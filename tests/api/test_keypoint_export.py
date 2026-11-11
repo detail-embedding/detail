@@ -36,6 +36,14 @@ from tests.pipeline.test_keypoint_track import _track_run
 DETECT_RUN, TRACK_RUN = "run_010", "run_011"
 NAME = "Mouse 7, day 2"
 STEM = export_targets.safe_name(NAME)
+#: The SLEAP and NWB writers need the ``keypoints_export`` extra; without it those two targets
+#: are offered as unavailable (``export_targets._needs_extra``), so a test that asks for all five
+#: cannot pass. CI installs the extra; a checkout without it skips rather than fails.
+needs_export_extra = pytest.mark.skipif(
+    any(importlib.util.find_spec(m) is None for m in ("h5py", "pynwb", "ndx_pose")),
+    reason="the keypoints_export extra is not installed",
+)
+
 FIVE = (
     "keypoints",
     "keypoints_dlc",
@@ -122,6 +130,7 @@ def _rows(path):
         return list(csv.DictReader(handle))
 
 
+@needs_export_extra
 def test_a_keypoint_run_offers_the_five_targets_and_names_what_a_tracking_run_lacks(
     keypoint_runs,
 ):

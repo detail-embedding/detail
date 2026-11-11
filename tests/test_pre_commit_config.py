@@ -27,6 +27,7 @@ import os
 import pathlib
 import re
 
+import pytest
 import yaml
 
 REPO = pathlib.Path(__file__).resolve().parent.parent

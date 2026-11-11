@@ -561,8 +561,11 @@ def test_the_selected_block_wears_a_dark_and_white_ring(icicle, qapp):
     assert _pixel_at(icicle, rect.left(), y).name() == node_icicle.GAP_COLOUR
     assert _pixel_at(icicle, rect.left() + 1, y).name() == node_icicle.GAP_COLOUR
     assert _pixel_at(icicle, rect.left() + 2, y).name() == node_icicle.RING_INNER_COLOUR
+    # Inside the ring is the fill. Probed at the right end: the label is left-aligned from
+    # left + 4 at this same height, so a probe there reads a glyph's antialiased edge wherever
+    # the platform's font puts one on that pixel (Linux CI read #ccc9b7 against #cccccc).
     assert (
-        _pixel_at(icicle, rect.left() + 4, y).name() == icicle.fill_of(node)[0].name()
+        _pixel_at(icicle, rect.right() - 6, y).name() == icicle.fill_of(node)[0].name()
     )
     icicle.set_selected(None)
     qapp.processEvents()

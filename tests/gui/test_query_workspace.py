@@ -1426,7 +1426,14 @@ def test_the_cut_button_names_the_clip_and_what_keeping_from_it_costs(qapp, tmp_
     assert not strip._cut.isEnabled(), "offered a cut before anything was marked"
     assert strip._cut.text() == "Cut here"
 
-    target = max(strip._cells)
+    # The highest built clip scoring clearly below the current cut, so the promise differs from
+    # today's count by construction. Not `max(strip._cells)`: the top two clips scored
+    # 0.99943244 and 0.99943214 on macOS and tied on Linux CPU, so marking the last one there
+    # promised the count already shown and the precondition below failed.
+    cut_score = strip._all[strip._boundary_index()].score or 0.0
+    target = max(
+        i for i in strip._cells if (strip._all[i].score or 0.0) < cut_score - 0.01
+    )
     _click(strip, target)
     qapp.processEvents()
 

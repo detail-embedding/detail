@@ -2552,7 +2552,7 @@ def test_interpret_rings_and_reads_a_cluster_only_once_every_clip_is_reviewed(
     assert text == f"precision {(n - 1) / n:.2f} · all {n} clips reviewed"
 
 
-def test_right_click_put_back_reaches_the_run(qapp, fitted_temporal):
+def test_right_click_put_back_reaches_the_run(qapp, fitted_temporal, monkeypatch):
     from PyQt6.QtCore import QPoint
     from PyQt6.QtWidgets import QMenu
 
@@ -2563,12 +2563,9 @@ def test_right_click_put_back_reaches_the_run(qapp, fitted_temporal):
     assert _drain(qapp, lambda: any(c.faded for c in montage.clips()))
     index = next(i for i, c in enumerate(montage.clips()) if c.tag == "→ rear")
     menus = []
-    real_popup = QMenu.popup
-    QMenu.popup = lambda self, *_a: menus.append(self)
-    try:
+    with monkeypatch.context() as patch:
+        patch.setattr(QMenu, "popup", lambda self, *_a: menus.append(self))
         montage.clip_context_requested.emit(index, QPoint(0, 0))
-    finally:
-        QMenu.popup = real_popup
     (menu,) = menus
     (action,) = menu.actions()
     assert action.text() == "Put back in climb" and action.isEnabled()

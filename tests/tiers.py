@@ -221,6 +221,8 @@ GUARD_FILES = frozenset(
         # it is open stays invisible until the .pth files are re-read (#506).
         "tests/core/test_installed.py",
         "tests/test_encoding_guard.py",
+        # A Qt method restored by hand no longer binds; the next caller in the process fails.
+        "tests/test_no_hand_patched_qt.py",
         # Every piece of machine-local state has a session floor, so a thread that outlives
         # its test cannot write the real preview cache, model cache or config.
         "tests/test_machine_state_isolation.py",

@@ -26,7 +26,9 @@ runs:
     # credentials/hf-access tests, so it is installed explicitly. scikit-learn + scipy +
     # numba (from the analysis extra) so syllable-discovery tests run here instead of
     # skipping — numba compiles the DTW clustering kernel; umap is not needed.
+    # keypoints_export (h5py, pandas, tables, pynwb, ndx-pose) so the SLEAP, DeepLabCut H5
+    # and NWB writers are exercised here rather than offered as unavailable.
     - shell: bash
       run: |
         pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-        pip install -e ".[dev,gui]" huggingface_hub scikit-learn scipy numba
+        pip install -e ".[dev,gui,keypoints_export]" huggingface_hub scikit-learn scipy numba

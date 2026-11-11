@@ -1365,7 +1365,9 @@ def test_scene_geometry_export_has_nothing_to_write_when_empty(qapp, tmp_path):
     assert dialog._export.toolTip() == "Nothing defined on this recording yet"
 
 
-def test_scene_geometry_export_names_the_experiment_and_recording(qapp, tmp_path):
+def test_scene_geometry_export_names_the_experiment_and_recording(
+    qapp, tmp_path, monkeypatch
+):
     """`Experiment` has no `.id`; reading one was an AttributeError on every export."""
     from PyQt6.QtWidgets import QFileDialog
 
@@ -1382,12 +1384,9 @@ def test_scene_geometry_export_names_the_experiment_and_recording(qapp, tmp_path
         seen["default"] = default
         return "", ""  # the user cancels; we only care what was offered
 
-    real = QFileDialog.getSaveFileName
-    QFileDialog.getSaveFileName = staticmethod(_stub)
-    try:
+    with monkeypatch.context() as patch:
+        patch.setattr(QFileDialog, "getSaveFileName", staticmethod(_stub))
         dialog._export_spatial()
-    finally:
-        QFileDialog.getSaveFileName = real
     assert "study3_s1_spatial.csv" in seen["default"]
 
 

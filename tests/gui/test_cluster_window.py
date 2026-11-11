@@ -661,8 +661,11 @@ def test_a_reload_reads_each_windows_clips_once_and_keeps_its_place(
     interpret._view = None
     interpret.reload()
     assert _drain(qapp, lambda: interpret._view is not None)
-    qapp.processEvents()
-    assert loads == [1]
+    # This view ranks on demand, so the window's clips arrive from a worker thread: wait for
+    # the read itself, not one pump after the page's view (that raced on a 2-core Linux
+    # runner). Then give a second read half a second to show up, and require none.
+    assert _drain(qapp, lambda: loads), "the reload never re-read the window's clips"
+    assert not _drain(qapp, lambda: len(loads) > 1, timeout_ms=500), loads
     assert window.montage.grid.verticalScrollBar().value() == scroll
 
 

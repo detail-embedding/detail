@@ -68,6 +68,17 @@ def _release_threads() -> list[threading.Thread]:
     return [t for t in threading.enumerate() if t.name == "FrameCursor-idle-release"]
 
 
+def _wait_for_no_release_thread() -> list[threading.Thread]:
+    """Wait for the shared release thread to exit; what is still alive at the failsafe.
+
+    A ``close`` only flags its pending release, so the thread exits on its next wake-up, not at
+    once. A cursor an earlier test left open keeps it alive until that release falls due.
+    """
+    for thread in _release_threads():
+        thread.join(_EXIT_TIMEOUT_S)
+    return _release_threads()
+
+
 def _cursors(path, n, threads):
     timestamps = video.generate_timestamps(path, FPS)
     cursors = [
@@ -106,7 +117,7 @@ def test_open_cursors_with_one_thread_cost_no_thread_each_and_closing_returns_th
     monkeypatch.setattr(video.FrameCursor, "IDLE_CLOSE_S", 0.05)
     p = tmp_path / "v.mp4"
     _write_distinct_video(p, 12)
-    _wait_for_threads(at_most=_native_threads() - len(_release_threads()))
+    assert not _wait_for_no_release_thread(), "an earlier release never finished"
     before = _native_threads()
     cursors = _cursors(p, N_OPEN, 1)
     added = _native_threads() - before
@@ -122,7 +133,7 @@ def test_open_cursors_with_one_thread_cost_no_thread_each_and_closing_returns_th
     after = _wait_for_threads(at_most=before)
     assert after <= before, f"closing every cursor left {after - before} threads behind"
     assert (
-        not _release_threads()
+        not _wait_for_no_release_thread()
     ), "the release thread outlived the last pending release"
 
 

@@ -107,11 +107,15 @@ def _open(qapp, tab, path, node):
 
 
 def _to_end(qapp, tab) -> None:
+    """Scroll to the bottom until the pane says so: under load the grid's maximum can still
+    grow after a fixed number of pumps, leaving the bar short of the real end."""
     bar = tab.pane.montage.grid.verticalScrollBar()
-    bar.setValue(bar.maximum())
-    for _ in range(3):
-        qapp.processEvents()
-    assert tab.pane.reached_end()
+
+    def scrolled() -> bool:
+        bar.setValue(bar.maximum())
+        return tab.pane.reached_end()
+
+    assert _drain(qapp, scrolled)
 
 
 def _finish(qapp, tab) -> None:
@@ -437,6 +441,9 @@ def test_finish_waits_for_the_end_of_the_scroll(qapp, tab):
     tab.open_cluster(
         tab._open["path"], tab._open["node"]
     )  # from the top, in the small window
+    # The clips rank off the UI thread; until they arrive the grid is empty and "reached the
+    # end" says nothing. A fixed five pumps lost that race in a loaded full run.
+    _ranked(qapp, tab)
     for _ in range(5):
         qapp.processEvents()
     if tab.pane.reached_end():

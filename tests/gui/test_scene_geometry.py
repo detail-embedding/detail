@@ -120,7 +120,9 @@ def test_an_active_window_can_be_set_and_cleared(qapp, tmp_path):
 
 
 # --- untouched kinds are not rewritten --------------------------------------- #
-def test_a_scalar_calibration_survives_a_save_about_something_else(qapp, tmp_path):
+def test_a_scalar_calibration_survives_a_save_about_something_else(
+    qapp, tmp_path, monkeypatch
+):
     """A calibration with no points must neither block the save nor be deleted by it.
 
     `set-calibration --pixels-per-mm` stores a scalar and no points, so there is nothing for
@@ -139,12 +141,13 @@ def test_a_scalar_calibration_survives_a_save_about_something_else(qapp, tmp_pat
     refused = []
     dialog._refuse = lambda title, message: refused.append(message)
     errors = []
-    monkey = QMessageBox.critical
-    QMessageBox.critical = staticmethod(lambda *a, **k: errors.append(a[-1]))
-    try:
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            QMessageBox,
+            "critical",
+            staticmethod(lambda *a, **k: errors.append(a[-1])),
+        )
         dialog._save_all()
-    finally:
-        QMessageBox.critical = monkey
 
     # The save has to *succeed*, not merely leave things alone. Asserting only that the
     # calibration is intact passes against the bug too — a save that blows up on the
@@ -410,7 +413,7 @@ def test_save_keeps_the_window_open_and_tracks_pending_edits(qapp, tmp_path):
     assert [r["name"] for r in rec.rois] == ["renamed"]
 
 
-def test_closing_with_pending_edits_asks_first(qapp, tmp_path):
+def test_closing_with_pending_edits_asks_first(qapp, tmp_path, monkeypatch):
     from PyQt6.QtWidgets import QMessageBox
 
     _exp, rec = _recording(tmp_path)
@@ -423,17 +426,18 @@ def test_closing_with_pending_edits_asks_first(qapp, tmp_path):
     dialog._sync()
 
     asked = []
-    real = QMessageBox.question
-    QMessageBox.question = staticmethod(
-        lambda *a, **k: (asked.append(a[-1]), QMessageBox.StandardButton.No)[1]
-    )
-    try:
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            QMessageBox,
+            "question",
+            staticmethod(
+                lambda *a, **k: (asked.append(a[-1]), QMessageBox.StandardButton.No)[1]
+            ),
+        )
         # Click the button, not `_close()` — the wiring is what this guards. Calling the
         # method directly passes even with the button connected straight to `reject`,
         # which is exactly the revert it is supposed to catch.
         dialog._close_button.click()
-    finally:
-        QMessageBox.question = real
     assert asked, "closing over unsaved edits discarded them silently"
     assert "Discard" in asked[0]
     qapp.processEvents()
