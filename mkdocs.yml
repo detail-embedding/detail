@@ -1,0 +1,142 @@
+site_name: DETAIL
+site_description: A species-agnostic tool for behavioral video analysis.
+docs_dir: docs
+# Flat page URLs (<page>.html, not <page>/index.html) so the built site is browsable
+# over file:// — the offline in-app / `detail docs` path (detail/docs_access.py).
+use_directory_urls: false
+
+# Internal, agent-facing specs — not published to the user site (docs/docs_design.md §1).
+exclude_docs: |
+  TODO.md
+  removed_capabilities.md
+  how_we_work.md
+  recorded_classes.md
+  package_map.md
+  backend_overview.md
+  bug_reports.md
+  docs_design.md
+  export_design.md
+  gui_design.md
+  chart_design.md
+  clustering_experiments.md
+  behavior_clustering_ideas.md
+  input-images-intro.md
+  embedding-models-intro.md
+  querying-methods-intro.md
+  measures-intro.md
+  behavior-query-eval-intro.md
+  modules/_intros/*
+
+# Broken links/anchors fail the build (docs/docs_design.md §9, Tenet 6).
+validation:
+  links:
+    anchors: warn
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - content.code.copy
+    # Picking an OS tab once syncs every OS tab on the page (getting-started.md).
+    - content.tabs.link
+    - toc.follow
+
+# Prose for a capability §25 hides is marked in the source and dropped here, rather than
+# deleted — so switching the capability back on republishes it (scripts/docs_surface_hook.py).
+hooks:
+  - scripts/docs_surface_hook.py
+
+plugins:
+  - search
+  # Material's offline plugin makes search work over file:// (inlines the index).
+  # Env-gated so it's a no-op for the CI/hosted build and only runs for the
+  # local offline build (detail/docs_access.py sets DETAIL_DOCS_OFFLINE=true).
+  - offline:
+      enabled: !ENV [DETAIL_DOCS_OFFLINE, false]
+  - gen-files:
+      scripts:
+        - scripts/gen_docs_modules.py
+        - scripts/gen_docs_parameters.py
+        - scripts/gen_docs_input_images.py
+        - scripts/gen_docs_embedding_models.py
+        - scripts/gen_docs_querying_methods.py
+        - scripts/gen_docs_behavior_query_eval.py
+        - scripts/gen_docs_measures.py
+        - scripts/gen_docs_manifest.py
+        - scripts/gen_docs_requirements.py
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            docstring_style: google
+            show_root_heading: true
+            show_source: true
+            members_order: source
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - toc:
+      permalink: true
+      slugify:
+        !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+  - mkdocs-click
+
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - Workflows:
+      - Create an experiment: workflows/create-a-experiment.md
+      - Add a recording: workflows/add-a-recording.md
+      - Add a multi-part recording: workflows/add-a-multi-part-recording.md
+      - Add stream data and metadata: workflows/add-stream-data-and-metadata.md
+      - Import recordings from YAML: workflows/import-recordings-from-yaml.md
+  - Concepts:
+      - Overview: concepts.md
+      - Input images: input-images.md
+      - Embedding models: embedding-models.md
+      - Querying methods: querying-methods.md
+      - Measures: measures.md
+      - Glossary: glossary.md
+  - Guides:
+      - GUI: gui.md
+      - CLI: cli.md
+      - Tools: tools.md
+  - Modules:  # generated per config model by scripts/gen_docs_modules.py
+      - Detection: modules/detection.md
+      - Tracking: modules/tracking.md
+      - Embedding: modules/embedding.md
+      - Keypoint detect: modules/keypoint_detect.md
+      - Keypoint track: modules/keypoint_track.md
+      - Keypoint track, temporal decode: modules/temporal_decode.md
+      - Keypoint track, despike and smooth: modules/despike_smooth.md
+      - Keypoint dataset: modules/keypoint_dataset.md
+      - Behavior scan: modules/query.md
+      - Behavior-query eval: modules/query_eval.md
+      - Location export: modules/location_export.md
+      - Comparison: modules/comparison.md
+      - Behavior clustering: modules/temporal_clustering.md
+      - Labeling: modules/labeling.md
+      - Quick segment: modules/quick_segment.md
+      - Query method - soft k-NN: modules/soft_knn.md
+      - Temporal cluster method - DTW+FINCH: modules/dtw_finch.md
+      - Temporal cluster method - codebook: modules/codebook_viterbi.md
+      - Trainer - YOLO: modules/ultralytics_yolo.md
+      - Stream importer - CSV: modules/timeseries_csv.md
+  - Evaluation:
+      - Behavior query: behavior-query-eval.md
+  - Reference:
+      - Python API: reference/api.md
+      - CLI commands: reference/cli.md
+      - Parameters: reference/parameters.md
+      - Manifest: reference/manifest.md
+      - GUI requirements: reference/gui-requirements.md
+  - Known issues: known-issues.md

@@ -1,0 +1,158 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Weekly full run. The tiered jobs below are a *selection*; this is the one that
+    # proves the selection is still complete on Linux + CPU.
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  QT_QPA_PLATFORM: offscreen
+
+jobs:
+  # Which tiers does this change actually need? A PR that touches no GUI source does
+  # not need the gui tier; a PR that touches no pipeline/executor source does not need
+  # the slow tier. Anything that is not a pull_request runs everything.
+  changes:
+    runs-on: ubuntu-latest
+    # paths-filter asks the API which files the PR touches, and the default token has
+    # `pull-requests: none` under this repo's restricted workflow permissions — without
+    # this it fails with "Resource not accessible by integration".
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      gui: ${{ steps.filter.outputs.gui }}
+      slow: ${{ steps.filter.outputs.slow }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            # The gate itself is in both lists: a change to the table, the hook that
+            # applies it, the marker declarations or the workflow has to be exercised by
+            # every tier it selects. (Written out twice rather than spliced with a YAML
+            # anchor — paths-filter takes a flat list of patterns, not a nested one.)
+            gui:
+              - 'tests/conftest.py'
+              - 'tests/tiers.py'
+              - 'pyproject.toml'
+              - '.github/workflows/ci.yml'
+              - '.github/actions/**'
+              - 'detail/gui/**'
+              - 'detail/configs/**'       # the forms are generated from these models
+              - 'detail/core/registries.py'
+              - 'detail/surfaces.py'
+              - 'tests/gui/**'
+            slow:
+              # Any test change runs this tier. The gui filter watches `tests/gui/**`
+              # because that is where every gui-tier test lives; slow-tier tests are
+              # spread across almost every test directory (tests/ root included), so
+              # there is no narrower pattern that fails closed. Without this, editing a
+              # slow-tier test skipped the only job that would have run it — which is
+              # exactly what happened to the PR that added this line.
+              - 'tests/**'
+              - 'pyproject.toml'
+              - '.github/workflows/ci.yml'
+              - '.github/actions/**'
+              - 'detail/executor/**'
+              - 'detail/pipeline/**'
+              - 'detail/analysis/**'
+              - 'detail/cluster_methods/**'
+              - 'detail/storage/**'
+              - 'detail/models/**'
+              - 'detail/trackers/**'
+              - 'detail/tools/**'
+              - 'detail/query_methods/**'
+              - 'detail/cli.py'
+
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install black==26.5.1
+      - run: black --check --diff detail/ tests/
+
+  # The guards: source scans, registry parity, structural and anti-drift checks. They
+  # cover the bug classes in CLAUDE.md's *Recorded classes* table, which are invisible
+  # to behavioural tests, and they are cheap. Always run, never skipped, first to go red.
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: pytest -m guard -q
+
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      # Serial on purpose, and the reason changed with #532. pytest-xdist *is* in the dev
+      # extra now, so the "different plugin set from the local run" objection is gone — but
+      # these runners are 2-core, so `-n auto` here is two workers against a tier that takes
+      # ~150s. It would buy seconds. Parallelism is worth ~4x on a 32-thread box and roughly
+      # nothing on this one, which is why the flag is passed per run rather than baked into
+      # `addopts`. If this tier grows past a couple of minutes, find what grew (the weekly
+      # `full` job's --durations) rather than hiding it behind workers.
+      - run: pytest -m "unit and not guard" -q
+
+  # Fail *closed*: `needs.changes` deciding nothing must mean "run it", never "skip it".
+  # A job with a plain `needs:` is skipped outright when its dependency fails, so the
+  # first version of this silently dropped the gui and slow tiers the moment the filter
+  # errored — the gate went green having run half of it, which is the failure this whole
+  # table exists to prevent. `always()` keeps the condition evaluated, and `!= 'false'`
+  # runs the tier unless the filter actively said it was not needed.
+  gui:
+    needs: changes
+    if: >
+      always() && needs.changes.result != 'cancelled' &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.gui != 'false')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      # Serial on purpose: the GUI suite has a known intermittent abort under headless
+      # PyQt6. Do not add -n here
+      # until that is pinned — parallel workers would make a wandering crash harder to
+      # attribute, not easier.
+      - run: pytest -m "gui and not guard" -q
+
+  slow:
+    needs: changes
+    if: >
+      always() && needs.changes.result != 'cancelled' &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.slow != 'false')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      # This is the tier where the local macOS run is *least* informative — process
+      # groups, `ps` truncation, signal semantics and concurrency timing all differ (see
+      # CLAUDE.md, "CI runs Linux + CPU"). Serial: these tests already spawn processes.
+      - run: pytest -m slow -q
+
+  # The selection is only trustworthy while every test is in a tier. The guard test
+  # proves that structurally on every run; this proves it by *running everything*, once
+  # a week and on demand, and prints the slowest tests so tier drift is visible.
+  full:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: pytest -q --durations=25

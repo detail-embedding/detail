@@ -1,0 +1,19 @@
+recordings:
+  - id: boxA
+    video:
+      - boxA_am.mp4
+      - boxA_pm.mp4
+    metadata:
+      treatment: drug_A
+      sex: M
+    streams:
+      - name: medpc
+        importer: medpc
+        raw: PX22.txt
+        aux:
+          program: Golden_Liq_SelfAdmin.MPC
+  - id: boxB
+    video: [boxB.mp4]
+    metadata:
+      treatment: saline
+      sex: F

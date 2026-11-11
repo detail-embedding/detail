@@ -1,0 +1,6 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+
+# Shell scripts run under sh on every platform, and a CRLF checkout of one does not run.
+*.sh text eol=lf

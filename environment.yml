@@ -1,0 +1,18 @@
+# Conda fallback for the Python environment. The primary, recommended install is
+# uv — see README.md "Installation". Conda provides the Python environment only;
+# experiment dependencies live in pyproject.toml so there is one source of truth.
+#
+# Usage:
+#   conda env create -f environment.yml
+#   conda activate detail
+#   pip install -e ".[torch,dev,sam3]"      # add extras as needed
+#
+# Then follow README.md for: Hugging Face access (gated models), SAM3 install
+# from source (--no-deps), and the CUDA / torch wheel matching note.
+
+name: detail
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip

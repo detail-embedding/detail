@@ -1,0 +1,42 @@
+
+*.asv
+FeatureOutput/
+InputVideo/
+SocialOutput/
+SocialVideo/
+ClusterOutput/
+runs/
+plans/
+YoloTraining/
+.vscode/
+*.pt
+.idea/
+*.ts
+__pycache__/
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+.venv/
+
+
+# mkdocs build output
+site/
+
+# mkdocs-gen-files build artifacts (generated at build time)
+docs/querying-methods.md
+docs/behavior-query-eval.md
+docs/assets/*/generated/
+
+
+
+
+# Coverage artifacts (pytest-cov, #532). The report is read from a run, never committed —
+# a checked-in number is one nobody re-measures.
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Per-machine Claude Code overrides (statusLine interpreter etc.)
+.claude/settings.local.json

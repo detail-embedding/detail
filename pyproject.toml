@@ -1,0 +1,192 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "detail"
+version = "0.1.0"
+description = "Segmentation, tracking, and embedding pipeline for behavioral video."
+requires-python = ">=3.12"  # zarr>=3.2 requires 3.12; uv resolves the full range
+dependencies = [
+    "numpy>=2",      # vlen-str columns use numpy StringDType (numpy 2.0+)
+    "zarr>=3.2",     # DESIGN_PLAN uses the zarr v3 API (create_array, resize-append, vlen-str)
+    "numcodecs",
+    "pyyaml",
+    "opencv-python",
+    "av",            # PyAV — container metadata / PTS (Tenet 15)
+    "pycocotools",   # COCO RLE mask encode/decode (DESIGN_PLAN §9)
+    "tqdm",
+    "click",         # CLI + confirm_fn default (DESIGN_PLAN §15)
+    "pydantic>=2",   # typed config models — single source for param metadata + validation
+    "matplotlib",    # publication figures for the report/ + comparison export capability (§18)
+    "pillow",        # GIF export (§22 enlarged panes, api/animation.py); matplotlib needs it too
+    "scipy",         # keypoint track's pose-to-subject match (linear_sum_assignment, §26);
+                      # imported lazily inside the functions that use it
+    "psutil",        # RAM for the performance report's machine block (core, #394); also
+                      # SAM3's inference path imports it without declaring it (see `sam3` below)
+    # Docs toolchain in base (not only the `[docs]` extra) so a first install can serve the
+    # site locally (`mkdocs serve`) while the repo is private and nothing is published.
+    # REVERT WHEN PUBLIC: delete these five from base — they already live in `[docs]` — and
+    # rely on the hosted site. (`matplotlib` above stays; `mike` is
+    # publish-only and stays out of base.)
+    "mkdocs",
+    "mkdocs-material",
+    "mkdocstrings[python]",
+    "mkdocs-click",
+    "mkdocs-gen-files",
+]
+
+[project.optional-dependencies]
+torch = [
+    "torch",
+    "torchvision",
+    "huggingface_hub",
+    # transformers 5.x requires torch ≥ 2.7 (uses torch.float8_e8m0fnu);
+    # cap at 4.x for compatibility with the torch 2.5/cu121 baseline.
+    "transformers>=4.50,<5",
+]  # lazy backend (Tenet 13); hf gated weights
+# Pinned to one minor series: its defaults decide every training setting this tool does not
+# set, so a new series can change what a distill trains. A model records the exact version
+# it trained with (model.yaml -> trained_with).
+yolo = ["ultralytics>=8.4,<8.5"]                # lazy backend
+# Runtime deps SAM3's inference path imports but its own pyproject leaves out
+# (psutil is a core dependency above, not listed again here; einops is not core —
+# decord is only ever imported, not called; iopath is the checkpoint loader; timm
+# provides the backbone — SAM3 imports both at load; ftfy is imported unconditionally
+# by the text-prompt tokenizer — sam3.__init__ fails to import without it). Pair with
+# `pip install -e ../sam3 --no-deps` — see README. timm is unpinned so it accepts the
+# already-installed cu121 torch (install torch first; see README).
+sam3 = ["einops", "decord", "iopath", "timm", "ftfy"]
+# numba (pulled by umap-learn) is floored at >=0.60 so the resolver can't backtrack
+# to numba 0.53.1 — the only release whose metadata claims numpy>=2 with no upper cap —
+# on a box with a very new numpy. 0.53.1 has no py3.12 wheel and won't build on 3.12,
+# which otherwise breaks `pip install .[analysis]` outright.
+# scikit-learn backs syllable discovery (sklearn.cluster.HDBSCAN; scipy, its peak detectors'
+# other half, is core now); imported lazily so the package still imports without the extra.
+analysis = ["umap-learn", "hdbscan", "scikit-learn", "numba>=0.60"]
+# §26 keypoint exports for other pose tools: h5py writes the SLEAP analysis file, pandas +
+# tables the DeepLabCut H5 beside its CSV, pynwb + ndx-pose the NWB file. Each is imported
+# inside its writer (Tenet 13); without the extra the CSV targets still run and the H5 / NWB
+# targets say what to install.
+keypoints_export = ["h5py", "pandas", "tables", "pynwb", "ndx-pose"]
+gui = [
+    "PyQt6",
+    "pyqtgraph",
+    "PyOpenGL",
+    "PyOpenGL_accelerate",
+    # macOS-only: lets the app set its menu-bar name (CFBundleName) when run
+    # unbundled; the Dock icon + window titles work without it. Best-effort.
+    "pyobjc-framework-Cocoa; sys_platform == 'darwin'",
+]
+dev = [
+    "pytest",
+    # The suite ran on one core until #532, several times slower than under `-n`, with the
+    # same tests passing either way. `-n` is deliberately **not** in `addopts`: it changes
+    # how fast the suite runs and never what it runs, and forcing workers onto a single-test
+    # run breaks `--pdb` and costs more than it saves. The commands carrying it are in
+    # CLAUDE.md; pandas and scikit-learn pass it per job for the same reason.
+    "pytest-xdist",
+    # The instrument the rest of #537 is argued from — what lets consolidating slow tests into
+    # fast ones be *shown* safe rather than asserted. Not a gate yet; see `codecov.yml` for why
+    # the floor waits for #535.
+    "pytest-cov",
+    "black==26.5.1",  # pin black so CI --check matches local format
+    # Runs black and cheap checks at commit, and the suite at push (`.pre-commit-config.yaml`).
+    # One `pre-commit install` per clone replaces `git config core.hooksPath scripts/hooks`,
+    # which a fresh clone silently loses (#378).
+    "pre-commit",
+]
+# While the repo is private, the build deps below (all but `mike`) are ALSO in base
+# `dependencies` so a first install can host docs locally; this extra stays the canonical
+# list + the publish-only `mike`. On publish, base loses them and this becomes the only home
+# again. CI (`docs.yml`) installs `.[docs]`; leaving it intact keeps CI green.
+docs = [
+    "mkdocs",
+    "mkdocs-material",
+    "mkdocstrings[python]",
+    "mkdocs-click",
+    "mkdocs-gen-files",
+    "matplotlib",  # scripts/gen_docs_querying_methods.py renders the figure at build time
+    "mike",
+]
+
+[project.scripts]
+detail = "detail.cli:main"
+detail-gui = "detail.gui.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["detail*"]
+
+[tool.setuptools.package-data]
+"detail.gui" = ["resources/*.png"]  # ship the app icon in built wheels
+# Named starting points offered by every launch form (`configs/baselines.py`). Data, not
+# code, so it needs declaring here or an installed wheel has an empty picker.
+"detail.configs" = ["baselines/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Two axes, both applied by path from tests/tiers.py in tests/conftest.py's collection
+# hook, never written on individual tests — see the tier comment there. Cost is exactly one
+# of unit / gui / slow; `guard` is orthogonal to it. The gate is `-m guard`,
+# `-m "unit and not guard"`, `-m "gui and not guard"` and `-m slow`, which partition the
+# suite; `-m "not slow"` is the coarse fallback. The edit loop selects by change instead
+# (`scripts/select_tests.py`, table in `tests/impact.py`) — not a gate, by design.
+markers = [
+    "unit: in-process, no Qt, no real workload — the tier that runs on every change",
+    "gui: needs a QApplication (headless PyQt6 in CI)",
+    "slow: spawns real worker subprocesses, drives a real pipeline end to end, encodes video, or pays for a heavy numeric backend",
+    "guard: a source scan, registry-parity sweep, or structural/anti-drift check — runs at every stage of the gate, never skipped",
+    "allow_slot_exceptions: this test's subject IS an exception escaping a Qt slot, so the conftest guard that fails on one stands down",
+]
+pythonpath = ["."]
+# --strict-markers: the tiers are applied from a table, so a typo'd or undeclared marker
+# would silently select nothing rather than fail.
+# --maxfail=10: a branch that has broken something broadly should stop, not spend the whole
+# suite proving it. Ten rather than napari's five because this suite's guards fail in
+# clusters — one registry change reddens every parity sweep at once, and seeing the shape of
+# that cluster is the diagnosis. Override with `--maxfail=0` when triaging a wide failure.
+# `-p scripts.suite_watchdog` makes a run end on its own. It defaults `--max-worker-restart` to 0, so
+# a worker that dies (a segfault, faulthandler_timeout below) fails the run at once naming its
+# test: with restarts on, pytest-xdist 3.8's `--dist loadfile` re-queues every file the dead worker
+# had finished, a finished file is sent to a worker as an empty list, that worker never reports
+# again, and the run waits forever with every worker idle. It also ends any run with no
+# progress for `suite_stall_timeout` seconds, printing
+# what it was waiting on.
+addopts = "--import-mode=importlib --strict-markers --maxfail=10 -p scripts.suite_progress_plugin -p scripts.suite_watchdog"
+# A hung test is indistinguishable from a slow one, and the suite has spawned real worker
+# subprocesses since §7 — a worker that neither exits nor writes a terminal status used to
+# park a run forever. faulthandler is pytest's own watchdog: it arms a C-level timer per
+# test, so it fires even when the hang sits inside a C call that never returns to the
+# interpreter (torch, numba, BLAS), which a signal-based timeout cannot. At the deadline it
+# dumps every thread's stack — naming the test and the line — and `exit_on_timeout` stops
+# the run rather than leaving it to be noticed by hand half an hour later.
+#
+# 120s is many times the slowest test, so this is a hang detector, not a performance budget,
+# and arming it costs little. pytest-timeout's thread method does the same job at a higher
+# cost, because it starts a real timer thread per test.
+faulthandler_timeout = 120
+faulthandler_exit_on_timeout = true
+# Above faulthandler_timeout, so a stuck test is reported with its own stack first.
+suite_stall_timeout = 300
+filterwarnings = [
+    "error",  # our own warnings are bugs (Tenet 17) — fail on them
+    # pycocotools' mask.decode is not numpy-2 __array__ compatible; harmless.
+    "ignore:.*__array__ implementation.*:DeprecationWarning",
+    # torch warns when a cuda-backend DataLoader sets pin_memory on a host whose
+    # accelerator can't pin (CPU-only CI: "no accelerator is found"; Apple MPS:
+    # "not supported on MPS now"). Harmless — pinned memory is simply unused.
+    "ignore:'pin_memory' argument is set as true:UserWarning",
+    # umap-learn warns at import that ParametricUMAP needs TensorFlow, which we never use
+    # (cluster diagnostics' layout is plain UMAP). Harmless, and only about the host.
+    "ignore:Tensorflow not installed; ParametricUMAP will be unavailable:ImportWarning",
+    # ... and warns per fit that a precomputed metric rules out inverse_transform, which the
+    # cluster projection never calls (it lays out an existing DTW matrix, one direction only).
+    "ignore:using precomputed metric; inverse_transform will be unavailable:UserWarning",
+    # ... and warns that seeding forces its default n_jobs=-1 down to 1. That single-threading
+    # is exactly what we want: the projection feeds a CSV in the byte-identical bundle, so a
+    # reproducible layout beats parallelism. Fires from the default, not from anything we pass.
+    "ignore:n_jobs value .* overridden to 1 by setting random_state:UserWarning",
+]
+
+[tool.black]
+line-length = 88

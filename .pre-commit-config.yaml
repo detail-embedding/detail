@@ -1,0 +1,53 @@
+# Checks that run on your own machine. One command sets up both stages:
+#
+#     pre-commit install
+#
+# Only the **commit** stage: black and a few quick checks over the files being committed, about a
+# second. Installed with `pre-commit install` (this config asks for that stage and no other).
+#
+# **There is deliberately no pre-push hook.** One used to run the whole suite on every push, which
+# gates the wrong event: a branch is pushed many times -- on creation, per commit, and again after
+# merging `main` in -- while it is merged once. On 2026-09-29 that was 64 merges and several times
+# as many pushes, so a push-time gate charges minutes repeatedly for a single decision, and with
+# `scripts/with_suite_lock.py` those runs queue behind each other across sessions.
+#
+# The suite belongs at **merge** time, and the mechanism for that is a required status check on the
+# PR, which needs Actions (disabled repo-wide, being restored). Until then it is a documented
+# discipline rather than a hook -- CLAUDE.md "Before you merge" and the `ship-a-change` skill. Git
+# offers a pre-push hook and no merge hook, so push time was never the right moment; it was the only
+# one reachable.
+#
+# This replaces `git config core.hooksPath scripts/hooks`, which a fresh clone silently loses
+# (#378: the hook had never run on that machine). pre-commit refuses to install while that
+# setting is present; `git config --unset core.hooksPath` clears it.
+default_install_hook_types: [pre-commit]
+default_stages: [pre-commit]
+
+repos:
+  # The pin must match `black==` in pyproject.toml's `dev` extra and CI's `pip install black==`,
+  # or a commit formats one way and CI checks another. `tests/test_pre_commit_config.py` checks
+  # the three agree.
+  - repo: https://github.com/psf/black-pre-commit-mirror
+    rev: 26.5.1
+    hooks:
+      - id: black
+        files: ^(detail|tests|paper)/
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-merge-conflict
+      - id: detect-private-key
+      # The largest tracked file is a 2 MB test fixture. The limit is set just above it, so a
+      # video, a model checkpoint or a zarr store committed by accident is caught.
+      - id: check-added-large-files
+        args: [--maxkb=2100]
+        exclude: ^paper/
+      # paper/ commits its figures, and some are big (paper/README.md "What is committed"): its
+      # limit is GitHub's, which refuses a push with a file of 100 MiB or more.
+      - id: check-added-large-files
+        name: check for added large files (paper/, GitHub's limit)
+        args: [--maxkb=97000]
+        files: ^paper/
+      - id: check-toml
+

@@ -1,0 +1,59 @@
+# Coverage is the instrument the test-suite work is argued from (#537), and since CLAUDE.md's
+# *What a new test costs* it is also a **rule**: coverage for the package you touched must not drop.
+#
+# It is still not a *gate*, and the reason has changed. It was waiting on #535, which retires guards
+# whose class has become structurally impossible — every retirement drops coverage, so a floor set
+# first would have blocked the cleanup it protects. #535 has since landed and retired nothing
+# (97 classes live, 0 retired), so that reason is spent. What blocks the gate now is that **Actions
+# is disabled repo-wide**, so nothing uploads and a `informational: false` here would fail nothing
+# while looking like a check. Flip it when Actions returns, at the number true then.
+#
+# The per-package shape follows napari's codecov.yml: separate targets, because one global
+# number lets a well-covered package hide a bare one. `target: auto` means "do not drop",
+# which is the point — it is satisfied by *better* tests as readily as by more, so
+# consolidating slow tests into fast ones passes where a test-count rule would not.
+
+codecov:
+  # Nothing uploads while Actions is disabled repo-wide (2026-09-30; it was #378's billing
+  # failure before that). These take effect when Actions returns, or when the repo goes public.
+  require_ci_to_pass: false
+
+comment: false
+
+coverage:
+  status:
+    project:
+      default: false
+      gui:
+        paths: ["detail/gui/"]
+        target: auto
+        threshold: 1%
+        informational: true
+      api:
+        paths: ["detail/api/"]
+        target: auto
+        threshold: 1%
+        informational: true
+      pipeline:
+        paths: ["detail/pipeline/", "detail/analysis/"]
+        target: auto
+        threshold: 1%
+        informational: true
+      storage:
+        paths: ["detail/storage/"]
+        target: auto
+        threshold: 1%
+        informational: true
+      core:
+        paths: ["detail/core/", "detail/executor/", "detail/configs/"]
+        target: auto
+        threshold: 1%
+        informational: true
+    patch:
+      default:
+        target: auto
+        threshold: 1%
+        informational: true
+
+ignore:
+  - "detail/_version.py"
