@@ -340,6 +340,33 @@ def _isolate_registries():
         live.update(saved[name])
 
 
+@pytest.fixture(autouse=True)
+def _isolate_pool_worker_state():
+    """Restore the GPU pool workers' process-wide state after each test.
+
+    ``pool_initializer`` runs once per worker *process* in production, so it writes module
+    globals (``_WORKER_STATE``) and ``CUDA_VISIBLE_DEVICES`` freely. Tests run it — or a
+    synchronous fake pool that does its job — inside the pytest process, and what it wrote stayed
+    for every later test on that worker: a two-GPU fake left ``share = 2``, and
+    ``tests/core/test_cpu.py`` then read a render pool of 3 threads where the rule gives 7, in
+    whichever full run put the two files on one worker. Dicts are cleared and refilled in place,
+    because the workers read their own module's dict.
+    """
+    from detail.pipeline import _detection_worker, _embedding_worker
+
+    states = (_detection_worker._WORKER_STATE, _embedding_worker._WORKER_STATE)
+    saved = [dict(state) for state in states]
+    cuda = os.environ.get("CUDA_VISIBLE_DEVICES")
+    yield
+    for state, before in zip(states, saved):
+        state.clear()
+        state.update(before)
+    if cuda is None:
+        os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+    else:
+        os.environ["CUDA_VISIBLE_DEVICES"] = cuda
+
+
 def _split_detail_modules() -> set[str]:
     """``detail.*`` modules whose ``sys.modules`` entry is not what their parent package holds."""
     split = set()

@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import (
 
 from detail.api import models as api_models
 from detail.api._runner_modules import PIPELINE_RUNNERS
+from detail.api.run_preview import DEFAULT_PREVIEW_FPS
 from detail.configs.quick_segment import QuickSegmentConfig
 from detail.core.dataclasses import Prompt, PromptTarget, TextCue
 from detail.executor.runners import import_runner_modules

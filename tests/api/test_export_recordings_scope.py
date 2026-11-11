@@ -316,7 +316,13 @@ KEYPOINT_STEMS = {
     [
         "keypoints",
         "keypoints_dlc",
-        "keypoints_sleap",
+        pytest.param(
+            "keypoints_sleap",
+            marks=pytest.mark.skipif(
+                importlib.util.find_spec("h5py") is None,
+                reason="h5py is not installed",
+            ),
+        ),
         pytest.param(
             "keypoints_nwb",
             marks=pytest.mark.skipif(

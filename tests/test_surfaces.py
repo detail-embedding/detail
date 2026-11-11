@@ -526,9 +526,7 @@ _COUNT_WORDS = {
 #: site left the other wrong: the sweep is the point of the rule, and it was not done.
 #: The second copy is private: its "Read this first" section is stripped from the public copy
 #: (`scripts/export_public.py`), where a test asserting the sentence is there would fail.
-_PROSE_COPIES = (
-    "CLAUDE.md",
-)
+_PROSE_COPIES = ("CLAUDE.md",)
 
 
 def _count_phrase(n: int) -> str:

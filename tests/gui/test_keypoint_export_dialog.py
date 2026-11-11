@@ -12,6 +12,7 @@ from tests.api.test_keypoint_export import (  # noqa: E402,F401  (the fixture)
     FIVE,
     TRACK_RUN,
     keypoint_runs,
+    needs_export_extra,
 )
 
 
@@ -22,6 +23,7 @@ def _dialog(it, run_id):
     return ExportDialog(subject, exporters.targets_for(subject), None)
 
 
+@needs_export_extra
 def test_a_track_run_lists_the_five_rows_and_their_shared_knobs(qapp, keypoint_runs):
     it, _recording = keypoint_runs
     dialog = _dialog(it, TRACK_RUN)

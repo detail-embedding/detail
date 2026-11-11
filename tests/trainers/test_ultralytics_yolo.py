@@ -202,6 +202,7 @@ def test_resolved_settings_are_args_yaml_with_version_and_no_machine_paths(tmp_p
 
     import yaml
 
+    pytest.importorskip("ultralytics")
     run = tmp_path / "run"
     run.mkdir()
     (run / "args.yaml").write_text(

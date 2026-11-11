@@ -354,8 +354,7 @@ def _child_is_this_interpreter(call: ast.Call) -> bool:
 
 #: Calls whose child is this interpreter through a variable the AST cannot see into. Claims:
 #: ``test_every_subprocess_allowlist_entry_still_matches`` fails on one that excuses nothing.
-SUBPROCESS_ALLOWED = {
-}
+SUBPROCESS_ALLOWED = {}
 
 
 def undeclared_subprocess_decodes(tree: ast.AST):
