@@ -935,12 +935,12 @@ def test_a_drag_produces_a_handful_of_layouts_not_one_per_pixel(qapp):
     assert len(layouts) > 1
 
 
-def test_three_groups_says_it_cannot_rank_rather_than_that_it_has_nothing(
-    qapp, tmp_path
-):
-    """A ranking is one group against another, so three groups have no single contrast. The
-    Overview said "(this comparison contrasts no measures)" — over a Measures tab holding every
-    one of them — and returned early, orphaning the figure grid it had already built."""
+def test_three_groups_rank_as_the_largest_gap_between_any_two(qapp, tmp_path):
+    """Three groups once had "no single contrast to rank" (and before that the Overview said
+    "contrasts no measures" over a Measures tab holding all of them). Now each measure's item
+    is the largest contrast between any two of them (§24 *Designs*): the Overview carries the
+    pair per row, the Measures tab holds all three side by side with the change named by its
+    pair, and one recording per group says why it has no floor rather than nothing."""
     from PyQt6.QtWidgets import QLabel
 
     plan = {
@@ -960,12 +960,26 @@ def test_three_groups_says_it_cannot_rank_rather_than_that_it_has_nothing(
     page = _opened(qapp, exp, exp.comparisons[-1].id)
 
     said = " ".join(label.text() for label in page.findChildren(QLabel))
-    assert "3 groups" in said and "no single contrast" in said, said
-    assert "contrasts no measures" not in said
-    # The Measures tab still holds all three groups side by side.
+    assert "no single contrast" not in said and "contrasts no measures" not in said
+    assert "No permutation floor" in said, said
+    overview = _named_table(page, "overview_contrasts")
+    headers = [
+        overview.horizontalHeaderItem(c).text() for c in range(overview.columnCount())
+    ]
+    assert headers[:5] == ["measure", "between", "a", "b", "change (a → b)"]
+    assert overview.rowCount() == 1
+    assert overview.item(0, 1).text() == "0 → 50", "2, 6 and 14 bouts: 0 against 50"
+    # The Measures tab still holds all three groups side by side, the change by its pair.
     table = _named_table(page, "group_measures")
     headers = [table.horizontalHeaderItem(c).text() for c in range(table.columnCount())]
-    assert headers == ["measure", "0", "5", "50"], headers
+    assert headers == [
+        "measure",
+        "0",
+        "5",
+        "50",
+        "change (most different pair)",
+    ], headers
+    assert table.item(0, 4).text().endswith("(0 → 50)"), table.item(0, 4).text()
 
 
 # --------------------------------------------------------------------------- #
@@ -1165,13 +1179,17 @@ def test_the_design_line_says_what_will_run(qapp, tmp_path):
     assert dialog.config()["levels"] is None, "two values: the column decides"
 
 
-def test_three_values_disable_run_until_two_are_ticked(qapp, tmp_path):
+def test_three_values_run_as_a_profile_until_two_are_ticked(qapp, tmp_path):
+    """Three sessions are a profile over all three, runnable as chosen, and the design line
+    says so; ticking two turns it into the paired contrast of those (§24 *Designs*)."""
     from tests.api.test_comparison import THREE_SESSIONS
 
     dialog = ComparisonLaunchDialog(_cohort(tmp_path, THREE_SESSIONS))
     _check(dialog._group_by, "drug")
-    assert not _ok(dialog)
-    assert "name the two to contrast" in dialog._status.text()
+    assert _ok(dialog), dialog._status.text()
+    assert dialog._design_note.text().startswith("profile")
+    assert "fent, nalox, veh" in dialog._design_note.text()
+    assert dialog.config()["levels"] is None
     assert not dialog._levels_box.isHidden()
     _check(dialog._levels, "nalox", "veh")
     assert _ok(dialog), dialog._status.text()
@@ -1327,3 +1345,37 @@ def test_the_detail_page_names_what_was_left_out(qapp, tmp_path):
     page = _opened(qapp, exp, comp.id)
     lines = page._header_lines(comp.record())
     assert any("left out" in line and "r5" in line for line in lines), lines
+
+
+def test_the_overview_of_a_profile_carries_each_rows_pair(qapp, tmp_path):
+    """Over three sessions each row is between its own pair, so the pair is a column of the
+    Overview where a two-group table named the groups in its headers (§24 *Designs*)."""
+    from tests.api.test_comparison import THREE_SESSIONS
+
+    exp = _cohort(tmp_path, THREE_SESSIONS)
+    exp.run_comparison(
+        {
+            "source_run_id": "an_01",
+            "group_by": ["drug"],
+            "aggregate_to": ["animal"],
+            "measures": ["n_instances"],
+        }
+    )
+    assert exp.comparisons[-1].record()["design"] == "profile"
+    page = _opened(qapp, exp, exp.comparisons[-1].id)
+    table = _named_table(page, "overview_contrasts")
+    headers = [table.horizontalHeaderItem(c).text() for c in range(table.columnCount())]
+    assert headers[:5] == ["measure", "between", "a", "b", "change (a → b)"]
+    assert "in that direction" in headers and "present" in headers
+    assert table.rowCount() > 0
+    between = table.item(0, 1).text()
+    assert " → " in between or between == "—", between
+    grid = _named_table(page, "group_measures")
+    headers = [grid.horizontalHeaderItem(c).text() for c in range(grid.columnCount())]
+    assert headers == [
+        "measure",
+        "fent",
+        "nalox",
+        "veh",
+        "change (most different pair)",
+    ]

@@ -86,29 +86,49 @@ def effect_extent(design: str) -> float:
     return 1.0 if design == "trend" else LOG_RATIO_EXTENT
 
 
-def effect_position(effect, clears: bool, extent: float) -> float:
+def one_sided(design: str) -> bool:
+    """Whether the effect axis is a size with no direction (§22). A profile's effect is the
+    largest difference between any two of its levels: its sign belongs to that pair, not to
+    the measure, so the axis runs from 1× up and the tree takes one ramp by size."""
+    return design == "profile"
+
+
+def effect_position(
+    effect, clears: bool, extent: float, *, one_sided: bool = False
+) -> float:
     """Where an effect sits on the −1..+1 axis: ``NaN`` for an undefined effect (``None`` or
     NaN), ``0`` for one that did not clear the floor (neutral, not shown to differ), else the
-    signed effect over ``extent``, clamped to the ends."""
+    signed effect over ``extent``, clamped to the ends. ``one_sided`` places its size on the
+    0..+1 half instead, for a profile."""
     if effect is None or effect != effect:
         return float("nan")
     if not clears:
         return 0.0
+    if one_sided:
+        return min(abs(float(effect)) / float(extent), 1.0)
     return min(max(float(effect) / float(extent), -1.0), 1.0)
 
 
 def effect_axis_labels(design: str) -> tuple[str, str]:
-    """The axis ends: ``("ρ −1", "ρ +1")`` for a trend, ``("÷20", "×20")`` for a log ratio."""
-    return ("ρ −1", "ρ +1") if design == "trend" else ("÷20", "×20")
+    """The axis ends: ``("ρ −1", "ρ +1")`` for a trend, ``("1×", "×20")`` for a
+    profile's size, ``("÷20", "×20")`` for a log ratio."""
+    if design == "trend":
+        return ("ρ −1", "ρ +1")
+    if one_sided(design):
+        return ("1×", "×20")
+    return ("÷20", "×20")
 
 
 def effect_value_text(effect: float | None, design: str) -> str:
-    """``12.4×``, ``÷2.1`` or ``ρ −0.74`` — an effect as a person reads it."""
+    """``12.4×``, ``÷2.1`` or ``ρ −0.74`` — an effect as a person reads it. A profile's is a
+    size, ``12.4×`` whichever way its pair runs."""
     if effect is None or effect != effect:
         return "undefined"
     if design == "trend":
         return f"ρ {effect:+.2f}"
     factor = math.exp(abs(float(effect)))
+    if one_sided(design):
+        return f"{factor:.1f}×"
     return f"{factor:.1f}×" if effect >= 0 else f"÷{factor:.1f}"
 
 
@@ -133,6 +153,9 @@ class _Ramp(QWidget):
         self.active = True
         #: The effect mode: the diverging scale over −1..+1 with the floor's ticks.
         self.diverging = False
+        #: The effect mode's one-sided form: a size over 0..+1 on the scale's upper half, one
+        #: floor tick — a profile's axis.
+        self.half = False
         self._floor: float | None = None
         self._selected_text: str | None = None
         self._selected: float | None = None
@@ -168,7 +191,7 @@ class _Ramp(QWidget):
         """Where ``share`` sits on the bar — a fixed map from 0..1 (or −1..+1 in the effect
         mode), whatever the data."""
         span = self.width() - 2 * _INSET
-        if self.diverging:
+        if self.diverging and not self.half:
             return _INSET + span * (min(max(float(share), -1.0), 1.0) + 1.0) / 2.0
         return _INSET + span * min(max(float(share), 0.0), 1.0)
 
@@ -201,7 +224,14 @@ class _Ramp(QWidget):
             painter.setOpacity(_INACTIVE_OPACITY)
         bar = QRectF(_INSET, _BAR_TOP, self.width() - 2 * _INSET, _BAR_H)
         gradient = QLinearGradient(bar.left(), 0, bar.right(), 0)
-        stops = theme.diverging if self.diverging else theme.sequential
+        if self.diverging and self.half:
+            # The upper half of the diverging scale, neutral to the "more" pole: the same
+            # colours `plot_theme.effect_colour` gives a block at 0..+1.
+            stops = theme.diverging[len(theme.diverging) // 2 :]
+        elif self.diverging:
+            stops = theme.diverging
+        else:
+            stops = theme.sequential
         for i, stop in enumerate(stops):
             gradient.setColorAt(i / (len(stops) - 1), QColor(stop))
         painter.fillRect(bar, gradient)
@@ -212,7 +242,8 @@ class _Ramp(QWidget):
         if self.diverging and self._floor is not None:
             # The floor, both ways from the middle: inside it a cluster is grey on the tree.
             painter.setPen(QPen(muted, 1.5))
-            for side in (-self._floor, self._floor):
+            sides = (self._floor,) if self.half else (-self._floor, self._floor)
+            for side in sides:
                 x = self.x_for(side)
                 painter.drawLine(QPointF(x, _BAR_TOP - 2), QPointF(x, _RUN_TOP))
             text = "floor"
@@ -295,6 +326,7 @@ class MatchKey(QWidget):
         # Greyed by colour, not by disabling: a disabled label cannot be selected and copied.
         self.ramp.active = bool(active)
         self.ramp.diverging = False
+        self.ramp.half = False
         self._caption.setText(CAPTION)
         self._low.setText("0%")
         self._high.setText("100%")
@@ -318,13 +350,16 @@ class MatchKey(QWidget):
 
         Args:
             caption: What the axis is, e.g. ``"Less ↔ more under drug"``.
-            design: ``"trend"`` for a ρ axis, else a log-ratio axis.
+            design: ``"trend"`` for a ρ axis, ``"profile"`` for a one-sided size axis, else a
+                log-ratio axis.
             floor: The screen's floor in the effect's unit, or ``None`` when it has none.
             selected_effect: The selected cluster's effect, ``None`` for none or undefined.
         """
         extent = effect_extent(design)
+        half = one_sided(design)
         self.ramp.active = True
         self.ramp.diverging = True
+        self.ramp.half = half
         self._caption.setText(caption)
         low, high = effect_axis_labels(design)
         self._low.setText(low)
@@ -335,7 +370,7 @@ class MatchKey(QWidget):
         position = (
             None
             if selected_effect is None or selected_effect != selected_effect
-            else effect_position(selected_effect, True, extent)
+            else effect_position(selected_effect, True, extent, one_sided=half)
         )
         self.ramp.set_effect_marks(
             position,

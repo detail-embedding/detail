@@ -301,10 +301,25 @@ def test_a_refused_design_is_a_message_not_a_traceback(tmp_path):
     result = _run(
         "comparison", "run", "--experiment", str(exp.dir), "--source-run", "an_01",
         "--group-by", "drug", "--aggregate-to", "animal", "--measure", "n_instances",
+        "--level", "veh", "--level", "nope",
     )  # fmt: skip
     assert result.exit_code != 0
-    assert "name the two to contrast" in result.output
+    assert "not a value of 'drug'" in result.output
     assert "Traceback" not in result.output
+
+
+def test_three_values_run_as_a_profile_and_the_design_is_printed(tmp_path):
+    """No levels over three sessions is a profile over all of them, not a refusal."""
+    from tests.api.test_comparison import THREE_SESSIONS
+
+    exp = _cohort(tmp_path, THREE_SESSIONS)
+    result = _run(
+        "comparison", "run", "--experiment", str(exp.dir), "--source-run", "an_01",
+        "--group-by", "drug", "--aggregate-to", "animal", "--measure", "n_instances",
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    assert "design: profile" in result.output
+    assert "fent, nalox, veh" in result.output
 
 
 def test_list_shows_the_design(tmp_path):

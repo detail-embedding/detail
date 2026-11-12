@@ -1138,8 +1138,9 @@ column of `metadata.csv`, and report how the groups differ.
   **The design follows from the column.** A `--group-by` column that is constant within each
   `--aggregate-to` unit (sex) compares between units; one that varies within units compares
   within them: two values are a paired contrast, three or more numeric values a trend, and three
-  or more other values ask you to name two with `--level A --level B` (the second against the
-  first). `--level` on a numeric column contrasts those two doses instead of running the trend. A
+  or more other values a profile over all of them, each measure reported by the pair of values it
+  differs most between. `--level A --level B` contrasts just those two (the second against the
+  first), on any column; on a numeric one it replaces the trend. A
   recording with no value in the column (blank, or `NA`) is left out, and the command says which.
   The command prints the design it ran, and the record carries it. Within-unit designs count a
   unit toward the ranking only when the behavior is present in it (`--presence-s` of total time

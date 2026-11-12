@@ -214,9 +214,10 @@ def rank_record(obs, record: dict, ancestors=None):
     observations it stored, with its floor — what the detail page, the export and a live screen
     all read, so none of them can disagree.
 
-    ``None`` where there is nothing to rank: a between design with other than two groups. A
+    ``None`` where there is nothing to rank: a between design with fewer than two groups. A
     record written before designs existed is a between design with no pseudo-count, so it ranks
-    exactly as it always did.
+    exactly as it always did over two groups; over more, each item is now the largest contrast
+    between any two of them (§24 *Designs*) where it had no ranking at all.
     """
     design_kind = record.get("design") or compare.BETWEEN
     levels = tuple(record["levels"]) if record.get("levels") else None
@@ -230,7 +231,7 @@ def rank_record(obs, record: dict, ancestors=None):
         groups = sorted({o.group for o in family})
         if levels is not None:
             groups = [g for g in groups if "|".join(g) in levels]
-        if len(groups) != 2:
+        if len(groups) < 2:
             return None
         # ε only over the node source: a label's appearance stays unbounded, as it always was.
         pseudo = (
@@ -239,7 +240,7 @@ def rank_record(obs, record: dict, ancestors=None):
             else None
         )
         ranking = compare.rank_by_difference(
-            family, (groups[0], groups[1]), draws=draws, seed=seed, pseudo=pseudo
+            family, tuple(groups), draws=draws, seed=seed, pseudo=pseudo
         )
     else:
         design = compare.Design(
@@ -345,15 +346,27 @@ def _suggestion(item, ranking, record: dict) -> str:
         if ranking.design == compare.TREND:
             column = record.get("design_column") or "the column"
             return f"{more} with {column} (mean ρ {item.effect:+.2f}; {direction})"
-        a, b = ranking.levels or ("a", "b")
-        return f"{more} under {b} than {a}, {math.exp(abs(item.effect)):.1f}× ({direction})"
+        a, b = item.pair or ranking.levels or ("a", "b")
+        text = f"{more} under {b} than {a}, {math.exp(abs(item.effect)):.1f}× ({direction})"
+        # A profile's pair is the item's finding, so the sentence names it first (§24).
+        if ranking.design == compare.PROFILE:
+            return f"differs most between {a} and {b}: {text}"
+        return text
+    a, b = item.pair
     if item.unbounded:
-        return "appeared" if (item.a.mean or 0) == 0 else "vanished"
+        text = "appeared" if (item.a.mean or 0) == 0 else "vanished"
+        return (
+            f"differs most between {a} and {b}: {text} in {b}"
+            if ranking.profile
+            else text
+        )
     if item.magnitude is None:
         return "—"
-    a, b = group_headers(ranking)
     which = b if (item.effect or 0) > 0 else a
-    return f"{math.exp(item.magnitude):.1f}× more in {which} ({unit} means)"
+    text = f"{math.exp(item.magnitude):.1f}× more in {which} ({unit} means)"
+    if ranking.profile:
+        return f"differs most between {a} and {b}: {text}"
+    return text
 
 
 def _floor_cell(ranking, item) -> str:
@@ -375,6 +388,41 @@ def ranking_rows(
     disagree about what a column means (one tested mapping per surface, CLAUDE.md)."""
     items = list(ranking.contrasts) if items is None else list(items)
     with_floor = ranking.floor is not None
+    if ranking.profile:
+        # Each row is between its own pair, so the pair is a column and the value columns
+        # cannot carry a group's name (§24 *Designs*).
+        within = ranking.design != compare.BETWEEN
+        headers = ["measure", "between", "a", "b", "change (a \u2192 b)"]
+        headers += ["in that direction", "present"] if within else []
+        headers += ["clears floor"] if with_floor else []
+        headers += ["kept"] if ranking.kept is not None else []
+        headers += ["suggestion"]
+        rows = []
+        for item in items:
+            unit = measure_unit(item.measure_key)
+            a_text, shown_unit = shown_value(
+                None if item.a is None else item.a.mean, unit
+            )
+            b_text, _ = shown_value(None if item.b is None else item.b.mean, unit)
+            suffix = f" {shown_unit}" if shown_unit else ""
+            pair = item.pair
+            cells = [
+                measure_title(item.measure_key),
+                " \u2192 ".join(pair) if pair else "\u2014",
+                f"{a_text}{suffix}" if a_text else "\u2014",
+                f"{b_text}{suffix}" if b_text else "\u2014",
+                _change_text(item),
+            ]
+            if within:
+                cells += [
+                    f"{item.consistency} of {item.n_units}",
+                    f"{item.present_a} / {item.present_b}",
+                ]
+            cells += [_floor_cell(ranking, item)] if with_floor else []
+            cells += [_kept_cell(ranking, item)] if ranking.kept is not None else []
+            cells += [suggestion(item, ranking, record)]
+            rows.append(cells)
+        return headers, rows
     if ranking.design == compare.TREND:
         headers = ["measure", "mean ρ", "in that direction", "present"]
         headers += ["clears floor"] if with_floor else []
@@ -463,6 +511,10 @@ def ranking_csv_rows(ranking, record: dict) -> list[dict]:
                 ),
                 "a_mean": "" if item.a is None or item.a.mean is None else item.a.mean,
                 "b_mean": "" if item.b is None or item.b.mean is None else item.b.mean,
+                # The two levels (or groups) the effect is between — the item's own pair over
+                # a profile, the design's over a paired or two-group between (§24 *Designs*).
+                "pair_a": "" if item.pair is None else item.pair[0],
+                "pair_b": "" if item.pair is None else item.pair[1],
                 "suggestion": suggestion(item, ranking, record),
             }
         )
@@ -806,7 +858,17 @@ def _ranking_figure(out_dir: Path, ranking, note: str, formats, style) -> list[P
                 else (
                     "|fold change| within unit (log scale)"
                     if ranking.design == compare.PAIRED
-                    else "|fold change| between groups (log scale)"
+                    else (
+                        "|fold change| of the most different pair of levels, "
+                        "within unit (log scale)"
+                        if ranking.design == compare.PROFILE
+                        else (
+                            "|fold change| of the most different pair of groups "
+                            "(log scale)"
+                            if ranking.profile
+                            else "|fold change| between groups (log scale)"
+                        )
+                    )
                 )
             ),
         )
@@ -893,10 +955,23 @@ def floor_sentence(ranking) -> str:
             f"Floor (95th percentile of the largest |effect| over {how}): "
             f"**{ranking.floor:.4g}** as a fold change ({math.exp(ranking.floor):.3g}x)."
         )
+    if ranking.design == compare.PROFILE:
+        return (
+            f"Floor (95th percentile of the largest |effect| over {how}, each unit's levels "
+            f"shuffled within it and the largest difference between any two levels taken "
+            f"each time): **{ranking.floor:.4g}** as a fold change "
+            f"({math.exp(ranking.floor):.3g}x)."
+        )
+    pairs = (
+        ", the largest difference between any two groups taken each time"
+        if ranking.profile
+        else ""
+    )
     return (
-        f"Floor (95th percentile of {how} of the group labels): **{ranking.floor:.4g}** as "
-        f"a fold change ({math.exp(ranking.floor):.3g}x). Measures are ranked by |fold "
-        f"change|, which orders counts, durations and fractions on one scale."
+        f"Floor (95th percentile of {how} of the group labels{pairs}): "
+        f"**{ranking.floor:.4g}** as a fold change ({math.exp(ranking.floor):.3g}x). "
+        f"Measures are ranked by |fold change|, which orders counts, durations and "
+        f"fractions on one scale."
     )
 
 

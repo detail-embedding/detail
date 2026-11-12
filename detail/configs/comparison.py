@@ -57,7 +57,8 @@ class ComparisonConfig(BaseModel):
         None,
         description="Two values of the one group_by column to contrast, read as the second "
         "against the first. Unset, a column with two values contrasts them, a numeric column "
-        "with more is a trend, and a column with more non-numeric values asks for these.",
+        "with more is a trend, and a column with more non-numeric values is a profile over "
+        "all of them: the largest difference between any two.",
         json_schema_extra={"label": "Contrast levels"},
     )
     recordings: list[str] | None = Field(

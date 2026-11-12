@@ -730,10 +730,11 @@ def node_screens(experiment, source_run_id: str) -> list:
 
 
 def screen_label(record: dict) -> str:
-    """How a saved screen reads in a list: ``drug vs vehicle · paired`` or ``dose · trend``."""
+    """How a saved screen reads in a list: ``drug vs vehicle · paired``, ``dose · trend`` or
+    ``session · profile``."""
     design = record.get("design") or "between"
     levels = record.get("levels") or []
-    if design == "trend":
+    if design in ("trend", "profile"):
         what = str(record.get("design_column") or "")
     elif len(levels) == 2:
         what = f"{levels[1]} vs {levels[0]}"

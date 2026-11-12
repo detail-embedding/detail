@@ -448,7 +448,15 @@ def _node_effects(ranking, record: dict) -> dict:
 
 
 def _effect_caption(ranking, record: dict) -> str:
-    """The effect axis's words: ``Less ↔ more under drug``, ``Less ↔ more with dose``."""
+    """The effect axis's words: ``Less ↔ more under drug``, ``Less ↔ more with dose``, or
+    ``Differs across session`` for a profile, whose axis is a size (§22)."""
+    if ranking.profile:
+        across = (
+            record.get("design_column")
+            or ", ".join(record.get("group_by") or [])
+            or "the groups"
+        )
+        return f"Differs across {across}"
     if ranking.design == "trend":
         return f"Less ↔ more with {record.get('design_column') or 'the column'}"
     levels = ranking.levels or ()
@@ -1097,7 +1105,9 @@ class NodeInterpretTab(QWidget):
                         leaves,
                         effects=_node_effects(ranking, record),
                         floor=ranking.floor,
-                        design=ranking.design,
+                        # The key's axis: a profile's effect is a size (§22), whatever the
+                        # record calls the design that produced it.
+                        design="profile" if ranking.profile else ranking.design,
                         caption=_effect_caption(ranking, record),
                         kept=tuple(int(n) for n in kept),
                         column=str(record.get("design_column") or ""),
