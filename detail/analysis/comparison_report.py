@@ -23,7 +23,7 @@ import json
 import math
 from collections import defaultdict
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Mapping
 
 from detail.analysis import compare, provenance
 from detail.analysis import windows as windows_lib
@@ -33,7 +33,33 @@ from detail.report import tables as tablib
 from detail.report.style import DEFAULT_STYLE, FigureStyle
 
 STATS_FILENAME = "stats.csv"
+NODES_FILENAME = "nodes.csv"
+RANKING_FILENAME = "ranking.csv"
 TABLE_COLUMNS = ["group", "n", "coverage", "mean", "median", "sd"]
+RANKING_COLUMNS = [
+    "rank",
+    "measure",
+    "label",
+    "label_to",
+    "window_id",
+    "effect",
+    "magnitude",
+    "floor",
+    "clears",
+    "kept",
+    "n_units",
+    "n_present",
+    "consistency",
+    "loo_sign_stable",
+    "present_a",
+    "present_b",
+    "a_mean",
+    "b_mean",
+    "suggestion",
+]
+#: Over the node source, how many below-floor items (nesting suppressed) the per-measurement
+#: tables and figures cover beside the kept set (§24 *The node source*).
+SHOWN_BELOW_FLOOR = 10
 
 
 def measure_unit(measure_key: tuple) -> str:
@@ -85,8 +111,16 @@ def measure_title(measure_key: tuple) -> str:
         return "measure"
     spec = MEASURES.get(measure_key[0])
     parts = [spec.label if spec is not None else measure_key[0]]
-    parts += [str(p) for p in measure_key[1:] if p and p != "whole"]
+    parts += [_readable_label(p) for p in measure_key[1:] if p and p != "whole"]
     return "  ·  ".join(parts)
+
+
+def _readable_label(label) -> str:
+    """A node's label reads ``node 1192``, the id form INTERPRET shows; the rest is the user's."""
+    from detail.analysis import node_measures
+
+    node = node_measures.node_of(label)
+    return f"node {node}" if node is not None else str(label)
 
 
 def measure_axis_label(measure_key: tuple) -> str:
@@ -127,9 +161,321 @@ def _observations(rows: list[dict]) -> list[compare.Observation]:
             ),
             value=float(row["value"]),
             n_underlying=int(row["n_underlying"] or 1),
+            # Absent from a stats.csv written before the column existed: those records are
+            # between designs, which never read it.
+            denominator_ns=(
+                float(row["denominator_ns"]) if row.get("denominator_ns") else None
+            ),
         )
         for row in rows
     ]
+
+
+def read_hierarchy(comparison_dir: Path) -> dict[str, set[str]] | None:
+    """The node source's ``nodes.csv`` as ``{label: ancestor labels}``, or ``None`` for a flat
+    source — what nesting suppression reads back."""
+    import csv
+
+    from detail.analysis import node_measures
+
+    path = Path(comparison_dir) / NODES_FILENAME
+    if not path.is_file():
+        return None
+    with open(path, newline="", encoding="utf-8-sig") as handle:
+        return node_measures.ancestors_from_rows(list(csv.DictReader(handle)))
+
+
+def pseudo_count(seconds: float) -> Callable[[tuple, float | None], float]:
+    """``pseudo(measure_key, denominator_ns)``: ``seconds`` of time in the measure's own unit.
+
+    A share of time or a rate needs the observation's denominator to say what one second is;
+    without one it contributes nothing rather than a guess. A count's pseudo-count is one.
+    """
+    from detail.analysis.measures import MEASURES
+
+    def pseudo(measure_key: tuple, denominator_ns: float | None) -> float:
+        spec = MEASURES.get(measure_key[0] if measure_key else "")
+        unit = spec.unit if spec is not None else ""
+        if unit == "ns":
+            return float(seconds) * 1e9
+        if unit == "fraction":
+            return float(seconds) * 1e9 / denominator_ns if denominator_ns else 0.0
+        if unit == "1/s":
+            return 1e9 / denominator_ns if denominator_ns else 0.0
+        if unit == "":
+            return 1.0 if seconds > 0 else 0.0
+        return 0.0
+
+    return pseudo
+
+
+def rank_record(obs, record: dict, ancestors=None):
+    """The one record → ranking mapping (§22, §24): the design the record resolved, over the
+    observations it stored, with its floor — what the detail page, the export and a live screen
+    all read, so none of them can disagree.
+
+    ``None`` where there is nothing to rank: a between design with other than two groups. A
+    record written before designs existed is a between design with no pseudo-count, so it ranks
+    exactly as it always did.
+    """
+    design_kind = record.get("design") or compare.BETWEEN
+    levels = tuple(record["levels"]) if record.get("levels") else None
+    ranking_measure = record.get("ranking_measure")
+    family = [
+        o for o in obs if ranking_measure is None or o.measure_key[0] == ranking_measure
+    ]
+    draws = int(record.get("draws", 200))
+    seed = int(record.get("seed", 0))
+    if design_kind == compare.BETWEEN:
+        groups = sorted({o.group for o in family})
+        if levels is not None:
+            groups = [g for g in groups if "|".join(g) in levels]
+        if len(groups) != 2:
+            return None
+        # ε only over the node source: a label's appearance stays unbounded, as it always was.
+        pseudo = (
+            pseudo_count(float(record.get("pseudo_count_s", 0.0)))
+            if record.get("source") == "nodes"
+            else None
+        )
+        ranking = compare.rank_by_difference(
+            family, (groups[0], groups[1]), draws=draws, seed=seed, pseudo=pseudo
+        )
+    else:
+        design = compare.Design(
+            kind=design_kind,
+            column=record.get("design_column"),
+            levels=levels,
+            unit=tuple(record.get("aggregate_to") or ()),
+            reason=record.get("design_reason") or "",
+        )
+        ranking = compare.rank_by_design(
+            obs,
+            design,
+            draws=draws,
+            seed=seed,
+            min_units=int(record.get("min_units") or 1),
+            presence_ns=float(record.get("presence_s", 0.0)) * 1e9,
+            pseudo=pseudo_count(float(record.get("pseudo_count_s", 0.0))),
+            ranking_measure=ranking_measure,
+        )
+    if ancestors is not None and record.get("suppress_nesting", True):
+        ranking = compare.suppress_nesting(ranking, ancestors)
+    return ranking
+
+
+def left_out_sentence(record: dict, names: Mapping[str, str] | None = None) -> str:
+    """The recordings a comparison left out for having no value in a grouping column (§24),
+    in one wording for the summary, the detail page, the launch preview and `comparison run`.
+    Empty when none was. ``names`` shows a recording's name in place of its id where a
+    surface has them."""
+    ids = list(record.get("left_out") or [])
+    if not ids:
+        return ""
+    columns = [c for c in (record.get("group_by") or []) if c not in compare.ROW_KEYS]
+    where = " / ".join(f"'{c}'" for c in columns) or "a grouping column"
+    shown = ", ".join((names or {}).get(i, i) for i in ids)
+    return f"{len(ids)} recording(s) left out, no value for {where}: {shown}"
+
+
+def _unit_word(record: dict) -> str:
+    return "|".join(record.get("aggregate_to") or []) or "recording"
+
+
+def screened_note(record: dict, label: str) -> str:
+    """Why this label's effect is not an independent finding, when a difference screen over
+    the compared column chose its cluster (``screened_labels``, §24): "chosen from screen
+    cmp_01 (cluster #1375 kept)". Empty for every other label. One wording, for the table, the
+    summary and the CLI alike."""
+    origins = (record.get("screened_labels") or {}).get(label) or []
+    if not origins:
+        return ""
+    parts = []
+    for origin in origins:
+        relation = origin.get("relation", "")
+        where = f"cluster #{origin.get('kept', '?')}"
+        if relation == "under":
+            where = f"inside {where}"
+        elif relation == "above":
+            where = f"above {where}"
+        parts.append(f"{origin.get('comparison', '?')} ({where} kept)")
+    return "chosen from screen " + ", ".join(parts)
+
+
+def screened_sentence(record: dict) -> str:
+    """The header's line for a labels comparison some of whose labels a screen over the same
+    column chose: "rearing was chosen from screen cmp_01 over this column, so its effect here
+    is not an independent finding." Empty when none was."""
+    screened = record.get("screened_labels") or {}
+    if not screened:
+        return ""
+    names = sorted(screened)
+    cited = ", ".join(
+        f"{name} ({', '.join(sorted({o.get('comparison', '?') for o in screened[name]}))})"
+        for name in names
+    )
+    column = ", ".join(record.get("group_by") or []) or "this column"
+    verb = "was" if len(names) == 1 else "were"
+    return (
+        f"{cited} {verb} chosen from a difference screen over {column}, so the effect here "
+        f"is not an independent finding: the screen selected the cluster this comparison "
+        f"scores."
+    )
+
+
+def suggestion(item, ranking, record: dict) -> str:
+    """What the item says, in one sentence a user can act on — "where to look", never a result
+    (§22). Generated from the design, so the same effect reads the same everywhere. A label a
+    screen over this column chose says so after its sentence (:func:`screened_note`)."""
+    text = _suggestion(item, ranking, record)
+    note = screened_note(record, str(item.measure_key[1]))
+    return f"{text} · {note}" if note else text
+
+
+def _suggestion(item, ranking, record: dict) -> str:
+    unit = _unit_word(record)
+    if isinstance(item, compare.Effect):
+        if item.effect is None:
+            return (
+                f"undefined: present in {item.n_present} {unit}(s), fewer than the "
+                f"{ranking.min_units} required"
+            )
+        more = "more" if item.effect > 0 else "less"
+        direction = f"{item.consistency} of {item.n_units} {unit}(s) in that direction"
+        if ranking.design == compare.TREND:
+            column = record.get("design_column") or "the column"
+            return f"{more} with {column} (mean ρ {item.effect:+.2f}; {direction})"
+        a, b = ranking.levels or ("a", "b")
+        return f"{more} under {b} than {a}, {math.exp(abs(item.effect)):.1f}× ({direction})"
+    if item.unbounded:
+        return "appeared" if (item.a.mean or 0) == 0 else "vanished"
+    if item.magnitude is None:
+        return "—"
+    a, b = group_headers(ranking)
+    which = b if (item.effect or 0) > 0 else a
+    return f"{math.exp(item.magnitude):.1f}× more in {which} ({unit} means)"
+
+
+def _floor_cell(ranking, item) -> str:
+    return "yes" if ranking.clears_floor(item) else "no"
+
+
+def _kept_cell(ranking, item) -> str:
+    """Over a hierarchical family: whether a clearing item is a finding or a slice of one."""
+    if item.measure_key in set(ranking.kept):
+        return "yes"
+    return "nested" if ranking.clears_floor(item) else ""
+
+
+def ranking_rows(
+    ranking, record: dict, items=None
+) -> tuple[list[str], list[list[str]]]:
+    """The ranking as a table — headers and one row of cells per item — the shape the detail
+    page's Overview, ``summary.md`` and ``ranking.csv`` all render from, so the three cannot
+    disagree about what a column means (one tested mapping per surface, CLAUDE.md)."""
+    items = list(ranking.contrasts) if items is None else list(items)
+    with_floor = ranking.floor is not None
+    if ranking.design == compare.TREND:
+        headers = ["measure", "mean ρ", "in that direction", "present"]
+        headers += ["clears floor"] if with_floor else []
+        headers += ["kept"] if ranking.kept is not None else []
+        headers += ["suggestion"]
+        rows = []
+        for item in items:
+            cells = [
+                measure_title(item.measure_key),
+                "—" if item.effect is None else f"{item.effect:+.2f}",
+                f"{item.consistency} of {item.n_units}",
+                str(item.n_present),
+            ]
+            cells += [_floor_cell(ranking, item)] if with_floor else []
+            cells += [_kept_cell(ranking, item)] if ranking.kept is not None else []
+            cells += [suggestion(item, ranking, record)]
+            rows.append(cells)
+        return headers, rows
+    names = group_headers(ranking)
+    headers = ["measure", *names, f"change ({names[0]} \u2192 {names[1]})"]
+    if ranking.design == compare.PAIRED:
+        headers += ["in that direction", "present"]
+    headers += ["clears floor"] if with_floor else []
+    headers += ["kept"] if ranking.kept is not None else []
+    headers += ["suggestion"]
+    rows = []
+    for item in items:
+        unit = measure_unit(item.measure_key)
+        a_text, shown_unit = shown_value(None if item.a is None else item.a.mean, unit)
+        b_text, _ = shown_value(None if item.b is None else item.b.mean, unit)
+        suffix = f" {shown_unit}" if shown_unit else ""
+        cells = [
+            measure_title(item.measure_key),
+            f"{a_text}{suffix}" if a_text else "—",
+            f"{b_text}{suffix}" if b_text else "—",
+            _change_text(item),
+        ]
+        if ranking.design == compare.PAIRED:
+            cells += [
+                f"{item.consistency} of {item.n_units}",
+                f"{item.present_a} / {item.present_b}",
+            ]
+        cells += [_floor_cell(ranking, item)] if with_floor else []
+        cells += [_kept_cell(ranking, item)] if ranking.kept is not None else []
+        cells += [suggestion(item, ranking, record)]
+        rows.append(cells)
+    return headers, rows
+
+
+def ranking_csv_rows(ranking, record: dict) -> list[dict]:
+    """Every ranked item with its verdict — ``ranking.csv``, complete where the tables and
+    figures over a large family are the shown set."""
+    kept = set(ranking.kept) if ranking.kept is not None else None
+    out = []
+    for rank, item in enumerate(ranking.contrasts, start=1):
+        keyed = dict(
+            zip(("measure", "label", "label_to", "window_id"), item.measure_key)
+        )
+        effect = getattr(item, "effect", None)
+        is_effect = isinstance(item, compare.Effect)
+        out.append(
+            {
+                "rank": rank,
+                "measure": keyed.get("measure", ""),
+                "label": keyed.get("label", ""),
+                "label_to": keyed.get("label_to", ""),
+                "window_id": keyed.get("window_id", ""),
+                "effect": "" if effect is None else effect,
+                "magnitude": "" if item.magnitude is None else item.magnitude,
+                "floor": "" if ranking.floor is None else ranking.floor,
+                "clears": ranking.clears_floor(item),
+                "kept": (
+                    ranking.clears_floor(item)
+                    if kept is None
+                    else item.measure_key in kept
+                ),
+                "n_units": item.n_units if is_effect else ranking.n_units,
+                "n_present": item.n_present if is_effect else "",
+                "consistency": item.consistency if is_effect else "",
+                "loo_sign_stable": item.loo_sign_stable if is_effect else "",
+                "present_a": (
+                    "" if not is_effect or item.present_a is None else item.present_a
+                ),
+                "present_b": (
+                    "" if not is_effect or item.present_b is None else item.present_b
+                ),
+                "a_mean": "" if item.a is None or item.a.mean is None else item.a.mean,
+                "b_mean": "" if item.b is None or item.b.mean is None else item.b.mean,
+                "suggestion": suggestion(item, ranking, record),
+            }
+        )
+    return out
+
+
+def shown_items(ranking, ancestors) -> list:
+    """What a large family's tables and figures cover: the kept set and the first
+    ``SHOWN_BELOW_FLOOR`` below the floor, nesting suppressed (§24 *The node source*).
+    """
+    return ranking.kept_items() + compare.below_floor(
+        ranking, ancestors, SHOWN_BELOW_FLOOR
+    )
 
 
 def _SILENT(_stage: str, _fraction: float, _detail: str) -> None:
@@ -441,6 +787,9 @@ def _ranking_figure(out_dir: Path, ranking, note: str, formats, style) -> list[P
     drawn = [c for c in ranking.contrasts if c.magnitude is not None]
     if not drawn:
         return []
+    # A family of a thousand nodes is not a bar chart: the drawn set is what the screen shows.
+    if len(drawn) > _MAX_DRAWN_BARS:
+        drawn = drawn[:_MAX_DRAWN_BARS]
     with figlib.styled(style):
         import matplotlib.pyplot as plt
 
@@ -451,11 +800,24 @@ def _ranking_figure(out_dir: Path, ranking, note: str, formats, style) -> list[P
             [c.magnitude for c in drawn],
             ranking.floor,
             style=style,
-            xlabel="|fold change| between groups (log scale)",
+            xlabel=(
+                "|mean Spearman \u03c1| within unit"
+                if ranking.design == compare.TREND
+                else (
+                    "|fold change| within unit (log scale)"
+                    if ranking.design == compare.PAIRED
+                    else "|fold change| between groups (log scale)"
+                )
+            ),
         )
-        _label_fold_change(ax, drawn)
+        if ranking.design != compare.TREND:
+            _label_fold_change(ax, drawn)
         _caption(ax, note, style)
         return figlib.save_figure(fig, out_dir / "difference_ranking", formats)
+
+
+#: Bars the ranking figure draws at most — the top of the ranking, which is what it is for.
+_MAX_DRAWN_BARS = 40
 
 
 def _label_fold_change(ax, drawn) -> None:
@@ -495,7 +857,9 @@ def group_headers(ranking) -> list[str]:
     before that ordering was fixed readable (tests/analysis/test_group_ordering.py).
     """
     first = ranking.contrasts[0]
-    return ["|".join(first.a.group), "|".join(first.b.group)]
+    if first.a is not None and first.b is not None:
+        return ["|".join(first.a.group), "|".join(first.b.group)]
+    return list(ranking.levels or ("a", "b"))
 
 
 def _change_text(item) -> str:
@@ -506,6 +870,76 @@ def _change_text(item) -> str:
     if percent is None:
         return "—"
     return f"{percent:+.0f}%"
+
+
+#: How many ranked items `summary.md` lists beyond the kept set over a large family.
+_SUMMARY_ROWS = 20
+
+
+def floor_sentence(ranking) -> str:
+    """How the floor was made, in one line every surface can print."""
+    how = (
+        f"every one of the {ranking.draws} sign-flip configurations"
+        if ranking.exact
+        else f"{ranking.draws} shuffled draws"
+    )
+    if ranking.design == compare.TREND:
+        return (
+            f"Floor (95th percentile of the largest |mean \u03c1| over {how}, each unit's "
+            f"levels shuffled within it): **{ranking.floor:.3g}**."
+        )
+    if ranking.design == compare.PAIRED:
+        return (
+            f"Floor (95th percentile of the largest |effect| over {how}): "
+            f"**{ranking.floor:.4g}** as a fold change ({math.exp(ranking.floor):.3g}x)."
+        )
+    return (
+        f"Floor (95th percentile of {how} of the group labels): **{ranking.floor:.4g}** as "
+        f"a fold change ({math.exp(ranking.floor):.3g}x). Measures are ranked by |fold "
+        f"change|, which orders counts, durations and fractions on one scale."
+    )
+
+
+def _summary_ranking_lines(record: dict, ranking) -> list[str]:
+    lines = ["## Largest changes", ""]
+    if ranking.floor is None:
+        # Stated, not left blank. A missing floor and a floor nothing cleared look identical
+        # on the page, and they are different facts.
+        lines += [
+            f"**No floor computed.** {ranking.no_floor_reason}. The changes below are "
+            "reported as measured; this comparison does not say how large a change "
+            "the design's own null alone would have produced.",
+            "",
+        ]
+    else:
+        lines += [floor_sentence(ranking), ""]
+    if ranking.design != compare.BETWEEN:
+        lines += [
+            f"An effect is undefined below {ranking.min_units} present "
+            f"{_unit_word(record)}(s) of {ranking.n_units}.",
+            "",
+        ]
+    kept = ranking.kept_items()
+    if ranking.kept is not None:
+        lines += [
+            f"**{len(kept)} kept** after nesting suppression, of "
+            f"{len(ranking.clearing())} clearing the floor.",
+            "",
+        ]
+    shown = kept + [i for i in ranking.contrasts if i not in kept][:_SUMMARY_ROWS]
+    headers, rows = ranking_rows(ranking, record, shown)
+    lines.append("| " + " | ".join(tablib.md_cell(h) for h in headers) + " |")
+    lines.append("|" + " --- |" * len(headers))
+    for cells in rows:
+        lines.append("| " + " | ".join(tablib.md_cell(c) for c in cells) + " |")
+    if len(shown) < len(ranking.contrasts):
+        lines.append("")
+        lines.append(
+            f"{len(ranking.contrasts) - len(shown)} more in `ranking.csv`, every candidate "
+            f"with its effect, floor and verdict."
+        )
+    lines.append("")
+    return lines
 
 
 def _write_summary(path: Path, record: dict, by_measure: dict, ranking) -> None:
@@ -519,54 +953,28 @@ def _write_summary(path: Path, record: dict, by_measure: dict, ranking) -> None:
         # Printed on the summary as well as every row, because "one point is one animal" and "one
         # point is one session" are different claims about the same numbers (§24).
         f"- **one observation is**: {path_of}",
-        f"- **source artifact**: {record.get('source_run_id', '')}",
+        f"- **source artifact**: {record.get('source_run_id', '')}"
+        + (
+            " (every node of its node cache)" if record.get("source") == "nodes" else ""
+        ),
         f"- **observations**: {record.get('n_observations', 0)}",
+    ]
+    if record.get("design"):
+        lines.append(
+            f"- **design**: {record['design']} — {record.get('design_reason', '')}"
+        )
+    if left_out_sentence(record):
+        lines.append(f"- **left out**: {left_out_sentence(record)}")
+    if screened_sentence(record):
+        lines.append(f"- **not independent**: {screened_sentence(record)}")
+    lines += [
         "",
         "Descriptive only — no tests, no corrections, no models. `stats.csv` is long form, one row "
         "per observation with its factors, for inferential work elsewhere.",
         "",
     ]
     if ranking is not None and ranking.contrasts:
-        lines += ["## Largest changes", ""]
-        if ranking.floor is None:
-            # Stated, not left blank. A missing floor and a floor nothing cleared look identical
-            # on the page, and they are different facts.
-            lines += [
-                f"**No floor computed.** {ranking.no_floor_reason}. The changes below are "
-                "reported as measured; this comparison does not say how large a change "
-                "relabelling alone would have produced.",
-                "",
-                "| measure | "
-                + " | ".join(tablib.md_cell(g) for g in group_headers(ranking))
-                + f" | change ({_direction(ranking)}) |",
-                "| --- | --- | --- | --- |",
-            ]
-        else:
-            lines += [
-                f"Floor (95th percentile of {ranking.draws} shuffled-label draws): "
-                f"**{ranking.floor:.4g}** as a fold change "
-                f"({math.exp(ranking.floor):.3g}x). Measures are ranked by |fold change|, "
-                "which orders counts, durations and fractions on one scale.",
-                "",
-                "| measure | "
-                + " | ".join(tablib.md_cell(g) for g in group_headers(ranking))
-                + f" | change ({_direction(ranking)}) | clears floor |",
-                "| --- | --- | --- | --- | --- |",
-            ]
-        for item in ranking.contrasts:
-            unit = measure_unit(item.measure_key)
-            a_text, shown_unit = shown_value(item.a.mean, unit)
-            b_text, _ = shown_value(item.b.mean, unit)
-            suffix = f" {shown_unit}" if shown_unit else ""
-            change = _change_text(item)
-            row = (
-                f"| {measure_title(item.measure_key)} | {a_text}{suffix} | "
-                f"{b_text}{suffix} | {change} |"
-            )
-            if ranking.floor is not None:
-                row += " yes |" if ranking.clears_floor(item) else " no |"
-            lines.append(row)
-        lines.append("")
+        lines += _summary_ranking_lines(record, ranking)
     lines += [
         "## Groups",
         "",
@@ -639,23 +1047,20 @@ def export_comparison(
     out_dir.mkdir(parents=True, exist_ok=True)
     source = comparisons_store.comparison_dir(experiment_dir, record["id"])
     obs = _observations(_read_stats(source))
+    ancestors = read_hierarchy(source)
     # With `coverage_by_group`, or the exported column reports `coverage == n` for every group —
     # the exact reading it exists to refuse. The GUI table had the same bug.
     summaries = compare.summarize(obs, coverage_by_group=compare.coverage_by_group(obs))
-    by_measure = _by_measure(summaries)
-
     note = observation_note(record)
-    groups = sorted({o.group for o in obs})
-    ranking = (
-        compare.rank_by_difference(
-            obs,
-            (groups[0], groups[1]),
-            draws=int(record.get("draws", 200)),
-            seed=int(record.get("seed", 0)),
-        )
-        if len(groups) == 2
-        else None
-    )
+    ranking = rank_record(obs, record, ancestors)
+    figure_obs = obs
+    if record.get("source") == "nodes" and ranking is not None:
+        # The shown set (§24 *The node source*): the per-measurement tables and figures over
+        # the kept nodes and the first few below the floor; `ranking.csv` carries the rest.
+        labels = {item.measure_key[1] for item in shown_items(ranking, ancestors)}
+        summaries = [s for s in summaries if s.measure_key[1] in labels]
+        figure_obs = [o for o in obs if o.measure_key[1] in labels]
+    by_measure = _by_measure(summaries)
 
     tables_dir = out_dir / "tables"
     figures_dir = out_dir / "figures"
@@ -681,11 +1086,16 @@ def export_comparison(
     report("tables", 1.0, f"{len(artifacts) - 1} table(s)")
     artifacts += _measure_figures(figures_dir, by_measure, note, formats, style, report)
     report("figures", 1.0, "")
-    artifacts += _paired_figures(figures_dir, obs, note, formats, style, report)
+    artifacts += _paired_figures(figures_dir, figure_obs, note, formats, style, report)
     report("paired figures", 1.0, "")
     if ranking is not None:
         report("ranking", 0.0, "")
         artifacts += _ranking_figure(figures_dir, ranking, note, formats, style)
+        ranking_path = out_dir / RANKING_FILENAME
+        tablib.write_tidy_csv(
+            ranking_path, ranking_csv_rows(ranking, record), RANKING_COLUMNS
+        )
+        artifacts.append(ranking_path)
         report("ranking", 1.0, "")
     report("summary", 0.0, "")
     summary = out_dir / "summary.md"

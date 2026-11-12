@@ -448,6 +448,23 @@ Two things to know:
 - It stops at **description**: means, medians, spreads, and a permutation floor saying how big a
   difference shuffling the group labels would produce anyway. There are no p-values. `stats.csv`
   is the handoff to whatever you test with.
+- **You choose the column; the tool picks the design.** A column that is the same for all of an
+  animal's recordings (sex, genotype) compares *between* animals. A column that changes within
+  an animal (session, dose) compares *within* each animal: two values are a paired contrast,
+  and a numeric column with three or more is a trend across them. Name two values of a column
+  to contrast just those two. Every result says which design ran, and its floor is the one that
+  design allows: shuffling labels across animals for a between design, flipping each animal's
+  own direction or shuffling its sessions for a within one, so the pairing is never thrown away.
+
+**Screening clusters nobody has named.** A comparison over a clustering run can measure its
+**nodes** instead of its labels: every cluster in the tree, named or not, ranked by how its share of
+time differs across your column, with bouts per hour and mean bout length shown beside it. The
+ranking is a list of *where to look*: a node is kept when its effect clears the floor in enough of
+your animals, nested slices of one behavior are collapsed to the best of them, and each kept node
+carries a one-line reason ("less under drug than vehicle, 2.1×; 8 of 10 animals in that
+direction"). Naming the node is still yours to do, from the clips. A label you write from a
+screen remembers it: compare that label across the same column later and the result says the
+screen chose the cluster it is scoring, so the effect is not mistaken for an independent finding.
 
 ## Export
 

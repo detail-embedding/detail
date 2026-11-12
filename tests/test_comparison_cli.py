@@ -239,3 +239,213 @@ def test_delete_asks_before_destroying_work(tmp_path):
     assert (
         exp.dir / "comparisons" / "cmp_01"
     ).is_dir(), "declining the prompt still deleted it"
+
+
+# --------------------------------------------------------------------------- #
+# the design flags reach the config, and the design is printed (§24 *Designs*)
+# --------------------------------------------------------------------------- #
+
+
+def test_level_must_be_passed_twice(tmp_path):
+    from tests.api.test_comparison import CROSSOVER
+
+    exp = _cohort(tmp_path, CROSSOVER)
+    result = _run(
+        "comparison", "run", "--experiment", str(exp.dir), "--source-run", "an_01",
+        "--group-by", "drug", "--aggregate-to", "animal", "--level", "veh",
+    )  # fmt: skip
+    assert result.exit_code != 0
+    assert "exactly twice" in result.output
+
+
+def test_every_design_flag_reaches_the_config_and_the_design_is_printed(
+    monkeypatch, tmp_path
+):
+    """Surface parity: what the API takes, the CLI passes — by name, every one of them."""
+    from tests.api.test_comparison import CROSSOVER
+
+    import detail.api.comparison as api
+
+    exp = _cohort(tmp_path, CROSSOVER)
+    captured = {}
+    real = api.run_comparison
+
+    def spy(experiment, config, *, progress=None):
+        captured.update(config)
+        return real(experiment, config, progress=progress)
+
+    monkeypatch.setattr(api, "run_comparison", spy)
+    result = _run(
+        "comparison", "run", "--experiment", str(exp.dir), "--source-run", "an_01",
+        "--group-by", "drug", "--aggregate-to", "animal",
+        "--level", "veh", "--level", "fent", "--measure", "n_instances",
+        "--measure", "total_time", "--presence-s", "2", "--pseudo-count-s", "0.5",
+        "--min-units-fraction", "0.75", "--no-suppress-nesting",
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    assert captured["source"] == "labels"
+    assert captured["levels"] == ["veh", "fent"]
+    assert captured["presence_s"] == 2.0
+    assert captured["pseudo_count_s"] == 0.5
+    assert captured["min_units_fraction"] == 0.75
+    assert captured["suppress_nesting"] is False
+    assert "design: paired" in result.output
+    assert "fent against veh" in result.output
+    assert "undefined below 3 present unit(s) of 4" in result.output
+
+
+def test_a_refused_design_is_a_message_not_a_traceback(tmp_path):
+    from tests.api.test_comparison import THREE_SESSIONS
+
+    exp = _cohort(tmp_path, THREE_SESSIONS)
+    result = _run(
+        "comparison", "run", "--experiment", str(exp.dir), "--source-run", "an_01",
+        "--group-by", "drug", "--aggregate-to", "animal", "--measure", "n_instances",
+    )  # fmt: skip
+    assert result.exit_code != 0
+    assert "name the two to contrast" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_list_shows_the_design(tmp_path):
+    from tests.api.test_comparison import CROSSOVER
+
+    exp = _cohort(tmp_path, CROSSOVER)
+    _run(
+        "comparison", "run", "--experiment", str(exp.dir), "--source-run", "an_01",
+        "--group-by", "drug", "--aggregate-to", "animal", "--measure", "n_instances",
+    )  # fmt: skip
+    result = _run("comparison", "list", "--experiment", str(exp.dir))
+    assert "design=paired" in result.output
+
+
+# --- --from-screen: the label records the screen; the comparison says what it scored ------
+
+
+def _quiet_projection(monkeypatch):
+    from detail.api.temporal_clustering import TemporalClusteringRun
+
+    monkeypatch.setattr(TemporalClusteringRun, "_project", lambda self, **_: None)
+
+
+def _branch(run) -> int:
+    tree = run._tree()
+    return int(tree.children[tree.n_nodes - 1 - tree.n_leaves][0])
+
+
+def test_from_screen_records_the_origin_the_screen_gives(authored_cohort, monkeypatch):
+    import detail.api.comparison as comparison_api
+    from detail.storage import run_labels
+
+    _quiet_projection(monkeypatch)
+    run = authored_cohort.run()
+    node = _branch(run)
+    asked = []
+
+    def fake_origin(experiment, comparison_id, wanted, *, ancestors_of):
+        asked.append((comparison_id, wanted, ancestors_of(wanted)))
+        return run_labels.LabelOrigin(
+            comparison_id, str(wanted), "kept", "drug", "x · y"
+        )
+
+    monkeypatch.setattr(comparison_api, "label_origin", fake_origin)
+    result = _run(
+        "analysis", "temporal-interpret", "--experiment", str(authored_cohort.experiment.dir),
+        "--run", "an_01", "--name-node", f"{node}=climb", "--from-screen", "cmp_01",
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    assert "labelled 1 node(s), from screen cmp_01" in result.output
+    assert asked == [("cmp_01", node, run.ancestors_of(node))]
+    assert run.state().label_origins[str(node)]["comparison"] == "cmp_01"
+
+
+def test_from_screen_refuses_a_node_the_screen_did_not_point_at(
+    authored_cohort, monkeypatch
+):
+    import detail.api.comparison as comparison_api
+
+    _quiet_projection(monkeypatch)
+    run = authored_cohort.run()
+    node = _branch(run)
+    monkeypatch.setattr(comparison_api, "label_origin", lambda *a, **k: None)
+    monkeypatch.setattr(comparison_api.Comparison, "kept_nodes", lambda self: [3, 5])
+    result = _run(
+        "analysis", "temporal-interpret", "--experiment", str(authored_cohort.experiment.dir),
+        "--run", "an_01", "--name-node", f"{node}=climb", "--from-screen", "cmp_01",
+    )  # fmt: skip
+    assert result.exit_code != 0
+    assert f"node {node} is not one screen cmp_01 kept" in result.output
+    assert "it kept 3, 5" in result.output
+    assert not run.state().node_labels, "refused before anything was written"
+
+
+def test_from_screen_without_name_node_is_a_usage_error(authored_cohort):
+    result = _run(
+        "analysis", "temporal-interpret", "--experiment", str(authored_cohort.experiment.dir),
+        "--run", "an_01", "--from-screen", "cmp_01",
+    )  # fmt: skip
+    assert result.exit_code != 0
+    assert "--from-screen records where --name-node labels came from" in result.output
+
+
+def test_the_tree_marks_a_label_a_screen_chose(fitted_codebook):
+    """``--tree`` needs the node cache, which the state-only cohort has none of: a real fit."""
+    from detail.storage import run_labels
+
+    experiment, run_id = fitted_codebook
+    run = experiment.temporal_clustering_run(run_id)
+    view = run.node_view()
+    node = int(view.children(view.root)[0])
+    run.name_nodes(
+        {node: "climb"},
+        origins={node: run_labels.LabelOrigin("cmp_02", str(node), "kept", "drug")},
+    )
+    result = _run(
+        "analysis", "temporal-interpret", "--experiment", str(experiment.dir),
+        "--run", run_id, "--tree",
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    assert "climb [from cmp_02]" in result.output
+    assert "[from cmp_NN] a label a difference screen chose" in result.output
+
+
+def test_a_labels_comparison_prints_what_it_is_not_independent_of(
+    authored_cohort, monkeypatch
+):
+    from detail.storage import metadata as md
+    from detail.storage import run_labels
+
+    _quiet_projection(monkeypatch)
+    exp = authored_cohort.experiment
+    md.upsert_row(exp.dir, "r1", {"animal": "A", "drug": "veh"})
+    md.upsert_row(exp.dir, "r2", {"animal": "B", "drug": "fent"})
+    run = authored_cohort.run()
+    node = _branch(run)
+    run.name_nodes(
+        {node: "climb"},
+        origins={node: run_labels.LabelOrigin("cmp_02", str(node), "kept", "drug")},
+    )
+    result = _run(
+        "comparison", "run", "--experiment", str(exp.dir), "--source-run", "an_01",
+        "--group-by", "drug", "--aggregate-to", "none",
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    assert (
+        "not independent: climb (cmp_02) was chosen from a difference screen over drug"
+        in (result.output)
+    )
+    listed = _run("comparison", "list", "--experiment", str(exp.dir))
+    assert "screened=climb" in listed.output
+
+
+def test_run_says_which_recordings_were_left_out(tmp_path):
+    from tests.api.test_comparison import DOSES
+
+    exp = _cohort(tmp_path, {**DOSES, "r0x": ({"animal": "A0", "dose": ""}, 3)})
+    result = _run(
+        "comparison", "run", "--experiment", str(exp.dir), "--source-run", "an_01",
+        "--group-by", "dose", "--aggregate-to", "animal",
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    assert "design: trend" in result.output
+    assert "left out" in result.output and "r0x" in result.output

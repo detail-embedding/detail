@@ -38,6 +38,24 @@ _SUBJECT_NAME_HINTS = (
 #: Above this many distinct values, listing them is noise, so the summary reports the shape.
 _MAX_LISTED_VALUES = 4
 
+#: What a metadata cell holds when it holds nothing: blank, or a spelling of *not available* a
+#: spreadsheet or a data frame writes for an empty cell. Compared after strip and lower-case.
+#: ``nan`` is here because a bare ``float("nan")`` succeeds, which made it a dose (§24).
+MISSING_TOKENS = frozenset({"", "nan", "na", "n/a", "none", "null"})
+
+
+def missing(value) -> bool:
+    """Whether a metadata value is no value at all (§11, §24): ``None``, blank, or one of
+    :data:`MISSING_TOKENS`. The one test every reader of a grouping column applies, so a
+    recording that has no value sits outside a comparison on every surface alike."""
+    return value is None or str(value).strip().lower() in MISSING_TOKENS
+
+
+def cell(row: Mapping[str, str], column: str) -> str:
+    """The value of ``column`` in a metadata row, stripped, ``""`` when it is missing."""
+    value = row.get(column)
+    return "" if missing(value) else str(value).strip()
+
 
 @dataclass(frozen=True)
 class ColumnSummary:
@@ -119,8 +137,8 @@ def _values(
     recordings: Sequence[str],
     column: str,
 ) -> list[tuple[str, str]]:
-    """``(recording_id, value)`` for each recording, blanks included as ``""``."""
-    return [(r, (metadata.get(r, {}).get(column) or "").strip()) for r in recordings]
+    """``(recording_id, value)`` for each recording, blanks and missing tokens as ``""``."""
+    return [(r, cell(metadata.get(r, {}), column)) for r in recordings]
 
 
 def describe_columns(
@@ -305,22 +323,20 @@ def group_preview(
     """
     if deferred_columns(metadata, recordings, group_by):
         return []
+    outside = set(left_out(metadata, recordings, group_by))
     buckets: dict[tuple[str, ...], list[str]] = {}
     for recording in recordings:
+        if recording in outside:
+            continue
         row = metadata.get(recording, {})
-        key = tuple((row.get(column) or "").strip() for column in group_by)
+        key = tuple(cell(row, column) for column in group_by)
         buckets.setdefault(key, []).append(recording)
 
     out = []
     for key in sorted(buckets):
         members = buckets[key]
         subjects = (
-            len(
-                {
-                    (metadata.get(r, {}).get(subject_column) or "").strip()
-                    for r in members
-                }
-            )
+            len({cell(metadata.get(r, {}), subject_column) for r in members})
             if subject_column
             else None
         )
@@ -328,3 +344,25 @@ def group_preview(
             GroupPreview(group=key, n_recordings=len(members), n_subjects=subjects)
         )
     return out
+
+
+def left_out(
+    metadata: Mapping[str, Mapping[str, str]],
+    recordings: Sequence[str],
+    group_by: Sequence[str],
+) -> list[str]:
+    """The recordings a comparison grouped by ``group_by`` leaves out: those with no value
+    (:func:`missing`) for one of its metadata columns, in the order given (§24).
+
+    A blank is not a level -- an antagonist session in a dose column is not a dose, and not a
+    group of its own -- so such a recording is out before anything is grouped, and this list is
+    what the record, the preview and every design line name. A deferred column (one no metadata
+    row carries, such as ``subject``) leaves nothing out: its values are not knowable yet.
+    """
+    deferred = set(deferred_columns(metadata, recordings, group_by))
+    columns = [c for c in group_by if c not in deferred]
+    return [
+        r
+        for r in recordings
+        if any(missing(metadata.get(r, {}).get(c)) for c in columns)
+    ]

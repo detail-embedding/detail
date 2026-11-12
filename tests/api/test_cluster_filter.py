@@ -343,3 +343,87 @@ def test_a_multi_part_recording_s_range_reaches_into_its_later_parts(tmp_path):
         True,
         False,
     ]
+
+
+# --------------------------------------------------------------------------- #
+# the clusters condition: a set of leaves (§22, the difference screen in the dock)
+# --------------------------------------------------------------------------- #
+
+
+def _tree_view():
+    """Four leaves merged (0,1)->4, (2,3)->5, (4,5)->6 over two recordings, no positions."""
+    from tests.analysis.test_node_measures import synthetic_view
+
+    return synthetic_view()
+
+
+def test_a_clusters_condition_is_a_set_of_leaves():
+    selection = cluster_filter.Selection(
+        leaves=frozenset({0, 1}), leaves_source="cmp_01"
+    )
+    assert not selection.is_empty
+    assert selection.keys() == [cluster_filter.CLUSTERS]
+    assert selection.only(cluster_filter.CLUSTERS) == selection
+    assert selection.without(cluster_filter.CLUSTERS).is_empty
+    assert cluster_filter.Selection(leaves=frozenset()).keys() == [
+        cluster_filter.CLUSTERS
+    ]
+    with pytest.raises(ValueError, match="no leaves"):
+        cluster_filter.Selection(leaves_source="cmp_01")
+
+
+def test_a_kept_cluster_shades_whole_and_its_parent_by_the_time_under_it():
+    """The arithmetic every other filter uses, unchanged: a member is in its leaf's cluster or
+    not, so a kept node is 100%, its leaves 100%, its parent the share of its time under kept
+    children, a sibling branch 0%."""
+    view = _tree_view()
+    kept = view.leaves_under_nodes([4])
+    assert kept == frozenset({0, 1})
+    shares = view.match_shares(cluster_filter.Selection(leaves=kept, leaves_source="x"))
+    assert shares[4] == pytest.approx(1.0)
+    assert shares[0] == pytest.approx(1.0) and shares[1] == pytest.approx(1.0)
+    assert shares[5] == pytest.approx(0.0)
+    assert shares[2] == pytest.approx(0.0)
+    time = view.leaf_recording_time_ns().sum(axis=1)
+    assert shares[view.root] == pytest.approx((time[0] + time[1]) / time.sum())
+
+
+def test_an_empty_set_of_leaves_matches_nothing():
+    view = _tree_view()
+    shares = view.match_shares(cluster_filter.Selection(leaves=frozenset()))
+    assert all(share == 0.0 for share in shares)
+    clips = view.clips(view.root)
+    assert not cluster_filter.clip_matches(
+        cluster_filter.Selection(leaves=frozenset()), clips
+    ).any()
+
+
+def test_a_clip_matches_by_its_own_leaf_and_ands_with_a_recording():
+    view = _tree_view()
+    clips = view.clips(view.root)
+    assert len(clips) >= 3 and set(clips.leaf.tolist()) >= {0, 3}
+    only_leaf = cluster_filter.clip_matches(
+        cluster_filter.Selection(leaves=frozenset({0})), clips
+    )
+    assert only_leaf.tolist() == (np.asarray(clips.leaf) == 0).tolist()
+    both = cluster_filter.clip_matches(
+        cluster_filter.Selection(
+            leaves=frozenset({0}), recording_ids=frozenset({"r1"})
+        ),
+        clips,
+    )
+    in_r1 = np.asarray(clips.recording) == clips.recording_ids.index("r1")
+    assert both.tolist() == (only_leaf & in_r1).tolist()
+    assert 0 < both.sum() < only_leaf.sum(), "the fixture must split on the recording"
+    # The node's share ANDs the same way: leaf 0's time in r1 over the node's whole time.
+    shares = view.match_shares(
+        cluster_filter.Selection(leaves=frozenset({0}), recording_ids=frozenset({"r1"}))
+    )
+    time = view.leaf_recording_time_ns()
+    assert shares[4] == pytest.approx(time[0, 0] / time[[0, 1]].sum())
+
+
+def test_a_leaf_outside_the_tree_is_refused():
+    view = _tree_view()
+    with pytest.raises(ValueError, match="outside a tree"):
+        view.match_shares(cluster_filter.Selection(leaves=frozenset({99})))

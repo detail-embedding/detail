@@ -1,6 +1,6 @@
 """A comparison says what one point is, and records what produced it (§24).
 
-Three classes guarded, all of which render as a clean chart:
+Four classes guarded, all of which render as a clean chart:
 
 **A silently chosen unit of analysis.** One animal contributes three recordings and another one;
 pooling and averaging-within-animal give different group means and answer different questions. The
@@ -13,6 +13,16 @@ looks exactly like a real one.
 
 **A ranking with no floor.** With several measures and a handful of animals, ranking by difference
 always produces a top hit. The figure takes a `Ranking`, which cannot be built without its floor.
+
+**A recording with no value for a grouping column enters the comparison.** The design resolution
+set a blank dose outside the trend and the ranking skipped it, but the recording's rows still
+reached the observations, the group summaries, every per-measure figure and table and `stats.csv`
+as a level with no name, and `n_observations` counted them: a trend over five doses drew a sixth,
+unlabelled column. The spelling `nan` parsed as a dose under a bare `float()`. One predicate
+(`cohort.missing`: blank, or a spelling of *not available*) is applied before anything is grouped,
+the record names what was left out (`left_out`) and one sentence
+(`comparison_report.left_out_sentence`) says so on every surface. A valued recording outside a
+two-level contrast is not left out: it has a value, it sits outside the levels.
 """
 
 import numpy as np
@@ -24,6 +34,7 @@ from detail.api.comparison import (
     ComparisonRunError,
     run_comparison,
 )
+from detail.configs.comparison import ComparisonConfig
 from detail.configs.windows import WindowSpec
 from detail.api.experiment import Experiment
 from detail.storage import analysis_runs
@@ -661,19 +672,28 @@ def test_the_declared_stages_are_the_ones_the_run_emits():
     import inspect
     import textwrap
 
-    from detail.api.comparison import STAGES, run_comparison
+    from detail.api.comparison import STAGES, prepare_comparison, run_comparison
 
-    tree = ast.parse(textwrap.dedent(inspect.getsource(run_comparison)))
+    # The run is `prepare_comparison` (loading, measuring, grouping) then the write, so the
+    # stages are read off both, in call order.
     emitted = []
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "report"
-            and node.args
-            and isinstance(node.args[0], ast.Constant)
-        ):
-            emitted.append(node.args[0].value)
+    for fn in (prepare_comparison, run_comparison):
+        tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+        # In source order: `ast.walk` is breadth-first, and a report inside a lambda sits
+        # deeper than one at the function's top level whatever line it is on.
+        calls = sorted(
+            (
+                node
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "report"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+            ),
+            key=lambda node: (node.lineno, node.col_offset),
+        )
+        emitted += [node.args[0].value for node in calls]
 
     assert emitted, "no report() calls found; the AST shape changed"
     assert list(dict.fromkeys(emitted)) == list(
@@ -738,3 +758,388 @@ def test_an_unknown_theme_is_refused_before_anything_is_written(tmp_path):
     with pytest.raises(ValueError, match="chart theme must be one of"):
         comp.export(tmp_path / "out", theme="sepia")
     assert not (tmp_path / "out").exists()
+
+
+# --------------------------------------------------------------------------- #
+# the design is resolved from the column (§24 *Designs*), and the node source
+# --------------------------------------------------------------------------- #
+
+#: Four animals, each measured on vehicle and on the drug — the crossover shape.
+CROSSOVER = {
+    "r1": ({"animal": "A", "drug": "veh"}, 2),
+    "r2": ({"animal": "A", "drug": "fent"}, 6),
+    "r3": ({"animal": "B", "drug": "veh"}, 3),
+    "r4": ({"animal": "B", "drug": "fent"}, 9),
+    "r5": ({"animal": "C", "drug": "veh"}, 4),
+    "r6": ({"animal": "C", "drug": "fent"}, 10),
+    "r7": ({"animal": "D", "drug": "veh"}, 2),
+    "r8": ({"animal": "D", "drug": "fent"}, 7),
+}
+
+#: The same animals with a third session, so the column has to be told which two to contrast.
+THREE_SESSIONS = {
+    **CROSSOVER,
+    "r9": ({"animal": "A", "drug": "nalox"}, 1),
+    "r10": ({"animal": "B", "drug": "nalox"}, 2),
+    "r11": ({"animal": "C", "drug": "nalox"}, 1),
+    "r12": ({"animal": "D", "drug": "nalox"}, 3),
+}
+
+#: Three animals over four doses — a numeric column that varies within each animal.
+DOSES = {
+    f"r{a}{d}": ({"animal": f"A{a}", "dose": str(d)}, 12 - d // 10 - a)
+    for a in range(3)
+    for d in (0, 25, 50, 75)
+}
+
+_PAIRED = {
+    "source_run_id": "an_01",
+    "group_by": ["drug"],
+    "aggregate_to": ["animal"],
+    "measures": ["n_instances", "total_time"],
+}
+
+
+def test_a_column_that_varies_within_animals_resolves_to_a_paired_design(tmp_path):
+    """Nothing in the config says `paired`: the column varies within the unit, so it is."""
+    exp = _cohort(tmp_path, CROSSOVER)
+    record = run_comparison(exp, _PAIRED).record()
+    assert record["design"] == "paired"
+    assert record["design_column"] == "drug"
+    assert record["levels"] == ["fent", "veh"]
+    assert record["n_units"] == 4 and record["min_units"] == 2
+    assert "paired within animal" in record["design_reason"]
+    assert record["source"] == "labels" and record["ranking_measure"] is None
+    assert record["suppress_nesting"] is True and record["min_units_fraction"] == 0.5
+
+
+def test_the_same_column_without_a_unit_is_a_between_design(tmp_path):
+    exp = _cohort(tmp_path, CROSSOVER)
+    record = run_comparison(exp, {**_PAIRED, "aggregate_to": []}).record()
+    assert record["design"] == "between"
+    # The contrast as run, resolved: the two groups, read as the second against the first.
+    assert record["levels"] == ["fent", "veh"]
+    assert "each recording is one observation" in record["design_reason"]
+
+
+def test_a_live_screen_and_the_saved_comparison_rank_identically(tmp_path):
+    """§22: the tab computes through §24's own code path, so the screen and the saved result
+    cannot disagree — one `rank_record`, called on the same observations."""
+    from detail.analysis import comparison_report
+    from detail.api.comparison import screen_comparison
+
+    exp = _cohort(tmp_path, CROSSOVER)
+    before = len(exp.comparisons)
+    screen = screen_comparison(exp, _PAIRED)
+    assert len(exp.comparisons) == before, "a screen writes nothing"
+    assert screen.ranking.design == "paired" and screen.record["design"] == "paired"
+
+    comp = run_comparison(exp, _PAIRED)
+    saved = comparison_report.rank_record(
+        comparison_report._observations(comparison_report._read_stats(comp.dir)),
+        comp.record(),
+        comparison_report.read_hierarchy(comp.dir),
+    )
+    assert saved.floor == screen.ranking.floor
+    assert saved.exact and saved.draws == 16  # 2^4 sign flips, enumerated
+    assert [i.effect for i in saved.contrasts] == [
+        i.effect for i in screen.ranking.contrasts
+    ]
+    assert [i.measure_key for i in saved.contrasts] == [
+        i.measure_key for i in screen.ranking.contrasts
+    ]
+
+
+def test_three_sessions_need_two_levels_and_get_only_those(tmp_path):
+    exp = _cohort(tmp_path, THREE_SESSIONS)
+    with pytest.raises(ValueError, match="name the two to contrast"):
+        run_comparison(exp, _PAIRED)
+    record = run_comparison(exp, {**_PAIRED, "levels": ["veh", "nalox"]}).record()
+    assert record["design"] == "paired"
+    assert record["levels"] == ["veh", "nalox"]
+    assert record["groups"] == [
+        "nalox",
+        "veh",
+    ], "the third session is outside the contrast"
+    assert "nalox against veh" in record["design_reason"]
+
+
+def test_a_numeric_column_resolves_to_a_trend_and_exports_its_ranking(tmp_path):
+    exp = _cohort(tmp_path, DOSES)
+    comp = run_comparison(
+        exp,
+        {
+            "source_run_id": "an_01",
+            "group_by": ["dose"],
+            "aggregate_to": ["animal"],
+            "measures": ["n_instances", "total_time"],
+        },
+    )
+    record = comp.record()
+    assert record["design"] == "trend" and record["levels"] is None
+    assert "trend over 0, 25, 75" in record["design_reason"].replace("50, ", "")
+    manifest = comp.export(formats=("png",))
+    assert "ranking.csv" in manifest["artifacts"]
+    summary = (comp.dir / "summary.md").read_text(encoding="utf-8-sig")
+    assert "design**: trend" in summary
+    assert "mean ρ" in summary
+
+
+def test_the_node_source_measures_a_clustering_runs_nodes(tmp_path, monkeypatch):
+    """Every candidate node becomes a label-like row, the hierarchy travels as `nodes.csv`, the
+    ranking is on share of time and the export's `ranking.csv` carries every node."""
+    import csv
+
+    import detail.api.comparison as api
+    from detail.analysis import node_measures
+    from tests.analysis.test_node_measures import synthetic_view
+
+    exp = _cohort(tmp_path, CROSSOVER)
+    view = synthetic_view(recording_ids=tuple(CROSSOVER))
+    monkeypatch.setattr(api, "_node_view", lambda experiment, run_id: view)
+    comp = run_comparison(
+        exp,
+        {
+            "source_run_id": "an_01",
+            "source": "nodes",
+            "group_by": ["drug"],
+            "aggregate_to": ["animal"],
+            # The synthetic view's clusters hold 3 to 27 s of member time.
+            "candidate_floor_s": 1.0,
+        },
+    )
+    record = comp.record()
+    assert record["source"] == "nodes"
+    assert (
+        record["source_snapshot"] is None
+    ), "nothing is pinned: the cache is the source"
+    assert record["candidate_floor_s"] == 1.0
+    assert ComparisonConfig.model_fields["candidate_floor_s"].default == 30.0
+    assert record["ranking_measure"] == "time_fraction"
+    assert record["design"] == "paired"
+    assert record["provenance"]["source"]["content_hash"] == api.node_source_hash(
+        view.built_from
+    )
+    assert (comp.dir / api.NODES_FILENAME).is_file()
+    with open(comp.dir / "stats.csv", newline="", encoding="utf-8-sig") as handle:
+        stats = list(csv.DictReader(handle))
+    assert {row["label"][:5] for row in stats} == {"node:"}
+    assert {row["measure"] for row in stats} == set(node_measures.MEASURES)
+    assert all(row["denominator_ns"] for row in stats)
+
+    manifest = comp.export(formats=("png",))
+    assert "ranking.csv" in manifest["artifacts"]
+    with open(comp.dir / "ranking.csv", newline="", encoding="utf-8-sig") as handle:
+        ranked = list(csv.DictReader(handle))
+    assert {row["label"] for row in ranked} == {
+        node_measures.node_label(n) for n in node_measures.candidate_nodes(view, 1.0)
+    }
+    assert {row["measure"] for row in ranked} == {"time_fraction"}
+    assert all(row["suggestion"] for row in ranked)
+    assert comp.drift() == []
+
+
+def test_the_node_source_refuses_windows(tmp_path, monkeypatch):
+    import detail.api.comparison as api
+    from tests.analysis.test_node_measures import synthetic_view
+
+    exp = _cohort(tmp_path, CROSSOVER)
+    monkeypatch.setattr(
+        api, "_node_view", lambda e, r: synthetic_view(recording_ids=tuple(CROSSOVER))
+    )
+    with pytest.raises(ComparisonRunError, match="whole recording"):
+        run_comparison(
+            exp,
+            {
+                "source_run_id": "an_01",
+                "source": "nodes",
+                "group_by": ["drug"],
+                "aggregate_to": ["animal"],
+                "windows": {"kind": "normalized", "parts": 2},
+            },
+        )
+
+
+def test_the_node_source_refuses_a_run_that_has_no_nodes(tmp_path):
+    exp = _cohort(tmp_path, CROSSOVER)
+    with pytest.raises(ComparisonRunError, match="not a clustering run"):
+        run_comparison(
+            exp,
+            {
+                "source_run_id": "an_01",
+                "source": "nodes",
+                "group_by": ["drug"],
+                "aggregate_to": ["animal"],
+            },
+        )
+
+
+def test_a_stale_node_cache_is_refused_naming_what_changed(tmp_path, monkeypatch):
+    import detail.api.comparison as api
+    from tests.analysis.test_node_measures import synthetic_view
+
+    exp = _cohort(tmp_path, CROSSOVER)
+    view = synthetic_view(recording_ids=tuple(CROSSOVER))
+    view.stale = "the fit file is 'new.npz' now but the clips were built from 'fit.npz'"
+
+    class _Run:
+        def has_node_cache(self):
+            return True
+
+        def node_view(self):
+            return view
+
+    monkeypatch.setattr(exp, "authored_run", lambda run_id: _Run())
+    with pytest.raises(ComparisonRunError, match="stale.*new.npz"):
+        run_comparison(
+            exp,
+            {
+                "source_run_id": "an_01",
+                "source": "nodes",
+                "group_by": ["drug"],
+                "aggregate_to": ["animal"],
+            },
+        )
+
+
+def test_a_record_from_before_designs_still_ranks_as_it_did(tmp_path):
+    """A comparison saved without `design` is a between design with no pseudo-count, so its
+    numbers do not move under the new reader."""
+    from detail.analysis import comparison_report
+
+    exp = _cohort(tmp_path, UNBALANCED)
+    comp = run_comparison(
+        exp, {"source_run_id": "an_01", "group_by": ["animal"], "aggregate_to": []}
+    )
+    obs = comparison_report._observations(comparison_report._read_stats(comp.dir))
+    record = comp.record()
+    old = {
+        k: v
+        for k, v in record.items()
+        if k not in ("design", "levels", "source", "pseudo_count_s", "min_units")
+    }
+    new = comparison_report.rank_record(obs, record)
+    legacy = comparison_report.rank_record(obs, old)
+    assert legacy.floor == new.floor
+    assert [i.magnitude for i in legacy.contrasts] == [
+        i.magnitude for i in new.contrasts
+    ]
+
+
+# --------------------------------------------------------------------------- #
+# a saved screen read back: its ranking, its kept clusters, the run's list (§22)
+# --------------------------------------------------------------------------- #
+
+
+def _node_screen(tmp_path, monkeypatch, **overrides):
+    import detail.api.comparison as api
+    from tests.analysis.test_node_measures import synthetic_view
+
+    exp = _cohort(tmp_path, CROSSOVER)
+    view = synthetic_view(recording_ids=tuple(CROSSOVER))
+    monkeypatch.setattr(api, "_node_view", lambda experiment, run_id: view)
+    comp = run_comparison(
+        exp,
+        {
+            "source_run_id": "an_01",
+            "source": "nodes",
+            "group_by": ["drug"],
+            "aggregate_to": ["animal"],
+            "candidate_floor_s": 1.0,
+            **overrides,
+        },
+    )
+    return exp, view, comp
+
+
+def test_a_saved_screen_ranks_and_names_its_kept_clusters(tmp_path, monkeypatch):
+    from detail.analysis import node_measures
+    from detail.api.comparison import screen_comparison
+
+    exp, view, comp = _node_screen(tmp_path, monkeypatch)
+    ranking = comp.ranking()
+    assert ranking is not None and ranking.design == "paired"
+    live = screen_comparison(exp, {**comp.record(), "candidate_floor_s": 1.0}).ranking
+    assert [i.measure_key for i in ranking.contrasts] == [
+        i.measure_key for i in live.contrasts
+    ]
+    kept = comp.kept_nodes()
+    assert kept == [
+        node_measures.node_of(item.measure_key[1]) for item in ranking.kept_items()
+    ]
+    assert set(kept) <= set(int(n) for n in node_measures.candidate_nodes(view, 1.0))
+    # What the dock turns a screen into: the leaves under what it kept.
+    leaves = view.leaves_under_nodes(kept)
+    assert leaves <= frozenset(range(view.tree.n_leaves))
+
+
+def test_the_runs_screens_are_listed_newest_first_and_labels_comparisons_are_not(
+    tmp_path, monkeypatch
+):
+    from detail.api.comparison import node_screens, screen_label
+
+    exp, _view, first = _node_screen(tmp_path, monkeypatch)
+    run_comparison(exp, _PAIRED)  # a labels comparison over the same run
+    second = run_comparison(
+        exp,
+        {
+            "source_run_id": "an_01",
+            "source": "nodes",
+            "group_by": ["drug"],
+            "aggregate_to": [],
+            "candidate_floor_s": 1.0,
+        },
+    )
+    listed = node_screens(exp, "an_01")
+    assert [c.id for c in listed] == [second.id, first.id]
+    assert node_screens(exp, "an_02") == []
+    assert screen_label(first.record()) == "veh vs fent · paired"
+    assert screen_label(second.record()) == "veh vs fent · between"
+    assert screen_label({"design": "trend", "design_column": "dose"}) == "dose · trend"
+
+
+def _all_stats(comparison):
+    import csv
+
+    with open(comparison.dir / "stats.csv", newline="", encoding="utf-8-sig") as handle:
+        return list(csv.DictReader(handle))
+
+
+def test_a_recording_with_no_value_in_the_column_is_left_out_and_named(tmp_path):
+    """A blank dose is not a dose of zero and not a group of its own. The design already set
+    such a recording outside the trend; its rows still reached the observations, the groups,
+    the figures and `stats.csv` as a level with no name. It is left out before anything is
+    grouped, and the record says which (section 24)."""
+    plan = {
+        **DOSES,
+        "r0x": ({"animal": "A0", "dose": ""}, 3),
+        "r1x": ({"animal": "A1", "dose": "NA"}, 4),
+    }
+    comp = run_comparison(
+        _cohort(tmp_path, plan),
+        {
+            "source_run_id": "an_01",
+            "group_by": ["dose"],
+            "aggregate_to": ["animal"],
+            "measures": ["n_instances", "total_time"],
+        },
+    )
+    record = comp.record()
+    assert record["design"] == "trend"
+    assert record["left_out"] == ["r0x", "r1x"]
+    assert record["groups"] == ["0", "25", "50", "75"]
+    rows = _all_stats(comp)
+    assert {r["group"] for r in rows} == {"0", "25", "50", "75"}
+    assert record["n_observations"] == len(rows)
+    comp.export(formats=("png",))
+    summary = (comp.dir / "summary.md").read_text(encoding="utf-8-sig")
+    assert "left out" in summary
+    assert "r0x" in summary and "r1x" in summary
+
+
+def test_a_valued_recording_outside_the_contrast_is_not_left_out(tmp_path):
+    """The third session of a paired contrast has a value; it sits outside the two levels, not
+    outside the data, and the record does not list it."""
+    exp = _cohort(tmp_path, THREE_SESSIONS)
+    record = run_comparison(exp, {**_PAIRED, "levels": ["veh", "nalox"]}).record()
+    assert record["left_out"] == []

@@ -12,10 +12,17 @@ label's parent is the label on the nearest labelled branch above its clusters �
 ``api/authored_run.check_labels`` holds the one rule that makes that well defined: every cluster of
 a label sits under the same parent label.
 
+A label written while a difference screen was ticked carries where it came from
+(``label_origins``, node -> :class:`LabelOrigin`): the saved screen, the cluster it kept and the
+column it contrasted, so a comparison of that label over the same column can say the cluster was
+chosen by the contrast it is now scored on (§22, §24).
+
 Fit-free on purpose. A state is read without its fit (a snapshot, the CLI, the manifest writer), so
-everything here works on the two maps alone; what needs the tree lives with the tree.
+everything here works on the maps alone; what needs the tree -- the relation of a node to a kept
+cluster -- takes the tree's ``ancestors_of`` as an argument.
 """
 
+import dataclasses
 import re
 
 #: A label's id: ``L`` and a number, never reused within a run. Valid as a ``source_label`` and as a
@@ -97,3 +104,132 @@ def read(data: dict) -> tuple[dict[str, str], dict[str, str]]:
         }
         return labels, node_labels
     return from_node_names(data.get("node_names") or {})
+
+
+#: How a labelled node stands to the cluster a difference screen kept (§22): it *is* the kept
+#: cluster, sits *under* one, or is *above* one.
+KEPT = "kept"
+UNDER = "under"
+ABOVE = "above"
+RELATIONS = (KEPT, UNDER, ABOVE)
+
+
+@dataclasses.dataclass(frozen=True)
+class LabelOrigin:
+    """Where a node's label came from, when a difference screen pointed at the cluster (§22).
+
+    A label is the user's, written from the clips; what the screen did was choose the cluster
+    to watch. That choice has to travel with the label, because a comparison of the label across
+    the same column later would be scoring a cluster the same contrast selected -- a number that
+    looks like an independent finding and is not (CLAUDE.md, *labels score a method; they never
+    build one*). Nothing fails without this record; the comparison just cannot say so.
+
+    ``comparison`` is the saved screen's id (``cmp_NN``), ``kept`` the cluster it kept that the
+    labelled node stands to as ``relation`` (:data:`RELATIONS`), ``column`` the metadata column
+    the screen contrasted (what a later comparison is checked against), ``screen`` how the screen
+    read when the label was written ("drug vs vehicle · paired") and ``text`` the screen's
+    sentence for the kept cluster. The last two are copies, so a state reads without the
+    comparison it names -- which may since have been deleted.
+    """
+
+    comparison: str
+    kept: str
+    relation: str
+    column: str
+    screen: str = ""
+    text: str = ""
+
+    def to_dict(self) -> dict[str, str]:
+        return {k: str(v) for k, v in dataclasses.asdict(self).items()}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "LabelOrigin | None":
+        """The origin a stored dict holds, or ``None`` for one missing what it needs."""
+        if not isinstance(data, dict):
+            return None
+        fields = {k: str(data.get(k) or "") for k in ("comparison", "kept", "relation")}
+        if not all(fields.values()) or fields["relation"] not in RELATIONS:
+            return None
+        return cls(
+            **fields,
+            column=str(data.get("column") or ""),
+            screen=str(data.get("screen") or ""),
+            text=str(data.get("text") or ""),
+        )
+
+
+def read_origins(data: dict) -> dict[str, dict[str, str]]:
+    """``{node: origin}`` from a stored state -- only the origins that read back whole."""
+    out: dict[str, dict[str, str]] = {}
+    for node, stored in (data.get("label_origins") or {}).items():
+        origin = LabelOrigin.from_dict(stored)
+        if origin is not None:
+            out[str(node)] = origin.to_dict()
+    return out
+
+
+def screen_relation(node: int, kept, ancestors_of) -> str | None:
+    """How ``node`` stands to the clusters a screen ``kept``: :data:`KEPT`, :data:`UNDER`,
+    :data:`ABOVE`, or ``None`` when the screen did not point at it. ``ancestors_of(node)`` is
+    the tree's root-first path above a node (``NodeView.ancestors``)."""
+    node = int(node)
+    kept_nodes = {int(k) for k in kept}
+    if node in kept_nodes:
+        return KEPT
+    if kept_nodes & set(ancestors_of(node)):
+        return UNDER
+    if any(node in ancestors_of(k) for k in kept_nodes):
+        return ABOVE
+    return None
+
+
+def label_origin(
+    node: int,
+    *,
+    comparison: str,
+    kept_texts: dict,
+    column: str,
+    screen: str,
+    ancestors_of,
+) -> LabelOrigin | None:
+    """The origin a label on ``node`` carries from the screen ``comparison``, or ``None`` when the
+    screen did not point at the node. ``kept_texts`` is ``{kept node: its sentence}``; the one
+    the node stands to is recorded -- the node itself, the kept ancestor, or the kept node
+    beneath it (the nearest, for a node above several)."""
+    relation = screen_relation(node, kept_texts, ancestors_of)
+    if relation is None:
+        return None
+    node = int(node)
+    kept_nodes = {int(k): k for k in kept_texts}
+    if relation == KEPT:
+        chosen = node
+    elif relation == UNDER:
+        chosen = next(a for a in reversed(ancestors_of(node)) if a in kept_nodes)
+    else:
+        below = [k for k in kept_nodes if node in ancestors_of(k)]
+        chosen = min(below, key=lambda k: len(ancestors_of(k)))
+    return LabelOrigin(
+        comparison=str(comparison),
+        kept=str(chosen),
+        relation=relation,
+        column=str(column),
+        screen=str(screen),
+        text=str(kept_texts[kept_nodes[chosen]] or ""),
+    )
+
+
+def screened(data: dict, columns) -> dict[str, list[dict]]:
+    """``{label name: [origin + node, ...]}`` for the labels of a stored state whose clusters a
+    difference screen over one of ``columns`` chose -- what a labels comparison over those
+    columns records as not independent of its own contrast (§24)."""
+    wanted = {str(c) for c in columns}
+    labels, node_labels = read(data)
+    names = {str(k): str(v) for k, v in (data.get("resolved_names") or {}).items()}
+    out: dict[str, list[dict]] = {}
+    for node, origin in read_origins(data).items():
+        if origin["column"] not in wanted or node not in node_labels:
+            continue
+        name = names.get(node) or labels.get(node_labels[node], "")
+        if name:
+            out.setdefault(name, []).append({"node": node, **origin})
+    return out

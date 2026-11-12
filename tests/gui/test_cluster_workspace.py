@@ -2647,3 +2647,336 @@ def test_an_order_picked_while_a_cluster_ranks_does_not_bring_back_the_last_ones
         interpret.montage_order()
         == handle.clips(second).order(other, seed=second).tolist()
     )
+
+
+# --------------------------------------------------------------------------- #
+# the Differences line on the page: a saved screen's kept clusters shade the tree (§22)
+# --------------------------------------------------------------------------- #
+
+
+class _FakeScreen:
+    """A saved node screen as the page reads it: an id, a record, a ranking, kept nodes."""
+
+    def __init__(self, comparison_id: str, kept: list[int], clearing: int) -> None:
+        self.id = comparison_id
+        self._kept = list(kept)
+        self._clearing = clearing
+
+    def record(self) -> dict:
+        return {
+            "source": "nodes",
+            "source_run_id": "an_01",
+            "design": "paired",
+            "design_column": "drug",
+            "levels": ["vehicle", "drug"],
+        }
+
+    def ranking(self):
+        from detail.analysis import compare
+
+        return compare.Ranking(
+            contrasts=[],
+            floor=0.5,
+            draws=16,
+            seed=0,
+            design=compare.PAIRED,
+            kept=tuple(("time_fraction", f"node:{n}", "", "whole") for n in self._kept),
+        )
+
+    def clearing_count(self) -> int:
+        return self._clearing
+
+    def kept_nodes(self) -> list[int]:
+        return list(self._kept)
+
+
+def _screens_read(qapp, interpret) -> None:
+    from tests.gui.conftest import drain_until
+
+    assert drain_until(qapp, lambda: interpret._screens_reader is None, 20_000)
+
+
+def _kept_candidate(view) -> int:
+    """A cluster under the root with clips of its own — what a screen would keep. The
+    fixture's busiest cluster is the root itself (one recording, one stretch)."""
+    for node in range(view.tree.n_nodes - 1):
+        if len(view.clips(node)) and view.summary(node).parent >= 0:
+            return node
+    raise AssertionError("the fixture must have a cluster under the root with clips")
+
+
+def test_a_saved_screens_kept_clusters_shade_the_tree_through_the_filters(
+    qapp, fitted, monkeypatch
+):
+    """Ticking a screen in the Differences line is the clusters condition: a kept cluster
+    shades 100%, its parent by the time under it, the rest grey, through the same
+    ``match_shares`` and ``clip_matches`` every other filter goes through."""
+    import detail.api.comparison as comparison_api
+    from detail.api.cluster_filter import CLUSTERS, Selection
+
+    _experiment, _handle, workspace = _workspace(qapp, fitted)
+    interpret = workspace._interpret
+    view = interpret._view
+    _screens_read(qapp, interpret)
+    node = _kept_candidate(view)
+    screen = _FakeScreen("cmp_07", [node], clearing=3)
+    monkeypatch.setattr(comparison_api, "node_screens", lambda exp, run_id: [screen])
+    interpret._read_screens()
+    _screens_read(qapp, interpret)
+
+    bar = interpret.filters()
+    lst = bar.screens.list
+    assert lst.count() == 1
+    assert lst.item(0).data(Qt.ItemDataRole.UserRole) == "cmp_07"
+    assert lst.item(0).text() == "drug vs vehicle · paired   1 kept of 0 clearing"
+
+    item = lst.item(0)
+    item.setCheckState(Qt.CheckState.Checked)
+    selection = bar.selection()
+    assert selection.keys() == [CLUSTERS] and selection.leaves_source == "cmp_07"
+    assert selection.leaves == view.leaves_under_nodes([node])
+    shaded = interpret._icicle.shades()
+    assert shaded[node] == pytest.approx(1.0)
+    expected = view.match_shares(Selection(leaves=selection.leaves))
+    for each, share in shaded.items():
+        assert share == pytest.approx(expected[each], nan_ok=True)
+    assert 0.0 < shaded[view.root] < 1.0
+    assert bar.count_label.text().endswith("clips match")
+    from detail.gui.cluster_filters import panel_name
+
+    assert panel_name(selection) == "Filters · 1 active"
+
+    bar.field_row("Differences").reset_button.click()
+    assert interpret._icicle.shades() is None
+
+
+def test_run_a_new_screen_opens_the_launch_dialog_seeded_and_ticks_what_it_saved(
+    qapp, fitted, monkeypatch
+):
+    import detail.api.comparison as comparison_api
+    import detail.gui.comparison as comparison_gui
+    from PyQt6.QtWidgets import QDialog
+
+    _experiment, _handle, workspace = _workspace(qapp, fitted)
+    interpret = workspace._interpret
+    view = interpret._view
+    _screens_read(qapp, interpret)
+    node = _kept_candidate(view)
+    seeds = []
+
+    class _Dialog:
+        def __init__(self, experiment, parent=None, seed=None) -> None:
+            seeds.append(seed)
+            self.comparison = _FakeScreen("cmp_09", [node], clearing=1)
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(comparison_gui, "ComparisonLaunchDialog", _Dialog)
+    monkeypatch.setattr(
+        comparison_api,
+        "node_screens",
+        lambda exp, run_id: [_FakeScreen("cmp_09", [node], clearing=1)],
+    )
+    interpret.filters().screens.run_button.click()
+    assert seeds == [{"source_run_id": str(interpret._run.id), "source": "nodes"}]
+    _screens_read(qapp, interpret)
+    assert interpret.filters().selection().leaves_source == "cmp_09"
+    assert interpret._icicle.shades()[node] == pytest.approx(1.0)
+
+
+def test_a_screen_alone_shades_the_tree_by_its_effect_and_a_clip_filter_brings_the_share_back(
+    qapp, fitted, monkeypatch
+):
+    """The effect mode (§22): while the ticked screen is the only filter on, the tree reads the
+    screen's statistic on the diverging scale and the key its axis and floor; tick a clip filter
+    too and both return to the share ramp, because two scales on one tree are unreadable.
+    """
+    import math
+
+    import detail.api.comparison as comparison_api
+    from detail.api.cluster_filter import Selection
+    from detail.gui import plot_theme
+    from detail.gui.match_key import LOG_RATIO_EXTENT
+
+    _experiment, _handle, workspace = _workspace(qapp, fitted)
+    interpret = workspace._interpret
+    view = interpret._view
+    _screens_read(qapp, interpret)
+    node = _kept_candidate(view)
+
+    class _Screen(_FakeScreen):
+        def ranking(self):
+            from detail.analysis import compare
+
+            key = ("time_fraction", f"node:{node}", "", "whole")
+            item = compare.Effect(
+                measure_key=key,
+                effect=math.log(12.4),
+                n_units=10,
+                n_present=6,
+                consistency=7,
+                loo_sign_stable=True,
+            )
+            return compare.Ranking(
+                contrasts=[item],
+                floor=math.log(7.14),
+                draws=1024,
+                seed=0,
+                design=compare.PAIRED,
+                levels=("vehicle", "drug"),
+                unit=("ID",),
+                n_units=10,
+                min_units=5,
+                exact=True,
+                kept=(key,),
+            )
+
+    monkeypatch.setattr(
+        comparison_api,
+        "node_screens",
+        lambda exp, run_id: [_Screen("cmp_11", [node], 1)],
+    )
+    interpret._read_screens()
+    _screens_read(qapp, interpret)
+    bar = interpret.filters()
+    bar.screens.list.item(0).setCheckState(Qt.CheckState.Checked)
+    interpret.select(node)
+
+    assert interpret._icicle._diverging
+    shaded = interpret._icicle.shades()
+    assert shaded[node] == pytest.approx(math.log(12.4) / LOG_RATIO_EXTENT)
+    assert shaded[view.root] != shaded[view.root], "the root has no row: NaN, grey"
+    key = bar.dock.key
+    assert key.is_effect()
+    assert key.text().startswith(
+        "Less ↔ more under drug (against vehicle) | ÷20 … ×20 |"
+    )
+    assert "selected 12.4×" in key.text() and "floor" in key.text()
+    assert "12.4×" in interpret._icicle._describe(node)
+    assert "kept" in interpret._icicle._describe(node)
+    theme = plot_theme.current()
+    assert interpret._icicle.fill_of(node)[0] == plot_theme.effect_colour(
+        shaded[node], theme
+    )
+
+    # A clip filter beside the screen: back to the share ramp, the screen still ANDed in.
+    bar.set_selection(
+        Selection(
+            leaves=bar.selection().leaves,
+            leaves_source="cmp_11",
+            recording_ids=frozenset(view.recording_ids),
+        )
+    )
+    assert not interpret._icicle._diverging
+    assert not key.is_effect()
+    assert interpret._icicle.shades()[node] == pytest.approx(1.0)
+    assert key.text().startswith("Clips that match | 0% … 100% |")
+
+
+# --- a label written while a screen is ticked remembers the screen (§22, Phase 3) ---------
+
+
+def _tick_screen(qapp, interpret, monkeypatch, screen) -> None:
+    import detail.api.comparison as comparison_api
+
+    _screens_read(qapp, interpret)
+    monkeypatch.setattr(comparison_api, "node_screens", lambda exp, run_id: [screen])
+    interpret._read_screens()
+    _screens_read(qapp, interpret)
+    item = interpret.filters().screens.list.item(0)
+    item.setCheckState(Qt.CheckState.Checked)
+    assert interpret.filters().selection().leaves_source == screen.id
+
+
+def test_a_label_written_while_a_screen_is_ticked_records_the_screen(
+    qapp, fitted, monkeypatch
+):
+    """The origin reaches the run through the page's one write path, reads back from the
+    state, and the label bar says it: the screen, how it read, and the labelled cluster's
+    relation to the cluster the screen kept. A child of the kept cluster records *inside* it;
+    with the screen unticked a label records nothing."""
+    _experiment, handle, workspace = _workspace(qapp, fitted)
+    interpret = workspace._interpret
+    view = interpret._view
+    node = _kept_candidate(view)
+    _tick_screen(
+        qapp, interpret, monkeypatch, _FakeScreen("cmp_07", [node], clearing=3)
+    )
+
+    _label(qapp, interpret, node, "climb", handle)
+    origin = handle.state().label_origins[str(node)]
+    assert origin == {
+        "comparison": "cmp_07",
+        "kept": str(node),
+        "relation": "kept",
+        "column": "drug",
+        "screen": "drug vs vehicle · paired",
+        "text": "",
+    }
+    bar = interpret.label_bar()
+    assert bar.origin.isVisibleTo(interpret)
+    assert bar.origin.text() == "From screen cmp_07 (drug vs vehicle · paired) · kept"
+
+    children = list(view.children(node))
+    if children:
+        child = int(children[0])
+        _label(qapp, interpret, child, "climb left", handle)
+        inside = handle.state().label_origins[str(child)]
+        assert inside["relation"] == "under" and inside["kept"] == str(node)
+        assert bar.origin.text().endswith(f"inside kept cluster #{node}")
+
+    interpret.filters().field_row("Differences").reset_button.click()
+    other = next(
+        n for n in range(view.tree.n_nodes - 1) if n != node and n not in children
+    )
+    _label(qapp, interpret, other, "rear", handle)
+    assert str(other) not in handle.state().label_origins
+    interpret.select(other)
+    assert not bar.origin.isVisibleTo(interpret)
+
+
+def test_undo_and_redo_carry_the_origin_with_the_label(qapp, fitted, monkeypatch):
+    _experiment, handle, workspace = _workspace(qapp, fitted)
+    interpret = workspace._interpret
+    node = _kept_candidate(interpret._view)
+    _tick_screen(
+        qapp, interpret, monkeypatch, _FakeScreen("cmp_07", [node], clearing=3)
+    )
+    _label(qapp, interpret, node, "climb", handle)
+    interpret.undo()
+    assert _drain(qapp, lambda: not handle.state().node_labels)
+    assert _drain(qapp, lambda: interpret._writer is None)
+    assert handle.state().label_origins == {}
+    assert str(node) not in interpret._origins
+    interpret.redo()
+    assert _drain(
+        qapp,
+        lambda: handle.state().label_origins.get(str(node), {}).get("comparison")
+        == "cmp_07",
+    )
+    assert _drain(qapp, lambda: interpret._writer is None)
+    assert interpret._origins[str(node)]["comparison"] == "cmp_07"
+    assert interpret.label_bar().origin.text().startswith("From screen cmp_07")
+
+
+def test_the_origin_line_reads_the_stored_origin():
+    from detail.gui.node_workspace import origin_line
+
+    assert origin_line(None) == ""
+    assert origin_line({}) == ""
+    stored = {
+        "comparison": "cmp_01",
+        "kept": "1375",
+        "relation": "under",
+        "column": "drug",
+        "screen": "drug vs vehicle · paired",
+        "text": "more under drug than vehicle, 12.4×",
+    }
+    assert origin_line(stored) == (
+        "From screen cmp_01 (drug vs vehicle · paired): more under drug than vehicle, "
+        "12.4× · inside kept cluster #1375"
+    )
+    assert origin_line({**stored, "relation": "above", "text": ""}) == (
+        "From screen cmp_01 (drug vs vehicle · paired) · above kept cluster #1375"
+    )

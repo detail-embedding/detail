@@ -52,7 +52,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from detail.analysis import cohort, compare, comparison_report
+from detail.analysis import cohort, compare, comparison_report, node_measures
 from detail.analysis.measures import MEASURES
 from detail.configs.comparison import ComparisonConfig
 from detail.configs.windows import WindowSpec
@@ -63,7 +63,13 @@ from detail.gui.dialog import Dialog
 from detail.gui.lifetime import discard
 from detail.gui.notes import NotesBox
 from detail.gui.status_color import WARN, set_label_color
-from detail.gui._pydantic_form import choice_combo, field_meta, field_widget
+from detail.gui._pydantic_form import (
+    any_field_value,
+    choice_combo,
+    field_meta,
+    field_widget,
+    set_any_field_value,
+)
 from detail.gui.forms import ConfigForm
 from detail.gui.busy import run_busy
 from detail.gui.help_ui import help_button, label_with
@@ -254,6 +260,20 @@ class ComparisonLaunchDialog(Dialog):
             self._source,
         )
 
+        # What is measured: the run's labelled behaviors, or every node of a clustering run's
+        # tree, named or not — the difference screen over clusters nobody has labelled (§24
+        # *The node source*). Offered, greyed with the reason, when the run has no node cache.
+        self._measure_source = QComboBox()
+        self._measure_source.addItem("Labelled behaviors", "labels")
+        self._measure_source.addItem("Every cluster (named or not)", "nodes")
+        self._measure_source.currentIndexChanged.connect(
+            lambda *_: self._on_measure_source_changed()
+        )
+        form.addRow(
+            label_with("Measure:", help_button("comparison-measure")),
+            self._measure_source,
+        )
+
         self._columns = list(metadata_store.columns(Path(experiment.dir))) + list(
             _ROW_KEYS
         )
@@ -287,6 +307,31 @@ class ComparisonLaunchDialog(Dialog):
         unit_layout.addWidget(self._aggregate_to)
         form.addRow(self._unit_note)
         form.addRow(self._unit_box)
+
+        # Two values of the one chosen column to contrast — the one lever that changes which
+        # design runs (§24 *Designs*). Shown only when exactly one metadata column is chosen.
+        self._levels = QListWidget()
+        #: The ticked values in the order they were ticked: the contrast reads as the second
+        #: against the first, and a list widget alone remembers only which, not when.
+        self._levels_order: list[str] = []
+        self._levels.itemChanged.connect(lambda *_: self._on_levels_changed())
+        self._levels_box = QWidget()
+        levels_layout = QVBoxLayout(self._levels_box)
+        levels_layout.setContentsMargins(0, 0, 0, 0)
+        levels_layout.addWidget(
+            label_with(
+                "Contrast these two (optional):", help_button("comparison-levels")
+            )
+        )
+        levels_layout.addWidget(self._levels)
+        form.addRow(self._levels_box)
+
+        # The design the choices above resolve to, before the run: the same function the run
+        # uses, so the preview and the record cannot disagree.
+        self._design_note = QLabel("")
+        self._design_note.setWordWrap(True)
+        form.addRow(label_with("Design:", help_button("comparison-design")))
+        form.addRow(self._design_note)
 
         self._summary = QLabel("")
         self._summary.setWordWrap(True)
@@ -350,7 +395,21 @@ class ComparisonLaunchDialog(Dialog):
 
         self._draws = field_widget(ComparisonConfig, "draws")
         self._seed = field_widget(ComparisonConfig, "seed")
-        for name, widget in (("draws", self._draws), ("seed", self._seed)):
+        self._ranking_fields = {
+            name: field_widget(ComparisonConfig, name)
+            for name in (
+                "presence_s",
+                "pseudo_count_s",
+                "min_units_fraction",
+                "candidate_floor_s",
+                "suppress_nesting",
+            )
+        }
+        for name, widget in (
+            ("draws", self._draws),
+            ("seed", self._seed),
+            *self._ranking_fields.items(),
+        ):
             form.addRow(
                 label_with(
                     f"{field_meta(ComparisonConfig, name)['label']}:",
@@ -378,6 +437,7 @@ class ComparisonLaunchDialog(Dialog):
 
         self._sync_window_fields(self._windows.currentText())
         self._fill_group_by()
+        self._sync_measure_source()
         self._refresh()
         form.finish()
         if seed:
@@ -388,7 +448,50 @@ class ComparisonLaunchDialog(Dialog):
 
     def _on_source_changed(self) -> None:
         self._fill_snapshots()
+        self._sync_measure_source()
         self._fill_measures()
+
+    def _on_measure_source_changed(self) -> None:
+        self._fill_measures()
+        nodes = self.measure_source() == "nodes"
+        # The node source measures the whole recording (§24): the window picker is greyed
+        # with that set, not hidden, so the constraint reads as one.
+        if nodes and self._windows.findText("whole") >= 0:
+            self._windows.setCurrentText("whole")
+        self._windows.setEnabled(not nodes)
+        self._windows.setToolTip(
+            "Every cluster is measured over the whole recording." if nodes else ""
+        )
+        self._refresh()
+
+    def measure_source(self) -> str:
+        return self._measure_source.currentData() or "labels"
+
+    def _node_cache_reason(self) -> str | None:
+        """Why the chosen run's clusters cannot be screened, or ``None`` when they can."""
+        run_id = self.source_run_id()
+        if not run_id:
+            return "no run chosen"
+        try:
+            run = self._experiment.authored_run(run_id)
+        except (OSError, ValueError, KeyError):
+            run = None
+        if run is None or not hasattr(run, "node_view"):
+            return "not a clustering run"
+        if not run.has_node_cache():
+            return "this run has no node cache — rebuild it from its workspace"
+        return None
+
+    def _sync_measure_source(self) -> None:
+        """Grey out *Every cluster* with the reason when the chosen run cannot offer it."""
+        reason = self._node_cache_reason()
+        model = self._measure_source.model()
+        item = model.item(1)
+        if item is not None:
+            item.setEnabled(reason is None)
+            item.setToolTip(reason or "")
+        if reason is not None and self.measure_source() == "nodes":
+            self._measure_source.setCurrentIndex(0)
 
     def _fill_snapshots(self) -> None:
         """Which pinned copy of the source's artifact to read (§21).
@@ -433,8 +536,14 @@ class ComparisonLaunchDialog(Dialog):
         self._fill_group_by()
         _set_checked(self._group_by, set(seed.get("group_by") or []))
         self._refresh()
-        path = list(seed.get("aggregate_to") or [])
-        if self._nested():
+        # Only a seed that *says* what one observation is may set it. A record always does
+        # (`[]` is its real answer, every recording one point); the dock's "New screen…" seed
+        # names the run and the source and nothing else, and reading its silence as `[]`
+        # launched every screen from the dock per recording -- the between design whose floor
+        # the node source cannot clear (§24 *Designs*) -- over the form's own default of
+        # averaging within the inferred subject column.
+        if self._nested() and "aggregate_to" in seed:
+            path = list(seed.get("aggregate_to") or [])
             self._per_column.setChecked(bool(path))
             self._per_recording.setChecked(not path)
             if path:
@@ -447,6 +556,7 @@ class ComparisonLaunchDialog(Dialog):
                 widget.setValue(windows[name])
         self._fill_measures()
         _set_checked(self._measures, set(seed.get("measures") or []))
+        self._apply_design_fields(seed)
         self._refresh()
 
     def _fill_measures(self) -> None:
@@ -464,11 +574,16 @@ class ComparisonLaunchDialog(Dialog):
         from detail.analysis.measures import unmet_condition
 
         manifest = self._source_manifest()
+        nodes = self.measure_source() == "nodes"
         checked = set(_checked(self._measures))
         self._measures.blockSignals(True)
         self._measures.clear()
         for measure_id, spec in MEASURES.items():
             why = unmet_condition(spec, manifest) if manifest is not None else None
+            if nodes and measure_id not in node_measures.MEASURES:
+                why = "not measured over clusters"
+            elif nodes:
+                why = None
             text = f"{spec.label}   —   {why}" if why else spec.label
             item = _checkable(text, data=measure_id)
             item.setToolTip(spec.description)
@@ -604,7 +719,90 @@ class ComparisonLaunchDialog(Dialog):
                 f"group would hold exactly one observation. Compare across it, or average "
                 f"within it — not both."
             )
+        ticked = _checked(self._levels) if not self._levels_box.isHidden() else []
+        if ticked and len(ticked) != 2:
+            return "Tick exactly two values to contrast, or none."
+        refusal = self._design_refusal()
+        if refusal:
+            return refusal
         return None
+
+    def levels(self) -> list[str] | None:
+        """The two values to contrast, in the order ticked, or ``None`` for "let the column
+        decide"."""
+        if not not self._levels_box.isHidden():
+            return None
+        ticked = _checked(self._levels)
+        if len(ticked) != 2:
+            return None
+        ordered = [v for v in self._levels_order if v in ticked]
+        return ordered + [v for v in ticked if v not in ordered]
+
+    def _on_levels_changed(self) -> None:
+        ticked = _checked(self._levels)
+        self._levels_order = [v for v in self._levels_order if v in ticked] + [
+            v for v in ticked if v not in self._levels_order
+        ]
+        self._refresh()
+
+    def _fill_levels(self, group_by: list[str]) -> None:
+        """The chosen column's values, to tick two of — shown only with one metadata column."""
+        recordings = self._selected_recordings()
+        column = group_by[0] if len(group_by) == 1 else None
+        if column is None or column in _ROW_KEYS:
+            self._levels_box.setVisible(False)
+            return
+        already = set(_checked(self._levels))
+        summary = cohort.describe_columns(self._metadata, recordings, [column])[0]
+        self._levels.blockSignals(True)
+        self._levels.clear()
+        for value, count in sorted(summary.counts.items(), key=lambda kv: kv[0]):
+            self._levels.addItem(
+                _checkable(f"{value}   —   {count} recording(s)", data=value)
+            )
+        _set_checked(self._levels, already)
+        self._levels.blockSignals(False)
+        fit_list_height(self._levels)
+        self._levels_box.setVisible(True)
+
+    def _design_refusal(self) -> str | None:
+        """Why the chosen column cannot resolve to a design yet, or ``None``."""
+        group_by = _checked(self._group_by)
+        recordings = self._selected_recordings()
+        if not group_by or cohort.deferred_columns(
+            self._metadata, recordings, group_by
+        ):
+            return None
+        try:
+            compare.resolve_design(
+                self._metadata,
+                recordings,
+                group_by=group_by,
+                aggregate_to=self.aggregate_to(),
+                levels=self.levels(),
+            )
+        except compare.ComparisonError as e:
+            return str(e)
+        return None
+
+    def _design_text(self, recordings: list[str], group_by: list[str]) -> str:
+        """What will run, in the sentence the record will carry (§24 *Designs*)."""
+        if not group_by:
+            return ""
+        deferred = cohort.deferred_columns(self._metadata, recordings, group_by)
+        if deferred:
+            return f"Decided when it runs: {', '.join(deferred)} come from the behavior result."
+        try:
+            design = compare.resolve_design(
+                self._metadata,
+                recordings,
+                group_by=group_by,
+                aggregate_to=self.aggregate_to(),
+                levels=self.levels(),
+            )
+        except compare.ComparisonError as e:
+            return f"\u26a0 {e}"
+        return f"{design.kind} — {design.reason}"
 
     def source_run_id(self) -> str:
         return self._source.currentData() or ""
@@ -623,6 +821,7 @@ class ComparisonLaunchDialog(Dialog):
             self._metadata, recordings, group_by=group_by, columns=self._columns
         )
         self._fill_aggregate_to(group_by)
+        self._fill_levels(group_by)
 
         nested = self._nested()
         self._unit_box.setVisible(nested)
@@ -633,6 +832,7 @@ class ComparisonLaunchDialog(Dialog):
             self._per_column.setChecked(True)  # the defensible answer, pre-selected
         self._unit_note.setText(self._unit_text(recordings, group_by))
         self._summary.setText(self._summary_text(recordings, group_by))
+        self._design_note.setText(self._design_text(recordings, group_by))
 
         error = self.validation_error()
         sizing.set_available(
@@ -686,25 +886,44 @@ class ComparisonLaunchDialog(Dialog):
                 f"Groups for {names} come from the behavior result itself, so their sizes are "
                 f"known once the comparison runs — {len(recordings)} recording(s) go in."
             )
+        # A recording with no value for a grouping column is out before anything is grouped
+        # (section 24), so neither the groups nor the count below include it.
+        outside = cohort.left_out(self._metadata, recordings, group_by)
+        recordings = [r for r in recordings if r not in set(outside)]
         groups = cohort.group_preview(
             self._metadata,
             recordings,
             group_by=group_by,
             subject_column=self._subject_column,
         )
+        levels = self.levels()
+        if levels:
+            # Two levels named: the other groups sit outside the contrast, and a preview that
+            # still counted them would describe a comparison that will not run.
+            groups = [g for g in groups if g.label in levels]
+            recordings = recordings[: sum(g.n_recordings for g in groups)]
         head = f"{len(groups)} group(s) over {len(recordings)} recording(s):"
         lines = []
         for group in groups:
-            bit = f"    {group.label or '(blank)'} — {group.n_recordings} recording(s)"
+            bit = f"    {group.label} — {group.n_recordings} recording(s)"
             if group.n_subjects is not None:
                 # "distinct" rather than a pluralized column name: `1 animal(s)` reads badly
                 # and the count is exactly the thing the aggregation question turns on.
                 bit += f", {group.n_subjects} distinct {self._subject_column}"
             lines.append(bit)
-        thin = [g.label or "(blank)" for g in groups if g.n_recordings < 2]
+        thin = [g.label for g in groups if g.n_recordings < 2]
         if thin:
             lines.append(
                 f"    ⚠ {', '.join(thin)} hold one recording each, so they have no spread."
+            )
+        if outside:
+            # The same sentence the record will carry (§24), before the run rather than after.
+            lines.append(
+                "    "
+                + comparison_report.left_out_sentence(
+                    {"left_out": outside, "group_by": group_by},
+                    self._experiment.recording_names(),
+                )
             )
         return "\n".join([head, *lines])
 
@@ -734,6 +953,23 @@ class ComparisonLaunchDialog(Dialog):
         for key, widget in (("draws", self._draws), ("seed", self._seed)):
             if config.get(key) is not None:
                 widget.setValue(int(config[key]))
+        self._apply_design_fields(config)
+
+    def _apply_design_fields(self, config: dict) -> None:
+        """The source, the levels and the ranking knobs — shared by `load_config` and
+        `_apply_seed`, so a field restored by one is restored by the other."""
+        for key, widget in self._ranking_fields.items():
+            if config.get(key) is not None:
+                set_any_field_value(ComparisonConfig, key, widget, config[key])
+        source = config.get("source")
+        if source and self._measure_source.findData(source) >= 0:
+            self._measure_source.setCurrentIndex(self._measure_source.findData(source))
+        levels = config.get("levels") or []
+        if levels:
+            self._refresh()  # fills the levels list for the restored column
+            _set_checked(self._levels, set(levels))
+            self._levels_order = list(levels)
+            self._refresh()
 
     def config(self) -> dict:
         """Every field of `ComparisonConfig`, so the form and the record hold the same comparison.
@@ -746,8 +982,10 @@ class ComparisonLaunchDialog(Dialog):
         return {
             "source_run_id": self.source_run_id(),
             "source_snapshot": self._snapshot.currentData(),
+            "source": self.measure_source(),
             "group_by": _checked(self._group_by),
             "aggregate_to": self.aggregate_to(),
+            "levels": self.levels(),
             "recordings": selected_recording_ids(self._recordings) or None,
             "measures": _checked(self._measures) or None,
             "windows": {
@@ -758,6 +996,10 @@ class ComparisonLaunchDialog(Dialog):
             },
             "draws": self._draws.value(),
             "seed": self._seed.value(),
+            **{
+                name: any_field_value(ComparisonConfig, name, widget)
+                for name, widget in self._ranking_fields.items()
+            },
         }
 
     # -- launch ---------------------------------------------------------------- #
@@ -1180,8 +1422,12 @@ class _Reading:
         return list(self.ranking.contrasts) if self.ranking is not None else []
 
 
-def _read_comparison(comparison_dir: Path, *, draws: int, seed: int) -> _Reading:
-    """Read `stats.csv` and rank it. Pure and Qt-free, so it runs in a worker thread."""
+def _read_comparison(comparison_dir: Path, *, record: dict) -> _Reading:
+    """Read `stats.csv` and rank it. Pure and Qt-free, so it runs in a worker thread.
+
+    Through `comparison_report.rank_record` — the one record → ranking mapping the export and
+    a live screen also use (§22), so this page cannot show a different floor from theirs.
+    """
     import csv
 
     stats = Path(comparison_dir) / comparison_report.STATS_FILENAME
@@ -1193,14 +1439,34 @@ def _read_comparison(comparison_dir: Path, *, draws: int, seed: int) -> _Reading
     # the column exists to refuse.
     summaries = compare.summarize(obs, coverage_by_group=compare.coverage_by_group(obs))
     groups = sorted({s.group for s in summaries})
-    ranking = (
-        compare.rank_by_difference(  # off-thread: this whole function is the worker body
-            obs, (groups[0], groups[1]), draws=draws, seed=seed
-        )
-        if len(groups) == 2
-        else None
+    ancestors = comparison_report.read_hierarchy(comparison_dir)
+    ranking = comparison_report.rank_record(  # off-thread: the worker body
+        obs, record, ancestors
     )
+    if record.get("source") == "nodes" and ranking is not None:
+        # The shown set (§24 *The node source*): a Measures tab of a thousand nodes times four
+        # measures is not a table anyone reads; the ranking carries the rest.
+        labels = {
+            item.measure_key[1]
+            for item in comparison_report.shown_items(ranking, ancestors)
+        }
+        summaries = [s for s in summaries if s.measure_key[1] in labels]
     return _Reading(groups=groups, summaries=summaries, ranking=ranking)
+
+
+def labels_from_screen_text(labelled: list[dict]) -> str:
+    """The screen page's line for the labels written from it
+    (``api.comparison.labels_from_screen``): *Labelled from this screen: rearing (#1375),
+    grooming (#1402, inside kept cluster #1390)*."""
+    parts = []
+    for row in labelled:
+        where = f"#{row['node']}"
+        if row.get("relation") == "under":
+            where += f", inside kept cluster #{row.get('kept', '?')}"
+        elif row.get("relation") == "above":
+            where += f", above kept cluster #{row.get('kept', '?')}"
+        parts.append(f"{row['name']} ({where})")
+    return "Labelled from this screen: " + ", ".join(parts)
 
 
 class ComparisonDetailPage(QWidget):
@@ -1233,6 +1499,7 @@ class ComparisonDetailPage(QWidget):
         self._on_deleted = on_deleted
         self._on_created = on_created
         record = self._comparison.record()
+        self._record = record
 
         # A QTabWidget inside a top-justified page collapses to its minimum without this — the
         # lesson `cluster_workspace` records at its own construction. The policy is the whole of
@@ -1253,6 +1520,11 @@ class ComparisonDetailPage(QWidget):
         self._drift_note.hide()
         set_label_color(self._drift_note, WARN)
         layout.addWidget(self._drift_note)
+        #: For a screen: the labels written from it, as its run holds them now (§22).
+        self._labels_note = QLabel("")
+        self._labels_note.setWordWrap(True)
+        self._labels_note.hide()
+        layout.addWidget(self._labels_note)
         self._notes_box = NotesBox(experiment, "comparison", comparison_id)
         layout.addWidget(self._notes_box)
 
@@ -1279,15 +1551,19 @@ class ComparisonDetailPage(QWidget):
         # Off the UI thread: reading `stats.csv` and ranking it is seconds of work at this
         # project's cohort sizes, and `drift()` shells out to `git`. Both ran inline in this
         # constructor, so opening a comparison froze the window for as long as they took.
+        from detail.api import comparison as comparison_api
+
         self._loading = run_busy(
             self,
             lambda: (
                 _read_comparison(  # off-thread
                     self._comparison.dir,
-                    draws=int(record.get("draws", 200)),
-                    seed=int(record.get("seed", 0)),
+                    record=record,
                 ),
                 self._comparison.drift(),  # off-thread
+                comparison_api.labels_from_screen(  # off-thread: reads the run's state
+                    experiment, comparison_id
+                ),
             ),
             self._on_read,
             label="Reading this comparison…",
@@ -1336,6 +1612,27 @@ class ComparisonDetailPage(QWidget):
         if cohort_line:
             bits.insert(1, cohort_line)
         lines.append("  ·  ".join(b for b in bits if b))
+        if record.get("design"):
+            # The resolved design, in the sentence the record carries (§24 *Designs*): a
+            # ranking read without it is a floor from an unknown null.
+            lines.append(
+                f"design: {record['design']} — {record.get('design_reason', '')}"
+            )
+        if comparison_report.left_out_sentence(record):
+            lines.append(
+                "left out: "
+                + comparison_report.left_out_sentence(
+                    record, self._experiment.recording_names()
+                )
+            )
+        if record.get("source") == "nodes":
+            lines.append(
+                f"every cluster of {record.get('source_run_id', '')} at or above "
+                f"{record.get('candidate_floor_s')} s, named or not, ranked on share of time"
+            )
+        # A label this comparison scores that a screen over the same column chose (§24): the
+        # one line that keeps the effect from reading as an independent finding.
+        lines.append(comparison_report.screened_sentence(record))
         return [line for line in lines if line]
 
     def _cohort_line(self, record: dict) -> str:
@@ -1388,13 +1685,16 @@ class ComparisonDetailPage(QWidget):
 
     def _on_read(self, payload) -> None:
         """Fill both tabs from the one reading, once it is back off the worker thread."""
-        reading, drift = payload
+        reading, drift, from_screen = payload
         self._reading = reading
         if drift:
             self._drift_note.setText(
                 "Inputs changed since this ran:\n" + "\n".join(drift)
             )
             self._drift_note.show()
+        if from_screen:
+            self._labels_note.setText(labels_from_screen_text(from_screen))
+            self._labels_note.show()
         _clear_layout(self._overview_body)
         _clear_layout(self._measures_body)
         for widget in self._overview_widgets(reading):
@@ -1431,22 +1731,29 @@ class ComparisonDetailPage(QWidget):
             return out
 
         out.append(_heading("Largest changes"))
-        top = reading.contrasts[: self._TOP_N]
-        table = QTableWidget(len(top), 4)
-        table.setObjectName("overview_contrasts")
-        names = comparison_report.group_headers(ranking)
-        table.setHorizontalHeaderLabels(
-            ["measure", *names, f"change ({names[0]} \u2192 {names[1]})"]
-        )
-        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        for row, item in enumerate(top):
-            unit = comparison_report.measure_unit(item.measure_key)
-            cells = (
-                comparison_report.measure_title(item.measure_key),
-                _cell(item.a, unit),
-                _cell(item.b, unit),
-                _change(item),
+        if ranking.floor is not None:
+            floor_note = QLabel(
+                comparison_report.floor_sentence(ranking).replace("**", "")
             )
+            floor_note.setWordWrap(True)
+            out.append(floor_note)
+        kept = ranking.kept_items()
+        if ranking.kept is not None:
+            out.append(
+                QLabel(
+                    f"{len(kept)} kept after nesting suppression, of "
+                    f"{len(ranking.clearing())} clearing the floor."
+                )
+            )
+        # The kept set first — the findings — then the ranking's head: over a thousand nodes
+        # the top of the ranking is where to look, and the kept nodes are what it found.
+        top = kept + [c for c in reading.contrasts if c not in kept][: self._TOP_N]
+        headers, rows = comparison_report.ranking_rows(ranking, self._record, top)
+        table = QTableWidget(len(rows), len(headers))
+        table.setObjectName("overview_contrasts")
+        table.setHorizontalHeaderLabels(headers)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        for row, cells in enumerate(rows):
             for column, value in enumerate(cells):
                 table.setItem(row, column, QTableWidgetItem(value))
         make_columns_resizable(table)

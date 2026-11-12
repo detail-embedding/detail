@@ -57,7 +57,7 @@ This document is the approved design for the DETAIL infrastructure redesign. Com
 | Authored Runs (§21) | **Built.** `api/authored_run.py` carries the contract — open vs partial, one writer, `finalize()` / `reopen()`, refuse-if-finalized, reproject-on-edit. `mutable` is declared on `AnalysisModule` so the API and CLI know it as well as the GUI; two modules set it (`query`, `temporal_clustering`). The shared base classes recorded as extraction targets were extracted. |
 | Behavior Discovery (§22) | **Temporal built** — `pipeline/temporal_clustering.py`, the `cluster_methods/` registry, CLI `analysis temporal-clustering` / `temporal-interpret`, and the INTERPRET workspace; it emits the §19 artifact. The pose half of this section is design: its protocol and an empty method registry are in the tree. **Node-centric interpretation built** (labels on tree nodes, no granularity, the node cache listing every node's clips with their typicality and a rebuild, the icicle shaded by the cluster-view filters, the label bar, and a live montage of every clip from the preview cache). Labels are stored things with ids (one label across several clusters, the parent rule, rename and merge). AUDIT is a list of labels and clusters beside a review pane, with the figures in INTERPRET's label bar (§19, §22); on a temporal run every clip of a cluster is reviewed, the wrong ones marked (removed or moved, `clip_edits`, faded in place on INTERPRET too) and the finish recorded as a census (`clip_review.csv`, `finish_review`) that gives the cluster's exact precision, built; and BROWSE is the labelled-data browser (filters, ethogram, list). Not yet built from §22's text: the descriptor histograms behind *Measurements that set it apart*, arena-normalized maps, BROWSE's location filter, and re-attaching audit answers after a branch is sub-labelled. |
 | Measures (§23) | **Built, on all three surfaces** — `analysis/measures.py` (eleven measures, each declaring how it meets a window boundary and what unit its value carries) and `analysis/windows.py` (whole / absolute / normalized / sliding, the model in `configs/windows.py`). Pure windowed queries over the §19 artifact; a windowed denominator needs the frame view's observed mask, which every producer now writes. `noise_time` is deliberately absent (see *The measures*). Reachable as `Experiment.measures(run_id)`, as `detail measures export` / `list`, and as the Measures panel on an analysis run's page. |
-| Comparison (§24) | **Built, on all three surfaces** — `analysis/compare.py`, `analysis/comparison_report.py`, `configs/comparison.py`, `storage/comparisons.py`, `api/comparison.py`, CLI `comparison run` / `export` / `list` / `delete`. Descriptive only, saved with its outputs; the aggregation path is declared, never defaulted, and the ranking ships with its permutation floor. The GUI section is **static by design**: a saved comparison holds its outputs, so reading one is not the scrubbing problem §21's DIFFERENCES tab still owns. |
+| Comparison (§24) | **Built, on all three surfaces** — `analysis/compare.py`, `analysis/comparison_report.py`, `analysis/node_measures.py`, `configs/comparison.py`, `storage/comparisons.py`, `api/comparison.py`, CLI `comparison run` / `export` / `list` / `delete`. Descriptive only, saved with its outputs; the aggregation path is declared, never defaulted, the design (between / paired / trend) is resolved from the chosen column and recorded, the node source screens a clustering run's unlabelled nodes, and every ranking ships with its permutation floor. The GUI section is **static by design**: a saved comparison holds its outputs; the live screen over a clustering run's clusters is INTERPRET's Differences line (§22), which reads a saved node comparison back. |
 | Surface Visibility (§25) | **Built** (#203) — `detail/surfaces.py`, sections declared once in `gui/sections.py`, fifteen enumeration points, `DETAIL_SHOW_ALL` escape hatch. Nothing is hidden: the capabilities it hid were removed from the tree on 2026-11-10; the mechanism stays. Nothing is staged. This sentence is a copy of `surfaces.HIDDEN` and had already drifted once, so `tests/test_surfaces.py` now checks it against the table. Hiding a *module or method* still needs the docs generator and the static `mkdocs.yml` nav taught about it. |
 | Keypoints (§26) | **Built; audit not kept** — spec rewritten 2026-10-07 from the keypoints review, replacing the integration branch `keypoints` (#626) rather than merging it: `dinov3_match` on a shared patch-matching engine plus a distilled YOLO-pose student; two stages, `keypoint_detect → keypoint_track`; alignment is §14's, distill §12's, the shared model layer §5's. Lands in PRs 0.5–9 (§26 *Sequencing*); each PR flips its own token here — PR0.5 ☑ · PR1 ☑ · PR2 ☑ · PR3 ☑ · PR4 ☑ · PR5 ☑ · PR6 ☑ · PR7 ☑ · PR8 ☑ · PR9 ⏸ — PR 9 (the audit) was parked by the user (2026-10-09) and its API and CLI later removed, so the verdict reads built without it; PR 4b (the detect form's *Test keypoints*, no cut-off field by the user's decision) has landed too. **Revised 2026-10-21, not built:** detect stores unassigned instances per part on a detection run; keypoint track assigns them to a tracking run's subjects by mask (§26 revision note, *Assignment*). |
 | GUI | Built: shell + navigation, launch/run-progress, per-module config UIs, prompt-test (matrix) + render-preview, arena editor (time-varying), detection + tracking run previews; embedding input-image constructors + scrubber; embedding result view (Stage 1: coverage + PCA point cloud); deletion at every level (experiment/recording/run/arena) with a cohesive strategy (gui_design §1.1); run-table navigation + rich run labels; smooth import progress; the model manager + readiness/CUDA-doctor onboarding; every analysis module's config and result UI; the training surface (datasets, trained models, distill); the §21 authored-run workspaces (query calibration, pose/temporal INTERPRET); and the §19 reliability audit, which both of them share by emitting the artifact. Pending: embedding result view Stage 2 (linked scrub), run-identity Layer 2 for the clip modules, and §24's comparison screen. |
@@ -5775,6 +5775,11 @@ rows read an empty answer.
   it. The headline counts only judgments made since, and the clips judged before
   can be drawn again — set aside but undrawable, a fully audited label could never be audited
   further. A cluster's interval keeps all of its judgments, because the cluster did not change.
+- **A label a difference screen chose carries the screen.** State keeps `label_origins` per
+  labelled node (§22 *The difference screen*): the saved `cmp_NN`, the kept cluster, the node's
+  relation to it and the column contrasted. It goes with the node's own label and is restored with
+  the other maps (`label_maps()` is four maps; `restore_labels` takes four), so an undo neither
+  strands an origin on an unlabelled node nor forgets one on redo.
 - **A rename or merge keeps every answer.** Answers are label paths, so renaming *climb* left
   every "climb › corner" answer naming a path that no longer existed, and each yes read as no.
   `LabelOperations._carry_answers` appends a superseding row per decision whose path moved
@@ -6840,7 +6845,7 @@ them in a tab widget whose bar is hidden (`gui/result_views.MultiViewWorkspace`)
  ┌───────────────────────────────────────────────────────────────────┐
  │  [ entity selector — behaviors, or nothing ]                      │
  │  ┌────────────┬───────┬────────┬─────────────┐                    │
- │  │  MODULE    │ AUDIT │ BROWSE │ DIFFERENCES │                    │
+ │  │  MODULE    │ AUDIT │ BROWSE │ MEASURES    │                    │
  │  └────────────┴───────┴────────┴─────────────┘                    │
  │       ▲            ▲       ▲          ▲                           │
  │       │            └───────┴──────────┘                           │
@@ -6864,15 +6869,17 @@ them in a tab widget whose bar is hidden (`gui/result_views.MultiViewWorkspace`)
 - **MEASURES** — §23's whole-recording measures of this artifact, a tab of its own on live runs
   (`pages.MeasuresPanel`); the run page shows the panel directly only for a producer whose result
   holds none.
-- **DIFFERENCES** — a §24 comparison over this artifact: group by metadata, rank labels by
-  difference, with the permutation floor drawn. A live screen; **Save as comparison** produces the
-  durable record. It runs through §24's own code path rather than a lighter copy, so the screen and
-  the saved result cannot drift (the one-tested-mapping rule).
+- **Differences are not a tab.** The difference screen (§22, *The difference screen*) is a line
+  of INTERPRET's filter dock: a saved §24 node comparison, ticked, shades the tree by the clusters
+  it kept and greys the clips of the rest, one click from the montage. The durable record is the
+  comparison itself, in the experiment's Comparisons section. A DIFFERENCES tab was specified here
+  and never built; the dock is the screen it was meant to be, and it already has the properties
+  the tab needed (never hides, shades on a fixed scale, next to the clips).
 
 **Three of the four tabs are generic, and not by resemblance.** They read only the artifact and
 `metadata.csv`, which is the same fact that makes measures (§23) and comparison (§24) generic. The
 GUI therefore inherits the property the artifact exists to create: **a module added later gets
-Audit, Browse and Differences by emitting the artifact**, not by building three tabs.
+Audit, Browse and Measures by emitting the artifact**, not by building three tabs.
 
 The module tab is where everything genuinely specific lives — a confidence curve, a node tree and
 its cards. That is two things against three whole tabs.
@@ -7156,7 +7163,7 @@ That is useful during interpretation, and it is not a number that belongs in an 
 
 ### INTERPRET: the interpretation tab
 
-The workspace is §21's: three generic tabs (Audit, Browse and Differences) plus one module tab. For
+The workspace is §21's: three generic tabs (Audit, Browse and Measures) plus one module tab. For
 both clustering modules that tab is **INTERPRET**. A user arrives there to explore what the fit found
 and to label the behaviors they care about, so the screen is built around one loop: **click a node,
 decide whether it deserves a label, label it or move on** (to a child, if the node is too broad, or
@@ -7287,7 +7294,10 @@ make one `cluster_filter.Selection`, and every change emits at once, a drag at m
 while it moves and once on release (`gui/throttle.py`): **Location** (`gui/density_map.RegionPicker`
 over the run's position density: a box drawn live while dragging, kept with four corner handles to
 resize, dragged from inside to move, a new one dragged from outside, a click toggling one cell;
-greyed with the reason on a run with no positions), **Time in session**
+greyed with the reason on a run with no positions), **Differences** (the run's saved node
+comparisons, §24, one tickable at a time, with what each kept, and *New screen…*; ticking one
+is the leaves under its kept clusters, `cluster_filter.CLUSTERS`, so the tree shades a kept cluster
+100% and its parent by the time under it — *The difference screen*), **Time in session**
 (`cluster_filters.SessionRange`: the `RangeHistogram` with `bars=False`, a plain two-handle slider
 over each recording's whole video in `SESSION_STEPS` = 100 steps, ticks *start · middle · end*, a
 line *12%–40% of each recording · 840 clips* or *Whole session*; its line folds like Location's,
@@ -8175,17 +8185,69 @@ It is framed as **where to look**, never as a result — the thing it produces i
 watching clips of, and the interpretation is the user's. Mechanically it belongs to the comparison
 layer (filter, group by metadata, aggregate a measure); discovery is its first consumer.
 
-**It lives in two places, deliberately.** As the workspace's **Differences** tab (§21) it is a live
-screen: cheap, throwaway, and one click from the clips, which is what makes anyone screen at all.
-**Save as comparison** turns that screen into a durable §24 record with its provenance, tables and
-figures — which is exactly the line between "where to look" and "a result". The tab computes through
-§24's own code path rather than a lighter copy, so the two cannot disagree; and because §24 requires
-the aggregation path declared and never defaulted, the tab carries that picker too, even though it
-is a third control on a surface meant to feel casual.
+**It reads the node cache, not the artifact, and it suggests, never writes.** The artifact
+collapses unlabelled nodes by design, and the screen exists to find the nodes nobody has labelled
+yet; so §24's `source: nodes` measures every candidate node from the leaf-additive tables, resolves
+the design from the chosen column (a within-animal dose is a trend, vehicle against drug a
+paired contrast, sex a between-unit fold change), ranks on time fraction with bouts per hour beside
+it, suppresses nesting by peak picking and ships the floor. A kept node is a *suggestion* with the
+sentence that earned it ("less under drug than vehicle, 2.1×; 8 of 10 animals in that direction");
+a label is the user's, written from the clips, because a label this screen wrote would be scored
+by the comparison that selected it. All of this was measured before any of it was built, in
+study records kept outside the public tree.
 
-**Query has this tab as well.** "Rearing frequency, vehicle versus drug" is the same operation on
-the same artifact — any artifact with named labels compares, which is why the tab is generic (§21)
-rather than discovery's.
+**It lives in two places, deliberately.** The durable one is the saved §24 node comparison
+(`source: nodes`), with its provenance, record, `ranking.csv` and figures — a result, in the
+experiment's Comparisons section, and what a label written from the screen cites. The live
+one is INTERPRET's **Differences** line in the filter dock (*INTERPRET: the interpretation tab*):
+the run's saved screens, one tickable at a time, and *New screen…*, which opens the comparison
+launch dialog seeded to this run and the cluster source. Ticking a screen is a filter like the
+others — **the clusters it kept, as the leaves under them** (`cluster_filter.Selection.leaves`,
+key `CLUSTERS`) — so with nothing else changed a kept cluster shades 100%, its parent by the time
+under kept children, a sibling branch grey; it ANDs with the recording, location and session
+filters; the montage greys the clips of clusters that do not differ; and "n of N clips match"
+reads as clips of clusters that differ. The page reads each screen's ranking back through the one
+record → ranking mapping (`comparison_report.rank_record`), so the dock, the Comparisons page and
+an export cannot disagree. One screen at a time: two statistics cannot shade one tree. A tab was
+specified for this (§21) and never built; the dock is the screen it was meant to be.
+
+**While a screen is the only filter on, the tree and the key read its statistic.** The blocks
+take the theme's diverging scale (`plot_theme.effect_colour`): less at one pole, more at the
+other, neutral grey inside the floor and for a cluster the screen has no row for, so only what
+cleared is coloured and its sign says which way. The axis is fixed, as the share ramp's is — ρ
+from −1 to +1 for a trend, ÷20 to ×20 for a log ratio (`match_key.effect_extent`) — with the
+floor's ticks either side of the middle and the selected cluster's effect as the tall bar
+("selected 12.4×"); `match_key.effect_position` is the one map from an effect to the axis, for
+the key and the blocks alike (`cluster_filters.effect_shades`). A block's hover carries the
+screen's sentence for it, the same words the Comparisons page prints
+(`comparison_report.suggestion`), with *kept*, *nested under a kept cluster* or *inside the
+floor* after it. Tick any clip filter beside the screen and both return to the share ramp: two
+scales on one tree are unreadable, and the screen then acts as a filter like the rest.
+
+**A label written while a screen is ticked remembers the screen.** There is no promotion of a
+suggestion to a label: the suggestion is where to look, the name is the user's, typed from the
+clips as any label is. What the screen did was choose the cluster, and that choice has to travel
+with the label, because the label scored later across the same column is the effect the screen
+selected it for, reported as if found independently — the *labels score a method* failure one step
+removed, and nothing fails when it happens. So the state keeps `label_origins` (node → the saved
+screen `cmp_NN`, the cluster it kept, the labelled node's relation to it — *kept*, *under*,
+*above* — the column the screen contrasted, and copies of how the screen read and the kept
+cluster's sentence, so the record reads without the comparison; `storage/run_labels.LabelOrigin`).
+It is written by `name_nodes` / `label_nodes` with the name, travels with the node's *own* label
+(a rename in place keeps it; removal, `delete_label` and a merge that drops the node's own label
+lose it, in the one edit door), and is restored with the other three maps by `restore_labels`, so
+⌘Z and ⇧⌘Z carry it. INTERPRET records it whenever a screen is ticked at labelling time and the
+screen points at the cluster (`run_labels.label_origin`, from the `ScreenChoice`); the CLI's
+`--from-screen cmp_NN` records the same thing from the saved screen
+(`api.comparison.label_origin`) and refuses a node the screen did not keep, nor sits under or
+above one. It shows on the label bar under the figures (*From screen cmp_01 (drug vs vehicle ·
+paired): more under drug than vehicle, 12.4× · kept*), on the screen's own page as the labels
+written from it (`api.comparison.labels_from_screen`, read from the run as it is now), and in
+`--tree` as `[from cmp_NN]`. The consumer is §24: a labels comparison records `screened_labels`.
+
+**Query has the same screen.** "Rearing frequency, vehicle versus drug" is the same operation on
+the same artifact — any artifact with named labels compares (a labels comparison, §24), which is
+why the comparison is generic rather than discovery's.
 
 ### The temporal module
 
@@ -8655,6 +8717,93 @@ is arithmetically the observed maximum and nothing can ever exceed it. That is w
 `no_floor_reason` rather than printed as a threshold nothing cleared, because a blank column and a
 column of "no" read as "nothing differed" when the truth is "this design cannot tell".
 
+### Designs: the permutation respects the unit, one level down
+
+The between-unit fold change above is one design, and the difference screen's pre-build study
+(kept outside the public tree) measured that it
+cannot reach what a cohort study is usually about: over ~1,350 sparse clustering nodes with five
+animals a side its family-wise floor sits at a log ratio above 6, so nothing clears, while the same
+nodes under a within-animal contrast clear a floor the shuffled control cannot (15 kept against 0
+of 20 seeds). The within-unit designs are the same `Observation` list — `key` is the unit after
+the aggregation path, `group` is the level — with the permutation the design allows.
+
+**The user chooses the variables; the tool resolves the design.** A comparison names its
+`group_by` column and its unit (`aggregate_to`), as it always has, and the design follows from
+what that column does *within* the unit. It is resolved when the comparison runs, written to the
+record with the sentence every surface prints (Tenet 9), and never configured — "there are too many
+combinations to do all", and an override has no meaning a user could state. The one lever kept is
+naming two `levels`, which turns any column into a two-level contrast.
+
+| the chosen column … | resolves to | effect per unit | null |
+| --- | --- | --- | --- |
+| is constant within each unit, or there is no unit, or several columns are chosen | **between** (above) | — (group means over units) | group shuffled **among** units |
+| varies within units and holds two values, or the user named two `levels` | **paired** | `log((b + ε) / (a + ε))` over the unit's level means | the sign flipped per unit; **exact** over all 2ⁿ flips when n ≤ 10 |
+| varies within units, is numeric with three or more values, no `levels` named | **trend** | Spearman ρ over the unit's levels | the levels shuffled **within** each unit |
+| varies within units with three or more non-numeric values and no `levels` | refused, naming the values to choose two of | | |
+
+A recording with no value for a grouping column — blank, or a spelling of *not available* such as `NA`,
+`nan` or `none` (`cohort.MISSING_TOKENS`, behind the one predicate `cohort.missing`) — sits outside the
+comparison, not only the design: it is left out before anything is grouped (an antagonist session in a dose
+column is not a dose, and not a group of its own), the record names it under `left_out`, and the summary,
+the detail page, the launch preview and `comparison run` say so in one sentence
+(`comparison_report.left_out_sentence`). `levels` on a
+numeric column is a paired contrast of those two doses. Prevalence — present at one level and absent
+at the other — is not a fourth design: a paired item carries the units present at each level beside
+its log ratio, which is what that statistic added. A unit with several recordings at one level
+contributes their mean, which is the aggregation path doing what it already does.
+
+Three rules the within designs share, each from a measurement:
+
+- **An effect over fewer than `min_units` *present* units is undefined, never large.** Presence is
+  the unit's level mean of `total_time` reaching `presence_s` at some level. Units with a value
+  are not the count: a node present in three of eight rats has a mean log ratio over eight, five of
+  them zero, and the trend promoted one-to-three-minute nodes on exactly that. `min_units` is
+  resolved from `min_units_fraction` (default one half) × the units in the cohort and recorded.
+- **ε is one second of member time** (`pseudo_count_s`), converted into the measure's own unit
+  through the observation's denominator, so a node absent at one level has a finite, honest ratio
+  and the family-wise floor is not owned by nodes a few animals barely touched. The between design
+  over **labels** keeps its unbounded "appeared / vanished" — a label's appearance is a finding,
+  not a sparsity artefact — and takes ε only over the node source.
+- **The floor is exact when it can be.** The sign-flip null of n units has 2ⁿ configurations; at
+  eight units the sampled 95th percentile moved three nodes in and out of a kept set with its seed.
+  n ≤ 10 enumerates every flip and the floor is deterministic; `Ranking.exact` says which.
+
+Beside the effect, every within-design item reports `consistency` (units whose own effect shares
+the sign), `n_units`, `n_present`, and whether the sign survives leaving any one unit out. The
+floor is the same 95th percentile of the largest |effect| over the family, in the same pass, and is
+withheld with `no_floor_reason` when nothing can move (one unit; no measure reaching `min_units`).
+**The permutation respects the design**: shuffle a paired contrast's levels *across* units and the
+pairs break — a unit dealt two of one level drops out of the draw, the null's tail widens and the
+floor rises past an effect every unit showed — the guard that pins the between permutation to the
+path's unit, applied one level down.
+
+### The node source
+
+A clustering run's **unlabelled** nodes are what the difference screen (§22) exists to screen, and
+the §19 artifact collapses them by design. `source: nodes` measures the run's **node cache**
+instead — the leaf-additive tables, no frame view, seconds rather than minutes — and emits rows in
+`measures.COLUMNS`' own schema, one `label` per candidate node (`node:<id>`), so `observations`,
+the summaries, the tables and the figures consume them unchanged. A candidate is a node with at
+least `candidate_floor_s` of member time over the run (default 30 s, Phase 0's floor), the root
+excluded: the cache has no floor of its own now that every cluster has clips, and every candidate
+widens the family the floor is taken over. Four measures, from the registry:
+`time_fraction` (the ranking family), `rate`, `total_time`, `duration_mean` — bouts are the node's
+leaf runs merged where adjacent — with the recording's analysed time as the denominator. The
+hierarchy travels beside the observations as `nodes.csv` (node, parent, depth, member time), and
+the cache's `built_from` digest is the source the record cites; a stale cache is refused, naming
+what changed, never silently read.
+
+**Nesting is suppressed by peak picking.** A node and its parent carry nearly the same time, so
+the clearing set is full of slices of one behaviour. Over the items that clear, in rank order: keep
+the best, drop its ancestors and descendants, repeat. The below-floor "show more" list is thinned
+the same way. `suppress_nesting` is a config field so a flat source turns it off; `Ranking.kept`
+is the kept set, `None` where suppression was not applied.
+
+**A large family is exported as its shown set.** 1,350 nodes × four measures is 5,000 dot plots
+nobody asked for, so for the node source the per-measurement tables and figures cover the kept
+nodes and the first ten below the floor after suppression; `ranking.csv` carries every candidate
+with its effect, floor and verdict, and `stats.csv` every observation, so nothing is lost by it.
+
 ### The saved comparison
 
 A comparison is a **saved object holding its outputs**, not a transient view. It is cheap to
@@ -8664,8 +8813,20 @@ reproducible.
 ```
 comparisons/<cmp_NN>/
   comparison.yaml     schema_version first, atomic: filter, group_by, aggregation_path,
-                      windows, measures, source artifact run id(s), provenance, status
+                      windows, measures, source artifact run id(s), provenance, status,
+                      and the resolved design: design, design_column, levels, min_units,
+                      n_units, presence_s, pseudo_count_s, ranking_measure, design_reason,
+                      and left_out, the recordings with no value for a grouping column;
+                      source: labels only — screened_labels, the labels (as measured, from
+                      the snapshot's state) whose cluster a node screen over one of the
+                      compared columns chose, each with the screen, the kept cluster and the
+                      node (§22): the effect of such a label here is not an independent
+                      finding, and every surface says so from one function
+                      (comparison_report.screened_note / screened_sentence — the suggestion
+                      cell, the summary, the detail page's header, `comparison run`)
   stats.csv           the tidy source of truth — one row per observation with its factors
+  nodes.csv           source: nodes only — the node hierarchy the ranking is suppressed over
+  ranking.csv         every ranked item: effect, floor, clears, kept, consistency, n_units
   tables/             per measure: groups as rows, summary columns
   figures/            dot plots, time-resolved curves, the difference ranking with its floor
   summary.md          the quick-look
@@ -8715,13 +8876,20 @@ names — a name can mean the same thing in two runs in a way an id never can.
 
 - **API** — `Experiment.run_comparison(config)` → a `Comparison`; `.export(out, formats)`,
   `.drift()`, `.record()`; `Experiment.comparisons` / `get_comparison`.
-- **CLI** — `comparison run` (filter, `--group-by`, `--aggregate-to`, measures, windows),
+  `api.comparison.screen_comparison(experiment, config)` is the same computation with nothing
+  written — the ranking a live screen (§22's tab) reads, through the one `rank_record` mapping
+  the export and the detail page use, so the screen and the saved result cannot disagree.
+- **CLI** — `comparison run` (filter, `--group-by`, `--aggregate-to`, `--source labels|nodes`,
+  `--level A --level B`, measures, windows, `--presence-s`, `--pseudo-count-s`,
+  `--min-units-fraction`, `--no-suppress-nesting`), printing the design it resolved;
   `comparison export`, `comparison list`. `--aggregate-to` is **required when the cohort has
   repeats**, per above, and the refusal names the column it found and how many recordings it
   covers.
-- **GUI** — the experiment's **Comparisons** section: list, launch dialog, and a detail view with
-  the tables, the dot plots, the time-resolved curves and the difference ranking, plus an export
-  button (off-thread).
+- **GUI** — the experiment's **Comparisons** section: list, launch dialog (source, the column,
+  the unit, two levels to contrast, with the design it will run shown before Run), and a detail
+  view with the tables, the dot plots, the time-resolved curves and the difference ranking — the
+  within-design ranking as effect, units in that direction, present, floor and a one-line
+  suggestion per item — plus an export button (off-thread).
 
 ### Guards
 
@@ -8736,12 +8904,28 @@ names — a name can mean the same thing in two runs in a way an id never can.
 - **No ranking without a floor** — the difference screen cannot render one, enforced at the API.
 - **The permutation shuffles at the path's unit level**, not the recording level. Revert it and the
   floor must become measurably easier to clear.
+- **The permutation respects the design.** A paired contrast's levels shuffled across units
+  instead of its signs flipped within them moves the floor measurably, and past the effect.
+- **The negative control, as a test.** A synthetic cohort with no signal keeps nothing after
+  suppression in at least 19 of 20 seeds, and a planted node clears in every seed.
+- **`min_units` leaves an effect undefined, not large**; **suppression is a peak pick** (no kept
+  node is an ancestor or descendant of another); **the exact floor does not move with its seed**.
+- **The node source is leaf-additive**: every row equals the figure computed directly over the
+  node's members.
+- **Design resolution is one function**: the launch dialog's preview, the CLI's printed line and
+  the record's `design` come from `compare.resolve_design`, and a config the GUI emits is
+  enumerated over `ComparisonConfig.model_fields`.
 - **n and coverage on every group row.**
 - **Determinism**: a re-export is byte-identical (§18.5 L1), and the permutation is seeded.
 
 ### Deferred
 
 - **Inference.** Deliberate. `stats.csv` is the handoff.
+- **Windows over the node source.** The cache's leaf runs make §23's window model applicable; a
+  drug effect is time-locked and a behaviour that changes within a session is its own question.
+  Whole recording first.
+- **A between-unit screen over nodes that can clear** — a presence restriction per group, so
+  sparse nodes stop owning the null's tail. Open from Phase 0, not run.
 - **Cross-artifact comparison**, above.
 - **Event-referenced windows**, which need the stream join (§23).
 - **Per-subject metadata.** `metadata.csv` is keyed on recording today; when a recording carries

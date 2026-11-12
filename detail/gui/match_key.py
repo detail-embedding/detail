@@ -18,10 +18,20 @@ It once also drew a tick per cluster above the ramp. Hundreds of clusters made t
 nobody could read, and the tree's own shading already says where each cluster sits, so review
 round 3 took it out.
 
+**The effect mode.** While a difference screen is the only filter on (§22, *The difference
+screen*), the key reads the screen's statistic instead of a share: the theme's diverging scale,
+less at the left and more at the right, on a **fixed** axis too — ρ from −1 to +1 for a trend,
+÷20 to ×20 for a log ratio — with the floor marked at both ends of the neutral middle and the
+selected cluster's effect as the tall bar. Inside the floor is neutral grey on the tree and on the
+key: not shown to differ. :func:`effect_position` is the one map from an effect to the axis, for
+the key and for the tree's blocks (`cluster_filters.effect_shades`), so they cannot disagree.
+
 The widgets take plain numbers: nothing here reads the node cache.
 """
 
 from __future__ import annotations
+
+import math
 
 from collections.abc import Sequence
 import html
@@ -61,6 +71,45 @@ RAMP_TEXT = (
 INACTIVE_TEXT = (
     "Pick values in the filters below to shade the tree by how many clips match."
 )
+#: The effect mode's ramp tooltip.
+EFFECT_TEXT = (
+    "The tall bar is the selected cluster's effect; the ticks are the floor, and a cluster "
+    "inside it is grey: not shown to differ."
+)
+#: How far the log-ratio axis reaches either way: a fixed 20× (ln 20), so the same effect sits
+#: at the same place on every screen. Beyond it a mark sits at the end.
+LOG_RATIO_EXTENT = math.log(20.0)
+
+
+def effect_extent(design: str) -> float:
+    """How far the effect axis reaches from its middle: 1 for a trend's ρ, ln 20 otherwise."""
+    return 1.0 if design == "trend" else LOG_RATIO_EXTENT
+
+
+def effect_position(effect, clears: bool, extent: float) -> float:
+    """Where an effect sits on the −1..+1 axis: ``NaN`` for an undefined effect (``None`` or
+    NaN), ``0`` for one that did not clear the floor (neutral, not shown to differ), else the
+    signed effect over ``extent``, clamped to the ends."""
+    if effect is None or effect != effect:
+        return float("nan")
+    if not clears:
+        return 0.0
+    return min(max(float(effect) / float(extent), -1.0), 1.0)
+
+
+def effect_axis_labels(design: str) -> tuple[str, str]:
+    """The axis ends: ``("ρ −1", "ρ +1")`` for a trend, ``("÷20", "×20")`` for a log ratio."""
+    return ("ρ −1", "ρ +1") if design == "trend" else ("÷20", "×20")
+
+
+def effect_value_text(effect: float | None, design: str) -> str:
+    """``12.4×``, ``÷2.1`` or ``ρ −0.74`` — an effect as a person reads it."""
+    if effect is None or effect != effect:
+        return "undefined"
+    if design == "trend":
+        return f"ρ {effect:+.2f}"
+    factor = math.exp(abs(float(effect)))
+    return f"{factor:.1f}×" if effect >= 0 else f"÷{factor:.1f}"
 
 
 def share_text(share: float) -> str:
@@ -82,6 +131,10 @@ class _Ramp(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         #: False while no filter is on: the ramp is drawn faint, with no marks.
         self.active = True
+        #: The effect mode: the diverging scale over −1..+1 with the floor's ticks.
+        self.diverging = False
+        self._floor: float | None = None
+        self._selected_text: str | None = None
         self._selected: float | None = None
         self._run: float | None = None
         self.setToolTip(RAMP_TEXT)
@@ -96,17 +149,41 @@ class _Ramp(QWidget):
         self._run = None if run is None else min(max(float(run), 0.0), 1.0)
         self.update()
 
+    def set_effect_marks(
+        self, selected: float | None, selected_text: str | None, floor: float | None
+    ) -> None:
+        """The effect mode's marks: the selected cluster at ``selected`` (−1..+1) with its
+        words, and the floor at ±``floor`` (0..1 of the half axis)."""
+        self._selected = (
+            None
+            if selected is None or selected != selected
+            else min(max(float(selected), -1.0), 1.0)
+        )
+        self._selected_text = selected_text
+        self._floor = None if floor is None else min(max(float(floor), 0.0), 1.0)
+        self._run = None
+        self.update()
+
     def x_for(self, share: float) -> float:
-        """Where ``share`` sits on the bar — a fixed map from 0..1, whatever the data."""
-        return _INSET + (self.width() - 2 * _INSET) * min(max(float(share), 0.0), 1.0)
+        """Where ``share`` sits on the bar — a fixed map from 0..1 (or −1..+1 in the effect
+        mode), whatever the data."""
+        span = self.width() - 2 * _INSET
+        if self.diverging:
+            return _INSET + span * (min(max(float(share), -1.0), 1.0) + 1.0) / 2.0
+        return _INSET + span * min(max(float(share), 0.0), 1.0)
 
     def labels(self) -> list[str]:
         """The marks' words, selected first — for tests and the key's own text."""
         out = []
         if self._selected is not None:
-            out.append(f"selected {share_text(self._selected)}")
+            if self.diverging:
+                out.append(f"selected {self._selected_text or ''}".rstrip())
+            else:
+                out.append(f"selected {share_text(self._selected)}")
         if self._run is not None:
             out.append(f"run {share_text(self._run)}")
+        if self.diverging and self._floor is not None:
+            out.append("floor")
         return out
 
     def label_rect(self, text: str, share: float, top: float) -> QRectF:
@@ -124,7 +201,7 @@ class _Ramp(QWidget):
             painter.setOpacity(_INACTIVE_OPACITY)
         bar = QRectF(_INSET, _BAR_TOP, self.width() - 2 * _INSET, _BAR_H)
         gradient = QLinearGradient(bar.left(), 0, bar.right(), 0)
-        stops = theme.sequential
+        stops = theme.diverging if self.diverging else theme.sequential
         for i, stop in enumerate(stops):
             gradient.setColorAt(i / (len(stops) - 1), QColor(stop))
         painter.fillRect(bar, gradient)
@@ -132,6 +209,14 @@ class _Ramp(QWidget):
         painter.drawRect(bar)
         ink, muted = QColor(theme.text), QColor(theme.text_secondary)
         centre = Qt.AlignmentFlag.AlignCenter
+        if self.diverging and self._floor is not None:
+            # The floor, both ways from the middle: inside it a cluster is grey on the tree.
+            painter.setPen(QPen(muted, 1.5))
+            for side in (-self._floor, self._floor):
+                x = self.x_for(side)
+                painter.drawLine(QPointF(x, _BAR_TOP - 2), QPointF(x, _RUN_TOP))
+            text = "floor"
+            painter.drawText(self.label_rect(text, self._floor, _RUN_TOP), centre, text)
         if self._run is not None:
             x = self.x_for(self._run)
             painter.setPen(QPen(muted, 1.5))
@@ -155,7 +240,11 @@ class _Ramp(QWidget):
             )
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.setPen(ink)
-            text = f"selected {share_text(self._selected)}"
+            text = (
+                f"selected {self._selected_text or ''}".rstrip()
+                if self.diverging
+                else f"selected {share_text(self._selected)}"
+            )
             painter.drawText(self.label_rect(text, self._selected, 0), centre, text)
         painter.end()
 
@@ -205,11 +294,53 @@ class MatchKey(QWidget):
         """
         # Greyed by colour, not by disabling: a disabled label cannot be selected and copied.
         self.ramp.active = bool(active)
+        self.ramp.diverging = False
+        self._caption.setText(CAPTION)
+        self._low.setText("0%")
+        self._high.setText("100%")
         self.setToolTip("" if active else INACTIVE_TEXT)
         self.ramp.setToolTip(RAMP_TEXT if active else INACTIVE_TEXT)
         self._grey_labels()
         self.ramp.set_marks(
             selected_share if active else None, run_share if active else None
+        )
+
+    def set_effect(
+        self,
+        caption: str,
+        design: str,
+        *,
+        floor: float | None,
+        selected_effect: float | None,
+    ) -> None:
+        """The effect mode: ``caption`` over the diverging axis for ``design``, the floor's
+        ticks at ±``floor`` (in the effect's own unit) and the selected cluster's effect.
+
+        Args:
+            caption: What the axis is, e.g. ``"Less ↔ more under drug"``.
+            design: ``"trend"`` for a ρ axis, else a log-ratio axis.
+            floor: The screen's floor in the effect's unit, or ``None`` when it has none.
+            selected_effect: The selected cluster's effect, ``None`` for none or undefined.
+        """
+        extent = effect_extent(design)
+        self.ramp.active = True
+        self.ramp.diverging = True
+        self._caption.setText(caption)
+        low, high = effect_axis_labels(design)
+        self._low.setText(low)
+        self._high.setText(high)
+        self.setToolTip("")
+        self.ramp.setToolTip(EFFECT_TEXT)
+        self._grey_labels()
+        position = (
+            None
+            if selected_effect is None or selected_effect != selected_effect
+            else effect_position(selected_effect, True, extent)
+        )
+        self.ramp.set_effect_marks(
+            position,
+            None if position is None else effect_value_text(selected_effect, design),
+            None if floor is None else float(floor) / extent,
         )
 
     def _grey_labels(self) -> None:
@@ -230,10 +361,15 @@ class MatchKey(QWidget):
             self._grey_labels()
         super().changeEvent(event)
 
+    def is_effect(self) -> bool:
+        """Whether the key reads an effect rather than a share."""
+        return self.ramp.diverging
+
     def text(self) -> str:
         """What the key says, for tests and the page's own checks: the scale, then the marks
         (none while greyed)."""
-        return " | ".join([self._caption.text(), "0% … 100%", *self.ramp.labels()])
+        scale = f"{self._low.text()} … {self._high.text()}"
+        return " | ".join([self._caption.text(), scale, *self.ramp.labels()])
 
 
 class LabelSwatches(QWidget):

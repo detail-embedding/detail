@@ -929,9 +929,15 @@ def test_a_folded_location_line_is_spaced_like_every_field_line(qapp):
     widget.dock.show()
     widget.location_row.set_open(False)
     widget.session_row.set_open(False)
+    widget.screens_row.set_open(False)
     qapp.processEvents()
     dock = widget.dock
-    rows = [widget.location_row, widget.session_row, *widget.field_rows()]
+    rows = [
+        widget.location_row,
+        widget.session_row,
+        widget.screens_row,
+        *widget.field_rows(),
+    ]
     assert len(rows) >= 3 and all(not r.is_open() for r in rows)
     tops = [r.mapTo(dock, QPoint(0, 0)).y() for r in rows]
     pitches = [b - a for a, b in zip(tops, tops[1:])]
@@ -1440,3 +1446,143 @@ def test_the_location_map_is_reached_and_picked_from_the_keyboard(qapp, bar):
     QTest.keyClick(picker.map, Qt.Key.Key_Down)
     QTest.keyClick(picker.map, Qt.Key.Key_Space)
     assert bar.selection().cells == frozenset({(2, 1)}), "Space takes a cell back out"
+
+
+# --------------------------------------------------------------------------- #
+# the Differences line: saved screens, one at a time, and Run a new screen… (§22)
+# --------------------------------------------------------------------------- #
+
+SCREENS = [
+    cf.ScreenChoice(
+        "cmp_02", "drug vs vehicle · paired", "1 kept of 4", frozenset({0, 1})
+    ),
+    cf.ScreenChoice("cmp_01", "dose · trend", "cannot be read: no stats.csv", None),
+]
+
+
+def _tick_screen(bar, key: str, on: bool = True) -> None:
+    lst = bar.screens.list
+    for i in range(lst.count()):
+        item = lst.item(i)
+        if item.data(Qt.ItemDataRole.UserRole) == key:
+            item.setCheckState(Qt.CheckState.Checked if on else Qt.CheckState.Unchecked)
+            return
+    raise AssertionError(f"{key!r} is not offered")
+
+
+def test_the_differences_line_lists_the_runs_screens_and_greys_one_it_cannot_read(bar):
+    assert bar.screens.note.text() == cf.NO_SCREENS_TEXT
+    bar.set_screens([], loading=True)
+    assert bar.screens.note.text() == cf.SCREENS_LOADING_TEXT
+    bar.set_screens(SCREENS)
+    lst = bar.screens.list
+    assert [lst.item(i).data(Qt.ItemDataRole.UserRole) for i in range(lst.count())] == [
+        "cmp_02",
+        "cmp_01",
+    ]
+    assert "1 kept of 4" in lst.item(0).text()
+    assert not (lst.item(1).flags() & Qt.ItemFlag.ItemIsEnabled)
+    assert "cannot be read" in lst.item(1).toolTip()
+    assert bar.field_row("Differences").summary_text() == "none"
+    assert bar.screens.note.text() == cf.SCREENS_HINT_TEXT
+
+
+def test_ticking_a_screen_is_the_clusters_condition_and_its_reset_removes_it(bar):
+    bar.set_screens(SCREENS)
+    _tick_screen(bar, "cmp_02")
+    selection = bar.seen[-1]
+    assert selection.leaves == frozenset({0, 1})
+    assert selection.leaves_source == "cmp_02"
+    assert selection.keys() == [cf.CLUSTERS]
+    row = bar.field_row("Differences")
+    assert row.summary_text() == "drug vs vehicle · paired"
+    assert row.reset_button.isVisible()
+    row.reset_button.click()
+    assert bar.seen[-1].is_empty
+    assert bar.screens.value() is None
+    assert row.summary_text() == "none"
+
+
+def test_one_screen_at_a_time(bar):
+    bar.set_screens(
+        [
+            *SCREENS,
+            cf.ScreenChoice("cmp_03", "sex · between", "0 kept of 0", frozenset({2})),
+        ]
+    )
+    _tick_screen(bar, "cmp_02")
+    _tick_screen(bar, "cmp_03")
+    assert bar.screens.value() == "cmp_03"
+    assert bar.seen[-1].leaves == frozenset({2})
+    _tick_screen(bar, "cmp_03", on=False)
+    assert bar.seen[-1].leaves is None
+
+
+def test_a_screen_no_longer_offered_takes_its_condition_with_it(bar):
+    """The rule every other field keeps: a filter with no line to show and reset it is
+    removed, never applied out of sight."""
+    bar.set_screens(SCREENS)
+    _tick_screen(bar, "cmp_02")
+    bar.set_screens([SCREENS[1]])
+    assert bar.selection().leaves is None
+    assert bar.field_row("Differences").summary_text() == "none"
+
+
+def test_a_selection_naming_a_screen_shows_in_the_line(bar):
+    bar.set_screens(SCREENS)
+    bar.set_selection(Selection(leaves=frozenset({0, 1}), leaves_source="cmp_02"))
+    assert bar.screens.value() == "cmp_02"
+    assert bar.field_row("Differences").summary_text() == "drug vs vehicle · paired"
+    assert cf.panel_name(bar.selection()) == "Filters · 1 active"
+
+
+def test_run_a_new_screen_is_the_pages_to_answer(bar):
+    asked = []
+    bar.screen_requested.connect(lambda: asked.append(True))
+    bar.screens.run_button.click()
+    assert asked == [True]
+
+
+def test_the_breakdown_names_the_clusters_condition():
+    selection = Selection(
+        leaves=frozenset({0}), leaves_source="cmp_02", recording_ids=frozenset({"r1"})
+    )
+    text = cf.breakdown(selection, {cf.CLUSTERS: True, VIDEO: False}, {})
+    assert "✓ differs" in text and "✗ video" in text
+
+
+def test_effect_shades_is_one_map_from_a_screen_to_the_blocks():
+    """Every node's place on the −1..+1 axis and its hover line, through the key's own
+    `effect_position`: NaN where the screen has no row or the effect is undefined, 0 inside the
+    floor, the signed effect over the axis's reach otherwise."""
+    import math
+
+    from detail.gui.match_key import LOG_RATIO_EXTENT
+
+    choice = cf.ScreenChoice(
+        "cmp_02",
+        "drug vs vehicle · paired",
+        "1 kept of 2",
+        frozenset({0, 1}),
+        effects={
+            4: cf.NodeEffect(math.log(12.4), True, True, "more under drug, 12.4×"),
+            5: cf.NodeEffect(math.log(1.3), False, False, "more under drug, 1.3×"),
+            2: cf.NodeEffect(-math.log(3.0), True, False, "less under drug, 3.0×"),
+            3: cf.NodeEffect(None, False, False, "undefined: present in 2 ID(s)"),
+        },
+        floor=math.log(7.14),
+        design="paired",
+        caption="Less ↔ more under drug",
+    )
+    shades, texts = cf.effect_shades(choice, 7)
+    assert shades[4] == pytest.approx(math.log(12.4) / LOG_RATIO_EXTENT)
+    assert shades[2] == pytest.approx(-math.log(3.0) / LOG_RATIO_EXTENT)
+    assert shades[5] == 0.0
+    assert (
+        shades[3] != shades[3] and shades[6] != shades[6]
+    ), "undefined and no row: NaN"
+    assert texts[4] == "more under drug, 12.4× · kept"
+    assert texts[2].endswith("clears the floor, nested under a kept cluster")
+    assert texts[5].endswith("inside the floor")
+    assert texts[3] == "undefined: present in 2 ID(s)"
+    assert 6 not in texts

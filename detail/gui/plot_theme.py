@@ -181,6 +181,30 @@ def add_legend(plot, *, corner: str, theme: ChartTheme | None = None):
     )
 
 
+def effect_colour(value: float, theme: ChartTheme | None = None) -> QColor:
+    """The shade for a cluster whose effect sits at ``value`` on a fixed −1..+1 axis.
+
+    The theme's ``diverging`` scale: its negative pole at −1, its neutral middle at 0, its
+    positive pole at +1. Zero is ``neutral`` exactly — a cluster inside the floor is "not shown
+    to differ", drawn the same grey as one with no clips to count (NaN) — so a tree shaded by an
+    effect colours only what cleared, and the sign says which way. One function for the tree's
+    blocks and the key beside them, as :func:`match_colour` is for the share ramp.
+    """
+    theme = theme or current()
+    if value != value or value == 0:
+        return QColor(theme.neutral)
+    stops = theme.diverging
+    position = (min(max(float(value), -1.0), 1.0) + 1.0) / 2.0 * (len(stops) - 1)
+    low = min(int(position), len(stops) - 2)
+    t = position - low
+    a, b = QColor(stops[low]), QColor(stops[low + 1])
+    return QColor(
+        round(a.red() + (b.red() - a.red()) * t),
+        round(a.green() + (b.green() - a.green()) * t),
+        round(a.blue() + (b.blue() - a.blue()) * t),
+    )
+
+
 def match_colour(share: float, theme: ChartTheme | None = None) -> QColor:
     """The shade for a cluster of which ``share`` (0..1) of the clips match a selection.
 

@@ -197,6 +197,8 @@ class NodeIcicle(QWidget):
         #: Each node's matching share while a filter is on (``None``: no filter); NaN where a
         #: node has nothing to count.
         self._shades: dict[int, float] | None = None
+        self._diverging = False
+        self._shade_texts: dict[int, str] = {}
         self._names: dict[int, str] = {}
         self._outlines: dict[int, QColor] = {}
         self._marks: dict[int, str] = {}
@@ -251,11 +253,28 @@ class NodeIcicle(QWidget):
         self._names = dict(names)
         self.update()
 
-    def set_shades(self, shares: dict[int, float] | None) -> None:
+    def set_shades(
+        self,
+        shares: dict[int, float] | None,
+        *,
+        diverging: bool = False,
+        texts: dict[int, str] | None = None,
+    ) -> None:
         """Shade every block by ``shares[node]`` (0..1) on the fixed 0–100% ramp, or ``None`` to
-        go back to the label colours. A node missing or NaN is drawn as having none."""
+        go back to the label colours. A node missing or NaN is drawn as having none.
+
+        ``diverging`` reads the values as effects on the −1..+1 axis instead
+        (``plot_theme.effect_colour``: zero and NaN neutral), and ``texts[node]`` is then the
+        hover's line for a block in place of its share — the screen's sentence for a cluster.
+        """
         self._shades = (
             None if shares is None else {int(k): v for k, v in shares.items()}
+        )
+        self._diverging = bool(diverging) and shares is not None
+        self._shade_texts = (
+            {}
+            if texts is None or shares is None
+            else {int(k): v for k, v in texts.items()}
         )
         self.update()
 
@@ -274,8 +293,11 @@ class NodeIcicle(QWidget):
         if self._shades is None:
             return label, None
         share = self._shades.get(int(node), float("nan"))
-        share = 0.0 if share is None or share != share else float(share)
         strip = label if node in self._fills else None
+        if self._diverging:
+            value = float("nan") if share is None else float(share)
+            return plot_theme.effect_colour(value, theme), strip
+        share = 0.0 if share is None or share != share else float(share)
         return plot_theme.match_colour(share, theme), strip
 
     def set_outlines(
@@ -824,7 +846,11 @@ class NodeIcicle(QWidget):
         text = (
             f"{name} · {share:.1f}% of the run · {format_time(int(self._times[node]))}"
         )
-        if self._shades is not None:
+        if self._shades is not None and self._diverging:
+            text += " · " + self._shade_texts.get(
+                int(node), "not a candidate of the screen"
+            )
+        elif self._shades is not None:
             match = self._shades.get(int(node), float("nan"))
             text += (
                 " · no positioned clips to match"

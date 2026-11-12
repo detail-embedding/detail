@@ -245,7 +245,7 @@ def test_a_restore_without_change_times_is_an_edit_like_any_other(fitted_codeboo
     run, climb, rear = _labelled(experiment, run_id)
     run.finish_review(climb)
     time.sleep(1.1)
-    labels, nodes, _stamps = run.label_maps()
+    labels, nodes, _stamps, _origins = run.label_maps()
     run.name_nodes({rear: "climb"})
     run.restore_labels(labels, {str(rear): nodes[str(rear)]})
     assert run.review_precision("climb") is None

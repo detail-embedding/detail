@@ -45,14 +45,15 @@ class Change:
 
 
 def restore_side(written: tuple[dict, ...] | None, after: bool) -> tuple[dict, ...]:
-    """``(labels, node_labels, membership_changed_at)`` to restore from what a label write did
-    (``authored_run.label_change``): the *after* values for a redo, *before* for an undo. Empty
-    when the write changed nothing or has not landed.
+    """``(labels, node_labels, membership_changed_at, label_origins)`` to restore from what a
+    label write did (``authored_run.label_change``): the *after* values for a redo, *before*
+    for an undo. Empty when the write changed nothing or has not landed.
 
     The change times go back too, so undoing a misclick does not read as an edit of the label
-    and set aside the review made before it."""
+    and set aside the review made before it; and the origins, so a redo of a label written
+    from a screen keeps the screen."""
     if written is None:
-        return {}, {}, {}
+        return {}, {}, {}, {}
     index = 1 if after else 0
     return tuple({key: pair[index] for key, pair in part.items()} for part in written)
 

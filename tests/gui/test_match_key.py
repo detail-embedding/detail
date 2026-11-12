@@ -3,6 +3,8 @@ the data."""
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 pytest.importorskip("PyQt6")
@@ -172,3 +174,68 @@ def _close(a: QColor, b: QColor, tolerance: int = 6) -> bool:
         abs(x - y) <= tolerance
         for x, y in zip((a.red(), a.green(), a.blue()), (b.red(), b.green(), b.blue()))
     )
+
+
+# --------------------------------------------------------------------------- #
+# the effect mode: the key reads a screen's statistic while the screen is the only filter
+# --------------------------------------------------------------------------- #
+
+
+def test_effect_position_is_one_fixed_map_with_the_floor_as_neutral():
+    from detail.gui.match_key import LOG_RATIO_EXTENT, effect_extent, effect_position
+
+    assert effect_extent("trend") == 1.0
+    assert effect_extent("paired") == LOG_RATIO_EXTENT == math.log(20.0)
+    assert effect_position(None, True, 1.0) != effect_position(None, True, 1.0), "NaN"
+    assert effect_position(0.9, False, 1.0) == 0.0, "inside the floor is neutral"
+    assert effect_position(-0.74, True, 1.0) == pytest.approx(-0.74)
+    assert effect_position(math.log(12.4), True, LOG_RATIO_EXTENT) == pytest.approx(
+        math.log(12.4) / math.log(20.0)
+    )
+    assert effect_position(math.log(400.0), True, LOG_RATIO_EXTENT) == 1.0, "clamped"
+    assert effect_position(-math.log(400.0), True, LOG_RATIO_EXTENT) == -1.0
+
+
+def test_effect_words_read_as_a_factor_or_a_rho():
+    from detail.gui.match_key import effect_axis_labels, effect_value_text
+
+    assert effect_value_text(math.log(12.4), "paired") == "12.4×"
+    assert effect_value_text(-math.log(2.1), "paired") == "÷2.1"
+    assert effect_value_text(-0.74, "trend") == "ρ -0.74"
+    assert effect_value_text(None, "trend") == "undefined"
+    assert effect_axis_labels("trend") == ("ρ −1", "ρ +1")
+    assert effect_axis_labels("paired") == ("÷20", "×20")
+
+
+@pytest.mark.parametrize("theme", [LIGHT, DARK])
+def test_effect_colour_is_the_fixed_diverging_scale_with_grey_in_the_middle(
+    qapp, theme
+):
+    assert plot_theme.effect_colour(0.0, theme) == QColor(theme.neutral)
+    assert plot_theme.effect_colour(float("nan"), theme) == QColor(theme.neutral)
+    assert plot_theme.effect_colour(-1.0, theme) == QColor(theme.diverging[0])
+    assert plot_theme.effect_colour(1.0, theme) == QColor(theme.diverging[-1])
+    assert plot_theme.effect_colour(0.5, theme) == QColor(theme.diverging[6])
+    assert plot_theme.effect_colour(5.0, theme) == QColor(
+        theme.diverging[-1]
+    ), "clamped"
+
+
+def test_the_key_switches_to_the_effect_and_back(key):
+    key.set_effect(
+        "Less ↔ more under drug",
+        "paired",
+        floor=math.log(7.14),
+        selected_effect=math.log(12.4),
+    )
+    assert key.is_effect()
+    assert key.text() == "Less ↔ more under drug | ÷20 … ×20 | selected 12.4× | floor"
+    assert key.ramp.x_for(0.0) == pytest.approx(key.ramp.width() / 2, abs=1)
+    assert key.ramp.x_for(1.0) > key.ramp.x_for(0.5) > key.ramp.x_for(-0.5)
+
+    key.set_effect("Less ↔ more with dose", "trend", floor=0.54, selected_effect=None)
+    assert key.text() == "Less ↔ more with dose | ρ −1 … ρ +1 | floor"
+
+    key.set_filter(True, selected_share=0.3, run_share=0.1)
+    assert not key.is_effect()
+    assert key.text() == "Clips that match | 0% … 100% | selected 30% | run 10%"

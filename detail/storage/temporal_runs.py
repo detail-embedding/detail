@@ -98,6 +98,9 @@ class TemporalClusteringState:
     #: audited reports its precision from judgments made since (§19), so choosing clusters by
     #: how they scored cannot raise the score the choice was made on. A rename is not a change.
     membership_changed_at: dict[str, str] = field(default_factory=dict)
+    #: node id -> where its label came from (``run_labels.LabelOrigin`` as a dict), for a node
+    #: labelled while a difference screen pointed at it (§22). Dropped with the node's own label.
+    label_origins: dict[str, dict] = field(default_factory=dict)
     #: label id -> name, for the labels that reach the output. Derived from ``labels`` and
     #: ``node_labels`` with the fit's tree, keyed the way ``instances.csv`` stores ``source_label``.
     resolved_names: dict[str, str] = field(default_factory=dict)
@@ -206,6 +209,10 @@ class TemporalClusteringState:
             "membership_changed_at": {
                 str(k): str(v) for k, v in self.membership_changed_at.items()
             },
+            "label_origins": {
+                str(k): {str(a): str(b) for a, b in dict(v).items()}
+                for k, v in self.label_origins.items()
+            },
             "resolved_names": {str(k): str(v) for k, v in self.resolved_names.items()},
             "resolved_paths": {str(k): str(v) for k, v in self.resolved_paths.items()},
             "names_by_granularity": {
@@ -238,6 +245,7 @@ class TemporalClusteringState:
                 str(k): str(v)
                 for k, v in (data.get("membership_changed_at") or {}).items()
             },
+            label_origins=run_labels.read_origins(data),
             resolved_names=cls._resolved_names(data),
             resolved_paths={
                 str(k): str(v) for k, v in (data.get("resolved_paths") or {}).items()
