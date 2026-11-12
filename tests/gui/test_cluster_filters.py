@@ -1638,3 +1638,38 @@ def test_the_effect_caption_of_a_profile_names_what_it_differs_across(qapp):
     assert _effect_caption(between, {"group_by": ["strain"]}) == "Differs across strain"
     paired = compare.Ranking([], None, 0, 0, design="paired", levels=("veh", "fent"))
     assert _effect_caption(paired, {}) == "Less ↔ more under fent (against veh)"
+
+
+def test_a_node_effect_carries_the_pair_its_screen_found(qapp):
+    """The workspace's row for a cluster keeps the item's pair, so the key can name it at the
+    mark (§22); the sentence is the Comparisons page's, pair first."""
+    import math
+
+    from detail.analysis import compare
+    from detail.gui.node_workspace import _node_effects
+
+    item = compare.Effect(
+        ("time_fraction", "node:12", "", "whole"),
+        math.log(9.6),
+        8,
+        8,
+        7,
+        True,
+        pair=("REI", "SA"),
+    )
+    ranking = compare.Ranking(
+        [item],
+        math.log(4.0),
+        200,
+        0,
+        design="profile",
+        unit=("ID",),
+        level_values=("EXT", "REI", "SA"),
+    )
+    effects = _node_effects(
+        ranking, {"design_column": "SessionType", "aggregate_to": ["ID"]}
+    )
+    assert effects[12].pair == ("REI", "SA") and effects[12].clears
+    assert effects[12].text.startswith(
+        "differs most between REI and SA: more under SA than REI, 9.6×"
+    )

@@ -286,3 +286,37 @@ def test_a_profile_axis_is_one_sided_by_size(key):
 
     key.set_effect("Less ↔ more under drug", "paired", floor=0.5, selected_effect=0.2)
     assert ramp.x_for(0.0) == pytest.approx(ramp.width() / 2, abs=1), "two-sided again"
+
+
+def test_a_profile_mark_names_the_pair_that_drives_it(key):
+    """The tall bar says which two levels the selected cluster differs most between and which
+    way, since a one-sided axis cannot (asked for on the first real profile screen); a
+    two-sided screen's caption already says, so its mark stays the bare factor."""
+    key.set_effect(
+        "Differs across SessionType",
+        "profile",
+        floor=math.log(4.0),
+        selected_effect=math.log(9.6),
+        selected_pair=("REI", "SA"),
+    )
+    assert key.text() == (
+        "Differs across SessionType | 1× … ×20 | selected 9.6× more under SA than REI | floor"
+    )
+    key.set_effect(
+        "Differs across SessionType",
+        "profile",
+        floor=None,
+        selected_effect=-math.log(2.5),
+        selected_pair=("REI", "SA"),
+    )
+    assert key.text() == (
+        "Differs across SessionType | 1× … ×20 | selected 2.5× less under SA than REI"
+    )
+    key.set_effect(
+        "Less ↔ more under fent (against veh)",
+        "paired",
+        floor=0.4,
+        selected_effect=math.log(3.0),
+        selected_pair=("veh", "fent"),
+    )
+    assert key.text().endswith("| selected 3.0× | floor")

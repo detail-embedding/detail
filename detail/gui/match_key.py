@@ -276,6 +276,11 @@ class _Ramp(QWidget):
                 if self.diverging
                 else f"selected {share_text(self._selected)}"
             )
+            # A profile's mark names its pair, which can outgrow a narrow dock: elided in
+            # the middle so the factor and the levels both survive.
+            text = self.fontMetrics().elidedText(
+                text, Qt.TextElideMode.ElideMiddle, self.width()
+            )
             painter.drawText(self.label_rect(text, self._selected, 0), centre, text)
         painter.end()
 
@@ -344,6 +349,7 @@ class MatchKey(QWidget):
         *,
         floor: float | None,
         selected_effect: float | None,
+        selected_pair: tuple[str, str] | None = None,
     ) -> None:
         """The effect mode: ``caption`` over the diverging axis for ``design``, the floor's
         ticks at ±``floor`` (in the effect's own unit) and the selected cluster's effect.
@@ -354,6 +360,10 @@ class MatchKey(QWidget):
                 log-ratio axis.
             floor: The screen's floor in the effect's unit, or ``None`` when it has none.
             selected_effect: The selected cluster's effect, ``None`` for none or undefined.
+            selected_pair: The two levels that effect is between, ``(a, b)`` as *b against
+                a*. On a one-sided axis the mark names them with the direction (*9.6× more
+                under SA than REI*), since the axis itself cannot say which pair or which
+                way; a two-sided axis's caption already says, so it is ignored there.
         """
         extent = effect_extent(design)
         half = one_sided(design)
@@ -372,10 +382,14 @@ class MatchKey(QWidget):
             if selected_effect is None or selected_effect != selected_effect
             else effect_position(selected_effect, True, extent, one_sided=half)
         )
+        text = None
+        if position is not None:
+            text = effect_value_text(selected_effect, design)
+            if half and selected_pair is not None:
+                more = "more" if float(selected_effect) >= 0 else "less"
+                text = f"{text} {more} under {selected_pair[1]} than {selected_pair[0]}"
         self.ramp.set_effect_marks(
-            position,
-            None if position is None else effect_value_text(selected_effect, design),
-            None if floor is None else float(floor) / extent,
+            position, text, None if floor is None else float(floor) / extent
         )
 
     def _grey_labels(self) -> None:

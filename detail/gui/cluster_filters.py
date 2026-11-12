@@ -187,12 +187,15 @@ class Column:
 @dataclass(frozen=True)
 class NodeEffect:
     """One cluster's row of a screen: its effect (``None`` where undefined), whether it clears
-    the floor, whether it was kept after nesting, and the screen's sentence for it."""
+    the floor, whether it was kept after nesting, the screen's sentence for it, and ``pair``,
+    the two levels the effect is between (``(a, b)``, *b against a*) — what a profile's key
+    names at the selected cluster's mark, since its one-sided axis cannot (§22)."""
 
     effect: float | None
     clears: bool
     kept: bool
     text: str
+    pair: tuple[str, str] | None = None
 
 
 @dataclass(frozen=True)

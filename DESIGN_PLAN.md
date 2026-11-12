@@ -8222,7 +8222,8 @@ the key and the blocks alike (`cluster_filters.effect_shades`). A profile screen
 size whose sign belongs to each cluster's own pair, not to the measure (§24 *Designs*), so its
 axis is one-sided — 1× to ×20 on the scale's upper half, one floor tick, the caption *Differs
 across session* in place of a direction (`match_key.one_sided`; `effect_position` takes the
-magnitude) — and the hover names the pair. A block's hover carries the
+magnitude) — the selected cluster's mark names its pair and direction (*selected 9.6× more under
+SA than REI*, `NodeEffect.pair`), and the hover names every block's. A block's hover carries the
 screen's sentence for it, the same words the Comparisons page prints
 (`comparison_report.suggestion`), with *kept*, *nested under a kept cluster* or *inside the
 floor* after it. Tick any clip filter beside the screen and both return to the share ramp: two

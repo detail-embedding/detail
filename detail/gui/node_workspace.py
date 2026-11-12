@@ -443,6 +443,7 @@ def _node_effects(ranking, record: dict) -> dict:
             clears=ranking.clears_floor(item),
             kept=item.measure_key in kept,
             text=comparison_report.suggestion(item, ranking, record),
+            pair=getattr(item, "pair", None),
         )
     return out
 
@@ -1624,6 +1625,7 @@ class NodeInterpretTab(QWidget):
                 screen.design,
                 floor=screen.floor,
                 selected_effect=None if row is None or not row.clears else row.effect,
+                selected_pair=None if row is None or not row.clears else row.pair,
             )
             return
 
