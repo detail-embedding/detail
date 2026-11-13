@@ -68,6 +68,10 @@ _ORPHANS_WITH_REASONS = {
     "resolve_track_id": "DESIGN_PLAN §13's animal-id selector; every config types track_id as "
     "int, so the str branch is unreachable. Real gap, tracked in docs/clustering_experiments.md",
     "module_topic": "help-system lookup; field_topic is wired, this one is not yet",
+    "screen_comparison": "the live difference screen's entry (§22): the same computation as "
+    "run_comparison with nothing written, built with the designs so the one-code-path "
+    "property is tested now; its caller is the live DIFFERENCES screen, which the private "
+    "plan note schedules",
     "anchor_exists": "help-system link validation, used by the docs tests, not yet by a surface",
     "marked_capabilities": "reads the §25 prose markers back out of a docs page; the "
     "surfaces guard is its only caller by design — the build strips blocks rather than "

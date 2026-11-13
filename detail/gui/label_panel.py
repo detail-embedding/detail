@@ -787,6 +787,13 @@ class LabelBar(QFrame):
         self.status.setTextFormat(Qt.TextFormat.PlainText)
         info.addWidget(self.status)
         box.addWidget(self.info)
+        #: Where the cluster's label came from, when a difference screen chose it
+        #: (:meth:`set_origin`): *From screen cmp_01 (drug vs vehicle · paired): more under
+        #: drug than vehicle, 12.4× · kept*. Hidden for a label the user found on their own.
+        self.origin = ElidedLabel("")
+        self.origin.setTextFormat(Qt.TextFormat.PlainText)
+        self.origin.hide()
+        box.addWidget(self.origin)
         #: Lines the page puts under the name (the AUDIT line).
         self.lines = QVBoxLayout()
         self.lines.setContentsMargins(0, 0, 0, 0)
@@ -837,6 +844,11 @@ class LabelBar(QFrame):
 
     def set_figures(self, text: str) -> None:
         self.figures.setText(text)
+
+    def set_origin(self, text: str) -> None:
+        """The line under the figures saying which screen chose this cluster; ``""`` hides it."""
+        self.origin.setText(text)
+        self.origin.setVisible(bool(text))
 
     def confirm(self, text: str) -> None:
         """What the last write did — "Labelled #1384 “climb”" — ahead of whether it is saved."""

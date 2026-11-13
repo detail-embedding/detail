@@ -26,6 +26,12 @@ is selected:
     over each recording's whole video (:class:`SessionRange`: the :class:`RangeHistogram` with
     ``bars=False``), "start · middle · end" under it and a line with the range and the clips it
     holds. Open or folded is remembered (:data:`SESSION_OPEN_KEY`), as Location's is.
+  - **Differences** — a line folding like Location's: the run's saved difference screens
+    (§22, §24 ``source: nodes``), one tickable at a time, each with what it kept ("drug vs
+    vehicle · paired   1 kept of 4"), and **New screen…**, which the page answers with the
+    comparison launch dialog seeded to this run. Ticking one is the :data:`CLUSTERS` condition:
+    the leaves under the clusters it kept, handed in by the page (:class:`ScreenChoice`), so the
+    tree shades a kept cluster 100%, its parent by the time under kept children, the rest grey.
   - **One line per field** (:class:`FieldRow`) — Video, then each metadata column: "▸ name",
     and at the right its value count or the filter set on it ("drug_A only", "2 of 3"),
     then, while it has a filter, a small Reset that removes it. The line is not a button: a
@@ -67,7 +73,7 @@ from __future__ import annotations
 
 import bisect
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 import datetime as dt
 
 from PyQt6.QtCore import QEvent, QObject, QRectF, QSettings, Qt, pyqtSignal
@@ -87,10 +93,10 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from detail.api.cluster_filter import LOCATION, SESSION, VIDEO, Selection
+from detail.api.cluster_filter import CLUSTERS, LOCATION, SESSION, VIDEO, Selection
 from detail.gui import plot_theme
 from detail.gui.density_map import RegionPicker
-from detail.gui.match_key import MatchKey
+from detail.gui.match_key import MatchKey, effect_extent, effect_position
 from detail.gui.selectable import make_text_selectable
 from detail.gui.sizing import (
     ElidedLabel,
@@ -128,7 +134,15 @@ OTHER_FIELDS_TEXT = "Other fields"
 #: How the fields combine: the tooltip of the "n of N clips match" line.
 MATCH_RULE_TEXT = "A clip matches when it fits every field. Several ticked values in one field: any of them."
 #: Condition keys (the API's). A metadata column's key is ``("meta", column)``.
-CONDITION_KEYS = (VIDEO, LOCATION, SESSION)
+CONDITION_KEYS = (VIDEO, LOCATION, SESSION, CLUSTERS)
+#: What the Differences line says with no screen saved, while reading them, and when ticked.
+NO_SCREENS_TEXT = "No difference screen saved for this run yet."
+SCREENS_LOADING_TEXT = "Reading the saved screens…"
+SCREENS_HINT_TEXT = (
+    "One at a time: the tree shades by the clusters the ticked screen kept, a kept cluster "
+    "100%, its parent by the time under kept children."
+)
+RUN_SCREEN_TEXT = "New screen…"
 #: The region picker's width before the dock has been laid out; from then on it fills the
 #: dock's width (:meth:`FilterBar._fit_map`), between these two.
 MAP_PX = 320
@@ -168,6 +182,78 @@ class Column:
     def __post_init__(self) -> None:
         if self.kind not in KINDS:
             raise ValueError(f"column kind must be one of {KINDS}, got {self.kind!r}")
+
+
+@dataclass(frozen=True)
+class NodeEffect:
+    """One cluster's row of a screen: its effect (``None`` where undefined), whether it clears
+    the floor, whether it was kept after nesting, and the screen's sentence for it."""
+
+    effect: float | None
+    clears: bool
+    kept: bool
+    text: str
+
+
+@dataclass(frozen=True)
+class ScreenChoice:
+    """A saved difference screen the Differences line offers.
+
+    ``key`` is the comparison id, ``label`` how it reads ("drug vs vehicle · paired"),
+    ``note`` what it kept ("1 kept of 4 clearing") or why it cannot be ticked, and ``leaves`` the
+    leaves under its kept clusters — ``None`` while the page is still reading it, or when it
+    cannot be read, which greys the row with the note as its tooltip. ``effects`` is every
+    candidate cluster's row, ``floor`` the screen's floor in the effect's unit and ``design``
+    its design, for the effect mode (:func:`effect_shades`); ``caption`` is the axis's words
+    ("Less ↔ more under drug"). ``kept`` is the clusters it kept, in rank order, and ``column``
+    the metadata column it contrasted: what a label written while the screen is ticked records
+    as its origin (``run_labels.LabelOrigin``, §22).
+    """
+
+    key: str
+    label: str
+    note: str
+    leaves: frozenset | None
+    effects: Mapping[int, NodeEffect] = field(default_factory=dict)
+    floor: float | None = None
+    design: str = ""
+    caption: str = ""
+    kept: tuple[int, ...] = ()
+    column: str = ""
+
+    def kept_texts(self) -> dict[int, str]:
+        """``{kept cluster: its sentence}`` -- what an origin is built from."""
+        return {
+            int(node): (self.effects[node].text if node in self.effects else "")
+            for node in self.kept
+        }
+
+
+def effect_shades(
+    choice: ScreenChoice, n_nodes: int
+) -> tuple[dict[int, float], dict[int, str]]:
+    """``(positions, texts)`` for the tree in the effect mode: every node's position on the
+    −1..+1 axis (NaN where it is not a candidate or its effect is undefined, 0 inside the floor)
+    and the hover line for it. The one map from a screen to the blocks, through
+    :func:`match_key.effect_position`, which the key uses for its own mark."""
+    extent = effect_extent(choice.design)
+    positions: dict[int, float] = {}
+    texts: dict[int, str] = {}
+    for node in range(int(n_nodes)):
+        row = choice.effects.get(node)
+        if row is None:
+            positions[node] = float("nan")
+            continue
+        positions[node] = effect_position(row.effect, row.clears, extent)
+        text = row.text
+        if row.kept:
+            text += " · kept"
+        elif row.clears:
+            text += " · clears the floor, nested under a kept cluster"
+        elif row.effect is not None:
+            text += " · inside the floor"
+        texts[node] = text
+    return positions, texts
 
 
 @dataclass(frozen=True)
@@ -289,10 +375,21 @@ def breakdown(
             parts.append(f"{mark} location")
         elif key == SESSION:
             parts.append(f"{mark} time in session")
+        elif key == CLUSTERS:
+            parts.append(f"{mark} differs")
         else:
             value = (meta.get(key[1]) or NO_VALUE).strip() or NO_VALUE_TEXT
             parts.append(f"{mark} {key[1]} {value}")
     return "  ".join(parts)
+
+
+def screen_summary(selection: Selection, screens: Mapping[str, ScreenChoice]) -> str:
+    """What the Differences line says at its right: ``none``, or the ticked screen's label."""
+    if selection.leaves is None:
+        return "none"
+    source = selection.leaves_source or ""
+    choice = screens.get(source)
+    return choice.label if choice is not None else source or "a screen"
 
 
 def _number_text(value: float) -> str:
@@ -1406,6 +1503,107 @@ class ConstantRow(QWidget):
 # --------------------------------------------------------------------------- #
 # the dock and the bar
 # --------------------------------------------------------------------------- #
+class ScreenList(QWidget):
+    """The Differences line's body: the run's saved difference screens, one tickable at a time,
+    and **New screen…**.
+
+    ``changed`` carries the :class:`ScreenChoice` ticked, or ``None`` when the tick came off.
+    Ticking one unticks the other — two screens cannot shade one tree — which is a radio in
+    all but its look; a tick box is what every other list in the dock has, and the note under
+    the list says the rule. ``run_requested`` is the button: the widget reads nothing and runs
+    nothing, the page answers it.
+    """
+
+    changed = pyqtSignal(object)
+    run_requested = pyqtSignal()
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.note = QLabel("")
+        self.note.setWordWrap(True)
+        layout.addWidget(self.note)
+        self.list = QListWidget()
+        self.list.setObjectName("screen_list")
+        self.list.itemChanged.connect(self._on_item)
+        layout.addWidget(self.list)
+        self.run_button = QPushButton(RUN_SCREEN_TEXT)
+        self.run_button.setToolTip(
+            "Run a difference screen over every cluster of this run: which clusters differ "
+            "across a column of your recording information, with the floor they must clear."
+        )
+        self.run_button.clicked.connect(self.run_requested)
+        layout.addWidget(self.run_button)
+        self._choices: dict[str, ScreenChoice] = {}
+        self._quiet = False
+        self.set_entries([])
+
+    def set_entries(
+        self, entries: Sequence[ScreenChoice], *, loading: bool = False
+    ) -> None:
+        """The screens to offer; the one ticked stays ticked when it is still offered."""
+        picked = self.value()
+        self._quiet = True
+        self.list.clear()
+        self._choices = {}
+        for choice in entries:
+            text = f"{choice.label}   {choice.note}" if choice.note else choice.label
+            item = QListWidgetItem(text)
+            item.setData(Qt.ItemDataRole.UserRole, choice.key)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Unchecked)
+            if choice.leaves is None:
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+                item.setToolTip(choice.note)
+            else:
+                item.setToolTip(
+                    f"{choice.label}: {choice.note}. Tick it to shade the tree by the "
+                    f"clusters it kept."
+                )
+            self.list.addItem(item)
+            self._choices[choice.key] = choice
+        self.list.setVisible(bool(entries))
+        if loading:
+            self.note.setText(SCREENS_LOADING_TEXT)
+        elif entries:
+            self.note.setText(SCREENS_HINT_TEXT)
+        else:
+            self.note.setText(NO_SCREENS_TEXT)
+        fit_list_height(self.list, max_rows=6)
+        self._quiet = False
+        choice = self._choices.get(picked or "")
+        if choice is not None and choice.leaves is not None:
+            self.set_value(picked)
+
+    def value(self) -> str | None:
+        """The ticked screen's key, or ``None``."""
+        for i in range(self.list.count()):
+            item = self.list.item(i)
+            if item.checkState() == Qt.CheckState.Checked:
+                return item.data(Qt.ItemDataRole.UserRole)
+        return None
+
+    def set_value(self, key: str | None) -> None:
+        """Tick exactly ``key`` (nothing for ``None``) without emitting."""
+        self._quiet = True
+        for i in range(self.list.count()):
+            item = self.list.item(i)
+            on = key is not None and item.data(Qt.ItemDataRole.UserRole) == key
+            item.setCheckState(Qt.CheckState.Checked if on else Qt.CheckState.Unchecked)
+        self._quiet = False
+
+    def _on_item(self, item) -> None:
+        if self._quiet:
+            return
+        key = item.data(Qt.ItemDataRole.UserRole)
+        if item.checkState() != Qt.CheckState.Checked:
+            self.changed.emit(None)
+            return
+        self.set_value(key)
+        self.changed.emit(self._choices.get(key))
+
+
 def _holder() -> QWidget:
     holder = QWidget()
     box = QVBoxLayout(holder)
@@ -1500,10 +1698,15 @@ class FilterBar(QObject):
     """
 
     selection_changed = pyqtSignal(object)
+    #: **Run a new screen…** on the Differences line: the page opens the launch dialog.
+    screen_requested = pyqtSignal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._selection = Selection()
+        #: The saved screens offered, by id; ``None`` until the page has listed them, so a
+        #: selection naming one is kept until there is a list to check it against.
+        self._screens: dict[str, ScreenChoice] | None = None
         self._columns: dict[str, Column] = {}
         self._recordings: list[RecordingChoice] = []
         self._names: dict[str, str] = {}
@@ -1575,6 +1778,17 @@ class FilterBar(QObject):
         self.session_row.head.toggled.connect(self._remember_session_open)
         self.session_row.set_open(QSettings().value(SESSION_OPEN_KEY, False, type=bool))
         location.addWidget(self.session_row)
+        #: Differences: the run's saved difference screens, folding like Location's line.
+        self.screens = ScreenList()
+        self.screens.changed.connect(self._on_screen)
+        self.screens.run_requested.connect(self.screen_requested)
+        self.screens_row = FieldRow("Differences", self.screens)
+        self.screens_row.head.setToolTip(
+            "Which clusters differ: show or hide this run's saved difference screens"
+        )
+        self.screens_row.reset_button.setToolTip("Untick the screen")
+        self.screens_row.reset_button.clicked.connect(lambda: self.remove(CLUSTERS))
+        location.addWidget(self.screens_row)
         self.dock.scroll.viewport().installEventFilter(self)
 
         self.set_columns([])
@@ -1654,9 +1868,28 @@ class FilterBar(QObject):
             return self.location_row
         if name == "Time in session":
             return self.session_row
+        if name == "Differences":
+            return self.screens_row
         if name == "Video" and self._video_row is not None:
             return self._video_row
         return self._rows[("meta", name)]
+
+    def set_screens(
+        self, screens: Sequence[ScreenChoice], *, loading: bool = False
+    ) -> None:
+        """The run's saved difference screens, newest first — what the Differences line
+        offers. ``loading`` says the page is still reading them: the offer is then unknown,
+        not empty, so the screens already known stay known and a ticked one stays applied
+        until the new list lands to check it against."""
+        if not loading:
+            self._screens = {s.key: s for s in screens}
+        self.screens.set_entries(screens, loading=loading)
+        self._keep_showable()
+        self._refresh()
+
+    def screen(self, key: str | None) -> ScreenChoice | None:
+        """The offered screen ``key`` names, or ``None``."""
+        return None if key is None or self._screens is None else self._screens.get(key)
 
     def set_recordings(self, recordings: Sequence[RecordingChoice]) -> None:
         """The run's recordings, with clips per recording."""
@@ -1694,6 +1927,15 @@ class FilterBar(QObject):
             if name in self._meta_sections
             and not isinstance(self._meta_sections[name], Checklist)
         }
+        leaves, source = selection.leaves, selection.leaves_source
+        if self._screens is not None and leaves is not None:
+            offered = self._screens.get(source or "")
+            if offered is None or offered.leaves is None:
+                leaves, source = None, None
+            else:
+                # The screen's leaves as listed now: a re-read lists them over the view
+                # the page has now, which a rebuild may have re-cut.
+                leaves = offered.leaves
         recordings = selection.recording_ids
         if recordings is not None:
             recordings = frozenset(recordings) & {
@@ -1701,7 +1943,12 @@ class FilterBar(QObject):
             }
             recordings = recordings or None
         return replace(
-            selection, values=values, ranges=ranges, recording_ids=recordings
+            selection,
+            values=values,
+            ranges=ranges,
+            recording_ids=recordings,
+            leaves=leaves,
+            leaves_source=source,
         )
 
     def _keep_showable(self) -> None:
@@ -1847,6 +2094,14 @@ class FilterBar(QObject):
     def _on_session(self, session) -> None:
         self._changed(replace(self._selection, session=session))
 
+    def _on_screen(self, choice) -> None:
+        if choice is None or choice.leaves is None:
+            self._changed(self._selection.without(CLUSTERS))
+            return
+        self._changed(
+            replace(self._selection, leaves=choice.leaves, leaves_source=choice.key)
+        )
+
     def _sync_sections(self) -> None:
         for name, section in self._meta_sections.items():
             value = condition(self._selection, name)
@@ -1860,6 +2115,9 @@ class FilterBar(QObject):
         self.region.set_region(self._selection.cells or frozenset())
         self.region.blockSignals(False)
         self.session.set_value(self._selection.session)
+        self.screens.set_value(self._selection.leaves_source)
+        if self._selection.leaves is not None:
+            self.screens_row.set_open(True)
 
     def _refresh(self) -> None:
         if not hasattr(self, "_total"):
@@ -1884,3 +2142,5 @@ class FilterBar(QObject):
         self.location_row.set_filtered(bool(selection.cells))
         self.session_row.summary.setText(session_summary(selection.session))
         self.session_row.set_filtered(selection.session is not None)
+        self.screens_row.summary.setText(screen_summary(selection, self._screens or {}))
+        self.screens_row.set_filtered(selection.leaves is not None)

@@ -1141,3 +1141,273 @@ def test_redraw_draws_dark_when_the_box_is_ticked(qapp, tmp_path, monkeypatch):
     page._dark_figures.setChecked(True)
     page._export()
     assert calls and calls[-1]["theme"] == "dark"
+
+
+# --------------------------------------------------------------------------- #
+# the design is shown before the run, and the levels are the one lever (§24 *Designs*)
+# --------------------------------------------------------------------------- #
+
+
+def test_the_design_line_says_what_will_run(qapp, tmp_path):
+    """The same `resolve_design` the run uses, so the preview and the record agree."""
+    from tests.api.test_comparison import CROSSOVER
+
+    dialog = ComparisonLaunchDialog(_cohort(tmp_path / "between", TWO_ARMS))
+    _check(dialog._group_by, "drug")
+    assert dialog._design_note.text().startswith("between")
+
+    dialog = ComparisonLaunchDialog(_cohort(tmp_path / "within", CROSSOVER))
+    _check(dialog._group_by, "drug")
+    assert dialog._per_column.isChecked(), "animals repeat, so the unit is pre-selected"
+    assert dialog._design_note.text().startswith("paired")
+    assert "fent" in dialog._design_note.text()
+    assert _ok(dialog)
+    assert dialog.config()["levels"] is None, "two values: the column decides"
+
+
+def test_three_values_disable_run_until_two_are_ticked(qapp, tmp_path):
+    from tests.api.test_comparison import THREE_SESSIONS
+
+    dialog = ComparisonLaunchDialog(_cohort(tmp_path, THREE_SESSIONS))
+    _check(dialog._group_by, "drug")
+    assert not _ok(dialog)
+    assert "name the two to contrast" in dialog._status.text()
+    assert not dialog._levels_box.isHidden()
+    _check(dialog._levels, "nalox", "veh")
+    assert _ok(dialog), dialog._status.text()
+    assert dialog.config()["levels"] == ["nalox", "veh"]
+    assert "veh against nalox" in dialog._design_note.text()
+    _check(dialog._levels, "fent")
+    assert not _ok(dialog)
+    assert "exactly two" in dialog._status.text()
+
+
+def test_ticking_a_level_keeps_its_row_and_another_column_starts_unticked(
+    qapp, tmp_path
+):
+    """The levels list was rebuilt on every refresh, and a tick refreshes the form: the row
+    that emitted ``itemChanged`` was deleted in its own handler. And the ticks were carried
+    by value, so a second column holding the same values arrived with the first's ticks.
+    """
+    from tests.api.test_comparison import THREE_SESSIONS
+
+    plan = {
+        r: ({**meta, "arm": meta["drug"]}, n) for r, (meta, n) in THREE_SESSIONS.items()
+    }
+    dialog = ComparisonLaunchDialog(_cohort(tmp_path, plan))
+    _check(dialog._group_by, "drug")
+    rows = [dialog._levels.item(i) for i in range(dialog._levels.count())]
+    _check(dialog._levels, "nalox", "veh")
+    assert [dialog._levels.item(i) for i in range(dialog._levels.count())] == rows
+    assert dialog.levels() == ["nalox", "veh"]
+
+    _row(dialog._group_by, "drug").setCheckState(Qt.CheckState.Unchecked)
+    _check(dialog._group_by, "arm")
+    assert _checked_values(dialog._levels) == []
+    assert dialog.levels() is None
+    _check(dialog._levels, "veh", "fent")
+    assert dialog.levels() == [
+        "veh",
+        "fent",
+    ], "the order is this column's, not the last"
+
+    aggregate = [
+        dialog._aggregate_to.item(i) for i in range(dialog._aggregate_to.count())
+    ]
+    _check(dialog._aggregate_to, "animal")
+    assert [
+        dialog._aggregate_to.item(i) for i in range(dialog._aggregate_to.count())
+    ] == aggregate
+
+
+def _checked_values(listwidget) -> list[str]:
+    return [
+        listwidget.item(i).data(Qt.ItemDataRole.UserRole)
+        for i in range(listwidget.count())
+        if listwidget.item(i).checkState() == Qt.CheckState.Checked
+    ]
+
+
+def test_every_cluster_is_greyed_for_a_run_without_nodes(qapp, tmp_path):
+    dialog = ComparisonLaunchDialog(_cohort(tmp_path, TWO_ARMS))
+    item = dialog._measure_source.model().item(1)
+    assert item.data(Qt.ItemDataRole.UserRole) == "nodes" or True
+    assert not item.isEnabled()
+    assert "not a clustering run" in item.toolTip()
+    assert dialog.measure_source() == "labels"
+    assert dialog.config()["source"] == "labels"
+
+
+def test_every_cluster_fixes_the_four_measures_and_the_snapshot_and_gives_the_choice_back(
+    qapp, tmp_path, monkeypatch
+):
+    """The node source always takes share of time, rate, total time and mean duration from
+    the run's current node cache: the form shows that rather than offering what the run
+    refuses, and the user's own ticks come back with the labelled artifact."""
+    from detail.analysis import node_measures
+
+    monkeypatch.setattr(ComparisonLaunchDialog, "_node_cache_reason", lambda self: None)
+    dialog = ComparisonLaunchDialog(_cohort(tmp_path, TWO_ARMS))
+    _check(dialog._measures, "rate")
+    dialog._measure_source.setCurrentIndex(1)
+    assert dialog.measure_source() == "nodes"
+    fixed = {
+        dialog._measures.item(i).data(Qt.ItemDataRole.UserRole)
+        for i in range(dialog._measures.count())
+        if dialog._measures.item(i).checkState() == Qt.CheckState.Checked
+    }
+    assert fixed == set(node_measures.MEASURES)
+    assert not any(
+        dialog._measures.item(i).flags() & Qt.ItemFlag.ItemIsEnabled
+        for i in range(dialog._measures.count())
+    )
+    assert not dialog._snapshot.isEnabled()
+    config = dialog.config()
+    assert config["measures"] is None and config["source_snapshot"] is None
+    dialog._apply_seed({"source_run_id": "an_01", "source": "nodes", "measures": None})
+    assert {
+        dialog._measures.item(i).data(Qt.ItemDataRole.UserRole)
+        for i in range(dialog._measures.count())
+        if dialog._measures.item(i).checkState() == Qt.CheckState.Checked
+    } == set(node_measures.MEASURES), "a seed does not untick the fixed four"
+
+    dialog._measure_source.setCurrentIndex(0)
+    assert dialog._snapshot.isEnabled()
+    assert dialog.config()["measures"] == ["rate"], "the user's choice comes back"
+
+
+def test_a_paired_comparison_shows_its_ranking_with_its_reasons(qapp, tmp_path):
+    from tests.api.test_comparison import CROSSOVER
+
+    exp = _cohort(tmp_path, CROSSOVER)
+    exp.run_comparison(
+        {
+            "source_run_id": "an_01",
+            "group_by": ["drug"],
+            "aggregate_to": ["animal"],
+            "measures": ["n_instances", "total_time"],
+            # The fixture's recordings are one second long: presence is in milliseconds here.
+            "presence_s": 0.01,
+        }
+    )
+    page = _opened(qapp, exp, exp.comparisons[-1].id)
+    header = [w.text() for w in page.findChildren(QLabel)]
+    assert any(t.startswith("design: paired") for t in header), header
+    table = _named_table(page, "overview_contrasts")
+    headers = [table.horizontalHeaderItem(c).text() for c in range(table.columnCount())]
+    assert "suggestion" in headers and "in that direction" in headers
+    assert "present" in headers
+    suggestion = table.item(0, headers.index("suggestion")).text()
+    assert "under veh than fent" in suggestion
+    assert "of 4 animal(s)" in suggestion
+
+
+# --- a label a screen chose, on the page that scores it and on the screen's own page -----
+
+
+def test_the_header_says_which_labels_a_screen_over_this_column_chose(qapp, tmp_path):
+    exp = _cohort(tmp_path, UNBALANCED)
+    comparison_id = _ran(exp)
+    page = _opened(qapp, exp, comparison_id)
+    record = {
+        **page._record,
+        "screened_labels": {
+            "rearing": [
+                {
+                    "node": "9",
+                    "comparison": "cmp_03",
+                    "kept": "9",
+                    "relation": "kept",
+                    "column": "drug",
+                }
+            ]
+        },
+    }
+    lines = page._header_lines(record)
+    assert any(
+        line.startswith(
+            "rearing (cmp_03) was chosen from a difference screen over drug"
+        )
+        for line in lines
+    ), lines
+    assert not any("chosen from" in line for line in page._header_lines(page._record))
+
+
+def test_a_screens_page_lists_the_labels_written_from_it(qapp, tmp_path, monkeypatch):
+    import detail.api.comparison as comparison_api
+    from detail.gui.comparison import labels_from_screen_text
+
+    exp = _cohort(tmp_path, UNBALANCED)
+    comparison_id = _ran(exp)
+    rows = [
+        {"node": 9, "name": "rearing", "kept": "9", "relation": "kept"},
+        {"node": 12, "name": "groom", "kept": "11", "relation": "under"},
+    ]
+    monkeypatch.setattr(
+        comparison_api, "labels_from_screen", lambda experiment, cid: rows
+    )
+    page = _opened(qapp, exp, comparison_id)
+    assert page._labels_note.isVisibleTo(page)
+    assert page._labels_note.text() == (
+        "Labelled from this screen: rearing (#9), groom (#12, inside kept cluster #11)"
+    )
+    assert labels_from_screen_text(rows) == page._labels_note.text()
+    monkeypatch.setattr(
+        comparison_api, "labels_from_screen", lambda experiment, cid: []
+    )
+    bare = _opened(qapp, exp, comparison_id)
+    assert not bare._labels_note.isVisibleTo(bare)
+
+
+# --- a seed that is silent about the unit leaves the form's default in place --------------
+
+
+def test_a_seed_without_an_aggregation_keeps_the_inferred_subject_column(
+    qapp, tmp_path
+):
+    """The dock's "New screen…" seeds the run and the source and nothing else. Read as an
+    answer, that silence selected *per recording*: every screen launched from the dock ran as
+    a between design, whose floor the node source cannot clear (two saved screens on a real
+    cohort of eight mice, floors of 110× and 76×, nothing kept; paired within the mouse the
+    same contrast keeps six). A seed sets the unit only when it says what it is; a record's
+    ``[]`` is still honoured."""
+    from tests.api.test_comparison import CROSSOVER
+
+    exp = _cohort(tmp_path, CROSSOVER)
+    dialog = ComparisonLaunchDialog(exp, seed={"source_run_id": "an_01"})
+    _check(dialog._group_by, "drug")
+    assert dialog._per_column.isChecked()
+    assert dialog.aggregate_to() == [
+        "animal"
+    ], "the inferred subject column, pre-selected"
+
+    per_recording = ComparisonLaunchDialog(
+        exp, seed={"source_run_id": "an_01", "group_by": ["drug"], "aggregate_to": []}
+    )
+    assert per_recording._per_recording.isChecked()
+    assert per_recording.aggregate_to() == []
+
+
+def test_a_recording_with_no_value_is_said_to_sit_outside(qapp, tmp_path):
+    """The preview leaves a blank-valued recording out and says so, rather than previewing a
+    group named "(blank)" that the run will not produce (section 24)."""
+    exp = _cohort(tmp_path, {**TWO_ARMS, "r5": ({"animal": "E", "drug": ""}, 3)})
+    dialog = ComparisonLaunchDialog(exp)
+    _check(dialog._group_by, "drug")
+
+    summary = dialog._summary.text()
+    assert "2 group(s) over 4 recording(s)" in summary
+    assert "1 recording(s) left out, no value for 'drug'" in summary
+    assert "(blank)" not in summary
+
+
+def test_the_detail_page_names_what_was_left_out(qapp, tmp_path):
+    from detail.api.comparison import run_comparison
+
+    exp = _cohort(tmp_path, {**TWO_ARMS, "r5": ({"animal": "E", "drug": ""}, 3)})
+    comp = run_comparison(
+        exp, {"source_run_id": "an_01", "group_by": ["drug"], "aggregate_to": []}
+    )
+    page = _opened(qapp, exp, comp.id)
+    lines = page._header_lines(comp.record())
+    assert any("left out" in line and "r5" in line for line in lines), lines

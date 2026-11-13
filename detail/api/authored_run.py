@@ -145,6 +145,19 @@ def source_label_of(group: int, state) -> str:
     return run_labels.order(state.labels)[int(group)]
 
 
+def ancestors(tree, node: int) -> list[int]:
+    """The path from the root down to ``node``'s parent, root first (``NodeView.ancestors``
+    without the cache) -- what a label's origin is placed with (``run_labels.screen_relation``).
+    """
+    parent = tree.parent
+    out = []
+    current = int(parent[int(node)])
+    while current >= 0:
+        out.append(current)
+        current = int(parent[current])
+    return list(reversed(out))
+
+
 def parent_label(tree, node: int, node_labels: dict) -> str | None:
     """The label on the nearest labelled branch strictly **above** ``node``, or ``None``."""
     current = int(tree.parent[int(node)])
@@ -552,6 +565,10 @@ class LabelOperations:
         labels are one behavior). A cluster given to another label is a different claim, and
         an answer about the old label says nothing about it: carried along, a cluster moved to
         a newly made label read the old label's whole review as its own.
+
+        A label's origin (``label_origins``) is the node's own label's: whatever the edit, a node
+        left without a label of its own loses it here, so no origin outlives the label it
+        explains.
         """
         moved_paths: dict[str, str] = {}
 
@@ -561,6 +578,8 @@ class LabelOperations:
             folded = self._reresolve(state)
             before = dict(state.node_labels)
             entry = change(state) or {}
+            for node in [n for n in state.label_origins if n not in state.node_labels]:
+                del state.label_origins[node]
             tree = self._tree()
             check_labels(state.labels, state.node_labels, tree)
             state.resolved_names, state.resolved_paths = label_resolution(
@@ -653,9 +672,16 @@ class LabelOperations:
                 answer=audit.ruled_out(new) if ruled else new,
             )
 
-    def name_nodes(self, names: dict, *, progress=None) -> Self:
+    def name_nodes(
+        self, names: dict, *, origins: dict | None = None, progress=None
+    ) -> Self:
         """Label nodes **by name**: an existing name adds the node to that label, a new name makes
         a label, and an empty name removes the node's own label (§22).
+
+        ``origins`` (``{node: run_labels.LabelOrigin}``) records, per node given a name, the
+        difference screen that pointed at its cluster; it travels with the node's own label and
+        goes when that label does. A node with no entry keeps the origin it had, so renaming a
+        cluster in place does not forget where it was found.
 
         The door scripts and the CLI use. A label here covers every member beneath the node unless
         a node inside carries a more specific one, and labels nest rather than replace: a label on a
@@ -670,6 +696,7 @@ class LabelOperations:
         from detail.storage import run_labels
 
         wanted = {str(int(k)): str(v).strip() for k, v in names.items()}
+        wanted_origins = _origins_as_dicts(origins)
 
         def change(state) -> dict:
             emptied = set()
@@ -679,6 +706,8 @@ class LabelOperations:
                     if old:
                         emptied.add(old)
                     continue
+                if node in wanted_origins:
+                    state.label_origins[node] = wanted_origins[node]
                 label = run_labels.find(state.labels, name)
                 current = state.node_labels.get(node)
                 alone = current is not None and [
@@ -702,7 +731,10 @@ class LabelOperations:
                     emptied.add(current)
             for label in emptied - set(state.node_labels.values()):
                 state.labels.pop(label, None)
-            return {"node_names": wanted}
+            entry = {"node_names": wanted}
+            if wanted_origins:
+                entry["origins"] = wanted_origins
+            return entry
 
         return self._label_edit("name nodes", change, progress=progress)
 
@@ -721,9 +753,11 @@ class LabelOperations:
         self._label_edit("create label", change, progress=progress)
         return made[0]
 
-    def label_nodes(self, assignments: dict, *, progress=None) -> Self:
+    def label_nodes(
+        self, assignments: dict, *, origins: dict | None = None, progress=None
+    ) -> Self:
         """Point nodes at labels by id — ``{node: label_id}``, or ``None`` to remove a node's own
-        label. What "Add to an existing label" does.
+        label. What "Add to an existing label" does. ``origins`` as :meth:`name_nodes` takes it.
 
         Raises:
             KeyError: a label id that does not exist.
@@ -732,6 +766,7 @@ class LabelOperations:
         wanted = {
             str(int(k)): (None if v is None else str(v)) for k, v in assignments.items()
         }
+        wanted_origins = _origins_as_dicts(origins)
 
         def change(state) -> dict:
             for node, label in wanted.items():
@@ -741,7 +776,12 @@ class LabelOperations:
                     raise KeyError(f"no label {label} in this run")
                 else:
                     state.node_labels[node] = label
-            return {"node_labels": wanted}
+                    if node in wanted_origins:
+                        state.label_origins[node] = wanted_origins[node]
+            entry = {"node_labels": wanted}
+            if wanted_origins:
+                entry["origins"] = wanted_origins
+            return entry
 
         return self._label_edit("label nodes", change, progress=progress)
 
@@ -803,9 +843,18 @@ class LabelOperations:
 
         return self._label_edit("delete label", change, progress=progress)
 
-    def label_maps(self) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
-        """``(labels, node_labels, membership_changed_at)`` as stored: each label id's name,
-        each node's label id, and when each label's clusters last changed.
+    def ancestors_of(self, node: int) -> list[int]:
+        """The path from the root down to ``node``'s parent, root first, from the fit's tree
+        -- what places a label's origin against a screen's kept clusters
+        (``api.comparison.label_origin``) with no node cache in hand."""
+        return ancestors(self._tree(), node)
+
+    def label_maps(
+        self,
+    ) -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, dict]]:
+        """``(labels, node_labels, membership_changed_at, label_origins)`` as stored: each label
+        id's name, each node's label id, when each label's clusters last changed, and where each
+        labelled node's label came from.
 
         What :func:`label_change` compares, before and after an edit, so the edit can be put back
         exactly (:meth:`restore_labels`) — label ids included, which a write by name cannot do,
@@ -816,6 +865,7 @@ class LabelOperations:
             dict(state.labels),
             dict(state.node_labels),
             dict(state.membership_changed_at or {}),
+            {k: dict(v) for k, v in (state.label_origins or {}).items()},
         )
 
     def restore_labels(
@@ -823,6 +873,7 @@ class LabelOperations:
         labels: dict[str, str | None],
         node_labels: dict[str, str | None],
         membership_changed_at: dict[str, str | None] | None = None,
+        label_origins: dict[str, dict | None] | None = None,
         *,
         progress=None,
     ) -> Self:
@@ -838,6 +889,8 @@ class LabelOperations:
         (``None`` removes the stamp). Without it a restore is an edit like any other and stamps
         every label it changes *now* — so undoing a misclick set aside a whole completed review
         of the label, whose clusters were by then exactly what was reviewed.
+        ``label_origins`` puts back where each node's label came from the same way, so a redo
+        of a label written from a screen does not forget the screen.
 
         Raises:
             ValueError: the result breaks a rule ``check_labels`` holds.
@@ -845,6 +898,7 @@ class LabelOperations:
         wanted_labels = {str(k): v for k, v in labels.items()}
         wanted_nodes = {str(int(k)): v for k, v in node_labels.items()}
         stamps = {str(k): v for k, v in (membership_changed_at or {}).items()}
+        wanted_origins = {str(k): v for k, v in (label_origins or {}).items()}
 
         def change(state) -> dict:
             for label, name in wanted_labels.items():
@@ -860,6 +914,11 @@ class LabelOperations:
             for node, label in list(state.node_labels.items()):
                 if label not in state.labels:
                     del state.node_labels[node]
+            for node, origin in wanted_origins.items():
+                if origin is None:
+                    state.label_origins.pop(node, None)
+                else:
+                    state.label_origins[node] = dict(origin)
             return {"labels": wanted_labels, "node_labels": wanted_nodes}
 
         return self._label_edit(
@@ -868,9 +927,9 @@ class LabelOperations:
 
 
 def label_change(before: tuple[dict, ...], after: tuple[dict, ...]) -> tuple[dict, ...]:
-    """``({label id: (before, after)}, {node: (before, after)}, {label id: (before, after)})``
-    — names, nodes' labels and membership change times — for what differs between two
-    :meth:`AuthoredRun.label_maps` reads; ``None`` where one side has no entry."""
+    """One ``{key: (before, after)}`` per map of :meth:`AuthoredRun.label_maps` -- names,
+    nodes' labels, membership change times, label origins -- for what differs between two
+    reads; ``None`` where one side has no entry."""
     return tuple(
         {
             key: (old.get(key), new.get(key))
@@ -879,6 +938,25 @@ def label_change(before: tuple[dict, ...], after: tuple[dict, ...]) -> tuple[dic
         }
         for old, new in zip(before, after)
     )
+
+
+def _origins_as_dicts(origins: dict | None) -> dict[str, dict]:
+    """``{node: origin dict}`` from what a caller hands ``name_nodes`` -- ``LabelOrigin``
+    values or their dicts -- dropping ``None`` entries."""
+    from detail.storage import run_labels
+
+    out: dict[str, dict] = {}
+    for node, origin in (origins or {}).items():
+        if origin is None:
+            continue
+        if isinstance(origin, run_labels.LabelOrigin):
+            out[str(int(node))] = origin.to_dict()
+        else:
+            parsed = run_labels.LabelOrigin.from_dict(dict(origin))
+            if parsed is None:
+                raise ValueError(f"node {node}: not a label origin: {origin!r}")
+            out[str(int(node))] = parsed.to_dict()
+    return out
 
 
 class ReadOnlyRunError(RuntimeError):

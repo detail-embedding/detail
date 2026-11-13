@@ -312,3 +312,33 @@ def test_a_deferred_column_previews_nothing_rather_than_one_blank_group():
     assert (
         len(cohort.group_preview(DEFERRED_COHORT, recordings, group_by=["drug"])) == 2
     )
+
+
+def test_a_missing_token_counts_as_blank():
+    """``NA`` and ``nan`` are how a spreadsheet writes an empty cell. A column summary reads them
+    as blank, never as a value, so neither becomes a level to tick."""
+    meta = {
+        "r1": {"dose": "10"},
+        "r2": {"dose": "NA"},
+        "r3": {"dose": "nan"},
+        "r4": {"dose": ""},
+    }
+    summary = cohort.describe_columns(meta, list(meta), ["dose"])[0]
+    assert summary.counts == {"10": 1}
+    assert summary.blank == 3
+
+
+def test_a_recording_with_no_value_is_left_out_of_the_preview_and_named():
+    """A recording with no value for a grouping column is not a group of its own: the preview
+    leaves it out and names it, the same way the run will (section 24)."""
+    meta = {
+        "r1": {"animal": "A", "dose": "0"},
+        "r2": {"animal": "A", "dose": "10"},
+        "r3": {"animal": "A", "dose": ""},
+        "r4": {"animal": "B", "dose": "NA"},
+    }
+    assert cohort.left_out(meta, list(meta), ["dose"]) == ["r3", "r4"]
+    groups = cohort.group_preview(meta, list(meta), group_by=["dose"])
+    assert [g.group for g in groups] == [("0",), ("10",)]
+    # A deferred column leaves nothing out: its values are not knowable yet.
+    assert cohort.left_out(meta, list(meta), ["subject"]) == []

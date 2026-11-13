@@ -5835,6 +5835,17 @@ def _interpret_options(kind: str):
                 "remove a node's label.",
             ),
             click.option(
+                "--from-screen",
+                "from_screen",
+                default=None,
+                metavar="CMP_ID",
+                help="Record that the nodes labelled with --name-node were found by this "
+                "saved difference screen (a comparison with --source nodes), so a later "
+                "comparison of the label over the same column can say the screen chose the "
+                "cluster it scores. Each node must be one the screen kept, or sit inside or "
+                "above one.",
+            ),
+            click.option(
                 "--rename-label",
                 "renames",
                 multiple=True,
@@ -5889,10 +5900,15 @@ def _interpret(
     inside,
     renames=(),
     merges=(),
+    from_screen=None,
 ) -> None:
     """The body both interpret commands run, against either kind of run handle (§22)."""
     failed = False
     try:
+        if from_screen and not node_names:
+            raise click.UsageError(
+                "--from-screen records where --name-node labels came from"
+            )
         note = getattr(run, "subsample_note", lambda: None)()
         if note:
             # Printed before anything else and on every invocation: a capped fit is identical to
@@ -5909,10 +5925,17 @@ def _interpret(
         rename_pairs = _label_pairs(renames, "--rename-label", "OLD=NEW")
         merge_pairs = _label_pairs(merges, "--merge-label", "SOURCE=INTO")
         names = _pose_names(node_names) if node_names else None
+        origins = _label_origins(proj, run, names, from_screen) if names else None
         # Each edit re-projects the whole run's output, so each shows its progress.
         if names:
-            _with_stage_progress(lambda bar: run.name_nodes(names, progress=bar))
-            click.echo(f"labelled {len(node_names)} node(s)")
+            extra = {"origins": origins} if origins else {}
+            _with_stage_progress(
+                lambda bar: run.name_nodes(names, progress=bar, **extra)
+            )
+            click.echo(
+                f"labelled {len(node_names)} node(s)"
+                + (f", from screen {from_screen}" if from_screen else "")
+            )
         for old, new in rename_pairs:
             label = _label_id(run, old)
             _with_stage_progress(lambda bar: run.rename_label(label, new, progress=bar))
@@ -5933,6 +5956,32 @@ def _interpret(
     finally:
         if not failed:
             _echo_coverage(proj, run, inside)
+
+
+def _label_origins(proj, run, names: dict, from_screen: str | None) -> dict | None:
+    """``{node: LabelOrigin}`` for the nodes ``--name-node`` labels, from the screen
+    ``--from-screen`` names, or ``None`` without it. A node the screen did not point at is
+    refused naming the clusters it kept: an origin that is not true is worse than none.
+    """
+    if not from_screen:
+        return None
+    from detail.api import comparison as comparison_api
+
+    named = [node for node, name in names.items() if name]
+    origins = comparison_api.label_origins(
+        proj, from_screen, [int(n) for n in named], ancestors_of=run.ancestors_of
+    )
+    out = {}
+    for node in named:
+        origin = origins[int(node)]
+        if origin is None:
+            kept = proj.get_comparison(from_screen).kept_nodes()
+            raise click.ClickException(
+                f"node {node} is not one screen {from_screen} kept, nor inside or above one; "
+                f"it kept {', '.join(str(k) for k in kept) or 'nothing'}"
+            )
+        out[node] = origin
+    return out
 
 
 def _label_pairs(pairs, option: str, shape: str) -> list[tuple[str, str]]:
@@ -5974,6 +6023,7 @@ def _echo_tree(run) -> None:
             "this run has no node cache yet; build one with --rebuild-cache"
         )
     names = run.node_names()  # legacy names folded on read
+    origins = run.state().label_origins
     rows: list[tuple[int, int]] = []
     level = [view.root]
     depth = 0
@@ -6000,6 +6050,8 @@ def _echo_tree(run) -> None:
             "",
         )
         shown = own or (f"({inherited})" if inherited else "-")
+        if own and str(node) in origins:
+            shown += f" [from {origins[str(node)].get('comparison', '?')}]"
         parent = "-" if summary.parent < 0 else str(summary.parent)
         click.echo(
             f"  {node:>5}  {parent:>6}  {depth:>5}  {summary.time_ns / 1e9:>8.1f}s  "
@@ -6008,8 +6060,9 @@ def _echo_tree(run) -> None:
     if len(rows) > _TREE_ROWS:
         click.echo(f"  … {len(rows) - _TREE_ROWS:,} more, finer than these")
     click.echo(
-        "  (label) is covered by a parent's label; clips: actions, one unbroken stretch at "
-        "the finest level each, at least as long as the run's shortest instance"
+        "  (label) is covered by a parent's label; [from cmp_NN] a label a difference screen "
+        "chose; clips: actions, one unbroken stretch at the finest level each, at least as "
+        "long as the run's shortest instance"
     )
 
 
@@ -6156,6 +6209,7 @@ def analysis_temporal_interpret(
     rebuild_cache: bool,
     finalize: bool,
     reopen: bool,
+    from_screen: str | None,
 ) -> None:
     """Interpret a Section 22 temporal-clustering run: label nodes of its tree, finish.
 
@@ -6175,6 +6229,7 @@ def analysis_temporal_interpret(
         finalize=finalize,
         reopen=reopen,
         inside="in a bout",
+        from_screen=from_screen,
     )
 
 
@@ -7060,6 +7115,20 @@ def _refuse_unanswered_unit(experiment, group_by: list, recordings: list) -> Non
     )
 
 
+def _comparison_default(name: str):
+    """A `comparison run` option's default, read off the config model rather than retyped."""
+    from detail.configs.comparison import ComparisonConfig
+
+    return ComparisonConfig.model_fields[name].default
+
+
+def _comparison_help(name: str) -> str:
+    """A `comparison run` option's help, read off the config model rather than retyped."""
+    from detail.configs.comparison import ComparisonConfig
+
+    return ComparisonConfig.model_fields[name].description or ""
+
+
 @main.group()
 def comparison() -> None:
     """Compare behavior between groups defined by recording metadata (§24)."""
@@ -7095,6 +7164,20 @@ def comparison() -> None:
     "Pass --aggregate-to none for one observation per recording. REQUIRED.",
 )
 @click.option(
+    "--source",
+    type=click.Choice(["labels", "nodes"]),
+    default=_comparison_default("source"),
+    show_default=True,
+    help=_comparison_help("source"),
+)
+@click.option(
+    "--level",
+    "levels",
+    multiple=True,
+    help="A value of the --group-by column; pass twice to contrast the second against the "
+    "first. " + _comparison_help("levels"),
+)
+@click.option(
     "--recording", "recordings", multiple=True, help="Restrict to these recordings."
 )
 @click.option(
@@ -7104,17 +7187,59 @@ def comparison() -> None:
 @click.option(
     "--draws",
     type=int,
-    default=200,
+    default=_comparison_default("draws"),
     show_default=True,
-    help="Permutation draws for the floor.",
+    help=_comparison_help("draws"),
 )
-@click.option("--seed", type=int, default=0, show_default=True)
+@click.option(
+    "--seed",
+    type=int,
+    default=_comparison_default("seed"),
+    show_default=True,
+    help=_comparison_help("seed"),
+)
+@click.option(
+    "--presence-s",
+    type=float,
+    default=_comparison_default("presence_s"),
+    show_default=True,
+    help=_comparison_help("presence_s"),
+)
+@click.option(
+    "--pseudo-count-s",
+    type=float,
+    default=_comparison_default("pseudo_count_s"),
+    show_default=True,
+    help=_comparison_help("pseudo_count_s"),
+)
+@click.option(
+    "--min-units-fraction",
+    type=float,
+    default=_comparison_default("min_units_fraction"),
+    show_default=True,
+    help=_comparison_help("min_units_fraction"),
+)
+@click.option(
+    "--candidate-floor-s",
+    type=float,
+    default=_comparison_default("candidate_floor_s"),
+    show_default=True,
+    help=_comparison_help("candidate_floor_s"),
+)
+@click.option(
+    "--suppress-nesting/--no-suppress-nesting",
+    default=_comparison_default("suppress_nesting"),
+    show_default=True,
+    help=_comparison_help("suppress_nesting"),
+)
 def comparison_run(
     experiment_dir,
     source_run_id,
     source_snapshot,
     group_by,
     aggregate_to,
+    source,
+    levels,
     recordings,
     measures_opt,
     windows,
@@ -7124,6 +7249,11 @@ def comparison_run(
     step_s,
     draws,
     seed,
+    presence_s,
+    pseudo_count_s,
+    min_units_fraction,
+    candidate_floor_s,
+    suppress_nesting,
 ) -> None:
     """Run a comparison and save it.
 
@@ -7132,38 +7262,87 @@ def comparison_run(
     because then pooling and averaging-within-animal answer different questions and the tool must
     not choose (§24). When nobody contributed two there is nothing to decide, and demanding an
     answer is a question with one possible response.
+
+    The design — between units, paired within them, or a trend — follows from what the
+    ``--group-by`` column does within the unit, and is printed when the run ends (§24).
+    ``--source nodes`` screens every node of a clustering run's node cache, named or not.
     """
     proj = _open_experiment(experiment_dir)
     if not aggregate_to:
         _refuse_unanswered_unit(proj, list(group_by or ()), list(recordings or ()))
     path = [] if tuple(aggregate_to) == ("none",) else list(aggregate_to)
+    if levels and len(levels) != 2:
+        raise click.UsageError(
+            f"--level names the two values to contrast, so pass it exactly twice "
+            f"(got {len(levels)})."
+        )
     from detail.api.comparison import run_comparison
 
     bar = _StageProgress()
-    comp = run_comparison(
-        proj,
-        {
-            "source_run_id": source_run_id,
-            "source_snapshot": source_snapshot,
-            "group_by": list(group_by),
-            "aggregate_to": path,
-            "recordings": list(recordings) or None,
-            "measures": list(measures_opt) or None,
-            "windows": _window_spec(windows, every_s, parts, length_s, step_s),
-            "draws": draws,
-            "seed": seed,
-        },
-        progress=bar,
-    )
-    bar.close()
+    try:
+        comp = run_comparison(
+            proj,
+            {
+                "source_run_id": source_run_id,
+                "source_snapshot": source_snapshot,
+                "source": source,
+                "group_by": list(group_by),
+                "aggregate_to": path,
+                "levels": list(levels) or None,
+                "recordings": list(recordings) or None,
+                "measures": list(measures_opt) or None,
+                "windows": _window_spec(windows, every_s, parts, length_s, step_s),
+                "draws": draws,
+                "seed": seed,
+                "presence_s": presence_s,
+                "pseudo_count_s": pseudo_count_s,
+                "min_units_fraction": min_units_fraction,
+                "candidate_floor_s": candidate_floor_s,
+                "suppress_nesting": suppress_nesting,
+            },
+            progress=bar,
+        )
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    finally:
+        bar.close()
     record = comp.record()
     click.echo(
         f"{comp.id}: {record['n_observations']} observation(s) over {len(record['groups'])} group(s)"
     )
     click.echo(f"  one observation is: {'|'.join(path) or '(one per recording)'}")
+    click.echo(f"  design: {record.get('design')} — {record.get('design_reason', '')}")
+    from detail.analysis import comparison_report
+
+    if comparison_report.left_out_sentence(record):
+        click.echo(
+            f"  left out: "
+            f"{comparison_report.left_out_sentence(record, proj.recording_names())}"
+        )
+    if record.get("design") != "between":
+        click.echo(
+            f"  an effect is undefined below {record.get('min_units')} present unit(s) of "
+            f"{record.get('n_units')}"
+        )
+    if record.get("source") == "nodes":
+        click.echo(
+            f"  every node of {record['source_run_id']} at or above "
+            f"{record.get('candidate_floor_s')} s, ranked on share of time"
+        )
     if record.get("source_snapshot"):
         click.echo(f"  read {record['source_run_id']} @ {record['source_snapshot']}")
+    _echo_screened(record)
     click.echo(f"  {comp.dir}")
+
+
+def _echo_screened(record: dict) -> None:
+    """The one line a labels comparison prints when a difference screen over the same column
+    chose a label it scores (``comparison_report.screened_sentence``)."""
+    from detail.analysis import comparison_report
+
+    sentence = comparison_report.screened_sentence(record)
+    if sentence:
+        click.echo(f"  not independent: {sentence}")
 
 
 def _figure_themes() -> list[str]:
@@ -7238,6 +7417,13 @@ def comparison_list(experiment_dir) -> None:
             f"{comp.id}  {','.join(record.get('group_by') or [])}"
             f"  by={'|'.join(record.get('aggregate_to') or []) or 'recording'}"
             f"  n={record.get('n_observations', 0)}"
+            + (f"  design={record['design']}" if record.get("design") else "")
+            + ("  source=nodes" if record.get("source") == "nodes" else "")
+            + (
+                f"  screened={','.join(sorted(record['screened_labels']))}"
+                if record.get("screened_labels")
+                else ""
+            )
         )
 
 

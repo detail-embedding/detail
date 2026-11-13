@@ -24,6 +24,15 @@ share counts only the **time** inside the range (a run half inside adds half its
 second column narrows it. A recording with no value in a column never matches a range on it, and
 matches a value condition only through ``""`` (no value).
 
+**Clusters** (``leaves``, key :data:`CLUSTERS`) is the condition the difference screen makes
+(§22, §24): the leaves of the merge tree under the clusters a saved node comparison kept. It is a
+fact about a cluster, not a member, and it fits the same arithmetic because a member sits in
+exactly one leaf: a kept cluster's share is 100%, its parent's the fraction of its time under
+kept children, a sibling branch's 0%, so the tree draws the lineage; a clip matches when its own
+leaf (``ClipTable.leaf``) is in the set. ``leaves_source`` names what picked them (the comparison
+id) for the page that shows it, and takes no part in the arithmetic. An empty set is a real
+condition — a screen that kept nothing — and matches nothing, the way a value nobody has does.
+
 Pure: numpy and the metadata parsers, no zarr, no Qt — except ``session_spans``, which reads each
 recording's timestamp map and is what a caller hands the rest as ``spans``.
 """
@@ -40,6 +49,7 @@ from detail.storage import metadata as metadata_store
 VIDEO = ("video",)
 LOCATION = ("location",)
 SESSION = ("session",)
+CLUSTERS = ("clusters",)
 
 
 @dataclass(frozen=True)
@@ -54,9 +64,13 @@ class Selection:
       (``bx`` across, ``by`` down), or ``None`` for the whole frame.
     - ``session``: ``(lo, hi)`` fractions of each recording's whole video, ``0 <= lo <= hi <= 1``,
       or ``None`` for all of it. ``(0, 1)`` is stored as ``None``: the whole session is no filter.
+    - ``leaves``: the leaves of the merge tree whose members match (the clusters a difference
+      screen kept, as leaves), or ``None`` for every leaf; ``leaves_source`` names what picked
+      them, a saved comparison's id, and is carried for the page, not the arithmetic.
 
     Raises:
-        ValueError: a ``session`` outside ``0..1`` or with ``lo > hi``.
+        ValueError: a ``session`` outside ``0..1`` or with ``lo > hi``, or a ``leaves_source``
+            with no ``leaves``.
     """
 
     values: Mapping[str, frozenset] = field(default_factory=dict)
@@ -64,8 +78,17 @@ class Selection:
     recording_ids: frozenset | None = None
     cells: frozenset | None = None
     session: tuple[float, float] | None = None
+    leaves: frozenset | None = None
+    leaves_source: str | None = None
 
     def __post_init__(self) -> None:
+        if self.leaves_source is not None and self.leaves is None:
+            raise ValueError(
+                f"leaves_source {self.leaves_source!r} names what picked the leaves, but no "
+                f"leaves were given"
+            )
+        if self.leaves is not None:
+            object.__setattr__(self, "leaves", frozenset(int(v) for v in self.leaves))
         if self.session is None:
             return
         lo, hi = (float(v) for v in self.session)
@@ -86,6 +109,7 @@ class Selection:
             and self.recording_ids is None
             and self.cells is None
             and self.session is None
+            and self.leaves is None
         )
 
     @property
@@ -94,7 +118,8 @@ class Selection:
 
     def keys(self) -> list[tuple]:
         """Every condition in force, one key each: ``("meta", column)``, then :data:`VIDEO`,
-        then :data:`LOCATION`, then :data:`SESSION` — the order a page lists them in."""
+        then :data:`LOCATION`, then :data:`SESSION`, then :data:`CLUSTERS` — the order a page
+        lists them in."""
         out: list[tuple] = [("meta", c) for c in (*self.values, *self.ranges)]
         if self.recording_ids is not None:
             out.append(VIDEO)
@@ -102,6 +127,8 @@ class Selection:
             out.append(LOCATION)
         if self.session is not None:
             out.append(SESSION)
+        if self.leaves is not None:
+            out.append(CLUSTERS)
         return out
 
     def without(self, key: tuple) -> "Selection":
@@ -112,6 +139,8 @@ class Selection:
             return replace(self, cells=None)
         if key == SESSION:
             return replace(self, session=None)
+        if key == CLUSTERS:
+            return replace(self, leaves=None, leaves_source=None)
         column = key[1]
         return replace(
             self,
@@ -128,6 +157,8 @@ class Selection:
             return Selection(cells=self.cells)
         if key == SESSION:
             return Selection(session=self.session)
+        if key == CLUSTERS:
+            return Selection(leaves=self.leaves, leaves_source=self.leaves_source)
         column = key[1]
         if column in self.values:
             return Selection(values={column: self.values[column]})
@@ -219,6 +250,22 @@ def cell_mask(selection: Selection, bins: int = POSITION_BINS) -> np.ndarray | N
     return mask
 
 
+def leaf_mask(selection: Selection, n_leaves: int) -> np.ndarray | None:
+    """``(n_leaves,) bool``: which leaves the clusters condition keeps, or ``None`` with none.
+
+    Raises:
+        ValueError: a leaf outside the tree.
+    """
+    if selection.leaves is None:
+        return None
+    mask = np.zeros(int(n_leaves), dtype=bool)
+    for leaf in selection.leaves:
+        if not (0 <= int(leaf) < n_leaves):
+            raise ValueError(f"leaf {leaf} is outside a tree of {n_leaves} leaves")
+        mask[int(leaf)] = True
+    return mask
+
+
 def session_window(
     selection: Selection, recording_ids, spans: Mapping[str, tuple[int, int]] | None
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
@@ -283,12 +330,16 @@ def clip_matches(
     ``session_window``): half-open, ``[lo, hi)``, with a range from ``0`` or to ``1`` open at that
     end, so ``[0, x]`` and ``[x, 1]`` split a recording's clips with none in both, a clip exactly
     on ``x`` going to the later one. A clip of a recording with no span never matches one.
+    Under a clusters condition the clip's own leaf must be one of the kept leaves.
     """
     by_recording = recording_mask(
         selection, clips.recording_ids, metadata, column_types
     )
     recording = np.asarray(clips.recording, dtype=np.int64)
     out = by_recording[recording]
+    if selection.leaves is not None:
+        leaf = np.asarray(clips.leaf, dtype=np.int64)
+        out = out & np.isin(leaf, np.fromiter(selection.leaves, dtype=np.int64))
     window = session_window(selection, clips.recording_ids, spans)
     if window is not None:
         known, start, end = window

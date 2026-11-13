@@ -644,6 +644,42 @@ def test_the_tree_paints_its_words_where_cell_text_puts_them(icicle, monkeypatch
     assert calls, "paintEvent places no text through cell_text"
 
 
+def test_a_diverging_shade_colours_by_sign_and_says_the_screens_words(qapp):
+    """The effect mode: the fill is the diverging scale (zero and NaN neutral), and the hover
+    carries the screen's sentence for the block rather than a share."""
+    from PyQt6.QtGui import QColor
+
+    from detail.gui import plot_theme
+    from detail.gui.node_icicle import NodeIcicle
+    from tests.analysis.test_node_measures import synthetic_view
+
+    view = synthetic_view()
+    widget = NodeIcicle()
+    widget.set_view(view)
+    theme = plot_theme.current()
+    widget.set_shades(
+        {4: 0.6, 5: -0.6, 0: 0.0, 1: float("nan")},
+        diverging=True,
+        texts={
+            4: "more under drug than vehicle, 12.4× · kept",
+            0: "inside the floor",
+        },
+    )
+    assert widget._diverging
+    assert widget.fill_of(4)[0] == plot_theme.effect_colour(0.6, theme)
+    assert widget.fill_of(5)[0] == plot_theme.effect_colour(-0.6, theme)
+    assert widget.fill_of(0)[0] == QColor(theme.neutral)
+    assert widget.fill_of(1)[0] == QColor(theme.neutral)
+    assert widget.fill_of(2)[0] == QColor(theme.neutral), "not shaded: not a candidate"
+    assert widget._describe(4).endswith("more under drug than vehicle, 12.4× · kept")
+    assert widget._describe(2).endswith("not a candidate of the screen")
+
+    widget.set_shades({4: 0.6})
+    assert not widget._diverging
+    assert widget.fill_of(4)[0] == plot_theme.match_colour(0.6, theme)
+    assert "of its clips match" in widget._describe(4)
+
+
 def test_a_mark_on_an_undrawn_node_lands_on_its_topmost_drawn_descendants():
     """`_drawn_as`: a node too thin to draw is shown by its nearest drawn descendants.
 

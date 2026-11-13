@@ -293,6 +293,14 @@ class NodeView:
     def leaves_under(self, node: int) -> np.ndarray:
         return self._leaves[int(node)]
 
+    def leaves_under_nodes(self, nodes) -> frozenset:
+        """The leaves under any of ``nodes`` — what a difference screen's kept clusters are as
+        a ``cluster_filter.Selection.leaves`` condition."""
+        out: set[int] = set()
+        for node in nodes:
+            out.update(int(leaf) for leaf in self._leaves[int(node)])
+        return frozenset(out)
+
     def ancestors(self, node: int) -> list[int]:
         """The path from the root down to ``node``'s parent, root first."""
         out = []
@@ -305,6 +313,20 @@ class NodeView:
     def node_times(self) -> np.ndarray:
         """``(n_nodes,)`` member time of every node, the icicle's widths."""
         return self._node_time
+
+    def leaf_recording_time_ns(self) -> np.ndarray:
+        """``(n_leaves, n_recordings)`` member time per leaf and recording — the table the node
+        source of a comparison (§24) sums per node, columns in ``recording_ids`` order.
+        """
+        return self._cache.leaves.leaf_rec_time_ns
+
+    def unit_runs(self):
+        """The leaf runs sorted by (recording, subject, start): ``(units, start, end, leaf)``,
+        with ``units`` mapping ``(recording index, subject)`` to that unit's ``[begin, end)``
+        slice of the three arrays. ``end`` is exclusive (the last member's end plus its time),
+        so two runs of one unit touch when the later starts no later than the earlier ends.
+        """
+        return self._runs_by_unit()
 
     # --- one node ------------------------------------------------------------------------
 
@@ -530,6 +552,11 @@ class NodeView:
             total = in_cells.sum(axis=1)
         if inside is not None:
             in_cells = in_cells * inside
+        leaves = cluster_filter.leaf_mask(selection, len(t.leaf_time_ns))
+        if leaves is not None:
+            # A clusters condition keeps whole leaves: a member is in its leaf's cluster or
+            # not, so the rows outside the set count nothing and `total` keeps every member.
+            in_cells = in_cells * leaves[:, None]
         matched = in_cells[:, recordings].sum(axis=1)
         return self._node_sums(matched), self._node_sums(total)
 

@@ -54,6 +54,7 @@ left and Cancel, waiting only on this run's recordings (``gui/preview_jobs.py`` 
 moves them to the front of its queue); the tree, the labels and the filters stay usable.
 """
 
+import dataclasses
 import time
 
 import numpy as np
@@ -61,6 +62,7 @@ from PyQt6.QtCore import QEvent, QPoint, QSettings, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QCompleter,
+    QDialog,
     QFrame,
     QHBoxLayout,
     QInputDialog,
@@ -82,10 +84,13 @@ from detail.gui import node_cache_jobs, plot_theme, preview_jobs
 from detail.gui.audit_table import audited_colour
 from detail.gui.busy import run_busy, run_progress
 from detail.gui.cluster_filters import (
-    MAP_PX,
     Column,
     FilterBar,
+    MAP_PX,
     RecordingChoice,
+    NodeEffect,
+    ScreenChoice,
+    effect_shades,
     breakdown,
     panel_name,
 )
@@ -259,7 +264,8 @@ def cluster_facts(page, node: int) -> tuple[list[str], str, str]:
 
 def show_cluster_name(page, bar: LabelBar, node: int, name: str) -> None:
     """The bar's first line: ``name`` and ``node``'s label chip — its own, or a parent's
-    drawn ``inside “label”``."""
+    drawn ``inside “label”`` — and, under the figures, where its own label came from when a
+    difference screen chose the cluster (:func:`origin_line`)."""
     own = page._names.get(str(node), "")
     owner = page._owner(node)
     bar.show_cluster(
@@ -268,6 +274,29 @@ def show_cluster_name(page, bar: LabelBar, node: int, name: str) -> None:
         page._colour_of(node) if owner is not None else None,
         inherited=not own and owner is not None,
     )
+    bar.set_origin(origin_line(page._origins.get(str(node))) if own else "")
+
+
+def origin_line(origin: dict | None) -> str:
+    """The label bar's line for a label a difference screen chose (``run_labels.LabelOrigin``
+    as stored): *From screen cmp_01 (drug vs vehicle · paired): more under drug than vehicle,
+    12.4× · kept* -- *· inside kept cluster #1375* / *· above kept cluster #1375* when the
+    labelled cluster is not the kept one itself. ``""`` for no origin."""
+    if not origin:
+        return ""
+    comparison = origin.get("comparison", "?")
+    screen = origin.get("screen", "")
+    head = f"From screen {comparison}" + (f" ({screen})" if screen else "")
+    relation = origin.get("relation", "")
+    kept = origin.get("kept", "?")
+    if relation == "under":
+        where = f"inside kept cluster #{kept}"
+    elif relation == "above":
+        where = f"above kept cluster #{kept}"
+    else:
+        where = "kept"
+    text = origin.get("text", "")
+    return f"{head}: {text} · {where}" if text else f"{head} · {where}"
 
 
 def show_figures(bar: LabelBar, clip_text: str, facts) -> None:
@@ -397,6 +426,37 @@ class _PreviewWait:
         )
 
 
+def _node_effects(ranking, record: dict) -> dict:
+    """Every candidate cluster's row of a screen, by node: effect, clears, kept, sentence —
+    through `comparison_report.suggestion`, the same words the Comparisons page prints.
+    """
+    from detail.analysis import comparison_report, node_measures
+
+    kept = {item.measure_key for item in ranking.kept_items()}
+    out = {}
+    for item in ranking.contrasts:
+        node = node_measures.node_of(item.measure_key[1])
+        if node is None:
+            continue
+        out[node] = NodeEffect(
+            effect=getattr(item, "effect", None),
+            clears=ranking.clears_floor(item),
+            kept=item.measure_key in kept,
+            text=comparison_report.suggestion(item, ranking, record),
+        )
+    return out
+
+
+def _effect_caption(ranking, record: dict) -> str:
+    """The effect axis's words: ``Less ↔ more under drug``, ``Less ↔ more with dose``."""
+    if ranking.design == "trend":
+        return f"Less ↔ more with {record.get('design_column') or 'the column'}"
+    levels = ranking.levels or ()
+    if len(levels) == 2:
+        return f"Less ↔ more under {levels[1]} (against {levels[0]})"
+    return "Less ↔ more"
+
+
 class NodeInterpretTab(QWidget):
     """The INTERPRET tab for a pose or temporal clustering run."""
 
@@ -444,6 +504,8 @@ class NodeInterpretTab(QWidget):
         self._groups: dict[str, dict[str, str]] = {}
         self._selection = cluster_filter.Selection()
         self._shares: np.ndarray | None = None
+        #: The screen whose effect the tree and the key read, while it is the only filter on.
+        self._effect_screen: ScreenChoice | None = None
         #: The selected cluster's clips, in the montage's order, and each condition's pass.
         self._clips = None
         self._order = np.zeros(0, dtype=np.int64)
@@ -551,6 +613,12 @@ class NodeInterpretTab(QWidget):
         # Not a widget: the filters' state, whose dock is what goes on screen.
         self._filters = FilterBar(self)
         self._filters.selection_changed.connect(self._on_selection)
+        self._filters.screen_requested.connect(self._run_screen)
+        #: The saved difference screens being read off the UI thread, and the id of a screen
+        #: just run from the dock, to tick when its leaves land.
+        self._screens_reader: BackgroundCall | None = None
+        self._screens_stale = False
+        self._tick_screen: str | None = None
         self._dock = self._filters.dock
         self._split.addWidget(self._dock)
         self._split.addWidget(main)
@@ -857,6 +925,9 @@ class NodeInterpretTab(QWidget):
         self._names = dict(
             loaded["labels"]
         )  # legacy names folded on read (`node_names`)
+        self._origins = {
+            str(k): dict(v) for k, v in (self._state.label_origins or {}).items()
+        }
         self._metadata = loaded["metadata"]
         self._column_types = loaded["types"]
         self._spans = dict(loaded.get("spans") or {})
@@ -886,6 +957,7 @@ class NodeInterpretTab(QWidget):
         self._icicle.set_view(view)
         self._schedule_tree_fit()
         self._fill_filters(view)
+        self._read_screens()
         self._tracking = loaded["tracking"]
         self._embeds = dict(loaded.get("embeds") or {})
         self._points_note, self._align_note = loaded.get("pose", (None, None))
@@ -971,6 +1043,116 @@ class NodeInterpretTab(QWidget):
             "None of this run's recordings has a timestamp map, so there is no session to "
             "measure a time in.",
         )
+
+    # --- the Differences line: saved screens, and running one ------------------------------
+
+    def _read_screens(self) -> None:
+        """List this run's saved difference screens in the dock, their kept clusters as leaves
+        (§22, §24 *The node source*), read off the UI thread: each screen is re-ranked from its
+        stored observations through the one record → ranking mapping, seconds over a large
+        family. The line says it is reading until they land."""
+        view = self._view
+        if view is None:
+            return
+        if self._screens_reader is not None:
+            # Read again when the one in flight lands, as `refresh_audit` does: a screen just
+            # run from the dock must be listed, not lost behind an earlier read.
+            self._screens_stale = True
+            return
+        self._screens_stale = False
+        self._filters.set_screens([], loading=True)
+        experiment, run_id = self._experiment, str(self._run.id)
+        generation = self._generation
+
+        def work():
+            from detail.api import comparison as comparison_api
+
+            out = []
+            for comp in comparison_api.node_screens(experiment, run_id):  # off-thread
+                record = comp.record()
+                label = comparison_api.screen_label(record)
+                try:
+                    ranking = comp.ranking()  # off-thread: seconds over a large family
+                except (OSError, ValueError, KeyError) as exc:
+                    out.append(
+                        ScreenChoice(comp.id, label, f"cannot be read: {exc}", None)
+                    )
+                    continue
+                if ranking is None:
+                    out.append(
+                        ScreenChoice(comp.id, label, "nothing to rank", frozenset())
+                    )
+                    continue
+                kept = comparison_api.kept_nodes_of(ranking)
+                leaves = view.leaves_under_nodes(kept)
+                if ranking.floor is None:
+                    note = f"no floor: {ranking.no_floor_reason}"
+                else:
+                    note = f"{len(kept)} kept of {len(ranking.clearing())} clearing"
+                out.append(
+                    ScreenChoice(
+                        comp.id,
+                        label,
+                        note,
+                        leaves,
+                        effects=_node_effects(ranking, record),
+                        floor=ranking.floor,
+                        design=ranking.design,
+                        caption=_effect_caption(ranking, record),
+                        kept=tuple(int(n) for n in kept),
+                        column=str(record.get("design_column") or ""),
+                    )
+                )
+            return out
+
+        reader = BackgroundCall(work, receiver=self)
+        self._screens_reader = reader
+
+        def done(entries) -> None:
+            self._screens_reader = None
+            if generation != self._generation:
+                return
+            self._filters.set_screens(entries)
+            wanted = self._tick_screen
+            choice = next((e for e in entries if e.key == wanted), None)
+            if choice is not None and choice.leaves is not None:
+                self._tick_screen = None
+                self._filters.set_selection(
+                    dataclasses.replace(
+                        self._filters.selection(),
+                        leaves=choice.leaves,
+                        leaves_source=choice.key,
+                    )
+                )
+            if self._screens_stale:
+                self._read_screens()
+
+        def failed(exc) -> None:
+            self._screens_reader = None
+            self._filters.set_screens([])
+            QMessageBox.warning(self, "Difference screens", str(exc))
+            if self._screens_stale:
+                self._read_screens()
+
+        reader.done.connect(done)
+        reader.failed.connect(failed)
+        reader.finished.connect(reader.deleteLater)
+        reader.start()
+
+    def _run_screen(self) -> None:
+        """**Run a new screen…**: the comparison launch dialog, seeded to this run and the
+        cluster source, so the dock lists the screen it saves and ticks it."""
+        from detail.gui.comparison import ComparisonLaunchDialog
+
+        dialog = ComparisonLaunchDialog(
+            self._experiment,
+            self,
+            seed={"source_run_id": str(self._run.id), "source": "nodes"},
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.comparison is None:
+            return
+        self._tick_screen = dialog.comparison.id
+        self._read_screens()
 
     def _remembered_tree_height(self) -> int | None:
         """The height the user dragged the tree to, or ``None`` when they never have."""
@@ -1362,6 +1544,7 @@ class NodeInterpretTab(QWidget):
             return
         if selection.is_empty:
             self._shares = None
+            self._effect_screen = None
             self._icicle.set_shades(None)
             self._filters.set_match_count(None, len(self._root_clips))
         else:
@@ -1373,9 +1556,15 @@ class NodeInterpretTab(QWidget):
                 QMessageBox.information(self, "Filter not applied", str(exc))
                 self._filters.set_selection(cluster_filter.Selection())
                 return
-            self._icicle.set_shades(
-                {node: float(share) for node, share in enumerate(self._shares)}
-            )
+            self._effect_screen = self._screen_alone(selection)
+            if self._effect_screen is not None:
+                # A screen alone: the tree reads its statistic, grey inside the floor (§22).
+                positions, texts = effect_shades(self._effect_screen, len(self._shares))
+                self._icicle.set_shades(positions, diverging=True, texts=texts)
+            else:
+                self._icicle.set_shades(
+                    {node: float(share) for node, share in enumerate(self._shares)}
+                )
             matched = cluster_filter.clip_matches(
                 selection,
                 self._root_clips,
@@ -1399,10 +1588,33 @@ class NodeInterpretTab(QWidget):
         if reselect:
             self._apply_matching()
 
+    def _screen_alone(self, selection) -> ScreenChoice | None:
+        """The ticked screen, when it is the only filter on and its effects are known."""
+        if selection.keys() != [cluster_filter.CLUSTERS]:
+            return None
+        choice = self._filters.screen(selection.leaves_source)
+        if choice is None or not choice.effects:
+            return None
+        return choice
+
     def _show_key(self) -> None:
         key = self._filters.dock.key
         if self._shares is None or self._view is None:
             key.set_filter(False)
+            return
+        screen = self._effect_screen
+        if screen is not None:
+            row = (
+                screen.effects.get(int(self._selected))
+                if self._selected is not None and self._selected != self._view.root
+                else None
+            )
+            key.set_effect(
+                screen.caption,
+                screen.design,
+                floor=screen.floor,
+                selected_effect=None if row is None or not row.clears else row.effect,
+            )
             return
 
         def share(node: int | None) -> float | None:
@@ -1920,21 +2132,50 @@ class NodeInterpretTab(QWidget):
             )
             return
         names, recent = dict(self._names), list(self._recent)
+        origins = dict(self._origins)
+        found = self._screen_origin(node) if name else None
         if name:
             names[str(int(node))] = name
             recent = [name, *(n for n in recent if n != name)]
             text = f"Labelled #{int(node)} “{name}”"
+            if found is not None:
+                origins[str(int(node))] = found.to_dict()
         else:
             names.pop(str(int(node)), None)
+            origins.pop(str(int(node)), None)
             text = f"Removed the label from #{int(node)}"
         self._change(
             text,
             names,
             recent,
-            lambda n=int(node), m=name: self._run.name_nodes({n: m}),
+            lambda n=int(node), m=name, o=found: self._run.name_nodes(
+                {n: m}, origins={n: o}
+            ),
+            origins=origins,
         )
         if origin is None:
             self.select(node)
+
+    def _screen_origin(self, node: int):
+        """Where a label written now would come from: the ticked screen, when it points at
+        ``node`` (``run_labels.label_origin``), else ``None``. The screen need not be the
+        only filter on -- it is the one that chose the cluster either way."""
+        from detail.storage import run_labels
+
+        selection = self._selection
+        if selection is None or selection.leaves_source is None or self._view is None:
+            return None
+        choice = self._filters.screen(selection.leaves_source)
+        if choice is None or not choice.kept:
+            return None
+        return run_labels.label_origin(
+            int(node),
+            comparison=choice.key,
+            kept_texts=choice.kept_texts(),
+            column=choice.column,
+            screen=choice.label,
+            ancestors_of=self._view.ancestors,
+        )
 
     def _label_id(self, name: str) -> str:
         """The run's id for the label called ``name`` — read when the write runs, off the UI
@@ -2018,27 +2259,45 @@ class NodeInterpretTab(QWidget):
 
     # --- one history of label changes: ⌘Z here and in every cluster window ------------------
 
-    def _change(self, text: str, names: dict, recent: list, write) -> None:
+    def _change(
+        self,
+        text: str,
+        names: dict,
+        recent: list,
+        write,
+        *,
+        origins: dict | None = None,
+    ) -> None:
         """Show a label change at once, record it for ⌘Z, and queue its write — which reads the
-        run's label maps either side of itself, so an undo can put them back by id."""
+        run's label maps either side of itself, so an undo can put them back by id. ``origins``
+        is the page's copy of where each label came from after the change; left out, it keeps
+        what it has."""
         from detail.api.authored_run import label_change
         from detail.gui.label_history import Change, restore_side
 
         sides = {
-            False: (dict(self._names), list(self._recent)),
-            True: (dict(names), list(recent)),
+            False: (dict(self._names), list(self._recent), dict(self._origins)),
+            True: (
+                dict(names),
+                list(recent),
+                dict(self._origins if origins is None else origins),
+            ),
         }
         written: list = [None]
         run = self._run
 
         def show(after: bool) -> None:
-            self._names, self._recent = dict(sides[after][0]), list(sides[after][1])
+            self._names, self._recent, self._origins = (
+                dict(sides[after][0]),
+                list(sides[after][1]),
+                dict(sides[after][2]),
+            )
             self._refresh_labels()
 
         def put(after: bool) -> None:
-            labels, nodes, stamps = restore_side(written[0], after)
-            if labels or nodes:
-                run.restore_labels(labels, nodes, stamps)
+            labels, nodes, stamps, origins_side = restore_side(written[0], after)
+            if labels or nodes or origins_side:
+                run.restore_labels(labels, nodes, stamps, origins_side)
 
         def work():
             before = run.label_maps()
@@ -2206,6 +2465,19 @@ class NodeInterpretTab(QWidget):
         )
         self._rebuild.setEnabled(loaded and editable)
         self._build.setEnabled(loaded and editable)
+        # A snapshot reads its run's saved screens; running one is the live run's to do, like
+        # a rebuild — not because a screen changes the snapshot, but because every control that
+        # writes is dead on a frozen view, and this one writes a comparison.
+        set_available(
+            self._filters.screens.run_button,
+            loaded and editable,
+            (
+                "The run is still loading."
+                if not loaded
+                else "Open the live run to run a difference screen; a snapshot lists the "
+                "run's saved screens only."
+            ),
+        )
         dead = why or "The run is still loading."
         self._label_field.set_editable(self._can_edit, dead)
         self._label_bar.quick.set_editable(self._can_edit, dead)

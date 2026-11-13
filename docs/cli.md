@@ -920,6 +920,13 @@ selection, written to `analysis/<an_NN>/`.
   before any is written, and each reports its progress. The name `other` is refused: it is what
   the GUI's labels panel calls a label's own remainder.
 
+  `--from-screen cmp_NN` records that the nodes you label with `--name-node` were found by that
+  saved cluster screen (`comparison run --source nodes`): the label remembers the screen, the
+  cluster it kept and the column it contrasted, so a later `comparison run` of the label over the
+  same column can say the screen chose the cluster it scores. Each node must be one the screen
+  kept, or sit inside or above one; any other is refused naming what the screen kept. `--tree`
+  shows such a label as `climb [from cmp_02]`.
+
   `--rebuild-cache` rebuilds every cluster's evidence from the fit, with a progress bar: for a run
   whose clips are reported out of date, or one prepared before every cluster listed its clips
   (such a run still opens; its clips just have no typicality order until it is rebuilt). It does
@@ -1121,11 +1128,42 @@ The instance table is not copied here: the run already writes `instances.csv` in
 Group statistics across recording metadata: take a behavior result, split the recordings by a
 column of `metadata.csv`, and report how the groups differ.
 
-- `run --experiment <dir> --source-run <an_NN> [--snapshot <snap_NN>] --group-by <column> --aggregate-to <column|none>
-  [--measure <name> …] [--recording <id> …] [--windows whole|absolute|normalized|sliding]
-  [--every <seconds>] [--parts N] [--length <seconds>] [--step <seconds>] [--draws N] [--seed N]`: measure each unit, group them, and
-  save the result to `comparisons/<cmp_NN>/`. Prints the `cmp_NN`. `--group-by`,
-  `--aggregate-to`, `--measure` and `--recording` are all repeatable.
+- `run --experiment <dir> --source-run <an_NN> [--snapshot <snap_NN>] [--source labels|nodes] --group-by <column> --aggregate-to <column|none>
+  [--level <value> --level <value>] [--measure <name> …] [--recording <id> …] [--windows whole|absolute|normalized|sliding]
+  [--every <seconds>] [--parts N] [--length <seconds>] [--step <seconds>] [--draws N] [--seed N]
+  [--presence-s <seconds>] [--pseudo-count-s <seconds>] [--min-units-fraction <share>] [--no-suppress-nesting]`: measure each unit, group them, and
+  save the result to `comparisons/<cmp_NN>/`. Prints the `cmp_NN` and the design it resolved.
+  `--group-by`, `--aggregate-to`, `--level`, `--measure` and `--recording` are all repeatable.
+
+  **The design follows from the column.** A `--group-by` column that is constant within each
+  `--aggregate-to` unit (sex) compares between units; one that varies within units compares
+  within them: two values are a paired contrast, three or more numeric values a trend, and three
+  or more other values ask you to name two with `--level A --level B` (the second against the
+  first). `--level` on a numeric column contrasts those two doses instead of running the trend. A
+  recording with no value in the column (blank, or `NA`) is left out, and the command says which.
+  The command prints the design it ran, and the record carries it. Within-unit designs count a
+  unit toward the ranking only when the behavior is present in it (`--presence-s` of total time
+  at some level), need that in `--min-units-fraction` of the cohort (default half) for an effect
+  to be defined, and add `--pseudo-count-s` of time to both sides of a ratio so a behavior absent
+  at one level has a finite one.
+
+  **`--source nodes` screens a clustering run's unlabelled clusters.** Every node of its tree with
+  at least `--candidate-floor-s` seconds of member time (30 by default) becomes a row
+  (`node:<id>`), measured from the node cache over the whole recording: share of time (what the ranking is on), rate, total time and mean
+  bout length. Nested nodes that clear the floor are collapsed to the best of them
+  (`--no-suppress-nesting` keeps every slice). The run needs a current node cache; a stale one is
+  refused with what changed. It always takes those four measures and reads the cache as it is
+  now, so `--measure` naming fewer and `--source-snapshot` are refused. `export` then writes `ranking.csv` with every node's effect, floor
+  and verdict, and draws the tables and figures for the kept nodes and the next ten below the
+  floor rather than for thousands of nodes.
+
+  **A labels comparison says which of its labels a screen chose.** A label written from a
+  cluster screen (`--from-screen`, or a screen ticked in the GUI) carries that screen; `run`
+  over the same column prints `not independent: climb (cmp_02) was chosen from a difference
+  screen over drug …`, the label's `suggestion` cell in `ranking.csv` and `summary.md` ends with
+  `chosen from screen cmp_02 (cluster #118 kept)`, and `list` marks the comparison
+  `screened=climb`. The number is still the number; the line is what keeps it from being read as
+  a finding the screen did not already make.
 
   **The source is pinned, so the numbers keep meaning what they meant.** An analysis run stays
   editable after it finishes (you can reopen it and re-cut the vocabulary) so a comparison that
@@ -1156,7 +1194,9 @@ column of `metadata.csv`, and report how the groups differ.
   tree, `stats.csv` (long form, one row per observation), `tables/` (per measure: groups as rows
   with n / coverage / mean / median / sd), `figures/` (every observation as a point, plus the
   difference ranking with its chance floor), `summary.md`, and `manifest.json` with a SHA-256 per
-  artifact. Warns if the source data has changed since the comparison was run. `--theme dark`
+  artifact, plus `ranking.csv` (every ranked measure or node with its effect, floor and verdict)
+  and, for a node screen, the `nodes.csv` hierarchy. Warns if the source data has changed since
+  the comparison was run. `--theme dark`
   draws the figures on a dark background for slides; the manifest records which theme was used.
 - `list --experiment <dir>`: the experiment's comparisons, with the unit of analysis each used.
 - `delete <cmp_NN> --experiment <dir> [--yes]`: remove the comparison and its exports. Confirms
