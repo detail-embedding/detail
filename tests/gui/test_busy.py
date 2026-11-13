@@ -15,8 +15,9 @@ which is ``test_every_decode_overlay_embedder_gets_the_suppression``.
 
 **2. A Qt object's C++ side outliving the Python state it needs.** Anything Qt holds by C++ pointer —
 a connection, an installed event filter, a queued call — must be outlived by the Python object behind
-it, or scoped to the window where something holds it. This file covers the event-filter half
+it, or scoped to the window where something holds it. This file covers the overlay's event filter
 (``test_an_abandoned_overlay_filters_nothing``, ``test_a_running_overlay_is_the_only_one_filtering``);
+``tests/gui/test_lifetime.py`` covers every filter whose wrapper the collector has cleared;
 ``tests/gui/test_workers.py`` covers the connection and queued-delivery halves and carries the
 signature to recognise it by.
 

@@ -1,5 +1,7 @@
 """``keypoint_track`` (§26 "Track methods"): a detect run's pose instances given to a tracking
-run's subjects, then settled over time into final points — CPU, re-run whole.
+run's subjects, then settled over time into final points — one CPU core, re-run whole. On this
+machine a batch's recordings run side by side, one per core for half the cores
+(``local_parallelism``); on a registered cluster (§6) each is its own job.
 
 **Assignment comes first, whatever method placed the instances** (§26 *Assignment*,
 ``pipeline/pose_match.py``): per part, each instance goes to at most one subject by the share of
@@ -29,6 +31,7 @@ filter or decode is a new track run over the same detect run.
 
 from __future__ import annotations
 
+import os
 import shutil
 import time
 from pathlib import Path
@@ -37,10 +40,12 @@ import numpy as np
 
 from detail.analysis import keypoint_filters as filters
 from detail.configs.keypoint_track import (
+    PARALLELISM_ENV,
     DespikeSmoothConfig,
     KeypointTrackConfig,
     TemporalDecodeConfig,
 )
+from detail.core.dataclasses import ComputeTarget
 from detail.core.keypoints import KeypointProgressEvent, KeypointTrackJob, TrackPart
 from detail.core.progress import ThrottledProgress, remaining_seconds
 from detail.core.protocols import KeypointTrackMethod
@@ -51,10 +56,18 @@ from detail.core.registries import (
 from detail.core.skeleton import Skeleton
 from detail.core.utils import utc_timestamp
 from detail.executor.runners import ProcessingModule, register_processing_module
-from detail.pipeline.pose_match import assign_part, frame_subjects, subject_mask_hw
+from detail.pipeline import teacher_window
+from detail.pipeline.pose_match import (
+    assign_part,
+    eligible_instances,
+    frame_subjects,
+    subject_mask_hw,
+    tracked_class_rows,
+)
 from detail.storage import experiment as experiment_store
 from detail.storage import keypoint_runs
 from detail.storage import recording as recording_store
+from detail.storage import remote_targets
 from detail.storage.keypoint_runs import KeypointDetectRun
 from detail.storage.keypoint_zarr import (
     KeypointAssignmentPartWriter,
@@ -62,6 +75,9 @@ from detail.storage.keypoint_zarr import (
 )
 
 _NS_PER_S = 1_000_000_000
+#: The stage runs numpy on one core and loads no model, so a device to pick has no meaning.
+_BACKENDS = ("cpu", "remote")
+_MAX_LOCAL_PARALLELISM = 8
 
 
 def keypoint_track_run_dir(experiment_root, job: KeypointTrackJob) -> Path:
@@ -75,16 +91,59 @@ def keypoint_track_run_dir(experiment_root, job: KeypointTrackJob) -> Path:
 # --------------------------------------------------------------------------- #
 # The filters both methods end with
 # --------------------------------------------------------------------------- #
+def tracked_columns(skeleton: Skeleton, config) -> np.ndarray:
+    """``(K,)`` bool: the skeleton's points the config's ``track_points`` names, in column
+    order; every point when it is unset. Names only — nothing here knows a body plan."""
+    chosen = getattr(config, "track_points", None)
+    if chosen is None:
+        return np.ones(len(skeleton.names), dtype=bool)
+    wanted = set(chosen)
+    return np.asarray([name in wanted for name in skeleton.names], dtype=bool)
+
+
+def resolve_track_points(
+    skeleton: Skeleton, track_points: list[str] | None
+) -> list[str] | None:
+    """``track_points`` as the run records it (Tenet 9): in the skeleton's column order,
+    without repeats, and ``None`` when it names every point, so two configs that track the
+    same points are the same run.
+
+    Raises:
+        ValueError: A name the skeleton does not have, or an empty list (nothing to track:
+            leave it unset to track every point).
+    """
+    if track_points is None:
+        return None
+    names = list(skeleton.names)
+    unknown = sorted(set(track_points) - set(names))
+    if unknown:
+        raise ValueError(
+            f"track_points names {unknown}, which the detect run's skeleton does not have; "
+            f"its points are {names}"
+        )
+    if not track_points:
+        raise ValueError(
+            "track_points is empty, so nothing would be tracked; leave it unset to track "
+            "every point, or name the points to track"
+        )
+    chosen = [n for n in names if n in set(track_points)]
+    return None if len(chosen) == len(names) else chosen
+
+
 def apply_filters(
     points_px: np.ndarray,
     t_ns: np.ndarray,
     scale_px: np.ndarray,
     config,
     rows_per_second: float,
+    tracked: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Despike then smooth, each when the config enables it: ``(points_px, moved)`` with
-    ``moved`` ``(M, K)`` bool where a filter moved a point. Absence is never filled."""
-    out = np.asarray(points_px, dtype=np.float64).copy()
+    ``moved`` ``(M, K)`` bool where a filter moved a point. Absence is never filled. A point
+    outside ``tracked`` (``(K,)`` bool; None: all) comes back as it went in: both filters are
+    per point, so filtering every column and restoring the untracked ones is exact."""
+    original = np.asarray(points_px, dtype=np.float64)
+    out = original.copy()
     moved = np.zeros(out.shape[:2], dtype=bool)
     if config.despike:
         half = filters.rows_for_seconds(config.despike_window_s, rows_per_second)
@@ -108,6 +167,9 @@ def apply_filters(
         shift = np.where(present, np.abs(smoothed - out).max(axis=2), 0.0)
         moved |= present & (shift > 1e-6)
         out = smoothed
+    if tracked is not None and not tracked.all():
+        out[:, ~tracked] = original[:, ~tracked]
+        moved[:, ~tracked] = False
     return out, moved
 
 
@@ -117,6 +179,17 @@ def _to_px(points: np.ndarray, frame_wh: tuple[int, int]) -> np.ndarray:
 
 def _to_norm(points_px: np.ndarray, frame_wh: tuple[int, int]) -> np.ndarray:
     return (points_px / np.asarray(frame_wh, dtype=np.float64)).astype(np.float32)
+
+
+def _as_detected(points: np.ndarray, rows: dict, tracked: np.ndarray) -> np.ndarray:
+    """``points`` (normalized) with every untracked point the detect row's own value, bit for
+    bit: a trip through pixels and back can move the last float32 digit, and "kept as
+    detected" should be exactly that."""
+    if tracked.all():
+        return points
+    out = np.array(points, dtype=np.float32, copy=True)
+    out[:, ~tracked] = np.asarray(rows["points"], dtype=np.float32)[:, ~tracked]
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -145,12 +218,15 @@ class DespikeSmooth(KeypointTrackMethod):
         scores = np.asarray(rows["point_scores"], dtype=np.float32)
         if phase is not None:
             phase("filtering")
+        tracked = tracked_columns(skeleton, config)
         filtered, moved = apply_filters(
-            points, rows["t_ns"], body_scale_px, config, rows_per_second
+            points, rows["t_ns"], body_scale_px, config, rows_per_second, tracked
         )
         changed = np.where(moved, 2, 0).astype(np.int8)
         return TrackPart(
-            points=_to_norm(filtered, frame_wh), point_scores=scores, changed=changed
+            points=_as_detected(_to_norm(filtered, frame_wh), rows, tracked),
+            point_scores=scores,
+            changed=changed,
         )
 
 
@@ -175,6 +251,65 @@ class TemporalDecode(KeypointTrackMethod):
     ) -> TrackPart:
         # A row no instance was assigned to is NaN throughout, so every candidate is absent
         # there and the path can only be *missing* — the gap is the missing state, not a fill.
+        if phase is not None:
+            phase("decoding")
+        points, scores, changed = self.decode(
+            rows,
+            skeleton,
+            config,
+            rows_per_second=rows_per_second,
+            frame_wh=frame_wh,
+            body_scale_px=body_scale_px,
+        )
+        if phase is not None:
+            phase("filtering")
+        return self.finish(
+            rows,
+            points,
+            scores,
+            changed,
+            config,
+            rows_per_second,
+            frame_wh,
+            body_scale_px,
+            tracked_columns(skeleton, config),
+        )
+
+    @staticmethod
+    def finish(
+        rows,
+        points,
+        scores,
+        changed,
+        config,
+        rows_per_second,
+        frame_wh,
+        body_scale_px,
+        tracked,
+    ) -> TrackPart:
+        """The filters on a decoded path, on the ``tracked`` points only. Separate from
+        ``decode`` because the path depends on the transition, missing and mirror settings
+        (and the points tracked) alone: tuning (``keypoint_track_tune``) decodes once per path
+        setting and filters that path once per filter setting."""
+        t_ns = np.asarray(rows["t_ns"], dtype=np.int64)
+        filtered, moved = apply_filters(
+            points, t_ns, body_scale_px, config, rows_per_second, tracked
+        )
+        changed = np.where(moved, 2, changed).astype(np.int8)
+        return TrackPart(
+            points=_as_detected(_to_norm(filtered, frame_wh), rows, tracked),
+            point_scores=scores.astype(np.float32),
+            changed=changed,
+        )
+
+    def decode(
+        self, rows, skeleton, config, *, rows_per_second, frame_wh, body_scale_px
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """The path through ``rows``' candidates with left/right settled: ``(points_px (M, K,
+        2), scores (M, K), changed (M, K) int8)``, before any filter. A point outside the
+        config's ``track_points`` is the detect stage's own placement and score, unchanged; a
+        pair is settled left from right only when both its points are tracked."""
+        tracked = tracked_columns(skeleton, config)
         t_ns = np.asarray(rows["t_ns"], dtype=np.int64)
         best = _to_px(rows["points"], frame_wh)  # (M, K, 2) the detect stage's choice
         cand = _to_px(rows["candidates"], frame_wh)  # (M, K, C, 2)
@@ -183,8 +318,6 @@ class TemporalDecode(KeypointTrackMethod):
         )  # (M, K, C)
         mirrored = rows.get("extras/mirrored")
         m, k, c = cand_scores.shape
-        if phase is not None:
-            phase("decoding")
         offered = cand_scores.copy()
         if config.decode_cutoff is not None:
             offered[offered < config.decode_cutoff] = np.nan
@@ -198,7 +331,7 @@ class TemporalDecode(KeypointTrackMethod):
             * np.sqrt(np.maximum(dt_rows, 1.0))
         )  # (M-1,)
         chosen = np.full((m, k), -1, dtype=np.int64)
-        for j in range(k):
+        for j in np.flatnonzero(tracked):
             cj = cand[:, j]  # (M, C, 2)
 
             def cost(i, cj=cj):
@@ -215,11 +348,18 @@ class TemporalDecode(KeypointTrackMethod):
             (chosen >= 0)[..., None], cand[rows_idx, cols, picked], np.nan
         )  # (M, K, 2)
         scores = np.where(chosen >= 0, cand_scores[rows_idx, cols, picked], np.nan)
+        untracked = ~tracked
+        points[:, untracked] = best[:, untracked]
+        scores[:, untracked] = np.asarray(rows["point_scores"], dtype=np.float64)[
+            :, untracked
+        ]
         # Left/right over the path: evidence for "swapped" is how much better the examples
         # mirrored (labels swapped) matched than the examples as given, per pair.
         if mirrored is not None:
             mirrored = np.asarray(mirrored, dtype=np.float64)
             for left, right in skeleton.pair_indices():
+                if not (tracked[left] and tracked[right]):
+                    continue  # a pair is settled as a pair, or not at all
                 pair = np.stack([scores[:, left], scores[:, right]])  # (2, M)
                 n_present = np.isfinite(pair).sum(axis=0)
                 as_given = (
@@ -248,18 +388,7 @@ class TemporalDecode(KeypointTrackMethod):
             ~np.isfinite(best).all(axis=2)
             | (np.linalg.norm(np.nan_to_num(points - best), axis=2) > 1e-6)
         )
-        changed = np.where(other, 1, 0).astype(np.int8)
-        if phase is not None:
-            phase("filtering")
-        filtered, moved = apply_filters(
-            points, t_ns, body_scale_px, config, rows_per_second
-        )
-        changed = np.where(moved, 2, changed).astype(np.int8)
-        return TrackPart(
-            points=_to_norm(filtered, frame_wh),
-            point_scores=scores.astype(np.float32),
-            changed=changed,
-        )
+        return points, scores, np.where(other, 1, 0).astype(np.int8)
 
 
 # --------------------------------------------------------------------------- #
@@ -336,21 +465,118 @@ def _tracking_part_ids(recording_dir: Path, tracking_run_id: str) -> list[str]:
     return sorted(p.stem for p in folder.glob("part_*.zarr"))
 
 
-def run(job: KeypointTrackJob, run_dir, progress_cb, stop_event) -> None:
-    """§26 track runner: per part, *Assignment* then each subject's method; CPU, no resume."""
-    run_dir = Path(run_dir)
-    recording_dir = run_dir.parent.parent
-    data = recording_store.read_recording(recording_dir)
-    detect = KeypointDetectRun(recording_dir, job.detect_run_id)
-    skeleton = Skeleton.from_dict(job.skeleton)
-    k = len(skeleton.names)
-    fps = float(data["video"]["fps_actual"])
+def rate_and_size(
+    recording_dir: Path, detect: KeypointDetectRun
+) -> tuple[float, tuple[int, int]]:
+    """``(rows_per_second, frame_wh)`` a method's windows and pixels resolve at: the detect
+    run's cadence over the recording's rate, and the frame size."""
+    data = recording_store.read_recording(Path(recording_dir))
     every_n = int(detect.meta.get("every_n_frames") or 1)
-    rows_per_second = fps / every_n
     frame_wh = (
         int(data["video"]["resolution"][0]),
         int(data["video"]["resolution"][1]),
     )
+    return float(data["video"]["fps_actual"]) / every_n, frame_wh
+
+
+def subject_rows(
+    recording_dir: Path,
+    detect: KeypointDetectRun,
+    tracking_run_id: str,
+    part_id: str,
+    match: dict,
+    *,
+    window_ns: tuple[int, int] | None = None,
+    on_frame=None,
+) -> dict[int, tuple[dict[str, np.ndarray], np.ndarray]]:
+    """``{track_id: (rows, body_scale_px)}`` for one part: the detect run's instances given to
+    the tracking run's subjects by *Assignment*, exactly as the stage gives them, without
+    writing anything. The one reader a tuner (``keypoint_track_tune``) and a preview
+    (``keypoint_track_preview``) share with the stage, so a tried setting meets the rows the
+    run will.
+
+    ``window_ns`` (``[start, end)`` in ``t_ns``) keeps only the frames inside it: a frame's
+    assignment reads that frame alone, so a window's rows are the full run's rows there.
+    ``on_frame(n_subjects)`` hears each frame as it is assigned."""
+    recording_dir = Path(recording_dir)
+    every_n = int(detect.meta.get("every_n_frames") or 1)
+    instances = (
+        detect.rows(part_id)
+        if part_id in set(detect.part_ids())
+        else _empty_instances(len(detect.skeleton.names), detect.n_candidates)
+    )
+    frames = frame_subjects(recording_dir, tracking_run_id, part_id, every_n)
+    if window_ns is not None:
+        frames = _within(frames, window_ns)
+    if on_frame is not None:
+        frames = _heard(frames, on_frame)
+    _subject_id, _inside, per_subject = assign_part(
+        instances,
+        frames,
+        subject_mask_hw(recording_dir, tracking_run_id),
+        eligible=_eligible(instances, recording_dir, tracking_run_id, part_id),
+        min_inside=match["min_inside"],
+        mask_grow=match["mask_grow"],
+    )
+    return {
+        int(track_id): subject_series(instances, entries)
+        for track_id, entries in per_subject.items()
+    }
+
+
+def _within(frames, window_ns: tuple[int, int]):
+    lo, hi = window_ns
+    for frame in frames:
+        if lo <= frame[1] < hi:
+            yield frame
+
+
+def _heard(frames, on_frame):
+    for frame in frames:
+        yield frame
+        on_frame(len(frame[2]))
+
+
+def window_subject_frames(
+    recording_dir: Path,
+    detect: KeypointDetectRun,
+    tracking_run_id: str,
+    part_id: str,
+    window_ns: tuple[int, int],
+) -> int:
+    """How many subject-frames :func:`subject_rows` assigns over ``window_ns``: a preview's
+    unit of work, counted without decoding a mask."""
+    every_n = int(detect.meta.get("every_n_frames") or 1)
+    return sum(
+        len(subjects)
+        for _f, _t, subjects in _within(
+            frame_subjects(recording_dir, tracking_run_id, part_id, every_n),
+            window_ns,
+        )
+    )
+
+
+def _eligible(
+    instances: dict, recording_dir: Path, tracking_run_id: str, part_id: str
+) -> np.ndarray:
+    """The instances the tracking run's subjects may take: none placed on a box of a class
+    the run does not follow (``pose_match.eligible_instances``)."""
+    n = len(instances["frame_idx"])
+    return eligible_instances(
+        instances.get("detection_row", np.full(n, -1, np.int32)),
+        tracked_class_rows(recording_dir, tracking_run_id, part_id),
+    )
+
+
+def run(job: KeypointTrackJob, run_dir, progress_cb, stop_event) -> None:
+    """§26 track runner: per part, *Assignment* then each subject's method; CPU, no resume."""
+    run_dir = Path(run_dir)
+    recording_dir = run_dir.parent.parent
+    detect = KeypointDetectRun(recording_dir, job.detect_run_id)
+    skeleton = Skeleton.from_dict(job.skeleton)
+    k = len(skeleton.names)
+    every_n = int(detect.meta.get("every_n_frames") or 1)
+    rows_per_second, frame_wh = rate_and_size(recording_dir, detect)
     method = KEYPOINT_TRACK_METHODS[job.method]()
     config = method.config_model.model_validate(job.config)
     match = dict(job.match)
@@ -423,6 +649,7 @@ def run(job: KeypointTrackJob, run_dir, progress_cb, stop_event) -> None:
                 frame_subjects(recording_dir, job.tracking_run_id, part_id, every_n)
             ),
             mask_hw,
+            eligible=_eligible(instances, recording_dir, job.tracking_run_id, part_id),
             min_inside=match["min_inside"],
             mask_grow=match["mask_grow"],
         )
@@ -528,8 +755,33 @@ class KeypointTrackModule(ProcessingModule):
     def run_dir_for(self, experiment_root, job):
         return keypoint_track_run_dir(experiment_root, job)
 
+    def remote_resources(self, job) -> dict:
+        """One GPU, the fewest Tillicum accepts: the work is one CPU core per recording, and
+        the node's CPUs and memory scale down with it."""
+        return {"gpus": 1}
+
+    def recording_parallelism(self) -> int:
+        """Recordings of a local run in flight at once: each is its own one-core worker."""
+        return local_parallelism()
+
     def output_path(self, run_id: str) -> str:
         return f"keypoint_track/{run_id}/"
+
+    def estimate_output_bytes(
+        self, recording_dir, recording_data: dict, config: dict
+    ) -> int:
+        """At most its detect run's size (#743): a subject's track part has a row per
+        subject-frame and fewer columns than an instance (no candidates, no extras), so the
+        detect run on disk bounds it.
+        """
+        from detail.core import disk_space
+
+        detect_run_id = config.get("detect_run_id")
+        if recording_dir is None or not detect_run_id:
+            return 0  # a bare registry probe; a launch estimates after `validate`
+        return disk_space.dir_bytes(
+            keypoint_runs.detect_run_dir(Path(recording_dir), detect_run_id)
+        )
 
     def validate(self, recording_dir, recording_data: dict, config: dict) -> dict:
         """§26 "Validation checks" for the track stage; the tracking run, the match, the
@@ -537,6 +789,7 @@ class KeypointTrackModule(ProcessingModule):
         ran (Tenet 9)."""
         model = KeypointTrackConfig.model_validate(config)
         recording_dir = Path(recording_dir)
+        config["compute"] = _resolve_compute(config.get("compute"))
         detect_run_id = config["detect_run_id"]
         entry = {
             r["id"]: r for r in recording_data.get("keypoint_detect_runs", [])
@@ -551,6 +804,8 @@ class KeypointTrackModule(ProcessingModule):
                 f"keypoint detect run {detect_run_id!r} is {entry.get('status')!r}, not "
                 "complete"
             )
+        # Inherited, never chosen: a track over a teacher detect run is a teacher run (§26).
+        config[teacher_window.WINDOW_KEY] = teacher_window.window_of(entry)
         try:
             detect = KeypointDetectRun(recording_dir, detect_run_id)
         except FileNotFoundError as exc:
@@ -608,6 +863,9 @@ class KeypointTrackModule(ProcessingModule):
             config.get("config") or {}
         )
         config["config"] = method_config.model_dump()
+        config["config"]["track_points"] = resolve_track_points(
+            skeleton, method_config.track_points
+        )
         if not recording_data.get("video", {}).get("fps_actual"):
             raise ValueError(
                 "the recording has no fps_actual, so a window in seconds cannot be resolved "
@@ -636,6 +894,7 @@ class KeypointTrackModule(ProcessingModule):
             skeleton=dict(config["skeleton"]),
             created_at=utc_timestamp(),
             skeleton_ref=config.get("skeleton_ref"),
+            compute=config["compute"],
         )
 
     def extra_record_fields(self, config: dict) -> dict:
@@ -643,6 +902,7 @@ class KeypointTrackModule(ProcessingModule):
             "min_inside": config.get("match_min_inside"),
             "mask_grow": config.get("match_mask_grow"),
         }
+        compute = config.get("compute")
         return {
             "detect_run_id": config["detect_run_id"],
             "tracking_run_id": config.get("tracking_run_id"),
@@ -651,7 +911,43 @@ class KeypointTrackModule(ProcessingModule):
             "method": config.get("method"),
             "config": dict(config.get("config") or {}),
             "skeleton_digest": config.get("skeleton_digest"),
+            teacher_window.WINDOW_KEY: config.get(teacher_window.WINDOW_KEY),
+            # Known at reservation time — where it will run, for the Where column.
+            "compute": compute.to_dict() if compute is not None else None,
         }
+
+
+def local_parallelism() -> int:
+    """How many recordings a local keypoint track run works on at once: ``PARALLELISM_ENV``
+    when set, else half this machine's cores, capped.
+
+    Measured 2026-11-03 on a 16-core WSL box, 8 recordings of Agression_BMAD_Full (116k
+    subject-frames), min of 2: 202 s at 1, 114 s at 2, 64 s at 4, 50 s at 8, ~380 MB per
+    worker. At 8 the wall is about the slowest recording's own time."""
+    raw = os.environ.get(PARALLELISM_ENV)
+    if raw is not None:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    return max(1, min(_MAX_LOCAL_PARALLELISM, (os.cpu_count() or 1) // 2))
+
+
+def _resolve_compute(compute: ComputeTarget | None) -> ComputeTarget:
+    """Where the run goes, written back (Tenet 9): unset is this machine's CPU; a remote
+    target must be registered here. A GPU backend is refused rather than read as the CPU, so a
+    caller who asked for one learns the stage cannot use it."""
+    if compute is None:
+        return ComputeTarget("cpu", None, None, None)
+    if compute.backend == "remote":
+        remote_targets.require_registered(compute)
+        return compute
+    if compute.backend != "cpu":
+        raise ValueError(
+            f"keypoint track runs on the CPU and loads no model, so backend "
+            f"{compute.backend!r} has nothing to run on; use one of {list(_BACKENDS)}"
+        )
+    return compute
 
 
 def _resolve_tracking_run(
@@ -695,7 +991,36 @@ def _resolve_tracking_run(
     if len(fits) > 1:
         raise ValueError(
             f"{len(fits)} complete tracking runs are on detection run "
-            f"{detection_run_id!r}: {', '.join(sorted(r['id'] for r in fits))}; choose "
-            "one with tracking_run_id"
+            f"{detection_run_id!r}: {describe_tracking_choice(fits)}"
         )
     return fits[0]
+
+
+def describe_tracking_choice(entries: list[dict]) -> str:
+    """Several tracking runs a pose could be given to, as a refusal names them: each by
+    what it follows, then which to choose. Runs that each follow one class give the poses
+    to that animal alone, so a person tracking animals by class is told the merge is what
+    gives them to every animal — and which run that is, when it exists."""
+    entries = sorted(entries, key=lambda r: str(r["id"]))
+    ids = ", ".join(
+        f"{r['id']} ({r['class_name']})" if r.get("class_name") else str(r["id"])
+        for r in entries
+    )
+    merged = [str(r["id"]) for r in entries if r.get("tracker_id") == "track_merge"]
+    by_class = {
+        str(r["class_name"])
+        for r in entries
+        if r.get("class_name") and r.get("tracker_id") != "track_merge"
+    }
+    if merged:
+        return (
+            f"{ids}; choose one as the tracking run — {', '.join(merged)} merges "
+            "several animals' tracks and gives the poses to each of them"
+        )
+    if len(by_class) > 1:
+        return (
+            f"{ids}; each follows one class, so the poses would go to that animal "
+            "alone — to give them to every animal, combine these with Merge tracks "
+            "(track_merge) and choose the merged run as the tracking run"
+        )
+    return f"{ids}; choose one as the tracking run"

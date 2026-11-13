@@ -23,9 +23,25 @@ from pydantic import BaseModel, Field
 #: there is no stage-level default here.
 METHOD_IDS = ("temporal_decode", "despike_smooth")
 
+#: Overrides how many recordings a local keypoint track run works on at once.
+PARALLELISM_ENV = "DETAIL_MAX_KEYPOINT_TRACK_PARALLELISM"
+
 
 class _Filters(BaseModel):
-    """The two switchable filters both methods end with (§26 "Track methods")."""
+    """The two switchable filters both methods end with (§26 "Track methods"), and which of
+    the skeleton's points the method may move at all."""
+
+    track_points: list[str] | None = Field(
+        None,
+        description=(
+            "The skeleton points this run settles over time; every other point keeps the "
+            "detect run's own placement, untouched by the path and the filters. Unset: every "
+            "point. Any of the detect run's point names, in any combination; a left/right "
+            "pair with only one of its points here is not swapped, since settling left from "
+            "right needs both."
+        ),
+        json_schema_extra={"label": "Points to track", "ui": "skeleton_points"},
+    )
 
     despike: bool = Field(
         True,
@@ -216,3 +232,89 @@ METHOD_CONFIGS: dict[str, type[BaseModel]] = {
     "temporal_decode": TemporalDecodeConfig,
     "despike_smooth": DespikeSmoothConfig,
 }
+
+#: The settings *Tune tracking* tries for ``temporal_decode`` (§26 *Tuning a track method*):
+#: every combination of these values, the rest of the config held at what the user has set.
+#: They are the knobs a study of track settings on hand-labelled hot-plate video found to move
+#: accuracy, at values spanning its range: the transition scale (0.15, the default, is far too
+#: small for 25 fps oblique video), smoothing off / short / default, and despike. The missing penalty and the
+#: mirror cost moved nothing there and are left where the user put them. Each combination is
+#: validated against ``TemporalDecodeConfig`` by ``tests/configs/test_keypoint_track.py``.
+TUNE_GRID: dict[str, tuple] = {
+    "transition_sigma_body": (0.15, 0.5, 1.0, 2.0, 3.0, 5.0),
+    "smooth_window_s": (None, 0.05, 0.133),  # None: smoothing off
+    "despike": (False, True),
+}
+TUNE_METHOD = "temporal_decode"
+
+
+class KeypointTrackPreviewWindow(BaseModel):
+    """*Preview tracking*'s stretch of one recording (§26 *Previewing a track method*)."""
+
+    start_s: float | None = Field(
+        None,
+        ge=0,
+        description=(
+            "Where the preview starts, in seconds from the start of the recording. Omit for "
+            "the middle of the recording. A window that would cross into the next video "
+            "part stops at the end of the part it starts in."
+        ),
+        json_schema_extra={"label": "Start (s)", "unit": "s"},
+    )
+    duration_s: float = Field(
+        30.0,
+        gt=0,
+        le=120.0,
+        description=(
+            "How long each preview is, in seconds. Tracking runs over these seconds alone "
+            "(and a short margin either side, so the path settles as it would in a full "
+            "run), which is what keeps a preview to seconds rather than minutes."
+        ),
+        json_schema_extra={"label": "Duration (s)", "unit": "s"},
+    )
+
+
+#: How many recordings a preview covers at most, and how many the window ticks by default.
+PREVIEW_MAX_RECORDINGS = 3
+PREVIEW_DEFAULT_RECORDINGS = 2
+#: How many settings a preview tries beside the current ones and detection alone.
+PREVIEW_MAX_VARIANTS = 2
+#: Seconds decoded either side of the window and then dropped: the path is a whole-series
+#: decode, so a window cut at its edges would settle differently there than a full run does.
+PREVIEW_MARGIN_S = 2.0
+#: The method settings a preview variant changes from the current ones: the knobs found to
+#: move accuracy on hand-labelled video (``TUNE_GRID``'s), each read off
+#: the method's own model; a method without one (despike_smooth has no transition) skips it.
+PREVIEW_VARIANT_FIELDS = (
+    "transition_sigma_body",
+    "smooth",
+    "smooth_window_s",
+    "despike",
+)
+#: Where the two variants start, per method, before the user edits them: for temporal_decode
+#: a wider transition, and the best of that study's 28 settings (transition 3, filters off).
+#: Starting points to look at, not recommendations.
+PREVIEW_STARTING_VARIANTS: dict[str, tuple[dict, ...]] = {
+    "temporal_decode": (
+        {"transition_sigma_body": 1.0},
+        {"transition_sigma_body": 3.0, "smooth": False, "despike": False},
+    ),
+    "despike_smooth": ({"smooth": False}, {"smooth": False, "despike": False}),
+}
+
+
+def tune_settings() -> list[dict]:
+    """Every ``TUNE_GRID`` combination as config overrides, in grid order: smoothing off is
+    ``smooth: False`` (its window left as set), on is ``smooth: True`` plus the window.
+    """
+    out = []
+    for sigma in TUNE_GRID["transition_sigma_body"]:
+        for window in TUNE_GRID["smooth_window_s"]:
+            for despike in TUNE_GRID["despike"]:
+                setting = {"transition_sigma_body": sigma, "despike": despike}
+                if window is None:
+                    setting["smooth"] = False
+                else:
+                    setting.update(smooth=True, smooth_window_s=window)
+                out.append(setting)
+    return out

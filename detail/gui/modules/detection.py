@@ -11,12 +11,20 @@ so "is there anything I can run?" could only be answered by toggling it — and 
 answer was yes, under the branch you were not looking at, while the visible branch offered
 a CUDA-only SAM 3 with an enabled CUDA device box.
 
+Detection is the one module wired to a remote (Slurm) executor (§6), so its picker passes
+``allow_remote=True``: a cuda-only model stays selectable on a machine with no working local
+CUDA, as long as a cluster is registered — the same "remote" backend row `ComputeTargetRow`
+below then offers. Without a registered target it still needs its reason, same as before.
+
 A model's own kind drives the rest: a prompted model (SAM 3) shows the prompt rows, a
-closed-set one (trained / imported) shows its class list instead.
+closed-set one (trained / imported) shows its class list instead — alongside a per-class
+confidence override row for each, seeded to (and falling back to) the flat confidence
+field above.
 """
 
 from PyQt6.QtWidgets import (
     QComboBox,
+    QFormLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -31,6 +39,7 @@ from detail.configs.detection import (
     BATCHABLE_DEFAULT_BATCH_SIZE,
     DetectionConfig,
 )
+from detail.core import class_names
 from detail.core.dataclasses import Prompt, PromptTarget, TextCue
 from detail.core.registries import MODELS
 from detail.executor.runners import import_runner_modules
@@ -52,6 +61,68 @@ from detail.gui.modules.registry import ConfigWidget, ModuleUI, register_module_
 # pydantic form helpers and the confidence row), so a top-level import here closes a
 # cycle whose outcome depends on which module the process happens to import first —
 # importing gui.preview before gui.modules raised ImportError. Imported where used.
+
+
+def detection_model_entries(experiment) -> list[dict]:
+    """Every model an experiment could detect with: built-ins, then its own trained models,
+    then the machine's imported ones. Built-ins lead, so a runnable SAM 3 is still what a
+    form opens on.
+
+    Each entry: ``label``, ``id``, ``kind`` (built-in / trained / imported),
+    ``prompt_capable``, ``classes`` (a closed-set model's own) and ``variants``. Shared by the
+    detection launch form and the keypoint setup dialog, which offers the closed-set ones.
+    """
+
+    def label(name: str | None, model_id: str, kind: str) -> str:
+        # Most imported models are named after their id; printing it twice is noise.
+        lead = f"{name}  ·  {model_id}" if name and name != model_id else model_id
+        return f"{lead}  ·  {kind}"
+
+    entries = []
+    for model_id in sorted(MODELS):
+        cls = MODELS[model_id]
+        entries.append(
+            {
+                "label": model_id,
+                "id": model_id,
+                "kind": "built-in",
+                "prompt_capable": TextCue in cls.supported_cue_types,
+                "classes": [],
+                "variants": list(cls.variants()),
+            }
+        )
+    if experiment is None:  # a form built before an experiment is attached
+        return entries
+    for model in experiment.models:
+        # A keypoint student (§26) is a trained model too, and detects nothing.
+        if model.status != "complete" or model.role != "detection":
+            continue
+        record = experiment.model_record(model.id)
+        entries.append(
+            {
+                "label": label(model.name, model.id, "trained"),
+                "id": model.id,
+                "kind": "trained",
+                "prompt_capable": False,
+                "classes": [c["name"] for c in record.get("classes", [])],
+                "variants": [],
+            }
+        )
+    for im in experiment.imported_models:  # machine-global, shared
+        # An imported keypoint model (§26) shares the catalog and detects nothing.
+        if im.role != "detection":
+            continue
+        entries.append(
+            {
+                "label": label(im.name, im.id, "imported"),
+                "id": im.id,
+                "kind": "imported",
+                "prompt_capable": False,
+                "classes": list(im.classes),
+                "variants": [],
+            }
+        )
+    return entries
 
 
 class _DetectionConfig(ConfigWidget):
@@ -107,6 +178,21 @@ class _DetectionConfig(ConfigWidget):
             field_label("detection", "conf_threshold", conf_meta["label"] + ":"),
             self._conf,
         )
+        # A closed-set model's own classes, each with an optional confidence override —
+        # rebuilt in _sync_model_kind off entry["classes"], since the valid rows depend on
+        # which model is selected and can't be declared statically. Empty container by
+        # default (no model chosen yet); hidden whenever there's nothing to override.
+        class_conf_meta = field_meta(DetectionConfig, "class_conf_thresholds")
+        self._class_conf_container = QWidget()
+        self._class_conf_form = QFormLayout(self._class_conf_container)
+        self._class_conf_form.setContentsMargins(0, 0, 0, 0)
+        self._class_conf_rows: dict[str, QWidget] = {}
+        form.addRow(
+            field_label(
+                "detection", "class_conf_thresholds", class_conf_meta["label"] + ":"
+            ),
+            self._class_conf_container,
+        )
         batch_meta = field_meta(DetectionConfig, "batch_size")  # label
         self._batch = field_widget(DetectionConfig, "batch_size")
         self._batch.setValue(1)
@@ -114,7 +200,7 @@ class _DetectionConfig(ConfigWidget):
             field_label("detection", "batch_size", batch_meta["label"] + ":"),
             self._batch,
         )
-        self._compute = ComputeTargetRow()
+        self._compute = ComputeTargetRow(allow_remote=True)
         self._compute.add_to(form.section())
         every_n_meta = field_meta(DetectionConfig, "every_n_frames")
         self._every_n = EveryNRow(DetectionConfig)
@@ -133,58 +219,7 @@ class _DetectionConfig(ConfigWidget):
 
     # -- the model list ------------------------------------------------------ #
     def _entries(self) -> list[dict]:
-        """Every model this experiment could detect with: built-ins, then its own trained
-        models, then the machine's imported ones. Built-ins lead, so a runnable SAM 3 is
-        still what the form opens on."""
-
-        def label(name: str | None, model_id: str, kind: str) -> str:
-            # Most imported models are named after their id; printing it twice is noise.
-            lead = f"{name}  ·  {model_id}" if name and name != model_id else model_id
-            return f"{lead}  ·  {kind}"
-
-        entries = []
-        for model_id in sorted(MODELS):
-            cls = MODELS[model_id]
-            entries.append(
-                {
-                    "label": model_id,
-                    "id": model_id,
-                    "kind": "built-in",
-                    "prompt_capable": TextCue in cls.supported_cue_types,
-                    "classes": [],
-                    "variants": list(cls.variants()),
-                }
-            )
-        if self._experiment is None:  # built before an experiment is attached
-            return entries
-        for model in self._experiment.models:
-            if model.status != "complete" or model.role != "detection":
-                continue  # a pose student (§12) is a keypoint method, not a detector
-            record = self._experiment.model_record(model.id)
-            entries.append(
-                {
-                    "label": label(model.name, model.id, "trained"),
-                    "id": model.id,
-                    "kind": "trained",
-                    "prompt_capable": False,
-                    "classes": [c["name"] for c in record.get("classes", [])],
-                    "variants": [],
-                }
-            )
-        for im in self._experiment.imported_models:  # machine-global, shared
-            if im.role != "detection":
-                continue  # a catalog keypoint model (§12) is a keypoint method
-            entries.append(
-                {
-                    "label": label(im.name, im.id, "imported"),
-                    "id": im.id,
-                    "kind": "imported",
-                    "prompt_capable": False,
-                    "classes": list(im.classes),
-                    "variants": [],
-                }
-            )
-        return entries
+        return detection_model_entries(self._experiment)
 
     def _rebuild_models(self) -> None:
         self._model.blockSignals(True)
@@ -192,7 +227,9 @@ class _DetectionConfig(ConfigWidget):
         for entry in self._entries():
             self._model.addItem(entry["label"], entry)
         self._model.blockSignals(False)
-        self._unavailable = apply_availability(self._model, "detection")
+        self._unavailable = apply_availability(
+            self._model, "detection", allow_remote=True
+        )
         show_note(self._no_models, self._unavailable)
         self._sync_model_kind()  # marking may or may not have moved the selection
 
@@ -222,6 +259,7 @@ class _DetectionConfig(ConfigWidget):
         self._classes.setText(
             ", ".join(names) if names else "(none)" if closed_set else ""
         )
+        self._rebuild_class_conf_rows(names if closed_set else [])
         # A closed-set model has no prompt, but it can still be previewed — the dialog
         # offers a per-class preview instead of candidate prompts.
         self._test_btn.setText("Test prompts" if prompted else "Test detection")
@@ -231,6 +269,28 @@ class _DetectionConfig(ConfigWidget):
         self._sync_variants()
         self._sync_backends()
         self._sync_batch_default()
+
+    def _rebuild_class_conf_rows(self, names: list[str]) -> None:
+        """Repopulate the per-class override rows for a closed-set model's classes
+        (empty for a prompt-capable model, or a closed-set one with no known classes —
+        there is nothing to override). Each row is freshly seeded to the *current*
+        global default rather than preserved across a rebuild: the classes changed
+        along with the model, so a stale value from the old model's rows would be a
+        threshold for a class that may not even exist any more."""
+        while self._class_conf_form.rowCount():
+            self._class_conf_form.removeRow(0)
+        self._class_conf_rows.clear()
+        labels = (
+            self._experiment.renamed_classes() if self._experiment is not None else {}
+        )
+        for name in names:
+            spin = field_widget(DetectionConfig, "conf_threshold")
+            spin.setValue(self._conf.value())
+            self._class_conf_form.addRow(
+                QLabel(class_names.label(name, labels) + ":"), spin
+            )
+            self._class_conf_rows[name] = spin
+        self._form.set_row_visible(self._class_conf_container, bool(names))
 
     def _sync_batch_default(self) -> None:
         # Batch-capable models (YOLO, incl. trained/imported) default to a tunable batch
@@ -324,15 +384,28 @@ class _DetectionConfig(ConfigWidget):
         is the misbind this whole flag exists to avoid. The device is a property of where you
         are running, not of the run you are copying.
         """
-        index = self._model.findData(config.get("model_id"))
-        if index >= 0:
-            self._model.setCurrentIndex(index)
+        # Not `self._model.findData(...)`: each row's data is the whole entry dict
+        # (kind/classes/variants alongside the id), so a plain id string never equals
+        # it and findData always misses — the restore silently no-ops and Refine opens
+        # on whatever _rebuild_models happened to default to, never the run's own model.
+        model_id = config.get("model_id")
+        for i in range(self._model.count()):
+            data = self._model.itemData(i)
+            if data and data["id"] == model_id:
+                self._model.setCurrentIndex(i)
+                break
         index = self._variant.findData(config.get("model_variant"))
         if index >= 0:
             self._variant.setCurrentIndex(index)
         self._load_prompt(config.get("prompt"))
         if config.get("conf_threshold") is not None:
             self._conf.setValue(float(config["conf_threshold"]))
+        # After conf_threshold, and after the model switch above already rebuilt the rows
+        # (currentIndexChanged -> _sync_model_kind): a class with no stored override was,
+        # by definition, at the global default when this config was saved.
+        stored = config.get("class_conf_thresholds") or {}
+        for name, spin in self._class_conf_rows.items():
+            spin.setValue(float(stored.get(name, self._conf.value())))
         if config.get("batch_size") is not None:
             self._batch.setValue(int(config["batch_size"]))
         self._every_n.set_value(config.get("every_n_frames"))
@@ -378,6 +451,9 @@ class _DetectionConfig(ConfigWidget):
             "prompt": prompt,
             "compute": self._compute.compute_target(),
             "conf_threshold": self._conf.value(),
+            "class_conf_thresholds": {
+                name: spin.value() for name, spin in self._class_conf_rows.items()
+            },
             "batch_size": self._batch.value(),
             "every_n_frames": self._every_n.value(),
         }
@@ -390,7 +466,51 @@ class DetectionModuleUI(ModuleUI):
     def config_widget(self) -> ConfigWidget:
         return _DetectionConfig()
 
-    def preview_widget(self, recording, run_id: str) -> QWidget | None:
+    def result_widget(self, experiment, run_record: dict) -> QWidget:
         from detail.gui.run_preview import DetectionRunPreview
 
-        return DetectionRunPreview(recording, run_id)
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        recordings = [
+            (sid, info.get("run_id"))
+            for sid, info in run_record.get("per_recording", {}).items()
+            if info.get("status") == "complete"
+        ]
+        if not recordings:
+            layout.addWidget(QLabel("(no completed detections to preview)"))
+            return widget
+        picker = QComboBox()
+        for sid, rid in recordings:
+            picker.addItem(f"{sid}  ·  {rid}", (sid, rid))
+        layout.addWidget(picker)
+        holder = QVBoxLayout()
+        layout.addLayout(holder, 1)
+        current = {"widget": None}
+
+        def show(index: int) -> None:
+            sid, rid = picker.itemData(index)
+            if current["widget"] is not None:
+                current["widget"].deleteLater()
+            current["widget"] = DetectionRunPreview(
+                experiment.get_recording(sid),
+                rid,
+                experiment_dir=experiment.dir,
+                parent_run_id=run_record.get("id"),
+            )
+            holder.addWidget(current["widget"])
+
+        picker.currentIndexChanged.connect(show)
+        show(0)
+        return widget
+
+    def preview_widget(
+        self, recording, run_id: str, *, experiment_dir, parent_run_id
+    ) -> QWidget | None:
+        from detail.gui.run_preview import DetectionRunPreview
+
+        return DetectionRunPreview(
+            recording,
+            run_id,
+            experiment_dir=experiment_dir,
+            parent_run_id=parent_run_id,
+        )

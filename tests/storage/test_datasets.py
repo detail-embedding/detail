@@ -20,9 +20,26 @@ picked one, which is why reading either one past it looked like agreement.
 
 import numpy as np
 
+from detail.core.dataclasses import LabelingClass, LabelingJob
 from detail.core.utils import mask_to_polygon
 from detail.storage import datasets as ds
 from detail.storage import experiment as experiment_store
+
+
+def _labeling_job(compute, dataset_id="dataset_001"):
+    return LabelingJob(
+        job_id=dataset_id,
+        dataset_id=dataset_id,
+        name="d",
+        source_recording_ids=["recording_001"],
+        classes=[LabelingClass(0, "mouse", "a mouse")],
+        n_frames=4,
+        logit_threshold=0.5,
+        min_contour_area=100,
+        val_split=0.15,
+        compute=compute,
+        created_at="2026-01-01T00:00:00Z",
+    )
 
 
 # --- mask_to_polygon -------------------------------------------------------- #
@@ -123,6 +140,30 @@ def test_set_dataset_status_records_error(tmp_path):
     rec = ds.read_dataset_yaml(ddir)
     assert rec["status"] == "failed"
     assert rec["error"] == "ValueError: nope"
+
+
+def test_set_dataset_status_merges_duration_from_the_jobs_own_envelope(tmp_path):
+    """dataset_dir doubles as the job's own run_dir (job.json lives right beside
+    dataset.yaml) — set_dataset_status reads the job's started_at/completed_at
+    straight from there, no extra argument needed from any caller."""
+    from detail.core.dataclasses import ComputeTarget, JobStatus
+    from detail.executor import rundir
+
+    proj = experiment_store.create_experiment(tmp_path, "p")
+    ddir = ds.dataset_dir(proj, "dataset_001")
+    ddir.mkdir(parents=True)
+    ds.write_dataset_yaml(ddir, {"id": "dataset_001", "status": "running"})
+    job = _labeling_job(compute=ComputeTarget("cpu", None, None, None))
+    rundir.init_run_dir(ddir, job)
+    rundir.set_status(ddir, JobStatus.RUNNING)
+    rundir.set_status(ddir, JobStatus.COMPLETE)
+
+    ds.set_dataset_status(ddir, "complete")
+
+    rec = ds.read_dataset_yaml(ddir)
+    assert rec["duration_s"] is not None
+    assert rec["compute"]["backend"] == "cpu"
+    assert "estimated_cost_usd" not in rec  # local — no rate to estimate from
 
 
 def test_discover_and_next_id(tmp_path):

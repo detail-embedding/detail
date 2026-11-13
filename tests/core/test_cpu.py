@@ -28,6 +28,9 @@ ALLOWED: dict[str, str] = {
     "detail/core/hostinfo.py": "the machine block reports the count",
     # The transcode pool: decoders self-thread, so a floor of four, env-overridable.
     "detail/core/utils.py": "max_transcode_parallelism: capped at 4, DETAIL_MAX_TRANSCODE_PARALLELISM",
+    # Recordings tracked side by side, a process each (~380 MB), half the cores: measured on a
+    # 16-core box in its own docstring, and env-overridable (`PARALLELISM_ENV`).
+    "detail/pipeline/keypoint_track.py": "local_parallelism: a process per recording, half the cores",
 }
 
 

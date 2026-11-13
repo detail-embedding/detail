@@ -18,6 +18,7 @@ import yaml
 
 from detail.core import atomic
 from detail.core import progress
+from detail.core import yaml_load
 from detail.storage import dirscan
 from detail.storage import read_cache
 
@@ -86,7 +87,7 @@ def write_run(experiment_dir: Path | str, run_id: str, record: dict) -> None:
     tmp = path.parent / (path.name + ".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         yaml.dump(ordered, f, sort_keys=False)
-    atomic.replace(tmp, path)
+    read_cache.replace_document(tmp, path)
 
 
 def read_run(experiment_dir: Path | str, run_id: str) -> dict:
@@ -98,7 +99,7 @@ def read_run(experiment_dir: Path | str, run_id: str) -> dict:
     path = run_dir(experiment_dir, run_id) / RUN_FILENAME
     try:
         return read_cache.cached_document(
-            path, lambda: yaml.safe_load(atomic.read_text(path))
+            path, lambda: yaml_load.safe_load(atomic.read_text(path))
         )
     except FileNotFoundError:
         raise FileNotFoundError(

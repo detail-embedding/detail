@@ -6,19 +6,17 @@ processing runs). Each dialog validates, calls the experiment API
 ``run_handle`` for the shell to show live progress.
 """
 
-from PyQt6.QtGui import QColor, QPalette
+from PyQt6.QtGui import QPalette
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
-    QDialog,
     QDialogButtonBox,
     QFormLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
-    QListWidgetItem,
     QMessageBox,
     QPushButton,
     QStackedWidget,
@@ -28,8 +26,8 @@ from PyQt6.QtWidgets import (
 
 from detail.api._runner_modules import PIPELINE_RUNNERS
 from detail.api.experiment import Experiment
-from detail.api.models import prompt_capable_models
-from detail.configs.distill import DEFAULT_N_FRAMES
+from detail.api.models import prompt_capable_models, supported_backends
+from detail.configs.distill import DEFAULT_N_FRAMES, DistillConfig
 from detail.configs.labeling import LabelingConfig
 from detail.core.dataclasses import LabelingClass
 from detail.gui.compute_target import ComputeTargetRow
@@ -47,10 +45,12 @@ from detail.gui.spin import IntSpin
 from detail.gui.preview import PromptTestDialog
 from detail.core.registries import MODELS, TRAINERS
 from detail.executor.runners import import_runner_modules
+from detail.gui.recording_filter import with_filter
 from detail.gui.recording_items import fill_recording_list, selected_recording_ids
 
 # The trainer's knobs, a group inside Advanced Settings, rebuilt whenever the trainer
 # changes (see _rebuild_hyperparams).
+DISTILL_FIELDS = DistillConfig.model_fields
 _TRAINING_KNOBS = "Training parameters"
 
 _BASE_MODELS = ["yolo11s-seg.pt", "yolo11n-seg.pt", "yolo11m-seg.pt", "yolo11l-seg.pt"]
@@ -65,14 +65,11 @@ def _colored(label: QLabel, ok: bool) -> None:
 class GenerateDatasetDialog(Dialog):
     """Export a YOLO dataset from a completed detection/tracking run (§12)."""
 
-    fits_content = True  # a settings form: show it all (Dialog.fits_content)
-
     def __init__(self, experiment, source_run_id: str | None = None, parent=None):
         super().__init__(parent)
         self._experiment = experiment
         self.run_handle = None
         self.setWindowTitle("Generate a training dataset")
-        self.resize(480, 320)
 
         layout = self.body()
         form = ConfigForm(layout, LabelingConfig)
@@ -167,14 +164,11 @@ class GenerateLabelingDialog(Dialog):
     """Label a random frame sample with a prompt-capable model into a YOLO dataset (§12) — no run
     needed."""
 
-    fits_content = True  # a settings form: show it all (Dialog.fits_content)
-
     def __init__(self, experiment, parent=None):
         super().__init__(parent)
         self._experiment = experiment
         self.run_handle = None
         self.setWindowTitle("Label a dataset")
-        self.resize(520, 440)
 
         layout = self.body()
         form = ConfigForm(layout, LabelingConfig)
@@ -185,7 +179,10 @@ class GenerateLabelingDialog(Dialog):
             QAbstractItemView.SelectionMode.ExtendedSelection
         )
         fill_recording_list(self._recordings, experiment.recordings)
-        form.addRow("Recordings (none = all):", self._recordings)
+        form.addRow(
+            "Recordings (none = all):",
+            with_filter(self._recordings, experiment, select_buttons=True),
+        )
         # Model + size/variant, mirroring the detection form: only prompt-capable models can
         # label. A no-variant model (SAM3) shows "(default)" → data None (a non-None variant on a
         # no-variant model raises).
@@ -197,6 +194,7 @@ class GenerateLabelingDialog(Dialog):
         )
         self._model.setToolTip(model_meta["help"])
         self._model.currentTextChanged.connect(self._sync_variants)
+        self._model.currentTextChanged.connect(self._sync_backends)
         form.addRow(
             field_label("labeling", "model_id", "Teacher (labels the frames):"),
             self._model,
@@ -244,8 +242,9 @@ class GenerateLabelingDialog(Dialog):
         form.addRow(
             field_label("labeling", "min_contour_area", ma_label + ":"), self._min_area
         )
-        self._compute = ComputeTargetRow()
+        self._compute = ComputeTargetRow(allow_remote=True)
         self._compute.add_to(form.section())
+        self._sync_backends()
         form.finish()
 
         layout.addWidget(QLabel("Classes (name + text prompt):"))
@@ -282,6 +281,9 @@ class GenerateLabelingDialog(Dialog):
         else:
             self._variant.addItem("(default)", None)
             self._variant.setEnabled(False)
+
+    def _sync_backends(self) -> None:
+        self._compute.set_backends(supported_backends(self._model.currentText()))
 
     def _add_class_row(self) -> None:
         row = QWidget()
@@ -380,14 +382,11 @@ class GenerateLabelingDialog(Dialog):
 class TrainModelDialog(Dialog):
     """Train a custom detection model from a completed dataset (§12)."""
 
-    fits_content = True  # a settings form: show it all (Dialog.fits_content)
-
     def __init__(self, experiment, dataset_id: str | None = None, parent=None):
         super().__init__(parent)
         self._experiment = experiment
         self.run_handle = None
         self.setWindowTitle("Train a model")
-        self.resize(480, 420)
         import_runner_modules(PIPELINE_RUNNERS)  # populate the TRAINERS registry
 
         layout = self.body()
@@ -424,7 +423,7 @@ class TrainModelDialog(Dialog):
         self._base_model.addItems(_BASE_MODELS)
         form.addRow("Student (the fast model):", self._base_model)
 
-        self._compute = ComputeTargetRow()
+        self._compute = ComputeTargetRow(allow_remote=True)
         self._compute.add_to(form.section())
 
         # The trainer's knobs get their own section: they are rebuilt wholesale when the
@@ -527,14 +526,11 @@ class DistillDialog(Dialog):
     ``AttachedDistillRun`` is held in ``run_handle`` for the shell to stream. Compute is per
     stage (SAM3 labeling needs CUDA)."""
 
-    fits_content = True  # a settings form: show it all (Dialog.fits_content)
-
     def __init__(self, experiment=None, parent=None, *, model_type: str = "detector"):
         super().__init__(parent)
         self.run_handle = None
         self.run_experiment = None  # the experiment the launched run belongs to
         self.setWindowTitle("Distill new model")
-        self.resize(560, 700)
         import_runner_modules(PIPELINE_RUNNERS)  # populate the TRAINERS registry
 
         # Distilling is machine-global, so you pick the experiment (and its recordings) here
@@ -584,7 +580,9 @@ class DistillDialog(Dialog):
         self._recordings.setSelectionMode(
             QAbstractItemView.SelectionMode.ExtendedSelection
         )
-        form.addRow("Recordings (none = all):", self._recordings)
+        picker = with_filter(self._recordings, self._experiment, select_buttons=True)
+        self._recording_filter = picker.filter
+        form.addRow("Recordings (none = all):", picker)
         self._sync_recordings()
 
         # --- Labeling stage (mirrors GenerateLabelingDialog) ---
@@ -594,6 +592,7 @@ class DistillDialog(Dialog):
         self._model.setCurrentText(LabelingConfig.model_fields["model_id"].default)
         self._model.setToolTip(model_meta["help"])
         self._model.currentTextChanged.connect(self._sync_variants)
+        self._model.currentTextChanged.connect(self._sync_label_backends)
         form.addRow(
             field_label("labeling", "model_id", "Teacher (labels the frames):"),
             self._model,
@@ -635,8 +634,11 @@ class DistillDialog(Dialog):
             field_label("labeling", "min_contour_area", "Min contour area (px):"),
             self._min_area,
         )
-        self._compute = ComputeTargetRow()  # labeling (also drives Test prompts)
+        self._compute = ComputeTargetRow(
+            allow_remote=True
+        )  # labeling (also drives Test prompts)
         self._compute.add_to(form.section(), prefix="Label")
+        self._sync_label_backends()
 
         # --- Training stage (mirrors TrainModelDialog) ---
         self._trainer = QComboBox()
@@ -652,8 +654,17 @@ class DistillDialog(Dialog):
         self._base_model.setEditable(True)
         self._base_model.addItems(_BASE_MODELS)
         form.addRow("Student (the fast model):", self._base_model)
-        self._train_compute = ComputeTargetRow()
+        self._train_compute = ComputeTargetRow(allow_remote=True)
         self._train_compute.add_to(form.section(), prefix="Train")
+        self._stage_videos = QCheckBox()
+        self._stage_videos.setToolTip(DISTILL_FIELDS["stage_videos"].description)
+        form.addRow(
+            f"{DISTILL_FIELDS['stage_videos'].json_schema_extra['label']}:",
+            self._stage_videos,
+        )
+        for row in (self._compute, self._train_compute):
+            row.backend.currentTextChanged.connect(self._sync_stage_videos)
+        self._sync_stage_videos()
         self._form = form
         self._hparams: dict[str, QWidget] = {}
         form.finish()
@@ -730,6 +741,10 @@ class DistillDialog(Dialog):
             self._variant.addItem("(default)", None)
             self._variant.setEnabled(False)
 
+    def _sync_label_backends(self) -> None:
+        self._compute.set_backends(supported_backends(self._model.currentText()))
+        self._sync_stage_videos()
+
     def _sync_experiment(self) -> None:
         self._experiment = self._exp_combo.currentData()
         self._sync_recordings()
@@ -737,6 +752,7 @@ class DistillDialog(Dialog):
 
     def _sync_recordings(self) -> None:
         self._recordings.clear()
+        self._recording_filter.set_experiment(self._experiment)
         if self._experiment is None:
             return
         fill_recording_list(self._recordings, self._experiment.recordings)
@@ -753,6 +769,7 @@ class DistillDialog(Dialog):
         )
         _colored(self._readiness, ready)
         self._train_compute.set_backends(trainer.supported_backends if trainer else [])
+        self._sync_stage_videos()
         self._rebuild_hyperparams(trainer)
 
     def _rebuild_hyperparams(self, trainer) -> None:
@@ -825,6 +842,19 @@ class DistillDialog(Dialog):
             model_variant=self._variant.currentData(),
         ).exec()
 
+    def _sync_stage_videos(self) -> None:
+        """The background upload only exists for a remote run: greyed (not hidden, per the GUI
+        style rule) and cleared otherwise, so a stale tick never reaches ``distill``."""
+        if not hasattr(self, "_stage_videos"):
+            return  # the first backend sync runs while the form is still being built
+        remote = "remote" in (
+            self._compute.current_backend(),
+            self._train_compute.current_backend(),
+        )
+        self._stage_videos.setEnabled(remote)
+        if not remote:
+            self._stage_videos.setChecked(False)
+
     def _run(self) -> None:
         if self._experiment is None:
             QMessageBox.warning(self, "Distill", "Create an experiment first.")
@@ -875,9 +905,18 @@ class DistillDialog(Dialog):
                 trainer_id=trainer_id,
                 hyperparams=hyperparams,
                 train_compute=self._train_compute.compute_target(),
+                stage_videos=self._stage_videos.isChecked(),
             )
         except (ValueError, FileNotFoundError) as exc:
             QMessageBox.critical(self, "Distill", str(exc))
             return
         self.run_experiment = self._experiment
         self.accept()
+
+
+_POSE_BASE_MODELS = [
+    "yolo11n-pose.pt",
+    "yolo11s-pose.pt",
+    "yolo11m-pose.pt",
+    "yolo11l-pose.pt",
+]

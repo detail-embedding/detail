@@ -20,6 +20,7 @@ from pathlib import Path
 from detail.core.protocols import DetectionModel
 from detail.core.registries import MODELS, TRAINED_LOADERS
 from detail.models import imported as imported_store
+from detail.models import onnx_keypoints
 from detail.storage import models as models_store
 
 
@@ -96,7 +97,7 @@ def resolve_pretrained_or_imported(
     model_cls = MODELS.get(model_id)
     if model_cls is not None:
         return model_cls(model_variant)
-    if model_id in imported_store.discover():
+    if model_id in imported_store.discover(role=None):
         return _load_from_model_yaml(imported_store.model_dir(model_id))
     raise ValueError(
         f"unknown model {model_id!r} — not a built-in model ({sorted(MODELS)}) or an "
@@ -110,10 +111,11 @@ def _load_from_model_yaml(model_dir: Path | str) -> DetectionModel:
     loader with the local weights path + recorded class names."""
     model_dir = Path(model_dir)
     record = models_store.read_model_yaml(model_dir)  # FileNotFoundError if absent
-    if imported_store.is_pose_record(record):
+    role = imported_store.role_of(record)
+    if role != "detection":
         raise ValueError(
-            f"model {model_dir.name!r} is a keypoint (pose) model, not a detector; run it "
-            "in keypoint detection (keypoint_detect), not detection"
+            f"model {model_dir.name!r} is a keypoint (pose) model (an imported {role} "
+            "model, not a detection model); use it in keypoint detection"
         )
     status = record.get("status")
     if status != "complete":
@@ -132,6 +134,22 @@ def _load_from_model_yaml(model_dir: Path | str) -> DetectionModel:
         raise ValueError(f"model {model_dir.name!r} has no best-weights path")
     classes = [c["name"] for c in record.get("classes", [])]
     return loader(weights_path=model_dir / best, classes=classes)
+
+
+def ensure_keypoint_methods() -> None:
+    """Import the modules that register the built-in keypoint methods, so a lookup here does
+    not depend on an import something else happened to make.
+
+    A method registers itself when its module is imported. The GUI form and every
+    ``Experiment`` launcher import them first; a bare process that reached a lookup another
+    way — ``detail keypoints test`` from the command line, a script, an export reading a run's
+    score cut-off — found the registry empty, and read ``dinov3_match`` as unknown or a run as
+    having no cut-off at all. ``import_runner_modules`` is idempotent, so the lookups pay it once.
+    """
+    from detail.api._runner_modules import PIPELINE_RUNNERS
+    from detail.executor.runners import import_runner_modules
+
+    import_runner_modules(PIPELINE_RUNNERS)
 
 
 #: Where a keypoint student's weights live, by the ``weights_source`` a run records (§12
@@ -156,6 +174,7 @@ def resolve_keypoint_model(model_id: str, model_variant: str | None = None, **kw
 
     from detail.core.registries import KEYPOINT_MODELS
 
+    ensure_keypoint_methods()
     experiment_dir = kwargs.pop("experiment_dir", None)
     weights_source = kwargs.pop("weights_source", None)
     if weights_source is not None:
@@ -169,9 +188,20 @@ def resolve_keypoint_model(model_id: str, model_variant: str | None = None, **kw
         hit = _find_keypoint_student(experiment_dir, model_id)
         if hit is not None:
             return _load_keypoint_student(hit, model_id, kwargs)
+        if onnx_keypoints.is_imported(model_id):
+            # An imported ONNX model is its file: no variant and no build inputs to take.
+            given = sorted(k for k, v in kwargs.items() if v is not None)
+            if model_variant is not None or given:
+                raise ValueError(
+                    f"imported keypoint model {model_id!r} takes no "
+                    f"{(['model_variant'] if model_variant is not None else []) + given}"
+                )
+            return onnx_keypoints.ImportedKeypointModel(model_id)
         students = [s["id"] for s in keypoint_students(experiment_dir)]
+        imported = imported_keypoint_models()
         raise ValueError(
             f"unknown keypoint method {model_id!r}; available: {sorted(KEYPOINT_MODELS)}"
+            + (f", imported {imported}" if imported else "")
             + (f" and the keypoint models {students}" if students else "")
         )
     params = inspect.signature(model_cls.__init__).parameters
@@ -186,24 +216,29 @@ def resolve_keypoint_weights_source(
     experiment_dir: Path | str | None, model_id: str
 ) -> str | None:
     """Where a keypoint method id resolves, in the lookup order: None for a registered
-    method, ``"trained"`` for this experiment's student, ``"imported"`` for a catalog model.
-    A keypoint detect run records it (Tenet 9) because an experiment model and a catalog
-    model can share an id.
+    method or an imported ONNX model (§26), ``"trained"`` for this experiment's student,
+    ``"imported"`` for a catalog student. A keypoint detect run records it (Tenet 9)
+    because an experiment model and a catalog model can share an id.
 
     Raises:
-        ValueError: ``model_id`` is none of the three.
+        ValueError: ``model_id`` is none of these.
     """
     from detail.core.registries import KEYPOINT_MODELS
 
     if model_id in KEYPOINT_MODELS:
         return None
     hit = _find_keypoint_student(experiment_dir, model_id)
-    if hit is None:
-        raise ValueError(
-            f"unknown keypoint method {model_id!r}; available: {sorted(KEYPOINT_MODELS)}, "
-            "this experiment's keypoint students and the catalog's keypoint models"
+    if hit is not None:
+        return hit[2]
+    if onnx_keypoints.is_imported(model_id):
+        return (
+            None  # an imported ONNX model is its file; the run records its hash (§26)
         )
-    return hit[2]
+    raise ValueError(
+        f"unknown keypoint method {model_id!r}; available: {sorted(KEYPOINT_MODELS)}, "
+        "the imported keypoint models, this experiment's keypoint students and the "
+        "catalog's keypoint models"
+    )
 
 
 def keypoint_method_class(experiment_dir: Path | str | None, model_id: str | None):
@@ -222,6 +257,7 @@ def keypoint_method_class(experiment_dir: Path | str | None, model_id: str | Non
 
     if not model_id:
         return None
+    ensure_keypoint_methods()
     cls = KEYPOINT_MODELS.get(str(model_id))
     if cls is not None:
         return cls
@@ -229,7 +265,17 @@ def keypoint_method_class(experiment_dir: Path | str | None, model_id: str | Non
         from detail.models.yolo_pose import TrainedYoloPose
 
         return TrainedYoloPose
+    if onnx_keypoints.is_imported(str(model_id)):
+        return onnx_keypoints.ImportedKeypointModel
     return None
+
+
+def imported_keypoint_models() -> list[str]:
+    """Ids of the imported ONNX keypoint models in the machine catalog (§26). A YOLO-pose
+    model there is a student (``keypoint_students``), not one of these."""
+    return [
+        m for m in imported_store.discover("keypoints") if onnx_keypoints.is_imported(m)
+    ]
 
 
 def keypoint_students(experiment_dir: Path | str | None) -> list[dict]:
@@ -246,7 +292,7 @@ def keypoint_students(experiment_dir: Path | str | None) -> list[dict]:
             if record is not None and record.get("status") == "complete":
                 out.append({**record, "source": "trained"})
                 taken.add(model_id)
-    for model_id in imported_store.discover():
+    for model_id in imported_store.discover(role=None):
         if model_id in taken:
             continue
         record = _pose_record_at(imported_store.model_dir(model_id))
@@ -335,4 +381,15 @@ def _load_keypoint_student(hit: tuple[dict, Path, str], model_id: str, kwargs: d
     skeleton = record.get("skeleton")
     if not skeleton:
         raise ValueError(f"keypoint student {model_id!r} records no skeleton")
-    return TrainedYoloPose(Path(model_dir) / best, Skeleton.from_dict(skeleton))
+
+    return TrainedYoloPose(
+        Path(model_dir) / best, Skeleton.from_dict(skeleton), **student_input_of(record)
+    )
+
+
+def student_input_of(record: dict) -> dict:
+    """``{student_input, crop_px}`` a student is run with: ``core.keypoints.student_input_of``,
+    the one reader of a stored record's choice."""
+    from detail.core.keypoints import student_input_of as read
+
+    return read(record)

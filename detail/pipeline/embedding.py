@@ -31,15 +31,17 @@ import cv2
 import numpy as np
 import yaml
 from detail.analysis import geometry
+from detail.core import yaml_load
 from detail.core.visualize import bgr_to_rgb
 from detail.configs.embedding import EmbeddingConfig
-from detail.core import atomic
+from detail.core import atomic, disk_space
 from detail.core.dataclasses import (
     EmbeddingJob,
     EmbeddingProgressEvent,
     RenderContext,
 )
 from detail.core.progress import PROGRESS_INTERVAL_S, remaining_seconds
+from detail.core.skeleton import Skeleton
 from detail.core.protocols import ModelNotReadyError
 from detail.core.registries import (
     EMBEDDING_MODELS,
@@ -49,23 +51,35 @@ from detail.core.registries import (
 from detail.core.utils import (
     check_cuda_indices,
     decode_mask,
+    effective_backend,
     mask_boxes,
     resolve_device,
     resolve_downstream_every_n,
+    resolve_track_id,
     utc_timestamp,
 )
 from detail.executor import rundir
 from detail.executor.runners import ProcessingModule, register_processing_module
-from detail.pipeline import _embedding_worker
-from detail.storage import experiment, read_cache, recording as recording_store
+from detail.pipeline import _embedding_worker, teacher_window
+from detail.storage import experiment, guidance, keypoint_runs, read_cache
+from detail.storage import recording as recording_store
+from detail.storage import remote_targets
 from detail.storage import video_integrity
-from detail.storage.zarr_io import PartZarrReader, kinematics_part_path  # noqa: F401
+from detail.storage.zarr_io import (  # noqa: F401
+    DetectionPartReader,
+    PartZarrReader,
+    kinematics_part_path,
+    object_ids_on_detection_rows,
+    resolve_assignment_rows,
+)
 from detail.transforms import basic as _basic  # noqa: F401 — registers transforms
 from detail.transforms.constructors import (
     ALIGNABLE,
     CONSTRUCTORS,
     alignment_step,
+    check_pose_step,
     with_alignment,
+    with_pose,
 )
 from detail.transforms.renderer import MaskRenderer
 
@@ -84,6 +98,34 @@ BG_COLOR_SCOPE = "shared"
 # never compared as one representation (``api/run_preview._RECIPE_KEYS``).
 CHANNEL_ORDER = "rgb"
 
+#: What a row carries besides its vector: frame_idx, t_ns and det_row (int64 each), the
+#: alignment angle, and the kinematics sibling (t_ns, centre, area, bbox). Rounded up.
+EMBEDDING_ROW_EXTRA_BYTES = 96
+
+#: Read-outs that concatenate two pooled features, so the vector is twice the model's width.
+_DOUBLED_READOUTS = frozenset({"gap_gmp", "cls_patch"})
+
+
+def embedding_dim(config: dict) -> int:
+    """The width of one stored vector, from the model's declared per-variant width (no
+    weights loaded): doubled by a concatenating read-out. Falls back to 1024 for a model that declares no width, the size the
+    measured runs had, so an unknown model is estimated, not skipped."""
+    model_cls = EMBEDDING_MODELS.get(config.get("model_id"))
+    if model_cls is None:
+        from detail.api._runner_modules import PIPELINE_RUNNERS
+        from detail.executor.runners import import_runner_modules
+
+        import_runner_modules(PIPELINE_RUNNERS)
+        model_cls = EMBEDDING_MODELS.get(config.get("model_id"))
+    per_variant = getattr(model_cls, "VARIANT_OUTPUT_DIMS", None) or {}
+    dim = per_variant.get(config.get("model_variant")) or getattr(
+        model_cls, "output_dim", 0
+    )
+    dim = int(dim) or 1024
+    if config.get("readout") in _DOUBLED_READOUTS:
+        dim *= 2
+    return dim
+
 
 def embedding_run_dir(experiment_root, job: EmbeddingJob) -> Path:
     """Run directory for an embedding job: ``recordings/<id>/embeddings/<run_id>/``."""
@@ -94,12 +136,22 @@ def embedding_run_dir(experiment_root, job: EmbeddingJob) -> Path:
     )
 
 
-def largest_mask_px(recording_dir, tracking_run_id: str, track_ids: list[int]) -> int:
+def largest_mask_px(
+    recording_dir,
+    tracking_run_id: str,
+    track_ids: list[int],
+    *,
+    diagonal: bool = False,
+) -> int:
     """Largest mask dimension (px) across the given tracks' detections.
 
     The "centered, true-scale" constructors size their shared canvas to this so
     every mask keeps its relative size. Measured at the detection's mask
     resolution (the same pixel scale the renderer's frame is decoded at).
+
+    ``diagonal`` measures each subject box's diagonal instead of its longer side: the canvas
+    a body-axis ``rotate`` needs (§26), because a turned subject's extent along either axis
+    is at most its box's diagonal (``align_rotate`` crops to the turned subject).
 
     A completed tracking + detection run is immutable, so the result is cached
     against the tracking run's ``track.yaml`` mtime (keyed on the track set) — a
@@ -118,27 +170,31 @@ def largest_mask_px(recording_dir, tracking_run_id: str, track_ids: list[int]) -
         tuple(sorted({int(t) for t in track_ids})),
     )
     stamp = recording_dir / "tracking" / tracking_run_id / "track.yaml"
-    return read_cache.cached_read(
+    side, diag = read_cache.cached_read(
         key, stamp, lambda: _largest_mask_px(recording_dir, tracking_run_id, track_ids)
     )
+    return diag if diagonal else side
 
 
 def _largest_mask_px(
     recording_dir: Path, tracking_run_id: str, track_ids: list[int]
-) -> int:
+) -> tuple[int, int]:
     tracking_dir = recording_dir / "tracking" / tracking_run_id
-    track_meta = yaml.safe_load(atomic.read_text(tracking_dir / "track.yaml"))
+    track_meta = yaml_load.safe_load(atomic.read_text(tracking_dir / "track.yaml"))
     detection_dir = recording_dir / "detections" / track_meta["detection_run_id"]
     frame_h, frame_w = rundir.read_envelope(detection_dir)["mask_resolution"]
     wanted = np.asarray(sorted({int(t) for t in track_ids}), dtype=np.int64)
+    class_name = track_meta.get("class_name")
     largest = 0.0
+    largest_diag = 0.0
     for part_path in sorted(detection_dir.glob("part_*.zarr")):
         reader = PartZarrReader(part_path)
-        bbox = reader.column("bbox")[:]
-        frame_idx = reader.column("frame_idx")[:]
-        object_id = PartZarrReader(
-            tracking_dir / "assignments" / part_path.name
-        ).column("object_id")[:]
+        assignment = PartZarrReader(tracking_dir / "assignments" / part_path.name)
+        raw_rows = resolve_assignment_rows(reader, assignment, class_name)
+        n = len(raw_rows)
+        bbox = np.asarray(reader.column("bbox")[: reader.n_rows])[raw_rows]
+        frame_idx = np.asarray(reader.column("frame_idx")[: reader.n_rows])[raw_rows]
+        object_id = assignment.column("object_id")[:n]
         sel = np.isin(object_id.astype(np.int64), wanted)
         if not sel.any():
             continue
@@ -159,14 +215,21 @@ def _largest_mask_px(
                 cur[0], cur[1] = min(cur[0], float(box[0])), min(cur[1], float(box[1]))
                 cur[2], cur[3] = max(cur[2], float(box[2])), max(cur[3], float(box[3]))
         for x1, y1, x2, y2 in unions.values():
-            largest = max(largest, (x2 - x1) * frame_w, (y2 - y1) * frame_h)
+            width, height = (x2 - x1) * frame_w, (y2 - y1) * frame_h
+            largest = max(largest, width, height)
+            largest_diag = max(largest_diag, math.hypot(width, height))
     if largest <= 0:
         raise ValueError(
             f"no detections for track_ids {sorted(set(int(t) for t in track_ids))} "
             f"in tracking run {tracking_run_id!r}"
         )
-    # round before ceil so float32 bbox noise can't inflate the canvas by a pixel
-    return int(math.ceil(round(largest, 3)))
+    # round before ceil so float32 bbox noise can't inflate the canvas by a pixel. The
+    # diagonal gets 2 px more: a turned mask is rasterized nearest-neighbour, so its edge can
+    # land a pixel past the exact rotated extent on either side.
+    return (
+        int(math.ceil(round(largest, 3))),
+        int(math.ceil(round(largest_diag, 3))) + 2,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -187,19 +250,28 @@ def _alignment_settings(config_or_job) -> dict:
         "max_gap_s": float(get("max_gap_s", 0.5) or 0.0),
         "mirror_hold_s": float(get("mirror_hold_s", 1.0) or 0.0),
         "facing_camera_ratio": float(get("facing_camera_ratio", 0.5) or 0.0),
+        "pose": str(get("pose") or "none"),
+        "pose_weight": get("pose_weight"),
+        "pose_min_score": get("pose_min_score"),
     }
 
 
 def track_frames_at_cadence(
-    det_part_path: Path, assignment_path: Path, track_id: int, every_n_frames: int
+    det_part_path: Path,
+    assignment_path: Path,
+    track_id: int,
+    every_n_frames: int,
+    class_name: str | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """``(frame_idx, t_ns)`` of the frames one track occupies in a part at the run's
     cadence — the same rule `embed_one` selects rows by, so the heading computed here is
     for exactly the frames the worker embeds."""
-    reader = PartZarrReader(det_part_path)
-    object_id = np.asarray(PartZarrReader(assignment_path).column("object_id")[:])
-    frame_idx = np.asarray(reader.column("frame_idx")[:]).astype(np.int64)
-    t_ns = np.asarray(reader.column("t_ns")[:]).astype(np.int64)
+    reader = DetectionPartReader(det_part_path)
+    object_id = object_ids_on_detection_rows(
+        reader, PartZarrReader(assignment_path), class_name
+    )
+    frame_idx = np.asarray(reader.column("frame_idx")[: reader.n_rows]).astype(np.int64)
+    t_ns = np.asarray(reader.column("t_ns")[: reader.n_rows]).astype(np.int64)
     sel = object_id.astype(np.int64) == int(track_id)
     frames, first = np.unique(frame_idx[sel], return_index=True)
     keep = frames % int(every_n_frames) == 0
@@ -222,7 +294,7 @@ def headings_for_run(
 
     recording_dir = Path(recording_dir)
     tracking_dir = recording_dir / "tracking" / tracking_run_id
-    track_meta = yaml.safe_load(atomic.read_text(tracking_dir / "track.yaml"))
+    track_meta = yaml_load.safe_load(atomic.read_text(tracking_dir / "track.yaml"))
     detection_dir = recording_dir / "detections" / track_meta["detection_run_id"]
     run = KeypointTrackRun(recording_dir, settings["keypoint_run_id"])
     frame_wh = (int(mask_size[1]), int(mask_size[0]))
@@ -243,6 +315,7 @@ def headings_for_run(
                 tracking_dir / "assignments" / det_part.name,
                 int(track_id),
                 every_n_frames,
+                track_meta.get("class_name"),
             )
             part_series = series.get(part_id)
             if part_series is None:
@@ -263,6 +336,100 @@ def headings_for_run(
                 "deg": deg,
                 "source": source,
                 "mirrored": mirrored,
+            }
+    return out
+
+
+def poses_for_run(
+    recording_dir: Path,
+    tracking_run_id: str,
+    track_ids: list[int],
+    every_n_frames: int,
+    settings: dict,
+    mask_size: tuple[int, int],
+    headings: dict[tuple[int, str], dict] | None,
+) -> dict[tuple[int, str], dict]:
+    """Per ``(track_id, part_id)``: ``{frame_idx, xy, score, vec, n_visible}`` over the track's
+    frames at the cadence (§14 *Pose in the embedding*), the points joined from the keypoint
+    track run by frame. ``vec`` is the body-relative pose block (``pose: append``), None for
+    ``draw``. ``headings`` is ``headings_for_run``'s answer for the same frames, which
+    ``append`` needs to turn the numbers exactly as the image is turned.
+
+    Read once per run, here, like the heading: the body length is the whole track's, which a
+    unit holding one part could not compute.
+    """
+    from detail.analysis import body_axis, pose_features
+    from detail.storage.keypoint_runs import KeypointTrackRun
+
+    recording_dir = Path(recording_dir)
+    pose = settings["pose"]
+    tracking_dir = recording_dir / "tracking" / tracking_run_id
+    track_meta = yaml_load.safe_load(atomic.read_text(tracking_dir / "track.yaml"))
+    detection_dir = recording_dir / "detections" / track_meta["detection_run_id"]
+    run = KeypointTrackRun(recording_dir, settings["keypoint_run_id"])
+    k = len(run.skeleton.names)
+    frame_wh = (int(mask_size[1]), int(mask_size[0]))
+    out: dict[tuple[int, str], dict] = {}
+    for track_id in track_ids:
+        body_length = None
+        if pose == "append":
+            series = body_axis.track_series(
+                run,
+                int(track_id),
+                settings["heading_definition"],
+                frame_wh,
+                cutoff=settings["heading_cutoff"],
+                facing_camera_ratio=settings["facing_camera_ratio"],
+            )
+            body_length = next((h.typical_length_px for h in series.values()), None)
+        have_parts = set(run.part_ids(int(track_id)))
+        for det_part in sorted(detection_dir.glob("part_*.zarr")):
+            part_id = det_part.stem
+            heading = (headings or {}).get((int(track_id), part_id))
+            if heading is not None:
+                frames = np.asarray(heading["frame_idx"], dtype=np.int64)
+            else:
+                frames, _t_ns = track_frames_at_cadence(
+                    det_part,
+                    tracking_dir / "assignments" / det_part.name,
+                    int(track_id),
+                    every_n_frames,
+                    track_meta.get("class_name"),
+                )
+            xy = np.full((frames.size, k, 2), np.nan, dtype=np.float32)
+            score = np.full((frames.size, k), np.nan, dtype=np.float32)
+            if part_id in have_parts and frames.size:
+                rows = run.rows(int(track_id), part_id)
+                at = {int(f): i for i, f in enumerate(np.asarray(rows["frame_idx"]))}
+                for j, f in enumerate(frames.tolist()):
+                    i = at.get(int(f))
+                    if i is not None:
+                        xy[j] = rows["points"][i]
+                        score[j] = rows["point_scores"][i]
+            vec = None
+            if pose == "append":
+                vec, n_visible = pose_features.pose_block(
+                    xy,
+                    score,
+                    deg=np.asarray(heading["deg"], dtype=np.float64),
+                    mirrored=np.asarray(heading["mirrored"], dtype=bool),
+                    body_length_px=body_length,
+                    frame_wh=frame_wh,
+                    min_score=settings["pose_min_score"],
+                    frame_mode="mirror" if settings["align"] == "mirror" else "rotate",
+                )
+            else:
+                n_visible = (
+                    pose_features.visible_points(xy, score, settings["pose_min_score"])
+                    .sum(axis=1)
+                    .astype(np.uint8)
+                )
+            out[(int(track_id), part_id)] = {
+                "frame_idx": frames,
+                "xy": xy,
+                "score": score,
+                "vec": vec,
+                "n_visible": n_visible,
             }
     return out
 
@@ -316,7 +483,7 @@ def _largest_turned_mask_px(
     from detail.transforms.basic import turned_mask_extent
 
     tracking_dir = recording_dir / "tracking" / tracking_run_id
-    track_meta = yaml.safe_load(atomic.read_text(tracking_dir / "track.yaml"))
+    track_meta = yaml_load.safe_load(atomic.read_text(tracking_dir / "track.yaml"))
     detection_dir = recording_dir / "detections" / track_meta["detection_run_id"]
     frame_h, frame_w = rundir.read_envelope(detection_dir)["mask_resolution"]
     # Every frame that could ever receive a heading, whatever gap a run fills: measured
@@ -501,14 +668,16 @@ def _mean_mask_color_rgb(
 
     data = recording_store.read_recording(recording_dir)
     tracking_dir = recording_dir / "tracking" / tracking_run_id
-    track_meta = yaml.safe_load(atomic.read_text(tracking_dir / "track.yaml"))
+    track_meta = yaml_load.safe_load(atomic.read_text(tracking_dir / "track.yaml"))
     detection_dir = recording_dir / "detections" / track_meta["detection_run_id"]
     env = rundir.read_envelope(detection_dir)
     frame_h, frame_w = env["mask_resolution"]
     recording_store.raise_on_legacy_downsampling(env.get("job"))
     files = recording_store.video_files(data)
     requested = {int(t) for t in track_ids}
-    candidates = _collect_candidates(detection_dir, tracking_dir, requested)
+    candidates = _collect_candidates(
+        detection_dir, tracking_dir, requested, track_meta.get("class_name")
+    )
     if not candidates:
         raise ValueError(
             f"no detections for track_ids {sorted(requested)} in "
@@ -628,6 +797,17 @@ def _detection_run_entry(recording_data: dict, detection_run_id: str) -> dict:
     raise ValueError(
         f"detection_run_id {detection_run_id!r} not found in recording.yaml"
     )
+
+
+def _subject_labels(recording_dir, tracking_run_id: str) -> dict | None:
+    """A tracking run's own ``subject_labels`` (§13: ``{track_id: animal_id}``), or
+    ``None`` when the run never set one (every tracker but ``track_merge`` writes
+    ``null``) — ``resolve_track_id``'s input, so a string track selector ("black
+    mouse") resolves to *this recording's own* track id rather than an integer
+    that only means "whichever the tracker numbered first" (Section 13)."""
+    tracking_dir = Path(recording_dir) / "tracking" / tracking_run_id
+    track_meta = yaml_load.safe_load(atomic.read_text(tracking_dir / "track.yaml"))
+    return track_meta.get("subject_labels")
 
 
 class DetectionMaskDataset:
@@ -792,7 +972,7 @@ def run(job: EmbeddingJob, run_dir, progress_cb, stop_event) -> None:
     recording_dir = run_dir.parent.parent
     recording_data = recording_store.read_recording(recording_dir)
     tracking_dir = recording_dir / "tracking" / job.tracking_run_id
-    track_meta = yaml.safe_load(atomic.read_text(tracking_dir / "track.yaml"))
+    track_meta = yaml_load.safe_load(atomic.read_text(tracking_dir / "track.yaml"))
     detection_run_id = track_meta["detection_run_id"]
     detection_dir = recording_dir / "detections" / detection_run_id
     frame_h, frame_w = rundir.read_envelope(detection_dir)["mask_resolution"]
@@ -862,6 +1042,7 @@ def run(job: EmbeddingJob, run_dir, progress_cb, stop_event) -> None:
         job,
         output_dim,
         "partial" if interrupted else "complete",
+        results=results,
         heading_coverage=coverage,
     )
     _raise_if_any_failed(results)
@@ -882,14 +1063,14 @@ def _build_units(
     stop_flag: Path,
     mask_size: tuple[int, int],
 ) -> list[dict]:
-    """One unit per (track_id, part_index). Flat list — ordered by track then
-    part so the inline path stays sequential per-track (matching the existing
-    progress contract) and the multi-GPU dispatcher can round-robin freely.
-
-    An aligned run (§14) computes every unit's heading here, once, so the worker embeds
-    exactly the frames with a heading and the bar's denominator counts those frames.
-    """
+    """One unit per (track_id, part_index). Flat list — ordered so the inline path stays
+    sequential per series (matching the existing progress contract) and the multi-GPU
+    dispatcher can round-robin freely."""
+    track_meta = yaml_load.safe_load(atomic.read_text(tracking_dir / "track.yaml"))
+    class_name = track_meta.get("class_name")
     settings = _alignment_settings(job)
+    # The heading is read for alignment, and for the pose numbers (``append`` turns them by it);
+    # only an aligned run hands it to the worker, which drops a frame with none.
     headings = (
         headings_for_run(
             recording_dir,
@@ -899,7 +1080,20 @@ def _build_units(
             settings,
             mask_size,
         )
-        if settings["align"] != "none"
+        if settings["align"] != "none" or settings["pose"] == "append"
+        else None
+    )
+    poses = (
+        poses_for_run(
+            recording_dir,
+            job.tracking_run_id,
+            list(job.track_ids),
+            int(job.every_n_frames or 1),
+            settings,
+            mask_size,
+            headings,
+        )
+        if settings["pose"] != "none"
         else None
     )
     units: list[dict] = []
@@ -918,8 +1112,16 @@ def _build_units(
             # frames_total for the unit (detections sharing a frame OR-merge to
             # one image). Pre-counted here so the bar has a real run-wide frame
             # denominator from the first event, not a per-unit sentinel.
-            object_id = PartZarrReader(assignment_path).column("object_id")[:]
-            frame_idx = PartZarrReader(part_path).column("frame_idx")[:]
+            assignment_reader = PartZarrReader(assignment_path)
+            det_reader = PartZarrReader(part_path)
+            raw_rows = resolve_assignment_rows(
+                det_reader, assignment_reader, class_name
+            )
+            n = len(raw_rows)
+            object_id = assignment_reader.column("object_id")[:n]
+            frame_idx = np.asarray(det_reader.column("frame_idx")[: det_reader.n_rows])[
+                raw_rows
+            ]
             sel = np.asarray(object_id).astype(np.int64) == int(track_id)
             n_frames = int(np.unique(np.asarray(frame_idx)[sel]).size)
             unit = {
@@ -934,8 +1136,22 @@ def _build_units(
                 "progress_json_path": progress_json,
                 "stop_flag_path": stop_flag,
                 "n_frames": n_frames,
+                "class_name": class_name,
             }
-            if headings is not None:
+            if poses is not None:
+                p = poses[(int(track_id), part_id)]
+                unit["pose"] = (
+                    {  # lists, like the heading: the unit rides a process pool
+                        "mode": settings["pose"],
+                        "weight": settings["pose_weight"],
+                        "frame_idx": p["frame_idx"].tolist(),
+                        "xy": p["xy"].tolist(),
+                        "score": p["score"].tolist(),
+                        "vec": None if p["vec"] is None else p["vec"].tolist(),
+                        "n_visible": [int(v) for v in p["n_visible"]],
+                    }
+                )
+            if headings is not None and settings["align"] != "none":
                 from detail.analysis import body_axis
 
                 h = headings[(int(track_id), part_id)]
@@ -1022,7 +1238,9 @@ def _run_inline(
                 batch_size=int(job.batch_size),
                 every_n_frames=int(getattr(job, "every_n_frames", 1) or 1),
                 gpu_idx=None,
+                class_name=unit.get("class_name"),
                 heading=unit.get("heading"),
+                pose=unit.get("pose"),
             )
 
         worker = threading.Thread(target=_work)
@@ -1104,8 +1322,12 @@ def _run_multi_gpu(
                 "batch_size": int(job.batch_size),
                 # Must travel in the args dict: the pool worker rebuilds the call from it,
                 # so a job field that stops here is silently dropped on the multi-GPU path
-                # only — which is exactly what happened to the retired temporal stack.
+                # only — which is exactly what happened to the retired temporal stack, and
+                # to this unit's own class_name before it was added here.
                 "every_n_frames": int(getattr(job, "every_n_frames", 1) or 1),
+                "class_name": unit.get("class_name"),
+                "heading": unit.get("heading"),  # the same: rebuilt from this dict
+                "pose": unit.get("pose"),  # and this one
             }
             fut = pools[assigned].submit(_embedding_worker.pool_run_one, args)
             futures[fut] = unit_index
@@ -1215,7 +1437,7 @@ def _aggregate_event_for_track(
         else None
     )
     return EmbeddingProgressEvent(
-        track_id=int(track_id),
+        track_id=track_id,
         parts_done=parts_done,
         parts_total=int(parts_total.get(track_id, 0)),
         frames_done=frames_done,
@@ -1257,11 +1479,30 @@ def _raise_if_any_failed(results: list[dict]) -> None:
 # --------------------------------------------------------------------------- #
 # embedding.yaml
 # --------------------------------------------------------------------------- #
+def _pose_dim(job: EmbeddingJob, results: list[dict] | None) -> int | None:
+    """The width of the appended pose block (2 per keypoint), or None without ``append``."""
+    if job.pose != "append":
+        return None
+    for r in results or []:
+        if int(r.get("pose_dim", 0)) > 0:
+            return int(r["pose_dim"])
+    return None
+
+
+def _mask_dim(job: EmbeddingJob, results: list[dict] | None) -> int | None:
+    """The width of the mask's own part of an appended vector, or None without ``append``."""
+    pose_dim = _pose_dim(job, results)
+    if pose_dim is None:
+        return None
+    return _first_output_dim(results or []) - pose_dim
+
+
 def _write_embedding_yaml(
     path,
     job: EmbeddingJob,
     output_dim: int,
     status: str,
+    results: list[dict] | None = None,
     heading_coverage: dict | None = None,
 ) -> None:
     """Written once, at run completion — but the executor subprocess and the GUI's
@@ -1296,6 +1537,13 @@ def _write_embedding_yaml(
         "mirror_hold_s": job.mirror_hold_s,
         "facing_camera_ratio": job.facing_camera_ratio,
         "heading_coverage": heading_coverage or {},
+        # §14 pose in the embedding. For ``append`` the vector is the mask block followed by
+        # the pose block: ``mask_dim`` + ``pose_dim`` == ``output_dim``, so a reader can split it.
+        "pose": job.pose,
+        "pose_weight": job.pose_weight,
+        "pose_min_score": job.pose_min_score,
+        "mask_dim": _mask_dim(job, results),
+        "pose_dim": _pose_dim(job, results),
         "status": status,
     }
     path = Path(path)
@@ -1331,7 +1579,17 @@ def _shared_inputs(
             {int(t) for t in PartZarrReader(tracks_path).read()["track_id"]}
         )
     else:
-        track_ids = [int(t) for t in resolved["track_ids"]]
+        # A selector may still be a name (§13/§14) at this point — resolve_shared_config
+        # runs before validate() resolves names to this recording's own object ids, so a
+        # name-based selection must be resolved here too, the same way, or this crashes
+        # the moment a shared-scoped canvas meets a name selector.
+        selectors = list(resolved["track_ids"])
+        subject_labels = (
+            _subject_labels(recording_dir, tracking_run_id)
+            if any(isinstance(t, str) for t in selectors)
+            else None
+        )
+        track_ids = [int(resolve_track_id(t, subject_labels)) for t in selectors]
     if not want_canvas:
         px = None
     elif (resolved.get("align") or "none") != "none":
@@ -1363,7 +1621,24 @@ _ALIGNMENT_DEFAULTS = {
 }
 
 
-def _heading_cutoff(track_run, detect) -> float | None:
+def _draw_pose_step(recording_dir, config: dict) -> dict | None:
+    """The ``draw_pose`` step for a ``pose: draw`` run, else None: the keypoint track run's own
+    skeleton and the resolved floor, so the run records exactly what it drew (§14)."""
+    if config.get("pose") != "draw":
+        return None
+    from detail.storage.keypoint_runs import KeypointTrackRun
+
+    skeleton = KeypointTrackRun(
+        Path(recording_dir), config["keypoint_run_id"]
+    ).skeleton.to_dict()
+    skeleton.pop("layout", None)  # how the editor drew it, not what the points mean
+    step: dict = {"type": "draw_pose", "skeleton": skeleton}
+    if config.get("pose_min_score") is not None:
+        step["min_score"] = float(config["pose_min_score"])
+    return step
+
+
+def point_cutoff(track_run, detect) -> float | None:
     """The score under which a point does not move the heading mean (§14: "at or above the
     track run's decode cut-off"). A track method that chooses among candidates carries
     ``decode_cutoff`` in its config, ``None`` included (dinov3_match's scores are its own,
@@ -1385,13 +1660,27 @@ def _heading_cutoff(track_run, detect) -> float | None:
     return None if cutoff is None else float(cutoff)
 
 
+#: A run without pose records these, so two runs that drew nothing never differ in a setting
+#: that did nothing (the alignment fields' rule, `_ALIGNMENT_DEFAULTS`).
+_POSE_DEFAULTS = {"pose": "none", "pose_weight": None, "pose_min_score": None}
+POSE_MODES = ("none", "draw", "append")
+
+
 def _resolve_alignment(
     recording_dir, recording_data: dict, config: dict, track_ids: list[int]
 ) -> dict:
-    """§14's pre-run checks for an aligned embedding, resolving what the run records:
-    the heading definition copied in, the track run's decode cut-off, and the keypoint
-    track run's identity. ``align == "none"`` clears every alignment field instead, so two
-    unaligned runs never differ in a setting that did nothing.
+    """§14's pre-run checks for what an embedding reads from a keypoint track run — the
+    heading it aligns to and/or the pose it puts into the vector — resolving what the run
+    records: the heading definition copied in, the track run's decode cut-off, the pose floor
+    and weight, and the keypoint track run's identity. With ``align`` and ``pose`` both
+    ``none`` every such field is cleared instead, so two runs that read nothing never differ
+    in a setting that did nothing.
+
+    The heading is needed to align and for the pose *numbers* (``append``: they are turned so
+    the heading points right); ``draw`` paints the points as placed and needs none. Pose needs
+    a row on every frame the run embeds, so the detect run's cadence must divide this run's: a
+    frame it never placed points on would be embedded with no pose, quietly, among frames that
+    have it.
 
     Raises:
         ValueError: naming the missing or mismatched input (the table in §14).
@@ -1403,23 +1692,51 @@ def _resolve_alignment(
 
     recording_dir = Path(recording_dir)
     align = config.get("align") or "none"
+    pose = config.get("pose") or "none"
     if align not in body_axis.ALIGN_MODES:
         raise ValueError(f"align must be one of {body_axis.ALIGN_MODES}, got {align!r}")
-    if align == "none":
+    if pose not in POSE_MODES:
+        raise ValueError(f"pose must be one of {POSE_MODES}, got {pose!r}")
+    if align == "none" and pose == "none":
         if config.get("keypoint_run_id") or config.get("heading"):
             raise ValueError(
-                "a keypoint track run or a heading definition was given with align "
-                "'none'; set --align rotate or mirror, or drop them"
+                "a keypoint track run or a heading definition was given with align and "
+                "pose both 'none'; set --align rotate or mirror, or --pose draw or append, "
+                "or drop them"
             )
         config["align"] = "none"
         config.update(_ALIGNMENT_DEFAULTS)
+        config.update(_POSE_DEFAULTS)
         return config
+    what = " and ".join(
+        part
+        for part in (
+            f"align {align!r}" if align != "none" else "",
+            f"pose {pose!r}" if pose != "none" else "",
+        )
+        if part
+    )
+    needs_heading = align != "none" or pose == "append"
     keypoint_run_id = config.get("keypoint_run_id")
     heading_name = config.get("heading")
-    if not keypoint_run_id or not heading_name:
+    if not keypoint_run_id:
         raise ValueError(
-            f"align {align!r} needs both a keypoint track run (keypoint_run_id) and a "
-            "heading definition (heading)"
+            f"{what} reads a keypoint track run; give keypoint_run_id (a kt_NN on this "
+            "embedding's tracking run)"
+        )
+    if needs_heading and not heading_name:
+        raise ValueError(
+            f"{what} needs a heading definition (heading): "
+            + (
+                "the image is turned to it"
+                if align != "none"
+                else "the pose numbers are turned so it points right"
+            )
+        )
+    if heading_name and not needs_heading:
+        raise ValueError(
+            f"heading {heading_name!r} is given but nothing reads it: pose 'draw' paints "
+            "the points as placed; drop the heading, or set --align or --pose append"
         )
     entry = {r["id"]: r for r in recording_data.get("keypoint_track_runs", [])}.get(
         keypoint_run_id
@@ -1434,6 +1751,11 @@ def _resolve_alignment(
             f"keypoint track run {keypoint_run_id!r} is {entry.get('status')!r}, not "
             "complete"
         )
+    teacher_window.refuse_teacher_run(
+        entry,
+        consumer=f"an embedding with {what}",
+        upstream=f"keypoint track run {keypoint_run_id!r}",
+    )
     track_run = KeypointTrackRun(recording_dir, keypoint_run_id)
     detect = KeypointDetectRun(recording_dir, track_run.meta["detect_run_id"])
     # §14 *Lineage*: a keypoint track run's subjects are the tracking run it assigned its
@@ -1443,7 +1765,7 @@ def _resolve_alignment(
         raise ValueError(
             f"keypoint track run {keypoint_run_id!r} assigned its poses to tracking run "
             f"{track_run.meta['tracking_run_id']!r}, not this embedding's "
-            f"{config['tracking_run_id']!r}; the heading must come from the same tracks"
+            f"{config['tracking_run_id']!r}; its points must come from the same tracks"
         )
     missing_tracks = sorted(set(int(t) for t in track_ids) - set(track_run.track_ids))
     if missing_tracks:
@@ -1451,23 +1773,66 @@ def _resolve_alignment(
             f"keypoint track run {keypoint_run_id!r} has no rows for track_ids "
             f"{missing_tracks}; it covers {track_run.track_ids}"
         )
-    experiment_dir = recording_dir.parent.parent
-    definition = heading_definitions.get_definition(experiment_dir, str(heading_name))
-    checked = body_axis.validate_definition(definition, tuple(track_run.skeleton.names))
-    constructor = config.get("constructor")
-    if config.get("renderer_spec") is None and constructor not in ALIGNABLE:
-        raise ValueError(
-            f"input image {constructor!r} does not crop to the subject, so it cannot be "
-            f"aligned; use one of {', '.join(ALIGNABLE)}"
+    if needs_heading:
+        experiment_dir = recording_dir.parent.parent
+        definition = heading_definitions.get_definition(
+            experiment_dir, str(heading_name)
         )
-    config["heading_definition"] = {"front": checked["front"], "back": checked["back"]}
-    config["heading_cutoff"] = _heading_cutoff(track_run, detect)
+        checked = body_axis.validate_definition(
+            definition, tuple(track_run.skeleton.names)
+        )
+        config["heading_definition"] = {
+            "front": checked["front"],
+            "back": checked["back"],
+        }
+        config["heading_cutoff"] = point_cutoff(track_run, detect)
+        config["max_gap_s"] = float(config.get("max_gap_s", 0.5))
+        config["mirror_hold_s"] = float(config.get("mirror_hold_s", 1.0))
+        config["facing_camera_ratio"] = float(config.get("facing_camera_ratio", 0.5))
+    else:
+        config.update(
+            heading=None,
+            heading_definition=None,
+            heading_cutoff=None,
+            max_gap_s=_ALIGNMENT_DEFAULTS["max_gap_s"],
+            mirror_hold_s=_ALIGNMENT_DEFAULTS["mirror_hold_s"],
+            facing_camera_ratio=_ALIGNMENT_DEFAULTS["facing_camera_ratio"],
+        )
+    if align != "none":
+        constructor = config.get("constructor")
+        if config.get("renderer_spec") is None and constructor not in ALIGNABLE:
+            raise ValueError(
+                f"input image {constructor!r} does not crop to the subject, so it cannot "
+                f"be aligned; use one of {', '.join(ALIGNABLE)}"
+            )
+    if pose != "none":
+        detect_entry = {
+            r["id"]: r for r in recording_data.get("keypoint_detect_runs", [])
+        }.get(track_run.meta["detect_run_id"], {})
+        kp_every = int(
+            detect_entry.get("every_n_frames") or detect.meta.get("every_n_frames") or 1
+        )
+        every = int(config.get("every_n_frames") or 1)
+        if every % kp_every:
+            raise ValueError(
+                f"keypoint track run {keypoint_run_id!r} has points on every {kp_every} "
+                f"frame(s), and this run embeds every {every}; pose needs points on every "
+                f"embedded frame, so use a multiple of {kp_every} for 'every N frames'"
+            )
+        floor = config.get("pose_min_score")
+        config["pose_min_score"] = (
+            float(floor) if floor is not None else point_cutoff(track_run, detect)
+        )
+        config["pose_weight"] = (
+            float(config.get("pose_weight") or 1.0) if pose == "append" else None
+        )
+    else:
+        config.update(pose_weight=None, pose_min_score=None)
+    config["align"] = align
+    config["pose"] = pose
     config["keypoint_track_identity"] = run_spec.spec_of(
         recording_data, "keypoint_track", entry, recording_dir
     )
-    config["max_gap_s"] = float(config.get("max_gap_s", 0.5))
-    config["mirror_hold_s"] = float(config.get("mirror_hold_s", 1.0))
-    config["facing_camera_ratio"] = float(config.get("facing_camera_ratio", 0.5))
     return config
 
 
@@ -1499,27 +1864,44 @@ class EmbeddingModule(ProcessingModule):
     module_id = "embedding"
     # §14 alignment joins the identity: the mode, the resolved heading definition, the three
     # settings, and the keypoint track run's *identity* (never its id). The defaults make a
-    # record written before alignment existed compare equal to an explicit ``none``.
+    # record written before alignment existed compare equal to an explicit ``none``, the same
+    # way a missing every_n_frames means stride 1.
     identity_fields = (
         "model_id",
         "model_variant",
         "constructor",
         "every_n_frames",
+        # Inert in this build, and kept on purpose: every embedding run recorded before it
+        # states `joint: false` / `joint_subjects: null`, and so does every spec a saved config
+        # carries (Start from, a stored selector). Specs compare by exact equality
+        # (`run_spec.freeze_spec`), so dropping the two fields would stop those saved specs
+        # matching the very runs they were made from.
+        "joint",
+        "joint_subjects",
         "align",
         "heading_definition",
         "max_gap_s",
         "mirror_hold_s",
         "facing_camera_ratio",
         "keypoint_track_identity",
+        # §14 pose in the embedding: a drawn or appended pose is a different vector
+        "pose",
+        "pose_weight",
+        "pose_min_score",
     )
     identity_defaults = {
         "every_n_frames": 1,
+        "joint": False,
+        "joint_subjects": None,
         "align": "none",
         "heading_definition": None,
         "max_gap_s": 0.5,
         "mirror_hold_s": 1.0,
         "facing_camera_ratio": 0.5,
         "keypoint_track_identity": None,
+        "pose": "none",
+        "pose_weight": None,
+        "pose_min_score": None,
     }
     lineage_ref = ("tracking", "tracking_run_id")
     # Embedding's one second input (§6.5 *auxiliary inputs*): the keypoint track run an
@@ -1542,6 +1924,21 @@ class EmbeddingModule(ProcessingModule):
 
     def output_path(self, run_id: str) -> str:
         return f"embeddings/{run_id}/"
+
+    def estimate_output_bytes(
+        self, recording_dir, recording_data: dict, config: dict
+    ) -> int:
+        """Rows × (vector × 4 bytes + the per-row columns) (#743), from the schema.
+
+        A row is one embedded frame of one series: each selected track. The vector is
+        float32 and barely compresses (measured 3,949 B/frame against 4,096 for a 1024-d
+        model), so the schema is the estimate.
+        """
+        frames = disk_space.frames_to_process(
+            recording_data, config.get("every_n_frames")
+        )
+        series = max(len(config.get("track_ids") or []), 1)
+        return frames * series * (4 * embedding_dim(config) + EMBEDDING_ROW_EXTRA_BYTES)
 
     def resolve_shared_config(
         self,
@@ -1613,6 +2010,11 @@ class EmbeddingModule(ProcessingModule):
                 f"tracking run {tracking_run_id!r} is {run_entry.get('status')!r}, "
                 "not complete"
             )
+        teacher_window.refuse_teacher_run(
+            run_entry,
+            consumer="embedding",
+            upstream=f"tracking run {tracking_run_id!r}",
+        )
         # Embedding decodes the same source frames detection saw, so gate that video
         # (a referenced original could have gone missing/changed since detection ran).
         det_entry = _detection_run_entry(
@@ -1641,13 +2043,25 @@ class EmbeddingModule(ProcessingModule):
                 )
             config["track_ids"] = track_ids
         else:
-            track_ids = list(config["track_ids"])
+            # A selector may be an int (a track's raw position) or a string (an
+            # animal id, resolved through *this recording's own* subject_labels —
+            # §13) — resolved per recording so the same name means the same
+            # animal everywhere, even where a bare int would not (track_merge's
+            # merged runs assign object_id by source order, not by identity).
+            selectors = list(config["track_ids"])
+            subject_labels = (
+                _subject_labels(recording_dir, tracking_run_id)
+                if any(isinstance(t, str) for t in selectors)
+                else None
+            )
+            track_ids = [resolve_track_id(t, subject_labels) for t in selectors]
             missing = [t for t in track_ids if int(t) not in existing]
             if missing:
                 raise ValueError(
                     f"track_ids {missing} not in tracking run {tracking_run_id!r}; "
                     f"available: {sorted(existing)}"
                 )
+            config["track_ids"] = track_ids
         # §14 alignment: resolved before the renderer spec, since the aligned canvas is
         # sized from the turned masks and the alignment step is inserted into the spec.
         _resolve_alignment(recording_dir, recording_data, config, track_ids)
@@ -1660,9 +2074,11 @@ class EmbeddingModule(ProcessingModule):
         # The resolved spec is what build_job records.
         renderer_spec = config.get("renderer_spec")
         if renderer_spec is None:
-            constructor = config["constructor"]
-            canvas_px = config.get("canvas_px")
+            constructor = config.get("constructor")
+            if constructor is None:
+                raise ValueError("config must provide a constructor or a renderer_spec")
             recipe = CONSTRUCTORS.get(constructor)
+            canvas_px = config.get("canvas_px")
             if (
                 align != "none"
                 and canvas_px is None
@@ -1686,7 +2102,10 @@ class EmbeddingModule(ProcessingModule):
                 canvas_px=canvas_px,
                 bg_color=config.get("bg_color"),
             )
-            renderer_spec = with_alignment(renderer_spec, align)
+            # The points are drawn before the turn, so a rotation carries them with the body.
+            renderer_spec = with_alignment(
+                with_pose(renderer_spec, _draw_pose_step(recording_dir, config)), align
+            )
             config["renderer_spec"] = renderer_spec
         elif (alignment_step(renderer_spec) or "none") != align:
             raise ValueError(
@@ -1694,6 +2113,8 @@ class EmbeddingModule(ProcessingModule):
                 f"but align is {align!r}; an explicit spec must carry exactly the step "
                 "align names"
             )
+        else:
+            check_pose_step(renderer_spec, config["pose"])
         model_cls = EMBEDDING_MODELS.get(model_id)
         if model_cls is None:
             raise ValueError(
@@ -1714,15 +2135,30 @@ class EmbeddingModule(ProcessingModule):
         # both a run identity field and part of the embedding recipe, so two runs recorded as
         # `None` would be judged interchangeable across a code change that reordered VARIANTS.
         config["model_variant"] = model.variant
-        status = model.readiness()
-        if not status.ready:
-            raise ModelNotReadyError(status)
-        if compute.backend not in model.supported_backends:
+        # Readiness is a fact about *this* machine's disk (and, if not installed, a
+        # network check from here — Hard Rules §"Model weights"): whether the weights
+        # are present where `load()` will look for them. A remote job never calls
+        # `load()` here — the shepherd rewrites `compute` to the on-cluster backend and
+        # the model actually loads on the cluster — so gating submission on *this*
+        # machine's install state would demand a full local install for a job this
+        # machine only submits. The cluster's own readiness is checked by
+        # `executor/remote_shepherd.py` before it submits the sbatch job, so a missing
+        # install still fails clearly — just not here, and not against this machine's
+        # cache. Mirrors detection.py's identical guard.
+        if compute.backend != "remote":
+            status = model.readiness()
+            if not status.ready:
+                raise ModelNotReadyError(status)
+        if effective_backend(compute) not in model.supported_backends:
             raise ValueError(
-                f"model {model_id!r} does not support backend {compute.backend!r}; "
-                f"supports {model.supported_backends}"
+                f"model {model_id!r} does not support the {compute.backend!r} backend; "
+                f"it requires one of {list(model.supported_backends)}"
             )
-        model.check_backend(compute.backend)  # this *install* on this backend (§5)
+        remote_targets.require_registered(compute)
+        if compute.backend != "remote":
+            # this *install* on this backend (§5); a remote job runs on the cluster's
+            # install, which the shepherd checks there before it submits
+            model.check_backend(compute.backend)
         unknown = [s["type"] for s in renderer_spec if s["type"] not in TRANSFORMS]
         if unknown:
             raise ValueError(
@@ -1761,9 +2197,13 @@ class EmbeddingModule(ProcessingModule):
             max_gap_s=float(config.get("max_gap_s", 0.5)),
             mirror_hold_s=float(config.get("mirror_hold_s", 1.0)),
             facing_camera_ratio=float(config.get("facing_camera_ratio", 0.5)),
+            pose=str(config.get("pose") or "none"),
+            pose_weight=config.get("pose_weight"),
+            pose_min_score=config.get("pose_min_score"),
         )
 
     def extra_record_fields(self, config: dict) -> dict:
+        compute = config.get("compute")
         return {
             "tracking_run_id": config["tracking_run_id"],
             # §14 alignment: the id for lineage, the identity for comparison.
@@ -1776,6 +2216,9 @@ class EmbeddingModule(ProcessingModule):
             "mirror_hold_s": float(config.get("mirror_hold_s", 1.0)),
             "facing_camera_ratio": float(config.get("facing_camera_ratio", 0.5)),
             "keypoint_track_identity": config.get("keypoint_track_identity"),
+            "pose": str(config.get("pose") or "none"),
+            "pose_weight": config.get("pose_weight"),
+            "pose_min_score": config.get("pose_min_score"),
             "model_id": config["model_id"],
             "model_variant": config.get("model_variant"),
             "constructor": config.get("constructor"),
@@ -1798,4 +2241,10 @@ class EmbeddingModule(ProcessingModule):
             # and reads as "bgr" (``run_preview._RECIPE_KEYS``).
             "channel_order": CHANNEL_ORDER,
             "track_ids": list(config["track_ids"]),
+            # The two inert identity fields (see `identity_fields`): every run states them, as
+            # every run recorded before the single-animal build did.
+            "joint": False,
+            "joint_subjects": None,
+            # Known at reservation time — see detection.py's identical field.
+            "compute": compute.to_dict() if compute is not None else None,
         }

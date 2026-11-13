@@ -25,6 +25,8 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from detail.api import clip_render
+from detail.core.utils import subject_key
+from detail.core.video_codecs import DEFAULT_VIDEO_CODEC
 
 #: What the `clip.csv` beside a clip carries — what it is, and where in the source it came from,
 #: so the mp4 can be put back in the recording without opening it.
@@ -54,6 +56,7 @@ def export_clip(
     end_t_ns: int | None = None,
     progress=None,
     preview=None,
+    codec: str = DEFAULT_VIDEO_CODEC,
 ) -> list[Path]:
     """Write one clip of ``frames`` into ``dest``, plus the ``clip.csv`` behind it.
 
@@ -109,10 +112,11 @@ def export_clip(
     clip_render.render_part(
         scrub._parts[part_index],
         [job],
-        int(track_id),
+        subject_key(track_id),
         int(size),
         renders=wanted,
         crop=bool(crop),
+        codec=codec,
     )
     names = clip_render.finish(job)
 
@@ -123,7 +127,7 @@ def export_clip(
         writer.writerow(CLIP_COLUMNS + [f"video_{render}" for render in wanted])
         writer.writerow(
             [
-                recording_id, int(track_id), lo, hi,
+                recording_id, subject_key(track_id), lo, hi,
                 int(start_t_ns), int(end_t_ns),
                 round(duration_s, 3), round(job["fps"], 3),
             ]  # fmt: skip

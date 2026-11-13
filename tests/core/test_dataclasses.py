@@ -29,6 +29,7 @@ from detail.core.dataclasses import (
     TextCue,
     TrackingJob,
     TrackingProgressEvent,
+    TrackMergeJob,
     TrainingJob,
     TrainingProgressEvent,
     job_from_dict,
@@ -116,6 +117,17 @@ def _tracking_job():
     )
 
 
+def _track_merge_job():
+    return TrackMergeJob(
+        job_id="track_03",
+        recording_id="recording_001",
+        track_id="track_03",
+        detection_run_id="det_01",
+        source_run_ids=["track_01", "track_02"],
+        created_at="2026-05-22T10:00:00Z",
+    )
+
+
 def _embedding_job():
     return EmbeddingJob(
         job_id="emb_01",
@@ -154,6 +166,7 @@ JOB_BUILDERS = [
     (TrainingJob, _training_job),
     (DatasetExportJob, _dataset_export_job),
     (TrackingJob, _tracking_job),
+    (TrackMergeJob, _track_merge_job),
     (EmbeddingJob, _embedding_job),
 ]
 
@@ -301,6 +314,7 @@ def test_job_union_members():
         TrainingJob,
         DatasetExportJob,
         TrackingJob,
+        TrackMergeJob,
         EmbeddingJob,
     }
 
@@ -319,6 +333,23 @@ def test_progress_event_union_members():
 def test_compute_target_round_trip():
     compute = _cuda([0, 1])
     assert ComputeTarget.from_dict(compute.to_dict()) == compute
+
+
+def test_compute_target_remote_target_round_trip():
+    compute = ComputeTarget("remote", None, None, None, remote_target="tillicum")
+    assert ComputeTarget.from_dict(compute.to_dict()) == compute
+    assert compute.to_dict()["remote_target"] == "tillicum"
+
+
+def test_compute_target_from_dict_defaults_remote_target_when_absent():
+    # A dict serialized before this field existed (an old job.json) must still load.
+    old_dict = {
+        "backend": "cuda",
+        "device_indices": [0],
+        "cloud_provider": None,
+        "cloud_instance": None,
+    }
+    assert ComputeTarget.from_dict(old_dict).remote_target is None
 
 
 # --- tagged (discriminated) serialization for the executor boundary --------- #

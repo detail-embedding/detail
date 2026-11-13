@@ -5,6 +5,7 @@ the same handle works for local and (later) cloud execution.
 """
 
 from collections.abc import Iterator
+from pathlib import Path
 
 from detail.core.dataclasses import ProgressEvent
 from detail.executor.base import Executor, RunHandle
@@ -20,6 +21,10 @@ class ExecutorRunHandle(RunHandle):
     @property
     def status(self) -> str:
         return self._executor.status(self.id).value
+
+    @property
+    def run_dir(self) -> Path:
+        return self._executor.run_dir(self.id)
 
     @property
     def error(self) -> str | None:

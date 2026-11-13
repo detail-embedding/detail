@@ -405,6 +405,20 @@ generator, not yet by a failing test. For an undocumented screen, still prefer t
 numbered callouts keyed to the body text — never sentences baked into the image; annotation marks
 meet 3:1 contrast.
 
+**User guides (`docs/user-guides/`): every new screen numbered, every number described.** The
+step-by-step guides are for non-specialists and are read on phones and as PDFs, so each screen
+or dialog shown for the first time carries numbered markers on every control
+(`_number_screen` in `gen_docs_screens.py`, whose coverage check refuses a screen with an
+unnumbered visible control) and is followed by a collapsed `??? info "What everything on this
+screen does"` box with **one list item per marker**. A line describing two markers renders as
+one item and shifts every line after it: the generator records each image's marker count in
+`docs/assets/user-guides/callouts.json`, and `tests/test_user_guide_legends.py` fails when a
+legend's numbers are not 1 to N. The guides also name the exact terminal for every command
+(PowerShell, the WSL terminal, Terminal, Tillicum's terminal), open each page with a
+`guide-flow` flowchart of linked steps tagged with where each happens, and say when the demo's
+inputs (example marks, clips, cut-offs, labels) were the author's own rather than careful
+scoring.
+
 **Motion.** A GIF only for a brief silent loop; a captioned video with a transcript for a narrated
 procedure. Auto-playing motion over five seconds needs a pause control.
 
@@ -517,12 +531,21 @@ support policy (which versions we keep) is §4's Migration & version policy, onc
 successor **Zensical** (same team, MIT) is a near-drop-in but pre-1.0 with only preliminary
 mkdocstrings support. Adopt Material now; revisit Zensical when it stabilizes.
 
-**Hosting — deferred (§10).** The repo is private on the free plan, which blocks free GitHub Pages
-and Read the Docs Community. Preview is **local `mkdocs serve`** for now; no host is provisioned.
-When we publish, the recorded options are: a public output repo (CI pushes `site/` to a public
-Pages repo — free), GitHub Pro (Pages from the private repo, ~$4/mo), making the repo public, or a
-gated preview via Cloudflare Pages + Access (free, email allow-list). The site builds locally and
-in CI without any of these.
+**Hosting — a gated lab copy; public hosting deferred (§10).** The repo is private on the free
+plan, which blocks free GitHub Pages and Read the Docs Community. Since 2026-11-10 the site built
+from `remote-detail` is hosted for the lab at `detail-docs.pages.dev`: Cloudflare Pages behind
+Cloudflare Access (email allow-list, one-time PIN), uploaded by hand with
+`python scripts/deploy_docs.py`. That script refuses to upload unless a signed-out request to
+production **and** to an unused preview address both redirect to the Access login, because each
+upload also gets its own `<hash>.detail-docs.pages.dev` address and the first setup gated
+production while leaving the preview wildcard open. **The copy is for sharing the guides outside
+DETAIL, never a help target:** the Docs tab's **User guides ↗** / **Open full docs ↗**, every `?`
+link and `detail docs` build and open the local site. Do not set `DETAIL_DOCS_URL` to it — that
+variable is reserved for a future public host, and setting it to the lab copy sent
+**User guides ↗** to a Cloudflare login on 2026-11-12. When we publish, the
+recorded options are: a public output repo (CI pushes `site/` to a public Pages repo — free),
+GitHub Pro (Pages from the private repo, ~$4/mo), or making the repo public. The site builds
+locally and in CI without any of these.
 
 ---
 
@@ -626,6 +649,7 @@ prose.
 
 | Decision | Rationale |
 | --- | --- |
+| User guides: numbered markers on every control of each new screen, a one-line-per-marker legend, guarded by `test_user_guide_legends.py` | the reader is a non-specialist who needs every button explained; a combined legend line silently misnumbered 27 markers against 24 descriptions (§6) |
 | Workflows section: step-by-step task tutorials (create a experiment, add recordings) with auto-rendered GUI screenshots + a committed sample dataset | operators need a guided path for common tasks; tutorial-type, distinct from the how-to Guides (§4) |
 | GUI screenshots are auto-rendered committed PNGs (Option 1: a `gen_docs_screens.py` generator you rerun) — not hand screenshots, and not the golden-compare pixel-diff (deferred) | a generator keeps images honest without hand-capture and keeps the docs build Qt-free; the golden-compare's cross-platform (Mac↔Linux) determinism cost isn't worth it yet — cheap to add later (§6, §9) |
 | Preview via local `mkdocs serve` only; production hosting deferred | repo is private on the free plan; no host is needed to build or preview (§8) |

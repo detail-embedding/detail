@@ -17,11 +17,21 @@ doesn't fit a ``worker.join(timeout)`` loop.
 import functools
 import logging
 import time
-from typing import Callable
+from typing import Callable, Iterable, Iterator, TypeVar
 
 _log = logging.getLogger(__name__)
 
+_T = TypeVar("_T")
+
 PROGRESS_INTERVAL_S = 0.5  # the single live-bar cadence for every runner
+
+#: The two passes over every selected recording before a processing run is launched (and
+#: before a retry re-launches one): the stage names ``Experiment.run_processing`` reports under.
+VALIDATING_STAGE = "Validating recordings"
+ESTIMATING_STAGE = "Estimating disk space"
+#: A module's ``resolve_shared_config`` pass, before validation, when it reads recordings
+#: (embedding's shared canvas); a module that resolves nothing shared reports no such stage.
+RESOLVING_STAGE = "Resolving shared settings"
 
 MESSAGE_SEPARATOR = " · "  # between a message's phase head and its note
 DONE_PHASE = (
@@ -200,6 +210,37 @@ class PhaseClock:
             self._phase = phase
             self._started = now
         return remaining_seconds(phase_fraction, now - self._started)
+
+
+def reporting_each(
+    items: Iterable[_T],
+    stage: str,
+    progress: Callable[[str, float, str], None] | None,
+    *,
+    label: Callable[[_T], str] | None = None,
+) -> Iterator[_T]:
+    """Yield each of ``items``, reporting ``(stage, fraction, detail)`` as it goes.
+
+    The one way a synchronous loop over recordings tells its caller where it is: a report
+    *before* each item (``detail`` is ``"<label> (N of M)"``, or ``"N of M"`` with no ``label``),
+    and a final report at ``1.0`` once the last is done, so a one-item loop still shows a bar at
+    both ends rather than none. Pre-run validation reads every recording's files, which on a
+    network share or a 71-recording experiment is minutes — a status that never changes in that
+    time reads as a hang.
+
+    ``progress`` is the caller's own callback, so an exception from it is its own bug and is not
+    caught. ``None`` reports nothing and costs nothing.
+    """
+    items = list(items)
+    total = len(items)
+    for index, item in enumerate(items):
+        if progress is not None:
+            count = f"{index + 1} of {total}"
+            detail = f"{label(item)} ({count})" if label is not None else count
+            progress(stage, index / total, detail)
+        yield item
+    if progress is not None and total:
+        progress(stage, 1.0, f"{total} of {total}")
 
 
 def format_duration(seconds: float) -> str:

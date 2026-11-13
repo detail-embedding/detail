@@ -10,18 +10,19 @@ from detail.core.dataclasses import (
     Detection,
     DetectionJob,
     FrameResult,
+    ModelReadiness,
     Prompt,
     PromptTarget,
     TextCue,
 )
-from detail.core.protocols import DetectionModel
+from detail.core.protocols import DetectionModel, ModelNotReadyError
 from detail.core.registries import MODELS, TRAINED_LOADERS, register_model
 from detail.executor import rundir
 from detail.pipeline import detection
 from detail.storage import models as models_store
 from detail.storage import experiment as experiment_store
 from detail.storage import recording as recording_store
-from detail.storage.zarr_io import PartZarrReader
+from detail.storage.zarr_io import DetectionPartWriter, PartZarrReader
 
 H, W = 24, 32
 
@@ -70,6 +71,50 @@ class _BatchDetector(_FakeDetector):
     supports_batching = True
 
 
+class _TwoClassDetector(_FakeDetector):
+    """Two named instances at two different confidences, so a per-class threshold's
+    effect on one class can be told apart from its effect on the other."""
+
+    model_id = "two_class_detector"
+
+    def predict(self, frame, prompt):
+        h, w = frame.shape[:2]
+        mask = np.zeros((h, w), dtype=bool)
+        mask[h // 4 : 3 * h // 4, w // 4 : 3 * w // 4] = True
+        return FrameResult.from_detections(
+            frame_idx=0,
+            t_ns=0,
+            detections=[
+                Detection(
+                    mask=mask,
+                    bbox=(0.25, 0.25, 0.75, 0.75),
+                    class_name="black mouse",
+                    confidence=0.6,
+                    object_id=None,
+                ),
+                Detection(
+                    mask=mask,
+                    bbox=(0.25, 0.25, 0.75, 0.75),
+                    class_name="white mouse",
+                    confidence=0.3,
+                    object_id=None,
+                ),
+            ],
+        )
+
+    def predict_batch(self, frames, prompts):
+        return [self.predict(f, p) for f, p in zip(frames, prompts)]
+
+
+@contextlib.contextmanager
+def _registered_two_class_model():
+    register_model("two_class_detector")(_TwoClassDetector)
+    try:
+        yield
+    finally:
+        MODELS.pop("two_class_detector", None)
+
+
 @contextlib.contextmanager
 def _registered_model():
     register_model("fake_detector")(_FakeDetector)
@@ -77,6 +122,31 @@ def _registered_model():
         yield
     finally:
         MODELS.pop("fake_detector", None)
+
+
+class _NotInstalledDetector(_FakeDetector):
+    """A model this machine has not installed — `readiness()` reports it, unlike
+    `_FakeDetector`, which inherits the base class's "nothing to fetch" default."""
+
+    model_id = "not_installed_detector"
+
+    def readiness(self):
+        return ModelReadiness(
+            ready=False,
+            reason="not_installed",
+            message="not_installed_detector weights are not installed on this machine",
+            action_url=None,
+            repo_id=None,
+        )
+
+
+@contextlib.contextmanager
+def _registered_not_installed_model():
+    register_model("not_installed_detector")(_NotInstalledDetector)
+    try:
+        yield
+    finally:
+        MODELS.pop("not_installed_detector", None)
 
 
 def _write_video(path, n_frames):
@@ -156,6 +226,36 @@ def test_part_frame_counts_uses_timestamp_map_not_cv2(tmp_path):
     assert counts == {"part_001": n_frames + 5}
 
 
+def test_detected_classes_returns_sorted_distinct_names_across_parts(tmp_path):
+    run_dir = tmp_path / "det_01"
+    run_dir.mkdir()
+    with DetectionPartWriter(run_dir / "part_001.zarr") as w:
+        w.add_row(0, 0, 0, "white mouse", 0.8, (0.6, 0.6, 0.7, 0.7), "")
+        w.add_row(0, 0, 1, "black mouse", 0.9, (0.1, 0.1, 0.2, 0.2), "")
+    with DetectionPartWriter(run_dir / "part_002.zarr") as w:
+        w.add_row(0, 0, 0, "black mouse", 0.9, (0.1, 0.1, 0.2, 0.2), "")
+
+    assert detection.detected_classes(run_dir) == ["black mouse", "white mouse"]
+
+
+def test_detected_classes_single_class_run(tmp_path):
+    run_dir = tmp_path / "det_01"
+    run_dir.mkdir()
+    with DetectionPartWriter(run_dir / "part_001.zarr") as w:
+        w.add_row(0, 0, 0, "mouse", 0.9, (0.1, 0.1, 0.2, 0.2), "")
+
+    assert detection.detected_classes(run_dir) == ["mouse"]
+
+
+def test_detected_classes_empty_run(tmp_path):
+    run_dir = tmp_path / "det_01"
+    run_dir.mkdir()
+    with DetectionPartWriter(run_dir / "part_001.zarr") as w:
+        pass
+
+    assert detection.detected_classes(run_dir) == []
+
+
 def test_detection_runner_writes_zarr_and_payload(tmp_path):
     recording_dir, n_frames = _setup(tmp_path)
     run_dir = recording_dir / "detections" / "det_01"
@@ -227,6 +327,67 @@ def test_detection_conf_threshold_filters(tmp_path):
     assert PartZarrReader(run_dir / "part_001.zarr").n_rows == 0
 
 
+def test_detection_per_class_conf_threshold_filters_independently(tmp_path):
+    """Two classes at different confidences (black mouse 0.6, white mouse 0.3), two
+    different thresholds — each row survives or not on its *own* class's threshold,
+    not the flat default. A class with no entry in class_conf_thresholds still falls
+    back to conf_threshold."""
+    recording_dir, n_frames = _setup(tmp_path)
+    run_dir = recording_dir / "detections" / "det_01"
+    run_dir.mkdir(parents=True)
+    job = _job()
+    job.model_id = "two_class_detector"
+    job.conf_threshold = 0.5  # would cut both classes if it were the only bound
+    job.class_conf_thresholds = {"black mouse": 0.5, "white mouse": 0.2}
+    rundir.init_run_dir(run_dir, job)
+
+    with _registered_two_class_model():
+        detection.run(job, run_dir, progress_cb=lambda e: None, stop_event=None)
+
+    rows = PartZarrReader(run_dir / "part_001.zarr").read()
+    kept = set(rows["class_name"])
+    # black mouse (0.6) clears its own 0.5; white mouse (0.3) clears its own 0.2 —
+    # neither would if the *other* class's threshold applied to it.
+    assert kept == {"black mouse", "white mouse"}
+
+
+def test_detection_per_class_conf_threshold_can_exclude_one_class(tmp_path):
+    recording_dir, n_frames = _setup(tmp_path)
+    run_dir = recording_dir / "detections" / "det_01"
+    run_dir.mkdir(parents=True)
+    job = _job()
+    job.model_id = "two_class_detector"
+    job.conf_threshold = 0.1  # loose flat default -- would keep both without overrides
+    job.class_conf_thresholds = {"black mouse": 0.7}  # above black mouse's 0.6
+    rundir.init_run_dir(run_dir, job)
+
+    with _registered_two_class_model():
+        detection.run(job, run_dir, progress_cb=lambda e: None, stop_event=None)
+
+    rows = PartZarrReader(run_dir / "part_001.zarr").read()
+    kept = set(rows["class_name"])
+    # black mouse is cut by its own override; white mouse falls back to the loose
+    # flat default (0.1) and survives.
+    assert kept == {"white mouse"}
+
+
+def test_class_conf_thresholds_fingerprint_is_stable_and_key_order_independent():
+    a = detection.class_conf_thresholds_fingerprint(
+        {"black mouse": 0.5, "white mouse": 0.2}
+    )
+    b = detection.class_conf_thresholds_fingerprint(
+        {"white mouse": 0.2, "black mouse": 0.5}
+    )
+    assert a == b
+
+
+def test_class_conf_thresholds_fingerprint_distinguishes_different_maps():
+    a = detection.class_conf_thresholds_fingerprint({"black mouse": 0.5})
+    b = detection.class_conf_thresholds_fingerprint({"black mouse": 0.7})
+    c = detection.class_conf_thresholds_fingerprint({})
+    assert len({a, b, c}) == 3
+
+
 def test_detection_unknown_model_raises(tmp_path):
     recording_dir, _ = _setup(tmp_path)
     run_dir = recording_dir / "detections" / "det_01"
@@ -291,6 +452,19 @@ def test_detection_stride_records_its_cadence(tmp_path):
     del data
 
 
+def test_detection_record_carries_compute_at_reservation_time():
+    """Where a run will execute is known before the job ever runs — recorded so
+    Active Processes / the run listing can show it right away, not just once the
+    run finishes (§ run location, duration, cost)."""
+    from detail.core.dataclasses import ComputeTarget
+
+    module = detection.DetectionModule()
+    compute = ComputeTarget("remote", None, None, None, remote_target="tillicum")
+    fields = module.extra_record_fields({"model_id": "m", "compute": compute})
+    assert fields["compute"] == compute.to_dict()
+    assert module.extra_record_fields({"model_id": "m"})["compute"] is None
+
+
 # --- multi-GPU coordinator (§7) ------------------------------------------- #
 # These tests stub ProcessPoolExecutor with a synchronous fake so we exercise
 # the round-robin assignment, progress aggregation, stop semantics, and
@@ -334,18 +508,23 @@ class _SyncPool:
                 conf_threshold,
                 batch_size,
                 _runners,
+                class_conf_thresholds,
             ) = initargs
             from detail.core.dataclasses import Prompt
             from detail.models.resolve import resolve_detection_model
 
+            class_conf_thresholds = class_conf_thresholds or {}
             model = resolve_detection_model(
                 experiment_root, model_id, weights_source, model_variant
             )
             model.load("cpu")
-            model.set_conf_threshold(conf_threshold)
+            model.set_conf_threshold(
+                _dw.conf_floor(conf_threshold, class_conf_thresholds)
+            )
             _dw._WORKER_STATE["model"] = model
             _dw._WORKER_STATE["prompt"] = Prompt.from_dict(prompt_dict)
             _dw._WORKER_STATE["conf_threshold"] = conf_threshold
+            _dw._WORKER_STATE["class_conf_thresholds"] = class_conf_thresholds
             _dw._WORKER_STATE["batch_size"] = batch_size
             _dw._WORKER_STATE["gpu_idx"] = gpu_idx
 
@@ -869,6 +1048,154 @@ def test_validate_rejects_unsupported_backend(tmp_path):
         detection.DetectionModule().validate(recording_dir, data, config)
 
 
+def test_validate_rejects_an_unknown_class_in_class_conf_thresholds(tmp_path):
+    # The prompt names "mouse" only; a per-class override for a class the prompt never
+    # asked for is a typo the user should hear about now, not at run time.
+    recording_dir, _ = _setup(tmp_path)
+    data = recording_store.read_recording(recording_dir)
+    config = {
+        "model_id": "fake_detector",
+        "prompt": Prompt(targets=[PromptTarget("mouse", TextCue("mouse"))]),
+        "compute": _cpu(),
+        "class_conf_thresholds": {"cat": 0.5},
+    }
+    with _registered_model():
+        with pytest.raises(ValueError, match="cat"):
+            detection.DetectionModule().validate(recording_dir, data, config)
+
+
+def test_validate_rejects_a_class_conf_threshold_out_of_range(tmp_path):
+    recording_dir, _ = _setup(tmp_path)
+    data = recording_store.read_recording(recording_dir)
+    config = {
+        "model_id": "fake_detector",
+        "prompt": Prompt(targets=[PromptTarget("mouse", TextCue("mouse"))]),
+        "compute": _cpu(),
+        "class_conf_thresholds": {"mouse": 1.5},
+    }
+    with _registered_model():
+        with pytest.raises(ValueError, match=r"\[0, 1\]"):
+            detection.DetectionModule().validate(recording_dir, data, config)
+
+
+def test_validate_accepts_a_known_class_in_class_conf_thresholds(tmp_path):
+    recording_dir, _ = _setup(tmp_path)
+    data = recording_store.read_recording(recording_dir)
+    config = {
+        "model_id": "fake_detector",
+        "prompt": Prompt(targets=[PromptTarget("mouse", TextCue("mouse"))]),
+        "compute": _cpu(),
+        "class_conf_thresholds": {"mouse": 0.3},
+    }
+    with _registered_model():
+        out = detection.DetectionModule().validate(recording_dir, data, config)
+    assert out["class_conf_thresholds"] == {"mouse": 0.3}
+
+
+def _register_remote_target(monkeypatch, tmp_path, name="tillicum"):
+    from detail.configs.remote import RemoteTargetConfig
+    from detail.storage import remote_targets
+
+    cfg_dir = tmp_path / "config" / "detail"
+    monkeypatch.setattr(remote_targets, "CONFIG_DIR", cfg_dir)
+    monkeypatch.setattr(
+        remote_targets, "REMOTE_TARGETS_PATH", cfg_dir / "remote_targets.yaml"
+    )
+    remote_targets.register_remote_target(
+        RemoteTargetConfig(name=name, host=name, remote_workdir="/scratch/x")
+    )
+
+
+def test_validate_remote_backend_requires_a_remote_target(tmp_path):
+    recording_dir, _ = _setup(tmp_path)
+    data = recording_store.read_recording(recording_dir)
+    config = {
+        "model_id": "sam3",
+        "prompt": Prompt(targets=[PromptTarget("mouse", TextCue("mouse"))]),
+        "compute": ComputeTarget("remote", None, None, None),
+    }
+    with pytest.raises(ValueError, match="no remote_target was given"):
+        detection.DetectionModule().validate(recording_dir, data, config)
+
+
+def test_validate_remote_backend_rejects_unregistered_target(tmp_path, monkeypatch):
+    recording_dir, _ = _setup(tmp_path)
+    data = recording_store.read_recording(recording_dir)
+    _register_remote_target(monkeypatch, tmp_path, name="tillicum")
+    config = {
+        "model_id": "sam3",
+        "prompt": Prompt(targets=[PromptTarget("mouse", TextCue("mouse"))]),
+        "compute": ComputeTarget("remote", None, None, None, remote_target="nope"),
+    }
+    with pytest.raises(ValueError, match="no remote target registered"):
+        detection.DetectionModule().validate(recording_dir, data, config)
+
+
+def test_validate_remote_backend_accepts_cuda_capable_model(tmp_path, monkeypatch):
+    # A model that supports "cuda" — "remote" must be judged against the effective
+    # ("cuda") backend, not the literal string "remote", or a cuda-capable model
+    # could never be run remotely at all.
+    recording_dir, _ = _setup(tmp_path)
+    data = recording_store.read_recording(recording_dir)
+    _register_remote_target(monkeypatch, tmp_path, name="tillicum")
+    config = {
+        "model_id": "fake_detector",
+        "prompt": Prompt(targets=[PromptTarget("mouse", TextCue("mouse"))]),
+        "compute": ComputeTarget("remote", None, None, None, remote_target="tillicum"),
+    }
+    with _registered_model():
+        assert (
+            detection.DetectionModule().validate(recording_dir, data, config) is config
+        )
+
+
+def test_validate_local_backend_raises_when_model_not_installed(tmp_path):
+    # The ordinary (non-remote) case: this machine is the one that will call
+    # load(), so its own readiness gates the run.
+    recording_dir, _ = _setup(tmp_path)
+    data = recording_store.read_recording(recording_dir)
+    config = {
+        "model_id": "not_installed_detector",
+        "prompt": Prompt(targets=[PromptTarget("mouse", TextCue("mouse"))]),
+        "compute": _cpu(),
+    }
+    with _registered_not_installed_model():
+        with pytest.raises(ModelNotReadyError, match="not installed on this machine"):
+            detection.DetectionModule().validate(recording_dir, data, config)
+
+
+def test_validate_remote_backend_skips_local_readiness_check(tmp_path, monkeypatch):
+    # A remote job never calls load() on this machine — the cluster is where it
+    # actually runs — so this machine's own install state must not gate submission.
+    # (The cluster's readiness is checked by remote_shepherd before it submits.)
+    recording_dir, _ = _setup(tmp_path)
+    data = recording_store.read_recording(recording_dir)
+    _register_remote_target(monkeypatch, tmp_path, name="tillicum")
+    config = {
+        "model_id": "not_installed_detector",
+        "prompt": Prompt(targets=[PromptTarget("mouse", TextCue("mouse"))]),
+        "compute": ComputeTarget("remote", None, None, None, remote_target="tillicum"),
+    }
+    with _registered_not_installed_model():
+        assert (
+            detection.DetectionModule().validate(recording_dir, data, config) is config
+        )
+
+
+def test_validate_remote_backend_rejects_cpu_only_model(tmp_path, monkeypatch):
+    recording_dir, _ = _setup(tmp_path)
+    monkeypatch.setitem(MODELS, "closed_set_stub", _ClosedSetModel)
+    data = recording_store.read_recording(recording_dir)
+    _register_remote_target(monkeypatch, tmp_path, name="tillicum")
+    config = {
+        "model_id": "closed_set_stub",
+        "prompt": Prompt(targets=[]),
+        "compute": ComputeTarget("remote", None, None, None, remote_target="tillicum"),
+    }
+    with pytest.raises(ValueError, match="does not support the 'remote' backend"):
+        detection.DetectionModule().validate(recording_dir, data, config)
+
+
 def test_validate_closed_set_accepts_empty_prompt(tmp_path, monkeypatch):
     recording_dir, _ = _setup(tmp_path)
     monkeypatch.setitem(MODELS, "closed_set_stub", _ClosedSetModel)
@@ -1021,6 +1348,55 @@ def test_validate_trained_model_must_be_complete(tmp_path, monkeypatch):
     }
     with pytest.raises(ValueError, match="not complete"):
         detection.DetectionModule().validate(recording_dir, data, config)
+
+
+# --- keypoint teacher window (§26, #717) ------------------------------------ #
+def _two_part_recording(tmp_path, frames_per_part=10, step_ns=1000):
+    """Two parts on one t_ns axis: part 0 at 0..9 µs, part 1 at 10..19 µs."""
+    recording_dir = tmp_path / "recordings" / "recording_001"
+    files = []
+    for i in range(2):
+        rel = f"video/timestamps/generated/part_{i + 1:03d}.csv"
+        path = recording_dir / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        start = i * frames_per_part
+        recording_store.write_timestamps_csv(
+            path, np.arange(start, start + frames_per_part, dtype=np.int64) * step_ns
+        )
+        files.append(
+            {
+                "index": i,
+                "file": f"video/part_{i + 1:03d}.mp4",
+                "timestamps": {"generated": rel, "user": None, "active": "generated"},
+            }
+        )
+    return recording_dir, {"id": "recording_001", "video": {"files": files}}, files
+
+
+@pytest.mark.parametrize(
+    "t_end_ns, kept, counts",
+    [
+        (None, 2, [10, 10]),  # no window: the whole recording
+        (4500, 1, [5]),  # ends inside part 0: part 1 is never opened
+        (10_000, 1, [10]),  # ends exactly where part 1 starts
+        (14_500, 2, [10, 5]),  # ends inside part 1
+        (10**12, 2, [10, 10]),  # past the end: the whole recording
+    ],
+)
+def test_a_teacher_window_keeps_the_parts_it_reaches_and_caps_their_counts(
+    tmp_path, t_end_ns, kept, counts
+):
+    recording_dir, data, files = _two_part_recording(tmp_path)
+    in_window = detection._parts_in_window(recording_dir, data, files, t_end_ns)
+    assert in_window == files[:kept]  # a prefix, so each part keeps its index
+    totals = detection._part_frame_counts(recording_dir, data, in_window, t_end_ns)
+    assert list(totals.values()) == counts
+
+
+def test_the_window_end_is_seconds_on_the_t_ns_axis():
+    assert detection.teacher_window_end_ns({"teacher_window_s": 300}) == 300 * 10**9
+    assert detection.teacher_window_end_ns({"teacher_window_s": None}) is None
+    assert detection.teacher_window_end_ns({}) is None
 
 
 def test_validate_asks_the_install_whether_it_runs_on_the_backend(

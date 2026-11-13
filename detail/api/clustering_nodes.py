@@ -8,6 +8,8 @@ where the fit lives and how a ranked member is placed differ, and those two come
 
 from pathlib import Path
 
+from detail.core.utils import subject_key
+
 
 class NodeCacheMixin:
     """``node_view()`` and ``rebuild_node_cache()`` for a clustering run handle."""
@@ -21,6 +23,58 @@ class NodeCacheMixin:
 
     def _member_resolver(self, method, fit):
         raise NotImplementedError
+
+    def check_member(
+        self,
+        node: int,
+        recording_id: str,
+        subject: int,
+        start_ns: int,
+        end_ns: int,
+        verdict: str,
+    ):
+        """Record whether one clip of ``node`` fits it: ``verdict`` is ``"fits"``,
+        ``"doesnt"`` or ``"unclear"`` (§22 *Clip checks*). Appends; a later answer for the same
+        clip supersedes this one. Evidence about the clustering, never an input to it.
+
+        Raises:
+            ValueError: an unknown ``verdict``, or the run is finalized (as the audit is
+                refused; ``reopen()`` first).
+            ReadOnlyRunError: the run is a read-only view.
+        """
+        from detail.storage import member_checks
+
+        if verdict not in member_checks.VERDICTS:
+            raise ValueError(
+                f"verdict must be one of {member_checks.VERDICTS}, not {verdict!r}"
+            )
+        key = member_checks.ClipKey(
+            int(node),
+            str(recording_id),
+            subject_key(subject),
+            int(start_ns),
+            int(end_ns),
+        )
+        self._record(
+            "check_member",
+            {
+                "node": key.node,
+                "recording_id": key.recording_id,
+                "subject": key.subject,
+                "start_ns": key.start_ns,
+                "end_ns": key.end_ns,
+                "verdict": verdict,
+            },
+        )
+        member_checks.append_check(self._run_dir(), key, verdict)
+        return self
+
+    def member_checks(self, node: int):
+        """``node``'s clip checks: counts, the latest answer per clip, and the estimate with
+        its 95% interval (``storage.member_checks.CheckSummary``)."""
+        from detail.storage import member_checks
+
+        return member_checks.summary(self._run_dir(), int(node))
 
     def has_node_cache(self) -> bool:
         from detail.storage import node_cache as store
@@ -55,7 +109,7 @@ class NodeCacheMixin:
         from detail.api.node_view import NodeView
 
         if self._node_view is None:
-            from detail.api.node_cache import fit_digest
+            from detail.api.node_cache import current_subject, fit_digest
 
             view = NodeView.open(
                 self._run_dir(),
@@ -64,7 +118,12 @@ class NodeCacheMixin:
             )
             # §22: a cache built from another fit is reported, never silently read as this one's.
             try:
-                view.stale = view.stale_reason(fit_digest(self._fit_path()))
+                view.stale = view.stale_reason(
+                    {
+                        **fit_digest(self._fit_path()),
+                        **current_subject(self.state().track_id),
+                    }
+                )
             except FileNotFoundError:
                 view.stale = None
             self._node_view = view
@@ -151,7 +210,7 @@ class NodeCacheMixin:
             if where is None:
                 continue
             recording_id, subject, start, _end = where
-            key = (index.get(recording_id, -1), int(subject), int(start))
+            key = (index.get(recording_id, -1), subject_key(subject), int(start))
             score.setdefault(key, float(distance))
         report("done", 1.0)
         return np.array(
@@ -233,6 +292,7 @@ class NodeCacheMixin:
                 fit_path=self._fit_path(),
                 params=dict(state.method_params),
                 embed_run_for=state.embed_run_for,
+                subject=state.track_id,
                 trajectories=self._clip_trajectories(method, fit, progress),
                 progress=progress,
             )

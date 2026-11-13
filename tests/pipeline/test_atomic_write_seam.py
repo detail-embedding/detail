@@ -176,9 +176,16 @@ def _is_attr_call(node: ast.AST, attr: str, receiver: str | None = None) -> bool
 
 
 def _is_parse(node: ast.AST) -> bool:
-    """A parse of a record's text: ``yaml.safe_load``, ``json.load`` or ``json.loads``."""
+    """A parse of a record's text: ``yaml_load.safe_load`` (the YAML seam, ``core/yaml_load``),
+    ``yaml.safe_load``, ``json.load`` or ``json.loads``.
+
+    The seam is listed first because every YAML read in ``detail/`` now goes through it: a scan
+    that knew only ``yaml.safe_load`` went blind to every YAML read the day they moved, and said
+    so only through a stale allowlist entry (``_legacy_records`` "no longer trips this scan").
+    """
     return (
-        _is_attr_call(node, "safe_load", "yaml")
+        _is_attr_call(node, "safe_load", "yaml_load")
+        or _is_attr_call(node, "safe_load", "yaml")
         or _is_attr_call(node, "load", "json")
         or _is_attr_call(node, "loads", "json")
     )
@@ -239,8 +246,16 @@ def _write_offenders(tree: ast.AST) -> list[tuple[str, int]]:
     found = []
     for name, scope in _scopes(tree):
         nodes = list(_own_nodes(scope))
+        # `read_cache.replace_document` is `atomic.replace` plus dropping the cached parse —
+        # the commit every `cached_document` writer goes through — so it commits the same way.
         committed = [
-            n.args[0] for n in nodes if _is_attr_call(n, "replace", "atomic") and n.args
+            n.args[0]
+            for n in nodes
+            if (
+                _is_attr_call(n, "replace", "atomic")
+                or _is_attr_call(n, "replace_document", "read_cache")
+            )
+            and n.args
         ]
         writes = []
         for node in nodes:
@@ -352,6 +367,16 @@ def test_the_read_scan_would_catch_a_method_form_open_read():
         "        return yaml.safe_load(f.read())",
     )
     assert caught == [3]
+
+
+def test_the_read_scan_sees_reads_through_the_yaml_seam():
+    caught = _reads(
+        "def read_x(path):",
+        "    with open(path, encoding='utf-8-sig') as f:",
+        "        return yaml_load.safe_load(f)",
+    )
+    assert caught == [3]
+    assert _reads("yaml_load.safe_load(atomic.read_text(path))") == []
 
 
 def test_the_read_scan_would_catch_a_bare_read_text():

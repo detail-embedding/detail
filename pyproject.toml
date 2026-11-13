@@ -19,7 +19,9 @@ dependencies = [
     "click",         # CLI + confirm_fn default (DESIGN_PLAN §15)
     "pydantic>=2",   # typed config models — single source for param metadata + validation
     "matplotlib",    # publication figures for the report/ + comparison export capability (§18)
-    "pillow",        # GIF export (§22 enlarged panes, api/animation.py); matplotlib needs it too
+    "plotly>=5.24",  # interactive HTML of a report/plot_spec.PlotSpec (§16 location plots);
+                      # pure Python, imported lazily inside the HTML renderer
+    "pillow",        # GIF export (§22 clip montage, enlarged panes); matplotlib needs it too
     "scipy",         # keypoint track's pose-to-subject match (linear_sum_assignment, §26);
                       # imported lazily inside the functions that use it
     "psutil",        # RAM for the performance report's machine block (core, #394); also
@@ -49,6 +51,15 @@ torch = [
 # set, so a new series can change what a distill trains. A model records the exact version
 # it trained with (model.yaml -> trained_with).
 yolo = ["ultralytics>=8.4,<8.5"]                # lazy backend
+# Imported keypoint models (§26 Phase 4) — a SLEAP model exported to ONNX runs through
+# onnxruntime, never with sleap-nn installed. Imported lazily in models/onnx_keypoints.py.
+# The GPU build wherever one is published (it runs on the CPU too); it borrows CUDA and
+# cuDNN from the PyTorch CUDA build, so the two need the same CUDA major version. The CPU
+# build cannot be installed beside it: both install the `onnxruntime` package.
+keypoints_onnx = [                               # lazy backend
+    "onnxruntime-gpu; sys_platform != 'darwin'",
+    "onnxruntime; sys_platform == 'darwin'",
+]
 # Runtime deps SAM3's inference path imports but its own pyproject leaves out
 # (psutil is a core dependency above, not listed again here; einops is not core —
 # decord is only ever imported, not called; iopath is the checkpoint loader; timm
@@ -63,7 +74,9 @@ sam3 = ["einops", "decord", "iopath", "timm", "ftfy"]
 # which otherwise breaks `pip install .[analysis]` outright.
 # scikit-learn backs syllable discovery (sklearn.cluster.HDBSCAN; scipy, its peak detectors'
 # other half, is core now); imported lazily so the package still imports without the extra.
-analysis = ["umap-learn", "hdbscan", "scikit-learn", "numba>=0.60"]
+# shap explains the cluster profile's default forest; without it the profile falls back to
+# permutation importance and says so.
+analysis = ["umap-learn", "hdbscan", "scikit-learn", "numba>=0.60", "shap"]
 # §26 keypoint exports for other pose tools: h5py writes the SLEAP analysis file, pandas +
 # tables the DeepLabCut H5 beside its CSV, pynwb + ndx-pose the NWB file. Each is imported
 # inside its writer (Tenet 13); without the extra the CSV targets still run and the H5 / NWB
@@ -145,6 +158,16 @@ pythonpath = ["."]
 # suite proving it. Ten rather than napari's five because this suite's guards fail in
 # clusters — one registry change reddens every parity sweep at once, and seeing the shape of
 # that cluster is the diagnosis. Override with `--maxfail=0` when triaging a wide failure.
+# --max-worker-restart=0: a crashed xdist worker ends the run, red, naming the test it crashed
+# on. The default replaces it (up to 4x the worker count), and under `--dist loadfile` the
+# replacement is handed the crashed file again, crashed test included. Measured on a 16-test
+# suite with one `os.abort()` (Windows, -n 3): by default 3 of 4 runs ended only after 13
+# crashes each (78-130s) and the fourth sat until killed at 150s, its replacement having died
+# while bootstrapping (`OSError: [Errno 22]`) unnoticed; with this flag 3/3 ended in ~12s. On the
+# real suite a crash held the machine lock for over an hour (2026-10-19), and gates stalled the
+# same way on 2026-11-06. It also makes `faulthandler_exit_on_timeout` below mean what it says:
+# a hung test exits its worker, and without this the replacement re-runs the hung file. Inert
+# without `-n`; `tests/test_xdist_crash_policy.py` pins it.
 # `-p scripts.suite_watchdog` makes a run end on its own. It defaults `--max-worker-restart` to 0, so
 # a worker that dies (a segfault, faulthandler_timeout below) fails the run at once naming its
 # test: with restarts on, pytest-xdist 3.8's `--dist loadfile` re-queues every file the dead worker
@@ -152,14 +175,16 @@ pythonpath = ["."]
 # again, and the run waits forever with every worker idle. It also ends any run with no
 # progress for `suite_stall_timeout` seconds, printing
 # what it was waiting on.
-addopts = "--import-mode=importlib --strict-markers --maxfail=10 -p scripts.suite_progress_plugin -p scripts.suite_watchdog"
+addopts = "--import-mode=importlib --strict-markers --maxfail=10 --max-worker-restart=0 -p scripts.suite_progress_plugin -p scripts.watchdog_plugin -p scripts.suite_watchdog"
 # A hung test is indistinguishable from a slow one, and the suite has spawned real worker
 # subprocesses since §7 — a worker that neither exits nor writes a terminal status used to
 # park a run forever. faulthandler is pytest's own watchdog: it arms a C-level timer per
 # test, so it fires even when the hang sits inside a C call that never returns to the
 # interpreter (torch, numba, BLAS), which a signal-based timeout cannot. At the deadline it
 # dumps every thread's stack — naming the test and the line — and `exit_on_timeout` stops
-# the run rather than leaving it to be noticed by hand half an hour later.
+# the run rather than leaving it to be noticed by hand half an hour later. pytest disarms it for
+# the rest of any test that fails, teardown included; `scripts/watchdog_plugin.py` (in addopts)
+# arms it again, because a hang there stops the whole run with no dump and no failure line.
 #
 # 120s is many times the slowest test, so this is a hang detector, not a performance budget,
 # and arming it costs little. pytest-timeout's thread method does the same job at a higher

@@ -22,6 +22,9 @@ from detail.storage.zarr_io import (
     EmbeddingPartWriter,
     PartZarrReader,
     TracksSummaryWriter,
+    UNSEEN,
+    object_ids_on_detection_rows,
+    resolve_assignment_rows,
 )
 
 
@@ -172,6 +175,34 @@ def test_torn_flush_is_repaired_on_open(tmp_path):
     assert reader.column("frame_idx").shape[0] == 20
 
 
+def test_a_torn_store_reads_consistently_without_a_writer_reopening_it(tmp_path):
+    """A read-only reader has no write access to repair a torn store the way
+    ``test_torn_flush_is_repaired_on_open`` shows a writer does — but every caller
+    that cross-references two columns by row index (a tracker masking by class,
+    frame grouping against ``bbox``) already assumes they agree. Without this, a
+    reader crashes exactly the way `detail.trackers._common.filter_by_class` did in
+    practice: ``IndexError: boolean index did not match indexed array``, because its
+    mask (built from ``class_name``) and another column (``bbox``) disagreed in
+    length — with no crash message pointing at the real cause, a torn store from an
+    interrupted remote/multi-GPU detection run."""
+    path = tmp_path / "part_001.zarr"
+    with DetectionPartWriter(path) as w:
+        _write_frames(w, range(10), _always_two)  # 20 rows
+
+    # simulate a crash mid-flush: one column got more rows than the others, and
+    # nothing ever reopens a *writer* on this store again (a reader is all that's
+    # left, exactly the tracking-run shape).
+    root = zarr.open_group(str(path), mode="a")
+    root["frame_idx"].resize((22,))
+    assert root["frame_idx"].shape[0] != root["t_ns"].shape[0]
+
+    reader = DetectionPartReader(path)
+    assert reader.n_rows == 20
+    data = reader.read()
+    assert {len(v) for v in data.values()} == {20}
+    assert reader.column("frame_idx").shape[0] == 22  # column() stays lazy/raw
+
+
 def test_resume_appends_after_consistent_repair(tmp_path):
     path = tmp_path / "part_001.zarr"
     with DetectionPartWriter(path) as w:
@@ -261,6 +292,68 @@ def test_assignment_resume_is_identical(tmp_path):
 
     assert PartZarrReader(part).read()["object_id"].tolist() == ids
     assert PartZarrReader(ref).read()["object_id"].tolist() == ids
+
+
+def _detection_reader_two_classes(tmp_path, n_frames=4):
+    """2 rows/frame: ``mouse`` at index 0, ``pellet`` at index 1 (`_rows_for_frame`)."""
+    path = tmp_path / "det.zarr"
+    with DetectionPartWriter(path) as writer:
+        _write_frames(writer, range(n_frames), _always_two)
+    return DetectionPartReader(path)
+
+
+def test_resolve_assignment_rows_filters_by_class(tmp_path):
+    reader = _detection_reader_two_classes(tmp_path)
+    assign_path = tmp_path / "assign.zarr"
+    with AssignmentPartWriter(assign_path) as w:
+        for _ in range(4):  # one row per "mouse" detection (the real filtered count)
+            w.add_object_id(0)
+    assignment = PartZarrReader(assign_path)
+
+    raw_rows = resolve_assignment_rows(reader, assignment, "mouse")
+
+    assert raw_rows.tolist() == [0, 2, 4, 6]  # "mouse" is always detection_idx 0
+
+
+def test_resolve_assignment_rows_no_filter_is_identity(tmp_path):
+    reader = _detection_reader_two_classes(tmp_path)
+    assign_path = tmp_path / "assign.zarr"
+    with AssignmentPartWriter(assign_path) as w:
+        for _ in range(8):
+            w.add_object_id(0)
+    assignment = PartZarrReader(assign_path)
+
+    assert resolve_assignment_rows(reader, assignment, None).tolist() == list(range(8))
+
+
+def test_resolve_assignment_rows_shrinks_for_a_torn_store(tmp_path):
+    """A crash-torn store: the assignment itself is short. Not an error — the
+    existing recovery (module docstring) bounds to the shorter side."""
+    reader = _detection_reader_two_classes(tmp_path)
+    assign_path = tmp_path / "assign.zarr"
+    with AssignmentPartWriter(assign_path) as w:
+        for _ in range(2):  # fewer rows than the 4 "mouse" detections
+            w.add_object_id(0)
+    assignment = PartZarrReader(assign_path)
+
+    assert resolve_assignment_rows(reader, assignment, "mouse").tolist() == [0, 2]
+
+
+def test_resolve_assignment_rows_rejects_a_class_name_the_tracker_never_used(tmp_path):
+    """The recorded class: a `class_name` that is not what the tracker actually
+    filtered by (e.g. a track_merge run's joined record label, not its track.yaml's
+    real `None`) makes the filtered row count collapse below what the assignment
+    holds — this must raise, not silently resolve to an empty/wrong pairing
+    (`detail/api/run_preview.py::TrackingPreview` is the consumer this guards)."""
+    reader = _detection_reader_two_classes(tmp_path)
+    assign_path = tmp_path / "assign.zarr"
+    with AssignmentPartWriter(assign_path) as w:
+        for _ in range(4):  # the real, unfiltered assignment: one per "mouse" row
+            w.add_object_id(0)
+    assignment = PartZarrReader(assign_path)
+
+    with pytest.raises(ValueError, match="not the filter this run's tracker actually"):
+        resolve_assignment_rows(reader, assignment, "black mouse+white mouse")
 
 
 # --- embedding zarr (Section 14) -------------------------------------------- #
@@ -369,3 +462,32 @@ def test_writer_gives_up_after_exhausting_share_retries(tmp_path, monkeypatch):
     with pytest.raises(PermissionError):
         with EmbeddingPartWriter(tmp_path / "e.zarr", output_dim=2):
             pass
+
+
+def test_object_ids_land_on_the_detection_rows_the_tracker_saw(tmp_path):
+    """A class-filtered assignment is laid onto the part's own rows: the pellets it never saw
+    read UNSEEN, the mice their tracks — never the assignment's raw row ``i`` on row ``i``.
+    """
+    reader = _detection_reader_two_classes(tmp_path)
+    assign_path = tmp_path / "assign.zarr"
+    with AssignmentPartWriter(assign_path) as w:
+        for oid in (3, -1, 3, 4):  # one per mouse, which is every even detection row
+            w.add_object_id(oid)
+
+    aligned = object_ids_on_detection_rows(reader, PartZarrReader(assign_path), "mouse")
+
+    assert aligned.tolist() == [3, UNSEEN, -1, UNSEEN, 3, UNSEEN, 4, UNSEEN]
+
+
+def test_object_ids_without_a_filter_are_the_assignment_and_a_torn_tail_is_unseen(
+    tmp_path,
+):
+    reader = _detection_reader_two_classes(tmp_path)
+    assign_path = tmp_path / "assign.zarr"
+    with AssignmentPartWriter(assign_path) as w:
+        for oid in range(6):  # a crash left the last two rows unassigned
+            w.add_object_id(oid)
+
+    aligned = object_ids_on_detection_rows(reader, PartZarrReader(assign_path), None)
+
+    assert aligned.tolist() == [0, 1, 2, 3, 4, 5, UNSEEN, UNSEEN]

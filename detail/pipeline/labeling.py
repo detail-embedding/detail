@@ -21,10 +21,15 @@ configured one. Output is the source-agnostic dataset layout shared with the run
 """
 
 import contextlib
+import json
 import random
 import time
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
+import cv2
+
+from detail.core import atomic
 from detail.core.dataclasses import (
     LabelingJob,
     LabelingProgressEvent,
@@ -69,7 +74,10 @@ def run(job: LabelingJob, run_dir, progress_cb, stop_event) -> None:
 
 def _label(job: LabelingJob, run_dir: Path, progress_cb, stop_event) -> None:
     experiment_root = run_dir.parent.parent
-    parts = _gather_parts(experiment_root, job)
+    # With the frames already extracted there is no video to find, and on the machine the labeling
+    # runs on there may be no video root to find it under.
+    frames_dir = run_dir / job.source_frames if job.source_frames else None
+    parts = _gather_parts(experiment_root, job, resolve_video=frames_dir is None)
     sampled = _sample_frames(parts, job)  # {part_index: sorted [frame_idx]}
     staged = StagedExamples(run_dir)
 
@@ -135,18 +143,25 @@ def _label(job: LabelingJob, run_dir: Path, progress_cb, stop_event) -> None:
             )
         batch.clear()
 
+    stored = _read_manifest(frames_dir) if frames_dir is not None else None
     for part_index, part in enumerate(parts):
         if stop_event is not None and stop_event.is_set():
             interrupted = True
             break
-        for frame_idx, frame in exact_sampled_frames(
-            part["video"],
-            sampled.get(part_index, []),
-            part["timestamps"],
-            random.Random(f"{job.dataset_id}:{part_index}:redraw"),
-            stats,
-        ):
-            stem = f"{part['recording_id']}_{part['stem']}_{frame_idx:07d}"
+        targets = sampled.get(part_index, [])
+        frames = (
+            exact_sampled_frames(
+                part["video"],
+                targets,
+                part["timestamps"],
+                random.Random(f"{job.dataset_id}:{part_index}:redraw"),
+                stats,
+            )
+            if stored is None
+            else _stored_frames(frames_dir, stored, part)
+        )
+        for frame_idx, frame in frames:
+            stem = _example_stem(part["recording_id"], part["stem"], frame_idx)
             batch.append((part_index, frame_idx, stem, frame))
             if len(batch) >= batch_size:
                 _flush()
@@ -205,15 +220,25 @@ def _labels_from_result(result, class_id, min_area, per_class) -> tuple[list[str
 # --------------------------------------------------------------------------- #
 # Recordings, sampling, model
 # --------------------------------------------------------------------------- #
-def _gather_parts(experiment_root, job: LabelingJob) -> list[dict]:
-    """Per-part contexts (original video + frame count) for every source recording."""
+def _gather_parts(
+    experiment_root, job: LabelingJob, *, resolve_video: bool = True
+) -> list[dict]:
+    """Per-part contexts (original video + frame count) for every source recording.
+
+    ``resolve_video=False`` leaves ``video`` as ``None``: the frame count comes from the
+    timestamp map, which lives in the experiment, so sampling needs no video at all.
+    """
     parts: list[dict] = []
     for recording_id in job.source_recording_ids:
         recording_dir = experiment_store.recording_path(experiment_root, recording_id)
         data = recording_store.read_recording(recording_dir)
         files = recording_store.video_files(data)
         for part_index, file in enumerate(files):
-            video = recording_store.resolve_part_video_path(recording_dir, file)
+            video = (
+                recording_store.resolve_part_video_path(recording_dir, file)
+                if resolve_video
+                else None
+            )
             timestamps = recording_store.load_active_timestamps(
                 recording_dir, data, part_index
             ).values
@@ -291,6 +316,142 @@ def _allocate(total: int, weights: list[int]) -> list[int]:
     for i in order[: total - sum(floors)]:
         floors[i] += 1
     return floors
+
+
+#: Where a remote labeling job's extracted frames live, relative to the dataset's run dir.
+SOURCE_FRAMES_DIR = "source_frames"
+_MANIFEST = "manifest.json"
+
+
+def _example_stem(recording_id: str, part_stem: str, frame_idx: int) -> str:
+    """The name a sampled frame is saved under: as a dataset example, and in ``source_frames``."""
+    return f"{recording_id}_{part_stem}_{frame_idx:07d}"
+
+
+def extract_source_frames(
+    experiment_root,
+    job: LabelingJob,
+    out_dir,
+    progress_cb: Callable[[int, int], None] | None = None,
+    stop_event=None,
+) -> int:
+    """Write every frame this job will sample to ``out_dir`` as a lossless PNG; return the count.
+
+    The sample is a pure function of the recordings' timestamp maps and the dataset id
+    (``_sample_frames``), so it can be drawn on the machine that holds the video and only the
+    images sent to wherever the labeling runs: ~1,000 frames instead of a whole video library
+    (80 recordings was ~116 GB). Each frame is read exactly as a local labeling run reads it
+    (``exact_sampled_frames``, redraws included) and saved **losslessly**: labeling re-encodes the frame as a JPEG for
+    the dataset, and a second lossy step here would make a remote run's pictures differ from a
+    local run's.
+
+    **Idempotent**, so a retry resumes: a frame already on disk is kept. A ``manifest.json``
+    naming every frame present is written last and only on a clean finish; the labeling reader
+    treats it as the source of truth, so an incomplete transfer fails loudly rather than quietly
+    labeling fewer frames than were asked for. An interrupted extraction writes none.
+
+    ``progress_cb(done, total)`` is throttled to the shared live-bar cadence.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    parts = _gather_parts(experiment_root, job)
+    sampled = _sample_frames(parts, job)
+    total = sum(len(frames) for frames in sampled.values())
+    emit = ThrottledProgress(
+        None if progress_cb is None else (lambda counts: progress_cb(*counts))
+    )
+    emit((0, total), force=True)
+    present: list[str] = []
+    done = 0
+    for part_index, part in enumerate(parts):
+        wanted = [
+            (
+                frame_idx,
+                f"{_example_stem(part['recording_id'], part['stem'], frame_idx)}.png",
+            )
+            for frame_idx in sampled.get(part_index, [])
+        ]
+        missing = [f for f, name in wanted if not (out_dir / name).is_file()]
+        present += [name for _f, name in wanted if (out_dir / name).is_file()]
+        done += len(wanted) - len(missing)
+        frames = exact_sampled_frames(
+            part["video"],
+            missing,
+            part["timestamps"],
+            random.Random(f"{job.dataset_id}:{part_index}:redraw"),
+        )
+        for frame_idx, frame in frames:
+            if stop_event is not None and stop_event.is_set():
+                return done
+            name = f"{_example_stem(part['recording_id'], part['stem'], frame_idx)}.png"
+            _write_png(out_dir / name, frame)
+            present.append(name)
+            done += 1
+            emit((done, total))
+        if stop_event is not None and stop_event.is_set():
+            return done
+    emit((done, total), force=True)
+    manifest = out_dir / f"{_MANIFEST}.tmp"
+    manifest.write_text(
+        json.dumps({"schema_version": 1, "frames": sorted(present)}), encoding="utf-8"
+    )
+    atomic.replace(manifest, out_dir / _MANIFEST)
+    return len(present)
+
+
+def _write_png(path: Path, frame) -> None:
+    """Write ``frame`` to ``path`` so no reader ever sees half a PNG: a sibling temp file, then a
+    replace. A crash mid-write would otherwise leave a truncated file under its final name, which
+    the idempotent skip above would then trust on the retry."""
+    temp = path.with_name(f"{path.stem}.tmp.png")
+    if not cv2.imwrite(str(temp), frame, [cv2.IMWRITE_PNG_COMPRESSION, 1]):
+        raise OSError(
+            f"could not write the extracted frame {path.name} to {path.parent}"
+        )
+    atomic.replace(temp, path)
+
+
+def _read_manifest(frames_dir: Path) -> set[str]:
+    """The frame names a finished extraction recorded.
+
+    Raises:
+        FileNotFoundError: no manifest, meaning the extraction never finished or the frames did
+            not all arrive.
+    """
+    path = frames_dir / _MANIFEST
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"no {_MANIFEST} in {frames_dir}: the sampled frames were not fully extracted, or "
+            "not fully transferred, so labeling will not guess at which are missing"
+        )
+    return set(json.loads(atomic.read_text(path))["frames"])
+
+
+def _stored_frames(
+    frames_dir: Path, manifest: set[str], part: dict
+) -> Iterator[tuple[int, object]]:
+    """``(frame_idx, BGR frame)`` for every frame of ``part`` that extraction produced.
+
+    Read from the manifest rather than ``targets``: extraction decodes exactly and redraws a
+    target it cannot land on (``exact_sampled_frames``), so the frames it wrote are the ones a
+    local run would have labelled, which need not be ``targets``. One the manifest names but the
+    disk does not have, or cannot decode, is a transfer problem and raises.
+    """
+    prefix = f"{part['recording_id']}_{part['stem']}_"
+    found = sorted(
+        int(name[len(prefix) : -len(".png")])
+        for name in manifest
+        if name.startswith(prefix) and name[len(prefix) : -len(".png")].isdigit()
+    )
+    for frame_idx in found:
+        name = f"{_example_stem(part['recording_id'], part['stem'], frame_idx)}.png"
+        frame = cv2.imread(str(frames_dir / name))
+        if frame is None:
+            raise FileNotFoundError(
+                f"the extracted frame {name} is missing or unreadable in {frames_dir}; "
+                "the transfer from the machine that holds the video may be incomplete"
+            )
+        yield frame_idx, frame
 
 
 def _load_model(experiment_root, job: LabelingJob):

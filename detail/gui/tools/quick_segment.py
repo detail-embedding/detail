@@ -55,6 +55,7 @@ from detail.gui.status_color import MUTED, WARN, set_label_color
 from detail.gui.run_preview import _to_pixmap
 from detail.gui.scrubber import FrameScrubber
 from detail.gui.tools.registry import ToolUI, register_tool_ui
+from detail.gui.video_codec import VideoCodecPicker, with_codec_note
 from detail.gui.workers import BackgroundCall, StageProgressWorker
 from detail.storage import tool_runs
 from detail.tools import quick_segment as engine
@@ -443,6 +444,8 @@ class _QuickSegmentResult(QWidget):
         self._export_btn = QPushButton("Export mp4")
         self._export_btn.clicked.connect(self._export)
         actions.addWidget(self._export_btn)
+        self._codec = VideoCodecPicker()
+        actions.addWidget(self._codec)
         actions.addStretch()
         layout.addLayout(actions)
         self._progress = QProgressBar()
@@ -505,24 +508,33 @@ class _QuickSegmentResult(QWidget):
         self._progress.setVisible(True)
         self._progress.setMaximum(1000)
         self._progress.setValue(0)
-        min_conf = self._min_conf
+        min_conf, codec = self._min_conf, self._codec.codec()
         self._export_worker = StageProgressWorker(
             lambda progress: engine.export_run(
-                run_dir, self._manifest, parent, progress, min_conf=min_conf
+                run_dir,
+                self._manifest,
+                parent,
+                progress,
+                min_conf=min_conf,
+                codec=codec,
             ),
             receiver=self,
         )
         self._export_worker.tick.connect(
             lambda permille, _s: self._progress.setValue(permille)
         )
-        self._export_worker.done.connect(lambda out: self._export_done(str(out)))
+        self._export_worker.done.connect(
+            lambda out: self._export_done(
+                with_codec_note(f"Saved to {out}", f"{out}.mp4", codec)
+            )
+        )
         self._export_worker.failed.connect(self._export_failed)
         self._export_worker.start()
 
-    def _export_done(self, path: str) -> None:
+    def _export_done(self, message: str) -> None:
         self._progress.setVisible(False)
         self._export_btn.setEnabled(True)
-        QMessageBox.information(self, "Export complete", f"Saved to {path}")
+        QMessageBox.information(self, "Export complete", message)
 
     def _export_failed(self, exc) -> None:
         self._progress.setVisible(False)

@@ -143,6 +143,9 @@ def test_a_retirement_entry_names_a_key_that_is_still_in_the_recipe():
 _NOT_PART_OF_THE_DETECT = {
     "detection_run_id": "selects which detections get points; the lineage parent, by ref",
     "example_set_id": "a selection; what the run learned from is the example_set_digest",
+    "class_example_sets": (
+        "selections, class to set id; what each class learned from is class_example_digests"
+    ),
     "batch_size": "throughput only; the same crops either way",
 }
 

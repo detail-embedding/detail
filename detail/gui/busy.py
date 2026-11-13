@@ -37,7 +37,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from detail.gui.lifetime import alive
+from detail.gui.lifetime import alive, cleared
 from detail.gui.workers import BackgroundCall, StageProgressWorker
 
 SHOW_DELAY_MS = 150  # don't flash an indicator for an op that finishes in a blink
@@ -198,11 +198,12 @@ class BusyOverlay(QWidget):
         self.setGeometry(self._target.rect())
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
-        # `getattr`, not `self._target`: a wrapper Qt materialized for a C++ object whose Python
-        # side was collected has no instance state at all, and raising here escapes into the
-        # excepthook where it is swallowed. Inert is the right behaviour for an overlay nobody
-        # holds any more.
-        target = getattr(self, "_target", None)
+        # A wrapper Qt materialized for a C++ object whose Python side was collected has no
+        # instance state at all, and raising here escapes into the excepthook where it is
+        # swallowed. Inert is the right behaviour for an overlay nobody holds any more.
+        if cleared(self):
+            return False
+        target = self._target
         if target is not None and obj is target and event.type() == QEvent.Type.Resize:
             self._sync_geometry()
         return super().eventFilter(obj, event)

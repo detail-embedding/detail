@@ -30,6 +30,7 @@ from detail.configs.detection import (
     BATCHABLE_DEFAULT_BATCH_SIZE,
     DetectionConfig,
 )
+from detail.core import disk_space
 from detail.core.dataclasses import (
     ACTIVE_STATUSES,
     DetectionJob,
@@ -37,7 +38,13 @@ from detail.core.dataclasses import (
 )
 from detail.core.progress import PROGRESS_INTERVAL_S, remaining_seconds
 from detail.core.protocols import ModelNotReadyError
-from detail.core.utils import check_cuda_indices, resolve_device, utc_timestamp
+from detail.core.utils import (
+    check_cuda_indices,
+    effective_backend,
+    resolve_device,
+    seconds_to_t_ns,
+    utc_timestamp,
+)
 from detail.executor import rundir
 from detail.executor.runners import (
     ProcessingModule,
@@ -50,18 +57,26 @@ from detail.models.resolve import (
 )
 from detail.pipeline import _detection_worker
 from detail.storage import experiment, recording as recording_store
+from detail.storage import remote_targets
 from detail.storage import video_integrity
+from detail.storage.zarr_io import DetectionPartReader
 
 # Detection runs a multiprocess pool and emits by *polling* the worker progress
 # files at the shared live-bar cadence (§6) — it doesn't use the in-loop
 # ThrottledProgress helper (a worker.join(timeout) loop is already incremental).
 _PROGRESS_POLL_INTERVAL_S = PROGRESS_INTERVAL_S
 
+#: Bytes a detection run writes per frame read. Measured on 164 single-animal recordings
+#: (2026-10-09, SAM 3 and a trained YOLO, ~3 h / 328k frames each): median 238 B/frame, the
+#: largest run 0.11 GB. Rounded up: an estimate that undershoots is the one that fills a drive.
+DETECTION_BYTES_PER_FRAME = 400
+
 
 def _part_frame_counts(
     recording_dir: Path,
     data: dict,
     files: list[dict],
+    t_end_ns: int | None = None,
 ) -> dict[str, int]:
     """Expected frame count per source video, from the authoritative timestamp
     map (Tenet 8) — the same count the worker bounds its loop by. Lets the
@@ -71,12 +86,41 @@ def _part_frame_counts(
     stall). Not cv2's ``CAP_PROP_FRAME_COUNT`` (duration × advertised fps), which
     over-reports when a file's header fps differs from its true PTS rate — that
     inflated the denominator so the bar never reached 100% and invented tail
-    ``dropped_frames``."""
+    ``dropped_frames``. A teacher window (§26) caps each count at the frames inside it.
+    """
     counts: dict[str, int] = {}
     for part_index, part in enumerate(files):
         tsmap = recording_store.load_active_timestamps(recording_dir, data, part_index)
-        counts[recording_store.part_stem(part)] = len(tsmap)
+        counts[recording_store.part_stem(part)] = recording_store.frames_before(
+            tsmap, t_end_ns
+        )
     return counts
+
+
+def _parts_in_window(
+    recording_dir: Path, data: dict, files: list[dict], t_end_ns: int | None
+) -> list[dict]:
+    """The parts a teacher window (§26) reaches: those whose first frame is before its end.
+
+    A prefix of ``files``, since parts are in time order — so each kept part's index in
+    ``files`` is still its index in the recording, which is how the worker finds its
+    timestamp map. A part past the end gets no zarr at all, and every consumer finds the
+    run's parts by globbing them."""
+    if t_end_ns is None:
+        return files
+    kept = []
+    for part_index, part in enumerate(files):
+        tsmap = recording_store.load_active_timestamps(recording_dir, data, part_index)
+        if recording_store.frames_before(tsmap, t_end_ns) == 0:
+            break
+        kept.append(part)
+    return kept
+
+
+def teacher_window_end_ns(config: dict) -> int | None:
+    """The window end a detection config asks for, on the t_ns axis (Tenet 8), or None."""
+    window_s = config.get("teacher_window_s")
+    return None if window_s is None else seconds_to_t_ns(float(window_s))
 
 
 def detection_run_dir(experiment_root, job: DetectionJob) -> Path:
@@ -112,11 +156,36 @@ def prompt_classes(prompt) -> list[str]:
     return sorted({target.class_name for target in prompt.targets})
 
 
+def detected_classes(detection_run_dir: Path) -> list[str]:
+    """Sorted distinct ``class_name`` values actually written across a detection run's
+    parts — the ground truth of what it detected, unlike ``prompt_classes`` (empty for
+    a closed-set model, since a closed-set run has no prompt) or the model's own
+    declared roster (a lookup this module has no reason to make, and one that could
+    list a class the video never actually triggered). Used by tracking's per-class
+    filter (§13) to validate and offer a class name — accurate whether the run is
+    open-vocab or closed-set, and for a run recorded before this existed."""
+    classes: set[str] = set()
+    for part_path in sorted(Path(detection_run_dir).glob("part_*.zarr")):
+        classes.update(DetectionPartReader(part_path).column("class_name")[:])
+    return sorted(classes)
+
+
+def class_conf_thresholds_fingerprint(class_conf_thresholds: dict[str, float]) -> str:
+    """Stable short digest of a per-class threshold override map, the same idiom as
+    ``prompt_fingerprint`` — a plain dict isn't a safe identity field on its own
+    (§6.5), so two runs that differ only in which class got which override still get
+    distinct run specs."""
+    payload = json.dumps(class_conf_thresholds, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
+
+
 def run(job: DetectionJob, run_dir, progress_cb, stop_event) -> None:
     run_dir = Path(run_dir)
     recording_dir = run_dir.parent.parent
     data = recording_store.read_recording(recording_dir)
-    files = recording_store.video_files(data)
+    files = _parts_in_window(
+        recording_dir, data, recording_store.video_files(data), job.t_end_ns
+    )
 
     progress_dir = run_dir / _detection_worker.PROGRESS_DIRNAME
     progress_dir.mkdir(parents=True, exist_ok=True)
@@ -169,7 +238,7 @@ def _run_inline(
     progress_cb,
     stop_event,
 ) -> list[dict]:
-    part_totals = _part_frame_counts(recording_dir, data, files)
+    part_totals = _part_frame_counts(recording_dir, data, files, job.t_end_ns)
     start = time.monotonic()
     # The bar appears at 0% immediately and sits there with "loading model" while
     # the (slow) weight load runs, instead of showing nothing until the first frame.
@@ -191,7 +260,9 @@ def _run_inline(
         job.model_variant,
     )
     model.load(resolve_device(job.compute, model.supported_backends))
-    model.set_conf_threshold(job.conf_threshold)
+    model.set_conf_threshold(
+        _detection_worker.conf_floor(job.conf_threshold, job.class_conf_thresholds)
+    )
 
     parts_status: list[dict] = []
     for part_index, part in enumerate(files):
@@ -216,12 +287,14 @@ def _run_inline(
                     recording_dir=recording_dir,
                     recording_data=data,
                     every_n_frames=job.every_n_frames,
+                    t_end_ns=job.t_end_ns,
                     out_zarr_path=out_zarr,
                     progress_json_path=pj,
                     stop_flag_path=stop_flag,
                     model=model,
                     prompt=job.prompt,
                     conf_threshold=job.conf_threshold,
+                    class_conf_thresholds=job.class_conf_thresholds,
                     gpu_idx=None,
                     batch_size=job.batch_size,
                 )
@@ -314,6 +387,7 @@ def _run_multi_gpu(
                     job.conf_threshold,
                     job.batch_size,
                     PIPELINE_RUNNERS,
+                    job.class_conf_thresholds,
                 ),
             )
             pools.append(pool)
@@ -330,6 +404,7 @@ def _run_multi_gpu(
                 "recording_dir": str(recording_dir),
                 "recording_data": data,
                 "every_n_frames": job.every_n_frames,
+                "t_end_ns": job.t_end_ns,
                 "out_zarr_path": str(out_zarr),
                 "progress_json_path": str(progress_json),
                 "stop_flag_path": str(stop_flag),
@@ -338,7 +413,7 @@ def _run_multi_gpu(
             futures[fut] = part_index
 
         pending = set(futures)
-        part_totals = _part_frame_counts(recording_dir, data, files)
+        part_totals = _part_frame_counts(recording_dir, data, files, job.t_end_ns)
         if progress_cb is not None:
             progress_cb(
                 _aggregate_event(
@@ -512,16 +587,23 @@ class DetectionModule(ProcessingModule):
         "weights_source",
         "conf_threshold",
         "every_n_frames",
+        "teacher_window_s",
         "prompt_fingerprint",
         "prompt_classes",
+        "class_conf_thresholds_fingerprint",
     )
-    identity_defaults = {"every_n_frames": 1}
+    # A teacher window is identity: a 5-minute teacher and a whole-recording run with the
+    # same settings are different runs, and a batch spec must never resolve one as the other.
+    identity_defaults = {"every_n_frames": 1, "teacher_window_s": None}
     lineage_ref = None  # roots at the recording's video — no upstream run spec
 
     def recompute_identity_from_job(self, job) -> dict:
         return {
             "prompt_fingerprint": prompt_fingerprint(job.prompt),
             "prompt_classes": prompt_classes(job.prompt),
+            "class_conf_thresholds_fingerprint": class_conf_thresholds_fingerprint(
+                job.class_conf_thresholds
+            ),
         }
 
     def runner(self, job, run_dir, progress_cb, stop_event) -> None:
@@ -533,10 +615,22 @@ class DetectionModule(ProcessingModule):
     def output_path(self, run_id: str) -> str:
         return f"detections/{run_id}/"
 
+    def estimate_output_bytes(
+        self, recording_dir, recording_data: dict, config: dict
+    ) -> int:
+        """Frames × :data:`DETECTION_BYTES_PER_FRAME` (#743). A mask's RLE length and the
+        number of instances depend on the video, so the per-frame figure is measured."""
+        frames = disk_space.frames_to_process(
+            recording_data, config.get("every_n_frames")
+        )
+        return frames * DETECTION_BYTES_PER_FRAME
+
     def validate(self, recording_dir, recording_data: dict, config: dict) -> dict:
-        # The model covers a subset (the scalar conf + typed ids); it enforces the conf
-        # bound + shape. The nested prompt / compute and the resolved weights_source stay
-        # outside it, so validate keeps its own enrichment and returns the enriched config.
+        # The model covers a subset (the scalar conf + typed ids, plus the structural
+        # shape of class_conf_thresholds); it enforces the conf bound + shape. The
+        # nested prompt / compute, the resolved weights_source, and which keys are
+        # valid in class_conf_thresholds stay outside it, so validate keeps its own
+        # enrichment and returns the enriched config.
         DetectionConfig.model_validate(config)
         model_id = config["model_id"]
         prompt = config["prompt"]
@@ -553,14 +647,20 @@ class DetectionModule(ProcessingModule):
         # order — and `model_variant` is a run **identity** field, so two runs recorded as
         # `None` would compare as the same spec across a code change that reordered VARIANTS.
         config["model_variant"] = model.variant
-        if compute is not None and compute.backend not in model.supported_backends:
+        if (
+            compute is not None
+            and effective_backend(compute) not in model.supported_backends
+        ):
             raise ValueError(
                 f"model {model_id!r} does not support the {compute.backend!r} backend; "
                 f"it requires one of {list(model.supported_backends)} "
                 "(a CUDA-only model like SAM3 needs an NVIDIA GPU)."
             )
-        if compute is not None:
-            model.check_backend(compute.backend)  # this *install* on this backend (§5)
+        remote_targets.require_registered(compute)
+        if compute is not None and compute.backend != "remote":
+            # this *install* on this backend (§5); a remote job runs on the cluster's install,
+            # which the shepherd checks there before it submits
+            model.check_backend(compute.backend)
         batch_size = config.get("batch_size")
         if batch_size is None:  # unset -> the model-appropriate default
             config["batch_size"] = (
@@ -594,9 +694,47 @@ class DetectionModule(ProcessingModule):
                     f"{sorted(unsupported)}; "
                     f"supported: {[c.__name__ for c in supported]}"
                 )
-        status = model.readiness()
-        if not status.ready:
-            raise ModelNotReadyError(status)
+        class_conf_thresholds = config.get("class_conf_thresholds") or {}
+        if class_conf_thresholds:
+            # The valid keys are whichever classes *this* model actually produces —
+            # its own trained roster for a closed-set model, or the prompt's own
+            # target names for an open-set one (the prompt *is* the class definition
+            # there). Known only here, after the model/prompt above are resolved —
+            # this is exactly why the field can't be a static pydantic bound.
+            known = (
+                {t.class_name for t in prompt.targets}
+                if supported
+                else set(getattr(model, "classes", []))
+            )
+            unknown = set(class_conf_thresholds) - known
+            if unknown:
+                raise ValueError(
+                    f"class_conf_thresholds names {sorted(unknown)}, which "
+                    f"{model_id!r} does not detect; known classes: {sorted(known)}"
+                )
+            out_of_range = {
+                name: value
+                for name, value in class_conf_thresholds.items()
+                if not 0.0 <= value <= 1.0
+            }
+            if out_of_range:
+                raise ValueError(
+                    f"class_conf_thresholds values must be within [0, 1]: {out_of_range}"
+                )
+        # Readiness is a fact about *this* machine's disk (and, if not installed,
+        # a network check from here — Hard Rules §"Model weights"): whether the
+        # weights are present where `load()` will look for them. A remote job never
+        # calls `load()` here — the shepherd rewrites `compute` to the on-cluster
+        # backend and the model actually loads on the cluster — so gating submission
+        # on *this* machine's install state would demand a full local install for a
+        # job this machine only submits. The cluster's own readiness is checked by
+        # `executor/remote_shepherd.py` before it submits the sbatch job, so a
+        # missing install still fails clearly — just not here, and not against this
+        # machine's cache.
+        if compute is None or compute.backend != "remote":
+            status = model.readiness()
+            if not status.ready:
+                raise ModelNotReadyError(status)
         _validate_source_files(recording_dir, recording_data)
         for run_entry in recording_data.get("detection_runs", []):
             if run_entry.get("status") in ACTIVE_STATUSES:
@@ -610,24 +748,38 @@ class DetectionModule(ProcessingModule):
             job_id=run_id,
             recording_id=recording_id,
             every_n_frames=int(config.get("every_n_frames") or 1),
+            t_end_ns=teacher_window_end_ns(config),
             model_id=config["model_id"],
             model_variant=config.get("model_variant"),
             weights_source=config.get("weights_source", "pretrained"),
             prompt=config["prompt"],
             conf_threshold=config.get("conf_threshold", 0.5),
+            class_conf_thresholds=config.get("class_conf_thresholds") or {},
             batch_size=config.get("batch_size") or 1,
             compute=config["compute"],
             created_at=utc_timestamp(),
         )
 
     def extra_record_fields(self, config: dict) -> dict:
+        compute = config.get("compute")
         return {
             "model_id": config["model_id"],
             "model_variant": config.get("model_variant"),
             "weights_source": config.get("weights_source", "pretrained"),
             "conf_threshold": config.get("conf_threshold", 0.5),
+            "class_conf_thresholds": config.get("class_conf_thresholds") or {},
+            "class_conf_thresholds_fingerprint": class_conf_thresholds_fingerprint(
+                config.get("class_conf_thresholds") or {}
+            ),
             "prompt_fingerprint": prompt_fingerprint(config.get("prompt")),
             "prompt_classes": prompt_classes(config.get("prompt")),
             "batch_size": config.get("batch_size") or 1,
             "every_n_frames": int(config.get("every_n_frames") or 1),
+            "teacher_window_s": config.get("teacher_window_s"),
+            "t_end_ns": teacher_window_end_ns(config),
+            # Known at reservation time (before the job ever runs) — where it will
+            # run, for the "Where" column/row every run listing shows (§ run
+            # location/duration/cost). duration_s/estimated_cost_usd arrive later,
+            # merged in by _RecordedRun._adopt_status once the job is terminal.
+            "compute": compute.to_dict() if compute is not None else None,
         }

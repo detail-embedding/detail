@@ -226,6 +226,25 @@ class DescriptorStrip(QWidget):
         """Whether this row drew a density rather than individually clickable points."""
         return self._dense
 
+    def mark_value(self, value: float | None) -> None:
+        """A vertical line at ``value`` — one clip's own reading, against the spread and the
+        members — or none for ``None`` / a ``NaN``. Drawn after :meth:`show_values`, which clears
+        it, so a caller re-marks after re-drawing."""
+        import pyqtgraph as pg
+
+        line = getattr(self, "_mark", None)
+        if line is not None:
+            self.plot.removeItem(line)
+            self._mark = None
+        if value is None or not np.isfinite(value):
+            return
+        self._mark = pg.InfiniteLine(
+            pos=float(value),
+            angle=90,
+            pen=plot_theme.pen(plot_theme.current().hue("blue"), width=2),
+        )
+        self.plot.addItem(self._mark)
+
     def show_values(self, run_wide, members) -> None:
         """Draw ``run_wide`` as the background spread and ``members`` on top of it.
 

@@ -10,6 +10,11 @@ isn't working".
 The band ranks now, and the guard is that the *drawn* set follows the ranking rather than the
 registry: permute the values and different measurements must be drawn.
 
+**A group printed by its key.** A scan's behaviors are grouped by id (``q01``), the key that
+survives a rename, and the band printed that key where a person reads it: "Behavior q01 · 38
+matches" and "This run has one behavior (q01)" on the Two-animal demo. ``select`` takes the
+name beside the key; the key keeps grouping, and only the name is shown.
+
 **Two computations of one thing, disagreeing.** Twice, in one afternoon:
 
 - the drill-in's cluster lane took its axis range from the run's values while the plot beneath it
@@ -646,14 +651,14 @@ def test_a_descriptor_that_measures_the_span_is_dropped_against_chosen_spans(
     assert span_measures & {r.name for r in panel_kept._ranked}
 
 
-def _run_with_instances(lengths_s):
+def _run_with_instances(lengths_s, subject=0):
     """A run whose artifact holds one instance per length, all on one subject."""
     from types import SimpleNamespace
 
     instances = [
         SimpleNamespace(
             recording_id="recording_001",
-            subject=0,
+            subject=subject,
             t_ns=int(i * 10e9),
             end_t_ns=int(i * 10e9 + s * 1e9),
             source_label="0",
@@ -859,3 +864,21 @@ def test_selecting_measures_nothing_and_offers_the_button(panel, monkeypatch):
     assert panel._measure_button.text() == measurements.MEASURE
     assert not panel._measure_button.isHidden()
     assert panel._rows == [] and panel._table is None
+
+
+def test_a_behavior_is_named_not_shown_by_its_id(panel):
+    """A scan's behaviors are keyed by id (``q01``), which survives a rename, and the band
+    printed that key: "Behavior q01 · 38 matches" and "This run has one behavior (q01)" on the
+    Two-animal demo. The key stays the key; what a person reads is the name the caller gives,
+    unmeasured and measured alike."""
+    from types import SimpleNamespace
+
+    panel.select(SimpleNamespace(id="an_05"), "q01", "close contact")
+    assert panel._heading.text() == "Behavior close contact"
+
+    run, labels = _cohort(n_groups=1)
+    labels = ["q01"] * len(labels)
+    members, ids = _members(run, labels, "q01")
+    panel.show_measurements(run, members, ids, labels)
+    assert panel._heading.text().startswith("Behavior close contact · ")
+    assert "(close contact)" in panel._withheld and "q01" not in panel._withheld

@@ -29,8 +29,9 @@ for the modules it actually names.
 from dataclasses import dataclass
 from importlib.resources import files
 
-import yaml
 from pydantic import BaseModel, ValidationError
+
+from detail.core import yaml_load
 
 BASELINES_PACKAGE = "detail.configs"
 BASELINES_DIR = "baselines"
@@ -131,7 +132,7 @@ def load_baselines() -> list[Baseline]:
     for entry in sorted(directory.iterdir(), key=lambda p: p.name):
         if not entry.name.endswith((".yaml", ".yml")):
             continue
-        data = yaml.safe_load(entry.read_text(encoding="utf-8-sig")) or {}
+        data = yaml_load.safe_load(entry.read_text(encoding="utf-8-sig")) or {}
         name = str(data.get("name") or entry.name)
         settings = data.get("settings") or {}
         if not isinstance(settings, dict):

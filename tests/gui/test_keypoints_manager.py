@@ -42,7 +42,7 @@ def _settle(qapp, page):
 
 
 def _page(qapp):
-    page = mod.KeypointsManagerPage()
+    page = mod.KeypointsManagerPage(experiment=None)
     page.resize(1000, 600)
     page.show()
     _settle(qapp, page)
@@ -50,7 +50,9 @@ def _page(qapp):
 
 
 def _dialog(qapp, entry=None, dependents=(), taken=()):
-    dialog = mod.SkeletonEditorDialog(entry, list(dependents), set(taken))
+    dialog = mod.SkeletonEditorDialog(
+        entry, list(dependents), set(taken), experiment=None
+    )
     dialog.show()
     qapp.processEvents()
     return dialog

@@ -42,6 +42,7 @@ from detail.core.progress import ThrottledProgress
 from detail.core.protocols import ModelNotReadyError, Tool
 from detail.core.registries import register_tool
 from detail.core.utils import decode_mask, resolve_device
+from detail.core.video_codecs import DEFAULT_VIDEO_CODEC
 from detail.core.visualize import (
     assign_colors,
     bgr_to_rgb,
@@ -659,6 +660,7 @@ def export_run(
     parent_dir: Path | str,
     progress: Callable[[str, float, str], None] | None = None,
     min_conf: float = 0.0,
+    codec: str = DEFAULT_VIDEO_CODEC,
 ) -> Path:
     """Export a run into a **new, named folder** under ``parent_dir``; return that folder.
 
@@ -682,6 +684,7 @@ def export_run(
             out / f"{export_basename(manifest)}.mp4",
             progress,
             min_conf,
+            codec=codec,
         )
     return out
 
@@ -733,12 +736,13 @@ def export_mp4(
     out_path: Path | str,
     progress: Callable[[str, float, str], None] | None = None,
     min_conf: float = 0.0,
+    codec: str = DEFAULT_VIDEO_CODEC,
 ) -> Path:
     """Render a completed run's overlay clip to an ``.mp4`` at ``out_path``.
 
     Reads the source video + the saved detections (nothing overlay-shaped is stored),
-    draws each frame's overlay, and writes an H.264 (or mp4v) clip via
-    ``video_store.open_video_writer`` (cv2, no FFmpeg — Tenet 15)."""
+    draws each frame's overlay, and writes a ``codec`` clip via
+    ``video_store.open_video_writer`` (never the FFmpeg CLI — Tenet 15)."""
     result = manifest["result"]
     if "detections" not in (result.get("outputs") or {}):
         raise ValueError(
@@ -756,7 +760,9 @@ def export_mp4(
 
     out_path = Path(out_path)
     emit = ThrottledProgress(None if progress is None else (lambda ev: progress(*ev)))
-    writer, _codec = video_store.open_video_writer(out_path, fps, width, height)
+    writer, _codec = video_store.open_video_writer(
+        out_path, fps, width, height, codec=codec
+    )
     try:
         for frame_idx in range(n):
             frame_rgb = overlay_frame(

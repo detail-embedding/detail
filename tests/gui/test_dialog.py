@@ -13,7 +13,6 @@ third, stray widget in the dialog's top-level layout and fail `a_dialog_scrolls_
 `super().paintEvent(event)` builds and shows exactly like a correct one — nothing about its
 structure changes — so the check reads the actual pixels back rather than checking for the
 presence of a method with the right name.
-
 **And checked against palettes this suite does not run under.** The first version of this fix
 drew the border in the palette's `Mid` tone and asserted only that `Mid != Window`. Both halves
 passed comfortably: the suite runs `QT_QPA_PLATFORM=offscreen`, whose `fusion` palette puts `Mid`
@@ -134,5 +133,32 @@ def test_every_dialog_in_the_app_paints_the_border(qapp, tmp_path, cls):
             f"{cls.__name__}'s corner pixel is {corner.name()}, not the derived border colour "
             f"— its `paintEvent` override must call `super().paintEvent(event)`"
         )
+    finally:
+        dialog.close()
+
+
+@pytest.mark.parametrize("keeps", [True, False])
+def test_a_dialog_that_keeps_its_place_is_not_refit_when_shown(qapp, keeps):
+    """Every dialog opens at its content's size, every time — except one that restored the
+    size a person left it at (``keeps_its_place``, a cluster window): its show leaves that
+    alone. Without the exception the base's fit undid the restore on every open."""
+    from PyQt6.QtWidgets import QVBoxLayout
+
+    dialog = Dialog()
+    QVBoxLayout(dialog).addWidget(QLabel("a short line"))
+    dialog.keeps_its_place = keeps
+    dialog.show()
+    qapp.processEvents()
+    fitted = dialog.size()
+    dialog.hide()
+    dialog.resize(fitted.width() + 120, fitted.height() + 80)
+    left = dialog.size()
+    dialog.show()
+    qapp.processEvents()
+    try:
+        if keeps:
+            assert dialog.size() == left, "the place it was left at was refit"
+        else:
+            assert dialog.size() == fitted, "a dialog opens at its content's size"
     finally:
         dialog.close()

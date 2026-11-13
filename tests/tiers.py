@@ -69,10 +69,7 @@ DIRECTORY_TIER = {
 #: for a file that has since been rewritten — or deleted — fails rather than sitting
 #: here excusing nothing.
 FILE_TIER = {
-    # --- a source scan that lives beside the widget it guards ------------------------ #
-    # It reads `gui/clip_strips.py` as text and builds no widget, so it runs in the tier
-    # that runs on every change rather than only when the GUI paths-filter fires.
-    "tests/gui/test_clip_strips_scan.py": "unit",
+    # --- source scans that live beside the widgets they guard ------------------------ #
     # Both read `detail/gui` as text (ast) and build no widget.
     "tests/gui/test_dialog_close_scan.py": "unit",
     "tests/gui/test_menu_once_scan.py": "unit",
@@ -87,6 +84,17 @@ FILE_TIER = {
     "tests/scripts/test_with_suite_lock.py": "slow",
     # Real pytest runs in a fresh interpreter (plain and -n 2), and the watcher following one: ~15s.
     "tests/scripts/test_suite_progress.py": "slow",
+    # Real pytest runs in a fresh interpreter (plain and -n 1) whose teardown hangs until the
+    # watchdog fires: ~25s.
+    "tests/scripts/test_watchdog_plugin.py": "slow",
+    # A real parent and grandchild per test, killed as a tree after a 2s bound: ~5s.
+    "tests/test_subprocesses.py": "slow",
+    # The heading pass over a real recording, its DINOv3 call faked with torch tensors: the
+    # fake needs torch, and importing it costs seconds.
+    "tests/pipeline/test_headings.py": "slow",
+    "tests/pipeline/test_keypoint_track_tune.py": "slow",
+    # Encodes a 240-frame video and runs keypoint detect and two real track runs in-process.
+    "tests/pipeline/test_keypoint_track_preview.py": "slow",
     # Real pytest runs in a fresh interpreter, -n 2, each made to crash, hang or stall: ~25s.
     "tests/scripts/test_suite_watchdog.py": "slow",
     # Two real pytest runs in a fresh interpreter, and a git clone with a worktree: ~5s.
@@ -114,6 +122,16 @@ FILE_TIER = {
     "tests/pipeline/test_detection_worker.py": "slow",
     "tests/pipeline/test_embedding.py": "slow",
     "tests/pipeline/test_embedding_worker.py": "slow",
+    # Writes a real mp4 per video test and times a real export on it (~32 s for the file on
+    # Windows): an estimate is only checked against frames this machine actually encoded.
+    "tests/api/test_export_estimates.py": "slow",
+    # Real git repositories (an origin and a clone behind it) and a fresh interpreter per case, to
+    # check that the cluster-side update only ever fast-forwards and changes nothing when git
+    # refuses: ~11s for the file, and git's own behaviour is the thing under test.
+    "tests/api/test_remote_update.py": "slow",
+    # Encodes a real mp4 and builds the pose dataset through the executor (~70s): the crop must
+    # be cut from the exact frame the teacher's point was placed on, which a stub cannot show.
+    "tests/pipeline/test_keypoint_dataset.py": "slow",
     "tests/pipeline/test_labeling.py": "slow",
     "tests/pipeline/test_prompt_test.py": "slow",
     "tests/pipeline/test_render_preview.py": "slow",
@@ -140,6 +158,7 @@ FILE_TIER = {
     "tests/report/test_comparison_figures.py": "slow",
     "tests/report/test_figures.py": "slow",
     "tests/report/test_behavior_figures.py": "slow",
+    "tests/report/test_plot_render.py": "slow",
     # --- a real backend model, fetched and run --------------------------------------- #
     "tests/models/test_trained_yolo.py": "slow",
     "tests/models/test_ultralytics.py": "slow",
@@ -152,15 +171,14 @@ FILE_TIER = {
     "tests/gui/test_readiness_guide.py": "unit",
     "tests/gui/test_import_cycles.py": "unit",
     "tests/gui/test_table_width.py": "unit",
+    "tests/gui/test_open_external_scan.py": "unit",
+    # A source scan, plus two bare-Qt interpreters (~1s) that walk a tree and exit.
+    "tests/gui/test_tree_items.py": "unit",
     # --- lives under tests/executor but never spawns -------------------------------- #
     # `test_liveness_guard` monkeypatches `subprocess.run` and never lets one start; it is
     # the identity guard's decision table, which costs a millisecond and guards a re-submit
     # stacking onto a live process, so it belongs where it runs at every stage.
     "tests/executor/test_liveness_guard.py": "unit",
-    # `test_coordinator_reap` drives `reap_coordinator` over stand-in exited handles from two
-    # threads held at a barrier — no process is spawned; the race it pins is deterministic
-    # and costs milliseconds, and it guards a GUI abort, so it runs at every stage.
-    "tests/executor/test_coordinator_reap.py": "unit",
     # `test_process_liveness` does spawn — see its UNIT_EXEMPTIONS entry for why and what it costs.
     "tests/executor/test_process_liveness.py": "unit",
     "tests/executor/test_base.py": "unit",
@@ -189,12 +207,8 @@ GUARD_FILES = frozenset(
     {
         # --- source scans over detail/ ------------------------------------------- #
         "tests/storage/test_path_serialization.py",
-        # The clip window's strips are fed `Curve`s and spell no curve's name themselves.
-        "tests/gui/test_clip_strips_scan.py",
         # One rule for a read-bound pool's thread count; `os.cpu_count()` nowhere else.
         "tests/core/test_cpu.py",
-        # The montage's CLI opens on the API's defaults (the window reads them directly).
-        "tests/api/test_montage_surface_parity.py",
         # A numpy channel swap is a strided copy ~45x slower than visualize's cv2 helpers.
         "tests/core/test_channel_swap_scan.py",
         # k-means built outside `_common.kmeans_level` runs uncapped OpenMP over OpenBLAS.
@@ -220,6 +234,9 @@ GUARD_FILES = frozenset(
         # A package probe in the app answers from startup; an editable install made while
         # it is open stays invisible until the .pth files are re-read (#506).
         "tests/core/test_installed.py",
+        # An `os.open` without O_BINARY is a text-mode descriptor on Windows, which cut a
+        # trailing 0x1A off one zarr chunk in 256 when a run was flushed.
+        "tests/core/test_binary_open.py",
         "tests/test_encoding_guard.py",
         # A Qt method restored by hand no longer binds; the next caller in the process fails.
         "tests/test_no_hand_patched_qt.py",
@@ -234,7 +251,16 @@ GUARD_FILES = frozenset(
         "tests/gui/test_frame_panes.py",
         "tests/gui/test_nav_dispatch.py",
         "tests/gui/test_table_width.py",
+        # A URL opened by a call whose False is dropped: a dead click wherever no browser
+        # is registered, which is always, inside WSL.
+        "tests/gui/test_open_external_scan.py",
+        # A wide fixture, a test and a stray GUI thread each meet a throwaway experiments
+        # workspace, not ~/Documents/DetailExperiments; 56 tests read the real one unseen.
+        "tests/test_experiments_root_isolation.py",
         "tests/test_no_orphan_functions.py",
+        # A launch that omits the progress callback works, and shows one unchanging sentence
+        # through a minutes-long validation — a 71-recording launch that read as hung.
+        "tests/test_launch_progress_wired.py",
         # A name imported inside a function fails only when a user reaches that function.
         "tests/test_deferred_imports_resolve.py",
         # The scan over the scans: a source guard with no negative case cannot be told
@@ -243,6 +269,15 @@ GUARD_FILES = frozenset(
         # A ratchet on real executor runs per module: the defect is "done again", not "slow",
         # and neither test count nor wall clock can see it (#534, R10).
         "tests/test_real_run_budget.py",
+        # A replaced xdist worker re-runs the file that crashed its predecessor, so one crash
+        # became a gate that never ended while holding the machine lock.
+        "tests/test_xdist_crash_policy.py",
+        # A wide fixture meets a throwaway machine config, not the developer's real
+        # storage.yaml — per-test isolation never reached it, and nothing failed.
+        "tests/test_machine_config_isolation.py",
+        # A pytest started by a test waits forever on the nested run's workers, and on Windows
+        # a timeout does not stop it: two gates hung on 2026-11-06 holding the machine lock.
+        "tests/test_nested_runs_bounded.py",
         # The suite lock and progress dir resolve to one place per machine on every branch;
         # a split lock serialises nothing and fails nothing (2026-10-23).
         "tests/scripts/test_machine_dir.py",
@@ -251,6 +286,9 @@ GUARD_FILES = frozenset(
         # --- registry / capability parity ----------------------------------------- #
         "tests/configs/test_record_completeness.py",
         "tests/configs/test_identity_completeness.py",
+        # A `None` meaning "the default" refused by a plain-typed field: every keypoint setup
+        # failed at its tracking stage, and the setup's stand-in runs never met the model.
+        "tests/configs/test_none_means_default.py",
         # Walks the command tree against the config models: a surface that writes a default
         # in by hand is a second copy of a fact, and the copies drift in silence.
         "tests/configs/test_cli_defaults_match_models.py",
@@ -264,6 +302,13 @@ GUARD_FILES = frozenset(
         "tests/api/test_authored_edit_ordering.py",
         "tests/api/test_wrapper_signatures.py",
         "tests/api/test_export_registry.py",
+        # A compute pre-flight that treats "remote" as a local backend (§6).
+        "tests/api/test_remote_preflight.py",
+        # Every module that reads a detection, tracking or keypoints run decides about a
+        # keypoint teacher run (§4 Teacher window, #717).
+        "tests/pipeline/test_teacher_window.py",
+        # Every keypoint-absence message goes through the hint that names an opt-out (#717).
+        "tests/storage/test_guidance.py",
         "tests/pipeline/test_producer_parity.py",
         # Data-driven over the temporal registry: a per-timeline statistic measured over
         # many recordings' timelines pooled reads the jitter between them, not a frame
@@ -299,9 +344,10 @@ GUARD_FILES = frozenset(
         "tests/gui/test_empty_states.py",
         "tests/gui/test_pydantic_form_defaults.py",
         "tests/executor/test_liveness_guard.py",
-        "tests/executor/test_coordinator_reap.py",
         "tests/executor/test_process_liveness.py",
         "tests/gui/test_scroll.py",
+        # A tree iterator freed after its tree writes into freed memory.
+        "tests/gui/test_tree_items.py",
         "tests/gui/test_dialog_close_scan.py",
         "tests/gui/test_menu_once_scan.py",
         "tests/gui/test_table_height.py",
@@ -320,6 +366,7 @@ GUARD_FILES = frozenset(
         "tests/test_docs_nav.py",
         "tests/test_docs_cli_examples.py",
         "tests/test_docs_voice.py",
+        "tests/test_user_guide_legends.py",
         "tests/test_docs_generated_pages.py",
         "tests/test_docs_map.py",
         "tests/test_docs_modules_nav.py",
@@ -395,9 +442,6 @@ UNIT_EXEMPTIONS = {
     "tests/api/test_job_reattach.py": "same: a `python -c pass` stand-in process is the "
     "only way to test that a surviving run reattaches",
     "tests/api/test_run_lifecycle_parity.py": "same PID stand-in, one per run kind",
-    "tests/api/test_export_estimates.py": "cv2.VideoWriter writes one 30-frame 64x64 stub "
-    "clip so the video estimate times real frames — 6.3 s for the 34-test file on the macOS "
-    "box, the rest of which is no-video estimates",
     "tests/core/test_resource_peaks.py": "two `python -c` stand-ins: one holds a 200 MB block "
     "so the sampler must count a child's memory, one proves nothing imports torch — no "
     "workload, ~1 s for the file",
@@ -405,14 +449,28 @@ UNIT_EXEMPTIONS = {
     "the liveness probe is only wrong against a real process, so nothing smaller tests it; "
     "no workload. 4.7 s for the file on Windows (three PowerShell CIM lookups ~0.6 s each, "
     "two repo-wide AST scans ~1 s each)",
+    "tests/api/test_remote_build.py": "one fresh interpreter runs the exact snippet a cluster is "
+    "sent, here, because a script naming something that does not exist passes every test that "
+    "is handed a finished answer — 0.6 s; every other `subprocess.run` in the file is a fake, "
+    "and the file's tests total ~1.3 s, no workload",
+    "tests/api/test_test_keypoints_registry.py": "one fresh interpreter, because the registry of "
+    "built-in methods is a fact about a process and this suite's own has long since imported "
+    "them all, so an in-process test passes with the fix removed — 1.4 s (importing "
+    "detail.api), no workload",
     "tests/api/test_recording_identity.py": "cv2.VideoWriter writes 16x16 stub clips so a "
     "recording has a video part at all — 0.4 s for the file, no decode, no pipeline",
+    "tests/api/test_experiment_remote_executor.py": "cv2.VideoWriter writes one 32x24, "
+    "20-frame stub clip so label_dataset's frame-count check has a real video part to "
+    "read timestamps from — the whole file is 1.3 s, no decode, no pipeline",
     "tests/models/test_dinov3.py": "torch is imported to build tiny fake tensors for the "
     "stand-in HF model; the module under test is torch-free at import (Tenet 13) and the "
     "file is 1.0 s",
     "tests/pipeline/test_keypoint_detect.py": "cv2.VideoWriter encodes five 40x40 frames so "
     "the stage has a part to walk (Tenet 11: it reads the video); milliseconds, 2.4 s for "
     "the file",
+    "tests/gui/test_tree_items.py": "two fresh interpreters that import PyQt6 alone, walk a "
+    "120-item tree and exit, because the bug is a heap write that kills the process it happens "
+    "in — 0.1 s each, no workload; the file's 3 s is the repo scan",
     "tests/analysis/test_cluster_metrics.py": "imports sklearn.metrics scorers only "
     "(AMI/ARI on tiny arrays) — no fit, no JIT",
     "tests/cluster_methods/test_blas_safe_openmp.py": "sklearn is imported to load the "

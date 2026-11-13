@@ -25,8 +25,9 @@ def _import_stub_model(tmp_path, monkeypatch, name="operant_v2", **meta):
     return api_models.import_model(w, family="stubfam", name=name, **meta)
 
 
-def _distilled_model(tmp_path):
+def _distilled_model(tmp_path, *, with_training_data=False):
     from detail.models import distilled
+    from detail.storage import datasets as datasets_store
     from detail.storage import experiment as experiment_store
     from detail.storage import models as models_store
 
@@ -50,8 +51,42 @@ def _distilled_model(tmp_path):
             "status": "complete",
         },
     )
+    training_history = None
+    if with_training_data:
+        ddir = datasets_store.dataset_dir(proj, "ds_1")
+        ddir.mkdir(parents=True)
+        datasets_store.write_dataset_yaml(
+            ddir,
+            {
+                "id": "ds_1",
+                "name": "mouse_ds",
+                "created_at": "2026-08-07T18:00:00Z",
+                "source": {
+                    "kind": "labeling",
+                    "model": "sam3",
+                    "model_variant": None,
+                    "recording_ids": ["recording_001"],
+                    "n_frames": 500,
+                    "logit_threshold": 0.5,
+                },
+                "classes": [{"id": 0, "name": "mouse"}],
+                "val_split": 0.15,
+                "n_train": 425,
+                "n_val": 75,
+                "per_class": {"0": 500},
+                "status": "complete",
+            },
+        )
+        training_history = [
+            {"epoch": 1, "box_map50": 0.3, "mask_map50": 0.25},
+            {"epoch": 31, "box_map50": 0.92, "mask_map50": 0.89},
+        ]
     return distilled.register_distilled_model(
-        proj, "model_001", source_experiment_name="rp", source_experiment_id="rp"
+        proj,
+        "model_001",
+        source_experiment_name="rp",
+        source_experiment_id="rp",
+        training_history=training_history,
     )
 
 
@@ -64,11 +99,42 @@ def test_your_models_table_lists_imported(qapp, tmp_path, monkeypatch):
 
 def test_detail_renders_metadata_and_provenance(qapp, tmp_path):
     gid = _distilled_model(tmp_path)
-    detail = pages.GlobalModelDetailPage(gid)
+    detail = pages.GlobalModelDetailPage(gid, experiment=None)
     texts = " ".join(label.text() for label in detail.findChildren(QLabel))
     assert "rp" in texts  # from project(s) — the source experiment
     assert "yolo11s-seg.pt" in texts  # build-history base model
     assert "mouse" in texts  # classes
+
+
+def test_detail_shows_no_training_data_when_not_captured(qapp, tmp_path):
+    # A model promoted before this schema (or with no dataset/history to capture) must not
+    # crash — it simply omits the sections, the same tolerance as a missing preview.
+    from detail.gui.training_curve import TrainingCurveBand
+
+    gid = _distilled_model(tmp_path)  # with_training_data=False (default)
+    detail = pages.GlobalModelDetailPage(gid, experiment=None)
+    assert not detail.findChildren(TrainingCurveBand)
+    texts = " ".join(label.text() for label in detail.findChildren(QLabel))
+    assert "Teacher model" not in texts
+
+
+def test_detail_renders_training_curve_and_dataset_composition(qapp, tmp_path):
+    """Closes the gap: the curve widget already existed for the experiment-scoped model page,
+    but never reached the promoted model's page in the Model manager."""
+    pytest.importorskip("pyqtgraph")
+    from detail.gui.training_curve import TrainingCurveBand
+
+    gid = _distilled_model(tmp_path, with_training_data=True)
+    detail = pages.GlobalModelDetailPage(gid, experiment=None)
+
+    bands = detail.findChildren(TrainingCurveBand)
+    assert bands, "the training curve does not reach the Model manager's detail page"
+    assert "epoch 31" in bands[0].curve._caption.text()
+
+    texts = " ".join(label.text() for label in detail.findChildren(QLabel))
+    assert "sam3" in texts  # teacher model
+    assert "500 used" in texts  # frames labeled (n_train + n_val)
+    assert "425 / 75" in texts  # train / val split
 
 
 def test_a_models_preview_opens_full_size(qapp, tmp_path, monkeypatch):
@@ -92,7 +158,7 @@ def test_a_models_preview_opens_full_size(qapp, tmp_path, monkeypatch):
         QImage.Format.Format_RGB888,
     ).save(str(preview))
     mid = _import_stub_model(tmp_path, monkeypatch, preview=preview)
-    detail = pages.GlobalModelDetailPage(mid)
+    detail = pages.GlobalModelDetailPage(mid, experiment=None)
 
     thumbs = [t for t in detail.findChildren(EnlargeableThumb) if t.toolTip()]
     assert thumbs, "the model's preview cannot be opened full size"
@@ -106,12 +172,12 @@ def test_a_model_with_no_preview_advertises_nothing(qapp, tmp_path, monkeypatch)
     from detail.gui.full_frame import EnlargeableThumb
 
     mid = _import_stub_model(tmp_path, monkeypatch)
-    detail = pages.GlobalModelDetailPage(mid)
+    detail = pages.GlobalModelDetailPage(mid, experiment=None)
     assert all(t.toolTip() == "" for t in detail.findChildren(EnlargeableThumb))
 
 
 def test_detail_not_found_builds(qapp):
-    detail = pages.GlobalModelDetailPage("no_such_model")
+    detail = pages.GlobalModelDetailPage("no_such_model", experiment=None)
     texts = " ".join(label.text() for label in detail.findChildren(QLabel))
     assert "not found" in texts  # a missing model renders a note, not a crash
 
@@ -346,7 +412,7 @@ def test_an_unreadable_checkpoint_is_said_inline(qapp, tmp_path, monkeypatch):
 
 def test_a_keypoint_models_page_shows_its_skeleton(qapp, tmp_path, monkeypatch):
     mid = _import_pose_model(tmp_path, monkeypatch)
-    detail = pages.GlobalModelDetailPage(mid)
+    detail = pages.GlobalModelDetailPage(mid, experiment=None)
     texts = " ".join(label.text() for label in detail.findChildren(QLabel))
     assert "keypoints" in texts  # the Kind row
     assert "head, midpoint, tail" in texts  # its points
@@ -355,7 +421,7 @@ def test_a_keypoint_models_page_shows_its_skeleton(qapp, tmp_path, monkeypatch):
 
 def test_a_detectors_page_shows_no_skeleton(qapp, tmp_path, monkeypatch):
     mid = _import_stub_model(tmp_path, monkeypatch)
-    detail = pages.GlobalModelDetailPage(mid)
+    detail = pages.GlobalModelDetailPage(mid, experiment=None)
     texts = [label.text() for label in detail.findChildren(QLabel)]
     assert "Skeleton" not in texts and "detector" in texts
 
@@ -568,3 +634,117 @@ def test_a_new_model_reaches_the_rail(qapp, tmp_path, monkeypatch):
     window._refresh_training()  # what every model/dataset/distill launch and delete calls
     assert _rail_children(window, "models") == ["model_001", "model_002"]
     window.deleteLater()
+
+
+# --------------------------------------------------------------------------- #
+# Keypoint models imported from ONNX (§26 Phase 4)
+# --------------------------------------------------------------------------- #
+SLEAP_ONNX = Path(__file__).parents[1] / "models" / "data" / "sleap_onnx"
+
+
+def _keypoints_model(name="mouse_pose"):
+    pytest.importorskip("onnxruntime")
+    return api_models.import_keypoint_model(SLEAP_ONNX / "centered_instance", name=name)
+
+
+def test_both_import_buttons_open_the_same_dialog(qapp, monkeypatch):
+    opened = []
+
+    class _Dialog:
+        def __init__(self, parent=None):
+            opened.append(type(parent).__name__)
+
+        def exec(self):
+            return pages.QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(pages, "ImportModelDialog", _Dialog)
+    pages.ModelManagerPage(
+        None, lambda m: None, lambda k: None, lambda h: None
+    )._import_model()
+    pages.GlobalModelsPage()._import_model()
+    assert opened == ["ModelManagerPage", "GlobalModelsPage"]
+
+
+def test_a_detection_models_page_has_no_roles(qapp, tmp_path, monkeypatch):
+    from PyQt6.QtWidgets import QPushButton
+
+    mid = _import_stub_model(tmp_path, monkeypatch)
+    detail = pages.GlobalModelDetailPage(mid, experiment=None)
+    assert "Edit roles" not in {b.text() for b in detail.findChildren(QPushButton)}
+
+
+def test_selecting_a_licensed_model_says_its_terms_where_install_is(qapp):
+    """SuperAnimal's weights are non-commercial (§26): the note appears beside Install for
+    that model and goes away for one whose weights carry no such terms."""
+    page = pages.GlobalModelsPage(builtin_only=True, embedded=True)
+    page._installed = {(r.id, r.variant): False for r in page._rows}
+    page._render_table()
+
+    def select(model_id):
+        row = next(i for i, r in enumerate(page._rows) if r.id == model_id)
+        page._table.selectRow(row)
+        page._update_actions()
+
+    select("superanimal_quadruped")
+    assert not page._license_note.isHidden()
+    assert "non-commercial" in page._license_note.text()
+    select("sam3")
+    assert page._license_note.isHidden() and page._license_note.text() == ""
+
+
+def test_the_import_dialog_takes_a_keypoint_model(qapp, monkeypatch):
+    dialog = pages.ImportModelDialog()
+    assert dialog._pick.text() == "Choose .pt"
+    dialog._format.setCurrentIndex(dialog._format.findData("keypoints"))
+    assert dialog._pick.text() == "Choose .onnx"
+    assert not dialog._ok.isEnabled()  # the format changed, so no file is chosen yet
+    dialog._weights = Path("x/model.onnx")
+    dialog._name.setText("mice")
+    path, meta = dialog.values()
+    assert (
+        path == Path("x/model.onnx") and "family" not in meta and meta["name"] == "mice"
+    )
+    seen = {}
+    monkeypatch.setattr(
+        api_models,
+        "import_keypoint_model",
+        lambda p, **kw: seen.update(p=p, **kw) or "id",
+    )
+    assert pages.import_selected(dialog)() == "id"
+    assert seen["p"] == Path("x/model.onnx") and seen["name"] == "mice"
+
+
+def test_a_keypoint_models_page_shows_its_pairs_and_offers_editing_them(
+    qapp, monkeypatch
+):
+    from PyQt6.QtWidgets import QPushButton
+
+    from detail.core.skeleton import Skeleton
+
+    mid = _keypoints_model()
+    detail = pages.GlobalModelDetailPage(mid, experiment=None)
+    texts = " ".join(label.text() for label in detail.findChildren(QLabel))
+    assert "left_ear ↔ right_ear" in texts and "SLEAP" in texts  # its pairs; its format
+    buttons = {b.text(): b for b in detail.findChildren(QPushButton)}
+    assert "Edit roles" in buttons
+
+    current = api_models.keypoint_model_skeleton(mid)
+    unpaired = Skeleton(names=current.names, edges=current.edges)
+    monkeypatch.setattr(
+        pages.KeypointRolesDialog,
+        "exec",
+        lambda dialog: pages.QDialog.DialogCode.Accepted,
+    )
+    monkeypatch.setattr(pages.KeypointRolesDialog, "skeleton", lambda dialog: unpaired)
+    buttons["Edit roles"].click()
+    assert api_models.keypoint_model_skeleton(mid).pairs == ()
+    texts = " ".join(label.text() for label in detail.findChildren(QLabel))
+    assert "No left/right pairs" in texts  # the page re-reads what it saved
+
+
+def test_the_roles_dialog_edits_the_models_own_skeleton(qapp):
+    mid = _keypoints_model()
+    skeleton = api_models.keypoint_model_skeleton(mid)
+    dialog = pages.KeypointRolesDialog(skeleton, experiment=None)
+    assert dialog.skeleton().names == skeleton.names
+    assert dialog.skeleton().pairs == skeleton.pairs

@@ -23,6 +23,9 @@ def test_complete_executor_instantiates():
         def stream_progress(self, job_id):
             return iter(())
 
+        def run_dir(self, job_id):
+            return None
+
     ex = FakeExecutor()
     assert ex.submit(None) == "job_1"
     assert list(ex.stream_progress("job_1")) == []

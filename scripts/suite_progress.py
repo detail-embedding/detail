@@ -44,8 +44,8 @@ from pathlib import Path
 
 #: How long a finished run is kept, so its result can still be read on the status line.
 KEEP_FINISHED_S = 120
-#: An unfinished run older than this is dropped whatever its process says. The only way out for a
-#: killed run on Windows, where ``_pid_alive`` cannot ask (see there).
+#: An unfinished run older than this is dropped whatever its process says — a backstop for a run
+#: whose own pid got reused by an unrelated process before its file was cleaned up.
 MAX_RUN_S = 2 * 60 * 60
 #: The most runs the status line shows at once (other sessions' gates included).
 MAX_LINES = 3
@@ -80,16 +80,37 @@ def write_state(state: dict) -> None:
     os.replace(tmp, path)
 
 
+#: PROCESS_QUERY_LIMITED_INFORMATION — enough access to read exit status, nothing more.
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+#: The sentinel GetExitCodeProcess returns for a process that has not yet terminated.
+_STILL_ACTIVE = 259
+
+
 def _pid_alive(pid: int) -> bool:
-    """Whether a run's process is still there, POSIX only.
+    """Whether a run's process is still there.
 
     Not ``executor.local.pid_alive``: the status line runs under whatever ``python3`` is first on
     the path, where ``detail`` may not be installed, so this module imports only the standard
-    library. On Windows ``os.kill(pid, 0)`` sends Ctrl-C rather than asking, so it is not used
-    there at all; a dead run is dropped by ``MAX_RUN_S`` instead.
+    library (``_winapi`` is stdlib on Windows). The same query either way, and the same reason:
+    ``os.kill(pid, 0)`` on Windows is not a query at all — ``signal.CTRL_C_EVENT == 0``, so the
+    call is ``GenerateConsoleCtrlEvent(CTRL_C_EVENT, pid)``, a Ctrl-C broadcast to process group
+    ``pid`` that succeeds whether or not the process has exited, so a killed run was never dropped
+    before its process died naturally rather than ``MAX_RUN_S`` (see ``executor.local._alive``,
+    ``tests/executor/test_process_liveness.py``). ``GetExitCodeProcess`` is the real question.
     """
     if os.name == "nt":
-        return True
+        import _winapi
+
+        try:
+            handle = _winapi.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        except PermissionError:
+            return True  # exists, just not queryable by us
+        except OSError:
+            return False  # no such process
+        try:
+            return _winapi.GetExitCodeProcess(handle) == _STILL_ACTIVE
+        finally:
+            _winapi.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

@@ -68,6 +68,22 @@ def frame_walk(groups: dict[int, list[int]], every_n_frames: int = 1) -> range:
     return range(min(groups), max(groups) + 1, max(1, every_n_frames))
 
 
+def filter_by_class(data: dict, class_name: str | None) -> dict:
+    """Restrict a part's detection columns to one class, keyed by name (§13).
+
+    A no-op when ``class_name`` is ``None`` (every class links together, the existing
+    behavior). Applied once, right after ``DetectionPartReader(...).read()``, in every
+    tracker — everything downstream (frame grouping, candidate scoring, resume) already
+    operates on whatever rows ``data`` holds, so nothing else needs to know a filter
+    happened. Two single-subject tracking runs, one per class, is how two animals told
+    apart at detection get two clean tracks without a cross-frame association layer.
+    """
+    if class_name is None:
+        return data
+    mask = np.asarray(data["class_name"]) == class_name
+    return {key: np.asarray(value)[mask] for key, value in data.items()}
+
+
 def filter_by_arena(rows, bbox, arena_polygon, global_frame: int) -> list[int]:
     """Keep rows whose normalized bbox center lies inside-or-on the polygon at
     this frame (the arena is interpolated per frame, Section 10)."""

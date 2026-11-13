@@ -94,7 +94,14 @@ def test_the_dialog_lists_the_finished_detect_runs_and_launches(
         "val_split",
         "exclude_audit_s",
         "every_n_frames",
+        "student_crop_px",
     }
+    # the student sees the whole frame unless asked (the default); the crop size is the
+    # crop's alone
+    assert form._student_input.currentData() == "whole_frame"
+    assert not form._fields["student_crop_px"].isEnabled()
+    form._student_input.setCurrentIndex(form._student_input.findData("crop"))
+    assert form._fields["student_crop_px"].isEnabled()
 
     dialog._name.setText("fast rats")
     form._fields["n_frames"].setValue(40)
@@ -108,6 +115,7 @@ def test_the_dialog_lists_the_finished_detect_runs_and_launches(
     assert captured["score_cutoff"] == pytest.approx(0.4)
     assert captured["hyperparams"]["epochs"] == 3
     assert captured["base_model"] == "yolo11s-pose.pt"
+    assert (captured["student_input"], captured["student_crop_px"]) == ("crop", 448)
     assert captured["train_compute"] is not None
     assert dialog.run_handle is not None
 
@@ -157,7 +165,11 @@ def test_one_button_makes_either_kind_of_model(qapp, tmp_path, sync_busy, monkey
     )
     buttons = {b.text(): b for b in page.findChildren(QPushButton)}
     assert "＋ Distill new model" in buttons
-    assert not any("keypoint" in t.lower() for t in buttons), "no second distill button"
+    # Set up keypoints… (§26, #717) is the whole-experiment wizard — detect, track, examples,
+    # then this distill — not a second way into the distill dialog.
+    assert not any(
+        "keypoint" in t.lower() and "distill" in t.lower() for t in buttons
+    ), "no second distill button"
     offered = []
 
     def fake_exec(self):
@@ -421,3 +433,62 @@ def test_the_patch_teacher_opens_on_an_installed_size_and_refuses_one_that_is_no
     form._sync_method()
     assert form.blocker().startswith("dinov3_match needs dinov3_vit")
     assert form.blocker().endswith(": install it in the Model manager")
+
+
+def test_the_student_can_be_trained_on_a_registered_cluster(qapp, taught):
+    """#718: the Train row is built with ``allow_remote``, so a registered cluster is offered
+    there; labelling stays on this machine, where the videos are."""
+    it, _recording = taught
+    _dialog, form = _keypoint_dialog(it.experiment)
+    assert form._train_compute.remote_target is not None
+    assert form._label_compute.remote_target is None
+
+
+def test_the_patch_teacher_takes_one_set_per_class(
+    qapp, patch_teacher, sync_busy, monkeypatch
+):
+    """§26 *One example set per detection class*: greyed while the tracking's detection run
+    has one class (read off the UI thread); with two, ticked, Examples gives way to one set
+    per class, and the teacher hands on the class map."""
+    from tests.gui.conftest import drain_until
+
+    it, _recording, _set_id, _seen = patch_teacher
+    proj = it.experiment
+    dialog = fit_gui.DistillDialog(proj, model_type="keypoints")
+    form = dialog.keypoint_form()
+    dialog.show()
+    _settled(qapp, form)
+    form._method.setCurrentIndex(form._method.findData("fake_learner"))
+    assert drain_until(qapp, lambda: form._class_sets.classes()), "classes never read"
+    assert not form._per_class.isEnabled()  # the fixture's detections are one class
+    assert "fewer than two classes" in form._per_class.toolTip()
+
+    # A tracking run over two classes, as the background read reports it.
+    form._apply_classes(
+        form._class_read_gen,
+        [
+            {"name": "Intruder", "recordings": []},
+            {"name": "Resident", "recordings": []},
+        ],
+    )
+    assert form._per_class.isEnabled()
+    form._per_class.setChecked(True)
+    assert form._class_sets.isVisibleTo(dialog)
+    assert not form._examples.isVisibleTo(dialog)
+    white = proj.create_example_set("white", "quadruped_side_5")
+    black = proj.create_example_set("black", "quadruped_side_5")
+    rows = form._class_sets._rows
+    for _tick, picker in rows.values():
+        picker.refresh()
+        assert drain_until(qapp, lambda p=picker: not p._reading)
+    rows["Resident"][1].select(white.id)
+    rows["Intruder"][1].select(black.id)
+    qapp.processEvents()
+    keywords = form.teacher_keywords()
+    assert keywords["class_example_sets"] == {
+        "Resident": white.id,
+        "Intruder": black.id,
+    }
+    assert "example_set" not in keywords
+    rows["Intruder"][0].setChecked(False)
+    assert "Tick two classes" in form._patch_blocker()

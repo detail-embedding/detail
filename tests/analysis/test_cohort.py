@@ -312,3 +312,23 @@ def test_a_deferred_column_previews_nothing_rather_than_one_blank_group():
     assert (
         len(cohort.group_preview(DEFERRED_COHORT, recordings, group_by=["drug"])) == 2
     )
+
+
+def test_the_acquisition_setup_is_never_the_subject():
+    """`acquisition_setup` repeats across recordings and crosses every group — the shape of a
+    repeated animal — but it names the box the recording was made in, not who was in it.
+    Every experiment has the column (§11), so once it is filled in it would be offered as the
+    subject on every comparison that has no real subject column."""
+    from detail.storage.metadata import ACQUISITION_SETUP_KEY as SETUP
+
+    boxes = {
+        "r1": {SETUP: "box 1", "drug": "veh"},
+        "r2": {SETUP: "box 1", "drug": "fent"},
+        "r3": {SETUP: "box 2", "drug": "veh"},
+        "r4": {SETUP: "box 2", "drug": "fent"},
+    }
+    recordings, columns = _all(boxes)
+
+    picked = infer_subject_column(boxes, recordings, group_by=["drug"], columns=columns)
+
+    assert picked is None

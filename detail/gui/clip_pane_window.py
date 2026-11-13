@@ -2,9 +2,9 @@
 footage's full resolution, with its own playback and export (§22 *Enlarged panes*).
 
 Opened by clicking the Masks or Keypoints pane in the clip window's Advanced view
-(``ClipPanes.enlarge_wanted`` → ``AdvancedClipPlayer.open_pane``). The pane beside the footage is
-a half-height thumbnail; this is the same picture — ``api.clip_views``'s ``masks`` or ``pose``,
-not the thumbnail scaled up — in a window that can be made as large as the screen.
+(``ClipPanes.enlarge_wanted`` → ``_ClipPlayer.open_pane``). The pane beside the footage is a
+half-height thumbnail; this is the same picture — ``ClipQueryPreview.clip_views``'s ``masks`` or
+``pose``, not the thumbnail scaled up — in a window that can be made as large as the screen.
 
 **It follows the clip window, live.** It reads the player's view ticks (Mask trail, Trail and Trail
 points, Align pose) and its window of frames (Context) whenever they change, and the clip when
@@ -13,10 +13,10 @@ window's child: it closes with it. Its own playback — play and pause, stepping
 loop — starts at the frame the clip window was on and is independent from there.
 
 **One window per pane, and it dies when closed.** Clicking a pane whose window is open raises
-that window rather than opening a second; Close deletes the window
-(``WA_DeleteOnClose``), stops its playback and unhooks it from the player. The port this
-replaced built a new window on every click and set none of that, so a closed window stayed
-parented to the main window, still connected to the player, decoding frames in a loop forever.
+that window rather than opening a second; Close deletes the window (``WA_DeleteOnClose``),
+stops its playback and unhooks it from the player. Before, every click built a new window and
+Close only hid it: still parented to the main window, still connected to the player, and still
+decoding frames in a loop.
 
 **Export video…** writes this pane over the frames its bar spans as an mp4, every frame at full
 size; **Export GIF…** asks a width and a frame rate first. Both cover the clip, plus its context
@@ -27,13 +27,20 @@ states.
 from __future__ import annotations
 
 from PyQt6.QtCore import QSize, Qt
-from PyQt6.QtWidgets import QCheckBox, QDialogButtonBox, QLabel, QPushButton
+from PyQt6.QtWidgets import (
+    QCheckBox,
+    QDialogButtonBox,
+    QLabel,
+    QPushButton,
+)
 
-from detail.api import clip_views
+from detail.api import clip_pane_export as pane_export
 from detail.api.animation import GIF, MP4
+from detail.core.video_codecs import DEFAULT_VIDEO_CODEC
 from detail.gui import frame_source
 from detail.gui.animation_export import (
     ask_gif_settings,
+    ask_mp4_path,
     ask_save_path,
     run_export,
     safe_name,
@@ -44,20 +51,8 @@ from detail.gui.dialog import Dialog
 from detail.gui.image_view import ImageView, PictureWithControls
 from detail.gui.run_preview import _to_pixmap
 from detail.gui.scrubber import FrameScrubber
-from detail.gui.sizing import fit_to_screen, lines
-
-#: Opening size in lines, so it follows a user who asked for larger text; capped to the screen
-#: and resizable from there.
-_WIDE = 70
-_TALL = 46
-_FOLLOWS = (
-    "Follows the clip window: its Mask trail, Trail, Trail points, Align pose and Context "
-    "ticks, and its clip."
-)
-_DECODES = (
-    " This recording's record carries no frame size, so the footage is decoded to size the "
-    "pane."
-)
+from detail.gui.sizing import lines
+from detail.gui.video_codec import with_codec_note
 
 
 class ClipPaneWindow(Dialog):
@@ -66,12 +61,12 @@ class ClipPaneWindow(Dialog):
     def __init__(self, player, pane: str, parent=None) -> None:
         """
         Raises:
-            ValueError: ``pane`` is not one of ``api.clip_views.PANES``.
+            ValueError: ``pane`` is not one of ``api.clip_pane_export.PANES``.
         """
         from detail.api.run_preview import ClipQueryPreview
 
-        if pane not in clip_views.PANES:
-            raise ValueError(f"pane must be one of {clip_views.PANES}, not {pane!r}")
+        if pane not in pane_export.PANES:
+            raise ValueError(f"pane must be one of {pane_export.PANES}, not {pane!r}")
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self._player = player
@@ -83,16 +78,12 @@ class ClipPaneWindow(Dialog):
         self._settings = player.view_settings()
         self._clip = player.clip()
         self._bounds = player.window()
-        # The panes are stored data at the record's frame size; a record with no size has
-        # nothing to draw them at without the footage, so this window decodes it and says so.
-        # The API refuses to guess (`clip_frame(footage=False)` raises); the window decides.
-        self._footage = (
-            self._clip is not None
-            and self._preview.frame_size(self._clip.recording_id) is None
-        )
 
         layout = self.body()
-        self._note = QLabel(_FOLLOWS + (_DECODES if self._footage else ""))
+        self._note = QLabel(
+            "Follows the clip window: its Mask trail, Trail, Trail points, Align pose and "
+            "Context ticks, and its clip."
+        )
         self._note.setObjectName("pane_follows_note")
         self._note.setWordWrap(True)
         layout.addWidget(self._note)
@@ -145,24 +136,6 @@ class ClipPaneWindow(Dialog):
         self.finished.connect(self._let_go)
         self._sync(start=player.current_frame())
         self._title()
-        self.resize(
-            fit_to_screen(
-                QSize(lines(_WIDE), lines(_TALL)), screen=parent_screen(parent)
-            )
-        )
-
-    # -- following the clip window -------------------------------------------- #
-    def _on_settings(self) -> None:
-        self._settings = self._player.view_settings()
-        self._scrubber.set_frame(self._scrubber.frame())  # redraw what is on screen
-
-    def _on_window(self) -> None:
-        self._sync(start=self.current_frame())
-
-    def _on_clip(self) -> None:
-        self._clip = self._player.clip()
-        self._sync(start=self._player.current_frame())
-        self._title()
 
     def _let_go(self, _result: int) -> None:
         """Closed: stop playing, stop following the player, and leave its register — so the
@@ -182,11 +155,25 @@ class ClipPaneWindow(Dialog):
                     pass  # not connected: closed twice
             windows = getattr(player, "pane_windows", None)
         except RuntimeError:
-            # The clip window closed first and Qt deleted the player (this window's parent's
-            # child, like this one): every connection to it went with it, and its register.
+            # The clip window closed first and Qt deleted the player: every connection to it
+            # went with it, and its register.
             return
         if windows is not None and windows.get(self._pane) is self:
             windows.pop(self._pane, None)
+
+    # -- following the clip window -------------------------------------------- #
+    def _on_settings(self) -> None:
+        self._settings = self._player.view_settings()
+        self._scrubber.set_frame(self._scrubber.frame())  # redraw what is on screen
+
+    def _on_window(self) -> None:
+        here = self.current_frame()
+        self._sync(start=here)
+
+    def _on_clip(self) -> None:
+        self._clip = self._player.clip()
+        self._sync(start=self._player.current_frame())
+        self._title()
 
     def _sync(self, *, start: int) -> None:
         """Span the player's window of frames and show ``start`` (clamped into it)."""
@@ -209,12 +196,11 @@ class ClipPaneWindow(Dialog):
 
     def _title(self) -> None:
         label = self._clip.label if self._clip is not None else ""
-        self.setWindowTitle(clip_views.pane_title(self._pane, label))
+        self.setWindowTitle(pane_export.pane_title(self._pane, label))
 
     # -- playing --------------------------------------------------------------- #
     def _compute(self, step: int):
         clip, settings, first = self._clip, self._settings, self._bounds[0]
-        footage = self._footage
         if clip is None:
             return None
         frame = first + int(step)
@@ -224,8 +210,8 @@ class ClipPaneWindow(Dialog):
                 clip.embed_run_id,
                 clip.track_id,
                 frame,
-                settings,
-                footage=footage,
+                footage=False,
+                **settings.views_kwargs(),
             )
         )
 
@@ -236,7 +222,7 @@ class ClipPaneWindow(Dialog):
         if reason is not None:
             self._view.clear_frame(frame_source.unavailable_text(reason))
             return
-        picture = clip_views.pane_picture(views, self._pane)
+        picture = pane_export.pane_picture(views, self._pane)
         if picture is None:
             self._view.clear_frame("No keypoints for this run")
             self._view.setToolTip(views.pose_note or "")
@@ -259,18 +245,13 @@ class ClipPaneWindow(Dialog):
     def view(self) -> ImageView:
         return self._view
 
-    def settings(self) -> clip_views.ClipViewSettings:
+    def settings(self):
         """The view ticks this window is drawing with (the clip window's, as last changed)."""
         return self._settings
 
     def frames(self) -> tuple[int, int]:
         """The inclusive global frames on this window's bar — what an export writes."""
         return self._bounds
-
-    def decodes_footage(self) -> bool:
-        """Whether this window has to decode the footage to size its pane (no recorded
-        frame size); the note says so when it does."""
-        return self._footage
 
     # -- exporting ------------------------------------------------------------- #
     def frames_note(self) -> str:
@@ -289,9 +270,10 @@ class ClipPaneWindow(Dialog):
         )
 
     def export_video(self) -> None:
-        path = ask_save_path(self, "Export video", self._suggested(MP4), MP4)
-        if path is not None:
-            self.write(path)
+        answer = ask_mp4_path(self, "Export video", self._suggested(MP4))
+        if answer is not None:
+            path, codec = answer
+            self.write(path, codec=codec)
 
     def export_gif(self) -> None:
         answer = ask_gif_settings(self, self.frames_note())
@@ -302,14 +284,21 @@ class ClipPaneWindow(Dialog):
             width, fps = answer
             self.write(path, max_width=width, fps=fps)
 
-    def write(self, path, *, max_width: int | None = None, fps: float | None = None):
+    def write(
+        self,
+        path,
+        *,
+        max_width: int | None = None,
+        fps: float | None = None,
+        codec: str = DEFAULT_VIDEO_CODEC,
+    ):
         """Export this pane to ``path`` (``.mp4`` / ``.gif``) off the UI thread, with the
-        settings and frames on screen now."""
+        settings and frames on screen now; an mp4 encoded as ``codec``."""
         clip, settings, (first, last) = self._clip, self._settings, self._bounds
         experiment_dir, pane = self._experiment.dir, self._pane
 
         def work(progress):
-            return clip_views.export_clip_pane(  # off-thread (run_progress)
+            return pane_export.export_clip_pane(  # off-thread (run_progress)
                 experiment_dir,
                 recording_id=clip.recording_id,
                 embed_run_id=clip.embed_run_id,
@@ -322,28 +311,21 @@ class ClipPaneWindow(Dialog):
                 max_width=max_width,
                 fps=fps,
                 progress=progress,
+                codec=codec,
             )
 
         return run_export(
             self,
             work,
-            on_written=lambda written: self._status.setText(written_note(written)),
+            on_written=lambda written: self._status.setText(
+                with_codec_note(written_note(written), written, codec)
+            ),
             label=f"Exporting the {pane} pane…",
         )
 
     def _suggested(self, kind: str) -> str:
         label = self._clip.label if self._clip is not None else "clip"
         return f"{safe_name(label)}_{self._pane}.{kind}"
-
-
-def parent_screen(widget):
-    """The screen a window will open on: its parent's, or ``None`` with no parent yet."""
-    if widget is None:
-        return None
-    try:
-        return widget.screen()
-    except (AttributeError, RuntimeError):
-        return None
 
 
 def open_pane_window(player, pane: str, parent) -> ClipPaneWindow:

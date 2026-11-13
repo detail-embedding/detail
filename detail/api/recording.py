@@ -17,6 +17,10 @@ from pydantic import ValidationError as PydanticValidationError
 
 
 from detail.api._runner_modules import PIPELINE_RUNNERS as _PIPELINE_RUNNERS
+from detail.configs.defaults import none_means_default
+from detail.core import atomic
+from detail.core import camera_view as camera_view_mod
+from detail.core import yaml_load
 from detail.core.dataclasses import (
     ComputeTarget,
     JobStatus,
@@ -31,17 +35,23 @@ from detail.core.dataclasses import (
 )
 from detail.core.protocols import ModelNotReadyError
 from detail.core.registries import STREAM_CONSUMERS, STREAM_IMPORTERS, TRANSFORMS
-from detail.core.utils import active_polygon_at_frame, default_compute
+from detail.core.utils import (
+    active_polygon_at_frame,
+    default_compute,
+    preview_compute,
+)
 from detail.core.visualize import bgr_to_rgb
-from detail.executor import rundir
+from detail.executor import rundir, run_metrics
 from detail.executor.base import RunHandle
 from detail.executor.handles import ExecutorRunHandle
-from detail.executor.local import LocalExecutor, cancel_run_dir
+from detail.executor.local import cancel_run_dir
+from detail.executor.remote import executor_for
 from detail.executor.runners import PROCESSING_MODULES, import_runner_modules
 from detail.importers import import_stream_importers
 from detail.models.resolve import resolve_detection_model_auto
 from detail.pipeline import prompt_test as _prompt_test_pipeline
 from detail.pipeline import render_preview as _render_preview_pipeline
+from detail.pipeline import teacher_window
 from detail.storage import clocks as clock_store
 from detail.storage import experiment as experiment_store
 from detail.storage import integrity
@@ -55,6 +65,7 @@ from detail.storage import video_integrity
 from detail.storage import video_roots
 from detail.storage.video import read_frame_at
 from detail.storage.zarr_io import PartZarrReader
+from detail.transforms.constructors import ALIGN_STEPS
 
 if TYPE_CHECKING:
     from detail.api import previews
@@ -105,7 +116,19 @@ def _downstream_edges(module_id: str) -> list[tuple[str, str, str]]:
         for aux_module, ref_field in getattr(m, "aux_refs", ())
         if aux_module == module_id
     }
-    return sorted(edges)
+    # Two modules that write one runs list (``track_merge`` shares ``tracking_runs``) read the
+    # same entries through the same field: one edge, or each dependent is reported twice. The
+    # module that owns the list by name (``tracking`` -> ``tracking_runs``) speaks for it.
+    spokesman: dict[tuple[str, str], tuple[bool, str]] = {}
+    for downstream_module, runs_key, ref_field in edges:
+        rank = (runs_key != f"{downstream_module}_runs", downstream_module)
+        key = (runs_key, ref_field)
+        if key not in spokesman or rank < spokesman[key]:
+            spokesman[key] = rank
+    return sorted(
+        (module, runs_key, ref_field)
+        for (runs_key, ref_field), (_, module) in spokesman.items()
+    )
 
 
 #: The stages ``add_video_part`` reports, in the order it runs them. Named because the import
@@ -223,7 +246,19 @@ class _RecordedRun(RunHandle):
         replace the caller's real exception with a file-system one.
         """
         with contextlib.suppress(Exception):
-            self._recording._set_run_status(self._runs_key, self.id, self._inner.status)
+            status = self._inner.status
+            # Timing/cost is bookkeeping *about* this adoption, not the adoption itself
+            # (the isolation-boundary rule) — a fake/stub executor with no run_dir(),
+            # or an unreadable envelope, must not also cost the real status its write.
+            extra: dict = {}
+            with contextlib.suppress(Exception):
+                job = rundir.read_job(self._inner.run_dir)
+                compute = getattr(job, "compute", None)
+                extra = run_metrics.completion_fields(
+                    self._inner.run_dir,
+                    compute.to_dict() if compute is not None else None,
+                )
+            self._recording._set_run_status(self._runs_key, self.id, status, **extra)
 
     def cancel(self) -> None:
         self._inner.cancel()
@@ -234,6 +269,11 @@ class Recording:
         self._experiment_dir = Path(experiment_dir)
         self.id = recording_id
         self.name = recording_store.read_recording(self.dir)["name"]
+
+    @property
+    def experiment_dir(self) -> Path:
+        """The experiment this recording belongs to."""
+        return self._experiment_dir
 
     @property
     def dir(self) -> Path:
@@ -959,6 +999,35 @@ class Recording:
             self.dir, block, self.video_resolution
         )
 
+    # --- camera view (§10) -------------------------------------------------- #
+    @property
+    def camera_view(self) -> camera_view_mod.CameraView:
+        """This recording's camera view: its own if it sets one, else the experiment's
+        default, else not set (``view is None``). ``source`` says which —
+        ``"recording"``, ``"experiment"`` or ``None``. Every consumer reads it here."""
+        return camera_view_mod.resolve(
+            recording_store.read_recording(self.dir),
+            experiment_store.read_config(self._experiment_dir),
+        )
+
+    @property
+    def default_camera_view(self) -> camera_view_mod.CameraView:
+        """The experiment's default — what this recording has when it sets no view of its
+        own, and what choosing "Experiment default" in Scene geometry inherits."""
+        return camera_view_mod.resolve(
+            {}, experiment_store.read_config(self._experiment_dir)
+        )
+
+    def set_camera_view(self, view: str | None, note: str | None = None) -> None:
+        """Set this recording's own camera view, overriding the experiment default — or
+        pass ``None`` to remove it, so the recording inherits the default again.
+
+        Raises:
+            ValueError: If the view is unknown, ``other`` has no note, or a note is given
+                with a view other than ``other``.
+        """
+        recording_store.set_camera_view(self.dir, view, note)
+
     # --- distance calibration (§10) ----------------------------------------- #
     @property
     def distance_calibration(self) -> dict | None:
@@ -1047,31 +1116,107 @@ class Recording:
             raise ValueError(
                 f"tracking run {tracking_run_id!r} is {rec.get('status')!r}, not complete"
             )
+        teacher_window.refuse_teacher_run(
+            rec,
+            consumer="location export",
+            upstream=f"tracking run {tracking_run_id!r}",
+        )
         return rec
 
-    def location_tables(self, tracking_run_id: str):
+    def _require_complete_keypoint_track(self, keypoint_run_id: str) -> None:
+        rec = {r["id"]: r for r in self.keypoint_track_runs}.get(keypoint_run_id)
+        if rec is None:
+            raise ValueError(
+                f"keypoint track run {keypoint_run_id!r} not found in recording {self.id!r}"
+            )
+        if rec.get("status") != "complete":
+            raise ValueError(
+                f"keypoint track run {keypoint_run_id!r} is {rec.get('status')!r}, "
+                "not complete"
+            )
+        teacher_window.refuse_teacher_run(
+            rec,
+            consumer="location export",
+            upstream=f"keypoint track run {keypoint_run_id!r}",
+        )
+
+    def location_tables(
+        self,
+        tracking_run_id: str,
+        *,
+        keypoint_run_id: str | None = None,
+        pair_edge_distance: bool = False,
+        on_progress=None,
+    ):
         """Per-frame, per-track spatial features for a completed tracking run —
-        bbox/centroids/areas + position relative to this recording's ROIs/POIs.
+        bbox/centroids/areas, position relative to this recording's ROIs/POIs, the distance
+        between every pair of animals, and (with ``keypoint_run_id``) each animal's points.
 
         Returns an ``analysis.locations.LocationTables`` (compute only, no write) —
         the reuse hook for a preview or a future analysis module. Read-only; the
         compute is pure (no executor, no run record).
 
         Raises:
-            ValueError: If the tracking run is missing or not complete.
+            ValueError: If the tracking run (or the keypoint track run) is missing or not
+                complete, or the keypoint track run assigned its poses to another tracking run.
         """
         from detail.analysis import locations as _locations
 
         self._require_complete_tracking(tracking_run_id)
-        return _locations.compute_location_tables(self, tracking_run_id)
+        if keypoint_run_id is not None:
+            self._require_complete_keypoint_track(keypoint_run_id)
+        return _locations.compute_location_tables(
+            self,
+            tracking_run_id,
+            on_progress=on_progress,
+            pair_edge_distance=pair_edge_distance,
+            keypoint_run_id=keypoint_run_id,
+        )
 
-    def export_locations(self, tracking_run_id: str, out_dir: Path | str) -> Path:
-        """Compute + write the three location CSVs (``tracks`` / ``roi_relations`` /
-        ``point_relations``) + a ``locations.yaml`` manifest into ``out_dir``;
-        returns ``out_dir``. Tables keyed by ``t_ns`` (joins with streams)."""
+    def export_locations(
+        self,
+        tracking_run_id: str,
+        out_dir: Path | str,
+        *,
+        keypoint_run_id: str | None = None,
+        pair_edge_distance: bool = False,
+        progress=None,
+    ) -> Path:
+        """Compute + write the location CSVs (``tracks`` / ``roi_relations`` /
+        ``point_relations`` / ``pair_relations``, and ``keypoints`` with ``keypoint_run_id``)
+        + a ``locations.yaml`` manifest into ``out_dir``; returns ``out_dir``. Tables keyed
+        by ``t_ns`` (joins with streams). ``pair_edge_distance`` also measures the nearest
+        distance between two tracks' masks.
+
+        ``progress`` takes the standard ``(stage, fraction, detail)`` callback: the compute
+        walks every tracked detection, which on a long recording is minutes.
+        """
+        from detail.core.progress import ThrottledProgress
         from detail.storage import location_export
 
-        tables = self.location_tables(tracking_run_id)
+        on_rows = None
+        if progress is not None:
+            emit = ThrottledProgress(lambda event: progress(*event))
+
+            def on_rows(done: int, total: int) -> None:
+                emit(
+                    (
+                        "computing",
+                        done / total if total else 1.0,
+                        f"{done}/{total} rows",
+                    ),
+                    force=done >= total,
+                )
+
+            progress("computing", 0.0, "reading the tracking run")
+        tables = self.location_tables(
+            tracking_run_id,
+            keypoint_run_id=keypoint_run_id,
+            pair_edge_distance=pair_edge_distance,
+            on_progress=on_rows,
+        )
+        if progress is not None:
+            progress("writing", 1.0, str(out_dir))
         return location_export.write_location_tables(out_dir, tables)
 
     def backfill_kinematics(
@@ -1091,6 +1236,27 @@ class Recording:
         from detail.pipeline import kinematics_backfill
 
         return kinematics_backfill.backfill_run(
+            self.dir, embed_run_id, progress=progress, overwrite=overwrite
+        )
+
+    def backfill_motion(
+        self,
+        embed_run_id: str,
+        *,
+        progress: Callable[[str, float, str], None] | None = None,
+        overwrite: bool = False,
+    ) -> int:
+        """Measure the movement inside each animal's mask on every embedded frame of
+        ``embed_run_id`` (``pipeline/motion_backfill``), from one forward decode of each
+        video part — minutes to an hour on a long recording, reported through ``progress``.
+        Parts already measured are skipped unless ``overwrite``. Returns parts written.
+
+        Raises:
+            ValueError: An unknown embedding run.
+        """
+        from detail.pipeline import motion_backfill
+
+        return motion_backfill.backfill_run(
             self.dir, embed_run_id, progress=progress, overwrite=overwrite
         )
 
@@ -1897,6 +2063,16 @@ class Recording:
 
         return DetectionPreview(self.dir, run_id)
 
+    def detection_coverage(self, run_id: str) -> tuple[int, int]:
+        """``(frames with at least one detection, frames the run processed)`` for a
+        completed detection run — the per-recording line a run's results list shows.
+
+        Raises:
+            ValueError: If no detection run with this id exists in the recording.
+        """
+        preview = self.detection_preview(run_id)
+        return preview.frames_with_detections, preview.frames_processed
+
     @property
     def tracking_runs(self) -> list[dict]:
         return recording_store.read_recording(self.dir).get("tracking_runs", [])
@@ -1949,12 +2125,21 @@ class Recording:
         ``complete`` (so a done run isn't relabeled). Idempotent."""
         module = _module_owning_output(module_id)
         out_dir = self.dir / module.output_path(run_id).rstrip("/")
+        extra: dict = {}
         if out_dir.is_dir():
             cancel_run_dir(out_dir)
             status = rundir.read_status(out_dir).value
+            with contextlib.suppress(Exception):
+                job = rundir.read_job(out_dir)
+                compute = getattr(job, "compute", None)
+                extra = run_metrics.completion_fields(
+                    out_dir, compute.to_dict() if compute is not None else None
+                )
         else:
             status = "cancelled"  # nothing ran (no run dir) → treat as cancelled
-        recording_store.set_run_status(self.dir, module.runs_key, run_id, status)
+        recording_store.set_run_status(
+            self.dir, module.runs_key, run_id, status, **extra
+        )
         return status
 
     def run(self, module_id: str, config: dict) -> RunHandle:
@@ -1981,8 +2166,11 @@ class Recording:
         # Resolve a batch <upstream>_spec to this recording's own run id before validate
         # (§6.5). A no-op for the explicit-id path (CLI/typed wrappers) or a module
         # with no lineage parent.
-        config = module.resolve_upstream_spec(self.dir, data, config)
+        config = module.resolve_upstream_spec(
+            self.dir, data, none_means_default(module.config_model, config)
+        )
         config = module.validate(self.dir, data, config)
+        module.check_upstream_intact(self.dir, data, config)
 
         # Reserve the id + record atomically (under the recording lock) so concurrent runs on
         # this recording — e.g. several embeddings pinned to different GPUs — never collide on the
@@ -1992,8 +2180,15 @@ class Recording:
             module.runs_key,
             module.id_prefix,
             lambda rid: module.run_record(rid, config, JobStatus.PENDING.value),
+            occupied=lambda rid: (self.dir / module.output_path(rid)).exists(),
         )
-        executor = LocalExecutor(self._experiment_dir, runner_modules=_PIPELINE_RUNNERS)
+        # A module shares this one backbone whether it runs locally or on a registered
+        # remote cluster (§6) — `RemoteExecutor` is a drop-in `Executor`, so nothing
+        # below this line (record-keeping, the returned handle, reattach) needs to
+        # know which one it got. `executor_for` is the one choice point every
+        # ProcessingModule-shaped caller shares (label_dataset/train_model too).
+        compute = config.get("compute")
+        executor = executor_for(self._experiment_dir, compute, _PIPELINE_RUNNERS)
         try:
             job = module.build_job(self.id, run_id, config)
             executor.submit(job)
@@ -2042,7 +2237,7 @@ class Recording:
     def run_embedding(
         self,
         tracking_run_id: str,
-        track_ids: list[int],
+        track_ids: list[int | str],
         model_id: str | None = None,
         renderer_spec: list[dict] | None = None,
         batch_size: int = 32,
@@ -2059,8 +2254,15 @@ class Recording:
         max_gap_s: float = 0.5,
         mirror_hold_s: float = 1.0,
         facing_camera_ratio: float = 0.5,
+        pose: str = "none",
+        pose_weight: float = 1.0,
+        pose_min_score: float | None = None,
     ) -> RunHandle:
         """Embed the selected tracks through the renderer + model (Section 14).
+
+        A ``track_ids`` entry may be an int (a track's raw position) or a string (an
+        animal id, resolved through *this recording's own* ``subject_labels`` — §13,
+        the way a track-merge run's ``object_id`` is a position, not an identity).
 
         ``constructor`` is the name the ``renderer_spec`` was resolved from; passing it records the
         constructor on the run so a constructor-axis comparison can read it (the spec alone does not
@@ -2076,7 +2278,14 @@ class Recording:
         ``mirror_hold_s`` and ``facing_camera_ratio`` are its settings and part of the run's
         identity. ``model_id`` omitted runs the configured default (``EmbeddingConfig``), and
         ``renderer_spec`` and ``constructor`` both omitted render the default constructor.
-        Thin wrapper over ``run``."""
+
+        §14 *Pose in the embedding*: ``pose`` ``draw`` paints the keypoint track run's points onto
+        the image the model sees; ``append`` writes the body-relative pose numbers after the
+        mask's vector, weighed by ``pose_weight`` (and needs ``heading``, which turns them).
+        ``pose_min_score`` omitted is the track run's own cut-off. Either needs
+        ``keypoint_run_id`` and leaves ``renderer_spec`` to ``validate``, which adds the step.
+        Thin wrapper over ``run``.
+        """
         from detail.api import models as api_models
         from detail.configs.embedding import EmbeddingConfig
 
@@ -2101,6 +2310,9 @@ class Recording:
                 "max_gap_s": max_gap_s,
                 "mirror_hold_s": mirror_hold_s,
                 "facing_camera_ratio": facing_camera_ratio,
+                "pose": pose,
+                "pose_weight": pose_weight,
+                "pose_min_score": pose_min_score,
                 "compute": compute
                 or default_compute(api_models.supported_backends(model_id)),
             },
@@ -2125,6 +2337,23 @@ class Recording:
                     int(t) for t in PartZarrReader(tracks_path).read()["track_id"]
                 ),
             )
+        )
+
+    def subject_labels(self, tracking_run_id: str) -> dict | None:
+        """A tracking run's own ``subject_labels`` (§13: ``{track_id: animal_id}``),
+        or ``None`` when the run never set one (every tracker but ``track_merge``
+        writes ``null``) — ``core.utils.resolve_track_id``'s input, the way a track
+        selector named by animal id resolves to *this recording's own* track id.
+        """
+        track_yaml = self.dir / "tracking" / tracking_run_id / "track.yaml"
+        if not track_yaml.exists():
+            return None
+        return read_cache.cached_read(
+            ("subject_labels", str(track_yaml)),
+            track_yaml,
+            lambda: yaml_load.safe_load(atomic.read_text(track_yaml)).get(
+                "subject_labels"
+            ),
         )
 
     def embedding_preview(self, run_id: str):
@@ -2152,7 +2381,9 @@ class Recording:
         ``alignment`` (§14) is the resolved alignment a run would record — ``align``,
         ``keypoint_run_id``, ``heading_definition``, ``heading_cutoff``, ``max_gap_s``,
         ``mirror_hold_s``, ``facing_camera_ratio`` — so the preview turns each input the way
-        the run will, and shows no input where the run would embed no row.
+        the run will, and shows no input where the run would embed no row. With ``pose:
+        draw`` (and its ``keypoint_run_id``) each frame's points are handed to the spec's
+        ``draw_pose`` step, as the run hands them.
 
         Raises:
             ValueError: If no tracking run with this id exists in the recording.
@@ -2182,9 +2413,15 @@ class Recording:
         ``model_id`` supplies the default resize target (the model's input size) so a
         preview shows exactly the image the run will embed; ``input_size`` (the model
         resolution knob) overrides that default, and ``resize`` overrides both.
+        ``align`` adds the body-axis alignment step (§26), sizing a ``rotate``'s canvas to
+        the largest subject's diagonal. ``pose="draw"`` adds the step that paints
+        ``keypoint_run_id``'s points onto the image (§26 "Pose in the embedding"), drawn before
+        any alignment so they turn with the body; ``pose_min_score`` omitted is the keypoints
+        run's own "not visible below" score, written into the step.
 
         Raises:
-            ValueError: For an unknown constructor, or tracks with no detections.
+            ValueError: For an unknown constructor, tracks with no detections, or
+                alignment on a constructor that does not crop to the subject.
         """
         from detail.pipeline.embedding import resolve_renderer_spec
 
@@ -2211,6 +2448,8 @@ class Recording:
         display_classes: list[str] | None = None,
         min_conf: float = 0.0,
         on_result=None,
+        t_start_ns: int | None = None,
+        t_end_ns: int | None = None,
     ) -> list[PromptTestResult]:
         """Preview a detection model on M sampled frames and return per-frame results (Section 8).
 
@@ -2224,6 +2463,9 @@ class Recording:
         ``min_conf`` applies only to the JPGs ``save_as`` writes, which can't be
         re-thresholded once they exist.
 
+        ``t_start_ns`` / ``t_end_ns`` draw the sample only from ``[t_start_ns, t_end_ns)``
+        of recording time (Tenet 8); leave either ``None`` for that end of the recording.
+
         Synchronous: blocks until the predictions complete. Not an executor job — no
         zarr, no recovery, no recording.yaml entry. ``save_as`` writes overlay JPGs and
         ``test.json`` to ``detections/prompt_tests/<save_as>/`` for inspection.
@@ -2234,7 +2476,7 @@ class Recording:
         """
         import_runner_modules(_PIPELINE_RUNNERS)
         data = recording_store.read_recording(self.dir)
-        closed_set, model_classes = self._validate_prompt_test(
+        closed_set, model_classes, compute = self._validate_prompt_test(
             data,
             model_id,
             prompts,
@@ -2242,6 +2484,8 @@ class Recording:
             compute,
             model_variant,
             display_classes,
+            t_start_ns,
+            t_end_ns,
         )
         if closed_set:
             chosen = list(display_classes) if display_classes else model_classes
@@ -2258,6 +2502,8 @@ class Recording:
             n_sample_frames=n_sample_frames,
             compute=compute,
             model_variant=model_variant,
+            t_start_ns=t_start_ns,
+            t_end_ns=t_end_ns,
         )
         return _prompt_test_pipeline.run_prompt_test(
             self.dir,
@@ -2278,9 +2524,15 @@ class Recording:
         model_variant: str | None = None,
         batch_size: int | None = None,
         every_n_frames: int = 1,
+        class_conf_thresholds: dict[str, float] | None = None,
+        teacher_window_s: float | None = None,
     ) -> RunHandle:
         """Detect on each video part with the given model + prompt (Section 7).
-        Thin wrapper over ``run``."""
+        Thin wrapper over ``run``. ``class_conf_thresholds`` overrides ``conf_threshold``
+        for the classes it names; a class with no entry uses ``conf_threshold``.
+        ``teacher_window_s`` detects only the recording's first that-many seconds, for a
+        keypoint teacher (§26): tracking and keypoints on the run inherit it, and nothing
+        else will take the run as input."""
         return self.run(
             "detection",
             {
@@ -2289,8 +2541,10 @@ class Recording:
                 "prompt": prompt,
                 "compute": compute,
                 "conf_threshold": conf_threshold,
+                "class_conf_thresholds": class_conf_thresholds or {},
                 "batch_size": batch_size,
                 "every_n_frames": every_n_frames,
+                "teacher_window_s": teacher_window_s,
             },
         )
 
@@ -2301,9 +2555,10 @@ class Recording:
         hyperparams: dict | None = None,
         arena_ids: list[str] | None = None,
         arena_name: str | None = None,
+        class_name: str | None = None,
         every_n_frames: int | None = None,
     ) -> RunHandle:
-        """Link detections into tracks, optionally arena-filtered (Section 13).
+        """Link detections into tracks, optionally arena- or class-filtered (Section 13).
         Thin wrapper over ``run``. ``every_n_frames`` omitted inherits the detection run's.
 
         ``tracker_id`` omitted takes ``configs.tracking.DEFAULT_TRACKER``, and ``hyperparams``
@@ -2315,11 +2570,16 @@ class Recording:
         every recording; ``arena_ids`` names this recording's own arena directly. Prefer the
         name for anything that runs over more than one recording — an id is minted per
         recording, so the same one is a different polygon on the recording next to it.
+
+        ``class_name`` restricts tracking to one class of the selected detection run —
+        the route to two clean single-subject tracks when two animals were told apart by
+        class at detection instead of by tracking. Omit to link every class together.
         """
         config = {
             "detection_run_id": detection_run_id,
             "arena_ids": arena_ids,
             "arena_name": arena_name,
+            "class_name": class_name,
             "every_n_frames": every_n_frames,
         }
         if tracker_id is not None:
@@ -2328,13 +2588,36 @@ class Recording:
             config["hyperparams"] = hyperparams
         return self.run("tracking", config)
 
+    def run_track_merge(self, source_track_ids: list[str]) -> RunHandle:
+        """Combine 2+ existing single-subject tracking runs into one multi-subject run
+        (Section 13) — one ``object_id`` per source, relabeled from each already-clean
+        class-filtered track rather than from a real multi-object tracker disambiguating
+        the animals itself. Every source must be this recording's own tracking run, built
+        from the same detection run, each with its own class filter.
+
+        Thin wrapper over ``run``: each raw id is turned into that run's own spec
+        (``run_spec.spec_from_run``) so ``TrackMergeModule.validate`` resolves it the
+        same way the GUI's spec pickers do — the direct-id and spec-based paths agree.
+        """
+        from detail.api import run_spec
+
+        config = {
+            "source_specs": [
+                run_spec.spec_from_run(self, "tracking", track_id)
+                for track_id in source_track_ids
+            ]
+        }
+        return self.run("track_merge", config)
+
     # -- keypoints (§26): PR 4 -- the detect stage ------------------------------- #
     def run_keypoint_detect(
         self,
         detection: str,
         model_id: str,
         *,
+        class_name: str | None = None,
         example_set_id: str | None = None,
+        class_example_sets: dict[str, str] | None = None,
         min_pose_confidence: float | None = None,
         model_variant: str | None = None,
         decode: str | None = None,
@@ -2351,6 +2634,13 @@ class Recording:
         ``detection`` is the detection run id. ``model_id`` names the method
         (``dinov3_match``, which learns from ``example_set_id``'s marked frames, or a
         distilled student, which keeps every pose at or above ``min_pose_confidence``).
+        ``class_name`` places poses only in that class's detections (e.g. ``"mouse"`` when
+        the detector also finds the arena); omitted, every detection gets one. It applies
+        only to a method that works per detection and is refused for a whole-frame one.
+        ``class_example_sets`` (``{"Resident": "ex_02", "Intruder": "ex_03"}``, in place of
+        ``class_name`` and ``example_set_id``) matches each class's detections against its
+        own set, for animals told apart at detection that look different; poses go only in
+        the classes named, and every set must be on one skeleton.
         ``decode`` / ``side_rule`` / ``crop_px`` left unset are resolved against the
         skeleton and written back to the run record; ``every_n_frames`` omitted inherits the
         detection run's cadence. Thin wrapper over ``run``.
@@ -2359,9 +2649,13 @@ class Recording:
 
         config = {
             "detection_run_id": detection,
+            "class_name": class_name,
             "model_id": model_id,
             "model_variant": model_variant,
             "example_set_id": example_set_id,
+            "class_example_sets": (
+                None if class_example_sets is None else dict(class_example_sets)
+            ),
             "min_pose_confidence": min_pose_confidence,
             "decode": decode,
             "side_rule": side_rule,
@@ -2406,7 +2700,7 @@ class Recording:
                 f"no video part {part_id!r} in recording {self.id!r}; parts: {parts}"
             )
         empty = keypoint_runs._instance_columns(
-            len(run.meta["skeleton"]["names"]), run.n_candidates
+            len(run.skeleton.names), run.n_candidates
         )
         del empty["row"]
         return empty
@@ -2421,6 +2715,7 @@ class Recording:
         tracking: str | None = None,
         match_min_inside: float | None = None,
         match_mask_grow: float | None = None,
+        compute: ComputeTarget | None = None,
     ) -> RunHandle:
         """Give a detect run's instances to a tracking run's subjects and settle them over
         time (§26 ``keypoint_track``).
@@ -2431,13 +2726,16 @@ class Recording:
         ``match_mask_grow`` left unset take the assignment's defaults. ``method`` omitted
         takes the detect run's method's own default (``dinov3_match``: ``temporal_decode``);
         ``config`` holds the method's settings, every field of which is resolved and
-        recorded. CPU only, seconds per recording. Thin wrapper over ``run``.
+        recorded. One CPU core, minutes per recording; ``compute`` omitted runs it on this
+        machine's CPU, ``ComputeTarget("remote", ..., remote_target=name)`` on a registered
+        cluster (§6). Thin wrapper over ``run``.
         """
         run_config = {
             "detect_run_id": detect,
             "tracking_run_id": tracking,
             "method": method,
             "config": dict(config or {}),
+            "compute": compute,
         }
         if match_min_inside is not None:
             run_config["match_min_inside"] = float(match_min_inside)
@@ -2480,6 +2778,22 @@ class Recording:
     ) -> None:
         if n_sample_frames <= 0:
             raise ValueError(f"n_sample_frames must be > 0, got {n_sample_frames}")
+        aligning = [
+            s["type"] for s in renderer_spec if s["type"] in ALIGN_STEPS.values()
+        ]
+        if aligning:
+            # The sampled grid takes no keypoints run, so it would show the subject unturned
+            # and look like the alignment did nothing.
+            raise ValueError(
+                f"renderer_spec aligns to a body axis ({aligning[0]}), which needs a keypoints "
+                "run; preview it with input_image_preview(..., keypoint_run_id=, align=)"
+            )
+        if any(s["type"] == "draw_pose" for s in renderer_spec):
+            # Same reason: no keypoints run here, so the points would simply not appear.
+            raise ValueError(
+                "renderer_spec draws pose (draw_pose), which needs a keypoints run; preview it "
+                "with input_image_preview(..., keypoint_run_id=, pose='draw')"
+            )
         run = {r["id"]: r for r in data.get("tracking_runs", [])}.get(tracking_run_id)
         if run is None:
             raise ValueError(
@@ -2514,16 +2828,28 @@ class Recording:
         compute,
         model_variant=None,
         display_classes=None,
-    ) -> tuple[bool, list[str]]:
-        """Validate a prompt-test request. Returns ``(closed_set, model_classes)`` so
-        the caller can build the closed-set class columns. Resolves through the shared
-        resolver so a trained/imported model id (not just a pretrained one) is accepted.
+        t_start_ns=None,
+        t_end_ns=None,
+    ) -> tuple[bool, list[str], ComputeTarget]:
+        """Validate a prompt-test request. Returns ``(closed_set, model_classes,
+        compute)`` so the caller can build the closed-set class columns; ``compute`` is
+        the local target the preview runs on (a remote one resolves to this machine —
+        ``preview_compute``). Resolves through the shared resolver so a trained/imported
+        model id (not just a pretrained one) is accepted.
         """
         if n_sample_frames <= 0:
             raise ValueError(f"n_sample_frames must be > 0, got {n_sample_frames}")
+        for name, value in (("t_start_ns", t_start_ns), ("t_end_ns", t_end_ns)):
+            if value is not None and value < 0:
+                raise ValueError(f"{name} must be >= 0, got {value}")
+        if t_start_ns is not None and t_end_ns is not None and t_end_ns <= t_start_ns:
+            raise ValueError(
+                f"t_end_ns ({t_end_ns}) must be after t_start_ns ({t_start_ns})"
+            )
         model, _ = resolve_detection_model_auto(
             self.dir.parents[1], model_id, model_variant
         )
+        compute = preview_compute(compute, list(model.supported_backends))
         if compute.backend not in model.supported_backends:
             raise ValueError(
                 f"backend {compute.backend!r} not supported by {model_id!r}; "
@@ -2575,36 +2901,61 @@ class Recording:
                     f"video for part {recording_store.part_stem(part)!r} is missing "
                     f"(expected at {src})"
                 )
-        return closed_set, model_classes
+        return closed_set, model_classes, compute
 
     # --- recording.yaml bookkeeping ------------------------------------------- #
-    def _next_run_id(self, runs: list[dict], prefix: str) -> str:
+    def _next_run_id(
+        self,
+        runs: list[dict],
+        prefix: str,
+        occupied: Callable[[str], bool] | None = None,
+    ) -> str:
+        """One past the highest recorded id, stepping past any ``occupied`` one.
+
+        The record is not the only place an id lives: a deleted run's output can come back (a
+        remote copy-back carries the cluster's old copy home), and a new run handed that id
+        writes into the old one's store — a 12-keypoint run opened a 4-keypoint zarr, and one
+        with the same width would have appended onto it.
+        """
         nums = []
         for run in runs:
             try:
                 nums.append(int(str(run["id"]).rsplit("_", 1)[-1]))
             except (ValueError, KeyError):
                 pass
-        return f"{prefix}_{max(nums, default=0) + 1:02d}"
+        n = max(nums, default=0) + 1
+        while occupied is not None and occupied(f"{prefix}_{n:02d}"):
+            n += 1
+        return f"{prefix}_{n:02d}"
 
-    def _reserve_run(self, key: str, prefix: str, make_record) -> str:
+    def _reserve_run(
+        self,
+        key: str,
+        prefix: str,
+        make_record,
+        occupied: Callable[[str], bool] | None = None,
+    ) -> str:
         """Allocate the next run id and append its record atomically under the recording lock.
 
         Serializing the read → allocate → append → write is what lets concurrent runs on one
         recording (e.g. embeddings on separate GPUs) get distinct ids without losing each other's
-        records. ``make_record(run_id)`` builds the record once the id is known.
+        records. ``make_record(run_id)`` builds the record once the id is known; ``occupied``
+        says whether an id still has something on disk (see ``_next_run_id``).
         """
         with recording_store.recording_lock(self.dir):
             data = recording_store.read_recording(self.dir)
-            run_id = self._next_run_id(data.get(key, []), prefix)
+            run_id = self._next_run_id(data.get(key, []), prefix, occupied)
             data.setdefault(key, []).append(make_record(run_id))
             recording_store.write_recording(self.dir, data)
         return run_id
 
-    def _set_run_status(self, key: str, run_id: str, status: str) -> None:
+    def _set_run_status(
+        self, key: str, run_id: str, status: str, **extra: object
+    ) -> None:
         with recording_store.recording_lock(self.dir):
             data = recording_store.read_recording(self.dir)
             for run in data.get(key, []):
                 if run.get("id") == run_id:
                     run["status"] = status
+                    run.update(extra)
             recording_store.write_recording(self.dir, data)

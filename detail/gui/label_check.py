@@ -64,14 +64,15 @@ from PyQt6.QtWidgets import (
     QStyleOptionViewItem,
     QTreeWidget,
     QTreeWidgetItem,
-    QTreeWidgetItemIterator,
     QVBoxLayout,
     QWidget,
 )
 
+from detail.core.utils import subject_key
 from detail.gui import plot_theme
 from detail.gui.busy import run_busy
 from detail.gui.grip_splitter import GripSplitter
+from detail.gui.lifetime import cleared, tree_items
 from detail.gui.label_clean import (
     RANKING,
     ReviewPane,
@@ -413,6 +414,7 @@ class LabelCheckTab(QWidget):
                 origin=self._origin,
                 name=self._export_stem,
                 empty=lambda: "Open a cluster in the list to export its clips.",
+                experiment=lambda: self._experiment,
             )
         )
         self.pane.take_out_requested.connect(self._take_out)
@@ -654,15 +656,12 @@ class LabelCheckTab(QWidget):
         option = QStyleOptionViewItem()
         option.initFrom(lst)
         widest = 0
-        walk = QTreeWidgetItemIterator(lst)
-        while walk.value() is not None:
-            item = walk.value()
+        for item in tree_items(lst):
             index = lst.indexFromItem(item)
             depth = 0 if item.parent() is None else 1
             widest = max(
                 widest, delegate.row_width(option, index) + depth * lst.indentation()
             )
-            walk += 1
         chrome = 2 * lst.frameWidth() + lst.verticalScrollBar().sizeHint().width()
         width = min(max(widest + chrome, LIST_PX), lines(LIST_MAX_LINES))
         sizes = self._split.sizes()
@@ -682,9 +681,7 @@ class LabelCheckTab(QWidget):
 
     def _paint_rows(self) -> None:
         """What each row draws, from the data and the pane's progress."""
-        walk = QTreeWidgetItemIterator(self._list)
-        while walk.value() is not None:
-            item = walk.value()
+        for item in tree_items(self._list):
             key = item.data(0, KEY_ROLE)
             if key[0] == "label":
                 row = self._label_row(key[1]) or {}
@@ -710,7 +707,6 @@ class LabelCheckTab(QWidget):
                 if cluster:
                     item.setToolTip(0, self._cluster_tip(cluster))
                 item.setData(0, ROW_ROLE, self._cluster_look(cluster))
-            walk += 1
         self._fit_list_width(grow_only=True)
         self._list.viewport().update()
 
@@ -824,10 +820,7 @@ class LabelCheckTab(QWidget):
         ]
 
     def _items(self):
-        walk = QTreeWidgetItemIterator(self._list)
-        while walk.value() is not None:
-            yield walk.value()
-            walk += 1
+        return tree_items(self._list)
 
     def _label_item(self, path: str) -> QTreeWidgetItem | None:
         return next(
@@ -870,6 +863,8 @@ class LabelCheckTab(QWidget):
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt virtual
         """Return, Enter or Space on a list row chooses it, as a click does."""
+        if cleared(self):
+            return False
         if (
             watched is self._list
             and event.type() == QEvent.Type.KeyPress
@@ -1059,7 +1054,7 @@ class LabelCheckTab(QWidget):
                 start, end = context_span(row["start_t_ns"], row["end_t_ns"], context)
                 tiles.append(
                     clip_tiles.TileClip(
-                        row["recording_id"], int(row["subject"]), start, end
+                        row["recording_id"], subject_key(row["subject"]), start, end
                     )
                 )
             montage.set_source(clip_tiles.ClipTiles(self._catalog, tiles))
@@ -1119,7 +1114,7 @@ class LabelCheckTab(QWidget):
                     rank=rank,
                     recording_id=rid,
                     recording_name=clips.names.get(rid, rid),
-                    subject=int(row["subject"]),
+                    subject=subject_key(row["subject"]),
                     embed_run_id=embeds.get(rid, ""),
                     start_t_ns=int(row["start_t_ns"]),
                     end_t_ns=int(row["end_t_ns"]),
@@ -1348,7 +1343,7 @@ class LabelCheckTab(QWidget):
             sequence.append(
                 ClipSpec(
                     rid,
-                    int(row["subject"]),
+                    subject_key(row["subject"]),
                     embeds[rid],
                     int(row["start_t_ns"]),
                     int(row["end_t_ns"]),

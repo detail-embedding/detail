@@ -14,6 +14,7 @@ from detail.storage import recording as recording_store
 from tests.gui.conftest import drain_until
 from tests.pipeline.test_keypoint_detect import (
     tracked,  # noqa: F401  (the fixture)
+    two_classes,  # noqa: F401  (the fixture)
     _FakeKeypointModel,
     _FakePoseModel,
     _config,
@@ -132,6 +133,47 @@ def test_the_picker_shows_only_for_a_method_that_learns_from_examples(
     assert form.config()["model_variant"] is None  # the fake has no sizes
 
 
+def test_the_class_row_offers_the_detection_runs_classes_and_writes_the_field(
+    qapp, two_classes  # noqa: F811 — the imported fixture
+):
+    """The class row offers what the chosen detection run actually detected (read off its
+    parts on a thread, as tracking's row is), opens on every class, writes the chosen one,
+    narrows the recordings to those that have it, and is hidden — and sent as None — for a
+    whole-frame method, whose `validate` refuses it."""
+    it, recording = two_classes
+    form = GUI_MODULES["keypoint_detect"].config_widget()
+    form.show()
+    form._method.setCurrentIndex(form._method.findData("fake_kp"))
+    assert form._class.isVisible() and form._class_label.isVisible()
+    form.on_recordings_changed([recording])
+    assert drain_until(qapp, lambda: form._class.count() == 3), "classes never read"
+    assert [form._class.itemData(i) for i in range(3)] == [None, "mouse", "plate"]
+    assert form._class.itemText(0) == "(every class)"
+    assert form.config()["class_name"] is None
+    form._class.setCurrentIndex(form._class.findData("mouse"))
+    assert form.config()["class_name"] == "mouse"
+    assert form.covered_recording_ids() == {recording.id}
+    form._method.setCurrentIndex(form._method.findData("fake_pose"))
+    assert not form._class.isVisible() and not form._class_label.isVisible()
+    assert form.config()["class_name"] is None
+
+
+def test_a_restored_class_waits_for_the_detection_runs_classes(
+    qapp, two_classes  # noqa: F811 — the imported fixture
+):
+    """A class is a setting (the same animal on the next recording), so *Start from*
+    restores it — even when the config arrives before the classes have been read."""
+    _it, recording = two_classes
+    form = GUI_MODULES["keypoint_detect"].config_widget()
+    form.show()
+    form.load_config({"model_id": "fake_kp", "class_name": "plate"})
+    form.on_recordings_changed([recording])
+    assert drain_until(qapp, lambda: form._class.count() == 3), "classes never read"
+    assert form.config()["class_name"] == "plate"
+    form.load_config({"model_id": "fake_kp", "class_name": None})
+    assert form.config()["class_name"] is None
+
+
 @pytest.fixture
 def detect_run(tracked):  # noqa: F811 — the imported fixture
     """``tracked``'s recording with a finished ``kd_01`` written by the real stage over the
@@ -159,7 +201,9 @@ def test_the_viewer_draws_every_instance_on_the_detection_frames(qapp, detect_ru
     from detail.gui.keypoint_run_preview import KeypointDetectRunPreview
     from detail.gui.run_preview import DetectionRunPreview, TrackingRunPreview
 
-    view = GUI_MODULES["keypoint_detect"].preview_widget(detect_run, "kd_01")
+    view = GUI_MODULES["keypoint_detect"].preview_widget(
+        detect_run, "kd_01", experiment_dir=None, parent_run_id=None
+    )
     assert isinstance(view, KeypointDetectRunPreview)
     assert isinstance(view, DetectionRunPreview)
     assert not isinstance(view, TrackingRunPreview)
@@ -256,7 +300,8 @@ def test_with_no_supported_size_installed_the_form_names_what_to_install(
     message = form.validation_error()
     assert message == (
         "No keypoint method can run here: dinov3_match needs dinov3_vit vit_large or "
-        "vit_base installed. Install it on the Model manager."
+        "vit_base installed; superanimal_quadruped not installed; "
+        "superanimal_topviewmouse not installed. Install one on the Model manager."
     )
     assert form._no_methods.text() == message
 
@@ -346,6 +391,41 @@ def test_test_keypoints_greys_with_the_reason_for_each_missing_input(
     assert "learns from an example set" in form._test.toolTip()
 
 
+def test_several_tracking_runs_ask_which_one_test_keypoints_draws_from(
+    qapp, patch_teacher
+):
+    """The social flow always has several tracking runs on one detection run (each class's
+    track and their merge). *Test on tracking* appears then — never chosen for the person —
+    offers only the tracking runs on the chosen detection run, and the one chosen is what
+    the test draws its frames from; with one tracking run it stays hidden."""
+    it, recording, _set_id, form = _ready_form(qapp, patch_teacher)
+    assert not form._test_tracking.combo.isVisible()  # one tracking run: nothing to ask
+    assert form._test.isEnabled(), form._test.toolTip()
+
+    data = recording_store.read_recording(recording.dir)
+    first = dict(data["tracking_runs"][0])
+    data["tracking_runs"].append(
+        {**first, "id": "track_02", "tracker_id": "track_merge", "class_name": None}
+    )
+    recording_store.write_recording(recording.dir, data)
+    form.on_recordings_changed([recording])
+    combo = form._test_tracking.combo
+    assert combo.isVisible() and form._test_tracking_label.isVisible()
+    assert combo.currentIndex() == 0 and form._test_tracking.spec() is None
+    assert not form._test.isEnabled()
+    assert "choose which one Test keypoints draws" in form._test.toolTip()
+    assert combo.count() == 3  # the choose row, and the two tracking runs
+
+    for index in range(1, combo.count()):
+        combo.setCurrentIndex(index)
+        teacher = form.test_teacher()
+        if teacher["tracking"] == {recording.id: "track_02"}:
+            break
+    else:
+        raise AssertionError("track_02 was never offered")
+    assert form._test.isEnabled(), form._test.toolTip()
+
+
 def test_test_keypoints_hands_the_window_the_forms_choices(
     qapp, patch_teacher, monkeypatch
 ):
@@ -378,3 +458,102 @@ def test_test_keypoints_hands_the_window_the_forms_choices(
     assert experiment is it.experiment and handed == teacher
     assert names == {recording.id: recording.name}
     assert cutoff == KEYPOINT_MODELS["fake_learner"].score_spec.default_cutoff
+
+
+def test_an_imported_keypoint_model_is_offered_as_a_method(qapp):
+    """A catalog ONNX import is machine-global: the form offers it in any experiment, with
+    no example set to choose, and launches it by its id."""
+    from tests.pipeline.test_keypoint_detect import _import_onnx_fixture
+
+    model_id = _import_onnx_fixture()
+    form = GUI_MODULES["keypoint_detect"].config_widget()
+    form.show()
+    index = form._method.findData(model_id)
+    assert index >= 0 and "from the catalog" in form._method.itemText(index)
+    form._method.setCurrentIndex(index)
+    assert not form._example_picker.isVisible()
+    assert form.config()["model_id"] == model_id
+
+
+def _class_learner(monkeypatch):
+    class _Learner(_FakeKeypointModel):
+        model_id = "fake_learner"
+        needs_examples = True
+
+        def __init__(self, variant=None, **_kwargs):
+            super().__init__(variant)
+
+    monkeypatch.setitem(KEYPOINT_MODELS, "fake_learner", _Learner)
+
+
+def test_one_example_set_per_class_replaces_class_and_examples(
+    qapp, two_classes, monkeypatch  # noqa: F811 — the imported fixture
+):
+    """§26 *One example set per detection class*: greyed until the detection run's classes
+    are read and number two; ticked, Class and Examples give way to one row per class, and
+    the config and Test keypoints carry the class-to-set map, never a class or one set.
+    """
+    from tests.pipeline.test_keypoint_detect import SKELETON
+
+    _class_learner(monkeypatch)
+    it, recording = two_classes
+    white = it.experiment.create_example_set("white mouse", SKELETON)
+    black = it.experiment.create_example_set("black mouse", SKELETON)
+    form = GUI_MODULES["keypoint_detect"].config_widget()
+    form.show()
+    form._method.setCurrentIndex(form._method.findData("fake_learner"))
+    form.on_experiment_set(it.experiment)
+    assert form._per_class.isVisible() and not form._per_class.isEnabled()
+    assert "fewer than two classes" in form._per_class.toolTip()
+    form.on_recordings_changed([recording])
+    assert drain_until(qapp, lambda: form._per_class.isEnabled()), "classes never read"
+    assert form._class_sets.classes() == ["mouse", "plate"]
+    assert not form._class_sets.isVisible()  # unticked: the single form as before
+
+    form._per_class.setChecked(True)
+    assert form._class_sets.isVisible()
+    assert not form._class.isVisible() and not form._example_picker.isVisible()
+    rows = form._class_sets._rows
+    for _tick, picker in rows.values():
+        assert drain_until(qapp, lambda p=picker: not p._reading), "sets never loaded"
+    rows["mouse"][1].select(white.id)
+    rows["plate"][1].select(black.id)
+    qapp.processEvents()
+    assert form.validation_error() is None
+    config = form.config()
+    assert config["class_example_sets"] == {"mouse": white.id, "plate": black.id}
+    assert config["class_name"] is None and config["example_set_id"] is None
+    teacher = form.test_teacher()
+    assert teacher["class_example_sets"] == config["class_example_sets"]
+    assert "example_set" not in teacher
+
+    rows["plate"][0].setChecked(False)
+    assert not rows["plate"][1].isEnabled()
+    assert "two classes or more" in form.validation_error()
+
+    form._per_class.setChecked(False)
+    assert form.config()["class_example_sets"] is None
+    assert form._example_picker.isVisible() and form._class.isVisible()
+
+
+def test_start_from_ticks_the_classes_and_asks_again_for_their_sets(
+    qapp, two_classes, monkeypatch  # noqa: F811 — the imported fixture
+):
+    """Which classes had a set is a setting; the sets are selections (re-asked), as the
+    single Examples picker's set is — even when the config arrives before the classes.
+    """
+    _class_learner(monkeypatch)
+    _it, recording = two_classes
+    form = GUI_MODULES["keypoint_detect"].config_widget()
+    form.show()
+    form.load_config(
+        {"model_id": "fake_learner", "class_example_sets": {"plate": "ex_07"}}
+    )
+    form.on_recordings_changed([recording])
+    assert drain_until(qapp, lambda: form._class_sets.classes() == ["mouse", "plate"])
+    assert form._per_class.isChecked()
+    ticks = {
+        name: tick.isChecked() for name, (tick, _p) in form._class_sets._rows.items()
+    }
+    assert ticks == {"mouse": False, "plate": True}
+    assert form._class_sets.value() == {}  # the set itself is chosen again

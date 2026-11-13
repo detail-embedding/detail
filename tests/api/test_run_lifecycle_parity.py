@@ -64,6 +64,9 @@ def test_a_batch_module_is_still_denied_the_job_seams():
         def output_path(self, run_id):
             return f"probe/{run_id}/"
 
+        def estimate_output_bytes(self, recording_dir, recording_data, config):
+            return 0
+
         def validate_batch(self, experiment_root, recording_ids, config):
             return config
 

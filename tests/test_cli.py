@@ -33,10 +33,13 @@ import click
 import cv2
 import numpy as np
 import pytest
+import yaml
 from click.testing import CliRunner
 
+from detail.api.experiment import Experiment
 from detail.cli import (
     _coerce_hyperparam,
+    _compute_target,
     _progress_postfix,
     _stream_distill_progress,
     _stream_processing_progress,
@@ -45,6 +48,7 @@ from detail.cli import (
 )
 from detail.executor.base import RunHandle
 from detail.core.dataclasses import (
+    ComputeTarget,
     Detection,
     DetectionProgressEvent,
     FrameResult,
@@ -60,6 +64,7 @@ from detail.core.registries import MODELS, TRACKERS, register_model
 from detail.models.hf_access import HFHubModel
 from detail.storage import experiment as experiment_store
 from detail.storage import recording as recording_store
+from detail.storage.metadata import ACQUISITION_SETUP_KEY as SETUP
 from detail.storage.zarr_io import DetectionPartWriter
 
 H, W = 24, 32
@@ -96,6 +101,85 @@ def test_experiment_create_already_exists(tmp_path):
     assert "already exists" in result.output
 
 
+def test_experiment_create_defaults_to_the_default_location():
+    from detail.storage import locations
+
+    result = _runner().invoke(main, ["experiment", "create", "p1"])
+    assert result.exit_code == 0, result.output
+    assert (locations.experiments_root() / "p1" / "config.yaml").is_file()
+
+
+def test_experiment_locations_add_create_import_and_remove(tmp_path):
+    from detail.storage import locations
+
+    r = _runner()
+    drive = tmp_path / "drive"
+    drive.mkdir()
+    result = r.invoke(main, ["experiment", "add-location", "Lab drive", str(drive)])
+    assert result.exit_code == 0, result.output
+
+    result = r.invoke(main, ["experiment", "locations"])
+    assert result.exit_code == 0, result.output
+    lines = result.output.strip().splitlines()
+    assert lines[0].startswith("default\t") and lines[0].endswith("\tconnected")
+    assert lines[1] == f"Lab drive\t{drive.resolve().as_posix()}\tconnected"
+
+    result = r.invoke(main, ["experiment", "create", "p1", "--location", "Lab drive"])
+    assert result.exit_code == 0, result.output
+    assert (drive / "p1" / "config.yaml").is_file()
+
+    archive = Experiment.open(drive / "p1").export(tmp_path / "p1.tar")
+    result = r.invoke(
+        main,
+        [
+            "experiment",
+            "import",
+            str(archive),
+            "--name",
+            "p2",
+            "--location",
+            "Lab drive",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert (drive / "p2" / "config.yaml").is_file()
+
+    result = r.invoke(main, ["experiment", "remove-location", "Lab drive"])
+    assert result.exit_code == 0, result.output
+    assert [loc.name for loc in locations.experiment_locations()] == ["default"]
+    assert (drive / "p1" / "config.yaml").is_file()  # forgotten, not deleted
+
+
+@pytest.mark.parametrize(
+    "args, message",
+    [
+        (["create", "p1", "--location", "nope"], "no experiment location named 'nope'"),
+        (["create", "p1", "--dir", ".", "--location", "x"], "not both"),
+        (["add-location", "default", "."], "built-in location"),
+        (["add-location", "Lab drive", "missing_folder"], "not an existing folder"),
+        (["remove-location", "default"], "cannot be removed"),
+    ],
+)
+def test_experiment_location_commands_refuse_with_the_reason(args, message):
+    result = _runner().invoke(main, ["experiment", *args])
+    assert result.exit_code != 0
+    assert message in result.output
+
+
+def test_experiment_create_in_an_unplugged_location_says_so(tmp_path):
+    from detail.storage import locations
+
+    drive = tmp_path / "drive"
+    drive.mkdir()
+    locations.add_location("Lab drive", drive)
+    drive.rmdir()
+    result = _runner().invoke(
+        main, ["experiment", "create", "p1", "--location", "Lab drive"]
+    )
+    assert result.exit_code != 0
+    assert "not connected" in result.output
+
+
 def test_experiment_status(tmp_path):
     r = _runner()
     r.invoke(main, ["experiment", "create", "p1", "--dir", str(tmp_path)])
@@ -106,6 +190,22 @@ def test_experiment_status(tmp_path):
     result = r.invoke(main, ["experiment", "status", "--experiment", pdir])
     assert result.exit_code == 0, result.output
     assert "recording_001" in result.output
+
+
+def test_experiment_archive_and_undo(tmp_path):
+    r = _runner()
+    r.invoke(main, ["experiment", "create", "p1", "--dir", str(tmp_path)])
+    pdir = str(tmp_path / "p1")
+    result = r.invoke(main, ["experiment", "archive", "--experiment", pdir])
+    assert result.exit_code == 0, result.output
+    assert Experiment.open(tmp_path / "p1").archived
+    status = r.invoke(main, ["experiment", "status", "--experiment", pdir])
+    assert "archived: yes" in status.output
+    result = r.invoke(main, ["experiment", "archive", "--experiment", pdir, "--undo"])
+    assert result.exit_code == 0, result.output
+    assert not Experiment.open(tmp_path / "p1").archived
+    status = r.invoke(main, ["experiment", "status", "--experiment", pdir])
+    assert "archived" not in status.output
 
 
 def test_experiment_status_missing_experiment(tmp_path):
@@ -181,6 +281,691 @@ def test_cli_video_root_set_rejects_missing_dir(tmp_path, monkeypatch):
     _isolate_storage(tmp_path, monkeypatch)
     res = _runner().invoke(main, ["video-root", "set", "lab", str(tmp_path / "nope")])
     assert res.exit_code != 0
+
+
+def _isolate_remote_targets(tmp_path, monkeypatch):
+    from detail.storage import remote_targets
+
+    monkeypatch.setattr(remote_targets, "CONFIG_DIR", tmp_path / "cfg")
+    monkeypatch.setattr(
+        remote_targets, "REMOTE_TARGETS_PATH", tmp_path / "cfg" / "remote_targets.yaml"
+    )
+
+
+def test_cli_remote_add_then_list(tmp_path, monkeypatch):
+    _isolate_remote_targets(tmp_path, monkeypatch)
+    r = _runner()
+    res = r.invoke(
+        main,
+        [
+            "remote",
+            "add",
+            "tillicum",
+            "tillicum",
+            "--workdir",
+            "/gscratch/scrubbed/uwnetid/detail_runs",
+            "--partition",
+            "gpu-a40",
+            "--module",
+            "cuda/12.4",
+        ],
+    )
+    assert res.exit_code == 0, res.output
+    res = r.invoke(main, ["remote", "list"])
+    assert res.exit_code == 0, res.output
+    assert "tillicum" in res.output
+
+
+def test_cli_remote_add_defaults_come_from_the_config_model(tmp_path, monkeypatch):
+    """`24:00:00` and 8 are the model's, shown in `--help` and used when the flags are omitted;
+    the CLI used to restate `04:00:00` in its own option, a second place a changed default is
+    missed."""
+    from detail.api import remote as api_remote
+
+    _isolate_remote_targets(tmp_path, monkeypatch)
+    r = _runner()
+    r.invoke(main, ["remote", "add", "tillicum", "tillicum", "--workdir", "/scratch/x"])
+
+    (config,) = api_remote.list_remote_targets()
+    assert (config.walltime, config.max_concurrent_jobs) == ("24:00:00", 8)
+    help_text = r.invoke(main, ["remote", "add", "--help"]).output
+    assert "--max-concurrent-jobs" in help_text and "24:00:00" in help_text
+
+
+def test_cli_remote_add_takes_max_concurrent_jobs_and_a_walltime(tmp_path, monkeypatch):
+    from detail.api import remote as api_remote
+
+    _isolate_remote_targets(tmp_path, monkeypatch)
+    res = _runner().invoke(
+        main,
+        [
+            "remote",
+            "add",
+            "tillicum",
+            "tillicum",
+            "--workdir",
+            "/scratch/x",
+            "--max-concurrent-jobs",
+            "5",
+            "--walltime",
+            "1-00:00:00",
+        ],
+    )
+
+    assert res.exit_code == 0, res.output
+    (config,) = api_remote.list_remote_targets()
+    assert (config.walltime, config.max_concurrent_jobs) == ("1-00:00:00", 5)
+
+
+@pytest.mark.parametrize("bad", ["0", "65", "many"])
+def test_cli_remote_add_rejects_a_bad_concurrent_jobs(tmp_path, monkeypatch, bad):
+    _isolate_remote_targets(tmp_path, monkeypatch)
+
+    res = _runner().invoke(
+        main,
+        [
+            "remote",
+            "add",
+            "tillicum",
+            "tillicum",
+            "--workdir",
+            "/scratch/x",
+            "--max-concurrent-jobs",
+            bad,
+        ],
+    )
+
+    assert res.exit_code != 0
+    assert "max-concurrent-jobs" in res.output
+
+
+def test_cli_remote_list_shows_concurrency_and_walltime(tmp_path, monkeypatch):
+    _isolate_remote_targets(tmp_path, monkeypatch)
+    r = _runner()
+    r.invoke(
+        main,
+        ["remote", "add", "tillicum", "tillicum", "--workdir", "/scratch/x"]
+        + ["--max-concurrent-jobs", "4", "--walltime", "12:00:00"],
+    )
+
+    res = r.invoke(main, ["remote", "list"])
+
+    assert "\t4 jobs\t12:00:00" in res.output
+
+
+def test_cli_remote_add_cost_per_gpu_hour(tmp_path, monkeypatch):
+    _isolate_remote_targets(tmp_path, monkeypatch)
+    from detail.storage import remote_targets
+
+    r = _runner()
+    res = r.invoke(
+        main,
+        [
+            "remote",
+            "add",
+            "tillicum",
+            "tillicum",
+            "--workdir",
+            "/scratch/x",
+            "--cost-per-gpu-hour",
+            "0.5",
+        ],
+    )
+    assert res.exit_code == 0, res.output
+    assert remote_targets.get_remote_target("tillicum").cost_per_gpu_hour == 0.5
+
+
+def test_cli_remote_add_without_cost_per_gpu_hour_leaves_it_unset(
+    tmp_path, monkeypatch
+):
+    _isolate_remote_targets(tmp_path, monkeypatch)
+    from detail.storage import remote_targets
+
+    r = _runner()
+    res = r.invoke(
+        main, ["remote", "add", "tillicum", "tillicum", "--workdir", "/scratch/x"]
+    )
+    assert res.exit_code == 0, res.output
+    assert remote_targets.get_remote_target("tillicum").cost_per_gpu_hour is None
+
+
+def test_cli_remote_add_rejects_bad_name(tmp_path, monkeypatch):
+    _isolate_remote_targets(tmp_path, monkeypatch)
+    res = _runner().invoke(
+        main,
+        ["remote", "add", "Bad Name", "host", "--workdir", "/scratch/x"],
+    )
+    assert res.exit_code != 0
+
+
+def test_cli_remote_remove(tmp_path, monkeypatch):
+    _isolate_remote_targets(tmp_path, monkeypatch)
+    r = _runner()
+    r.invoke(main, ["remote", "add", "tillicum", "tillicum", "--workdir", "/scratch/x"])
+    res = r.invoke(main, ["remote", "remove", "tillicum"])
+    assert res.exit_code == 0, res.output
+    res = r.invoke(main, ["remote", "list"])
+    assert "no remote targets registered" in res.output
+
+
+def test_cli_remote_remove_missing_fails(tmp_path, monkeypatch):
+    _isolate_remote_targets(tmp_path, monkeypatch)
+    res = _runner().invoke(main, ["remote", "remove", "nope"])
+    assert res.exit_code != 0
+
+
+def test_cli_remote_test_reports_connectivity(tmp_path, monkeypatch):
+    _isolate_remote_targets(tmp_path, monkeypatch)
+    r = _runner()
+    r.invoke(main, ["remote", "add", "tillicum", "tillicum", "--workdir", "/scratch/x"])
+
+    from detail.api import remote as api_remote
+
+    monkeypatch.setattr(
+        api_remote,
+        "test_remote_target",
+        lambda name, timeout_s=api_remote.DEFAULT_TEST_TIMEOUT_S: api_remote.RemoteTargetStatus(
+            ok=True, detail="connected to 'tillicum'; sbatch found"
+        ),
+    )
+    res = r.invoke(main, ["remote", "test", "tillicum"])
+    assert res.exit_code == 0, res.output
+    assert "connected" in res.output
+
+
+def test_cli_remote_test_says_when_the_cluster_is_behind_and_still_exits_clean(
+    tmp_path, monkeypatch
+):
+    """A cluster on another build is a warning beside a working connection: the update command
+    is printed, and the exit code is the connection's alone."""
+    _isolate_remote_targets(tmp_path, monkeypatch)
+    r = _runner()
+    r.invoke(main, ["remote", "add", "tillicum", "tillicum", "--workdir", "/scratch/x"])
+
+    from detail.api import remote as api_remote
+    from detail.core import buildinfo
+
+    behind = buildinfo.BuildComparison(
+        buildinfo.BEHIND,
+        target="tillicum",
+        host="tillicum",
+        local_commit="c2a1dd8",
+        remote_commit="a1b2c3d",
+        remote_root="/gpfs/home/x/detail",
+        commits=4,
+    )
+    monkeypatch.setattr(
+        api_remote,
+        "test_remote_target",
+        lambda name, timeout_s=api_remote.DEFAULT_TEST_TIMEOUT_S: api_remote.RemoteTargetStatus(
+            ok=True, detail="connected to 'tillicum'; sbatch found", build=behind
+        ),
+    )
+    res = r.invoke(main, ["remote", "test", "tillicum"])
+    assert res.exit_code == 0, res.output
+    assert "connected to 'tillicum'" in res.output
+    assert "4 commit(s) behind this app" in res.output
+    assert "ssh tillicum 'git -C /gpfs/home/x/detail pull --ff-only'" in res.output
+
+
+def test_cli_remote_test_missing_target_fails(tmp_path, monkeypatch):
+    _isolate_remote_targets(tmp_path, monkeypatch)
+    res = _runner().invoke(main, ["remote", "test", "nope"])
+    assert res.exit_code != 0
+
+
+def _remote_update_fixture(tmp_path, monkeypatch, state, *, result=None):
+    """A registered target whose comparison is ``state``; the calls that reach the cluster are
+    recorded, and `update_remote_build` answers ``result`` (an `ok` update by default).
+    """
+    from detail.api import remote as api_remote
+    from detail.core import buildinfo
+
+    _isolate_remote_targets(tmp_path, monkeypatch)
+    runner = _runner()
+    runner.invoke(
+        main, ["remote", "add", "tillicum", "tillicum", "--workdir", "/scratch/x"]
+    )
+    comparison = buildinfo.BuildComparison(
+        state,
+        target="tillicum",
+        host="tillicum",
+        local_commit="c2a1dd8",
+        remote_commit="a1b2c3d",
+        remote_root="/gpfs/home/x/detail",
+        commits=4,
+    )
+    calls = []
+    monkeypatch.setattr(api_remote, "check_remote_build", lambda name: comparison)
+
+    def update(name, *, before=None, progress=None, **kwargs):
+        calls.append((name, before))
+        progress("Updating", 0.3, "git pull --ff-only")
+        return result or api_remote.RemoteUpdate(
+            True, "Updated DETAIL on 'tillicum': a1b2c3d -> c2a1dd8.", before
+        )
+
+    monkeypatch.setattr(api_remote, "update_remote_build", update)
+    return runner, calls
+
+
+def test_cli_remote_update_asks_first_and_only_then_updates(tmp_path, monkeypatch):
+    from detail.core import buildinfo
+
+    r, calls = _remote_update_fixture(tmp_path, monkeypatch, buildinfo.BEHIND)
+
+    declined = r.invoke(main, ["remote", "update", "tillicum"], input="n\n")
+    assert declined.exit_code == 1 and calls == [], "declined: nothing ran"
+    assert "git pull --ff-only" in declined.output
+
+    accepted = r.invoke(main, ["remote", "update", "tillicum"], input="y\n")
+    assert accepted.exit_code == 0, accepted.output
+    assert [name for name, _ in calls] == ["tillicum"]
+    assert "Updated DETAIL on 'tillicum'" in accepted.output
+    assert calls[0][1].state == buildinfo.BEHIND, "the comparison shown is the one used"
+
+
+def test_cli_remote_update_yes_skips_the_question(tmp_path, monkeypatch):
+    from detail.core import buildinfo
+
+    r, calls = _remote_update_fixture(tmp_path, monkeypatch, buildinfo.BEHIND)
+
+    res = r.invoke(main, ["remote", "update", "tillicum", "--yes"])
+
+    assert res.exit_code == 0, res.output
+    assert len(calls) == 1
+
+
+def test_cli_remote_update_check_changes_nothing(tmp_path, monkeypatch):
+    from detail.core import buildinfo
+
+    r, calls = _remote_update_fixture(tmp_path, monkeypatch, buildinfo.BEHIND)
+    res = r.invoke(main, ["remote", "update", "tillicum", "--check", "--yes"])
+
+    assert calls == []
+    assert res.exit_code == 1, "not the same build"
+    assert "4 commit(s) behind this app" in res.output
+
+    r, calls = _remote_update_fixture(tmp_path, monkeypatch, buildinfo.SAME)
+    res = r.invoke(main, ["remote", "update", "tillicum", "--check"])
+    assert res.exit_code == 0 and calls == []
+
+
+@pytest.mark.parametrize("state", ["same", "ahead", "diverged", "unknown"])
+def test_cli_remote_update_only_updates_from_behind(tmp_path, monkeypatch, state):
+    r, calls = _remote_update_fixture(tmp_path, monkeypatch, state)
+
+    res = r.invoke(main, ["remote", "update", "tillicum", "--yes"])
+
+    assert calls == [], "nothing is run on the cluster"
+    assert res.exit_code == (0 if state == "same" else 1)
+
+
+def test_cli_remote_update_a_refused_update_exits_nonzero_with_gits_words(
+    tmp_path, monkeypatch
+):
+    from detail.api import remote as api_remote
+    from detail.core import buildinfo
+
+    refused = api_remote.RemoteUpdate(
+        False,
+        "git refused the update on 'tillicum', which is unchanged: fatal: Not possible to "
+        "fast-forward, aborting.",
+        None,
+        output="fatal: Not possible to fast-forward, aborting.",
+    )
+    r, _calls = _remote_update_fixture(
+        tmp_path, monkeypatch, buildinfo.BEHIND, result=refused
+    )
+
+    res = r.invoke(main, ["remote", "update", "tillicum", "--yes"])
+
+    assert res.exit_code == 1
+    assert "git refused the update" in res.output
+
+
+def test_cli_remote_update_missing_target_fails(tmp_path, monkeypatch):
+    _isolate_remote_targets(tmp_path, monkeypatch)
+    res = _runner().invoke(main, ["remote", "update", "nope", "--yes"])
+    assert res.exit_code != 0
+
+
+def test_cli_remote_push_credentials_reports_success(tmp_path, monkeypatch):
+    _isolate_remote_targets(tmp_path, monkeypatch)
+    r = _runner()
+    r.invoke(main, ["remote", "add", "tillicum", "tillicum", "--workdir", "/scratch/x"])
+
+    from detail.api import remote as api_remote
+
+    monkeypatch.setattr(
+        api_remote,
+        "push_credentials",
+        lambda name, timeout_s=api_remote.DEFAULT_TEST_TIMEOUT_S: api_remote.RemoteTargetStatus(
+            ok=True, detail="pushed to 'tillicum': Hugging Face access"
+        ),
+    )
+    res = r.invoke(main, ["remote", "push-credentials", "tillicum"])
+    assert res.exit_code == 0, res.output
+    assert "pushed" in res.output
+
+
+def test_cli_remote_push_credentials_missing_target_fails(tmp_path, monkeypatch):
+    _isolate_remote_targets(tmp_path, monkeypatch)
+    res = _runner().invoke(main, ["remote", "push-credentials", "nope"])
+    assert res.exit_code != 0
+
+
+def test_cli_remote_push_credentials_no_local_credentials_fails(tmp_path, monkeypatch):
+    _isolate_remote_targets(tmp_path, monkeypatch)
+    r = _runner()
+    r.invoke(main, ["remote", "add", "tillicum", "tillicum", "--workdir", "/scratch/x"])
+
+    from detail.api import remote as api_remote
+
+    def _raise(name, timeout_s=api_remote.DEFAULT_TEST_TIMEOUT_S):
+        raise ValueError("no credentials are configured on this machine yet")
+
+    monkeypatch.setattr(api_remote, "push_credentials", _raise)
+    res = r.invoke(main, ["remote", "push-credentials", "tillicum"])
+    assert res.exit_code != 0
+    assert "no credentials are configured" in res.output
+
+
+def test_compute_target_remote_requires_a_remote_target():
+    with pytest.raises(click.ClickException, match="--remote-target"):
+        _compute_target("remote", (), None)
+
+
+def test_compute_target_remote_sets_remote_target():
+    compute = _compute_target("remote", (), "tillicum")
+    assert compute.backend == "remote"
+    assert compute.remote_target == "tillicum"
+    assert compute.device_indices is None
+
+
+def test_compute_target_non_remote_ignores_remote_target_default():
+    compute = _compute_target("cpu", ())
+    assert compute.remote_target is None
+
+
+def test_cli_detection_run_remote_without_target_fails_fast(tmp_path, monkeypatch):
+    _isolate_remote_targets(tmp_path, monkeypatch)
+    r = _runner()
+    r.invoke(main, ["experiment", "create", "p1", "--dir", str(tmp_path)])
+    exp_dir = str(tmp_path / "p1")
+    r.invoke(
+        main,
+        ["recording", "create", "--experiment", exp_dir, "--name", "recording_001"],
+    )
+    res = r.invoke(
+        main,
+        [
+            "detection",
+            "run",
+            "--experiment",
+            exp_dir,
+            "--recording",
+            "recording_001",
+            "--model",
+            "sam3",
+            "--class",
+            "mouse",
+            "--prompt",
+            "mouse",
+            "--backend",
+            "remote",
+        ],
+    )
+    assert res.exit_code != 0
+    assert "--remote-target" in res.output
+
+
+def test_parse_class_conf_reads_repeated_name_equals_value():
+    from detail.cli import _parse_class_conf
+
+    assert _parse_class_conf(("black mouse=0.6", "white mouse=0.2")) == {
+        "black mouse": 0.6,
+        "white mouse": 0.2,
+    }
+    assert _parse_class_conf(()) == {}
+
+
+def test_parse_class_conf_rejects_a_malformed_entry():
+    from detail.cli import _parse_class_conf
+
+    with pytest.raises(click.BadParameter, match="NAME=VALUE"):
+        _parse_class_conf(("black mouse-0.6",))  # no "="
+    with pytest.raises(click.BadParameter, match="not a number"):
+        _parse_class_conf(("black mouse=nope",))
+    with pytest.raises(click.BadParameter, match=r"outside \[0, 1\]"):
+        _parse_class_conf(("black mouse=1.5",))
+
+
+def test_cli_detection_run_rejects_a_malformed_class_conf(tmp_path):
+    r = _runner()
+    r.invoke(main, ["experiment", "create", "p1", "--dir", str(tmp_path)])
+    exp_dir = str(tmp_path / "p1")
+    r.invoke(
+        main,
+        ["recording", "create", "--experiment", exp_dir, "--name", "recording_001"],
+    )
+    res = r.invoke(
+        main,
+        [
+            "detection",
+            "run",
+            "--experiment",
+            exp_dir,
+            "--recording",
+            "recording_001",
+            "--model",
+            "sam3",
+            "--class",
+            "mouse",
+            "--prompt",
+            "mouse",
+            "--class-conf",
+            "mouse=1.5",  # out of [0, 1] -- rejected before any model is touched
+        ],
+    )
+    assert res.exit_code != 0
+    assert "outside [0, 1]" in res.output
+
+
+def test_cli_embedding_run_remote_without_target_fails_fast(tmp_path, monkeypatch):
+    _isolate_remote_targets(tmp_path, monkeypatch)
+    r = _runner()
+    r.invoke(main, ["experiment", "create", "p1", "--dir", str(tmp_path)])
+    exp_dir = str(tmp_path / "p1")
+    r.invoke(
+        main,
+        ["recording", "create", "--experiment", exp_dir, "--name", "recording_001"],
+    )
+    res = r.invoke(
+        main,
+        [
+            "embedding",
+            "run",
+            "--experiment",
+            exp_dir,
+            "--recording",
+            "recording_001",
+            "--tracking",
+            "track_01",
+            "--all-tracks",
+            "--model",
+            "dinov3_vit",
+            "--backend",
+            "remote",
+        ],
+    )
+    assert res.exit_code != 0
+    assert "--remote-target" in res.output
+
+
+def test_cli_process_embedding_remote_without_target_fails_fast(tmp_path, monkeypatch):
+    _isolate_remote_targets(tmp_path, monkeypatch)
+    r = _runner()
+    r.invoke(main, ["experiment", "create", "p1", "--dir", str(tmp_path)])
+    exp_dir = str(tmp_path / "p1")
+    r.invoke(
+        main,
+        ["recording", "create", "--experiment", exp_dir, "--name", "recording_001"],
+    )
+    res = r.invoke(
+        main,
+        [
+            "process",
+            "embedding",
+            "--experiment",
+            exp_dir,
+            "--recording",
+            "recording_001",
+            "--tracking",
+            "track_01",
+            "--all-tracks",
+            "--model",
+            "dinov3_vit",
+            "--backend",
+            "remote",
+        ],
+    )
+    assert res.exit_code != 0
+    assert "--remote-target" in res.output
+
+
+def test_cli_process_detection_remote_without_target_fails_fast(tmp_path, monkeypatch):
+    _isolate_remote_targets(tmp_path, monkeypatch)
+    r = _runner()
+    r.invoke(main, ["experiment", "create", "p1", "--dir", str(tmp_path)])
+    exp_dir = str(tmp_path / "p1")
+    r.invoke(
+        main,
+        ["recording", "create", "--experiment", exp_dir, "--name", "recording_001"],
+    )
+    res = r.invoke(
+        main,
+        [
+            "process",
+            "detection",
+            "--experiment",
+            exp_dir,
+            "--recording",
+            "recording_001",
+            "--model",
+            "sam3",
+            "--class",
+            "mouse",
+            "--prompt",
+            "mouse",
+            "--backend",
+            "remote",
+        ],
+    )
+    assert res.exit_code != 0
+    assert "--remote-target" in res.output
+
+
+def test_cli_dataset_label_remote_without_target_fails_fast(tmp_path, monkeypatch):
+    _isolate_remote_targets(tmp_path, monkeypatch)
+    r = _runner()
+    r.invoke(main, ["experiment", "create", "p1", "--dir", str(tmp_path)])
+    exp_dir = str(tmp_path / "p1")
+    res = r.invoke(
+        main,
+        [
+            "dataset",
+            "label",
+            "--experiment",
+            exp_dir,
+            "--name",
+            "ds1",
+            "--class",
+            "mouse:a mouse",
+            "--n-frames",
+            "4",
+            "--backend",
+            "remote",
+        ],
+    )
+    assert res.exit_code != 0
+    assert "--remote-target" in res.output
+
+
+def test_cli_train_run_remote_without_target_fails_fast(tmp_path, monkeypatch):
+    _isolate_remote_targets(tmp_path, monkeypatch)
+    r = _runner()
+    r.invoke(main, ["experiment", "create", "p1", "--dir", str(tmp_path)])
+    exp_dir = str(tmp_path / "p1")
+    res = r.invoke(
+        main,
+        [
+            "train",
+            "run",
+            "--experiment",
+            exp_dir,
+            "--name",
+            "m1",
+            "--dataset",
+            "dataset_001",
+            "--backend",
+            "remote",
+        ],
+    )
+    assert res.exit_code != 0
+    assert "--remote-target" in res.output
+
+
+def test_cli_distill_run_remote_without_label_target_fails_fast(tmp_path, monkeypatch):
+    _isolate_remote_targets(tmp_path, monkeypatch)
+    r = _runner()
+    r.invoke(main, ["experiment", "create", "p1", "--dir", str(tmp_path)])
+    exp_dir = str(tmp_path / "p1")
+    res = r.invoke(
+        main,
+        [
+            "distill",
+            "run",
+            "--experiment",
+            exp_dir,
+            "--name",
+            "d1",
+            "--class",
+            "mouse:a mouse",
+            "--n-frames",
+            "4",
+            "--label-backend",
+            "remote",
+        ],
+    )
+    assert res.exit_code != 0
+    assert "--remote-target" in res.output
+
+
+def test_cli_distill_run_remote_without_train_target_fails_fast(tmp_path, monkeypatch):
+    _isolate_remote_targets(tmp_path, monkeypatch)
+    r = _runner()
+    r.invoke(main, ["experiment", "create", "p1", "--dir", str(tmp_path)])
+    exp_dir = str(tmp_path / "p1")
+    res = r.invoke(
+        main,
+        [
+            "distill",
+            "run",
+            "--experiment",
+            exp_dir,
+            "--name",
+            "d1",
+            "--class",
+            "mouse:a mouse",
+            "--n-frames",
+            "4",
+            "--train-backend",
+            "remote",
+        ],
+    )
+    assert res.exit_code != 0
+    assert "--remote-target" in res.output
 
 
 def test_cli_recording_add_video_reference(tmp_path, monkeypatch):
@@ -596,6 +1381,180 @@ def test_tracking_unknown_detection(tmp_path):
     assert "not found" in result.output
 
 
+def _build_two_class_detection_run_cli(pdir, recording_id="recording_001"):
+    """A completed 2-class detection run on disk, reachable through the CLI's own
+    experiment/recording (§13's class filter) — not routed through detection's own
+    CLI command, since it needs no model backend."""
+    recording_dir = Path(pdir) / "recordings" / recording_id
+    det_dir = recording_dir / "detections" / "det_01"
+    det_dir.mkdir(parents=True)
+    (det_dir / "job.json").write_text(
+        json.dumps({"schema_version": 1, "mask_resolution": [24, 32]}), encoding="utf-8"
+    )
+    with DetectionPartWriter(det_dir / "part_001.zarr") as w:
+        w.add_row(0, 0, 0, "black mouse", 0.9, (0.1, 0.1, 0.2, 0.2), "")
+        w.add_row(0, 0, 1, "white mouse", 0.8, (0.6, 0.6, 0.7, 0.7), "")
+    data = recording_store.read_recording(recording_dir)
+    data.setdefault("detection_runs", []).append(
+        {
+            "id": "det_01",
+            "status": "complete",
+            "output": "detections/det_01/",
+            "model_id": "sam3",
+        }
+    )
+    recording_store.write_recording(recording_dir, data)
+
+
+def test_tracking_run_class_reaches_the_job(tmp_path):
+    r = _runner()
+    r.invoke(main, ["experiment", "create", "p1", "--dir", str(tmp_path)])
+    pdir = str(tmp_path / "p1")
+    r.invoke(
+        main, ["recording", "create", "--experiment", pdir, "--name", "recording_001"]
+    )
+    _build_two_class_detection_run_cli(pdir)
+    result = r.invoke(
+        main,
+        [
+            "tracking",
+            "run",
+            "--experiment",
+            pdir,
+            "--recording",
+            "recording_001",
+            "--detection",
+            "det_01",
+            "--tracker",
+            "anchor_tracker",
+            "--conf-threshold",
+            "0.05",
+            "--class",
+            "white mouse",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    recording_dir = Path(pdir) / "recordings" / "recording_001"
+    data = recording_store.read_recording(recording_dir)
+    [track] = data["tracking_runs"]
+    assert track["class_name"] == "white mouse"
+
+
+def test_tracking_run_unknown_class_is_a_clean_error(tmp_path):
+    r = _runner()
+    r.invoke(main, ["experiment", "create", "p1", "--dir", str(tmp_path)])
+    pdir = str(tmp_path / "p1")
+    r.invoke(
+        main, ["recording", "create", "--experiment", pdir, "--name", "recording_001"]
+    )
+    _build_two_class_detection_run_cli(pdir)
+    result = r.invoke(
+        main,
+        [
+            "tracking",
+            "run",
+            "--experiment",
+            pdir,
+            "--recording",
+            "recording_001",
+            "--detection",
+            "det_01",
+            "--class",
+            "orange mouse",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "no class named 'orange mouse'" in result.output
+
+
+def _two_class_filtered_tracks_cli(r, pdir, recording_id="recording_001"):
+    """Two complete, class-filtered tracking runs on the same detection run, built
+    entirely through the CLI's own ``tracking run`` command (§13) — the direct
+    precedent `track-merge` needs as its two sources."""
+    _build_two_class_detection_run_cli(pdir, recording_id)
+    track_ids = []
+    for class_name in ("black mouse", "white mouse"):
+        result = r.invoke(
+            main,
+            [
+                "tracking", "run", "--experiment", pdir, "--recording", recording_id,
+                "--detection", "det_01", "--tracker", "anchor_tracker",
+                "--conf-threshold", "0.05", "--class", class_name,
+            ],
+        )  # fmt: skip
+        assert result.exit_code == 0, result.output
+        recording_dir = Path(pdir) / "recordings" / recording_id
+        data = recording_store.read_recording(recording_dir)
+        track_ids.append(data["tracking_runs"][-1]["id"])
+    return track_ids
+
+
+def test_track_merge_run_reaches_the_job(tmp_path):
+    r = _runner()
+    r.invoke(main, ["experiment", "create", "p1", "--dir", str(tmp_path)])
+    pdir = str(tmp_path / "p1")
+    r.invoke(
+        main, ["recording", "create", "--experiment", pdir, "--name", "recording_001"]
+    )
+    track_a, track_b = _two_class_filtered_tracks_cli(r, pdir)
+    result = r.invoke(
+        main,
+        [
+            "track-merge", "run", "--experiment", pdir, "--recording", "recording_001",
+            "--source", track_a, "--source", track_b,
+        ],
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    recording_dir = Path(pdir) / "recordings" / "recording_001"
+    data = recording_store.read_recording(recording_dir)
+    merged = data["tracking_runs"][-1]
+    assert sorted(merged["source_run_ids"]) == sorted([track_a, track_b])
+    assert merged["tracker_id"] == "track_merge"
+
+
+def test_track_merge_run_requires_two_sources(tmp_path):
+    r = _runner()
+    r.invoke(main, ["experiment", "create", "p1", "--dir", str(tmp_path)])
+    pdir = str(tmp_path / "p1")
+    r.invoke(
+        main, ["recording", "create", "--experiment", pdir, "--name", "recording_001"]
+    )
+    track_a, _ = _two_class_filtered_tracks_cli(r, pdir)
+    result = r.invoke(
+        main,
+        [
+            "track-merge", "run", "--experiment", pdir, "--recording", "recording_001",
+            "--source", track_a,
+        ],
+    )  # fmt: skip
+    assert result.exit_code != 0
+    assert "at least twice" in result.output
+
+
+def test_process_track_merge_source_ref_reaches_the_job(tmp_path):
+    r = _runner()
+    r.invoke(main, ["experiment", "create", "p1", "--dir", str(tmp_path)])
+    pdir = str(tmp_path / "p1")
+    r.invoke(
+        main, ["recording", "create", "--experiment", pdir, "--name", "recording_001"]
+    )
+    track_a, track_b = _two_class_filtered_tracks_cli(r, pdir)
+    result = r.invoke(
+        main,
+        [
+            "process", "track-merge", "--experiment", pdir,
+            "--recording", "recording_001",
+            "--source-ref", f"recording_001:{track_a}",
+            "--source-ref", f"recording_001:{track_b}",
+        ],
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    recording_dir = Path(pdir) / "recordings" / "recording_001"
+    data = recording_store.read_recording(recording_dir)
+    merged = data["tracking_runs"][-1]
+    assert sorted(merged["source_run_ids"]) == sorted([track_a, track_b])
+
+
 def test_tracking_anchor_tracker_flags_parse(tmp_path):
     r = _runner()
     r.invoke(main, ["experiment", "create", "p1", "--dir", str(tmp_path)])
@@ -631,8 +1590,11 @@ def test_tracking_anchor_tracker_flags_parse(tmp_path):
     assert "not found" in result.output
 
 
-# --- embedding bad --tracks parsing --------------------------------------- #
+# --- embedding --tracks parsing -------------------------------------------- #
 def test_embedding_bad_tracks_arg(tmp_path):
+    """A non-numeric token is a subject-name selector, not malformed syntax (§13) —
+    it fails at resolution (no tracking run, so no subject_labels to resolve
+    against), not at parsing."""
     r = _runner()
     r.invoke(main, ["experiment", "create", "p1", "--dir", str(tmp_path)])
     pdir = str(tmp_path / "p1")
@@ -657,7 +1619,47 @@ def test_embedding_bad_tracks_arg(tmp_path):
         ],
     )
     assert result.exit_code != 0
-    assert "comma-separated ints" in result.output
+    assert "no subject_labels on this tracking run" in result.output
+
+
+def test_embedding_run_resolves_a_track_selected_by_subject_name(tmp_path):
+    """The actual point of §13's subject_labels: an object_id is a position, not an
+    animal, so --tracks takes the animal's name and resolves it to the right
+    object_id for *this* recording rather than assuming an integer lines up."""
+    r = _runner()
+    r.invoke(main, ["experiment", "create", "p1", "--dir", str(tmp_path)])
+    pdir = str(tmp_path / "p1")
+    r.invoke(
+        main, ["recording", "create", "--experiment", pdir, "--name", "recording_001"]
+    )
+    track_a, track_b = _two_class_filtered_tracks_cli(r, pdir)
+    result = r.invoke(
+        main,
+        [
+            "track-merge", "run", "--experiment", pdir, "--recording", "recording_001",
+            "--source", track_a, "--source", track_b,
+        ],
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    recording_dir = Path(pdir) / "recordings" / "recording_001"
+    data = recording_store.read_recording(recording_dir)
+    merged_id = data["tracking_runs"][-1]["id"]
+
+    result = r.invoke(
+        main,
+        [
+            "embedding", "run", "--experiment", pdir, "--recording", "recording_001",
+            "--tracking", merged_id, "--tracks", "white mouse",
+            "--model", "not_a_real_model",
+        ],
+    )  # fmt: skip
+    # This recording has no video (nothing beyond the CLI's own `recording create`),
+    # so the run fails downstream of track resolution regardless of which error that
+    # turns out to be — the assertion is only that it is *not* a subject_labels
+    # failure, proving "white mouse" itself resolved cleanly rather than being
+    # rejected as a bad selector.
+    assert result.exit_code != 0
+    assert "subject_labels" not in result.output
 
 
 def test_embedding_run_rejects_unknown_constructor(tmp_path):
@@ -1261,7 +2263,7 @@ def test_experiment_import_metadata_keys_on_a_named_column(tmp_path):
         main, [*base, "--csv", str(csv_path), "--key", "Session Clip"]
     )
     assert result.exit_code == 0, result.output
-    assert exp.recording_metadata[recording.id] == {"dose": "0.5"}
+    assert exp.recording_metadata[recording.id] == {SETUP: "", "dose": "0.5"}
 
 
 def test_experiment_metadata_columns_round_trip(tmp_path):
@@ -1298,7 +2300,11 @@ def test_experiment_metadata_columns_round_trip(tmp_path):
         ],
     )
     assert result.exit_code == 0, result.output
-    assert exp.recording_metadata[recording.id] == {"dose": "0.5", "day": "3"}
+    assert exp.recording_metadata[recording.id] == {
+        SETUP: "",
+        "dose": "0.5",
+        "day": "3",
+    }
 
     assert (
         r.invoke(
@@ -1307,7 +2313,7 @@ def test_experiment_metadata_columns_round_trip(tmp_path):
         == 0
     )
     assert "dose" not in exp.metadata_columns
-    assert exp.recording_metadata[recording.id] == {"day": "3"}
+    assert exp.recording_metadata[recording.id] == {SETUP: "", "day": "3"}
 
 
 def test_experiment_set_metadata_rejects_a_malformed_assignment(tmp_path):
@@ -1377,7 +2383,7 @@ def test_experiment_export_metadata(tmp_path):
     # way back, never stored columns. No video yet, so the file cell is blank.
     assert (
         out.read_text(encoding="utf-8-sig")
-        == "recording_id,name,file,treatment\ns1,s1,,drug_A\n"
+        == "recording_id,name,file,acquisition_setup,treatment\ns1,s1,,,drug_A\n"
     )
 
 
@@ -2656,6 +3662,52 @@ def test_stream_processing_progress_renders_message_and_recording():
     assert "recording s1 (1/2)" in out  # recording position in the postfix
 
 
+def _in_flight(done: int, total: int, message: str = "detecting"):
+    from detail.core.dataclasses import DetectionProgressEvent
+
+    return DetectionProgressEvent(0, 1, done, total, 1.0, None, message=message)
+
+
+def test_stream_processing_progress_counts_recordings_when_several_are_in_flight():
+    """With a remote target keeping eight jobs on the cluster, one bar of frames reset at every
+    event (each names a different recording). From the first event with more than one live, the
+    bar counts recordings: done plus the in-flight fractions, and says how many are in flight.
+    """
+    from detail.cli import _stream_processing_progress
+    from detail.core.dataclasses import ProcessingProgress
+
+    live = {
+        "s1": _in_flight(50, 100, "detecting"),
+        "s2": _in_flight(100, 100, "syncing results back"),
+        "s3": _in_flight(0, 100, "queued"),
+    }
+    events = [
+        ProcessingProgress(1, 6, "s1", live["s1"], elapsed_s=1.0, live=live),
+        ProcessingProgress(1, 6, "s2", live["s2"], elapsed_s=2.0, live=live),
+    ]
+
+    out = _capture(_stream_processing_progress, _FakeRun(events), "detection")
+
+    assert "3 in flight, 1/6 done" in out
+    assert "[s1]: detecting" in out and "[s2]: syncing results back" in out
+    assert "[s3]: queued" in out, "every recording's phase is announced when it changes"
+    assert out.count("[s1]: detecting") == 1, "an unchanged message is not repeated"
+    assert "2.5/6" in out, "1 done + 0.5 + 1.0 + 0.0 in flight, over six recordings"
+
+
+def test_stream_processing_progress_keeps_the_frame_bar_for_a_serial_run():
+    from detail.cli import _stream_processing_progress
+    from detail.core.dataclasses import ProcessingProgress
+
+    inner = _in_flight(5, 10, "detecting")
+    events = [ProcessingProgress(0, 2, "s1", inner, elapsed_s=1.0, live={"s1": inner})]
+
+    out = _capture(_stream_processing_progress, _FakeRun(events), "detection")
+
+    assert "in flight" not in out
+    assert "recording s1 (1/2)" in out
+
+
 def test_stream_training_progress_renders_message_and_metrics():
     # #18: the training bar must show the phase message (e.g. "loading base model")
     # and the epoch metrics — previously untested.
@@ -2779,6 +3831,51 @@ def test_detection_prompt_test_cli_summary_and_save(tmp_path):
         / "try01"
     )
     assert (save_dir / "test.json").is_file()
+
+
+def test_detection_prompt_test_cli_time_range(tmp_path):
+    proj_dir = _make_detection_recording(tmp_path)  # 5 frames at 30 fps
+    with _registered():
+        result = _runner().invoke(
+            main,
+            [
+                "detection",
+                "prompt-test",
+                "--experiment",
+                str(proj_dir),
+                "--recording",
+                "recording_001",
+                "--model",
+                "fake_check",
+                "--backend",
+                "cpu",
+                "--class",
+                "mouse",
+                "--prompt",
+                "a mouse",
+                "--n",
+                "3",
+                "--start",
+                "0.05",
+                "--save-as",
+                "late",
+            ],
+        )
+    assert result.exit_code == 0, result.output
+    test_json = json.loads(
+        (
+            proj_dir
+            / "recordings"
+            / "recording_001"
+            / "detections"
+            / "prompt_tests"
+            / "late"
+            / "test.json"
+        ).read_text(encoding="utf-8-sig")
+    )
+    assert test_json["t_start_ns"] == 50_000_000 and test_json["t_end_ns"] is None
+    # From 0.05 s on is frames 2-4: all three, frames 0 and 1 never.
+    assert [f["frame_idx_requested"] for f in test_json["sampled_frames"]] == [2, 3, 4]
 
 
 def test_detection_prompt_test_cli_rejects_zero_frames(tmp_path):
@@ -2996,9 +4093,27 @@ def _setup_complete_detection_run(tmp_path, n_frames=6):
     recording_store.create_recording(proj, "recording_001")
     recording_dir = experiment_store.recording_path(proj, "recording_001")
     _write_video(recording_dir / "video" / "part_001.mp4", n_frames)
+    # Every imported recording has its PTS map (Tenet 8); a frame count is read from it.
+    timestamps = "video/timestamps/generated/part_001.csv"
+    (recording_dir / timestamps).parent.mkdir(parents=True, exist_ok=True)
+    recording_store.write_timestamps_csv(
+        recording_dir / timestamps, np.arange(n_frames, dtype=np.int64) * 33_333_333
+    )
 
     data = recording_store.read_recording(recording_dir)
-    data["video"] = {"files": [{"index": 0, "file": "video/part_001.mp4"}]}
+    data["video"] = {
+        "files": [
+            {
+                "index": 0,
+                "file": "video/part_001.mp4",
+                "timestamps": {
+                    "generated": timestamps,
+                    "user": None,
+                    "active": "generated",
+                },
+            }
+        ]
+    }
     data["detection_runs"] = [
         {"id": "det_01", "status": "complete", "every_n_frames": 1}
     ]
@@ -3048,6 +4163,8 @@ def test_process_list_and_status(tmp_path):
     res = r.invoke(main, ["process", "status", "run_001", "--experiment", pdir])
     assert res.exit_code == 0, res.output
     assert "recording_001" in res.output and "det_01" in res.output
+    # A detection run says how much of each recording it found something on.
+    assert "frames_with_detections=6/6" in res.output
 
 
 def test_process_status_missing(tmp_path):
@@ -3611,6 +4728,73 @@ def test_cli_model_import_with_metadata_and_show(tmp_path, monkeypatch):
     assert "preview:" in out and "preview.png" in out
 
 
+def test_cli_model_show_prints_dataset_and_training_history(tmp_path):
+    from detail.models import distilled
+    from detail.storage import datasets as datasets_store
+    from detail.storage import models as models_store
+
+    proj = experiment_store.create_experiment(tmp_path, "rp")
+    mdir = models_store.model_dir(proj, "model_001")
+    (mdir / "run" / "weights").mkdir(parents=True)
+    (mdir / "run" / "weights" / "best.pt").write_bytes(b"w")
+    models_store.write_model_yaml(
+        mdir,
+        {
+            "id": "model_001",
+            "name": "operant",
+            "model_family": "yolo",
+            "task": "segment",
+            "classes": [{"id": 0, "name": "mouse"}],
+            "weights": {"best": "run/weights/best.pt"},
+            "metrics": {"box_map50": 0.9},
+            "base_model": "yolo11s-seg.pt",
+            "trainer_id": "ultralytics_yolo",
+            "dataset_id": "ds_1",
+            "status": "complete",
+        },
+    )
+    ddir = datasets_store.dataset_dir(proj, "ds_1")
+    ddir.mkdir(parents=True)
+    datasets_store.write_dataset_yaml(
+        ddir,
+        {
+            "id": "ds_1",
+            "name": "mouse_ds",
+            "created_at": "2026-08-07T18:00:00Z",
+            "source": {
+                "kind": "labeling",
+                "model": "sam3",
+                "model_variant": None,
+                "recording_ids": ["recording_001"],
+                "n_frames": 500,
+                "logit_threshold": 0.5,
+            },
+            "classes": [{"id": 0, "name": "mouse"}],
+            "val_split": 0.15,
+            "n_train": 425,
+            "n_val": 75,
+            "per_class": {"0": 500},
+            "status": "complete",
+        },
+    )
+    gid = distilled.register_distilled_model(
+        proj,
+        "model_001",
+        source_experiment_name="rp",
+        source_experiment_id="rp",
+        training_history=[
+            {"epoch": 1, "box_map50": 0.3},
+            {"epoch": 31, "box_map50": 0.92},
+        ],
+    )
+    out = _runner().invoke(main, ["model", "show", gid]).output
+    assert "teacher:     sam3" in out
+    assert "500 used of 500 requested" in out
+    assert "425 train / 75 val" in out
+    assert "per class:   {'0': 500}" in out
+    assert "2 epochs, best mAP50 0.920 at epoch 31" in out
+
+
 def test_cli_model_set_meta_edits(tmp_path, monkeypatch):
     r = _runner()
     _import_stub_model(r, tmp_path, monkeypatch)
@@ -3819,6 +5003,38 @@ def test_process_embedding_tracking_selector_exclusivity(tmp_path):
     assert both_tracks.exit_code != 0 and "not both" in both_tracks.output
 
 
+def test_parse_track_selectors_accepts_ints_and_subject_names():
+    from detail.cli import _parse_track_selectors
+
+    assert _parse_track_selectors("0, 1") == [0, 1]
+    assert _parse_track_selectors("black mouse, white mouse") == [
+        "black mouse",
+        "white mouse",
+    ]
+    assert _parse_track_selectors("0, black mouse") == [0, "black mouse"]
+    assert _parse_track_selectors("") == []
+
+
+def test_process_embedding_accepts_a_subject_name_in_tracks(tmp_path):
+    """`process embedding --tracks` is not restricted to ints (§13) — a name is a
+    valid selector, resolved per recording by EmbeddingModule.validate. Confirmed by
+    the failure moving *past* parsing: the recording named doesn't exist, which is a
+    later error than "--tracks must be comma-separated ints" ever was."""
+    r = _runner()
+    r.invoke(main, ["experiment", "create", "p1", "--dir", str(tmp_path)])
+    pdir = str(tmp_path / "p1")
+    result = r.invoke(
+        main,
+        [
+            "process", "embedding", "--experiment", pdir, "--recording", "recording_001",
+            "--model", "dinov3_convnext_base", "--tracking", "track_01",
+            "--tracks", "black mouse",
+        ],  # fmt: skip
+    )
+    assert result.exit_code != 0
+    assert "comma-separated ints" not in result.output
+
+
 def test_embedding_run_resize_defaults_to_model_input_not_224():
     """`--resize` defaults to unset (None) so the renderer defers to the embedding
     model's own input size, not a hard-coded 224 — parity with the GUI/API (§14)."""
@@ -3838,9 +5054,69 @@ def test_analysis_run_tracking_selector_exclusivity(tmp_path):
         main,
         base + ["--tracking", "track_01", "--tracking-ref", "recording_001:track_01"],
     )
-    assert both.exit_code != 0 and "exactly one" in both.output
+    assert both.exit_code != 0 and "not both" in both.output
     neither = r.invoke(main, base)
-    assert neither.exit_code != 0 and "exactly one" in neither.output
+    assert (
+        neither.exit_code != 0 and "pass --tracking or --tracking-ref" in neither.output
+    )
+
+
+def test_a_run_named_per_recording_reaches_the_config(tmp_path, monkeypatch):
+    """`--tracking-for` / `--keypoints-for` / `--embed-for RECORDING:run` (§6.5 per-recording
+    overrides): the recording by id or name, one run each, and the other flags optional.
+    """
+    from detail.api.experiment import Experiment
+
+    proj = Experiment.create("p1", tmp_path)
+    first = proj.add_recording("fish 3").id
+    second = proj.add_recording("fish 4").id
+    seen = []
+
+    def capture(_self, module_id, config):
+        seen.append((module_id, config))
+        raise ValueError("captured")
+
+    monkeypatch.setattr(Experiment, "run_analysis", capture)
+    r = _runner()
+    pdir = str(proj.dir)
+    both = ["--recording", first, "--recording", second]
+    result = r.invoke(
+        main,
+        ["analysis", "run", "--experiment", pdir, *both]
+        + ["--tracking-for", "fish 3:track_02", "--keypoints-for", f"{first}:kt_02"],
+    )
+    assert "captured" in result.output, result.output
+    _module, config = seen[-1]
+    assert config["tracking_overrides"] == {first: "track_02"}
+    assert config["keypoint_track_overrides"] == {first: "kt_02"}
+    assert "tracking_run_id" not in config and "tracking_spec" not in config
+
+    result = r.invoke(
+        main,
+        ["analysis", "temporal-clustering", "--experiment", pdir, *both]
+        + ["--embed-run", "emb_01", "--embed-for", "fish 4:emb_03"],
+    )
+    assert "captured" in result.output, result.output
+    _module, config = seen[-1]
+    assert config["embed_run_id"] == "emb_01"
+    assert config["embedding_overrides"] == {second: "emb_03"}
+
+    for bad, message in (
+        ("fish 3", "expects RECORDING:run_id"),
+        ("fish 9:track_02", "no recording 'fish 9'"),
+    ):
+        result = r.invoke(
+            main,
+            ["analysis", "run", "--experiment", pdir, "--recording", first]
+            + ["--tracking-for", bad],
+        )
+        assert result.exit_code != 0 and message in result.output, result.output
+    twice = r.invoke(
+        main,
+        ["analysis", "run", "--experiment", pdir, "--recording", first]
+        + ["--tracking-for", "fish 3:track_01", "--tracking-for", f"{first}:track_02"],
+    )
+    assert twice.exit_code != 0 and "names two runs" in twice.output
 
 
 def test_a_repeated_ref_names_several_settings(monkeypatch):
@@ -3883,6 +5159,7 @@ def _det_rec(rid, **over):
         "id": rid, "status": "complete", "output": f"detections/{rid}/", "created_at": "t",
         "model_id": "sam3", "model_variant": "large", "weights_source": "pretrained",
         "conf_threshold": 0.25, "prompt_fingerprint": "fp", "prompt_classes": ["mouse"],
+        "class_conf_thresholds_fingerprint": "ccf",
         **over,
     }  # fmt: skip
 
@@ -3917,6 +5194,50 @@ def test_spec_from_ref_derives_and_resolves_per_recording(tmp_path):
         run_spec.resolve_spec_for_recording(proj.get_recording("s2"), "detection", spec)
         == "det_01"
     )
+
+
+def test_spec_from_ref_takes_an_experiment_run(tmp_path):
+    """`--detection-ref run_NNN` names the run the way a GUI picker row leads with it: the
+    run's settings, resolved to each recording's own run with them. A run that made no run of
+    the stage asked for is refused by name rather than read as some other stage's run.
+    """
+    from detail.api import run_spec
+    from detail.api.experiment import Experiment
+    from detail.cli import _spec_from_ref
+    from detail.storage import runs as runs_store
+
+    proj = Experiment.create("p", tmp_path)
+    for sid, dets in [
+        ("s1", [_det_rec("det_01"), _det_rec("det_02", conf_threshold=0.9)]),
+        ("s2", [_det_rec("det_01", conf_threshold=0.9)]),
+    ]:
+        proj.create_recording(sid)
+        sdir = proj.get_recording(sid).dir
+        data = recording_store.read_recording(sdir)
+        data["detection_runs"] = dets
+        recording_store.write_recording(sdir, data)
+    runs_store.write_run(
+        proj.dir,
+        "run_007",
+        {
+            "module_id": "detection",
+            "per_recording": {
+                "s1": {"run_id": "det_02", "status": "complete"},
+                "s2": {"run_id": "det_01", "status": "complete"},
+            },
+        },
+    )
+
+    spec = _spec_from_ref(proj, "detection", "run_007")
+    assert spec["identity"]["conf_threshold"] == 0.9
+    assert (
+        run_spec.resolve_spec_for_recording(proj.get_recording("s1"), "detection", spec)
+        == "det_02"
+    )
+    with pytest.raises(click.ClickException, match="made no complete tracking run"):
+        _spec_from_ref(proj, "tracking", "run_007")
+    with pytest.raises(click.ClickException, match="run_NNN or RECORDING:run_id"):
+        _spec_from_ref(proj, "detection", "det_02")
 
 
 def test_spec_from_ref_missing_run_errors(tmp_path):
@@ -4266,6 +5587,153 @@ def test_distill_run_wires_classes_computes_and_hyperparams(tmp_path, monkeypatc
     assert captured["train_compute"].backend == "cpu"
 
 
+def test_distill_run_passes_stage_videos_through_and_defaults_it_off(
+    tmp_path, monkeypatch
+):
+    proj = experiment_store.create_experiment(tmp_path, "p")
+    captured = _capture_distill(monkeypatch)
+    base = [
+        "distill",
+        "run",
+        "--experiment",
+        str(proj),
+        "--name",
+        "m",
+        "--class",
+        "mouse:a mouse",
+        "--n-frames",
+        "50",
+    ]
+
+    _runner().invoke(main, base)
+    assert captured["stage_videos"] is False
+    _runner().invoke(main, [*base, "--stage-videos"])
+    assert captured["stage_videos"] is True
+
+
+def test_cli_staging_status_with_nothing_started(tmp_path):
+    proj = experiment_store.create_experiment(tmp_path, "p")
+
+    res = _runner().invoke(
+        main, ["remote", "staging-status", "--experiment", str(proj)]
+    )
+
+    assert res.exit_code == 0, res.output
+    assert "no background video uploads" in res.output
+
+
+def test_cli_staging_status_shows_progress_eta_and_a_failure(tmp_path, monkeypatch):
+    from detail.api.experiment import Experiment
+
+    proj = experiment_store.create_experiment(tmp_path, "p")
+    monkeypatch.setattr(
+        Experiment,
+        "video_staging",
+        lambda self: [
+            {
+                "target": "tillicum",
+                "status": "running",
+                "files_done": 3,
+                "files_total": 8,
+                "bytes_done": 12_000_000_000,
+                "bytes_total": 116_000_000_000,
+                "eta_s": 3600,
+                "error": None,
+            },
+            {
+                "target": "hyak",
+                "status": "failed",
+                "files_done": 0,
+                "files_total": 8,
+                "bytes_done": 0,
+                "bytes_total": 116_000_000_000,
+                "eta_s": None,
+                "error": "RuntimeError: disk quota exceeded",
+            },
+        ],
+    )
+
+    res = _runner().invoke(
+        main, ["remote", "staging-status", "--experiment", str(proj)]
+    )
+
+    assert res.exit_code == 0, res.output
+    assert "tillicum\trunning\t3/8 files\t12.0/116.0 GB\t~1h00m left" in res.output
+    assert "hyak\tfailed\t0/8 files" in res.output
+    assert "disk quota exceeded" in res.output
+
+
+def test_cli_staging_start_passes_the_target_and_recordings(tmp_path, monkeypatch):
+    from detail.api.experiment import Experiment
+
+    proj = experiment_store.create_experiment(tmp_path, "p")
+    calls = []
+    monkeypatch.setattr(
+        Experiment,
+        "start_video_staging",
+        lambda self, target, recording_ids=None: calls.append((target, recording_ids))
+        or {"target": target, "status": "running", "pid": 99},
+    )
+    base = ["remote", "staging-start", "tillicum", "--experiment", str(proj)]
+
+    res = _runner().invoke(main, base)
+    assert res.exit_code == 0, res.output
+    assert "background video upload to tillicum: running (pid 99)" in res.output
+    Experiment(proj).create_recording("recording_001").set_name("larva A")
+    res = _runner().invoke(main, [*base, "--recording", "larva A"])
+    assert res.exit_code == 0, res.output
+
+    # The name a user types reaches the API as the recording's id (§11).
+    assert calls == [("tillicum", None), ("tillicum", ["recording_001"])]
+
+
+def test_cli_staging_start_reports_a_refusal_as_an_error(tmp_path, monkeypatch):
+    from detail.api.experiment import Experiment
+
+    proj = experiment_store.create_experiment(tmp_path, "p")
+
+    def refuse(self, target, recording_ids=None):
+        raise ValueError("no remote target registered as 'nope'")
+
+    monkeypatch.setattr(Experiment, "start_video_staging", refuse)
+
+    res = _runner().invoke(
+        main, ["remote", "staging-start", "nope", "--experiment", str(proj)]
+    )
+
+    assert res.exit_code != 0
+    assert "no remote target registered as 'nope'" in res.output
+
+
+def test_cli_staging_stop_names_what_it_stopped(tmp_path, monkeypatch):
+    from detail.api.experiment import Experiment
+
+    proj = experiment_store.create_experiment(tmp_path, "p")
+    calls = []
+    monkeypatch.setattr(
+        Experiment,
+        "stop_video_staging",
+        lambda self, target=None: calls.append(target) or ["tillicum"],
+    )
+
+    res = _runner().invoke(
+        main, ["remote", "staging-stop", "tillicum", "--experiment", str(proj)]
+    )
+
+    assert res.exit_code == 0, res.output
+    assert calls == ["tillicum"]
+    assert "stopped the background video upload to: tillicum" in res.output
+
+
+def test_cli_staging_stop_with_nothing_running_says_so(tmp_path):
+    proj = experiment_store.create_experiment(tmp_path, "p")
+
+    res = _runner().invoke(main, ["remote", "staging-stop", "--experiment", str(proj)])
+
+    assert res.exit_code == 0, res.output
+    assert "no background video upload was running" in res.output
+
+
 def test_distill_run_rejects_bad_class(tmp_path):
     proj = experiment_store.create_experiment(tmp_path, "p")
     res = _runner().invoke(
@@ -4520,7 +5988,7 @@ def test_an_unknown_recording_is_a_clean_error_not_a_traceback(tmp_path):
 
 
 def test_every_processing_command_resolves_what_the_user_typed():
-    """Guard: a fourth processing command must not pass raw refs to the run API.
+    """Guard: a processing command must not pass raw refs to the run API.
 
     Scans both CLI modules: ``cli.py`` and ``cli_keypoints.py`` (the ``keypoints`` group,
     §26 "Surfaces"), so a keypoint processing command is held to the same rule.
@@ -4529,46 +5997,31 @@ def test_every_processing_command_resolves_what_the_user_typed():
 
     import detail
 
+    import ast
+
     package = Path(detail.__file__).parent
-    source = "\n".join(
-        (package / name).read_text(encoding="utf-8-sig")
-        for name in ("cli.py", "cli_keypoints.py")
-    )
+    # Per command, not a file-wide count: a count of resolutions against a count of
+    # run_processing calls went red the day a command that does *not* run_processing
+    # resolved names too — which is the behaviour wanted.
+    commands = []
+    for name in ("cli.py", "cli_keypoints.py"):
+        source = (package / name).read_text(encoding="utf-8-sig")
+        commands += [
+            (node.name, ast.get_source_segment(source, node))
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.FunctionDef)
+            and "proj.run_processing(" in ast.get_source_segment(source, node)
+        ]
     offenders = [
-        line.strip()
-        for line in source.splitlines()
-        if "run_processing(" in line and "_resolve_recording_refs" not in line
+        fn_name
+        for fn_name, segment in commands
+        if "_resolve_recording_refs(proj, recording_ids)" not in segment
     ]
-    # the call is wrapped, so the refs land on the following line; check the whole call
-    calls = source.count("proj.run_processing(")
-    resolved = source.count("_resolve_recording_refs(proj, recording_ids)")
-    assert resolved == calls, (
-        f"{calls} run_processing call(s) but {resolved} resolve through the name→id "
-        f"translation: {offenders}. --recording advertises a name; it has to work."
+    assert len(commands) >= 4, f"the scan stopped finding commands: {commands}"
+    assert not offenders, (
+        f"{offenders} call run_processing without resolving --recording through the "
+        f"name→id translation. --recording advertises a name; it has to work."
     )
-
-
-def test_the_keypoints_group_holds_exactly_the_subcommands_that_have_landed():
-    """§26 *Sequencing*: the ``keypoints`` group lives in ``cli_keypoints.py`` and is added to
-    the root group; each PR adds its subcommands (PR 2: ``examples``; PR 4:
-    ``detect``; PR 5: ``track``; PR 8: ``distill``), so this set grows one PR at a time
-    and a subcommand that lands early, or vanishes, fails here. PR 9a's ``audit`` group was
-    removed (``docs/removed_capabilities.md``).
-    """
-    result = CliRunner().invoke(main, ["keypoints", "--help"])
-    assert result.exit_code == 0, result.output
-    assert "Keypoints" in result.output
-    from detail.cli_keypoints import keypoints
-
-    assert set(keypoints.commands) == {
-        "examples",
-        "detect",
-        "track",
-        "distill",
-        "export",
-        "test",
-    }
-    assert main.commands["keypoints"] is keypoints
 
 
 # --------------------------------------------------------------------------- #
@@ -4659,6 +6112,129 @@ def test_the_window_options_come_from_the_model():
         ), f"--help does not show {name}'s default of {fields[name].default}"
 
 
+# --- keypoints (§26) ------------------------------------------------------------- #
+def test_embedding_run_aligns_nothing_by_default(monkeypatch, tmp_path):
+    from detail.api.recording import Recording
+
+    Experiment.create("e", tmp_path).create_recording("recording_001")
+    seen = {}
+    monkeypatch.setattr(
+        Recording, "resolve_constructor", lambda self, *a, **kw: seen.update(kw) or []
+    )
+
+    def fake_run_embedding(self, **kwargs):
+        seen.update(kwargs)
+        raise ValueError("stop here")
+
+    monkeypatch.setattr(Recording, "run_embedding", fake_run_embedding)
+    _runner().invoke(
+        main,
+        [
+            "embedding", "run", "--experiment", str(tmp_path / "e"),
+            "--recording", "recording_001", "--tracking", "track_01", "--tracks", "0",
+            "--model", "dinov3_convnext_base",
+        ],  # fmt: skip
+    )
+    assert seen["align"] == "none" and seen["keypoint_run_id"] is None
+
+
+def test_detection_run_forwards_a_teacher_window(monkeypatch, tmp_path):
+    from detail.api.recording import Recording
+
+    seen = {}
+
+    def fake_run_detection(self, **kwargs):
+        seen.update(kwargs)
+        raise ValueError("stop here")
+
+    monkeypatch.setattr(Recording, "run_detection", fake_run_detection)
+    r = _runner()
+    pdir = _proj_with_recording(r, tmp_path)
+    base = [
+        "detection",
+        "run",
+        "--experiment",
+        pdir,
+        "--recording",
+        "recording_001",
+        "--model",
+        "sam3",
+        "--class",
+        "mouse",
+        "--prompt",
+        "mouse",
+    ]
+    result = r.invoke(main, [*base, "--teacher-window-s", "300"])
+    assert "stop here" in result.output and seen["teacher_window_s"] == 300.0
+    seen.clear()
+    r.invoke(main, base)
+    assert seen["teacher_window_s"] is None  # the whole recording
+    refused = r.invoke(main, [*base, "--teacher-window-s", "0"])
+    assert refused.exit_code != 0 and "teacher-window-s" in refused.output
+
+
+def test_every_command_that_launches_a_processing_run_offers_ignore_free_space():
+    """#743: a command that launches or retries a processing run is checked against the free
+    space, so each must offer the way past it. Found by scanning the commands' own source for
+    the launch call, so a launcher added tomorrow is held to it the day it lands."""
+    import inspect
+
+    import click
+
+    from detail import cli
+
+    launchers = []
+
+    def walk(group: click.Group) -> None:
+        for command in group.commands.values():
+            if isinstance(command, click.Group):
+                walk(command)
+                continue
+            source = inspect.getsource(command.callback)
+            if "run_processing(" in source or "retry_run(" in source:
+                launchers.append(command)
+
+    walk(cli.main)
+    assert len(launchers) >= 6, [c.name for c in launchers]
+    missing = [
+        c.name
+        for c in launchers
+        if "ignore_free_space" not in {p.name for p in c.params}
+    ]
+    assert not missing, f"{missing} launch a run without --ignore-free-space"
+
+
+# --- §26 keypoints commands and §14 alignment, from main --------------------- #
+
+
+def test_the_keypoints_group_holds_exactly_the_subcommands_that_have_landed():
+    """§26 *Sequencing*: the ``keypoints`` group lives in ``cli_keypoints.py`` and is added to
+    the root group; each PR adds its subcommands (PR 2: ``examples``; PR 4:
+    ``detect``; PR 5: ``track``; PR 8: ``distill``; and ``setup``, the remote-detail line's
+    keypoint setup ported in the 2026-10-16 catch-up; ``track-tune``, *Tuning a track
+    method*; ``track-preview``, *Previewing a track method*), so this set grows one PR at a
+    time and a subcommand that lands early, or vanishes, fails here. PR 9a's ``audit`` group
+    was removed (``docs/removed_capabilities.md``).
+    """
+    result = CliRunner().invoke(main, ["keypoints", "--help"])
+    assert result.exit_code == 0, result.output
+    assert "Keypoints" in result.output
+    from detail.cli_keypoints import keypoints
+
+    assert set(keypoints.commands) == {
+        "examples",
+        "detect",
+        "track",
+        "track-tune",
+        "track-preview",
+        "distill",
+        "export",
+        "test",
+        "setup",
+    }
+    assert main.commands["keypoints"] is keypoints
+
+
 def test_keypoints_detect_is_process_keypoint_detect_and_shapes_the_config(
     monkeypatch, tmp_path
 ):
@@ -4678,12 +6254,13 @@ def test_keypoints_detect_is_process_keypoint_detect_and_shapes_the_config(
         result = CliRunner().invoke(main, path)
         assert result.exit_code == 0, result.output
         assert "--example-set" in result.output and "--side-rule" in result.output
+        assert "--class" in result.output  # the detection class poses are placed in
 
     proj = Experiment.create("p", tmp_path)
     proj.create_recording("recording_001")
     seen: dict = {}
 
-    def _capture(self, module_id, recording_ids, config, progress=None):
+    def _capture(self, module_id, recording_ids, config, **_options):
         seen.update(module_id=module_id, recording_ids=recording_ids, config=config)
         raise ValueError("stop here")  # the run itself is the pipeline tests' job
 
@@ -4729,6 +6306,7 @@ def test_keypoints_detect_is_process_keypoint_detect_and_shapes_the_config(
         None,
     )
     assert config["min_pose_confidence"] is None  # validate resolves it per method
+    assert config["class_name"] is None  # every detection's class, as before
     assert config["batch_size"] == 16  # the model's default, read off the model
     assert config["compute"].backend == "cpu"
 
@@ -4746,6 +6324,13 @@ def test_keypoints_detect_is_process_keypoint_detect_and_shapes_the_config(
     )
     assert "stop here" in result.output
     assert seen["config"]["min_pose_confidence"] == 0.4
+
+    result = CliRunner().invoke(
+        main,
+        base + ["--detection", "det_01", "--model", "fake_kp", "--class", "mouse"],
+    )
+    assert "stop here" in result.output
+    assert seen["config"]["class_name"] == "mouse"
 
     import detail.cli as cli_module
 
@@ -4814,7 +6399,7 @@ def test_keypoints_track_is_process_keypoint_track_and_types_method_params(
     proj.create_recording("recording_001")
     seen: dict = {}
 
-    def _capture(self, module_id, recording_ids, config, progress=None):
+    def _capture(self, module_id, recording_ids, config, **_options):
         seen.update(module_id=module_id, recording_ids=recording_ids, config=config)
         raise ValueError("stop here")  # the run itself is the pipeline tests' job
 
@@ -4852,6 +6437,7 @@ def test_keypoints_track_is_process_keypoint_track_and_types_method_params(
         "match_mask_grow": 0.05,
         "method": "temporal_decode",
         "config": {"smooth_window_s": 0.2, "despike": False, "decode_cutoff": None},
+        "compute": ComputeTarget("cpu", None, None, None),
         "detect_run_id": "kd_01",
     }
     result = CliRunner().invoke(main, base + ["--detect", "kd_01"])
@@ -4863,8 +6449,22 @@ def test_keypoints_track_is_process_keypoint_track_and_types_method_params(
         "match_mask_grow": 0.05,
         "method": None,
         "config": {},
+        "compute": ComputeTarget("cpu", None, None, None),
         "detect_run_id": "kd_01",
     }
+    result = CliRunner().invoke(
+        main,
+        base
+        + ["--detect", "kd_01", "--backend", "remote", "--remote-target", "tillicum"],
+    )
+    assert "stop here" in result.output
+    assert seen["config"]["compute"] == ComputeTarget(
+        "remote", None, None, None, "tillicum"
+    )
+    result = CliRunner().invoke(
+        main, base + ["--detect", "kd_01", "--backend", "remote"]
+    )
+    assert result.exit_code != 0 and "--remote-target" in result.output
     result = CliRunner().invoke(
         main,
         base
@@ -5020,6 +6620,88 @@ def test_keypoints_export_routes_to_run_export_with_only_the_options_given(
     assert result.exit_code != 0 and "Invalid value" in result.output
 
 
+def test_validating_draws_each_stage_of_the_up_front_work():
+    """`run_processing` reads every recording twice before it launches anything; the bar names
+    the stage and the count in both passes, so a long validation is not a silent terminal.
+    """
+    import io
+    import sys
+
+    from detail.cli import _validating
+
+    def launch(progress):
+        progress("Validating recordings", 0.5, "2 of 4")
+        progress("Estimating disk space", 1.0, "4 of 4")
+        return "run"
+
+    cap, real = io.StringIO(), sys.stderr
+    sys.stderr = cap
+    try:
+        assert _validating(launch) == "run"
+    finally:
+        sys.stderr = real
+
+    drawn = cap.getvalue()
+    assert "Validating recordings" in drawn and "2 of 4" in drawn
+    assert "Estimating disk space" in drawn and "4 of 4" in drawn
+
+
+def test_validating_closes_its_bar_when_the_launch_is_refused(monkeypatch):
+    """A refusal prints on the line below; a bar left open overwrites it."""
+    from detail import cli as cli_module
+
+    closed = []
+    real_close = cli_module._StageProgress.close
+    monkeypatch.setattr(
+        cli_module._StageProgress,
+        "close",
+        lambda self: (closed.append(True), real_close(self)),
+    )
+
+    def launch(progress):
+        progress("Validating recordings", 0.5, "1 of 2")
+        raise ValueError("refused")
+
+    with pytest.raises(ValueError, match="refused"):
+        cli_module._validating(launch)
+
+    assert closed == [True]
+
+
+def test_process_embedding_hands_the_launch_a_progress_callback(monkeypatch, tmp_path):
+    from detail.api.experiment import Experiment
+
+    proj = Experiment.create("p", tmp_path)
+    proj.create_recording("recording_001")
+    seen: dict = {}
+
+    def _capture(self, module_id, recording_ids, config, **options):
+        seen["progress"] = options.get("progress")
+        raise ValueError("stop here")
+
+    monkeypatch.setattr(Experiment, "run_processing", _capture)
+    result = CliRunner().invoke(
+        main,
+        [
+            "process",
+            "embedding",
+            "--experiment",
+            str(proj.dir),
+            "--recording",
+            "recording_001",
+            "--tracking",
+            "track_01",
+            "--tracks",
+            "0",
+            "--model",
+            "dinov3_vit",
+        ],
+    )
+
+    assert "stop here" in result.output
+    assert callable(seen["progress"]), "the CLI drew no bar for the validation"
+
+
 def test_process_embedding_carries_the_alignment_options_and_the_keypoint_ref(
     monkeypatch, tmp_path
 ):
@@ -5032,7 +6714,7 @@ def test_process_embedding_carries_the_alignment_options_and_the_keypoint_ref(
     proj.create_recording("recording_001")
     seen: dict = {}
 
-    def _capture(self, module_id, recording_ids, config, progress=None):
+    def _capture(self, module_id, recording_ids, config, **_options):
         seen.update(module_id=module_id, config=config)
         raise ValueError("stop here")
 
@@ -5157,6 +6839,79 @@ def test_heading_definitions_round_trip_through_the_experiment_commands(tmp_path
     del base
 
 
+def test_both_embedding_commands_carry_the_pose_options(monkeypatch, tmp_path):
+    """§14 pose in the embedding on the CLI: --pose / --pose-weight / --pose-min-score reach
+    the config on `process embedding` and the run call on `embedding run`, and a posed
+    `embedding run` leaves the renderer spec to validate, which adds the draw step."""
+    from detail.api.experiment import Experiment
+    from detail.api.recording import Recording
+
+    proj = Experiment.create("p", tmp_path)
+    proj.create_recording("recording_001")
+    seen: dict = {}
+
+    def _capture_processing(self, module_id, recording_ids, config, **_options):
+        seen["config"] = config
+        raise ValueError("stop here")
+
+    def _capture_run(self, **kwargs):
+        seen["run"] = kwargs
+        raise ValueError("stop here")
+
+    monkeypatch.setattr(Experiment, "run_processing", _capture_processing)
+    monkeypatch.setattr(Recording, "run_embedding", _capture_run)
+    common = ["--tracks", "0", "--model", "dinov3_vit", "--keypoint-run", "kt_01"]
+    result = CliRunner().invoke(
+        main,
+        [
+            "process",
+            "embedding",
+            "--experiment",
+            str(proj.dir),
+            "--recording",
+            "recording_001",
+            "--tracking",
+            "track_01",
+            *common,
+            "--pose",
+            "append",
+            "--heading",
+            "nose_to_tail",
+            "--pose-weight",
+            "0.5",
+            "--pose-min-score",
+            "0.2",
+        ],
+    )
+    assert "stop here" in result.output, result.output
+    config = seen["config"]
+    assert (config["pose"], config["pose_weight"], config["pose_min_score"]) == (
+        "append",
+        0.5,
+        0.2,
+    )
+    result = CliRunner().invoke(
+        main,
+        [
+            "embedding",
+            "run",
+            "--experiment",
+            str(proj.dir),
+            "--recording",
+            "recording_001",
+            "--tracking",
+            "track_01",
+            *common,
+            "--pose",
+            "draw",
+        ],
+    )
+    assert "stop here" in result.output, result.output
+    run = seen["run"]
+    assert run["pose"] == "draw" and run["pose_weight"] == 1.0
+    assert run["renderer_spec"] is None  # validate inserts draw_pose
+
+
 _LAUNCHES = {
     "process detection": ["process", "detection", "--model", "fake_dl"],
     "process tracking": ["process", "tracking", "--detection", "det_01"],
@@ -5206,7 +6961,7 @@ def test_every_launch_names_the_recording_it_is_validating(
     proj.create_recording("recording_001")
     called = []
 
-    def _reporting(self, *args, progress=None):
+    def _reporting(self, *args, progress=None, **_options):
         called.append(args)
         progress("Validating", 0.0, "Rat 7 (1/1)")
         raise ValueError("stop here")

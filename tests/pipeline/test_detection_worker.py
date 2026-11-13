@@ -58,6 +58,30 @@ class _FakeModel:
         return [self.predict(f, p) for f, p in zip(frames, prompts)]
 
 
+def _two_class_detection(frame):
+    h, w = frame.shape[:2]
+    mask = np.zeros((h, w), dtype=bool)
+    mask[h // 4 : 3 * h // 4, w // 4 : 3 * w // 4] = True
+    return FrameResult.from_detections(
+        0,
+        0,
+        [
+            Detection(mask, (0.25, 0.25, 0.75, 0.75), "black mouse", 0.6, None),
+            Detection(mask, (0.25, 0.25, 0.75, 0.75), "white mouse", 0.3, None),
+        ],
+    )
+
+
+class _TwoClassModel:
+    """Returns two named detections per frame at two different confidences."""
+
+    def predict(self, frame, prompt):
+        return _two_class_detection(frame)
+
+    def predict_batch(self, frames, prompts):
+        return [self.predict(f, p) for f, p in zip(frames, prompts)]
+
+
 class _RaisingModel:
     def predict(self, frame, prompt):
         raise RuntimeError("simulated model OOM")
@@ -390,6 +414,62 @@ def test_run_part_low_conf_filtered(tmp_path):
     assert rows["frame_idx"].shape[0] == 0
 
 
+def test_run_part_class_conf_thresholds_filter_independently(tmp_path):
+    """black mouse (0.6) and white mouse (0.3), two different thresholds: each row
+    survives or not on its own class's bound, not the flat conf_threshold."""
+    recording_dir, data, _ = _setup(tmp_path)
+    run_dir = recording_dir / "detections" / "det_01"
+    run_dir.mkdir(parents=True)
+    _detection_worker.run_part(
+        part=_part_dict(),
+        part_index=0,
+        parts_total=1,
+        recording_dir=recording_dir,
+        recording_data=data,
+        out_zarr_path=run_dir / "part_001.zarr",
+        progress_json_path=None,
+        stop_flag_path=None,
+        model=_TwoClassModel(),
+        prompt=_prompt(),
+        conf_threshold=0.5,  # would cut white mouse if it applied to every class
+        class_conf_thresholds={"white mouse": 0.2},
+        gpu_idx=None,
+    )
+    rows = PartZarrReader(run_dir / "part_001.zarr").read()
+    assert set(rows["class_name"]) == {"black mouse", "white mouse"}
+
+
+def test_run_part_class_with_no_override_falls_back_to_flat_threshold(tmp_path):
+    recording_dir, data, _ = _setup(tmp_path)
+    run_dir = recording_dir / "detections" / "det_01"
+    run_dir.mkdir(parents=True)
+    _detection_worker.run_part(
+        part=_part_dict(),
+        part_index=0,
+        parts_total=1,
+        recording_dir=recording_dir,
+        recording_data=data,
+        out_zarr_path=run_dir / "part_001.zarr",
+        progress_json_path=None,
+        stop_flag_path=None,
+        model=_TwoClassModel(),
+        prompt=_prompt(),
+        conf_threshold=0.95,  # above both classes' confidence
+        class_conf_thresholds={"black mouse": 0.1},  # only black mouse overridden
+        gpu_idx=None,
+    )
+    rows = PartZarrReader(run_dir / "part_001.zarr").read()
+    # black mouse clears its own override; white mouse has none and is cut by the
+    # flat 0.95 default.
+    assert set(rows["class_name"]) == {"black mouse"}
+
+
+def test_conf_floor_is_the_lowest_of_the_flat_default_and_every_override():
+    assert _detection_worker.conf_floor(0.5, {}) == 0.5
+    assert _detection_worker.conf_floor(0.5, {"a": 0.8, "b": 0.2}) == 0.2
+    assert _detection_worker.conf_floor(0.1, {"a": 0.8}) == 0.1
+
+
 # --- stop.flag ------------------------------------------------------------- #
 def test_run_part_stops_when_stop_flag_set_before_invocation(tmp_path):
     """If stop.flag exists before the first forward pass, the worker exits with
@@ -666,6 +746,66 @@ def test_run_part_stop_mid_batch_frames_done_matches_rows(tmp_path):
     assert result["status"] == "failed"
     rows = PartZarrReader(out_zarr).read()
     assert rows["frame_idx"].shape[0] == result["frames_done"]  # no buffered overcount
+
+
+# --- keypoint teacher window (§26, #717) ----------------------------------- #
+@pytest.mark.parametrize("batch_size", [1, 4])
+def test_a_teacher_window_ends_the_part_cleanly_at_its_last_frame(tmp_path, batch_size):
+    """Frames before ``t_end_ns`` are detected and nothing after: a clean ``complete`` whose
+    total is the window, so the bar reaches 100% and the rest is not ``dropped_frames``.
+    """
+    recording_dir, data, n_frames = _setup(tmp_path)  # t_ns = 0, 1000, 2000, ...
+    run_dir = recording_dir / "detections" / "det_01"
+    run_dir.mkdir(parents=True)
+
+    result = _detection_worker.run_part(
+        part=_part_dict(),
+        part_index=0,
+        parts_total=1,
+        recording_dir=recording_dir,
+        recording_data=data,
+        out_zarr_path=run_dir / "part_001.zarr",
+        progress_json_path=None,
+        stop_flag_path=None,
+        model=_FakeModel(),
+        prompt=_prompt(),
+        conf_threshold=0.5,
+        gpu_idx=0,
+        batch_size=batch_size,
+        t_end_ns=4500,
+    )
+
+    assert n_frames > 5
+    assert result["status"] == "complete"
+    assert (result["frames_done"], result["frames_total"]) == (5, 5)
+    assert result["dropped_frames"] == []
+    rows = PartZarrReader(run_dir / "part_001.zarr").read()
+    assert rows["t_ns"].tolist() == [0, 1000, 2000, 3000, 4000]
+
+
+def test_a_teacher_window_past_the_part_reads_all_of_it(tmp_path):
+    recording_dir, data, n_frames = _setup(tmp_path)
+    run_dir = recording_dir / "detections" / "det_01"
+    run_dir.mkdir(parents=True)
+
+    result = _detection_worker.run_part(
+        part=_part_dict(),
+        part_index=0,
+        parts_total=1,
+        recording_dir=recording_dir,
+        recording_data=data,
+        out_zarr_path=run_dir / "part_001.zarr",
+        progress_json_path=None,
+        stop_flag_path=None,
+        model=_FakeModel(),
+        prompt=_prompt(),
+        conf_threshold=0.5,
+        gpu_idx=0,
+        t_end_ns=10**12,
+    )
+
+    assert (result["frames_done"], result["frames_total"]) == (n_frames, n_frames)
+    assert result["status"] == "complete" and result["dropped_frames"] == []
 
 
 # --- the four stages (§7 *Execution*) --------------------------------------- #

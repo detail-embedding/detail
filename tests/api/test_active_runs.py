@@ -8,11 +8,11 @@ remembering which experiment it was in. The records were always there — every 
 **Imports** are the family that is not a run (the last section below), and this file holds the
 listing half of the *news delivered where nobody is looking* class written up in
 `tests/gui/test_active_processes.py`. A listing that drops finished rows cannot be looked at in time
-when what it lists finishes inside a second, which an import on a local disk does, so finished
-imports are kept — ten, newest first. The two things that are not a finished import, a recording no
-import ever touched (whose `import_status` property defaults a missing key to "ready") and a
-metadata-only shell, are each pinned with a real finished import beside them, so neither exclusion
-can pass by listing nothing.
+when what it lists finishes inside a second, which an import on a local disk does, so a finished
+import stays listed — every family does now, until archived (§ active-run archiving). The two
+things that are not a finished import, a recording no import ever touched (whose `import_status`
+property defaults a missing key to "ready") and a metadata-only shell, are each pinned with a real
+finished import beside them, so neither exclusion can pass by listing nothing.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ def workspace(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _run(experiment_dir, run_id, status, created_at, module="detection"):
+def _run(experiment_dir, run_id, status, created_at, module="detection", **extra):
     runs_store.run_dir(experiment_dir, run_id).mkdir(parents=True, exist_ok=True)
     runs_store.write_run(
         experiment_dir,
@@ -48,6 +48,7 @@ def _run(experiment_dir, run_id, status, created_at, module="detection"):
             "per_recording": {},
             "created_at": created_at,
             "status": status,
+            **extra,
         },
     )
 
@@ -63,14 +64,90 @@ def test_it_spans_experiments(workspace):
     assert {r.experiment_name for r in found} == {"alpha", "beta"}
 
 
-def test_finished_runs_are_not_listed(workspace):
-    """The negative case. A listing that showed everything would be the runs page, one level up,
-    and would bury the four rows someone came here for under four hundred."""
+def test_finished_runs_stay_listed_too(workspace):
+    """Every family keeps its finished runs now, not just export/import — until archived
+    (`test_archiving_a_run_removes_it_from_the_listing` below)."""
     exp = Experiment.create("alpha", workspace)
     _run(exp.dir, "det_01", "complete", "2026-09-10T12:00:00Z")
     _run(exp.dir, "det_02", "running", "2026-09-10T12:30:00Z")
 
-    assert [r.run_id for r in active.list_active()] == ["det_02"]
+    assert {r.run_id for r in active.list_active()} == {"det_01", "det_02"}
+
+
+def test_a_local_run_shows_where_as_local(workspace):
+    exp = Experiment.create("alpha", workspace)
+    _run(exp.dir, "det_01", "running", "2026-09-10T12:00:00Z")
+    assert active.list_active()[0].where == "local"
+    assert active.list_active()[0].cost == ""
+
+
+def test_a_remote_run_shows_where_and_a_configured_cost(workspace):
+    exp = Experiment.create("alpha", workspace)
+    _run(
+        exp.dir,
+        "det_01",
+        "running",
+        "2026-09-10T12:00:00Z",
+        compute={"backend": "remote", "remote_target": "tillicum"},
+        estimated_cost_usd=1.5,
+    )
+    row = active.list_active()[0]
+    assert row.where == "remote: tillicum"
+    assert row.cost == "$1.50"
+
+
+def test_a_multi_recording_run_shows_its_aggregate_cost(workspace):
+    """A `run`-kind record never carries a bare `estimated_cost_usd` of its own — only
+    `RunOrchestrator._write_record`'s aggregate `total_estimated_cost_usd`, summed from
+    each per-recording entry's own `estimated_cost_usd` (`detail/api/experiment.py`).
+    `test_a_remote_run_shows_where_and_a_configured_cost` above writes the bare key
+    directly, which never exercises this path — the run-detail page already reads the
+    aggregate key (`detail/gui/pages.py`), so the listing here has to as well."""
+    exp = Experiment.create("alpha", workspace)
+    _run(
+        exp.dir,
+        "run_006",
+        "complete",
+        "2026-09-10T12:00:00Z",
+        compute={"backend": "remote", "remote_target": "tillicum"},
+        per_recording={
+            "recording_001": {"status": "complete", "estimated_cost_usd": 0.11},
+        },
+        total_estimated_cost_usd=0.11,
+    )
+    row = active.list_active()[0]
+    assert row.cost == "$0.11"
+
+
+def test_a_remote_run_with_no_rate_configured_shows_where_but_no_cost(workspace):
+    exp = Experiment.create("alpha", workspace)
+    _run(
+        exp.dir,
+        "det_01",
+        "running",
+        "2026-09-10T12:00:00Z",
+        compute={"backend": "remote", "remote_target": "tillicum"},
+    )
+    row = active.list_active()[0]
+    assert row.where == "remote: tillicum"
+    assert row.cost == ""
+
+
+def test_a_finished_run_shows_its_duration(workspace):
+    exp = Experiment.create("alpha", workspace)
+    _run(exp.dir, "det_01", "complete", "2026-09-10T12:00:00Z", duration_s=125)
+
+    row = active.list_active()[0]
+    assert row.duration == "2m05s"
+
+
+def test_a_run_with_no_duration_yet_shows_a_blank_duration(workspace):
+    """Still going, or a legacy record from before this field existed — either way, a blank cell
+    rather than a formatted ``None``."""
+    exp = Experiment.create("alpha", workspace)
+    _run(exp.dir, "det_01", "running", "2026-09-10T12:00:00Z")
+
+    assert active.list_active()[0].duration == ""
 
 
 def test_failed_runs_are_listed_with_the_active_ones(workspace):
@@ -209,6 +286,25 @@ def test_every_listing_ref_carries_created_at(ref_name):
     )
 
 
+@pytest.mark.parametrize(
+    "ref_name",
+    ["AnalysisRunRef", "DatasetRef", "ModelRef", "ExportRunRef"],
+)
+def test_every_listing_ref_carries_duration_and_compute(ref_name):
+    """Same class as created_at, for § run location, duration, cost: a ref missing
+    `compute`/`duration_s`/`estimated_cost_usd` shows a blank Where/Duration/Cost
+    forever for that whole family, no matter what set_*_status merges into its
+    record on disk — `_field`'s dataclass branch can only read what the ref
+    declares."""
+    import dataclasses
+
+    from detail.api import experiment as experiment_mod
+
+    fields = {f.name for f in dataclasses.fields(getattr(experiment_mod, ref_name))}
+    missing = {"compute", "duration_s", "estimated_cost_usd"} - fields
+    assert not missing, f"{ref_name} carries no {missing}"
+
+
 @pytest.mark.parametrize("spec", active.RUN_KINDS, ids=lambda s: s.kind)
 def test_every_run_kind_reads_a_real_accessor(spec):
     """`records` names an `Experiment` attribute; a typo is a family that lists nothing."""
@@ -244,7 +340,7 @@ def test_a_kind_with_an_active_record_is_reported_as_active(
 
 
 # --------------------------------------------------------------------------- #
-# a finished export is the one terminal run this listing keeps
+# finished runs stay listed, and archiving is how you dismiss one
 # --------------------------------------------------------------------------- #
 def _export_record(experiment_dir, run_id, status, created_at, targets=("instances",)):
     """An export record the way `run_export` writes one, minus the job it submits."""
@@ -268,12 +364,9 @@ def _export_record(experiment_dir, run_id, status, created_at, targets=("instanc
 
 
 def test_a_finished_export_stays_listed(workspace):
-    """The whole reason this family declares `keep_finished`.
-
-    A finished processing run has a permanent home — its experiment's Runs page — so dropping it
-    here loses nothing. A finished export has **none**: its files are in a folder outside the
-    experiment and its record is reachable from no page in the app once it is done. Dropped from
-    this listing it was reachable from nowhere at all, which is the state the user reported.
+    """A finished export has no other home: its files are in a folder outside the experiment
+    and its record is reachable from no page in the app once it is done. Dropped from this
+    listing it was reachable from nowhere at all, which is the state the user reported.
     """
     exp = Experiment.create("alpha", workspace)
     _export_record(exp.dir, "ex_01", "complete", "2026-09-10T12:00:00Z")
@@ -283,49 +376,67 @@ def test_a_finished_export_stays_listed(workspace):
     assert found[0].kind == "export"
 
 
-def test_a_finished_run_is_still_dropped(workspace):
-    """The other half, and what makes this a rule rather than "list more things".
-
-    If every finished run were kept, this screen would become the runs page one level up and
-    bury the rows somebody actually came here for. The asymmetry is the point, so it is asserted
-    in the same breath as the behaviour it looks like an exception to.
+def test_archiving_a_run_removes_it_from_the_listing(workspace):
+    """The one way a finished run stops being listed now that every family keeps one — a pure
+    view dismissal, asserted here at the API layer that both the CLI and the GUI read.
     """
     exp = Experiment.create("alpha", workspace)
     _run(exp.dir, "det_01", "complete", "2026-09-10T12:00:00Z")
-    _export_record(exp.dir, "ex_01", "complete", "2026-09-10T12:00:00Z")
 
-    assert [r.run_id for r in active.list_active()] == ["ex_01"]
+    active.archive_run(exp.dir, "run", "det_01")
 
-
-def test_kept_exports_are_capped_across_the_workspace(workspace):
-    """Bounded, and bounded *once* — not once per experiment.
-
-    A per-experiment cap is a workspace cap of N x however many experiments there happen to be,
-    which is a bound that grows with the thing it bounds. Two experiments each at the cap is the
-    shape that tells the two apart; one experiment would pass either way.
-    """
-    cap = active._KEEP_FINISHED_EXPORTS
-    for name in ("alpha", "beta"):
-        exp = Experiment.create(name, workspace)
-        for i in range(cap):
-            _export_record(
-                exp.dir, f"ex_{i:02d}", "complete", f"2026-09-10T12:{i:02d}:00Z"
-            )
-
-    kept = [r for r in active.list_active() if r.kind == "export"]
-    assert len(kept) == cap, f"{len(kept)} kept against a cap of {cap}"
+    assert active.list_active() == []
 
 
-def test_the_newest_finished_exports_are_the_ones_kept(workspace):
-    """Cap the *old* end. Keeping the first N read is keeping an arbitrary N, and the export
-    somebody is looking for is the one they just ran."""
+def test_archiving_one_run_does_not_hide_another(workspace):
     exp = Experiment.create("alpha", workspace)
-    cap = active._KEEP_FINISHED_EXPORTS
-    for i in range(cap + 3):
-        _export_record(exp.dir, f"ex_{i:02d}", "complete", f"2026-09-10T12:{i:02d}:00Z")
+    _run(exp.dir, "det_01", "complete", "2026-09-10T12:00:00Z")
+    _run(exp.dir, "det_02", "complete", "2026-09-10T12:30:00Z")
 
-    kept = sorted(r.run_id for r in active.list_active())
-    assert kept[0] == "ex_03", f"kept the oldest instead of the newest: {kept}"
+    active.archive_run(exp.dir, "run", "det_01")
+
+    assert [r.run_id for r in active.list_active()] == ["det_02"]
+
+
+def test_archiving_a_run_is_idempotent(workspace):
+    exp = Experiment.create("alpha", workspace)
+    _run(exp.dir, "det_01", "complete", "2026-09-10T12:00:00Z")
+
+    active.archive_run(exp.dir, "run", "det_01")
+    active.archive_run(exp.dir, "run", "det_01")
+
+    assert active.list_active() == []
+
+
+def test_archiving_does_not_touch_an_active_run_with_the_same_id_elsewhere(workspace):
+    """A pure view flag, never consulted for a status still in `wanted` — archiving is a
+    dismiss for a *finished* row, not a way to hide a run still going."""
+    exp = Experiment.create("alpha", workspace)
+    _run(exp.dir, "det_01", "running", "2026-09-10T12:00:00Z")
+
+    active.archive_run(exp.dir, "run", "det_01")
+
+    assert [r.run_id for r in active.list_active()] == ["det_01"]
+
+
+def test_archiving_a_failed_run_removes_it_when_failures_are_included(workspace):
+    """A looked-at failure can be dismissed like any other finished row."""
+    exp = Experiment.create("alpha", workspace)
+    _run(exp.dir, "det_01", "failed", "2026-09-10T12:00:00Z")
+
+    active.archive_run(exp.dir, "run", "det_01")
+
+    assert active.list_active() == []
+
+
+def test_excluding_failures_hides_them_regardless_of_archive_state(workspace):
+    """`include_failed=False` means "not this" outright — it must not be overridden by the
+    run happening to be unarchived, or the flag would stop meaning what its name says the
+    moment every family started keeping finished rows."""
+    exp = Experiment.create("alpha", workspace)
+    _run(exp.dir, "det_01", "failed", "2026-09-10T12:00:00Z")
+
+    assert active.list_active(include_failed=False) == []
 
 
 def test_a_cancelled_run_is_listed(workspace):
@@ -532,9 +643,8 @@ def test_a_recording_no_import_ever_touched_is_not_listed(workspace):
     assert [row.run_id for row in active.list_active()] == ["rec_imported"]
 
 
-def test_finished_imports_are_capped_newest_first(workspace):
-    """Ten, across the workspace, newest first — the bound exports already use, for the same
-    reason: one screen, and a cap per experiment would grow with the thing it bounds."""
+def test_finished_imports_all_stay_listed_newest_first(workspace):
+    """Unbounded now, like every other family — newest first, across the workspace."""
     exp = Experiment.create("alpha", workspace)
     for day in range(1, 13):
         _with_video(
@@ -543,7 +653,7 @@ def test_finished_imports_are_capped_newest_first(workspace):
         )
 
     assert [row.run_id for row in active.list_active()] == [
-        f"rec_{day:02d}" for day in range(12, 2, -1)
+        f"rec_{day:02d}" for day in range(12, 0, -1)
     ]
 
 

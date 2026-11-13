@@ -27,6 +27,7 @@ from pathlib import Path
 import yaml
 
 from detail.core import atomic
+from detail.core import yaml_load
 
 SCHEMA_VERSION = 1
 
@@ -63,4 +64,4 @@ def read_state_yaml(path: Path | str) -> dict:
     path = Path(path)
     if not path.is_file():
         raise FileNotFoundError(f"no {path.name} in {path.parent}")
-    return yaml.safe_load(atomic.read_text(path)) or {}
+    return yaml_load.safe_load(atomic.read_text(path)) or {}

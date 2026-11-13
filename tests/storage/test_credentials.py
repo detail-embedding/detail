@@ -94,3 +94,17 @@ def test_set_hf_token_invalid_raises(cred_paths, monkeypatch):
     monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
     with pytest.raises(ValueError, match="invalid or could not be validated"):
         credentials.set_hf_token("hf_bad")
+
+
+def test_set_hf_token_keeps_the_servers_reason(cred_paths, monkeypatch):
+    """A 429 or an outage is not a bad token; the server's reason tells them apart."""
+
+    class _Api:
+        def whoami(self, token):
+            error = HfHubHTTPError.__new__(HfHubHTTPError)
+            error.args = ("429 Client Error: Too Many Requests\n\nRate limit reached",)
+            raise error
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
+    with pytest.raises(ValueError, match="Too Many Requests Rate limit reached"):
+        credentials.set_hf_token("hf_bad")

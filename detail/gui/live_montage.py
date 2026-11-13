@@ -179,7 +179,7 @@ from detail.api.clip_tiles import TileLook
 from detail.core.progress import format_duration
 from detail.gui import plot_theme
 from detail.gui.busy import BusyOverlay
-from detail.gui.lifetime import alive
+from detail.gui.lifetime import alive, cleared
 from detail.gui.sizing import emphasis_font, small_font
 from detail.gui.workers import GuiWorker
 
@@ -422,9 +422,15 @@ class _PictureWorker(GuiWorker):
     window left its open clips and drawn tiles to the garbage collector.
     """
 
+    #: Busy while the montage plays; stopped when the montage is destroyed (:meth:`stop`).
+    serves_a_view = True
+
     delivered = pyqtSignal(
         int, int, int, object
     )  # generation, index, offset_ns, QImage|None
+    #: The source read the keypoint run's skeleton: ``(names, pairs)`` — what **Show ▾**'s
+    #: *Trail points* chooses from. Said once per skeleton.
+    skeleton_found = pyqtSignal(object)
 
     def __init__(self, *, receiver) -> None:
         super().__init__(receiver=receiver)
@@ -443,6 +449,8 @@ class _PictureWorker(GuiWorker):
         #: Whether the thread is serving or about to: set by whoever hands it work, cleared by
         #: the thread itself as it goes idle — both under the lock.
         self._live = False
+        #: The skeleton last said (``skeleton_found``); touched only by the thread.
+        self._skeleton = None
 
     def post(self, index: int, request: tuple, *, first: bool = False) -> None:
         """Ask for a picture; replaces any request for the same tile not yet served, keeping
@@ -570,6 +578,13 @@ class _PictureWorker(GuiWorker):
         ):  # noqa: BLE001 — boundary: one bad tile must not stop the rest
             image = None
         self.emit_to_ui(self.delivered, generation, index, offset_ns, image)
+        found = getattr(source, "skeleton", None)
+        skeleton = found() if callable(found) else None
+        if skeleton is not None:
+            shape = (tuple(skeleton.names), tuple(tuple(p) for p in skeleton.pairs))
+            if shape != self._skeleton:
+                self._skeleton = shape
+                self.emit_to_ui(self.skeleton_found, shape)
 
 
 def _close(source) -> None:
@@ -703,6 +718,8 @@ class LiveMontage(QWidget):
     context_changed = pyqtSignal(float)
     #: The tiles were replaced or re-marked (:meth:`set_clips`).
     clips_changed = pyqtSignal()
+    #: What a tile draws changed (**Show ▾**'s layers or trail points, or :meth:`set_look`).
+    look_changed = pyqtSignal()
 
     def __init__(
         self,
@@ -786,6 +803,9 @@ class LiveMontage(QWidget):
         self._watched: tuple = (None, None)
         self._worker = _PictureWorker(receiver=self)
         self._worker.delivered.connect(self._on_delivered)
+        self._worker.skeleton_found.connect(self._on_skeleton)
+        #: ``(names, pairs)`` of the keypoint run, once a tile has read it (*Trail points*).
+        self._skeleton: tuple | None = None
         self.destroyed.connect(self._worker.stop)
 
         layout = QVBoxLayout(self)
@@ -851,6 +871,7 @@ class LiveMontage(QWidget):
         self.show_button.layer_toggled.connect(self._layer_toggled)
         self.show_button.aligned_wanted.connect(self.set_aligned)
         self.show_button.context_wanted.connect(self.set_context_s)
+        self.show_button.trail_points_wanted.connect(self.set_trail_points)
         header.addWidget(self.show_button)
         self._sync_orientation()
         header.addSpacing(8)
@@ -1323,7 +1344,24 @@ class LiveMontage(QWidget):
             return
         if key == "masks" and not on:
             look = replace(look, mask_trail=False)
+        if key == "keypoints" and not on:
+            look = replace(look, keypoint_trail=False)
         self._set_look(look)
+
+    def set_trail_points(self, names) -> None:
+        """Which keypoints the keypoint trail follows, by name (``None``: every point); kept
+        with the look."""
+        points = None if names is None else tuple(names)
+        if points != self._look.trail_points:
+            self._set_look(replace(self._look, trail_points=points))
+
+    def _on_skeleton(self, shape) -> None:
+        self._skeleton = shape
+        self._sync_orientation()
+
+    def skeleton(self) -> tuple | None:
+        """``(names, pairs)`` of the keypoint run once a tile has read it, else ``None``."""
+        return self._skeleton
 
     def _set_look(self, look: TileLook) -> None:
         from detail.gui.show_menu import remember_look
@@ -1334,6 +1372,7 @@ class LiveMontage(QWidget):
             remember_look(self._look_key, self._look)
         self._sync_orientation()
         self._request_visible()
+        self.look_changed.emit()
 
     def set_points(self, note: str | None) -> None:
         """Whether the run's keypoints can be drawn: ``None`` they can, else why not —
@@ -1351,7 +1390,10 @@ class LiveMontage(QWidget):
         if look.keypoints and self._points_note is not None and self._look_key:
             # One replace: keypoints alone, taken away, would be a look that draws nothing.
             look = replace(
-                look, keypoints=False, footage=look.footage or not look.masks
+                look,
+                keypoints=False,
+                keypoint_trail=False,
+                footage=look.footage or not look.masks,
             )
         return replace(look, aligned=self.is_aligned())
 
@@ -1400,6 +1442,7 @@ class LiveMontage(QWidget):
             align_tip=ALIGN_TIP,
             points_note=self._points_note,
             context_s=self._context_s,
+            skeleton=self._skeleton,
         )
 
     def is_off(self, index: int) -> bool:
@@ -1658,6 +1701,8 @@ class LiveMontage(QWidget):
                 new.installEventFilter(self)
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802 — Qt's name
+        if cleared(self):
+            return False
         if event.type() in (QEvent.Type.WindowStateChange, QEvent.Type.Expose):
             self._sync_clock()
         return False

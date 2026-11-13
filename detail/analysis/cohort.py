@@ -20,6 +20,8 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Iterable, Mapping, Sequence
 
+from detail.storage import metadata as metadata_store
+
 #: Column names that suggest an animal identity rather than a manipulation. A *tiebreak only* —
 #: the structural signals below decide, and a cohort that names its animals `panda` still works.
 _SUBJECT_NAME_HINTS = (
@@ -218,9 +220,11 @@ def infer_subject_column(
     silently pool into one convincing-looking extra animal.
 
     This is a *suggestion*, and every surface using it must show which column it picked. It is
-    inferred rather than configured because nothing in ``metadata.csv`` marks a column's role
-    (`storage/metadata.py` reserves exactly one name, ``recording_id``), and asking every user to
-    declare one up front is a setup step paid by everybody to help the few cohorts that repeat.
+    inferred rather than configured because nothing in ``metadata.csv`` marks a subject column,
+    and asking every user to declare one up front is a setup step paid by everybody to help the
+    few cohorts that repeat. The reserved columns (``metadata.RESERVED_COLUMNS``) do carry a
+    role, and it is never "subject": ``acquisition_setup`` repeats and crosses groups exactly as
+    an animal does, but it names the box, not who was in it.
     """
     if columns is None:
         columns = sorted({key for row in metadata.values() for key in row})
@@ -229,7 +233,11 @@ def infer_subject_column(
     scored = []
     for summary in describe_columns(metadata, recordings, columns):
         column = summary.name
-        if column in group_by or column == "recording_id":
+        if (
+            column in group_by
+            or column == metadata_store.RECORDING_KEY
+            or column in metadata_store.RESERVED_COLUMNS
+        ):
             continue
         if summary.blank or not summary.has_repeats:
             continue

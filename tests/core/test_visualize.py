@@ -111,6 +111,57 @@ def test_draw_bbox_label_overlays_text():
     assert not np.array_equal(without, with_lbl)
 
 
+# --- frame labels: readable on any frame, in any palette colour -------------------------- #
+def _contrast(a, b) -> float:
+    la = visualize._relative_luminance(a)
+    lb = visualize._relative_luminance(b)
+    return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+
+
+@pytest.mark.parametrize(
+    "color",
+    [*PALETTE_OKABE_ITO, visualize.DETECTION_BOX_COLOR, (255, 255, 255), (0, 0, 0)],
+)
+def test_every_label_colour_gets_ink_that_reads_on_it(color):
+    # 4.5:1 is WCAG AA for body text: the pale blue/pink tags that were unreadable meet it.
+    assert _contrast(visualize.readable_text_color(color), color) >= 4.5
+
+
+def test_readable_text_color_picks_dark_on_light_and_light_on_dark():
+    assert visualize.readable_text_color((255, 255, 255)) == visualize.LABEL_INK_DARK
+    assert visualize.readable_text_color((0, 0, 0)) == visualize.LABEL_INK_LIGHT
+
+
+def test_a_box_label_sits_on_a_solid_tag_not_on_the_footage():
+    # The old label was text in the box colour straight onto the frame, so the pixels
+    # between its letters were footage. A tag fills them with the box colour.
+    frame = _frame(h=200, w=300, fill=128)
+    color = (86, 180, 233)
+    out = draw_bbox(frame, (0.3, 0.5, 0.8, 0.9), color, label="white mouse 0.97")
+    x0, y_top = int(0.3 * 300), int(0.5 * 200)
+    tag = out[y_top - 12 : y_top - 1, x0 : x0 + 60].reshape(-1, 3)
+    filled = (tag == color).all(axis=1).mean()
+    # Anti-aliased strokes at a small scale rarely hit the ink exactly; nearer the ink
+    # than the tag is what "drawn in the contrasting ink" looks like in pixels.
+    ink = np.asarray(visualize.readable_text_color(color))
+    to_ink = np.abs(tag.astype(int) - ink).sum(axis=1)
+    inked = (to_ink < np.abs(np.asarray(color) - ink).sum() / 2).any()
+    assert filled > 0.5, "the space around the letters is the tag, not the frame"
+    assert inked, "the letters are drawn in the contrasting ink"
+    assert not (tag == 128).all(axis=1).any(), "no footage shows through the tag"
+
+
+def test_a_label_with_no_room_above_hangs_inside_the_frame():
+    frame = _frame(h=100, w=100, fill=0)
+    out = draw_bbox(frame, (0.9, 0.0, 1.0, 0.5), (230, 159, 0), label="a long label")
+    assert (out[2, 99] == (230, 159, 0)).all(), "tag clamped to the right and top edges"
+
+
+def test_label_scale_grows_with_the_frame():
+    assert visualize.label_scale(1080) > visualize.label_scale(480)
+    assert visualize.label_scale(10) == pytest.approx(0.4)
+
+
 # --- draw_detections ------------------------------------------------------- #
 def test_draw_detections_empty_list_returns_unchanged_copy():
     frame = _frame()
@@ -159,16 +210,18 @@ def _det(confidence, row=5, class_name="mouse", shape=(24, 32)):
 
 
 def test_draw_detections_min_conf_skips_the_ones_below_it():
-    frame = _frame()
-    dets = [_det(0.9, row=2), _det(0.3, row=14)]
+    # Room enough that the 0.9 detection's label tag cannot reach the 0.3 one's pixels.
+    shape = (200, 300)
+    frame = _frame(*shape)
+    dets = [_det(0.9, row=2, shape=shape), _det(0.3, row=150, shape=shape)]
     everything = draw_detections(frame, dets, (255, 0, 0))
     filtered = draw_detections(frame, dets, (255, 0, 0), min_conf=0.5)
 
     # The 0.9 detection is drawn either way.
     assert not np.array_equal(filtered[2:6, 2:6], frame[2:6, 2:6])
     # The 0.3 one is drawn without a floor and gone with one.
-    assert not np.array_equal(everything[14:18, 14:18], frame[14:18, 14:18])
-    np.testing.assert_array_equal(filtered[14:18, 14:18], frame[14:18, 14:18])
+    assert not np.array_equal(everything[150:154, 150:154], frame[150:154, 150:154])
+    np.testing.assert_array_equal(filtered[150:154, 150:154], frame[150:154, 150:154])
 
 
 def test_draw_detections_min_conf_is_inclusive_at_the_threshold():
@@ -334,6 +387,131 @@ def test_the_blend_leaves_everything_outside_the_mask_alone():
     assert int(out.sum()) == 2 * 3 * 255, "more than the two masked pixels were touched"
 
 
+# --- preview style ----------------------------------------------------------- #
+def _preview_det(*, mask=None, bbox=(0.1, 0.1, 0.5, 0.5), object_id=1):
+    return Detection(
+        mask=mask, bbox=bbox, class_name="mouse", confidence=0.75, object_id=object_id
+    )
+
+
+def _solid_color(_det):
+    return (255, 0, 0)
+
+
+def test_resolve_preview_style_raises_on_unknown():
+    with pytest.raises(ValueError, match="unknown preview style"):
+        visualize.resolve_preview_style("sepia")
+
+
+def test_preview_needs_mask_matches_the_styles_that_draw_a_mask():
+    needs = {s: visualize.preview_needs_mask(s) for s in visualize.PREVIEW_STYLES}
+    assert needs == {
+        visualize.MASK_BOX_CONF: True,
+        visualize.MASK_BOX: True,
+        visualize.MASK_ONLY: True,
+        visualize.BOX_CONF: False,
+        visualize.BOX_ONLY: False,
+        visualize.RAW_VIDEO: False,
+        visualize.RAW_MASK: True,  # the green-screen cutout needs the mask to cut with
+    }
+
+
+def test_raw_video_draws_nothing():
+    frame = _frame()
+    mask = np.zeros(frame.shape[:2], dtype=bool)
+    mask[5:10, 5:10] = True
+    out = visualize.draw_preview_overlay(
+        frame, [_preview_det(mask=mask)], visualize.RAW_VIDEO, color_fn=_solid_color
+    )
+    np.testing.assert_array_equal(out, frame)
+    assert out is not frame
+
+
+def test_mask_only_draws_no_box_and_never_asks_for_a_label():
+    frame = _frame()
+    mask = np.zeros(frame.shape[:2], dtype=bool)
+    mask[5:10, 5:10] = True
+
+    def _label_fn(_det, _conf):
+        raise AssertionError("mask_only has no box, so a label must never be asked for")
+
+    out = visualize.draw_preview_overlay(
+        frame,
+        [_preview_det(mask=mask)],
+        visualize.MASK_ONLY,
+        color_fn=_solid_color,
+        label_fn=_label_fn,
+    )
+    assert not np.array_equal(out[5:10, 5:10], frame[5:10, 5:10])  # the mask blended in
+    np.testing.assert_array_equal(
+        out[0:5, :], frame[0:5, :]
+    )  # nothing outside it moved
+
+
+def test_box_only_draws_a_box_and_asks_for_a_label():
+    frame = _frame()
+    seen = []
+
+    def _label_fn(det, show_confidence):
+        seen.append(show_confidence)
+        return None
+
+    out = visualize.draw_preview_overlay(
+        frame,
+        [_preview_det()],
+        visualize.BOX_ONLY,
+        color_fn=_solid_color,
+        label_fn=_label_fn,
+    )
+    assert not np.array_equal(out, frame)  # the box outline drew something
+    assert seen == [False]  # box_only's own show_confidence flag
+
+
+def test_mask_box_conf_asks_for_a_label_with_confidence_on():
+    frame = _frame()
+    seen = []
+    out = visualize.draw_preview_overlay(
+        frame,
+        [_preview_det()],
+        visualize.MASK_BOX_CONF,
+        color_fn=_solid_color,
+        label_fn=lambda det, conf: seen.append(conf) or f"{det.class_name}",
+    )
+    assert seen == [True]
+    assert not np.array_equal(out, frame)
+
+
+def test_raw_mask_is_green_screen_with_the_subjects_real_pixels_cut_out():
+    frame = np.full((20, 20, 3), 100, dtype=np.uint8)
+    mask = np.zeros((20, 20), dtype=bool)
+    mask[5:10, 5:10] = True
+
+    out = visualize.draw_preview_overlay(
+        frame, [_preview_det(mask=mask)], visualize.RAW_MASK, color_fn=_solid_color
+    )
+    assert out[0, 0].tolist() == [0, 255, 0]  # green screen outside the mask
+    assert out[7, 7].tolist() == [
+        100,
+        100,
+        100,
+    ]  # the subject's real pixel, unrecolored
+    assert out.shape == frame.shape and out.dtype == frame.dtype
+
+
+def test_raw_mask_with_no_detections_is_solid_green():
+    frame = np.full((10, 10, 3), 100, dtype=np.uint8)
+    out = visualize.draw_preview_overlay(
+        frame, [], visualize.RAW_MASK, color_fn=_solid_color
+    )
+    assert (out == [0, 255, 0]).all()
+
+
+def test_track_color_is_stable_and_untracked_falls_back_to_the_detection_color():
+    assert visualize.track_color(3) == visualize.track_color(3)
+    assert visualize.track_color(None) == visualize.DETECTION_BOX_COLOR
+    assert visualize.track_color(None) not in set(PALETTE_OKABE_ITO)
+
+
 # --- draw_keypoints (§26) -------------------------------------------------- #
 _SKELETON = Skeleton(
     names=("nose", "left_ear", "right_ear", "tail_base"),
@@ -433,138 +611,3 @@ def test_draw_keypoints_refuses_the_wrong_number_of_points():
         visualize.draw_keypoints(
             _frame(), _points((0.1, 0.1), (0.2, 0.2), (0.3, 0.3)), _SKELETON
         )
-
-
-# --- the trail primitives (the clip window's; the montage shares `fade_weights`) ---------- #
-def _whole_frame_onion_skin(canvas, layers, colour):
-    """The onion skin as it was first written: one float32 blend over the whole frame. Kept
-    as the reference the bounded blend must equal byte for byte — the slow form a test may
-    hold, so the two cannot drift apart about what the fade means."""
-    weight = np.zeros(canvas.shape[:2], dtype=np.float32)
-    n = len(layers)
-    for age, layer in enumerate(reversed(layers)):
-        if layer is None:
-            continue
-        y0, x0, crop = layer
-        alpha = np.float32(visualize.ONION_ALPHA * (1.0 - age / n))
-        region = weight[y0 : y0 + crop.shape[0], x0 : x0 + crop.shape[1]]
-        np.maximum(region, np.where(crop, alpha, np.float32(0.0)), out=region)
-    if not weight.any():
-        return canvas
-    tint = np.asarray(colour, dtype=np.float32)
-    share = weight[..., None]
-    blended = canvas.astype(np.float32) * (1.0 - share) + tint * share
-    return np.clip(np.round(blended), 0, 255).astype(np.uint8)
-
-
-def _trail_layers(rng, h, w, n):
-    """``n`` random past masks as ``(y0, x0, crop)``, some frames without one."""
-    layers = []
-    for _ in range(n):
-        if rng.random() < 0.2:
-            layers.append(None)
-            continue
-        ch, cw = rng.integers(1, h // 3), rng.integers(1, w // 3)
-        y0, x0 = rng.integers(0, h - ch), rng.integers(0, w - cw)
-        layers.append((int(y0), int(x0), rng.random((ch, cw)) < 0.6))
-    return layers
-
-
-@pytest.mark.parametrize("seed", range(6))
-def test_the_onion_skin_is_the_whole_frame_blend_byte_for_byte(seed):
-    rng = np.random.default_rng(seed)
-    canvas = rng.integers(0, 256, (90, 160, 3), dtype=np.uint8)
-    layers = _trail_layers(rng, 90, 160, int(rng.integers(1, 12)))
-    before = canvas.copy()
-    np.testing.assert_array_equal(
-        visualize.draw_onion_skin(canvas, layers, visualize.MASK_TINT),
-        _whole_frame_onion_skin(canvas, layers, visualize.MASK_TINT),
-    )
-    np.testing.assert_array_equal(
-        canvas, before
-    )  # the canvas handed in is not drawn on
-
-
-def test_fade_weights_runs_from_alpha_at_the_newest_to_a_share_at_the_oldest():
-    """Newest layer (last in the list) gets the full alpha; age ``k`` gets ``alpha(1-k/n)``;
-    where layers overlap the newer one shows."""
-    crop = np.ones((2, 2), bool)
-    layers = [(0, 0, crop), (1, 1, crop), (0, 0, crop)]  # oldest ... newest
-    weight, top, left = visualize.fade_weights(layers)
-    assert (top, left) == (0, 0)
-    a = visualize.ONION_ALPHA
-    assert weight[0, 0] == pytest.approx(a)  # newest covers (0,0)
-    assert weight[2, 2] == pytest.approx(
-        a * (1 - 1 / 3)
-    )  # only the middle layer reaches (2,2)
-    assert weight[1, 1] == pytest.approx(a)  # overlap: the newest wins
-
-
-def test_fade_weights_is_none_when_no_layer_is_present():
-    assert visualize.fade_weights([None, None]) is None
-    assert visualize.fade_weights([]) is None
-
-
-class _Watched(np.ndarray):
-    """A canvas that records the shape of every float copy taken of it or its slices."""
-
-    shapes: list = []
-
-    def astype(self, dtype, *args, **kwargs):
-        if np.dtype(dtype).kind == "f":
-            _Watched.shapes.append(self.shape)
-        return super().astype(dtype, *args, **kwargs)
-
-
-def test_the_onion_skin_blends_only_where_the_trail_is():
-    """A trail is a few small masks on a large frame: the blend covers their bounding box, not
-    the frame. The float copy it makes is that box, 30x40 here, on a 1080p canvas — where the
-    whole-frame blend copied all 1920x1080 pixels for every picture drawn (measured on a real
-    Raw-off montage: 56 ms of a 119 ms tile)."""
-    canvas = np.full((1080, 1920, 3), 255, np.uint8).view(_Watched)
-    crop = np.ones((20, 30), bool)
-    _Watched.shapes = []
-    out = visualize.draw_onion_skin(
-        canvas, [(500, 900, crop), None, (510, 910, crop)], visualize.MASK_TINT
-    )
-    assert _Watched.shapes, "the blend took no float copy: re-derive this guard"
-    assert max(s[0] * s[1] for s in _Watched.shapes) == 30 * 40
-    assert (np.asarray(out)[:500] == 255).all() and (np.asarray(out)[530:] == 255).all()
-
-
-def test_fading_paths_break_at_a_nan_and_leave_the_input_alone():
-    """A NaN point breaks its path; a point that did not move leaves no trail; the frame handed
-    in is never drawn on."""
-    frame = np.zeros((60, 80, 3), np.uint8)
-    before = frame.copy()
-    moving = np.array([[[0.1, 0.5]], [[0.3, 0.5]], [[0.5, 0.5]]])  # (n=3, K=1, 2)
-    out = visualize.draw_fading_paths(frame, moving, [(255, 0, 0)])
-    assert out.shape == frame.shape and out.dtype == np.uint8
-    assert out.any(), "a moving point leaves a trail"
-    np.testing.assert_array_equal(frame, before)
-
-    broken = np.array([[[0.1, 0.5]], [[np.nan, np.nan]], [[0.5, 0.5]]])
-    assert not visualize.draw_fading_paths(frame, broken, [(255, 0, 0)]).any()
-
-    still = np.array([[[0.4, 0.5]], [[0.4, 0.5]], [[0.4, 0.5]]])
-    assert not visualize.draw_fading_paths(frame, still, [(255, 0, 0)]).any()
-
-
-# --- mask_outline: a ring round the animal, never over it --------------------------------- #
-def test_the_outline_sits_outside_the_mask_at_the_asked_thickness():
-    from detail.core.visualize import mask_outline
-
-    mask = np.zeros((40, 40), dtype=bool)
-    mask[10:30, 10:30] = True
-    ring = mask_outline(mask, 2)
-    assert ring.dtype == bool and ring.shape == mask.shape
-    assert not (ring & mask).any(), "the line never covers the animal"
-    assert ring[8, 20] and ring[9, 20] and not ring[7, 20], "two pixels wide, outside"
-    assert ring[20, 31] and not ring[20, 33]
-    assert mask_outline(mask, 0).sum() > 0, "a thickness below one still draws a line"
-
-
-def test_an_empty_mask_has_no_outline():
-    from detail.core.visualize import mask_outline
-
-    assert not mask_outline(np.zeros((8, 8), dtype=bool), 3).any()

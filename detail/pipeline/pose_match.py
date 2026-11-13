@@ -21,6 +21,19 @@ The tracking run's assignment zarr is joined to the detection rows **by row id, 
 position** (``subject_frames``, #657): a class-filtered run's assignment covers only the tracked
 class's rows.
 
+**A pose placed on a box of a class the tracking run does not follow is never given to a
+subject** (:func:`tracked_class_rows`, :func:`eligible_instances`). A per-detection method
+places a pose inside every box the detection run holds, whatever its class; a detector that
+also finds the arena (``plate``) has a pose placed in the arena's box too: the whole arena
+cropped and resized, the animal small inside it, its paws lost. The mask match cannot tell the
+two apart, since the arena pose sits on the animal as well as the animal's own does, so on the
+Hotplate experiment 28% of tracked poses (13,750 of 48,872) came from the arena's box and the
+animal's own pose went unused. The class is the tracking run's (``class_name`` in its
+``track.yaml``): the same filter that chose its subjects chooses the poses they may take. A pose
+placed on no box (``detection_row`` −1, a whole-frame method) is offered as before, and a
+tracking run that follows every class offers every pose. ``assign_part`` takes the
+eligibility as a required argument, so no caller can match without deciding it.
+
 **The defaults — ``min_inside = 0.5``, ``mask_grow = 0.05`` of body scale — are policy, not
 measured** (§26 *Open questions*). Both are part of a track run's identity (``match``).
 """
@@ -33,16 +46,20 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-import yaml
 
 from detail.core import atomic
+from detail.core import yaml_load
 from detail.core.rle import RunMask
 from detail.models.patch_match.view import body_scale
 from detail.pipeline.subject_frames import _mask_size
 from detail.pipeline.subject_frames import _part_columns
 from detail.pipeline.subject_frames import subject_frames
 from detail.storage import recording as recording_store
-from detail.storage.zarr_io import DetectionPartReader, PartZarrReader
+from detail.storage.zarr_io import (
+    DetectionPartReader,
+    PartZarrReader,
+    object_ids_on_detection_rows,
+)
 
 DEFAULT_MIN_INSIDE = 0.5
 DEFAULT_MASK_GROW = 0.05
@@ -266,8 +283,16 @@ def frame_subjects(
         return
     frame_wh = _frame_wh(recording_dir)
     mask_size = _mask_size(detection_dir)
-    det = _part_columns(DetectionPartReader(det_path))
-    object_id = np.asarray(PartZarrReader(assignment_path).column("object_id")[:])
+    reader = DetectionPartReader(det_path)
+    det = _part_columns(reader)
+    # Laid onto the detection rows, never read by position: a class-filtered tracking run's
+    # assignment is shorter than the part, so row i of one is not row i of the other (§13,
+    # ``object_ids_on_detection_rows``).
+    object_id = object_ids_on_detection_rows(
+        reader,
+        PartZarrReader(assignment_path),
+        _tracking_meta(recording_dir, tracking_run_id).get("class_name"),
+    )
     by_frame: dict[int, tuple[int, dict[int, SubjectOnFrame]]] = {}
     for track_id in sorted({int(t) for t in object_id.tolist() if int(t) >= 0}):
         for item in subject_frames(det, object_id, track_id, every_n_frames):
@@ -284,11 +309,47 @@ def frame_subjects(
         yield frame, t_ns, subjects
 
 
+def tracked_class_rows(
+    recording_dir: Path | str, tracking_run_id: str, part_id: str
+) -> np.ndarray | None:
+    """Per detection row of the tracking run's detection part: whether its class is the one
+    the tracking run follows; ``None`` when the run follows every class (no ``class_name``).
+    A part the detection run never wrote has no rows."""
+    recording_dir = Path(recording_dir)
+    class_name = _tracking_meta(recording_dir, tracking_run_id).get("class_name")
+    if not class_name:
+        return None
+    det_path = _detection_dir(recording_dir, tracking_run_id) / f"{part_id}.zarr"
+    if not det_path.is_dir():
+        return np.zeros(0, dtype=bool)
+    classes = np.asarray(DetectionPartReader(det_path).column("class_name")[:])
+    return classes == str(class_name)
+
+
+def eligible_instances(
+    detection_row: np.ndarray, tracked_rows: np.ndarray | None
+) -> np.ndarray:
+    """Which detect instances may be given to a subject (:func:`assign_part`'s
+    ``eligible``): every one when ``tracked_rows`` is ``None``; otherwise one placed on no box
+    (``detection_row`` −1) or on a row of the tracked class (:func:`tracked_class_rows`).
+    """
+    detection_row = np.asarray(detection_row, dtype=np.int64).reshape(-1)
+    if tracked_rows is None:
+        return np.ones(detection_row.shape, dtype=bool)
+    out = detection_row < 0
+    on_box = np.flatnonzero(~out)
+    rows = detection_row[on_box]
+    known = rows < len(tracked_rows)
+    out[on_box[known]] = np.asarray(tracked_rows, dtype=bool)[rows[known]]
+    return out
+
+
 def assign_part(
     instances: dict,
     subjects_iter,
     mask_hw: tuple[int, int],
     *,
+    eligible: np.ndarray | None,
     min_inside: float = DEFAULT_MIN_INSIDE,
     mask_grow: float = DEFAULT_MASK_GROW,
 ) -> tuple[np.ndarray, np.ndarray, dict[int, list[tuple[int, int, int, float]]]]:
@@ -299,6 +360,9 @@ def assign_part(
             ``(N, K, 2)`` normalized full-frame, ``confidence`` ``(N,)``.
         subjects_iter: :func:`frame_subjects`' frames (or the same shape).
         mask_hw: The subjects' mask resolution ``(h, w)`` (:func:`subject_mask_hw`).
+        eligible: ``(N,)`` bool, the instances that may be given to a subject
+            (:func:`eligible_instances`); ``None`` offers every one. Required, so a caller
+            decides it rather than inherits "all".
         min_inside: The least inside share a pair may be matched at.
         mask_grow: How far a mask is grown, as a fraction of the subject's body scale.
 
@@ -315,7 +379,11 @@ def assign_part(
     confidence = np.asarray(
         instances.get("confidence", np.full(n, np.nan)), dtype=np.float64
     )
+    offered = (
+        np.ones(n, dtype=bool) if eligible is None else np.asarray(eligible, dtype=bool)
+    )
     order = np.argsort(frame_idx, kind="stable")
+    order = order[offered[order]]
     frames, starts, counts = np.unique(
         frame_idx[order], return_index=True, return_counts=True
     )
@@ -356,14 +424,18 @@ def assign_part(
     return subject_id, inside, per_subject
 
 
-def _detection_dir(recording_dir: Path, tracking_run_id: str) -> Path:
+def _tracking_meta(recording_dir: Path, tracking_run_id: str) -> dict:
     meta_path = recording_dir / "tracking" / tracking_run_id / "track.yaml"
     if not meta_path.is_file():
         raise ValueError(
             f"no tracking run {tracking_run_id!r} in recording {recording_dir.name!r}"
         )
-    track_meta = yaml.safe_load(atomic.read_text(meta_path))
-    return recording_dir / "detections" / track_meta["detection_run_id"]
+    return yaml_load.safe_load(atomic.read_text(meta_path)) or {}
+
+
+def _detection_dir(recording_dir: Path, tracking_run_id: str) -> Path:
+    meta = _tracking_meta(recording_dir, tracking_run_id)
+    return recording_dir / "detections" / meta["detection_run_id"]
 
 
 def _frame_wh(recording_dir: Path) -> tuple[int, int]:

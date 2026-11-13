@@ -1,0 +1,96 @@
+/* The "steps at a glance" flowchart at the top of each user-guide install page.
+   A plain markdown list inside <div class="guide-flow" markdown>, so every box is a real
+   link the strict build checks, it works offline, and it prints. */
+
+.md-typeset .guide-flow ol {
+  list-style: none;
+  counter-reset: guide-step;
+  margin: 1em 0 1.5em;
+  padding: 0;
+  max-width: 36rem;
+}
+
+.md-typeset .guide-flow ol li {
+  counter-increment: guide-step;
+  position: relative;
+  margin: 0 0 1.7em;
+  padding: 0.55em 0.8em 0.55em 3em;
+  border: 1px solid var(--md-default-fg-color--lighter);
+  border-radius: 6px;
+  background: var(--md-code-bg-color);
+  break-inside: avoid;
+}
+
+.md-typeset .guide-flow ol li:last-child {
+  margin-bottom: 0;
+}
+
+/* The step number, matching the page's numbered headings. */
+.md-typeset .guide-flow ol li::before {
+  content: counter(guide-step);
+  position: absolute;
+  left: 0.75em;
+  top: 0.6em;
+  width: 1.6em;
+  height: 1.6em;
+  border-radius: 50%;
+  background: var(--md-primary-fg-color);
+  color: var(--md-primary-bg-color);
+  font-weight: 700;
+  font-size: 0.85em;
+  line-height: 1.6em;
+  text-align: center;
+}
+
+/* The arrow to the next step. */
+.md-typeset .guide-flow ol li:not(:last-child)::after {
+  content: "\2193";
+  position: absolute;
+  left: 50%;
+  bottom: -1.55em;
+  transform: translateX(-50%);
+  color: var(--md-default-fg-color--light);
+  font-size: 1.1em;
+}
+
+.md-typeset .guide-flow ol li a {
+  font-weight: 600;
+}
+
+/* The whole box goes to the step, which is easier to tap on a phone than the words alone. */
+.md-typeset .guide-flow ol li a::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+
+.md-typeset .guide-flow ol li:hover {
+  border-color: var(--md-accent-fg-color);
+}
+
+.md-typeset .guide-flow .where {
+  display: inline-block;
+  margin: 0.15em 0 0 0.3em;
+  padding: 0 0.55em;
+  border: 1px solid currentColor;
+  border-radius: 1em;
+  font-size: 0.75em;
+  font-weight: 600;
+}
+
+.md-typeset .guide-flow .note {
+  display: block;
+  margin-top: 0.15em;
+  color: var(--md-default-fg-color--light);
+  font-size: 0.8em;
+}
+
+.md-typeset .guide-flow .where-web { color: #6a3fa0; }
+.md-typeset .guide-flow .where-powershell { color: #1f5fbf; }
+.md-typeset .guide-flow .where-wsl { color: #a34f00; }
+.md-typeset .guide-flow .where-terminal { color: #2e7031; }
+.md-typeset .guide-flow .where-tillicum { color: #8b1e3f; }
+.md-typeset .guide-flow .where-detail { color: #00695c; }
+.md-typeset .guide-flow .where-settings { color: #555555; }
+.md-typeset .guide-flow .where-gpu { color: #8b1e3f; }
+.md-typeset .guide-flow .where-app { color: #00695c; }

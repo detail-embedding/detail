@@ -78,6 +78,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from detail.core.utils import subject_key
+from detail.gui.lifetime import cleared
 from detail.gui.live_montage import LiveMontage, MontageClip, context_span
 from detail.gui.sizing import emphasis_font, set_available, small_font
 from detail.gui.status_color import MUTED, READY, set_button_color, set_label_color
@@ -143,9 +145,10 @@ def display(path: str | None) -> str:
     return (path or "").replace(bo.PATH_SEPARATOR, audit.PATH_DISPLAY)
 
 
-def clip_key(recording_id: str, subject, start_ns, end_ns) -> tuple[str, int, int, int]:
-    """What names a clip: one leaf run of one subject, ``(recording, subject, start, end)``."""
-    return (str(recording_id), int(subject or 0), int(start_ns), int(end_ns))
+def clip_key(recording_id: str, subject, start_ns, end_ns) -> tuple:
+    """What names a clip: one leaf run of one subject, ``(recording, subject, start, end)`` —
+    the subject a track id (``subject_key``)."""
+    return (str(recording_id), subject_key(subject), int(start_ns), int(end_ns))
 
 
 def edit_key(edit) -> tuple[str, int, int, int]:
@@ -670,6 +673,8 @@ class ReviewPane(QWidget):
     def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt virtual
         """Note whether the grid's last mouse press was a double-click's second one, so
         :meth:`_on_activated` can tell a double-click from Space."""
+        if cleared(self):
+            return False
         if watched is self.montage.canvas:
             kind = event.type()
             if kind == QEvent.Type.MouseButtonDblClick:

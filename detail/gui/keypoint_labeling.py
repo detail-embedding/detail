@@ -14,7 +14,8 @@ remembered splitter, an *Annotating: <point>* box under the transport.
 - **Not visible (N)** says the current keypoint cannot be seen on this frame, **Clear
   (Backspace)** unmarks it, **1-9** choose a keypoint, **D** / **A** jump to the next / previous
   example frame; **Add frames** samples varied postures (or a spread over time) from every
-  video offered.
+  video offered. *By heading*, its floor and the compass are offered only when a recording
+  here is not top down (``Experiment.heading_applies``, §26 *Headings*).
 
 **Clicks are on the full frame**, so the stored normalized coordinate is the click's own; the
 method maps it into whatever it crops. Points are drawn by role — a pair's left member blue,
@@ -54,6 +55,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from detail.core import class_names
+from detail.core import yaml_load
 from detail.core.examples import ExampleMark, ExampleSet
 from detail.core.skeleton import Skeleton
 from detail.core.visualize import draw_bbox, draw_keypoints
@@ -62,6 +65,7 @@ from detail.gui.busy import decode_overlay, run_busy, run_progress
 from detail.gui.dialog import Dialog
 from detail.gui.full_frame import to_pixmap
 from detail.gui.grip_splitter import GripSplitter
+from detail.gui.heading_review import HeadingCompass, HeadingReviewDialog
 from detail.gui.image_view import ImageView, PictureWithControls
 from detail.gui.scrubber import FrameScrubber
 from detail.gui.sizing import (
@@ -73,12 +77,12 @@ from detail.gui.sizing import (
 )
 from detail.gui.spin import IntSpin
 from detail.gui.workers import BackgroundCall
+from detail.pipeline import subject_frames
 from detail.storage import recording as recording_store
 
 #: The tracked box the method crops to — drawn thin, so it frames the animal without covering
 #: the points being placed on it.
 _BOX_COLOR = (255, 220, 60)
-_STRATEGIES = (("Varied frames", "varied"), ("Spread over time", "spread"))
 
 
 # --------------------------------------------------------------------------- #
@@ -122,6 +126,7 @@ def offered_videos(experiment, sources: dict[str, str] | None, example_set) -> d
     """
     names = experiment.recording_names()  # off-thread
     videos: list[tuple[str, str]] = []
+    entries: dict[tuple[str, str], dict] = {}  # (recording, run) -> its tracking entry
     if sources:
         videos = [(rid, run) for rid, run in sources.items()]
     else:
@@ -134,11 +139,19 @@ def offered_videos(experiment, sources: dict[str, str] | None, example_set) -> d
         pair = (frame.recording_id, frame.tracking_run_id)
         if pair not in videos and frame.recording_id in names:
             videos.append(pair)
+    for rid in {rid for rid, _run in videos}:
+        for entry in experiment.get_recording(rid).tracking_runs:  # off-thread
+            entries[(rid, str(entry["id"]))] = entry
+    renamed = experiment.renamed_classes()
     per_recording = {}
     for rid, _run in videos:
         per_recording[rid] = per_recording.get(rid, 0) + 1
     return {
         "names": names,
+        "columns": list(experiment.metadata_columns),  # off-thread: one CSV read
+        "classes": detection_classes(experiment, videos[0]) if videos else [],
+        "class_labels": renamed,
+        "heading_applies": experiment.heading_applies(per_recording),  # off-thread
         "videos": [
             {
                 "recording_id": rid,
@@ -148,10 +161,43 @@ def offered_videos(experiment, sources: dict[str, str] | None, example_set) -> d
                     if per_recording[rid] > 1
                     else names.get(rid, rid)
                 ),
+                "tracking": tracking_kind(entries.get((rid, run)) or {}, names=renamed),
             }
             for rid, run in videos
         ],
     }
+
+
+def tracking_kind(entry: dict, *, names: dict[str, str]) -> str:
+    """What a tracking run follows, the same on every recording it was run on: its class by
+    the experiment's names, and tracker — the key *From tracking* groups runs by, since a run
+    id is a per-recording counter."""
+    stored = entry.get("class_name")
+    classes = class_names.label(str(stored), names) if stored else "every class"
+    tracker = entry.get("tracker_id") or "tracking"
+    return f"{classes} · {tracker}"
+
+
+def detection_classes(experiment, video: tuple[str, str]) -> list[str]:
+    """Off the UI thread: the class names one offered tracking run's detections carry — the
+    choices for the heading sampler's floor (§26 *Headings*). Empty when none are recorded.
+    """
+    from detail.core import atomic
+    from detail.storage.zarr_io import DetectionPartReader
+
+    recording_id, run_id = video
+    rec_dir = experiment.get_recording(recording_id).dir
+    track_yaml = rec_dir / "tracking" / run_id / "track.yaml"
+    if not track_yaml.is_file():
+        return []
+    det_run = yaml_load.safe_load(atomic.read_text(track_yaml)).get("detection_run_id")
+    parts = sorted((rec_dir / "detections" / str(det_run)).glob("part_*.zarr"))
+    if not parts:
+        return []
+    reader = DetectionPartReader(parts[0])
+    if "class_name" not in reader.column_names:
+        return []
+    return sorted({str(c) for c in reader.column("class_name")[:]})
 
 
 def load_video(experiment, recording_id: str, tracking_run_id: str) -> dict:
@@ -309,7 +355,6 @@ class KeypointLabelingDialog(Dialog):
         self._stored_rgb: np.ndarray | None = None
         self._pending_seek: tuple | None = None  # (part_id, frame_idx, track_id)
         self.setWindowTitle(f"Mark example frames — {self._set.name} ({self._set.id})")
-        self.resize(1260, 740)  # fits 1440x810 (gui_design.md §3.1)
 
         layout = self.body()
         top = QHBoxLayout()
@@ -452,18 +497,106 @@ class KeypointLabelingDialog(Dialog):
         self._n_frames.setValue(5)
         add_row.addWidget(self._n_frames)
         self._strategy = QComboBox()
-        for label, value in _STRATEGIES:
-            self._strategy.addItem(label, value)
+        for strategy in subject_frames.STRATEGY_TABLE:
+            self._strategy.addItem(strategy.label, strategy.id)
+            self._strategy.setItemData(
+                self._strategy.count() - 1, strategy.help, Qt.ItemDataRole.ToolTipRole
+            )
         self._strategy.setToolTip(
-            "Varied: postures that differ, the typical ones first (reads the subject's shape "
-            "on every tracked frame). Spread: one frame per equal time slice."
+            "  ".join(f"{s.label}: {s.help}" for s in subject_frames.STRATEGY_TABLE)
         )
         add_row.addWidget(self._strategy, 1)
         self._add_frames = QPushButton("Add frames")
         self._add_frames.setAutoDefault(False)
         self._add_frames.clicked.connect(self._sample)
         add_row.addWidget(self._add_frames)
+        # Which tracking Add frames (and By heading's pool) samples from, asked when a
+        # recording has several — each animal's track and their merge, in a social
+        # experiment. A recording's runs were once folded into one {recording: run} map,
+        # so the last run listed (the merge) always won, whatever animal the set was for.
+        self._sample_tracking_row = QWidget()
+        tracking_row = QHBoxLayout(self._sample_tracking_row)
+        tracking_row.setContentsMargins(0, 0, 0, 0)
+        tracking_label = QLabel("From tracking")
+        tracking_label.setToolTip(
+            "Which tracking Add frames samples from, for recordings with several: an "
+            "animal's own track gives frames of that animal only; a merged track gives "
+            "frames of every animal it follows."
+        )
+        tracking_row.addWidget(tracking_label)
+        self._sample_tracking = QComboBox()
+        self._sample_tracking.setToolTip(tracking_label.toolTip())
+        self._sample_tracking.currentIndexChanged.connect(self._sample_tracking_changed)
+        tracking_row.addWidget(self._sample_tracking, 1)
+        self._sample_tracking_row.hide()
+        side.addWidget(self._sample_tracking_row)
         side.addLayout(add_row)
+        subset_row = QHBoxLayout()
+        recordings_label = QLabel("Recordings")
+        recordings_label.setToolTip(
+            "How many recordings the sample reads, in total. A varied sample reads the shape "
+            "of every tracked frame of each one, so fewer is faster."
+        )
+        subset_row.addWidget(recordings_label)
+        self._n_recordings = IntSpin()
+        self._n_recordings.setRange(1, 1)
+        subset_row.addWidget(self._n_recordings)
+        across_label = QLabel("spread across")
+        across_label.setToolTip(
+            "Split those recordings evenly across the values of a metadata column (an "
+            "acquisition setup, a cohort), so every value is read. Recording order spreads "
+            "them through the experiment as imported."
+        )
+        subset_row.addWidget(across_label)
+        self._spread_by = QComboBox()
+        self._spread_by.addItem("recording order", None)
+        subset_row.addWidget(self._spread_by, 1)
+        side.addLayout(subset_row)
+        # The heading sampler's controls: shown once the offered recordings are known, and
+        # only when one of them is not top down (`_apply_heading_gate`).
+        self._heading_box = QWidget()
+        heading_column = QVBoxLayout(self._heading_box)
+        heading_column.setContentsMargins(0, 0, 0, 0)
+        floor_row = QHBoxLayout()
+        floor_label = QLabel("Floor")
+        floor_label.setToolTip(
+            "By heading: off by default, which works with any detector. If your detector "
+            "segments the arena floor (a hot plate, an open-field base), choose that class: "
+            "from a 45° or side view the floor is squashed in the picture, and its outline "
+            "lets walking toward and away from the camera be read, so those two directions "
+            "are found more reliably."
+        )
+        floor_row.addWidget(floor_label)
+        self._floor = QComboBox()
+        self._floor.addItem("no floor", None)
+        floor_row.addWidget(self._floor, 1)
+        heading_column.addLayout(floor_row)
+        self._compass = HeadingCompass()
+        self._compass.clicked.connect(self._review_direction)
+        heading_column.addWidget(self._compass)
+        self._heading_box.hide()
+        side.addWidget(self._heading_box)
+        self._heading_note = QLabel(
+            "Top-down camera: sampling by heading is for side and angled views."
+        )
+        self._heading_note.setWordWrap(True)
+        self._heading_note.setToolTip(
+            "Every recording here has the camera view Top down, and the directions By "
+            "heading reads (toward, away from the camera) are not visible from above. If "
+            "that view is wrong, change it at the top of the Recordings page, or for one "
+            "recording under its Scene geometry."
+        )
+        self._heading_note.hide()
+        side.addWidget(self._heading_note)
+        self._pool = None
+        self._pool_request = None
+        for control in (self._n_recordings, self._spread_by, self._floor):
+            signal = (
+                getattr(control, "valueChanged", None) or control.currentIndexChanged
+            )
+            signal.connect(self._forget_pool)
+        self._strategy.currentIndexChanged.connect(self._strategy_changed)
+        self._strategy_changed()
         side.addWidget(QLabel("Example frames (D / A to step):"))
         self._frames = QListWidget()
         self._frames.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -484,6 +617,9 @@ class KeypointLabelingDialog(Dialog):
             "midline green; the box is the tracked subject."
         )
         side.addWidget(legend)
+        # Height the row-fitted lists do not take collects here, not between the labels —
+        # which is where it went once the compass was gone.
+        side.addStretch(1)
         return panel
 
     # -- public -------------------------------------------------------------- #
@@ -508,6 +644,22 @@ class KeypointLabelingDialog(Dialog):
     def _videos_ready(self, offered: dict) -> None:
         self._names = offered["names"]
         self._offered = offered["videos"]
+        self._spread_by.clear()
+        self._spread_by.addItem("recording order", None)
+        for column in offered["columns"]:
+            self._spread_by.addItem(column, column)
+        self._floor.clear()
+        self._floor.addItem("no floor", None)
+        labels = offered.get("class_labels") or {}
+        for name in offered.get("classes", []):
+            self._floor.addItem(class_names.label(name, labels), name)
+        self._apply_heading_gate(offered["heading_applies"])
+        n_recordings = max(len({v["recording_id"] for v in self._offered}), 1)
+        self._n_recordings.setRange(1, n_recordings)
+        self._n_recordings.setValue(
+            min(subject_frames.DEFAULT_FROM_RECORDINGS, n_recordings)
+        )
+        self._strategy_changed()
         self._recording.clear()
         for video in self._offered:
             self._recording.addItem(
@@ -528,9 +680,68 @@ class KeypointLabelingDialog(Dialog):
             if self._set.frames:
                 self._go_to(0)
             return
-        set_available(self._add_frames, True, "")
+        self._fill_sample_tracking()
         self._refresh_lists()
         self._recording_chosen()
+
+    # -- which tracking Add frames samples from -------------------------------- #
+    def _fill_sample_tracking(self) -> None:
+        """Offer *From tracking* when a recording has several tracking runs: one entry per
+        kind of run (its classes and tracker), with how many recordings have it. Opens on a
+        choose row, never a guess (Tenet 9)."""
+        per_recording: dict[str, int] = {}
+        for video in self._offered:
+            rid = video["recording_id"]
+            per_recording[rid] = per_recording.get(rid, 0) + 1
+        several = any(n > 1 for n in per_recording.values())
+        kinds: dict[str, set] = {}
+        for video in self._offered:
+            kinds.setdefault(video.get("tracking") or "", set()).add(
+                video["recording_id"]
+            )
+        self._sample_tracking.blockSignals(True)
+        self._sample_tracking.clear()
+        self._sample_tracking.addItem("(choose the tracking to sample from)", None)
+        total = len(per_recording)
+        for kind in sorted(kinds):
+            self._sample_tracking.addItem(
+                f"{kind}  ·  {len(kinds[kind])}/{total} recordings", kind
+            )
+        self._sample_tracking.blockSignals(False)
+        self._sample_tracking_row.setVisible(several)
+        self._sync_add_frames()
+
+    def _sample_tracking_changed(self, *_args) -> None:
+        self._forget_pool()  # the heading pool was built from the previous choice
+        self._sync_add_frames()
+
+    def sample_sources(self) -> dict[str, str]:
+        """``{recording_id: tracking run id}`` Add frames and By heading sample from: every
+        offered recording's run of the chosen *From tracking* kind; with one run per
+        recording, that run. Empty while a choice is needed and not made."""
+        if self._sample_tracking_row.isHidden():
+            return {v["recording_id"]: v["run_id"] for v in self._offered}
+        kind = self._sample_tracking.currentData()
+        if kind is None:
+            return {}
+        return {
+            v["recording_id"]: v["run_id"]
+            for v in self._offered
+            if v.get("tracking") == kind
+        }
+
+    def _sync_add_frames(self) -> None:
+        if not self._offered:
+            return
+        if not self.sample_sources():
+            set_available(
+                self._add_frames,
+                False,
+                "Recordings here have several tracking runs: choose which one to sample "
+                "from in From tracking",
+            )
+            return
+        set_available(self._add_frames, True, "")
 
     def _recording_chosen(self) -> None:
         chosen = self._recording.currentData()
@@ -565,7 +776,7 @@ class KeypointLabelingDialog(Dialog):
             self._scrubber.set_playback_rate(video["fps"])
         self._scrubber.set_total(sum(video["counts"]))
         self._scrubber.set_timestamps(video["timestamps"])
-        set_available(self._scrubber, True, "")
+        self._scrubber.set_available(True, "")
         target = 0
         if self._pending_seek is not None:
             part_id, frame_idx, track_id = self._pending_seek
@@ -881,8 +1092,7 @@ class KeypointLabelingDialog(Dialog):
             self._stored = index
             self._stored_rgb = None
             self._raw = None
-            set_available(
-                self._scrubber,
+            self._scrubber.set_available(
                 False,
                 "This frame's recording is not in this experiment; its stored image is shown.",
             )
@@ -901,7 +1111,7 @@ class KeypointLabelingDialog(Dialog):
             self._recording.setCurrentIndex(where)
             self._recording_chosen()
             return
-        set_available(self._scrubber, True, "")
+        self._scrubber.set_available(True, "")
         self._stored = None
         track = self._track.findData(frame.track_id)
         if track >= 0:
@@ -916,16 +1126,136 @@ class KeypointLabelingDialog(Dialog):
             self._stored_rgb = rgb
             self._compose()
 
+    def _apply_heading_gate(self, applies: bool) -> None:
+        """Offer the heading sampler — *By heading*, the floor and the compass — only when
+        a recording here is not top down (``Experiment.heading_applies``); otherwise one note
+        says why it is missing. The API refuses the same requests, so the two agree."""
+        offered = {self._strategy.itemData(i) for i in range(self._strategy.count())}
+        if ("heading" in offered) != applies:
+            chosen = self._strategy.currentData()
+            self._strategy.blockSignals(True)
+            self._strategy.clear()
+            for strategy in subject_frames.STRATEGY_TABLE:
+                if strategy.id == "heading" and not applies:
+                    continue
+                self._strategy.addItem(strategy.label, strategy.id)
+                self._strategy.setItemData(
+                    self._strategy.count() - 1,
+                    strategy.help,
+                    Qt.ItemDataRole.ToolTipRole,
+                )
+            self._strategy.setCurrentIndex(max(self._strategy.findData(chosen), 0))
+            self._strategy.blockSignals(False)
+        self._heading_box.setVisible(applies)
+        self._heading_note.setVisible(not applies)
+
+    def _strategy_changed(self) -> None:
+        """The recordings controls apply only to a strategy that reads a subset; the floor and
+        the per-direction count only to the heading sampler."""
+        chosen = next(
+            (
+                s
+                for s in subject_frames.STRATEGY_TABLE
+                if s.id == self._strategy.currentData()
+            ),
+            subject_frames.STRATEGY_TABLE[0],
+        )
+        reason = f"{chosen.label} reads every recording."
+        set_available(self._n_recordings, chosen.reads_subset, reason)
+        set_available(
+            self._spread_by,
+            chosen.reads_subset and self._spread_by.count() > 1,
+            (
+                reason
+                if not chosen.reads_subset
+                else "The experiment has no metadata columns."
+            ),
+        )
+        heading = chosen.id == "heading"
+        set_available(
+            self._floor,
+            heading and self._floor.count() > 1,
+            (
+                "Only By heading reads a floor."
+                if not heading
+                else "The detections carry no class to use as the floor."
+            ),
+        )
+        self._n_frames.setToolTip(
+            "Frames per direction." if heading else "Frames to add."
+        )
+
+    def _forget_pool(self) -> None:
+        """A different recording subset or floor is a different pool."""
+        self._pool = None
+
+    def _refresh_compass(self) -> None:
+        from detail.pipeline import headings
+
+        self._compass.set_coverage(headings.coverage(self._pool, self._set))
+
+    def _review_direction(self, bucket: str) -> None:
+        """Open the review window on ``bucket``, building the pool first if it is not held."""
+        if self._pool is not None:
+            self._open_review(bucket)
+            return
+        experiment = self._experiment
+        sources = self.sample_sources()
+        if not sources:
+            return
+        options = {
+            "from_recordings": self._n_recordings.value(),
+            "spread_by": self._spread_by.currentData(),
+            "floor_class": self._floor.currentData(),
+        }
+        run_progress(
+            self,
+            lambda emit: experiment.heading_pool(sources, progress=emit, **options),
+            lambda pool: self._pool_ready(pool, bucket),
+            label="Reading headings…",
+            on_error=self._sample_failed,
+        )
+
+    def _pool_ready(self, pool, bucket: str) -> None:
+        self._pool = pool
+        self._refresh_compass()
+        self._open_review(bucket)
+
+    def _open_review(self, bucket: str) -> None:
+        dialog = HeadingReviewDialog(
+            self._experiment, self._set.id, self._pool, bucket, self
+        )
+        dialog.changed.connect(self._review_changed)
+        dialog.open_frame.connect(self._go_to)
+        dialog.open()
+
+    def _review_changed(self) -> None:
+        self._set = self._experiment.example_set(self._set.id)
+        self._refresh_lists()
+        self._refresh_ticks()
+
     def _sample(self) -> None:
         set_id, n = self._set.id, self._n_frames.value()
         strategy = self._strategy.currentData()
+        from_recordings = self._n_recordings.value()
+        spread_by = self._spread_by.currentData()
+        heading = (
+            {"floor_class": self._floor.currentData()} if strategy == "heading" else {}
+        )
         experiment = self._experiment
-        sources = {v["recording_id"]: v["run_id"] for v in self._offered}
+        sources = self.sample_sources()
         set_available(self._add_frames, False, "Adding frames…")
         run_progress(
             self,
             lambda emit: experiment.sample_example_frames(
-                set_id, sources, n, strategy=strategy, progress=emit
+                set_id,
+                sources,
+                n,
+                strategy=strategy,
+                from_recordings=from_recordings,
+                spread_by=spread_by,
+                progress=emit,
+                **heading,
             ),
             self._sampled,
             label="Adding frames…",
@@ -936,7 +1266,7 @@ class KeypointLabelingDialog(Dialog):
         )
 
     def _sampled(self, example_set: ExampleSet) -> None:
-        set_available(self._add_frames, True, "")
+        self._sync_add_frames()
         before = len(self._set.frames)
         self._set = example_set
         self._refresh_lists()
@@ -946,10 +1276,10 @@ class KeypointLabelingDialog(Dialog):
 
     def _sample_cancelled(self) -> None:
         """Nothing was added: a cancelled draw removes the pictures it had copied."""
-        set_available(self._add_frames, True, "")
+        self._sync_add_frames()
 
     def _sample_failed(self, exc: BaseException) -> None:
-        set_available(self._add_frames, True, "")
+        self._sync_add_frames()
         QMessageBox.warning(self, "Add frames", f"Could not add frames:\n{exc}")
 
     def _remove(self) -> None:
@@ -981,7 +1311,9 @@ class KeypointLabelingDialog(Dialog):
         self._set = example_set
         if self._stored is not None:
             self._stored = None
-            set_available(self._scrubber, self._video is not None, "")
+            self._scrubber.set_available(
+                self._video is not None, "This frame's video is not loaded."
+            )
         self._refresh_lists()
         self._refresh_ticks()
         self._compose()
@@ -999,7 +1331,15 @@ class KeypointLabelingDialog(Dialog):
         k = len(self._set.skeleton)
         done = len({m.target for m in frame.marks} & set(self._set.skeleton.names))
         state = "all marked" if done == k else f"{done}/{k} marked"
-        how = f" ({frame.sampled_by.split(':')[0]})" if frame.sampled_by else ""
+        how = ""
+        if frame.sampled_by:
+            parts = frame.sampled_by.split(":")
+            # a heading pick says which way it faces; the others say how they were chosen
+            how = (
+                f" ({parts[0]}: {parts[1]})"
+                if parts[0] == "heading"
+                else f" ({parts[0]})"
+            )
         return f"{i + 1}. {recording}, frame {frame.frame_idx} · {state}{how}"
 
     # -- the skeleton, until the first mark ------------------------------------ #
@@ -1047,6 +1387,7 @@ class KeypointLabelingDialog(Dialog):
         self._compose()
 
     def _refresh_lists(self) -> None:
+        self._refresh_compass()
         selected = self._frames.currentRow()
         self._frames.clear()
         for i in range(len(self._set.frames)):

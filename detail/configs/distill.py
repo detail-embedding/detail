@@ -41,6 +41,15 @@ class DistillConfig(BaseModel):
         description="Training framework that fits the student on the labeled dataset.",
         json_schema_extra={"label": "Training framework"},
     )
+    stage_videos: bool = Field(
+        False,
+        description=(
+            "Copy every source recording's video to the remote cluster in the background while "
+            "labeling and training run, so the detection run that follows finds it already "
+            "there. Opt-in: it can be 100+ GB. Needs a remote labeling or training target."
+        ),
+        json_schema_extra={"label": "Upload videos in the background"},
+    )
     labeling: LabelingConfig = Field(
         ...,
         description="Labeling-stage parameters (prompt-capable model, frames to label, sampling).",

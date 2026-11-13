@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import QLabel, QPushButton  # noqa: E402
 from detail.api.experiment import Experiment  # noqa: E402
 from detail.gui.comparison import ComparisonsPage  # noqa: E402
 from detail.gui.active_processes import ActiveProcessesPage  # noqa: E402
+from detail.gui.staging import BackgroundUploadsDialog  # noqa: E402
 from detail.gui.pages import (  # noqa: E402
     DatasetsPage,
     ExperimentAnalysisPage,
@@ -63,6 +64,17 @@ def _settled_active_processes():
     return page
 
 
+def _settled_background_uploads(exp):
+    """The dialog, built the way the app opens it: it reads on show, so one read is started here
+    for `_settle` to wait out (the transitional state is `test_a_page_still_reading...`).
+    """
+    from detail.gui.staging import BackgroundUploadsDialog
+
+    dialog = BackgroundUploadsDialog(exp)
+    dialog.refresh()
+    return dialog
+
+
 #: Every collection page reached from the rail or the banner, built the way the shell builds it,
 #: keyed by the class so the coverage check below can compare against the source without
 #: constructing anything. A page whose constructor needs more than `(experiment, on_open)`
@@ -74,6 +86,10 @@ _PAGES = {
     "active_processes": (
         ActiveProcessesPage,
         lambda exp: _settled_active_processes(),
+    ),
+    "background_uploads": (
+        BackgroundUploadsDialog,
+        _settled_background_uploads,
     ),
     "recordings": (
         ExperimentRecordingsPage,
@@ -141,6 +157,9 @@ NO_ACTION_FILLS_IT = {
     # whole reason the page exists. Its notice names *where* runs come from instead of a button
     # it does not have, which is the same promise the rule is making.
     "active_processes": "runs are started from an experiment, not from here",
+    # An upload is started by a checkbox on the Distill dialog, and this window only watches
+    # them; its notice names that checkbox, which is not a button it has.
+    "background_uploads": "uploads are started from the Distill dialog, not from here",
 }
 
 

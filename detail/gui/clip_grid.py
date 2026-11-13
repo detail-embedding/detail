@@ -301,7 +301,7 @@ class ClipGrid(QWidget):
         preview = self._preview
         recording_id = clip.recording_id
         embed_run_id = clip.embed_run_id
-        track_id = int(clip.track_id)
+        track_id = clip.track_id
         middle_t_ns = (int(clip.start_t_ns) + int(clip.end_t_ns)) // 2
 
         def produce():
@@ -574,10 +574,6 @@ class ConfidenceStrip(QWidget):
         them, which is what keeps a given scroll distance meaning a fixed number of clips.
         """
         return max(self._scroll.viewport().width() // (self._size_px + 14), 1)
-
-    def resizeEvent(self, event):  # noqa: N802 — Qt's name
-        super().resizeEvent(event)
-        self._sync_recentre()
 
     # -- what it shows ------------------------------------------------------------------ #
 
@@ -966,7 +962,7 @@ class ConfidenceStrip(QWidget):
         """What makes two clips the same picture."""
         return (
             clip.recording_id,
-            int(clip.track_id),
+            clip.track_id,
             int(clip.start_t_ns),
             int(clip.end_t_ns),
         )
@@ -1126,6 +1122,7 @@ class ConfidenceStrip(QWidget):
         super().resizeEvent(event)
         if self._all and not self._user_scrolled:
             self._centre_handle()
+        self._sync_recentre()  # the "centre on cutoff" button follows what is on screen
 
     def _sync_recentre(self) -> None:
         """Enabled whenever the row can scroll at all.
@@ -1286,7 +1283,7 @@ def _producer(preview, clip, size_px: int = THUMB_PX):
     """The off-thread decode for one clip — the strip's copy of the grid's producer."""
     recording_id = clip.recording_id
     embed_run_id = clip.embed_run_id
-    track_id = int(clip.track_id)
+    track_id = clip.track_id
     middle_t_ns = (int(clip.start_t_ns) + int(clip.end_t_ns)) // 2
 
     def produce():

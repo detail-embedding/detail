@@ -27,28 +27,45 @@ import numpy as np
 from detail.storage import experiment as experiment_store
 
 
-def require_embedded_track(
-    experiment_root, embed_run_ids: dict[str, str], track_id: int
-) -> None:
-    """Refuse a selection where some recording's own embedding run lacks ``track_id``.
+def require_embedded_track(experiment_root, embed_run_ids: dict[str, str], track_id):
+    """Refuse a selection where some recording's own embedding run lacks ``track_id``, or
+    where ``track_id`` is an ambiguous bare integer in a recording that embedded more than
+    one track. Returns the (possibly resolved) ``track_id`` every caller must use from here
+    on — see below.
 
     Per recording, because the runs are matched on settings and embedding settings do not
     include which tracks were embedded (§6.5), so two recordings' matching runs can cover
-    different subjects.
+    different subjects. The ambiguity check is the other half of that: pooling bouts from
+    several recordings into one vocabulary/query treats ``track_id`` as naming the *same*
+    animal everywhere, which a bare int cannot promise the moment a recording embedded more
+    than one track (§13) — found missing here and in query/cluster_fit's siblings while this
+    function was touched for settings-based selection (#547).
+
+    **The untouched literal default (``0``) is resolved against the first recording**, via
+    ``resolve_track_default`` — a run whose only series is not ``0`` would otherwise be refused
+    by every caller whose config field defaults to a plain ``0`` (temporal clustering), despite
+    there being exactly one honest answer. An explicit, wrong value is never rescued this way;
+    it still raises its own clear error below.
 
     Raises:
-        ValueError: A recording's run has no such track; the message names what it has.
+        ValueError: A recording's run has no such track, or the track id is ambiguous there;
+            the message names what it has.
     """
     from detail.api.run_preview import embedding_track_ids
+    from detail.core.utils import check_track_is_unambiguous, resolve_track_default
 
-    for recording_id, embed_run_id in embed_run_ids.items():
+    for i, (recording_id, embed_run_id) in enumerate(embed_run_ids.items()):
         recording_dir = experiment_store.recording_path(experiment_root, recording_id)
         tracks = embedding_track_ids(recording_dir, embed_run_id)
+        if i == 0:
+            track_id = resolve_track_default(track_id, tracks)
         if track_id not in tracks:
             raise ValueError(
                 f"recording {recording_id!r} has no track {track_id} in embedding "
                 f"run {embed_run_id!r}; it has {sorted(tracks)}"
             )
+        check_track_is_unambiguous(track_id, recording_id, tracks, run_id=embed_run_id)
+    return track_id
 
 
 def coverage_for(recording_id: str, subject: int, t_ns, gap_ns: int | None):
@@ -316,7 +333,7 @@ def write_instance_features(
         if wanted is not None and (recording_id, subject) not in wanted:
             continue
         recording_dir = experiment_store.recording_path(experiment_root, recording_id)
-        found = load_track_kinematics(recording_dir, embed_run_id, int(subject))
+        found = load_track_kinematics(recording_dir, embed_run_id, subject)
         if found is not None:
             kinematics[(recording_id, subject)] = found
     if previous is None and not kinematics:

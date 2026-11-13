@@ -33,7 +33,7 @@ from PyQt6.QtWidgets import (
 from detail.api import skeletons as library
 from detail.core.examples import ExampleSet
 from detail.gui.dialog import Dialog
-from detail.gui.sizing import lines, set_available
+from detail.gui.sizing import set_available
 from detail.gui.workers import BackgroundCall
 
 #: The skeleton choice for sets whose skeleton is in no library entry.
@@ -79,7 +79,6 @@ class NewExampleSetDialog(Dialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("New example set")
-        self.resize(lines(36), lines(8))
         form = QFormLayout()
         self._name = QLineEdit(default_set_name)
         self._name.textEdited.connect(lambda _t: self._sync())
@@ -123,9 +122,12 @@ class ExampleSetPicker(QWidget):
 
     changed = pyqtSignal()
 
-    def __init__(self, experiment=None, *, parent=None) -> None:
+    def __init__(self, experiment=None, *, sources=None, parent=None) -> None:
         super().__init__(parent)
         self._experiment = experiment
+        # The recordings the marking window offers (recording id -> tracking run id), when
+        # the caller knows which ones the set is for: a keypoint setup's teacher tracks.
+        self._sources = dict(sources) if sources else None
         self._entries: list[dict] = []
         self._sets: list[ExampleSet] = []
         self._reading = False
@@ -154,6 +156,11 @@ class ExampleSetPicker(QWidget):
         self._delete = QPushButton("Delete set…")
         self._delete.clicked.connect(self._delete_set)
         buttons.addWidget(self._delete)
+        # Never what Enter clicks. A picker is commonly built after its dialog was shown — one per
+        # class, on a hidden page, once the detection run's classes are read
+        # (`class_example_sets`) — where the dialog's own disarming at show cannot reach it.
+        for button in (self._new, self._mark, self._delete):
+            button.setAutoDefault(False)
         buttons.addStretch()
         form.addRow("", buttons)
         self._sync()
@@ -315,7 +322,7 @@ class ExampleSetPicker(QWidget):
             return
         from detail.gui.keypoint_labeling import open_labeling
 
-        open_labeling(self, self._experiment, made.id)
+        open_labeling(self, self._experiment, made.id, sources=self._sources)
         self.refresh(select=made.id)
 
     def _mark_frames(self) -> None:
@@ -324,7 +331,7 @@ class ExampleSetPicker(QWidget):
             return
         from detail.gui.keypoint_labeling import open_labeling
 
-        open_labeling(self, self._experiment, set_id)
+        open_labeling(self, self._experiment, set_id, sources=self._sources)
         self.refresh(select=set_id)
 
     def _delete_set(self) -> None:

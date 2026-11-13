@@ -87,6 +87,17 @@ in a terminal the status line shows it anyway.
 Too many messages is its own failure: leave `--step` at 10 and `--every` at 15 unless the person
 asks for more.
 
+## A crashed or stalled worker
+
+`--max-worker-restart=0` is in `addopts`: `[gwN] node down: Not properly terminated` is a red run
+naming the test it crashed on, not something to wait out. Under xdist's default the replacement
+re-ran the crashed file, and gates stalled holding the machine lock. `scripts/suite_watchdog`
+also ends a run that makes no progress for `suite_stall_timeout` seconds, printing what it was
+waiting on. A crash in `tests/gui` is usually a Qt object freed while in use: every GUI worker
+is rooted until it finishes, a GUI test that leaves one running fails at teardown, and each
+test's orphaned windows are collected at its teardown. `tests/test_xdist_crash_policy.py` has the
+measurement.
+
 ## If nothing shows
 
 - **The watcher waits forever:** it matches the run by checkout root and start time. A run in

@@ -11,7 +11,9 @@ O(recordings) disk reads, and a selection is only getting larger.
 **The rule.** Each per-recording loop at launch reports through the ``(stage, fraction, detail)``
 callback before it reads each recording, by **name**, with its place in the selection, and names
 the phase it is in: ``Resolving shared settings`` for a module's ``resolve_shared_config``, then
-``Validating``. A module that resolves nothing shared reports no such phase.
+``Validating recordings`` (``core.progress``'s stage names, worded ``Rat 2 (2 of 3)`` as
+``progress.reporting_each`` words every loop). A module that resolves nothing shared reports no
+such phase.
 
 These drive a fake module that refuses the last recording, so every check runs and nothing spawns.
 """
@@ -19,6 +21,7 @@ These drive a fake module that refuses the last recording, so every check runs a
 import pytest
 
 from detail.api.experiment import Experiment
+from detail.core.progress import RESOLVING_STAGE, VALIDATING_STAGE
 from detail.executor.runners import PROCESSING_MODULES, ProcessingModule
 from detail.storage import runs as runs_store
 
@@ -48,6 +51,9 @@ class _Checked(ProcessingModule):
 
     def runner(self, job, run_dir, progress_cb, stop_event):
         raise AssertionError("a refused launch never runs")
+
+    def estimate_output_bytes(self, recording_dir, recording_data, config):
+        return 0
 
     def run_dir_for(self, experiment_root, job):
         return experiment_root
@@ -88,20 +94,20 @@ def test_each_launch_phase_names_the_recording_before_reading_it(tmp_path, monke
         PROCESSING_MODULES, "_checked", _SharedChecked(events, refuse=ids[-1])
     )
     _launch(proj, ids, events)
-    share, check = "Resolving shared settings", "Validating"
+    share, check = RESOLVING_STAGE, VALIDATING_STAGE
     assert events == [
-        (share, 0.0, "Rat 1 (1/3)"),
+        (share, 0.0, "Rat 1 (1 of 3)"),
         ("share", ids[0]),
-        (share, 1 / 3, "Rat 2 (2/3)"),
+        (share, 1 / 3, "Rat 2 (2 of 3)"),
         ("share", ids[1]),
-        (share, 2 / 3, "Rat 3 (3/3)"),
+        (share, 2 / 3, "Rat 3 (3 of 3)"),
         ("share", ids[2]),
-        (share, 1.0, "3/3"),
-        (check, 0.0, "Rat 1 (1/3)"),
+        (share, 1.0, "3 of 3"),
+        (check, 0.0, "Rat 1 (1 of 3)"),
         ("validate", ids[0]),
-        (check, 1 / 3, "Rat 2 (2/3)"),
+        (check, 1 / 3, "Rat 2 (2 of 3)"),
         ("validate", ids[1]),
-        (check, 2 / 3, "Rat 3 (3/3)"),
+        (check, 2 / 3, "Rat 3 (3 of 3)"),
         ("validate", ids[2]),
     ]
 
@@ -113,7 +119,7 @@ def test_a_module_with_nothing_shared_reports_only_validation(tmp_path, monkeypa
     events: list = []
     monkeypatch.setitem(PROCESSING_MODULES, "_checked", _Checked(events, refuse=ids[0]))
     _launch(proj, ids, events)
-    assert events == [("Validating", 0.0, "Rat 1 (1/3)"), ("validate", ids[0])]
+    assert events == [(VALIDATING_STAGE, 0.0, "Rat 1 (1 of 3)"), ("validate", ids[0])]
 
 
 def test_a_retry_names_each_recording_it_re_checks(tmp_path, monkeypatch):
@@ -144,9 +150,9 @@ def test_a_retry_names_each_recording_it_re_checks(tmp_path, monkeypatch):
     with pytest.raises(ValueError) as refused:
         proj.retry_run("run_001", progress=lambda *report: events.append(report))
     assert [e for e in events if len(e) == 3] == [
-        ("Validating", 0.0, "Rat 2 (1/3)"),
-        ("Validating", 1 / 3, "Rat 3 (2/3)"),
-        ("Validating", 2 / 3, f"{gone} (3/3)"),
-        ("Validating", 1.0, "3/3"),
+        (VALIDATING_STAGE, 0.0, "Rat 2 (1 of 3)"),
+        (VALIDATING_STAGE, 1 / 3, "Rat 3 (2 of 3)"),
+        (VALIDATING_STAGE, 2 / 3, f"{gone} (3 of 3)"),
+        (VALIDATING_STAGE, 1.0, "3 of 3"),
     ]
     assert ids[1] in str(refused.value) and gone in str(refused.value)

@@ -91,6 +91,58 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(pytest.mark.guard)
 
 
+# --- the real machine config, watched across the run ---------------------------------- #
+# `_machine_config_floor` and `_isolate_machine_storage` below keep every test off the real
+# `~/.config/detail`; this is the backstop for whatever route they miss next. It reads the
+# real config before the first fixture and after the last worker, and fails the run if a file
+# there changed to name this run's basetemp. The helpers are `tests/machine_config.py`.
+
+_MACHINE_CONFIG_MODULE = "detail_test_machine_config"
+_REAL_MACHINE_CONFIG = pytest.StashKey[tuple]()
+
+
+def _load_machine_config():
+    """Load ``tests/machine_config.py`` by path, for the same reason ``tiers.py`` is."""
+    if _MACHINE_CONFIG_MODULE not in sys.modules:
+        path = Path(__file__).parent / "machine_config.py"
+        spec = importlib.util.spec_from_file_location(_MACHINE_CONFIG_MODULE, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[_MACHINE_CONFIG_MODULE] = module
+        spec.loader.exec_module(module)
+    return sys.modules[_MACHINE_CONFIG_MODULE]
+
+
+def pytest_configure(config):
+    from detail.storage import locations
+
+    config.stash[_REAL_MACHINE_CONFIG] = (
+        locations.CONFIG_DIR,
+        _load_machine_config().snapshot(locations.CONFIG_DIR),
+    )
+
+
+def pytest_sessionfinish(session, exitstatus):
+    if hasattr(session.config, "workerinput"):
+        return  # an xdist worker; the controller checks once, after all of them
+    machine_config = _load_machine_config()
+    config_dir, before = session.config.stash[_REAL_MACHINE_CONFIG]
+    basetemp = session.config._tmp_path_factory.getbasetemp()
+    litter = machine_config.litter(
+        before, machine_config.snapshot(config_dir), basetemp
+    )
+    if not litter:
+        return
+    session.exitstatus = pytest.ExitCode.TESTS_FAILED
+    session.config.pluginmanager.get_plugin("terminalreporter").write_line(
+        f"\nthis run wrote its own temp paths ({basetemp}) into the real machine config: "
+        f"{', '.join(str(config_dir / name) for name in litter)}. A fixture reached "
+        "storage.yaml / credentials.yaml outside _machine_config_floor - see "
+        "tests/test_machine_config_isolation.py. Remove the entries naming that basetemp.",
+        red=True,
+        bold=True,
+    )
+
+
 #: Machine-local state a test could write, by the env var that relocates it. Each gets a
 #: session-wide floor below its per-test isolation (``_machine_state_floor``).
 _MACHINE_STATE_ENV = {
@@ -132,9 +184,8 @@ def _machine_state_floor(tmp_path_factory):
     previous = {name: os.environ.get(name) for name in _MACHINE_STATE_ENV}
     for name, dirname in _MACHINE_STATE_ENV.items():
         os.environ[name] = str(tmp_path_factory.mktemp(dirname))
-    with pytest.MonkeyPatch.context() as mp:
-        _point_machine_storage_at(mp, tmp_path_factory.mktemp("machine_config_floor"))
-        yield
+    # ``~/.config/detail`` has its own floor, ``_machine_config_floor`` below.
+    yield
     for name, value in previous.items():
         if value is None:
             os.environ.pop(name, None)
@@ -173,6 +224,52 @@ def _isolate_model_cache(tmp_path_factory, monkeypatch):
     monkeypatch.setenv(
         "DETAIL_MODEL_DIR", str(_isolation_dir(tmp_path_factory, "model_cache"))
     )
+
+
+def _point_machine_config_at(monkeypatch, config_dir: Path) -> None:
+    """Redirect this machine's config dir (storage.yaml, credentials.yaml,
+    remote_targets.yaml) to ``config_dir``.
+
+    Both halves are needed. The **env var** is what reaches a spawned worker, which
+    re-imports ``locations`` and would otherwise resolve the real path; the **monkeypatch**
+    is what redirects this process, where each module captured the dir at import, long
+    before any fixture ran. ``tests/test_machine_config_isolation.py`` finds every module
+    that does, so one missing here fails there.
+    """
+    from detail.storage import credentials, locations, remote_targets
+
+    monkeypatch.setenv("DETAIL_CONFIG_DIR", str(config_dir))
+    monkeypatch.setattr(locations, "CONFIG_DIR", config_dir)
+    monkeypatch.setattr(locations, "STORAGE_PATH", config_dir / "storage.yaml")
+    monkeypatch.setattr(credentials, "CONFIG_DIR", config_dir)
+    monkeypatch.setattr(
+        credentials, "CREDENTIALS_PATH", config_dir / "credentials.yaml"
+    )
+    monkeypatch.setattr(remote_targets, "CONFIG_DIR", config_dir)
+    monkeypatch.setattr(
+        remote_targets, "REMOTE_TARGETS_PATH", config_dir / "remote_targets.yaml"
+    )
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _machine_config_floor(tmp_path_factory):
+    """A **session-wide** throwaway machine config, below the per-test isolation.
+
+    A function-scoped autouse fixture is set up for each *test*, which is after every
+    module- and session-scoped fixture that test depends on. So ``_isolate_machine_storage``
+    alone never covered a wide fixture: one that imported a video (``an_experiment`` and
+    friends, built once per module to save the cost) registered its temp dir as a video root
+    in the developer's real ``storage.yaml`` — ~30 ``conformance0_N`` / ``settings0_N`` /
+    ``fits0_N`` entries on one machine in a fortnight, after it had been cleaned once. A
+    session-scoped autouse fixture is set up before any narrower one, so every wide fixture
+    meets this floor; a background thread that outlives its test falls back to it too, as
+    with ``_machine_state_floor`` above. ``tests/test_machine_config_isolation.py`` is the guard.
+    """
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        _point_machine_config_at(
+            monkeypatch, tmp_path_factory.mktemp("machine_config_floor")
+        )
+        yield
 
 
 @pytest.fixture(autouse=True)
@@ -237,6 +334,14 @@ def held_build_lock():
 
 
 @pytest.fixture(autouse=True)
+def _no_hosted_docs_url(monkeypatch):
+    """Clear ``DETAIL_DOCS_URL`` for every test: help and the Docs tab follow the hosted docs
+    site when a developer's shell sets it, so a test asserting the local URL passed or failed by
+    the machine it ran on. A test about the hosted site sets it itself."""
+    monkeypatch.delenv("DETAIL_DOCS_URL", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_machine_storage(tmp_path_factory, monkeypatch):
     """Point ``~/.config/detail/storage.yaml`` at a throwaway dir per test.
 
@@ -245,30 +350,11 @@ def _isolate_machine_storage(tmp_path_factory, monkeypatch):
     that imported a video could write to the developer's real config, and one that forgot
     failed with a confusing ``storage.yaml.tmp -> storage.yaml`` error instead. Covering it
     once here matches ``_isolate_model_cache`` above: a test never touches real machine
-    state, and never has to remember to say so.
-
-    Both halves are needed. The **env var** is what reaches a spawned import worker, which
-    re-imports ``locations`` and would otherwise resolve the real path; the **monkeypatch**
-    is what redirects this process, where the module was imported long before the fixture
-    ran. Credentials live in the same directory and follow the same override.
+    state, and never has to remember to say so. Fixtures wider than a test are covered by
+    ``_machine_config_floor``, which this reverts to.
     """
-    _point_machine_storage_at(
+    _point_machine_config_at(
         monkeypatch, _isolation_dir(tmp_path_factory, "machine_config")
-    )
-
-
-def _point_machine_storage_at(monkeypatch, config_dir: Path) -> None:
-    """``_isolate_machine_storage``'s body, for a session-scoped builder that imports video: a
-    wider-scoped fixture is set up *before* the function-scoped autouse ones, so it is not yet
-    isolated and has to say so itself."""
-    from detail.storage import credentials, locations
-
-    monkeypatch.setenv("DETAIL_CONFIG_DIR", str(config_dir))
-    monkeypatch.setattr(locations, "CONFIG_DIR", config_dir)
-    monkeypatch.setattr(locations, "STORAGE_PATH", config_dir / "storage.yaml")
-    monkeypatch.setattr(credentials, "CONFIG_DIR", config_dir)
-    monkeypatch.setattr(
-        credentials, "CREDENTIALS_PATH", config_dir / "credentials.yaml"
     )
 
 
@@ -319,6 +405,37 @@ def _prepopulate_registries() -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_real_ssh_check(request, monkeypatch):
+    """Leave the shared-connection check out of every test that fakes ``subprocess.run``.
+
+    ``ssh_transport.require_responsive`` runs ``ssh -O check`` before a remote command, so a
+    test that stands in for ssh by replacing ``subprocess.run`` would see one call it did not
+    plan for (and a machine with a live ControlMaster would be asked a real question). A module
+    that tests the check itself sets ``REAL_STALL_CHECK = True``.
+    """
+    if getattr(request.module, "REAL_STALL_CHECK", False):
+        return
+    from detail.executor import ssh_transport
+
+    monkeypatch.setattr(ssh_transport, "require_responsive", lambda host: None)
+
+
+@pytest.fixture(scope="session")
+def _ssh_slot_root(tmp_path_factory):
+    return tmp_path_factory.mktemp("ssh-sessions")
+
+
+@pytest.fixture(autouse=True)
+def _ssh_slots_off_home(_ssh_slot_root, monkeypatch):
+    """Keep ``ssh_transport.session_slot``'s lock files out of the real home directory, where a
+    test would share slots with a live run on the same machine."""
+    from detail.executor import ssh_transport
+
+    monkeypatch.setattr(ssh_transport, "_SLOT_ROOT", _ssh_slot_root)
+    ssh_transport._refused_last.clear()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_registries():
     """Restore the component registries after each test so a fake model/tracker/etc.
     registered mid-test can't leak into a later test — an in-body ``register_model(...)``
@@ -365,6 +482,46 @@ def _isolate_pool_worker_state():
         os.environ.pop("CUDA_VISIBLE_DEVICES", None)
     else:
         os.environ["CUDA_VISIBLE_DEVICES"] = cuda
+
+
+# --- the managed experiments workspace ------------------------------------------------ #
+# `locations.experiments_root()` falls back to `DEFAULT_ROOT` (~/Documents/DetailExperiments)
+# whenever storage.yaml names no root — which is every test, since storage.yaml is isolated
+# and empty. Both scopes below redirect that fallback; the guard and the class are in
+# `tests/test_experiments_root_isolation.py`. Patching `DEFAULT_ROOT` rather than
+# `experiments_root` keeps the function itself — its storage.yaml override, its mkdir —
+# the thing every test runs.
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _experiments_root_floor(tmp_path_factory):
+    """A **session-wide** throwaway experiments workspace, below the per-test one.
+
+    What a module- or session-scoped fixture sees, since a function-scoped autouse fixture is
+    set up after those — and what a GUI thread outliving its test (readiness, the active
+    processes poll) falls back to once the per-test patch reverts, instead of the developer's
+    real experiments.
+    """
+    from detail.storage import locations
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(
+            locations, "DEFAULT_ROOT", tmp_path_factory.mktemp("experiments_root_floor")
+        )
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_experiments_root(tmp_path_factory, monkeypatch):
+    """A fresh experiments workspace per test, so ``Experiment.create(name)`` in one test is
+    not in the next test's ``Experiment.list_all()``. Reverts to the floor above."""
+    from detail.storage import locations
+
+    monkeypatch.setattr(
+        locations,
+        "DEFAULT_ROOT",
+        _isolation_dir(tmp_path_factory, "experiments_root"),
+    )
 
 
 def _split_detail_modules() -> set[str]:
@@ -596,6 +753,17 @@ def make_embedding_run():
 
 
 @pytest.fixture
+def make_keypoints_run():
+    """Factory: write a keypoints run (§26) into a recording and index it in ``recording.yaml``.
+
+    Hands back ``tests/experiments.py::write_keypoints_run``. The real ``KeypointsPartWriter``
+    and the module's own ``run_record``, so a consumer (an aligned embedding) resolves it by
+    id or by settings exactly as it resolves a real one.
+    """
+    return _load_experiments().write_keypoints_run
+
+
+@pytest.fixture
 def processed_recording(tmp_path):
     """An experiment with one recording carrying a complete detection **and** tracking run,
     recorded both per-recording and as experiment-level run records.
@@ -649,11 +817,27 @@ def processed_recording(tmp_path):
             self._recordings: list[str] = []
             self.recording = self.add_recording("recording_001")
 
-        def add_recording(self, recording_id, detections=None, object_ids=None):
+        def add_recording(
+            self,
+            recording_id,
+            detections=None,
+            object_ids=None,
+            *,
+            classes=None,
+            class_name=None,
+            frame_ns=1000,
+            n_timestamps=5,
+        ):
             """A recording with a 1-part 40x40 video and a complete ``det_01`` / ``track_01``.
 
             ``detections`` is ``[(frame_idx, detection_idx, bbox, mask), ...]`` and
             ``object_ids`` is parallel — the track each detection row was assigned to.
+            ``classes`` names each detection row's class (``mouse`` when omitted); with
+            ``class_name`` the tracking run tracked that class only, so ``object_ids`` is
+            parallel to *its* rows alone, as a class-filtered tracker writes it (§13).
+            ``frame_ns`` spaces the frames in time and ``n_timestamps`` sizes the timestamp
+            map; the defaults are the fixture's historical 1 µs and five frames, and a test of
+            anything measured in seconds passes a real rate (33_333_333 for 30 fps).
             """
             if detections is None:
                 detections = [(0, 0, (0.1, 0.1, 0.5, 0.5), _square(4, 20, 4, 20))]
@@ -664,7 +848,7 @@ def processed_recording(tmp_path):
             rel = "video/timestamps/generated/part_001.csv"
             (sdir / rel).parent.mkdir(parents=True, exist_ok=True)
             recording_store.write_timestamps_csv(
-                sdir / rel, np.arange(5, dtype=np.int64) * 1000
+                sdir / rel, np.arange(n_timestamps, dtype=np.int64) * frame_ns
             )
             data = recording_store.read_recording(sdir)
             data["video"] = {
@@ -703,15 +887,22 @@ def processed_recording(tmp_path):
                 encoding="utf-8",
             )
             with DetectionPartWriter(det_dir / "part_001.zarr") as writer:
-                for frame, index, bbox, mask in detections:
+                for row, (frame, index, bbox, mask) in enumerate(detections):
                     writer.add_row(
-                        frame, frame * 1000, index, "mouse", 0.9, bbox, _rle(mask)
+                        frame,
+                        frame * frame_ns,
+                        index,
+                        classes[row] if classes else "mouse",
+                        0.9,
+                        bbox,
+                        _rle(mask),
                     )
 
             trk_dir = sdir / "tracking" / "track_01"
             (trk_dir / "assignments").mkdir(parents=True)
             (trk_dir / "track.yaml").write_text(
-                yaml.dump({"detection_run_id": "det_01"}), encoding="utf-8"
+                yaml.dump({"detection_run_id": "det_01", "class_name": class_name}),
+                encoding="utf-8",
             )
             with AssignmentPartWriter(
                 trk_dir / "assignments" / "part_001.zarr"
@@ -1084,6 +1275,69 @@ def fitted_temporal(experiment_dir, recording_dir, _temporal_fit_template):
     return Experiment(experiment_dir), run_id
 
 
+#: The profile fit's trajectory (70 runs, 29 nodes). 32 bouts already give three unrelated nodes
+#: of at least 12 runs, but not a third such node beside the largest one apart from the first,
+#: which `test_cluster_lookalikes.py::three` picks; 40 is the smallest size tried that does.
+_PROFILE_FIT_SHAPE = {"n_bouts": 40, "bout_rows": 20, "kinds": 4}
+
+
+@pytest.fixture(scope="session")
+def _profile_fit_template(tmp_path_factory):
+    """One real temporal fit with enough bouts per node for a cluster profile, built once per
+    session; never handed to a test directly.
+
+    A profile needs at least 10 complete rows on each side, and the profile and look-alike tests
+    need several unrelated nodes that size. The shared temporal fit has 21 bouts, so no node of it
+    reaches that; these tests were written on a pose-clustering fit, whose members were frames,
+    and this fit replaced it when pose clustering was removed. The same build as
+    ``_temporal_fit_template`` over a longer trajectory (about 4 s on the Windows box).
+    """
+    from detail.api.experiment import Experiment
+    from detail.storage import recording as recording_store
+
+    experiments = _load_experiments()
+    root = tmp_path_factory.mktemp("profile_fit_template")
+    experiment_dir = experiments.build_experiment_dir(root)
+    recording_dir = experiments.build_recording_dir(experiment_dir)
+
+    features = _bouty_trajectory(**_PROFILE_FIT_SHAPE)
+    n = len(features)
+    frame_idx = np.arange(n, dtype=np.int64)
+    t_ns = frame_idx * _POSE_FIT_STEP
+    recording_store.write_timestamps_csv(
+        recording_dir / "video/timestamps/generated/part_001.csv",
+        np.arange(n + _POSE_FIT_VIDEO_TAIL, dtype=np.int64) * _POSE_FIT_STEP,
+    )
+    cx = np.linspace(0.0, 1.0, n)
+    experiments.write_embedding_run(
+        recording_dir, features, frame_idx, t_ns, embed_run_id="emb_01", cx=cx, cy=cx
+    )
+    run = Experiment(experiment_dir).run_analysis(
+        "temporal_clustering",
+        {
+            "source_recording_ids": ["recording_001"],
+            "embed_run_id": "emb_01",
+            "track_id": 0,
+            "method": "dtw_finch",
+            "method_params": dict(_TEMPORAL_METHOD_PARAMS),
+        },
+    )
+    run.wait()
+    return experiment_dir, run.id
+
+
+@pytest.fixture
+def fitted_profile(experiment_dir, recording_dir, _profile_fit_template):
+    """A private copy of the session's profile fit, as ``(experiment, run_id)``."""
+    import shutil
+
+    from detail.api.experiment import Experiment
+
+    template, run_id = _profile_fit_template
+    shutil.copytree(template, experiment_dir, dirs_exist_ok=True)
+    return Experiment(experiment_dir), run_id
+
+
 _SESSION_LENGTHS_MODULE = "detail_test_session_lengths"
 
 
@@ -1109,7 +1363,7 @@ def _session_lengths_template(tmp_path_factory):
     experiments = _load_experiments()
     root = tmp_path_factory.mktemp("session_lengths_template")
     with pytest.MonkeyPatch.context() as mp:
-        _point_machine_storage_at(mp, root / "machine_config")
+        _point_machine_config_at(mp, root / "machine_config")
         experiment_dir = root / "experiment"
         experiment_dir.mkdir()
         experiments.build_experiment_dir(experiment_dir)

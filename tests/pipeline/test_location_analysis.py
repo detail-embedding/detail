@@ -65,6 +65,7 @@ def _add_tracked_recording(experiment, sid, *, complete=True):
             "model_variant": "large",
             "weights_source": "pretrained",
             "conf_threshold": 0.25,
+            "class_conf_thresholds_fingerprint": "ccf",
             "prompt_fingerprint": "fp",
             "prompt_classes": ["mouse"],
         }
@@ -359,7 +360,8 @@ def test_runner_isolates_failed_recording(tmp_path):
     assert rec["per_recording"]["recording_002"]["status"] == "failed"
     assert rec["per_recording"]["recording_002"]["error"]  # a reason is recorded
     assert {a["path"] for a in rec["artifacts"]} == {
-        f"recording_001/{k}.csv" for k in ("tracks", "roi_relations", "point_relations")
+        f"recording_001/{k}.csv"
+        for k in ("tracks", "roi_relations", "point_relations", "pair_relations")
     }  # only the recording whose CSVs are on disk
 
 
@@ -394,3 +396,186 @@ def test_validate_refuses_a_calibration_of_another_shape(tmp_path):
     recording_store.write_recording(rec.dir, data)
     with pytest.raises(ValueError, match="recording_001.*different video shape"):
         proj.run_analysis("location_export", _config("recording_001"))
+
+
+# --------------------------------------------------------------------------- #
+# Keypoints and pairs (§16 *Keypoints and pairs in the export*)
+# --------------------------------------------------------------------------- #
+def _with_keypoints(proj, sid, track_run_id="kt_01", tracking_run_id="track_01"):
+    from tests.experiments import write_keypoint_track_run
+
+    recording = _add_tracked_recording(proj, sid)
+    write_keypoint_track_run(
+        recording.dir,
+        n_frames=1,
+        track_run_id=track_run_id,
+        tracking_run_id=tracking_run_id,
+    )
+    return recording
+
+
+def test_a_keypoint_run_id_is_resolved_per_recording_and_reaches_the_record(tmp_path):
+    proj = Experiment.create("p", tmp_path)
+    _with_keypoints(proj, "recording_001")
+    module = ANALYSIS_MODULES["location_export"]
+    config = module.validate(
+        proj.dir,
+        {
+            **_config("recording_001"),
+            "keypoint_run_id": "kt_01",
+            "pair_edge_distance": True,
+        },
+    )
+    assert config["keypoint_run_ids"] == {"recording_001": "kt_01"}
+    job = module.build_job("an_01", config)
+    assert job.keypoint_run_ids == {"recording_001": "kt_01"} and job.pair_edge_distance
+    run_dir = ar.analysis_dir(proj.dir, "an_01")
+    ar.write_analysis_yaml(
+        run_dir, {"id": "an_01", "module_id": "location_export", "status": "running"}
+    )
+    module.runner(job, run_dir, lambda *_: None, threading.Event())
+    rec = proj.analysis_record("an_01")
+    assert rec["status"] == "complete", rec
+    assert (run_dir / "recording_001" / "keypoints.csv").is_file()
+    assert "recording_001/keypoints.csv" in {a["path"] for a in rec["artifacts"]}
+    assert rec["params"]["keypoint_run_ids"] == {"recording_001": "kt_01"}
+    assert rec["params"]["pair_edge_distance"] is True
+
+
+def test_a_keypoint_spec_finds_each_recording_s_own_run_whatever_its_id(tmp_path):
+    from detail.api import run_spec
+
+    proj = Experiment.create("p", tmp_path)
+    first = _with_keypoints(proj, "recording_001", track_run_id="kt_01")
+    _with_keypoints(proj, "recording_002", track_run_id="kt_02")
+    spec = run_spec.spec_from_run(first, "keypoint_track", "kt_01")
+    config = ANALYSIS_MODULES["location_export"].validate(
+        proj.dir,
+        {**_config("recording_001", "recording_002"), "keypoint_track_spec": spec},
+    )
+    assert config["keypoint_run_ids"] == {
+        "recording_001": "kt_01",
+        "recording_002": "kt_02",
+    }
+
+
+def test_a_keypoint_run_of_another_tracking_run_is_refused_at_validate(tmp_path):
+    proj = Experiment.create("p", tmp_path)
+    recording = _with_keypoints(proj, "recording_001", tracking_run_id="track_02")
+    data = recording_store.read_recording(recording.dir)
+    data["tracking_runs"].append({**data["tracking_runs"][0], "id": "track_01"})
+    recording_store.write_recording(recording.dir, data)
+    with pytest.raises(
+        ValueError, match="assigned its poses to tracking run 'track_02'"
+    ):
+        ANALYSIS_MODULES["location_export"].validate(
+            proj.dir, {**_config("recording_001"), "keypoint_run_id": "kt_01"}
+        )
+
+
+def test_a_recording_without_the_keypoint_run_is_named(tmp_path):
+    proj = Experiment.create("p", tmp_path)
+    _add_tracked_recording(proj, "recording_001")
+    with pytest.raises(ValueError, match="recording 'recording_001' has no keypoint"):
+        ANALYSIS_MODULES["location_export"].validate(
+            proj.dir, {**_config("recording_001"), "keypoint_run_id": "kt_01"}
+        )
+
+
+def test_a_job_written_before_keypoints_reads_as_none_and_off():
+    from detail.pipeline.location_analysis import LocationAnalysisJob
+
+    job = LocationAnalysisJob.from_dict(
+        {
+            "job_id": "an_01",
+            "source_recording_ids": ["recording_001"],
+            "tracking_run_ids": {"recording_001": "track_01"},
+            "created_at": "2026-01-01T00:00:00Z",
+        }
+    )
+    assert job.keypoint_run_ids == {} and job.pair_edge_distance is False
+
+
+# --------------------------------------------------------------------------- #
+# Per-recording overrides (§6.5): a recording whose tracking was redone beside a bad run
+# --------------------------------------------------------------------------- #
+def _redone(proj, sid):
+    """track_01 (bad) and track_02 (redone with another setting), each with its own keypoint
+    track run: kt_01 on track_01, kt_02 on track_02."""
+    from tests.experiments import write_keypoint_track_run
+
+    recording = _add_tracked_recording(proj, sid)
+    records = {}
+    for tracking_run_id, kt in (("track_02", "kt_02"), ("track_01", "kt_01")):
+        write_keypoint_track_run(
+            recording.dir, n_frames=1, track_run_id=kt, tracking_run_id=tracking_run_id
+        )
+        data = recording_store.read_recording(recording.dir)
+        records[kt] = data["keypoint_track_runs"][0]
+    original = data["tracking_runs"][0]
+    data["tracking_runs"] = [
+        original,
+        {**original, "id": "track_02", "hyperparams": {"max_missed_frames": 9}},
+    ]
+    data["keypoint_track_runs"] = [records["kt_01"], records["kt_02"]]
+    recording_store.write_recording(recording.dir, data)
+    return recording
+
+
+def test_a_keypoint_override_follows_a_tracking_override(tmp_path):
+    proj = Experiment.create("p", tmp_path)
+    _redone(proj, "recording_001")
+    _with_keypoints(proj, "recording_002")
+    base = {
+        **_config("recording_001", "recording_002"),
+        "tracking_overrides": {"recording_001": "track_02"},
+        "keypoint_run_id": "kt_01",
+    }
+    module = ANALYSIS_MODULES["location_export"]
+    # The tracking run is chosen, but kt_01 put its poses on track_01: still refused.
+    with pytest.raises(
+        ValueError, match="assigned its poses to tracking run 'track_01'"
+    ):
+        module.validate(proj.dir, dict(base))
+
+    config = module.validate(
+        proj.dir, {**base, "keypoint_track_overrides": {"recording_001": "kt_02"}}
+    )
+
+    assert config["tracking_run_ids"] == {
+        "recording_001": "track_02",
+        "recording_002": "track_01",
+    }
+    assert config["keypoint_run_ids"] == {
+        "recording_001": "kt_02",
+        "recording_002": "kt_01",
+    }
+    job = module.build_job("an_01", config)
+    assert job.keypoint_run_ids == config["keypoint_run_ids"]
+
+
+def test_a_keypoint_override_alone_exports_keypoints_for_its_recording_only(tmp_path):
+    proj = Experiment.create("p", tmp_path)
+    _with_keypoints(proj, "recording_001")
+    _add_tracked_recording(proj, "recording_002")
+    config = ANALYSIS_MODULES["location_export"].validate(
+        proj.dir,
+        {
+            **_config("recording_001", "recording_002"),
+            "keypoint_track_overrides": {"recording_001": "kt_01"},
+        },
+    )
+    assert config["keypoint_run_ids"] == {"recording_001": "kt_01"}
+
+
+def test_a_keypoint_override_outside_the_selection_is_refused(tmp_path):
+    proj = Experiment.create("p", tmp_path)
+    _with_keypoints(proj, "recording_001")
+    with pytest.raises(ValueError, match="'recording_009'.*not selected"):
+        ANALYSIS_MODULES["location_export"].validate(
+            proj.dir,
+            {
+                **_config("recording_001"),
+                "keypoint_track_overrides": {"recording_009": "kt_01"},
+            },
+        )

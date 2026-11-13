@@ -63,7 +63,6 @@ class FullFrameDialog(Dialog):
     def __init__(self, render: Render, *, title: str, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle(title)
-        self.resize(900, 700)
         layout = self.body()
         self._view = ImageView(zoomable=True)
         self._view.setMinimumSize(480, 360)

@@ -50,60 +50,75 @@ def walked(tmp_path_factory, qapp, _temporal_fit_template):
 
     monkeypatch = _pytest.MonkeyPatch()
     monkeypatch.setattr(locations, "experiments_root", lambda: tmp_path)
-    experiment = subj.an_experiment(tmp_path)
-    recording = experiment.get_recording("recording_001")
+    # Undone however the setup ends: a dialog that fails to build used to raise before the
+    # `yield`, leave this patch in place, and send every later test on the worker to this
+    # fixture's folder as the experiments root (`test_locations` failed three ways on it).
+    alive: list = []
+    try:
+        experiment = subj.an_experiment(tmp_path)
+        # Dialogs over a crowded experiment: a pop-up's lists are where rows get hidden, and
+        # with one recording nothing is ever long enough to hide any.
+        (tmp_path / "crowded").mkdir()
+        crowded = subj.a_crowded_experiment(tmp_path / "crowded")
+        crowded_recording = crowded.get_recording("recording_001")
 
-    # The built roots are held for the fixture's whole life. A `Subject` holds a *child* widget,
-    # and a child does not keep its tree alive: drop the root's Python reference and Qt destroys
-    # the C++ side underneath every subject, so the rules meet
-    # "wrapped C/C++ object of type QPushButton has been deleted" rather than a button. That is
-    # this repo's recorded Qt-lifetime class, met on the first run of this file.
-    # Pages are built **the way the shell builds them** — through `MainWindow._show`, which is
-    # not decoration: `_show` is where a page's labels are made selectable, so a directly
-    # constructed page is not in the state a user meets. Measured: 0 of 263 labels selectable at
-    # construction, 105 of 105 after `_show`.
-    #
-    # One window per page, because `_show` discards the page it replaces; 18 windows cost 0.4s.
-    from detail.gui.app import MainWindow
+        # The built roots are held for the fixture's whole life. A `Subject` holds a *child* widget,
+        # and a child does not keep its tree alive: drop the root's Python reference and Qt destroys
+        # the C++ side underneath every subject, so the rules meet
+        # "wrapped C/C++ object of type QPushButton has been deleted" rather than a button. That is
+        # this repo's recorded Qt-lifetime class, met on the first run of this file.
+        # Pages are built **the way the shell builds them** — through `MainWindow._show`, which is
+        # not decoration: `_show` is where a page's labels are made selectable, so a directly
+        # constructed page is not in the state a user meets. Measured: 0 of 263 labels selectable at
+        # construction, 105 of 105 after `_show`.
+        #
+        # One window per page, because `_show` discards the page it replaces; 18 windows cost 0.4s.
+        from detail.gui.app import MainWindow
 
-    alive, found, roots = [], [], []
-    for name, build in PAGE_BUILDERS.items():
+        found, roots = [], []
+        for name, build in PAGE_BUILDERS.items():
+            window = MainWindow()
+            widget = build(experiment)
+            window._show(widget, name)
+            window.show()  # policies that apply on show — and the state layout rules will need
+            alive.extend((window, widget))
+            roots.append(name)
+            found.extend(subj.walk(widget, name))
+        # The shell itself holds one split — the navigation beside the page — which no page
+        # walk reaches, because a page is the right-hand pane of it.
+        found.append(subj.Subject("splitter", window._split, "MainWindow"))
+        roots.append("MainWindow")
+        # The clustering page needs a fitted run, which no page builder above has: the
+        # session's shared fit, copied, so the walk adds no fit of its own.
         window = MainWindow()
-        widget = build(experiment)
-        window._show(widget, name)
-        window.show()  # policies that apply on show — and the state layout rules will need
+        widget = subj.a_clustering_workspace(
+            tmp_path_factory.mktemp("clustering"), _temporal_fit_template, qapp
+        )
+        window._show(widget, "ClusterWorkspace")
+        window.show()
         alive.extend((window, widget))
-        roots.append(name)
-        found.extend(subj.walk(widget, name))
-    # The shell itself holds one split — the navigation beside the page — which no page walk
-    # reaches, because a page is the right-hand pane of it.
-    found.append(subj.Subject("splitter", window._split, "MainWindow"))
-    roots.append("MainWindow")
-    # The clustering page needs a fitted run, which no page builder above has: the session's
-    # shared fit, copied, so the walk adds no fit of its own.
-    window = MainWindow()
-    widget = subj.a_clustering_workspace(
-        tmp_path_factory.mktemp("clustering"), _temporal_fit_template, qapp
-    )
-    window._show(widget, "ClusterWorkspace")
-    window.show()
-    alive.extend((window, widget))
-    roots.append("ClusterWorkspace")
-    found.extend(subj.walk(widget, "ClusterWorkspace"))
-    for cls in DIALOGS:
-        widget = subj.build_dialog(cls, experiment, recording)
-        widget.show()  # a dialog reaches the screen without the shell; show it as one appears
-        alive.append(widget)
-        roots.append(cls.__name__)
-        found.extend(subj.walk(widget, cls.__name__, "dialog"))
-    # The source tree is a subject too. Four house rules are about what the package *never* does,
-    # and a rule of that shape cannot be checked by looking at what happens to be built — an icon
-    # on a `QListWidgetItem` is not a `QWidget`, so no walk over widgets will ever reach it.
-    found.append(subj.PackageSubject())
-    roots.append("detail.gui")
-    yield found, roots
-    alive.clear()
-    monkeypatch.undo()
+        roots.append("ClusterWorkspace")
+        found.extend(subj.walk(widget, "ClusterWorkspace"))
+        for cls in DIALOGS:
+            widget = subj.build_dialog(cls, crowded, crowded_recording)
+            widget.show()  # a dialog reaches the screen without the shell; show it as one appears
+            alive.append(widget)
+            roots.append(cls.__name__)
+            found.extend(subj.walk(widget, cls.__name__, "dialog"))
+        # A dialog's content can land after its show — a list filled, a form swapped — and its
+        # re-fit is queued behind that (`Dialog._refit`). Let both happen before anything is
+        # measured, as they would before a user could look.
+        for _ in range(4):
+            qapp.processEvents()
+        # The source tree is a subject too. Four house rules are about what the package *never* does,
+        # and a rule of that shape cannot be checked by looking at what happens to be built — an icon
+        # on a `QListWidgetItem` is not a `QWidget`, so no walk over widgets will ever reach it.
+        found.append(subj.PackageSubject())
+        roots.append("detail.gui")
+        yield found, roots
+    finally:
+        alive.clear()
+        monkeypatch.undo()
 
 
 # --------------------------------------------------------------------------- #

@@ -259,3 +259,115 @@ def test_introspect_reads_k_and_flip_idx_and_refuses_a_non_pose_checkpoint(
     assert TrainedYoloPose.introspect(tmp_path / "pose.pt") == (3, [0, 2, 1])
     with pytest.raises(ValueError, match="not a pose model"):
         TrainedYoloPose.introspect(tmp_path / "seg.pt")
+
+
+# --- student_input: crop (§12) ----------------------------------------------------- #
+def test_a_crop_student_takes_the_animal_at_its_crops_centre_back_to_the_frame(
+    tmp_path,
+    fake_split,
+):
+    """Each detection is run on its own crop (BGR, like the whole frame); the detection covering
+    the crop's centre is its, and its points go back through the crop's view."""
+    from detail.models.patch_match.view import make_view
+
+    model = TrainedYoloPose(tmp_path / "best.pt", SK, student_input="crop", crop_px=64)
+    # in the crop: a neighbour at the edge, then the subject, centred
+    det_boxes = [[0.0, 0.0, 0.2, 0.2], [0.3, 0.3, 0.7, 0.7]]
+    xyn = [
+        [[0.1, 0.1], [0.1, 0.1], [0.1, 0.1]],
+        [[0.5, 0.4], [0.4, 0.6], [0.6, 0.6]],
+    ]
+    result = _Result(
+        _Boxes(det_boxes, [0.7, 0.9]), _Keypoints(xyn, [[0.9] * 3, [0.8] * 3])
+    )
+    model._model = _FakeYolo([result])
+    box = (0.2, 0.25, 0.4, 0.75)
+    red = np.zeros((40, 60, 3), np.uint8)
+    red[..., 0] = 255
+
+    (fr,) = model.predict_batch(
+        [InstanceFrame(frame_idx=3, t_ns=3000, frame=red, boxes={5: box})]
+    )
+
+    assert model._model.calls[0][0] == 1  # one crop for the one detection
+    (seen,) = model._model.frames
+    assert seen.shape == (64, 64, 3)
+    assert seen[32, 32, 2] == 255 and seen[32, 32, 0] == 0, "the crop is handed BGR"
+    view = make_view(box, (60, 40), 64, 1)
+    x, y = view.to_source(0.5 * 64, 0.4 * 64)
+    np.testing.assert_allclose(fr.points[0, 0], [x / 60, y / 40], atol=1e-6)
+    # the detection it was cut around; no subject until keypoint track assigns one (§26)
+    assert fr.detection_row.tolist() == [5] and fr.confidence[0] == pytest.approx(0.9)
+
+
+def test_a_crop_with_nothing_on_its_centre_places_no_points(tmp_path, fake_split):
+    """A detection that does not cover the crop's centre is a neighbour reaching in, never
+    this track."""
+    model = TrainedYoloPose(tmp_path / "best.pt", SK, student_input="crop", crop_px=64)
+    result = _Result(
+        _Boxes([[0.0, 0.0, 0.2, 0.2]], [0.9]),
+        _Keypoints([[[0.1, 0.1]] * 3], [[0.9] * 3]),
+    )
+    model._model = _FakeYolo([result])
+    (fr,) = model.predict_batch([_frame({0: (0.2, 0.25, 0.4, 0.75)})])
+    assert np.isnan(fr.points).all() and np.isnan(fr.confidence).all()
+
+
+def test_a_student_is_run_the_way_its_record_says_it_was_trained():
+    from detail.models.resolve import student_input_of
+
+    assert student_input_of({}) == {"student_input": "whole_frame", "crop_px": 448}
+    assert student_input_of({"student_input": "crop", "student_crop_px": 320}) == {
+        "student_input": "crop",
+        "crop_px": 320,
+    }
+    # a student the stage before §26 trained: a crop_px and no student_input
+    assert student_input_of({"crop_px": 320}) == {
+        "student_input": "crop",
+        "crop_px": 320,
+    }
+    with pytest.raises(ValueError, match="whole_frame or crop"):
+        TrainedYoloPose("x.pt", SK, student_input="sideways")
+
+
+def test_a_catalog_student_from_before_the_rebuild_runs_on_its_crop(tmp_path):
+    """The stage before §26 promoted each distilled student into the catalog, trained on
+    crops, with its old skeleton shape; it resolves to a crop-mode student with that skeleton
+    in §26's shape."""
+    from detail.models import imported as imported_store
+    from detail.models.resolve import keypoint_method_class
+    from detail.models.resolve import keypoint_students
+    from detail.models.resolve import resolve_keypoint_model
+    from detail.storage import models as models_store
+
+    model_dir = imported_store.model_dir("old_rat_pose")
+    (model_dir / "weights").mkdir(parents=True)
+    (model_dir / "weights" / "best.pt").write_bytes(b"weights")
+    models_store.write_model_yaml(
+        model_dir,
+        {
+            "id": "old_rat_pose",
+            "role": "keypoints",
+            "task": "pose",
+            "model_family": "yolo_pose",
+            "crop_px": 320,
+            "weights": {"best": "weights/best.pt"},
+            "skeleton": {
+                "keypoints": [
+                    {"name": "nose", "side": "midline", "pair": None},
+                    {"name": "left_ear", "side": "left", "pair": "right_ear"},
+                    {"name": "right_ear", "side": "right", "pair": "left_ear"},
+                ],
+                "edges": [],
+            },
+            "status": "complete",
+        },
+    )
+    assert {"id": "old_rat_pose", "source": "imported"}.items() <= next(
+        s for s in keypoint_students(None) if s["id"] == "old_rat_pose"
+    ).items()
+    assert keypoint_method_class(None, "old_rat_pose") is TrainedYoloPose
+    student = resolve_keypoint_model("old_rat_pose")
+    assert isinstance(student, TrainedYoloPose)
+    assert student.resolved() == {"student_input": "crop", "student_crop_px": 320}
+    assert student.skeleton().pairs == (("left_ear", "right_ear"),)

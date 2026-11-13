@@ -230,3 +230,25 @@ def test_a_flip_idx_of_the_wrong_length_is_refused():
 def test_a_pair_named_the_wrong_way_round_is_not_caught():
     # The stated limit (§12): (left, right) and (right, left) give the same flip_idx.
     check_against_model(_rat(pairs=(("right_ear", "left_ear"),)), 5, [0, 2, 1, 3, 4])
+
+
+def test_no_reader_indexes_a_stored_skeletons_names_directly():
+    """A stored skeleton is read through ``Skeleton.from_dict``, the one reader that knows
+    both shapes on disk (§26's and the older ``keypoints`` one). Indexing ``["names"]`` on a
+    stored dict is the bug that failed every catalog read on a student promoted before §26:
+    ``KeyError: 'names'``. Read the skeleton, then its names."""
+    import re
+    from pathlib import Path
+
+    import detail
+
+    pattern = re.compile(r"""\[["']skeleton["']\]\s*\[["']names["']\]""")
+    root = Path(detail.__file__).parent
+    offenders = [
+        f"{path.relative_to(root).as_posix()}:{n}"
+        for path in sorted(root.rglob("*.py"))
+        for n, line in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), 1)
+        if pattern.search(line)
+    ]
+    assert not offenders, offenders
+    assert pattern.search('meta["skeleton"]["names"]')  # the check can fire

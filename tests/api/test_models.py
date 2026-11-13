@@ -280,7 +280,9 @@ def test_import_with_metadata_surfaces_on_the_ref(tmp_path, stub_family):
     assert ref.notes == "room 1"
     assert ref.created_at  # stamped on import
     assert ref.preview_path is not None and ref.preview_path.is_file()
-    assert api_models.imported_models()[0].made_by == "labmate"  # also on the list
+    assert (
+        api_models.imported_models(role=None)[0].made_by == "labmate"
+    )  # also on the list
 
 
 def test_imported_model_missing_raises():
@@ -328,7 +330,7 @@ def test_export_import_round_trip_preserves_metadata(tmp_path, stub_family):
     assert dest.is_file()
     assert events and events[0][0] == "exporting" and events[-1][1] == 1.0
     api_models.remove_imported_model(mid)
-    assert mid not in imported_store.discover()
+    assert mid not in imported_store.discover(role=None)
 
     restored = api_models.import_model_archive(dest)
     assert restored == mid
@@ -448,7 +450,7 @@ def test_import_takes_a_skeleton_file_preset_or_library_id(tmp_path, pose_pt):
 
     mid = api_models.import_model(pose_pt, skeleton=_rat_yaml(tmp_path), name="a")
     ref = api_models.imported_model(mid)
-    assert ref.role == "keypoint" and ref.task == "pose"
+    assert ref.role == "keypoints" and ref.task == "pose"
     assert ref.skeleton == RAT
     assert ref.skeleton_ref["name"] == "rat overhead"  # the file's stated name
     # the library id it was added as works as a source too, and is reused
@@ -528,4 +530,6 @@ def test_restore_refuses_a_skeleton_that_does_not_match_its_digest(tmp_path, pos
     api_models.remove_imported_model(mid)
     with pytest.raises(ValueError, match="does not match its recorded digest"):
         api_models.import_model_archive(tampered)
-    assert mid not in imported_store.discover()  # nothing half-restored left behind
+    assert mid not in imported_store.discover(
+        role=None
+    )  # nothing half-restored left behind

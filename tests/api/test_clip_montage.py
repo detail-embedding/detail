@@ -3,25 +3,19 @@ one clock.
 
 **What is pinned, and why each.**
 
-- **One clock, and each clip's own loop.** Every clip starts at once and a shorter one starts
-  again the moment it ends (its last frame shown for one step), so no tile is ever still.
-  Asserted as the frames each clip shows at each step — not that "a picture came back", which a
-  montage stuck on frame 0 also passes.
+- **One clock, and the hold.** Every clip starts at once and a shorter one shows its *last* frame
+  until the longest ends. Asserted as the frames each clip shows at each step — not that "a
+  picture came back", which a montage stuck on frame 0 also passes.
 - **The ticks.** Raw on draws the footage; Raw off draws on white; a trail without what it trails
   is refused. Asserted on pixels a tick must change. The defaults are the mask and its trail.
 - **The mask on the footage is an outline**, so the animal's own pixels are untouched — asserted
   on the pixels inside the animal, which a tint changes and an outline does not.
 - **The labels**, with Blind mode's letters; **which clips** (count, order).
 - **The exports**, read back: a GIF's width and rate and an mp4's rate are what was asked; one GIF
-  per clip, named for it; a CSV list that is a clip-query CSV with the montage's columns after.
-- **Order and teardown**: drawing before ``prepare`` is refused rather than waited on (the port
-  this replaced deadlocked there), and ``close`` drops the decode contexts and the reads.
+  per clip, named for it; a CSV list that reads back as Query examples.
 """
 
 from __future__ import annotations
-
-import math
-import threading
 
 import cv2
 import numpy as np
@@ -30,8 +24,7 @@ from PIL import Image
 
 from detail.api import clip_montage as cm
 from detail.api.animation import sample_offsets_ns
-from detail.api.clip_views import ClipViewSettings
-from tests.clip_fixtures import count_decodes, walking
+from tests.api.test_clip_views import _walking, count_decodes
 
 STEP = int(1e9 / 30)
 
@@ -53,34 +46,43 @@ def _clip(recording, rank, first, last, name="M01_day1"):
     )
 
 
-def _montage(tmp_path, spans=((0, 4), (1, 2)), **kwargs):
-    recording = walking(tmp_path)
+def _montage(tmp_path, spans=((0, 4), (1, 2))):
+    recording = _walking(tmp_path)
     clips = [_clip(recording, i + 1, a, b) for i, (a, b) in enumerate(spans)]
-    montage = cm.ClusterMontage(recording.dir.parent.parent, clips, **kwargs)
+    montage = cm.ClusterMontage(recording.dir.parent.parent, clips, workers=1)
     montage.prepare()
     return montage
 
 
 # --- the clock --------------------------------------------------------------------------- #
-def test_a_shorter_clip_loops_from_its_start_until_the_longest_ends(tmp_path):
-    """The short clip (frames 1..3, a 100 ms loop: 67 ms long plus one 33 ms step) sampled at
-    0, 67 and 133 ms shows frames 1, 3 and — 133 mod 100 = 33 ms in — 2: it has started
-    again rather than held its last frame."""
-    montage = _montage(tmp_path, spans=((0, 4), (1, 3)))
+def test_a_shorter_clip_holds_its_last_frame_until_the_longest_ends(tmp_path):
+    montage = _montage(tmp_path)
     assert montage.fps == 15.0, "30 fps footage plays on a 15 fps clock"
     offsets = _pass(montage)
     assert len(offsets) == 3  # 0, 67 and 133 ms: the longest clip's 133 ms
     frames = [[montage.frame_at(i, t) for i in range(2)] for t in offsets]
     assert [f[0] for f in frames] == [0, 2, 4], "the long clip runs to its end"
-    assert [f[1] for f in frames] == [1, 3, 2], "the short one has looped round"
-    montage.close()
+    assert [f[1] for f in frames] == [1, 2, 2], "the short one holds its last frame"
+
+
+def test_a_clip_on_rounded_frame_times_shows_the_frame_each_step_means(tmp_path):
+    """Through ``animation.frame_at_offset``: frame times rounded to the nanosecond each on
+    their own put a 15 fps step 1 ns short of the frame it means, and an exact lookup showed the
+    frame before it at every other step (``test_animation.py`` has the arithmetic)."""
+    from tests.api.test_animation import rounded_frame_times
+
+    montage = _montage(tmp_path)
+    prepared = montage._prep(0)
+    prepared.t_ns = rounded_frame_times(12)[1:10]
+    first = prepared.first
+    offsets = [round(i * 1e9 / 15) for i in range(5)]
+    assert [montage.frame_at(0, o) - first for o in offsets] == [0, 2, 4, 6, 8]
 
 
 def test_every_clip_starts_together(tmp_path):
     """Synchronised to each clip's own start, not to the recording's clock."""
     montage = _montage(tmp_path, spans=((3, 4), (0, 1)))
-    assert [montage.frame_at(i, 0) for i in range(2)] == [3, 0]
-    montage.close()
+    assert montage.frames_at_step_offset(0) == [3, 0]
 
 
 # --- the ticks --------------------------------------------------------------------------- #
@@ -115,7 +117,6 @@ def test_every_tick_combination_draws_a_tile(tmp_path, layers):
     else:
         assert white > 0.3, "Raw off draws on white"
         assert (tile != 255).any(axis=2).any(), "...and draws something on it"
-    montage.close()
 
 
 def test_each_tick_changes_the_picture(tmp_path):
@@ -139,7 +140,6 @@ def test_each_tick_changes_the_picture(tmp_path):
     assert np.abs(raw_trail - tile(raw=True, mask=True)).sum() > 0, (
         "the mask trail shows on the footage too"
     )  # fmt: skip
-    montage.close()
 
 
 def test_nothing_drawn_and_orphan_trails_are_refused():
@@ -151,31 +151,16 @@ def test_nothing_drawn_and_orphan_trails_are_refused():
         cm.MontageLayers(raw=True, keypoint_trail=True)
 
 
-def test_the_layers_name_their_flavour_and_their_read_in_the_clip_windows_words():
-    """The three looks share ``clip_render``'s vocabulary, and the read a tile needs is the
-    clip window's own settings object — never a mask tinted onto the footage (a tile outlines
-    it at its own scale), the trails only when asked."""
-    from detail.api import clip_render
-
-    assert cm.MontageLayers(raw=True, mask=False).flavour == clip_render.RAW
-    assert cm.MontageLayers(raw=True).flavour == clip_render.OVERLAY
-    assert cm.MontageLayers(raw=True, mask=False, keypoints=True).flavour == (
-        clip_render.OVERLAY
-    )
-    assert cm.DEFAULT_LAYERS.flavour == clip_render.MASK
-    assert cm.DEFAULT_LAYERS.settings == ClipViewSettings(
-        masks_on_frame=False, mask_trail=True
-    )
-    full = cm.MontageLayers(
-        raw=True, keypoints=True, keypoint_trail=True, trail_points=("nose",)
-    )
-    assert full.settings == ClipViewSettings(
-        masks_on_frame=False,
-        points_on_frame=True,
-        trail=True,
-        trail_points=("nose",),
-        mask_trail=True,
-    )
+def test_a_held_tile_is_drawn_once(tmp_path, monkeypatch):
+    montage = _montage(tmp_path)
+    layers = cm.MontageLayers(raw=True, mask=False)
+    calls = []
+    real = montage._draw
+    monkeypatch.setattr(montage, "_draw", lambda *a: calls.append(a[:2]) or real(*a))
+    for step in range(montage.n_steps):
+        montage.tiles_at(montage.step_offset_ns(step), layers, 32)
+    assert sorted(set(calls)) == sorted(calls), "a tile was drawn twice"
+    assert [c for c in calls if c[0] == 1] == [(1, 1), (1, 2)]
 
 
 RAW_OFF = [
@@ -214,10 +199,10 @@ def test_a_raw_off_tile_decodes_no_video_and_is_the_decoded_tile(
     calls = count_decodes(monkeypatch)
     blank = _every_tile(_montage(tmp_path / "blank"), layers)
     assert calls == [], f"a Raw-off pass decoded video: {calls[:3]}"
-    real = ClipQueryPreview.clip_frame
+    real = ClipQueryPreview.clip_views
     monkeypatch.setattr(
         ClipQueryPreview,
-        "clip_frame",
+        "clip_views",
         lambda self, *a, **k: real(self, *a, **{**k, "footage": True}),
     )
     decoded = _every_tile(_montage(tmp_path / "decoded"), layers)
@@ -235,9 +220,9 @@ def test_raw_on_still_decodes_the_footage(tmp_path, monkeypatch):
 
 def test_a_pass_reads_each_clips_masks_once(tmp_path, monkeypatch):
     """A tile wants its frame's rows and the frames just before it (the mask trail), step
-    after step, and each ask decompressed the same ``mask_rle`` chunk again. The rows come
-    from a cached block instead — one read of the mask column per decode context for the
-    whole pass."""
+    after step, and each ask decompressed the same ``mask_rle`` chunk again: two reads a tile,
+    11.3 s of a 27 s pass on real data. The rows come from a cached block instead — one read
+    of the mask column per decode context for the whole pass."""
     from detail.storage.zarr_io import PartZarrReader
 
     montage = _montage(tmp_path)
@@ -252,7 +237,6 @@ def test_a_pass_reads_each_clips_masks_once(tmp_path, monkeypatch):
     contexts = len(montage._shared.previews)
     assert len(tiles) > 2 * contexts
     assert reads.count("mask_rle") == contexts
-    montage.close()
 
 
 def test_without_its_video_file_a_raw_off_tile_still_draws(tmp_path):
@@ -264,31 +248,7 @@ def test_without_its_video_file_a_raw_off_tile_still_draws(tmp_path):
     off = montage.tile(0, 4, cm.DEFAULT_LAYERS, 48)
     assert (off == 255).all(axis=2).mean() > 0.3 and (off != 255).any(axis=2).any()
     on = montage.tile(0, 4, cm.MontageLayers(raw=True), 48)
-    assert (on == cm.NO_PICTURE).all(axis=2).mean() > 0.5
-    montage.close()
-
-
-def test_a_recording_with_no_recorded_size_is_decoded_by_the_montage(tmp_path):
-    """The API refuses to size a picture it cannot know (``clip_frame(footage=False)``
-    raises); the montage, as the caller, reads the footage for that clip and draws on.
-    """
-    from detail.storage import recording as recording_store
-
-    recording = walking(tmp_path)
-    data = recording_store.read_recording(recording.dir)
-    del data["video"]["resolution"]
-    recording_store.write_recording(recording.dir, data)
-    montage = cm.ClusterMontage(
-        recording.dir.parent.parent, [_clip(recording, 1, 0, 4)], workers=1
-    )
-    montage.prepare()
-    assert montage._shared.prepared[montage.clips[0]].needs_footage
-    tile = montage.tile(0, 4, cm.DEFAULT_LAYERS, 48)
-    assert (tile == 255).all(
-        axis=2
-    ).mean() > 0.3, "the masks on white, sized by the footage"
-    assert (tile != 255).any(axis=2).any()
-    montage.close()
+    assert (on == cm._NO_PICTURE).all(axis=2).mean() > 0.5
 
 
 def test_a_raw_off_export_decodes_no_video(tmp_path, monkeypatch):
@@ -299,61 +259,6 @@ def test_a_raw_off_export_decodes_no_video(tmp_path, monkeypatch):
         tmp_path / "gifs", cm.DEFAULT_LAYERS, ["a", "b"], ["a", "b"], max_width=48
     )
     assert calls == []
-    montage.close()
-
-
-# --- ownership and order ------------------------------------------------------------------ #
-def test_drawing_before_prepare_refuses_rather_than_waiting(tmp_path):
-    """The latent deadlock: a tile asked for before ``prepare`` used to prepare from inside
-    the pool task that wanted it, a nested blocking ``pool.map`` on the pool it was running
-    on. Now it raises, at once, on the thread that asked."""
-    recording = walking(tmp_path)
-    clips = [_clip(recording, i + 1, 0, 4) for i in range(3)]
-    montage = cm.ClusterMontage(recording.dir.parent.parent, clips)
-    assert montage._shared.workers >= 1
-    outcome: list = []
-
-    def draw():
-        try:
-            montage.tile(0, 0, cm.DEFAULT_LAYERS, 32)
-        except Exception as exc:  # noqa: BLE001 — the test records whatever came out
-            outcome.append(exc)
-        else:
-            outcome.append(None)
-
-    worker = threading.Thread(target=draw)
-    worker.start()
-    worker.join(5)
-    assert not worker.is_alive(), "tile() before prepare() is still waiting"
-    assert isinstance(outcome[0], RuntimeError) and "prepare" in str(outcome[0])
-    for ask in (
-        lambda: montage.fps,
-        lambda: montage.duration_ns,
-        lambda: montage.frame_at(0, 0),
-        lambda: montage.frame_span(0),
-    ):
-        with pytest.raises(RuntimeError, match="prepare"):
-            ask()
-    montage.close()
-
-
-def test_close_drops_the_decode_contexts_and_the_reads(tmp_path):
-    montage = _montage(tmp_path)
-    montage.tile(0, 0, cm.DEFAULT_LAYERS, 32)
-    assert montage._shared.previews and montage._shared.prepared
-    montage.close()
-    assert montage._shared.previews == [] and montage._shared.prepared == {}
-
-
-def test_the_montage_sizes_its_threads_by_the_one_rule(tmp_path):
-    from detail.core import cpu
-
-    recording = walking(tmp_path)
-    montage = cm.ClusterMontage(
-        recording.dir.parent.parent, [_clip(recording, 1, 0, 4)]
-    )
-    assert montage._shared.workers == cpu.thread_workers()
-    montage.close()
 
 
 # --- the crop ---------------------------------------------------------------------------- #
@@ -443,7 +348,7 @@ _SIXTY = [
 
 
 def test_the_defaults_are_twenty_five_clips_of_the_mask_and_its_trail():
-    """The window, the CLI and the API open on the same thing."""
+    """The window, the CLI and the API open on the same thing (the user's choice, 2026-10-23)."""
     assert cm.DEFAULT_CLIPS == 25
     assert (
         cm.DEFAULT_LAYERS
@@ -460,32 +365,28 @@ def test_the_defaults_are_twenty_five_clips_of_the_mask_and_its_trail():
 def test_a_montage_shows_twenty_five_most_typical_unless_asked():
     asked = []
     experiment, run = _fake_run(_SIXTY, asked)
-    clips = cm.montage_clips(experiment, run, 5)
+    clips = cm.cluster_montage_clips(experiment, run, 5)
     assert len(clips) == 25
     assert asked == [25], "the head of the ranking is all the default order needs"
     assert [c.rank for c in clips] == list(range(1, 26))
     assert [c.start_t_ns for c in clips] == list(range(25)), "most typical first"
     assert clips[0].recording_name == "mouse 0"
-    more = cm.montage_clips(experiment, run, 5, limit=55)
+    more = cm.cluster_montage_clips(experiment, run, 5, limit=55)
     assert len(more) == 55, "no fifty cap: any count up to the cluster"
 
 
 def test_least_typical_reads_every_member_and_starts_from_the_last():
     asked = []
     experiment, run = _fake_run(_SIXTY, asked)
-    clips = cm.montage_clips(experiment, run, 5, limit=3, sort="least-typical")
+    clips = cm.cluster_montage_clips(experiment, run, 5, limit=3, sort="least-typical")
     assert asked == [None], "the tail needs the whole ranking"
     assert [c.rank for c in clips] == [60, 59, 58]
-    with pytest.raises(ValueError, match="unknown sort"):
-        cm.montage_clips(experiment, run, 5, sort="shuffled")
-    with pytest.raises(ValueError, match="at least 1"):
-        cm.montage_clips(experiment, run, 5, limit=0)
 
 
 @pytest.mark.parametrize("sort", list(cm.SORTS))
 def test_every_order_sorts_and_keeps_each_clips_rank(sort):
     experiment, run = _fake_run(_SIXTY)
-    members = cm.montage_members(experiment, run, 5)
+    members = cm.cluster_montage_members(experiment, run, 5)
     ordered = cm.sort_clips(members, sort)
     assert sorted(c.rank for c in ordered) == list(range(1, 61)), "a sort loses nothing"
     if sort == "typical":
@@ -512,42 +413,52 @@ def test_every_order_sorts_and_keeps_each_clips_rank(sort):
 
 def test_choosing_clips_refuses_an_unknown_sort_or_no_clips():
     experiment, run = _fake_run(_SIXTY)
-    members = cm.montage_members(experiment, run, 5)
+    members = cm.cluster_montage_members(experiment, run, 5)
+    shown = cm.choose_clips(members, count=5, removed={members[1], members[3]})
+    assert [c.rank for c in shown] == [1, 3, 5, 6, 7]
     with pytest.raises(ValueError, match="unknown sort"):
         cm.choose_clips(members, sort="shuffled")
     with pytest.raises(ValueError, match="at least 1"):
         cm.choose_clips(members, count=0)
 
 
-def test_an_origin_names_its_behaviour():
-    assert cm.MontageOrigin("an_01", 7, "rearing").behavior_name == "rearing"
-    assert cm.MontageOrigin("an_01", 7).behavior_name == "cluster 7"
-    assert cm.MontageOrigin("an_01", 7, unit="behavior").behavior_name == "behavior 7"
-
-
-# --- the grid ----------------------------------------------------------------------------- #
-def test_an_export_frame_is_the_size_its_grid_says():
-    """One grid formula: the export's picture is exactly the size ``grid_size`` says for the
-    columns and tile ``export_grid`` chose, within the width asked, and the last tile sits
-    where ``tile_origin`` puts it."""
-    for count, max_width in ((5, 300), (1, 120), (50, None), (7, 640)):
-        columns, tile_px = cm.export_grid(count, max_width)
-        rows = math.ceil(count / columns)
-        tiles = [np.full((40, 40, 3), 128, np.uint8)] * count
-        picture = cm.compose(tiles, [""] * count, columns=columns, tile_px=tile_px)
-        width, height = cm.grid_size(columns, rows, tile_px)
-        assert picture.shape == (height, width, 3), (count, max_width)
-        if max_width is not None:
-            assert width <= max_width
-        else:
-            assert tile_px == cm.EXPORT_TILE_PX and width <= cm.EXPORT_MAX_WIDTH
-        x, y = cm.tile_origin(count - 1, columns=columns, tile_px=tile_px)
-        assert x + tile_px <= width and y + tile_px + cm.label_px(tile_px) <= height
-
-
 def test_a_long_label_keeps_its_rank_and_time():
-    text = cm.fit_label("#12 · a_very_long_recording_name · 1:02.3", len, 24)
+    text = cm._fit_label("#12 · a_very_long_recording_name · 1:02.3", len, 24)
     assert text.startswith("#12 · ") and text.endswith(" · 1:02.3") and "…" in text
+
+
+@pytest.mark.parametrize(
+    "label",
+    [
+        "#12 · a_very_long_recording_name · 1:02.3",  # a cluster tile
+        "20251103_Raible_larva_Shot1_ArenaE",  # a location montage tile: a bare name
+        "#12 · name · with · dots · 1:02.3",  # a name that itself holds the separator
+        "#123456789012",  # a rank wider than the tile
+    ],
+)
+def test_every_label_shape_comes_back_fitting_its_width(label):
+    """The fitter knew one shape, ``#rank · name · time``, and handed every other label back
+    whole — so a location montage's recording names ran into the next tile's caption."""
+    for width in (4, 10, 24):
+        assert len(cm._fit_label(label, len, width)) <= width
+
+
+def test_a_bare_name_keeps_the_end_that_tells_two_recordings_apart():
+    left = cm._fit_label("20251103_Raible_larva_Shot1_ArenaE", len, 20)
+    right = cm._fit_label("20251103_Raible_larva_Shot1_ArenaF", len, 20)
+    assert left != right and left.endswith("ArenaE") and "…" in left
+
+
+def test_a_caption_stays_under_its_own_tile():
+    """A caption wider than its tile must not ink the next tile's label strip."""
+    tile_px = 48
+    tiles = [np.full((tile_px, tile_px, 3), 128, np.uint8)] * 2
+    picture = cm.compose(
+        tiles, ["20251103_Raible_larva_Shot1_ArenaE", ""], columns=2, tile_px=tile_px
+    )
+    x, y = cm.tile_origin(1, columns=2, tile_px=tile_px)
+    strip = picture[y + tile_px : y + tile_px + cm.label_px(tile_px), x - cm.GAP_PX :]
+    assert (strip == np.asarray(cm.BACKGROUND, np.uint8)).all()
 
 
 # --- exports ----------------------------------------------------------------------------- #
@@ -562,7 +473,6 @@ def test_a_gif_export_has_the_asked_width_and_rate(tmp_path):
         assert gif.size[0] <= 120 and gif.size[0] >= 100
         assert gif.info["duration"] == 100
         assert gif.n_frames == 2  # 0 and 100 ms of a 133 ms pass at 10 fps
-    montage.close()
 
 
 def test_an_mp4_export_plays_at_the_montage_clock(tmp_path):
@@ -577,8 +487,7 @@ def test_an_mp4_export_plays_at_the_montage_clock(tmp_path):
             count += 1
     finally:
         cap.release()
-    assert count == len(_pass(montage))
-    montage.close()
+    assert count == montage.n_steps
 
 
 # --- the mask on the footage is an outline ----------------------------------------------- #
@@ -596,6 +505,8 @@ def test_raw_on_outlines_the_animal_and_leaves_its_pixels_alone(tmp_path):
     """With the footage on, the animal's own pixels are the footage's: only a line *round*
     it is tinted. A tint over the animal (the clip window's look) fails the interior check.
     """
+    import cv2
+
     from detail.core.visualize import MASK_TINT
 
     montage = _montage(tmp_path)
@@ -615,7 +526,6 @@ def test_raw_on_outlines_the_animal_and_leaves_its_pixels_alone(tmp_path):
     assert (changed & ~near).sum() == 0, "the line sits round the animal, not elsewhere"
     tinted = np.abs(outlined - np.asarray(MASK_TINT)).sum(axis=2) < 30
     assert (tinted & changed).sum() >= 0.8 * changed.sum(), "the line is the mask tint"
-    montage.close()
 
 
 def test_raw_off_fills_the_animal_with_the_tint(tmp_path):
@@ -623,7 +533,6 @@ def test_raw_off_fills_the_animal_with_the_tint(tmp_path):
     animal, filled = _animal(montage, 96)
     assert animal.sum() > 50, "a filled tint on white, not an outline"
     assert (filled[~animal] > 200).all(axis=1).mean() > 0.6, "...on white"
-    montage.close()
 
 
 def test_the_outline_scales_with_the_tile():
@@ -642,13 +551,14 @@ def test_the_outline_is_visible_at_any_tile_size(tmp_path, size):
     ring = (np.abs(outlined.astype(int) - plain.astype(int)).sum(axis=2) > 0).sum()
     # A closed line round the animal at outline_px(size) wide covers at least its perimeter.
     assert ring >= 4 * cm.outline_px(size) * 4
-    montage.close()
 
 
 def test_the_mask_trail_on_the_footage_is_outlines_too(tmp_path):
     montage = _montage(tmp_path)
     size = 96
     animal, _filled = _animal(montage, size)
+    import cv2
+
     interior = cv2.erode(animal.astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
     plain = montage.tile(0, 4, cm.MontageLayers(raw=True, mask=False), size).astype(int)
     trailed = montage.tile(0, 4, cm.MontageLayers(raw=True), size).astype(int)
@@ -659,14 +569,28 @@ def test_the_mask_trail_on_the_footage_is_outlines_too(tmp_path):
     assert not (np.abs(trailed - plain).sum(axis=2) > 0)[interior].any(), (
         "and leaves the animal's own pixels alone"
     )  # fmt: skip
-    montage.close()
+
+
+# --- pages share their reads -------------------------------------------------------------- #
+def test_a_subset_shares_the_reads_and_the_tiles(tmp_path, monkeypatch):
+    montage = _montage(tmp_path)
+    layers = cm.MontageLayers(raw=True, mask=False)
+    montage.tile(1, 2, layers, 32)
+    page = montage.subset(montage.clips[1:])
+    calls = []
+    monkeypatch.setattr(page, "_prepare_one", lambda *a: calls.append(a))
+    monkeypatch.setattr(page, "_draw", lambda *a: calls.append(a))
+    assert (
+        page._key(0, 2, layers, 32) in page._shared.cache
+    ), "the tile drawn before is the page's"
+    page.tile(0, 2, layers, 32)
+    assert page.frames_at_step_offset(0) == [1]
+    assert calls == [], "a page re-read or re-drew a clip the montage already had"
 
 
 # --- one GIF per clip --------------------------------------------------------------------- #
 def test_each_clip_is_written_as_its_own_gif(tmp_path):
-    # One thread: the bar is fed per frame there, which three frames can show; on the pool
-    # the bar ticks every 0.1 s and these GIFs land inside one tick.
-    montage = _montage(tmp_path, workers=1)
+    montage = _montage(tmp_path)
     clips = montage.clips
     stems = [cm.clip_file_stem(c) for c in clips]
     assert stems == ["1_M01_day1_0-00.0", "2_M01_day1_0-00.0"]
@@ -693,7 +617,6 @@ def test_each_clip_is_written_as_its_own_gif(tmp_path):
     fractions = [f for stage, f, _d in events if stage == "writing GIFs"]
     assert fractions == sorted(fractions) and fractions[-1] == 1.0
     assert any(0 < f < 1 for f in fractions), "the bar moves within the batch"
-    montage.close()
 
 
 def test_a_blind_file_name_hides_the_recording():
@@ -705,7 +628,7 @@ def test_a_blind_file_name_hides_the_recording():
 def test_a_stopped_batch_keeps_the_finished_gifs(tmp_path):
     from detail.core.progress import OperationCancelled
 
-    montage = _montage(tmp_path, workers=1)
+    montage = _montage(tmp_path)
     written = []
 
     def progress(stage, fraction, detail):
@@ -725,7 +648,69 @@ def test_a_stopped_batch_keeps_the_finished_gifs(tmp_path):
         )
     assert [p.name for p in written] == ["one.gif"]
     assert sorted(p.name for p in (tmp_path / "gifs").iterdir()) == ["one.gif"]
-    montage.close()
+
+
+# --- the clip list ------------------------------------------------------------------------ #
+def test_the_clip_list_has_its_columns_and_reads_back_as_query_examples(tmp_path):
+    import csv
+
+    from detail.storage.clip_query_csv import read_clip_csv
+
+    montage = _montage(tmp_path)
+    origin = cm.MontageOrigin(run_id="an_07", node=12, name="rearing")
+    path = montage.export_clip_list(tmp_path / "clips.csv", origin)
+    with open(path, newline="", encoding="utf-8-sig") as handle:
+        rows = list(csv.DictReader(handle))
+        header = rows[0].keys() if rows else []
+    assert list(header) == cm.CLIP_LIST_COLUMNS
+    first = rows[0]
+    clip = montage.clips[0]
+    assert first["rank"] == "1" and first["recording_name"] == "M01_day1"
+    assert first["recording_id"] == clip.recording_id and first["subject"] == "0"
+    assert int(first["start_t_ns"]) == clip.start_t_ns
+    assert int(first["end_t_ns"]) == clip.end_t_ns
+    assert float(first["end_s"]) == pytest.approx(clip.end_t_ns / 1e9, abs=1e-3)
+    assert first["node"] == "12" and first["run_id"] == "an_07"
+    assert (first["start_frame"], first["end_frame"]) == ("0", "4")
+    back = read_clip_csv(path)
+    assert [(r.recording_id, r.track_id, r.start_t_ns, r.end_t_ns) for r in back] == [
+        (c.recording_id, c.subject, c.start_t_ns, c.end_t_ns) for c in montage.clips
+    ]
+    assert {r.query_name for r in back} == {"rearing"}
+
+
+# --- query examples ----------------------------------------------------------------------- #
+def test_selected_clips_become_one_query_behaviour():
+    clips = [
+        cm.MontageClip(3, "rec_b", "B", 1, "emb_01", 10, 20),
+        cm.MontageClip(1, "rec_a", "A", 1, "emb_01", 30, 50),
+        cm.MontageClip(7, "rec_b", "B", 0, "emb_01", 60, 90),
+    ]
+    examples = cm.query_examples(clips, name="cluster 12")
+    config = examples.config()
+    assert config["source_recording_ids"] == ["rec_b", "rec_a"]
+    assert config["embed_run_id"] == "emb_01" and config["track_id"] == 1
+    (behavior,) = config["behaviors"]
+    assert behavior["name"] == "cluster 12" and behavior["negatives"] == []
+    assert behavior["examples"] == [
+        {"recording_id": c.recording_id, "track_id": c.subject,
+         "start_t_ns": c.start_t_ns, "end_t_ns": c.end_t_ns}
+        for c in clips
+    ]  # fmt: skip
+    mixed = cm.query_examples(
+        clips + [cm.MontageClip(9, "rec_c", "C", 0, "emb_02", 0, 9)], name="x"
+    )
+    assert mixed.embed_run_id is None and mixed.embed_run_ids == ("emb_01", "emb_02")
+    with pytest.raises(ValueError, match="several embedding runs"):
+        mixed.config()
+    with pytest.raises(ValueError, match="at least one"):
+        cm.query_examples([], name="x")
+
+
+def test_an_origin_names_its_behaviour():
+    assert cm.MontageOrigin("an_01", 7, "rearing").behavior_name == "rearing"
+    assert cm.MontageOrigin("an_01", 7).behavior_name == "cluster 7"
+    assert cm.MontageOrigin("an_01", 7, unit="behavior").behavior_name == "behavior 7"
 
 
 def test_one_gif_alone_still_moves_the_bar(tmp_path):
@@ -745,14 +730,86 @@ def test_one_gif_alone_still_moves_the_bar(tmp_path):
     )
     fractions = [f for stage, f, _d in events if stage == "writing GIFs"]
     assert any(0 < f < 1 for f in fractions), fractions
-    montage.close()
+
+
+# --- what an export costs ------------------------------------------------------------------ #
+def test_an_export_reads_the_windows_tiles_and_leaves_them_alone(tmp_path, monkeypatch):
+    """An export draws a tile the window already has at its size **zero** times, every other
+    tile once, and puts none of its own in the cache.
+
+    The last is the one that failed: an export draws at its own size (a GIF's 77-pixel tiles, a
+    per-clip GIF's 636-pixel ones), which the window never shows, and caching them pushed out the
+    pass the window had drawn ahead — a folder of per-clip GIFs streams up to a gigabyte of tiles
+    through the 256 MB cache, after which playback draws everything again.
+    """
+    montage = _montage(tmp_path)
+    layers = cm.MontageLayers(raw=True)
+    labels = cm.montage_labels(montage.clips, blind=False)
+    for step in range(montage.n_steps):  # a window's whole pass, at its size
+        offset = montage.step_offset_ns(step)
+        for index, frame in enumerate(montage.frames_at_step_offset(offset)):
+            montage.tile(index, frame, layers, 32)
+    before = dict(montage._shared.cache)
+    drawn = []
+    real = montage._draw
+    monkeypatch.setattr(montage, "_draw", lambda *a: drawn.append(a[:2]) or real(*a))
+
+    # Two clips lay out two columns: a 70-pixel-wide export draws 32-pixel tiles, the window's,
+    # and at the montage clock it asks for exactly the frames the window drew.
+    montage.export(tmp_path / "same.gif", layers, labels, max_width=70, fps=montage.fps)
+    assert drawn == [], "an export redrew tiles the window had already drawn"
+
+    montage.export(tmp_path / "other.gif", layers, labels, max_width=120, fps=10)
+    assert drawn and len(set(drawn)) == len(drawn), f"a tile was drawn twice: {drawn}"
+    assert montage._shared.cache.keys() == before.keys(), (
+        "an export put its own tiles in the window's cache"
+    )  # fmt: skip
+
+
+def test_a_cold_prepare_parses_each_recording_once(tmp_path, monkeypatch):
+    """Six clips of one recording, prepared on six threads with nothing cached: its
+    ``recording.yaml`` is read and parsed **once**.
+
+    Each clip's decode context reads its recording's record, and on a cold cache they all missed
+    it together; on a real 35 KB record each parse cost ~160 ms while the threads shared the
+    interpreter, which was most of a cold 25-clip prepare. The read is slowed here so the threads
+    overlap every time rather than when the scheduler happens to interleave them. (Shown failing
+    against the code before, counted at ``atomic.read_text``: read 6 times.)
+    """
+    import threading
+    import time
+
+    from detail.storage import read_cache
+    from detail.storage import recording as recording_store
+
+    recording = _walking(tmp_path)
+    clips = [_clip(recording, i + 1, i % 3, 4) for i in range(6)]
+    montage = cm.ClusterMontage(recording.dir.parent.parent, clips, workers=6)
+    recording_store.clear_recording_cache()
+    read_cache.clear_read_cache()
+    reads = []
+    guard = threading.Lock()
+    parse = recording_store._parse_recording
+
+    def counted(path):
+        with guard:
+            reads.append(str(path))
+        time.sleep(0.05)
+        return parse(path)
+
+    monkeypatch.setattr(recording_store, "_parse_recording", counted)
+    try:
+        montage.prepare()
+    finally:
+        montage.close()
+    assert len(reads) == 1, f"recording.yaml read {len(reads)} times"
 
 
 def test_per_clip_gifs_written_side_by_side_match_one_at_a_time(tmp_path):
     """The montage's threads write the per-clip GIFs a clip each; the files are the ones a single
     thread writes, frame for frame, and the bar still only moves forward and ends at 1.
     """
-    recording = walking(tmp_path)
+    recording = _walking(tmp_path)
     clips = [
         _clip(recording, i + 1, a, b)
         for i, (a, b) in enumerate([(0, 4), (1, 2), (0, 3), (2, 4)])
@@ -795,7 +852,7 @@ def test_a_stopped_side_by_side_batch_keeps_only_finished_gifs(tmp_path):
     announced), the ones being written are removed, and nothing is half-written."""
     from detail.core.progress import OperationCancelled
 
-    recording = walking(tmp_path)
+    recording = _walking(tmp_path)
     clips = [_clip(recording, i + 1, 0, 4) for i in range(6)]
     montage = cm.ClusterMontage(recording.dir.parent.parent, clips, workers=3)
     landed = []
@@ -821,127 +878,23 @@ def test_a_stopped_side_by_side_batch_keeps_only_finished_gifs(tmp_path):
             assert gif.n_frames == 5, f"{name} is half-written"
 
 
-# --- the clip list ------------------------------------------------------------------------ #
-def test_the_clip_list_is_a_clip_query_csv_with_the_montages_columns_after(tmp_path):
-    import csv
-
-    from detail.storage.clip_query_csv import COLUMNS, read_clip_csv
-
-    montage = _montage(tmp_path)
-    origin = cm.MontageOrigin(run_id="an_07", node=12, name="rearing")
-    path = montage.export_clip_list(tmp_path / "clips.csv", origin)
-    with open(path, newline="", encoding="utf-8-sig") as handle:
-        rows = list(csv.DictReader(handle))
-        header = list(rows[0].keys()) if rows else []
-    assert header == cm.MONTAGE_LIST_COLUMNS == COLUMNS + list(cm.MONTAGE_LIST_EXTRA)
-    first = rows[0]
-    clip = montage.clips[0]
-    assert first["kind"] == "query" and first["rank"] == "0", "an example, not a match"
-    assert first["rank_typical"] == "1" and first["recording_name"] == "M01_day1"
-    assert first["recording_id"] == clip.recording_id and first["subject"] == "0"
-    assert int(first["start_t_ns"]) == clip.start_t_ns
-    assert int(first["end_t_ns"]) == clip.end_t_ns
-    assert float(first["end_s"]) == pytest.approx(clip.end_t_ns / 1e9, abs=1e-3)
-    assert first["node"] == "12" and first["run_id"] == "an_07"
-    assert (first["start_frame"], first["end_frame"]) == ("0", "4")
-    back = read_clip_csv(path)
-    assert [(r.recording_id, r.track_id, r.start_t_ns, r.end_t_ns) for r in back] == [
-        (c.recording_id, c.subject, c.start_t_ns, c.end_t_ns) for c in montage.clips
-    ]
-    assert {r.query_name for r in back} == {"rearing"}
-    assert [r.example_idx for r in back] == [0, 1]
-    montage.close()
-
-
-# --- what an export costs ------------------------------------------------------------------ #
-def test_an_export_draws_each_frame_it_holds_once(tmp_path, monkeypatch):
-    """Within one loop a clip's frames only go forward, so a frame sampled twice in a row is
-    the tile already drawn: 60 samples a second over 30 fps footage ask for every frame twice, and each
-    is drawn once."""
-    montage = _montage(tmp_path, spans=((0, 4),))
-    layers = cm.MontageLayers(raw=True)
-    drawn = []
-    real = montage.tile
-    monkeypatch.setattr(montage, "tile", lambda *a: drawn.append(a[:2]) or real(*a))
-    montage.export(tmp_path / "m.gif", layers, ["a"], max_width=70, fps=60)
-    assert drawn, "the export drew nothing"
-    assert len(set(drawn)) == len(drawn), f"a tile was drawn twice: {drawn}"
-    montage.close()
-
-
-def test_a_cold_prepare_parses_each_recording_once(tmp_path, monkeypatch):
-    """Six clips of one recording, prepared on six threads with nothing cached: its
-    ``recording.yaml`` is read and parsed **once**.
-
-    Each clip's decode context reads its recording's record, and on a cold cache they all missed
-    it together, and the repeated parses, sharing one interpreter, were most of a cold
-    prepare. The read is slowed here so the threads
-    overlap every time rather than when the scheduler happens to interleave them.
-    """
-    import time
-
-    from detail.storage import read_cache
-    from detail.storage import recording as recording_store
-
-    recording = walking(tmp_path)
-    clips = [_clip(recording, i + 1, i % 3, 4) for i in range(6)]
-    montage = cm.ClusterMontage(recording.dir.parent.parent, clips, workers=6)
-    recording_store.clear_recording_cache()
-    read_cache.clear_read_cache()
-    reads = []
-    guard = threading.Lock()
-    parse = recording_store._parse_recording
-
-    def counted(path):
-        with guard:
-            reads.append(str(path))
-        time.sleep(0.05)
-        return parse(path)
-
-    monkeypatch.setattr(recording_store, "_parse_recording", counted)
-    try:
-        montage.prepare()
-    finally:
-        montage.close()
-    assert len(reads) == 1, f"recording.yaml read {len(reads)} times"
-
-
-def test_least_typical_keeps_unranked_clips_last_as_the_clip_table_does():
-    """A medoid method cannot rank a bout assigned after its fit (``NaN``). Reversing the rank
-    put those first in *least typical*, while ``ClipTable.order("atypical")`` keeps them last:
-    the montage and the cluster view would disagree about which clip is least typical.
-    """
-    from detail.api.node_view import ClipTable
-
-    typicality = np.array([0.1, np.nan, 0.3, 0.2])
-    n = len(typicality)
-    clips = ClipTable(
-        recording_ids=("recording_001",),
-        recording=np.zeros(n, np.int32),
-        subject=np.zeros(n, np.int64),
-        start_ns=np.arange(n, dtype=np.int64) * 10,
-        end_ns=np.arange(n, dtype=np.int64) * 10 + 5,
-        cx=np.full(n, np.nan, np.float32),
-        cy=np.full(n, np.nan, np.float32),
-        members=np.ones(n, np.int64),
-        typicality=typicality,
-        leaf=np.zeros(n, np.int64),
+def test_closing_a_subset_leaves_the_shared_threads_to_their_owner(tmp_path):
+    """A subset (a page, an export's clips) shares its montage's threads; closing it once shut
+    them for every other view, and the owner's later draws ran on one thread with nothing
+    saying why. Only the montage that made the threads closes them."""
+    clip = cm.MontageClip(
+        rank=1,
+        recording_id="recording_001",
+        recording_name="r",
+        subject=0,
+        embed_run_id="emb_01",
+        start_t_ns=0,
+        end_t_ns=10,
     )
-    rows = clips.rows(clips.order("typical"))
-    montage = [
-        cm.MontageClip(
-            rank=rank,
-            recording_id=r["recording_id"],
-            recording_name="r",
-            subject=0,
-            embed_run_id="emb_01",
-            start_t_ns=r["start_t_ns"],
-            end_t_ns=r["end_t_ns"],
-            ranked=cm._is_ranked(r["typicality"]),
-        )
-        for rank, r in enumerate(rows, start=1)
-    ]
-    least = [c.start_t_ns for c in cm.sort_clips(montage, "least-typical")]
-    assert least == [int(clips.start_ns[i]) for i in clips.order("atypical")]
-    assert least[-1] == 10, "the unranked clip is last"
-    assert [c.rank for c in cm.sort_clips(montage, "typical")][-1] == 4
+    root = cm.ClusterMontage(tmp_path, [clip, clip], workers=2)
+    pool = root._pool()
+    assert pool is not None
+    root.subset([clip]).close()
+    assert root._pool() is pool, "a subset's close shut the owner's threads"
+    root.close()
+    assert root._pool() is None

@@ -617,6 +617,35 @@ def test_the_example_sets_skeleton_ref_reaches_the_record_and_detect_yaml(
     assert read_detect_yaml(plain_dir)["skeleton_ref"] is None
 
 
+def _import_onnx_fixture() -> str:
+    """The real sleap-nn centred-instance export (``tests/models/data``), through the importer."""
+    pytest.importorskip("onnxruntime")
+    from pathlib import Path
+
+    from detail.models import onnx_keypoints
+
+    data = Path(__file__).parents[1] / "models" / "data" / "sleap_onnx"
+    return onnx_keypoints.import_model(data / "centered_instance", name="mouse_pose")
+
+
+def test_an_imported_model_runs_on_the_stage_and_records_which_file_ran(tracked):
+    """An imported ONNX model is a method by id (§26): validated, run on every
+    detection, and recorded by its file's hash so a re-import under the same id is told apart.
+    """
+    it, recording = tracked
+    model_id = _import_onnx_fixture()
+    _m, config, run_dir, _events = _run(it, recording, _config(model_id=model_id))
+    assert config["model_variant"] is None and config["example_set_id"] is None
+    run = KeypointDetectRun(recording.dir, "kd_01")
+    assert len(run.skeleton) == 12 and run.skeleton.names[0] == "nose"
+    rows = run.rows("part_001")  # one instance per detection, no subject (§26)
+    assert rows["frame_idx"].tolist() == [frame for frame, _box in DET_ROWS]
+    assert rows["detection_row"].tolist() == list(range(len(DET_ROWS)))
+    assert rows["points"].shape == (len(DET_ROWS), 12, 2)
+    imported = read_detect_yaml(run_dir)["resolved"]["imported"]
+    assert imported["preset"] == "centered_instance" and len(imported["sha256"]) == 16
+
+
 # --------------------------------------------------------------------------- #
 # A keypoint model from the machine catalog (§12 *Keypoint models in the catalog*)
 # --------------------------------------------------------------------------- #
@@ -732,6 +761,353 @@ def test_the_worker_builds_the_recorded_source_not_the_first_match(
 
 
 # --------------------------------------------------------------------------- #
+# class_name: poses only in the detections of one class (§26)
+# --------------------------------------------------------------------------- #
+PLATE = (0.0, 0.0, 1.0, 1.0)
+#: A two-class detection run, as a detector that also finds the arena writes it: the animal
+#: (`mouse`) on frames 0, 1, 3, 4 and the arena (`plate`) on frames 0 to 3 — frame 2 has the
+#: arena alone. (frame_idx, bbox, class).
+TWO_CLASS_ROWS = [
+    (0, BOX_A, "mouse"),
+    (0, PLATE, "plate"),
+    (1, BOX_A, "mouse"),
+    (1, PLATE, "plate"),
+    (2, PLATE, "plate"),
+    (3, PLATE, "plate"),
+    (3, BOX_B, "mouse"),
+    (4, BOX_A, "mouse"),
+]
+MOUSE_ROWS = [r for r, (_f, _b, c) in enumerate(TWO_CLASS_ROWS) if c == "mouse"]
+
+
+@pytest.fixture
+def two_classes(processed_recording, monkeypatch):
+    """A recording whose detection run ``det_01`` holds two classes, ``mouse`` and ``plate``,
+    plus the video: the Hotplate shape, where a per-detection method placed a pose in the
+    arena's box on every frame."""
+    it = processed_recording
+    sq = it.square
+    frame_seen: dict[int, int] = {}
+    detections = []
+    for frame, box, _cls in TWO_CLASS_ROWS:
+        index = frame_seen.get(frame, 0)
+        frame_seen[frame] = index + 1
+        mask = sq(0, 40, 0, 40) if box == PLATE else sq(4, 20, 4, 20)
+        detections.append((frame, index, box, mask))
+    recording = it.add_recording(
+        "recording_004",
+        detections,
+        [0] * len(detections),
+        classes=[cls for _f, _b, cls in TWO_CLASS_ROWS],
+    )
+    _complete_detection_run(recording)
+    _write_video(recording)
+    monkeypatch.setitem(KEYPOINT_MODELS, "fake_kp", _FakeKeypointModel)
+    monkeypatch.setitem(KEYPOINT_MODELS, "fake_pose", _FakePoseModel)
+    _FakeKeypointModel.instances.clear()
+    _FakePoseModel.instances.clear()
+    return it, recording
+
+
+def test_a_class_places_poses_only_in_its_detections_and_keeps_their_rows(two_classes):
+    """Only the class's boxes reach the method; each pose keeps its real ``detection_row``,
+    so keypoint track's join still lands on the right detection. A frame with no box of the
+    class is a frame with no detection: not visited, not counted in progress or coverage.
+    """
+    it, recording = two_classes
+    module, config, run_dir, events = _run(it, recording, _config(class_name="mouse"))
+    assert config["class_name"] == "mouse"
+    model = _FakeKeypointModel.instances[-1]
+    assert model.frames_seen == [0, 1, 3, 4]  # frame 2 holds the plate alone
+    rows = KeypointDetectRun(recording.dir, "kd_01").rows("part_001")
+    assert rows["detection_row"].tolist() == MOUSE_ROWS
+    assert rows["frame_idx"].tolist() == [TWO_CLASS_ROWS[r][0] for r in MOUSE_ROWS]
+    np.testing.assert_allclose(rows["bbox"], [TWO_CLASS_ROWS[r][1] for r in MOUSE_ROWS])
+    assert events[1].frames_total == 4 and events[-1].frames_done == 4
+    meta = read_detect_yaml(run_dir)
+    assert meta["class_name"] == "mouse"
+    assert meta["coverage"]["part_001"] == {
+        "frames": 4,
+        "frames_with_instance": 4,
+        "instances": 4,
+    }
+    record = module.run_record("kd_01", config, "complete")
+    assert record["class_name"] == "mouse"
+    assert module.build_job(recording.id, "kd_01", config).class_name == "mouse"
+
+
+def test_no_class_places_a_pose_in_every_detection_as_before(two_classes):
+    it, recording = two_classes
+    _m, config, run_dir, _e = _run(it, recording, _config())
+    assert config["class_name"] is None
+    rows = KeypointDetectRun(recording.dir, "kd_01").rows("part_001")
+    assert rows["detection_row"].tolist() == list(range(len(TWO_CLASS_ROWS)))
+    assert _FakeKeypointModel.instances[-1].frames_seen == [0, 1, 2, 3, 4]
+    assert read_detect_yaml(run_dir)["class_name"] is None
+
+
+def test_validate_refuses_a_class_the_detection_run_lacks_naming_what_it_has(
+    two_classes,
+):
+    _it, recording = two_classes
+    with pytest.raises(
+        ValueError, match=r"has no class named 'rat'; it has: \['mouse', 'plate'\]"
+    ):
+        _validate(recording, _config(class_name="rat"))
+
+
+def test_validate_refuses_a_class_for_a_whole_frame_method(two_classes):
+    """A whole-frame method is handed no detections, so a class would be recorded as
+    identity and change nothing: refused, even for a class the run has."""
+    _it, recording = two_classes
+    with pytest.raises(ValueError, match="'fake_pose' works on the whole frame"):
+        _validate(recording, _config(model_id="fake_pose", class_name="mouse"))
+    assert _validate(recording, _config(model_id="fake_pose"))["class_name"] is None
+
+
+def test_a_crop_student_takes_a_class_and_a_whole_frame_one_does_not(
+    two_classes, fake_ultralytics
+):
+    """Per detection is the instance's fact, not the class's: ``TrainedYoloPose`` is
+    whole-frame as a class and per-detection when it was trained on crops."""
+    from detail.storage import models as models_store
+
+    _it, recording = two_classes
+    _catalog_student("whole_pose")
+    crop = _catalog_student("crop_pose")
+    record = models_store.read_model_yaml(crop)
+    models_store.write_model_yaml(
+        crop, {**record, "student_input": "crop", "student_crop_px": 96}
+    )
+    with pytest.raises(ValueError, match="works on the whole frame"):
+        _validate(recording, _config(model_id="whole_pose", class_name="mouse"))
+    out = _validate(recording, _config(model_id="crop_pose", class_name="mouse"))
+    assert out["class_name"] == "mouse"
+
+
+def test_the_class_is_identity_and_an_older_record_reads_as_every_class(two_classes):
+    """Two runs differing only in class are told apart; a record written before the field
+    existed placed a pose in every detection, and reads so."""
+    from detail.api import run_spec
+
+    _it, recording = two_classes
+    module = keypoint_detect.KeypointDetectModule()
+    data = recording_store.read_recording(recording.dir)
+    mouse = _validate(recording, _config(class_name="mouse"))
+    every = _validate(recording, _config())
+
+    def spec(config, run_id):
+        record = module.run_record(run_id, config, "complete")
+        return run_spec.spec_of(data, "keypoint_detect", record)
+
+    assert "class_name" in module.identity_fields
+    assert spec(mouse, "kd_01") != spec(every, "kd_02")
+    older = module.run_record("kd_03", every, "complete")
+    del older["class_name"]
+    assert run_spec.spec_of(data, "keypoint_detect", older) == spec(every, "kd_02")
+    old_job = module.build_job(recording.id, "kd_03", mouse).to_dict()
+    del old_job["class_name"]  # a job.json written before the field
+    assert keypoint_detect.KeypointDetectJob.from_dict(old_job).class_name is None
+
+
+# --------------------------------------------------------------------------- #
+# One example set per detection class (§26 *One example set per detection class*)
+# --------------------------------------------------------------------------- #
+def _class_sets(monkeypatch, recording, skeletons=None):
+    """Example sets read from no disk (the patched reads the learner test uses), and the
+    class-aware learner as ``fake_classes``, returned: it records which sets it was built with
+    and the class handed with each detection."""
+    from detail.core.examples import ExampleFrame, ExampleMark, ExampleSet
+    from detail.pipeline import keypoint_detect as stage
+
+    skeletons = skeletons or {}
+
+    def read_set(_d, set_id):
+        skeleton = skeletons.get(set_id, SKELETON)
+        marks = [
+            ExampleMark(n, x=0.2 + 0.1 * i, y=0.3) for i, n in enumerate(skeleton.names)
+        ]
+        frame = ExampleFrame(
+            image=f"frames/{set_id}.png",
+            recording_id=recording.id,
+            tracking_run_id="track_01",
+            track_id=0,
+            part_id="part_001",
+            frame_idx=0,
+            t_ns=0,
+            bbox=BOX_A,
+            marks=marks,
+        )
+        return ExampleSet(
+            id=set_id,
+            name=set_id,
+            purpose="example",
+            created_at="2026-11-02T00:00:00Z",
+            skeleton=skeleton,
+            frames=[frame],
+        )
+
+    monkeypatch.setattr(stage.example_sets, "read_set", read_set)
+    monkeypatch.setattr(stage.example_sets, "load_images", lambda d, es: {})
+    monkeypatch.setattr(stage.example_sets, "image_hashes", lambda d, es: {})
+    monkeypatch.setattr(
+        stage.example_sets, "load_image", lambda *a, **k: np.zeros((8, 8, 3), np.uint8)
+    )
+
+    class _ClassLearner(_FakeKeypointModel):
+        model_id = "fake_classes"
+        needs_examples = True
+        built: list = []
+
+        def __init__(
+            self,
+            variant=None,
+            *,
+            examples=None,
+            example_images=None,
+            class_examples=None,
+            crop_px=None,
+        ):
+            super().__init__(variant, crop_px=crop_px)
+            self.sets = (
+                {cls: s.id for cls, (s, _im) in class_examples.items()}
+                if class_examples
+                else {None: examples.id}
+            )
+            self.classes_seen: dict[int, dict] = {}
+            type(self).built.append(self)
+
+        def predict_batch(self, frames):
+            for sf in frames:
+                self.classes_seen[sf.frame_idx] = dict(sf.classes or {})
+            return super().predict_batch(frames)
+
+    monkeypatch.setitem(KEYPOINT_MODELS, "fake_classes", _ClassLearner)
+    return _ClassLearner
+
+
+PER_CLASS = {"mouse": "ex_mouse", "plate": "ex_plate"}
+
+
+def test_each_class_gets_its_own_set_and_each_detection_its_class(
+    two_classes, monkeypatch
+):
+    """One run, one walk: both classes' detections reach the method, each with its class, and
+    the run records one snapshot and one digest per class (identity) beside a null
+    ``example_set`` and ``class_name``."""
+    it, recording = two_classes
+    learner = _class_sets(monkeypatch, recording)
+    module, config, run_dir, _events = _run(
+        it,
+        recording,
+        _config(model_id="fake_classes", class_example_sets=dict(PER_CLASS)),
+    )
+    model = learner.built[-1]
+    assert model.sets == PER_CLASS
+    by_frame: dict[int, dict] = {}
+    for row, (frame, _box, cls) in enumerate(TWO_CLASS_ROWS):
+        by_frame.setdefault(frame, {})[row] = cls
+    assert model.classes_seen == by_frame
+    assert config["class_name"] is None and config["example_set"] is None
+    assert config["class_example_sets"] == PER_CLASS
+    assert config["example_sets"]["plate"]["id"] == "ex_plate"
+    meta = read_detect_yaml(run_dir)
+    assert meta["example_set"] is None and meta["class_name"] is None
+    assert {c: s["id"] for c, s in meta["example_sets"].items()} == PER_CLASS
+    assert set(meta["class_example_digests"]) == {"mouse", "plate"}
+    record = module.run_record("kd_01", config, "complete")
+    assert record["class_example_digests"] == config["class_example_digests"]
+    assert "class_example_digests" in module.identity_fields
+    job = module.build_job(recording.id, "kd_01", config)
+    assert keypoint_detect.KeypointDetectJob.from_dict(job.to_dict()) == job
+    rows = KeypointDetectRun(recording.dir, "kd_01").rows("part_001")
+    assert rows["detection_row"].tolist() == list(range(len(TWO_CLASS_ROWS)))
+
+
+def test_a_one_class_map_is_the_single_form(two_classes, monkeypatch):
+    """Spelled as a one-entry map or as class + set, the same settings get one identity."""
+    from detail.api import run_spec
+
+    _it, recording = two_classes
+    _class_sets(monkeypatch, recording)
+    module = keypoint_detect.KeypointDetectModule()
+    data = recording_store.read_recording(recording.dir)
+    as_map = _validate(
+        recording,
+        _config(model_id="fake_classes", class_example_sets={"mouse": "ex_mouse"}),
+    )
+    as_pair = _validate(
+        recording,
+        _config(model_id="fake_classes", class_name="mouse", example_set_id="ex_mouse"),
+    )
+    assert as_map["class_name"] == "mouse" and as_map["example_set_id"] == "ex_mouse"
+    assert as_map["class_example_sets"] is None and as_map["example_sets"] is None
+
+    def spec(config, run_id):
+        return run_spec.spec_of(
+            data, "keypoint_detect", module.run_record(run_id, config, "complete")
+        )
+
+    assert spec(as_map, "kd_01") == spec(as_pair, "kd_02")
+
+
+def test_per_class_sets_are_identity_and_an_older_record_reads_as_one_set(
+    two_classes, monkeypatch
+):
+    from detail.api import run_spec
+
+    _it, recording = two_classes
+    _class_sets(monkeypatch, recording)
+    module = keypoint_detect.KeypointDetectModule()
+    data = recording_store.read_recording(recording.dir)
+    per_class = _validate(
+        recording, _config(model_id="fake_classes", class_example_sets=dict(PER_CLASS))
+    )
+    single = _validate(
+        recording, _config(model_id="fake_classes", example_set_id="ex_mouse")
+    )
+
+    def spec(config, run_id):
+        return run_spec.spec_of(
+            data, "keypoint_detect", module.run_record(run_id, config, "complete")
+        )
+
+    assert spec(per_class, "kd_01") != spec(single, "kd_02")
+    older = module.run_record("kd_03", single, "complete")
+    del older["class_example_digests"]  # a record written before the field
+    assert run_spec.spec_of(data, "keypoint_detect", older) == spec(single, "kd_02")
+
+
+@pytest.mark.parametrize(
+    "overrides, message",
+    [
+        ({"class_name": "mouse"}, "leave class_name and example_set_id unset"),
+        ({"example_set_id": "ex_mouse"}, "leave class_name and example_set_id unset"),
+        ({"class_example_sets": {}}, "class_example_sets is empty"),
+        ({"class_example_sets": {"mouse": ""}}, "needs a class and a set"),
+        (
+            {"class_example_sets": {"mouse": "ex_mouse", "rat": "ex_plate"}},
+            r"has no class named 'rat'; it has: \['mouse', 'plate'\]",
+        ),
+        ({"model_id": "fake_kp"}, "'fake_kp' takes no example set"),
+        (
+            {"class_example_sets": {"mouse": "ex_mouse", "plate": "ex_three"}},
+            "must be on the same skeleton",
+        ),
+    ],
+)
+def test_validate_refuses_a_per_class_map_it_cannot_run(
+    two_classes, monkeypatch, overrides, message
+):
+    _it, recording = two_classes
+    three = Skeleton(names=("nose", "tail", "ear"), edges=(("nose", "tail"),))
+    _class_sets(monkeypatch, recording, skeletons={"ex_three": three})
+    config = _config(model_id="fake_classes", class_example_sets=dict(PER_CLASS))
+    config.update(overrides)
+    with pytest.raises(ValueError, match=message):
+        _validate(recording, config)
+
+
 # The four stages (§26 *Execution*)
 # --------------------------------------------------------------------------- #
 class _SplitKeypointModel(_FakeKeypointModel):

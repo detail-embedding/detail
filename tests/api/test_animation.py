@@ -110,6 +110,22 @@ def test_a_rate_samples_real_time():
         animation.sample_offsets_ns(10, 0)
 
 
+def rounded_frame_times(n: int, fps: float = 30.0) -> np.ndarray:
+    """Frame times each rounded to the nanosecond on its own, as PTS-derived times are."""
+    return np.array([round(k * 1e9 / fps) for k in range(n)], dtype=np.int64)
+
+
+def test_a_sample_lands_on_the_frame_it_means_not_the_one_before():
+    """A 15 fps sample of 30 fps footage from an odd frame is every other frame. The sample at
+    133,333,333 ns means the frame four on, at 133,333,334 past the first, and an exact lookup
+    showed the frame before it: a GIF that stutters back one frame at every other step.
+    """
+    span = rounded_frame_times(12)[1:10]
+    offsets = animation.sample_offsets_ns(int(span[-1] - span[0]), 15)
+    assert [animation.frame_at_offset(span, o) for o in offsets] == [0, 2, 4, 6, 8]
+    assert animation.frame_at_offset(span, 10**12) == len(span) - 1, "held at the last"
+
+
 # --- one palette per GIF ---------------------------------------------------------------- #
 def _decoded(path):
     with Image.open(path) as gif:

@@ -59,6 +59,7 @@ from PyQt6.QtWidgets import (
 
 from detail.gui import plot_theme
 from detail.gui.flow import FlowLayout
+from detail.gui.lifetime import cleared
 from detail.gui.sizing import text_width
 from detail.gui.timefmt import TIME_WIDEST, format_time
 
@@ -545,7 +546,6 @@ class FrameScrubber(QWidget):
             self._label = QLabel("0 / 0")
             readout_row.addWidget(self._label)
         self._controls.addWidget(readout)
-        self._readout = readout
         layout.addLayout(self._controls)
 
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -630,6 +630,11 @@ class FrameScrubber(QWidget):
     def playing_direction(self) -> int:
         """``1`` playing forward, ``-1`` backward, ``0`` stopped (or armed and not yet running)."""
         return self._direction() if self.is_playing() else 0
+
+    def speed(self) -> float:
+        """The speed chosen from the menu (negative plays backward) — what an export that
+        should match the player reads."""
+        return self._speed
 
     def set_speed(self, speed: float) -> None:
         """Choose a speed from the menu, as a person would; negative plays backward.
@@ -780,6 +785,19 @@ class FrameScrubber(QWidget):
         self._rate_note.setText(f"{achieved:.0f} fps")
 
     # -- what a structural rule asks ----------------------------------------- #
+    def set_available(self, available: bool, reason: str) -> None:
+        """Grey the whole player, every button in it saying ``reason``.
+
+        ``sizing.set_available(scrubber, …)`` put the reason on the scrubber alone, and a greyed
+        parent greys Play, Prev frame and Next frame without giving them one, so each read as
+        broken (`requirements.a_disabled_button_says_why`). The buttons carry no tooltip of
+        their own, so clearing it when the player comes back loses nothing.
+        """
+        self.setEnabled(available)
+        self.setToolTip("" if available else reason)
+        for button in self.findChildren(QPushButton):
+            button.setToolTip("" if available else reason)
+
     # Named accessors rather than letting the rules reach into `_play_btn` and friends. A rule
     # that reads a private attribute breaks on a rename with no signal to whoever renamed it,
     # so these five are part of the widget's contract rather than an accident of its layout.
@@ -846,23 +864,6 @@ class FrameScrubber(QWidget):
     def add_control(self, widget: QWidget) -> None:
         """Insert a host widget (e.g. a checkbox) into the control row, after the step buttons."""
         self._controls.insertWidget(self._controls.indexOf(self._nxt) + 1, widget)
-
-    def set_transport_compact(self, on: bool) -> None:
-        """Play/Pause, the speed menu and any added controls only: the slider, its time
-        labels, the step buttons and the frame readout are hidden. For a surface whose frames
-        are not one timeline — the clip montage, where every tile loops on its own, so a shared
-        playhead and a frame step would point at nothing. Playback itself is unchanged.
-        """
-        self._compact = bool(on)  # `_refresh_readout` keeps the time labels hidden
-        for widget in (
-            self._slider,
-            self._elapsed,
-            self._total_time,
-            self._prev,
-            self._nxt,
-            self._readout,
-        ):
-            widget.setVisible(not on)
 
     def set_loop(self, on: bool) -> None:
         """Replay from the start of the playback range instead of stopping at its end."""
@@ -988,7 +989,7 @@ class FrameScrubber(QWidget):
     def _refresh_readout(self) -> None:
         last = max(self._total - 1, 0)
         time_text = self.time_text()
-        shown = time_text is not None and not getattr(self, "_compact", False)
+        shown = time_text is not None
         self._elapsed.setVisible(shown)
         self._total_time.setVisible(shown)
         self._elapsed.setText(time_text or "")
@@ -1097,7 +1098,7 @@ class FrameScrubber(QWidget):
         # `AttributeError: no attribute '_slider'` out of a slot. PyQt reports it and carries
         # on, which in the app is a dialog nobody can act on and in the suite was invisible
         # until `tests/gui/conftest.py` started failing on a swallowed slot exception.
-        if getattr(self, "_slider", None) is None:
+        if cleared(self):
             return False
         if obj is self._slider and event.type() == QEvent.Type.KeyPress:
             if self._handle_key(event):

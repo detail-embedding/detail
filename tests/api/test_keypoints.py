@@ -274,6 +274,47 @@ def test_sampling_refuses_an_audit_set(tracked):
         proj.sample_example_frames(audit.id, ["recording_002"], 1, strategy="spread")
 
 
+def test_heading_is_refused_when_every_recording_is_top_down(tracked):
+    """Toward and away are invisible from above (§26 *Headings*, "Not from above"): the
+    sampler and its pool refuse rather than file overhead frames under them, and the
+    strategies that do not read the camera still sample."""
+    proj = tracked.experiment
+    created = proj.create_example_set("rats", SK)
+    proj.set_camera_view("top_down")
+
+    assert not proj.heading_applies(["recording_002"])
+    with pytest.raises(ValueError, match="top-down camera .*set-camera-view"):
+        proj.sample_example_frames(created.id, ["recording_002"], 1, strategy="heading")
+    with pytest.raises(ValueError, match="top-down camera"):
+        proj.heading_pool(["recording_002"])
+    updated = proj.sample_example_frames(
+        created.id, ["recording_002"], 1, strategy="spread"
+    )
+    assert len(updated.frames) == 1
+
+
+def test_heading_applies_unless_every_view_is_top_down(tracked):
+    """Not set is unknown, never top down (§10); one recording that is not top down keeps
+    the sampler; with no recordings the experiment default decides."""
+    proj = tracked.experiment
+    both = proj.recording_ids
+    assert len(both) == 2
+    assert proj.heading_applies(both)  # nothing set anywhere
+    assert proj.heading_applies([])
+
+    proj.get_recording(both[0]).set_camera_view("top_down")
+    assert proj.heading_applies(both)  # the other is not set
+    proj.get_recording(both[1]).set_camera_view("side")
+    assert proj.heading_applies(both)  # a mix
+
+    proj.set_camera_view("top_down")
+    proj.get_recording(both[1]).set_camera_view(None)  # inherits top down now
+    assert not proj.heading_applies(both)
+    assert not proj.heading_applies([])
+    proj.get_recording(both[1]).set_camera_view("angled_down")
+    assert proj.heading_applies(both)
+
+
 def test_frames_are_added_marked_and_removed_through_the_experiment(tracked):
     proj = tracked.experiment
     created = proj.create_example_set("rats", SK)
@@ -465,6 +506,7 @@ def test_run_keypoint_track_names_the_tracking_run_and_the_match(tracked, monkey
         "tracking_run_id": "track_01",
         "method": "despike_smooth",
         "config": {},
+        "compute": None,  # unset: validate resolves it to this machine's CPU
         "match_min_inside": 0.6,
         "match_mask_grow": 0.1,
     }
@@ -474,6 +516,7 @@ def test_run_keypoint_track_names_the_tracking_run_and_the_match(tracked, monkey
         "tracking_run_id": None,
         "method": None,
         "config": {},
+        "compute": None,
     }
 
 

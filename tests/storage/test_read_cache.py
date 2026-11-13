@@ -17,16 +17,14 @@ freezing the cache.
 
 `tests/gui/test_page_read_cost.py` holds the surface-level half, where the count is asserted against
 a real page build.
-
 **The second class here: a memo whose miss is check, compute, store.** Every thread that misses
 before the first store computes too, so a cold cache under a thread pool does the work once per
-thread. A montage prepares its clips on several threads, and the clips sharing a recording all
-missed its `recording.yaml` together: one read and parse of a 35 KB file per thread, each inflated
-to ~160 ms by the other threads holding the interpreter. `read_cache.computing(key)` is a per-key
-lock the miss path takes and re-checks under (`cached_read`, `cached_document`, and
-`recording.read_recording`'s own cache). The guards hold six threads inside the computation at
-once, so a cache that lets them all compute counts 6 every time, not only when the scheduler
-interleaves them; `tests/storage/test_recording.py` and
+thread. A montage prepares its clips on six threads, and the clips sharing a recording all missed
+its `recording.yaml` together: six reads and parses of one 35 KB file, each inflated to ~160 ms by
+the other threads holding the interpreter. `read_cache.computing(key)` is a per-key lock the miss
+path takes and re-checks under (`read_recording`, `cached_read`, `cached_document`). The guards hold
+six threads inside the computation at once, so a cache that lets them all compute counts 6 every
+time, not only when the scheduler interleaves them; `tests/storage/test_recording.py` and
 `tests/api/test_clip_montage.py::test_a_cold_prepare_parses_each_recording_once` apply the same
 rendezvous to `read_recording` and to a real montage prepare.
 """
@@ -334,6 +332,90 @@ def test_a_pin_unwinds_to_where_it_started():
     assert not read_cache.is_pinned(), "a raising body left the thread pinned"
 
 
+# --- every cached-document writer drops its entry ---------------------------------- #
+#
+# **The class: a writer that replaces a cached document without dropping its entry.** The
+# docstring above has always said "every writer drops its own entry", and only
+# `write_recording` did. A pinned read skips the stat that would have noticed the rewrite, so
+# the next pinned read returned the record from before the write: set an experiment's default
+# camera view, build the recordings table under a pin, and every row showed the old view.
+# Each writer now commits through `read_cache.replace_document`, which replaces and drops.
+
+
+def _pinned_round_trip(read, write, before, after):
+    read_cache.clear_read_cache()
+    write(before)
+    assert read()["probe"] == "before"  # warm the entry
+    write(after)
+    with read_cache.pinned():
+        return read()["probe"]
+
+
+def test_a_pinned_read_sees_every_cached_writer_s_last_write(tmp_path):
+    from detail.storage import analysis_runs, experiment, export_runs, runs
+
+    exp_dir = tmp_path / "exp"
+    exp_dir.mkdir()
+    run_dir = tmp_path / "an_01"
+    export_dir = tmp_path / "ex_01"
+    pairs = {
+        "config.yaml": (
+            lambda: experiment.read_config(exp_dir),
+            lambda probe: experiment.write_config(
+                exp_dir, {"name": "e", "probe": probe}
+            ),
+        ),
+        "run.yaml": (
+            lambda: runs.read_run(exp_dir, "run_001"),
+            lambda probe: runs.write_run(exp_dir, "run_001", {"probe": probe}),
+        ),
+        "analysis.yaml": (
+            lambda: analysis_runs.read_analysis_yaml(run_dir),
+            lambda probe: analysis_runs.write_analysis_yaml(run_dir, {"probe": probe}),
+        ),
+        "export.yaml": (
+            lambda: export_runs.read_export_yaml(export_dir),
+            lambda probe: export_runs.write_export_yaml(export_dir, {"probe": probe}),
+        ),
+    }
+    stale = [
+        name
+        for name, (read, write) in pairs.items()
+        if _pinned_round_trip(read, write, "before", "after") != "after"
+    ]
+    assert stale == [], f"a pinned read returned the pre-write record for {stale}"
+
+
+def test_every_module_caching_a_document_commits_through_replace_document():
+    """Source scan, so a new ``cached_document`` reader cannot ship with a writer that only
+    replaces the file. A module that caches must also commit through
+    ``replace_document``; the behavioural test above names the four that exist today."""
+    from pathlib import Path
+
+    import detail
+
+    root = Path(detail.__file__).parent
+    # A reader whose file is written by another module, and that module: it is the writer that
+    # has to commit through ``replace_document``, so the scan follows it there.
+    commits_elsewhere = {"storage/locations.py": "storage/machine_file.py"}
+    offenders = []
+    for path in sorted(root.rglob("*.py")):
+        if path.name == "read_cache.py":
+            continue
+        rel = path.relative_to(root).as_posix()
+        text = path.read_text(encoding="utf-8-sig")
+        if rel in commits_elsewhere:
+            text = (root / commits_elsewhere[rel]).read_text(encoding="utf-8-sig")
+        if "read_cache.cached_document(" in path.read_text(encoding="utf-8-sig") and (
+            "read_cache.replace_document(" not in text
+        ):
+            offenders.append(rel)
+    assert offenders == [], (
+        f"{offenders} cache a document with read_cache.cached_document but never commit "
+        "through read_cache.replace_document, so a pinned read can return a stale record"
+    )
+
+
 # --- concurrent misses compute once ---------------------------------------------------------- #
 def _miss_together(n, call, enter):
     """Run ``call`` on ``n`` threads released at once; ``enter()`` is what the computation calls.
@@ -393,13 +475,13 @@ def test_concurrent_misses_of_one_document_parse_it_once(tmp_path):
 
 def test_misses_of_different_keys_do_not_wait_for_each_other(tmp_path):
     """Per key, never global: two keys missed together both compute at once."""
-    import threading
-
     read_cache.clear_read_cache()
     stamps = [tmp_path / "a.yaml", tmp_path / "b.yaml"]
     for stamp in stamps:
         stamp.write_text("x", encoding="utf-8")
     keys = iter(range(2))
+    import threading
+
     pick = threading.Lock()
 
     def call(compute):

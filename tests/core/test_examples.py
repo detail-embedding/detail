@@ -90,6 +90,43 @@ def test_the_digest_follows_content_and_images_not_the_name():
     assert len(a.digest(HASHES)) == 16
 
 
+KEY = ("recording_009", "part_001", 40_210_000_000, 0)
+
+
+def test_a_rejection_is_per_bucket_and_a_null_bucket_is_every_bucket():
+    s = _set()
+    s.reject(KEY, "left-toward")
+    assert s.is_rejected(KEY, "left-toward")
+    assert not s.is_rejected(KEY, "away"), "turned down for one bucket, not for others"
+    assert not s.is_rejected(KEY), "a bucketless strategy may still draw it"
+    s.reject(KEY)
+    assert s.is_rejected(KEY, "away") and s.is_rejected(KEY)
+    s.reject(KEY, "left-toward")
+    assert len(s.rejected) == 2, "a repeated rejection is recorded once"
+
+
+def test_rejections_round_trip_and_stay_out_of_the_digest():
+    s = _set()
+    before = s.digest(HASHES)
+    s.reject(KEY, "toward")
+    d = s.to_dict(HASHES)
+    assert d["rejected"] == [
+        {
+            "recording_id": "recording_009",
+            "part_id": "part_001",
+            "t_ns": 40_210_000_000,
+            "track_id": 0,
+            "bucket": "toward",
+        }
+    ]
+    assert d["digest"] == before, "a refusal changes no run's input"
+    d["rejected"][0]["later"] = 1
+    back = ExampleSet.from_dict(json.loads(json.dumps(d)))
+    assert back.is_rejected(KEY, "toward")
+    assert back.to_dict()["rejected"][0]["later"] == 1
+    assert "rejected" not in _set().to_dict(), "an empty list is not written"
+
+
 def test_a_not_visible_mark_is_not_visible():
     s = _set(frames=[_frame(marks=_marks(tail_base=False))])
     assert s.visible_counts()["tail_base"] == 0

@@ -64,7 +64,11 @@ def min_row_px() -> int:
 
 
 def cell_text(
-    cell: QRectF, name: str, share: float, name_metrics, small_metrics
+    cell: QRectF,
+    name: str,
+    share: float,
+    name_metrics,
+    small_metrics,
 ) -> list[tuple[QRectF, str, str]]:
     """Where a tree block's words go: ``[(box, text, kind)]`` — ``kind`` is ``"name"`` (the
     block's font), ``"share"`` or ``"line"`` (the small font) — each box exactly one
@@ -90,7 +94,13 @@ def cell_text(
                 ),
                 "name",
             ),
-            (under, f"{share:.1f}%", "share"),
+            (
+                under,
+                small_metrics.elidedText(
+                    f"{share:.1f}%", Qt.TextElideMode.ElideRight, inner.width()
+                ),
+                "share",
+            ),
         ]
     line = cell.adjusted(4, 0, -4, 0)
     if low > cell.height() + 2 or line.width() <= 0:
@@ -173,6 +183,8 @@ class NodeIcicle(QWidget):
     unlabel_wanted = pyqtSignal(int)
     #: Open this node's clips in a window of their own (the menu).
     window_wanted = pyqtSignal(int)
+    #: Right-click → *Cluster profile…* (§22), offered only while a host listens.
+    profile_wanted = pyqtSignal(int)
     #: The content height, the scroll offset or the viewport changed: a scrollbar re-reads them.
     extent_changed = pyqtSignal()
 
@@ -661,17 +673,20 @@ class NodeIcicle(QWidget):
                 )
                 inner = rect.intersected(QRectF(0, 0, self.width(), self.height()))
                 share = self._times[node] / self._times[self._view.root] * 100
-                fonts = {"name": self.font(), "share": small, "line": small}
+                name_font = QFont(self.font())
+                line_font = QFont(small)
+                fonts = {"name": name_font, "share": small, "line": line_font}
                 for box, line, kind in cell_text(
                     inner,
                     name,
                     share,
-                    QFontMetricsF(self.font()),
-                    QFontMetricsF(small),
+                    QFontMetricsF(name_font),
+                    QFontMetricsF(line_font),
                 ):
                     painter.setFont(fonts[kind])
                     # The share under the name is quieter, except on a solid fill.
-                    painter.setPen(muted if kind == "share" and not solid else ink)
+                    quiet = kind == "share"
+                    painter.setPen(muted if quiet and not solid else ink)
                     painter.drawText(
                         box,
                         Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
@@ -892,8 +907,9 @@ class NodeIcicle(QWidget):
         open_once(self.context_menu(node), event.globalPos(), wait=True)
 
     def context_menu(self, node: int) -> QMenu:
-        """Label…, Remove label (when it has one), Open in window (while the page opens one:
-        derived from the wiring), Zoom to this."""
+        """Label…, Remove label (when it has one), then — each only while a host listens,
+        derived from the wiring — Open in window and Cluster profile…, and Zoom to this.
+        """
         menu = QMenu(self)
         menu.setToolTipsVisible(True)
         label = menu.addAction(
@@ -910,6 +926,19 @@ class NodeIcicle(QWidget):
         menu.addSeparator()
         if self.receivers(self.window_wanted) > 0:
             menu.addAction("Open in window", lambda: self.window_wanted.emit(node))
+        if self.receivers(self.profile_wanted) > 0:
+            profile = menu.addAction(
+                "Cluster profile…", lambda: self.profile_wanted.emit(node)
+            )
+            whole = self._view is not None and int(node) == int(self._view.root)
+            profile.setEnabled(not whole)
+            profile.setToolTip(
+                "The top of the tree is the whole run: there is nothing to set it apart "
+                "from."
+                if whole
+                else "Which measures set this cluster apart, checked on recordings the "
+                "model has not seen, with plain rules and what comes before and after it."
+            )
         menu.addAction("Zoom to this", lambda: self.zoom_to(node))
         return menu
 

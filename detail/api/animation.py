@@ -34,6 +34,8 @@ from pathlib import Path
 
 import numpy as np
 
+from detail.core.video_codecs import DEFAULT_VIDEO_CODEC
+
 #: What the GIF dialog opens with: the user's answer of 2026-10-22 ("ask each time", 640 / 12).
 GIF_DEFAULT_WIDTH = 640
 GIF_DEFAULT_FPS = 12.0
@@ -85,23 +87,34 @@ def sample_offsets_ns(duration_ns: int, fps: float) -> list[int]:
     return [int(round(i * period)) for i in range(count)]
 
 
-def _fit_frame(rgb: np.ndarray, max_width: int | None) -> np.ndarray:
-    """``rgb`` at the size :func:`detail.api.clip_render.fit_within` gives it — scaled down to
-    ``max_width`` (aspect kept, never up) and even on both sides, which H.264 needs. When only
-    an odd pixel is in the way the frame is cropped rather than resampled: invisible, lossless,
-    and the same picture the writer got before one rule sized every export.
-    """
-    from detail.api.clip_render import fit_within
+#: How far an integer-nanosecond sample time may fall short of the frame it means: a microsecond,
+#: three orders of magnitude under any frame period.
+SAMPLE_SLACK_NS = 1_000
 
-    height, width = rgb.shape[:2]
-    target_w, target_h = fit_within(width, height, max_width=max_width)
-    if (target_w, target_h) == (width, height):
+
+def frame_at_offset(t_ns: np.ndarray, offset_ns: int) -> int:
+    """The position in ``t_ns`` (a span's frame times, ascending) of the frame showing at
+    ``offset_ns`` past its first: the one at or just before it, held at the last.
+
+    With :data:`SAMPLE_SLACK_NS` of slack, because a sample and a frame's time are each rounded to
+    the nanosecond on their own: a 15 fps sample of 30 fps footage can land 1 ns short of the frame
+    it means (133,333,333 against 133,333,334), and an exact lookup then showed the frame before.
+    """
+    times = np.asarray(t_ns, dtype=np.int64)
+    target = int(times[0]) + int(offset_ns) + SAMPLE_SLACK_NS
+    position = int(np.searchsorted(times, target, side="right")) - 1
+    return min(max(position, 0), len(times) - 1)
+
+
+def fit_width(rgb: np.ndarray, max_width: int | None) -> np.ndarray:
+    """``rgb`` scaled down to ``max_width`` (aspect kept), or as it is when narrower."""
+    if max_width is None or rgb.shape[1] <= int(max_width):
         return rgb
-    if width - target_w <= 1 and height - target_h <= 1:
-        return np.ascontiguousarray(rgb[:target_h, :target_w])
     import cv2
 
-    return cv2.resize(rgb, (target_w, target_h), interpolation=cv2.INTER_AREA)
+    width = int(max_width)
+    height = max(int(round(rgb.shape[0] * width / rgb.shape[1])), 1)
+    return cv2.resize(rgb, (width, height), interpolation=cv2.INTER_AREA)
 
 
 def write_animation(
@@ -112,11 +125,13 @@ def write_animation(
     count: int,
     max_width: int | None = None,
     progress: Progress = None,
+    codec: str = DEFAULT_VIDEO_CODEC,
 ) -> Path:
     """Write ``frames`` (RGB ``uint8``, all one size) to ``path`` as its suffix says.
 
     ``count`` is how many ``frames`` will yield, for the bar. ``max_width`` scales every frame
-    down to that width first. A partly written file is removed when writing fails or is
+    down to that width first. ``codec`` is an mp4's encoding (``storage.video.VIDEO_CODECS``);
+    a GIF ignores it. A partly written file is removed when writing fails or is
     cancelled, so a stopped export never leaves something that looks finished.
 
     Raises:
@@ -141,7 +156,7 @@ def write_animation(
         if kind == GIF:
             written = _write_gif(path, frames, fps, max_width, report)
         else:
-            written = _write_mp4(path, frames, fps, max_width, report)
+            written = _write_mp4(path, frames, fps, max_width, report, codec)
     except BaseException:
         path.unlink(missing_ok=True)
         raise
@@ -151,7 +166,7 @@ def write_animation(
     return path
 
 
-def _write_mp4(path, frames, fps, max_width, report) -> int:
+def _write_mp4(path, frames, fps, max_width, report, codec) -> int:
     from detail.core.visualize import rgb_to_bgr
     from detail.storage.video import open_video_writer
 
@@ -159,10 +174,12 @@ def _write_mp4(path, frames, fps, max_width, report) -> int:
     written = 0
     try:
         for rgb in frames:
-            rgb = _fit_frame(np.ascontiguousarray(rgb, dtype=np.uint8), max_width)
+            rgb = fit_width(np.ascontiguousarray(rgb, dtype=np.uint8), max_width)
+            # H.264 wants even dimensions; a one-pixel crop is invisible and keeps it playable.
+            rgb = rgb[: rgb.shape[0] // 2 * 2, : rgb.shape[1] // 2 * 2]
             if writer is None:
                 writer, _codec = open_video_writer(
-                    path, fps, int(rgb.shape[1]), int(rgb.shape[0])
+                    path, fps, int(rgb.shape[1]), int(rgb.shape[0]), codec=codec
                 )
             writer.write(rgb_to_bgr(rgb))
             written += 1
@@ -212,7 +229,7 @@ def _write_gif(path, frames, fps, max_width, report) -> int:
         )
 
     for rgb in frames:
-        rgb = _fit_frame(np.ascontiguousarray(rgb, dtype=np.uint8), max_width)
+        rgb = fit_width(np.ascontiguousarray(rgb, dtype=np.uint8), max_width)
         if palette is None:
             held.append(rgb)
             held_bytes += rgb.nbytes

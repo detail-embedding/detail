@@ -12,6 +12,7 @@ A build that wants to exclude a backend drops it from this tuple (or overrides v
 
 PIPELINE_RUNNERS: tuple[str, ...] = (
     "detail.pipeline.tracking",
+    "detail.pipeline.track_merge",
     "detail.pipeline.detection",
     "detail.pipeline.embedding",
     "detail.pipeline.keypoint_detect",
@@ -25,10 +26,13 @@ PIPELINE_RUNNERS: tuple[str, ...] = (
     "detail.pipeline.query",
     "detail.pipeline.query_eval",
     "detail.pipeline.temporal_clustering",
+    "detail.pipeline.profile_describe",
+    "detail.pipeline.cluster_lookalikes",
     "detail.trainers.ultralytics_yolo",
     "detail.models.sam3",
     "detail.models.trained_yolo",
     "detail.models.dinov3",
     "detail.models.patch_match",  # dinov3_match (§26); its package import registers it
+    "detail.models.superanimal",  # the two DeepLabCut SuperAnimal methods (§26)
     "detail.models.yolo_pose",  # the distilled keypoint student (§12), resolved by record
 )

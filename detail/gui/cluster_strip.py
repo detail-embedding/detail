@@ -53,6 +53,7 @@ from detail.gui import frame_source
 from detail.gui import decode_order
 from detail.gui import plot_theme
 from detail.gui.clip_grid import _CellSignals, _CellTask
+from detail.gui.lifetime import cleared
 from detail.gui.quick_preview import (
     MAX_THUMB_PX,
     MIN_THUMB_PX,
@@ -368,7 +369,7 @@ class ClusterClipStrip(QWidget):
         preview = self._preview
         recording_id = clip.recording_id
         embed_run_id = clip.embed_run_id
-        track_id = int(clip.track_id)
+        track_id = clip.track_id
         middle = (int(clip.start_t_ns) + int(clip.end_t_ns)) // 2
         size = MAX_THUMB_PX
         tint = self._tint
@@ -423,7 +424,7 @@ class ClusterClipStrip(QWidget):
         preview = self._preview
         recording_id = clip.recording_id
         embed_run_id = clip.embed_run_id
-        track_id = int(clip.track_id)
+        track_id = clip.track_id
         start_t_ns, end_t_ns = int(clip.start_t_ns), int(clip.end_t_ns)
         tint = self._tint
 
@@ -1130,6 +1131,8 @@ class _WheelToStrip(QObject):
         self._strip = strip
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802 — Qt's name
+        if cleared(self):
+            return False
         kind = event.type()
         if kind == QEvent.Type.Wheel:
             if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:

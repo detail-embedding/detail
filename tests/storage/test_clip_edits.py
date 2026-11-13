@@ -12,7 +12,7 @@ from detail.storage import temporal_runs
 
 def _state(**kw) -> temporal_runs.TemporalClusteringState:
     return temporal_runs.TemporalClusteringState(
-        embed_run_id="emb_01", track_id=0, method="dtw_finch", **kw
+        **{"embed_run_id": "emb_01", "track_id": 0, "method": "dtw_finch", **kw}
     )
 
 

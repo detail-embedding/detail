@@ -1,5 +1,7 @@
 """Run tables navigate: recording run-history → experiment run, run → recording."""
 
+from pathlib import Path
+
 import pytest
 
 pytest.importorskip("PyQt6")
@@ -55,6 +57,59 @@ def _recording_with_tracking(proj, sid, processing_run_id):
     ]
     recording_store.write_recording(recording.dir, data)
     return proj.get_recording(sid)
+
+
+def test_experiment_runs_page_shows_where_it_ran(qapp, tmp_path):
+    """§ run location, duration, cost — the "Where" column between "Module" and
+    "Recordings" on the experiment-wide processing-runs index."""
+    from detail.gui.pages import ExperimentRunsPage, IndexTable
+    from detail.storage import runs as runs_store
+
+    proj = Experiment.create("p", tmp_path)
+    runs_store.run_dir(proj.dir, "run_001").mkdir(parents=True)
+    runs_store.write_run(
+        proj.dir,
+        "run_001",
+        {
+            "id": "run_001",
+            "module_id": "detection",
+            "recording_ids": [],
+            "config": {},
+            "per_recording": {},
+            "status": "complete",
+            "created_at": "2026-01-01T00:00:00Z",
+            "compute": {"backend": "remote", "remote_target": "tillicum"},
+        },
+    )
+    page = ExperimentRunsPage(proj, on_open=lambda _i: None)
+    table = page.findChildren(IndexTable)[0]
+    where_col = ["Run", "Module", "Where", "Recordings", "Status", "Started"].index(
+        "Where"
+    )
+    assert table.view.model().index(0, where_col).data() == "remote: tillicum"
+
+
+def test_recording_run_history_shows_where_it_ran(qapp, tmp_path):
+    """§ run location, duration, cost — the "Where" column between "From run" and
+    "Status"."""
+    from detail.gui.pages import RecordingDetailPage
+
+    proj = Experiment.create("p", tmp_path)
+    recording = _recording_with_tracking(proj, "s1", "run_003")
+    data = recording_store.read_recording(recording.dir)
+    data["tracking_runs"][0]["compute"] = {
+        "backend": "remote",
+        "remote_target": "tillicum",
+    }
+    recording_store.write_recording(recording.dir, data)
+
+    page = RecordingDetailPage(proj.get_recording("s1"), experiment=proj)
+
+    from detail.gui.pages import IndexTable
+
+    run_history = page.findChildren(IndexTable)[-1]  # the last one is Run history
+    where_col = ["Stage", "Id", "From run", "Where", "Status"].index("Where")
+    assert run_history.view.model().index(0, where_col).data() == "remote: tillicum"
 
 
 def test_recording_run_history_opens_experiment_run(qapp, tmp_path):
@@ -283,9 +338,13 @@ def test_create_dialog_tags_metadata_at_import(qapp, tmp_path):
     submitted = {}
     dialog = AddRecordingsDialog(proj, lambda specs, ds: submitted.update(specs=specs))
     dialog._append_row("s1", "")
-    dialog._table.item(0, 2).setText("drug_A")  # column 2 = the 'treatment' column
+    treatment = 2 + proj.metadata_columns.index("treatment")  # after name and video
+    dialog._table.item(0, treatment).setText("drug_A")
     dialog._create()
-    assert submitted["specs"][0].metadata == {"treatment": "drug_A"}
+    assert submitted["specs"][0].metadata == {
+        "acquisition_setup": "",
+        "treatment": "drug_A",
+    }
 
 
 def test_experiment_data_page_deletes_experiment(qapp, tmp_path, monkeypatch):
@@ -343,10 +402,6 @@ def _row_for_name(dialog, name):
     raise AssertionError(f"no row for {name!r}")
 
 
-def _square_kf():
-    return [(0, [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])]
-
-
 def _scene_button_texts(page):
     from PyQt6.QtWidgets import QPushButton
 
@@ -398,12 +453,16 @@ def test_recording_detail_summarises_every_spatial_kind(qapp, tmp_path):
 def test_locate_button_enables_only_when_a_referenced_video_is_missing(
     qapp, tmp_path, monkeypatch
 ):
+    import time
+
     import cv2
     import numpy as np
+    from PyQt6.QtCore import QThreadPool
 
     from detail.gui.pages import RecordingDetailPage
     from detail.storage import locations
     from detail.storage.video import FrameCursor
+    from tests import waits
     from tests.file_handles import file_is_held
     from tests.gui.conftest import drain_busy_calls
 
@@ -432,6 +491,11 @@ def test_locate_button_enables_only_when_a_referenced_video_is_missing(
     page._on_video(recording.verify_videos())
     assert not page._locate_btn.isEnabled()
 
+    # The page's own constructor-time scan (`_scan_video`) hashes this file off-thread; wait for
+    # it rather than race it — under a loaded suite it was still reading when the check came.
+    assert QThreadPool.globalInstance().waitForDone(
+        waits.WORKER_TIMEOUT_MS
+    ), "the page's video scan did not finish"
     # The user moves the external file with the page still open. Asked of the OS rather than
     # left to `unlink`, which succeeds on an open file on Linux and so cannot fail there.
     drain_busy_calls(qapp)
@@ -1154,6 +1218,103 @@ def test_model_detail_page_shows_recorded_error(qapp, tmp_path):
     assert any("RuntimeError: boom" in t for t in texts)
 
 
+def test_model_detail_page_shows_where_duration_and_cost(qapp, tmp_path):
+    """§ run location, duration, cost — a gap the original feature missed: this page never
+    got the Where/Duration/Cost rows `RunDetailPage`/`DistillRunDetail` already have, even
+    though `model.yaml` already carries the fields."""
+    from PyQt6.QtWidgets import QLabel
+
+    from detail.gui.pages import ModelDetailPage
+    from detail.storage import models as mstore
+
+    experiment = Experiment.create("p", tmp_path)
+    mdir = mstore.model_dir(experiment.dir, "model_001")
+    mdir.mkdir(parents=True)
+    mstore.write_model_yaml(
+        mdir,
+        {
+            "id": "model_001",
+            "name": "m",
+            "status": "complete",
+            "compute": {"backend": "remote", "remote_target": "tillicum"},
+            "duration_s": 125,
+            "estimated_cost_usd": 1.5,
+        },
+    )
+    page = ModelDetailPage(experiment, "model_001")
+    texts = [w.text() for w in page.findChildren(QLabel)]
+    assert any("remote: tillicum" in t for t in texts)
+    assert any("2m05s" in t for t in texts)
+    assert any("$1.50" in t for t in texts)
+
+
+def test_model_detail_page_omits_duration_and_cost_when_absent(qapp, tmp_path):
+    """A legacy record from before these fields existed gets no row at all, rather than one
+    reading a formatted ``None``. ``Where`` is unconditional (defaults to "local")."""
+    from PyQt6.QtWidgets import QLabel
+
+    from detail.gui.pages import ModelDetailPage
+    from detail.storage import models as mstore
+
+    experiment = Experiment.create("p", tmp_path)
+    mdir = mstore.model_dir(experiment.dir, "model_001")
+    mdir.mkdir(parents=True)
+    mstore.write_model_yaml(
+        mdir, {"id": "model_001", "name": "m", "status": "complete"}
+    )
+    page = ModelDetailPage(experiment, "model_001")
+    labels = {w.text() for w in page.findChildren(QLabel)}
+    assert "Where:" in labels
+    assert "Duration:" not in labels
+    assert "Cost:" not in labels
+
+
+def test_dataset_detail_page_shows_where_duration_and_cost(qapp, tmp_path):
+    from PyQt6.QtWidgets import QLabel
+
+    from detail.gui.pages import DatasetDetailPage
+    from detail.storage import datasets as dstore
+
+    experiment = Experiment.create("p", tmp_path)
+    ddir = dstore.dataset_dir(experiment.dir, "dataset_001")
+    ddir.mkdir(parents=True)
+    dstore.write_dataset_yaml(
+        ddir,
+        {
+            "id": "dataset_001",
+            "name": "d",
+            "status": "complete",
+            "compute": {"backend": "remote", "remote_target": "tillicum"},
+            "duration_s": 125,
+            "estimated_cost_usd": 1.5,
+        },
+    )
+    page = DatasetDetailPage(experiment, "dataset_001")
+    texts = [w.text() for w in page.findChildren(QLabel)]
+    assert any("remote: tillicum" in t for t in texts)
+    assert any("2m05s" in t for t in texts)
+    assert any("$1.50" in t for t in texts)
+
+
+def test_dataset_detail_page_omits_duration_and_cost_when_absent(qapp, tmp_path):
+    from PyQt6.QtWidgets import QLabel
+
+    from detail.gui.pages import DatasetDetailPage
+    from detail.storage import datasets as dstore
+
+    experiment = Experiment.create("p", tmp_path)
+    ddir = dstore.dataset_dir(experiment.dir, "dataset_001")
+    ddir.mkdir(parents=True)
+    dstore.write_dataset_yaml(
+        ddir, {"id": "dataset_001", "name": "d", "status": "complete"}
+    )
+    page = DatasetDetailPage(experiment, "dataset_001")
+    labels = {w.text() for w in page.findChildren(QLabel)}
+    assert "Where:" in labels
+    assert "Duration:" not in labels
+    assert "Cost:" not in labels
+
+
 def test_recordings_page_shows_queued_source_and_cancel(qapp, tmp_path):
     from detail.gui.pages import ExperimentRecordingsPage
     from detail.storage import recording as recording_store
@@ -1198,6 +1359,7 @@ def test_recordings_page_always_shows_source(qapp, tmp_path):
         "Parts",
         "Streams",
         "Field of view",
+        "Camera view",
         "Detections",
         "",  # trailing "›" column — the navigable-row cue
     ]
@@ -1482,6 +1644,61 @@ def test_the_measures_table_keeps_every_column_draggable(qapp):
         assert_border_follows_the_drag(table, column, dx=30)
 
 
+class _ExportingMeasures:
+    """The ``Measures.export`` contract, writing the file the real one names."""
+
+    def __init__(self, calls):
+        self._calls = calls
+
+    def export(self, out_dir, *, progress=None):
+        out = Path(out_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "measures.csv").write_text(
+            "recording_id,measure,value\n", encoding="utf-8"
+        )
+        self._calls.append(out)
+        return out
+
+
+class _MeasuredExperiment:
+    def __init__(self, root):
+        self.dir = root
+        self.calls = []
+
+    def measures(self, run_id):
+        return _ExportingMeasures(self.calls)
+
+
+def test_the_measures_table_exports_its_csv(qapp, tmp_path):
+    """**Export CSV…** writes the run's measures into a folder of its own, off the UI thread,
+    and says where. It stays off until there are measures to export: the table was readable on
+    this page and the CSV reachable only from `detail measures export`."""
+    from detail.gui.pages import MeasuresPanel
+
+    experiment = _MeasuredExperiment(tmp_path)
+    panel = MeasuresPanel(experiment=experiment, run_id="an_01")
+    assert not panel._export.isEnabled(), "export offered before anything was measured"
+    panel._show_rows([("recording_001", "0", "rearing", "Bouts", "3", "", "3")])
+    assert panel._export.isEnabled()
+    assert "measures.csv" in panel._export.toolTip()
+
+    panel.export_to(tmp_path / "out")
+    assert drain_until(qapp, lambda: panel._exported.text().startswith("Wrote"))
+    assert experiment.calls == [tmp_path / "out" / "an_01_measures"]
+    assert (tmp_path / "out" / "an_01_measures" / "measures.csv").is_file()
+    assert str(tmp_path / "out" / "an_01_measures") in panel._exported.text()
+    assert panel._export.isEnabled(), "the button stayed off after the export"
+
+
+def test_the_measures_table_offers_no_export_when_empty(qapp):
+    from detail.gui.pages import MeasuresPanel
+
+    panel = MeasuresPanel(experiment=None, run_id="an_01")
+    panel._show_rows([])
+    assert not panel._export.isEnabled()
+    assert panel._export.toolTip(), "a greyed button with no reason"
+
+
 def _measures_rows(n):
     return [
         (f"recording_{i:03d}", "0", "climb", "Median bout length", "1.20", "s", "3")
@@ -1608,3 +1825,56 @@ def test_import_dialog_disables_a_calibration_from_another_rig(qapp, tmp_path):
     assert (
         _row_for_name(same, "Distance calibration").flags() & Qt.ItemFlag.ItemIsEnabled
     )
+
+
+def _frames_column(results) -> dict:
+    """``{recording name: Frames with detections text}`` as the table shows it."""
+    model = results._table.view.model()
+    headers = [model.headerData(c, Qt.Orientation.Horizontal) for c in range(4)]
+    column = headers.index("Frames with detections")
+    return {
+        model.item(r, 0).text(): model.item(r, column).text()
+        for r in range(model.rowCount())
+    }
+
+
+def test_a_detection_runs_table_counts_each_recordings_frames_with_detections(
+    qapp, processed_recording
+):
+    built = processed_recording
+    square = built.square(4, 20, 4, 20)
+    # Two detections on frame 1: a frame counts once, however many it holds.
+    built.add_recording(
+        "recording_002",
+        detections=[(i, 0, (0.1, 0.1, 0.5, 0.5), square) for i in (0, 1, 1, 2)],
+        object_ids=[0, 1, 0, 0],
+    )
+    record = runs_store.read_run(built.experiment.dir, built.detection_run_id)
+    results = RunResults(built.experiment, record, ui=None)
+    results._table.view.selectRow(1)
+
+    assert drain_until(qapp, lambda: "…" not in _frames_column(results).values())
+    names = built.experiment.recording_names()
+    assert _frames_column(results) == {
+        names["recording_001"]: "1/5",
+        names["recording_002"]: "3/5",
+    }
+    # Filled in place: the row the user picked while it read is still the one picked.
+    assert results._selected_id == "recording_002"
+    assert results._table.view.currentIndex().row() == 1
+    results.deleteLater()
+    qapp.processEvents()
+
+
+def test_a_tracking_runs_table_has_no_frames_column(qapp, processed_recording):
+    built = processed_recording
+    record = runs_store.read_run(built.experiment.dir, built.tracking_run_id)
+    results = RunResults(built.experiment, record, ui=None)
+    model = results._table.view.model()
+    headers = [
+        model.headerData(c, Qt.Orientation.Horizontal)
+        for c in range(model.columnCount())
+    ]
+    assert "Frames with detections" not in headers
+    results.deleteLater()
+    qapp.processEvents()

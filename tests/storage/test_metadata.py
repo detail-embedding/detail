@@ -7,11 +7,13 @@ import pytest
 from detail.storage import metadata as md
 from detail.storage import experiment as experiment_store
 
+SETUP = md.ACQUISITION_SETUP_KEY
+
 
 def test_read_absent_is_empty(tmp_path):
     proj = experiment_store.create_experiment(tmp_path, "p")
     assert md.read_metadata(proj) == {}
-    assert md.columns(proj) == []
+    assert md.columns(proj) == [SETUP]  # reserved: present before any file exists
 
 
 def test_upsert_creates_row_with_recording_id_first(tmp_path):
@@ -20,11 +22,11 @@ def test_upsert_creates_row_with_recording_id_first(tmp_path):
     # header order: recording_id first, then columns in insertion order
     with open(md.metadata_path(proj), newline="", encoding="utf-8-sig") as f:
         header = next(csv.reader(f))
-    assert header == ["recording_id", "animal_id", "treatment"]
+    assert header == ["recording_id", SETUP, "animal_id", "treatment"]
     assert md.read_metadata(proj) == {
-        "recording_001": {"animal_id": "M001", "treatment": "drug_A"}
+        "recording_001": {SETUP: "", "animal_id": "M001", "treatment": "drug_A"}
     }
-    assert md.columns(proj) == ["animal_id", "treatment"]
+    assert md.columns(proj) == [SETUP, "animal_id", "treatment"]
 
 
 def test_upsert_unions_new_columns_and_merges(tmp_path):
@@ -33,16 +35,24 @@ def test_upsert_unions_new_columns_and_merges(tmp_path):
     md.upsert_row(proj, "recording_002", {"treatment": "vehicle"})  # new column
     md.upsert_row(proj, "recording_001", {"treatment": "drug_A"})  # merge into existing
     table = md.read_metadata(proj)
-    assert table["recording_001"] == {"animal_id": "M001", "treatment": "drug_A"}
-    assert table["recording_002"] == {"animal_id": "", "treatment": "vehicle"}
-    assert md.columns(proj) == ["animal_id", "treatment"]
+    assert table["recording_001"] == {
+        SETUP: "",
+        "animal_id": "M001",
+        "treatment": "drug_A",
+    }
+    assert table["recording_002"] == {
+        SETUP: "",
+        "animal_id": "",
+        "treatment": "vehicle",
+    }
+    assert md.columns(proj) == [SETUP, "animal_id", "treatment"]
     assert list(table) == ["recording_001", "recording_002"]  # row order preserved
 
 
 def test_empty_upsert_seeds_a_key_row(tmp_path):
     proj = experiment_store.create_experiment(tmp_path, "p")
     md.upsert_row(proj, "recording_001")  # how create_recording seeds the row
-    assert md.read_metadata(proj) == {"recording_001": {}}
+    assert md.read_metadata(proj) == {"recording_001": {SETUP: ""}}
 
 
 def test_remove_row_idempotent(tmp_path):
@@ -58,8 +68,12 @@ def test_add_column(tmp_path):
     proj = experiment_store.create_experiment(tmp_path, "p")
     md.upsert_row(proj, "recording_001", {"animal_id": "M001"})
     md.add_column(proj, "group")
-    assert md.columns(proj) == ["animal_id", "group"]
-    assert md.read_metadata(proj)["recording_001"] == {"animal_id": "M001", "group": ""}
+    assert md.columns(proj) == [SETUP, "animal_id", "group"]
+    assert md.read_metadata(proj)["recording_001"] == {
+        SETUP: "",
+        "animal_id": "M001",
+        "group": "",
+    }
 
 
 def test_add_column_rejects_reserved(tmp_path):
@@ -190,6 +204,7 @@ def test_apply_import_merges_skips_blanks_adds_columns(tmp_path):
         proj, ["treatment", "group"], [("s1", {"treatment": "", "group": "ctrl"})]
     )
     assert md.read_metadata(proj)["s1"] == {
+        SETUP: "",
         "animal_id": "M001",
         "treatment": "old",
         "group": "ctrl",
@@ -206,19 +221,20 @@ def test_export_metadata_writes_template(tmp_path):
     md.export_metadata(proj, out)
     # recording_id first, every column, one row per recording, blanks empty
     assert out.read_text(encoding="utf-8-sig") == (
-        "recording_id,animal_id,treatment\ns1,M001,drug_A\ns2,M002,\n"
+        "recording_id,acquisition_setup,animal_id,treatment\n"
+        "s1,,M001,drug_A\ns2,,M002,\n"
     )
     # round-trips back through the importer
     key, cols, rows = md.load_import_csv(out)
-    assert (key, cols) == ("recording_id", ["animal_id", "treatment"])
-    assert rows[0] == ("s1", {"animal_id": "M001", "treatment": "drug_A"})
+    assert (key, cols) == ("recording_id", [SETUP, "animal_id", "treatment"])
+    assert rows[0] == ("s1", {SETUP: "", "animal_id": "M001", "treatment": "drug_A"})
 
 
 def test_export_metadata_empty_is_header_only(tmp_path):
     proj = experiment_store.create_experiment(tmp_path, "p")
     out = tmp_path / "template.csv"
     md.export_metadata(proj, out)
-    assert out.read_text(encoding="utf-8-sig") == "recording_id\n"
+    assert out.read_text(encoding="utf-8-sig") == "recording_id,acquisition_setup\n"
 
 
 def test_export_metadata_writes_the_derived_columns_it_is_given(tmp_path):
@@ -230,7 +246,8 @@ def test_export_metadata_writes_the_derived_columns_it_is_given(tmp_path):
         proj, out, names={"s1": "m27", "s2": "m28"}, files={"s1": "m27.mp4"}
     )
     assert out.read_text(encoding="utf-8-sig") == (
-        "recording_id,name,file,dose\ns1,m27,m27.mp4,0.5\ns2,m28,,\n"
+        "recording_id,name,file,acquisition_setup,dose\n"
+        "s1,m27,m27.mp4,,0.5\ns2,m28,,,\n"
     )
 
 
@@ -240,10 +257,10 @@ def test_delete_column_removes_column_and_values(tmp_path):
     md.upsert_row(proj, "s1", {"animal_id": "M001", "treatment": "drug_A"})
     md.upsert_row(proj, "s2", {"animal_id": "M002", "treatment": "vehicle"})
     md.delete_column(proj, "treatment")
-    assert md.columns(proj) == ["animal_id"]
+    assert md.columns(proj) == [SETUP, "animal_id"]
     assert md.read_metadata(proj) == {
-        "s1": {"animal_id": "M001"},
-        "s2": {"animal_id": "M002"},
+        "s1": {SETUP: "", "animal_id": "M001"},
+        "s2": {SETUP: "", "animal_id": "M002"},
     }
 
 
@@ -251,7 +268,7 @@ def test_delete_column_absent_is_noop(tmp_path):
     proj = experiment_store.create_experiment(tmp_path, "p")
     md.upsert_row(proj, "s1", {"animal_id": "M001"})
     md.delete_column(proj, "nope")  # no error, no change
-    assert md.columns(proj) == ["animal_id"]
+    assert md.columns(proj) == [SETUP, "animal_id"]
 
 
 def test_delete_column_rejects_recording_id(tmp_path):
@@ -267,8 +284,47 @@ def test_write_metadata_replaces_whole_table(tmp_path):
     md.write_metadata(
         proj, ["animal_id", "cohort"], {"s1": {"animal_id": "M1", "cohort": "A"}}
     )
-    assert md.columns(proj) == ["animal_id", "cohort"]
-    assert md.read_metadata(proj) == {"s1": {"animal_id": "M1", "cohort": "A"}}
+    assert md.columns(proj) == [SETUP, "animal_id", "cohort"]
+    assert md.read_metadata(proj) == {
+        "s1": {SETUP: "", "animal_id": "M1", "cohort": "A"}
+    }
+
+
+# --- the canonical acquisition_setup column (§11, #717) ------------------------------ #
+def test_the_setup_column_cannot_be_deleted(tmp_path):
+    proj = experiment_store.create_experiment(tmp_path, "p")
+    md.upsert_row(proj, "s1", {SETUP: "box 1"})
+    with pytest.raises(ValueError, match="cannot delete the reserved column"):
+        md.delete_column(proj, SETUP)
+    assert md.read_metadata(proj)["s1"][SETUP] == "box 1"
+
+
+def test_a_table_written_before_the_setup_column_reads_it_and_saves_it(tmp_path):
+    """No migration: an old file shows the column at once and gains it on its next write."""
+    proj = experiment_store.create_experiment(tmp_path, "p")
+    _write_csv(md.metadata_path(proj), ["recording_id", "animal_id"], [["s1", "M001"]])
+    assert md.columns(proj) == [SETUP, "animal_id"]
+    assert md.read_metadata(proj)["s1"] == {SETUP: "", "animal_id": "M001"}
+    md.upsert_row(proj, "s1", {SETUP: "box 2"})
+    with open(md.metadata_path(proj), newline="", encoding="utf-8-sig") as f:
+        assert next(csv.reader(f)) == ["recording_id", SETUP, "animal_id"]
+
+
+def test_a_user_column_already_named_acquisition_setup_is_adopted_in_place(tmp_path):
+    proj = experiment_store.create_experiment(tmp_path, "p")
+    _write_csv(
+        md.metadata_path(proj),
+        ["recording_id", "animal_id", SETUP],
+        [["s1", "M001", "rig A"]],
+    )
+    assert md.columns(proj) == [SETUP, "animal_id"]  # moved first, not duplicated
+    assert md.read_metadata(proj)["s1"] == {SETUP: "rig A", "animal_id": "M001"}
+
+
+def test_a_bulk_replace_without_the_setup_column_keeps_it(tmp_path):
+    proj = experiment_store.create_experiment(tmp_path, "p")
+    md.write_metadata(proj, ["animal_id"], {"s1": {"animal_id": "M001"}})
+    assert md.columns(proj) == [SETUP, "animal_id"]
 
 
 # --- column types (the cluster view's filters pick a widget from these) -------------------

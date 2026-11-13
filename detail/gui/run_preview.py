@@ -7,25 +7,31 @@ only, via the shared ``FrameScrubber``), so the UI never stalls on an hour-long 
 """
 
 import numpy as np
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QImage, QPainter, QPixmap
 from PyQt6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
     QLabel,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
-from detail.api.run_preview import track_coverage
+from detail.api.run_preview import locate_frame, track_coverage
 from detail.core.chart_theme import LIGHT, rgb
 from detail.core.visualize import (
-    draw_bbox,
-    draw_detections,
-    draw_mask,
+    BOX_ONLY,
+    DETECTION_BOX_COLOR,
+    MASK_BOX_CONF,
+    PREVIEW_STYLE_LABELS,
+    PREVIEW_STYLES,
+    draw_preview_overlay,
+    preview_needs_mask,
 )
 from detail.gui import frame_source
 from detail.gui.busy import decode_overlay, run_busy
@@ -35,8 +41,7 @@ from detail.gui import plot_theme
 from detail.gui.plots import bound_axes
 from detail.gui.scrubber import FrameScrubber
 from detail.gui.sizing import lines
-
-_BOX_COLOR = (60, 220, 70)
+from detail.gui.spin import FRACTION, FloatSpin
 
 
 def _track_color(object_id):
@@ -47,7 +52,7 @@ def _track_color(object_id):
     extension, rather than wrapping so track 6 wore track 0's colour.
     """
     if object_id is None:
-        return _BOX_COLOR
+        return DETECTION_BOX_COLOR
     return rgb(LIGHT.identity(object_id))
 
 
@@ -295,16 +300,45 @@ class _TrackTimeline(QWidget):
 class DetectionRunPreview(QWidget):
     """Frame viewer + overview for one recording's detection run."""
 
-    def __init__(self, recording, run_id: str):
+    #: The style the viewer opens in. The mask is the result of a detection or tracking run,
+    #: so it is drawn; a keypoints run's points are, and a mask tint would sit under them.
+    _DEFAULT_STYLE = MASK_BOX_CONF
+
+    def __init__(
+        self,
+        recording,
+        run_id: str,
+        *,
+        experiment_dir=None,
+        parent_run_id: str | None = None,
+    ):
+        """``experiment_dir``/``parent_run_id`` are what the export buttons need and the frame
+        viewer does not: the *experiment's* run (``run_006``), not this recording's own
+        ``det_01``, because the export target is the run (`export_targets._RUN_TARGETS`'
+        ``preview_frame``/``preview_video``) and only an experiment-level run has a record to
+        export from. ``None`` hides the buttons, which is right for a run with no experiment-
+        level record (one launched per recording from the API or CLI) and for a fake recording
+        in a test. It is **not** a default to rely on: a viewer built without them looks
+        complete and has no Export, which is how this went missing from the run-detail page
+        (`ModuleUI.preview_widget` takes both as required keywords for that reason).
+        """
         super().__init__()
         self._frame = 0
-        self._masks_on = (
-            True  # masks on by default; snapshot for the off-thread compute
-        )
+        self._style = self._DEFAULT_STYLE  # snapshot for the off-thread compute
+        self._experiment_dir = experiment_dir
+        self._parent_run_id = parent_run_id
+        self._recording_id = getattr(recording, "id", None)
         layout = QVBoxLayout(self)
         self._layout = layout
         self._summary = QLabel("")
-        layout.addWidget(self._summary)
+        # The summary line has free width to its right, which is where the export buttons go: not
+        # in the transport row under the picture. That row wraps, and `PictureWithControls` sizes
+        # the page's minimum height from it wrapped at the picture's narrowest width, so every
+        # control added there costs a full line of height at any window size (two buttons made the
+        # tracking page 32px too tall for the 1440x810 window, which scrolls the transport away).
+        self._head = QHBoxLayout()
+        self._head.addWidget(self._summary, 1)
+        layout.addLayout(self._head)
         # Zoomable: a detection is judged at the size of the thing detected, and a whole
         # 1080p frame fitted to this pane draws a mouse a few dozen pixels wide.
         self._image = ImageView(zoomable=True)
@@ -369,12 +403,36 @@ class DetectionRunPreview(QWidget):
         self._scrubber.set_timestamps(self._preview.timestamps())
         if fps:
             self._scrubber.set_playback_rate(fps)
-        self._masks = QCheckBox("Masks")
-        self._masks.setChecked(
-            self._masks_on
-        )  # on by default; set before wiring toggled
-        self._masks.toggled.connect(self._on_masks_toggled)
-        self._scrubber.add_control(self._masks)
+        self._style_picker = QComboBox()
+        for style in PREVIEW_STYLES:
+            self._style_picker.addItem(PREVIEW_STYLE_LABELS[style], style)
+        self._style_picker.setCurrentIndex(self._style_picker.findData(self._style))
+        self._style_picker.currentIndexChanged.connect(self._on_style_changed)
+        self._scrubber.add_control(self._style_picker)
+
+        # Both go through the shared export dialog (`gui/export.py::open_export`),
+        # pre-answered — the same "one dialog, two triggers" rule the clip player's own
+        # Export video… button keeps. Neither writes anything itself.
+        export_frame = QPushButton("Export frame…")
+        export_frame.setToolTip(
+            "Write the frame on screen to a PNG, in the style shown."
+        )
+        export_frame.clicked.connect(self._export_frame)
+
+        export_video = QPushButton("Export video…")
+        export_video.setToolTip(
+            "Write the whole recording — every video part — to an mp4, in the style "
+            "shown."
+        )
+        export_video.clicked.connect(self._export_video)
+        self._export_buttons = (export_frame, export_video)
+        self._place_export_buttons()
+        # No experiment-level run to export from (see `__init__`) — hidden rather than a click
+        # that always fails.
+        if not self._can_export():
+            export_frame.hide()
+            export_video.hide()
+
         self._scrubber.frame_changed.connect(
             self._on_frame_changed
         )  # immediate cursors
@@ -394,15 +452,8 @@ class DetectionRunPreview(QWidget):
         self._build_overview(self._layout, overview)  # e.g. a track-presence timeline
         self._scrubber.set_frame(0)
 
-    def _locate(self, frame: int) -> tuple[int, int]:
-        for part, count in enumerate(self._part_counts):
-            if frame < count:
-                return part, frame
-            frame -= count
-        return max(len(self._part_counts) - 1, 0), max(self._part_counts[-1] - 1, 0)
-
-    def _on_masks_toggled(self, checked: bool) -> None:
-        self._masks_on = checked
+    def _on_style_changed(self, index: int) -> None:
+        self._style = self._style_picker.itemData(index)
         self._scrubber.set_frame(self._frame)  # re-decode the current frame
 
     def _on_frame_changed(self, frame: int) -> None:
@@ -415,14 +466,28 @@ class DetectionRunPreview(QWidget):
         """Off-thread: decode + overlay → a display payload (no Qt here)."""
         if not self._total:
             return ("text", "(no video)")
-        part, local = self._locate(global_frame)
+        part, local = locate_frame(self._part_counts, global_frame)
         result, reason = frame_source.decode(
-            lambda: self._preview.frame(part, local, with_masks=self._masks_on)
+            lambda: self._preview.frame(
+                part, local, with_masks=preview_needs_mask(self._style)
+            )
         )
         if reason is not None:
             return ("text", frame_source.unavailable_text(reason))
         _actual, rgb, detections = result
-        return ("img", self._overlay(rgb, detections))
+        return ("img", self._decorate(self._overlay(rgb, detections), part, local))
+
+    def _overlay(self, rgb, detections):
+        """The run's own drawing of ``detections`` on ``rgb``, in the style picked — the one
+        draw a subclass layers its own marks over (the keypoint viewers' points, §26).
+        """
+        return draw_preview_overlay(
+            rgb,
+            detections,
+            self._style,
+            color_fn=self._color_fn,
+            label_fn=self._label_fn,
+        )
 
     def _display(self, _frame: int, payload) -> None:
         kind, data = payload
@@ -433,6 +498,44 @@ class DetectionRunPreview(QWidget):
         # magnifying a copy already shrunk to the pane.
         self._image.set_frame(_to_pixmap(data))
         self._block.set_aspect(self._image.pixmap_size())
+
+    def _export_frame(self) -> None:
+        self._open_preview_export("preview_frame", frames=(self._frame, self._frame))
+
+    def _export_video(self) -> None:
+        self._open_preview_export("preview_video", frames=None)
+
+    def _place_export_buttons(self) -> None:
+        """The frame and video buttons, at the right of the summary line (see ``__init__``)."""
+        for button in self._export_buttons:
+            self._head.addWidget(button, 0, Qt.AlignmentFlag.AlignTop)
+
+    def _can_export(self) -> bool:
+        """Whether there is an experiment-level run behind this viewer to export from."""
+        return (
+            self._experiment_dir is not None
+            and self._parent_run_id is not None
+            and self._recording_id is not None
+        )
+
+    def _export_seed(self) -> dict:
+        """What the viewer knows that no control in the export dialog offers: the recording on
+        screen and the style on screen. A subclass adds what it draws on top."""
+        return {"recording_id": self._recording_id, "style": self._style}
+
+    def _open_preview_export(self, target_id: str, *, frames) -> None:
+        """Open the shared export dialog, pre-answered with the run and what is on screen."""
+        from detail.api.exporters import ExportScope, ExportSubject
+        from detail.gui.export import open_export
+
+        scope = ExportScope(frames=frames) if frames is not None else None
+        open_export(
+            self,
+            ExportSubject("run", self._experiment_dir, self._parent_run_id),
+            scope,
+            only=(target_id,),
+            seed=self._export_seed(),
+        )
 
     # -- subclass hooks ------------------------------------------------------ #
     def _summary_text(self, overview, fps: float | None) -> str:
@@ -446,16 +549,28 @@ class DetectionRunPreview(QWidget):
         total = int(self._counts.sum())
         with_dets = int((self._counts > 0).sum())
         peak = int(self._counts.max()) if self._total else 0
+        # Over the frames the run looked at, as the run's results list counts them: at
+        # every_n_frames=4 the source count would report three frames in four as empty.
+        processed = self._preview.frames_processed
         return (
-            f"{total} detections · {with_dets}/{self._total} frames with ≥1 · "
+            f"{total} detections · {with_dets}/{processed} frames with ≥1 · "
             f"up to {peak}/frame"
         )
 
     def _make_preview(self, recording, run_id: str):
         return recording.detection_preview(run_id)  # off-thread (called from _load)
 
-    def _overlay(self, rgb, detections):
-        return draw_detections(rgb, detections, _BOX_COLOR)
+    def _color_fn(self, det):
+        return DETECTION_BOX_COLOR
+
+    def _label_fn(self, det, show_confidence: bool):
+        return f"{det.class_name} {det.confidence:.2f}" if show_confidence else None
+
+    def _decorate(self, rgb, part: int, local: int):
+        """Off-thread: draw what belongs to *this frame* over the overlay — a hook for a run
+        whose marks are per frame rather than per detection (keypoints). Default: nothing.
+        """
+        return rgb
 
     def _load_overview(self, preview):
         """Off-thread: overview data (e.g. track presence). ``None`` = no overview."""
@@ -475,14 +590,16 @@ class TrackingRunPreview(DetectionRunPreview):
     def _make_preview(self, recording, run_id: str):
         return recording.tracking_preview(run_id)  # off-thread (called from _load)
 
-    def _overlay(self, rgb, detections):
-        out = rgb
-        for det in detections:
-            color = _track_color(det.object_id)
-            out = draw_mask(out, det.mask, color)
-            if det.bbox is not None:
-                out = draw_bbox(out, det.bbox, color, label=f"track {det.object_id}")
-        return out
+    def _color_fn(self, det):
+        return _track_color(det.object_id)
+
+    def _label_fn(self, det, show_confidence: bool):
+        # The track id is the reason a tracking preview exists, so it stays in the
+        # label even when the style turns confidence off — unlike detection, which has
+        # no label at all in that case.
+        if show_confidence:
+            return f"track {det.object_id} · {det.class_name} {det.confidence:.2f}"
+        return f"track {det.object_id}"
 
     def _summary_text(self, overview, fps: float | None) -> str:
         """Coverage, per subject — the number a tracking run is actually asked for.
@@ -558,6 +675,11 @@ class InputImageScrubber(Dialog):
     Decodes + renders on demand (slider release / step), so it stays responsive on
     long video. The spec is resolved per recording, so the centered constructors
     show the same canvas the embedding run would use for that recording.
+
+    ``alignment`` (§14) is the alignment the run would apply, with each recording's keypoint
+    track run in ``keypoint_run_ids``, so the preview turns what the run will turn. ``pose``
+    (``{"pose": "draw", "pose_min_score": ...}``) draws the points the run will draw, from the
+    same keypoint track runs.
     """
 
     def __init__(
@@ -571,10 +693,10 @@ class InputImageScrubber(Dialog):
         *,
         alignment=None,
         keypoint_run_ids=None,
+        pose=None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Input image preview")
-        self.resize(820, 560)
         self._recordings = recordings
         # {recording_id: tracking run id resolved from the selected spec} — differs per
         # recording (§6.5), so the run id is looked up per recording, not shared.
@@ -591,6 +713,8 @@ class InputImageScrubber(Dialog):
             else None
         )
         self._keypoint_run_ids = dict(keypoint_run_ids or {})
+        # §14 pose: only a drawn pose changes the picture; appended numbers change the vector
+        self._pose = dict(pose) if pose and pose.get("pose") == "draw" else None
         self._preview = None
         self._part_counts: list[int] = []
         self._total = 0
@@ -622,9 +746,8 @@ class InputImageScrubber(Dialog):
         panes.addWidget(_titled("Model input", self._input), 2)
         layout.addLayout(panes, 1)
 
-        self._active_track = (
-            self._track.currentData()
-        )  # snapshot for off-thread compute
+        # snapshot for off-thread compute
+        self._active_track = self._track.currentData()
         # Watching what the embedder sees as the subject moves is the whole point here.
         self._scrubber = FrameScrubber(playable=True)
         self._scrubber.frame_changed.connect(self._on_frame_changed)
@@ -679,7 +802,7 @@ class InputImageScrubber(Dialog):
         step, as the run will (§14)."""
         alignment = None
         canvas_px = None
-        if self._alignment is not None:
+        if self._alignment is not None or self._pose is not None:
             from detail.pipeline.embedding import (
                 _alignment_settings,
                 largest_turned_mask_px,
@@ -689,27 +812,41 @@ class InputImageScrubber(Dialog):
             if keypoint_run_id is None:
                 raise ValueError(
                     f"recording {recording.name!r} has no keypoint track run matching the "
-                    "selected one, so its input cannot be aligned"
+                    "selected one, so its input cannot be aligned or drawn on"
                 )
             track_run = recording.keypoint_track_run(keypoint_run_id)
+            cutoff = (track_run.meta.get("config") or {}).get("decode_cutoff")
             alignment = {
-                **self._alignment,
+                **(self._alignment or {"align": "none"}),
                 "keypoint_run_id": keypoint_run_id,
-                "heading_cutoff": (track_run.meta.get("config") or {}).get(
-                    "decode_cutoff"
+                "heading_cutoff": cutoff,
+                "pose": "draw" if self._pose is not None else "none",
+                "pose_min_score": (
+                    self._pose.get("pose_min_score")
+                    if self._pose is not None
+                    and self._pose.get("pose_min_score") is not None
+                    else cutoff
                 ),
             }
-            canvas_px = largest_turned_mask_px(
-                recording.dir, run_id, self._track_ids, _alignment_settings(alignment)
-            )
+            if self._alignment is not None:
+                canvas_px = largest_turned_mask_px(
+                    recording.dir,
+                    run_id,
+                    self._track_ids,
+                    _alignment_settings(alignment),
+                )
         if alignment is None:  # the unaligned call, exactly as before alignment existed
             spec = recording.resolve_constructor(  # off-thread (called from _reload)
-                self._constructor, run_id, self._track_ids, model_id=self._model_id
+                self._constructor,
+                run_id,
+                self._track_ids,
+                model_id=self._model_id,
             )
             return recording.input_image_preview(  # off-thread (via _reload)
                 run_id, spec
             )
-        from detail.transforms.constructors import with_alignment
+        from detail.pipeline.embedding import _draw_pose_step
+        from detail.transforms.constructors import with_alignment, with_pose
 
         spec = recording.resolve_constructor(  # off-thread (called from _reload)
             self._constructor,
@@ -718,7 +855,11 @@ class InputImageScrubber(Dialog):
             model_id=self._model_id,
             canvas_px=canvas_px,
         )
-        spec = with_alignment(spec, alignment["align"])
+        # the points first, then the turn: the order validate builds the run's spec in
+        spec = with_alignment(
+            with_pose(spec, _draw_pose_step(recording.dir, alignment)),
+            alignment["align"],
+        )
         return recording.input_image_preview(  # off-thread (via _reload)
             run_id, spec, alignment=alignment
         )
@@ -759,9 +900,10 @@ class InputImageScrubber(Dialog):
         if self._preview is None or not self._total:
             return ("none",)
         part, local = self._locate(global_frame)
-        result, reason = frame_source.decode(
-            lambda: self._preview.input_at(part, local, self._active_track)
-        )
+        decode = lambda: self._preview.input_at(
+            part, local, self._active_track
+        )  # noqa: E731
+        result, reason = frame_source.decode(decode)
         if reason is not None:
             return ("unavailable", reason)
         return ("ok", *result)  # (actual, rgb, model_input)
@@ -792,6 +934,20 @@ class InputImageScrubber(Dialog):
 
 
 _SCATTER_MAX_POINTS = 5000  # cap the inspection scatter so big runs stay responsive
+
+
+def pose_text(meta: dict) -> str | None:
+    """How a run put the pose into its vectors (§14), for the viewer's header; None for a
+    run without pose (and every run recorded before pose existed)."""
+    from detail.configs.embedding import POSE_CHOICES
+
+    pose = meta.get("pose") or "none"
+    if pose == "none":
+        return None
+    label = POSE_CHOICES[pose][0].lower()
+    if pose == "append" and meta.get("pose_weight") is not None:
+        return f"{label} (weight {float(meta['pose_weight']):g})"
+    return label
 
 
 class EmbeddingRunPreview(QWidget):
@@ -908,6 +1064,7 @@ class EmbeddingRunPreview(QWidget):
                     meta.get("model_id"),
                     meta.get("model_variant"),
                     meta.get("constructor"),
+                    pose_text(meta),
                     f"{meta.get('output_dim')}-d",
                     meta.get("status"),
                 )
@@ -917,7 +1074,7 @@ class EmbeddingRunPreview(QWidget):
         spots = [
             {
                 "pos": (float(self._coords[i, 0]), float(self._coords[i, 1])),
-                "brush": plot_theme.brush(QColor(*_track_color(int(self._tracks[i])))),
+                "brush": plot_theme.brush(QColor(*_track_color(self._tracks[i]))),
                 "data": i,
             }
             for i in range(len(self._locators))

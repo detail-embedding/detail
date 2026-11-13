@@ -170,6 +170,30 @@ def test_a_target_that_cannot_run_here_is_refused_with_its_reason(
         )
 
 
+def test_set_export_status_merges_duration_from_the_jobs_own_envelope(tmp_path):
+    """export_dir doubles as the job's own run_dir — set_export_status reads
+    started_at/completed_at straight from job.json. Export runs are local-only
+    today, so no compute/cost, just timing."""
+    from detail.core.dataclasses import JobStatus
+    from detail.executor import rundir
+
+    edir = export_runs_store.export_dir(tmp_path, "export_001")
+    edir.mkdir(parents=True)
+    export_runs_store.write_export_yaml(edir, {"id": "export_001", "status": "running"})
+    rundir._atomic_write(
+        rundir._job_path(edir),
+        {"schema_version": 1, "job": None, "progress": None, "error": None},
+    )
+    rundir.set_status(edir, JobStatus.RUNNING)
+    rundir.set_status(edir, JobStatus.COMPLETE)
+
+    export_runs_store.set_export_status(edir, "complete")
+
+    rec = export_runs_store.read_export_yaml(edir)
+    assert rec["duration_s"] is not None
+    assert rec["compute"] is None
+
+
 def test_a_renamed_folder_is_reflected_in_the_record(
     authored_cohort, tmp_path, monkeypatch
 ):

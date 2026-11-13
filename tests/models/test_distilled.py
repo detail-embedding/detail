@@ -6,6 +6,7 @@ from detail.api import models as api_models
 from detail.api.experiment import Experiment
 from detail.models import distilled
 from detail.models import imported as imported_store
+from detail.storage import datasets as datasets_store
 from detail.storage import experiment as experiment_store
 from detail.storage import models as models_store
 
@@ -140,7 +141,7 @@ def test_catalog_marks_distilled_with_provenance(tmp_path):
     rows = {r.id: r for r in api_models.list_models()}
     assert rows[gid].source == "distilled"
     assert rows[gid].provenance["source_dataset_id"] == "dataset_003"
-    refs = {r.id: r for r in api_models.imported_models()}
+    refs = {r.id: r for r in api_models.imported_models(role=None)}
     assert refs[gid].source == "distilled"
     assert refs[gid].provenance["base_model"] == "yolo11s-seg.pt"
 
@@ -171,6 +172,101 @@ def test_experiment_promote_model_wraps_register(tmp_path):
     rec = imported_store.read(gid)
     assert rec["source"] == "distilled"
     assert rec["provenance"]["source_experiments"][0]["id"] == proj.dir.name
+
+
+def _dataset(experiment_dir, dataset_id="dataset_003"):
+    """Write a completed ``dataset.yaml`` with the labeling composition (§12)."""
+    ddir = datasets_store.dataset_dir(experiment_dir, dataset_id)
+    ddir.mkdir(parents=True)
+    datasets_store.write_dataset_yaml(
+        ddir,
+        {
+            "id": dataset_id,
+            "name": "mouse_ds",
+            "created_at": "2026-08-07T18:00:00Z",
+            "source": {
+                "kind": "labeling",
+                "model": "sam3",
+                "model_variant": None,
+                "recording_ids": ["recording_001"],
+                "n_frames": 500,
+                "logit_threshold": 0.5,
+            },
+            "classes": [{"id": 0, "name": "mouse"}],
+            "val_split": 0.15,
+            "n_train": 425,
+            "n_val": 75,
+            "per_class": {"0": 500},
+            "status": "complete",
+        },
+    )
+    return ddir
+
+
+def test_promote_captures_dataset_composition(tmp_path):
+    proj = experiment_store.create_experiment(tmp_path, "rp")
+    _trained_model(proj)
+    _dataset(proj)
+    gid = distilled.register_distilled_model(
+        proj, "model_001", source_experiment_name="rp", source_experiment_id="rp"
+    )
+    ds = imported_store.read(gid)["provenance"]["dataset"]
+    assert ds["model"] == "sam3"
+    assert ds["n_frames"] == 500
+    assert ds["n_train"] == 425 and ds["n_val"] == 75
+    assert ds["per_class"] == {"0": 500}
+
+
+def test_promote_omits_dataset_block_when_source_dataset_is_gone(tmp_path):
+    # The dataset can be deleted independently of the model it produced — provenance is
+    # best-effort, so this must not block promoting weights that already exist.
+    proj = experiment_store.create_experiment(tmp_path, "rp")
+    _trained_model(proj)  # dataset_id="dataset_003", but no dataset.yaml written
+    gid = distilled.register_distilled_model(
+        proj, "model_001", source_experiment_name="rp", source_experiment_id="rp"
+    )
+    prov = imported_store.read(gid)["provenance"]
+    assert "dataset" not in prov
+    assert (
+        prov["source_dataset_id"] == "dataset_003"
+    )  # the id itself still carries over
+
+
+def test_promote_captures_training_history(tmp_path):
+    proj = experiment_store.create_experiment(tmp_path, "rp")
+    _trained_model(proj)
+    history = [
+        {"epoch": 1, "box_map50": 0.3, "mask_map50": 0.25},
+        {"epoch": 60, "box_map50": 0.92, "mask_map50": 0.89},
+    ]
+    gid = distilled.register_distilled_model(
+        proj,
+        "model_001",
+        source_experiment_name="rp",
+        source_experiment_id="rp",
+        training_history=history,
+    )
+    assert imported_store.read(gid)["provenance"]["training_history"] == history
+
+
+def test_promote_omits_training_history_when_none_given(tmp_path):
+    proj = experiment_store.create_experiment(tmp_path, "rp")
+    _trained_model(proj)
+    gid = distilled.register_distilled_model(
+        proj, "model_001", source_experiment_name="rp", source_experiment_id="rp"
+    )
+    assert "training_history" not in imported_store.read(gid)["provenance"]
+
+
+def test_experiment_promote_model_passes_metric_history(tmp_path, monkeypatch):
+    proj = Experiment.create("rotation_pilot", tmp_path)
+    _trained_model(proj.dir)
+    history = [{"epoch": 1, "box_map50": 0.5}]
+    monkeypatch.setattr(
+        Experiment, "model_metric_history", lambda self, model_id: history
+    )
+    gid = proj.promote_model("model_001")
+    assert imported_store.read(gid)["provenance"]["training_history"] == history
 
 
 # --- a keypoint student (§12 *Keypoint models in the catalog*) --------------------- #
@@ -261,7 +357,9 @@ def test_a_keypoint_student_without_a_skeleton_is_refused(tmp_path):
         distilled.register_distilled_model(
             proj, "model_002", source_experiment_name="rp", source_experiment_id="rp"
         )
-    assert imported_store.discover() == []  # refused before anything was copied
+    assert (
+        imported_store.discover(role=None) == []
+    )  # refused before anything was copied
 
 
 def test_a_detection_promote_adds_no_pose_fields(tmp_path):

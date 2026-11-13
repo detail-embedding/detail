@@ -1518,7 +1518,7 @@ class AuditTab(QWidget):
         self._player.set_clip(
             ClipSpec(
                 recording_id=instance.recording_id,
-                track_id=int(instance.subject or 0),
+                track_id=instance.subject if instance.subject is not None else 0,
                 embed_run_id=run_selection.run_for_recording(
                     self._run.data_sources(), instance.recording_id
                 )

@@ -81,6 +81,12 @@ _SEAMS = (
     # §12 *Test cut-off…*: loads the teacher's model and labels a dozen frames.
     "test_keypoints(",
     "run_teacher_test(",
+    # §26 *Tuning a track method*: re-runs tracking ~38 times over the labelled videos, and
+    # telling which example sets can score hashes every set's images.
+    "tune_keypoint_tracking(",
+    "tune_example_sets(",
+    # §26 *Previewing a track method*: assigns and tracks a few windows, seconds each.
+    "preview_keypoint_tracking(",
     "read_behavior_output(",
     ".artifact(",  # dotted: skip the `def artifact(` definition
     "source_crop(",
@@ -90,24 +96,10 @@ _SEAMS = (
     # one seek for a whole clip, but still seconds of decode.
     "source_crop_masked(",
     "source_crops_masked(",
-    # §22 clip window. One frame with every mask, the keypoint run the embedding read (its
-    # whole series per part, the first time a part is asked for), the strips' curves over a
-    # window of the kinematics sidecar; ranking a node's members on demand loads the fit
-    # (megabytes) and ranks every member; an enlarged pane's export decodes and draws every
-    # frame it writes.
-    "clip_frame(",
+    # The clip popup's three pictures: a frame decoded with every mask, plus the keypoint run
+    # the embedding read (its whole series per part, the first time a part is asked for).
     "clip_views(",
-    "clip_curves(",
     "clip_has_points(",
-    "typical_members(",
-    "export_clip_pane(",
-    # §22 clip montage. Finding a montage's clips ranks every member of a node; preparing
-    # reads every clip's frame times and boxes; the exports decode and draw every frame they
-    # write, a clip list reads every clip's frame span.
-    "montage_members(",
-    "clip_boxes(",
-    "export_clip_gifs(",
-    "export_clip_list(",
     # §24 comparisons. `rank_by_difference` is a permutation test -- 200 shuffles of every
     # observation -- and it ran three times per page open because three widgets each re-read
     # `stats.csv` and re-ranked it, about a second to open the page on a small cohort.
@@ -153,6 +145,34 @@ _SEAMS = (
     "restore_model_archive(",
     ".import_model(",  # dotted: skip the `def _import_model(` slot
     "read_checkpoint(",
+    # §22 clip montage and enlarged panes. Ranking a node's members on demand loads the fit
+    # (megabytes) and ranks every member; finding a montage's clips does that and reads names;
+    # the exports decode and draw every frame they write.
+    "typical_members(",
+    "cluster_montage_clips(",
+    "cluster_montage_members(",
+    # One GIF per clip decodes and draws every frame of each; a clip list reads every clip's
+    # frame times to give its frame span.
+    "export_clip_gifs(",
+    "export_clip_list(",
+    "export_clip_pane(",
+    "export_cluster_montage(",
+    # Export clips… (§22): every file of an export, its estimate, and the reads behind both.
+    "export_clips(",
+    "export_cluster_clips(",
+    "estimate_export(",
+    "native_tile_px(",
+    "keypoints_available(",
+    "recording_resolutions(",
+    "subject_boxes(",
+    # §1 Cluster profile: an install runs pip / uv (a minute, the network), and an extra's
+    # status and its command read every distribution's metadata.
+    "install_extra(",
+    "run_installer(",
+    "extras.status(",
+    "extras.command_text(",
+    # §22: a cluster's ranked clips past the cache load the fit.
+    "typical_members(",
     # The clustering montage's tile pictures: a preview-cache read, crop, shrink and mask draw
     # per tile per tick. `LiveMontage` asks its worker; nothing calls a source inline.
     "source.frame(",
@@ -160,6 +180,9 @@ _SEAMS = (
     # walk over every leaf run of the fit. INTERPRET asks for it on every node click, and it ran
     # inline on each one while BROWSE was a hidden tab.
     "labelled_runs(",
+    # §22 Find look-alike clusters: how many pairs each mode compares reads the node cache and
+    # every saved comparison of the run — asked before a launch with every pair.
+    "count_lookalike_pairs(",
 )
 
 # Property seams: an O(recordings) / O(runs) sweep spelled as an attribute, so nothing
@@ -275,6 +298,32 @@ def test_the_scan_would_actually_catch_one():
     assert _seams_in(
         "            for run in view.labelled_runs({str(int(node)): name}, apply_edits=False):"
     ) == {"labelled_runs("}
+    # The export dialog's seams: an inline export or estimate is caught, a wrapped one is not.
+    assert _seams_in("        paths = export_api.export_clips(root, plan, folder)") == {
+        "export_clips("
+    }
+    assert _seams_in("        e = export_api.estimate_export(root, plan, native)") == {
+        "estimate_export("
+    }
+    assert (
+        _seams_in(
+            "        n = export_api.native_tile_px(root)  # off-thread (BackgroundCall)"
+        )
+        == set()
+    )
+
+
+def test_the_scan_would_catch_an_inline_install():
+    # The Install button on Configuration ▸ Cluster profile, called the obvious way.
+    assert _seams_in('        extras.install_extra("analysis", None)') == {
+        "install_extra("
+    }
+    assert (
+        _seams_in(
+            '            lambda emit: extras.install_extra("analysis", emit),  # off-thread'
+        )
+        == set()
+    )
 
 
 def test_the_scan_would_catch_a_property_seam():

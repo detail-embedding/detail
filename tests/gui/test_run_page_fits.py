@@ -104,6 +104,11 @@ def _still_loading(page) -> bool:
     return False
 
 
+#: Keypoints joined late (issue #690): its viewer was never measured, and the Export buttons that
+#: came back to every viewer page are exactly what would have grown it. **Why they are not in the
+#: transport row:** `PictureWithControls` sizes the page's minimum height from that row wrapped at
+#: the picture's narrowest width, so each control added there costs a whole line of page at *any*
+#: window size. Two buttons there made the tracking page 32px too tall for this window.
 @pytest.mark.parametrize("module_id", ["detection", "tracking", "embedding"])
 def test_a_run_page_fits_the_window_without_scrolling(
     qapp, shell, experiment, module_id

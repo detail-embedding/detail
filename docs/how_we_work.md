@@ -1,4 +1,4 @@
-﻿# How work is done here
+# How work is done here
 
 **Agent-facing. Not a user page** — it is in `mkdocs.yml`'s `exclude_docs`.
 

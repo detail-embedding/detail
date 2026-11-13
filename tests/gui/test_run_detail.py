@@ -30,8 +30,8 @@ from detail.core.dataclasses import TrackingJob  # noqa: E402
 from detail.gui import modules as _gui_modules  # noqa: E402,F401 (registers UIs)
 from detail.gui.pages import RunDetailPage  # noqa: E402
 from detail.gui.tables import row_id  # noqa: E402
-from detail.gui.workers import StageProgressWorker  # noqa: E402
-from detail.gui.run_preview import (  # noqa: E402
+from detail.gui.workers import BackgroundCall  # noqa: E402
+from detail.gui.run_preview import (
     DetectionRunPreview,
     EmbeddingRunPreview,
     TrackingRunPreview,
@@ -75,6 +75,46 @@ def test_run_detail_builds_result_widget(qapp, completed_runs_experiment, module
         assert page.findChildren(_RESULT_VIEW[module_id])
 
 
+def test_run_detail_shows_where_duration_and_cost(qapp, tmp_path):
+    """§ run location, duration, cost: Where between Module and Status; Duration
+    and Cost (final, persisted) near Created."""
+    from PyQt6.QtWidgets import QFormLayout, QLabel
+
+    proj = Experiment.create("p", tmp_path)
+    runs_store.run_dir(proj.dir, "run_001").mkdir(parents=True)
+    runs_store.write_run(
+        proj.dir,
+        "run_001",
+        {
+            "id": "run_001",
+            "module_id": "detection",
+            "recording_ids": [],
+            "config": {},
+            "per_recording": {},
+            "status": "complete",
+            "created_at": "2026-01-01T00:00:00Z",
+            "compute": {"backend": "remote", "remote_target": "tillicum"},
+            "duration_s": 3661.0,
+            "total_estimated_cost_usd": 1.83,
+        },
+    )
+    page = RunDetailPage(proj, "run_001")
+
+    forms = page.findChildren(QFormLayout)
+    labels = {
+        forms[0]
+        .itemAt(i, QFormLayout.ItemRole.LabelRole)
+        .widget()
+        .text(): forms[0]
+        .itemAt(i, QFormLayout.ItemRole.FieldRole)
+        .widget()
+        for i in range(forms[0].rowCount())
+    }
+    assert labels["Where:"].text() == "remote: tillicum"
+    assert labels["Duration:"].text() == "1h01m"
+    assert labels["Cost:"].text() == "$1.83"
+
+
 def test_run_detail_shows_next_stage_button(qapp, completed_runs_experiment):
     from PyQt6.QtWidgets import QPushButton
 
@@ -99,7 +139,9 @@ def test_run_detail_shows_next_stage_button(qapp, completed_runs_experiment):
     # track — which reads tracking as a second input — is offered only from a keypoint detect
     # run, never from tracking, where it would be a button with nothing to run.
     assert _next_stages("detection") == ["tracking"]
-    assert _next_stages("tracking") == ["keypoint_detect", "embedding"]
+    # tracking forks (§26): keypoint detect, embedding and a track merge all read it, in
+    # pipeline order
+    assert _next_stages("tracking") == ["keypoint_detect", "embedding", "track_merge"]
     assert _next_stages("keypoint_detect") == ["keypoint_track"]
     assert (
         _next_stages("embedding") == []
@@ -998,6 +1040,34 @@ def test_recording_run_detail_shows_failure_reason(qapp, tmp_path):
     assert any("RuntimeError: boom" in t for t in labels)
 
 
+def test_recording_run_detail_shows_where_duration_and_cost(qapp, tmp_path):
+    """§ run location, duration, cost — same three facts as RunDetailPage, read
+    from the per-recording record shape instead of the aggregate one."""
+    from PyQt6.QtWidgets import QLabel
+
+    from detail.gui.pages import RecordingRunDetailPage
+
+    proj = Experiment.create("p", tmp_path)
+    recording = proj.create_recording("recording_001")
+    data = recording_store.read_recording(recording.dir)
+    data["detection_runs"] = [
+        {
+            "id": "det_01",
+            "status": "complete",
+            "compute": {"backend": "remote", "remote_target": "tillicum"},
+            "duration_s": 125.0,
+            "estimated_cost_usd": 0.75,
+        }
+    ]
+    recording_store.write_recording(recording.dir, data)
+
+    page = RecordingRunDetailPage(proj, "recording_001", "detection", "det_01")
+    labels = [w.text() for w in page.findChildren(QLabel)]
+    assert "Where: remote: tillicum" in labels
+    assert "Duration: 2m05s" in labels
+    assert "Cost: $0.75" in labels
+
+
 def test_recording_run_detail_missing_run(qapp, tmp_path):
     from PyQt6.QtWidgets import QLabel
 
@@ -1011,7 +1081,7 @@ def test_recording_run_detail_missing_run(qapp, tmp_path):
 
 
 # --- retry button (§15) ----------------------------------------------------- #
-class _SyncStageProgressWorker(StageProgressWorker):
+class _SyncBackgroundCall(BackgroundCall):
     """Run inline so done/failed fire deterministically in the test thread (real
     QObject signals; only the OS thread is skipped). Mirrors tests/gui/test_launch.py.
     """
@@ -1092,7 +1162,7 @@ def test_retry_runs_off_thread_and_goes_live(qapp, tmp_path, monkeypatch):
 
     spawned, captured = [], {}
 
-    class _RecordingCall(_SyncStageProgressWorker):
+    class _RecordingCall(_SyncBackgroundCall):
         def start(self):
             # Snapshot before the work runs: if retry_run were called inline (the
             # _resume shape) it would already be recorded here. Asserting merely that
@@ -1104,13 +1174,11 @@ def test_retry_runs_off_thread_and_goes_live(qapp, tmp_path, monkeypatch):
         def progress(self):
             return iter(())
 
-    def _fake_retry(self, rid, progress=None):
+    def _fake_retry(self, rid, *, ignore_free_space=False, progress=None):
         captured["rid"] = rid
-        progress("Validating", 0.0, "s2 (1/2)")
-        captured["status"] = page._status.text()
         return _Handle()
 
-    monkeypatch.setattr(gui_pages, "StageProgressWorker", _RecordingCall)
+    monkeypatch.setattr(gui_pages, "BackgroundCall", _RecordingCall)
     monkeypatch.setattr(Experiment, "retry_run", _fake_retry)
     proj = Experiment.create("p", tmp_path)
     run_id = _retry_record(proj)
@@ -1118,12 +1186,13 @@ def test_retry_runs_off_thread_and_goes_live(qapp, tmp_path, monkeypatch):
     button = next(
         b for b in page.findChildren(QPushButton) if b.text().startswith("Retry")
     )
+    # A detection run's results list reads its frame counts on a worker of its own whenever
+    # the page builds it; the retry's worker is the first one the click starts.
+    before = len(spawned)
     button.click()  # the real button → slot wiring, not the slot directly
 
-    assert spawned == [{}]  # retry_run had NOT run when the worker started...
+    assert spawned[before] == {}  # retry_run had NOT run when the worker started...
     assert captured["rid"] == run_id  # ...the worker is what ran it
-    # Each report replaces the status line: the recording it is on, not a static line.
-    assert captured["status"] == "Validating — s2 (1/2)"
     # isVisibleTo, not isVisible: an unshown top-level makes every child report
     # hidden regardless of its own flag.
     assert page._progress.isVisibleTo(page)  # _start_live ran: the page is live again
@@ -1135,12 +1204,12 @@ def test_retry_failure_surfaces_and_re_enables(qapp, tmp_path, monkeypatch):
     from PyQt6.QtWidgets import QPushButton
 
     shown = []
-    monkeypatch.setattr(gui_pages, "StageProgressWorker", _SyncStageProgressWorker)
+    monkeypatch.setattr(gui_pages, "BackgroundCall", _SyncBackgroundCall)
     monkeypatch.setattr(
         gui_pages.QMessageBox, "critical", lambda *a, **k: shown.append(a[2])
     )
 
-    def _boom(self, rid, progress=None):
+    def _boom(self, rid, *, ignore_free_space=False, progress=None):
         raise ValueError("cannot retry run_009 — s2: no video parts")
 
     monkeypatch.setattr(Experiment, "retry_run", _boom)
@@ -1155,6 +1224,42 @@ def test_retry_failure_surfaces_and_re_enables(qapp, tmp_path, monkeypatch):
     assert shown == ["cannot retry run_009 — s2: no video parts"]  # verbatim
     assert button.isEnabled()  # re-enabled so the user can fix and retry
     assert not page._progress.isVisibleTo(page)  # did not go live
+
+
+def test_retry_says_which_recording_it_is_validating(qapp, tmp_path, monkeypatch):
+    """Retry validates every incomplete recording before it relaunches, the same wait as a
+    launch, so its status line follows the callback instead of sitting on one sentence.
+    """
+    from detail.gui import pages as gui_pages
+    from PyQt6.QtWidgets import QPushButton
+
+    monkeypatch.setattr(gui_pages, "BackgroundCall", _SyncBackgroundCall)
+    monkeypatch.setattr(gui_pages.QMessageBox, "critical", lambda *a, **k: None)
+    shown = []
+    holder = {}
+
+    def _retry(self, rid, *, ignore_free_space=False, progress=None):
+        page = holder["page"]
+        shown.append(page._status.text())
+        progress("Validating recordings", 0.0, "1 of 2")
+        shown.append(page._status.text())
+        progress("Estimating disk space", 0.5, "2 of 2")
+        shown.append(page._status.text())
+        raise ValueError("stop here; the status is what is under test")
+
+    monkeypatch.setattr(Experiment, "retry_run", _retry)
+    proj = Experiment.create("p", tmp_path)
+    page = RunDetailPage(proj, _retry_record(proj))
+    holder["page"] = page
+    next(
+        b for b in page.findChildren(QPushButton) if b.text().startswith("Retry")
+    ).click()
+
+    assert shown == [
+        "Validating recordings…",
+        "Validating recordings — 1 of 2",
+        "Estimating disk space — 2 of 2",
+    ]
 
 
 def test_query_eval_result_shows_each_score_beside_its_null(qapp, tmp_path):
@@ -1307,6 +1412,24 @@ def _running_analysis_dir(proj, run_id="an_01", module_id="location_export"):
     return adir
 
 
+def _end_the_run(run_dir, page) -> None:
+    """Finish the run a reattached page is streaming, and join the stream.
+
+    These runs are written ``running`` under this process's own pid, so nothing reconciles
+    them and the page's progress worker polls the envelope for as long as the process lives.
+    A test that returns there leaves a thread running into every test after it, which
+    ``tests/gui/conftest.py`` fails at teardown (and which, before every worker was rooted,
+    could be collected mid-poll and abort the xdist worker).
+    """
+    from detail.core.dataclasses import JobStatus
+    from detail.executor import rundir
+
+    rundir.set_status(run_dir, JobStatus.COMPLETE)
+    worker = getattr(page, "_worker", None)
+    if worker is not None:
+        waits.finished(worker, "the page's progress stream")
+
+
 def test_reopening_a_running_analysis_shows_its_progress_bar(
     qapp, tmp_path, monkeypatch
 ):
@@ -1322,7 +1445,7 @@ def test_reopening_a_running_analysis_shows_its_progress_bar(
 
     monkeypatch.setattr(locations, "experiments_root", lambda: tmp_path)
     proj = Experiment.create("p", tmp_path)
-    _running_analysis_dir(proj)
+    adir = _running_analysis_dir(proj)
 
     window = MainWindow()
     window._experiment = proj
@@ -1331,6 +1454,7 @@ def test_reopening_a_running_analysis_shows_its_progress_bar(
 
     assert page._progress.isVisibleTo(page)  # a live bar, not a hidden one
     assert page._worker is not None  # ...actually streaming the run
+    _end_the_run(adir, page)
 
 
 def test_reopening_a_finished_analysis_shows_no_bar(qapp, tmp_path, monkeypatch):
@@ -1366,7 +1490,7 @@ def test_a_live_launched_analysis_page_is_complete(qapp, tmp_path, monkeypatch):
 
     monkeypatch.setattr(locations, "experiments_root", lambda: tmp_path)
     proj = Experiment.create("p", tmp_path)
-    _running_analysis_dir(proj)
+    adir = _running_analysis_dir(proj)
 
     window = MainWindow()
     window._experiment = proj
@@ -1375,6 +1499,7 @@ def test_a_live_launched_analysis_page_is_complete(qapp, tmp_path, monkeypatch):
     page = window._content.widget(0)
 
     assert page._on_new is not None
+    _end_the_run(adir, page)
 
 
 # --- 4c: a run page shows which phase it is in, and what is still ahead (§16, issue #393) --- #
@@ -1386,12 +1511,13 @@ def test_an_analysis_page_shows_a_row_per_declared_phase(qapp, tmp_path, monkeyp
 
     monkeypatch.setattr(locations, "experiments_root", lambda: tmp_path)
     proj = Experiment.create("p", tmp_path)
-    _running_analysis_dir(proj, module_id="query")
+    adir = _running_analysis_dir(proj, module_id="query")
 
     page = AnalysisRunDetailPage(proj, "an_01")
 
     assert page._panel.units.isVisibleTo(page)
     assert len(page._panel._units_drawn()) == 4, page._panel._units_drawn()
+    _end_the_run(adir, page)
 
 
 def test_a_live_message_moves_the_running_phase_row(qapp, tmp_path, monkeypatch):
@@ -1404,7 +1530,7 @@ def test_a_live_message_moves_the_running_phase_row(qapp, tmp_path, monkeypatch)
 
     monkeypatch.setattr(locations, "experiments_root", lambda: tmp_path)
     proj = Experiment.create("p", tmp_path)
-    _running_analysis_dir(proj, module_id="query")
+    adir = _running_analysis_dir(proj, module_id="query")
     page = AnalysisRunDetailPage(proj, "an_01")
 
     class _Event:
@@ -1420,6 +1546,7 @@ def test_a_live_message_moves_the_running_phase_row(qapp, tmp_path, monkeypatch)
     assert len(running) == 1, drawn
     assert running[0].name == "searching"
     assert running[0].fraction == 0.7
+    _end_the_run(adir, page)
 
 
 def test_the_phase_rows_disappear_once_the_run_is_over(qapp, tmp_path, monkeypatch):
@@ -1490,7 +1617,7 @@ def test_reopening_a_running_fit_page_shows_its_progress_bar(
 
     monkeypatch.setattr(locations, "experiments_root", lambda: tmp_path)
     proj = Experiment.create("p", tmp_path)
-    _running_job(proj, kind, run_id)
+    run_dir = _running_job(proj, kind, run_id)
 
     window = MainWindow()
     window._experiment = proj
@@ -1499,6 +1626,7 @@ def test_reopening_a_running_fit_page_shows_its_progress_bar(
 
     assert page._progress.isVisibleTo(page)  # a live bar, not a hidden one
     assert page._worker is not None
+    _end_the_run(run_dir, page)
 
 
 def test_distill_stage_rows_track_the_run_not_the_launch(qapp, tmp_path):

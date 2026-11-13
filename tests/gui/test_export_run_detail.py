@@ -17,6 +17,7 @@ pytest.importorskip("PyQt6")
 from PyQt6.QtWidgets import QLabel, QPushButton  # noqa: E402
 
 from detail.api import export_targets  # noqa: E402,F401  (registers the catalogue)
+from detail.gui import open_external  # noqa: E402
 from detail.gui import pages as gui_pages  # noqa: E402
 
 
@@ -25,6 +26,13 @@ def _run(cohort, targets, out, **kwargs):
         "analysis_run", "an_01", targets, out, **kwargs
     )
     return handle.wait()
+
+
+class _Child:
+    """A spawned launcher that has already exited."""
+
+    def wait(self, timeout=None):
+        return 1
 
 
 def _open_folder_button(page):
@@ -71,7 +79,7 @@ def test_open_folder_targets_the_actual_destination(
 
     opened = []
     monkeypatch.setattr(
-        gui_pages.QDesktopServices,
+        open_external.QDesktopServices,
         "openUrl",
         lambda url: opened.append(Path(url.toLocalFile())) or True,
     )
@@ -94,7 +102,11 @@ def test_open_folder_warns_instead_of_silently_doing_nothing(
     out = tmp_path / "out"
     handle = _run(authored_cohort, ["instances"], out)
 
-    monkeypatch.setattr(gui_pages.QDesktopServices, "openUrl", lambda url: False)
+    monkeypatch.setattr(open_external.QDesktopServices, "openUrl", lambda url: False)
+    # Pinned to a non-WSL host: on a WSL dev box the fallback would launch a real Explorer.
+    monkeypatch.setattr(
+        open_external.api_checks, "wsl_explorer_argv", lambda path: None
+    )
     warned = []
     monkeypatch.setattr(
         QMessageBox, "warning", lambda *a, **k: warned.append(a) or None
@@ -104,6 +116,63 @@ def test_open_folder_warns_instead_of_silently_doing_nothing(
     _open_folder_button(page).click()
 
     assert warned, "a failed openUrl must not be a silent no-op"
+
+
+def test_open_folder_falls_back_to_explorer_inside_wsl(
+    qapp, authored_cohort, tmp_path, monkeypatch
+):
+    """A WSL distro has no `file://` launcher, so `openUrl` is always False there. The click
+    must hand the folder to Windows Explorer instead of only saying it could not."""
+    from PyQt6.QtWidgets import QMessageBox
+
+    handle = _run(authored_cohort, ["instances"], tmp_path / "out")
+    monkeypatch.setattr(open_external.QDesktopServices, "openUrl", lambda url: False)
+    argv = ["explorer.exe", "\\\\wsl$\\Ubuntu\\out"]
+    monkeypatch.setattr(
+        open_external.api_checks, "wsl_explorer_argv", lambda path: argv
+    )
+    ran = []
+    monkeypatch.setattr(
+        open_external.subprocess, "Popen", lambda a, **k: ran.append(a) or _Child()
+    )
+    warned = []
+    monkeypatch.setattr(
+        QMessageBox, "warning", lambda *a, **k: warned.append(a) or None
+    )
+
+    page = gui_pages.ExportRunDetailPage(authored_cohort.experiment, handle.id)
+    _open_folder_button(page).click()
+
+    assert ran == [argv]
+    assert not warned
+
+
+def test_open_folder_still_warns_when_the_explorer_fallback_fails(
+    qapp, authored_cohort, tmp_path, monkeypatch
+):
+    from PyQt6.QtWidgets import QMessageBox
+
+    handle = _run(authored_cohort, ["instances"], tmp_path / "out")
+    monkeypatch.setattr(open_external.QDesktopServices, "openUrl", lambda url: False)
+    monkeypatch.setattr(
+        open_external.api_checks,
+        "wsl_explorer_argv",
+        lambda path: ["explorer.exe", "x"],
+    )
+
+    def broken(argv, **kwargs):
+        raise FileNotFoundError("explorer.exe")
+
+    monkeypatch.setattr(open_external.subprocess, "Popen", broken)
+    warned = []
+    monkeypatch.setattr(
+        QMessageBox, "warning", lambda *a, **k: warned.append(a) or None
+    )
+
+    page = gui_pages.ExportRunDetailPage(authored_cohort.experiment, handle.id)
+    _open_folder_button(page).click()
+
+    assert warned
 
 
 def test_a_renamed_folder_is_what_the_page_actually_shows(

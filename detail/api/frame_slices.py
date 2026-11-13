@@ -5,33 +5,33 @@ A descriptor is pure over a `FrameSlice`; something has to build one. That is he
 deliberately numpy-only so the pipeline can import it.
 
 **Two loaders, one shape.** The geometry a descriptor wants is captured twice in this codebase:
-during the embed pass (the §14 ``kinematics/`` sidecar, one row per embedded frame, cheap to
-read) and in the detection store (boxes, and masks as RLE). `from_tracking` reads the detection
-store; `from_kinematics` reads the sidecar. Both fill the same `FrameSlice`, so a descriptor
-cannot tell which one fed it. That is why the loader is a seam rather than a step inside the
-descriptor code: the second loader was added without anything above it changing.
+during the embed pass (a per-frame sidecar, cheap to read) and in the detection store (boxes, and
+masks as RLE). `from_tracking` reads the detection store, which is what exists on `main` today.
+When the kinematics sidecar lands, a second loader fills the same `FrameSlice` from it — the same
+descriptors, the same values, less work. That is why the loader is a seam rather than a step
+inside the descriptor code: a cache should be addable without anything above it changing.
 
-**Which to use.** `from_tracking` covers every tracked frame but only with boxes (and the
-embeddings, when asked), so the four mass-centre descriptors report `NaN` from it and a surface
-shows them as unavailable rather than blank — an RLE decode per frame is exactly what the sidecar
-exists to avoid repeating. `from_kinematics` carries the mask centroid and area too, at the
-embedding's cadence, which is the cadence the clustering saw. A run from before the sidecar
-existed has none: the loader says so with `None`, and `Recording.backfill_kinematics` writes it.
-
-**Two clocks, deliberately not reconciled here.** `from_tracking` offsets each later part's
-`t_ns` by the elapsed time of the parts before it, so a multi-part recording is one timeline;
-the sidecar carries each part's own clock as the embedding rows do, which is what a clustering
-run's `start_t_ns`/`end_t_ns` were taken from, so `between` agrees with those spans by
-construction. A multi-part recording therefore reads different `t_ns` from the two loaders past
-its first part. That disagreement predates this module and is recorded rather than settled.
+**The sidecar is the first choice; boxes are the fallback.** `from_kinematics` fills the slice
+from the embed pass's sidecar — mask centroid, mask area and the union box, at the embedding's
+cadence — so the four mass-centre descriptors have their inputs. `from_tracking` reads the
+detection store's boxes only (a mask centroid and area would need an RLE decode per frame, the
+cost the sidecar exists to avoid), so there those descriptors report `NaN` and a surface shows
+them as unavailable. `track_slice` picks: the sidecar when the embedding run wrote one, the
+boxes otherwise — a run embedded before the sidecar existed still answers what a box can.
 """
 
+import dataclasses
 from pathlib import Path
 
 import numpy as np
 
 from detail.analysis.descriptors import FrameSlice
 from detail.storage import recording as recording_store
+from detail.storage.zarr_io import (
+    KINEMATICS_SHAPE_COLUMNS,
+    PartZarrReader,
+    kinematics_part_path,
+)
 
 
 def from_tracking(
@@ -65,12 +65,19 @@ def from_tracking(
     boxes: list[np.ndarray] = []
     times: list[np.ndarray] = []
     offset = 0
-    elapsed_ns = 0
     for part in preview._parts:
         reader, assignment = part["reader"], part["assignment"]
+        n_rows = part["n_rows"]
         stamps = np.asarray(part["timestamps"], dtype=np.int64)
-        if reader is not None and assignment is not None and reader.n_rows:
-            object_id = np.asarray(assignment.column("object_id")[:])
+        if reader is not None and assignment is not None and n_rows:
+            # part["frame_idx"]/part["raw_rows"] are already resolved by _build_parts:
+            # this run's own class filter (§13), if it had one, plus the shorter-wins
+            # bound against a crash-torn store (storage/zarr_io.py). object_id is
+            # bounded the same way before a mask built from it indexes bbox — reading
+            # bbox as a raw [:n_rows] slice would silently pair the wrong rows the
+            # moment a class filter made row i of the assignment something other than
+            # the reader's own row i.
+            object_id = np.asarray(assignment.column("object_id")[:n_rows])
             rows = np.flatnonzero(object_id == int(track_id))
             if len(rows):
                 # Part-local frame indices are made global, so a multi-part recording is one
@@ -78,14 +85,12 @@ def from_tracking(
                 # is otherwise a jump backwards, and reads as an enormous speed.
                 local = np.asarray(part["frame_idx"])[rows]
                 frames.append(local + offset)
-                boxes.append(np.asarray(reader.column("bbox")[:])[rows])
-                # The part's own PTS map — the authoritative frame -> t_ns (Tenet 8), offset so
-                # later parts continue the timeline rather than restarting it.
-                times.append(stamps[np.clip(local, 0, len(stamps) - 1)] + elapsed_ns)
+                boxes.append(np.asarray(reader.column("bbox")[part["raw_rows"]])[rows])
+                # The part's own PTS map is already recording-global (Tenet 8; the import
+                # writes `local + offset_ns`), so it is used as stored: adding the earlier
+                # parts' elapsed time again put every row after part 1 that much too late.
+                times.append(stamps[np.clip(local, 0, len(stamps) - 1)])
         offset += part["n_frames"]
-        elapsed_ns += (
-            int(stamps[-1]) + int(np.median(np.diff(stamps))) if len(stamps) > 1 else 0
-        )
 
     if not frames:
         return FrameSlice(
@@ -116,83 +121,276 @@ def from_tracking(
 
 
 def from_kinematics(
-    recording_dir: Path | str, *, embed_run_id: str, track_id: int
+    recording_dir: Path | str,
+    *,
+    embed_run_id: str,
+    track_id: int,
+    every_n_frames: int = 1,
 ) -> FrameSlice | None:
-    """One track's embedded frames from the §14 ``kinematics/`` sidecar, as a `FrameSlice` in
-    **pixel** units — centroid, mask area and box filled; ``None`` when the run has no sidecar.
+    """One animal's embedded frames as a `FrameSlice` from the §14 kinematics sidecar, in
+    **pixel** units — or ``None`` when the embedding run wrote no sidecar for this track.
 
-    One row per *embedded* frame (the run's ``every_n_frames`` is the slice's ``stride``), with
-    ``frame_idx`` made global across parts the way `from_tracking` does, using each part's frame
-    count from its timestamp map — never from the sidecar's own highest row. ``t_ns`` is the
-    sidecar's column (see the module docstring on the two clocks). ``embeddings`` is left
-    ``None``: a caller that wants them has `from_tracking`.
-
-    Raises:
-        ValueError: ``recording.yaml`` records no ``video.resolution`` (the sidecar is
-            normalized to the frame, so without a size there are no pixels to give — and
-            normalized numbers labelled as pixels would be wrong everywhere without failing);
-            or the sidecar names a video part the recording does not list.
+    Centroid, area and box come from the sidecar (fractions of the frame, rescaled here by ``(width, height)``), the embeddings
+    from the same run, and ``stride`` is the **embedding** run's cadence, because the rows are
+    the embedded frames. The sidecar's ``frame_idx`` restarts in every part, so it is put on the
+    recording-wide scale; its ``t_ns`` already is. A NaN centroid (an empty mask, no detection)
+    stays NaN — never zero, which would place the animal in the corner.
     """
-    from detail.api.run_preview import embedding_cadence, iter_track_kinematics
-
     recording_dir = Path(recording_dir)
-    parts = iter_track_kinematics(recording_dir, embed_run_id, int(track_id))
-    if not parts:
-        return None
     data = recording_store.read_recording(recording_dir)
-    if not (data.get("video") or {}).get("resolution"):
-        raise ValueError(
-            f"{recording_dir.name}: recording.yaml records no video.resolution, so the "
-            "kinematics sidecar's normalized geometry cannot be given in pixels"
-        )
     width, height = _resolution(data)
-    offsets = _part_offsets(recording_dir, data)
-
-    frames, times, cx, cy, areas, boxes = [], [], [], [], [], []
-    for stem, columns in parts:
-        if stem not in offsets:
-            raise ValueError(
-                f"{recording_dir.name}: embedding run {embed_run_id!r} has kinematics for "
-                f"part {stem!r}, which recording.yaml does not list"
+    columns = ("frame_idx", "t_ns", "cx_norm", "cy_norm", "mask_area_norm", "bbox_norm")
+    chunks: dict[str, list[np.ndarray]] = {name: [] for name in columns}
+    outline: dict[str, list[np.ndarray]] = {n: [] for n in KINEMATICS_SHAPE_COLUMNS}
+    complete = True  # every part carries the outline; a mix would misalign rows
+    for offset, part in _series_parts(recording_dir, embed_run_id, int(track_id)):
+        sidecar = kinematics_part_path(part)
+        if not sidecar.exists():
+            continue
+        reader = PartZarrReader(sidecar)
+        if reader.n_rows == 0:
+            continue
+        for name in columns:
+            values = np.asarray(reader.column(name)[: reader.n_rows])
+            chunks[name].append(
+                values.astype(np.int64) + offset if name == "frame_idx" else values
             )
-        frames.append(np.asarray(columns["frame_idx"], dtype=np.int64) + offsets[stem])
-        times.append(np.asarray(columns["t_ns"], dtype=np.int64))
-        cx.append(np.asarray(columns["cx_norm"], dtype=np.float64))
-        cy.append(np.asarray(columns["cy_norm"], dtype=np.float64))
-        areas.append(np.asarray(columns["mask_area_norm"], dtype=np.float64))
-        boxes.append(np.asarray(columns["bbox_norm"], dtype=np.float64).reshape(-1, 4))
-
-    frame_idx = np.concatenate(frames)
-    order = np.argsort(frame_idx, kind="stable")
-    frame_idx = frame_idx[order]
+        if KINEMATICS_SHAPE_COLUMNS[0] in reader.column_names:
+            for name in KINEMATICS_SHAPE_COLUMNS:
+                outline[name].append(np.asarray(reader.column(name)[: reader.n_rows]))
+        else:
+            complete = False
+    if not chunks["frame_idx"]:
+        return None
+    joined = {name: np.concatenate(parts) for name, parts in chunks.items()}
+    order = np.argsort(joined["frame_idx"], kind="stable")
+    frame_idx = joined["frame_idx"][order]
     centroid = np.stack(
-        [np.concatenate(cx)[order] * width, np.concatenate(cy)[order] * height], axis=1
+        [
+            joined["cx_norm"][order].astype(np.float64) * width,
+            joined["cy_norm"][order].astype(np.float64) * height,
+        ],
+        axis=1,
+    )
+    motion = _motion_rows(recording_dir, embed_run_id, int(track_id), order)
+    shape = (
+        _outline_px(
+            {n: np.concatenate(v)[order] for n, v in outline.items()}, width, height
+        )
+        if complete and outline[KINEMATICS_SHAPE_COLUMNS[0]]
+        else None
     )
     return FrameSlice(
         frame_idx=frame_idx,
-        t_ns=np.concatenate(times)[order],
-        stride=embedding_cadence(recording_dir, data, embed_run_id),
+        t_ns=joined["t_ns"][order].astype(np.int64),
+        stride=max(1, int(every_n_frames or 1)),
+        embeddings=_embeddings_for(
+            recording_dir, embed_run_id, int(track_id), frame_idx
+        ),
         centroid=centroid,
-        area=np.concatenate(areas)[order] * width * height,
-        bbox=np.concatenate(boxes)[order]
-        * np.array([width, height, width, height], dtype=np.float64),
+        area=joined["mask_area_norm"][order].astype(np.float64) * width * height,
+        bbox=joined["bbox_norm"][order].astype(np.float64)
+        * np.array([width, height, width, height]),
+        shape=shape,
+        body_length=_body_length(shape),
+        motion=motion,
     )
 
 
-def _part_offsets(recording_dir: Path, data: dict) -> dict[str, int]:
-    """``{part stem: the global frame its first frame is}``, from each part's timestamp map —
-    the authoritative frame count (Tenet 8), as `from_tracking` and `_build_parts` count.
+def _motion_rows(recording_dir: Path, embed_run_id: str, track_id: int, order):
+    """The motion sibling's columns on the kinematics rows (the same rows, the same order, so
+    the same ``order``), or ``None`` unless every part has one."""
+    from detail.pipeline.motion_backfill import motion_part_path
+
+    columns = {"inside": [], "ends": [], "middle": []}
+    for _offset, part in _series_parts(recording_dir, embed_run_id, track_id):
+        if not kinematics_part_path(part).exists():
+            continue
+        path = motion_part_path(part)
+        if not path.exists():
+            return None
+        reader = PartZarrReader(path)
+        for key in columns:
+            columns[key].append(
+                np.asarray(reader.column(f"motion_{key}")[: reader.n_rows], np.float64)
+            )
+    if not columns["inside"]:
+        return None
+    joined = {k: np.concatenate(v) for k, v in columns.items()}
+    if len(joined["inside"]) != len(order):
+        return None  # a sibling from another embed of this part: not these rows
+    return {k: v[order] for k, v in joined.items()}
+
+
+def _outline_px(columns: dict, width: int, height: int) -> dict:
+    """The sidecar's normalized outline in pixels, degrees and ratios (``mask_shape``'s rule:
+    vertical extents are fractions of the height, lengths of ``sqrt(height x width)``).
     """
-    offsets: dict[str, int] = {}
-    total = 0
-    for part_index, file in enumerate(recording_store.video_files(data)):
-        offsets[recording_store.part_stem(file)] = total
-        total += len(
-            recording_store.load_active_timestamps(
-                recording_dir, data, part_index
-            ).values
+    scale = float(np.sqrt(width * height))
+    as_float = {k: np.asarray(v, dtype=np.float64) for k, v in columns.items()}
+    return {
+        "top": as_float["mask_top_norm"] * height,
+        "bottom": as_float["mask_bottom_norm"] * height,
+        "floor_width": as_float["floor_width_norm"] * width,
+        "major": as_float["major_axis_norm"] * scale,
+        "minor": as_float["minor_axis_norm"] * scale,
+        "orientation": as_float["orientation_deg"],
+        "solidity": as_float["solidity"],
+        "circularity": as_float["circularity"],
+        "protrusions": as_float["protrusions"],
+        "protrusion_depth": as_float["protrusion_depth_norm"] * scale,
+    }
+
+
+def _body_length(shape: dict | None) -> float | None:
+    """The track's typical length: the median of its mask's long axis over the whole track."""
+    if shape is None:
+        return None
+    major = shape["major"][np.isfinite(shape["major"])]
+    return float(np.median(major)) if len(major) else None
+
+
+def track_slice(recording, embed_record: dict, subject) -> FrameSlice | None:
+    """One unit's whole trajectory from the best source its embedding run has — the one place
+    a surface asks for it, so every descriptor surface measures the same rows.
+
+    ``embed_record`` is the recording's embedding-run entry. The animal's sidecar is read
+    (:func:`from_kinematics`), falling back to the tracking boxes (:func:`from_tracking`) for a run embedded before the sidecar existed.
+    ``None`` when the run names no tracking run.
+    """
+    slice_ = _track_slice(recording, embed_record, subject)
+    if slice_ is None:
+        return None
+    view = getattr(recording, "camera_view", None)
+    slice_ = dataclasses.replace(
+        slice_, camera_view=getattr(view, "view", None) if view is not None else None
+    )
+    run_id = keypoint_run_for(recording, embed_record)
+    if run_id is None:
+        return slice_
+    try:
+        points = keypoints_for(
+            Path(recording.dir), run_id, int(subject), slice_.frame_idx
         )
-    return offsets
+    except (FileNotFoundError, KeyError, ValueError, OSError):
+        points = None
+    if points is None:
+        return slice_
+    length = _nose_to_tail(points)
+    return dataclasses.replace(
+        slice_,
+        points=points,
+        points_run=run_id,
+        body_length=length if length is not None else slice_.body_length,
+    )
+
+
+def _nose_to_tail(points: dict) -> float | None:
+    """The track's typical nose-to-tailbase distance, when both points exist: the body length a
+    skeleton gives, preferred over the mask's long axis (which a curled body shortens).
+    """
+    from detail.analysis.descriptors import point_named
+
+    nose, tail = point_named(points, "nose"), point_named(points, "tailbase")
+    if nose is None or tail is None:
+        return None
+    lengths = np.hypot(*(nose - tail).T)
+    lengths = lengths[np.isfinite(lengths)]
+    return float(np.median(lengths)) if len(lengths) else None
+
+
+def keypoint_run_for(recording, embed_record: dict) -> str | None:
+    """Which keypoint track run describes this embedding run's animals, or ``None``.
+
+    The one the embedding run drew or appended its pose from, when it used one; otherwise the
+    newest complete track run on the same tracking run. Resolved here and **stated** in a
+    slice (``points_run``) and in a profile's basis, so a different answer tomorrow is
+    visible rather than silent.
+    """
+    named = embed_record.get("keypoint_run_id")
+    if named:
+        return str(named)
+    tracking = embed_record.get("tracking_run_id")
+    runs = [
+        r
+        for r in (getattr(recording, "keypoint_track_runs", None) or [])
+        if r.get("status") == "complete" and r.get("tracking_run_id") == tracking
+    ]
+    return str(runs[-1]["id"]) if runs else None
+
+
+def keypoints_for(
+    recording_dir: Path, run_id: str, track_id: int, frame_idx: np.ndarray
+) -> dict | None:
+    """``{name: (N, 2) px}`` for ``track_id`` at the slice's recording-wide ``frame_idx``,
+    NaN where a row has no point or its score is under the run's cut-off (the cut-off the
+    embedding pass reads points with). ``None`` when the run holds nothing for this track.
+    """
+    from detail.pipeline.embedding import point_cutoff
+    from detail.storage.keypoint_runs import KeypointDetectRun, KeypointTrackRun
+
+    run = KeypointTrackRun(recording_dir, run_id)
+    if int(track_id) not in run.track_ids:
+        return None
+    try:
+        cutoff = point_cutoff(
+            run, KeypointDetectRun(recording_dir, run.meta["detect_run_id"])
+        )
+    except (FileNotFoundError, KeyError, ValueError):
+        cutoff = None
+    data = recording_store.read_recording(recording_dir)
+    width, height = _resolution(data)
+    stems = [recording_store.part_stem(f) for f in recording_store.video_files(data)]
+    offsets = recording_store.part_frame_offsets(recording_dir) or [0] * len(stems)
+    names = tuple(run.skeleton.names)
+    frames, points, scores = [], [], []
+    for part_id in run.part_ids(int(track_id)):
+        rows = run.rows(int(track_id), part_id)
+        offset = offsets[stems.index(part_id)] if part_id in stems else 0
+        frames.append(np.asarray(rows["frame_idx"], dtype=np.int64) + offset)
+        points.append(np.asarray(rows["points"], dtype=np.float64))
+        scores.append(np.asarray(rows["point_scores"], dtype=np.float64))
+    if not frames:
+        return None
+    frames_all = np.concatenate(frames)
+    points_all = np.concatenate(points) * np.array([width, height], dtype=np.float64)
+    scores_all = np.concatenate(scores)
+    if cutoff is not None:
+        points_all[scores_all < cutoff] = np.nan
+    order = np.argsort(frames_all, kind="stable")
+    frames_all, points_all = frames_all[order], points_all[order]
+    where = np.searchsorted(frames_all, frame_idx)
+    where = np.clip(where, 0, max(len(frames_all) - 1, 0))
+    hit = frames_all[where] == np.asarray(frame_idx, dtype=np.int64)
+    out = {}
+    for k, name in enumerate(names):
+        column = np.full((len(frame_idx), 2), np.nan)
+        column[hit] = points_all[where[hit], k]
+        out[name] = column
+    return out
+
+
+def _track_slice(recording, embed_record: dict, subject) -> FrameSlice | None:
+    tracking_run_id = embed_record.get("tracking_run_id")
+    embed_run_id = embed_record.get("id")
+    if tracking_run_id is None:
+        return None
+    cadence = embed_record.get("every_n_frames") or 1
+    if embed_run_id is not None:
+        slice_ = from_kinematics(
+            recording.dir,
+            embed_run_id=embed_run_id,
+            track_id=int(subject),
+            every_n_frames=cadence,
+        )
+        if slice_ is not None:
+            return slice_
+    return from_tracking(
+        recording.dir,
+        tracking_run_id=tracking_run_id,
+        track_id=int(subject),
+        embed_run_id=embed_run_id,
+    )
 
 
 def between(slice_: FrameSlice, start_t_ns: int, end_t_ns: int) -> FrameSlice:
@@ -211,17 +409,23 @@ def between(slice_: FrameSlice, start_t_ns: int, end_t_ns: int) -> FrameSlice:
     lo = int(np.searchsorted(t_ns, int(start_t_ns), side="left"))
     hi = int(np.searchsorted(t_ns, int(end_t_ns), side="right"))
     keep = slice(lo, hi)
-    take = lambda a: None if a is None else np.asarray(a)[keep]  # noqa: E731
+    n = len(t_ns)
+
+    def cut(value):
+        # Every per-row array is cut and every other field carried, **by inspection** rather
+        # than by a list: the list was complete until a field was added, and a new per-row
+        # field then reached every bout as the whole trajectory, or not at all.
+        if isinstance(value, np.ndarray) and value.ndim and value.shape[0] == n:
+            return value[keep]
+        if isinstance(value, dict):
+            return {k: cut(v) for k, v in value.items()}
+        return value
+
     return FrameSlice(
-        frame_idx=np.asarray(slice_.frame_idx)[keep],
-        t_ns=t_ns[keep],
-        stride=slice_.stride,
-        part=slice_.part,
-        embeddings=take(slice_.embeddings),
-        centroid=take(slice_.centroid),
-        area=take(slice_.area),
-        bbox=take(slice_.bbox),
-        labels=take(slice_.labels),
+        **{
+            f.name: (t_ns[keep] if f.name == "t_ns" else cut(getattr(slice_, f.name)))
+            for f in dataclasses.fields(FrameSlice)
+        }
     )
 
 
@@ -279,6 +483,27 @@ def _resolution(data: dict) -> tuple[float, float]:
     return float(resolution[0]), float(resolution[1])
 
 
+def _series_parts(
+    recording_dir: Path, embed_run_id: str, track_id: int
+) -> list[tuple[int, Path]]:
+    """``(recording-wide frame offset, part store)`` for each part a series was embedded in.
+
+    A store's ``frame_idx`` is the detection part's own and restarts at zero in every video part,
+    so a row's recording-wide frame number is that plus the frames in the parts before it. A join
+    between this and a slice (whose frame numbers are recording-wide) that skips the offset
+    compares part-local numbers with recording-wide ones: for a later part it finds nothing, or
+    finds another part's frame with the same number.
+    """
+    data = recording_store.read_recording(recording_dir)
+    stems = [recording_store.part_stem(f) for f in recording_store.video_files(data)]
+    offsets = recording_store.part_frame_offsets(recording_dir) or [0] * len(stems)
+    run_dir = recording_dir / "embeddings" / embed_run_id / f"track_{track_id}"
+    return [
+        (offsets[stems.index(part.stem)] if part.stem in stems else 0, part)
+        for part in sorted(run_dir.glob("part_*.zarr"))
+    ]
+
+
 def _embeddings_for(recording_dir, embed_run_id, track_id, frame_idx):
     """The embeddings aligned to ``frame_idx``, or ``None``.
 
@@ -292,14 +517,22 @@ def _embeddings_for(recording_dir, embed_run_id, track_id, frame_idx):
     """
     if not embed_run_id:
         return None
-    from detail.api.run_preview import load_track_trajectory
-
-    try:
-        emb, emb_frames, _emb_t_ns = load_track_trajectory(
-            recording_dir, embed_run_id, int(track_id)
+    vectors: list[np.ndarray] = []
+    frames: list[np.ndarray] = []
+    for offset, part in _series_parts(Path(recording_dir), embed_run_id, track_id):
+        reader = PartZarrReader(part)
+        if reader.n_rows == 0:
+            continue
+        vectors.append(
+            np.asarray(reader.column("embedding")[: reader.n_rows], dtype=np.float32)
         )
-    except (FileNotFoundError, ValueError):
+        frames.append(
+            np.asarray(reader.column("frame_idx")[: reader.n_rows]).astype(np.int64)
+            + offset
+        )
+    if not vectors:
         return None
+    emb, emb_frames = np.concatenate(vectors), np.concatenate(frames)
 
     # `searchsorted` over the embedding's own sorted frame list, not a dict comprehension: the
     # dict was one Python-level pass per frame over a hundred thousand of them, per subject.

@@ -23,7 +23,9 @@ def cli_defaults() -> dict:
 def api_defaults() -> dict:
     """What the API opens on, under the CLI's parameter names."""
     return {
-        "limit": cm.DEFAULT_CLIPS,
+        # The count follows --overlay (cm.DEFAULT_CLIPS, or cm.OVERLAY_CLIPS for an overlay),
+        # so the option is "unset" and resolved from those constants: pinned below.
+        "limit": None,
         "sort": cm.DEFAULT_SORT,
         "raw": cm.DEFAULT_LAYERS.raw,
         "mask": cm.DEFAULT_LAYERS.mask,
@@ -47,7 +49,13 @@ def drift(cli: dict, api: dict) -> dict:
 
 
 def test_the_cli_opens_on_the_apis_montage():
+    from detail import cli
+
     assert drift(cli_defaults(), api_defaults()) == {}
+    assert (cli._MONTAGE_CLIPS, cli._OVERLAY_CLIPS) == (
+        cm.DEFAULT_CLIPS,
+        cm.OVERLAY_CLIPS,
+    ), "an unset --clips resolves to the API's counts"
     assert cm.DEFAULT_CLIPS == 25 and cm.DEFAULT_SORT == "typical"
     assert cm.DEFAULT_LAYERS == cm.MontageLayers(mask=True, mask_trail=True)
 
@@ -59,7 +67,7 @@ def test_the_sort_choices_are_the_apis():
 
 def test_the_guard_would_catch_a_drifted_default():
     drifted = {**cli_defaults(), "limit": 50, "raw": True}
-    assert drift(drifted, api_defaults()) == {"limit": (50, 25), "raw": (True, False)}
+    assert drift(drifted, api_defaults()) == {"limit": (50, None), "raw": (True, False)}
     assert drift({}, {"limit": 25}) == {
         "limit": (None, 25)
     }, "a missing option is drift too"

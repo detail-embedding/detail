@@ -9,6 +9,7 @@ Python API's ``run_*`` methods (Section 15).
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
+from pathlib import Path
 
 from detail.core.dataclasses import Job, JobStatus, ProgressEvent
 
@@ -31,6 +32,14 @@ class Executor(ABC):
     @abstractmethod
     def stream_progress(self, job_id: str) -> Iterator[ProgressEvent]:
         """Yield progress events until the job reaches a terminal status."""
+
+    @abstractmethod
+    def run_dir(self, job_id: str) -> Path:
+        """This job's own run directory — where its ``job.json`` envelope lives.
+
+        The one place a job's ``started_at``/``completed_at`` (stamped by
+        ``rundir.set_status``) can be read back from, for a run family's
+        ``run_metrics.completion_fields`` call once the job is terminal."""
 
     def error(self, job_id: str) -> str | None:
         """The error message of a failed job, or None. Default None."""

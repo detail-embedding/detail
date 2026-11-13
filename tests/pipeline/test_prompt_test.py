@@ -225,6 +225,41 @@ def test_sample_frames_spreads_across_parts():
     assert parts_hit == {0, 1, 2}
 
 
+def test_sample_frames_draws_only_inside_windows():
+    # Five frames in the windows, five asked for: every one of them, and nothing else.
+    samples = _sample_frames([10, 10, 10], 5, seed=0, windows=[(7, 10), (0, 0), (0, 2)])
+    assert samples == [(0, 7), (0, 8), (0, 9), (2, 0), (2, 1)]
+
+
+# --- time range ------------------------------------------------------------- #
+def test_time_range_samples_only_frames_inside_it(recording_dir):
+    _seed_recording(recording_dir, n_parts=2, n_frames=8)  # frame g sits at g * 1000 ns
+    job = _job([_one_prompt()], n=4)
+    job.t_start_ns, job.t_end_ns = 6000, 12000  # frames 6, 7 of part 0; 8-11 of part 1
+    with _registered_fake():
+        results = run_prompt_test(recording_dir, job, seed=0)
+    assert len(results) == 4
+    assert all(6000 <= r.t_ns < 12000 for r in results)
+
+
+def test_time_range_open_end_runs_to_the_end(recording_dir):
+    _seed_recording(recording_dir, n_parts=2, n_frames=8)
+    job = _job([_one_prompt()], n=3)
+    job.t_start_ns = 13000  # the last three frames
+    with _registered_fake():
+        results = run_prompt_test(recording_dir, job, seed=0)
+    assert sorted(r.t_ns for r in results) == [13000, 14000, 15000]
+
+
+def test_time_range_too_short_for_the_sample_raises(recording_dir):
+    _seed_recording(recording_dir, n_frames=8)
+    job = _job([_one_prompt()], n=3)
+    job.t_start_ns, job.t_end_ns = 2000, 4000
+    with _registered_fake():
+        with pytest.raises(ValueError, match="holds 2 frame.*fewer than the 3"):
+            run_prompt_test(recording_dir, job, seed=0)
+
+
 # --- end-to-end (mocked model) --------------------------------------------- #
 def test_returns_one_result_per_sampled_frame(recording_dir):
     _seed_recording(recording_dir, n_frames=8)

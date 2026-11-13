@@ -52,6 +52,7 @@ from PyQt6.QtGui import (
 
 from detail.configs.query import DEFAULT_METHOD, QueryConfig
 from detail.core import chart_theme
+from detail.core.utils import subject_key
 from detail.gui.forms import ConfigForm
 from detail.gui.grip_splitter import GripSplitter
 from detail.gui.help_ui import field_label, help_button, label_with
@@ -142,10 +143,14 @@ class _QueryConfig(ConfigWidget):
         self._method_note: str | None = None
         self._experiment = None
         self._recordings: list = []
+        #: An embedding run a caller offered (`prefer_selection`), picked whenever offered.
+        self._preferred_embed: str | None = None
         form = ConfigForm(self, QueryConfig)
 
         self._embed = QComboBox()
         self._embed.currentIndexChanged.connect(self.coverage_changed.emit)
+        # A run the user picks by hand outranks one a caller offered (`prefer_selection`).
+        self._embed.activated.connect(self._forget_preferred_embed)
         form.addRow(label_with("Embed run:", help_button("embedding-run")), self._embed)
         self._track = field_widget(QueryConfig, "track_id")
         form.addRow(field_label("query", "track_id", "Subject:"), self._track)
@@ -242,6 +247,23 @@ class _QueryConfig(ConfigWidget):
                 self._experiment.model_names() if self._experiment else None,
             ),
         )
+        self._pick_preferred_embed()
+
+    def prefer_selection(self, selection: dict) -> None:
+        """Pick ``selection["embed_run_id"]`` whenever the checked recordings offer it — the
+        embedding a clip montage's clips were read from (§22)."""
+        self._preferred_embed = selection.get("embed_run_id") or None
+        self._pick_preferred_embed()
+
+    def _forget_preferred_embed(self, _index: int) -> None:
+        self._preferred_embed = None
+
+    def _pick_preferred_embed(self) -> None:
+        if self._preferred_embed is None:
+            return
+        index = self._embed.findData(self._preferred_embed)
+        if index >= 0:
+            self._embed.setCurrentIndex(index)
 
     # -- behaviors ---------------------------------------------------------- #
     def _selected(self) -> int:
@@ -378,12 +400,16 @@ class _QueryConfig(ConfigWidget):
         The **behaviors** are restored too, and they are the point: a behavior carries its
         example clips as ``(recording_id, track_id, start_t_ns, end_t_ns)``, which is the work
         a user actually wants back. That is a reference to data, but to data *inside this
-        experiment* — the same experiment the picker draws its runs from — so it binds. What is
-        not restored is ``embed_run_id``, which the dialog re-derives from the current
-        recording selection.
+        experiment* — the same experiment the picker draws its runs from — so it binds.
+
+        ``embed_run_id`` stays a selection the dialog re-derives from the checked recordings,
+        but the clips are bound to it: they are of that run's series, which another run need
+        not hold. So it is *preferred* (``prefer_selection``) rather than restored — picked
+        whenever the recordings offer it, outranked by a pick by hand.
 
         The method is selected before its parameters, since each method's rows are its own.
         """
+        self.prefer_selection({"embed_run_id": config.get("embed_run_id")})
         wanted = config.get("method")
         index = self._method.findData(wanted)
         if index >= 0:
@@ -398,8 +424,7 @@ class _QueryConfig(ConfigWidget):
                 f"that run used the {wanted!r} method, which this build does not offer; "
                 f"{self._method.currentData()!r} is selected instead"
             )
-        if config.get("track_id") is not None:
-            self._track.setValue(int(config["track_id"]))
+        self._track.setValue(subject_key(config.get("track_id")))
         self._method_fields.set_params(
             self._method.currentData(), config.get("method_params") or {}
         )
@@ -513,7 +538,7 @@ def _clip_specs(candidates, recording_id, subject, embed_run_id, timeline) -> li
         out.append(
             ClipSpec(
                 recording_id,
-                int(subject),
+                subject,
                 embed_run_id,
                 int(t_ns[c.start_row]),
                 int(t_ns[c.end_row]),
@@ -819,7 +844,7 @@ class _CalibrateTab(QWidget):
         # Measured against the recording, so "slower than most" means something. This follows the
         # behavior rather than the slider; a committed cutoff changes the matches, and reaches the
         # band through `committed`.
-        self._measurements.select(self._run, behavior_id)
+        self._measurements.select(self._run, behavior_id, behavior.name)
         # ...and on opening, not only after a commit. Hanging the ethograms off `_on_committed`
         # alone left the pane holding a heading and nothing under it until somebody happened to
         # move the cutoff — on a behavior already calibrated, that is a blank panel reporting a
@@ -1177,7 +1202,7 @@ class _CalibrateTab(QWidget):
                     "instance_id": row.instance_id,
                     "cx": float(found[0]),
                     "cy": float(found[1]),
-                    "subject": int(row.subject or 0),
+                    "subject": row.subject if row.subject is not None else 0,
                     "t_ns": int(row.t_ns),
                     "end_t_ns": int(row.end_t_ns),
                 }
@@ -1410,7 +1435,7 @@ class _BrowseTab(QWidget):
         self._player.set_clip(
             ClipSpec(
                 row.recording_id,
-                int(row.subject or 0),
+                row.subject if row.subject is not None else 0,
                 self._embed_run_id,
                 int(row.t_ns),
                 int(row.end_t_ns),

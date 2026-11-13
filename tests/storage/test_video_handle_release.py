@@ -168,6 +168,25 @@ def _decode_through_detection_preview(tmp_path):
     return preview, path
 
 
+def _decode_through_track_preview_window(tmp_path):
+    from types import SimpleNamespace
+
+    from detail.gui.keypoint_track_preview import _WindowFrames
+
+    recording, path = _experiment_recording(tmp_path)
+    data = recording_store.read_recording(recording.dir)
+    t_ns = recording_store.load_active_timestamps(recording.dir, data, 0).values
+    window = SimpleNamespace(
+        recording_id=recording.id,
+        part_index=0,
+        start_ns=int(t_ns[0]),
+        end_ns=int(t_ns[-1]),
+    )
+    frames = _WindowFrames(SimpleNamespace(dir=recording.experiment_dir), window)
+    assert frames.read(frames.first_frame + 1) is not None
+    return frames, path
+
+
 def _decode_through_preview_clip(tmp_path):
     from detail.api import previews
 
@@ -187,6 +206,10 @@ HOLDERS = {
         "detail/api/run_preview.py",
         "DetectionPreview",
     ): _decode_through_detection_preview,
+    (
+        "detail/gui/keypoint_track_preview.py",
+        "_WindowFrames",
+    ): _decode_through_track_preview_window,
     ("detail/api/previews.py", "PreviewClip"): _decode_through_preview_clip,
 }
 
@@ -220,7 +243,18 @@ def _is_call_to(node, names: set[tuple[str, str]]) -> bool:
         and isinstance(node.func, ast.Attribute)
         and isinstance(node.func.value, ast.Name)
         and (node.func.value.id, node.func.attr) in names
+        and not _opens_for_writing(node)
     )
+
+
+def _opens_for_writing(call: ast.Call) -> bool:
+    """``av.open(path, "w")``: the export writer's output, which its one export releases
+    (``storage.video.open_video_writer``), not a reader cached past the read."""
+    mode = call.args[1] if len(call.args) > 1 else None
+    for keyword in call.keywords:
+        if keyword.arg == "mode":
+            mode = keyword.value
+    return isinstance(mode, ast.Constant) and mode.value == "w"
 
 
 def _is_frame_cursor_call(node) -> bool:
@@ -320,6 +354,18 @@ def test_no_raw_reader_handle_outlives_the_function_that_opened_it():
 )
 def test_the_scan_refuses_each_escape(source):
     assert _escaping_handles(ast.parse(source))
+
+
+def test_a_stored_writer_is_not_a_reader_but_a_stored_reader_still_is():
+    """The writer exemption is exactly ``mode "w"``: the same store of a read handle is
+    still refused."""
+    store = "class W:\n    def f(self, p):\n        self._c = {}\n"
+    writer = store.format("av.open(p, 'w')")
+    by_keyword = store.format("av.open(p, mode='w')")
+    reader = store.format("av.open(p, 'r')")
+    assert not _escaping_handles(ast.parse(writer))
+    assert not _escaping_handles(ast.parse(by_keyword))
+    assert _escaping_handles(ast.parse(reader))
 
 
 def test_the_scan_would_refuse_the_cursor_itself():

@@ -29,6 +29,7 @@ from pathlib import Path
 import yaml
 
 from detail.core import atomic
+from detail.core import yaml_load
 from detail.core.skeleton import PRESETS
 from detail.core.skeleton import Skeleton
 from detail.core.utils import utc_timestamp
@@ -63,7 +64,7 @@ def read(skeleton_id: str) -> dict:
         raise FileNotFoundError(
             f"no skeleton {skeleton_id!r} in the library; it has {discover() or 'none'}"
         )
-    return yaml.safe_load(atomic.read_text(path))
+    return yaml_load.safe_load(atomic.read_text(path))
 
 
 def list_records() -> list[dict]:

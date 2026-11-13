@@ -75,14 +75,17 @@ def is_cached(repo_id: str, files: list[str] | None = None) -> bool:
         return False
 
 
-def is_installed(repo_id: str, files: list[str] | None = None) -> bool:
+def is_installed(
+    repo_id: str, files: list[str] | None = None, *, revision: str | None = None
+) -> bool:
     """True if every file in ``files`` is present in the local cache. No network.
 
     ``files`` is the model's manifest (``hf_files``) — load-bearing for correctness,
     not a download-size optimization: it is what this verifies *and* what
     ``install`` downloads, so the two agree by construction. Without a manifest we
     can only fall back to ``is_cached``'s snapshot-folder check, which reports True
-    for a partial download.
+    for a partial download. ``revision`` pins a commit: a file cached at another one
+    does not count.
     """
     hf = _require_hf()
     if not files:
@@ -91,12 +94,17 @@ def is_installed(repo_id: str, files: list[str] | None = None) -> bool:
     # try_to_load_from_cache returns the path (str), None when absent, or the
     # _CACHED_NO_EXIST sentinel — only a str means "the file is here".
     return all(
-        isinstance(hf.try_to_load_from_cache(repo_id, name, cache_dir=cache_dir), str)
+        isinstance(
+            hf.try_to_load_from_cache(
+                repo_id, name, cache_dir=cache_dir, revision=revision
+            ),
+            str,
+        )
         for name in files
     )
 
 
-def local_file(repo_id: str, filename: str) -> Path:
+def local_file(repo_id: str, filename: str, *, revision: str | None = None) -> Path:
     """The cached path of one file, for a loader that takes an explicit path. No network.
 
     Raises rather than downloading: ``load()`` runs inside a pool worker subprocess
@@ -104,7 +112,9 @@ def local_file(repo_id: str, filename: str) -> Path:
     construction (§5).
     """
     hf = _require_hf()
-    hit = hf.try_to_load_from_cache(repo_id, filename, cache_dir=str(model_cache_dir()))
+    hit = hf.try_to_load_from_cache(
+        repo_id, filename, cache_dir=str(model_cache_dir()), revision=revision
+    )
     if not isinstance(hit, str):
         raise FileNotFoundError(
             f"{filename} for {repo_id} is not in the local model cache "

@@ -21,6 +21,81 @@ RETRY_ATTEMPTS = 20
 RETRY_DELAY_S = 0.01
 _LOCK_POLL_S = 0.005
 
+#: ``os.O_BINARY`` on Windows, ``0`` elsewhere. Every ``os.open`` names it: without it the
+#: Windows C runtime opens the descriptor in text mode, which cuts a trailing Ctrl-Z (0x1A)
+#: off any file opened read/write — a compressed chunk's last byte, 1 time in 256.
+#: ``tests/core/test_binary_open.py`` is the guard.
+O_BINARY = getattr(os, "O_BINARY", 0)
+
+
+class DamagedFileError(OSError, ValueError):
+    """A file that is there, at the length it was written, whose contents the OS lost.
+
+    After an unclean shutdown a filesystem can keep a new file's name and size while the bytes
+    were still in the cache, so it reads back as that many zero bytes, or as nothing. Parsers turn
+    that into errors that name no file and no cause: PyYAML or ``json`` sniff leading NULs as
+    UTF-32 and fail with ``'utf-32-be' codec can't decode byte 0x00 in position 92``, which is
+    what a whole tracking run printed for a recording whose detection results had been zeroed.
+
+    Both bases on purpose. ``OSError`` and ``ValueError`` are what the readers that tolerate a
+    torn record already catch (``storage/dirscan.UNREADABLE_RECORD_ERRORS``, the comparison and
+    benchmark pages, which caught the ``yaml.YAMLError`` this replaces), so a damaged file still
+    degrades a listing instead of taking it down; ``io.UnsupportedOperation`` has the same two.
+    """
+
+
+def damaged_file_message(path: Path | str, what: str) -> str:
+    return (
+        f"{path} is {what}. The file was lost when this machine shut down, or lost power, "
+        "before the system had written it to disk; its contents are gone. Re-run the stage "
+        "that wrote it. A run that was copied back from a cluster may still be intact there: "
+        "copy it again with `rsync -a --checksum`."
+    )
+
+
+def is_lost(data: bytes) -> bool:
+    """Whether ``data`` is what a lost write leaves behind: nothing, or only NUL bytes."""
+    return not data.strip(b"\x00")
+
+
+def flush_tree(root: Path | str) -> int:
+    """Make every file under ``root`` durable, so the OS cannot lose it in a shutdown.
+
+    ``fsync`` per file, and per directory where the platform can (the entry that names a file is
+    metadata of its directory; Windows has no way to flush one). This is what "complete" has to
+    mean: a run recorded complete while its outputs sit in the cache is a run a power cut
+    turns into zero-filled files under a record that says they are fine. Returns how many files
+    were flushed.
+
+    A read-only file is flushed through a read-only handle on POSIX, where that is allowed; a
+    file that cannot be flushed at all raises rather than being skipped, because the caller is
+    about to say the data is safe.
+    """
+    flushed = 0
+    for directory, _dirs, files in os.walk(root):
+        for name in files:
+            path = Path(directory, name)
+            try:
+                _flush_to_disk(path)
+            except FileNotFoundError:
+                continue  # replaced while we walked: `replace` flushed it before the rename
+            except PermissionError:
+                if os.name == "nt":
+                    raise
+                fd = os.open(path, os.O_RDONLY | O_BINARY)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+            flushed += 1
+        if os.name != "nt":
+            fd = os.open(directory, os.O_RDONLY | O_BINARY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+    return flushed
+
 
 def retry_on_lock(operation):
     """Run ``operation`` (a no-arg callable) and return its result, retrying the
@@ -62,7 +137,7 @@ def replace(src: Path | str, dst: Path | str) -> None:
 def _flush_to_disk(path: Path | str) -> None:
     """``fsync`` a closed file by path (``FlushFileBuffers`` on Windows, which needs a
     handle opened for writing)."""
-    fd = retry_on_lock(lambda: os.open(path, os.O_RDWR))
+    fd = retry_on_lock(lambda: os.open(path, os.O_RDWR | O_BINARY))
     try:
         os.fsync(fd)
     finally:
@@ -80,8 +155,19 @@ def read_text(path: Path | str) -> str:
     raise ``UnicodeDecodeError`` instead, from the reader of every ``recording.yaml``.
     ``utf-8-sig`` on the read side, per the encoding rule; ``replace`` above is the
     write-side twin.
+
+    Raises:
+        DamagedFileError: the file is all NUL bytes, which is what a write the OS lost leaves.
+            Named here because the parsers behind this seam would not: they fail with a decoder
+            error that carries no path. An *empty* file is returned as ``""``, since a caller may
+            have written one on purpose.
     """
-    return retry_on_lock(lambda: Path(path).read_text(encoding="utf-8-sig"))
+    text = retry_on_lock(lambda: Path(path).read_text(encoding="utf-8-sig"))
+    if text and not text.strip("\x00"):
+        raise DamagedFileError(
+            damaged_file_message(path, f"all zero bytes ({len(text)} of them)")
+        )
+    return text
 
 
 # An atomic write keeps a *reader* from seeing a torn file; it does nothing for two writers
@@ -155,7 +241,7 @@ def file_lock(lock_path: Path | str, *, waiting: Callable[[], None] | None = Non
     user cancels. A blocking ``flock`` held by another process can last minutes, and a thread
     parked in it can neither report nor be stopped.
     """
-    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | O_BINARY, 0o644)
     os.set_inheritable(fd, False)
     try:
         if waiting is None:

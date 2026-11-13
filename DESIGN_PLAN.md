@@ -1,4 +1,4 @@
-﻿# DETAIL Design Plan
+# DETAIL Design Plan
 
 This document is the approved design for the DETAIL infrastructure redesign. Components are added here after discussion and approval. It is the source of truth for implementation.
 
@@ -59,7 +59,7 @@ This document is the approved design for the DETAIL infrastructure redesign. Com
 | Measures (§23) | **Built, on all three surfaces** — `analysis/measures.py` (eleven measures, each declaring how it meets a window boundary and what unit its value carries) and `analysis/windows.py` (whole / absolute / normalized / sliding, the model in `configs/windows.py`). Pure windowed queries over the §19 artifact; a windowed denominator needs the frame view's observed mask, which every producer now writes. `noise_time` is deliberately absent (see *The measures*). Reachable as `Experiment.measures(run_id)`, as `detail measures export` / `list`, and as the Measures panel on an analysis run's page. |
 | Comparison (§24) | **Built, on all three surfaces** — `analysis/compare.py`, `analysis/comparison_report.py`, `configs/comparison.py`, `storage/comparisons.py`, `api/comparison.py`, CLI `comparison run` / `export` / `list` / `delete`. Descriptive only, saved with its outputs; the aggregation path is declared, never defaulted, and the ranking ships with its permutation floor. The GUI section is **static by design**: a saved comparison holds its outputs, so reading one is not the scrubbing problem §21's DIFFERENCES tab still owns. |
 | Surface Visibility (§25) | **Built** (#203) — `detail/surfaces.py`, sections declared once in `gui/sections.py`, fifteen enumeration points, `DETAIL_SHOW_ALL` escape hatch. Nothing is hidden: the capabilities it hid were removed from the tree on 2026-11-10; the mechanism stays. Nothing is staged. This sentence is a copy of `surfaces.HIDDEN` and had already drifted once, so `tests/test_surfaces.py` now checks it against the table. Hiding a *module or method* still needs the docs generator and the static `mkdocs.yml` nav taught about it. |
-| Keypoints (§26) | **Built; audit not kept** — spec rewritten 2026-10-07 from the keypoints review, replacing the integration branch `keypoints` (#626) rather than merging it: `dinov3_match` on a shared patch-matching engine plus a distilled YOLO-pose student; two stages, `keypoint_detect → keypoint_track`; alignment is §14's, distill §12's, the shared model layer §5's. Lands in PRs 0.5–9 (§26 *Sequencing*); each PR flips its own token here — PR0.5 ☑ · PR1 ☑ · PR2 ☑ · PR3 ☑ · PR4 ☑ · PR5 ☑ · PR6 ☑ · PR7 ☑ · PR8 ☑ · PR9 ⏸ — PR 9 (the audit) was parked by the user (2026-10-09) and its API and CLI later removed, so the verdict reads built without it; PR 4b (the detect form's *Test keypoints*, no cut-off field by the user's decision) has landed too. **Revised 2026-10-21, not built:** detect stores unassigned instances per part on a detection run; keypoint track assigns them to a tracking run's subjects by mask (§26 revision note, *Assignment*). |
+| Keypoints (§26) | **Built; audit not kept** — spec rewritten 2026-10-07 from the keypoints review, replacing the integration branch `keypoints` (#626) rather than merging it: `dinov3_match` on a shared patch-matching engine plus a distilled YOLO-pose student; two stages, `keypoint_detect → keypoint_track`; alignment is §14's, distill §12's, the shared model layer §5's. Lands in PRs 0.5–9 (§26 *Sequencing*); each PR flips its own token here — PR0.5 ☑ · PR1 ☑ · PR2 ☑ · PR3 ☑ · PR4 ☑ · PR5 ☑ · PR6 ☑ · PR7 ☑ · PR8 ☑ · PR9 ⏸ — PR 9 (the audit) was parked by the user (2026-10-09) and its API and CLI later removed, so the verdict reads built without it; PR 4b (the detect form's *Test keypoints*, no cut-off field by the user's decision) has landed too. **Revised 2026-10-21 (#791, #792):** detect stores unassigned instances per part on a detection run; keypoint track assigns them to a tracking run's subjects by mask (§26 revision note, *Assignment*). |
 | GUI | Built: shell + navigation, launch/run-progress, per-module config UIs, prompt-test (matrix) + render-preview, arena editor (time-varying), detection + tracking run previews; embedding input-image constructors + scrubber; embedding result view (Stage 1: coverage + PCA point cloud); deletion at every level (experiment/recording/run/arena) with a cohesive strategy (gui_design §1.1); run-table navigation + rich run labels; smooth import progress; the model manager + readiness/CUDA-doctor onboarding; every analysis module's config and result UI; the training surface (datasets, trained models, distill); the §21 authored-run workspaces (query calibration, pose/temporal INTERPRET); and the §19 reliability audit, which both of them share by emitting the artifact. Pending: embedding result view Stage 2 (linked scrub), run-identity Layer 2 for the clip modules, and §24's comparison screen. |
 
 
@@ -129,7 +129,9 @@ Outputs are written to zarr incrementally in fixed-size buffers, never accumulat
 HF tokens, API keys, and any other credentials live in `~/.config/detail/credentials.yaml` or environment variables. If a credential appears in `config.yaml` or `recording.yaml` it is a bug.
 
 **15. Frame reading uses `cv2.VideoCapture` and `PyAV` only. No FFmpeg.**
-FFmpeg CLI and any library that shells out to it are prohibited for any operation that touches individual frames. FFmpeg's frame extraction is not guaranteed frame-accurate — it can drop frames, misalign PTS, or silently re-encode. `cv2.VideoCapture` is used for all sequential frame reading and writing. `PyAV` is used for container metadata and PTS extraction. This applies to detection, embedding, and any future stage that reads video frames. A violation is any `subprocess.run(["ffmpeg", ...])` or equivalent in pipeline code.
+FFmpeg CLI and any library that shells out to it are prohibited for any operation that touches individual frames. FFmpeg's frame extraction is not guaranteed frame-accurate — it can drop frames, misalign PTS, or silently re-encode. `cv2.VideoCapture` is used for all sequential frame reading. `PyAV` is used for container metadata and PTS extraction. This applies to detection, embedding, and any future stage that reads video frames. A violation is any `subprocess.run(["ffmpeg", ...])` or equivalent in pipeline code.
+
+**Writing an export's video** goes through one writer, `storage/video.open_video_writer`, and nowhere else. Its default codec, `h264`, encodes through **PyAV's linked libav** (`libx264`: High profile, `yuv420p`, CRF 23, preset `veryfast`, `+faststart` MP4) — a library call in this process, never an `ffmpeg` executable and never a library that shells out to one. The other codec, `mp4v` (MPEG-4 Part 2), is written by `cv2.VideoWriter`. A machine whose PyAV has no `libx264` writes `mp4v` instead, and says so: the export surface shows the note and the export's record carries the codec it wrote. Why H.264 by default: PowerPoint on Windows does not reliably play MPEG-4 Part 2, and cv2's pip wheels have no H.264 encoder on Linux (WSL included), so before this every MP4 export there was `mp4v`. Measured in WSL on 20 s of real 1280×720 footage: `mp4v` 9.64 MB, `h264` 4.31 MB; on 300 frames of it, preset `veryfast` encodes at 117 fps to `medium`'s 72 and `mp4v`'s 153, so a long export costs about a third more time than `mp4v` did, not twice.
 
 ---
 
@@ -308,6 +310,76 @@ defaults:
     compute: {backend: "cuda", device_indices: [0]}
 ```
 
+**Archived.** `archived: true` marks an experiment the user has archived (`Experiment.archive()`
+/ `unarchive()`, `detail experiment archive [--undo]`, **Archive** on the Home card). Absent
+means not archived; unarchiving removes the key rather than writing `false`. It lives here
+because it is read for every Home card, as identity is. It governs the Home listing only:
+`Experiment.list_all()` returns archived experiments too, and an archived experiment opens,
+runs and exports unchanged. `import_archive` clears it, since an archive is the sender's tidying
+and would otherwise hide the import from the list it was imported into.
+
+**Two experiment-wide facts live here beside identity:** the default camera view,
+`camera_view` (+ `camera_view_note` for `other`), which every recording inherits unless its own
+`recording.yaml` overrides it (§10 "Camera view"); and the user's names for detection classes,
+`class_names` (below). Neither is the removed `defaults:` block: that was a pre-fill nothing
+read; these are facts a resolver reads and the Recordings page sets.
+
+### Class names
+
+A detection class is named twice. Its **stored name** is the `class_name` a detection run wrote
+(§9): the prompt target's name for an open-vocabulary model, the trained class's name for a
+closed-set one. It is in every zarr row, run record, identity, example-set map and subject
+label downstream, and it never changes, because rewriting it would change what every
+existing run means. Its **name** is the user's, set per experiment, and is what every surface
+shows: in this experiment `Intruder` may be called `Stranger` without a single run being
+re-run. This is §11's recording rule applied to classes — the stored name is the tool's handle,
+the name is the user's.
+
+```yaml
+# config.yaml — only renamed classes appear
+class_names:
+  Intruder: "Stranger"
+```
+
+- **Absent means not renamed.** A class with no entry is shown by its stored name; an
+  experiment made before this existed has no `class_names` and reads unchanged.
+- **The roster** is the classes the experiment knows: every detection run's prompt targets and
+  `class_conf_thresholds` keys, the classes of the model a closed-set run used, and every
+  trained detection model's classes (`Experiment.classes()`). It reads run records and model
+  records, never zarr, so it is O(runs) not O(recordings).
+- **Validation** (`core/class_names.py::check`). A name is stripped and non-empty. No two
+  classes show the same name. A name may not be another class's stored name, because a user
+  typing it would then mean two classes. Renaming a class to its own stored name, or to
+  nothing, removes its entry. Each is a `ValueError` naming the class.
+- **Input accepts either.** Wherever a user names an existing class — tracking's `class_name`,
+  keypoint detect's `class_name` and `class_example_sets` keys, detection's
+  `class_conf_thresholds` keys, a setup's `class_names` and `class_example_sets` — the
+  reference is resolved to the stored name before validation (`class_names.resolve_config`,
+  one table of class-reference fields, `CLASS_REF_FIELDS`). A stored name wins over a name, so
+  a class is always reachable by its stored name. What is recorded is the stored name, so a
+  run's identity does not depend on what the class was called that day (Tenet 9). A
+  detection prompt target's name is **not** a reference: it defines a new stored name.
+- **Display goes through one function**, `class_names.label(stored, names)`. The class
+  pickers (tracking's class filter, keypoint detect's class and per-class rows, the distill
+  dialog's per-class teacher, **Set up keypoints…**'s animals, the mark-frames screen's class
+  list), the detection form's per-class thresholds and the run-spec labels that name a class
+  show the name. Exported files and rendered video overlays carry the stored name, which is
+  the data; this is a deliberate stop, recorded in `docs/gui.md`.
+- **Surfaces.** API: `Experiment.classes()`, `class_names()` (`{stored: name}` for every class
+  in the roster), `renamed_classes()` (the map alone: one cached config read, for labelling on
+  the UI thread), `class_label(stored)`, `rename_class(stored, name)`, `rename_classes(changes)`
+  (several at once, checked together, so two classes can trade names), `resolve_class(ref)`,
+  `resolve_class_refs(config)`. CLI: `detail experiment classes` and
+  `detail experiment rename-class CLASS NAME` (`--reset`). GUI: **Class names…** on the
+  Recordings page, one row per class (its stored name, and a field for its name), applied
+  together on *Save*.
+- **Where resolution happens.** `Experiment._validate_processing`, before any module validates,
+  so every processing module inherits it; and the keypoint setup, continue and teacher entry
+  points (`start_keypoint_setup`, `continue_keypoint_setup`, `resolve_teacher`), which take
+  classes as arguments rather than through a module config. Every config-model field whose name
+  says *class* is in `CLASS_REF_FIELDS` or excused with its reason
+  (`tests/core/test_class_names.py`).
+
 ### What is explicitly excluded from `config.yaml`
 
 - Video paths (recordings are discovered by scanning `recordings/`)
@@ -392,6 +464,8 @@ video_roots:
 ```
 
 If a storage alias cannot be resolved (drive not mounted, credentials missing), the tool reports which alias failed — not a generic "file not found."
+
+**Experiment locations (built: the local slice).** Every `type: local` alias under `storage:` — `default` plus any the user adds — is an *experiment location*: a folder experiments are created in and discovered from (`locations.experiment_locations()`, `list_experiment_dirs()` over all of them, `location_root(name)`, `location_of(dir)`). `default` always exists and its `root` falls back to `~/Documents/DetailExperiments`; `add_location(name, folder)` writes `{type: local, root}` (re-pointing an existing name keeps its other keys, e.g. `volume_label`), `remove_location(name)` forgets one and deletes nothing. A location whose folder is missing is reported `connected: false` — listed, never created, its experiments skipped, and creating into it raises `LocationNotConnectedError` naming the alias. Names: letters, digits, space, `.`, `_`, `-`; `default` is reserved; one folder cannot be two locations. Two connected locations may not hold the same experiment name (create and import refuse). Machine-global trees (`tools/`, `roi_exports/`) stay under `default`. Surfaces: `Experiment.create(name, location=)`, `Experiment.import_archive(..., location=)`, `Experiment.location`; `detail experiment locations | add-location | remove-location`, `create --location`, `import --location`; GUI **Save in** + **Add location…** on New experiment, a location chooser on Import when more than one is connected, **Experiment locations…** on Home, a per-card location tag and a not-connected notice. Guarded by `tests/storage/test_locations.py` (nothing lists experiments from `experiments_root()` alone).
 
 The `default` alias's optional `model_cache` key is where auto-downloaded model weights live (the `model_cache_dir()` single-owner location, §5), letting several machines share one weight cache. Resolution order: the `DETAIL_MODEL_DIR` env var, then `default.model_cache`, then the `~/.cache/detail/models/` default. The resolved path is passed to the backend explicitly (`cache_dir=`) — never steered via `HF_HUB_CACHE`/`HF_HOME`, which are snapshotted at import time (§5).
 
@@ -585,6 +659,9 @@ streams:
 > program, and a single `canonical/part_001.csv`. `metadata:` carries the source
 > header + the code→label map. Readers default missing keys via `.get`.
 
+A recording may also carry `camera_view` / `camera_view_note`, its own camera view overriding
+the experiment's default; absent means it inherits (§10 "Camera view").
+
 **Copied or referenced, and a reader never branches on it.** A part either carries `file` (the
 tool copied the bytes into the recording, at a recording-relative path) or `source: {root, rel}`
 (the bytes stay where the user put them). Neither stores an absolute path — Tenet 6 — because
@@ -686,8 +763,12 @@ new one. Copied parts record no fingerprint, so it is computed at build time and
 Masks are keyed by **tracking run** and part, because which animal is which (`object_id`) exists
 only in tracking's assignments; they hang under their proxy because they are indexed by its
 frames. `<digest>` = `masks_digest(tracking entry, detection entry)` — ids, `created_at` and
-`every_n_frames` from `recording.yaml` — so a run re-made under a reused id is a new store, and
-asking whether masks are missing costs one stat.
+`every_n_frames` from `recording.yaml`, and the tracking entry's `class_name` when it has one — so
+a run re-made under a reused id is a new store, and asking whether masks are missing costs one
+stat. The class is in the digest because a class-filtered run's masks built before its assignment
+was paired through the filter drew each animal on another detection's mask: naming the class makes
+those another store, rebuilt once rather than trusted; an unfiltered run's digest, and masks, are
+unchanged.
 
 **Build** (`api/previews.py`), staged in a sibling `<name>.<uuid>.tmp` directory (unique per
 build, never per process) and swapped with `core.atomic.replace`; a cancelled or failed build
@@ -727,7 +808,10 @@ again to build the proxy it draws on, and fail the same way.
   animal); unassigned rows (`object_id < 0`) skipped, an animal's fragments OR-merged and their
   boxes unioned, the mask shrunk (area, >50%) and re-encoded with `pycocotools`. It reads its own
   part only (`run_preview._build_part`, the cached timestamp map): another part's video being
-  absent does not fail it.
+  absent does not fail it. A tracker with a class filter writes one assignment row per detection
+  row *of that class*, so the build passes the run's own filter (`track.yaml`, not the record's
+  display `class_name`) to `_build_part` and reads `bbox` / `mask_rle` through its `raw_rows`; the
+  encoded mask size is the part's `mask_hw`, else the recording's resolution.
 
 **There is no second timestamp map.** The proxy container's own clock is not a time reference;
 a proxy frame's time is `timestamps[src_frame[i]]` from the part's active map (Tenet 8).
@@ -754,8 +838,8 @@ own packet times, read once per file. Raises `PreviewMissingError` when the prox
 built here; masks asked for and not built yet open **footage-only** (`masks_missing` set,
 whole-frame crop, no outline), so a montage can play while they build.
 
-**Who reads it.** Display surfaces only (the clip montage, later the behavior-query clip grid,
-the clip window's opening playback, node thumbnails). Never a pipeline / analysis / tracker /
+**Who reads it.** Display surfaces only (the live montage of every clip grid: INTERPRET, the
+cluster window, AUDIT's review, through `api/clip_tiles.py`). Never a pipeline / analysis / tracker /
 model / executor / transform / method / trainer module (`tests/storage/test_preview_isolation.py`,
 a source scan), never an export (exports read the source), and not the full-frame viewers
 (detection / tracking runs, keypoint labelling, arena, prompt test), which need every frame at
@@ -1150,6 +1234,41 @@ which is what the wall clock tracks.
 **No resize.** Nothing in the pipeline shrinks a frame: masks are stored at source resolution.
 SAM 3's processor resizes to the model's own input, so source resolution never reached the GPU
 cost; embedding's `input_size` still bounds what its model sees.
+
+### Teacher window (`teacher_window_s`, #717)
+
+A **keypoint teacher run** reads only a recording's first minutes, so DINOv3 runs on one short
+window of each acquisition setup rather than on hours of video (§26 *Distillation*). It is a
+sibling of the cadence above — which frames a run looks at — with one rule the cadence does not
+have: **a windowed run is a teacher run and nothing else.**
+
+- **Detection takes it.** `DetectionConfig.teacher_window_s: float | None` (seconds, `unit: s`,
+  `gt=0`), converted at `build_job` to `DetectionJob.t_end_ns: int | None` on the `t_ns` axis
+  (Tenet 8). Parts whose first frame is at or past it are never opened and get no zarr
+  (`detection._parts_in_window` — a prefix, so a kept part's index is still its index); in the
+  last part reached, the worker stops at `frames_before(tsmap, t_end_ns)` — a clean `complete`,
+  `frames_total` the window's frames, nothing after it in `dropped_frames`. A prefix is a forward
+  read that stops early, so Tenet 11 holds without a seek.
+- **Tracking, track merge and keypoints inherit it** from their upstream run in `validate()`
+  and record it (`teacher_window_s` in the run record); none takes it as a setting. Their rows
+  already end where detection's do. A merge takes it from its sources, which must all cover the
+  same span (one window, or all the whole recording) — the two-animal keypoint setup's own chain
+  is windowed detection → one track per animal → a merge. Recording it is what keeps a consumer
+  from laundering a teacher run into one that reads as the whole recording.
+- **Identity.** `teacher_window_s` is a detection `identity_field` with default `None`, so a
+  teacher and a whole-recording run with the same settings are different specs; the picker label
+  appends `· first 5 min (teacher)` (`run_spec.teacher_label`), which every downstream label
+  inherits through `from …`.
+- **Consumers.** `teacher_window.TEACHER_CONSUMERS` (tracking, track merge, keypoints) take a
+  teacher run; so do keypoint references, audits and the keypoint distill, through the API.
+  Every other consumer refuses one with `teacher_window.refuse_teacher_run` — embedding (its
+  tracking run, and the keypoints run behind `align` / `pose`), location export. Exports and
+  viewers are allowed: they show what the run holds, and a teacher run is worth inspecting.
+  `tests/pipeline/test_teacher_window.py` fails on any registered module that reads a detection,
+  tracking or keypoints run and has decided neither.
+- **Surfaces.** API `Recording.run_detection(teacher_window_s=)`, CLI `--teacher-window-s` on
+  `detection run` / `process detection`. The GUI sets it only through the keypoint teacher setup
+  (#717 PR 5); the detection launch form does not offer it.
 
 ---
 
@@ -1672,7 +1791,9 @@ Cloud execution writes progress events to a status channel (S3 key, Redis, webho
   "status": "running",
   "job": {"type": "detection", "job_id": "det_01", "...": "..."},
   "progress": {"type": "detection", "parts_done": 1, "...": "..."},
-  "error": null
+  "error": null,
+  "started_at": "2026-09-15T22:06:06Z",
+  "completed_at": null
 }
 ```
 
@@ -1680,7 +1801,18 @@ Cloud execution writes progress events to a status channel (S3 key, Redis, webho
 - `job` — the tagged job (`job_to_dict`); the worker reconstructs the right class with `job_from_dict` and dispatches on `type`.
 - `progress` — the latest tagged `ProgressEvent` (`progress_event_to_dict`) or `null`; `stream_progress()` polls and yields it on change until `status` is terminal.
 - `error` — message recorded if the worker catches an exception.
+- `started_at` / `completed_at` — ISO-8601 UTC stamps `rundir.set_status` writes itself, absent until reached (see "Run location, duration, cost" below).
 - stage payload (e.g. detection's `parts[]` and `mask_resolution`, Section 7/9) lives alongside these keys and is managed entirely by the runner.
+
+#### Run location, duration, cost
+
+`rundir.set_status` is the *only* place any job's status ever changes (the worker, both executors' crash/cancel backstops, and the reconciliation backstop all funnel through it), which makes it the one seam that can stamp a run's wall-clock timing for free rather than duplicating the capture at every call site. It stamps `started_at` on entering `RUNNING` from any non-`RUNNING` status — including a **resume**, re-entering `RUNNING` after a prior terminal status — and drops the previous `completed_at` at the same point, so a resumed run's duration reflects only its latest attempt, not a stale start time plus whatever gap sat before the resume. `completed_at` is stamped once, on the first terminal transition of an attempt.
+
+`executor/run_metrics.py::completion_fields(run_dir, compute)` turns those two stamps (plus, for a remote job, the target's configured `cost_per_gpu_hour`) into what every run family's own record merges in on completion: `compute` (a `ComputeTarget.to_dict()`-shaped mapping, `None` for a family with no remote concept — tracking, analysis, export, a clusterer fit — which always reads "local"), `duration_s`, and (remote + a rate configured) `estimated_cost_usd = gpus × elapsed_hours × cost_per_gpu_hour`, where `gpus` is the envelope's `remote_gpus` (what the shepherd asked Slurm for, after a module's `remote_resources`) or, for a record from before it was written, the target's `gpus_per_job`. Never raises — a bookkeeping read must not block the status write it accompanies (the isolation-boundary rule); a missing envelope or a renamed/removed remote target just yields fewer fields.
+
+Every family's `set_*_status` (`datasets`/`models`/`analysis_runs`/`export_runs`/`clusterers`) merges `completion_fields` in directly, so the normal path, cancel, and the crash-reconciliation backstop all inherit it automatically. The two per-recording families (detection, embedding) record `compute` in `extra_record_fields` at **reservation** time instead (known before the job runs), then get `duration_s`/`estimated_cost_usd` merged in by `_RecordedRun._adopt_status` once terminal; tracking's `extra_record_fields` deliberately adds no `compute` key (`TrackingJob` has no `ComputeTarget`, so it is always local). Distill's two stages roll up whatever the underlying `dataset.yaml`/`model.yaml` already carries; the two aggregate families (a processing `run_NNN`, a distill run) sum their per-recording/per-stage costs into a `total_estimated_cost_usd`.
+
+`core/run_cost.py` is the one formatter every surface (Active Processes, the recording's run-history table, the experiment-wide processing-runs index, and both single-run detail pages) calls through — `compute_label(compute)` → `"local"` / `"local (cuda)"` / `"remote: tillicum"` — instead of a hand-rolled string per page. A still-running remote job's detail page shows a **live** cost estimate (`elapsed_s / 3600 × rate`, ticking off the same `elapsed_s` the progress bar already receives — no extra I/O per tick) until the page rebuilds on completion and shows the persisted, authoritative value instead. `RemoteTargetConfig.cost_per_gpu_hour: float | None` (§6) is the rate; unset means no cost is ever shown for that target's runs.
 
 Writes are atomic (`tmp` + `os.replace`) so the polling reader never sees a torn file; with one writer (the worker) and one reader (the executor) no locking is needed. One worker subprocess runs per job; multi-GPU part-parallelism lives inside the detection runner, not the executor.
 
@@ -1755,6 +1887,9 @@ class ProcessingModule(ABC):
     def output_path(self, run_id: str) -> str:
         """Recording-relative output dir recorded in recording.yaml (e.g. detections/det_01/)."""
 
+    def estimate_output_bytes(self, recording_dir, recording_data: dict, config: dict) -> int:
+        """Bytes this stage will write into one recording, from its validated config (#743)."""
+
     # Provided by the base class; modules override only the extras hook.
     def run_record(self, run_id: str, config: dict, status: str) -> dict:
         return {
@@ -1767,6 +1902,8 @@ class ProcessingModule(ABC):
     def extra_record_fields(self, config: dict) -> dict:
         return {}
 ```
+
+**Free space (#743).** `estimate_output_bytes` is abstract, so no stage ships without saying what it writes: rows × bytes per row from the stage's own schema (embedding: frames × series × (4·width + 96), width from the model's declared per-variant `VARIANT_OUTPUT_DIMS`, doubled by a concatenating read-out), or a cited measurement where the size depends on the data (detection, tracking). `Experiment.run_processing` and `retry_run` sum it over the validated recordings and compare it with `core/disk_space.free_space(experiment)`, keeping 5 GB spare. **Under WSL, an experiment on the distribution's own filesystem is bounded by the Windows drive holding `ext4.vhdx`**, read from the per-user `Lxss` registry key, whenever that is tighter than `statvfs`, which reports the virtual disk's own ceiling. A run that does not fit raises `InsufficientSpaceError` (a `ValueError`) before a run id is reserved, unless `ignore_free_space`. The run record keeps `space: {estimated_output_bytes, free_bytes_at_launch, fits}`: numbers only, never where. Remote runs are checked the same way, since their output is copied back.
 
 The `recording.yaml` run record stays a lightweight index — the upstream run id among the module's extras is its lineage pointer. The **full** input ids + parameters live in the run's `job.json` (the serialized `Job`), which is what satisfies Tenet 9; the record shape per stage is unchanged from today.
 
@@ -1796,6 +1933,14 @@ live outside it — `model_validate` only enforces the bounds/shape and `validat
 enriched `config` unchanged; **do not merge a partial `model_dump()`**, it reverts the enrichment
 (e.g. an `all_tracks`-resolved `track_ids` back to `[]`). `pydantic.ValidationError` subclasses
 `ValueError`, so existing error handling and `pytest.raises(ValueError)` still hold.
+
+**`None` means the default.** A caller passing an optional keyword through spells "use the
+default" as `None`, and a plain-typed field (`tracker_id: str = DEFAULT_TRACKER`) refuses it. So
+every entry that hands a config to `validate()` / `validate_batch()` first calls
+`configs.defaults.none_means_default(module.config_model, config)`, which replaces a `None` with
+the field's default wherever the field has one and cannot hold `None`, and writes it into the dict
+so the run record names it (Tenet 9). A field whose `None` means something (`model_variant`,
+`arena_name`) keeps it. Guarded by `tests/configs/test_none_means_default.py`.
 
 **Status:** done. Every registered processing and analysis module declares a `config_model`, and
 `describe_config` renders the generated parameter reference (`docs/reference/parameters.md`) from
@@ -1861,6 +2006,8 @@ def run_detection(self, model_id, prompt, compute, every_n_frames=1,
 
 The chain reads `video → detection → tracking → embedding`, and **forks at detection**: `detection → tracking → embedding` and `detection → keypoint_detect → keypoint_track`. A module that needs **multiple** upstreams (a true DAG) stays out of scope; the second inputs are declared as **auxiliary inputs** — `ProcessingModule.aux_refs`, `(module_id, record_ref_field)` pairs a run *may* read beside its lineage parent — and there are two: embedding's alignment (§14), `(("keypoint_track", "keypoint_run_id"),)`, and keypoint tracking's subjects (§26 *Assignment*), `(("tracking", "tracking_run_id"),)`. One constraint keeps the chain linear: the auxiliary run and the module's own lineage must meet at one run — embedding refuses a keypoint track run whose `tracking_run_id` is not the embedding's tracking run, and keypoint track refuses a tracking run not on its detect run's detection run. Eligibility and the GUI progression read `upstream` alone; the run spec gains an `aux` entry keyed on the auxiliary run's **identity** (its settings), not its id, so per-recording runs with the same settings still match; a batch run resolves a `<module>_spec` per recording by the same machinery as the upstream spec; and the run is a dependent of what it read (`_downstream_edges`, derived from the registry, §15 *Run deletion*).
 
+*Auxiliary inputs* (§26, built for embedding alignment) are that deliberate extension, kept linear: `ProcessingModule.aux_refs` declares `(module_id, record_ref_field)` pairs a run **may** read besides its lineage parent — embedding declares `(("keypoints", "keypoint_run_id"),)` — and each must descend from the **same** lineage parent run (an aligned embedding's keypoints run is on the tracking run it embeds). `upstream` and eligibility are unchanged. A run that read one carries the input's spec under `"aux"` in its own spec (below); it resolves a batch `<module>_spec` per recording, restricted to runs on its own parent run (`run_spec.resolve_into_config`); and it is a dependent of that input (`api/recording.py::_downstream_edges`, derived from `lineage_ref` and `aux_refs` alike). A run that read none has exactly the spec it had before aux inputs existed.
+
 ### Upstream run specs
 
 A batch run (`Experiment.run_processing` over N recordings) must pick a **per-recording upstream** — which detection run to track, which tracking run to embed. The per-recording run id (`det_NN`) cannot be that selector: it is a **per-recording monotonic counter** (`api/recording.py::_next_run_id`), so the *first* run in every recording is `det_01` regardless of what it is. Matching on it both **false-negatives** (the same logical batch is `det_02` in one recording, `det_01` in another → "no common run") and **false-merges** (two different runs share an ordinal → silent mixing). The fix: select by a canonical **run spec**, resolved to each recording's own run.
@@ -1882,7 +2029,7 @@ Two runs are interchangeable iff their specs are equal. `api/run_spec.py::freeze
 | detection | `model_id, model_variant, weights_source, conf_threshold, every_n_frames, prompt_fingerprint, prompt_classes` | `None` (roots at the recording's video) | **+`prompt_fingerprint`** (short digest of `Prompt.to_dict()`; the prompt is the class definition for open-set models — omitting it false-merges "mouse" vs "cage") **and +`prompt_classes`** (the sorted target names — the human-readable half, redundant for equivalence so it can only ever false-*split*) |
 | tracking | `tracker_id, arena_ids, hyperparams, every_n_frames` | `("detection","detection_run_id")` | **+`hyperparams`** (`config["hyperparams"]`, enriched in validate; was `job.json`-only) |
 | embedding | `model_id, model_variant, constructor, every_n_frames`; with alignment (§14, specified) also `align, heading, max_gap_s, mirror_hold_s, facing_camera_ratio` and the auxiliary keypoint track run's identity under `aux` | `("tracking","tracking_run_id")` (+ `aux_refs = (("keypoint_track","keypoint_run_id"),)`) | — (the constructor **name**, not the resolved `renderer_spec` — centered recipes size per-recording, so the resolved spec is intentionally recording-specific and must not be identity) |
-| keypoint_detect (§26) | `model_id, model_variant, backbone_id, backbone_variant, skeleton_digest, example_set_digest, n_candidates, every_n_frames, crop_px, decode, side_rule, matching` (the matching constants as one dict), `min_pose_confidence` | `("detection","detection_run_id")` | compute, batch size and the display cut-off are not identity |
+| keypoint_detect (§26) | `model_id, model_variant, backbone_id, backbone_variant, skeleton_digest, example_set_digest, n_candidates, every_n_frames, crop_px, decode, side_rule, matching` (the matching constants as one dict), `min_pose_confidence`, `class_name` (absent on an older record reads as `None`, every class: `identity_defaults`) | `("detection","detection_run_id")` | compute, batch size and the display cut-off are not identity |
 | keypoint_track (§26) | `tracking_identity` (the tracking run's settings, never its id — ids restart per recording, §6.5 *auxiliary inputs*), `match` (`min_inside`, `mask_grow`), `method` and every field of the method's config, filter constants and decode cut-off included; the detect run's identity by lineage | `("keypoint_detect","detect_run_id")` | the display cut-off is not identity |
 
 `every_n_frames` is identity on all three (§4): the same config at a different cadence is a different output. Each carries `identity_defaults = {"every_n_frames": 1}`, which is how a record written before the field existed reads — without it those runs would false-*split* from equivalent ones written since.
@@ -1900,6 +2047,8 @@ Two runs are interchangeable iff their specs are equal. `api/run_spec.py::freeze
 The explicit-id path (CLI names a run) stays working at all three — spec is additive.
 
 **Labels always carry lineage** (`spec_label` → `anchor_tracker @ conf 0.25 · from sam3/large @ 0.25`) so "same tracker params, different detection model" is visible in the picker, not silently identical.
+
+**A picker row names its experiment runs.** `group_specs` gives each group a `provenance` (`run_spec.provenance_of` per recording, merged by `merge_provenance`): at every lineage and aux level, the sorted `processing_run_id`s of the runs the group reads (a record with none contributes its per-recording id), plus record keys a label shows that identity holds only as a digest (`_SHOWN_FIELDS`: detection's `class_conf_thresholds`, keypoint detect's `example_set_id` / `class_example_sets`). `spec_label(..., provenance=)` leads each level with them, at most three then `+N more`: `run_008 · anchor_tracker · Intruder @ conf 0.10 · from run_007 · model_001 @ 0.50 (trained) · Intruder 0.20, Resident 0.50`. A group stays one set of settings, so a later launch with the same settings joins the row (`run_001 + run_004`) rather than splitting it. Provenance is display only: it never enters `freeze_spec`, and a stored spec does not carry it. `run_spec.run_label` renders one named run the same way, for a run page's lineage. The CLI `--*-ref` selectors take `run_NNN` beside `RECORDING:run_id` (`run_spec.spec_from_experiment_run`: the run's per-recording runs must share one spec, else refused).
 
 **Known limitations (v1).** A trained/imported model whose weights change under a stable `model_id` (`resume_training`, re-import) is a `weights_source`-level match — the weights *content* is not fingerprinted. Detection identity uses the whole `Prompt.to_dict()`, so an `ImageCue`'s per-run path can false-split two otherwise-equal image prompts (text/point/box prompts — the common case — are content-stable). Both are acceptable false-*splits* / narrow, and documented rather than merged. **Embedding identity is the constructor name + model only — deliberately not `track_ids`**: an `all_tracks` run resolves to different concrete ids per recording, so including them would false-*split* the same logical run across recordings. The trade-off is a possible false-*merge* — two embedding runs over different track subsets of the same tracking parent share a spec — so a future spec-select of an embedding run (clip `--embed-ref`) could under-cover; acceptable while that path is deferred, and documented rather than merged.
 
@@ -2157,7 +2306,11 @@ class PromptTestJob:
     conf_threshold: float
     n_sample_frames: int           # M random frames
     compute: ComputeTarget
+    t_start_ns: int | None = None  # sample only inside [t_start_ns, t_end_ns) of
+    t_end_ns: int | None = None    #   recording time; None = that end left open
 ```
+
+A time range is placed on each part through its timestamp map (`searchsorted`), never through cv2's frame count alone, so it means the same instants detection's `t_ns` does. A range holding fewer frames than `n_sample_frames` is refused with the recording's own span in the message, rather than silently returning a smaller sample.
 
 Results are returned directly — one entry per sampled frame, one detection result per prompt:
 
@@ -2393,6 +2546,57 @@ The generic executor envelope (`schema_version`, `status`, `job`, `progress`, `e
 
 Spatial definitions describe the physical recording space and are stored per recording. They are user-defined by drawing polygons on video frames in the GUI.
 
+### Camera view
+
+Where the camera looks at the animal from — a fact about the rig, not about any one analysis.
+Anything whose meaning depends on it reads it: a measure of how high the animal reaches is
+meaningful from the side and meaningless from above, and keypoint presets and embedding
+alignment (`rotate` overhead, `mirror` side view, §14) are choices the same fact informs.
+
+**Vocabulary** (`core/camera_view.py`, the one list every surface reads):
+
+| value | label |
+|---|---|
+| `top_down` | Top down |
+| `side` | Side view |
+| `angled_down` | Angled down view |
+| `other` | Other — with a free-text `camera_view_note` describing it |
+
+**An experiment default, a recording override.** `config.yaml` may carry `camera_view` (+
+`camera_view_note`): the view every recording has unless it says otherwise. `recording.yaml`
+may carry the same two keys: that recording's own view, for a recording made on a different
+rig. Both are optional and absent by default. Resolution is one function,
+`camera_view.resolve(recording, config)`, and every consumer calls it:
+
+1. the recording's own `camera_view`, when present;
+2. otherwise the experiment's;
+3. otherwise **not set** — never a guess. A consumer that needs a view treats not set as
+   "unknown", skips what depends on it, and says why.
+
+The resolved answer carries **where it came from** (`recording` / `experiment` / none), so a
+surface can say "Side view (experiment default)" and a consumer can record what it used.
+
+```yaml
+# config.yaml
+camera_view: "side"
+# recording.yaml — only on a recording that overrides the default
+camera_view: "other"
+camera_view_note: "45° from above, mirror on the back wall"
+```
+
+**Validation.** An unknown value is refused (`ValueError` naming the four). `other` needs a
+non-empty note; a note on any other value is refused rather than kept silently. Clearing a
+recording's view (`None`) removes both keys, so it inherits again; clearing the experiment's
+removes the default.
+
+**A consumer persists the view it used** (Tenet 9). The default can change after a run; a
+record that only says "the experiment default" would then describe a different setup than the
+one it ran on. A consumer writes the resolved value per recording into its own record.
+
+**Not a spatial definition in the copy/CSV sense.** *Copy to other recordings* and the spatial
+CSV carry polygons and the calibration; the camera view is carried by the experiment default
+instead, which is what makes copying it unnecessary.
+
 ### Arenas
 
 An arena is a named polygon that defines the valid detection region within a recording's recording space. Detections outside the active arena polygon for a given frame are filtered out during the detection filtering stage. A recording may have any number of named arenas.
@@ -2503,13 +2707,14 @@ Grouping variables are recording-level metadata used to compare groups during an
 ### `metadata.csv`
 
 ```
-recording_id,animal_id,treatment,group,notes
-recording_001,M001,drug_A,experimental,
-recording_002,M002,vehicle,control,
-recording_003,M001,vehicle,control,day 2
+recording_id,acquisition_setup,animal_id,treatment,group,notes
+recording_001,box 1,M001,drug_A,experimental,
+recording_002,box 2,M002,vehicle,control,
+recording_003,box 1,M001,vehicle,control,day 2
 ```
 
 - `recording_id` is the key column — always present, auto-populated when a new recording is created.
+- `acquisition_setup` is the one **reserved** column (`metadata.RESERVED_COLUMNS`): which camera / box / rig the recording was made with, one value per setup. Always present and always second — read as present when the file lacks it (an experiment made before #717), written on the next save, so no migration exists; a user column already of that name is adopted, moved second. It cannot be deleted. Values are free strings and may be blank; a blank is refused by the keypoint teacher setup (§26, #717), which picks one recording per distinct value. Every surface gets it through `metadata.columns()`; none special-cases it except to keep it off *Delete column*.
 - All other columns are user-defined. New columns can be added at any time.
 - Type inference from values (numeric, string, datetime) is applied at analysis time.
 - The file is the single source of truth. There is no generated/user split — all content is user-owned.
@@ -2587,6 +2792,10 @@ class Trainer(ABC):
     model_family: str                      # which DetectionModel family this produces
     supported_cue_types: list[type[Cue]]   # cue types the trained model will accept
     supported_backends: list[str]          # ["cpu", "cuda", "mps"] — subset ComputeTarget.backend
+    live_files: tuple[str, ...] = ()       # model-dir-relative files metric_history reads; a
+                                           # remote run's shepherd copies them back on each new
+                                           # progress event, before publishing it, so a cluster
+                                           # run's curve fills in live (ultralytics: run/results.csv)
 
     def is_ready(self) -> bool:
         """Base weights downloadable/present and runtime installed."""
@@ -2937,7 +3146,7 @@ metrics:
 
 hyperparams:                # what was asked (UltralyticsYOLOConfig, defaults filled) —
   epochs: 100               # written at submit, so a live page has the epoch count
-  batch_size: 32
+  batch_size: 8
   imgsz: 640
   patience: 100
 
@@ -2976,7 +3185,7 @@ defaults:
     base_model: "yolo11s-seg.pt"
     hyperparams:               # UltralyticsYOLOConfig (configs/training.py)
       epochs: 100
-      batch_size: 32
+      batch_size: 8            # fits an 8 GB GPU; raise it on a larger one
       imgsz: 640
       patience: 100
     val_split: 0.15
@@ -3115,7 +3324,7 @@ config:                          # serialized DistillConfig + the experiment-awa
   labeling: {model_id: "sam3", model_variant: null, n_frames: 500, sampling: "stratified",
              logit_threshold: 0.5, min_contour_area: 100, val_split: 0.15,
              background_share: 0.1}
-  training: {epochs: 100, batch_size: 32, imgsz: 640, patience: 100}
+  training: {epochs: 100, batch_size: 8, imgsz: 640, patience: 100}
   label_compute: {backend: "cuda", device_indices: null}
   train_compute: {backend: "cuda", device_indices: null}
 stages:
@@ -3209,6 +3418,22 @@ resume / attach and the run page; only the stage bodies differ.
   required. No teacher window (a proposed `teacher_window_s`, declined). Either teacher's placements
   join the example set's own clicks, the hand labels the teacher was built from. Both are the
   user's input; neither is an audit label.
+- **Student input** (added 2026-10-16: whole frame is the default, so a dataset stays
+  compatible with the whole-frame student code already in use; the crop is there for multi-animal
+  work later). `KeypointDatasetConfig.student_input`:
+  `whole_frame` (default; everything above) or `crop`, with `student_crop_px` (default 448,
+  64–1280). A crop dataset writes **one image per tracked animal**: the patch teacher's own view
+  (`patch_match.view.make_view`, patch 1: the box's longer side × 1.3, centred, black outside the
+  frame) rendered to `student_crop_px`, labelled with a line for **every** animal whose box reaches
+  into it (clipped to the crop), so no animal in a training image goes unlabelled; a point the crop
+  cuts off is taught as not visible. A frame's crops share its split. `dataset.yaml` records
+  `student_input` and `student_crop_px` (null for whole frame); training copies both onto
+  `model.yaml`, and the student is **run the way it was trained**
+  (`resolve.student_input_of`): a crop student cuts the same view per track, keeps the
+  detection covering the crop's centre (nearest to it), and maps the points back through the
+  view. A record with neither field is a whole-frame student; one with a `crop_px` and no
+  `student_input` is a crop student the stage before §26 promoted to the catalog, which resolves
+  as one (`resolve.catalog_keypoint_student`). Both modes hand Ultralytics **BGR** (#749 / #757).
 - **Test cut-off…** (built 2026-10-09; the user chose a pre-launch sample "for continuity with how
   detection is run", detection's *Test prompts…*). `pipeline/keypoint_preview.py::run_teacher_test`
   draws about a dozen frames **through the label stage's own sampler** (`_gather` → `_share` +
@@ -3292,12 +3517,35 @@ provenance:
   trainer_id: "ultralytics_yolo"
   distilled_at: "2026-08-07T19:40:11Z"
   metrics: {box_map50: 0.92, mask_map50: 0.89}
+  dataset:                        # the labeling composition — captured at promote time (below)
+    model: "sam3"                 # the teacher
+    model_variant: null
+    n_frames: 500                 # requested
+    logit_threshold: 0.5
+    n_train: 425
+    n_val: 75                     # n_train + n_val = frames actually used
+    val_split: 0.15
+    per_class: {"0": 500}
+  training_history:               # per-epoch series — Experiment.model_metric_history's own
+    - {epoch: 1, box_map50: 0.31, mask_map50: 0.28}    # shape, oldest first
+    - {epoch: 87, box_map50: 0.923, mask_map50: 0.891}
 ```
 
 `made_by` / `description` / `notes` are captured in the import dialog and editable on the model detail
 page; `created_at` shows alongside a `last-updated` (equal until in-place iteration exists). Readers
 accept the **legacy single-source** shape (`provenance.source_experiment_name`/`_id`) and treat it as a
 one-element `source_experiments` list, so models promoted before this schema still render.
+
+**`provenance.dataset` and `provenance.training_history` are captured once, at promote time** —
+`register_distilled_model` (`models/distilled.py`) reads the source dataset's `dataset.yaml` for the
+composition block, and `Experiment.promote_model` passes in `model_metric_history(model_id)` (the
+same per-epoch series `ModelDetailPage`'s training curve already draws) for the history — never read
+live from the source experiment afterward, for the same reason as the rest of provenance: the global
+model must still render after that experiment is deleted. Both are best-effort — a deleted dataset or
+a trainer with no on-disk history simply omits its block, the same tolerance already given to a
+missing `preview` or an empty `metrics`. The Model manager detail page renders `dataset` as frame
+counts/per-class counts and `training_history` as the same `TrainingCurveBand` the experiment-scoped
+model page uses; `detail model show` prints the equivalent as text.
 
 Provenance is **metadata only** — names, ids, and metrics, never an absolute path into the source
 experiment (Tenet 6) — and the weights (and preview) are **copied**, so the global model stays
@@ -3699,14 +3947,14 @@ class RenderContext:
     class_name: str
     confidence: float
     object_id: int
-    aux: dict   # open slot: secondary masks, metadata, research extensions (e.g. second animal's mask)
+    aux: dict   # open slot: secondary masks, metadata, research extensions
 
 class MaskTransform(ABC):
     def apply(self, ctx: RenderContext) -> RenderContext: ...
     def to_spec(self) -> dict: ...    # serializes to {"type": "...", param: value, ...}
 ```
 
-`aux` carries anything a transform needs outside the standard fields. For multi-animal interaction frames, the embedding job loads both tracks' detections for the same frame and populates `aux["track_1_mask"]` — the relevant transform reads it from there.
+`aux` carries anything a transform needs outside the standard fields.
 
 All `MaskTransform` subclasses must be picklable — they are instantiated in the main process and sent to DataLoader worker processes. This is automatic for pure-Python objects with simple attributes.
 
@@ -4176,7 +4424,49 @@ kinematics/part_001.zarr/
   cy_norm         (M,) float32   chunks=(10000,)     subject centroid, y, [0, 1]
   mask_area_norm  (M,) float32   chunks=(10000,)     mask pixels ÷ frame pixels
   bbox_norm       (M, 4) float32 chunks=(10000, 4)   union xyxy over the frame's detections
+  # the mask's outline (analysis/mask_shape.py), all (M,) float32 chunks=(10000,)
+  mask_top_norm          topmost mask pixel's top edge ÷ frame height
+  mask_bottom_norm       bottommost mask pixel's bottom edge ÷ frame height
+  floor_width_norm       width of the mask's bottom 10% of rows ÷ frame width
+  major_axis_norm        equivalent ellipse's long axis ÷ sqrt(height × width)
+  minor_axis_norm        its short axis, the same scale
+  orientation_deg        long axis angle, image coordinates (y down), [0, 180)
+  solidity               mask area ÷ convex hull area, 0–1
+  circularity            4π·area ÷ perimeter², 0–1
+  protrusions            convexity defects deeper than 15% of the long axis (a count)
+  protrusion_depth_norm  the deepest defect ÷ sqrt(height × width)
 ```
+
+### `motion/` — movement inside the mask, per embedded frame
+
+A second sibling of each embedding part, written by `recording backfill-motion`
+(`pipeline/motion_backfill.py`), never by the embed pass: it needs the frame **before** each
+embedded frame, so it is a full forward decode of every video part (Tenet 11), one pass serving
+every track. Kept apart from `kinematics/` because the kinematics backfill rewrites its sidecar
+whole, and a pass that costs a video decode must not be thrown away by one that does not.
+
+```
+motion/part_001.zarr/
+  frame_idx      (M,) int32    chunks=(10000,)   the embedding part's rows, same order
+  t_ns           (M,) int64    chunks=(10000,)
+  motion_inside  (M,) float32  chunks=(10000,)   mean |grey_t − grey_t−1| over the mask, 0–1
+  motion_ends    (M,) float32  chunks=(10000,)   the same over the mask's outer thirds (long axis)
+  motion_middle  (M,) float32  chunks=(10000,)   the same over its middle third
+```
+
+The frame is reduced to the detection's mask resolution (`cv2.INTER_AREA`) rather than the mask
+enlarged; NaN where a row has no mask or its previous frame was not read (the first of a part).
+The loader joins it to the kinematics rows by position and refuses a sibling whose row count
+differs. Descriptors: `inner_motion`, `end_motion_share`.
+
+**The outline columns arrived after the first sidecars.** A sidecar without them is complete for
+where the animal was and silent on its shape; readers treat the absent columns as "not measured"
+(the shape descriptors are then unavailable, never zero), and `recording backfill-kinematics`
+treats such a part as stale (`kinematics_backfill.is_current`) and rewrites it with them on the
+CPU. Lengths are divided by `sqrt(height × width)` so a length means the same in every direction
+on a non-square frame; the loader (`frame_slices.from_kinematics`) turns them back into pixels and
+derives the track's **body length** (the median long axis over the whole track), which the
+shape descriptors divide by so animals of different sizes compare.
 
 **A sibling, not extra columns on the embedding part.** Tenet: a stage that annotates earlier output
 writes a parallel artifact alongside it, never into it. The measured reason is in
@@ -4404,6 +4694,51 @@ class EmbeddingConfig(BaseModel):            # additions
 | An explicit `renderer_spec` whose alignment steps disagree with `align` | Error |
 | Heading coverage below the alert thresholds | Alert on the form, not an error |
 
+#### Pose in the embedding
+
+The same keypoint track run, read a second way (#659 on `remote-detail`, ported onto §26's
+keypoint track runs in the 2026-10-16 catch-up merge). One setting chooses how the pose enters
+the vector, so the ways can be compared; the three choices are worded once
+(`configs/embedding.POSE_CHOICES`) for the form, `--help` and the docs.
+
+```python
+class EmbeddingConfig(BaseModel):            # additions
+    pose: Literal["none", "draw", "append"] = "none"
+    pose_weight: float = 1.0                 # append only; (0, 10]
+    pose_min_score: float | None = None      # [-1, 1]; None = the track run's own cut-off
+```
+
+- **`draw`** — a `draw_pose` renderer step paints the points onto the image the model sees,
+  coloured by side (the viewer's `KEYPOINT_COLORS`) and joined by the skeleton's edges. It goes
+  after the subject image is built and before placement (`with_pose`), and **before** any
+  alignment step, so a turn or a flip carries the points with the body; it needs no crop. The
+  step records the track run's skeleton (`skeleton`, no layout) and the resolved floor
+  (`min_score`), so the run says what it drew. The vector keeps its size. A spec recorded before
+  §26 carries `sides` / `edges` by column instead, and still renders.
+- **`append`** — the mask's vector at unit length, followed by `pose_weight` × the pose block:
+  `(x, y)` of every point in skeleton order, centred on the mean of the visible points, turned so
+  the heading points along +x (in `mirror`, flipped where the run flips its image), divided by the
+  track's body length (the heading series' typical axis length, one number per track), then unit
+  length. A point below the floor sits at the centre; a frame with fewer than two visible points,
+  or (turned) no heading, gets a zero block. Needs `heading` — the numbers are turned by it —
+  whether or not the run aligns. `analysis/pose_features.pose_block` is the one computation.
+- **Points on every embedded frame.** The detect run's `every_n_frames` must divide this run's;
+  otherwise a frame with no points would be embedded among frames that have them. A frame the run
+  placed nothing on is embedded as the mask alone (`draw`) or with a zero block (`append`).
+- **Recorded per frame** on the embedding part zarr, present only when `pose != "none"`:
+  `pose_points (M,) uint8`, how many points the frame had. **In `embedding.yaml`:** `pose`,
+  `pose_weight`, `pose_min_score`, and for `append` `mask_dim` + `pose_dim` (== `output_dim`, so a
+  reader can split the vector).
+- **Identity.** `pose`, `pose_weight`, `pose_min_score` join `identity_fields` and `_RECIPE_KEYS`,
+  defaulting to `none` / `None` / `None` for a run recorded before pose existed.
+
+| Check | Action on failure |
+|---|---|
+| `pose != "none"` without `keypoint_run_id` | Error |
+| `pose == "append"` without `heading`; a `heading` that nothing reads (`draw`, unaligned) | Error |
+| The detect run's cadence does not divide this run's | Error — name the multiple |
+| An explicit `renderer_spec` whose `draw_pose` steps disagree with `pose` | Error |
+
 **Later, with research (§26 *Deferred*):** one rule for every camera tilt — turn about the floor's
 vertical axis, so overhead is an in-plane rotation, side is a mirror and an oblique camera is a
 floor-plane warp then a rotation, with the tilt a per-rig fact — and a study of whether alignment
@@ -4628,6 +4963,7 @@ class Recording:
     def run_prompt_test(
         self, model_id: str, prompts: list[Prompt], n_sample_frames: int,
         conf_threshold: float, compute: ComputeTarget,
+        t_start_ns: int | None = None, t_end_ns: int | None = None,
     ) -> list[PromptTestResult]: ...
 
     def run_render_preview(
@@ -4758,7 +5094,7 @@ Also built: `Experiment.set_metadata` (name/description; `description` is a `con
 
 **Import progress (§3)** — `Recording.add_video_part(path, progress=None)` copies the part in at its original rate and resolution; a stage that wants fewer frames sets a `every_n_frames` on the run (§4). `progress(stage, fraction, detail)` reports the import stage (Reading timestamps → Copying). `DINOv3.readiness` now reports missing `torch`/`transformers` (not-ready) so the pre-run check explains what to install instead of failing deep in the worker.
 
-**Managed workspace:** experiments live under the `default` storage location's root (§2, `storage/locations.py`). `Experiment.list_all()` lists them and `Experiment.create(name)` defaults there — so the GUI Home lists/creates experiments with no folder picker (experiments are tracked in one managed location, not imported from arbitrary folders). The full `StorageLocation` surface (storage.yaml config UI, cloud backends) is still to come.
+**Managed workspace:** experiments live in experiment locations (§2, `storage/locations.py`): the `default` storage location's root plus any local folder the user added. `Experiment.list_all()` lists every connected one and `Experiment.create(name)` defaults to `default` — so the GUI Home lists experiments from every location and creates them in the one chosen under **Save in** (experiments are tracked in known locations, not imported from arbitrary folders). Cloud backends are still to come.
 
 ---
 
@@ -4880,7 +5216,7 @@ detail model check sam3
 detail model install sam3
 ```
 
-**Planned, not built (§26 *Surfaces*):** `keypoints export|audit` (PRs 7 and 9b). Built: `keypoints examples|detect|track|distill`, `dataset keypoints`, `process keypoint_detect|keypoint_track`, and on the API `Recording.run_keypoint_detect` / `run_keypoint_track` / `keypoints`, `Experiment.distill_keypoints` / `keypoint_dataset`.
+**Built (§26 *Surfaces*):** `keypoints export` (PR 7) and `keypoints audit` (PRs 9a and 9b, built, parked and then removed with the other hidden capabilities), `keypoints examples|detect|track|distill`, `dataset keypoints`, `process keypoint_detect|keypoint_track`, and on the API `Recording.run_keypoint_detect` / `run_keypoint_track` / `keypoints`, `Experiment.distill_keypoints` / `keypoint_dataset`.
 
 **Deferred from the CLI:**
 
@@ -4933,18 +5269,48 @@ class AnalysisModule(ABC):
 
 **Recording and discovery.** Each run writes `analysis/<run_id>/` with its own `analysis.yaml` (`schema_version: 1` first, written **atomically** — sibling `*.tmp` + `os.replace` — because the runner subprocess rewrites it on completion while the GUI's progress view reads it; Tenet "atomic writes for concurrently-read experiment files"). The experiment discovers runs by **scanning `analysis/`** — the same way it discovers datasets/models — so there is no central mutable list.
 
+**Meta-information.** The YAML files at the top of a run's directory are what the run says about
+itself: `analysis.yaml` (the record, with `params` as resolved at launch), the module's own
+`<module>.yaml` (method parameters, and labels and accepted names since), `machine.yaml` and
+`resources.yaml` (where it ran and what it used). `Experiment.analysis_info(run_id)`
+(`api/run_info.py`) reads them unparsed, in that order (record, module file, the rest
+alphabetically); nothing under the run's subfolders, which hold results.
+`Experiment.export_analysis_info(run_id, path)` writes them to one zip, each under
+`<run_id>/`. Surfaces: the **Meta-information…** button on every analysis run's page, under the
+details and above Results, opening the shared `gui/run_info.RunInfoWindow` (a tab per file,
+**Export…**); `analysis info <an_NN> [--export FILE.zip]`.
+
 **Inputs.** `requires` names the artifact kinds; the config carries `source_recording_ids` plus the run id(s) the module needs — one per required kind, common to the selection (location export takes a single `tracking_run_id`). `validate` checks every referenced run exists and is complete before any compute.
 
 **Outputs.** No fixed schema: the module writes figures/tables/reports into its run dir and declares them via the artifacts manifest. Full lineage (recording ids + run ids + params) lives in the run's `job.json` (Tenet 9).
 
 **Now implementable — location export is the first module.** The blocker an earlier draft named here, grouping variables (§11), has since landed: `metadata.csv` is built and analyses may read it, so cohort analyses that pool across recordings are no longer gated on it. The one input still without a consumer is **streams** (§3) — ingested (MED-PC importer + canonical store + `apply_alignment`) but read by no stage yet — so a stream-joining analysis still awaits that consumer. **Location export** (per-track position relative to a recording's ROIs/POIs, §10) needs neither: it loops the selected recordings and emits a **per-recording** result, which makes it the simplest first consumer of this machinery. Cohort-pooling and stream-joining modules follow on the same contract, so the GUI and shared run machinery are designed against it once.
 
+### Duplicating a run
+
+`Experiment.duplicate_analysis(run_id, *, name=None, progress=None)` (`api/duplicate_analysis.py`,
+`analysis duplicate`, the run page's **Duplicate analysis...**) copies a run's directory whole to
+a new `an_NN` (`reserve_analysis_id`), the original untouched: fit, tree, node cache, frame
+view, measures, history, snapshots and profiles. Ids are rewritten where a record
+names its own run: every YAML / JSON / JSON-lines document holding the source id **as a whole
+value** has it replaced (`analysis.yaml` `id`, `job.json` `job_id`, `behavior_output.yaml`
+`producer.run_id`, each profile's `run_id`, a snapshot's); a document without it is copied byte
+for byte, and zarr stores are copied as bytes (none names its run). Not copied: process state,
+`cancel`, `stop`, `coordinator.pid`, `*.lock`, `*.tmp`; `job.json` is copied with its worker
+`pid` dropped. `analysis.yaml` is written last (atomically, `schema_version` first) with `name`
+(`"<source name or id> (copy)"` unless given), `duplicated_from` and `duplicated_at`, so a
+listing never shows a half copy; a failed or cancelled copy removes its directory. A history
+line records the duplication. Refused while the source is running or pending (its record or
+its job envelope). An analysis record may carry `name`; `AnalysisRunRef.name` reads it.
+Guard: `tests/api/test_duplicate_analysis.py`.
+
 ### Location export (the first analysis module)
 
 `LocationExportModule` (`pipeline/location_analysis.py`, `module_id="location_export"`,
 `requires=["tracking"]`) turns a completed tracking run into per-frame, per-track
-**spatial features relative to a recording's ROIs/POIs** — three tidy CSVs
-(`tracks` / `roi_relations` / `point_relations`) keyed by `t_ns` (so they join the
+**spatial features relative to a recording's ROIs/POIs** — tidy CSVs (`tracks` /
+`roi_relations` / `point_relations` / `pair_relations`, and `keypoints` when a keypoint track
+run is given; *Keypoints and pairs in the export* below) keyed by `t_ns` (so they join the
 streams CSV, §3). Its config is `{source_recording_ids, tracking_run_id}` (the
 selection plus one tracking run id common to it). The runner loops the recordings,
 calling the pure compute `analysis/locations.compute_location_tables` →
@@ -4962,7 +5328,276 @@ GUI Analysis tab) is the surface that adds progress, batch, history, and
 navigate-away safety. Feature details (the column schemas, the OR-merge, the
 normalized/pixel/mm units — the `_mm` columns come from the recording's distance
 calibration, blank when uncalibrated — the part-frame-offset lift) live with the compute
-in `analysis/locations.py`.
+in `analysis/locations.py`. `Recording.export_locations` takes the standard `(stage,
+fraction, detail)` `progress` callback (the compute's row progress, one `computing` stage),
+and CLI `locations export` drives it with `_StageProgress`.
+
+#### Keypoints and pairs in the export
+
+Two more per-recording CSVs, written beside `tracks.csv` by the same compute (`storage/
+location_export.write_location_tables`), both keyed like `tracks.csv`: recording-global
+`frame_idx` (the part-frame-offset lift), `t_ns` (Tenet 8) and `object_id`, so they join it on
+`(t_ns, object_id)` — or on `(frame_idx, object_id)`, which is the same row.
+
+**Inputs.** `LocationExportConfig` gains:
+
+- `keypoint_run_id: str | None` — a keypoint track run (`kt_NN`, §26) to export the points of.
+  The GUI picker and the CLI's `--keypoints-ref` give a `keypoint_track_spec` instead (§6.5, the way
+  `tracking_spec` stands for `tracking_run_id`); `validate()` resolves either to **each
+  recording's own** keypoint track run and writes the map back as `keypoint_run_ids` (Tenet 9).
+  It **refuses**, naming the recording: no matching run; a run that is not `complete`; a
+  teacher-window run (§4); and a run whose `tracking_run_id` is not the tracking run this export
+  reads in that recording — a keypoint track run assigns its poses to *its* tracking run's
+  subjects, and joining them to another run's `object_id`s would put one animal's points on
+  another. Unset: no keypoints, no `keypoints.csv`.
+- `pair_edge_distance: bool = False` — also compute the mask-to-mask nearest-edge distance per
+  pair (below). Off by default — the user's choice (2026-11-08): it costs a distance transform per
+  pair per frame.
+
+Both reach `LocationAnalysisJob` (`keypoint_run_ids: dict[str, str]`, `pair_edge_distance`) and
+so `record["params"]`; a job written before them reads as `{}` / `False`. `locations.yaml`
+records `keypoint_run_id`, the keypoint cut-off used, the skeleton's point names, and
+`pair_edge_distance`.
+
+**`keypoints.csv`** (only when a keypoint track run is given) — long form, one row per frame ×
+subject × skeleton point, for every frame the keypoint track run has a row for that subject:
+
+| column | |
+|---|---|
+| `frame_idx`, `t_ns`, `object_id` | as in `tracks.csv`; `object_id` is the keypoint track run's `track_id`, which *is* its tracking run's `object_id` |
+| `keypoint` | the skeleton point's name |
+| `x_norm`, `y_norm` | position, a fraction of the frame |
+| `x_px`, `y_px` | pixels at the video resolution |
+| `x_mm`, `y_mm` | millimetres; blank when the recording is uncalibrated |
+| `score` | the method's point score (comparable within a run, never across methods — `keypoint_export.LIKELIHOOD_NOTE`) |
+| `visible` | `1` when placed and at or above the cut-off, else `0` |
+
+Points are read through `api/keypoint_export.PointSource` (the track run, the detect method's
+display cut-off, coordinates kept below it: §26 *Visibility* is a view, never a filter), so this
+table and every keypoint export agree. A point the run did not place is a row with **blank**
+coordinates and score and `visible = 0` — never zero, never dropped, so a frame always carries
+every point name.
+
+**`pair_relations.csv`** — one row per frame per **unordered pair** of subjects both tracked on
+that frame (`object_id_a < object_id_b`). A frame where either animal is missing has **no row**
+for that pair: a distance to an animal that is not there is not a number, and `tracks.csv` has
+no row for it either. Three animals make three pairs. A single-subject recording writes the
+file **header-only**, so every export has the same files and a reader never branches on their
+presence.
+
+| column | |
+|---|---|
+| `frame_idx`, `t_ns`, `object_id_a`, `object_id_b` | the frame and the pair |
+| `mask_centroid_dist_norm` / `_px` / `_mm` | distance between the two mask centroids |
+| `bbox_centroid_dist_norm` / `_px` / `_mm` | the same for the box centroids |
+| `mask_edge_dist_px` / `_mm` | nearest distance between the two masks' pixels, `0` when they touch or overlap; blank unless `pair_edge_distance` |
+
+`_norm` is the distance in normalized coordinates (`hypot(Δx_norm, Δy_norm)`, as
+`point_relations.csv` measures it), `_px` at the video resolution, `_mm` from the calibration
+(blank when uncalibrated). The centroids are the very values `tracks.csv` writes, so a pair's
+centroid distance is reproducible from `tracks.csv` alone — which is how plots draw it for a run
+made before this file existed. The edge distance needs the masks, so it exists only in this
+file. It is measured at mask resolution and scaled to video pixels by `width / mask_width`.
+
+#### Location plots (viewing a location export)
+
+A completed location-export run is **drawn on demand from its own CSVs** — nothing
+image-shaped is written by the run, and a run made before plots existed gets them with no
+re-run. The plots read `tracks.csv` and `locations.yaml` only (the yaml supplies
+`video_resolution`, `pixels_per_mm` and `subject_labels`, so a position is read once, as the
+normalized centroid, and converted: `px = norm × width|height`, `mm = px / pixels_per_mm` — the
+same conversion `compute_location_tables` writes into the `_px` / `_mm` columns).
+
+**The unit is one animal in one recording** — a `(recording, object_id)` pair. Every animal is
+plotted unless the view names some. An animal is named by its **label**, the tracking run's
+§13 `subject_labels` (`{object_id: label}`; a track merge names each source, e.g. "white
+mouse"), because `object_id` is a position within one tracking run and means nothing across
+recordings: a label is matched in each recording, whatever its track number there. A run with
+no labels names its animals `subject N` by track number. `locations.yaml` records the run's
+`subject_labels` (`null` when it has none); an export made before it did reads them from the
+recording's tracking run, and a run whose tracking run is gone falls back to `subject N`.
+
+**View parameters, not run config.** `configs/location_plots.LocationPlotView` (pydantic,
+the `configs/display.py` kind — absent from the run record and from the parameter reference)
+is the one source for each knob's choices, bounds, default and help, read by the GUI controls
+and the CLI help:
+
+| field | type / default | meaning |
+|---|---|---|
+| `kind` | `trace` \| `heatmap` \| `speed` \| `trace3d`, `trace` | 2-D path; occupancy heat map; speed over time; path against time in 3-D |
+| `source` | `mask` \| `bbox`, `mask` | which centroid is the position — a heat map takes exactly one position source |
+| `units` | `mm` \| `px` \| `norm` \| None, None | None = `mm` when every plotted recording is calibrated, else `px`; asking for `mm` with an uncalibrated recording in the plot raises |
+| `color_by` | `auto` \| `time` \| `speed` \| `subject`, `auto` | what colours a path (`trace`, `trace3d`); `auto` = by animal when any panel holds more than one animal, else by time |
+| `subjects` | list[str] \| None, None | animal labels to plot, matched per recording; None = every animal |
+| `group_by` | str \| None, None | a Recording Information (`metadata.csv`) column |
+| `split_by_subject` | bool, False | also group by animal label — alone, or crossed with `group_by` (`wt · resident`) |
+| `bins` | int 40, 5–200 | heat-map cells along the frame's longer side (square cells) |
+| `time_bin_s` | float 1.0, 0.04–600 | speed-over-time bin width |
+| `speed_clip_pct` | float 95, 50–100 | top of a speed colour scale, as a percentile of every plotted speed (one outlier does not wash out the rest) |
+| `elev`, `azim` | float 22 (−90–90), −60 (−180–180) | the one camera every 3-D panel shares |
+| `max_points` | int 20000, 500–1,000,000 | drawn samples per path, evenly subsampled; statistics use every sample |
+
+**One animal's path** (`analysis/location_plots.trace`): the rows of one `object_id`, in
+`frame_idx` order, as `t_s`, `x`, `y` and `speed` (distance ÷ time between consecutive samples,
+in units/s). `t_s` runs from the recording's first tracked sample over **every** animal, so
+two animals of one recording share one clock. A gap — consecutive samples more than five
+median sample intervals apart — breaks the drawn line (NaN), so a tracking dropout is not drawn
+as a straight jump. y runs **down** (image coordinates) on every 2-D and 3-D plot, so a plot
+reads the same way up as the video.
+
+**Keypoints as positions.** With a `keypoints.csv` in the run, `source` also takes a skeleton
+point's name (`nose`), read as that point's normalized position; a row where the point is not
+placed or is under the cut-off (`visible = 0`) is a gap, broken like a tracking dropout. A heat
+map still takes exactly that one source. `points` (several point names) draws each point's path
+on a `trace` / `trace3d` plot, coloured by point (identity in skeleton order) — so a path panel
+holds **one animal** when `points` is set (two animals × several points would need two colour
+encodings at once), and the points are named in the legend. A point name the run's skeleton does
+not have, or any point on a run exported without keypoints, raises naming what there is.
+
+**Distance between animals.** Two more kinds, drawn from the run's pairs (every unordered pair of
+animals both tracked on a frame — see `pair_relations.csv`):
+
+- `distance` — distance over time: the mean distance in each `time_bin_s` bin (a bin with no
+  frame of the pair is a gap).
+- `distance_hist` — the share of the pair's frames at each distance (`hist_bins` bins from 0 to
+  the largest distance plotted; each pair's bars sum to 1), drawn as a step line.
+
+`distance_by` picks what is measured: `mask_centroid` / `bbox_centroid` (derived from
+`tracks.csv`, so every run has them — the same formula the export writes) or `mask_edge` (read
+from `pair_relations.csv`; refused, with the reason, on a run exported without
+`pair_edge_distance`). A pair is named by its animals' labels, sorted (`Intruder – Resident`),
+and `pairs` picks pairs by those names, matched per recording. Units follow the auto rule (a
+distance is a scalar, like speed).
+
+Per recording: one panel per recording, a line per pair, coloured by pair (identity in the
+pair label's sorted order over the run). By group: one axes, one line per group, the mean across
+pairs per bin with a ± SEM band where the group has ≥ 2 pairs — **each pair counts once**, as
+each animal does in a heat map. `split_by_subject` groups by pair name. A recording with fewer
+than two animals has no pair and is named in the note.
+
+New `LocationPlotView` fields: `points: list[str] | None`, `pairs: list[str] | None`,
+`distance_by` (`mask_centroid` \| `bbox_centroid` \| `mask_edge`, `mask_centroid`), `hist_bins`
+(int 40, 5–200); `source` becomes a string (`mask`, `bbox`, or a point name) and `kind` gains
+`distance` and `distance_hist`. `LocationPlots` gains `keypoint_names` (the run's skeleton
+points, empty without keypoints) and `pair_choices(progress=None)` (every pair name in the run).
+
+**Per recording.** With neither `group_by` nor `split_by_subject`: `trace` / `trace3d` draw one
+panel per recording holding its chosen animals (small multiples, shared axis ranges, one colour
+scale or one animal legend); `heatmap` and `speed` draw one panel per animal. A recording's
+animals are listed by label, so every panel orders them the same way.
+
+**By group.** The group key is the recording's `group_by` value, the animal's label, or both
+(`wt · resident`). Each animal counts once:
+
+- `trace` / `trace3d` — one panel per group, every animal of the group overlaid, in `norm`
+  units (the only frame shared across videos).
+- `heatmap` — one panel per group: **each animal's occupancy is normalized to sum to 1, then
+  the group's grids are averaged**, so each animal counts equally whatever its tracked
+  duration — two animals of one recording are two. Pooled on `norm` coordinates. Cells are
+  square when every recording in the plot shares one aspect ratio; otherwise `bins × bins`.
+- `speed` — one axes, one line per group: each animal's speed per time bin (distance in the
+  bin ÷ time in the bin), then the group mean across animals with a ± SEM band where the group
+  has ≥ 2. Speed is a scalar, so `units` follows the auto rule rather than `norm`.
+
+A panel title's `n` counts animals. A recording with no value in the `group_by` column is its
+own group, `(no value)` — never dropped silently. An unknown column raises, naming the columns
+there are.
+
+**What is left out is said.** A labelled animal with no rows in `tracks.csv`, or a recording
+holding none of the chosen animals, is named in the spec's `note`, drawn under the title
+(`Not plotted: box 3 · intruder: no tracked rows`). With nothing left to plot, `build` raises
+with the same list.
+
+A heat-map cell holds the **fraction of the animal's samples** that fell in it (sums to 1; a
+group panel is the mean of those). Colour is the theme's one-hue sequential ramp, low end near
+the surface so an empty cell reads as nothing; a path's time or speed colour is the same ramp
+less its two palest steps (a thin line in them vanishes). **An animal's colour follows its
+label**: categorical identity *i* in the label's sorted order over every labelled animal of the
+run — not the plotted subset, so leaving one out never repaints the rest. An unlabelled `subject N` takes the identity after the labelled
+ones plus N. Group lines take identities in group order (by animal alone: the animal's own).
+
+**Preview and montage.** A location-export run also **plays**: its recordings' footage, side by
+side, through the cluster montage's engine (§22 `api/clip_montage.ClusterMontage`) — the same
+tiles, layer ticks, clock, cache and exports. A clip there was found through an embedding run,
+which a location export does not have; but the embedding run was only ever a lookup for its
+tracking run and its keypoint run, so the clip machinery takes a
+`run_preview.ClipSource(tracking_run_id, keypoint_track_run_id, subject_colors)` wherever it takes
+an `embed_run_id` (`MontageClip.source`; `ClipQueryPreview` methods accept either). Frames,
+masks, keypoints, signals and timing come from the tracking run it names; only an embedding's own
+input image (`frame_view`) needs the embedding, and a location tile does not use it.
+
+- **A tile is one recording**, showing every chosen animal (`subjects`, by label as in the plots)
+  each in its label's colour — the plots' colour order, as RGB — on the footage (each outlined in
+  its own colour when **Raw** is on), the masks pane and the onion skins, with **one trail per animal** in its colour (the per-point colours could not
+  tell two animals apart). Other animals in the frame are drawn as others.
+  `ClipSource.subject_colors` says which animals the tile means.
+- **Window.** One `start_s` + `length_s` (seconds of the recording's own clock, `t_ns` / 1e9) for
+  every tile, all playing on one clock; `full_length` instead plays each recording from its first
+  to its last tracked frame, so tiles end at different times (a finished tile holds its last
+  frame, as the cluster montage's shorter clips do). A recording with nothing tracked in the window
+  is named in the note.
+- **Crop.** `full_frame` shows the whole frame; off (the default), `crop_box` crops each tile to
+  the **union of its chosen animals'** boxes over the window, never to an animal left out.
+- **Speed.** `speed` (0.25–4) plays and exports faster or slower than real time: the window's
+  player uses its speed menu, and an export advances `speed / fps` seconds of footage per written
+  frame, keeping the file's own rate.
+- **Last tracing frame.** A PNG of the montage's last picture with every trail covering the
+  **whole** clip (each tile's own length), rather than the half second the player shows — one
+  picture of where each animal went.
+- **Preview** is the same window with one recording ticked; it exports the same PNG / GIF / MP4.
+
+`configs/location_plots.LocationMontageView` holds these knobs (`start_s`, `length_s`,
+`full_length`, `full_frame`, `speed`, and the layer ticks `raw` / `mask` / `keypoints` /
+`mask_trail` / `keypoint_trail` with `trail_points`, defaulting to the cluster montage's mask and
+mask trail). `LocationPlots.montage(view, recording_ids=None, subjects=None)` returns a
+`LocationMontage` (the `ClusterMontage`, its tile labels, the note), and
+`LocationPlots.export_montage(view, path, …, last_frame=False, progress=None)` writes a GIF, an MP4
+or the last tracing frame's PNG. The montage reads the recordings' videos and their tracking runs,
+not the CSVs, so a recording or tracking run deleted since the export is named in the note and left
+out. CLI: `detail locations montage --run an_NN --out FILE [--recording …] [--subject …]
+[montage options] [--last-frame]`. GUI: **Montage…** on the Plots tab opens the window over the
+ticked recordings and animals.
+
+**Plot spec, then a renderer.** `analysis/location_plots.build_plot` returns a
+`report/plot_spec.PlotSpec` — **plain data** (numpy arrays + labels + roles, no library
+objects): `panels` of `Line` (`x`, `y`, optional `z`, optional per-sample colour `values`
+or an identity index, a label), `Band` (`x`, `lo`, `hi`, identity), `Heat` (grid +
+`x_edges` / `y_edges`); shared `Axis` labels and ranges; an optional `ColorScale`
+(`label`, `vmin`, `vmax`, ramp role); a `Camera` (`elev`, `azim`) for 3-D; `aspect`,
+`invert_y`, `legend` (one entry per distinct identity + label across every panel) and `note`.
+Colours are **roles** (`sequential`, identity *i*), resolved by the renderer against the chart
+theme, so one spec renders light or dark. `report/plot_render.py` is the matplotlib renderer
+(PNG / SVG / PDF via `figures.save_figure`, or PNG bytes for the GUI); `report/plot_html.py`
+is its twin for the same spec — **one self-contained interactive HTML page** (plotly, `plotly.js`
+embedded, so it opens offline with no server): the same panels, ranges, colour roles, legend and
+note, hoverable and zoomable. A 2-D path coloured by time or speed carries its colour on markers
+over a hairline of the path (a plotly 2-D line has one colour); a 3-D path colours its line. Every
+3-D panel shares one camera — plotly links axes, not cameras, so the page carries one small script
+that copies a turned scene's camera to the others. `plotly` is imported inside the renderer, never
+at module import. Nothing about a figure lives only in one library. `LocationPlots.export(...,
+formats=("html",))`, CLI `locations plot --format html`, and the Plots tab's *Export image…*
+(Interactive HTML) write it.
+
+**Surfaces.**
+
+- API: `Experiment.location_plots(run_id) → api.location_plots.LocationPlots` —
+  `recording_ids` (the run's completed recordings), `subjects(recording_id)` (its animals,
+  labelled), `subject_choices(progress=None)` (every label in the run, sorted),
+  `group_columns`, `build(view, recording_ids=None, progress=None) → PlotSpec`, and
+  `export(view, out_stem, recording_ids=None, formats=("png",), theme="light",
+  progress=None) → list[Path]`. Reading the CSVs is the long part, so these take the
+  `(stage, fraction, detail)` callback (`reading` per recording, then `drawing`). Rows read
+  once are kept for the object's lifetime, so a second plot does not re-read them.
+- CLI: `detail locations plot --run an_NN --out STEM [--recording …] [view options]`,
+  one `@click.option` per `LocationPlotView` field with its help read from the model (a list
+  field is a repeatable singular flag, `--subject`).
+- GUI: the Location export result page — **Plots** and **Files** tabs. Plots holds the
+  `LocationPlotView` controls (an **Animals** checklist of `subject_choices`, hidden with
+  *Group by animal* when the run has one animal), the recording checklist under the shared
+  `RecordingFilter`, *Export image…*, and the rendered figure in a zoomable `ImageView`.
+  Opening reads every recording's rows behind a progress bar; rendering runs off the UI thread
+  through `gui/busy.run_progress`; the 3-D camera is two sliders, so turning one turns every
+  panel.
 
 ### The analysis run page
 
@@ -7329,7 +7964,10 @@ tree **drags and does not fold** (a `ResizeHandle` under it, no `CollapsibleBand
 decision 2026-11-07, pinned by `test_workspace_parity`). A drag of the handle is kept under
 `interpret/tree_height_dragged` and wins from then on, with full-height rows. The montage's **Show ▾** (`gui/show_menu.ShowButton`, 2026-11-09; it replaced a *Show masks*
 check box and an *As recorded ▾* menu) ticks the `TileLook` layers — Video, Masks, Mask trail,
-Keypoints, one definition in `show_menu.LAYERS` — the orientation and the context (none, 1, 2,
+Keypoints, Keypoint trail, one definition in `show_menu.LAYERS` — with a *Trail points* submenu
+(`SkeletonPointsPicker`, `TileLook.trail_points`, fed the skeleton once a tile's picture worker has
+read it; remembered with the look and carried into `layers_of` and every export), the orientation
+and the context (none, 1, 2,
 5 s either side, `show_menu.CONTEXT_CHOICES_S`; the page widens its clips by
 `live_montage.context_span`), kept per page (`interpret/montage_look` / `_context`,
 `label_check/review_look` / `_context`, `interpret/cluster_window_look` / `_context`; the old
@@ -7364,8 +8002,9 @@ the others; its tooltip is rank, recording, start, length, each condition's ✓ 
 position. **A clip outside the selection still plays, its animal drawn grey** (`ClipTiles`'s `GREY`
 tint). The grey and the ✓ / ✗ come from one rule: the per-condition flags are
 `clip_matches(selection.only(key), clips)` and the match is their AND, pinned by
-`tests/gui/test_cluster_filters.py::test_every_condition_passing_is_exactly_a_match`. A double-click
-opens the clip in `ClipPopup` from the source video, stepping through the montage's order.
+`tests/gui/test_cluster_filters.py::test_every_condition_passing_is_exactly_a_match`. A double-click opens the clip in
+the page's one clip window (`clip_popup.open_clip_window`, below) from the source video, stepping
+through the montage's order.
 
 **The label bar's first two lines** (the first was the montage header until review round 9) are
 what survives from the card: the node's name, its label chip, clip count, member time and share;
@@ -7384,7 +8023,8 @@ the filters open, and on the field's line the status 80 of 262; then the field, 
 montage, the cluster window and AUDIT's review grid carry the same controls — **Most typical ▾ ·
 Show ▾ · Size · Export ▾** — because `LiveMontage` builds all four, with `export=` (an
 `ExportSource`: the grid's clips as `api.clip_montage.MontageClip` in grid order, the experiment
-dir, a `MontageOrigin` for the CSV, a file stem and the reason while empty) and `context_key=`
+dir, a `MontageOrigin` for the CSV, a file stem, the reason while empty, and `experiment`, the open
+experiment *New Query from N clips…* launches in) and `context_key=`
 **required**: a grid cannot be built without its export, and a page adds nothing to the row (AUDIT
 hides the order button, its order being fixed). **Export ▾** writes every clip the grid shows, in
 its order — *Video of N clips…*, *GIF of N clips…*, *One file per clip…* (stems numbered `NN_`),
@@ -7393,7 +8033,10 @@ its order — *Video of N clips…*, *GIF of N clips…*, *One file per clip…*
 thread behind `run_export` / `run_progress` with Cancel; a greyed last entry says it in words
 (*Writes what the grid shows: video + masks, as recorded, no context*). The writers are
 `MontageExport.write_montage` / `write_files` / `write_list`, one copy for the three grids (the page
-and the window each had their own before). The shell's **Export…** no longer lists montage
+and the window each had their own before). Under them, after a separator (2026-11-10, porting
+remote-detail's montage window): *Export clips…*, *Export overlay…* and *New Query from N clips…*
+(*Clip montage* below). Every MP4 asks its codec (*Clip montage*, *On every clip grid*). The shell's
+**Export…** no longer lists montage
 exports, and the dialog's page-exports section (`gui/export.PageExports`) went with the last page
 that offered one.
 
@@ -7725,153 +8368,687 @@ BROWSE *narrows* the labelled set by the same dimensions.
 
 Not built: a location filter (per-instance positions are not in the node cache) and ethogram zoom.
 
-### The clip window: three pictures, trails and strips
+### Clip checks (the clip window)
 
-The window a clip opens into (`gui/clip_popup.py`) is for **seeing** a behaviour, so its Advanced
-view shows three pictures of each frame — the footage, the masks alone and the keypoints alone on
-white (`gui/clip_panes.py`) — with the picture taking the width and the stretch, and everything
-else a row only as tall as it needs: one header row (Advanced / Blind, the clip's length and
-place, previous / next), the slider, the strips, the player's controls. Simple is the plain
-one-picture player every other surface embeds. Both choices are remembered (`clip_window/advanced`,
-`clip_window/blind`); the window opens at 100 x 56 lines capped to 92% of the screen
-(`sizing.fit_to_screen`, one helper where the port had three copies), and
-`tests/gui/test_clip_popup.py` pins the picture at >= 70% of the window's body at 1500 x 900.
+The clip window opened on a cluster's clip (a double-click on INTERPRET's montage or a cluster
+window, which hand it `clip_labelling.PageLabelling`; AUDIT hands none) asks one question per clip
+while a person decides what the cluster is: **does this clip fit?** The answers are kept
+beside the run, in their own file, because they come *before* a label — §19's audit is over the
+artifact's instances, which exist only once a cluster is labelled, and a person naming a cluster
+wants to know how pure it is while choosing the name (the user's choice, 2026-10-21).
 
-- **The Advanced player is the plain player over its hooks**, not a flag on it
-  (`gui/advanced_player.py::AdvancedClipPlayer(_ClipPlayer)`). `_ClipPlayer` is embedded by eleven
-  surfaces and none wants a trail picker, three pictures or strips, so it opens seven seams with
-  today's behaviour as the default (`_picture_widget`, `_add_view_controls`, `_decode`,
-  `_show_payload`, `_show_unavailable`, `_clip_only`, `_redraw`) and the Advanced player overrides
-  exactly those plus `set_clip`; `tests/gui/test_advanced_player.py` asserts the override set, so
-  popup-only state landing on the base class fails there first.
-- **One settings object, one decode.** The view ticks (Masks / Keypoints on the footage, Trail and
-  Trail points, Mask trail, Align pose) are read on the UI thread into a frozen
-  `api.clip_views.ClipViewSettings` and handed to the decoder as a value; `ClipQueryPreview.clip_views`
-  decodes one frame (`clip_frame`, a `ClipFrame`: the footage, the frame's detections, the placed
-  keypoints, the body axis, the trails) and three pure drawers paint the panes from it
-  (`draw_footage`, `draw_masks_pane`, `draw_pose_pane`). `ClipFrame.rgb` is `None` when no footage
-  was asked for (`footage=False`), and drawing the footage then raises rather than painting a
-  white canvas that looks like a frame: the caller that wants no footage draws the panes alone. A
-  recording with no `video.resolution` cannot size the panes without the footage, so
-  `clip_frame(footage=False)` raises naming the field and **the window decides** (the enlarged pane
-  decodes and says so); the API never decodes behind a caller's back. The footage's subject tint
-  is `draw_mask`'s own alpha.
-- **Trails** (`core/visualize.py`): **Trail** is each ticked keypoint's path over the last
-  `CLIP_TRAIL_S` (0.5 s), fading with age, in its role colour (`KEYPOINT_COLORS`), on the footage
-  and the pose pane, from the keypoint run the embedding read (`ClipPoints`); body-aligned, each
-  past frame is turned by its own axis, so the pane's trail is the path relative to the body. A run
-  with no keypoints trails the centre of the animal from the kinematics sidecar's centroids
-  instead; `trail_note` says which. **Mask trail** is the subject's masks over the same span under
-  the current one, fading (`draw_onion_skin` over `fade_weights`, the fade rule written once),
-  read from the detection rows via `MaskHistory` (a `core.lru.CountLRU` of cropped masks), never by
-  decoding another frame.
-- **Row blocks.** Every detection row a frame or its trail needs comes from a cached block of
-  `DetectionPreview.ROW_BLOCK` rows (`_row_block`, `ROW_BLOCKS_KEPT` on a `CountLRU`), keyed on
-  `(part stem, block, with_masks)`: the flag that decides the read's cost is in the key, so a
-  masks-off caller never touches `mask_rle` (the 4.7 ms `frame_plain` path stays that), and the
-  key survives a rebuilt part list, which `id(part)` did not.
-- **The strips** (`gui/clip_strips.py`) are `api.clip_curves.read_clip_curves` over the window on
-  the bar: **speed** and **area** off the §14 kinematics sidecar through `frame_slices.from_kinematics`
-  (the loader `frame_slices`' docstring promised, globalised per part from the timestamp maps) and
-  `descriptors.step_curve`, so the step rule cannot drift from the descriptors'; with keypoints and
-  a heading, **length**, **bend** and **turning** from `analysis.body_axis.body_shape_series`, the
-  code an aligned embedding turns its inputs by. Units are px or mm (`pixels_per_mm`), never a
-  body-size unit of the window's own. The strips run at the **embedding cadence** (`lcm` of the
-  tracking cadence and `every_n_frames`), with NaN breaks and an untracked lane where the track has
-  no row: what the method saw. No sidecar → `curves == []` and a note naming
-  `detail recording backfill-kinematics`; nothing is recomputed from RLE. A row is a `Curve` (name,
-  label, unit, `signed` / `floor_zero`), so the widget names no curve — `tests/gui/test_clip_strips_scan.py`
-  fails if it does.
+```
+analysis/an_NN/
+  member_checks.csv   node, recording_id, subject, start_ns, end_ns, verdict, checked_at
+```
+
+- **Append-only** (`storage/append_log.AppendLog`, the audit's), one row per answer. A clip is
+  `(node, recording_id, subject, start_ns, end_ns)`; its **latest** row is its answer, so a
+  changed mind supersedes and nothing is erased. `verdict` is `fits`, `doesnt` or `unclear`.
+- **The estimate** is `fits / (fits + doesnt)` over the node's checked clips, with the 95% Wilson
+  interval (`behavior_audit.wilson_interval`, for the reason given there); `unclear` is counted
+  and shown but is in neither. It describes the clips a person happened to look at — the most
+  typical first — so it is a check on the cluster's core, not an unbiased precision; the window
+  says so beside the figure.
+- **Evidence, not input.** Nothing reads the checks to fit, rank, cache or label: they score the
+  clustering and never build it (CLAUDE.md, *Labels score a method*).
+- **Refused on a finalized run**, as the audit is (`AuthoredRun._record`), and not copied into a
+  snapshot: a snapshot freezes the artifact, and the checks are not about the artifact.
+- **Not built:** carrying a labelled cluster's checks into its §19 audit.
+- **Surfaces:** the API (`check_member`, `member_checks`) and the GUI's clip window. Not the CLI:
+  a verdict is given while watching the clip, which a terminal cannot show (`docs/cli.md`, *Not
+  in the CLI*).
+
+### The body's shape in the clip window
+
+With keypoints, the clip window adds three strips — **body length** (relative to the track's
+median over the whole run), **bend** (signed degrees at the midline point furthest off the
+axis) and **turning** (signed degrees per second) — and an **Align pose** view of the pose pane
+(the subject alone, axis up, centred, its median length a fixed share of the pane). All four are
+measured by `analysis.body_axis`, the code an aligned embedding turns its inputs by, so they
+describe the axis the clusters were built on. Nothing is stored: they are read from the
+keypoint run each time (`ClipQueryPreview.clip_signals` / `clip_views`).
+
+- **The heading definition** is the embedding's own when it was aligned; otherwise the
+  experiment's one saved definition that fits the skeleton. Several that fit, and an embedding
+  aligned by none, is refused rather than guessed (the strips are left out and the view greyed,
+  with the names in the reason): which end is the front decides every number here.
+- **Bend needs a midline point** — one with no left/right partner, in neither end's set. A
+  skeleton without one gets no bend, never a bend made up from the ends.
+
+### The clip window's layout and trails
+
+The clip window is for **seeing** the behaviour, so the picture (footage, masks pane, pose pane)
+takes the full width and the layout's stretch; everything else is a row only as tall as it needs:
+one header row (Advanced / Blind, the orientation menu, **Export ▾**, the clip's length and place,
+previous / next with the position and the opener's order note), the slider, the
+strips (each signal row about a line of fine print, `sizing.small_font`), the player's controls,
+and one labelling row (`ClipLabelPanel`: label box, **Label cluster**, Fits / Doesn't / Unclear,
+the figure in brief with the sentence on hover). The cluster sections (what sets it apart,
+compare) sit under **Cluster details**, built the first time it opens and closed by default
+(`clip_window/details`), because they cost a measurement and a looping player and took a third of
+the width as a side column. The window opens at 100 x 56 lines, capped to 92% of the screen's
+height and 98% of its width, and its height follows its width (`ClipPopup.fit_height`: the header,
+the player's `height_for_width`, the labelling row and the buttons), so on a laptop the picture
+is not letterboxed; `tests/gui/test_clip_popup.py` pins the picture at >= 70% of the window's body
+at 1500 x 900, and `tests/gui/test_laptop_layout.py` the window at 1440 x 847.
+
+- **Trail is per keypoint** (`ClipQueryPreview.clip_views(trail=True)`): each point's path over
+  the last `CLIP_TRAIL_S` (0.5 s), fading with age, in its role colour (`KEYPOINT_COLORS`), on
+  the footage and the pose pane, from the same keypoint run the pose pane draws (`_ClipPoints`).
+  `trail_points` limits it by name; the GUI's chooser is the keypoint track form's
+  `SkeletonPointsPicker` (`wording="trail"`). Body-aligned, each past frame is turned by **its
+  own** axis, so the trail is the path relative to the body (a paw stepping), not travel, which
+  the footage shows. A run with no keypoints keeps the old box-centre trail, in white, on the
+  footage: it is the only motion cue such a run has. `trail_note` says which.
+- **Mask trail** (`mask_trail=True`): the subject's masks over the same span under its current one
+  on the masks pane, fading with age, the subject only. Read from the detection rows and decoded
+  from RLE (`_MaskHistory`, an LRU of cropped masks per (recording, run)), never by decoding
+  another video frame; one `clip_views` call decodes one frame whatever the ticks, and none with
+  `footage=False`: for a caller that shows only the masks and keypoints (a Raw-off montage tile,
+  the enlarged pane and its exports), the frame is a white canvas of `recording.yaml`'s
+  `video.resolution` (`DetectionPreview.blank_frame`), the detections are the requested frame's,
+  nothing is drawn on it (the `*_on_frame` marks and the footage's trail are skipped), and `masks`
+  / `pose` are pixel for pixel the decoded path's (the decode lands on the requested frame whenever
+  the timestamp map describes the video). A recording with no recorded resolution is decoded.
+  `mask_trail_on_frame=True` draws the same onion skin on the footage, under the subject's tint.
+  The onion skin is blended over its layers' bounding box only (`_draw_onion_skin`; outside it
+  every weight is zero, so the output is byte-identical to a whole-frame blend), and the
+  detection rows every frame and its trail read come from a cached block of
+  `DetectionPreview.ROW_BLOCK` rows (`_row_block`, an LRU of `ROW_BLOCKS_KEPT` per preview), so
+  walking a clip decompresses each `mask_rle` chunk once rather than twice a frame.
+  `mask_outline=True` hands the subject's mask and that onion skin back as data
+  (`ClipViews.subject_mask`, `mask_history`) instead of tinting them: the clip montage draws them
+  as outlines at its tiles' own scale.
 
 ### Enlarged panes
 
 Clicking the Masks or Keypoints pane (`ClipPanes.enlarge_wanted`, `"masks"` / `"keypoints"`) opens
-it in a window of its own (`gui/clip_pane_window.py::ClipPaneWindow`, via
-`AdvancedClipPlayer.open_pane`). The cue (a pointing hand through `ImageView.set_rest_cursor`,
-"Click to enlarge" on hover) is derived from `receivers(enlarge_wanted) > 0`, so a `ClipPanes`
-nobody wired advertises nothing.
+it in a window of its own (`gui/clip_pane_window.py::ClipPaneWindow`, opened by
+`_ClipPlayer.open_pane`). The cue (pointing hand via `ImageView.set_rest_cursor`, "Click to
+enlarge" on hover) is derived from `receivers(enlarge_wanted) > 0`, refreshed in `connectNotify`,
+so a `ClipPanes` nobody wired advertises nothing.
 
-- **Full resolution, no footage.** The window draws `clip_views`' own `masks` / `pose` picture at
-  the record's frame size with its own `ClipQueryPreview` (a decode context's reader keeps its
-  place, so two threads never share one), calling `clip_views(footage=False)`; it and its exports
-  decode no video (`test_the_enlarged_pane_decodes_no_video`). A record with no frame size is the
-  exception: the window decodes and its note says so.
-- **Live, and torn down.** It reads the player's ticks on `view_changed`, its window of frames on
-  `window_changed` and its clip on `clip_changed`, so it is **non-modal** and the clip window's
-  child (`requirements._NON_MODAL_DIALOGS`), closing with it. **One window per pane**: a second
-  click raises the open one (`open_pane_window`, `player.pane_windows`); Close deletes it
-  (`WA_DeleteOnClose`), pauses its scrubber and disconnects it from the player (`finished`). The
-  port this replaced built a window per click and set none of that, so a closed window stayed
-  parented to the main window, still wired, decoding in a loop forever.
-- **Exports** (`api.clip_views.export_clip_pane`, through `api.animation.write_animation` and the
-  GUI's `animation_export.run_export`, the house `run_progress` mapping): the frames on the
-  window's bar — the clip plus its context when Context is on. An mp4 keeps every frame at full
-  size and the recording's rate; a GIF samples real time at the asked rate (`pane_frames`, with
-  `SAMPLE_SLACK_NS` so an integer-nanosecond boundary picks the frame at it, not the one before)
-  at the asked width, both asked by `GifSettingsDialog` (640 px, 12 fps), with one palette for
-  all its frames. A cancelled or failed export removes its partial file.
+- **Full resolution.** The window draws `clip_views`' own `masks` / `pose` picture, the footage's
+  size, with its own `ClipQueryPreview` (a decode context's reader keeps its place, so two threads
+  never share one). It shows no footage, so it and its exports call `clip_views(footage=False)` and
+  decode no video (pinned by `test_the_enlarged_pane_decodes_no_video` and
+  `test_a_pane_export_decodes_no_video`).
+- **Live.** It reads the player's ticks as plain values (`_ClipPlayer.view_settings()` →
+  `api.clip_pane_export.ClipViewSettings`) on `view_changed`, the player's window of frames on
+  `window_changed` (Context), and its clip on `clip_changed` (previous / next). So it is
+  **non-modal**, the clip window's child (it closes with it): `requirements.py`'s
+  `_NON_MODAL_DIALOGS` names `clip_pane_window.py` with that reason. Its own transport (play, step,
+  slider, speed, loop) starts on the player's current frame.
+- **One per pane, gone when closed.** `open_pane_window` keeps a register on the player
+  (`pane_windows`, keyed by pane): a second click raises the open window. The window is
+  `WA_DeleteOnClose`, and on `finished` it pauses its scrubber and disconnects from the player's
+  four signals (pinned by `test_a_second_click_raises_the_open_window_rather_than_opening_another`
+  and `test_closing_the_window_stops_its_playback_and_unhooks_it`).
+- **Exports** (`api.clip_pane_export.export_clip_pane`, through `api.animation.write_animation`):
+  the frames on the window's bar, i.e. the clip plus its context when Context is on. An mp4 keeps
+  every frame at full size and the recording's rate; a GIF samples real time at the asked rate
+  (`sample_offsets_ns`, each sample's frame by `animation.frame_at_offset`, which allows
+  `SAMPLE_SLACK_NS` for times rounded to the nanosecond) at the asked width, both asked each time by `GifSettingsDialog` (640 px,
+  12 fps). A GIF has one palette for all its frames (`animation.gif_palette`: its colours exactly
+  when 256 or fewer, else an octree over the frames). A GIF delay is stored to the hundredth of a
+  second, rounded (Pillow truncates). A
+  cancelled or failed export removes its partial file. Keypoints asked of a run with none is
+  refused with the run's own reason.
 
 ### Clip montage
 
 **A cluster's clips side by side, on one clock, drawn from the source video** (`api/clip_montage.py`,
-`detail analysis cluster-montage`, and INTERPRET's **Export ▾**). The window that played it on the
-GUI (`gui/clip_montage.ClipMontageDialog`, opened from the tree's right-click) is gone: INTERPRET's
-montage plays every clip from the previews (*INTERPRET* above), and this module is what an export,
-the CLI and a script write with. `montage_members` gives every clip of the node, most typical first
-(through `typical_members`, which reads `NodeView.clips`), and a montage takes `DEFAULT_CLIPS` (25)
-of them in `SORTS`' order (`choose_clips`). The sorts are most typical, least typical,
-by recording, longest, and **random**: a shuffle of the clips in rank order seeded by the node id
-(`sort_clips(seed=)`), so a node's random 25 are the same on every open and a fair look at a large
-node rather than its centre alone. A clip's `rank` is its typicality
-rank among the members whatever the layout. Every clip starts at once and **each loops from its
-own start the moment it ends** (`frame_at`: its frame at `start + (offset mod its cycle)`, the
-cycle its length plus one frame step), so no tile ever stands still — a tile that held its last
-frame until the longest clip ended read as a stuck one; a pass is the longest clip's length,
-after which every clip starts together again. The clock is the footage's rate up to
-`MONTAGE_MAX_FPS` (15), and time, not frame count, is what is synchronised (Tenet 8).
+`detail analysis cluster-montage`, and every clip grid's **Export ▾**). The window that played it on
+the GUI (`gui/clip_montage.ClipMontageDialog`, opened from the tree's right-click) is gone, with its
+tile boxes and *Selected clips* menu: INTERPRET's montage, the cluster window and AUDIT's review
+grid play every clip from the previews (`gui/live_montage.LiveMontage`, *INTERPRET* above), and this
+module is what an export, the CLI and a script write with. The engine is remote-detail's
+(the overlay, the codec, Export clips' backend) with main's random order, context and
+`aligned` naming (2026-11-10 merge).
 
+- **Members.** `cluster_montage_members` gives every clip of the node, most typical first
+  (`run.typical_members(node, None)`, which reads `NodeView.clips`), and a montage takes
+  `DEFAULT_CLIPS` (25) of them (`cluster_montage_clips`; `--clips`). `MontageOrigin(run_id, node,
+  name, unit)` names a clip list's run and node and a Query behaviour built from the clips
+  (`behavior_name`: the node's label, or `cluster 7`).
+- **Which clips** (`choose_clips(members, count, sort, removed)`): the members not removed, in one
+  of `SORTS` — `typical` (rank 1 first, the default), `least-typical` (where impurities collect),
+  `recording` (name, then start), `length` (longest first) and `random` (a shuffle of the clips
+  in rank order seeded by the node id, `sort_clips(seed=)`, so a node's random 25 are the same
+  every time and a fair look at a large node rather than its centre alone) — ties broken by rank,
+  and the first `count`. `rank` is always the typicality rank, whatever the order, so a tile names
+  one clip under every sort.
 - **A tile is the clip window's read, drawn by the clip window's drawers.** `tile` reads one
-  `ClipQueryPreview.clip_frame` with `MontageLayers.settings` (a `ClipViewSettings`) and paints
-  it with `draw_footage` / `draw_masks_pane` / `draw_pose_pane`, so a tile and the clip window
-  never disagree about a frame. The one thing a tile adds is the **outline**: with Raw on the
-  animal is outlined in the mask tint at the tile's own scale (`visualize.mask_outline`, its
-  fade `fade_weights`', its blend `tint_by_weight`'s), never tinted, so its fur and paws stay
-  visible. `MontageLayers.flavour` names the look in `clip_render`'s words (`RAW` / `OVERLAY` /
-  `MASK`). Raw off decodes no video (`footage=False`); a recording with no recorded frame size
-  is the exception, where the montage, as the caller, reads the footage for that clip
-  (`_Prepared.needs_footage`) rather than showing a grey tile.
-- **The crop is fixed per clip** (`crop_box` over `ClipQueryPreview.clip_boxes`, the animal's
-  boxes read off the detection rows in blocks), so a tile never jitters.
-- **Ownership and order.** A `ClusterMontage` is one export's: its decode contexts, per-clip
-  reads and threads (`core.cpu.thread_workers()`, the rule the embedding worker and the
-  kinematics backfill each had a copy of) are its own, and `close()` shuts the pool and drops
-  them, so a finished export holds nothing. It keeps no rendered tiles between exports: within
-  one export a frame sampled twice in a row is drawn once (`_export_tile`'s `held`). **Drawing
-  before `prepare()` raises** (`RuntimeError`, "call prepare() before drawing") rather than
-  preparing from inside a pool task — the port this replaced did, a nested blocking `pool.map`
-  on the pool it ran on, reachable only by call order. Concurrent cold reads of one record wait
-  for a single parse (`read_cache.computing`, taken by `cached_read`, `cached_document` and
-  `read_recording`'s own cache).
-- **One grid formula.** `grid_size(columns, rows, tile_px)` is what an export's frame
-  (`export_grid`, `compose`) measures with. `fit_label` stays in `api/`: an export draws its
-  labels with no Qt.
-- **Exports** draw at their own size; a GIF has one palette for all its frames
-  (`api.animation`). The clip list is a **clip-query CSV** through `storage.clip_query_csv.write_clip_csv`
-  (which grew `extra=` for columns after the canonical ones): every clip an example (`kind="query"`,
-  `rank=0`) of the one query named after the node, so `analysis query --from-csv` reads it, with
-  `MONTAGE_LIST_EXTRA` (`rank_typical`, `recording_name`, `subject`, `node`, `run_id`, `start_s`,
-  `end_s`) after. `cluster_montage()` is the context manager a script or the CLI exports from,
-  closed on the way out; the CLI refuses `--max-width` / `--fps` with nothing to picture.
-- **On every clip grid** an export runs behind the house bar (`run_progress`, Cancel), from the
-  grid's order or the picks, and writes only where the user points. It draws **what the grid
-  shows** (`show_menu.layers_of` of **Show ▾**'s look, the orientation included, and its context),
-  and **Export ▾** says so; Export… entries had once said "from the source video" while writing
-  `DEFAULT_LAYERS` — masks on white, no footage.
-- **Aligned** (`MontageLayers.aligned`, `--aligned`): a tile frame turned by `clip_views.turn_matrix`
-  about the axis's middle, the crop's side kept, the outline placed by the same turn
-  (`_outline_turned`); a frame with no axis is `_as_recorded` and marked. **Context**
-  (`with_context`, `cluster_montage(context_s=)`, `--context`): each clip widened either side;
-  labels and the clip list name the clip itself.
+  `ClipQueryPreview.clip_views` picture with `MontageLayers.settings` (a `ClipViewSettings`), so a
+  tile and the clip window never disagree about a frame. The one thing a tile adds is the
+  **outline**: with Raw on the animal is outlined in the mask tint at the tile's own scale, never
+  tinted, so its fur and paws stay visible. Raw off decodes no video (`footage=False`).
+- **Layers** (`MontageLayers`): `raw` (footage), `mask`, `keypoints`, `mask_trail` (needs `mask`;
+  unset, it follows `mask`), `keypoint_trail` (needs `keypoints`), `trail_points`, `aligned`; at
+  least one of the first three. **Default `DEFAULT_LAYERS` = mask + mask trail on white** (the
+  user's choice of 2026-10-23), for the CLI and every API default. On a clip grid the layers are
+  **Show ▾**'s (`show_menu.layers_of` of the grid's `TileLook`). Raw on: `clip_views(
+  points_on_frame=keypoints, trail=…, mask_outline=True)`'s footage, the mask and its onion skin
+  handed back as data and drawn after the crop and scale, as a ring just outside the animal
+  `outline_px(tile)` wide (2 px to a 160 px tile, then one more per 64), the past outlines fading
+  and stopping at the animal as it is now. Raw off: `clip_views`' masks pane (the subject filled in
+  the tint on white), its pose pane, or the pose pane's ink laid over the masks pane.
+- **Crop** (`crop_box`): fixed for the clip, so a tile never jitters. A square centred on the union
+  of the subject's boxes over the clip (`ClipQueryPreview.subject_boxes`, read from the tracking
+  rows), widened by `CROP_MARGIN` (15%) either side, never tighter than `CROP_MIN_BODIES` (2) of
+  its median box side, clamped inside the frame.
+- **One clock.** Montage time `t` shows each clip's own frame at `start + t` (Tenet 8: time, not
+  frame count), so a shorter clip holds its last frame until the longest ends, then all restart.
+  The clock runs at the footage's own rate, capped at `MONTAGE_MAX_FPS` (15).
+- **Context** (`with_context`, `context_s=`, `--context`): each clip widened either side, so each
+  tile plays the clip and its context; labels and the clip list name the clip itself.
+- **Label** `#rank · recording · m:ss.t` (`montage_label`); Blind (`blind=`) uses `blind_aliases`,
+  lettered over every member most typical first so a recording keeps its letter under every sort.
+- **A clip that cannot be read** (an unregistered video root; with Raw on, no video on this
+  machine) is one grey tile saying why, never the montage's failure. Raw off decodes no video, so a
+  recording whose file is absent (a video-excluded export) still draws its masks and keypoints.
+- **Cost and threading.** A tile is one `clip_views` picture cropped and scaled, decoding the frame
+  only when Raw is on. Clips sharing a recording are spread over separate decode contexts (one
+  reader per recording per context, so each reads forward), and up to six threads draw tiles, each
+  context locked while used. The 256 MB rendered-tile cache (`CACHE_BYTES`) serves the location
+  montage window (`draw_first`, `render`); `subset` serves **Export clips…**; the cluster montage
+  window's pages, draw-ahead, grid and selection marks went with that window. An export reads the
+  cache only where size and frame match and adds none of its own.
+- **Exports.** `ClusterMontage.export`: one pass of the longest clip, the grid as near square as
+  the count allows; an mp4 at the montage clock with 200 px tiles (no wider than
+  `EXPORT_MAX_WIDTH`, 3840), a GIF at 640 px / 12 fps unless asked otherwise (`--out`), the mp4 in
+  `codec` (`core.video_codecs`: `h264` by default, `mp4v` where this machine cannot write H.264,
+  and the caller says so). `export_clip_gifs`: one GIF per clip, its own pass, `clip_file_stem`
+  names (`3_mouse_07_0-42.1.gif`, `recording-C` blind), the bar weighed by frames, a cancel keeping
+  the finished GIFs (and removing the ones in flight) (`--per-clip-gifs`). An export draws its
+  tiles at its own size (`_export_tile`); `export` draws the next picture on a helper thread while
+  this one is encoded (`_drawn_ahead`, in order, so each clip still reads forward);
+  `export_clip_gifs` writes a clip per montage thread, from the clip's own decode context, with
+  progress and cancellation on the calling thread; a GIF has one palette (`animation.gif_palette`).
+  Measured (an_10 node 1394, WSL, median of 3, against the code before): 25 per-clip GIFs 19.0 →
+  9.6 s (Raw on 68.5 → 14.9 s); the 50-clip GIF 23.9 → 21.9 s with Raw on (9.9 → 1.4 MB) and 17.4
+  → 16.5 s with Raw off (paired); the 50-clip mp4 17.1 → 16.3 s (Raw on 26.4 → 25.7 s). The rest
+  is drawing tiles, about 0.1 s each across six threads. `export_clip_list`: `CLIP_LIST_COLUMNS`
+  — rank, recording name and id, subject, start/end `t_ns` and seconds, node, run, plus the
+  clip-query CSV's columns (`storage.clip_query_csv.write_clip_csv`), so `analysis query
+  --from-csv` reads it as examples.
+- **On every clip grid** (`gui/montage_export.MontageExport`, *One montage toolbar everywhere*
+  above) an export runs behind the house bar (`run_progress`, Cancel), from the grid's order or
+  the picks, and writes only where the user points, drawing **what the grid shows** (Show ▾'s
+  layers, orientation and context). Every MP4 asks its codec: the save dialog's file types
+  (`video_codec.mp4_filters`) for *Video of N clips…* and the overlay, the dialog's
+  `VideoCodecPicker` in *Export clips…*; `with_codec_note` adds the fallback sentence to the line
+  that says where the file went.
+- **Export clips…** (`gui/export_clips.MontageExportDialog`, hosted by `MontageExport`, which it
+  reads live; `api/montage_export.py`; the user's design of 2026-10-23, an **Export ▾** item since
+  2026-11-10). Several looks at once; the CSV list stays its own item (data, not a picture), and
+  the clip window and its enlarged pane keep their own exports. Not modal. The dialog:
+  - **Visuals**, each ticked row its own set of files in its own subfolder (`visual_folder`): first
+    *Current preview settings (…)*, named live from **Show ▾** (`describe_layers`; the trail
+    points when a keypoint trail is on), ticked by default; then the fixed `VISUALS` — Raw
+    footage; Raw + mask outline (+ mask trail); Raw + keypoints (+ keypoint trail); Mask (+ mask
+    trail); Keypoints (+ keypoint trail); Mask + keypoints + both trails. Rows that draw keypoints
+    are greyed with the reason when none of the clips' embedding runs carries a
+    `keypoint_run_id` (`keypoints_available`). One *Keypoint trail points* (`SkeletonPointsPicker`,
+    opening on Show ▾'s *Trail points*) serves every keypoint trail. *Align to heading* turns the
+    fixed looks (opening on Show ▾'s orientation); the current row follows Show ▾.
+  - **What to write** (`WRITES`): one montage file, one file per clip, or both (default).
+    **Clips**: *All in the grid* (in the grid's order) or *Picked only* (pick mode's picks, in
+    pick order; preset while picking). Every clip is widened by Show ▾'s context and labelled by
+    its own span, as the quick writers do.
+  - **Formats** (`ExportFormat`): MP4 (with its codec) and/or GIF, each with its own width and
+    fps. The MP4 opens at *full size* — each clip's tile at its crop's own side in the recording's
+    pixels (`native_tile_px`); a montage file's tiles at the largest crop, shrunk only to keep the
+    grid within `EXPORT_MAX_WIDTH` — and at the footage's own rate (`ClusterMontage.footage_fps`,
+    not capped like the playback clock). The GIF opens at 640 px / 12 fps. At least one format must
+    be ticked.
+  - **Preview**: the grid's first clip, in the row whose Preview is pressed, drawn as its own file
+    would be — at the MP4's width and rate, or the GIF's when only GIF is ticked, which it says —
+    by the scrubber's background decoder.
+  - **Folder**, remembered per experiment as the parent the last export went into
+    (`clip_montage/export_parent/<digest>`), opening on `<parent>/<run>_<unit>_<node>`; a live
+    **summary** (`summary_text`): *Will write V visuals × F formats × (1 montage + C clips) = K
+    files into a new subfolder per visual · about X MB · about Y min*. The count is
+    `ExportPlan.files()`, the very list the export writes; size and time are `estimate_export`
+    from per-tile and per-pixel costs (`ExportCosts`, measured on a real 1080p recording) and are
+    labelled approximate. Fitted to that recording's 25-clip default export (104 files at
+    full size, after #807 and #817): 309 s and 79 MB written.
+  - **The run** (`export_cluster_clips`): per look, per format, the montage file then each clip
+    (`clip_file_stem` names), through the montage's own writers: a montage file or a per-clip mp4
+    is `ClusterMontage.export`, a look's per-clip GIFs one `export_clip_gifs` batch written side
+    by side. One `run_progress` bar over everything, weighed by each file's estimated cost, phases
+    *preparing clips* → *exporting*; Cancel keeps the finished files and removes the one being
+    written. Nothing on the UI thread reads or decodes: the open-time read, every estimate and the
+    export are `BackgroundCall` / `run_progress`, guarded by
+    `tests/gui/test_ui_thread_blocking.py`'s seams.
+- **Query examples** (`query_examples(clips, name)` → `QueryExamples.config()`): one behaviour
+  whose examples are the clips, their recordings, the subject most of them follow, and the
+  embedding the clustering read (none when they span several, and the note says a Query searches
+  one). **New Query from N clips…** (`montage_export.query_prefill`, the picks while picking, else
+  every clip, each its own span) opens `LaunchAnalysisDialog(seed=…, recordings=…,
+  selection={"embed_run_id": …}, note=…)` on the Query module, in `ExportSource.experiment`: the
+  behaviour filled in, the clips' recordings checked, the embedding picked through
+  `ConfigWidget.prefer_selection` (a user's pick of the combo outranks it), and a note saying what
+  is left. Nothing launches until Run. The clips are chosen by the user watching them, which
+  "Labels score a method; they never build one" allows.
+- **Surfaces.** Every clip grid's **Export ▾**; the API (`cluster_montage_clips`,
+  `cluster_montage_members`, `export_cluster_montage`, `export_cluster_clip_gifs`,
+  `export_cluster_clip_list`, `export_cluster_overlay`, `montage_export.export_cluster_clips`,
+  `query_examples`); the CLI `analysis cluster-montage` with `--out`, `--per-clip-gifs`, `--csv`,
+  `--clips` (25), `--sort`, the layer flags at `DEFAULT_LAYERS`, `--aligned` / `--as-recorded`
+  (`--align` kept as a hidden alias), `--context`, `--overlay`, `--codec`, and Export clips… as
+  `--export-dir` with `--visual` (repeatable, `current` = the layer flags), `--write`, `--format`
+  (repeatable), `--mp4-width` / `--mp4-fps` / `--gif-width` / `--gif-fps`, all at the dialog's
+  defaults. Picking clips is GUI-only, recorded in `docs/cli.md`'s *Not in the CLI* with the path
+  a terminal takes instead.
+
+#### Align to heading, and Overlay
+
+> Specified 2026-11-08 for the zebrafish report (the user's yes to each point). Two views of the
+> same clips, both drawn from `clip_views` and turned here; neither adds a renderer.
+
+- **Align to heading** (`MontageLayers.aligned`; **Show ▾**'s *Aligned* carried into an export,
+  and Export clips…' *Align to heading* tick; `--aligned`, with `--align` a hidden alias). Every
+  exported tile is turned so its animal faces the same way. This is the **export's** turn: the
+  live tiles and the clip window turn by `clip_views.turn_matrix` of the frame's body axis
+  (*Cluster windows, the clip window, and the Aligned orientation* below), marking a frame with no
+  axis *no axis*, where an export draws a frame with no heading as a grey tile. **The heading is the embedding's**
+  (§14 *Egocentric alignment*), never one made up for the montage:
+  - **Which points.** The clip's embedding run's keypoint track run, and a heading definition:
+    the run's own when it carries one (an aligned run, or `pose: append`), else the experiment's
+    **one** saved definition that fits the skeleton — the clip window's body-axis rule
+    (`run_preview._clip_heading_definition`). None fitting, or several, is a reason on the tile,
+    not a choice made for the user.
+  - **Which frames.** `pipeline.embedding.headings_for_run` at every frame (`every_n_frames=1`),
+    with the run's own `max_gap_s`, `facing_camera_ratio` and decode cut-off when it has a
+    heading, else `EmbeddingConfig`'s defaults and `point_cutoff` — the one computation the
+    embedding, its canvas pre-pass and its input preview share, so a frame turned here is a frame
+    the embedding turns, by the same angle, and interpolated across the same gaps.
+  - **Which way.** A run aligned by `mirror` (a side view): no turn; the tile is flipped where the
+    run flips (`mirror_flags`, its own `mirror_hold_s`), so a side view stays one. Otherwise
+    `rotate`: the animal faces **up** — the clip window's body-aligned pose, so a tile and that
+    pane agree (the embedding turns to +x because that is the model's input; a person reads a
+    posture upright).
+  - **Fixed per frame, stable per clip.** Each frame is turned by its own heading about the
+    centre of its box, and that centre is the tile's centre: the camera follows the animal, and
+    the rotation never smooths across frames. The tile's side is fixed for the clip: the largest
+    of its boxes turned by their own frames' headings (`(w)|cos a| + (h)|sin a|`, the canvas
+    pre-pass's bound, from the boxes `crop_box` already reads — no mask is decoded), widened by
+    `CROP_MARGIN` either side. One scale for the whole clip, so nothing jitters but the animal.
+  - **A frame with no heading** (a gap longer than `max_gap_s`, before the first or after the
+    last defined row, an untracked frame) gets no embedding row, and here gets no turned picture:
+    a grey tile saying *no heading*. Never the unturned frame — it would sit in an aligned grid
+    looking aligned. A clip with no heading at all (no keypoint run, no single fitting
+    definition) is grey throughout with its reason, and the
+    export says it.
+  - Trails are drawn into the frame's picture and turned with it: a trail is the movement
+    relative to the body as it is now.
+  - **Cost.** The heading is computed once per (recording, embedding run, subject), off the UI
+    thread under the fill's bar, and cached against the tracking run (`read_cache`). Turning is
+    one `warpAffine` of the tile's own square per picture.
+- **Overlay** (`ClusterMontage.overlay` / `export_overlay`; **Export ▾ → Export overlay…** on every
+  clip grid, `MontageExport.export_overlay`; `--overlay`). The clips on top of each other in **one**
+  square, on white:
+  - each clip's mask **outline** (a line just outside the animal, `overlay_line_px` wide: 3 px
+    at 640, thinner than a tile's ring, which a dozen of on top of each other merge into one
+    band) in its own
+    colour (`overlay_colours(n)`: `n` hues evenly spaced, rank 1 first), aligned as above — every
+    clip turned by its own frame's heading and centred, at **one** scale for all of them (the
+    largest of the clips' aligned sides, so a large animal is drawn larger than a small one);
+  - its mask trail as fading outlines in the same colour;
+  - its keypoint skeleton on top, edges and points in that colour (when its embedding run has a
+    keypoint run);
+  - a legend beside the square: each colour's swatch and the tile's label (Blind mode's letters
+    when blind). The most typical clip is drawn last, on top of the others.
+  - A frame with no heading leaves that clip out of the picture at that moment (by the rule
+    above), and its legend row says *no heading*.
+  - **Clips** play on the montage's one clock, each with its trail (a short clip holds its last
+    frame): an mp4 or GIF.
+  - **How many:** on a clip grid, the picks while picking, else the grid's first `OVERLAY_CLIPS`
+    (12) in its order; `--clips` defaults to 12 with `--overlay`.
+  - **One renderer.** Each clip's mask, onion skin and points come from
+    `clip_views(subject_data=True, footage=False)` — returned as data, as `mask_outline` already
+    returns the montage's outlines — and are turned and drawn here. No video is decoded.
+  - **Cost.** Each clip's outline and fading trail is worked out only in its mask's box
+    widened by the line, on the montage's threads, and blended in rank order; the key is
+    drawn once. Measured on a real temporal run (zebrafish `an_14` root, 12 clips, 640 px,
+    WSL, median of 3 × 20 pictures): one picture took 552 ms before that (every trail layer
+    dilated and blended over the whole square), 223 ms after on one thread and 115 ms on six,
+    byte-identical. The whole MP4 of that node, whose longest bout is 449 s (6,742 pictures),
+    takes 966 s; the export's bar says so as it goes.
+  - **On a clip grid** it is an **Export ▾** item under *Export clips…*: its own look, not Show
+    ▾'s, written (MP4 in the codec its file type names, GIF, or PNG for single frames) behind a
+    bar with Cancel, and greyed with `OVERLAY_NEEDS_HEADING` and the reason while the run cannot
+    align.
+- **Surfaces.**
+
+  | surface | Align to heading | Overlay |
+  |---|---|---|
+  | clip grid (INTERPRET, cluster window, AUDIT) | **Show ▾** *Aligned*, carried into **Export ▾**'s writers | **Export ▾ → Export overlay…** |
+  | Export clips… | carried by *Current preview settings*, and an *Align to heading* tick for every look | not a look: Export overlay… is its file |
+  | API | `MontageLayers(aligned=True)`; `export_cluster_montage` / `export_cluster_clip_gifs` / `export_cluster_clips(align=)` | `ClusterMontage.overlay` / `export_overlay`, `export_cluster_overlay` |
+  | CLI `analysis cluster-montage` | `--aligned` (the ticks and every `--visual`; `--align` hidden) | `--overlay --out x.mp4\|.gif\|.png` |
+  | location montage | deliberately not: its tiles are whole frames of every animal (§16), with no one subject to turn | deliberately not, for the same reason |
+  | the export catalogue's clips (`clip`, `clips`, §17) | deliberately not: a clip export shows the animal in its arena; turning it is a way of comparing clips, which is the montage's job | deliberately not |
+
+### Cluster profile
+
+**What sets one node apart, as measures, with how far to trust it.** The clip window's *What sets
+this cluster apart* ranks descriptors one at a time on the node's most typical members (Cliff's
+delta). The profile is the deeper question: several measures at once, on a **seeded random**
+sample of the node's members, against an equal-sized comparison sample, fitted by an explainer
+and **scored on held-out recordings beside a shuffled floor**.
+
+- **Rows.** `NodeView.sample_runs(node, n, seed, outside)` draws leaf runs uniformly (a run is
+  what a person watches). A member is its bout.
+- **Comparison.** `rest` (every run not under the node), `sibling` (the other child of its
+  parent; the parent minus the node *is* the sibling in a binary tree), or `node` with
+  `against: <id>`: one other cluster, for whether two clusters in different branches are one
+  behaviour (*rearing to the back* and *rearing* are often siblings of neither). Neither may
+  hold the other: a cluster inside this one is part of it, and one this sits inside is the
+  sibling question. `against` is set exactly when `compare` is `node`. The batch job (*Profile
+  clusters (many at once)*) offers `rest` and `sibling` only: every cluster against one named
+  cluster is not a batch question.
+- **Place.** Four descriptors say where the animal is and which way it faces rather than what
+  its body does (`Descriptor.place`): `facing_right` and `facing_down` (the circular mean of the
+  tailbase-to-nose direction in the image as its two components, missing when the directions
+  cancel), `position_x` and `position_y` (the mean centre, px; not the arena, which is not
+  built). With `leave_out_place` (default true) they are measured and kept in `measures.csv`
+  but left out of the fit and listed in `measures_dropped` as *left out: position and
+  facing*, so a profile does not tell rearing to the left from rearing to the back by facing
+  alone. A study of what separates sibling clusters measured both halves of the reason: facing
+  and position alone separate sibling clusters above the floor, and box aspect, bend, mask area and
+  mass offset are partly predicted by them. A `node` comparison with place left out also fits
+  the same rows on the place measures alone (`place_explanation`, same explainer, seed and
+  margin): body measures that cannot tell two clusters apart while place can is one behaviour
+  seen in two places or directions, the evidence *Look-alike clusters* rests on. Both surfaces
+  say it in one line (`cluster_profile.place_text`).
+- **Measures.** Every registered descriptor (`analysis/descriptors.py`) the slice supports,
+  through `api/frame_slices.track_slice`: the kinematics sidecar when the embedding run wrote
+  one (mask centroid, area, box, outline), the tracking boxes otherwise; plus the keypoints of
+  one track run (`keypoint_run_for`: the run the embedding drew its pose from, else the newest
+  complete one on the same tracking run, named in the basis), points under the run's cut-off
+  (`embedding.point_cutoff`) read as missing. Three roles are read by name, whatever the
+  skeleton calls them (`POINT_ALIASES`): nose, mid back and tailbase — nose height (side view),
+  bend, heading turning and head scanning — and nose-to-tailbase, when both exist, replaces the
+  mask's long axis as the track's body length. A measure missing on more than
+  half the rows is dropped and named; a row still missing one is dropped and counted. Never
+  filled. Every registered descriptor is measured.
+- **Sample size.** A time budget by default (30 s): animal-recordings are read in a seeded
+  order until about 60% of it is spent, then both sides are trimmed at random to the smaller
+  count. `n_per_side` is a fixed count instead.
+- **Explainers** (`analysis/explainers.py`, a registry): `random_forest_shap` (default; mean
+  |SHAP| per measure, direction from how a measure's value and its SHAP value move together),
+  `random_forest_permutation` (the default's fallback without `shap`, and says so),
+  `logistic_regression`, `decision_tree`. Each scores balanced accuracy over `GroupKFold` by
+  recording (by row, and saying so, when only one recording contributes), and a floor: the
+  same folds with the membership shuffled, three times, averaged. **A fold with one class on
+  its held-out side is not scored**, in the score or its floor: its "balanced" accuracy is one
+  class's hit rate, which a model that learned only *not this recording* passes (a cluster
+  from one recording read 83% against a ~50% floor on the Two-animal demo). The floor is
+  scored on exactly the folds the score is. With no fold left, `accuracy` is NaN, `separated`
+  is False and `Explanation.unscored` says why (`NO_SCORABLE_FOLD`); the headline shows it.
+- **The gate.** `separated = accuracy − floor ≥ margin` (default 0.1, settable). A surface leads
+  with that line and keeps the importance chart folded when it is False: a classifier always
+  ranks something, so a chart that leads is read as an answer it is not.
+- **Plain rules.** A depth-3, class-balanced decision tree; leaves that are ≥ 60% the node read
+  as `measure > x AND …`, with precision and coverage.
+- **Context.** From the node cache, no tracks: `NodeView.neighbours` names each neighbouring run
+  by the branch it sits in relative to the node (for each ancestor, the child not holding it),
+  which partitions everything outside the node without a cut; run-length median and 10th/90th
+  percentiles; the share of the node's time in each third of the animals' tracked spans; and
+  metadata columns where `NodeView.distribution` flags the node over its floor.
+- **Labels build nothing.** Rows are told apart by cluster membership, the clustering's own
+  output. Hand labels, behavior labels and Query results are not read; permuting the node
+  names cannot move a number (`tests/api/test_cluster_profile.py`).
+
+```yaml
+# analysis/<run_id>/profiles/node_<id>/profile.yaml — beside the run, never inside its outputs
+schema_version: 1
+run_id: an_10
+node: 1394
+unit: behavior            # cluster (pose) | behavior (temporal)
+compare: rest             # rest | sibling | node
+comparison_node: null     # the sibling, or the other cluster when compare is node
+params: {compare, against, explainer, time_budget_s, n_per_side, margin, leave_out_place,
+  seed}                   # ClusterProfileConfig
+basis: mask (kinematics sidecar)
+labels: {descriptor: label}
+units: {descriptor: unit}
+n_units_read: 24
+elapsed_s: 27.4
+created_at: "2026-10-23T21:34:08Z"
+explanation: {explainer, accuracy, floor, margin, separated, held_out, importances: [{name,
+  value, direction, cluster_median, comparison_median}], rules: [{conditions, precision,
+  coverage}], n_cluster, n_comparison, measures_used, measures_dropped, rows_dropped, note,
+  fold_accuracy, fold_floor}
+context: {before, after, bout_median_s, bout_p10_s, bout_p90_s, session_thirds,
+  over_represented}
+place_explanation: null   # compare: node with leave_out_place — the explanation's fields,
+                          # fitted on the place measures alone
+# measures.csv beside it: recording_id, subject, start_t_ns, end_t_ns, in_cluster, <descriptor>…
+# a compare: node profile is saved under it, in node_<id>/against_<other>/, the same two
+# files: it never replaces the node's own profile
+```
+
+Surfaces: `Experiment.profile_cluster(run_id, node, config, save=True, progress=)` and
+`Experiment.cluster_profile(run_id, node, against=None)`; `analysis profile`; the GUI's *Cluster profile*
+window, opened from the tree's right-click menu and the clip window's *Cluster details*. Config: `configs/cluster_profile.ClusterProfileConfig`.
+
+### Profile clusters (many at once)
+
+**The single-cluster path, many times, as one recorded job** (`pipeline/profile_describe.py`,
+`api/profile_describe.py`). A registered analysis module, `profile_describe` (its id from when
+the job also ran Describe, kept so its runs on disk still open; shown as *Profile clusters*),
+rather than a script or an in-process loop: it gets its own `an_NN`, `run_analysis`'s executor
+job (Active processes, attach, cancel, stop-and-keep, reconcile), `ProgressEvent`s, and a record
+whose `params` is `job_params(job)`. Per cluster it is exactly `profile_cluster`; nothing about
+a profile differs from one made by hand.
+
+- **Which clusters** (`select_nodes`): `floor` (default: member time at or above
+  `NodeView.min_cluster_s`, the run's naming floor, *The node cache*), `all` (every node with
+  members), `leaves`, or `ids` (`node_ids`, in the order given). Never the root, which has
+  nothing to compare against. Largest member time first, so a stopped job has done the
+  clusters that matter most. `validate()` resolves the list into the job's `nodes`.
+- **Config** (`configs/profile_describe.ProfileDescribeConfig`) **is** `ClusterProfileConfig`
+  by inheritance, so a field it gains reaches the job, the record, the form and the CLI by
+  name; the job class is generated from the model's fields. Batch-only fields:
+  `source_run_id`, `clusters`, `node_ids`, `skip_existing`; `compare` is restated without
+  `node` (every cluster against one named other cluster is not a batch question). Profiles
+  default to `n_per_side: 50` rather than the time budget, so a profile does not depend on the
+  machine's speed (50 is about what the 30 s budget measured on the 2026-10-28 workstation: 34,
+  44 and 73 per side on the three real profiles of clusters large enough to fill it);
+  `n_per_side: null` selects the budget. A saved config or record from before the single-animal
+  build cut Describe also carries the Describe settings (`backend`, `n_clips`, `batch_size`,
+  `blind`, `use_setup`, `use_behaviours`, `allow_external`, `model`, `vision_model`,
+  `num_ctx`); the model ignores keys it does not declare, so such a config still loads and
+  launches a profile-only job, and such a run still opens. `compute` (a `ComputeTarget`,
+  outside the model as every module's is) is carried in the job: this machine, or a registered
+  remote target (the module is `remote_capable`, §6 "Remote analysis"); a cloud target is
+  refused.
+- **Where results go: the job's own run directory, then placed.** Each cluster's profile is
+  written to `analysis/<an_NN>/profiles/node_<id>/` (the single-cluster layout), and
+  `place(experiment, job_run_id, nodes=None)` copies it to the clustering run's
+  `profiles/node_<id>/`, where the Interpret tab reads it. Placement is its own **idempotent**
+  step: a profile is placed when the run's is absent or older. Here it runs after every
+  cluster; a remote run, whose copy-back returns only its own run directory, runs it after the
+  copy-back.
+- **Resume is the mechanism; there is no in-job state.** With `skip_existing` (default), a
+  cluster is skipped when the run holds a profile made with the same `ClusterProfileConfig`
+  (a field it predates reads at its default). So a cancel, a kill, a crash or a remote cancel
+  all "keep the finished clusters" the same way: they were placed, and the next run skips them.
+- **A failed cluster is a row.** The profile call is its own isolation boundary; a profile that
+  cannot be fitted records `status: failed` and `error` and the job goes on. A Cancel keeps what
+  finished: `cancelled` on the cluster in hand and `not run` on the rest.
+- **Progress.** `ProfileDescribeProgressEvent` in the §16 analysis names: `recordings_*` count
+  clusters (skipped ones done from the start), `frames_*` the running cluster's share from the
+  profile's own stages; `unit_label: cluster`; `eta_s` over the job's own work. Messages are
+  `<phase> · cluster i of N · node <id> (<label>) · <detail>` with the phases `measuring`
+  (sampling and reading tracks, with a fraction) and `fitting` (the fit and the context), as
+  Find look-alike clusters names them. The CLI draws one bar over the whole job (`fold_units`,
+  `cli._fold_tick`), printing the head when it changes and the heartbeat in the postfix; the
+  GUI's `fit_progress_fraction` folds and names the units.
+- **Estimate** (`estimate` / `Experiment.estimate_profile_describe`): only what is left; each
+  profile at the median of this run's own profiles with the same settings, else its budget.
+- **On a remote target** (§6 "Remote analysis"): the job profiles there. `refreshed_inputs`
+  re-sends the clustering run exactly before the job (its node cache and what is already
+  placed, which the skip check reads), and `after_copy_back` runs `place()` here. A CPU job:
+  `remote_resources` asks for one GPU, the fewest Tillicum accepts, as Find look-alike clusters
+  does.
+
+```yaml
+# analysis/<an_NN>/analysis.yaml — a profile_describe run's record (beside the usual keys)
+source_run_id: an_10
+counts: {complete: 152, skipped: 4, failed: 3}
+clusters:
+  - node: 877
+    name: Rear_to_right            # the node's label, when it has one
+    status: complete               # complete | skipped | failed | cancelled | not run
+    seconds: 28.4
+    profile: {status: done, seconds: 28.1, accuracy: 0.81, floor: 0.5, separated: true}
+    error: "profile: ValueError: ..."                       # failed only
+    # a record from before Describe was cut also has describe: {status, names, file, ...}
+params: {...}   # job_params(job): every config field as resolved, nodes, compute
+```
+
+Surfaces: `Experiment.profile_describe_clusters(run_id, config)` /
+`estimate_profile_describe`; `analysis profile-all [--clusters] [--node ...]
+[--remote-target] [--estimate] ...`; the module in New analysis (its launch
+dialog hides the recording picker: `ModuleUI.selects_recordings = False`, and offers **Run on**)
+and the Interpret tab's **Profile clusters...**, which opens that dialog on the run.
+Guards: `tests/pipeline/test_profile_describe_module.py`,
+`tests/pipeline/test_profile_describe_remote.py`, `tests/test_cli_profile_describe_all.py`.
+
+### Look-alike clusters
+
+**Which clusters in different branches are one behaviour, and one label for them**
+(`api/cluster_lookalikes.py`). A tree splits one behaviour by place and direction — rearing toward
+the back and toward the right sit in different branches — and a person who does not care about
+either wants one label. A depth cap does not find that point (measured: body measures separate
+22 of 23 real splits, and a cap by names stops at a node holding 42% of the run); joining does
+(the joins chain one run's rearing clusters from both halves of its tree).
+
+
+- **The evidence is the saved comparisons.** Two clusters *look alike* when a profile of one
+  against the other (`compare: node`, `leave_out_place: true`) is not separated on body measures
+  (`PairEvidence.looks_alike`: an accuracy was fitted and `separated` is false). Read from every
+  `profiles/node_<a>/against_<b>/profile.yaml`, however made — the job below, or one pair compared
+  by hand in the profile window — each parsed once per mtime. A comparison that kept place, or
+  that is not against a cluster, is not evidence. A pair compared more than once (or both ways
+  round) is read at its newest.
+- **Groups chain** (`find_groups`): connected components of the look-alike pairs. Each link is
+  kept with both scores (body measures; position and facing alone, `place_explanation`), so a
+  person sees why a member is there. A group needs two members, and lists every one, nested or
+  not (`nodes`, largest first; `share(node)` of the run).
+- **What a label would sweep in** (`swept_clusters`, `LookalikeGroup.sweeps`). A label covers
+  everything under its cluster with no label of its own (most specific wins), and look-alike
+  members nest: on an_17 the rearing members form two chains (755 ⊂ 831 ⊂ 940 ⊂ 1001 ⊂ 1064 ⊂
+  1391; 803, 818 ⊂ 1067 ⊂ 1101 ⊂ 1239 ⊂ 1393) holding walking clusters (#931, #849…), so
+  the first rule, "a member another member holds is covered by the outer one's label", proposed
+  labelling the tree's two halves — 75% of the run — one name. For each member, the branch tops
+  inside it that are not members, carry no label and sit under no label nearer than the member
+  are `SweptCluster(node, name, share)` — share the top's time less
+  the maximal members and labelled clusters inside it. A top is said through a listed top above
+  it only when no member or label lies between (a listed top's share leaves those out).
+  `ticked` — what both surfaces label by default — is the members that sweep nothing in, less
+  any inside another of them (its label covers it; `check_labels` would refuse it as a label
+  inside itself). A label given first to a swept cluster takes it off every list.
+- **The proposed name** (`proposed_name`): the label its members carry most, the largest
+  member's on a tie, else none. Labels *name* a group; they never decide which pairs are
+  compared or which look alike (the rule in CLAUDE.md *Labels score a method*: nothing here is scored).
+- **Label as one** (`run.label_lookalikes(nodes, name)`) is `name_nodes`' own change
+  (`apply_names`) inside `LabelOperations._label_edit`, planned first and purely
+  (`plan_join(names, parent, nodes, name)`): parents before children; a member
+  already carrying that label, carrying another label of its own (kept), or refused by
+  `check_labels` is skipped with the reason; one edit, one `history.jsonl` entry (`op: label
+  look-alikes`, `group`, `name`, `labelled`, `skipped`), nothing written when no step is
+  accepted. Its summary (`plan_lines` / `plan_text` with the group's `sweeps`) names what each
+  labelled member sweeps in, and ends with `SWEEP_WARNING` when any does. Provenance: `node_label_sources[node] = {from: lookalikes, group, label,
+  accepted_at}`, pruned when the node no longer carries that label (`prune_label_sources`).
+- **Which pairs to compare** (`candidate_pairs`): the **branch tops** — the two children of every
+  node over the floor (`NodeView.min_cluster_s`) whose both children are over it (`branch_tops`); a
+  split with one
+  side under it only trims a sliver. Every pair where neither holds the other (an_17: 853 of
+  46 branch tops). `pairs` chooses which of them (`PAIR_CHOICES`, default `all`):
+  - `all` — every candidate pair. Compute intensive (an_17: 853 pairs, many hours on CPU).
+  - `labelled` (`labelled_pairs`) — each branch top a label covers against every other branch
+    top: a candidate pair is kept when at least one side is covered and dropped when one label
+    covers both (already one behaviour). "Covered" is the run's own `node_labels`: a node's own
+    label, else the nearest labelled branch above it (`covering_label`, through
+    `authored_run.parent_label` — the most specific label wins, as everywhere a label is read).
+    Labelled × all rather than all × all; it finds unlabelled clusters that look like ones
+    already named. `validate()` refuses it while no branch top is labelled ("label at least one
+    cluster first, or choose every pair").
+
+  Choosing pairs by how much two clusters' suggested names share left with Describe (the
+  single-animal build): a saved config or record that still carries `min_name_overlap` loads with
+  it ignored (`RETIRED_FIELDS`), and `pairs: names` loads as the default `all` (`RETIRED_PAIRS`,
+  a `before` validator on the model, so `validate()`, the form and *Start from* all read it).
+- **Before every pair, every surface says what it costs** (`count_pairs` → `PairCounts`, through
+  `Experiment.count_lookalike_pairs(run_id, config)`): how many pairs each mode compares
+  (`counts` `{all, labelled}`, less those already compared with these settings while
+  `skip_existing` is on), about how long on this machine (`per_pair_s`: the median `elapsed_s` of
+  the run's pairs already compared with these settings, else the time budget plus
+  `PROFILE_OVERHEAD_S`, as Profile clusters' estimate takes an untimed profile), and
+  `warning()`, the one text both surfaces show. The CLI prints it and asks (`click.confirm`,
+  skipped by `--yes`); the launch dialog asks before launching through the form's
+  `ConfigWidget.launch_question` — counted off the UI thread (`run_busy`), asked with
+  `space_prompt.ask_before_launch` (**Run every pair** / **Cancel**, Cancel the default). With
+  nothing left to compare (`to_compare`) there is nothing to ask: no pair at all is the job's
+  own refusal to explain, and pairs all already compared cost nothing.
+
+#### Find look-alike clusters (the job)
+
+An analysis module (`pipeline/cluster_lookalikes.py`, `module_id: cluster_lookalikes`, config
+`configs/cluster_lookalikes.ClusterLookalikesConfig`): `source_run_id`, `pairs` (`all` |
+`labelled`), `skip_existing`, and the profile settings that make sense for a pair, carried
+by name (`PROFILE_FIELDS`: `explainer`, `time_budget_s`, `n_per_side` — 50 by default, as the
+batch uses — `margin`, `seed`); each pair sets `compare: node`, `against` and `leave_out_place:
+true` itself (`SET_PER_PAIR`).
+
+- **Resolved at launch** (Tenet 9): `validate()` reads the branch tops (and, for `labelled`,
+  the run's labels) and writes the pairs back as `pair_list`, so a job compares what it was
+  launched for, and `pairs` reaches `params` by name. A run with no pair to compare is refused
+  before anything runs, with why (fewer than two branch tops, every pair nested, or for
+  `labelled` no labelled branch top, or every labelled pair under one label).
+- **Each pair** is `Experiment.profile_cluster(run, a, {compare: node, against: b, …})`, written
+  into the job's own run directory (`profiles/node_<a>/against_<b>/`) and placed beside the
+  clustering run (`api/profile_describe.place`) where the groups read it. Resumable by
+  construction: a pair already
+  compared with these settings, either way round, by the job or by hand, is skipped. A failed
+  pair is a row with its error; a Cancel keeps every finished pair. One running job per
+  clustering run.
+- **Progress**: `ClusterLookalikesProgressEvent` (`unit_label: pair`, folded over pairs, the inner
+  share from the profile's own stages); phases `measuring` (sampling and reading tracks, with a
+  fraction) and `fitting` (both fits and the context).
+- **Record**: `analysis.yaml` lists `pairs[]` (`a`, `b`, `status`, and for a
+  compared one `accuracy`, `floor`, `place_accuracy`, `place_floor`, `looks_alike`, `file`,
+  `seconds`, or `error`), `counts`, `looks_alike`, `groups` (`nodes`, `name`, `links` when it
+  ended) and `params` (`job_params`), rewritten after every pair.
+- **On a remote target** (§6 "Remote analysis"; `remote_capable`), which is what makes a large
+  run practical (an_17: 853 pairs, many hours on CPU): `compute` is validated and carried into
+  the job; `refreshed_inputs` re-sends the clustering run, so the skip check there sees every pair
+  placed here; `after_copy_back` places the job's comparisons beside the run here. A CPU job:
+  `remote_resources` asks for one GPU, the fewest Tillicum accepts (it refuses a job with none),
+  and the target's CPUs and memory scale down with it; the walltime is the target's. The record's `artifacts` lists the
+  job's own `profiles/`.
+
+Surfaces: `Experiment.find_lookalikes(run_id, config)`, `Experiment.count_lookalike_pairs(run_id,
+config)`; `run.lookalike_groups()`, `plan_lookalike_label`, `label_lookalikes`; `analysis
+find-lookalikes --run [--pairs all|labelled] [--yes] [--remote-target NAME] …` and `analysis lookalikes --run [--label-group N [--include NODE…] [--leave-out NODE…] [--name
+NAME] [--yes]]` (members marked `[x]` / `[ ]` by `ticked`, each with what it would sweep in;
+prints the plan and asks before writing); INTERPRET's **Look-alike clusters…** window
+(`gui/lookalikes.py`, non-modal beside the tree: each group's members, `ticked` ones ticked, a
+*Would also label* column, why they are grouped and what each unticked member sweeps in,
+the proposed name editable, **Label as one…** after `LabelGroupDialog`; **Find look-alikes…**
+opens the launch dialog on this run; a member clicked is selected in the tree), and the job in
+New analysis (**Pairs to compare**; its **Run on** picks this computer or a registered remote
+target; Run with every pair asks first). The profile
+window and `analysis profile` print `place_text` for a `node` comparison. Guards:
+`tests/api/test_cluster_lookalikes.py`, `tests/pipeline/test_cluster_lookalikes_module.py`,
+`tests/pipeline/test_cluster_lookalikes_remote.py`, `tests/gui/test_lookalikes_gui.py`,
+`tests/test_cli_lookalikes.py`.
 
 ### Cluster windows, the clip window, and the Aligned orientation (2026-11-09)
 
@@ -7923,28 +9100,39 @@ close with it.
 - **Picks and the export** are every grid's (*One montage toolbar everywhere*, above): the window
   hands `ExportSource` its clips in the window's order.
 
-**The clip window is non-modal** (`clip_popup.open_clip_window`, `requirements._NON_MODAL_DIALOGS`):
+**The clip window is remote-detail's `ClipPopup`** (the panels player, the labelling row and its
+Fits / Doesn't / Unclear checks, **Cluster details**, the cluster lane, the arena colours,
+*The clip window's layout and trails* above) with main's window behaviours added (2026-11-10). A
+clustering page hands it its cluster (`clip_labelling.PageLabelling`: labels go through the page's
+own `_label`, so undo and Finish's lock hold; checks through `member_checks`) and the lane around
+the clip (`page_lane`); every other opener passes neither. **It is non-modal**
+(`clip_popup.open_clip_window`, `requirements._NON_MODAL_DIALOGS`):
 every opener (INTERPRET, AUDIT, the cluster window, the cluster strip, both query grids) calls it;
 while the page's window is open the next clip is shown **in it** (`ClipPopup.show_clip`, the
-sequence replaced) and raised. Parented to the page; `WA_DeleteOnClose`. A source scan
+sequence, labelling and lane replaced) and raised; **◀ previous / next ▶** step through the
+opener's sequence, the position shown with the opener's order note (*3 of 182 (most typical
+first)*). Parented to the page; `WA_DeleteOnClose`. A source scan
 (`test_every_opener_goes_through_the_one_non_modal_opener`) fails on a page that builds the window
 itself. **Export ▾**: *Video of what you see…* / *GIF of what you see…*
-(`clip_views.export_clip_view`: `view_picture` — the footage, or the footage with its two panes — of
-every frame on the bar, context included, with the window's `ClipViewSettings`) and *This frame as
-PNG…* (`write_clip_frame`, off the UI thread through `run_busy`). The plain player's own **Export
+(`api.clip_pane_export.export_clip_view`: the footage, or the footage with its two panes, of every
+frame on the bar, context included, with the window's `ClipViewSettings`; the MP4's codec from the
+save dialog's file type) and *This frame as PNG…* (`clip_pane_export.write_clip_frame`, off the UI
+thread through `run_busy`). Main's `api/clip_curves.py` and `gui/advanced_player.py` are not part of
+it. The plain player's own **Export
 video…** is hidden in this window.
 
 **Aligned** (`ClipViewSettings.aligned`, `TileLook.aligned`, `MontageLayers.aligned`) is **one turn**,
 `clip_views.turn_matrix(front, back, side, out_wh)`: rotate about the body axis's middle so back→front
 points **up** (Align pose's direction), put the middle at the output's centre, scale `side` to the
 output's height. The axis ends are the frame's keypoints of the run the embedding read, averaged over
-the heading definition's front and back sets at the run's cutoff (`axis_ends`, `body_axis.
+the heading definition's front and back sets at the run's cutoff (`body_axis.
 row_axis_ends`), in the target picture's own pixels, so the angle is right at any size. Used by the
-clip window (`turn_views`: footage, masks pane and pose pane — unless Align pose already aligned it —
+clip window (`run_preview._turn_clip_views`: footage, masks pane and pose pane — unless Align pose already aligned it —
 turned together at the frame's size), the live tiles (`PreviewClip.set_pose`, fed once per clip by
 `ClipTiles._pose` from `TileCatalog.points` → `ClipPoints.rows_at` over the tile frames' source
 frames; the mask, its trail — each past mask turned by the *current* frame's turn — and the keypoints
-placed by the same matrix) and the exports. **No cache on disk**: the headings are computed as a clip
+placed by the same matrix) and the clip window's own exports; a montage export turns by the
+embedding's heading instead (*Align to heading, and Overlay* above). **No cache on disk**: the headings are computed as a clip
 is opened and kept with it in memory. A frame with no axis is drawn as recorded and marked *no axis*
 (`mark_no_axis`); a run with no keypoints or no fitting heading definition draws nothing turned, and
 every orientation choice (*As recorded* / *Aligned*: in **Show ▾** on every clip grid, the clip
@@ -7963,6 +9151,19 @@ as rows, most typical first, for the CLI and exports. INTERPRET's montage plays 
 old **Preview clips…** and **Clip montage…** items are gone with it. A node whose every stretch is
 shorter than the run's minimum instance has no clips, and its montage is empty.
 
+**Why a temporal run listed nothing.** `codebook_viterbi` measured its rows per second over the
+study's timestamps pooled and sorted, and cut its runs on the pooled timeline. Every recording's
+clock starts at zero, so the sorted median step was the jitter between recordings (30,000 rows/s
+on a 72-recording study instead of 21) and a 0.27 s minimum run became 8,100 rows; the only runs
+that long crossed a recording seam (a step *back* to zero is not a gap), and `resolve` refuses
+those. The cache listed no member of any node, and a label would have projected almost no
+instances (the same floor and blocks cut them). Cadence and blocks are now per unit
+(`_unit_seams` / `_unit_blocks`, `finch`'s shape); the guard,
+`tests/cluster_methods/test_pooled_timelines.py`, is data-driven over the temporal registry. A run
+fitted before the fix keeps its fit (the decode ran per trajectory and is unaffected): Preview and
+the montage work on it at once (members are ranked on demand), and **Rebuild clips** lists its
+clips again; nothing is re-fitted.
+
 ### The node cache
 
 **Computed once after the fit, so that interpretation is instant.** A user has already waited for
@@ -7971,6 +9172,13 @@ every click wait. The cache lives at `<run>/node_cache.zarr` and is **independen
 a function of the fit and the tracks, so labelling never invalidates it, and a snapshot of the run
 reads the same cache. **Nothing in it is decoded from video**, and there is no size floor: every
 node of the tree, however small, has every figure and every clip.
+
+**A naming floor, for the batch tools only.** `NodeView.min_cluster_s` is the member time a cluster
+needs to count as one worth naming: the run's own floor where a cache built before the floor was
+dropped recorded it (`built_from["min_cluster_s"]`), else `NAMING_FLOOR_S` (30 s), the default the
+size floor once had. Look-alike clusters' branch tops (`lookalikes.branch_tops`) and Profile
+clusters' `floor` choice (`profile_describe.select_nodes`) read it; nothing about which clips a
+node lists depends on it.
 
 **Leaf-additive, so every node has exact figures.** Everything that sums is stored **per leaf** or
 **per leaf run**, and a node's value is a sum over the leaves under it, which is one numpy
@@ -7994,6 +9202,12 @@ index-and-sum. That makes every node's figures exact and cheap, however large th
 | `run_vec_sum` | `(U, K)` | `float32` | `(65536, K)` | `centroid` scoring only: the run's member vectors summed in `K ≤ 64` dimensions |
 | `leaf_vec_sum` | `(L, K)` | `float64` | `(4096, K)` | `centroid` scoring only: `run_vec_sum` summed per leaf |
 | `separation` | `(N,)` | `float32` | `(N,)` | per internal node; `NaN` on leaves |
+
+**A subject in an `int64` column is its track id.** A clustering run has one subject, its
+`state.track_id`, and the cache stores that for every member, never the fit's own `subject`
+column (the method's bookkeeping). `built_from` records the subject as text; a cache without one
+is judged by the subject its columns hold (`NodeView.stale_reason`), and a rebuild replaces a
+stale one.
 
 Metadata distributions are joined at read time from `leaf_rec_time_ns` and `metadata.csv`, so editing
 the metadata needs no rebuild. The labels ethogram is built in memory from the leaf-level runs mapped
@@ -9065,11 +10279,22 @@ Used by* (the presets as read-only rows), **+ New skeleton** and **Import…** a
 **Export…** and **Delete** below, double-click to edit. No Duplicate button: editing a preset or a
 used skeleton already saves a copy (`skeleton duplicate` stays in the CLI and API). **+ New
 skeleton** and **Edit…** open the **skeleton editor dialog**: *Name*, the plain `SkeletonCanvas`
-(the scene editor's `ArenaCanvas`, subclassed; no video frame behind it) with the scene editor's
+(the scene editor's `ArenaCanvas`, subclassed) with the scene editor's
 gestures (click adds a point, drag moves, right-click removes a point and its edges, Shift+click a
 second point joins or unjoins an edge, scroll zooms, right-drag pans), the selected point's *Point*
 name, *Pair with*, *Side*, *Remove point*, then **Save** (or **Save as new**) and **Cancel**, which
 asks when there are unsaved edits.
+
+**A frame to draw over** (added 2026-11-06 at the user's request: "import a frame from a recording
+to use as the background"). Above the canvas, **Frame from a recording…** opens a picker
+(`gui/skeleton_backdrop.py`) over the **open** experiment, greyed with no experiment open: a
+*Recording* dropdown by name, the recording on the shared `FrameScrubber` (playable, decoding off
+the UI thread), a crop rectangle dragged on the frame, and **Use this frame**. The crop is padded
+to the canvas's square (the plain canvas's grey) so the `layout` fractions mean the same with it
+and without it. **It is a drawing aid, not part of the skeleton: it is never saved** (no field in
+`skeleton.yaml`, no change to `layout`, not an edit), and the skeleton reopens on the plain
+canvas. The Model manager's **Edit roles** embeds the same editor and so offers the same picker.
+GUI-only by nature: the API and CLI have no canvas to draw on.
 
 ### Example sets follow the model that needs them
 
@@ -9151,6 +10376,12 @@ frames:
       - {target: "nose",      kind: "point", x: 0.61, y: 0.85, visible: true}
       - {target: "left_ear",  kind: "point", visible: false}
       # reserved, no UI yet: kind "region" (rle) · kind "box" (xyxy) · positive: false = "not this"
+rejected:                                    # frames the user turned down; never offered again
+  - recording_id: "recording_009"
+    part_id: "part_001"
+    t_ns: 40210000000
+    track_id: 0
+    bucket: "left-toward"                    # the heading bucket it was refused for; null = every bucket
 digest: "9f2c…"                              # over the skeleton copy, every mark, and each image's hash
 ```
 
@@ -9165,18 +10396,130 @@ digest: "9f2c…"                              # over the skeleton copy, every m
   is refused while a run lists any of its frames**, found by scanning run records — nothing to go
   stale.
 - **The digest covers the images by hash**, so swapping an image under the same name changes it.
-- **Sampling** (`Experiment.sample_example_frames`, strategy `varied` by default, `spread` the
-  alternative): `spread` draws one frame per equal time slice across the chosen recordings, in
-  proportion to their tracked frames (Tenet 11's labeling-sampler exception: an example frame's
-  index is a label, not a join key); `varied` (#656/#677) groups tracked frames by silhouette
-  shape, embeds one stand-in per group with the patch backbone, and picks the most typical frames
-  first, then the farthest apart, so a resting animal does not hand the user five copies of one
-  posture. Each frame records `sampled_by`. Audit sets always use `spread`: an audit needs an
-  unbiased sample. Whether `varied` beats `spread` on accuracy is **not measured** (#656's own
-  body).
+- **Sampling** (`Experiment.sample_example_frames`, strategy `varied` by default, `spread` and
+  `heading` the alternatives; the strategies are one table, `subject_frames.STRATEGY_TABLE`, that
+  the CLI choice and the GUI combo both read): `spread` draws one frame per equal time slice across
+  the chosen recordings, in proportion to their tracked frames (Tenet 11's labeling-sampler
+  exception: an example frame's index is a label, not a join key); `varied` (#656/#677)
+  groups tracked frames by silhouette shape, embeds one stand-in per group with the patch backbone,
+  and picks the most typical frames first, then the farthest apart, so a resting animal does not
+  hand the user five copies of one posture; `heading` (*Headings*, below) picks frames per
+  camera-relative heading. Each frame records `sampled_by` (`heading:<bucket>:<source>` for the
+  third). `varied` and `heading` read a **subset** of the recordings — `from_recordings` of them,
+  split evenly across the values of the metadata column `spread_by` when one is named (an
+  acquisition setup, a cohort), else spread by recording order. A frame in `rejected` is never
+  drawn again — for its bucket, or for any when `bucket` is null. Audit sets always use `spread`:
+  an audit needs an unbiased sample. Whether `varied` beats `spread` on accuracy is
+  **not measured** (#656's own body).
 - **The labeling screen** (*Surfaces*) builds one in the GUI; the API and CLI take a prepared YAML
   as well, so a set can be scripted. Clicks are on the **full frame**, so the stored coordinate is
   the click's own; `dinov3_match` maps it into its crop.
+
+### Headings (the `heading` sampler)
+
+An example set for a turning animal needs it facing every way the camera sees it, and `varied`
+spends its picks on posture. The `heading` strategy estimates each tracked frame's heading
+**relative to the camera** — eight 45° buckets (`right`, `right-toward`, `toward`, `left-toward`,
+`left`, `left-away`, `away`, `right-away`; *toward* is facing the camera) plus `rearing` and
+`unclear` — from the frames alone, and picks per bucket. No clicks and no labels go in: the method
+is the third version tried in a study, and its evidence is self-consistency on held-out
+recordings, not accuracy (accuracy is still an open question).
+
+
+- **Walking.** While the animal walks steadily, its direction of travel is its heading. Sideways
+  travel is read in image pixels against the body's size. Travel toward or away from the camera
+  needs the floor (*Floor*, below) and counts only when the tail-free body grows or shrinks the
+  same way, because jitter in the floor point is magnified by the floor's foreshortening.
+- **Body and tail.** An opening a few percent of the body's size strips the tail and legs from the
+  subject mask; the tail is the largest thin leftover. The body's shape says side-on or end-on, and
+  must agree with a walking heading. The head points away from the tail **base**: its side gives
+  left/right; its height gives front/back, but only for a leftover that reaches well past the body
+  (paws below a mouse facing the camera do not). A walking heading the tail contradicts is dropped,
+  and toward/away walking with no tail to confirm it is dropped: walking away and turning away look
+  alike.
+- **Similar frames.** Every other frame takes the similarity-weighted circular mean of the
+  headings of its 20 most similar labelled frames **from other recordings** (walking frames, their
+  mirror images with the heading mirrored, and tail-labelled still frames), over 4×4-pooled DINOv3
+  patch features (the CLS token is trained flip-invariant and cannot tell a left profile from a
+  right one). A frame whose neighbours disagree (resultant length below 0.55) is `unclear`.
+- **Rearing** is a mask taller than 1.45× the recording's walking median, and is its own bucket.
+- **Floor.** `floor_class` names the detection class whose masks are the arena floor (the hot
+  plate's `plate`). Its ellipse is fitted to the far rim of the per-pixel vote of its masks; a
+  recording whose fit's aspect is more than 20% from its `spread_by` group's median, or that has
+  none, uses the group's median. With no floor class, or no fit to use, walking reads sideways
+  travel only, and front/back comes from the tail and similar frames alone. `floor_class` is
+  optional: without it overall agreement and front/back flips hold, but frames facing the
+  camera or away land in their own bucket less often, so a rig with a segmentable floor should
+  name it. The
+  floor each recording used is recorded in its cache's `headings.yaml` (Tenet 9).
+- **Not from above** (2026-11-03). Toward and away are directions a camera looking down never
+  sees, so the sampler is gated on the camera view (§10): `Experiment.heading_applies(ids)` is
+  False when **every** recording resolves to `top_down` (with none, the experiment default
+  decides), through `camera_view.all_top_down`. A view that is not set is unknown, not top down,
+  and keeps the sampler (§10's "never a guess" — hiding it would guess the other way). Where it
+  is False, `sample_example_frames(strategy="heading")` and `heading_pool` raise `ValueError`
+  naming the view and how to change it, and the labeling screen drops *By heading*, the floor
+  and the compass for one line saying why. A mix of views keeps the sampler; a request whose
+  own recordings are all top down is still refused.
+
+**The cache** is per recording and per tracking run, written the first time a sample reads that
+recording, and rewritten only when the method's version, its constants or the floor it read
+differ from what `headings.yaml` records (a parallel artifact, as tracking's `assignments/` is to
+detection):
+
+```
+recordings/recording_005/
+└── headings/
+    └── track_01/
+        ├── headings.yaml
+        └── part_001.zarr
+```
+
+```yaml
+schema_version: 1
+tracking_run_id: "track_01"
+floor: {class: "plate", detection_run_id: "det_01", cx: 946.5, cy: 851.9, a: 503.5, b: 111.9,
+        source: "own"}                       # "own" | "group_median:<value>" | null (no floor)
+backbone: {model_id: "dinov3_vit", variant: "vit_large", crop_px: 224, pool: 4,
+           projection: {kind: "random", seed: 20261019, dim: 64}}
+embed_every: 2
+method: {version: 3, constants: {...}}       # every constant that moved a heading (Tenet 9)
+created_at: "2026-10-20T10:00:00Z"
+```
+
+`part_NNN.zarr` (zarr v3, `schema_version` in its attrs), one row per (frame, track), chunk 10000
+rows:
+
+| array | dtype | meaning |
+|---|---|---|
+| `frame_idx` | int32 | |
+| `t_ns` | int64 | |
+| `track_id` | int32 | |
+| `walking_deg` | float32 | the walking heading, NaN when not walking or dropped |
+| `tail_deg` | float32 | the tail's heading, NaN when the tail says nothing |
+| `conflict` | bool | walking and tail disagreed |
+| `rearing` | bool | |
+| `pickable` | bool | on the floor, wholly in view, a single animal's area |
+| `feature_row` | int32 | row of `features` / `features_mirror`, −1 when not embedded |
+| `features` | float16 (M, 1024) | 4×4 cells × 64 projected channels, each cell L2-normalised; chunk (1000, 1024) |
+| `features_mirror` | float16 (M, 1024) | the same of the mirror-imaged crop |
+
+What depends on other recordings — the similar-frames heading, and so a frame's bucket — is
+computed at sampling time from the caches, never stored. The projection is a fixed seeded
+Gaussian rather than a PCA fitted on the experiment, so one recording's cache needs no other
+recording, and it measured within the floor of the PCA on agreement and on front/back flips.
+
+
+**Picking.** Per bucket, candidates rank by source — walking with the tail agreeing, walking,
+tail, similar frames — then by confidence, and each next pick must differ from the frames already
+in the set (farthest-first over `features`), so turning one down never hands back its near-twin.
+`rejected` frames are skipped, for their bucket.
+
+**The review window** (GUI only; *Not in the CLI*): clicking a direction on the labeling screen's
+coverage compass opens it — that bucket's frames in the set above its ranked candidates. **Reject**
+moves an in-set frame into `rejected` and puts the next candidate in its place; **Not this
+direction** rejects a candidate; ticked candidates are added. The compass shows marked / in-set
+per bucket, and hand-picked frames apart (they carry no heading).
 
 ### Shared model layer (§5, §14)
 
@@ -9320,6 +10663,62 @@ the research measured on (a patch is a fixed fraction of body size). A per-detec
 forward pass per detection rather than per tracked subject — under `anchor_tracker`, up to three
 detections where the subject was one.
 
+### One example set per detection class (2026-11-02)
+
+**The case.** A social experiment tells two animals apart at detection as two classes (Resident,
+Intruder), tracks each class on its own and merges the tracks (§13 `track_merge`). When the
+animals look different — a white and a black mouse — one example set does not serve both: the
+user measured clicks on the white mouse failing on the black one. So a `keypoint_detect` run may
+match **each class against its own set**: `class_example_sets: {Resident: ex_02, Intruder:
+ex_03}`.
+
+**One run, not one per class.** The alternatives were two detect runs with `keypoint_track`
+taking a list, or a keypoint counterpart of `track_merge`. Both put more than one detect run
+behind a track run, and every reader of "the track run's detect run" — the viewer, the exports'
+`source="detect"`, the embedding's pose, distill, *Tune tracking* — would have to read several;
+two runs also walk the video and load the backbone twice. One run walks the video once, loads
+the backbone once, and its output has today's shape, so `keypoint_track` and everything after it
+are unchanged: a pose already carries `detection_row`, and the row's class is the detection
+run's.
+
+- **The config.** `class_example_sets` is exclusive with `class_name` and `example_set_id`. A
+  one-entry map is resolved to the single form (`class_name` + `example_set_id`), so the same
+  settings have one identity whichever way they were spelled. With two or more entries, poses
+  are placed only in detections of the named classes, each against its class's set.
+- **The engine.** One backbone, and per class its own bank, mirror bank and learned skeleton
+  statistics (edge lengths and side rules are learned from that class's clicks). Each detection
+  reaches the method with its class (`InstanceFrame.classes`); a detection of a class with no set
+  is never handed over (the runner filters by class, as `class_name` does). Held-out scoring
+  scores each class's frames against that class's other frames only.
+- **One skeleton.** Every set must be on the same skeleton (equal digest): one run stores one set
+  of point columns. Refused otherwise, naming the sets and their skeletons.
+- **Scores are per bank.** A cosine against the black mouse's clicks is not on the same scale as
+  one against the white mouse's; the track stage weighs each subject's own scores, so within a
+  subject they compare. A single display cut-off across classes is the caveat, not a fix.
+- **Every reader of a run's example sets goes through one function**
+  (`keypoint_runs.detect_example_sets(meta) → {class or None: snapshot}`): the delete refusal,
+  *Tune tracking*'s refusal to score on a set that built the method (any of them), the distill
+  dataset's exclusion of example frames, *Test keypoints*' held-out score, and the audit. A guard
+  scans for direct reads of `meta["example_set"]`.
+- **The patch-method teacher** (§12 *Distill keypoints*, *Test cut-off…*) takes the same map
+  (`class_example_sets`, in place of `example_set`): resolved by the same
+  `resolve_method_model`, recorded as the teacher's `example_sets`, and handed only the named
+  classes' detections, each with its class. `distill_keypoints`, `keypoint_dataset`,
+  `keypoint_test` and the trained model's `teacher` record carry it (built 2026-11-02, phase
+  2). A student distilled from a finished per-class detect run learns from that run's stored
+  poses, as any detect-run teacher does.
+- **Set up keypoints… with two or more animals** (phase 2, the user's choice 2026-11-02:
+  *track each class, then merge*). `start_keypoint_setup(class_names=[…])`, two or more of the
+  detector's classes in place of `class_name`, runs `detect → track → merge → examples → label →
+  train → register` (`distill_stage_names` reads the record: a single-class setup keeps its
+  six stages, so an older record reads as it did). **`track`** runs one class-filtered
+  tracking run per class over the teacher recordings — the flow a social experiment already
+  uses — recorded as `processing_run_ids` / `run_ids` per class; **`merge`** is one
+  `track_merge` run per teacher recording over those tracks (phase `merging`). The pause waits
+  for **one example set per class** (`continue_keypoint_setup(class_example_sets=…)`), or a run
+  started with `class_example_sets` goes straight through; the patch teacher then labels the
+  merged subjects. One student is trained for every class.
+
 **`TrainedYoloPose` — the distilled student** (§12 *Distill keypoints*): a closed-set
 `KeypointModel` whose skeleton is fixed from the teacher's example set; `n_candidates = 1`;
 `score_spec` is the detector's confidence, a confidence of 0 is NaN, never a guess; sees the whole
@@ -9336,6 +10735,7 @@ picker. `default_track_method = "despike_smooth"`.
 class KeypointDetectJob:                        # core/keypoints.py
     job_id: str; recording_id: str; detect_run_id: str
     detection_run_id: str                        # the detections a per-detection method crops; the cadence and lineage for every method
+    class_name: str | None                       # the detection class a per-detection method places poses in; None: every class (refused for a whole-frame method)
     min_pose_confidence: float | None            # 0.25 when the method reports_confidence; None (refused if set) otherwise
     model_id: str; model_variant: str | None
     backbone: dict | None                        # {"id": "dinov3_vit", "variant": "vit_large"}; None for a closed-set model
@@ -9353,6 +10753,7 @@ class KeypointTrackJob:
     match: dict                                  # {min_inside: 0.5, mask_grow: 0.05} (*Assignment*)
     method: str; config: dict                    # the method's config, every field resolved
     skeleton: dict; created_at: str
+    compute: ComputeTarget | None = None         # cpu, or remote (§6); None: a job from before, ran here
 
 @dataclass
 class KeypointProgressEvent:                     # both stages; §6's contract
@@ -9445,6 +10846,7 @@ schema_version: 1
 id: "kd_01"
 created_at: "2026-10-07T10:00:00Z"
 detection_run_id: "det_01"
+class_name: null                                             # "mouse": poses only in that class's detections; null: every detection
 min_pose_confidence: null                                    # 0.25 for a method that reports_confidence
 model_id: "dinov3_match"
 model_variant: "vit_large"
@@ -9455,6 +10857,10 @@ example_set:                                                 # null when the met
   digest: "9f2c…"
   frames: ["frames/a1f3c9….png", "frames/9c2e71….png"]       # the images this run learned from
   marks: {...}                                               # a full copy, so the run never depends on the set
+example_sets: null                                           # per class instead (*One example set per detection class*):
+                                                             #   {Resident: {id, name, digest, frames, marks}, Intruder: {...}}
+                                                             #   with example_set and class_name null
+class_example_digests: null                                  # {Resident: "9f2c…", Intruder: "1b0d…"}; identity
 skeleton: {names: [...], edges: [...], pairs: [...]}         # the copy the arrays follow
 skeleton_digest: "4b7e…"
 n_candidates: 5
@@ -9463,7 +10869,8 @@ crop_px: 448
 decode: "skeleton"
 side_rule: "auto"                                            # as asked; what each pair got is under resolved
 matching: {refine_tau: 0.01, skel_tau: 0.05, topk: 5, topk_wide: 10, len_tol: 0.25, len_floor: 0.02, side_penalty: 4.0}
-resolved: {side_rules: {"left_ear/right_ear": "midline"}}   # Model.resolved(), after load()
+resolved: {side_rules: {"left_ear/right_ear": "midline"}}   # Model.resolved(), after load(); per class:
+                                                             #   {by_class: {Resident: {side_rules: …}, …}, matching: …}
 batch_size: 32
 compute: {backend: "cuda", device_indices: [0]}
 # appended when the run ends:
@@ -9489,6 +10896,7 @@ config:                                                      # every field of th
   decode_cutoff: null                                        # the score below which a candidate is "not visible" to the decode; null = the method's default
 skeleton: {names: [...], edges: [...], pairs: [...]}
 skeleton_digest: "4b7e…"
+compute: {backend: "cpu"}                                    # on a cluster, the node's backend (§6)
 assignment: {part_001: {instances: 63402, assigned: 61205, unassigned: 2197}}
 coverage: {track_0: {part_001: {placed: 61205, total: 61311}}}   # subject-frames with an assigned instance / subject-frames
 timing: {frames: 61311, seconds: 14.2}
@@ -9530,6 +10938,20 @@ keypoint_track_runs:
   method: the student, asked for everything, returns hundreds of near-zero boxes per frame, and a
   row per box would store noise. It is identity and recorded; the per-point visibility above stays
   a view.
+- **`class_name` chooses which detections a per-detection method is handed** (2026-10-22). A
+  per-detection method places a pose in every box the detection run holds, whatever its class, so
+  a detector that also finds the arena had a pose placed in the arena's box on every frame: 38,276
+  of 89,212 poses in one Hotplate run were in `plate` boxes, GPU time spent on something that is
+  not an animal. With `class_name` only that class's rows reach the method; each pose keeps its
+  real `detection_row`, and a frame with no detection of the class is a frame with no detection
+  (not visited, not counted in progress or coverage). It is a selection of input rows, not a
+  filter on output, so the rows it skips were never placed. Refused for a whole-frame method,
+  which is handed no detections (the instance decides: a crop student is per-detection where its
+  class is not). Not taken by the distill teacher or *Test keypoints* (§12): both are handed a
+  tracking run, and which class counts there is that tracking run's `class_name`, not a second
+  setting that could disagree with it. Keypoint track's own rule (*Assignment*: only poses on the
+  tracked class's boxes are offered a subject) still applies to a detect run that placed every
+  class, so the two agree without being set twice.
 - **Coverage.** A detect run records, per part, the frames it walked, the frames with at least one
   instance and the instances; it knows no subjects. A track run records, per part, how many
   instances were assigned and how many were not, and per subject and part the frames placed / the
@@ -9548,6 +10970,13 @@ a pose meets a subject.
    (`subject_frames`, the grouping every keypoint and sampler path shares, §13's multi-detection
    tracks). Their masks are read as run lengths (`core/rle.py`), never decoded here: a point is
    inside the subject when any row's grown mask holds it, which is the OR without building it.
+   **Instances offered**: only those placed on a box of the class the tracking run follows
+   (its `class_name`), or on no box (`detection_row` −1, a whole-frame method); a tracking run
+   that follows every class offers every instance (`pose_match.eligible_instances`, 2026-10-22).
+   A per-detection method places a pose in every box the detection run holds, so a detector
+   that also finds the arena has a pose placed in the arena's box. That pose lies on the
+   animal, and the mask cannot tell it from the animal's own: on the Hotplate experiment it
+   was 28% of tracked poses, its paws lost to the arena-wide crop.
 2. **Score** for each (instance, subject): the **share of the instance's placed points that fall
    inside the subject's mask grown by `mask_grow` × body scale** (`√(w·h)` of the subject's box;
    default 0.05). Points are scaled to the mask's resolution first — a mask is stored at detection
@@ -9622,6 +11051,133 @@ class KeypointTrackMethod(ABC):                 # core/protocols.py
 Each method's config is a pydantic model (§6.5) and **every one of its fields is identity**, filter
 constants included: a run is "the same settings" only if every number that moved a point matches.
 
+**A subset of the skeleton (`track_points`).** Both methods take `track_points: list[str] | None`:
+the points the method may move; every other point is the detect run's own placement and score,
+**bit for bit**, untouched by the path, the left/right settling and the filters (`changed` 0).
+Unset is every point. It is names only, so it fits any skeleton: `validate` checks each name
+against the detect run's skeleton (refusing an unknown one with the skeleton's names, and an empty
+list), and writes back the resolved value (Tenet 9): the skeleton's column order, no repeats, and
+`None` when it names every point, so two configs that track the same points are one run. Any
+combination is allowed; a left/right pair with only one point tracked is **not settled left from
+right** (that needs both), and its tracked point still gets its path and filters. The filters are
+per point, so filtering every column and restoring the untracked ones is exact. Measured on
+hot-plate paws: tracking at transition 3 lifted the midline and hind paws above detection while
+the fore paws fell below it; leaving the fore paws as detected scores above both (0.819 against
+0.797 tracked and 0.745 detected, over the same 45 frames).
+
+
+The surfaces read it from the field: the GUI renders a field declared `ui: skeleton_points` as a
+checkbox per point of the chosen detect run's skeleton (read off the UI thread with the detect
+groups; `gui/skeleton_points.py`), on the main form, noting a split pair; the CLI parses any list
+field's `--method-param NAME=a,b,c` as a list.
+
+### Tuning a track method
+
+`temporal_decode`'s right settings depend on the footage. On 25 fps oblique hot-plate video the
+shipped transition scale (0.15 body per row) cut held-out PCK@0.1 from detection's 0.745 to 0.624,
+the paws from 0.604 to 0.405, while a scale of 3 with the filters off scored 0.797 (the best of
+28 settings, so provisional). A default cannot be right for every rig, so **Tune tracking**
+measures it per experiment from labels the user already has.
+
+
+- **Input**: the detect runs (one `kd_NN`, or a `keypoint_detect_spec` resolved per recording as
+  the track form resolves it), an **example set** whose labelled frames score the settings, and
+  the track config the user has set (the base the tried settings override).
+- **The grid** is `configs/keypoint_track.TUNE_GRID`: transition scale {0.15, 0.5, 1, 2, 3, 5} ×
+  smoothing {off, 0.05 s, 0.133 s} × despike {off, on}, 36 settings, beside *detection only* and
+  *the current settings*. The missing penalty and the mirror cost moved nothing in the study and
+  stay where the user set them. Every combination validates against `TemporalDecodeConfig`.
+- **The work** (`pipeline/keypoint_track_tune.py`) re-runs the method **in memory** over the video
+  parts that hold labelled frames: the path is decoded once per path setting (`decode`) and
+  filtered once per filter setting (`finish`), reading each part's rows and inputs once
+  (`keypoint_track.track_inputs`, the stage's own reader). Nothing is written. Each setting is
+  scored by the audit scorer (`analysis/keypoint_audit.score`): PCK at 0.05 and 0.1, over all
+  points, the paired and unpaired groups, and each keypoint, each with its Wilson interval and
+  box-alone floor; a figure under `MIN_N_FOR_ESTIMATE` frames is withheld.
+- **Points left as detected.** After the grid, `points_to_track` compares the chosen setting with
+  detection alone, per unit (a left/right pair whose points are both tracked, or a single point),
+  on the **pick** half's per-keypoint PCK@0.1; a unit detection placed better is left as detected
+  (a unit with a withheld figure stays tracked). If that leaves some but not all points, the
+  setting with that `track_points` is scored as one more row (*… as detected: a, b*) and becomes
+  the recommendation only if it too wins on the pick half. On the hot-plate set it finds the fore
+  paws unprompted: check half 0.810 against 0.786 for the whole skeleton tracked and 0.762 for
+  detection.
+- **The choice is checked on labels it did not see.** The labelled recordings are dealt largest
+  first into a *pick* and a *check* half (whole recordings, so the check frames come from videos
+  the choice never read; the seed orders equal counts). The recommendation is the grid setting
+  with the best all-points PCK@0.1 on the pick half (`choose`, which reads nothing of the check
+  half); the check half scores it beside detection and the current settings, and those are the
+  figures to quote. Labels in one recording leave no check half, and every surface says so.
+- **The detect run's own examples are never scored**: the example set a detect run learned from
+  is refused outright, and its frames are excluded (and counted) from any other set. The window
+  never offers it: `example_set_choices` (`Experiment.tune_example_sets`, off the UI thread, since
+  it hashes each set's images) marks each labelled set usable or not against the detect spec's
+  own `example_set_digest` and `skeleton_digest` (the set it learned from; a set on another
+  skeleton), and the window lists only the usable ones and names the rest.
+- **Surfaces**: `Experiment.tune_keypoint_tracking`, `detail keypoints track-tune` (a table, the
+  recommendation marked, and the `keypoints track` command that applies it), and the track form's
+  **Tune tracking…** window (the same table; **Use selected settings** fills the form's method
+  settings). Derived, never stored; the track run that follows records its settings as any run
+  does.
+
+### Previewing a track method
+
+*Tune tracking* needs labels the detect run did not learn from; a user who has none, or who wants to
+**see** what a setting does before a full run, previews instead. A full run is mostly
+**Assignment**: measured on a 16-minute two-animal recording (Agression_BMAD_Full recording_008,
+WSL, a loaded box), 2.5–5 ms per subject-frame for the mask decode and match against ~0.5 ms for the
+path and filters together, 83–91% of the run, and it depends on no method setting. So a preview
+assigns a short window once and runs every setting on those rows.
+
+- **Input**: the track stage's **launch config** (what `run_processing("keypoint_track", …)`
+  takes), each recording validated by the stage's own `validate` through the launch's
+  `_validate_processing`, so the tracking run, the method and `track_points` resolve exactly as a
+  launch would; up to `PREVIEW_MAX_RECORDINGS` (3) recordings, two of those the config covers by
+  default (`subject_frames.choose_recordings`); per recording a `KeypointTrackPreviewWindow`
+  (`start_s`, None = the middle; `duration_s`, 30 s default, ≤ 120); up to
+  `PREVIEW_MAX_VARIANTS` (2) **variants**, overrides of the method settings in
+  `PREVIEW_VARIANT_FIELDS` (transition scale, smooth, smooth window, despike), starting at
+  `PREVIEW_STARTING_VARIANTS`.
+- **The window** lies in the part its start falls in and stops at that part's end. It is decoded
+  with `PREVIEW_MARGIN_S` (2 s) either side and cut back, so inside it every setting's points are the
+  full run's (the path and filters settle as they would over the whole part); the rows come from
+  `keypoint_track.subject_rows(window_ns=…)`, the stage's own reader, shared with tuning.
+- **The work** (`pipeline/keypoint_track_preview.py`): detection alone, the current settings and
+  each variant per subject, the path decoded once per path setting and filtered per setting (as
+  tuning does). Progress: `assigning` per frame, `tracking` per subject and setting, `measuring`,
+  throttled by `ThrottledProgress` with each phase's first and last report forced.
+- **What it reports is description, not a ranking** (`analysis/keypoint_track_diagnostics.py`), per
+  recording and pooled, over the tracked points: share placed, median row-to-row move (body
+  fraction), jumps (> 0.5 body in one row) per minute, left/right swaps per minute, skeleton
+  stretch (median per-edge CV). Smoothing lowers each of them whether or not the points stay on the
+  animal, so **detection alone is always the first row** — the floor every figure is read
+  against. The counterweight is **agreement**: of detection's confident cells (a placed point
+  scoring at least its point's median placed score over the subject's window), the share where the
+  setting's point is within `AGREE_BODY` (0.1 body) of detection's. Over-smoothing and a too-tight
+  transition both lower it; detection alone scores 100% by construction, a ceiling, not a score.
+- **The grid search** (`grid=True`, phase 2): the same run over every `tune_settings()` setting
+  (the 36 of `TUNE_GRID`, `temporal_decode` only; variants refused beside it), with the **front**
+  marked — the settings no other setting beats on agreement, placed, jumps and swaps together
+  (`diagnostics.pareto_front`; a figure some setting lacks is left out of the comparison).
+  `PreviewResult.ranked()` orders detection alone, the current settings, the front by agreement,
+  then the rest. **The front is a provisional rule, not yet checked against labels**, and every
+  surface says so: the user chose label-free ranking, with the check against a labelled set
+  (Hotplate ex_02) to decide the rule afterwards. Measured on recording_008 (kd_01, 400–410 s),
+  every tracking setting agreed with 48–49% of confident detections (detection's own row-to-row
+  move was 13% of a body, wider than the radius), so the front was chosen on differences of about
+  one point: there it describes rather than decides. Assignment is still once per window and the
+  path once per transition scale (six decodes), so the grid costs little more than a preview.
+- **Surfaces**: `Experiment.preview_keypoint_tracking` (`grid=` for the search), `detail keypoints
+  track-preview` (`--grid`; the table, the front starred, then the `keypoints track` command for
+  each setting, or for the current settings and the front), and the track form's **Preview
+  tracking…** window: the settings played side by side on the same frames under one scrubber,
+  each tile named as its table row is (*Variant A: transition 1*), zoomed and panned together
+  (`ImageView.set_tiles`),
+  the table under them, **Use selected settings** back to the form; **Search the grid** lists
+  every setting front first and plays detection alone, the current settings and the selected
+  row. The side-by-side clips are GUI-only (`docs/cli.md` *Not in the CLI*). Derived, never
+  stored.
+
 ### The processing modules
 
 ```python
@@ -9636,7 +11192,9 @@ class KeypointDetectModule(ProcessingModule):
     identity_fields = ("model_id", "model_variant", "backbone_id", "backbone_variant",
                        "skeleton_digest", "example_set_digest", "n_candidates",
                        "every_n_frames", "crop_px", "decode", "side_rule", "matching",
-                       "min_pose_confidence")
+                       "min_pose_confidence", "class_name", "class_example_digests")
+    identity_defaults = {"class_name": None,  # a record before the field placed every class
+                         "class_example_digests": None}  # ... and learned from one set
     lineage_ref = ("detection", "detection_run_id")
 
 @register_processing_module
@@ -9651,14 +11209,18 @@ class KeypointTrackModule(ProcessingModule):
     lineage_ref = ("keypoint_detect", "detect_run_id")
 ```
 
-`KeypointDetectConfig`: `detection_run_id`, `model_id` — **no default**: which method fits is a
+`KeypointDetectConfig`: `detection_run_id`, `class_name` (default None: every detection; a
+per-detection method only), `model_id` — **no default**: which method fits is a
 fact about the animal and the camera, and a default is where a wrong one hides — `model_variant`,
-`example_set_id` (required iff `needs_examples`; refused otherwise), `min_pose_confidence` (0.25
+`example_set_id` (required iff `needs_examples`; refused otherwise), `class_example_sets`
+(class → set, in place of `class_name` + `example_set_id`; *One example set per detection
+class*), `min_pose_confidence` (0.25
 for a method that `reports_confidence`; refused otherwise), `decode`, `side_rule`, `crop_px`,
 `every_n_frames`, `batch_size`, compute. `validate()` resolves every defaulted input and writes it
 back (Tenet 9): the variant, the backbone, `decode` (`skeleton` when the skeleton has edges),
 `side_rule` (`off` when it has no pairs; an explicit `hard` without pairs refused), the matching
-constants, `min_pose_confidence`, the set's digest, frames and marks, the skeleton copy and digest.
+constants, `min_pose_confidence`, the set's digest, frames and marks, the skeleton copy and digest,
+and `class_name` as checked (None when unset).
 `KeypointTrackConfig`: `detect_run_id`, `tracking_run_id` (default: **the one** complete tracking
 run on the detect run's detection run; several → refused, naming them — resolving to "the first"
 would make the same command assign differently tomorrow), `match_min_inside` (0.5),
@@ -9668,7 +11230,8 @@ would make the same command assign differently tomorrow), `match_min_inside` (0.
 **Detect runner** (`pipeline/keypoint_detect.py`). Per part: **one** forward-sequential
 `cv2.VideoCapture` walk (Tenet 11). A per-detection method visits the frames that have detections
 at the run's cadence and is given every detection on the frame — its box, and its mask decoded
-only when the method reads masks; a whole-frame method visits every frame at the cadence. Frames
+only when the method reads masks; with `class_name`, only that class's detections, and only the
+frames that have one. A whole-frame method visits every frame at the cadence. Frames
 batched in a bounded buffer of `batch_size`, `predict_batch`, every returned row appended in frame
 order, the writer flushing on frame boundaries (Tenet 12). Frames come from the detection part's
 rows or the timestamp map, never `CAP_PROP_FRAME_COUNT`. Progress per §6 (*Job dataclasses and
@@ -9724,7 +11287,7 @@ Re-tracking a detect run is the same launch. **The GUI's next-step buttons follo
 
 | stage | identity | recorded, not identity |
 |---|---|---|
-| `keypoint_detect` | the detection run's identity (by lineage), method, variant, `weights_source`, backbone + variant, skeleton digest, example-set digest, `n_candidates`, `every_n_frames`, `crop_px`, `decode`, `side_rule`, the matching constants, `min_pose_confidence` | compute, batch size, timing, coverage |
+| `keypoint_detect` | the detection run's identity (by lineage), method, variant, `weights_source`, backbone + variant, skeleton digest, example-set digest, `n_candidates`, `every_n_frames`, `crop_px`, `decode`, `side_rule`, the matching constants, `min_pose_confidence`, `class_name`, `class_example_digests` (each class's set digest) | compute, batch size, timing, coverage |
 | `keypoint_track` | the detect run's identity (by lineage), the tracking run's identity (`tracking_identity`; the id is recorded, not identity), `match` (`min_inside`, `mask_grow`), `method`, every field of its config (filters, transition, decode cut-off) | timing, coverage, assignment counts |
 
 What #626 left out and this adds: the skeleton (a run with a renamed or reordered skeleton merged
@@ -9798,8 +11361,10 @@ still read, and the distill's rule that audit frames never build a student stays
 | Detection run `status: "complete"` | Error |
 | `model_id` in `KEYPOINT_MODELS` or a catalog record with `role: keypoints` | Error — list available methods |
 | `min_pose_confidence` in [0, 1], and set only for a method that `reports_confidence` | Error — name the method |
+| `class_name` set only for a per-detection method (the built instance's `per_detection`), and one the detection run has (`detection.detected_classes`, read off its parts) | Error — name the method / the classes the run has |
 | Model installed (`readiness()`, §5); `compute.backend` in `supported_backends`; `check_backend` passes | `ModelNotReadyError` with the install action / Error |
 | Example set given iff the model `needs_examples`; it exists and `purpose: example` | Error |
+| `class_example_sets`: not beside `class_name` / `example_set_id`; a per-detection method that `needs_examples`; every class one the detection run has; every set runnable; all sets on one skeleton (equal digest) | Error — name the field, the method, the classes the run has, or the sets and their skeletons |
 | Every skeleton point clicked visible on at least one example frame | Error — name the keypoints with none |
 | `Skeleton.validate` passes | Error with the offending point |
 | `decode = "skeleton"` requires edges; an explicit `hard` / `midline` side rule requires a pair | Error — name the setting to change |
@@ -9881,6 +11446,11 @@ Every capability on all three surfaces in the change that adds it (`wire-every-s
 - `tests/pipeline/test_label_leakage.py` gains the keypoint stages: permute the audit labels and
   the example marks held fixed, and every prediction is byte-identical.
 - Export round-trips: each format opened by its own loader.
+- Per-class example sets (`tests/models/test_patch_match_classes.py`): swapping the two classes'
+  sets changes which bank placed each detection's points; a detection of a class with no set is
+  refused. `tests/storage/test_detect_example_sets.py` scans for a direct read of a detect run's
+  `example_set` outside `keypoint_runs.detect_example_sets`, and the delete and *Tune tracking*
+  refusals are tested for a set used by either class.
 - UI-thread scan seams (`tests/gui/test_ui_thread_blocking.py`): `keypoints(`,
   `keypoint_instances(`, `sample_example_frames(`, `add_example_frame(`, `set_example_marks(`,
   `test_keypoints(`, the canvas pre-pass.

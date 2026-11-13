@@ -10,6 +10,8 @@ names and, when the user picked a column to balance across, the cohort metadata 
 
 from __future__ import annotations
 
+from detail.core.utils import coerce_series_key
+
 #: The example count the setup form already advises (``ADVISED_CLIPS``: 3-5 is measurably
 #: steadier). The progress bar fills toward it and turns into a tick there.
 TARGET_EXAMPLES = 3
@@ -22,7 +24,7 @@ def _plural(n: int, word: str) -> str:
 def subjects(clips) -> tuple[set[str], set[tuple[str, int]]]:
     """The recordings and the individuals (recording, track) ``clips`` come from."""
     recordings = {c["recording_id"] for c in clips}
-    individuals = {(c["recording_id"], int(c["track_id"])) for c in clips}
+    individuals = {(c["recording_id"], coerce_series_key(c["track_id"])) for c in clips}
     return recordings, individuals
 
 

@@ -20,14 +20,19 @@ from detail.checks.commands import (
     current_script,
     detail_repo_root,
     setup_scripts,
+    ssh_refresh_argv,
+    ssh_terminal_supported,
     terminal_launch_argv,
     terminal_name,
+    wsl_browser_argv,
+    wsl_explorer_argv,
 )
 from detail.core.dataclasses import CheckResult, CheckStatus
 from detail.core.registries import CHECKS
 
-# Re-exported so the CLI (`detail doctor`) and the GUI (`Sam3BackendPage`) reach the
-# machine-tailored install commands through the one check API they already import.
+# Re-exported so the CLI (`detail doctor`) and the GUI (`Sam3BackendPage`,
+# `RemoteTargetsPage`) reach the machine-tailored install commands through the
+# one check API they already import.
 __all__ = [
     "CheckInfo",
     "SetupScript",
@@ -38,8 +43,12 @@ __all__ = [
     "run_check",
     "run_checks",
     "setup_scripts",
+    "ssh_refresh_argv",
+    "ssh_terminal_supported",
     "terminal_launch_argv",
     "terminal_name",
+    "wsl_browser_argv",
+    "wsl_explorer_argv",
 ]
 
 _PROBE_TIMEOUT_S = 60

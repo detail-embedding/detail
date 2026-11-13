@@ -146,14 +146,16 @@ def test_concurrent_registrations_all_survive(isolated_storage, tmp_path):
 def test_a_failed_write_leaves_no_temp_file(isolated_storage, tmp_path, monkeypatch):
     """The temp name is unique per writer (a shared one raced), so a crash between write
     and replace would otherwise litter the config dir with orphans."""
-    from detail.storage import roots
+    from detail.storage import machine_file
 
     folder = tmp_path / "rig"
     folder.mkdir()
-    # Patched on `roots`, which is where the write now lives — `video_roots` is the video-shaped
-    # door onto it. Point of use, as the mocking rule says; the point moved.
+    # Patched on `machine_file`, which is where every machine-config write now lives —
+    # `video_roots` and `roots` are doors onto it. Point of use, as the mocking rule says.
     monkeypatch.setattr(
-        roots.atomic, "replace", lambda *a: (_ for _ in ()).throw(OSError("boom"))
+        machine_file.atomic,
+        "replace",
+        lambda *a: (_ for _ in ()).throw(OSError("boom")),
     )
     with pytest.raises(OSError):
         video_roots.register_video_root("rig", folder)

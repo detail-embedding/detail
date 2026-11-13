@@ -13,12 +13,52 @@ importing the other.
 
 from PyQt6 import sip
 from PyQt6.QtCore import QObject
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtWidgets import (
+    QTreeWidget,
+    QTreeWidgetItem,
+    QTreeWidgetItemIterator,
+    QWidget,
+)
 
 
 def alive(obj: QObject | None) -> bool:
     """Whether ``obj`` is a Qt object that still exists (C++ side not destroyed)."""
     return obj is not None and not sip.isdeleted(obj)
+
+
+def tree_items(tree: QTreeWidget) -> list[QTreeWidgetItem]:
+    """Every item of ``tree``, depth first in display order, collapsed children included.
+
+    The one place a ``QTreeWidgetItemIterator`` is built, so none outlives this call. The
+    iterator registers itself with the tree's model and its destructor unregisters itself
+    without asking whether the model still exists. Held as a local beside the only reference
+    to the tree — a test's frame — it is freed after the tree and writes into freed memory:
+    ``corrupted double-linked list``, the process aborted at a later, unrelated free
+    (``tests/gui/test_tree_items.py``).
+    """
+    items = []
+    walk = QTreeWidgetItemIterator(tree)
+    while walk.value() is not None:
+        items.append(walk.value())
+        walk += 1
+    return items
+
+
+def cleared(obj: QObject) -> bool:
+    """Whether ``obj``'s Python instance state is gone while its C++ side still runs.
+
+    The mirror of :func:`alive`. The cyclic collector *clears* every object in an unreachable
+    cycle before it frees any, and for a sip wrapper that empties ``__dict__`` while the C++
+    object is still installed as an event filter and still a slot's receiver. Whatever the
+    collection then destroys first can send it events: a clip pane window closed by its
+    player's ``destroyed`` hid its body, and ``Dialog.eventFilter`` raised ``AttributeError:
+    no attribute '_body_widget'`` into the excepthook, blaming whichever test next collected.
+
+    Ask it first in an ``eventFilter`` that reads instance state, and filter nothing when it
+    says so. Only meaningful for an object that sets instance state in ``__init__`` — which is
+    exactly the object that can be caught without it.
+    """
+    return not vars(obj)
 
 
 def discard(widget: QWidget | None) -> None:

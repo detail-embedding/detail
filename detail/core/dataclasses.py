@@ -321,10 +321,15 @@ class FrameResult:
 # --------------------------------------------------------------------------- #
 @dataclass
 class ComputeTarget:
-    backend: str  # "cpu" | "cuda" | "mps" | "cloud"
+    backend: str  # "cpu" | "cuda" | "mps" | "remote" | "cloud"
     device_indices: list[int] | None  # cuda: [0], [0,1], ...; None = all available
     cloud_provider: str | None  # cloud: "modal" | "aws" | ...
     cloud_instance: str | None  # cloud: "A100" | "g4dn.xlarge" | ...
+    # remote: the registered target name (`detail remote list`) to submit through
+    # (§6). A RemoteExecutor rewrites this to the concrete on-cluster backend
+    # ("cuda") before the job ever reaches a runner — no runner or `resolve_device`
+    # sees "remote" as a backend.
+    remote_target: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -332,6 +337,7 @@ class ComputeTarget:
             "device_indices": self.device_indices,
             "cloud_provider": self.cloud_provider,
             "cloud_instance": self.cloud_instance,
+            "remote_target": self.remote_target,
         }
 
     @classmethod
@@ -350,6 +356,9 @@ class ModelLicense:
 
     name: str  # e.g. "DINOv3 License"
     url: str | None  # where the terms are read
+    summary: str = (
+        ""  # one sentence a user can act on, e.g. "academic, non-commercial use"
+    )
 
 
 @dataclass
@@ -403,17 +412,25 @@ class DetectionJob:
     # Process every Nth source frame (1 = every frame). Rows keep the *source* frame
     # index, so nothing downstream renumbers (§4).
     every_n_frames: int = 1
+    # Per-class overrides, keyed by class name; a class with no entry falls back to
+    # conf_threshold. Empty for every job that doesn't set one (§7).
+    class_conf_thresholds: dict[str, float] = dataclasses.field(default_factory=dict)
+    # A keypoint teacher run's window end (§26): only frames with t_ns below it are read.
+    # None reads the whole recording (Tenet 8: a point on the t_ns axis, so int ns).
+    t_end_ns: int | None = None
 
     def to_dict(self) -> dict:
         return {
             "job_id": self.job_id,
             "recording_id": self.recording_id,
             "every_n_frames": self.every_n_frames,
+            "t_end_ns": self.t_end_ns,
             "model_id": self.model_id,
             "model_variant": self.model_variant,
             "weights_source": self.weights_source,
             "prompt": self.prompt.to_dict(),
             "conf_threshold": self.conf_threshold,
+            "class_conf_thresholds": self.class_conf_thresholds,
             "batch_size": self.batch_size,
             "compute": self.compute.to_dict(),
             "created_at": self.created_at,
@@ -425,9 +442,11 @@ class DetectionJob:
             job_id=d["job_id"],
             recording_id=d["recording_id"],
             every_n_frames=int(d.get("every_n_frames") or 1),
+            t_end_ns=(int(d["t_end_ns"]) if d.get("t_end_ns") is not None else None),
             model_id=d["model_id"],
             prompt=Prompt.from_dict(d["prompt"]),
             conf_threshold=d["conf_threshold"],
+            class_conf_thresholds=d.get("class_conf_thresholds") or {},
             compute=ComputeTarget.from_dict(d["compute"]),
             created_at=d["created_at"],
             model_variant=d.get("model_variant"),
@@ -468,6 +487,11 @@ class LabelingJob:
     sampling: str = "stratified"  # within-part frame draw: "stratified" | "uniform"
     model_id: str = "sam3"  # prompt-capable detection model doing the labeling
     model_variant: str | None = None  # None = the model's default variant
+    #: A directory **relative to the dataset's run dir** holding the sampled frames already
+    #: extracted as images (``labeling.extract_source_frames``), or ``None`` to read them from the
+    #: videos. A remote labeling run sets it so only ~1,000 images cross to the cluster rather than
+    #: the whole video library; nothing else about the job changes.
+    source_frames: str | None = None
     # Largest share of the dataset kept as empty-label background frames. The API always
     # passes LabelingConfig's resolved value; 0.0 is what a job recorded before the field
     # existed did.
@@ -489,6 +513,7 @@ class LabelingJob:
             "sampling": self.sampling,
             "model_id": self.model_id,
             "model_variant": self.model_variant,
+            "source_frames": self.source_frames,
             "background_share": self.background_share,
         }
 
@@ -509,6 +534,7 @@ class LabelingJob:
             sampling=d.get("sampling", "stratified"),
             model_id=d.get("model_id", "sam3"),
             model_variant=d.get("model_variant"),
+            source_frames=d.get("source_frames"),
             background_share=d.get("background_share", 0.0),
         )
 
@@ -684,6 +710,10 @@ class TrackingJob:
     # Link every Nth *source* frame — a multiple of the stride detection ran at (§4).
     # The trackers age tracks by stepping this, so max_missed counts processed frames.
     every_n_frames: int = 1
+    # Restrict linking to detections of this class only. None = every class together
+    # (right for a single-class detection run); a multi-class run needs one tracking
+    # job per class, each with its own class_name, to get one clean track per animal.
+    class_name: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -696,6 +726,7 @@ class TrackingJob:
             "arena_ids": list(self.arena_ids),
             "created_at": self.created_at,
             "every_n_frames": self.every_n_frames,
+            "class_name": self.class_name,
         }
 
     @classmethod
@@ -708,6 +739,50 @@ class TrackingJob:
             tracker_id=d["tracker_id"],
             hyperparams=dict(d["hyperparams"]),
             arena_ids=list(d["arena_ids"]),
+            created_at=d["created_at"],
+            every_n_frames=int(d.get("every_n_frames") or 1),
+            class_name=d.get("class_name"),
+        )
+
+
+@dataclass
+class TrackMergeJob:
+    """Combine 2+ existing single-subject tracking runs into one multi-subject run
+    (§13) — one object_id per source, built by relabeling already-clean tracks rather
+    than by asking a real multi-object tracker to tell the animals apart itself."""
+
+    job_id: str
+    recording_id: str
+    track_id: str
+    detection_run_id: str
+    source_run_ids: list[
+        str
+    ]  # each source's own tracking run id; object_id = its index
+    created_at: str
+    # The common cadence every source ran at (validated equal across sources) — carried
+    # so the merge's own progress denominator matches theirs, the same field every
+    # tracking-shaped job carries.
+    every_n_frames: int = 1
+
+    def to_dict(self) -> dict:
+        return {
+            "job_id": self.job_id,
+            "recording_id": self.recording_id,
+            "track_id": self.track_id,
+            "detection_run_id": self.detection_run_id,
+            "source_run_ids": list(self.source_run_ids),
+            "created_at": self.created_at,
+            "every_n_frames": self.every_n_frames,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "TrackMergeJob":
+        return cls(
+            job_id=d["job_id"],
+            recording_id=d["recording_id"],
+            track_id=d["track_id"],
+            detection_run_id=d["detection_run_id"],
+            source_run_ids=list(d["source_run_ids"]),
             created_at=d["created_at"],
             every_n_frames=int(d.get("every_n_frames") or 1),
         )
@@ -752,6 +827,13 @@ class EmbeddingJob:
     max_gap_s: float = 0.5
     mirror_hold_s: float = 1.0
     facing_camera_ratio: float = 0.5
+    # §14 *Pose in the embedding*: "none" | "draw" (the points are painted onto the image the
+    # model sees) | "append" (the body-relative pose numbers follow the mask's vector, scaled by
+    # pose_weight). Both read keypoint_run_id; pose_min_score is the floor below which a point
+    # is not used. pose_weight is None unless "append"; pose_min_score None when "none".
+    pose: str = "none"
+    pose_weight: float | None = None
+    pose_min_score: float | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -784,6 +866,9 @@ class EmbeddingJob:
             "max_gap_s": self.max_gap_s,
             "mirror_hold_s": self.mirror_hold_s,
             "facing_camera_ratio": self.facing_camera_ratio,
+            "pose": self.pose,
+            "pose_weight": self.pose_weight,
+            "pose_min_score": self.pose_min_score,
         }
 
     @classmethod
@@ -816,6 +901,10 @@ class EmbeddingJob:
             max_gap_s=float(d.get("max_gap_s", 0.5)),
             mirror_hold_s=float(d.get("mirror_hold_s", 1.0)),
             facing_camera_ratio=float(d.get("facing_camera_ratio", 0.5)),
+            # A job written before pose existed carried no pose.
+            pose=str(d.get("pose") or "none"),
+            pose_weight=d.get("pose_weight"),
+            pose_min_score=d.get("pose_min_score"),
         )
 
 
@@ -825,6 +914,7 @@ Job = (
     | TrainingJob
     | DatasetExportJob
     | TrackingJob
+    | TrackMergeJob
     | EmbeddingJob
 )
 
@@ -1038,6 +1128,38 @@ class ProcessingProgress:
     # this mark. Dividing the run-wide fraction by it instead reads 30 min remaining on
     # a 15 h retry.
     recordings_at_start: int = 0
+    # **Every recording in flight, with its latest event** — more than one when a run keeps
+    # several jobs on a cluster at once (``RemoteTargetConfig.max_concurrent_jobs``). ``inner``
+    # and ``current_recording`` can name only one, so with eight in flight the bar read whichever
+    # reported last and jumped between them. Empty for a serial run and for a record written
+    # before this existed; every reader then falls back to ``inner``, which is why this is
+    # additive rather than a replacement.
+    live: dict[str, ProgressEvent] = dataclasses.field(default_factory=dict)
+
+
+def _event_fraction(event) -> float:
+    """How far one recording's event says it is, 0..1 (0 when it has no frame total yet)."""
+    total = getattr(event, "frames_total", 0) or 0
+    done = getattr(event, "frames_done", 0) or 0
+    return min(done / total, 1.0) if total else 0.0
+
+
+def processing_inflight_fraction(p: ProcessingProgress) -> float:
+    """The recordings' worth of work in flight right now: Σ of each live recording's fraction.
+
+    The run's bar is ``(recordings_done + this) / recordings_total``. With one recording in
+    flight this is that recording's own fraction — the formula every surface already used — and
+    with several it is their **sum** (eight at half way is 4.0 recordings of progress, not 0.5),
+    which is the number a single ``inner`` cannot carry. One function, so the GUI bar, the CLI
+    bar and the ETA cannot disagree about it.
+    """
+    # `getattr`, like every renderer of this event: a reader may be handed a record or a stub
+    # that predates `live`, and that is exactly the case that must keep drawing the old bar.
+    live = getattr(p, "live", None)
+    if live:
+        return sum(_event_fraction(e) for e in live.values())
+    inner = getattr(p, "inner", None)
+    return _event_fraction(inner) if inner is not None else 0.0
 
 
 def processing_progress_to_dict(p: ProcessingProgress) -> dict:
@@ -1049,6 +1171,7 @@ def processing_progress_to_dict(p: ProcessingProgress) -> dict:
         "inner": progress_event_to_dict(p.inner) if p.inner is not None else None,
         "elapsed_s": p.elapsed_s,
         "recordings_at_start": p.recordings_at_start,
+        "live": {sid: progress_event_to_dict(event) for sid, event in p.live.items()},
     }
 
 
@@ -1062,6 +1185,10 @@ def processing_progress_from_dict(d: dict) -> ProcessingProgress:
         inner=progress_event_from_dict(inner) if inner is not None else None,
         elapsed_s=d.get("elapsed_s", 0.0),
         recordings_at_start=d.get("recordings_at_start", 0),
+        live={
+            sid: progress_event_from_dict(event)
+            for sid, event in (d.get("live") or {}).items()
+        },
     )
 
 
@@ -1069,22 +1196,50 @@ def processing_progress_from_dict(d: dict) -> ProcessingProgress:
 # dominates wall-clock, so it carries the larger share; the fraction is nominal — the
 # renderer shows the phase message alongside, so the exact split need not be measured.
 DISTILL_STAGE_WEIGHTS = {"labeling": 0.45, "training": 0.55}
-DISTILL_STAGE_ORDER = ("labeling", "training")
+#: A keypoint setup run (§26, #717): the teacher's detect → track, then the keypoint
+#: distill's own stages (the patch method labels the sampled frames itself, so there is no
+#: "place the teacher's keypoints" run on main's classes). Nominal, for the bar only (the ETA
+#: comes from the running stage). ``registering`` is absent, as in the keypoints distill: it
+#: reads as all stages done.
+KEYPOINT_SETUP_STAGE_WEIGHTS = {
+    "detecting": 0.25,
+    "tracking": 0.05,
+    "labeling": 0.25,
+    "training": 0.45,
+}
+#: The same with two or more animal classes: one tracking run per class, then the merge
+#: (§26 *One example set per detection class*). The merge reads assignments only, so it is
+#: a sliver of tracking's share; the total is still 1.
+KEYPOINT_SETUP_CLASSES_STAGE_WEIGHTS = {
+    "detecting": 0.25,
+    "tracking": 0.04,
+    "merging": 0.01,
+    "labeling": 0.25,
+    "training": 0.45,
+}
+#: A keypoint setup run between its two halves: the teacher's detections and tracks are done,
+#: and it waits for a person to click a reference set on them. Not active (no coordinator is
+#: running, so reconcile leaves it alone) and not terminal (it continues).
+AWAITING_REFERENCES = "awaiting_references"
 
 
-def distill_overall_fraction(phase: str, inner_fraction: float) -> float:
+def distill_overall_fraction(
+    phase: str, inner_fraction: float, weights: dict[str, float] | None = None
+) -> float:
     """Fold a stage's inner fraction into the whole-run fraction (stage-weighted, §12).
 
     Stages before ``phase`` count fully; the active stage contributes its clamped
     ``inner_fraction`` scaled by its weight. An unrecognized phase reads as all named
-    stages done.
+    stages done. ``weights`` is the run kind's stage order and weights (insertion order);
+    omitted, the label → train distill's.
     """
+    weights = DISTILL_STAGE_WEIGHTS if weights is None else weights
     offset = 0.0
     clamped = max(0.0, min(1.0, inner_fraction))
-    for name in DISTILL_STAGE_ORDER:
+    for name, weight in weights.items():
         if name == phase:
-            return offset + DISTILL_STAGE_WEIGHTS[name] * clamped
-        offset += DISTILL_STAGE_WEIGHTS[name]
+            return offset + weight * clamped
+        offset += weight
     return offset
 
 
@@ -1154,6 +1309,9 @@ class PromptTestJob:
     n_sample_frames: int  # M random frames
     compute: ComputeTarget
     model_variant: str | None = None  # None = the model's default variant
+    # Sample only inside [t_start_ns, t_end_ns) of recording time; None = that end open.
+    t_start_ns: int | None = None
+    t_end_ns: int | None = None
 
 
 @dataclass
@@ -1196,7 +1354,7 @@ class RenderContext:
     class_name: str
     confidence: float
     object_id: int
-    aux: dict  # open slot: secondary masks, metadata, research extensions
+    aux: dict  # open slot
 
 
 # --------------------------------------------------------------------------- #

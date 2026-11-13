@@ -24,7 +24,8 @@ from pathlib import Path
 
 from detail.api import clip_render
 from detail.api.run_preview import ClipQueryPreview
-from detail.core.utils import safe_path_part
+from detail.core.utils import safe_path_part, subject_key
+from detail.core.video_codecs import DEFAULT_VIDEO_CODEC
 
 #: clips.csv — the row behind every clip, so the figure can be rebuilt outside DETAIL. This is
 #: the "data required to recreate this video file" half, and it is why the clip target declares
@@ -59,6 +60,7 @@ def export_behavior_clips(
     max_per_cluster: int | None = None,
     progress=None,
     preview: ClipQueryPreview | None = None,
+    codec: str = DEFAULT_VIDEO_CODEC,
 ) -> list[Path]:
     """Write a clip per instance into ``dest``, plus the ``clips.csv`` behind them.
 
@@ -89,11 +91,11 @@ def export_behavior_clips(
 
     # Plan every clip first, then render grouped by (recording, part, subject) — one forward
     # decode per part serves every bout it contains, instead of one seek (and its keyframe
-    # rewind) per bout. The subject is in the key because `render_part` draws one track.
+    # rewind) per bout. The subject is in the key because `render_part` draws one subject.
     by_part: dict[tuple[str, int, int], list[dict]] = {}
     jobs_by_instance: dict[str, dict] = {}
     for row in rows:
-        subject = int(row.subject or 0)
+        subject = subject_key(row.subject)
         out_path = dest / clip_name(
             str(row.source_label), row.recording_id, row.start_frame, row.end_frame
         )
@@ -121,7 +123,9 @@ def export_behavior_clips(
         if progress is not None:
             progress("rendering", done / total, Path(job["path"]).name)
 
-    for (recording_id, part_index, subject), jobs in sorted(by_part.items()):
+    for (recording_id, part_index, subject), jobs in sorted(
+        by_part.items(), key=lambda item: item[0]
+    ):
         scrub, _t_ns = preview._scrub_ctx(recording_id, embed_run_ids[recording_id])
         clip_render.render_part(
             scrub._parts[part_index],
@@ -131,6 +135,7 @@ def export_behavior_clips(
             renders=wanted,
             crop=crop,
             progress=_tick,
+            codec=codec,
         )
 
     written: list[Path] = []

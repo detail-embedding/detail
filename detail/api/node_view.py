@@ -23,11 +23,17 @@ import numpy as np
 
 from detail.analysis import node_cache as tables_lib
 from detail.api import cluster_filter
+from detail.core.utils import series_words, subject_key
 from detail.storage import node_cache as store
 
 #: Redraws behind a concentration floor, and the percentile taken.
 FLOOR_DRAWS = 200
 FLOOR_PERCENTILE = 95.0
+
+#: The member time a cluster needs to count as one worth naming, for Look-alike clusters'
+#: pairs and Profile & describe's ``floor`` choice (§22), when the cache does not record the
+#: run's own: the default of the size floor the node cache once pictured clusters above.
+NAMING_FLOOR_S = 30.0
 
 #: The orders a node's clips come in (``ClipTable.order``).
 CLIP_SORTS = ("typical", "atypical", "random")
@@ -148,7 +154,7 @@ class ClipTable:
             out.append(
                 {
                     "recording_id": self.recording_ids[int(self.recording[i])],
-                    "subject": int(self.subject[i]),
+                    "subject": subject_key(self.subject[i]),
                     "start_t_ns": start,
                     "end_t_ns": end,
                     "frame_ns": (start + end) // 2,
@@ -227,6 +233,13 @@ class NodeView:
         return rule
 
     @property
+    def min_cluster_s(self) -> float:
+        """The member time, in seconds, a cluster needs to count as one worth naming: the run's
+        own floor where a cache built before the floor was dropped recorded it, else
+        :data:`NAMING_FLOOR_S`. Nothing about which clips a node lists depends on it."""
+        return float(self._cache.built_from.get("min_cluster_s", NAMING_FLOOR_S))
+
+    @property
     def ranks_on_demand(self) -> bool:
         """Whether typicality comes from the fit when a node is first asked (``medoid``)."""
         return self.clip_rule["kind"] == "medoid"
@@ -244,6 +257,9 @@ class NodeView:
         where it ends, so the two rules give it the same runs, and flagging every such run would
         teach users to ignore the banner. (Every bout method's clips are unjoined, ``join``
         false, and every frame method's joined.)
+
+        And the **subject** its members were stored under, against the run's: a cache built
+        before ``built_from`` recorded one is judged by the subject its columns hold.
         """
         built = self._cache.built_from
         for key, what in (("fit", "fit file"), ("fit_size", "fit size")):
@@ -252,6 +268,13 @@ class NodeView:
                     f"the {what} is {current[key]!r} now but the clips were built from "
                     f"{built[key]!r}"
                 )
+        want = current.get("subject")
+        have = built.get("subject", self._stored_subject())
+        if want is not None and have is not None and str(have) != str(want):
+            return (
+                f"the clips are of subject {series_words(have)} but this run's subject is "
+                f"{series_words(want)}"
+            )
         if self._cache.leaves.run_rows is None:
             return (
                 "the clips were built before every clip of every cluster was listed, so they "
@@ -263,6 +286,13 @@ class NodeView:
                 "each bout ran on past its end"
             )
         return None
+
+    def _stored_subject(self) -> str | None:
+        """The one subject this cache's columns hold, or ``None`` when they hold none or several."""
+        codes = {int(c) for c in np.unique(self._cache.leaves.run_subject)}
+        if len(codes) != 1:
+            return None
+        return str(subject_key(codes.pop()))
 
     @classmethod
     def open(cls, run_dir, tree, recording_names: dict | None = None) -> "NodeView":
@@ -610,6 +640,97 @@ class NodeView:
                 )
         return out
 
+    def sample_runs(
+        self, node: int, *, n: int, seed: int, outside: int | None = None
+    ) -> list[dict]:
+        """A seeded random draw of up to ``n`` of ``node``'s leaf runs, leaving out any under
+        ``outside`` — the rows a cluster profile measures (§22 "Cluster profile").
+
+        Uniform over runs, not over time: the profile asks what a member *is*, and a run is the
+        unit a person watches. Each is ``{recording_id, subject, start_t_ns, end_t_ns}``.
+        """
+        t = self._cache.leaves
+        under = np.isin(t.run_leaf, self._leaves[int(node)])
+        if outside is not None:
+            under &= ~np.isin(t.run_leaf, self._leaves[int(outside)])
+        rows = np.flatnonzero(under)
+        if not len(rows):
+            return []
+        rng = np.random.default_rng(int(seed))
+        picks = rng.choice(len(rows), size=min(int(n), len(rows)), replace=False)
+        return [
+            {
+                "recording_id": self.recording_ids[int(t.run_recording[r])],
+                "subject": subject_key(t.run_subject[r]),
+                "start_t_ns": int(t.run_start_ns[r]),
+                "end_t_ns": int(t.run_end_ns[r]),
+            }
+            for r in (rows[int(p)] for p in sorted(picks))
+        ]
+
+    def run_durations_s(self, node: int) -> np.ndarray:
+        """Every one of ``node``'s leaf runs' lengths, in seconds."""
+        t = self._cache.leaves
+        under = np.isin(t.run_leaf, self._leaves[int(node)])
+        return (t.run_end_ns[under] - t.run_start_ns[under]).astype(np.float64) / 1e9
+
+    def neighbours(self, node: int) -> tuple[dict[int, int], dict[int, int], int]:
+        """What comes just before and just after ``node``'s runs, per animal.
+
+        A neighbour is named by the branch it sits in **relative to this node**: for each of the
+        node's ancestors, the child that does not hold the node. Those branches partition
+        everything outside the node, from the sibling (closest) out to the root's other child
+        (furthest), so every neighbour lands in exactly one, and the answer needs no cut of the
+        tree. A neighbour inside the node itself (another leaf of it) is not counted as a
+        transition. ``(before, after, n_runs)``: branch node → how many of the node's runs it
+        precedes / follows, and the node's run count.
+        """
+        units, starts, _ends, leaves = self._runs_by_unit()
+        inside = set(self._leaves[int(node)].tolist())
+        branch_of_leaf: dict[int, int] = {}
+        path = [*self.ancestors(node), int(node)]
+        for parent, child in zip(path, path[1:]):
+            for other in self.children(parent):
+                if other != child:
+                    for leaf in self._leaves[other].tolist():
+                        branch_of_leaf[int(leaf)] = int(other)
+        before: dict[int, int] = {}
+        after: dict[int, int] = {}
+        n_runs = 0
+        for begin, end in units.values():
+            for i in range(begin, end):
+                if int(leaves[i]) not in inside:
+                    continue
+                n_runs += 1
+                if i > begin and int(leaves[i - 1]) not in inside:
+                    b = branch_of_leaf.get(int(leaves[i - 1]))
+                    if b is not None:
+                        before[b] = before.get(b, 0) + 1
+                if i + 1 < end and int(leaves[i + 1]) not in inside:
+                    b = branch_of_leaf.get(int(leaves[i + 1]))
+                    if b is not None:
+                        after[b] = after.get(b, 0) + 1
+        return before, after, n_runs
+
+    def session_thirds(self, node: int) -> list[float]:
+        """The share of ``node``'s run time in the first, middle and last third of each animal's
+        tracked span — whether it happens early, late or throughout. ``[]`` with no time.
+        """
+        units, starts, ends, leaves = self._runs_by_unit()
+        inside = np.isin(leaves, self._leaves[int(node)])
+        thirds = np.zeros(3)
+        for begin, end in units.values():
+            lo, hi = int(starts[begin]), int(ends[end - 1])
+            if hi <= lo:
+                continue
+            mids = (starts[begin:end] + ends[begin:end]) // 2
+            lengths = (ends[begin:end] - starts[begin:end]).astype(np.float64)
+            which = np.clip(((mids - lo) * 3) // (hi - lo), 0, 2).astype(np.int64)
+            mask = inside[begin:end]
+            thirds += np.bincount(which[mask], weights=lengths[mask], minlength=3)
+        total = thirds.sum()
+        return [round(float(v / total), 4) for v in thirds] if total else []
+
     # --- labels --------------------------------------------------------------------------
 
     def set_clip_edits(self, edits, labels: dict) -> None:
@@ -633,7 +754,7 @@ class NodeView:
                 continue
             runs = np.flatnonzero(
                 (t.run_recording == recording)
-                & (t.run_subject.astype(np.int64) == int(edit["subject"]))
+                & (t.run_subject.astype(np.int64) == subject_key(edit["subject"]))
                 & (t.run_start_ns >= int(edit["t_ns"]))
                 & (end <= int(edit["end_t_ns"]))
             )
@@ -718,7 +839,7 @@ class NodeView:
         index = {rid: i for i, rid in enumerate(self.recording_ids)}
         out: list[int | None] = []
         for recording_id, subject, t0, t1 in spans:
-            bounds = units.get((index.get(recording_id), int(subject or 0)))
+            bounds = units.get((index.get(recording_id), subject_key(subject)))
             if bounds is None:
                 out.append(None)
                 continue
@@ -789,7 +910,7 @@ class NodeView:
                 continue
             here = {
                 "recording_id": self.recording_ids[int(t.run_recording[i])],
-                "subject": int(t.run_subject[i]),
+                "subject": subject_key(t.run_subject[i]),
                 "start_ns": int(t.run_start_ns[i]),
                 "end_ns": int(t.run_end_ns[i]),
                 "node": node,
@@ -801,6 +922,64 @@ class NodeView:
                 and last["recording_id"] == here["recording_id"]
                 and last["subject"] == here["subject"]
                 and here["start_ns"] <= last["end_ns"]
+            ):
+                last["end_ns"] = max(last["end_ns"], here["end_ns"])
+            else:
+                out.append(here)
+        return out
+
+    def lane(
+        self,
+        recording_id: str,
+        subject: int,
+        start_ns: int,
+        end_ns: int,
+        node: int,
+        node_names: dict,
+    ) -> list[dict]:
+        """What one animal was doing around a clip, for the clip popup's cluster strip:
+        ``[{start_ns, end_ns, kind, node, name}]`` over ``[start_ns, end_ns]``, in time order,
+        neighbours of the same kind and node merged.
+
+        ``kind`` is ``"this"`` inside ``node`` (the cluster being looked at), ``"label"`` where
+        a labelled cluster holds the time (``name`` its label), and ``"other"`` elsewhere —
+        an unlabelled cluster, named by its leaf. Time no leaf run covers (the subject was not
+        tracked, or is under the size floor) is simply absent.
+        """
+        if recording_id not in self.recording_ids:
+            return []
+        units, starts, ends, leaves = self._runs_by_unit()
+        key = (self.recording_ids.index(recording_id), subject_key(subject))
+        if key not in units:
+            return []
+        begin, stop = units[key]
+        inside = set(self.leaves_under(int(node)).tolist())
+        named = {int(n) for n, name in node_names.items() if name}
+        owner = self._tree.leaf_groups(named)
+        out: list[dict] = []
+        for i in range(begin, stop):
+            if ends[i] < start_ns or starts[i] > end_ns:
+                continue
+            leaf = int(leaves[i])
+            if leaf in inside:
+                kind, held, name = "this", int(node), ""
+            elif owner[leaf] >= 0:
+                held = int(owner[leaf])
+                kind, name = "label", str(node_names.get(str(held), ""))
+            else:
+                kind, held, name = "other", leaf, ""
+            here = {
+                "start_ns": max(int(starts[i]), int(start_ns)),
+                "end_ns": min(int(ends[i]), int(end_ns)),
+                "kind": kind,
+                "node": held,
+                "name": name,
+            }
+            last = out[-1] if out else None
+            if (
+                last is not None
+                and (last["kind"], last["node"]) == (kind, held)
+                and here["start_ns"] <= last["end_ns"] + 1
             ):
                 last["end_ns"] = max(last["end_ns"], here["end_ns"])
             else:

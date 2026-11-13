@@ -7,6 +7,7 @@ dispatch to). The executor finds it via ``DETAIL_RUNNER_MODULES``.
 from pathlib import Path
 
 from detail.configs.tracking import DEFAULT_TRACKER, TrackingConfig
+from detail.core import disk_space
 from detail.core.dataclasses import (
     ACTIVE_STATUSES,
     TrackingJob,
@@ -15,6 +16,8 @@ from detail.core.dataclasses import (
 from detail.core.registries import TRACKERS
 from detail.core.utils import resolve_downstream_every_n, utc_timestamp
 from detail.executor.runners import ProcessingModule, register_processing_module
+from detail.pipeline import teacher_window
+from detail.pipeline.detection import detected_classes
 from detail.storage import experiment
 from detail.storage import recording as recording_store
 from detail.storage import spatial as spatial_store
@@ -22,6 +25,11 @@ from detail.trackers import (  # noqa: F401  (registers trackers)
     anchor_tracker as _anchor_tracker,
     iou_single_tracker as _iou_single_tracker,
 )
+
+#: Bytes a tracking run writes per frame read: an int32 object id per detection row, a few
+#: rows a frame. Measured on 164 recordings (2026-10-09): under 1 MB a run, about 0 B/frame;
+#: 16 covers four instances a frame with room to spare.
+TRACKING_BYTES_PER_FRAME = 16
 
 
 def tracking_run_dir(experiment_root, job: TrackingJob) -> Path:
@@ -86,8 +94,17 @@ class TrackingModule(ProcessingModule):
     progress_event_class = TrackingProgressEvent
     # frames_total is the detected frames the tracker stepped through
     progress_counts_frames = True
-    identity_fields = ("tracker_id", "arena_ids", "hyperparams", "every_n_frames")
-    identity_defaults = {"every_n_frames": 1}
+    identity_fields = (
+        "tracker_id",
+        "arena_ids",
+        "class_name",
+        "hyperparams",
+        "every_n_frames",
+    )
+    # class_name is new; a record written before it existed has one honest reading for its
+    # absence (no class filter was used) rather than a per-job recovery, the same way
+    # every_n_frames defaults a legacy record to stride 1.
+    identity_defaults = {"every_n_frames": 1, "class_name": None}
     lineage_ref = ("detection", "detection_run_id")
 
     def recompute_identity_from_job(self, job) -> dict:
@@ -101,6 +118,17 @@ class TrackingModule(ProcessingModule):
 
     def output_path(self, run_id: str) -> str:
         return f"tracking/{run_id}/"
+
+    def estimate_output_bytes(
+        self, recording_dir, recording_data: dict, config: dict
+    ) -> int:
+        """Frames × :data:`TRACKING_BYTES_PER_FRAME` (#743): a track run stores one object id
+        per detection row and a summary, not the masks, which stay in the detection run.
+        """
+        frames = disk_space.frames_to_process(
+            recording_data, config.get("every_n_frames")
+        )
+        return frames * TRACKING_BYTES_PER_FRAME
 
     def validate(self, recording_dir, recording_data: dict, config: dict) -> dict:
         # The model types the shape; hyperparams + arena_ids are enriched below (tracker-owned
@@ -128,9 +156,14 @@ class TrackingModule(ProcessingModule):
                 "not complete"
             )
         recording_store.raise_on_legacy_downsampling(det)
+        config["class_name"] = self._resolve_class_name(
+            config, recording_dir, detection_run_id, recording_id
+        )
         config["every_n_frames"] = resolve_downstream_every_n(
             config.get("every_n_frames"), int(det.get("every_n_frames") or 1)
         )
+        # Inherited, never chosen: the detections end where the teacher window does (§26).
+        config[teacher_window.WINDOW_KEY] = teacher_window.window_of(det)
         tracker_cls = TRACKERS.get(tracker_id)
         if tracker_cls is None:
             raise ValueError(
@@ -199,6 +232,30 @@ class TrackingModule(ProcessingModule):
             )
         return arena_ids
 
+    @staticmethod
+    def _resolve_class_name(
+        config: dict, recording_dir, detection_run_id: str, recording_id: str
+    ) -> str | None:
+        """Validate ``class_name`` against the classes the selected detection run
+        *actually has* — read from its own zarr parts (``detection.detected_classes``),
+        not the model's declared roster (empty in the record for a closed-set model's
+        ``prompt_classes``, which is prompt-only) or a fresh model lookup (a dependency
+        this module doesn't otherwise have). Ground truth this way works identically
+        for an open-vocab or closed-set run, and for one recorded before this field
+        existed.
+        """
+        class_name = config.get("class_name")
+        if not class_name:
+            return None
+        detection_run_dir = Path(recording_dir) / "detections" / detection_run_id
+        known = detected_classes(detection_run_dir)
+        if class_name not in known:
+            raise ValueError(
+                f"recording {recording_id!r}'s detection run {detection_run_id!r} has "
+                f"no class named {class_name!r}; it has: {known or 'none'}"
+            )
+        return class_name
+
     def build_job(self, recording_id: str, run_id: str, config: dict) -> TrackingJob:
         return TrackingJob(
             job_id=run_id,
@@ -210,6 +267,7 @@ class TrackingModule(ProcessingModule):
             arena_ids=list(config.get("arena_ids") or []),
             created_at=utc_timestamp(),
             every_n_frames=int(config.get("every_n_frames") or 1),
+            class_name=config.get("class_name"),
         )
 
     def extra_record_fields(self, config: dict) -> dict:
@@ -222,6 +280,8 @@ class TrackingModule(ProcessingModule):
             # and so `load_config` can restore the selection, which it could not while the
             # record held a number that means something else on the next recording.
             "arena_name": config.get("arena_name"),
+            "class_name": config.get("class_name"),
             "hyperparams": dict(config.get("hyperparams") or {}),
             "every_n_frames": int(config.get("every_n_frames") or 1),
+            teacher_window.WINDOW_KEY: config.get(teacher_window.WINDOW_KEY),
         }

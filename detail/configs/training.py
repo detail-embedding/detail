@@ -23,9 +23,14 @@ class UltralyticsYOLOConfig(BaseModel):
         json_schema_extra={"label": "Epochs"},
     )
     batch_size: int = Field(
-        32,
+        8,
         ge=1,
-        description="Images per training batch.",
+        description=(
+            "Images per training batch. The default fits an 8 GB GPU: measured on an RTX 2070 "
+            "SUPER at imgsz 640 with yolo11s-seg, 8 used 3.0 GB and 32 needed 9.3 GB, about "
+            "0.26 GB per image. Raise it on a larger GPU; a batch that does not fit is slow "
+            "on Windows (it spills into shared memory) and stops with out-of-memory elsewhere."
+        ),
         json_schema_extra={"label": "Batch size"},
     )
     imgsz: int = Field(

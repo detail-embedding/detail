@@ -30,7 +30,8 @@ inference and is also its limit:
 - A call through a bound method held in a variable, ``getattr``, or a helper that forwards its
   arguments is not seen.
 - It says nothing about a long method that takes **no** ``progress`` at all. That is the half
-  ``Experiment.export`` was; ``Recording.export_locations`` still is (CLAUDE.md names it).
+  ``Experiment.export`` was, and ``Recording.export_locations`` was until location plots, when it
+  gained one and so came under this guard.
 """
 
 import ast

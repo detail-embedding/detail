@@ -36,12 +36,17 @@ from pathlib import Path
 from detail.core import run_selection
 from detail.core.installed import is_importable
 from detail.core.progress import PhaseClock, ThrottledProgress
-from detail.core.utils import utc_timestamp
+from detail.core.utils import (
+    coerce_series_key,
+    subject_key,
+    utc_timestamp,
+)
 from detail.executor.runners import (
     AnalysisModule,
     job_params,
     register_analysis_module,
 )
+from detail.pipeline import clustering_remote
 from detail.pipeline.behavior_artifact import (
     UnitFrames,
     bring_frame_views_current,
@@ -88,6 +93,9 @@ class TemporalClusteringJob:
     trajectory_split_gap_ns: int | None = None
     created_at: str = ""
     embed_run_ids: dict[str, str] = field(default_factory=dict)
+    # Where it runs (§6 "Remote analysis"); None is this machine, and a job written
+    # before the field existed reads as that.
+    compute: dict | None = None
 
     def embed_run_for(self, recording_id: str) -> str:
         """``recording_id``'s own embedding run — ``embed_run_ids`` when recorded, else the
@@ -105,6 +113,7 @@ class TemporalClusteringJob:
             "method_params": dict(self.method_params),
             "trajectory_split_gap_ns": self.trajectory_split_gap_ns,
             "created_at": self.created_at,
+            "compute": clustering_remote.compute_dict(self.compute),
         }
 
     @classmethod
@@ -114,11 +123,12 @@ class TemporalClusteringJob:
             source_recording_ids=list(data.get("source_recording_ids") or []),
             embed_run_id=data.get("embed_run_id") or None,
             embed_run_ids=dict(data.get("embed_run_ids") or {}),
-            track_id=int(data.get("track_id", 0)),
+            track_id=coerce_series_key(data.get("track_id", 0)),
             method=str(data["method"]),
             method_params=dict(data.get("method_params") or {}),
             trajectory_split_gap_ns=data.get("trajectory_split_gap_ns"),
             created_at=str(data.get("created_at") or ""),
+            compute=data.get("compute"),
         )
 
 
@@ -267,8 +277,13 @@ def project_frames(experiment_root, run_dir, *, progress=None) -> int:
     )
 
 
-def member_resolver(method, fit):
-    """``instance -> (recording_id, subject, start_ns, end_ns)``, asked of the method (§22)."""
+def member_resolver(method, fit, subject):
+    """``instance -> (recording_id, subject, start_ns, end_ns)``, asked of the method (§22).
+
+    ``subject`` is the run's own (``state.track_id``), returned for every member: a run has one,
+    and the method's ``subject`` is its int bookkeeping.
+    """
+    subject = subject_key(subject)
 
     def resolve(instance):
         where = method.resolve(fit, instance)
@@ -276,7 +291,7 @@ def member_resolver(method, fit):
             return None
         return (
             where["recording_id"],
-            int(where["subject"]),
+            subject,
             int(where["t_ns"]),
             int(where["end_t_ns"]),
         )
@@ -292,6 +307,12 @@ def _row_for(method, fit, instance, state, frames_of):
     second one stores rows rather than bouts, and the module raised deep inside a reprojection.
     An instance the method cannot place is dropped rather than written, because a row claiming a
     span across two recordings is worse than a missing one.
+
+    ``subject`` comes from ``state.track_id``, not ``where["subject"]`` — a temporal-clustering
+    run has exactly one ``track_id`` for its whole lifetime (never per-recording), so the two
+    always agree, and ``state.track_id`` is the one that is the real subject: a method's own
+    ``subjects`` array is a plain ``int64`` internal grouping key, not a value meant to be read
+    back as the subject.
     """
     from detail.api import authored_run
     from detail.storage import behavior_output
@@ -303,7 +324,7 @@ def _row_for(method, fit, instance, state, frames_of):
     frames = frames_of[where["recording_id"]]
     return behavior_output.BehaviorInstance(
         recording_id=where["recording_id"],
-        subject=int(where["subject"]),
+        subject=state.track_id,
         t_ns=int(where["t_ns"]),
         end_t_ns=int(where["end_t_ns"]),
         start_frame=frames.frame_at(where["t_ns"]),
@@ -368,7 +389,7 @@ def _load_fit(run_dir: Path, method):
 
 
 @register_analysis_module
-class TemporalClusteringModule(AnalysisModule):
+class TemporalClusteringModule(clustering_remote.RemoteClusteringFit, AnalysisModule):
     """§22's temporal clustering: one behavior vocabulary pooled across a recording selection."""
 
     module_id = "temporal_clustering"
@@ -391,6 +412,7 @@ class TemporalClusteringModule(AnalysisModule):
     mutable = True
 
     def validate(self, experiment_dir, config: dict) -> dict:
+        from detail.api import remote as api_remote
         from detail.configs.temporal_clustering import TemporalClusteringConfig
 
         from detail.configs.clustering_legacy import drop_legacy_floor
@@ -399,6 +421,10 @@ class TemporalClusteringModule(AnalysisModule):
         config = drop_legacy_floor(config)
         experiment_dir = Path(experiment_dir)
         model = TemporalClusteringConfig.model_validate(config)
+        # First, so a target not registered here is refused before anything is read.
+        compute = api_remote.analysis_compute(
+            config.get("compute"), "temporal clustering"
+        )
         recordings = list(model.source_recording_ids)
         if not recordings:
             raise ValueError(
@@ -434,7 +460,7 @@ class TemporalClusteringModule(AnalysisModule):
         # Each recording's own run with the selected settings (§6.5), refusing rather than
         # guessing when the default is ambiguous (§22, Tenet 9).
         selection = self.resolve_selection(experiment_dir, recordings, config)
-        require_embedded_track(
+        resolved_track_id = require_embedded_track(
             experiment_dir, selection["embed_run_ids"], model.track_id
         )
 
@@ -444,6 +470,8 @@ class TemporalClusteringModule(AnalysisModule):
             **config,
             **model.model_dump(),
             **selection,
+            "track_id": resolved_track_id,
+            "compute": compute,
             "method_params": method.config_model()
             .model_validate(config.get("method_params") or {})
             .model_dump(),
@@ -460,13 +488,14 @@ class TemporalClusteringModule(AnalysisModule):
             source_recording_ids=list(config["source_recording_ids"]),
             embed_run_id=config.get("embed_run_id"),
             embed_run_ids=dict(config.get("embed_run_ids") or {}),
-            track_id=int(config.get("track_id", 0)),
+            track_id=coerce_series_key(config.get("track_id", 0)),
             method=str(
                 config.get("method") or self.config_model.model_fields["method"].default
             ),
             method_params=dict(config.get("method_params") or {}),
             trajectory_split_gap_ns=config.get("trajectory_split_gap_ns"),
             created_at=utc_timestamp(),
+            compute=config.get("compute"),
         )
 
     def run_dir_for(self, experiment_root, job):
@@ -514,6 +543,9 @@ class TemporalClusteringModule(AnalysisModule):
                 force=force,
             )
 
+        # The method's own `subjects` array is int64 bookkeeping (dtw_finch.py). Every read-out
+        # takes the run's own state.track_id instead (`_row_for`, `member_resolver`).
+        subject_placeholder = subject_key(job.track_id)
         trajectories = []
         for index, recording_id in enumerate(job.source_recording_ids):
             report(
@@ -525,7 +557,7 @@ class TemporalClusteringModule(AnalysisModule):
                 recording_id,
                 job.track_id,
             )
-            trajectories.append((recording_id, job.track_id, features, t_ns))
+            trajectories.append((recording_id, subject_placeholder, features, t_ns))
         report("loading", 1.0)
 
         fit = method.fit(
@@ -588,6 +620,7 @@ class TemporalClusteringModule(AnalysisModule):
             fit_path=temporal_runs.fit_path(run_dir, method.shard_suffix),
             embed_run_for=job.embed_run_for,
             params=dict(job.method_params),
+            subject=job.track_id,
             progress=lambda stage, fraction, detail="": report(
                 "caching", fraction, detail
             ),

@@ -37,7 +37,12 @@ settings with their coverage (``gui.modules._common.UpstreamSpecPicker``), not s
 5. a *list* of settings (``<upstream>_specs`` — two strains, each detected by its own model)
    resolves each recording to its run of the one listed setting it has, refuses a recording
    with none or several, and refuses pooled embeddings whose recipes differ — the check equal
-   specs used to make implicitly.
+   specs used to make implicitly;
+6. a run named per recording (``<upstream>_overrides``: a recording whose run was redone beside
+   a bad one, which no setting or list can single out) wins for its recording ahead of every
+   other input, leaves the rest to resolve as before, reaches the record's ``params``, and is
+   refused when its run is missing, incomplete, outside the selection or — for embeddings —
+   not comparable with the rest.
 
 Hidden capabilities (§25) keep the old helper deliberately; the scan's allow-list says so per file.
 """
@@ -101,20 +106,9 @@ def test_every_surfaced_selecting_module_is_exercised_or_named():
 
 
 def test_every_claim_names_a_live_surfaced_selecting_module():
-    """``NOT_YET_BY_SETTINGS`` excuses a surfaced module, so it must name one. ``EXERCISED`` may
-    also name a hidden module (§25): hidden is not dead, and dropping its coverage here would let
-    its selection rot until the day it is switched back on."""
     selecting = _surfaced_selecting()
-    registered_selecting = {
-        module_id
-        for module_id, module in ANALYSIS_MODULES.items()
-        if module.selects is not None
-    }
-    stale = sorted(
-        [m for m in EXERCISED if m not in registered_selecting]
-        + [m for m in NOT_YET_BY_SETTINGS if m not in selecting]
-    )
-    assert not stale, f"{stale} are not live modules that select an upstream run"
+    stale = sorted(m for m in (*EXERCISED, *NOT_YET_BY_SETTINGS) if m not in selecting)
+    assert not stale, f"{stale} are not surfaced modules that select an upstream run"
     assert not set(EXERCISED) & set(NOT_YET_BY_SETTINGS)
 
 
@@ -574,3 +568,124 @@ def test_the_map_wins_over_the_single_id_when_both_are_recorded():
     assert run_selection.run_for_recording(source, "recording_002") == "emb_02"
     # A recording outside the map is outside the run — not quietly given the single id.
     assert run_selection.run_for_recording(source, "recording_009") is None
+
+
+# --------------------------------------------------------------------------- #
+# Per-recording overrides: the run a recording reads, named outright
+# --------------------------------------------------------------------------- #
+#: The zebrafish shape: recording_001's tracking was redone with another setting (``B``) beside
+#: a bad run (``A``); recording_002 has only ``A``. ``A`` covers both, so the default reads the
+#: bad run on recording_001, and listing both settings is refused there.
+REDONE = {
+    "recording_001": [("01", "A", "complete"), ("02", "B", "complete")],
+    "recording_002": [("01", "A", "complete")],
+}
+
+
+def _overrides(module_id: str, mapping: dict) -> dict:
+    upstream, _ref_field = ANALYSIS_MODULES[module_id].selects
+    return {f"{upstream}_overrides": mapping}
+
+
+@pytest.mark.parametrize("module_id", sorted(EXERCISED))
+def test_an_override_wins_for_its_recording_and_the_rest_resolve_as_usual(
+    cohort, module_id
+):
+    experiment_dir = cohort(REDONE)
+    module = ANALYSIS_MODULES[module_id]
+    upstream, ref_field = module.selects
+    prefix = _PREFIX[upstream]
+    # Without one, the default silently reads the bad run, and both settings are refused.
+    assert _selection(
+        module_id, module.validate(experiment_dir, _config(module_id))
+    ) == {
+        "recording_001": f"{prefix}_01",
+        "recording_002": f"{prefix}_01",
+    }
+    both = _specs(
+        experiment_dir,
+        upstream,
+        ("recording_001", f"{prefix}_01"),
+        ("recording_001", f"{prefix}_02"),
+    )
+    with pytest.raises(ValueError, match="'recording_001' has a run of more than one"):
+        module.validate(
+            experiment_dir, _config(module_id, **{f"{upstream}_specs": both})
+        )
+
+    override = _overrides(module_id, {"recording_001": f"{prefix}_02"})
+    expected = {"recording_001": f"{prefix}_02", "recording_002": f"{prefix}_01"}
+    # Ahead of every input: the default, one spec, the list, and the literal id.
+    for selection in (
+        {},
+        {f"{upstream}_spec": both[0]},
+        {f"{upstream}_specs": both},
+        {ref_field: f"{prefix}_01"},
+    ):
+        validated = module.validate(
+            experiment_dir, _config(module_id, **selection, **override)
+        )
+        assert _selection(module_id, validated) == expected, selection
+
+    # The record carries the resolved map (Tenet 9): the job, and the params derived from it.
+    from detail.executor.runners import job_params
+
+    job = module.build_job("an_01", validated)
+    assert job_params(job)[f"{ref_field}s"] == expected
+
+
+@pytest.mark.parametrize("module_id", sorted(EXERCISED))
+def test_an_override_naming_a_missing_or_incomplete_run_is_refused(cohort, module_id):
+    experiment_dir = cohort(
+        {
+            "recording_001": [("01", "A", "complete"), ("02", "A", "failed")],
+            "recording_002": [("01", "A", "complete")],
+        }
+    )
+    module = ANALYSIS_MODULES[module_id]
+    upstream, _ref_field = module.selects
+    prefix = _PREFIX[upstream]
+    for mapping, message in (
+        ({"recording_001": f"{prefix}_09"}, f"no {upstream} run '{prefix}_09'"),
+        ({"recording_001": f"{prefix}_02"}, "'failed', not complete"),
+        ({"recording_009": f"{prefix}_01"}, "'recording_009'.*not selected"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            module.validate(
+                experiment_dir, _config(module_id, **_overrides(module_id, mapping))
+            )
+
+
+def test_an_override_on_every_recording_needs_nothing_else(cohort):
+    """No recording is left to the settings, so none is resolved — not "no run of any"."""
+    experiment_dir = cohort(SPLIT)
+    validated = ANALYSIS_MODULES["temporal_clustering"].validate(
+        experiment_dir,
+        _config(
+            "temporal_clustering",
+            embedding_overrides={"recording_001": "emb_01", "recording_002": "emb_02"},
+        ),
+    )
+    assert validated["embed_run_ids"] == {
+        "recording_001": "emb_01",
+        "recording_002": "emb_02",
+    }
+
+
+@pytest.mark.parametrize(
+    "module_id",
+    sorted(m for m in EXERCISED if ANALYSIS_MODULES[m].selects[0] == "embedding"),
+)
+def test_an_overridden_embedding_must_share_the_recipe(cohort, module_id):
+    """A named run carries no spec equal to the others', so the recipe is checked."""
+    experiment_dir = cohort(
+        {
+            "recording_001": [("01", "A", "complete"), ("02", "M", "complete")],
+            "recording_002": [("01", "A", "complete")],
+        }
+    )
+    with pytest.raises(ValueError, match="not comparable"):
+        ANALYSIS_MODULES[module_id].validate(
+            experiment_dir,
+            _config(module_id, embedding_overrides={"recording_001": "emb_02"}),
+        )

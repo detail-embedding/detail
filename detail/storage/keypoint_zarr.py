@@ -91,6 +91,16 @@ def detect_columns(
     return tuple(cols)
 
 
+def row_bytes(columns: tuple) -> int:
+    """Uncompressed bytes of one row of a part with ``columns`` (``detect_columns`` /
+    ``track_columns``): the upper bound a stage's free-space check sizes its output by (#743).
+    """
+    return sum(
+        int(np.dtype(dtype).itemsize) * int(np.prod(trailing, dtype=np.int64))
+        for _name, dtype, _chunks, trailing in columns
+    )
+
+
 def is_legacy_store(path: Path | str) -> bool:
     """A finished store written before the ``layout`` attr: skeleton recorded, no layout."""
     attrs = PartZarrReader(path)._root.attrs

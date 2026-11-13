@@ -50,6 +50,7 @@ from PyQt6.QtWidgets import (
 
 from detail.core.progress import format_duration
 from detail.gui import plot_theme
+from detail.gui.lifetime import cleared
 from detail.gui.sizing import (
     ElidedLabel,
     emphasis_font,
@@ -252,6 +253,8 @@ class _ChooseSuggestion(QObject):
         self._chosen = chosen
 
     def eventFilter(self, _watched, event) -> bool:  # noqa: N802 — Qt's name
+        if cleared(self):
+            return False
         return (
             event.type() == QEvent.Type.KeyPress
             and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
@@ -478,6 +481,8 @@ class LabelField(QWidget):
         )
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802 — Qt's name
+        if cleared(self):
+            return False
         if (
             watched is self.edit
             and event.type() == QEvent.Type.ShortcutOverride

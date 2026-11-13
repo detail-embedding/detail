@@ -24,6 +24,9 @@ the minimum, which is the only reason the labels could elide at all, so the chec
 row through one.
 """
 
+import re
+from pathlib import Path
+
 import pytest
 
 pytest.importorskip("PyQt6")
@@ -1155,33 +1158,59 @@ def test_a_span_dims_the_context_and_brackets_the_clip(qapp):
         assert any(top), f"no bracket at the clip's {edge}"
 
 
-def test_a_compact_transport_keeps_play_and_speed_and_the_added_controls(qapp):
-    """The clip montage's transport: every tile loops on its own, so the slider, its time
-    labels, the step buttons and the frame readout point at nothing and are hidden; Play,
-    the speed menu and a host's own controls stay, and playback is unchanged."""
-    from PyQt6.QtWidgets import QPushButton, QWidget
+# -- a greyed player says why on every button ------------------------------------- #
+#: Greying a scrubber any way but its own ``set_available``: a bare ``setEnabled`` on it, or
+#: ``sizing.set_available(self._scrubber, …)``, which puts the reason on the parent alone. Keyed
+#: on ``scrubber``, the name every ``FrameScrubber`` host gives it: ``quick_preview``'s
+#: ``_scrub`` is a bare ``QSlider`` beside its own Play button, not this widget.
+_GREYED_WITHOUT_REASON = re.compile(
+    r"scrubber\.setEnabled\(|set_available\(\s*self\._\w*scrubber\b"
+)
 
-    from detail.gui.scrubber import FrameScrubber
 
-    host = QWidget()
-    scrubber = FrameScrubber(host, allow_frame_entry=False, playable=True, loop=True)
-    extra = QPushButton("Export")
-    scrubber.add_control(extra)
-    scrubber.set_total(5)
-    scrubber.set_transport_compact(True)
-    host.show()
-    for hidden in (
-        scrubber._slider,
-        scrubber._elapsed,
-        scrubber._total_time,
-        scrubber._prev,
-        scrubber._nxt,
-        scrubber._readout,
+def test_a_greyed_player_gives_every_button_the_reason(qapp):
+    """The class: a greyed parent greys Play, Prev frame and Next frame without giving them a
+    reason, so each reads as broken. Found on the skeleton editor's frame picker while its video
+    opened; the scene-geometry dialog with no video and the labeling screen did the same.
+    """
+    from PyQt6.QtWidgets import QPushButton
+
+    from detail.gui.requirements import a_disabled_button_says_why
+
+    scrubber = FrameScrubber(playable=True)
+    buttons = scrubber.findChildren(QPushButton)
+    assert {b.text() for b in buttons} >= {"Play", "Prev frame", "Next frame"}
+
+    scrubber.set_available(False, "No video imported")
+    for button in buttons:
+        assert not button.isEnabled()
+        assert button.toolTip() == "No video imported"
+        a_disabled_button_says_why(button)
+
+    scrubber.set_available(True, "")
+    assert all(b.isEnabled() and not b.toolTip() for b in buttons)
+
+
+def test_nothing_greys_a_scrubber_around_its_own_set_available():
+    import detail.gui
+
+    gui = Path(detail.gui.__file__).parent
+    for bad in (
+        "self._scrubber.setEnabled(False)",
+        'set_available(\n    self._scrubber, False, "why"\n)',
     ):
-        assert not hidden.isVisibleTo(host), hidden.objectName() or hidden
-    assert scrubber.play_button().isVisibleTo(host)
-    assert scrubber._speed_box.isVisibleTo(host) and extra.isVisibleTo(host)
-    scrubber.set_frame(3)
-    assert scrubber.frame() == 3, "playback and position are untouched"
-    scrubber.set_transport_compact(False)
-    assert scrubber._slider.isVisibleTo(host)
+        assert _GREYED_WITHOUT_REASON.search(bad), bad  # the scan can fail
+    assert not _GREYED_WITHOUT_REASON.search(
+        'self._scrubber.set_available(False, "why")'
+    )
+    offenders = [
+        f"{path.relative_to(gui).as_posix()}: {match.group(0)}"
+        for path in sorted(gui.rglob("*.py"))
+        for match in _GREYED_WITHOUT_REASON.finditer(
+            path.read_text(encoding="utf-8-sig")
+        )
+    ]
+    assert not offenders, (
+        "grey a FrameScrubber with its own set_available(available, reason), so Play, Prev "
+        f"frame and Next frame each say why: {offenders}"
+    )

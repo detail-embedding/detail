@@ -32,6 +32,7 @@ def test_valid_config_round_trips():
         "name": "mouse_fast",
         "base_model": "yolo11s-seg.pt",
         "trainer_id": "ultralytics_yolo",
+        "stage_videos": True,
         "labeling": _labeling(),
         "training": _training(),
     }
@@ -42,6 +43,7 @@ def test_defaults():
     cfg = DistillConfig.model_validate(
         {"name": "x", "labeling": _labeling(n_frames=10)}
     )
+    assert cfg.stage_videos is False, "100+ GB of cluster storage is not a default"
     assert cfg.base_model == "yolo11s-seg.pt"
     assert cfg.trainer_id == "ultralytics_yolo"
     assert cfg.training.epochs == 100  # nested default via default_factory

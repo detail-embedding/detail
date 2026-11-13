@@ -129,7 +129,7 @@ def test_a_sparse_bin_contributes_everything_it_has(tmp_path):
     assert len(drawn) == 3
 
 
-def test_the_draw_is_deterministic_for_a_seed(tmp_path):
+def test_the_binned_draw_is_deterministic_for_a_seed(tmp_path):
     instances = _instances([i / 100 for i in range(100)])
     first = audit.draw_audit_sample(instances, per_bin=2, seed=7)
     second = audit.draw_audit_sample(instances, per_bin=2, seed=7)
@@ -390,7 +390,7 @@ def test_a_second_batch_draws_new_instances_and_the_thinnest_stratum_first():
     assert max(counts.values()) - min(counts.values()) <= 1, f"uneven strata: {counts}"
 
 
-def test_the_draw_is_deterministic_for_a_seed():
+def test_the_budgeted_draw_is_deterministic_for_a_seed():
     scored = [_inst(i, "rear", score=i / 100.0) for i in range(100)]
     a = [r.instance_id for r in audit.draw_sample(scored, budget=25, seed=3)]
     b = [r.instance_id for r in audit.draw_sample(scored, budget=25, seed=3)]

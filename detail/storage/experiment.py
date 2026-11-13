@@ -14,11 +14,15 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 import yaml
 
 from detail.core import atomic
+from detail.core import camera_view
+from detail.core import class_names
+from detail.core import yaml_load
 from detail.storage import dirscan
 from detail.storage import read_cache
 
 SCHEMA_VERSION = 1
 CONFIG_FILENAME = "config.yaml"
+ARCHIVED_KEY = "archived"
 SUBDIRS = ("recordings", "analysis", "models", "datasets", "runs")
 
 
@@ -56,7 +60,7 @@ def _refuse_legacy_layout(exp_dir: Path) -> None:
 
 def _parse_config(exp_dir: Path, path: Path) -> dict:
     _refuse_legacy_layout(exp_dir)
-    config = yaml.safe_load(atomic.read_text(path))
+    config = yaml_load.safe_load(atomic.read_text(path))
     if not isinstance(config, dict):
         raise ValueError(f"{path} is not a mapping")
     if config.get("schema_version") != SCHEMA_VERSION:
@@ -115,7 +119,7 @@ def write_config(experiment_dir: Path | str, config: dict) -> None:
     try:
         with open(tmp, "w", encoding="utf-8") as f:
             yaml.dump(ordered, f, sort_keys=False)
-        atomic.replace(tmp, path)
+        read_cache.replace_document(tmp, path)
     finally:
         tmp.unlink(
             missing_ok=True
@@ -173,6 +177,44 @@ def set_metadata(
         config["name"] = name
     if description is not None:
         config["description"] = description
+    write_config(experiment_dir, config)
+
+
+def set_archived(experiment_dir: Path | str, archived: bool) -> None:
+    """Mark the experiment archived in config.yaml, or clear the mark (absent = not)."""
+    config = dict(read_config(experiment_dir))
+    config.pop(ARCHIVED_KEY, None)
+    if archived:
+        config[ARCHIVED_KEY] = True
+    write_config(experiment_dir, config)
+
+
+def set_camera_view(
+    experiment_dir: Path | str, view: str | None, note: str | None = None
+) -> None:
+    """Set the experiment's default camera view in config.yaml, or remove it (``None``).
+
+    Raises:
+        ValueError: As ``core.camera_view.validate``.
+    """
+    config = read_config(experiment_dir)
+    write_config(experiment_dir, camera_view.write(config, view, note))
+
+
+def read_class_names(experiment_dir: Path | str) -> dict[str, str]:
+    """``{stored class name: the user's name}`` from config.yaml — only renamed classes,
+    ``{}`` in an experiment that has renamed none (§1 *Class names*)."""
+    names = read_config(experiment_dir).get(class_names.NAMES_KEY) or {}
+    return {str(stored): str(name) for stored, name in names.items()}
+
+
+def write_class_names(experiment_dir: Path | str, names: dict[str, str]) -> None:
+    """Replace config.yaml's ``class_names`` (removed when empty). The caller validates
+    (``core.class_names.check``) against the roster, which this layer does not know."""
+    config = dict(read_config(experiment_dir))
+    config.pop(class_names.NAMES_KEY, None)
+    if names:
+        config[class_names.NAMES_KEY] = dict(sorted(names.items()))
     write_config(experiment_dir, config)
 
 

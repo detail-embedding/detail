@@ -44,7 +44,6 @@ from detail.gui.importers.registry import (
 )
 from detail.gui.lifetime import discard
 from detail.gui.scrubber import FrameScrubber
-from detail.gui.sizing import lines
 from detail.gui.spin import FloatSpin
 from detail.gui.status_color import ERROR, MUTED, set_label_color
 from detail.gui.workers import BackgroundCall, StageProgressWorker
@@ -140,7 +139,6 @@ class AddStreamDialog(Dialog):
         self._band: ConfigBand | None = None
         self._worker: BackgroundCall | None = None
         self.setWindowTitle("Add stream")
-        self.resize(lines(34), lines(30))
         import_stream_importers()
         import_importer_uis()
         self._importers = dict(sorted(STREAM_IMPORTERS.items()))
@@ -621,7 +619,6 @@ class ImportBehaviorLabelsDialog(Dialog):
         self._worker: StageProgressWorker | None = None
         self.skipped: list[tuple[str, str]] = []
         self.setWindowTitle("Import behavior labels")
-        self.resize(560, 0)
 
         layout = self.body()
         form = QFormLayout()
@@ -738,7 +735,6 @@ class SyncStreamDialog(Dialog):
             else "Sync stream to video"
         )
         self.setWindowTitle(title)
-        self.resize(720, 640)
         self._part_counts = recording.part_frame_counts
         self._total = sum(self._part_counts)
         self._frame = 0
@@ -1123,7 +1119,6 @@ class StreamPreviewDialog(Dialog):
         box.rejected.connect(self.reject)
         box.accepted.connect(self.accept)
         self.set_buttons(box)
-        self.resize(820, 620 if self._has_video else min(strip_h, 320) + 190)
         self._scrubber.set_frame(0)  # initial cursor + (video) frame image
 
     def _locate(self, frame: int) -> tuple[int, int]:

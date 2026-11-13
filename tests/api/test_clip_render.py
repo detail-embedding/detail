@@ -179,7 +179,11 @@ def test_one_capture_serves_every_bout_in_the_part(video, tmp_path):
     real = cv2.VideoCapture
     with unittest.mock.patch("cv2.VideoCapture", wraps=real) as spy:
         clip_render.render_part(
-            make_part(video, range(_N_FRAMES)), jobs, 0, 32, renders=(clip_render.RAW,)
+            make_part(video, range(_N_FRAMES)),
+            jobs,
+            0,
+            32,
+            renders=(clip_render.RAW,),
         )
     assert spy.call_count == 1
     assert [j["n_written"] for j in jobs] == [2] * 4
@@ -218,7 +222,11 @@ def test_frames_without_a_detection_are_skipped(video, tmp_path):
     out = tmp_path / "clip.mp4"
     detected = [i for i in range(_N_FRAMES) if i % 2 == 0]
     clip_render.render_part(
-        make_part(video, detected), [job(4, 13, out)], 0, 32, renders=(clip_render.RAW,)
+        make_part(video, detected),
+        [job(4, 13, out)],
+        0,
+        32,
+        renders=(clip_render.RAW,),
     )
     assert frame_indices(out) == [4, 6, 8, 10, 12]
 
@@ -263,7 +271,11 @@ def test_a_part_with_no_detections_at_all_is_handled(video, tmp_path):
 
 def test_no_jobs_is_a_no_op(video):
     clip_render.render_part(
-        make_part(video, range(_N_FRAMES)), [], 0, 32, renders=(clip_render.RAW,)
+        make_part(video, range(_N_FRAMES)),
+        [],
+        0,
+        32,
+        renders=(clip_render.RAW,),
     )
 
 
@@ -351,7 +363,12 @@ def test_overlay_keeps_the_whole_frame_at_a_steady_scale(tmp_path):
     }
     out = tmp_path / "clip.mp4"
     clip_render.render_part(
-        part, [job(4, 11, out)], 0, 64, renders=(clip_render.OVERLAY,), crop=False
+        part,
+        [job(4, 11, out)],
+        0,
+        64,
+        renders=(clip_render.OVERLAY,),
+        crop=False,
     )
     assert _sizes(out) == {
         (64, 32)
@@ -375,7 +392,12 @@ def test_overlay_draws_the_mask_on_the_frame(tmp_path):
         crop=False,
     )
     clip_render.render_part(
-        part, [job(2, 6, tinted)], 0, 64, renders=(clip_render.OVERLAY,), crop=False
+        part,
+        [job(2, 6, tinted)],
+        0,
+        64,
+        renders=(clip_render.OVERLAY,),
+        crop=False,
     )
     assert _first_frame(tinted) is not None
     # Per channel, not the mean over them: the overlay colour averages near mid-grey, so a
@@ -395,7 +417,12 @@ def test_overlay_still_writes_a_frame_when_the_mask_is_missing(tmp_path):
     }
     out = tmp_path / "clip.mp4"
     clip_render.render_part(
-        part, [job(2, 6, out)], 0, 64, renders=(clip_render.OVERLAY,), crop=False
+        part,
+        [job(2, 6, out)],
+        0,
+        64,
+        renders=(clip_render.OVERLAY,),
+        crop=False,
     )
     assert _first_frame(out) is not None
 
@@ -407,7 +434,12 @@ def test_overlay_is_frame_accurate_too(tmp_path):
     part = make_part(video, range(_N_FRAMES))
     out = tmp_path / "clip.mp4"
     clip_render.render_part(
-        part, [job(4, 11, out)], 0, 64, renders=(clip_render.OVERLAY,), crop=False
+        part,
+        [job(4, 11, out)],
+        0,
+        64,
+        renders=(clip_render.OVERLAY,),
+        crop=False,
     )
     assert _frame_count(out) == 8
 
@@ -429,12 +461,9 @@ def test_crop_remains_the_default_framing(tmp_path):
 
 def test_fit_keeps_the_aspect_and_never_goes_odd():
     """Several mp4 encoders reject an odd width or height outright."""
-    assert clip_render.fit_within(1920, 1080, max_longest=640) == (640, 360)
-    assert clip_render.fit_within(640, 480, max_longest=1920) == (
-        640,
-        480,
-    )  # never upscales
-    assert all(v % 2 == 0 for v in clip_render.fit_within(101, 33, max_longest=51))
+    assert clip_render._fit(1920, 1080, 640) == (640, 360)
+    assert clip_render._fit(640, 480, 1920) == (640, 480)  # never upscales
+    assert all(v % 2 == 0 for v in clip_render._fit(101, 33, 51))
 
 
 def _write_sized_video(path, n_frames, *, width, height, value=None):
@@ -572,7 +601,12 @@ def test_a_single_flavour_keeps_the_bare_filename(video, tmp_path):
     part = make_part(video, range(_N_FRAMES))
     out = tmp_path / "clip.mp4"
     clip_render.render_part(
-        part, [job(2, 6, out)], 0, 64, renders=(clip_render.OVERLAY,), crop=False
+        part,
+        [job(2, 6, out)],
+        0,
+        64,
+        renders=(clip_render.OVERLAY,),
+        crop=False,
     )
     assert out.is_file()
     assert not (tmp_path / "clip_overlay.mp4").exists()
@@ -588,7 +622,12 @@ def test_the_mask_flavour_is_binary_not_a_picture_of_one(video, tmp_path):
     part = make_part(video, range(_N_FRAMES))
     out = tmp_path / "clip.mp4"
     clip_render.render_part(
-        part, [job(2, 6, out)], 0, 64, renders=(clip_render.MASK,), crop=False
+        part,
+        [job(2, 6, out)],
+        0,
+        64,
+        renders=(clip_render.MASK,),
+        crop=False,
     )
     frames = read_frames(out)
     assert frames, "the mask flavour wrote no decodable frames"
@@ -612,7 +651,12 @@ def test_the_raw_flavour_has_no_overlay_drawn_on_it(video, tmp_path):
     part = make_part(video, range(_N_FRAMES))
     raw_out, overlay_out = tmp_path / "r.mp4", tmp_path / "o.mp4"
     clip_render.render_part(
-        part, [job(2, 6, raw_out)], 0, 64, renders=(clip_render.RAW,), crop=False
+        part,
+        [job(2, 6, raw_out)],
+        0,
+        64,
+        renders=(clip_render.RAW,),
+        crop=False,
     )
     clip_render.render_part(
         part,
@@ -663,10 +707,20 @@ def test_crop_and_render_are_independent(video, tmp_path):
     part = make_part(video, range(_N_FRAMES))
     out, raw_out = tmp_path / "clip.mp4", tmp_path / "raw.mp4"
     clip_render.render_part(
-        part, [job(2, 6, out)], 0, 32, renders=(clip_render.MASK,), crop=True
+        part,
+        [job(2, 6, out)],
+        0,
+        32,
+        renders=(clip_render.MASK,),
+        crop=True,
     )
     clip_render.render_part(
-        part, [job(2, 6, raw_out)], 0, 32, renders=(clip_render.RAW,), crop=True
+        part,
+        [job(2, 6, raw_out)],
+        0,
+        32,
+        renders=(clip_render.RAW,),
+        crop=True,
     )
     frames, raw_frames = read_frames(out), read_frames(raw_out)
     assert frames and raw_frames, "a cropped flavour wrote nothing"
@@ -745,18 +799,3 @@ def test_the_exporter_scan_would_catch_one():
         and n.value.id == "clip_render"
     ]
     assert len(hits) == 1
-
-
-# --- fit_within: the one rule for an exported picture's size ------------------------------ #
-def test_fit_within_never_scales_up_and_keeps_both_sides_even():
-    """One rule sizes every export (the clip renders by longest side, ``api.animation`` by
-    width): never up, aspect kept, even on both sides for H.264, the tighter limit winning.
-    """
-    from detail.api.clip_render import fit_within
-
-    assert fit_within(321, 181) == (320, 180)  # only the odd pixel goes
-    assert fit_within(100, 50, max_width=640) == (100, 50)  # never up
-    assert fit_within(1920, 1080, max_longest=200) == (200, 112)
-    assert fit_within(1000, 100, max_width=100) == (100, 10)
-    assert fit_within(1920, 1080, max_width=960, max_longest=200) == (200, 112)
-    assert fit_within(1, 1) == (2, 2)  # a floor, so a writer always gets a frame

@@ -25,6 +25,9 @@ def test_round_trips():
         "max_gap_s": 0.25,
         "mirror_hold_s": 2.0,
         "facing_camera_ratio": 0.4,
+        "pose": "append",
+        "pose_weight": 0.5,
+        "pose_min_score": 0.3,
     }
     assert EmbeddingConfig.model_validate(d).model_dump() == d
 
@@ -54,6 +57,10 @@ def test_defaults():
         "max_gap_s": 0.5,
         "mirror_hold_s": 1.0,
         "facing_camera_ratio": 0.5,
+        # §14 pose in the embedding: off
+        "pose": "none",
+        "pose_weight": 1.0,
+        "pose_min_score": None,
     }
 
 
@@ -104,13 +111,16 @@ def test_extra_keys_ignored():
         "resize",
         "canvas_scope",
         "every_n_frames",
-        "batch_size",
         "align",
         "keypoint_run_id",
         "heading",
         "max_gap_s",
         "mirror_hold_s",
         "facing_camera_ratio",
+        "pose",
+        "pose_weight",
+        "pose_min_score",
+        "batch_size",
     }
 
 

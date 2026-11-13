@@ -19,12 +19,16 @@ from detail.configs.keypoint_track import (
     KeypointTrackConfig,
     TemporalDecodeConfig,
 )
+from detail.configs.remote import RemoteTargetConfig
 from detail.core import progress as progress_mod
+from detail.core.dataclasses import ComputeTarget, job_from_dict, job_to_dict
 from detail.core.registries import KEYPOINT_TRACK_METHODS
 from detail.core.skeleton import Skeleton
 from detail.pipeline import keypoint_track
+from detail.executor import remote_shepherd
 from detail.pipeline import pose_match
 from detail.storage import recording as recording_store
+from detail.storage import remote_targets
 from detail.storage.keypoint_runs import (
     KeypointDetectRun,
     KeypointTrackRun,
@@ -247,11 +251,17 @@ def _config(detect_run_id="kd_01", **overrides) -> dict:
     return config
 
 
-def _add_tracking_run(recording, run_id, detection_run_id, status="complete"):
+def _add_tracking_run(recording, run_id, detection_run_id, status="complete", **fields):
     data = recording_store.read_recording(recording.dir)
     data["tracking_runs"].append(
-        {"id": run_id, "status": status, "detection_run_id": detection_run_id}
+        {"id": run_id, "status": status, "detection_run_id": detection_run_id, **fields}
     )
+    recording_store.write_recording(recording.dir, data)
+
+
+def _set_tracking_fields(recording, run_id, **fields):
+    data = recording_store.read_recording(recording.dir)
+    next(r for r in data["tracking_runs"] if r["id"] == run_id).update(fields)
     recording_store.write_recording(recording.dir, data)
 
 
@@ -385,6 +395,85 @@ def test_the_tracking_run_is_resolved_and_written_back(detect_runs):
     assert read_track_yaml(run_dir)["tracking_run_id"] == "track_01"
 
 
+def test_where_it_runs_is_resolved_and_written_back(detect_runs):
+    """Tenet 9: no compute is this machine's CPU, recorded in the config, the job, the run
+    record (the Where column) and the yaml — not left for a reader to assume."""
+    it, recording = detect_runs
+    module, config, run_dir, _e = _track_run(it, recording, _config())
+    cpu = ComputeTarget("cpu", None, None, None)
+    assert config["compute"] == cpu
+    assert module.build_job(recording.id, "kt_01", config).compute == cpu
+    assert module.run_record("kt_01", config, "complete")["compute"] == cpu.to_dict()
+    assert read_track_yaml(run_dir)["compute"] == cpu.to_dict()
+
+
+def test_a_remote_run_carries_its_target_and_asks_for_one_gpu(
+    detect_runs, tmp_path, monkeypatch
+):
+    """The job the shepherd sends names the target and survives job.json; the sbatch asks
+    for one GPU (the fewest Tillicum takes) on a target sized for a multi-GPU model, with the
+    target's CPUs and memory scaled down alongside."""
+    cfg = tmp_path / "machine"
+    monkeypatch.setattr(remote_targets, "CONFIG_DIR", cfg)
+    monkeypatch.setattr(
+        remote_targets, "REMOTE_TARGETS_PATH", cfg / "remote_targets.yaml"
+    )
+    target = RemoteTargetConfig(
+        name="tillicum",
+        host="tillicum",
+        remote_workdir="/scratch/x",
+        gpus_per_job=4,
+        cpus_per_task=16,
+        mem_gb=128,
+    )
+    remote_targets.register_remote_target(target)
+    _it, recording = detect_runs
+    remote = ComputeTarget("remote", None, None, None, "tillicum")
+    module = keypoint_track.KeypointTrackModule()
+    config = _validate(recording, _config(compute=remote))
+    job = module.build_job(recording.id, "kt_01", config)
+    assert job_from_dict(job_to_dict(job)).compute == remote
+    sized = remote_shepherd._sized_for(target, job)
+    assert (sized.gpus_per_job, sized.cpus_per_task, sized.mem_gb) == (1, 4, 32)
+
+
+@pytest.mark.parametrize("cores, expected", [(1, 1), (2, 1), (4, 2), (16, 8), (64, 8)])
+def test_a_local_run_keeps_several_recordings_in_flight(monkeypatch, cores, expected):
+    """One core per recording, so a local batch fans out instead of taking the GPU stages'
+    default of one at a time: half the cores, capped."""
+    monkeypatch.delenv(keypoint_track.PARALLELISM_ENV, raising=False)
+    monkeypatch.setattr(keypoint_track.os, "cpu_count", lambda: cores)
+    module = keypoint_track.KeypointTrackModule()
+    assert module.recording_parallelism() == expected
+
+
+def test_the_local_fan_out_can_be_overridden(monkeypatch):
+    monkeypatch.setenv(keypoint_track.PARALLELISM_ENV, "3")
+    assert keypoint_track.KeypointTrackModule().recording_parallelism() == 3
+    monkeypatch.setenv(keypoint_track.PARALLELISM_ENV, "0")
+    assert keypoint_track.KeypointTrackModule().recording_parallelism() == 1
+
+
+def test_a_job_from_before_compute_reads_as_a_local_one():
+    """A kt job.json written before the stage could go remote has no ``compute`` key."""
+    from detail.core.keypoints import KeypointTrackJob
+
+    old = {
+        "job_id": "kt_01",
+        "recording_id": "recording_001",
+        "track_run_id": "kt_01",
+        "detect_run_id": "kd_01",
+        "tracking_run_id": "track_01",
+        "match": {"min_inside": 0.5, "mask_grow": 0.05},
+        "method": "temporal_decode",
+        "config": {},
+        "skeleton": SKELETON.to_dict(),
+        "created_at": "2026-10-21T00:00:00Z",
+        "skeleton_ref": None,
+    }
+    assert KeypointTrackJob.from_dict(old).compute is None
+
+
 def test_a_second_tracking_run_on_the_detection_run_is_refused_naming_both(
     detect_runs,
 ):
@@ -395,6 +484,43 @@ def test_a_second_tracking_run_on_the_detection_run_is_refused_naming_both(
         _validate(recording, _config())
     out = _validate(recording, _config(tracking_run_id="track_02"))
     assert out["tracking_run_id"] == "track_02"  # naming one settles it
+
+
+def test_one_track_per_class_is_refused_pointing_at_their_merge(detect_runs):
+    """An experiment that tracks animals by class has one tracking run per animal, and a
+    pose given to one of them reaches that animal alone. Naming the runs is not enough to
+    tell a person that: the refusal says so, names each run's class, and points at the
+    merge, or names the merge when there is one."""
+    _it, recording = detect_runs
+    _set_tracking_fields(recording, "track_01", class_name="Intruder")
+    _add_tracking_run(recording, "track_02", "det_01", class_name="Resident")
+    with pytest.raises(ValueError) as refused:
+        _validate(recording, _config())
+    message = str(refused.value)
+    assert "track_01 (Intruder), track_02 (Resident)" in message
+    assert "Merge tracks" in message and "choose the merged run" in message
+
+    _add_tracking_run(
+        recording,
+        "track_03",
+        "det_01",
+        class_name="Intruder+Resident",
+        tracker_id="track_merge",
+    )
+    with pytest.raises(ValueError) as refused:
+        _validate(recording, _config())
+    message = str(refused.value)
+    assert "track_03 merges several animals' tracks" in message
+    assert "Merge tracks" not in message
+
+
+def test_runs_that_do_not_split_by_class_are_only_named():
+    assert (
+        keypoint_track.describe_tracking_choice(
+            [{"id": "track_02"}, {"id": "track_01", "class_name": "Resident"}]
+        )
+        == "track_01 (Resident), track_02; choose one as the tracking run"
+    )
 
 
 @pytest.mark.parametrize(
@@ -544,6 +670,18 @@ def test_re_running_the_same_id_is_a_whole_re_run(detect_runs):
         (_config(match_min_inside=0.0), "match_min_inside"),
         (_config(match_min_inside=1.5), "match_min_inside"),
         (_config(match_mask_grow=-0.1), "match_mask_grow"),
+        (
+            _config(compute=ComputeTarget("cuda", [0], None, None)),
+            "loads no model",
+        ),
+        (
+            _config(compute=ComputeTarget("remote", None, None, None, None)),
+            "no remote_target was given",
+        ),
+        (
+            _config(compute=ComputeTarget("remote", None, None, None, "nowhere")),
+            "no remote target registered as 'nowhere'",
+        ),
     ],
 )
 def test_validate_names_what_to_fix(detect_runs, config, fragment):
@@ -593,6 +731,89 @@ def test_the_detect_runs_skeleton_ref_is_carried_into_track_yaml(detect_runs):
     )
     assert plain["skeleton_ref"] is None  # the detect run carried none
     assert read_track_yaml(plain_dir)["skeleton_ref"] is None
+
+
+# --------------------------------------------------------------------------- #
+# track_points: a subset of the skeleton, any subset of any skeleton
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "method_id, config",
+    [
+        ("despike_smooth", DespikeSmoothConfig(track_points=["nose"])),
+        ("temporal_decode", TemporalDecodeConfig(track_points=["nose"])),
+    ],
+)
+def test_untracked_points_come_out_bit_for_bit_as_detected(method_id, config):
+    """The class: a point the user left untracked must be the detect run's placement, not
+    something a path, a swap or a filter touched. Rows where every filter and the path would
+    move the ears (a spike, a decoy the path prefers, a persistent mirror signal) leave them
+    exactly as detected; the tracked nose is still settled."""
+    rows = _detect_rows(40)
+    rows["points"][20] += (0.25, 0.25)  # a one-frame jump of every point
+    rows["points"][15, 1:] = rows["candidates"][15, 1:, 1]  # the ears on the decoy
+    rows["candidate_scores"][15, 1:, 1] = 0.95
+    rows["extras/mirrored"][25:, 1:] = 1.5
+    out = _track(method_id, rows, config)
+    np.testing.assert_array_equal(out.points[:, 1:], rows["points"][:, 1:])
+    assert (out.changed[:, 1:] == 0).all()
+    np.testing.assert_array_equal(out.point_scores[:, 1:], rows["point_scores"][:, 1:])
+    np.testing.assert_allclose(out.points[20, 0], (0.5, 0.5), atol=0.01)  # nose settled
+    assert out.changed[20, 0] != 0
+
+
+def test_a_pair_is_swapped_only_when_both_its_points_are_tracked():
+    rows = _detect_rows(40)
+    rows["extras/mirrored"][20:, 1:] = 1.5  # from row 20 the mirrored examples win
+    both = _track(
+        "temporal_decode",
+        rows,
+        TemporalDecodeConfig(despike=False, smooth=False),
+    )
+    np.testing.assert_allclose(both.points[20:, 1], rows["points"][20:, 2], atol=1e-6)
+    split = _track(
+        "temporal_decode",
+        rows,
+        TemporalDecodeConfig(
+            despike=False, smooth=False, track_points=["nose", "left_ear"]
+        ),
+    )
+    np.testing.assert_allclose(split.points[:, 1], rows["points"][:, 1], atol=1e-6)
+    np.testing.assert_array_equal(split.points[:, 2], rows["points"][:, 2])
+
+
+def test_track_points_resolve_to_the_skeletons_order_or_every_point():
+    names = list(PAIRED.names)
+    assert keypoint_track.resolve_track_points(PAIRED, None) is None
+    assert keypoint_track.resolve_track_points(PAIRED, names[::-1]) is None
+    assert keypoint_track.resolve_track_points(
+        PAIRED, ["right_ear", "nose", "nose"]
+    ) == ["nose", "right_ear"]
+    with pytest.raises(ValueError, match=r"\['tail'\].*its points are"):
+        keypoint_track.resolve_track_points(PAIRED, ["nose", "tail"])
+    with pytest.raises(ValueError, match="nothing would be tracked"):
+        keypoint_track.resolve_track_points(PAIRED, [])
+
+
+def test_the_stage_records_track_points_as_resolved_and_keeps_the_rest(detect_runs):
+    it, recording = detect_runs
+    _m, config, run_dir, _events = _track_run(
+        it,
+        recording,
+        _config(method="temporal_decode", config={"track_points": ["tail"]}),
+    )
+    assert config["config"]["track_points"] == ["tail"]
+    assert read_track_yaml(run_dir)["config"]["track_points"] == ["tail"]
+    detect = KeypointDetectRun(recording.dir, "kd_01").rows("part_001")
+    rows = KeypointTrackRun(recording.dir, "kt_01").rows(0, "part_001")
+    # the untracked nose is its assigned instance's placement, exactly
+    np.testing.assert_array_equal(
+        rows["points"][:, 0], detect["points"][rows["instance_row"], 0]
+    )
+    with pytest.raises(ValueError, match="does not have"):
+        _validate(
+            recording,
+            _config(method="temporal_decode", config={"track_points": ["left_paw"]}),
+        )
 
 
 def test_a_keypoint_track_run_is_a_dependent_of_its_tracking_run():

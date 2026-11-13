@@ -116,3 +116,9 @@ def test_stream_picker_does_not_reread_recordings_on_change(qapp):
     before = len(calls)
     cfg._stream.setCurrentIndex(cfg._stream.findData("full"))
     assert len(calls) == before
+
+
+def test_load_config_restores_the_track(qapp):
+    cfg = _QueryEvalConfig()
+    cfg.load_config({"track_id": 3})
+    assert cfg._fields["track_id"][1].value() == 3

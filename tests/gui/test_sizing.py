@@ -1,38 +1,22 @@
-"""``gui/sizing.py``'s two newest helpers: the opening-size cap that was three copies in #806,
-and the fine-print font the strips use."""
+"""``gui/sizing.py``'s helpers: the fine-print font the strips use, and the elided label.
+
+**The class: a text label cut by its layout mid-letter, with nothing to say so.** A ``QLabel``
+shorter than its text is clipped, and the label bar's figures read "…of the run · sepa" into the
+chip beside them. ``sizing.ElidedLabel`` shortens with "…" and says the whole line in its
+tooltip, while ``text()`` stays whole.
+
+**Its sibling: a value's text setting a panel's minimum width** inside a scroll area that never
+scrolls sideways. Each filter a user picked raised the filters column's minimum until it grew
+past the panel and cut its right edge, so an elided label's floor is a constant, never its text.
+"""
 
 import pytest
 
 pytest.importorskip("PyQt6")
 
-from PyQt6.QtCore import QRect, QSize  # noqa: E402
 from PyQt6.QtWidgets import QLabel  # noqa: E402
 
-from detail.gui.sizing import fit_to_screen, small_font  # noqa: E402
-
-
-class _Screen:
-    def __init__(self, width, height):
-        self._free = QRect(0, 0, width, height)
-
-    def availableGeometry(self):  # noqa: N802 — Qt's name
-        return self._free
-
-
-def test_fit_to_screen_bounds_to_the_share(qapp):
-    got = fit_to_screen(QSize(1600, 900), share=0.5, screen=_Screen(1000, 600))
-    assert (got.width(), got.height()) == (500, 300)
-
-
-def test_a_window_that_fits_is_left_alone(qapp):
-    got = fit_to_screen(QSize(400, 300), share=0.92, screen=_Screen(1000, 600))
-    assert (got.width(), got.height()) == (400, 300)
-
-
-def test_without_a_screen_the_size_is_returned_as_is(qapp):
-    want = QSize(1600, 900)
-    got = fit_to_screen(want, screen=None)
-    assert got == want and got is not want, "a copy: the caller's size is not mutated"
+from detail.gui.sizing import small_font  # noqa: E402
 
 
 def test_small_font_is_smaller_than_the_widgets_own(qapp):

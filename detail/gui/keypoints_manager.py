@@ -83,7 +83,8 @@ class SkeletonEditorDialog(Dialog):
     """Draw one skeleton: a new one (``skeleton_entry`` None, an empty canvas) or a library or
     preset entry. ``skeleton_dependents`` is what uses it (already read by the page), which decides whether
     **Save** writes in place or as a new skeleton. :meth:`saved_id` is the skeleton written,
-    or None. **Cancel** with edits asks first.
+    or None. **Cancel** with edits asks first. ``experiment`` (the open one, or None) is where
+    *Frame from a recording…* finds a frame to draw over.
     """
 
     def __init__(
@@ -92,6 +93,7 @@ class SkeletonEditorDialog(Dialog):
         skeleton_dependents: list[dict],
         taken_skeleton_names: set[str],
         *,
+        experiment,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -112,7 +114,6 @@ class SkeletonEditorDialog(Dialog):
             self._base_name = entry["name"]
             self._base = entry["skeleton"]
             self.setWindowTitle(f"Edit skeleton: {entry['name']}")
-        self.resize(lines(60), lines(44))
 
         body = self.body()
         name_row = QHBoxLayout()
@@ -121,7 +122,7 @@ class SkeletonEditorDialog(Dialog):
         self._name.textEdited.connect(lambda _t: self._sync())
         name_row.addWidget(self._name, 1)
         body.addLayout(name_row)
-        self._editor = SkeletonEditor()
+        self._editor = SkeletonEditor(experiment=experiment)
         self._editor.load(self._base)
         self._editor.edited.connect(self._sync)
         body.addWidget(self._editor, 1)
@@ -238,10 +239,13 @@ class SkeletonEditorDialog(Dialog):
 
 
 class KeypointsManagerPage(QWidget):
-    """The skeleton library as a table (§26)."""
+    """The skeleton library as a table (§26). ``experiment`` is the open one, or None: the
+    library belongs to no experiment, but the editor borrows a frame from one to draw over.
+    """
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, *, experiment, parent=None) -> None:
         super().__init__(parent)
+        self._experiment = experiment
         self._entries: dict[str, dict] = {}
         self._order: list[str] = []
         self._deps: dict[str, list[dict]] | None = None
@@ -392,6 +396,7 @@ class KeypointsManagerPage(QWidget):
             entry,
             deps or [],
             {e["name"] for e in self._entries.values()},
+            experiment=self._experiment,
             parent=self,
         )
         self._dialog = dialog

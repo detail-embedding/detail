@@ -1067,7 +1067,10 @@ def test_the_windows_top_is_interprets_label_bar_row_for_row(qapp, fitted):
     _drain(qapp, lambda: False, 500)
     page_bar, bar = interpret.label_bar(), window.bar
     assert type(bar) is LabelBar and type(page_bar) is LabelBar
-    page_rows = bar_rows(page_bar, skip=(interpret._open_window, page_bar.lines))
+    # The page's own two: Open in window, and Cluster tools ▾ (run-wide tools, page-only).
+    page_rows = bar_rows(
+        page_bar, skip=(interpret._open_window, interpret._tools, page_bar.lines)
+    )
     assert bar_rows(bar, skip=(bar.lines,)) == page_rows
     assert page_rows[0][-1].startswith("ExportMenu"), "the toolbar ends line 1"
     assert [w for w in page_rows[2] if w.startswith("QPushButton")] == [
@@ -1096,6 +1099,25 @@ def test_the_windows_top_is_interprets_label_bar_row_for_row(qapp, fitted):
     window.body().insertWidget(1, row)
     _drain(qapp, lambda: False, 300)
     assert widgets_between(bar, window.montage.grid), "the planted row is caught"
+
+
+def test_a_window_reopens_at_the_size_the_last_one_was_left(qapp, fitted):
+    """A cluster window keeps the size and place the last one was closed at. The shared dialog
+    base fits every dialog to its content at show, and that fit overrode the restored geometry,
+    so every window opened at the content's size whatever the person had dragged it to.
+    """
+    _e, _h, _workspace, interpret = _interpret(qapp, fitted)
+    a, b = _two_clusters(interpret._view)
+    first = _window(qapp, interpret, a)
+    first.resize(first.width() - 137, first.height() - 61)
+    qapp.processEvents()
+    left = first.size()
+    first.close()
+    qapp.processEvents()
+    second = _window(qapp, interpret, b)
+    qapp.processEvents()
+    assert second.size() == left, (second.size(), left)
+    second.close()
 
 
 def test_an_order_picked_while_the_window_ranks_draws_nothing_until_the_clips_land(

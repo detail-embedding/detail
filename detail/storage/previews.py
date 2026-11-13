@@ -47,6 +47,7 @@ from pathlib import Path
 import numpy as np
 
 from detail.core import atomic
+from detail.core.utils import subject_key
 from detail.storage import integrity
 from detail.storage import locations
 from detail.storage import zarr_store
@@ -117,6 +118,11 @@ def masks_digest(tracking_entry: dict, detection_entry: dict) -> str:
         str(detection_entry.get("id")),
         str(detection_entry.get("created_at")),
     ]
+    # Masks of a class-filtered run built before its assignment was paired through the filter
+    # drew each animal on another detection's mask. Naming the class makes those another
+    # store, rebuilt rather than trusted; an unfiltered run's digest, and masks, are unchanged.
+    if tracking_entry.get("class_name"):
+        fields.append(f"class={tracking_entry['class_name']}")
     return hashlib.sha1("|".join(fields).encode("utf-8")).hexdigest()[:12]
 
 
@@ -409,7 +415,7 @@ class MaskRows:
         start = int(np.searchsorted(self.proxy_frame, int(lo), side="left"))
         stop = int(np.searchsorted(self.proxy_frame, int(hi), side="right"))
         rows = np.arange(start, stop)
-        return rows[self.object_id[start:stop] == int(object_id)]
+        return rows[self.object_id[start:stop] == subject_key(object_id)]
 
 
 def read_masks(path: Path) -> MaskRows:

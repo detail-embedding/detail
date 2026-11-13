@@ -25,7 +25,7 @@ be outlived by the Python object behind it, or scoped to the window where someth
 ordinary ``lambda result, g=generation:`` idiom is exactly the shape that breaks, which is why every
 worker here names a ``receiver=``. Covered by
 ``test_a_worker_with_a_delivery_in_flight_is_not_collected``,
-``test_fit_progress_worker_outlives_the_page_that_started_it`` and
+``test_every_gui_worker_inherits_the_root`` (with its behavioural pair) and
 ``test_pool_work_does_not_cross_a_test_boundary``; ``tests/gui/test_busy.py`` holds the event-filter
 half, and ``tests/gui/test_worker_lifetime.py`` the mirror class — Python state outliving the Qt
 object it was going to touch.
@@ -255,6 +255,49 @@ def test_fit_progress_fraction_no_eta_before_progress():
     assert "left" not in status
 
 
+def test_a_remote_upload_phase_shows_its_message_and_measured_eta_on_a_stage_bar():
+    """The shepherd's pre-submit phases (#644) publish a zero-work event of the job's own family:
+    message and ETA only. The page must show both, and must not invent a fraction."""
+    from detail.core.dataclasses import LabelingProgressEvent
+
+    fraction, status = fit_progress_fraction(
+        LabelingProgressEvent(
+            0,
+            0,
+            0,
+            0,
+            600.0,
+            2400.0,
+            "uploading videos · 12/80 files · 17.0/115.8 GB",
+        )
+    )
+    assert fraction == 0.0
+    assert "uploading videos · 12/80 files" in status
+    assert "40m00s" in status and "left" in status
+
+
+def test_a_remote_upload_phase_reads_as_a_named_phase_on_the_distill_bar():
+    """What the distill page renders from its own progress.json while the upload runs: the labeling
+    stage, its message, and the upload's ETA, with the stage-weighted bar still at 0."""
+    from detail.core.dataclasses import DistillProgress
+
+    fraction, status = fit_progress_fraction(
+        DistillProgress(
+            phase="labeling",
+            stage_index=0,
+            stage_count=2,
+            inner_fraction=0.0,
+            overall_fraction=0.0,
+            elapsed_s=600.0,
+            eta_s=2400.0,
+            message="uploading videos · 12/80 files · 17.0/115.8 GB",
+        )
+    )
+    assert fraction == 0.0
+    assert status.startswith("labeling (1/2) — uploading videos · 12/80 files")
+    assert "40m00s" in status
+
+
 def test_fit_progress_fraction_never_derives_a_distill_eta_from_the_weighted_bar():
     """A distill event's fraction is stage-*weighted*; its elapsed_s is wall clock.
 
@@ -319,6 +362,72 @@ def test_processing_progress_fraction_folds_inner_within_recording():
     fraction, status = processing_progress_fraction(event)
     assert fraction == pytest.approx(0.25)
     assert "s1" in status and "1/2" in status and "detecting" in status
+
+
+def _detecting(done, total, message="detecting"):
+    from detail.core.dataclasses import DetectionProgressEvent
+
+    return DetectionProgressEvent(0, 1, done, total, 1.0, None, message=message)
+
+
+def test_processing_progress_fraction_sums_the_recordings_in_flight():
+    """Eight jobs on a cluster at half way is four recordings of progress, not half of one: the
+    bar was `(done + the last-reporting recording's fraction) / total`, a fraction of one
+    recording regardless of how many were running."""
+    from detail.core.dataclasses import ProcessingProgress
+
+    live = {f"s{i}": _detecting(5, 10) for i in range(4)}  # four at half way
+    event = ProcessingProgress(
+        recordings_done=2,
+        recordings_total=10,
+        current_recording="s3",
+        inner=live["s3"],
+        live=live,
+    )
+
+    fraction, status = processing_progress_fraction(event)
+
+    assert fraction == pytest.approx((2 + 4 * 0.5) / 10)
+    assert "4 recordings in flight" in status and "2/10 done" in status
+
+
+def test_processing_progress_fraction_with_one_recording_live_is_the_old_bar():
+    from detail.core.dataclasses import ProcessingProgress
+
+    inner = _detecting(5, 10)
+    serial = ProcessingProgress(0, 2, "s1", inner)
+    live_of_one = ProcessingProgress(0, 2, "s1", inner, live={"s1": inner})
+
+    assert processing_progress_fraction(live_of_one) == processing_progress_fraction(
+        serial
+    )
+
+
+def test_processing_progress_fraction_never_passes_one():
+    from detail.core.dataclasses import ProcessingProgress
+
+    live = {
+        f"s{i}": _detecting(10, 10) for i in range(3)
+    }  # three finished, not yet reported done
+    event = ProcessingProgress(2, 3, "s0", live["s0"], live=live)
+
+    fraction, _ = processing_progress_fraction(event)
+
+    assert fraction == 1.0
+
+
+def test_processing_progress_fraction_eta_uses_the_summed_progress():
+    """The ETA divides the work done by the time spent. Fed one recording's fraction while eight
+    ran, it inferred an eighth of the real throughput and reported hours too many."""
+    from detail.core.dataclasses import ProcessingProgress
+
+    live = {f"s{i}": _detecting(5, 10) for i in range(4)}
+    event = ProcessingProgress(0, 8, "s0", live["s0"], elapsed_s=600.0, live=live)
+
+    _, status = processing_progress_fraction(event)
+
+    # 2 of 8 recordings' work in 600 s -> 1800 s left (30 min); one recording's 0.5/8 would say 2h20m.
+    assert "30m" in status
 
 
 def _import_event(done, total, in_flight, *, failed=0, eta_s=None):
@@ -598,6 +707,112 @@ def test_background_call_runs_off_thread_but_delivers_on_ui_thread(qapp):
     assert seen["deliver"] == main_tid  # done delivered ON the UI thread
 
 
+def test_a_progress_reporting_call_delivers_each_report_on_the_ui_thread(qapp):
+    """The launch dialog's status line is set from `tick`; a report made on the worker thread
+    must land on the UI thread or the label is touched from the wrong one."""
+    import threading
+
+    from PyQt6.QtCore import QEventLoop, QTimer
+
+    main_tid = threading.get_ident()
+    seen: list[tuple] = []
+
+    def work(progress):
+        progress("Validating recordings", 0.0, "1 of 2")
+        progress("Validating recordings", 0.5, "2 of 2")
+        return "launched"
+
+    call = BackgroundCall(work, receiver=None, reports_progress=True)
+    loop = QEventLoop()
+    call.tick.connect(
+        lambda stage, fraction, detail: seen.append(
+            (stage, fraction, detail, threading.get_ident())
+        )
+    )
+    call.done.connect(lambda _result: loop.quit())
+    call.start()
+    QTimer.singleShot(5000, loop.quit)  # safety net; should never fire
+    loop.exec()
+    call.wait()
+
+    assert [s[:3] for s in seen] == [
+        ("Validating recordings", 0.0, "1 of 2"),
+        ("Validating recordings", 0.5, "2 of 2"),
+    ]
+    assert {s[3] for s in seen} == {main_tid}
+
+
+def test_a_call_that_does_not_report_is_still_called_with_nothing():
+    """Every existing `BackgroundCall(fn)` is a zero-argument callable; reporting is opt-in."""
+    call = BackgroundCall(lambda: "x", receiver=None)
+    assert call._fn() == "x" and call._reports_progress is False
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    """`time.monotonic` as the status line sees it, set by the test."""
+    from detail.gui import workers
+
+    now = {"t": 100.0}
+    monkeypatch.setattr(workers.time, "monotonic", lambda: now["t"])
+    return now
+
+
+def test_the_status_line_names_the_stage_and_the_count(clock):
+    from detail.gui.workers import StageStatusLine
+
+    line = StageStatusLine()
+
+    assert line("Validating recordings", 0.0, "1 of 71") == (
+        "Validating recordings — 1 of 71"
+    )
+
+
+def test_the_status_line_estimates_time_left_from_what_it_has_measured(clock):
+    """10 of 71 recordings in 20 s is 2 s each, so 61 more is ~2m02s — read from the stage's own
+    elapsed, which starts at its first report."""
+    from detail.gui.workers import StageStatusLine
+
+    line = StageStatusLine()
+    line("Validating recordings", 0.0, "1 of 71")
+    clock["t"] += 20.0
+
+    assert line("Validating recordings", 10 / 71, "11 of 71") == (
+        "Validating recordings — 11 of 71 · ~2m02s left"
+    )
+
+
+def test_a_new_stage_does_not_inherit_the_old_stages_pace(clock):
+    """The space estimate is not paced by validation: 71 recordings that took 142 s to validate
+    must not make the estimate's first report claim minutes."""
+    from detail.gui.workers import StageStatusLine
+
+    line = StageStatusLine()
+    line("Validating recordings", 0.0, "1 of 71")
+    clock["t"] += 142.0
+    line("Validating recordings", 1.0, "71 of 71")
+    clock["t"] += 0.1
+
+    status = line("Estimating disk space", 0.0, "1 of 71")
+
+    assert status == "Estimating disk space — 1 of 71"
+    clock["t"] += 7.0
+    assert line("Estimating disk space", 10 / 71, "11 of 71") == (
+        "Estimating disk space — 11 of 71 · ~43s left"
+    )
+
+
+def test_no_time_left_is_claimed_when_done_or_instant(clock):
+    from detail.gui.workers import StageStatusLine
+
+    line = StageStatusLine()
+    line("Validating recordings", 0.0, "1 of 2")
+    clock["t"] += 0.2
+
+    assert "left" not in line("Validating recordings", 0.5, "2 of 2")
+    assert "left" not in line("Validating recordings", 1.0, "2 of 2")
+
+
 def test_processing_progress_eta_measures_only_this_coordinators_work():
     """A retry's bar legitimately starts part-way (29/60 — those recordings really are
     done), but elapsed_s only ever buys the recordings run *since this coordinator
@@ -670,28 +885,126 @@ def test_distill_progress_fraction_maps_phase_and_message():
     assert "epoch 2/5" in status  # advancing message
 
 
-def test_fit_progress_worker_outlives_the_page_that_started_it(qapp):
-    """A FitProgressWorker is a parentless QThread whose only Python reference lives on the
-    page that started it. The shell deleteLater()s a page on navigation, so that reference
-    drops while the thread is still polling — and destroying a *running* QThread is a Qt
-    fatal abort, not an exception. It has to hold its own reference until it finishes.
+def _every_gui_worker_class() -> list[type]:
+    from tests.gui import subjects
+
+    from detail.gui.workers import GuiWorker
+
+    subjects._import_every_gui_module()  # lazily imported workers exist only once imported
+    seen, stack = set(), list(GuiWorker.__subclasses__())
+    while stack:
+        cls = stack.pop()
+        if cls not in seen:
+            seen.add(cls)
+            stack.extend(cls.__subclasses__())
+    # Test stand-ins subclass it too, and stay listed until collected.
+    shipped = [c for c in seen if c.__module__.startswith("detail.")]
+    return sorted(shipped, key=lambda c: f"{c.__module__}.{c.__qualname__}")
+
+
+def _bypassing_the_root(classes: list[type]) -> list[str]:
+    """The classes whose ``start`` neither is ``GuiWorker.start`` nor chains to it."""
+    import inspect
+
+    from detail.gui.workers import GuiWorker
+
+    return [
+        cls.__qualname__
+        for cls in classes
+        if cls.start is not GuiWorker.start
+        and "super().start(" not in inspect.getsource(cls.start)
+    ]
+
+
+def test_every_gui_worker_inherits_the_root():
+    """Destroying a *running* QThread is a Qt fatal abort, not an exception, and a worker's only
+    Python reference lives on whatever started it — a page the shell ``deleteLater``s, an
+    ``ImportQueue`` replaced on an experiment switch. ``GuiWorker.start`` roots it until it
+    finishes; a subclass that overrides ``start`` without reaching that is the same bug again.
+
+    Data-driven, so a worker added tomorrow is covered. The root used to be a per-class choice:
+    three of nine subclasses made it, in two different registers, and ``_ImportWorker`` — which
+    did not — killed xdist workers with no traceback.
     """
-    from detail.gui.workers import _LIVE_WORKERS, FitProgressWorker
+    from detail.gui.workers import GuiWorker
 
-    class _Handle:
-        status = "complete"
-        error = None
+    assert "start" in vars(
+        GuiWorker
+    ), "GuiWorker no longer roots its workers in start(); see workers._IN_FLIGHT"
+    classes = _every_gui_worker_class()
+    assert (
+        len(classes) >= 8
+    ), f"found only {classes} — is discovery still importing modules?"
+    bypassing = _bypassing_the_root(classes)
+    assert (
+        not bypassing
+    ), f"these override start() without GuiWorker's root: {bypassing}"
 
-        def progress(self):
-            return iter(())
+    # The check bites: an override that skips the base is reported, one that chains is not.
+    from PyQt6.QtCore import QThread
 
-    worker = FitProgressWorker(_Handle(), receiver=None)
-    worker.start()
-    assert worker in _LIVE_WORKERS  # referenced independently of any page
+    class _Skips(GuiWorker):
+        def start(self, *args, **kwargs):
+            QThread.start(self, *args, **kwargs)
 
-    worker.wait()
-    qapp.processEvents()  # let the finished signal land
-    assert worker not in _LIVE_WORKERS  # ...and released once it is safe
+    class _Chains(GuiWorker):
+        def start(self, *args, **kwargs):
+            super().start(*args, **kwargs)
+
+    assert _bypassing_the_root([_Skips, _Chains]) == [_Skips.__qualname__]
+
+
+def test_a_started_worker_is_rooted_until_finished_and_released_on_the_ui_thread(qapp):
+    """The mechanism, both directions: held while running even with every caller reference gone,
+    then let go — and let go on the UI thread. Releasing the last reference from the worker's own
+    thread would destroy the QThread from inside itself, the abort this exists to prevent.
+    """
+    import gc
+
+    from detail.gui import workers
+
+    started, release = threading.Event(), threading.Event()
+
+    class _Blocked(workers.GuiWorker):
+        def run(self):
+            started.set()
+            release.wait(10)
+
+    release_threads: list[int] = []
+
+    class _Recording(set):
+        """The live register, watching for *this* test's worker only."""
+
+        def discard(self, item):
+            if isinstance(item, _Blocked):
+                release_threads.append(threading.get_ident())
+            super().discard(item)
+
+    original = workers._IN_FLIGHT
+    workers._IN_FLIGHT = _Recording(original)
+    try:
+        worker = _Blocked(receiver=None)
+        ref = weakref.ref(worker)
+        worker.start()
+        assert started.wait(10), "the worker never ran"
+        assert worker in workers._IN_FLIGHT, "a running worker must be rooted"
+        del worker
+        gc.collect()
+        assert ref() is not None and ref().isRunning(), "collected while still running"
+
+        release.set()
+        assert ref().wait(10)
+        for _ in range(100):
+            qapp.processEvents()  # the release is queued to this thread
+            if release_threads:
+                break
+        assert ref() is None or ref() not in workers._IN_FLIGHT, "never released"
+        assert release_threads == [threading.get_ident()], "released off the UI thread"
+    finally:
+        # Hand back whatever other workers rooted or released meanwhile.
+        original.clear()
+        original.update(workers._IN_FLIGHT)
+        workers._IN_FLIGHT = original
 
 
 def test_fit_progress_fraction_never_renders_a_position_past_the_total():
@@ -856,3 +1169,24 @@ def test_the_pool_drain_gives_up_rather_than_hanging(qapp):
     assert elapsed < 5, f"the drain blocked for {elapsed:.1f}s instead of giving up"
     release.set()
     QThreadPool.globalInstance().waitForDone(5_000)
+
+
+def test_a_batch_of_clusters_folds_the_running_cluster_and_names_its_units():
+    """A profile-and-describe job counts clusters, not recordings: the bar folds the running
+    cluster's share into the clusters done, and the status says "cluster", not "recording".
+    """
+    from detail.pipeline.profile_describe import ProfileDescribeProgressEvent
+
+    event = ProfileDescribeProgressEvent(
+        recordings_done=3,
+        recordings_total=159,
+        frames_done=500,
+        frames_total=1000,
+        elapsed_s=60.0,
+        eta_s=1200.0,
+        message="describing · cluster 4 of 159 · node 877 · batch 2 of 5",
+    )
+    fraction, status = fit_progress_fraction(event)
+    assert fraction == pytest.approx(3.5 / 159)
+    assert "cluster 4/159" in status and "recording" not in status
+    assert "batch 2 of 5" in status and "left" in status

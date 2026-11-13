@@ -43,10 +43,12 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from detail.api import clip_render, exporters
+from detail.api import clip_render, export_targets, exporters
 from detail.api.exporters import ExportScope, ExportSubject
 from detail.api.experiment import Experiment
 from detail.gui.dialog import Dialog
+from detail.gui.recording_filter import with_filter
+from detail.gui.video_codec import VideoCodecPicker
 from detail.gui.workers import BackgroundCall
 from detail.gui.spin import FloatSpin, IntSpin
 from detail.gui.sizing import mono_font, set_available
@@ -353,7 +355,8 @@ class ExportDialog(Dialog):
         ):
             self._recording_ids = exporters.recordings_of(subject)
         if len(self._recording_ids) > 1:
-            names = Experiment(subject.experiment_dir).recording_names()
+            experiment = Experiment(subject.experiment_dir)
+            names = experiment.recording_names()
             wanted = set(self._scope.recording_ids) or set(self._recording_ids)
             self._recording_list = QListWidget()
             self._recording_list.setMaximumHeight(140)
@@ -380,7 +383,7 @@ class ExportDialog(Dialog):
             column = QVBoxLayout()
             column.setContentsMargins(0, 0, 0, 0)
             column.addLayout(head)
-            column.addWidget(self._recording_list)
+            column.addWidget(with_filter(self._recording_list, experiment))
             holder = QWidget()
             holder.setLayout(column)
             form.addRow("Recordings:", holder)
@@ -467,6 +470,14 @@ class ExportDialog(Dialog):
         self._kp_source = self._kp_cutoff = self._kp_blank = self._kp_overlay = None
         self._build_keypoint_knobs(form)
 
+        # Only where a chosen target writes video, for the same reason as the figures below.
+        self._codec = None
+        if any(
+            t.writes_video and self._include[t.id].isEnabled() for t in self._targets
+        ):
+            self._codec = VideoCodecPicker()
+            form.addRow("Video codec:", self._codec)
+
         # Only where a chosen target draws a figure: a control for nothing is a question the
         # user cannot answer.
         self._dark_figures = None
@@ -531,6 +542,8 @@ class ExportDialog(Dialog):
                 spin.valueChanged.connect(self._changed)
         if self._kp_source is not None:
             self._kp_source.currentIndexChanged.connect(self._changed)
+        if self._codec is not None:
+            self._codec.changed.connect(self._changed)
         if self._scope_pick is not None:
             self._scope_pick.currentIndexChanged.connect(self._changed)
         self._out.textChanged.connect(self._changed)
@@ -771,6 +784,8 @@ class ExportDialog(Dialog):
                 options["source"] = self._kp_source.currentData()
             if self._kp_overlay is not None:
                 options["overlay"] = self._kp_overlay.isChecked()
+        if self._codec is not None:
+            options["codec"] = self._codec.codec()
         # Only when asked for, as on the command line: light is every target's own default.
         if self._dark_figures is not None and self._dark_figures.isChecked():
             options["theme"] = "dark"

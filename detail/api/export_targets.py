@@ -26,7 +26,9 @@ from detail.api.exporters import (
     experiment_name,
     register,
 )
-
+from detail.core.utils import parse_series_dirname, subject_key
+from detail.core.video_codecs import DEFAULT_VIDEO_CODEC
+from detail.storage import guidance
 from detail.storage import behavior_output
 from detail.storage import experiment as experiment_store
 
@@ -115,14 +117,32 @@ def recordings_of(subject: ExportSubject) -> list[str]:
 def _only(scope: ExportScope | None, options: dict) -> set[str] | None:
     """The recordings an export is narrowed to, or ``None`` for every one of them.
 
-    ``scope.recording_ids`` is the answer. ``options`` is accepted so a target that is given a
-    ``recording_id`` option by a caller still narrows (the run-level previews on the branch that
-    has them seed one); on its own the scope is the whole of it.
+    ``scope.recording_ids`` is the answer. The ``recording_id`` option is the older spelling the
+    viewers' own buttons seed (one recording, named by the widget showing it), and is honoured
+    when the scope names none, so a viewer's export and a scoped one narrow the same way.
     """
     if scope is not None and scope.recording_ids:
         return set(scope.recording_ids)
     chosen = options.get("recording_id")
     return {str(chosen)} if chosen else None
+
+
+def _one_recording(scope: ExportScope | None, options: dict) -> dict:
+    """``options`` with ``recording_id`` set from a one-recording scope, for a target that
+    draws exactly one recording (the previews).
+
+    More than one is refused rather than drawing the first: a preview is a picture of one
+    recording, and an export that quietly dropped the other nine would be wrong in a way only
+    visible once the file is opened.
+    """
+    if options.get("recording_id") or scope is None or not scope.recording_ids:
+        return options
+    if len(scope.recording_ids) > 1:
+        raise ExportError(
+            "a run preview draws one recording at a time; choose one recording "
+            f"(got {len(scope.recording_ids)})"
+        )
+    return {**options, "recording_id": scope.recording_ids[0]}
 
 
 def unavailable_reason(target: ExportTarget, subject: ExportSubject) -> str | None:
@@ -132,7 +152,21 @@ def unavailable_reason(target: ExportTarget, subject: ExportSubject) -> str | No
     reader's next question is "so what do I do". "This recording has no streams yet" can be
     acted on; "unavailable" cannot.
     """
-    return _REASONS[(target.subject_kind, target.id)](subject)
+    reason = _REASONS[(target.subject_kind, target.id)](subject)
+    # A greyed keypoint export on a machine that opted out of keypoints says so (§26, #717):
+    # "these come from a keypoints run" alone sends the reader looking for a step they chose
+    # to skip. Short, like every reason here — the GUI prints it after the target's name.
+    if (
+        reason is not None
+        and target.id in _KEYPOINT_TARGETS
+        and guidance.keypoints_opted_out()
+    ):
+        reason += "; keypoints were skipped at setup (Configuration ▸ Get started)"
+    return reason
+
+
+#: The export targets that only a keypoints run can produce.
+_KEYPOINT_TARGETS = frozenset({"keypoints", "keypoints_video"})
 
 
 # --------------------------------------------------------------------------- #
@@ -439,11 +473,12 @@ def _run_clip(subject, dest, scope, progress, **options):
         recording_id=subject.id,
         frames=scope.frames,
         embed_run_id=embed_run_id,
-        track_id=int(options.get("track_id") or 0),
+        track_id=subject_key(options.get("track_id")),
         renders=options.get("renders") or (clip_render.OVERLAY,),
         crop=bool(options.get("crop", False)),
         size=int(options.get("size", 640)),
         progress=progress,
+        codec=options.get("codec", DEFAULT_VIDEO_CODEC),
     )
 
 
@@ -460,6 +495,7 @@ register(
         data_files=("clip.csv",),
         scopes=("frames",),
         renders=clip_render.RENDERS,
+        writes_video=True,
         run=_run_clip,
         estimate=est.clip,
     )
@@ -839,6 +875,7 @@ def _run_clips(subject, dest, scope, progress, **options):
         size=int(options.get("size", 640)),
         max_per_cluster=options.get("max_per_cluster"),
         progress=progress,
+        codec=options.get("codec", DEFAULT_VIDEO_CODEC),
     )
 
 
@@ -854,6 +891,7 @@ register(
         data_files=("clips.csv",),
         scopes=("cluster", "selection", "recordings"),
         renders=clip_render.RENDERS,
+        writes_video=True,
         run=_run_clips,
         estimate=est.clips,
     )
@@ -918,8 +956,9 @@ register(
 #: `docs/export_design.md` §1 opens with. `tests/api/test_export_registry.py` holds this to
 #: `PROCESSING_MODULES`, so a module added tomorrow has to say how its runs get out.
 _RUN_TARGETS: dict[str, tuple[str, ...]] = {
-    "detection": ("masks",),
-    "tracking": ("tracks",),
+    "detection": ("masks", "preview_frame", "preview_video"),
+    "tracking": ("tracks", "preview_frame", "preview_video"),
+    "track_merge": ("tracks", "preview_frame", "preview_video"),
     "embedding": ("vectors",),
     # §26 *Analysis and export*: the five keypoint targets read a track run by default and a
     # detect run for its raw, unassigned poses, so both modules produce all five.
@@ -942,6 +981,12 @@ _RUN_TARGETS: dict[str, tuple[str, ...]] = {
 #: The keypoint targets, in catalogue order — what the GUI dialog and `keypoints export` list.
 KEYPOINT_TARGETS = _RUN_TARGETS["keypoint_track"]
 
+#: Modules this build no longer has whose runs still export (hiding governs launching, not
+#: reading). ``keypoints`` is the stage before §26: its ``kp_NN`` runs are final points, read
+#: through ``keypoint_runs.LegacyKeypointsRun`` as a track run, so all five keypoint targets
+#: apply. Kept apart from `_RUN_TARGETS`, which the registry guard holds to live modules.
+_LEGACY_RUN_TARGETS: dict[str, tuple[str, ...]] = {"keypoints": KEYPOINT_TARGETS}
+
 #: How a refusal names the run a target *does* come from. Separate from `_RUN_TARGETS` because
 #: that table is the fact and this is the wording; the guard checks this covers exactly the
 #: targets that table names, so a new entry there cannot ship without a sentence.
@@ -956,6 +1001,8 @@ _RUN_SOURCE = {
     "masks": "a detection run",
     "tracks": "a tracking run",
     "vectors": "an embedding run",
+    "preview_frame": "a detection or tracking run",
+    "preview_video": "a detection or tracking run",
     "keypoints": _KEYPOINT_SOURCE,
     "keypoints_dlc": _KEYPOINT_SOURCE,
     "keypoints_sleap": _KEYPOINT_SOURCE,
@@ -965,7 +1012,10 @@ _RUN_SOURCE = {
 
 
 def _produces(record: dict | None, target_id: str) -> bool:
-    return target_id in _RUN_TARGETS.get(str((record or {}).get("module_id") or ""), ())
+    module_id = str((record or {}).get("module_id") or "")
+    return target_id in _RUN_TARGETS.get(module_id, ()) or target_id in (
+        _LEGACY_RUN_TARGETS.get(module_id, ())
+    )
 
 
 def _wrong_kind(subject: ExportSubject, target_id: str) -> str | None:
@@ -977,7 +1027,7 @@ def _wrong_kind(subject: ExportSubject, target_id: str) -> str | None:
     module_id = str((record or {}).get("module_id") or "")
     if not module_id:
         return f"this run's record cannot be read; these come from {source}"
-    if module_id not in _RUN_TARGETS:
+    if module_id not in _RUN_TARGETS and module_id not in _LEGACY_RUN_TARGETS:
         # A record outlives the module that wrote it (`docs/removed_capabilities.md`).
         return (
             f"this run was made by {module_id!r}, which this version no longer has; "
@@ -1013,8 +1063,8 @@ def _embedding_parts(
             if not track_dir.is_dir():
                 continue
             try:
-                track_id = int(track_dir.name.split("_", 1)[1])
-            except (IndexError, ValueError):
+                track_id = parse_series_dirname(track_dir.name)
+            except ValueError:
                 continue
             for part in sorted(track_dir.glob("part_*.zarr")):
                 out.append((recording_id, track_id, part))
@@ -1040,9 +1090,10 @@ def _run_vectors(subject, dest, scope, progress, **options):
         reader = PartZarrReader(path)
         if not reader.n_rows:
             continue
-        vectors = np.asarray(reader.column("embedding")[:])
-        frames = np.asarray(reader.column("frame_idx")[:])
-        t_ns = np.asarray(reader.column("t_ns")[:])
+        n = reader.n_rows
+        vectors = np.asarray(reader.column("embedding")[:n])
+        frames = np.asarray(reader.column("frame_idx")[:n])
+        t_ns = np.asarray(reader.column("t_ns")[:n])
         blocks.append(vectors)
         index_rows.extend(
             [recording_id, track_id, path.stem, int(f), int(t)]
@@ -1345,6 +1396,208 @@ register(
 
 
 # --------------------------------------------------------------------------- #
+# detection / tracking run preview — the style picker's PNG and mp4 (§25 follow-up)
+# --------------------------------------------------------------------------- #
+def _preview_for(subject: ExportSubject, options: dict):
+    """``(preview, is_tracking)`` for the recording named in ``options["recording_id"]``.
+
+    A run-level preview export needs a *recording*, the way ``clip`` needs an
+    ``embed_run_id``: the widget that seeds this option is per-recording (one recording
+    of a possibly multi-recording run, picked in the module's own UI), and the export has
+    no other way to know which one. ``None`` means that recording's part of this run
+    never completed — the same "had nothing to write" shape every other target reports
+    rather than raising for a state that is not this recording's fault.
+    """
+    recording_id = str(options.get("recording_id") or "")
+    if not recording_id:
+        raise ExportError(
+            "a run preview needs which recording to draw — pass --for-recording"
+        )
+    record = run_record(subject) or {}
+    info = (record.get("per_recording") or {}).get(recording_id) or {}
+    if info.get("status") != "complete":
+        return None
+    run_id = str(info.get("run_id") or "")
+    module_id = str(record.get("module_id") or "")
+    from detail.api.recording import Recording
+
+    recording = Recording(subject.experiment_dir, recording_id)
+    if module_id == "detection":
+        return recording.detection_preview(run_id), False
+    if module_id in ("tracking", "track_merge"):
+        return recording.tracking_preview(run_id), True
+    raise ExportError(
+        f"a preview needs a detection or tracking run, not a {module_id!r} one"
+    )
+
+
+def _preview_style(preview, options: dict) -> str:
+    """The style a preview export draws in: the one asked for, else the viewer's own default."""
+    from detail.core import visualize
+
+    return visualize.resolve_preview_style(
+        options.get("style") or visualize.MASK_BOX_CONF
+    )
+
+
+def _preview_draw_fns(is_tracking: bool):
+    """``(color_fn, label_fn)`` for `visualize.draw_preview_overlay`.
+
+    A detection preview draws one solid color and a ``class conf`` label; a tracking
+    preview colors by track id and keeps the track id in the label even when the style
+    turns confidence off — *"the track id is the reason a tracking preview exists"* — so
+    the two never share a label function, only the composer that calls them.
+    """
+    from detail.core import visualize
+
+    if is_tracking:
+
+        def color_fn(det):
+            return visualize.track_color(det.object_id)
+
+        def label_fn(det, show_confidence):
+            if show_confidence:
+                return f"track {det.object_id} · {det.class_name} {det.confidence:.2f}"
+            return f"track {det.object_id}"
+
+        return color_fn, label_fn
+
+    def color_fn(det):
+        return visualize.DETECTION_BOX_COLOR
+
+    def label_fn(det, show_confidence):
+        return f"{det.class_name} {det.confidence:.2f}" if show_confidence else None
+
+    return color_fn, label_fn
+
+
+def _run_preview_frame(subject, dest, scope, progress, **options):
+    """One PNG of a single frame, drawn the way the live preview was showing it.
+
+    The frame is a **scope** (``scope.frames``, collapsed to one frame) for the same
+    reason a clip's span is one: it answers *how much* of the subject to write, and a
+    range hidden in ``**options`` would leave ``describe()`` unable to say which frame.
+    """
+    if scope is None or scope.frames is None:
+        return (
+            []
+        )  # nothing asked for; `write_export` records this as "had nothing to write"
+    options = _one_recording(scope, options)
+    resolved = _preview_for(subject, options)
+    if resolved is None:
+        return []
+    preview, is_tracking = resolved
+    from detail.core import visualize
+    from detail.api.run_preview import locate_frame
+
+    style = _preview_style(preview, options)
+    frame_no = int(scope.frames[0])
+    part, local = locate_frame(preview.part_frame_counts, frame_no)
+    result = preview.frame(part, local, with_masks=visualize.preview_needs_mask(style))
+    if result is None:
+        return []
+    actual, rgb, detections = result
+    color_fn, label_fn = _preview_draw_fns(is_tracking)
+    drawn = visualize.draw_preview_overlay(
+        rgb, detections, style, color_fn=color_fn, label_fn=label_fn
+    )
+    import cv2
+
+    out = Path(dest) / f"{options['recording_id']}_frame{frame_no:06d}.png"
+    cv2.imwrite(str(out), visualize.rgb_to_bgr(drawn))
+    if progress is not None:
+        progress("writing", 1.0, out.name)
+    return [out]
+
+
+def _run_preview_video(subject, dest, scope, progress, **options):
+    """The whole recording, every video part, drawn the way the live preview was
+    showing it, as one mp4 — the run-level twin of the clip player's export.
+    """
+    options = _one_recording(scope, options)
+    resolved = _preview_for(subject, options)
+    if resolved is None:
+        return []
+    preview, is_tracking = resolved
+    from detail.core import visualize
+    from detail.api.recording import Recording
+    from detail.storage import video as video_store
+
+    style = _preview_style(preview, options)
+    color_fn, label_fn = _preview_draw_fns(is_tracking)
+    needs_mask = visualize.preview_needs_mask(style)
+    part_counts = preview.part_frame_counts
+    total = sum(part_counts) or 1
+    fps = Recording(subject.experiment_dir, options["recording_id"]).video_fps or 30.0
+
+    out = Path(dest) / f"{options['recording_id']}_preview.mp4"
+    writer = None
+    written = 0
+    try:
+        for part_index, count in enumerate(part_counts):
+            if not count:
+                continue
+            for actual, rgb, detections in preview.frames_range(
+                part_index, 0, count - 1, with_masks=needs_mask
+            ):
+                drawn = visualize.draw_preview_overlay(
+                    rgb, detections, style, color_fn=color_fn, label_fn=label_fn
+                )
+                if writer is None:
+                    writer, _codec = video_store.open_video_writer(
+                        out,
+                        fps,
+                        drawn.shape[1],
+                        drawn.shape[0],
+                        codec=options.get("codec", DEFAULT_VIDEO_CODEC),
+                    )
+                writer.write(visualize.rgb_to_bgr(drawn))
+                written += 1
+                if progress is not None:
+                    progress("rendering", written / total, out.name)
+    finally:
+        if writer is not None:
+            writer.release()
+    if progress is not None:
+        progress("rendering", 1.0, "done")
+    return [out] if written else []
+
+
+register(
+    ExportTarget(
+        id="preview_frame",
+        label="Preview frame (PNG)",
+        subject_kind="run",
+        artifact=(
+            "one PNG of a single frame, drawn in the style the run preview was showing "
+            "on screen"
+        ),
+        artifact_is_data=True,
+        scopes=("frames", "recordings"),
+        run=_run_preview_frame,
+        estimate=est.preview_frame,
+    )
+)
+
+register(
+    ExportTarget(
+        id="preview_video",
+        label="Preview video",
+        subject_kind="run",
+        artifact=(
+            "the whole recording, every video part, drawn in the style the run preview "
+            "was showing on screen, as one mp4"
+        ),
+        artifact_is_data=True,
+        scopes=("recordings",),
+        writes_video=True,
+        run=_run_preview_video,
+        estimate=est.preview_video,
+    )
+)
+
+
+# --------------------------------------------------------------------------- #
 # keypoint runs — §26 "Analysis and export"
 # --------------------------------------------------------------------------- #
 def _keypoint_runs(
@@ -1369,7 +1622,11 @@ def _keypoint_runs(
         recording_dir = experiment_store.recording_path(
             subject.experiment_dir, recording_id
         )
-        if run_id.startswith("kt_"):
+        if keypoint_runs.is_legacy_run_id(run_id):
+            marker = (
+                recording_dir / keypoint_runs.LEGACY_DIRNAME / run_id / "keypoints.yaml"
+            )
+        elif run_id.startswith("kt_"):
             marker = keypoint_runs.track_run_dir(recording_dir, run_id) / "track.yaml"
         else:
             marker = keypoint_runs.detect_run_dir(recording_dir, run_id) / "detect.yaml"
@@ -1545,6 +1802,7 @@ def _run_keypoints_video(subject, dest, scope, progress, **options):
             safe_name(source.recording_name),
             overlay=bool(options.get("overlay", False)),
             progress=_folded,
+            codec=options.get("codec", DEFAULT_VIDEO_CODEC),
         )
     if sources:
         written.append(
@@ -1634,6 +1892,7 @@ register(
         ),
         data_files=("keypoints.csv", "coverage.csv"),
         scopes=("recordings",),
+        writes_video=True,
         run=_run_keypoints_video,
         estimate=est.keypoints_video,
     )
@@ -1754,6 +2013,27 @@ def _no_masks(subject) -> str | None:
         return reason
     if not _detection_parts(subject):
         return "this detection run has not completed a recording yet"
+    return None
+
+
+def _no_preview(subject: ExportSubject, target_id: str) -> str | None:
+    """Shared by both preview targets: a detection or tracking run, with something done.
+
+    Not "this recording's part completed" — that is not knowable here, since which
+    recording is not decided until the seed the preview widget supplies (`recording_id`).
+    A row that is available by this check and empty for the recording actually asked for
+    is `_run_preview_frame`/`_run_preview_video` returning ``[]``, the same "had nothing
+    to write" shape every other target uses for a state one option away from here.
+    """
+    reason = _wrong_kind(subject, target_id)
+    if reason is not None:
+        return reason
+    record = run_record(subject) or {}
+    if not any(
+        info.get("status") == "complete"
+        for info in (record.get("per_recording") or {}).values()
+    ):
+        return "this run has not completed a recording yet"
     return None
 
 
@@ -2115,6 +2395,8 @@ _REASONS = {
     ("run", "vectors"): _no_vectors,
     ("run", "tracks"): _no_tracks,
     ("run", "masks"): _no_masks,
+    ("run", "preview_frame"): lambda s: _no_preview(s, "preview_frame"),
+    ("run", "preview_video"): lambda s: _no_preview(s, "preview_video"),
     ("run", "keypoints"): _no_keypoints,
     ("run", "keypoints_dlc"): _no_keypoints,
     ("run", "keypoints_sleap"): _no_keypoints_sleap,

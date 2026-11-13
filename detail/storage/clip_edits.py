@@ -21,6 +21,8 @@ Fit-free and pure: the derivation that needs the tree lives in ``api/clip_edits.
 
 from dataclasses import dataclass
 
+from detail.core.utils import subject_key
+
 EDIT_FIELDS = (
     "recording_id",
     "subject",
@@ -34,7 +36,10 @@ EDIT_FIELDS = (
 
 @dataclass(frozen=True)
 class ClipRef:
-    """One clip: one leaf run of one subject in one recording, ``end_t_ns`` inclusive."""
+    """One clip: one leaf run of one subject in one recording, ``end_t_ns`` inclusive.
+
+    ``subject`` is a track's int.
+    """
 
     recording_id: str
     subject: int
@@ -59,13 +64,13 @@ def clip_ref(clip) -> ClipRef:
         start = clip["start_t_ns"] if "start_t_ns" in clip else clip["t_ns"]
         return ClipRef(
             str(clip["recording_id"]),
-            int(clip.get("subject") or 0),
+            subject_key(clip.get("subject")),
             int(start),
             int(clip["end_t_ns"]),
         )
     if isinstance(clip, (tuple, list)) and len(clip) == 4:
         recording_id, subject, start, end = clip
-        return ClipRef(str(recording_id), int(subject), int(start), int(end))
+        return ClipRef(str(recording_id), subject_key(subject), int(start), int(end))
     raise TypeError(
         f"a clip is a ClipRef, a clip row dict or (recording_id, subject, t_ns, end_t_ns), "
         f"not {type(clip).__name__}"
@@ -94,7 +99,7 @@ def normalize(edits) -> list[dict]:
         out.append(
             {
                 "recording_id": str(edit["recording_id"]),
-                "subject": int(edit.get("subject") or 0),
+                "subject": subject_key(edit.get("subject")),
                 "t_ns": int(edit["t_ns"]),
                 "end_t_ns": int(edit["end_t_ns"]),
                 "from_label": str(edit["from_label"]),

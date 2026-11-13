@@ -7,7 +7,7 @@ pytest.importorskip("PyQt6")
 from detail.api.experiment import Experiment  # noqa: E402
 from detail.core.registries import TRACKERS  # noqa: E402
 from detail.gui.launch import _eligible  # noqa: E402
-from detail.gui.workers import BackgroundCall, StageProgressWorker  # noqa: E402
+from detail.gui.workers import BackgroundCall  # noqa: E402
 from detail.storage import recording as recording_store  # noqa: E402
 
 
@@ -19,11 +19,17 @@ class _SyncBackgroundCall(BackgroundCall):
         self.run()
 
 
-class _SyncStageProgressWorker(StageProgressWorker):
-    """The launch's own worker (it reports progress), run inline the same way."""
-
-    def start(self) -> None:  # type: ignore[override]
-        self.run()
+def _select(widget, recordings: list) -> None:
+    """Drive a config widget's recording selection the way the real launch dialog
+    does: every eligible recording through ``resolve_eligible_recordings`` /
+    ``apply_eligible_recordings`` (§6.5's spec/coverage pickers — a module pick, not a
+    checkbox click), then the checked subset through the older ``on_recordings_changed``
+    pair. A test that only drives the second half sees an empty spec picker: nothing
+    populates it any more except the first."""
+    widget.apply_eligible_recordings(
+        recordings, widget.resolve_eligible_recordings(recordings)
+    )
+    widget.on_recordings_changed(recordings)
 
 
 class _FakeRecording:
@@ -147,7 +153,7 @@ def test_tracking_config_widget(qapp):
         detection_runs = [{"id": "det_01", "status": "complete"}]
         arenas = [{"id": "arena_001", "name": "rig A camera"}]
 
-    widget.on_recordings_changed([_S(), _S()])
+    _select(widget, [_S(), _S()])
     cfg = widget.config()
     # the picker carries a detection spec (not a per-recording run id); it resolves to
     # each recording's own detection run at launch
@@ -313,7 +319,7 @@ def test_tracking_conf_below_detection_warns(qapp):
 
     widget = _TrackingConfig()
     conf = widget._hp_widgets["conf_threshold"]  # built from the tracker's schema
-    widget.on_recordings_changed([_S()])
+    _select(widget, [_S()])
     conf.setValue(0.2)  # below the detection run's 0.5
     warning = widget._conf_warnings["conf_threshold"]
     assert not warning.isHidden()  # isVisible() is False until shown
@@ -335,7 +341,7 @@ def test_tracking_secondary_conf_below_detection_warns(qapp):
     widget._tracker.setCurrentText("iou_single_tracker")  # exposes secondary_conf
     secondary = widget._hp_widgets["secondary_conf"]
     warning = widget._conf_warnings["secondary_conf"]
-    widget.on_recordings_changed([_S()])
+    _select(widget, [_S()])
     secondary.setValue(0.05)  # below the detection run's 0.5
     assert not warning.isHidden()
     secondary.setValue(0.5)  # at/above → no warning
@@ -357,7 +363,7 @@ def test_embedding_config_widget(qapp):
         def track_ids(self, run_id):
             return [0, 1, 2]
 
-    widget.on_recordings_changed([_S(), _S()])
+    _select(widget, [_S(), _S()])
     cfg = widget.config()
     assert cfg["tracking_spec"] is not None
     assert cfg["tracking_spec"]["module"] == "tracking"
@@ -649,7 +655,6 @@ def test_launch_analysis_narrows_source_recording_ids(qapp, tmp_path, monkeypatc
     from detail.gui.launch import LaunchAnalysisDialog
 
     monkeypatch.setattr(launch, "BackgroundCall", _SyncBackgroundCall)
-    monkeypatch.setattr(launch, "StageProgressWorker", _SyncStageProgressWorker)
     dialog = LaunchAnalysisDialog(_experiment_with_mixed_recordings(tmp_path))
     monkeypatch.setattr(
         dialog, "_selected_recordings", lambda: ["recording_001", "recording_002"]
@@ -684,7 +689,6 @@ def test_launch_names_each_recording_as_it_validates(qapp, tmp_path, monkeypatch
     from detail.gui.launch import LaunchRunDialog
 
     monkeypatch.setattr(launch, "BackgroundCall", _SyncBackgroundCall)
-    monkeypatch.setattr(launch, "StageProgressWorker", _SyncStageProgressWorker)
     dialog = LaunchRunDialog(_experiment_with_mixed_recordings(tmp_path))
     dialog._module_combo.setCurrentIndex(dialog._module_combo.findData("detection"))
     dialog._select_all.click()
@@ -718,7 +722,6 @@ def test_launch_run_spawns_off_thread(qapp, tmp_path, monkeypatch):
     from detail.gui.launch import LaunchRunDialog
 
     monkeypatch.setattr(launch, "BackgroundCall", _SyncBackgroundCall)
-    monkeypatch.setattr(launch, "StageProgressWorker", _SyncStageProgressWorker)
     dialog = LaunchRunDialog(_experiment_with_mixed_recordings(tmp_path))
     dialog._module_combo.setCurrentIndex(dialog._module_combo.findData("detection"))
     dialog._select_all.click()
@@ -757,7 +760,6 @@ def test_launch_run_error_surfaces_and_reenables(qapp, tmp_path, monkeypatch):
     from detail.gui.launch import LaunchRunDialog
 
     monkeypatch.setattr(launch, "BackgroundCall", _SyncBackgroundCall)
-    monkeypatch.setattr(launch, "StageProgressWorker", _SyncStageProgressWorker)
     dialog = LaunchRunDialog(_experiment_with_mixed_recordings(tmp_path))
     dialog._module_combo.setCurrentIndex(dialog._module_combo.findData("detection"))
     dialog._select_all.click()
@@ -778,6 +780,98 @@ def test_launch_run_error_surfaces_and_reenables(qapp, tmp_path, monkeypatch):
     assert accepted == []  # not accepted on failure
     assert dialog._ok_button.isEnabled()  # form re-enabled after the failure
     assert dialog._status.text() == ""  # busy status cleared
+
+
+def test_the_launch_dialog_says_which_recording_validation_is_on(
+    qapp, tmp_path, monkeypatch
+):
+    """Validating a large selection is minutes of reading; a status that read "Validating N
+    recording(s)…" throughout is indistinguishable from a hang (the 71-recording embedding launch
+    that looked stuck). The status follows the callback the launch hands to `run_processing`.
+    """
+    from detail.gui import launch
+    from detail.gui.launch import LaunchRunDialog
+
+    monkeypatch.setattr(launch, "BackgroundCall", _SyncBackgroundCall)
+    dialog = LaunchRunDialog(_experiment_with_mixed_recordings(tmp_path))
+    dialog._module_combo.setCurrentIndex(dialog._module_combo.findData("detection"))
+    dialog._select_all.click()
+    dialog._config.validation_error = lambda: None
+    dialog._config.config = lambda: {}
+    dialog._config.covered_recording_ids = lambda: None
+
+    class _Run:
+        id = "det_run_01"
+
+    shown = []
+
+    def _validating(self, mid, recordings, config, progress=None):
+        shown.append(dialog._status.text())  # before the first report: the opening line
+        progress("Validating recordings", 0.0, "1 of 2")
+        shown.append(dialog._status.text())
+        progress("Validating recordings", 1.0, "2 of 2")
+        shown.append(dialog._status.text())
+        progress("Estimating disk space", 0.0, "1 of 2")
+        shown.append(dialog._status.text())
+        return _Run()
+
+    monkeypatch.setattr(type(dialog._experiment), "run_processing", _validating)
+    monkeypatch.setattr(dialog, "accept", lambda: None)
+    dialog._run()
+
+    assert shown == [
+        "Validating 2 recording(s)…",
+        "Validating recordings — 1 of 2",
+        "Validating recordings — 2 of 2",
+        "Estimating disk space — 1 of 2",
+    ]
+
+
+def test_the_launch_anyway_retry_reports_progress_too(qapp, tmp_path, monkeypatch):
+    """A launch refused for space and then launched anyway runs the same two passes again;
+    `work_anyway` is a second lambda, which is where a callback goes missing."""
+    from PyQt6.QtWidgets import QMessageBox
+
+    from detail.core.disk_space import InsufficientSpaceError, SpaceEstimate
+    from detail.gui import launch
+    from detail.gui.launch import LaunchRunDialog
+
+    monkeypatch.setattr(launch, "BackgroundCall", _SyncBackgroundCall)
+    dialog = LaunchRunDialog(_experiment_with_mixed_recordings(tmp_path))
+    dialog._module_combo.setCurrentIndex(dialog._module_combo.findData("detection"))
+    dialog._select_all.click()
+    dialog._config.validation_error = lambda: None
+    dialog._config.config = lambda: {}
+    dialog._config.covered_recording_ids = lambda: None
+    refusal = InsufficientSpaceError(
+        SpaceEstimate(bytes=2, free_bytes=1, where="C:", per_recording={})
+    )
+
+    class _Run:
+        id = "det_run_01"
+
+    reported = []
+
+    def _run_processing(
+        self, mid, recordings, config, *, ignore_free_space=False, progress=None
+    ):
+        progress("Validating recordings", 0.0, "1 of 2")
+        reported.append(ignore_free_space)
+        if not ignore_free_space:
+            raise refusal
+        return _Run()
+
+    monkeypatch.setattr(type(dialog._experiment), "run_processing", _run_processing)
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *a, **k: QMessageBox.StandardButton.Yes,
+    )
+    monkeypatch.setattr(dialog, "accept", lambda: None)
+    dialog._run()
+
+    assert reported == [False, True], "both launches reported through the callback"
+    assert dialog._status.text() == "Validating recordings — 1 of 2"
 
 
 def test_covered_recording_ids_across_pickers(qapp):
@@ -805,16 +899,12 @@ def test_covered_recording_ids_across_pickers(qapp):
 
     # analysis (tracking spec): only s1 has a tracking run → covers {s1}
     loc = _LocationExportConfig()
-    loc.on_recordings_changed(
-        [_S("s1", tracking_runs=[trk]), _S("s2", tracking_runs=[])]
-    )
+    _select(loc, [_S("s1", tracking_runs=[trk]), _S("s2", tracking_runs=[])])
     assert loc.covered_recording_ids() == {"s1"}
 
     # embedding (tracking spec): same
     emb = _EmbeddingConfig()
-    emb.on_recordings_changed(
-        [_S("s1", tracking_runs=[trk]), _S("s2", tracking_runs=[])]
-    )
+    _select(emb, [_S("s1", tracking_runs=[trk]), _S("s2", tracking_runs=[])])
     assert emb.covered_recording_ids() == {"s1"}
 
     # detection reads the recording's video directly, so every selected recording is
@@ -826,8 +916,11 @@ def test_covered_recording_ids_across_pickers(qapp):
 
 # --- Stage 4: off-thread recording-change resolution -------------------------- #
 def test_embedding_resolve_apply_split(qapp):
-    """resolve_recordings gathers the spec groups + per-recording track ids WITHOUT
-    touching widgets (it runs off the UI thread); apply_recordings installs them."""
+    """resolve_eligible_recordings gathers the spec groups + per-recording track ids
+    WITHOUT touching widgets (it runs off the UI thread); apply_eligible_recordings
+    installs them. Over every *eligible* recording, not just the checked ones — the
+    §6.5 spec/coverage pickers' own pair (checked-selection reactions still go through
+    on_recordings_changed, unchanged)."""
     from detail.gui.modules.embedding import _EmbeddingConfig
 
     class _S:
@@ -838,12 +931,13 @@ def test_embedding_resolve_apply_split(qapp):
             return [0, 1, 2]
 
     widget = _EmbeddingConfig()
-    payload = widget.resolve_recordings([_S()])
+    payload = widget.resolve_eligible_recordings([_S()])
     assert widget._tracking.count() == 0  # resolve did not mutate the UI
     assert payload["tracks"] == {("s1", "track_01"): [0, 1, 2]}
 
-    widget.apply_recordings([_S()], payload)
+    widget.apply_eligible_recordings([_S()], payload)
     assert widget._tracking.count() >= 1  # combo populated on apply
+    widget.on_recordings_changed([_S()])  # the checked-selection reaction
     assert "Available tracks" in widget._available.text()
 
 
@@ -968,7 +1062,7 @@ def test_tracking_form_shows_the_missed_tolerance_in_seconds(qapp):
 
     widget = _TrackingConfig()
     widget._tracker.setCurrentText("iou_single_tracker")
-    widget.on_recordings_changed([_DetectedAt4()])
+    _select(widget, [_DetectedAt4()])
 
     assert widget._every_n.value() == 4  # inherited from the detection run
     widget._hp_widgets["max_missed"].setValue(30)
@@ -982,7 +1076,7 @@ def test_tracking_form_refuses_a_cadence_its_detection_run_cannot_produce(qapp):
     from detail.gui.modules.tracking import _TrackingConfig
 
     widget = _TrackingConfig()
-    widget.on_recordings_changed([_DetectedAt4()])
+    _select(widget, [_DetectedAt4()])
     assert widget.validation_error() is None
     assert widget.config()["every_n_frames"] == 4
 
@@ -1102,6 +1196,7 @@ def _experiment_with_divergent_detections(tmp_path):
                 "model_variant": None,
                 "weights_source": "pretrained",
                 "conf_threshold": conf,
+                "class_conf_thresholds_fingerprint": "ccf",
                 "prompt_fingerprint": "fp",
                 "prompt_classes": ["mouse"],
                 "every_n_frames": 1,
@@ -1215,6 +1310,97 @@ def test_switching_back_restores_the_recording(qapp, tmp_path, monkeypatch):
     assert set(dialog._selected_recordings()) == {"has_both", "has_one"}
 
 
+def test_tracking_class_combo_populates_and_round_trips(qapp, tmp_path):
+    """The class filter (§13): populates from the *selected* detection spec's real
+    classes, rebuilds when that selection changes, narrows coverage, and round-trips
+    through config()/load_config() — the GUI half of the class-filtered tracking
+    feature (the pipeline half is tests/pipeline/test_tracking.py)."""
+    from detail.gui.modules.tracking import _TrackingConfig
+    from detail.storage.zarr_io import DetectionPartWriter
+    from tests import waits
+
+    proj = Experiment.create("p", tmp_path)
+    sess = proj.create_recording("recording_001")
+    sdir = sess.dir
+    det_dir = sdir / "detections" / "det_01"
+    with DetectionPartWriter(det_dir / "part_001.zarr") as w:
+        w.add_row(0, 0, 0, "black mouse", 0.9, (0.1, 0.1, 0.2, 0.2), "")
+        w.add_row(0, 0, 1, "white mouse", 0.8, (0.6, 0.6, 0.7, 0.7), "")
+    data = recording_store.read_recording(sdir)
+    data.setdefault("detection_runs", []).append(
+        {
+            "id": "det_01",
+            "status": "complete",
+            "output": "detections/det_01/",
+            "model_id": "sam3",
+        }
+    )
+    recording_store.write_recording(sdir, data)
+
+    widget = _TrackingConfig()
+    _select(widget, [sess])
+    waits.until(qapp, lambda: widget._class.count() == 3, "class combo populating")
+    names = [widget._class.itemData(i) for i in range(widget._class.count())]
+    assert names == [None, "black mouse", "white mouse"]
+
+    widget._class.setCurrentIndex(widget._class.findData("white mouse"))
+    assert widget.config()["class_name"] == "white mouse"
+    assert widget.covered_recording_ids() == {"recording_001"}
+
+    # A second, single-class detection run: selecting it rebuilds the class list —
+    # unlike the arena list, this is not a fixed property of the recording.
+    det2_dir = sdir / "detections" / "det_02"
+    with DetectionPartWriter(det2_dir / "part_001.zarr") as w:
+        w.add_row(0, 0, 0, "mouse", 0.9, (0.1, 0.1, 0.2, 0.2), "")
+    data = recording_store.read_recording(sdir)
+    data["detection_runs"].append(
+        {
+            "id": "det_02",
+            "status": "complete",
+            "output": "detections/det_02/",
+            "model_id": "sam3",
+        }
+    )
+    recording_store.write_recording(sdir, data)
+    _select(widget, [sess])
+    other_index = next(
+        i
+        for i in range(widget._detection.count())
+        if widget._detection.itemData(i) != widget._detection.currentData()
+    )
+    widget._detection.setCurrentIndex(other_index)
+    waits.until(qapp, lambda: widget._class.count() == 2, "class combo rebuilding")
+    assert [widget._class.itemData(i) for i in range(widget._class.count())] == [
+        None,
+        "mouse",
+    ]
+
+    # Round-trips through config()/load_config() like arena_name — a fresh recording
+    # with only the two-class run, so the default detection selection is unambiguous.
+    sess3 = proj.create_recording("recording_003")
+    with DetectionPartWriter(
+        sess3.dir / "detections" / "det_01" / "part_001.zarr"
+    ) as w:
+        w.add_row(0, 0, 0, "black mouse", 0.9, (0.1, 0.1, 0.2, 0.2), "")
+        w.add_row(0, 0, 1, "white mouse", 0.8, (0.6, 0.6, 0.7, 0.7), "")
+    data = recording_store.read_recording(sess3.dir)
+    data.setdefault("detection_runs", []).append(
+        {
+            "id": "det_01",
+            "status": "complete",
+            "output": "detections/det_01/",
+            "model_id": "sam3",
+        }
+    )
+    recording_store.write_recording(sess3.dir, data)
+
+    restored = _TrackingConfig()
+    _select(restored, [sess3])
+    waits.until(qapp, lambda: restored._class.count() == 3, "class combo populating")
+    restored.load_config({"class_name": "black mouse"})
+    assert restored.config()["class_name"] == "black mouse"
+
+
 def test_coverage_marking_leaves_ineligible_rows_alone(qapp, tmp_path):
     """A recording with no detection run at all is disabled for *eligibility*. Coverage
     must not resurrect it — two different reasons, one flag."""
@@ -1294,7 +1480,8 @@ def test_the_field_of_view_picker_offers_names_not_ids(qapp):
     # the cohort whose ids do not line up: one recording kept an old arena, so its copy of
     # the shared field of view is arena_002 while the other's is arena_001
     widget = _TrackingConfig()
-    widget.on_recordings_changed(
+    _select(
+        widget,
         [
             _R(
                 "tracked",
@@ -1304,7 +1491,7 @@ def test_the_field_of_view_picker_offers_names_not_ids(qapp):
                 ],
             ),
             _R("fresh", [{"id": "arena_001", "name": "rig A camera"}]),
-        ]
+        ],
     )
     labels = [widget._arena.itemText(i) for i in range(widget._arena.count())]
     assert not any("arena_00" in label for label in labels), labels
@@ -1329,11 +1516,12 @@ def test_a_recording_without_the_chosen_field_of_view_is_narrowed_out(qapp):
             self.arenas = arenas
 
     widget = _TrackingConfig()
-    widget.on_recordings_changed(
+    _select(
+        widget,
         [
             _R("has_it", [{"id": "arena_001", "name": "rig A camera"}]),
             _R("lacks_it", [{"id": "arena_001", "name": "something else"}]),
-        ]
+        ],
     )
     # whole frame: both recordings are covered
     assert widget.covered_recording_ids() == {"has_it", "lacks_it"}
@@ -1356,7 +1544,7 @@ def test_the_field_of_view_selection_survives_start_from_a_previous_run(qapp):
         arenas = [{"id": "arena_002", "name": "rig A camera"}]
 
     widget = _TrackingConfig()
-    widget.on_recordings_changed([_R()])
+    _select(widget, [_R()])
     widget._arena.setCurrentIndex(widget._arena.findData("rig A camera"))
 
     # through the real writer, not a hand-built dict: config() -> the run record
@@ -1366,6 +1554,6 @@ def test_the_field_of_view_selection_survives_start_from_a_previous_run(qapp):
     assert record["arena_name"] == "rig A camera"
 
     fresh = _TrackingConfig()
-    fresh.on_recordings_changed([_R()])
+    _select(fresh, [_R()])
     fresh.load_config(record)
     assert fresh.config()["arena_name"] == "rig A camera"

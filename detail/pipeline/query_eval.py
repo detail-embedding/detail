@@ -27,7 +27,12 @@ from detail.analysis import query_eval as scoring
 from detail.analysis import retrieval
 from detail.configs.query_eval import _PERFRAME_METHODS, QueryEvalConfig
 from detail.core.progress import ThrottledProgress, remaining_seconds
-from detail.core.utils import check_track_is_unambiguous, utc_timestamp
+from detail.core.utils import (
+    check_track_is_unambiguous,
+    coerce_series_key,
+    resolve_track_default,
+    utc_timestamp,
+)
 from detail.executor.runners import AnalysisModule, register_analysis_module
 from detail.storage import analysis_runs as analysis_store
 from detail.storage import query_eval_csv
@@ -971,7 +976,7 @@ class QueryEvalJob:
             # A job recorded before the selector existed scored the first behavior
             # stream, which is what None means.
             stream_name=d.get("stream_name"),
-            track_id=int(d["track_id"]),
+            track_id=coerce_series_key(d["track_id"]),
             fusion=d["fusion"],
             # A job recorded before the matcher was selectable ran DTW, so its defaults
             # are the right reading of an older run.
@@ -1174,6 +1179,8 @@ class QueryEvalModule(AnalysisModule):
         # the behaviors and carries the embed run at the search track — resolved here so
         # the pre-written record's ``recording_ids`` is the real universe (not empty).
         eligible: list[str] = []
+        track_id = cfg.track_id
+        track_resolved = False
         for sid in recording_ids:
             sess = Recording(experiment_dir, sid)
             if not any(
@@ -1187,18 +1194,24 @@ class QueryEvalModule(AnalysisModule):
                 )
             except (FileNotFoundError, ValueError):
                 continue
-            if cfg.track_id in tracks:
+            if not track_resolved:
+                # The untouched default (0) against the first readable run: a run whose only
+                # series is not 0 would otherwise find no recording at track 0 and report the
+                # labels as the problem.
+                track_id = resolve_track_default(track_id, tracks)
+                track_resolved = True
+            if track_id in tracks:
                 # Retrieval is scored across every eligible recording, so an integer that
                 # names a different animal in each would pool one animal's hits with
                 # another's and report a single number for both.
                 check_track_is_unambiguous(
-                    cfg.track_id, sid, tracks, run_id=cfg.embed_run_id
+                    track_id, sid, tracks, run_id=cfg.embed_run_id
                 )
                 eligible.append(sid)
         if not eligible:
             raise ValueError(
                 "no requested recording is annotated for the behavior(s) and has embed "
-                f"run {cfg.embed_run_id!r} at track {cfg.track_id}"
+                f"run {cfg.embed_run_id!r} at track {track_id}"
             )
         validate_comparability(
             [
@@ -1208,6 +1221,7 @@ class QueryEvalModule(AnalysisModule):
         )
         out = dict(config)
         out["source_recording_ids"] = eligible
+        out["track_id"] = track_id
         return out
 
     def build_job(self, run_id: str, config: dict) -> QueryEvalJob:

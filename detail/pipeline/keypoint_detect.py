@@ -49,6 +49,7 @@ from detail.core.registries import KEYPOINT_MODELS
 from detail.core.skeleton import Skeleton
 from detail.core.utils import (
     check_cuda_indices,
+    effective_backend,
     decode_mask,
     resolve_device,
     resolve_downstream_every_n,
@@ -58,6 +59,7 @@ from detail.core.visualize import bgr_to_rgb
 from detail.executor import rundir
 from detail.executor.runners import ProcessingModule, register_processing_module
 from detail.models.resolve import resolve_keypoint_model
+from detail.pipeline import teacher_window
 from detail.storage import example_sets
 from detail.storage import experiment as experiment_store
 from detail.storage import keypoint_runs
@@ -92,6 +94,7 @@ def part_frames(
     every_n_frames: int,
     *,
     per_detection: bool,
+    classes: frozenset[str] | None = None,
 ) -> list[tuple[int, int, list[int]]]:
     """``(frame_idx, t_ns, detection rows)`` for every frame the method visits in a part, in
     frame order.
@@ -99,7 +102,10 @@ def part_frames(
     A per-detection method visits the frames with at least one detection at the cadence, each
     with its rows (global row indices within the detection part); a whole-frame method visits
     every frame at the cadence of the timestamp map, with no rows. ``det`` holds the detection
-    part's ``frame_idx`` and ``t_ns``; None when the part has no detection store.
+    part's ``frame_idx`` and ``t_ns`` (and ``class_name`` when ``classes`` is given); None when
+    the part has no detection store. With ``classes`` only those classes' rows are kept (the
+    run's ``class_name``, or its per-class sets' classes), so a frame with none of them is a
+    frame with no detection: not visited, not counted.
     """
     if not per_detection:
         return [
@@ -110,9 +116,18 @@ def part_frames(
         return []
     frame_col = np.asarray(det["frame_idx"])
     t_col = np.asarray(det["t_ns"])
+    if classes is None:
+        keep = np.ones(len(frame_col), bool)
+    else:
+        # One comparison per class: the column is numpy's StringDType, which compares with
+        # a str but does not cast to the fixed-width type np.isin wants.
+        names = np.asarray(det["class_name"])
+        keep = np.zeros(len(frame_col), bool)
+        for name in classes:
+            keep |= names == name
     by_frame: dict[int, list[int]] = {}
     for row, frame in enumerate(frame_col.tolist()):
-        if frame % every_n_frames == 0:
+        if keep[row] and frame % every_n_frames == 0:
             by_frame.setdefault(int(frame), []).append(row)
     return [
         (frame, int(t_col[rows[0]]), rows) for frame, rows in sorted(by_frame.items())
@@ -125,10 +140,12 @@ def iter_instance_frames(
     bbox: np.ndarray | None,
     mask_rle: np.ndarray | None,
     mask_size: tuple[int, int] | None,
+    class_col: np.ndarray | None = None,
 ):
     """Yield one ``InstanceFrame`` per entry of ``frames`` from one forward walk of the part's
     video (Tenet 11). Each detection row's mask is decoded only when ``mask_rle`` is given
-    (the method reads masks and the detection run kept them)."""
+    (the method reads masks and the detection run kept them); each row's class is handed
+    over only when ``class_col`` is (a per-class method's bank is chosen by it)."""
     if not frames:
         return
     cap = cv2.VideoCapture(str(video_path))
@@ -156,6 +173,9 @@ def iter_instance_frames(
                 frame=bgr_to_rgb(bgr),
                 boxes={r: tuple(float(v) for v in bbox[r]) for r in rows},
                 masks=masks,
+                classes=(
+                    None if class_col is None else {r: str(class_col[r]) for r in rows}
+                ),
             )
     finally:
         cap.release()
@@ -164,6 +184,26 @@ def iter_instance_frames(
 # --------------------------------------------------------------------------- #
 # Runner
 # --------------------------------------------------------------------------- #
+def _examples_from_snapshot(
+    experiment_dir: Path, snapshot: dict, skeleton: dict
+) -> tuple[ExampleSet, list[np.ndarray]]:
+    """An example set and its images rebuilt from a run's snapshot of it (``detect.yaml``'s
+    copy of the marks), so the run never reads the live set's later edits."""
+    frames = [ExampleFrame.from_dict(f) for f in snapshot["marks"]]
+    examples = ExampleSet(
+        id=snapshot["id"],
+        name=snapshot.get("name", snapshot["id"]),
+        purpose="example",
+        created_at="",
+        skeleton=Skeleton.from_dict(skeleton),
+        frames=frames,
+    )
+    images = [
+        example_sets.load_image(experiment_dir, examples.id, f.image) for f in frames
+    ]
+    return examples, images
+
+
 def build_method(
     experiment_dir: Path,
     model_id: str,
@@ -172,28 +212,26 @@ def build_method(
     example_set: dict | None,
     skeleton: dict,
     weights_source: str | None = None,
+    example_sets_by_class: dict[str, dict] | None = None,
 ):
     """A keypoint method built from a run's **own copy** of its inputs (the ``example_set``
-    snapshot :func:`resolve_method` wrote, the resolved ``settings``, the recorded
-    ``weights_source``) — never from the live example set, which the user may have edited
-    since the run was configured, and never by searching for a student again. Shared by the
-    detect stage and the distill label stage, so both build the method the same way."""
+    snapshot :func:`resolve_method` wrote — or one per class, ``example_sets_by_class`` — the
+    resolved ``settings``, the recorded ``weights_source``) — never from the live example
+    set, which the user may have edited since the run was configured, and never by searching
+    for a student again. Shared by the detect stage and the distill label stage, so both
+    build the method the same way."""
     kwargs: dict = {name: settings.get(name) for name in METHOD_SETTINGS}
-    if example_set is not None:
-        frames = [ExampleFrame.from_dict(f) for f in example_set["marks"]]
-        examples = ExampleSet(
-            id=example_set["id"],
-            name=example_set.get("name", example_set["id"]),
-            purpose="example",
-            created_at="",
-            skeleton=Skeleton.from_dict(skeleton),
-            frames=frames,
+    if example_sets_by_class:
+        kwargs["class_examples"] = {
+            cls: _examples_from_snapshot(experiment_dir, snapshot, skeleton)
+            for cls, snapshot in example_sets_by_class.items()
+        }
+    elif example_set is not None:
+        examples, images = _examples_from_snapshot(
+            experiment_dir, example_set, skeleton
         )
         kwargs["examples"] = examples
-        kwargs["example_images"] = [
-            example_sets.load_image(experiment_dir, examples.id, f.image)
-            for f in frames
-        ]
+        kwargs["example_images"] = images
     return resolve_keypoint_model(
         model_id,
         model_variant,
@@ -203,7 +241,97 @@ def build_method(
     )
 
 
+def normalize_class_example_sets(config: dict) -> dict[str, str] | None:
+    """``class_example_sets`` checked and written back (§26 *One example set per detection
+    class*); returns the map when it names two or more classes, else None.
+
+    Exclusive with ``class_name`` and ``example_set_id``. A one-entry map is the single form
+    spelled differently, so it is rewritten as ``class_name`` + ``example_set_id``: the same
+    settings get one identity however they were written.
+
+    Raises:
+        ValueError: The map beside ``class_name`` / ``example_set_id``, an empty class or
+            set id, or an empty map.
+    """
+    class_sets = config.get("class_example_sets")
+    if class_sets is None:
+        return None
+    if config.get("class_name") or config.get("example_set_id"):
+        raise ValueError(
+            "class_example_sets names each class with its own example set; leave "
+            "class_name and example_set_id unset beside it"
+        )
+    if not class_sets:
+        raise ValueError(
+            "class_example_sets is empty; name at least one class with its example set, "
+            "or leave it unset"
+        )
+    for cls, set_id in class_sets.items():
+        if not str(cls).strip() or not str(set_id).strip():
+            raise ValueError(
+                f"class_example_sets needs a class and a set for every entry; got "
+                f"{cls!r}: {set_id!r}"
+            )
+    if len(class_sets) == 1:
+        [(cls, set_id)] = class_sets.items()
+        config["class_name"], config["example_set_id"] = str(cls), str(set_id)
+        config["class_example_sets"] = None
+        return None
+    config["class_example_sets"] = {
+        str(cls): str(set_id) for cls, set_id in sorted(class_sets.items())
+    }
+    return config["class_example_sets"]
+
+
+def _read_runnable_set(experiment_dir: Path, set_id: str) -> ExampleSet:
+    try:
+        examples = example_sets.read_set(experiment_dir, set_id)
+    except FileNotFoundError as exc:
+        raise ValueError(str(exc)) from None
+    examples.check_runnable()  # purpose, skeleton, every point marked visible
+    return examples
+
+
+def _raise_on_mixed_skeletons(by_class: dict[str, ExampleSet]) -> None:
+    """One run stores one set of point columns, so every class's set must be on one
+    skeleton (equal digest).
+
+    Raises:
+        ValueError: Sets on different skeletons, naming each set and its skeleton.
+    """
+    digests = {cls: ex.skeleton.digest() for cls, ex in by_class.items()}
+    if len(set(digests.values())) <= 1:
+        return
+    listed = ", ".join(
+        f"{cls}: {ex.id} ({len(ex.skeleton.names)} points, skeleton {digests[cls][:8]})"
+        for cls, ex in by_class.items()
+    )
+    raise ValueError(
+        "every class's example set must be on the same skeleton, since one run stores one "
+        f"set of points; these differ — {listed}. Mark the sets on one skeleton."
+    )
+
+
+def _set_snapshot(experiment_dir: Path, examples: ExampleSet) -> dict:
+    """The run's own copy of a set (§26 ``detect.yaml``): id, name, digest, frames, marks."""
+    hashes = example_sets.image_hashes(experiment_dir, examples)
+    return {
+        "id": examples.id,
+        "name": examples.name,
+        "digest": examples.digest(hashes),
+        "frames": [f.image for f in examples.frames],
+        "marks": [f.to_dict() for f in examples.frames],
+    }
+
+
 def resolve_method(experiment_dir: Path, config: dict, compute) -> dict:
+    """Resolve a keypoint method for a run and write what was resolved back into ``config``;
+    returns ``config``. See :func:`resolve_method_model`, which this wraps."""
+    resolve_method_model(experiment_dir, config, compute)
+    return config
+
+
+def resolve_method_model(experiment_dir: Path, config: dict, compute):
     """Resolve a keypoint method for a run and write what was resolved back into ``config``
     (Tenet 9): the variant, ``weights_source`` (where a student's weights live), the
     skeleton and its digest, the **example-set snapshot** (id,
@@ -213,7 +341,8 @@ def resolve_method(experiment_dir: Path, config: dict, compute) -> dict:
 
     Shared by keypoint detect's ``validate`` and the distill label stage's plan, so a patch
     method is checked (set runnable, weights installed, backend supported) and recorded the
-    same way wherever it runs.
+    same way wherever it runs. Returns the method it built (not loaded), for the facts only
+    an instance knows: a crop-input student works per detection where its class does not.
 
     Raises:
         ValueError: An unknown method, a missing or unwanted example set, an unrunnable set,
@@ -233,26 +362,38 @@ def resolve_method(experiment_dir: Path, config: dict, compute) -> dict:
     if model_cls is None:
         raise ValueError(
             f"unknown keypoint method {model_id!r}; available: "
-            f"{sorted(KEYPOINT_MODELS)}, this experiment's keypoint students and the "
-            "catalog's keypoint models"
+            f"{sorted(KEYPOINT_MODELS)}, the imported keypoint models, this experiment's "
+            "keypoint students and the catalog's keypoint models"
         )
     # Resolved and written back (Tenet 9): an experiment student and a catalog model can
     # share an id, so the worker must build the one validated here, not search again.
     config["weights_source"] = resolve_keypoint_weights_source(experiment_dir, model_id)
+    class_sets = normalize_class_example_sets(config)
     example_set_id = config.get("example_set_id")
     build: dict = {name: config.get(name) for name in METHOD_SETTINGS}
     examples = None
-    if model_cls.needs_examples:
+    by_class: dict[str, ExampleSet] = {}
+    if class_sets:
+        if not model_cls.needs_examples:
+            raise ValueError(
+                f"method {model_id!r} takes no example set; leave class_example_sets unset"
+            )
+        by_class = {
+            cls: _read_runnable_set(experiment_dir, set_id)
+            for cls, set_id in sorted(class_sets.items())
+        }
+        _raise_on_mixed_skeletons(by_class)
+        build["class_examples"] = {
+            cls: (examples_, example_sets.load_images(experiment_dir, examples_))
+            for cls, examples_ in by_class.items()
+        }
+    elif model_cls.needs_examples:
         if not example_set_id:
             raise ValueError(
                 f"method {model_id!r} learns from an example set; choose one "
-                "(example_set_id)"
+                "(example_set_id), or one per class (class_example_sets)"
             )
-        try:
-            examples = example_sets.read_set(experiment_dir, example_set_id)
-        except FileNotFoundError as exc:
-            raise ValueError(str(exc)) from None
-        examples.check_runnable()  # purpose, skeleton, every point marked visible
+        examples = _read_runnable_set(experiment_dir, example_set_id)
         build["examples"] = examples
         build["example_images"] = example_sets.load_images(experiment_dir, examples)
     elif example_set_id:
@@ -267,15 +408,23 @@ def resolve_method(experiment_dir: Path, config: dict, compute) -> dict:
         **build,
     )
     config["model_variant"] = model.variant
-    status = model.readiness()
-    if not status.ready:
-        raise ModelNotReadyError(status)
-    if compute.backend not in model.supported_backends:
+    if compute.backend == "remote":
+        # A remote job's weights are the cluster's: the shepherd checks them there, after
+        # uploading a catalog model, before it submits (§6) — not against this machine.
+        from detail.storage import remote_targets
+
+        remote_targets.require_registered(compute)
+    else:
+        status = model.readiness()
+        if not status.ready:
+            raise ModelNotReadyError(status)
+    if effective_backend(compute) not in model.supported_backends:
         raise ValueError(
             f"method {model_id!r} does not support backend {compute.backend!r}; "
             f"supports {model.supported_backends}"
         )
-    model.check_backend(compute.backend)
+    if compute.backend != "remote":
+        model.check_backend(compute.backend)
     if compute.backend == "cuda" and compute.device_indices:
         check_cuda_indices(compute.device_indices)
 
@@ -283,17 +432,28 @@ def resolve_method(experiment_dir: Path, config: dict, compute) -> dict:
     skeleton.validate()
     config["skeleton"] = skeleton.to_dict()
     config["skeleton_digest"] = skeleton.digest()
-    if examples is not None:
-        hashes = example_sets.image_hashes(experiment_dir, examples)
-        digest = examples.digest(hashes)
-        config["example_set"] = {
-            "id": examples.id,
-            "name": examples.name,
-            "digest": digest,
-            "frames": [f.image for f in examples.frames],
-            "marks": [f.to_dict() for f in examples.frames],
+    config["example_sets"] = None
+    config["class_example_digests"] = None
+    if by_class:
+        snapshots = {
+            cls: _set_snapshot(experiment_dir, examples_)
+            for cls, examples_ in by_class.items()
         }
-        config["example_set_digest"] = digest
+        config["example_set"] = None
+        config["example_set_digest"] = None
+        config["example_sets"] = snapshots
+        config["class_example_digests"] = {
+            cls: snap["digest"] for cls, snap in snapshots.items()
+        }
+        # Every set is on one skeleton (checked above), so the first one's library ref is
+        # the run's.
+        first = next(iter(by_class.values()))
+        config["skeleton_ref"] = (
+            None if first.skeleton_ref is None else dict(first.skeleton_ref)
+        )
+    elif examples is not None:
+        config["example_set"] = _set_snapshot(experiment_dir, examples)
+        config["example_set_digest"] = config["example_set"]["digest"]
         config["skeleton_ref"] = (
             None if examples.skeleton_ref is None else dict(examples.skeleton_ref)
         )
@@ -311,7 +471,7 @@ def resolve_method(experiment_dir: Path, config: dict, compute) -> dict:
         config[name] = settings.get(name, config.get(name))
     matching = getattr(model, "matching", None)
     config["matching"] = dict(matching) if matching else None
-    return config
+    return model
 
 
 def _build_model(job: KeypointDetectJob, experiment_dir: Path):
@@ -323,7 +483,48 @@ def _build_model(job: KeypointDetectJob, experiment_dir: Path):
         job.example_set,
         job.skeleton,
         job.weights_source,
+        example_sets_by_class=getattr(job, "example_sets", None),
     )
+
+
+def _whole_frame_class_message(model_id: str) -> str:
+    return (
+        f"method {model_id!r} works on the whole frame and is handed no detections, so "
+        "there is no detection class to place poses in; leave class_name unset (it applies "
+        "only to a method that works per detection)"
+    )
+
+
+def resolve_class_name(
+    detection_run_dir: Path,
+    class_name: str | None,
+    *,
+    model_id: str,
+    per_detection: bool,
+    detection_run_id: str,
+    recording_id: str,
+) -> str | None:
+    """``class_name`` checked (§26 *Validation checks*): None (every class) as given; refused
+    for a whole-frame method, which is handed no detections to choose among; refused when
+    the detection run has no detection of that class, naming the classes it has (read off its
+    own parts, ``detection.detected_classes``, as tracking's class filter reads them).
+
+    Raises:
+        ValueError: A class for a whole-frame method, or one the detection run lacks.
+    """
+    if class_name is None:
+        return None
+    if not per_detection:
+        raise ValueError(_whole_frame_class_message(model_id))
+    from detail.pipeline.detection import detected_classes
+
+    known = detected_classes(detection_run_dir)
+    if class_name not in known:
+        raise ValueError(
+            f"recording {recording_id!r}'s detection run {detection_run_id!r} has no "
+            f"class named {class_name!r}; it has: {known or 'none'}"
+        )
+    return class_name
 
 
 def resolve_min_pose_confidence(model_cls, model_id: str, value: float | None):
@@ -385,12 +586,19 @@ class _Progress:
         )
 
 
-def _read_det(path: Path, *, with_masks: bool) -> dict | None:
-    """The detection part's columns the walk needs; ``mask_rle`` only when masks are read."""
+def _read_det(
+    path: Path, *, with_masks: bool, with_classes: bool = False
+) -> dict | None:
+    """The detection part's columns the walk needs; ``mask_rle`` only when masks are read,
+    ``class_name`` only when the run places poses in one class."""
     if not path.is_dir():
         return None
     reader = DetectionPartReader(path)
-    names = ["frame_idx", "t_ns", "bbox"] + (["mask_rle"] if with_masks else [])
+    names = (
+        ["frame_idx", "t_ns", "bbox"]
+        + (["mask_rle"] if with_masks else [])
+        + (["class_name"] if with_classes else [])
+    )
     return {name: np.asarray(reader.column(name)[:]) for name in names}
 
 
@@ -422,8 +630,19 @@ def run(job: KeypointDetectJob, run_dir, progress_cb, stop_event) -> None:
     skeleton = Skeleton.from_dict(job.skeleton)
     names = tuple(skeleton.names)
     model = _build_model(job, experiment_dir)
-    per_detection = bool(type(model).per_detection)
+    # The instance's, not the class's: a crop-input student is per-detection where the
+    # whole-frame one is not (``TrainedYoloPose``).
+    per_detection = bool(model.per_detection)
     needs_mask = per_detection and bool(getattr(model, "needs_mask", False))
+    class_name = getattr(job, "class_name", None)
+    by_class = getattr(job, "example_sets", None) or None
+    classes = (
+        frozenset(by_class)
+        if by_class
+        else (None if class_name is None else frozenset({class_name}))
+    )
+    if classes is not None and not per_detection:
+        raise ValueError(_whole_frame_class_message(job.model_id))
 
     # One event before the count, so a long count is not silence (§6).
     _Progress(progress_cb, len(files), 0, 0).emit("counting frames")
@@ -433,7 +652,11 @@ def run(job: KeypointDetectJob, run_dir, progress_cb, stop_event) -> None:
     for part_index, part in enumerate(files):
         part_id = recording_store.part_stem(part)
         if per_detection:
-            det = _read_det(detection_dir / f"{part_id}.zarr", with_masks=False)
+            det = _read_det(
+                detection_dir / f"{part_id}.zarr",
+                with_masks=False,
+                with_classes=classes is not None,
+            )
             timestamps = np.zeros(0, np.int64)
         else:
             det = None
@@ -441,7 +664,11 @@ def run(job: KeypointDetectJob, run_dir, progress_cb, stop_event) -> None:
                 recording_dir, recording_data, part_index
             ).values
         frames = part_frames(
-            det, timestamps, job.every_n_frames, per_detection=per_detection
+            det,
+            timestamps,
+            job.every_n_frames,
+            per_detection=per_detection,
+            classes=classes,
         )
         store = keypoint_runs.part_path(run_dir, part_id)
         last = keypoint_runs.last_frame_written(store)
@@ -485,13 +712,16 @@ def run(job: KeypointDetectJob, run_dir, progress_cb, stop_event) -> None:
         todo = part["frames"][part["skip"] :]
         det = None
         if per_detection and todo:
-            det = _read_det(part["det_path"], with_masks=needs_mask)
+            det = _read_det(
+                part["det_path"], with_masks=needs_mask, with_classes=bool(by_class)
+            )
         frame_iter = iter_instance_frames(
             part["video_path"],
             todo,
             None if det is None else det["bbox"],
             None if det is None or not needs_mask else det["mask_rle"],
             mask_size,
+            None if det is None or not by_class else det["class_name"],
         )
         stopped = _place_part(
             halves, model, frame_iter, part, names, job, progress, stop_event
@@ -645,7 +875,13 @@ class KeypointDetectModule(ProcessingModule):
         "side_rule",
         "matching",
         "min_pose_confidence",
+        "class_name",
+        "class_example_digests",
     )
+    # class_name is newer than the stage: a record written before it has one honest reading
+    # for its absence (a pose in every detection), the way tracking defaults its own; and a
+    # record before per-class sets learned from one set, or none.
+    identity_defaults = {"class_name": None, "class_example_digests": None}
     lineage_ref = ("detection", "detection_run_id")
 
     def runner(self, job, run_dir, progress_cb, stop_event) -> None:
@@ -656,6 +892,27 @@ class KeypointDetectModule(ProcessingModule):
 
     def output_path(self, run_id: str) -> str:
         return f"keypoint_detect/{run_id}/"
+
+    def estimate_output_bytes(
+        self, recording_dir, recording_data: dict, config: dict
+    ) -> int:
+        """Rows × the detect part's own row size (#743): a row per frame read per track, sized
+        from ``keypoint_zarr.detect_columns`` uncompressed, so an upper bound. The method-only
+        ``extras/`` columns are a few bytes a point and are left out."""
+        from detail.core import disk_space
+        from detail.storage import keypoint_zarr
+
+        # `validate` resolves the skeleton before a launch estimates; without one (a bare
+        # registry probe) the per-point columns count nothing and the frame columns remain
+        skeleton = config.get("skeleton")
+        k = len(Skeleton.from_dict(skeleton).names) if skeleton else 0
+        row = keypoint_zarr.row_bytes(
+            keypoint_zarr.detect_columns(k, int(config.get("n_candidates") or 1), {})
+        )
+        frames = disk_space.frames_to_process(
+            recording_data, config.get("every_n_frames")
+        )
+        return frames * max(1, len(config.get("track_ids") or [])) * row
 
     def validate(self, recording_dir, recording_data: dict, config: dict) -> dict:
         """Every pre-run check of §26 "Validation checks", resolving each defaulted input
@@ -686,11 +943,26 @@ class KeypointDetectModule(ProcessingModule):
         config["every_n_frames"] = resolve_downstream_every_n(
             config.get("every_n_frames"), int(det_entry.get("every_n_frames") or 1)
         )
+        # Inherited, never chosen: the points end where the teacher window does (§26, #717).
+        config[teacher_window.WINDOW_KEY] = teacher_window.window_of(det_entry)
         video_integrity.raise_on_video_issues(
             video_integrity.validate_source_videos(recording_dir, recording_data)
         )
 
-        resolve_method(experiment_dir, config, compute)
+        model = resolve_method_model(experiment_dir, config, compute)
+        # The instance's, not the class's: a crop-input student is per-detection (``run``).
+        for class_name in config.get("class_example_sets") or [
+            config.get("class_name") or None
+        ]:
+            resolved = resolve_class_name(
+                recording_dir / "detections" / detection_run_id,
+                class_name,
+                model_id=model_id,
+                per_detection=bool(model.per_detection),
+                detection_run_id=detection_run_id,
+                recording_id=recording_id,
+            )
+        config["class_name"] = None if config.get("class_example_sets") else resolved
         from detail.models.resolve import keypoint_method_class
 
         config["min_pose_confidence"] = resolve_min_pose_confidence(
@@ -712,12 +984,14 @@ class KeypointDetectModule(ProcessingModule):
             recording_id=recording_id,
             detect_run_id=run_id,
             detection_run_id=config["detection_run_id"],
+            class_name=config.get("class_name"),
             min_pose_confidence=config.get("min_pose_confidence"),
             model_id=config["model_id"],
             model_variant=config.get("model_variant"),
             weights_source=config.get("weights_source"),
             backbone=config.get("backbone"),
             example_set=config.get("example_set"),
+            example_sets=config.get("example_sets"),
             skeleton=dict(config["skeleton"]),
             n_candidates=int(config["n_candidates"]),
             every_n_frames=int(config.get("every_n_frames") or 1),
@@ -734,6 +1008,7 @@ class KeypointDetectModule(ProcessingModule):
     def extra_record_fields(self, config: dict) -> dict:
         return {
             "detection_run_id": config["detection_run_id"],
+            "class_name": config.get("class_name"),
             "min_pose_confidence": config.get("min_pose_confidence"),
             "model_id": config["model_id"],
             "model_variant": config.get("model_variant"),
@@ -742,9 +1017,12 @@ class KeypointDetectModule(ProcessingModule):
             "backbone_variant": config.get("backbone_variant"),
             "example_set_id": config.get("example_set_id"),
             "example_set_digest": config.get("example_set_digest"),
+            "class_example_sets": config.get("class_example_sets"),
+            "class_example_digests": config.get("class_example_digests"),
             "skeleton_digest": config.get("skeleton_digest"),
             "n_candidates": config.get("n_candidates"),
             "every_n_frames": int(config.get("every_n_frames") or 1),
+            teacher_window.WINDOW_KEY: config.get(teacher_window.WINDOW_KEY),
             "crop_px": config.get("crop_px"),
             "decode": config.get("decode"),
             "side_rule": config.get("side_rule"),

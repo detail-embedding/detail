@@ -81,7 +81,11 @@ def append(path: Path, record: dict) -> None:
     """Add one run as one line, in a single write, so concurrent runs never interleave."""
     path.parent.mkdir(parents=True, exist_ok=True)
     line = (json.dumps({"schema_version": SCHEMA_VERSION, **record}) + "\n").encode()
-    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    fd = os.open(
+        path,
+        os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_BINARY", 0),
+        0o644,
+    )
     try:
         os.write(fd, line)
     finally:

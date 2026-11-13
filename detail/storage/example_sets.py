@@ -36,11 +36,13 @@ import numpy as np
 import yaml
 
 from detail.core import atomic
+from detail.core import yaml_load
 from detail.core.examples import PURPOSES, ExampleSet
 from detail.core.skeleton import Skeleton
 from detail.core.utils import utc_timestamp
 from detail.storage import dirscan
 from detail.storage import experiment as experiment_store
+from detail.storage import keypoint_runs
 from detail.storage import read_cache
 
 SCHEMA_VERSION = 1
@@ -69,7 +71,7 @@ def read_set(experiment_dir: Path | str, set_id: str) -> ExampleSet:
             f"no example set {set_id!r} in this experiment; it has "
             f"{discover_sets(experiment_dir) or 'none'}"
         )
-    return ExampleSet.from_dict(yaml.safe_load(atomic.read_text(path)))
+    return ExampleSet.from_dict(yaml_load.safe_load(atomic.read_text(path)))
 
 
 def list_sets(
@@ -79,7 +81,7 @@ def list_sets(
     the listing (``dirscan``)."""
     records = dirscan.read_each(
         discover_sets(experiment_dir),
-        lambda set_id: yaml.safe_load(
+        lambda set_id: yaml_load.safe_load(
             atomic.read_text(set_dir(experiment_dir, set_id) / EXAMPLES_FILENAME)
         ),
     )
@@ -201,7 +203,7 @@ def load_image(experiment_dir: Path | str, set_id: str, image: str) -> np.ndarra
     path = set_dir(experiment_dir, set_id) / image
     bgr = cv2.imread(str(path), cv2.IMREAD_COLOR)
     if bgr is None:
-        raise FileNotFoundError(f"frame image missing or unreadable: {path}")
+        raise FileNotFoundError(f"frame image missing or unreadable: {path.as_posix()}")
     return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
 
@@ -216,17 +218,17 @@ def load_images(
 
 def runs_using(experiment_dir: Path | str, set_id: str) -> list[tuple[str, str]]:
     """``(recording_id, run_id)`` for every ``keypoint_detect`` run whose record names this
-    set (``detect.yaml → example_set.id``, §26). Read from the run records, so nothing here
-    has to be kept up to date by the stage."""
+    set (``detect.yaml → example_set.id``, or any class's under ``example_sets``, §26). Read
+    from the run records, so nothing here has to be kept up to date by the stage."""
     root = experiment_store.recordings_dir(experiment_dir)
     if not root.is_dir():
         return []
     out = []
     for recording_dir in dirscan.child_dirs(root):
         for meta in sorted((recording_dir / "keypoint_detect").glob("*/detect.yaml")):
-            data = yaml.safe_load(atomic.read_text(meta)) or {}
-            ref = data.get("example_set") or {}
-            if ref.get("id") == set_id:
+            data = yaml_load.safe_load(atomic.read_text(meta)) or {}
+            used = keypoint_runs.detect_example_sets(data).values()
+            if any(snap.get("id") == set_id for snap in used):
                 out.append((recording_dir.name, meta.parent.name))
     return out
 

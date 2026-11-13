@@ -13,9 +13,9 @@ import time
 from pathlib import Path
 
 import numpy as np
-import yaml
 
 from detail.core import atomic
+from detail.core import yaml_load
 from detail.core.dataclasses import DatasetExportJob, LabelingProgressEvent
 from detail.core.progress import ThrottledProgress, remaining_seconds
 from detail.core.utils import decode_mask, mask_to_polygon
@@ -26,7 +26,11 @@ from detail.storage import datasets as datasets_store
 from detail.storage import experiment as experiment_store
 from detail.storage import runs as runs_store
 from detail.storage import recording as recording_store
-from detail.storage.zarr_io import DetectionPartReader, PartZarrReader
+from detail.storage.zarr_io import (
+    DetectionPartReader,
+    PartZarrReader,
+    resolve_assignment_rows,
+)
 
 _SUPPORTED_SOURCES = ("detection", "tracking")
 
@@ -160,11 +164,14 @@ def _gather_parts(experiment_root, record: dict, module_id: str) -> list[dict]:
         data = recording_store.read_recording(recording_dir)
         if module_id == "tracking":
             tracking_dir = recording_dir / "tracking" / run_id
-            track_meta = yaml.safe_load(atomic.read_text(tracking_dir / "track.yaml"))
+            track_meta = yaml_load.safe_load(
+                atomic.read_text(tracking_dir / "track.yaml")
+            )
             detection_run = track_meta["detection_run_id"]
             assignment_dir = tracking_dir / "assignments"
+            class_name = track_meta.get("class_name")
         else:
-            detection_run, assignment_dir = run_id, None
+            detection_run, assignment_dir, class_name = run_id, None, None
         detection_dir = recording_dir / "detections" / detection_run
         frame_h, frame_w = rundir.read_envelope(detection_dir)["mask_resolution"]
         # Export reads the same frames detection saw. Its rows index the source video
@@ -192,23 +199,43 @@ def _gather_parts(experiment_root, record: dict, module_id: str) -> list[dict]:
                         if assignment_dir is not None
                         else None
                     ),
+                    "class_name": class_name,
                 }
             )
     return parts
 
 
-def _kept_mask(part: dict) -> np.ndarray | None:
-    """Boolean keep-mask over a part's detection rows: drop tracker-unassigned
+def _raw_rows(part: dict) -> np.ndarray:
+    """The detection reader's own row index behind each of this part's usable rows.
+
+    An assignment's ``object_id`` is parallel to the detection rows the tracker
+    actually kept when it ran (§13) — every row for a detection source, or when a
+    tracking source had no class filter; only one class's otherwise
+    (``anchor_tracker`` et al. build ``object_ids`` from ``filter_by_class``'d
+    data). Reading "the first N rows" of the detection reader instead would
+    silently pair the wrong row with each assignment row the moment a class
+    filter narrowed what the tracker saw. Also bounds a crash-torn store
+    (``storage/zarr_io.py``) the same way ``resolve_assignment_rows`` always does.
+    """
+    reader = DetectionPartReader(part["det_part"])
+    assignment = PartZarrReader(part["assignment"]) if part["assignment"] else None
+    return resolve_assignment_rows(reader, assignment, part.get("class_name"))
+
+
+def _kept_mask(part: dict, raw_rows: np.ndarray) -> np.ndarray | None:
+    """Boolean keep-mask, one per row of ``raw_rows``: drop tracker-unassigned
     (``object_id < 0``) rows for a tracking source; keep all for detection."""
     if part["assignment"] is None:
         return None
-    return PartZarrReader(part["assignment"]).column("object_id")[:] >= 0
+    return PartZarrReader(part["assignment"]).column("object_id")[: len(raw_rows)] >= 0
 
 
 def _candidate_frames(part: dict, job: DatasetExportJob) -> list[int]:
     """Frame indices with ≥1 kept detection that also pass the frame selection."""
-    frame_idx = DetectionPartReader(part["det_part"]).column("frame_idx")[:]
-    keep = _kept_mask(part)
+    raw_rows = _raw_rows(part)
+    reader = DetectionPartReader(part["det_part"])
+    frame_idx = np.asarray(reader.column("frame_idx")[: reader.n_rows])[raw_rows]
+    keep = _kept_mask(part, raw_rows)
     if keep is not None:
         frame_idx = frame_idx[keep]
     frames = np.unique(frame_idx)
@@ -239,10 +266,14 @@ def _selected_frames(parts: list[dict], job: DatasetExportJob) -> list[tuple[int
 
 
 def _rows_by_frame(part: dict) -> dict[int, list[tuple[str, str]]]:
-    reader = DetectionPartReader(part["det_part"]).read()
-    keep = _kept_mask(part)
+    raw_rows = _raw_rows(part)
+    reader = {
+        k: np.asarray(v)[raw_rows]
+        for k, v in DetectionPartReader(part["det_part"]).read().items()
+    }
+    keep = _kept_mask(part, raw_rows)
     out: dict[int, list[tuple[str, str]]] = {}
-    for i in range(len(reader["frame_idx"])):
+    for i in range(len(raw_rows)):
         if keep is not None and not keep[i]:
             continue
         out.setdefault(int(reader["frame_idx"][i]), []).append(

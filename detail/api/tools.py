@@ -47,8 +47,8 @@ def default_model_for_machine() -> str:
     if cuda_available():
         return _SAM3_MODEL_ID
     raise RuntimeError(
-        "Quick segment needs an NVIDIA GPU to run SAM3 on this machine. A no-GPU "
-        "shipped model is planned but not yet available."
+        "Quick segment needs an NVIDIA GPU that PyTorch can use (CUDA) to run SAM3 on "
+        "this machine. A no-GPU shipped model is planned but not yet available."
     )
 
 

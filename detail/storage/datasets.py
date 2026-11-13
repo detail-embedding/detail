@@ -8,12 +8,14 @@ mutable list (the same pattern as recordings, runs, and analysis §16); each
 ``dataset.yaml`` is the source of truth.
 """
 
+import contextlib
 import shutil
 from pathlib import Path
 
 import yaml
 
 from detail.core import atomic
+from detail.core import yaml_load
 from detail.storage import dirscan
 from detail.storage import experiment as experiment_store
 
@@ -62,7 +64,7 @@ def read_dataset_yaml(dataset_dir: Path | str) -> dict:
     path = Path(dataset_dir) / DATASET_FILENAME
     if not path.is_file():
         raise FileNotFoundError(f"no {DATASET_FILENAME} in {dataset_dir}")
-    return yaml.safe_load(atomic.read_text(path))
+    return yaml_load.safe_load(atomic.read_text(path))
 
 
 def set_dataset_status(
@@ -71,12 +73,27 @@ def set_dataset_status(
     """Update the ``status`` field of an existing ``dataset.yaml``, in place.
 
     ``error`` (a failure message) is recorded into the record so readers — the
-    GUI detail page in particular — can show why a run failed.
+    GUI detail page in particular — can show why a run failed. Also merges in
+    ``duration_s``/``compute``/(if remote and a rate is configured)
+    ``estimated_cost_usd`` from the job's own envelope (§ run location, duration,
+    cost) — ``dataset_dir`` is the run's own directory (``job.json`` lives right
+    beside ``dataset.yaml``), so this needs no extra argument threaded through
+    every caller.
     """
+    from detail.executor import rundir, run_metrics
+
     record = read_dataset_yaml(dataset_dir)
     record["status"] = status
     if error is not None:
         record["error"] = error
+    with contextlib.suppress(Exception):
+        job = rundir.read_job(dataset_dir)
+        compute = getattr(job, "compute", None)
+        record.update(
+            run_metrics.completion_fields(
+                dataset_dir, compute.to_dict() if compute is not None else None
+            )
+        )
     write_dataset_yaml(dataset_dir, record)
 
 

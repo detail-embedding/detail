@@ -9,15 +9,10 @@ Pinned:
   own resolution.
 - **It follows the clip window live** — a tick there changes what this one draws — and starts on
   the frame the clip window was on.
-- **One window per pane, torn down on Close.** The port this replaced built a new window per
-  click and never deleted one: a closed window stayed parented to the main window, still wired
-  to the player, decoding frames in a loop forever. Here a second click raises the open window,
-  and Close pauses it, unhooks it and lets it go.
-- **No footage unless the record forces it.** The panes are drawn from stored masks and points
-  at the record's frame size; a record with no ``video.resolution`` makes the window decode the
-  footage to size them, and it says so — the API refuses to guess (``clip_frame(footage=False)``
-  raises), the window decides.
 - **Its exports** write that pane, at the size and rate asked for.
+- **One window per pane, and Close ends it**: a second click raises the open window, and
+  Close pauses its playback, unhooks it from the player and deletes it. Before, every click
+  built a window and Close only hid it, still following the player and decoding in a loop.
 """
 
 import numpy as np
@@ -29,7 +24,7 @@ pytest.importorskip("PyQt6")
 from PyQt6.QtCore import Qt  # noqa: E402
 
 from detail.gui.behavior_query import ClipSpec  # noqa: E402
-from tests.clip_fixtures import H, W, count_decodes, walking  # noqa: E402
+from tests.api.test_clip_views import H, W, _walking, count_decodes  # noqa: E402
 from tests.gui.conftest import drain_until  # noqa: E402
 
 
@@ -38,11 +33,10 @@ class _ExperimentAt:
         self.dir = path
 
 
-def _popup(qapp, tmp_path, *, keypoints=True, recording=None):
+def _popup(qapp, tmp_path, *, keypoints=True):
     from detail.gui.clip_popup import ClipPopup
 
-    if recording is None:
-        recording = walking(tmp_path, keypoints=keypoints)
+    recording = _walking(tmp_path, keypoints=keypoints)
     clip = ClipSpec(recording.id, 0, "emb_01", 0, 4 * int(1e9 / 30), "a walk")
     popup = ClipPopup(
         _ExperimentAt(recording.dir.parent.parent), clip, context_s=0, advanced=True
@@ -51,7 +45,7 @@ def _popup(qapp, tmp_path, *, keypoints=True, recording=None):
     popup.show()
     player = popup.player()
     player.pause()
-    assert drain_until(qapp, lambda: player.panes().masks.pixmap_size() is not None)
+    assert drain_until(qapp, lambda: player._panes.masks.pixmap_size() is not None)
     return popup, player
 
 
@@ -89,7 +83,7 @@ def test_the_clip_windows_panes_say_click_to_enlarge(qapp, tmp_path):
     from detail.gui.clip_panes import ENLARGE_TIP
 
     popup, player = _popup(qapp, tmp_path)
-    panes = player.panes()
+    panes = player._panes
     for pane in (panes.masks, panes.pose):
         assert pane.rest_cursor() == Qt.CursorShape.PointingHandCursor
         assert ENLARGE_TIP in pane.toolTip()
@@ -102,7 +96,7 @@ def test_a_click_on_a_pane_opens_it_full_size(qapp, tmp_path):
     from detail.gui.clip_pane_window import ClipPaneWindow
 
     popup, player = _popup(qapp, tmp_path)
-    QTest.mouseClick(player.panes().masks, Qt.MouseButton.LeftButton)
+    QTest.mouseClick(player._panes.masks, Qt.MouseButton.LeftButton)
     assert drain_until(qapp, lambda: popup.findChildren(ClipPaneWindow))
     (window,) = popup.findChildren(ClipPaneWindow)
     assert window.isVisible() and not window.isModal()
@@ -111,41 +105,6 @@ def test_a_click_on_a_pane_opens_it_full_size(qapp, tmp_path):
     size = window.view().pixmap_size()
     assert (size.width(), size.height()) == (W, H), "the frame's own resolution"
     assert "Masks" in window.windowTitle()
-    assert not window.decodes_footage(), "the record carries a frame size"
-    popup.close()
-
-
-def test_a_second_click_raises_the_open_window_rather_than_opening_another(
-    qapp, tmp_path
-):
-    popup, player = _popup(qapp, tmp_path)
-    first = _window(qapp, player, "masks")
-    again = player.open_pane("masks")
-    assert again is first and player.pane_windows == {"masks": first}
-    other = player.open_pane("keypoints")
-    assert other is not first and set(player.pane_windows) == {"masks", "keypoints"}
-    first.close()
-    assert drain_until(qapp, lambda: "masks" not in player.pane_windows)
-    fresh = player.open_pane("masks")
-    assert fresh is not first and player.pane_windows["masks"] is fresh
-    popup.close()
-
-
-def test_closing_the_window_stops_its_playback_and_unhooks_it(
-    qapp, tmp_path, monkeypatch
-):
-    popup, player = _popup(qapp, tmp_path)
-    before = player.receivers(player.view_changed)
-    window = _window(qapp, player, "masks")
-    assert player.receivers(player.view_changed) == before + 1
-    paused = []
-    monkeypatch.setattr(window.scrubber(), "pause", lambda: paused.append(1))
-    window.close()
-    assert paused, "Close pauses the loop that would otherwise decode forever"
-    assert drain_until(qapp, lambda: _gone(window))
-    assert player.receivers(player.view_changed) == before, "unhooked from the player"
-    assert "masks" not in player.pane_windows
-    player._mask_trail.setChecked(True)  # reaches no dead window
     popup.close()
 
 
@@ -159,9 +118,9 @@ def test_the_enlarged_pane_follows_the_clip_windows_ticks(qapp, tmp_path):
     before = window.view().pixmap().toImage()
     player._mask_trail.setChecked(True)
     assert window.settings().mask_trail, "a tick in the clip window reaches it"
-    assert drain_until(
-        qapp, lambda: window.view().pixmap().toImage() != before
-    ), "and it redraws with it"
+    assert drain_until(qapp, lambda: window.view().pixmap().toImage() != before), (
+        "and it redraws with it"
+    )  # fmt: skip
     player._trail.setChecked(True)
     assert window.settings().trail
     popup.close()
@@ -186,23 +145,6 @@ def test_the_enlarged_pane_decodes_no_video(qapp, tmp_path, monkeypatch):
         assert [c for c in calls if c[1] == here] == [], pane
         monkeypatch.undo()
         window.close()
-    popup.close()
-
-
-def test_the_window_decodes_when_the_record_has_no_size_and_says_so(qapp, tmp_path):
-    """The API refuses to invent a canvas; the window pays for the footage and says so."""
-    from detail.storage import recording as recording_store
-
-    recording = walking(tmp_path, keypoints=False)
-    data = recording_store.read_recording(recording.dir)
-    del data["video"]["resolution"]
-    recording_store.write_recording(recording.dir, data)
-    popup, player = _popup(qapp, tmp_path, recording=recording)
-    window = _window(qapp, player, "masks")
-    assert window.decodes_footage()
-    assert "decoded" in window._note.text()
-    size = window.view().pixmap_size()
-    assert (size.width(), size.height()) == (W, H)
     popup.close()
 
 
@@ -238,15 +180,21 @@ def test_export_gif_writes_the_pane_at_the_size_and_rate_asked(
     popup.close()
 
 
-def test_export_video_writes_every_frame_at_full_size(qapp, tmp_path, monkeypatch):
+@pytest.mark.parametrize("codec", ["h264", "mp4v"])
+def test_export_video_writes_every_frame_at_full_size(
+    qapp, tmp_path, monkeypatch, codec
+):
+    """The codec chosen as the save dialog's file type is the one in the file."""
+    import av
     import cv2
 
     from detail.gui import clip_pane_window
+    from detail.storage import video as video_store
 
     popup, player = _popup(qapp, tmp_path)
     window = _window(qapp, player, "keypoints")
     out = tmp_path / "pose.mp4"
-    monkeypatch.setattr(clip_pane_window, "ask_save_path", lambda *a: out)
+    monkeypatch.setattr(clip_pane_window, "ask_mp4_path", lambda *a: (out, codec))
     window.export_video()
     assert drain_until(qapp, lambda: "Wrote pose.mp4" in window._status.text(), 20_000)
     cap = cv2.VideoCapture(str(out))
@@ -258,6 +206,10 @@ def test_export_video_writes_every_frame_at_full_size(qapp, tmp_path, monkeypatc
     assert ok and first.shape[:2] == (H, W) and count == 5
     assert (first > 230).all(axis=2).mean() > 0.5, "the pose on white"
     assert np.asarray(first).std() > 0
+    with av.open(str(out)) as container:
+        name = container.streams.video[0].codec_context.name
+    written = video_store.written_codec(codec)
+    assert name == {"h264": "h264", "mp4v": "mpeg4"}[written]
     popup.close()
 
 
@@ -272,10 +224,35 @@ def test_the_enlarged_pane_closes_with_the_player_it_follows(qapp, tmp_path):
     popup.close()
 
 
-def test_a_pane_that_is_not_one_is_refused(qapp, tmp_path):
-    from detail.gui.clip_pane_window import ClipPaneWindow
-
+def test_a_second_click_raises_the_open_window_rather_than_opening_another(
+    qapp, tmp_path
+):
     popup, player = _popup(qapp, tmp_path)
-    with pytest.raises(ValueError, match="pane must be one of"):
-        ClipPaneWindow(player, "footage")
+    first = _window(qapp, player, "masks")
+    again = player.open_pane("masks")
+    assert again is first and player.pane_windows == {"masks": first}
+    other = player.open_pane("keypoints")
+    assert other is not first and set(player.pane_windows) == {"masks", "keypoints"}
+    first.close()
+    assert drain_until(qapp, lambda: "masks" not in player.pane_windows)
+    fresh = player.open_pane("masks")
+    assert fresh is not first and player.pane_windows["masks"] is fresh
+    popup.close()
+
+
+def test_closing_the_window_stops_its_playback_and_unhooks_it(
+    qapp, tmp_path, monkeypatch
+):
+    popup, player = _popup(qapp, tmp_path)
+    before = player.receivers(player.view_changed)
+    window = _window(qapp, player, "masks")
+    assert player.receivers(player.view_changed) == before + 1
+    paused = []
+    monkeypatch.setattr(window.scrubber(), "pause", lambda: paused.append(1))
+    window.close()
+    assert paused, "Close pauses the loop that would otherwise decode forever"
+    assert drain_until(qapp, lambda: _gone(window))
+    assert player.receivers(player.view_changed) == before, "unhooked from the player"
+    assert "masks" not in player.pane_windows
+    player._mask_trail.setChecked(True)  # reaches no dead window
     popup.close()

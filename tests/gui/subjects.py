@@ -39,12 +39,14 @@ from PyQt6.QtWidgets import (  # noqa: E402
     QComboBox,
     QDialog,
     QLabel,
+    QListView,
     QPushButton,
     QScrollArea,
     QScrollBar,
     QSplitter,
     QTableView,
     QTableWidget,
+    QTreeView,
     QWidget,
 )
 
@@ -94,6 +96,9 @@ _KINDS: tuple[tuple[str, type | tuple[type, ...]], ...] = (
     ("dropdown", QComboBox),
     ("button", QPushButton),
     ("table", (QTableView, QTableWidget)),
+    # Lists and trees: the other item views. A pop-up's rules about rows (every row shown, an
+    # edge to drag) speak about all three; no page rule names this kind yet.
+    ("list", (QListView, QTreeView)),
     ("scroll area", QScrollArea),
     # Panes side by side (`gui/grip_splitter.py`): whether a pane can be dragged to nothing.
     ("splitter", QSplitter),
@@ -256,6 +261,12 @@ def _example_set_picker():
     return example_set_picker
 
 
+def _profile_describe():
+    from detail.gui import profile_describe_setup
+
+    return profile_describe_setup
+
+
 def _with_view_open(page):
     """``page`` (an analysis run page) with its first view's card clicked."""
     next(iter(page._cards.values())).click()
@@ -278,9 +289,12 @@ def page_builders(pages_mod, comparison_mod) -> dict:
         "MetadataPage": lambda p: pages_mod.MetadataPage(p),
         "ExperimentRunsPage": lambda p: pages_mod.ExperimentRunsPage(p, _noop),
         "GlobalModelsPage": lambda p: pages_mod.GlobalModelsPage(),
+        "RemoteTargetsPage": lambda p: pages_mod.RemoteTargetsPage(),
         "DatasetsPage": lambda p: pages_mod.DatasetsPage(p, _noop),
         "ModelsPage": lambda p: pages_mod.ModelsPage(p, _noop),
-        "KeypointsManagerPage": lambda p: _keypoints_manager().KeypointsManagerPage(),
+        "KeypointsManagerPage": lambda p: _keypoints_manager().KeypointsManagerPage(
+            experiment=p
+        ),
         "ExampleSetPicker": lambda p: _example_set_picker().ExampleSetPicker(p),
         "ExperimentAnalysisPage": lambda p: pages_mod.ExperimentAnalysisPage(p, _noop),
         "RecordingDetailPage": lambda p: pages_mod.RecordingDetailPage(
@@ -307,10 +321,13 @@ def page_builders(pages_mod, comparison_mod) -> dict:
         "GpuCudaPage": lambda p: pages_mod.GpuCudaPage(),
         "Sam3BackendPage": lambda p: pages_mod.Sam3BackendPage(),
         "HuggingFacePage": lambda p: pages_mod.HuggingFacePage(),
+        "ProfileDescribePage": lambda p: _profile_describe().ProfileDescribePage(),
         "DocumentationPage": lambda p: pages_mod.DocumentationPage(),
         # The not-found path is a real screen a user reaches, and the one this walk most wants:
         # an empty state still has to obey every rule about how it says it is empty.
-        "GlobalModelDetailPage": lambda p: pages_mod.GlobalModelDetailPage("nope"),
+        "GlobalModelDetailPage": lambda p: pages_mod.GlobalModelDetailPage(
+            "nope", experiment=None
+        ),
         # The detail pages. They are where most of the app's tables and buttons live, and the
         # walk could not reach any of them: each needs a record to open. It was never a hard
         # problem — every one of them was *already* built by some test, with the setup written
@@ -440,6 +457,40 @@ def an_example_set(experiment) -> str:
     if existing:
         return existing[0].id
     return experiment.create_example_set("examples", "quadruped_side_5").id
+
+
+def a_heading_pool(recording, heading_deg: float = 90.0):
+    """A heading pool (§26 *Headings*) over the fixture recording's real tracked frames, every
+    one walking at ``heading_deg`` (90: toward), so the review window has candidates to decode.
+
+    Built in memory rather than by a heading pass: the fixture's detections carry no masks, and
+    the window under test ranks and shows a pool — the pass has its own tests
+    (``tests/pipeline/test_headings.py``)."""
+    from detail.pipeline import headings
+
+    n = len(_FRAMES)
+    rng = np.random.default_rng(0)
+    features = rng.standard_normal(
+        (n, headings.POOL * headings.POOL * headings.PROJ_DIM)
+    )
+    cache = headings.Headings(
+        recording_id=recording.id,
+        tracking_run_id="track_01",
+        part_id=np.array(["part_001"] * n),
+        frame_idx=np.array(_FRAMES),
+        t_ns=np.array([f * 1000 for f in _FRAMES]),
+        track_id=np.zeros(n, dtype=int),
+        walking_deg=np.full(n, heading_deg),
+        tail_deg=np.full(n, np.nan),
+        conflict=np.zeros(n, bool),
+        rearing=np.zeros(n, bool),
+        pickable=np.ones(n, bool),
+        bbox=np.tile([0.1, 0.1, 0.4, 0.4], (n, 1)),
+        feature_row=np.arange(n),
+        features=features.astype(np.float32),
+        features_mirror=features[:, ::-1].astype(np.float32),
+    )
+    return headings.heading_pool([cache])
 
 
 def an_imported_stream(recording) -> str:
@@ -667,14 +718,22 @@ def _a_clip(recording):
     )
 
 
-def _an_advanced_player(experiment, recording):
-    """The clip window's Advanced player with the fixture's clip on it — what an enlarged pane
-    follows. Not playing: the walk looks at widgets, not at frames arriving."""
-    from detail.gui.advanced_player import AdvancedClipPlayer
+class _AClusterContext:
+    """The least a clustering page hands the clip window's cluster sections: a title, the
+    experiment, and one clip of the fixture's recording as the cluster's only member."""
 
-    player = AdvancedClipPlayer(experiment, context_s=1, autoplay=False)
-    player.set_clip(_a_clip(recording), autoplay=False)
-    return player
+    def __init__(self, experiment, recording) -> None:
+        self._experiment = experiment
+        self._clip = _a_clip(recording)
+
+    def title(self) -> str:
+        return "cluster #1"
+
+    def experiment(self):
+        return self._experiment
+
+    def member_clips(self, n: int) -> list:
+        return [self._clip][:n]
 
 
 def _providers(experiment, recording) -> dict:
@@ -702,6 +761,9 @@ def _providers(experiment, recording) -> dict:
         "recording": lambda: recording,
         "recordings": lambda: [recording],
         "stream_name": lambda: an_imported_stream(recording),
+        # A remote target's name: none is registered under the test's config dir, so a dialog
+        # that asks the target anything gets the KeyError at once, never an ssh.
+        "target": lambda: "tillicum",
         # A dialog that reports back through a callback needs one that does nothing; what it
         # reports is the caller's business, not this walk's.
         "on_submit": lambda: _noop,
@@ -723,15 +785,25 @@ def _providers(experiment, recording) -> dict:
         # The context a clip window opens with. A second, not "off": the padded window is the
         # shape with a span drawn on its bar, which is the one a walk should look at.
         "context_s": lambda: 1,
-        # The enlarged pane window follows a player and shows one of its two panes; the GIF
-        # dialog says which frames it will write.
-        "player": lambda: _an_advanced_player(experiment, recording),
-        "pane": lambda: "masks",
-        "frames_note": lambda: "The clip itself, 5 frames.",
+        # The clip window's door into a clustering page (`clip_labelling.ClusterLabelling`):
+        # one clip of the fixture to show, so the member grid is built over a real cell.
+        "context": lambda: _AClusterContext(experiment, recording),
         # A **mapping** keyed by recording id, not a list: the run differs per recording
         # (§6.5), which is the whole reason the dialog takes it separately.
         "run_ids": lambda: {recording.id: "emb_01"},
+        # The per-recording run choice (§6.5 per-recording overrides): the fixture's recording
+        # with two runs to choose between — the shape the dialog exists for — and one chosen.
+        "module_id": lambda: "tracking",
+        "run_options": lambda: {
+            recording.id: [
+                ("track_01", "anchor_tracker · from sam3 @ 0.25"),
+                ("track_02", "anchor_tracker · larva_area · from sam3 @ 0.25"),
+            ]
+        },
+        "chosen_runs": lambda: {recording.id: "track_02"},
         "track_ids": lambda: [0],
+        # Two classes, one renamed: both row shapes (a name typed, and the placeholder).
+        "class_names": lambda: {"Intruder": "Stranger", "Resident": "Resident"},
         "constructor": lambda: next(iter(CONSTRUCTORS)),
         # A prompt-test dialog is built from what the launch form had typed in it. None of it
         # has to be loadable: the dialog under test is the form, and its model load is a button
@@ -754,6 +826,10 @@ def _providers(experiment, recording) -> dict:
         # The keypoint labeling screen (§26) opens on an example set; one is made in the
         # fixture experiment the first time a dialog asks.
         "set_id": lambda: an_example_set(experiment),
+        # The heading sampler's review window (§26 *Headings*) opens on a pool and one of its
+        # buckets; the pool's frames all face the camera, so `toward` has candidates to show.
+        "heading_pool": lambda: a_heading_pool(recording),
+        "bucket": lambda: "toward",
         # The skeleton editor (§26 Keypoints manager) opens on one library entry, with what
         # uses it already read by the page: a preset that something uses is the shape with the
         # most on screen (Save as new, the used-by line).
@@ -770,14 +846,203 @@ def _providers(experiment, recording) -> dict:
         "skeleton_entries": lambda: _skeleton_entries(),
         "chosen_skeleton_id": lambda: "quadruped_side_5",
         "default_set_name": lambda: "example set 1",
+        # An imported keypoint model's roles (§26): the editor opens on the model's skeleton.
+        "skeleton": lambda: _a_skeleton_entry()["skeleton"],
+        # *Tune tracking…* on the track form (§26 *Tuning a track method*): a detect-run kind
+        # and the form's settings. It scores nothing until asked, so the walk sees the window
+        # before a run, with its example-set choice and greyed buttons saying why.
+        "tune_detect_spec": lambda: {"identity": {"model_id": "dinov3_match"}},
+        "tune_base_config": lambda: {},
+        # Preview tracking opens on the track form's launch config and the recordings it covers.
+        "preview_launch_config": lambda: {
+            "detect_run_id": "kd_01",
+            "method": "temporal_decode",
+            "config": {},
+        },
+        "preview_recordings": lambda: sorted(experiment.recording_names().items()),
+        # The clip window's enlarged pane (§22) opens on a player showing a clip, and which of
+        # its two side panes to show large.
+        "player": lambda: _a_clip_player(experiment, recording),
+        "pane": lambda: "masks",
+        # The GIF dialog says which frames it will write; a montage or a pane says it.
+        "frames_note": lambda: "The clip itself, 7 frames.",
+        # The clip montage (§22) opens on a cluster's clips: two of the fixture's own, from
+        # a node of a run the montage only reads.
+        "clips": lambda: _montage_clips(recording),
+        "origin": lambda: _montage_origin(),
+        # The Cluster profile window (§22) opens on a node of a clustering run: a run with an
+        # id is all it reads before a profile exists, and the window then shows its "no
+        # profile yet" state, the one a person meets first.
+        "run": lambda: _AProfiledRun(),
+        "node": lambda: 7,
+        # Export clips… (§22) exports a clip grid's clips: a montage's Export ▾, reading its
+        # clips, Show ▾'s look and the picks.
+        "exports": lambda: _a_montage_export(experiment, recording),
+        # Label as one (§22 "Look-alike clusters") opens on a plan: one new label, one joining
+        # a label, one skipped with the rule's reason — every kind of row the summary draws.
+        "plan": lambda: _a_label_plan(),
+        # Label as one (§22 "Look-alike clusters") names the group's label.
+        "name": lambda: "rearing",
+        # The location montage (§16 "Preview and montage") plays a location-export run's
+        # recordings: a run over the fixture's recording, every animal.
+        "plots": lambda: _a_location_plots(experiment, recording),
+        "recording_ids": lambda: [recording.id],
+        "subjects": lambda: None,
+        # The Meta-information window (any analysis run's page): the files already read.
+        "run_info": lambda: _a_run_info(),
         # A cluster's pop-out window (`cluster_window.ClusterWindow`) is opened by INTERPRET and
         # reads its labels and write queue. A page with no run loaded: the window opens on its
         # empty state with the label row greyed, which is what this walk checks the structure
         # of. The populated window, over a real fit, is `test_cluster_window.py`'s and the page
         # walk's (`a_clustering_workspace` opens one).
         "interpret": lambda: _an_interpret_page_with_nothing_loaded(experiment),
-        "node": lambda: 0,
     }
+
+
+def a_lookalike_group():
+    """A look-alike group of three clusters: one with a label, one inside another, two links,
+    and one whose label would sweep in a cluster outside the group."""
+    from detail.api.cluster_lookalikes import LookalikeGroup, PairEvidence, SweptCluster
+
+    def link(a, b, accuracy):
+        return PairEvidence(
+            node=a,
+            against=b,
+            accuracy=accuracy,
+            floor=0.5,
+            margin=0.1,
+            separated=False,
+            place_accuracy=0.91,
+            place_floor=0.5,
+            params={},
+            created_at="2026-10-30T00:00:00Z",
+            file=f"profiles/node_{a}/against_{b}/profile.yaml",
+        )
+
+    return LookalikeGroup(
+        nodes=(755, 1067, 1391, 1101),
+        links=(link(755, 1067, 0.48), link(1067, 1391, 0.55), link(1101, 1391, 0.5)),
+        sweeps={1067: (SweptCluster(739, 0.039),)},
+        ticked=(755, 1391, 1101),
+        name="Rear_to_right",
+        named="the label a member already has",
+        labels={1391: "Rear_to_right"},
+        time_s={755: 120.0, 1067: 90.0, 1391: 40.0, 1101: 30.0},
+        run_s=600.0,
+    )
+
+
+def _a_label_plan():
+    from detail.api.cluster_lookalikes import AcceptPlan, AcceptStep
+
+    return AcceptPlan(
+        (
+            AcceptStep(12, "moving", "", True),
+            AcceptStep(
+                9,
+                "standing still",
+                "",
+                True,
+                joins="standing still",
+                joins_clusters=3,
+                joins_yours=True,
+            ),
+            AcceptStep(
+                4,
+                "Moving",
+                "",
+                False,
+                reason="cluster #4 is already inside a branch labelled 'moving', so "
+                "labelling it again adds nothing",
+            ),
+        )
+    )
+
+
+class _AProfiledRun:
+    """The least a Cluster profile window reads of its run before anything is computed, and
+    the groups a Look-alike clusters window reads of it."""
+
+    id = "an_01"
+
+    def lookalike_groups(self) -> list:
+        return [a_lookalike_group()]
+
+
+def _a_location_plots(experiment, recording):
+    """A completed location-export run over the fixture's recording (its own tracking run
+    named), as the montage window reads it."""
+    from tests.location_runs import location_run
+
+    location_run(experiment, {recording.id: {}}, run_id="an_09")
+    return experiment.location_plots("an_09")
+
+
+def _a_montage_export(experiment, recording):
+    """A clip grid's **Export ▾** (``montage_export.MontageExport``) over two of the fixture's
+    own clips, as a page builds one: what *Export clips…* opens on."""
+    from detail.gui import live_montage
+    from detail.gui.montage_export import ExportSource
+
+    clips = _montage_clips(recording)
+    montage = live_montage.LiveMontage(
+        aligned_key="interpret/subjects_aligned",
+        look_key=None,
+        context_key="interpret/subjects_context",
+        export=ExportSource(
+            clips=lambda: clips,
+            experiment_dir=lambda: experiment.dir,
+            origin=_montage_origin,
+            name=lambda: "Cluster #7",
+            empty=lambda: "Nothing here to export.",
+            experiment=lambda: experiment,
+        ),
+    )
+    montage.set_clips(
+        [live_montage.MontageClip(c.end_t_ns - c.start_t_ns, c.rank, "") for c in clips]
+    )
+    return montage.exports
+
+
+def _a_clip_player(experiment, recording):
+    """A clip window's player in its Advanced view, on the fixture's clip — what an enlarged
+    pane follows."""
+    from detail.gui.behavior_query import _ClipPlayer
+
+    player = _ClipPlayer(experiment, context_s=0, panels=True)
+    player.set_clip(_a_clip(recording))
+    return player
+
+
+def _montage_clips(recording) -> list:
+    from detail.api.clip_montage import MontageClip
+
+    return [
+        MontageClip(
+            rank, recording.id, recording.name, 0, "emb_01", start, start + step
+        )
+        for rank, (start, step) in enumerate(
+            ((0, 66_000_000), (33_000_000, 99_000_000)), start=1
+        )
+    ]
+
+
+def _montage_origin():
+    from detail.api.clip_montage import MontageOrigin
+
+    return MontageOrigin(run_id="an_01", node=7, name=None)
+
+
+def _a_run_info():
+    from detail.api.run_info import InfoFile, RunInfo
+
+    return RunInfo(
+        "an_01",
+        (
+            InfoFile("analysis.yaml", "schema_version: 1\nid: an_01\n"),
+            InfoFile("machine.yaml", "schema_version: 1\ncpu_cores: 16\n"),
+        ),
+    )
 
 
 def _an_interpret_page_with_nothing_loaded(experiment):
@@ -905,6 +1170,27 @@ def build_dialog(cls, experiment, recording):
             return None
         args.append(providers[name]())
     return cls(*args, **kwargs)
+
+
+#: How many recordings :func:`a_crowded_experiment` holds. Past every row cap a pop-up used to
+#: apply (eight for a list, fourteen for a log band), and the size a user called "realistic"
+#: when asking for every row: 12 to 30.
+CROWD = 24
+
+
+def a_crowded_experiment(tmp_path) -> Experiment:
+    """:func:`an_experiment`, with :data:`CROWD` named recordings rather than one.
+
+    What the dialog sweep builds over. With one recording every list in every pop-up fits under
+    any cap, so a rule about rows hidden by a cap can never fail on it — the recorded lesson of
+    `a_dialog_scrolls_its_content`, whose first fixture made every floor look fine.
+    """
+    experiment = an_experiment(tmp_path)
+    experiment.get_recording("recording_001").set_name("Tank 01 · morning session")
+    for index in range(2, CROWD + 1):
+        recording = experiment.add_recording(f"Tank {index:02d} · afternoon session")
+        recording.add_video_part(_tiny_video(tmp_path / f"crowd_{index:02d}.mp4"))
+    return experiment
 
 
 def an_experiment(tmp_path) -> Experiment:

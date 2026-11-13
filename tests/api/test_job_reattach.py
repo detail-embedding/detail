@@ -299,6 +299,10 @@ def test_a_launched_run_does_own_its_worker(tmp_path):
 _DETACHING_NON_ATTACH = {
     "distill run": ("distill", "AttachedDistillRun"),
     "keypoints distill": ("distill_keypoints", "AttachedDistillRun"),
+    # A keypoint setup (§26, #717) is a distill run of its own kind, launched and continued
+    # through the same coordinator; both halves stream an AttachedDistillRun.
+    "keypoints setup start": ("start_keypoint_setup", "AttachedDistillRun"),
+    "keypoints setup continue": ("continue_keypoint_setup", "AttachedDistillRun"),
 }
 
 #: The exact sentences. Substring-sniffing for the *word* "detach" reads a docstring that

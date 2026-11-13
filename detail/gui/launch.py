@@ -32,6 +32,7 @@ from detail.executor.runners import (
 )
 from detail.gui import modules as _gui_modules  # noqa: F401 — registers UIs
 from detail.gui.dialog import Dialog
+from detail.gui.busy import run_busy
 from detail.gui.forms import AdvancedSection
 from detail.gui.modules import registry
 from detail.gui.start_from import (
@@ -44,9 +45,11 @@ from detail.gui.modules.registry import (
     GUI_MODULES,
     ConfigWidget,
 )
+from detail.gui.recording_filter import RecordingFilter, check_shown, uncheck_shown
 from detail.gui.selectable import make_text_selectable
 from detail.gui.sizing import fit_list_height
-from detail.gui.workers import BackgroundCall, StageProgressWorker
+from detail.gui.space_prompt import ask_before_launch, launch_anyway
+from detail.gui.workers import BackgroundCall, StageStatusLine
 from detail.storage import read_cache
 
 
@@ -95,6 +98,64 @@ def _push_config_recordings(dialog, sync: bool = False) -> None:
     _resolve_recordings_in_background(dialog, selected, dialog._resolve_gen)
 
 
+def _eligible_recordings(dialog) -> list:
+    """Every recording eligible for the dialog's current module (``_ELIGIBLE_ROLE``) —
+    not just the checked ones ``_push_config_recordings`` sends, and not narrowed by
+    ``_mark_uncovered``'s *coverage* disabling either (which reuses the same enabled
+    flag once a spec is chosen — reading that flag here would feed a coverage-shrunk
+    pool back into the next rebuild). The population a spec-based picker's own options
+    should be built from (§6.5): checking recordings one at a time, or picking a
+    narrower spec, must never narrow what the picker can even offer next time."""
+    return [
+        dialog._all_recordings[i]
+        for i in range(dialog._recordings.count())
+        if dialog._recordings.item(i).data(_ELIGIBLE_ROLE)
+    ]
+
+
+def _resolve_eligible_in_background(dialog, eligible: list, gen: int) -> None:
+    """``_resolve_recordings_in_background``'s mirror for the eligible-pool pair."""
+    config = dialog._config
+    call = BackgroundCall(
+        lambda: config.resolve_eligible_recordings(eligible), receiver=dialog
+    )
+    dialog._eligible_calls.add(call)
+
+    def _finish() -> None:
+        dialog._eligible_calls.discard(call)
+
+    def _done(resolved) -> None:
+        if gen == dialog._eligible_gen and dialog._config is config:
+            config.apply_eligible_recordings(eligible, resolved)
+        _finish()
+
+    def _failed(_exc) -> None:
+        _finish()  # a resolution failure leaves the form as-is (no crash)
+
+    call.done.connect(_done)
+    call.failed.connect(_failed)
+    call.start()
+
+
+def _push_eligible_recordings(dialog) -> None:
+    """Push every recording eligible for the dialog's module into its config form's
+    ``resolve_eligible_recordings``/``apply_eligible_recordings`` pair — once per
+    module selection (eligibility does not change per checkbox click), off the UI
+    thread when the widget declares that pair heavy."""
+    eligible = _eligible_recordings(dialog)
+    dialog._eligible_gen += 1
+    heavy = (
+        type(dialog._config).resolve_eligible_recordings
+        is not ConfigWidget.resolve_eligible_recordings
+    )
+    if not heavy:
+        dialog._config.apply_eligible_recordings(
+            eligible, dialog._config.resolve_eligible_recordings(eligible)
+        )
+        return
+    _resolve_eligible_in_background(dialog, eligible, dialog._eligible_gen)
+
+
 def _apply_to_config(dialog, selected: list, resolved) -> None:
     """Install a resolved selection in the dialog's form, noting which recordings it was.
 
@@ -126,17 +187,29 @@ def _set_form_busy(dialog, busy: bool) -> None:
     )
 
 
-def _launch_in_background(dialog, work, error_title: str) -> None:
-    """Run ``work(progress)`` (validates every recording + spawns the run) off the UI
-    thread so the dialog never freezes — per-recording validation is O(recordings) disk
-    I/O (§4.13, CLAUDE.md). Each ``(stage, fraction, detail)`` report replaces the status
-    line, so a validation that takes minutes names the recording it is on. On success
-    store the returned handle on ``dialog.run_handle`` and ``accept()``; on failure
-    surface it and re-enable. Keeps the QThread referenced on the dialog so it isn't
-    garbage-collected mid-run."""
+def _launch_in_background(dialog, work, error_title: str, work_anyway=None) -> None:
+    """Run ``work`` (validates every recording + spawns the run) off the UI thread so
+    the dialog never freezes — per-recording validation is O(recordings) disk I/O (§4.13,
+    CLAUDE.md). On success store the returned handle on ``dialog.run_handle`` and
+    ``accept()``; on failure surface it and re-enable. Keeps the QThread referenced on
+    the dialog so it isn't garbage-collected mid-run.
+
+    ``work(progress)`` is handed the ``(stage, fraction, detail)`` callback that drives the
+    dialog's status line — "Validating recordings — 12 of 71 · ~1m30s left" — because a
+    sentence that never changes through a minutes-long validation is indistinguishable from
+    a hang. A launch with no recording loop to report (an analysis) ignores it.
+
+    ``work_anyway`` is the same launch past the free-space check (#743): when ``work`` is
+    refused for space and the user says to launch anyway, it runs in ``work``'s place.
+    """
     _set_form_busy(dialog, True)
-    call = StageProgressWorker(work, receiver=dialog)
-    call.tick.connect(lambda _permille, status: dialog._status.setText(status))
+    call = BackgroundCall(work, receiver=dialog, reports_progress=True)
+    status_line = StageStatusLine()
+    call.tick.connect(
+        lambda stage, fraction, detail: dialog._status.setText(
+            status_line(stage, fraction, detail)
+        )
+    )
     dialog._launch_call = call  # keep alive until it finishes
 
     def _done(handle) -> None:
@@ -145,6 +218,9 @@ def _launch_in_background(dialog, work, error_title: str) -> None:
 
     def _failed(exc) -> None:
         _set_form_busy(dialog, False)
+        if work_anyway is not None and launch_anyway(dialog, error_title, exc):
+            _launch_in_background(dialog, work_anyway, error_title)
+            return
         message = (
             str(exc)
             if isinstance(exc, (ValueError, ModelNotReadyError))
@@ -212,6 +288,9 @@ def _discard_config(holder: QVBoxLayout, config: ConfigWidget | None) -> None:
 
 # Per-row flag: does this recording have *any* complete run of the upstream stage?
 _ELIGIBLE_ROLE = Qt.ItemDataRole.UserRole
+# The row's recording id, for `RecordingFilter` (this list's `UserRole` is the flag above; the
+# selection itself is still read from the parallel `_recording_ids`).
+_ID_ROLE = Qt.ItemDataRole.UserRole + 1
 
 
 def _eligible(recording, upstream: str) -> bool:
@@ -260,24 +339,15 @@ def _covered_subset(config_widget, recordings: list[str], parent, title: str):
 
 
 def _check_all_eligible(recording_list: QListWidget) -> None:
-    """Check every *eligible* (enabled) recording in the list, leaving ineligible ones
-    unchecked. Signals are blocked so the caller can emit a single config update after.
+    """Check every *eligible* (enabled) recording the filter is showing, leaving ineligible
+    ones unchecked. Signals are blocked so the caller can emit a single config update after.
     """
-    recording_list.blockSignals(True)
-    for i in range(recording_list.count()):
-        item = recording_list.item(i)
-        if item.flags() & Qt.ItemFlag.ItemIsEnabled:
-            item.setCheckState(Qt.CheckState.Checked)
-    recording_list.blockSignals(False)
+    check_shown(recording_list)
 
 
 def _uncheck_all(recording_list: QListWidget) -> None:
-    """Uncheck every recording in the list. Signals are blocked so the caller can emit a
-    single config update after (mirror of ``_check_all_eligible``)."""
-    recording_list.blockSignals(True)
-    for i in range(recording_list.count()):
-        recording_list.item(i).setCheckState(Qt.CheckState.Unchecked)
-    recording_list.blockSignals(False)
+    """Uncheck every recording the filter is showing (mirror of ``_check_all_eligible``)."""
+    uncheck_shown(recording_list)
 
 
 # Launch-dropdown order: the pipeline itself, with the three core stages numbered.
@@ -363,14 +433,12 @@ def seed_config(seed: dict) -> dict:
 
 
 class LaunchRunDialog(Dialog):
-    fits_content = True  # a settings form: show it all (Dialog.fits_content)
 
     def __init__(self, experiment, parent=None, seed=None):
         super().__init__(parent)
         self._experiment = experiment
         self.run_handle = None
         self.setWindowTitle("Launch a processing run")
-        self.resize(560, 520)
         import_runner_modules(PIPELINE_RUNNERS)
 
         layout = self.body()
@@ -390,6 +458,9 @@ class LaunchRunDialog(Dialog):
         layout.addWidget(QLabel("Recordings (check the ones to run over):"))
         self._recordings = QListWidget()
         self._recordings.itemChanged.connect(self._on_selection_changed)
+        layout.addWidget(
+            RecordingFilter(self._recordings, experiment, id_role=_ID_ROLE)
+        )
         layout.addWidget(
             self._recordings
         )  # sized to its rows by `fit_list_height`, once they are known
@@ -422,6 +493,8 @@ class LaunchRunDialog(Dialog):
         self._pending_recordings: list[str] = []
         self._resolve_gen = 0
         self._resolve_calls: set = set()
+        self._eligible_gen = 0
+        self._eligible_calls: set = set()
         self._resolved_ids: set[str] = set()  # what the form's coverage is about
         self._on_module_changed()
         if seed is not None:
@@ -484,6 +557,7 @@ class LaunchRunDialog(Dialog):
                     else f"{recording.name}   (needs {upstream})"
                 )
                 item = QListWidgetItem(label)
+                item.setData(_ID_ROLE, recording.id)
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                 item.setCheckState(Qt.CheckState.Unchecked)
                 # Eligibility is fixed for this module; coverage (below) varies with the
@@ -510,6 +584,7 @@ class LaunchRunDialog(Dialog):
         self._config.on_experiment_set(self._experiment)
         self._config_holder.addWidget(self._config)
         self._update_config_recordings()
+        _push_eligible_recordings(self)
         _mark_config_baseline(self._config)
         # `Dialog.showEvent` covers a dialog's labels once, on show; this form is rebuilt
         # *while* the dialog is open — pick a different module and its rows are replaced —
@@ -607,7 +682,14 @@ class LaunchRunDialog(Dialog):
             and self._recordings.item(i).flags() & Qt.ItemFlag.ItemIsEnabled
         ]
 
+    def _selects_recordings(self) -> bool:
+        ui = ANALYSIS_GUI_MODULES.get(self._module_id())
+        return bool(getattr(ui, "selects_recordings", True))
+
     def _run(self) -> None:
+        if not self._selects_recordings():
+            self._run_without_recordings()
+            return
         recordings = self._selected_recordings()
         if not recordings:
             QMessageBox.warning(self, "Launch run", "Select at least one recording.")
@@ -628,6 +710,13 @@ class LaunchRunDialog(Dialog):
                 module_id, recordings, config, progress=progress
             ),
             "Launch run",
+            work_anyway=lambda progress: self._experiment.run_processing(
+                module_id,
+                recordings,
+                config,
+                ignore_free_space=True,
+                progress=progress,
+            ),
         )
 
     def _narrow_to_covered(self, recordings: list[str]) -> list[str] | None:
@@ -641,14 +730,30 @@ class LaunchAnalysisDialog(Dialog):
     ``run_handle`` for the shell to show live progress. Mirrors ``LaunchRunDialog``
     but over ``ANALYSIS_GUI_MODULES`` / ``ANALYSIS_MODULES``."""
 
-    fits_content = True  # a settings form: show it all (Dialog.fits_content)
+    def __init__(
+        self,
+        experiment,
+        parent=None,
+        seed=None,
+        *,
+        recordings: list[str] | None = None,
+        selection: dict | None = None,
+        note: str | None = None,
+    ):
+        """``seed`` opens on a run's settings (the *Start from* picker, pointed at one run).
 
-    def __init__(self, experiment, parent=None, seed=None):
+        ``recordings``, ``selection`` and ``note`` are for a caller that has just watched the
+        clips a run should start from — the clip montage's *Use selected as query examples*
+        (§22). Unlike a seed, which is an old run's and re-asks for every data reference, these
+        are the user's choice of a moment ago: ``recordings`` are checked (the eligible ones),
+        ``selection`` offers the form its selection fields (``ConfigWidget.prefer_selection``,
+        e.g. the embedding run the clips were read from), and ``note`` says in the dialog what
+        was filled in and what is left to choose. Nothing launches until the user presses Run.
+        """
         super().__init__(parent)
         self._experiment = experiment
         self.run_handle = None
         self.setWindowTitle("Launch an analysis run")
-        self.resize(560, 520)
         import_runner_modules(PIPELINE_RUNNERS)
 
         layout = self.body()
@@ -663,10 +768,18 @@ class LaunchAnalysisDialog(Dialog):
         form.addRow("Start from:", self._start_from)
         layout.addLayout(form)
 
-        layout.addWidget(QLabel("Recordings (check the ones to run over):"))
+        # The recording picker, in one widget so a module that reads another run rather than
+        # a recording selection (``ModuleUI.selects_recordings``) can hide it whole.
+        self._recording_picker = QWidget()
+        picker = QVBoxLayout(self._recording_picker)
+        picker.setContentsMargins(0, 0, 0, 0)
+        picker.addWidget(QLabel("Recordings (check the ones to run over):"))
         self._recordings = QListWidget()
         self._recordings.itemChanged.connect(self._on_selection_changed)
-        layout.addWidget(self._recordings)
+        picker.addWidget(
+            RecordingFilter(self._recordings, experiment, id_role=_ID_ROLE)
+        )
+        picker.addWidget(self._recordings)
         buttons = QHBoxLayout()
         self._select_all = QPushButton("Select all")
         self._select_all.clicked.connect(self._select_all_recordings)
@@ -675,7 +788,8 @@ class LaunchAnalysisDialog(Dialog):
         self._clear.clicked.connect(self._clear_all_recordings)
         buttons.addWidget(self._clear)
         buttons.addStretch()
-        layout.addLayout(buttons)
+        picker.addLayout(buttons)
+        layout.addWidget(self._recording_picker)
 
         layout.addWidget(QLabel("Configuration:"))
         self._config_holder = _config_holder_layout(layout)
@@ -696,10 +810,39 @@ class LaunchAnalysisDialog(Dialog):
         self._pending_recordings: list[str] = []
         self._resolve_gen = 0
         self._resolve_calls: set = set()
+        self._eligible_gen = 0
+        self._eligible_calls: set = set()
         self._resolved_ids: set[str] = set()  # what the form's coverage is about
         self._on_module_changed()
         if seed:
             self._start_from_run(seed)
+        if selection:
+            self._config.prefer_selection(dict(selection))
+        if recordings:
+            self.check_recordings(recordings)
+        if note:
+            self._status.setText(note)
+            self._status.setWordWrap(True)
+
+    def check_recordings(self, recording_ids) -> list[str]:
+        """Check each of ``recording_ids`` this module can run over and push the selection to
+        the form; returns the ids that could not be checked (not eligible, or not in this
+        experiment)."""
+        wanted = set(recording_ids)
+        checked: set[str] = set()
+        self._recordings.blockSignals(True)
+        for i in range(self._recordings.count()):
+            item = self._recordings.item(i)
+            if item.data(_ID_ROLE) in wanted and item.data(_ELIGIBLE_ROLE):
+                item.setCheckState(Qt.CheckState.Checked)
+                checked.add(item.data(_ID_ROLE))
+        self._recordings.blockSignals(False)
+        self._update_config_recordings(sync=True)
+        return [r for r in recording_ids if r not in checked]
+
+    def config_widget(self):
+        """The module's config form as it is now — for a caller that prefilled it."""
+        return self._config
 
     def _start_from_run(self, seed: dict) -> None:
         """Open on one particular run's settings — the picker, pointed at a given run.
@@ -742,8 +885,13 @@ class LaunchAnalysisDialog(Dialog):
                     recording.name if eligible else f"{recording.name}   (needs {need})"
                 )
                 item = QListWidgetItem(label)
+                item.setData(_ID_ROLE, recording.id)
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                 item.setCheckState(Qt.CheckState.Unchecked)
+                # Eligibility is fixed for this module; coverage (below) varies with the
+                # chosen upstream run. Kept apart so one never re-enables the other's rows
+                # (mirrors LaunchRunDialog's own _on_module_changed).
+                item.setData(_ELIGIBLE_ROLE, eligible)
                 if not eligible:
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
                 self._recordings.addItem(item)
@@ -754,6 +902,7 @@ class LaunchAnalysisDialog(Dialog):
         # form. Capping the list gives that back: 285px, most of the form visible instead of a
         # porthole beside a scrollbar that reads as the Behaviors table's.
         fit_list_height(self._recordings)
+        self._recording_picker.setVisible(self._selects_recordings())
         self._rebuild_config()
         self._start_from.set_module(
             self._experiment, module_id, analysis_runs_for(self._experiment, module_id)
@@ -767,6 +916,7 @@ class LaunchAnalysisDialog(Dialog):
         self._config.on_experiment_set(self._experiment)
         self._config_holder.addWidget(self._config)
         self._update_config_recordings()
+        _push_eligible_recordings(self)
         _mark_config_baseline(self._config)
         # `Dialog.showEvent` covers a dialog's labels once, on show; this form is rebuilt
         # *while* the dialog is open — pick a different module and its rows are replaced —
@@ -808,7 +958,14 @@ class LaunchAnalysisDialog(Dialog):
     def _update_config_recordings(self, sync: bool = False) -> None:
         _push_config_recordings(self, sync)
 
+    def _selects_recordings(self) -> bool:
+        ui = ANALYSIS_GUI_MODULES.get(self._module_id())
+        return bool(getattr(ui, "selects_recordings", True))
+
     def _run(self) -> None:
+        if not self._selects_recordings():
+            self._run_without_recordings()
+            return
         recordings = self._selected_recordings()
         if not recordings:
             QMessageBox.warning(
@@ -825,8 +982,48 @@ class LaunchAnalysisDialog(Dialog):
         module_id = self._module_id()
         config = {"source_recording_ids": recordings, **self._config.config()}
         self._pending_recordings = recordings
-        _launch_in_background(
+        self._launch(module_id, config)
+
+    def _run_without_recordings(self) -> None:
+        """Launch a module whose input is another run, not a recording selection: its form
+        names the run, and the module reads the recordings from it."""
+        error = self._config.validation_error()
+        if error:
+            QMessageBox.warning(self, "Launch analysis", error)
+            return
+        module_id = self._module_id()
+        config = dict(self._config.config())
+        self._pending_recordings = []
+        self._launch(module_id, config)
+
+    def _launch(self, module_id: str, config: dict) -> None:
+        """Launch ``config``, first asking the form's ``launch_question`` when it has one.
+
+        The question is worked out off the UI thread (a count over the node cache, for Find
+        look-alike clusters). If working it out fails, the launch goes ahead, so the module's
+        own validation says what is wrong rather than a second message about a count.
+        """
+
+        def launch() -> None:
+            _launch_in_background(
+                self,
+                lambda _progress: self._experiment.run_analysis(module_id, config),
+                "Launch analysis",
+            )
+
+        ask = self._config.launch_question(self._experiment, config)
+        if ask is None:
+            launch()
+            return
+
+        def answer(question) -> None:
+            if question is None or ask_before_launch(self, "Launch analysis", question):
+                launch()
+
+        run_busy(
             self,
-            lambda _progress: self._experiment.run_analysis(module_id, config),
-            "Launch analysis",
+            ask,
+            answer,
+            label="Counting what this run will do…",
+            on_error=lambda _exc: launch(),
         )

@@ -61,6 +61,7 @@ from detail.analysis.clip_query import (
 )
 from detail.core import atomic
 from detail.core.ids import sorted_by_id
+from detail.core.utils import coerce_series_key
 from detail.storage import behavior_output
 from detail.storage import zarr_store
 
@@ -186,7 +187,7 @@ def stored_built_from(
 
 def unit_filename(recording_id: str, subject: int | None) -> str:
     """``<recording_id>__<subject>.zarr`` — the flat per-unit store name (§19)."""
-    return f"{recording_id}__{_NO_SUBJECT if subject is None else int(subject)}.zarr"
+    return f"{recording_id}__{_NO_SUBJECT if subject is None else subject}.zarr"
 
 
 def unit_path(run_dir: Path | str, recording_id: str, subject: int | None) -> Path:
@@ -204,7 +205,7 @@ def parse_unit(stem: str) -> tuple[str, int | None]:
         raise FrameViewError(
             f"frame-view store {stem!r} is not <recording_id>__<subject>"
         )
-    return recording_id, None if raw == _NO_SUBJECT else int(raw)
+    return recording_id, None if raw == _NO_SUBJECT else coerce_series_key(raw)
 
 
 def observed_mask(
@@ -495,6 +496,14 @@ def read_frame_view(
     return FrameView(recording_id=recording_id, subject=subject, root=root)
 
 
+def _subject_sort_key(subject: int | None) -> tuple:
+    """None, then every int in order — never compares a ``None`` against an int directly
+    (mixing them in a bare comparison raises ``TypeError``)."""
+    if subject is None:
+        return (0, 0)
+    return (1, subject)
+
+
 def _in_unit_order(
     units: list[tuple[str, int | None]], recording_order: list[str]
 ) -> list[tuple[str, int | None]]:
@@ -502,12 +511,12 @@ def _in_unit_order(
 
     Split out from :func:`discover_frame_views` so the two orderings stay visibly separate:
     the *recording id* must go through ``sorted_by_id`` (it is a minted ``recording_NNN``,
-    and a text sort breaks past the pad), while *subject* is a plain integer that sorts
-    correctly as one. The guard over ``discover_*`` bodies bans a bare ``sorted(`` precisely so
-    the first ordering cannot quietly become the second.
+    and a text sort breaks past the pad), while *subject* sorts by ``_subject_sort_key``. The
+    guard over ``discover_*`` bodies bans a bare ``sorted(`` precisely so the first ordering
+    cannot quietly become the second.
     """
     rank = {rid: i for i, rid in enumerate(recording_order)}
-    return sorted(units, key=lambda u: (rank[u[0]], -1 if u[1] is None else u[1]))
+    return sorted(units, key=lambda u: (rank[u[0]], _subject_sort_key(u[1])))
 
 
 def discover_frame_views(run_dir: Path | str) -> list[tuple[str, int | None]]:

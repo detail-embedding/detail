@@ -1,7 +1,7 @@
 """The one pane that shows a picture — scaled to fit, and optionally zoomable.
 
-A **leaf**: it imports nothing from ``detail.gui`` except ``scroll``'s wheel-ownership property,
-which is itself a leaf. That is the point. This widget began as ``behavior_query._VideoPane``,
+A **leaf**: it imports nothing from ``detail.gui`` except ``scroll``'s wheel-ownership property
+and ``sizing``'s way of telling a window its picture grew, which are leaves themselves. That is the point. This widget began as ``behavior_query._VideoPane``,
 inside a 5000-line module that imports the module registry — so ``tools/quick_segment.py`` and
 ``modules/analysis_query_eval.py`` reached it by importing *from* ``behavior_query``. The same
 shape as ``sizing.finish_dialog`` (8 of 44 dialogs) and ``sizing.mono_font`` (five copies): a
@@ -22,15 +22,23 @@ gesture for the same test's other half: a view that can be moved out of frame ne
 **Double-click is deliberately not bound.** ``clicked`` drives play/pause on three surfaces, and
 Qt delivers press and release *before* a double click — so "double-click to fit" would toggle
 playback on the way past. The Fit button is the fit.
+
+**A montage zooms its tiles together** (:meth:`ImageView.set_tiles`). Zooming a picture composed
+of one moment seen several ways magnifies one tile and pushes the ones it is compared with off
+screen; with tiles set, the same gestures zoom and pan the same region of every tile at once.
+Their names are painted by the view, after scaling, at the screen's own text size: a name drawn
+into the picture shrinks with it, and a two-by-two montage of a square video fitted to a dialog
+put them at 7px.
 """
 
 from collections.abc import Callable
 
-from PyQt6.QtCore import QEvent, QPoint, QPointF, QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QFontMetrics, QPainter, QPixmap
 from PyQt6.QtWidgets import QLabel, QPushButton, QSizePolicy, QWidget
 
 from detail.gui.scroll import OWNS_WHEEL
+from detail.gui.sizing import announce_natural_size
 
 #: How far one wheel notch moves the zoom. 1.25 is a quarter per notch — enough to feel
 #: responsive on a mouse, small enough that a trackpad's finer deltas do not leap.
@@ -88,9 +96,16 @@ class ImageView(QLabel):
         # size hint for the same reason: it changes what is *drawn*, never what is asked for.
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         self._pixmap: QPixmap | None = None
+        #: A host's own statement of the picture's natural size — see :meth:`natural_size`.
+        self._natural: QSize | None = None
         self._zoomable = zoomable
         self._zoom = 1.0
         self._offset = QPoint(0, 0)  # pan, in scaled-pixmap pixels
+        #: The rects that zoom together (:meth:`set_tiles`), and their shared pan: the centre
+        #: of the region each shows, in that tile's own ``[0, 1]``.
+        self._tiles: list[QRect] | None = None
+        self._tile_names: list[str] | None = None
+        self._centre = QPointF(0.5, 0.5)
         self._press: QPoint | None = None
         self._dragged = False
         self.hit_test: Callable[[QPoint], bool] | None = None
@@ -131,6 +146,32 @@ class ImageView(QLabel):
     def set_frame(self, pixmap: QPixmap) -> None:
         self._pixmap = pixmap
         self._rescale()
+        self._announce()
+
+    # -- the size the picture would like ------------------------------------- #
+    def natural_size(self) -> QSize | None:
+        """The size this picture is meant to be seen at — what a pop-up opens large enough to
+        show, up to its cap (`sizing.fit_to_content`). ``None`` before there is a picture.
+
+        The frame's own pixels by default. **Never** the size hint: a hint taken from the
+        pixmap feeds back into the layout that scaled it (see ``__init__``), and a window grown
+        to it would grow again with every frame. The frame's own size is not a product of this
+        pane's, so a window can be sized to it once.
+
+        A host whose picture **is** a product of the pane — a montage composed at whatever tile
+        size fits — says what it would be at its own resolution, with :meth:`set_natural_size`.
+        """
+        if self._natural is not None:
+            return QSize(self._natural)
+        return self.pixmap_size()
+
+    def set_natural_size(self, size: QSize | None) -> None:
+        """Declare the picture's natural size, for a picture drawn to fit the pane."""
+        self._natural = None if size is None else QSize(size)
+        self._announce()
+
+    def _announce(self) -> None:
+        announce_natural_size(self)
 
     def clear_frame(self, text: str) -> None:
         self.setText(text)
@@ -168,6 +209,27 @@ class ImageView(QLabel):
     def fit(self) -> None:
         """Back to the whole picture, centred — the way out of a view panned off screen."""
         self._set_zoom(1.0, about=None)
+
+    def set_tiles(
+        self, tiles: list[QRect] | None, names: list[str] | None = None
+    ) -> None:
+        """Zoom ``tiles`` together instead of the whole picture (see the module docstring),
+        each named in its top-left corner by ``names``.
+
+        Each rect, in the picture's own pixels, shows the same region of itself at the one zoom
+        and pan; the picture outside them is never zoomed. ``None`` is the whole picture again.
+        A host sets them with every frame, so an unchanged set keeps the zoom it had. With
+        tiles set, :meth:`image_position` and :meth:`widget_position` speak of the composed
+        picture as fitted, not of what a tile shows.
+        """
+        tiles = [QRect(t) for t in tiles] if tiles else None
+        names = list(names) if tiles and names else None
+        if tiles != self._tiles or names != self._tile_names:
+            self._tiles, self._tile_names = tiles, names
+            self._rescale()
+
+    def tile_names(self) -> list[str] | None:
+        return None if self._tile_names is None else list(self._tile_names)
 
     # -- gestures -------------------------------------------------------------- #
     def wheelEvent(self, event) -> None:
@@ -210,7 +272,10 @@ class ImageView(QLabel):
             if self._dragged or delta.manhattanLength() > _DRAG_SLOP_PX:
                 self._dragged = True
                 self._press = event.pos()
-                self._offset += delta
+                if self._tiles is None:
+                    self._offset += delta
+                else:
+                    self._pan_tiles(delta)
                 self._rescale()
         super().mouseMoveEvent(event)
 
@@ -242,7 +307,9 @@ class ImageView(QLabel):
             return None
         mode = Qt.AspectRatioMode.KeepAspectRatio
         fitted = self._pixmap.size().scaled(self.size(), mode)
-        if self._zoom == 1.0:
+        if (
+            self._zoom == 1.0 or self._tiles is not None
+        ):  # tiles zoom inside a fitted picture
             scaled, left, top = fitted, 0, 0
         else:
             scaled = self._pixmap.size().scaled(fitted * self._zoom, mode)
@@ -287,7 +354,9 @@ class ImageView(QLabel):
         zoom = max(_MIN_ZOOM, min(_MAX_ZOOM, zoom))
         if zoom == self._zoom:
             return
-        if zoom == _MIN_ZOOM:
+        if self._tiles is not None:
+            self._zoom_tiles(zoom, about)
+        elif zoom == _MIN_ZOOM:
             self._offset = QPoint(0, 0)  # fitting re-centres; a stale pan would stick
         elif about is not None:
             # Keep the point under the cursor under the cursor: the offset scales with the
@@ -305,6 +374,101 @@ class ImageView(QLabel):
             self._fit_btn.raise_()
         self._rescale()
 
+    def _zoom_tiles(self, zoom: float, about) -> None:
+        """Keep what is under the cursor under it, in whichever tile the cursor is over — and
+        so the same point of every tile, since they zoom as one."""
+        if zoom == _MIN_ZOOM:
+            self._centre = QPointF(0.5, 0.5)
+            return
+        under = None if about is None else self._tile_position(about)
+        if under is not None:
+            u, v = under
+            seen_x = self._centre.x() + (u - 0.5) / self._zoom
+            seen_y = self._centre.y() + (v - 0.5) / self._zoom
+            self._centre = QPointF(seen_x - (u - 0.5) / zoom, seen_y - (v - 0.5) / zoom)
+        self._centre = self._clamped_centre(zoom)
+
+    def _tile_position(self, pos) -> tuple[float, float] | None:
+        """Where ``pos`` falls in the tile under it, in that tile's ``[0, 1]`` as drawn."""
+        where = self.image_position(pos)
+        if where is None:
+            return None
+        x, y = where[0] * self._pixmap.width(), where[1] * self._pixmap.height()
+        for tile in self._tiles:
+            if tile.left() <= x < tile.left() + tile.width() and (
+                tile.top() <= y < tile.top() + tile.height()
+            ):
+                return (x - tile.left()) / tile.width(), (
+                    y - tile.top()
+                ) / tile.height()
+        return None
+
+    def _pan_tiles(self, delta: QPoint) -> None:
+        """Move every tile's region by the drag, the way the content under the cursor goes."""
+        geometry = self._picture_geometry()
+        if geometry is None:
+            return
+        shown = self._zoom * geometry[0].width() / max(1, self._pixmap.width())
+        tile = self._tiles[0]
+        self._centre = QPointF(
+            self._centre.x() - delta.x() / max(1.0, tile.width() * shown),
+            self._centre.y() - delta.y() / max(1.0, tile.height() * shown),
+        )
+        self._centre = self._clamped_centre(self._zoom)
+
+    def _clamped_centre(self, zoom: float) -> QPointF:
+        """The centre held where the region it shows stays inside its tile."""
+        half = 0.5 / zoom
+        return QPointF(
+            min(max(self._centre.x(), half), 1.0 - half),
+            min(max(self._centre.y(), half), 1.0 - half),
+        )
+
+    def _tiled(self) -> QPixmap:
+        """The picture with each tile showing the zoomed, panned region of itself."""
+        if self._zoom == 1.0:
+            return self._pixmap
+        picture = QPixmap(self._pixmap)
+        painter = QPainter(picture)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        span = 1.0 / self._zoom
+        for tile in self._tiles:
+            region = QRectF(
+                tile.left() + (self._centre.x() - span / 2) * tile.width(),
+                tile.top() + (self._centre.y() - span / 2) * tile.height(),
+                tile.width() * span,
+                tile.height() * span,
+            )
+            painter.drawPixmap(QRectF(tile), self._pixmap, region)
+        painter.end()
+        return picture
+
+    def _named(self, shown: QPixmap) -> QPixmap:
+        """``shown`` (the picture as scaled to the pane) with each tile's name on a dark plate
+        in its top-left corner, in the view's own font made bold — elided to the tile's width
+        rather than run into its neighbour."""
+        if not self._tile_names:
+            return shown
+        scale = shown.width() / max(1, self._pixmap.width())
+        font = self.font()
+        font.setBold(True)
+        metrics = QFontMetrics(font)
+        pad = 4
+        painter = QPainter(shown)
+        painter.setFont(font)
+        for tile, name in zip(self._tiles, self._tile_names):
+            x, y = round(tile.left() * scale), round(tile.top() * scale)
+            room = round(tile.width() * scale) - 2 * pad
+            text = metrics.elidedText(name, Qt.TextElideMode.ElideRight, max(room, 0))
+            plate = QRect(
+                x, y, metrics.horizontalAdvance(text) + 2 * pad, metrics.height() + pad
+            )
+            painter.fillRect(plate, QColor(20, 20, 20))
+            painter.setPen(QColor(245, 245, 245))
+            painter.drawText(plate, Qt.AlignmentFlag.AlignCenter, text)
+        painter.end()
+        return shown
+
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._place_fit_button()
@@ -320,6 +484,14 @@ class ImageView(QLabel):
 
     def _rescale(self) -> None:
         if self._pixmap is None:
+            return
+        if self._tiles is not None:
+            shown = self._tiled().scaled(
+                self.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            self.setPixmap(self._named(shown))
             return
         fitted = self._pixmap.scaled(
             self.size(),

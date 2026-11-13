@@ -518,12 +518,15 @@ def test_a_failed_stage_write_does_not_fail_a_distill_run(tmp_path, monkeypatch)
     """
     from detail.api import experiment as experiment_api
 
+    import time
+
     orchestrator = object.__new__(experiment_api.DistillOrchestrator)
     orchestrator.id = "distill_001"
     orchestrator._stages = {}
     orchestrator._record = {}
     orchestrator._status = "running"
     orchestrator._error = None
+    orchestrator._start = time.monotonic()
     orchestrator._experiment = type("_E", (), {"dir": tmp_path})()
     monkeypatch.setattr(
         experiment_api.distill_store,
@@ -545,12 +548,15 @@ def test_the_distill_terminal_write_still_raises(tmp_path, monkeypatch):
     """
     from detail.api import experiment as experiment_api
 
+    import time
+
     orchestrator = object.__new__(experiment_api.DistillOrchestrator)
     orchestrator.id = "distill_001"
     orchestrator._stages = {}
     orchestrator._record = {}
     orchestrator._status = "running"
     orchestrator._error = None
+    orchestrator._start = time.monotonic()
     orchestrator._experiment = type("_E", (), {"dir": tmp_path})()
     monkeypatch.setattr(
         experiment_api.distill_store,

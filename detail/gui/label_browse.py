@@ -38,19 +38,20 @@ from PyQt6.QtWidgets import (
     QTableView,
     QTreeWidget,
     QTreeWidgetItem,
-    QTreeWidgetItemIterator,
     QVBoxLayout,
     QWidget,
 )
 
 from detail.core import run_selection
 from detail.core.progress import format_duration
+from detail.core.utils import subject_key
 from detail.gui import plot_theme
 from detail.gui.behavior_query import ClipSpec
 from detail.gui.busy import run_busy
 from detail.gui.cluster_strip import EthogramStrip, cluster_colors, ruled
 from detail.gui.collapse import CollapsibleBand
 from detail.gui.grip_splitter import GripSplitter
+from detail.gui.lifetime import cleared, tree_items
 from detail.gui.label_panel import path_rows, root_slots, row_path
 from detail.gui.sizing import emphasis_font, lines, set_available
 from detail.gui.status_color import MUTED, set_label_color
@@ -391,13 +392,11 @@ class LabelBrowseTab(QWidget):
     def rows_px(widget) -> int:
         """The height that shows every row ``widget`` has on show, and nothing under them."""
         if isinstance(widget, QTreeWidget):
-            shown, walk = 0, QTreeWidgetItemIterator(widget)
-            while walk.value() is not None:
-                item = walk.value()
+            shown = 0
+            for item in tree_items(widget):
                 parent = item.parent()
                 if not item.isHidden() and (parent is None or parent.isExpanded()):
                     shown += 1
-                walk += 1
             header = (
                 0 if widget.isHeaderHidden() else widget.header().sizeHint().height()
             )
@@ -543,6 +542,8 @@ class LabelBrowseTab(QWidget):
         )
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802 — Qt's name
+        if cleared(self):
+            return False
         if event.type() == QEvent.Type.Resize:
             if watched is self._ethogram:
                 self._fit_ethogram()
@@ -1038,7 +1039,7 @@ class LabelBrowseTab(QWidget):
         self._player.set_clip(
             ClipSpec(
                 recording_id=run["recording_id"],
-                track_id=int(run["subject"] or 0),
+                track_id=subject_key(run["subject"]),
                 embed_run_id=self._embed_run_ids.get(run["recording_id"], ""),
                 start_t_ns=int(run["start_ns"]),
                 end_t_ns=int(run["end_ns"]),
@@ -1125,7 +1126,7 @@ class LabelBrowseTab(QWidget):
         self._player.set_clip(
             ClipSpec(
                 recording_id=row.recording_id,
-                track_id=int(row.subject or 0),
+                track_id=subject_key(row.subject),
                 embed_run_id=self._embed_run_ids.get(row.recording_id, ""),
                 start_t_ns=int(row.t_ns),
                 end_t_ns=int(row.end_t_ns),

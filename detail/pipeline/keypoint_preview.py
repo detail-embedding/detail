@@ -37,6 +37,7 @@ from detail.core.keypoints import KeypointDatasetJob
 from detail.core.skeleton import Skeleton
 from detail.core.visualize import bgr_to_rgb
 from detail.pipeline import keypoint_dataset as kds
+from detail.storage import keypoint_runs
 
 #: Frames a test draws unless asked otherwise: enough to see a teacher's habits, few enough to
 #: wait for.
@@ -165,6 +166,10 @@ def run_teacher_test(
 
     if n_frames < 1:
         raise ValueError(f"n_frames must be 1 or more; got {n_frames}")
+    if compute is not None and compute.backend == "remote":
+        # The run's target says where the distill is submitted, not what device a preview
+        # loads the model on (`core.utils.preview_compute`); `None` is the model's own default.
+        compute = None
     root = Path(experiment_root)
 
     def report(stage: str, fraction: float, detail: str = "") -> None:
@@ -320,7 +325,9 @@ def _load_for_held_out(root: Path, sources: dict, compute, report):
     cls = keypoint_method_class(root, meta.get("model_id"))
     if cls is None or not getattr(cls, "needs_examples", False):
         return None, None, 0.0
-    if not hasattr(cls, "score_held_out") or not meta.get("example_set"):
+    if not hasattr(cls, "score_held_out") or not keypoint_runs.detect_example_sets(
+        meta
+    ):
         return None, None, 0.0
     start = time.monotonic()
     report(f"loading {meta['model_id']}", 0.0)
@@ -329,8 +336,9 @@ def _load_for_held_out(root: Path, sources: dict, compute, report):
         meta["model_id"],
         meta.get("model_variant"),
         {name: meta.get(name) for name in METHOD_SETTINGS},
-        meta["example_set"],
+        meta.get("example_set"),
         meta["skeleton"],
+        example_sets_by_class=meta.get("example_sets"),
     )
     device = resolve_device(
         compute or default_compute(model.supported_backends), model.supported_backends

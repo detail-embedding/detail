@@ -7,21 +7,30 @@ overview. Lazy per-frame reads keep memory flat on hour-long videos — only a
 frame-index column is held in memory; boxes/masks/track-ids are sliced per frame.
 """
 
-import math
 import threading
 from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
 import numpy as np
-import yaml
 
-from detail.analysis import clip_query
+from detail.analysis import body_axis, clip_query
 from detail.core import atomic
+from detail.core import yaml_load
 from detail.core.dataclasses import Detection, RenderContext
-from detail.core.lru import CountLRU
+from detail.core.skeleton import Skeleton
 from detail.core.utils import decode_mask
-from detail.core.visualize import bgr_to_rgb
+
+from detail.core.utils import (
+    coerce_series_key,
+    decode_mask,
+    parse_series_dirname,
+    series_dirname,
+    subject_key,
+)
+from detail.core import visualize
+from detail.core.visualize import bgr_to_rgb, draw_keypoints
 from detail.storage import experiment as experiment_store
 from detail.storage import recording as recording_store
 from detail.storage import streams as streams_store
@@ -30,8 +39,10 @@ from detail.storage.zarr_io import (
     DetectionPartReader,
     PartZarrReader,
     kinematics_part_path,
+    resolve_assignment_rows,
 )
 from detail.transforms import basic as _basic  # noqa: F401 — registers transforms
+
 from detail.transforms.renderer import MaskRenderer
 
 # Embedding-run fields that must match for two runs' embeddings to be comparable in a
@@ -76,6 +87,10 @@ _RECIPE_KEYS = (
     "mirror_hold_s",
     "facing_camera_ratio",
     "keypoint_track_identity",
+    # §14 pose in the embedding: drawn points or an appended pose block is a different vector.
+    "pose",
+    "pose_weight",
+    "pose_min_score",
     # The order the model was handed the pixels in. Runs before the channel-order fix rendered
     # and embedded BGR frames — a red subject reached the model as blue — and record nothing,
     # which reads as "bgr" (``_recipe_value``), so they never pool with an RGB run.
@@ -85,7 +100,7 @@ _RECIPE_KEYS = (
 #: What a run recorded before the channel-order fix is read as: BGR frames reached the model.
 _CHANNEL_ORDER_BEFORE_THE_FIX = "bgr"
 
-#: What a run recorded before alignment existed is read as: unaligned, with the defaults.
+#: What a run recorded before alignment (or pose) existed is read as: unaligned, no pose.
 _ALIGNMENT_DEFAULTS = {
     "align": "none",
     "heading_definition": None,
@@ -93,6 +108,9 @@ _ALIGNMENT_DEFAULTS = {
     "mirror_hold_s": 1.0,
     "facing_camera_ratio": 0.5,
     "keypoint_track_identity": None,
+    "pose": "none",
+    "pose_weight": None,
+    "pose_min_score": None,
 }
 
 # renderer_spec parameters a constructor derives from the data, and the scope field that
@@ -138,6 +156,56 @@ def _scopes(meta: dict) -> dict:
     return {"canvas_scope": meta.get("canvas_scope", "per_recording")}
 
 
+@dataclass(frozen=True)
+class ClipSource:
+    """Where a clip's footage, masks and keypoints come from when no embedding run stands behind
+    it — a location export's tiles (§16 "Location plots"). Accepted wherever the clip machinery
+    takes an ``embed_run_id``: the embedding run was only ever a lookup for its tracking run and
+    its keypoint run, which this names directly.
+
+    ``subject_colors`` (``((object_id, (r, g, b)), ...)``) are the animals a tile shows, each in
+    its own colour (:func:`_tile_colors`): the tile draws every one of them, whatever the clip's
+    subject, and each leaves its own trail. Hashable, so it keys every cache an embedding run id
+    keys.
+    """
+
+    tracking_run_id: str
+    keypoint_track_run_id: str | None = None
+    subject_colors: tuple = ()
+
+    @property
+    def subject_ids(self) -> tuple[int, ...]:
+        return tuple(int(oid) for oid, _rgb in self.subject_colors)
+
+
+def _tile_colors(source) -> dict[int, tuple[int, int, int]] | None:
+    """``{object_id: RGB}`` when ``source`` is a ``ClipSource`` naming the animals its tile shows
+    (a location export's tile), each drawn in its own colour; ``None`` for a clip of one animal,
+    drawn in the caller's tint."""
+    if isinstance(source, ClipSource) and source.subject_colors:
+        return dict(source.subject_colors)
+    return None
+
+
+def _source_meta(recording_dir: Path, key) -> dict:
+    """What a clip key says about its source: an embedding run's ``embedding.yaml``, or for a
+    ``ClipSource`` the two run ids it names (no renderer, no alignment).
+    """
+    if isinstance(key, ClipSource):
+        return {
+            "tracking_run_id": key.tracking_run_id,
+            "keypoint_run_id": key.keypoint_track_run_id,
+        }
+    return _embedding_meta(recording_dir, key)
+
+
+def _source_name(key) -> str:
+    """How a note names a clip's source."""
+    if isinstance(key, ClipSource):
+        return f"tracking run {key.tracking_run_id}"
+    return f"embedding run {key}"
+
+
 def _embedding_meta(recording_dir: Path, embed_run_id: str) -> dict:
     """The ``embedding.yaml`` for one run (carries lineage + comparability fields)."""
     path = Path(recording_dir) / "embeddings" / embed_run_id / "embedding.yaml"
@@ -145,36 +213,7 @@ def _embedding_meta(recording_dir: Path, embed_run_id: str) -> dict:
         raise ValueError(
             f"embedding run {embed_run_id!r} not found in recording {Path(recording_dir).name!r}"
         )
-    return yaml.safe_load(atomic.read_text(path))
-
-
-def iter_track_kinematics(
-    recording_dir: Path | str, embed_run_id: str, track_id: int
-) -> list[tuple[str, dict[str, np.ndarray]]]:
-    """A track's §14 ``kinematics/`` sidecar as one ``(part stem, columns)`` per part that has
-    one, in part order; ``[]`` when the run never wrote any.
-
-    ``columns`` is ``{frame_idx, t_ns, cx_norm, cy_norm, mask_area_norm, bbox_norm}`` with
-    ``frame_idx`` **part-local**, as the sidecar stores it. Kept per part rather than flattened
-    so a caller can place each part on the recording's timeline
-    (:func:`detail.api.frame_slices.from_kinematics`) or keep a row with its own part: `det_row`
-    restarts at zero in every part, so anything flattened first and indexed after resolves the
-    wrong detection.
-    """
-    run_dir = Path(recording_dir) / "embeddings" / embed_run_id / f"track_{track_id}"
-    columns = ("frame_idx", "t_ns", "cx_norm", "cy_norm", "mask_area_norm", "bbox_norm")
-    parts: list[tuple[str, dict[str, np.ndarray]]] = []
-    for part in sorted(run_dir.glob("part_*.zarr")):
-        sidecar = kinematics_part_path(part)
-        if not sidecar.exists():
-            continue
-        reader = PartZarrReader(sidecar)
-        if reader.n_rows == 0:
-            continue
-        parts.append(
-            (part.stem, {name: np.asarray(reader.column(name)[:]) for name in columns})
-        )
-    return parts
+    return yaml_load.safe_load(atomic.read_text(path))
 
 
 def load_track_kinematics(
@@ -185,18 +224,28 @@ def load_track_kinematics(
     ``{frame_idx, t_ns, cx_norm, cy_norm, mask_area_norm, bbox_norm}``, concatenated over parts
     in frame order — the same rows and the same order as
     :func:`load_track_trajectory`, without loading the embedding column beside it.
-    ``frame_idx`` stays part-local; :func:`iter_track_kinematics` is the per-part form.
 
     **``None``, not an exception.** A run made before kinematics existed simply has none, which is
-    a state a caller renders ("re-run embedding, or backfill") rather than an error.
+    a state a caller renders ("re-run embedding, or backfill") rather than an error. Concatenating
+    per part rather than reading one flat store is what keeps a row with its own part: `det_row`
+    restarts at zero in every part, so anything flattened first and indexed after resolves the
+    wrong detection.
     """
-    parts = iter_track_kinematics(recording_dir, embed_run_id, track_id)
-    if not parts:
+    run_dir = Path(recording_dir) / "embeddings" / embed_run_id / f"track_{track_id}"
+    columns = ("frame_idx", "t_ns", "cx_norm", "cy_norm", "mask_area_norm", "bbox_norm")
+    chunks: dict[str, list[np.ndarray]] = {name: [] for name in columns}
+    for part in sorted(run_dir.glob("part_*.zarr")):
+        sidecar = kinematics_part_path(part)
+        if not sidecar.exists():
+            continue
+        reader = PartZarrReader(sidecar)
+        if reader.n_rows == 0:
+            continue
+        for name in columns:
+            chunks[name].append(np.asarray(reader.column(name)[: reader.n_rows]))
+    if not chunks["frame_idx"]:
         return None
-    return {
-        name: np.concatenate([columns[name] for _stem, columns in parts])
-        for name in parts[0][1]
-    }
+    return {name: np.concatenate(chunks[name]) for name in columns}
 
 
 def tracking_entries(data: dict, tracking_run_id: str) -> tuple[dict, dict]:
@@ -225,23 +274,6 @@ def tracking_cadence(data: dict, tracking_run_id: str) -> int:
     )
 
 
-def embedding_cadence(recording_dir: Path | str, data: dict, embed_run_id: str) -> int:
-    """The step, in video frames, between an embedding run's consecutive rows.
-
-    The embed pass keeps a tracked frame when ``frame % every_n_frames == 0`` on top of the
-    tracking run's own cadence (``pipeline/embedding.py``), so the rows sit at multiples of
-    both: their step is the least common multiple. A run whose record has no
-    ``every_n_frames`` embedded every tracked frame (the same default `_recipe_value` applies
-    for comparability), so its step is the tracking run's.
-
-    Raises:
-        ValueError: the embedding run, or the tracking run it names, is not in the record.
-    """
-    meta = _embedding_meta(Path(recording_dir), embed_run_id)
-    own = int(meta.get("every_n_frames") or 1)
-    return math.lcm(tracking_cadence(data, meta["tracking_run_id"]), own)
-
-
 def load_track_trajectory(
     recording_dir: Path | str, embed_run_id: str, track_id: int
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -264,9 +296,11 @@ def load_track_trajectory(
         reader = PartZarrReader(part)
         if reader.n_rows == 0:
             continue
-        embs.append(np.asarray(reader.column("embedding")[:], dtype=np.float32))
-        frames.append(np.asarray(reader.column("frame_idx")[:]))
-        times.append(np.asarray(reader.column("t_ns")[:]))
+        embs.append(
+            np.asarray(reader.column("embedding")[: reader.n_rows], dtype=np.float32)
+        )
+        frames.append(np.asarray(reader.column("frame_idx")[: reader.n_rows]))
+        times.append(np.asarray(reader.column("t_ns")[: reader.n_rows]))
     if not embs:
         raise ValueError(
             f"no embedded rows for track {track_id} in embedding run {embed_run_id!r}"
@@ -335,8 +369,8 @@ def load_track_timeline(
         reader = PartZarrReader(part)
         if reader.n_rows == 0:
             continue
-        frames.append(np.asarray(reader.column("frame_idx")[:]))
-        times.append(np.asarray(reader.column("t_ns")[:]))
+        frames.append(np.asarray(reader.column("frame_idx")[: reader.n_rows]))
+        times.append(np.asarray(reader.column("t_ns")[: reader.n_rows]))
     if not frames:
         raise ValueError(
             f"no embedded rows for track {track_id} in embedding run {embed_run_id!r}"
@@ -345,10 +379,9 @@ def load_track_timeline(
 
 
 def embedding_track_ids(recording_dir: Path | str, embed_run_id: str) -> list[int]:
-    """Track ids embedded in one run (from its ``embedding.yaml``)."""
-    return [
-        int(t) for t in _embedding_meta(Path(recording_dir), embed_run_id)["track_ids"]
-    ]
+    """Selectable series in one embedding run (from its ``embedding.yaml``)."""
+    meta = _embedding_meta(Path(recording_dir), embed_run_id)
+    return [coerce_series_key(t) for t in meta["track_ids"]]
 
 
 def validate_comparability(pairs: list[tuple[Path, str]]) -> tuple:
@@ -461,16 +494,37 @@ def _build_parts(
     detection_run_id: str,
     every_n_frames: int = 1,
     assignment_dir: Path | None = None,
+    class_name: str | None = None,
 ) -> list[dict]:
     """Per-part readers for a detection run, optionally paired with a tracking
     run's per-part ``object_id`` assignments (parallel to the detection rows).
 
     ``every_n_frames`` is the run's cadence, carried through so a viewer can step between
     the frames the run actually processed: at a stride, a frame with no row may simply
-    never have been looked at, which is not the same as "the model found nothing"."""
+    never have been looked at, which is not the same as "the model found nothing".
+
+    ``class_name`` is the *tracking run's own* class filter (§13), if it had one — not
+    optional to pass when pairing with an assignment: a class-filtered tracker writes
+    one assignment row per *matching* detection row, not one per detection row overall
+    (``anchor_tracker`` etc. build ``object_ids`` from ``filter_by_class``'d data). Row i
+    of the assignment is then the i-th *filtered* detection, not the i-th detection —
+    reading "the first N rows" of the raw, unfiltered reader silently pairs the wrong
+    rows together, which reads as tracking dropping a whole trailing span of an
+    otherwise fully-detected video. ``raw_rows`` (below) is what recovers the real
+    detection row behind each filtered position.
+    """
+    run_dir = recording_dir / "detections" / detection_run_id
+    mask_hw = _encoded_mask_hw(run_dir)
     return [
         _build_part(
-            recording_dir, data, detection_run_id, i, every_n_frames, assignment_dir
+            recording_dir,
+            data,
+            detection_run_id,
+            i,
+            every_n_frames,
+            assignment_dir,
+            class_name=class_name,
+            mask_hw=mask_hw,
         )
         for i in range(len(recording_store.video_files(data)))
     ]
@@ -484,6 +538,8 @@ def _build_part(
     every_n_frames: int = 1,
     assignment_dir: Path | None = None,
     *,
+    class_name: str | None = None,
+    mask_hw: tuple[int, int] | None = None,
     timestamps: np.ndarray | None = None,
 ) -> dict:
     """One part of :func:`_build_parts` — only its own video resolved, only its own map read.
@@ -491,21 +547,35 @@ def _build_part(
     For a caller that needs one part (a preview's mask build): building every part resolved
     every part's video, so one part whose video is not on this machine failed a build of
     another, and re-parsed every part's timestamp CSV per call. ``timestamps`` is the part's
-    map when the caller already holds it (``load_active_timestamps_cached``)."""
+    map when the caller already holds it (``load_active_timestamps_cached``). ``class_name``
+    is the tracking run's own class filter, as in :func:`_build_parts`; ``mask_hw`` the size
+    its detection run encoded masks at, read from the run when not given."""
     file = recording_store.video_files(data)[part_index]
     stem = recording_store.part_stem(file)
-    zarr_path = recording_dir / "detections" / detection_run_id / f"{stem}.zarr"
+    run_dir = recording_dir / "detections" / detection_run_id
+    if mask_hw is None:
+        mask_hw = _encoded_mask_hw(run_dir)
+    zarr_path = run_dir / f"{stem}.zarr"
     reader = DetectionPartReader(zarr_path) if zarr_path.exists() else None
-    frame_idx = (
-        reader.column("frame_idx")[:]
-        if reader is not None and reader.n_rows
-        else np.empty(0, dtype=np.int64)
-    )
     assignment = None
     if assignment_dir is not None:
         assignment_path = assignment_dir / f"{stem}.zarr"
         if assignment_path.exists():
             assignment = PartZarrReader(assignment_path)
+    # raw_rows[k] is the reader's own row index behind filtered position k — the
+    # identity map when this run had no class filter, so the unfiltered path below
+    # is unchanged (zarr_io.resolve_assignment_rows).
+    raw_rows = (
+        resolve_assignment_rows(reader, assignment, class_name)
+        if reader is not None
+        else np.empty(0, dtype=np.int64)
+    )
+    n_rows = len(raw_rows)
+    frame_idx = (
+        np.asarray(reader.column("frame_idx")[: reader.n_rows])[raw_rows]
+        if reader is not None and n_rows
+        else np.empty(0, dtype=np.int64)
+    )
     if timestamps is None:
         # Kept, not just measured: it is the authoritative frame_idx -> t_ns map, so
         # read_frame_at seeks by t_ns instead of scanning the whole file's packets.
@@ -517,11 +587,43 @@ def _build_part(
         "stem": stem,
         "reader": reader,
         "frame_idx": frame_idx,
+        "raw_rows": raw_rows,
+        "n_rows": n_rows,
         "n_frames": len(timestamps),
         "timestamps": timestamps,
         "assignment": assignment,
         "every_n_frames": max(1, int(every_n_frames or 1)),
+        # The size the run's mask RLEs were encoded at (`decode_mask(encoded=)`).
+        "mask_hw": mask_hw,
     }
+
+
+def _encoded_mask_hw(run_dir: Path) -> tuple[int, int] | None:
+    """``(height, width)`` a detection run encoded its masks at (its envelope's
+    ``mask_resolution``); ``None`` when it does not say, and masks decode as asked."""
+    from detail.executor import rundir
+
+    try:
+        hw = rundir.read_envelope(run_dir).get("mask_resolution")
+    except (FileNotFoundError, ValueError, OSError):
+        return None
+    return (int(hw[0]), int(hw[1])) if hw else None
+
+
+def locate_frame(part_frame_counts: Sequence[int], frame: int) -> tuple[int, int]:
+    """A recording-**global** frame number as ``(part_index, local_frame)``.
+
+    Clamped to the last frame of the last part rather than raising: a scrub bar and an
+    export's ``--frames`` both hand this a number a caller already validated is in
+    range, and a run whose last part is shorter than expected should still resolve to
+    something on screen rather than crash a widget mid-drag.
+    """
+    for part, count in enumerate(part_frame_counts):
+        if frame < count:
+            return part, frame
+        frame -= count
+    last = len(part_frame_counts) - 1
+    return max(last, 0), max((part_frame_counts[-1] if part_frame_counts else 1) - 1, 0)
 
 
 class DetectionPreview:
@@ -568,6 +670,11 @@ class DetectionPreview:
             len(range(0, part["n_frames"], max(1, int(part["every_n_frames"] or 1))))
             for part in self._parts
         )
+
+    @property
+    def frames_with_detections(self) -> int:
+        """How many frames carry at least one detection, across every part."""
+        return sum(len(np.unique(part["frame_idx"])) for part in self._parts)
 
     def part_index_for_stem(self, stem: str) -> int | None:
         """The part index for a video-file stem (e.g. ``part_001``), or None."""
@@ -629,6 +736,22 @@ class DetectionPreview:
         mask_size = rgb.shape[:2] if with_masks else None
         return actual, rgb, self._detections_at(part, actual, mask_size)
 
+    def blank_frame(
+        self, part_index: int, local_frame: int, frame_hw: tuple[int, int]
+    ) -> tuple[int, np.ndarray, list[Detection]]:
+        """:meth:`frame`'s ``(actual_frame_idx, rgb, detections)`` for a caller that will not
+        show the footage: a white ``frame_hw`` canvas in place of the picture, the detections
+        (masks decoded at ``frame_hw``) of ``local_frame`` itself, and **no video opened**.
+
+        ``local_frame`` is what :meth:`frame` lands on whenever the part's timestamp map
+        describes its video, which is the map every surface passes (``FrameCursor``); the
+        packet-PTS fallback, which can snap to a keyframe, is never reached without a decode.
+        """
+        part = self._parts[part_index]
+        canvas = np.full((int(frame_hw[0]), int(frame_hw[1]), 3), 255, dtype=np.uint8)
+        actual = int(local_frame)
+        return actual, canvas, self._detections_at(part, actual, canvas.shape[:2])
+
     def frames_range(
         self,
         part_index: int,
@@ -663,101 +786,28 @@ class DetectionPreview:
                 mask_size = rgb.shape[:2]
             yield actual, rgb, self._detections_at(part, actual, mask_size)
 
-    def detections_at(
-        self, part_index: int, local_frame: int, *, mask_hw: tuple[int, int] | None
-    ) -> tuple[int, list[Detection]]:
-        """:meth:`frame`'s ``(actual_frame_idx, detections)`` for a caller that will not show
-        the footage — the detections of ``local_frame`` itself, masks decoded at ``mask_hw``
-        when it is given, and **no video opened**.
-
-        ``local_frame`` is what :meth:`frame` lands on whenever the part's timestamp map
-        describes its video, which is the map every surface passes (``FrameCursor``); the
-        packet-PTS fallback, which can snap to a keyframe, is never reached without a decode.
-        """
-        part = self._parts[part_index]
-        actual = int(local_frame)
-        return actual, self._detections_at(part, actual, mask_hw)
-
     def _detections_at(self, part: dict, frame: int, mask_size=None) -> list[Detection]:
-        reader = part["reader"]
         frame_idx = part["frame_idx"]
-        if reader is None or not len(frame_idx):
+        if part["reader"] is None or not len(frame_idx):
             return []
         lo = int(np.searchsorted(frame_idx, frame, "left"))
         hi = int(np.searchsorted(frame_idx, frame, "right"))
         if lo >= hi:
             return []
-        rows = self.read_rows(part, lo, hi, with_masks=mask_size is not None)
-        bbox, class_name = rows["bbox"], rows["class_name"]
-        confidence, mask_rle = rows["confidence"], rows["mask_rle"]
-        object_id = rows["object_id"]
-        detections = []
-        for j in range(hi - lo):
-            oid = int(object_id[j]) if object_id is not None else None
-            if oid is not None and oid < 0:
-                continue  # detection the tracker left unassigned (filtered)
-            detections.append(
-                Detection(
-                    mask=(
-                        decode_mask(str(mask_rle[j]), mask_size)
-                        if mask_size is not None
-                        else None
-                    ),
-                    bbox=tuple(float(v) for v in bbox[j]),
-                    class_name=str(class_name[j]),
-                    confidence=float(confidence[j]),
-                    object_id=oid,
-                )
-            )
-        return detections
+        rows = self._read_rows(part, lo, hi, with_masks=mask_size is not None)
+        return _detections_from_rows(
+            rows, 0, hi - lo, mask_size, encoded_hw=part.get("mask_hw")
+        )
 
-    def subject_masks(
-        self,
-        part_index: int,
-        track_id: int,
-        local_frames: list[int],
-        size: tuple[int, int],
-    ) -> dict[int, np.ndarray]:
-        """``{local_frame: bool mask (size)}`` of one subject on ``local_frames`` of a part,
-        the frame's fragments OR-merged, from one read of their rows — what the clip window's
-        onion skin is made of, with no video decoded."""
-        part = self._parts[part_index]
-        frame_idx = part["frame_idx"]
-        if part["reader"] is None or not len(frame_idx) or not local_frames:
-            return {}
-        lo = int(np.searchsorted(frame_idx, min(local_frames), "left"))
-        hi = int(np.searchsorted(frame_idx, max(local_frames), "right"))
-        if lo >= hi:
-            return {}
-        rows = self.read_rows(part, lo, hi, with_masks=True)
-        object_id = rows["object_id"]
-        wanted = set(int(f) for f in local_frames)
-        union: dict[int, np.ndarray] = {}
-        for j in range(hi - lo):
-            frame = int(frame_idx[lo + j])
-            if frame not in wanted:
-                continue
-            oid = int(object_id[j]) if object_id is not None else None
-            if oid is None or oid != int(track_id):
-                continue
-            counts = str(rows["mask_rle"][j])
-            if not counts:
-                continue
-            mask = decode_mask(counts, size)
-            union[frame] = (union[frame] | mask) if frame in union else mask
-        return union
-
-    #: Rows (positions in the part) per cached block: about one chunk of the ``mask_rle``
-    #: column (§9's 1,000 rows), which a read of any one of its rows decompresses whole.
+    #: Rows (filtered positions) per cached block: about one chunk of the ``mask_rle`` column
+    #: (§9's 1,000 rows), which a read of any one of its rows decompresses whole.
     ROW_BLOCK = 1024
-    #: Blocks one preview keeps. A block is its rows' boxes, scores and (with masks) RLE
-    #: strings — about a megabyte at 1080p with masks — so a surface holding a preview per
-    #: recording stays in the tens of MB.
+    #: Blocks one preview keeps. A block is its rows' boxes, scores and RLE strings — about a
+    #: megabyte at 1080p — so a montage holding a preview per recording stays in the tens of MB.
     ROW_BLOCKS_KEPT = 4
 
-    def read_rows(self, part: dict, lo: int, hi: int, *, with_masks: bool) -> dict:
-        """The columns of rows ``lo:hi`` of one part, with each row's track (``object_id``,
-        ``None`` without a tracking run) read off the assignment row beside it.
+    def _read_rows(self, part: dict, lo: int, hi: int, *, with_masks: bool) -> dict:
+        """The columns of rows ``lo:hi`` (positions in the part's filtered space).
 
         Each column read is its own zarr call, and zarr v3's async layer charges a fixed
         overhead for one however few rows it returns — five of them per frame cost more
@@ -765,12 +815,12 @@ class DetectionPreview:
         encoding it together. A caller that wants a span reads it here in one go.
 
         **A short span is served from a cached block of :data:`ROW_BLOCK` rows**, kept per
-        ``(part, block, with_masks)``. A surface that walks a clip asks for one frame's rows
-        and then the few frames before it (the mask trail), step after step, and each ask
-        decompressed the same ``mask_rle`` chunk again, which was much of a montage's
-        pass. ``with_masks`` is part of the key so a caller that asked for no masks pays
-        for none. The rows of a part are fixed when the preview is built, so
-        a block never goes stale; a span longer than a block is read directly.
+        ``(part stem, block, with_masks)``. A surface that walks a clip asks for one frame's
+        rows and then the few frames before it (the mask trail), step after step, and each ask
+        decompressed the same ``mask_rle`` chunk again, which was much of a montage's pass.
+        ``with_masks`` is part of the key so a caller that asked for no masks decompresses
+        none. The rows of a part are fixed when the preview is built, so a block never goes
+        stale; a span longer than a block is read directly.
         """
         if hi <= lo or hi - lo > self.ROW_BLOCK:
             return self._read_rows_now(part, lo, hi, with_masks=with_masks)
@@ -790,67 +840,146 @@ class DetectionPreview:
             )
         return out
 
-    def subject_boxes(
-        self, part_index: int, track_id: int, lo: int, hi: int
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """One track's boxes on part ``part_index``'s local frames ``lo..hi`` inclusive:
-        ``(frames, boxes)`` — the local frames it has a row on, ascending, and its normalized
-        ``(x0, y0, x1, y1)`` on each. Read off the detection rows in blocks (:meth:`read_rows`,
-        no masks), never by decoding video; empty without a tracking run."""
-        part = self._parts[part_index]
-        frame_idx = np.asarray(part["frame_idx"], dtype=np.int64)
-        empty = np.zeros(0, dtype=np.int64), np.zeros((0, 4), dtype=np.float64)
-        if not len(frame_idx) or part.get("assignment") is None or hi < lo:
-            return empty
-        row_lo = int(np.searchsorted(frame_idx, int(lo), side="left"))
-        row_hi = int(np.searchsorted(frame_idx, int(hi), side="right"))
-        if row_hi <= row_lo:
-            return empty
-        rows = self.read_rows(part, row_lo, row_hi, with_masks=False)
-        ids = rows["object_id"]
-        if ids is None:
-            return empty
-        mine = np.asarray(ids) == int(track_id)
-        return (
-            frame_idx[row_lo:row_hi][mine],
-            np.asarray(rows["bbox"], dtype=np.float64).reshape(-1, 4)[mine],
-        )
-
     def _row_block(self, part: dict, block: int, with_masks: bool) -> dict:
         """Rows ``[block * ROW_BLOCK, (block + 1) * ROW_BLOCK)`` of ``part``, read once and
         kept in a small LRU (several threads may draw from one preview). Keyed on the part's
         stem — stable for the preview's life — never on ``id(part)``, which a rebuilt part
-        list would silently reuse."""
-        # Lazily, the way `_cursor_for` keeps its cursor: `TrackingPreview.__init__` builds
-        # its parts without calling up, so an attribute set in `__init__` is not there.
-        kept = getattr(self, "_row_blocks", None)
-        if kept is None:
-            kept = self._row_blocks = CountLRU(self.ROW_BLOCKS_KEPT)
+        list would silently reuse for different rows.
+        """
+        from collections import OrderedDict
+
+        kept = self.__dict__.setdefault("_row_blocks", OrderedDict())
+        guard = self.__dict__.setdefault("_row_blocks_guard", threading.Lock())
         key = (str(part["stem"]), int(block), bool(with_masks))
-        found = kept.get(key)
-        if found is not None:
-            return found
+        with guard:
+            found = kept.get(key)
+            if found is not None:
+                kept.move_to_end(key)
+                return found
         start = int(block) * self.ROW_BLOCK
-        stop = min(start + self.ROW_BLOCK, len(part["frame_idx"]))
+        stop = min(start + self.ROW_BLOCK, len(part["raw_rows"]))
         found = self._read_rows_now(part, start, stop, with_masks=with_masks)
-        kept.put(key, found)
+        with guard:
+            kept[key] = found
+            while len(kept) > self.ROW_BLOCKS_KEPT:
+                kept.popitem(last=False)
         return found
 
     def _read_rows_now(self, part: dict, lo: int, hi: int, *, with_masks: bool) -> dict:
-        """:meth:`read_rows` straight from the zarr columns."""
+        """:meth:`_read_rows` straight from the zarr columns."""
+        # part["frame_idx"] is positioned in *filtered* space (§13's class filter, if
+        # this run had one) — raw_rows maps each filtered position back to the
+        # reader's own row, the identity map when there was no filter. Reading
+        # reader.column(name)[lo:hi] directly would be a contiguous slice of the
+        # *unfiltered* reader, which is a different — and wrong — set of rows the
+        # moment a class filter narrowed what the tracker actually saw.
         reader = part["reader"]
+        raw = part["raw_rows"][lo:hi]
         assignment = part.get("assignment")
         return {
-            "bbox": reader.column("bbox")[lo:hi],
-            "class_name": reader.column("class_name")[lo:hi],
-            "confidence": reader.column("confidence")[lo:hi],
-            "mask_rle": reader.column("mask_rle")[lo:hi] if with_masks else None,
+            "bbox": reader.column("bbox")[raw],
+            "class_name": reader.column("class_name")[raw],
+            "confidence": reader.column("confidence")[raw],
+            "mask_rle": reader.column("mask_rle")[raw] if with_masks else None,
             "object_id": (
                 assignment.column("object_id")[lo:hi]
                 if assignment is not None
                 else None
             ),
         }
+
+    def detection_blocks(
+        self, part_index: int, mask_size=None, *, block: int = 1024
+    ) -> "DetectionBlocks":
+        """A sequential reader of one part's detections, ``block`` frames per read."""
+        return DetectionBlocks(self, self._parts[part_index], mask_size, block)
+
+
+def _detections_from_rows(
+    rows: dict, first: int, stop: int, mask_size=None, *, encoded_hw=None
+) -> list[Detection]:
+    """``Detection``s for rows ``first:stop`` of what ``DetectionPreview._read_rows`` read.
+
+    A mask is decoded here, one row at a time, because a span's worth of decoded masks is a
+    frame-sized array each: a thousand frames of 1080p is gigabytes, where their RLE strings
+    are kilobytes.
+
+    An RLE only decodes at the size it was encoded at (``encoded_hw``, the run's
+    ``mask_resolution``); decoded at any other it comes out striped and repeated. So a mask
+    asked for at another size (the footage's own, when a video decodes larger than the
+    detection run saw it) is decoded at its own and resized, nearest-neighbour.
+    """
+    if first >= stop:
+        return []
+    object_id = rows["object_id"]
+    detections = []
+    for j in range(first, stop):
+        oid = int(object_id[j]) if object_id is not None else None
+        if oid is not None and oid < 0:
+            continue  # detection the tracker left unassigned (filtered)
+        detections.append(
+            Detection(
+                mask=(
+                    decode_mask(str(rows["mask_rle"][j]), mask_size, encoded=encoded_hw)
+                    if mask_size is not None
+                    else None
+                ),
+                bbox=tuple(float(v) for v in rows["bbox"][j]),
+                class_name=str(rows["class_name"][j]),
+                confidence=float(rows["confidence"][j]),
+                object_id=oid,
+            )
+        )
+    return detections
+
+
+class DetectionBlocks:
+    """One part's detections for a caller that walks its frames in order, read a block at a time.
+
+    ``at(frame)`` is what ``DetectionPreview._detections_at`` answers, without paying five zarr
+    reads for each frame: the columns of the next ``block`` frames are read once and a frame is
+    sliced out of them. Frames may be asked for in any order, but only a forward walk is cheap —
+    a frame outside the block in hand reads the block that starts at it.
+    """
+
+    def __init__(
+        self, preview: DetectionPreview, part: dict, mask_size, block: int
+    ) -> None:
+        self._preview = preview
+        self._part = part
+        self._mask_size = mask_size
+        self._encoded_hw = part.get("mask_hw")
+        self._block = max(1, int(block))
+        self._first = self._stop = 0
+        self._frames = np.zeros(0, dtype=np.int64)
+        self._rows: dict = {}
+
+    def at(self, frame: int) -> list[Detection]:
+        frame_idx = self._part["frame_idx"]
+        if self._part["reader"] is None or not len(frame_idx):
+            return []
+        if not self._first <= frame < self._stop:
+            self._load(frame)
+        lo = int(np.searchsorted(self._frames, frame, "left"))
+        hi = int(np.searchsorted(self._frames, frame, "right"))
+        return _detections_from_rows(
+            self._rows, lo, hi, self._mask_size, encoded_hw=self._encoded_hw
+        )
+
+    def _load(self, first: int) -> None:
+        frame_idx = self._part["frame_idx"]
+        stop = first + self._block
+        lo = int(np.searchsorted(frame_idx, first, "left"))
+        hi = int(np.searchsorted(frame_idx, stop, "left"))
+        self._first, self._stop = first, stop
+        self._frames = np.asarray(frame_idx[lo:hi])
+        self._rows = (
+            self._preview._read_rows(
+                self._part, lo, hi, with_masks=self._mask_size is not None
+            )
+            if hi > lo
+            else {}
+        )
 
 
 class TrackingPreview(DetectionPreview):
@@ -860,15 +989,35 @@ class TrackingPreview(DetectionPreview):
     def __init__(self, recording_dir: Path | str, run_id: str) -> None:
         self._dir = Path(recording_dir)
         data = recording_store.read_recording(self._dir)
-        entry, detection_entry = tracking_entries(data, run_id)
+        entry = {r["id"]: r for r in data.get("tracking_runs", [])}.get(run_id)
+        if entry is None:
+            raise ValueError(f"tracking run {run_id!r} not found in recording")
+        detection_run_id = entry["detection_run_id"]
+        detection_entry = {r["id"]: r for r in data.get("detection_runs", [])}.get(
+            detection_run_id, {}
+        )
         assignment_dir = self._dir / "tracking" / run_id / "assignments"
         recording_store.raise_on_legacy_downsampling(detection_entry)
+        # The row filter must be the class this run's own tracker actually applied
+        # (track.yaml), not the record's `class_name` — a track_merge run gives that
+        # record field a joined identity label (e.g. "black mouse+white mouse", §13)
+        # for display, while its own track.yaml correctly keeps `None` ("no single
+        # class filter applies"). Filtering detection rows by the joined label matches
+        # nothing and silently reads as an empty run.
+        track_yaml = yaml_load.safe_load(
+            atomic.read_text(self._dir / "tracking" / run_id / "track.yaml")
+        )
         self._parts = _build_parts(
             self._dir,
             data,
-            entry["detection_run_id"],
-            tracking_cadence(data, run_id),
+            detection_run_id,
+            int(
+                entry.get("every_n_frames")
+                or detection_entry.get("every_n_frames")
+                or 1
+            ),
             assignment_dir,
+            track_yaml.get("class_name"),
         )
 
     def track_presence(self) -> tuple[list[int], dict[int, np.ndarray]]:
@@ -880,9 +1029,10 @@ class TrackingPreview(DetectionPreview):
         offset = 0
         for part in self._parts:
             reader, assignment = part["reader"], part["assignment"]
-            if reader is not None and assignment is not None and reader.n_rows:
-                frame_idx = part["frame_idx"]
-                object_id = assignment.column("object_id")[:]
+            n_rows = part["n_rows"]
+            if reader is not None and assignment is not None and n_rows:
+                frame_idx = part["frame_idx"]  # already bounded to n_rows
+                object_id = assignment.column("object_id")[:n_rows]
                 for track_id in np.unique(object_id[object_id >= 0]):
                     row = presence.setdefault(
                         int(track_id), np.zeros(total, dtype=bool)
@@ -954,10 +1104,17 @@ class InputImagePreview(TrackingPreview):
         renderer_spec: list[dict],
         *,
         alignment: dict | None = None,
+        recorded_turns: Path | str | None = None,
     ) -> None:
         super().__init__(recording_dir, run_id)
         self._renderer = MaskRenderer.from_spec(renderer_spec)
         self._tracking_run_id = run_id
+        # An embedding run aligned by the stage before §26 read its axis from a ``kp_NN`` run
+        # that §26 has no reader for the heading of; it recorded the turn it applied on every
+        # row (``align_deg`` / ``align_mirrored``), so its preview replays those rather than
+        # computing one. The run's own directory; None for every other preview.
+        self._recorded_turns = None if recorded_turns is None else Path(recorded_turns)
+        self._turns: dict[tuple[int, str], dict[int, tuple[float, bool]]] = {}
         # §14 alignment: the per-frame heading a run would use, computed once per track
         # the way the run computes it, so the preview turns what the run will turn and
         # shows no input where the run writes no row.
@@ -967,12 +1124,62 @@ class InputImagePreview(TrackingPreview):
             else None
         )
         self._headings: dict[int, dict[str, dict]] = {}
+        # §14 pose: a drawn pose reads each frame's points from the keypoint track run, the
+        # way the worker hands them to the ``draw_pose`` step. ``append`` changes the vector,
+        # not the image, so its preview is the mask's.
+        self._pose_run = None
+        if (
+            alignment
+            and alignment.get("pose") == "draw"
+            and alignment.get("keypoint_run_id")
+        ):
+            from detail.storage.keypoint_runs import KeypointTrackRun
+
+            self._pose_run = KeypointTrackRun(
+                self._dir, str(alignment["keypoint_run_id"])
+            )
+
+    #: The embedding.yaml keys an aligned run's preview needs to turn a frame as the run did.
+    _ALIGNMENT_KEYS = (
+        "align",
+        "keypoint_run_id",
+        "heading_definition",
+        "heading_cutoff",
+        "max_gap_s",
+        "mirror_hold_s",
+        "facing_camera_ratio",
+        "pose",
+    )
+
+    @classmethod
+    def for_embedding_run(
+        cls, recording_dir: Path | str, meta: dict
+    ) -> "InputImagePreview":
+        """The inputs a finished embedding run embedded, from its ``embedding.yaml`` — its
+        tracking run, its stored spec, and its alignment (§14). The one way to re-render a run,
+        so no reader shows an aligned run's frames unaligned."""
+        from detail.storage.keypoint_runs import is_legacy_run_id
+
+        legacy = (meta.get("align") or "none") != "none" and is_legacy_run_id(
+            str(meta.get("keypoint_run_id") or "")
+        )
+        return cls(
+            recording_dir,
+            meta["tracking_run_id"],
+            meta["renderer_spec"],
+            alignment={key: meta.get(key) for key in cls._ALIGNMENT_KEYS},
+            recorded_turns=(
+                Path(recording_dir) / "embeddings" / str(meta["id"]) if legacy else None
+            ),
+        )
 
     def heading_for(self, track_id: int, part_stem: str, frame_idx: int):
         """``(heading_deg, mirrored)`` at a frame, ``None`` when the run would not embed
         it; always ``(None, False)`` on an unaligned preview."""
         if self._alignment is None:
             return None, False
+        if self._recorded_turns is not None:
+            return self._recorded_turn(int(track_id), part_stem, int(frame_idx))
         from detail.analysis.body_axis import SOURCE_NONE
         from detail.pipeline.embedding import _alignment_settings, headings_for_run
 
@@ -1000,11 +1207,30 @@ class InputImagePreview(TrackingPreview):
             return None
         return found[0], found[2]
 
+    def _recorded_turn(self, track_id: int, part_stem: str, frame_idx: int):
+        """``(deg, mirrored)`` the run recorded for this frame, or None where it wrote no row
+        (a frame it did not embed shows no input, as on every aligned preview)."""
+        key = (track_id, part_stem)
+        if key not in self._turns:
+            path = self._recorded_turns / f"track_{track_id}" / f"{part_stem}.zarr"
+            turns: dict[int, tuple[float, bool]] = {}
+            if path.is_dir():
+                columns = PartZarrReader(path).read()
+                deg = columns.get("align_deg", columns.get("heading_deg"))
+                mirrored = columns.get("align_mirrored")
+                for i, frame in enumerate(np.asarray(columns["frame_idx"]).tolist()):
+                    turns[int(frame)] = (
+                        float(deg[i]) if deg is not None else float("nan"),
+                        bool(mirrored[i]) if mirrored is not None else False,
+                    )
+            self._turns[key] = turns
+        return self._turns[key].get(frame_idx)
+
     def _mask_size(self) -> tuple[int, int]:
         """``(height, width)`` of the detection masks, from the detection run's envelope."""
         from detail.executor import rundir
 
-        track_meta = yaml.safe_load(
+        track_meta = yaml_load.safe_load(
             atomic.read_text(
                 self._dir / "tracking" / self._tracking_run_id / "track.yaml"
             )
@@ -1036,6 +1262,12 @@ class InputImagePreview(TrackingPreview):
             if heading is None:
                 return actual, rgb, None
             aux = {"heading_deg": heading[0], "align_mirrored": heading[1]}
+        if self._pose_run is not None:
+            placed = self._pose_run.at(
+                int(track_id), self._parts[part_index]["stem"], int(actual)
+            )
+            if placed is not None:
+                aux["pose"] = {"xy": placed[0], "score": placed[1]}
         # Merge every detection this track has on the frame — OR the masks, union the
         # bboxes — so the preview renders exactly what the run embeds; ``embed_one``
         # merges the same way (§14). A single detection is unchanged.
@@ -1049,13 +1281,14 @@ class InputImagePreview(TrackingPreview):
             max(d.bbox[3] for d in matches),
         )
         lead = matches[0]
+        t_ns = int(self._parts[part_index]["timestamps"][actual])
         ctx = RenderContext(
             frame=rgb,
             mask=mask,
             bbox=bbox,
             image=None,
             frame_idx=actual,
-            t_ns=0,
+            t_ns=t_ns,
             class_name=lead.class_name,
             confidence=lead.confidence,
             object_id=int(track_id),
@@ -1094,21 +1327,22 @@ class EmbeddingPreview:
         meta_path = self._run_dir / "embedding.yaml"
         if not meta_path.exists():
             raise ValueError(f"embedding run {run_id!r} not found in recording")
-        self._meta = yaml.safe_load(atomic.read_text(meta_path))
+        self._meta = yaml_load.safe_load(atomic.read_text(meta_path))
         self._input: InputImagePreview | None = None  # lazily built for frame_view
 
     def metadata(self) -> dict:
         return dict(self._meta)
 
     def track_ids(self) -> list[int]:
+        """The series actually on disk."""
         return sorted(
-            int(p.name[len("track_") :])
+            parse_series_dirname(p.name)
             for p in self._run_dir.glob("track_*")
             if p.is_dir()
         )
 
     def _track_parts(self, track_id: int) -> list[Path]:
-        return sorted((self._run_dir / f"track_{track_id}").glob("part_*.zarr"))
+        return sorted((self._run_dir / series_dirname(track_id)).glob("part_*.zarr"))
 
     def heading_loss(self, tracking: "TrackingPreview") -> dict:
         """Where an aligned run (§14) lost frames to heading: per track, over the tracking
@@ -1167,7 +1401,11 @@ class EmbeddingPreview:
         **before** the SVD (the worst-scaling step) — for a responsive inspection
         scatter on a long run; ``None`` keeps every row.
         """
-        ids = self.track_ids() if track_ids is None else [int(t) for t in track_ids]
+        ids = (
+            self.track_ids()
+            if track_ids is None
+            else [coerce_series_key(t) for t in track_ids]
+        )
         mats: list[np.ndarray] = []
         tracks: list[int] = []
         locators: list[tuple[int, str, int, int]] = []
@@ -1176,9 +1414,9 @@ class EmbeddingPreview:
                 reader = PartZarrReader(part)
                 if reader.n_rows == 0:
                     continue
-                mats.append(reader.column("embedding")[:])
-                frame_idx = reader.column("frame_idx")[:]
-                t_ns = reader.column("t_ns")[:]
+                mats.append(reader.column("embedding")[: reader.n_rows])
+                frame_idx = reader.column("frame_idx")[: reader.n_rows]
+                t_ns = reader.column("t_ns")[: reader.n_rows]
                 tracks.extend([track_id] * len(frame_idx))
                 locators.extend(
                     (track_id, part.stem, int(f), int(t))
@@ -1223,24 +1461,8 @@ class EmbeddingPreview:
 
     def _input_preview(self) -> "InputImagePreview":
         if self._input is None:
-            self._input = InputImagePreview(
-                self._dir,
-                self._meta["tracking_run_id"],
-                self._meta["renderer_spec"],
-                # §14: an aligned run's clicked frame renders turned, as the run saw it.
-                alignment={
-                    key: self._meta.get(key)
-                    for key in (
-                        "align",
-                        "keypoint_run_id",
-                        "heading_definition",
-                        "heading_cutoff",
-                        "max_gap_s",
-                        "mirror_hold_s",
-                        "facing_camera_ratio",
-                    )
-                },
-            )
+            # §14: an aligned run's clicked frame renders turned, as the run saw it.
+            self._input = InputImagePreview.for_embedding_run(self._dir, self._meta)
         return self._input
 
 
@@ -1360,6 +1582,55 @@ def _global_to_part(counts: list[int], global_frame: int) -> tuple[int, int]:
     raise IndexError(f"frame {global_frame} past the video ({sum(counts)} frames)")
 
 
+def _union_detection(detections: list[Detection]) -> Detection | None:
+    """A synthetic combined detection standing in for every animal in the frame — how a
+    location export's tile of several animals (:func:`_tile_colors`) is framed by
+    ``source_crop_masked``. ``None`` when the frame has no detections at all.
+    """
+    boxes = [d.bbox for d in detections if d.bbox is not None]
+    if not boxes:
+        return None
+    masks = [d.mask for d in detections if d.mask is not None]
+    union = None
+    for mask in masks:
+        union = mask.copy() if union is None else union | mask
+    return Detection(
+        mask=union,
+        bbox=(
+            min(b[0] for b in boxes),
+            min(b[1] for b in boxes),
+            max(b[2] for b in boxes),
+            max(b[3] for b in boxes),
+        ),
+        class_name="",
+        confidence=1.0,
+        object_id=None,
+    )
+
+
+def _colour_layers(
+    detections: list[Detection], colors: dict[int, tuple[int, int, int]]
+) -> list[tuple[np.ndarray, tuple[int, int, int]]]:
+    """Each animal of a location export's tile as ``(mask, RGB)``, in its own colour
+    (:func:`_tile_colors`). An animal with no colour of its own takes the usual tint, so nothing
+    in the frame goes unmarked.
+    """
+    from detail.core.visualize import MASK_TINT
+
+    return [
+        (
+            d.mask,
+            (
+                MASK_TINT
+                if d.object_id is None
+                else colors.get(int(d.object_id), MASK_TINT)
+            ),
+        )
+        for d in detections
+        if d.mask is not None
+    ]
+
+
 def _square_crop(
     rgb: np.ndarray,
     bbox: tuple[float, float, float, float],
@@ -1369,6 +1640,7 @@ def _square_crop(
     mask: np.ndarray | None = None,
     tint: tuple[int, int, int] | None = None,
     alpha: float = 0.35,
+    layers: Sequence[tuple[np.ndarray, tuple[int, int, int]]] = (),
 ) -> np.ndarray:
     """A square, subject-centered crop of the raw frame, resized to ``size``×``size``.
 
@@ -1381,7 +1653,9 @@ def _square_crop(
     came from. Same picture either way, and it is the difference between blending over ~2M pixels
     and over ~90k: on a 1080p part, tinting the whole frame and then throwing all but the crop
     away was the largest single item in loading a clip.
-    """
+
+    ``layers`` are further ``(mask, tint)`` pairs blended the same way, one after another: a
+    location export's tile of several animals, each in its own colour."""
     h, w = rgb.shape[:2]
     x1, y1, x2, y2 = bbox[0] * w, bbox[1] * h, bbox[2] * w, bbox[3] * h
     cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
@@ -1393,14 +1667,17 @@ def _square_crop(
     canvas = np.zeros((side_px, side_px, 3), dtype=rgb.dtype)
     if sx2 > sx1 and sy2 > sy1:
         canvas[sy1 - top : sy2 - top, sx1 - left : sx2 - left] = rgb[sy1:sy2, sx1:sx2]
-        if mask is not None and tint is not None and mask.shape[:2] == (h, w):
+        drawn = [(mask, tint), *layers] if tint is not None else list(layers)
+        for one, colour in drawn:
+            if one is None or colour is None or one.shape[:2] != (h, w):
+                continue
             from detail.core.visualize import draw_mask
 
-            mask_canvas = np.zeros((side_px, side_px), dtype=mask.dtype)
-            mask_canvas[sy1 - top : sy2 - top, sx1 - left : sx2 - left] = mask[
+            mask_canvas = np.zeros((side_px, side_px), dtype=one.dtype)
+            mask_canvas[sy1 - top : sy2 - top, sx1 - left : sx2 - left] = one[
                 sy1:sy2, sx1:sx2
             ]
-            canvas = draw_mask(canvas, mask_canvas, tint, alpha=alpha)
+            canvas = draw_mask(canvas, mask_canvas, colour, alpha=alpha)
     return cv2.resize(canvas, (size, size), interpolation=cv2.INTER_AREA)
 
 
@@ -1417,10 +1694,699 @@ class SubjectNotDetectedError(LookupError):
     """
 
 
+#: How far back the clip popup's trails reach: the point trails, the box-centre trail and the
+#: masks pane's onion skin all show this much of the animal's past.
+CLIP_TRAIL_S = 0.5
+#: The onion skin's most opaque layer (the frame just before the one shown); older layers
+#: fade linearly towards nothing — ``visualize``'s one fade rule, which draws the trails.
+_MASK_TRAIL_ALPHA = visualize.ONION_ALPHA
+#: The trail drawn without keypoints: the animal's box centre, in white.
+_CENTRE_TRAIL = (255, 255, 255)
+
+
+class _MaskHistory:
+    """The clip's animal's masks on the frames before the one shown, for the masks pane's
+    onion skin — **read from the detection run's rows, never by decoding video**, decoded from
+    their RLE once, cropped to the mask, and kept for the frames playback asks for again.
+
+    Bounded (an LRU of :attr:`capacity` frames), so a long playback holds a few hundred small
+    crops rather than a frame-sized array for every frame it passed.
+    """
+
+    capacity = 256
+
+    def __init__(self) -> None:
+        from collections import OrderedDict
+
+        self._kept: OrderedDict = OrderedDict()
+        self._lock = threading.Lock()
+
+    def layers(
+        self,
+        preview: "DetectionPreview",
+        part_index: int,
+        subject: int | None,
+        local_frames: list[int],
+        size: tuple[int, int],
+    ) -> list:
+        """One ``(y0, x0, crop)`` or None per frame of ``local_frames`` (one part's):
+        ``subject``'s mask, or every animal's together when ``None``."""
+        subject = None if subject is None else subject_key(subject)
+        key = (int(part_index), str(subject), tuple(int(v) for v in size))
+        found: dict[int, object] = {}
+        with self._lock:
+            for frame in local_frames:
+                if (key, frame) in self._kept:
+                    self._kept.move_to_end((key, frame))
+                    found[frame] = self._kept[(key, frame)]
+        missing = [f for f in local_frames if f not in found]
+        if missing:
+            read = self._read(preview, part_index, subject, missing, size)
+            with self._lock:
+                for frame in missing:
+                    found[frame] = self._kept[(key, frame)] = read.get(frame)
+                while len(self._kept) > self.capacity:
+                    self._kept.popitem(last=False)
+        return [found[frame] for frame in local_frames]
+
+    @staticmethod
+    def _read(preview, part_index, subject, frames, size) -> dict:
+        """``{local_frame: (y0, x0, crop)}`` for ``frames``, from one read of their rows."""
+        part = preview._parts[part_index]
+        frame_idx = part["frame_idx"]
+        if part["reader"] is None or not len(frame_idx):
+            return {}
+        lo = int(np.searchsorted(frame_idx, min(frames), "left"))
+        hi = int(np.searchsorted(frame_idx, max(frames), "right"))
+        if lo >= hi:
+            return {}
+        rows = preview._read_rows(part, lo, hi, with_masks=True)
+        object_id = rows["object_id"]
+        wanted = set(frames)
+        union: dict[int, np.ndarray] = {}
+        for j in range(hi - lo):
+            frame = int(frame_idx[lo + j])
+            if frame not in wanted:
+                continue
+            oid = int(object_id[j]) if object_id is not None else None
+            if oid is not None and oid < 0:
+                continue  # a detection the tracker left unassigned
+            if subject is not None and oid != subject:
+                continue
+            counts = str(rows["mask_rle"][j])
+            if not counts:
+                continue
+            mask = decode_mask(counts, size, encoded=part.get("mask_hw"))
+            union[frame] = (union[frame] | mask) if frame in union else mask
+        out = {}
+        for frame, mask in union.items():
+            # The mask's extent from two axis reductions, not `np.nonzero`, which lists every
+            # pixel of the animal across a full frame to find four numbers.
+            rows = np.flatnonzero(mask.any(axis=1))
+            if not len(rows):
+                continue
+            cols = np.flatnonzero(mask[rows[0] : rows[-1] + 1].any(axis=0))
+            y0, y1, x0, x1 = rows[0], rows[-1] + 1, cols[0], cols[-1] + 1
+            out[frame] = (int(y0), int(x0), mask[y0:y1, x0:x1].copy())
+        return out
+
+
+def source_frame_of(preview, part_index: int, local: int) -> int:
+    """A part-local frame as the recording-global frame §10's keyframes are numbered in."""
+    return int(sum(preview.part_frame_counts[:part_index])) + int(local)
+
+
+class _ClipArena:
+    """A recording's field of view and regions of interest (§10), for the masks pane:
+    ``(kind, name, keyframes, active)`` each, the shape interpolated to the frame shown.
+    """
+
+    def __init__(self, shapes: list) -> None:
+        self.shapes = shapes
+
+    @classmethod
+    def of(cls, recording_dir: Path) -> "_ClipArena":
+        from detail.storage import spatial
+
+        shapes = []
+        for kind in ("arena", "roi"):
+            for entry in spatial.list_defs(recording_dir, kind):
+                try:
+                    keyframes = spatial.read_keyframes(
+                        recording_dir, kind, entry["id"], int(entry["n_vertices"])
+                    )
+                except (FileNotFoundError, KeyError, ValueError):
+                    continue  # a half-written region is left off, not a failed frame
+                shapes.append(
+                    (
+                        kind,
+                        str(entry.get("name") or entry["id"]),
+                        keyframes,
+                        _active(entry.get("active")),
+                    )
+                )
+        return cls(shapes)
+
+    def at(self, frame: int) -> list[tuple[str, str, np.ndarray]]:
+        """``(kind, name, vertices (n, 2) normalized)`` of each shape live on ``frame``."""
+        from detail.core.utils import polygon_at_frame
+
+        out = []
+        for kind, name, keyframes, active in self.shapes:
+            if active is not None and not active[0] <= frame <= active[1]:
+                continue
+            if keyframes.keyframes:
+                out.append((kind, name, polygon_at_frame(keyframes, frame)))
+        return out
+
+
+def _active(value) -> tuple[int, int] | None:
+    if not value:
+        return None
+    if isinstance(value, dict):
+        return int(value["start"]), int(value["end"])
+    return int(value[0]), int(value[1])
+
+
+#: The masks pane's field of view and regions: a muted blue, and the line to the nearest animal.
+_ARENA_INK = (90, 130, 190)
+_REGION_INK = (150, 160, 200)
+#: The tag behind a note written on a pane (regions entered, "no body axis").
+_NOTE_TAG = (60, 60, 60)
+
+
+def _draw_arena(
+    masks: np.ndarray, shapes: list, subjects: list, others: list
+) -> np.ndarray:
+    """The field of view and regions outlined on the masks pane, the regions the clip's animal
+    is in named in its corner, and a line from it to the nearest other animal."""
+    out = masks.copy()
+    h, w = out.shape[:2]
+    thickness = max(1, round(min(h, w) / 400))
+    scale = np.asarray([w, h], dtype=np.float64)
+    centre = _centre_px([d.bbox for d in subjects], w, h)
+    inside = []
+    for kind, name, vertices in shapes:
+        polygon = np.round(np.asarray(vertices) * scale).astype(np.int32)
+        ink = _ARENA_INK if kind == "arena" else _REGION_INK
+        cv2.polylines(out, [polygon], True, ink, thickness, cv2.LINE_AA)
+        if (
+            kind == "roi"
+            and centre is not None
+            and cv2.pointPolygonTest(
+                polygon, (float(centre[0]), float(centre[1])), False
+            )
+            >= 0
+        ):
+            inside.append(name)
+    others_c = [_centre_px([d.bbox], w, h) for d in others]
+    others_c = [c for c in others_c if c is not None]
+    if centre is not None and others_c:
+        nearest = min(others_c, key=lambda c: float(np.hypot(*(c - centre))))
+        cv2.line(
+            out,
+            (int(centre[0]), int(centre[1])),
+            (int(nearest[0]), int(nearest[1])),
+            _ARENA_INK,
+            thickness,
+            cv2.LINE_AA,
+        )
+    if inside:
+        visualize.draw_text_label(
+            out,
+            "in: " + ", ".join(inside),
+            (int(6 * thickness), int(6 * thickness)),
+            _NOTE_TAG,
+            scale=max(min(h, w) / 450, 0.45),
+            above=False,
+        )
+    return out
+
+
+def _centre_px(boxes: list, w: int, h: int) -> np.ndarray | None:
+    """The centre of the union of normalized boxes, in pixels; None with no box."""
+    boxes = [b for b in boxes if b is not None]
+    if not boxes:
+        return None
+    b = np.asarray(boxes, dtype=np.float64).reshape(-1, 4)
+    return np.asarray(
+        [
+            (b[:, 0].min() + b[:, 2].max()) / 2 * w,
+            (b[:, 1].min() + b[:, 3].max()) / 2 * h,
+        ]
+    )
+
+
+#: The clip popup's masks pane: an animal that is not the clip's subject, on white.
+_OTHER_ANIMAL = (150, 150, 150)
+#: The clip popup's pose pane draws the skeleton's edges dark: the default is near-white.
+_POSE_EDGE = (110, 110, 110)
+
+
+@dataclass(frozen=True)
+class ClipViews:
+    """One frame as the clip popup shows it (:meth:`ClipQueryPreview.clip_views`): RGB
+    pictures of the frame's size, ``pose`` ``None`` (with ``pose_note``) when there are no
+    keypoints to draw."""
+
+    frame: np.ndarray
+    masks: np.ndarray
+    pose: np.ndarray | None
+    pose_note: str | None
+    actual: int
+    t_ns: int
+    #: Why the pose cannot be drawn body-aligned for this run (None when it can).
+    align_note: str | None = None
+    #: The keypoints' skeleton (None without keypoints), for choosing which points trail.
+    skeleton: Skeleton | None = None
+    #: What ``trail`` draws for this clip, or why it draws nothing — for the tick's tooltip.
+    trail_note: str | None = None
+    #: With ``mask_outline``: the subject's mask (bool, the frame's size), or None without one.
+    subject_mask: np.ndarray | None = None
+    #: With ``mask_outline`` and ``mask_trail_on_frame``: the onion skin's layers, oldest first,
+    #: each ``(y0, x0, bool crop)`` or None — what ``_draw_onion_skin`` would have tinted.
+    mask_history: list | None = None
+    #: With ``mask_outline`` on a ClipSource's tile: ``[(mask, RGB)]``, each chosen animal's
+    #: mask and its own colour, in place of ``subject_mask``.
+    subject_outlines: list | None = None
+    #: The same with ``mask_trail_on_frame``: ``[(layers, RGB)]``, each animal's onion skin.
+    history_outlines: list | None = None
+    #: With ``subject_data``: the subject's ``(points (K, 2) normalized, scores (K,))`` on this
+    #: frame, or None when it has none here (or the run read no keypoints).
+    subject_points: tuple | None = None
+
+
+@dataclass(frozen=True)
+class ClipHeadings:
+    """A clip's heading on each of its frames, by the embedding's own rule (§22 *Align to
+    heading*; :meth:`ClipQueryPreview.subject_headings`)."""
+
+    #: ``(n,)`` image degrees (y down, 0 = facing +x), NaN on a frame with no heading.
+    deg: np.ndarray
+    #: ``(n,)`` bool: where a ``mirror`` run flips its picture.
+    mirrored: np.ndarray
+    #: ``"rotate"`` or ``"mirror"``: how the clip's embedding aligns (unaligned: rotate).
+    mode: str
+    #: Why no frame has a heading, when none can (no keypoint run, no single fitting
+    #: definition, a tile of several animals); None otherwise.
+    note: str | None = None
+
+
+#: The share of the pose pane's height the animal's typical body length fills, body-aligned.
+_ALIGNED_LENGTH = 0.4
+
+
+def _aligned_window(
+    points, xy: np.ndarray, scores: np.ndarray, track_id, canvas_wh: tuple[int, int]
+) -> np.ndarray:
+    """``xy`` (``(n, K, 2)`` normalized) with each frame turned by **its own** body axis, the
+    way :func:`_draw_aligned_pose` turns the frame shown — NaN where a frame has no axis.
+
+    So a trail on the body-aligned pose is the path each point took *relative to the body*:
+    a paw stepping, a head turning, not the animal crossing the arena (which the footage's
+    trail shows, and which aligning is there to remove)."""
+    from detail.analysis import body_axis
+
+    front, back, _middle = points.axis_columns
+    wh = points.frame_wh if min(points.frame_wh) > 0 else canvas_wh
+    typical = points.typical_length(int(track_id))
+    out = np.full_like(xy, np.nan)
+    if typical <= 0:
+        return out
+    front_xy, back_xy = body_axis.row_axis_ends(
+        xy, scores, front, back, wh, points.cutoff
+    )
+    scale = _ALIGNED_LENGTH * wh[1] / typical
+    for i in range(len(xy)):
+        if np.isfinite(front_xy[i]).all() and np.isfinite(back_xy[i]).all():
+            out[i] = body_axis.aligned_points(xy[i], front_xy[i], back_xy[i], wh, scale)
+    return out
+
+
+def _turn_clip_views(points, subject, frame, masks, pose, *, footage, pose_turned):
+    """``(frame, masks, pose)`` in the clip window's **Aligned** orientation
+    (``ClipQueryPreview.clip_views``' ``aligned``): each turned by the one
+    ``clip_views.turn_matrix`` of ``subject``'s body axis on this frame, at the frame's size.
+    ``subject`` is its ``(points (K, 2) normalized, scores (K,))``, or ``None`` when it has
+    none here; a frame with no axis comes back as recorded, the footage (or, without it, the
+    masks pane) marked. ``pose_turned``: the pose pane is body-aligned already."""
+    from detail.analysis import body_axis
+    from detail.api import clip_views
+
+    h, w = frame.shape[:2]
+    ends = None
+    if subject is not None:
+        front, back, _middle = points.axis_columns
+        xy, scores = subject
+        front_xy, back_xy = body_axis.row_axis_ends(
+            np.asarray(xy, dtype=np.float64)[None],
+            np.asarray(scores, dtype=np.float64)[None],
+            list(front),
+            list(back),
+            (w, h),
+            points.cutoff,
+        )
+        front_xy, back_xy = front_xy[0], back_xy[0]
+        if (
+            np.isfinite(front_xy).all()
+            and np.isfinite(back_xy).all()
+            and not np.allclose(front_xy, back_xy)
+        ):
+            ends = (front_xy, back_xy)
+    if ends is None:
+        if footage:
+            return clip_views.mark_no_axis(frame), masks, pose
+        return frame, clip_views.mark_no_axis(masks), pose
+    matrix = clip_views.turn_matrix(ends[0], ends[1], h, (w, h))
+    white = (255, 255, 255)
+    frame = clip_views.turn_picture(
+        frame, matrix, (w, h), (0, 0, 0) if footage else white
+    )
+    masks = clip_views.turn_picture(masks, matrix, (w, h), white)
+    if pose is not None and not pose_turned:
+        pose = clip_views.turn_picture(pose, matrix, (w, h), white)
+    return frame, masks, pose
+
+
+def _draw_aligned_pose(canvas: np.ndarray, points, subject, track_id) -> np.ndarray:
+    """The clip's animal on ``canvas``, its body axis up (``ClipQueryPreview.clip_views``'s
+    ``pose_aligned``); a line instead when this frame gives no axis."""
+    from detail.analysis import body_axis
+
+    front, back, _middle = points.axis_columns
+    h, w = canvas.shape[:2]
+    # Measured in the recording's pixels, as the typical length was; drawn normalized.
+    wh = points.frame_wh if min(points.frame_wh) > 0 else (w, h)
+    if subject is not None:
+        xy, scores = subject
+        front_xy, back_xy = body_axis.row_axis_ends(
+            xy[None], scores[None], front, back, wh, points.cutoff
+        )
+        typical = points.typical_length(int(track_id))
+        if np.isfinite(front_xy).all() and np.isfinite(back_xy).all() and typical > 0:
+            turned = body_axis.aligned_points(
+                xy, front_xy[0], back_xy[0], wh, _ALIGNED_LENGTH * wh[1] / typical
+            )
+            return draw_keypoints(
+                canvas, turned, points.skeleton, scores=scores, edge_color=_POSE_EDGE
+            )
+    visualize.draw_text_label(
+        canvas,
+        "no body axis on this frame",
+        (8, h // 2),
+        _NOTE_TAG,
+        scale=max(h / 600.0, 0.4),
+        above=False,
+    )
+    return canvas
+
+
+class _ClipPoints:
+    """The keypoint run an embedding run read, held for drawing: each (subject, part) series
+    is read whole the first time a frame of it is asked for, so playback looks a frame up
+    rather than reopening a store per frame.
+
+    It also holds the **heading definition** the body's axis is measured by (which points are
+    the front and which the back): the embedding run's own when it was aligned, else the
+    experiment's one saved definition that fits this skeleton. Several that fit is a choice
+    this window does not make for you, so it uses none and ``axis_note`` says why.
+    """
+
+    def __init__(
+        self,
+        run,
+        note: str | None,
+        part_stems: list[str],
+        *,
+        frame_wh: tuple[int, int] = (0, 0),
+        definition: dict | None = None,
+        axis_note: str | None = None,
+        cutoff: float | None = None,
+    ) -> None:
+        self.run = run
+        self.note = note
+        self.part_stems = part_stems
+        self.frame_wh = (int(frame_wh[0]), int(frame_wh[1]))
+        self.definition = definition
+        self.axis_note = note if run is None else axis_note
+        self.cutoff = cutoff
+        self._series: dict[tuple[int, str], tuple | None] = {}
+        self._typical: dict[int, float] = {}
+        self._lock = threading.Lock()
+
+    @property
+    def skeleton(self) -> Skeleton:
+        return self.run.skeleton
+
+    @property
+    def axis_columns(self) -> tuple[list[int], list[int], list[int]] | None:
+        """``(front, back, middle)`` skeleton columns, or None without a definition."""
+        if self.run is None or self.definition is None:
+            return None
+        from detail.analysis import body_axis
+
+        names = tuple(self.skeleton.names)
+        front, back = body_axis.definition_columns(self.definition, names)
+        return front, back, body_axis.midline_columns(self.skeleton, self.definition)
+
+    @classmethod
+    def of(
+        cls, experiment_dir: Path, recording_dir: Path, embed_run_id: str
+    ) -> "_ClipPoints":
+        from detail.storage.keypoint_runs import (
+            KeypointTrackRun,
+            LegacyKeypointsRun,
+            is_legacy_run_id,
+        )
+
+        meta = _source_meta(recording_dir, embed_run_id)
+        data = recording_store.read_recording(recording_dir)
+        stems = [
+            recording_store.part_stem(f) for f in recording_store.video_files(data)
+        ]
+        resolution = (data.get("video") or {}).get("resolution") or (0, 0)
+        run_id = str(meta.get("keypoint_run_id") or "")
+        if not run_id and isinstance(embed_run_id, ClipSource):
+            return cls(
+                None,
+                "This export read no keypoint track run, so there is no pose to show. "
+                "Export again with a keypoint track run to draw one.",
+                stems,
+            )
+        if not run_id:
+            return cls(
+                None,
+                f"Embedding run {embed_run_id} used no keypoints, so there is no pose to "
+                "show. An embedding aligned by, or drawing, a keypoint track run carries one.",
+                stems,
+            )
+        try:
+            run = (
+                LegacyKeypointsRun(recording_dir, run_id)
+                if is_legacy_run_id(run_id)
+                else KeypointTrackRun(recording_dir, run_id)
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            return cls(
+                None,
+                f"The keypoint run {_source_name(embed_run_id)} reads ({run_id}) cannot be "
+                f"read: {exc}",
+                stems,
+            )
+        definition, axis_note = _clip_heading_definition(
+            experiment_dir, meta, tuple(run.skeleton.names)
+        )
+        cutoff = meta.get("heading_cutoff")
+        if cutoff is None:
+            cutoff = meta.get("pose_min_score")
+        return cls(
+            run,
+            None,
+            stems,
+            frame_wh=(int(resolution[0]), int(resolution[1])),
+            definition=definition,
+            axis_note=axis_note,
+            cutoff=None if cutoff is None else float(cutoff),
+        )
+
+    def window(
+        self, track_id: int, part_frame_counts: list[int], first: int, last: int
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """``(points (n, K, 2), scores (n, K))`` for one subject over the inclusive global
+        frames ``[first, last]``, NaN on a frame it has no keypoints."""
+        n = int(last) - int(first) + 1
+        k = len(self.skeleton.names)
+        points = np.full((n, k, 2), np.nan, dtype=np.float64)
+        scores = np.full((n, k), np.nan, dtype=np.float64)
+        start = 0
+        for stem, count in zip(self.part_stems, part_frame_counts):
+            lo, hi = max(int(first), start), min(int(last), start + int(count) - 1)
+            if lo <= hi:
+                series = self._load(int(track_id), stem)
+                if series is not None:
+                    frames, pts, scs = series
+                    keep = (frames >= lo - start) & (frames <= hi - start)
+                    at = frames[keep].astype(np.int64) + start - int(first)
+                    points[at] = pts[keep]
+                    scores[at] = scs[keep]
+            start += int(count)
+        return points, scores
+
+    def typical_length(self, track_id: int) -> float:
+        """The subject's median body-axis length in pixels over the whole run (0 when it has
+        none): what ``body length`` is relative to, and what the aligned pose is scaled by,
+        so neither changes with the window."""
+        columns = self.axis_columns
+        if columns is None:
+            return 0.0
+        with self._lock:
+            found = self._typical.get(int(track_id))
+        if found is not None:
+            return found
+        from detail.analysis import body_axis
+
+        front, back, _middle = columns
+        lengths = []
+        for stem in self.part_stems:
+            series = self._load(int(track_id), stem)
+            if series is not None:
+                lengths.append(
+                    body_axis.row_headings(
+                        series[1], series[2], front, back, self.frame_wh, self.cutoff
+                    )[1]
+                )
+        every = np.concatenate(lengths) if lengths else np.zeros(0)
+        every = every[np.isfinite(every) & (every > 0)]
+        typical = float(np.median(every)) if every.size else 0.0
+        with self._lock:
+            self._typical[int(track_id)] = typical
+        return typical
+
+    def at(
+        self, part_id: str, frame_idx: int
+    ) -> dict[int, tuple[np.ndarray, np.ndarray]]:
+        """``{subject: (points (K, 2) normalized, scores (K,))}`` on one frame of a part."""
+        out = {}
+        for track_id in self.run.track_ids:
+            series = self._load(int(track_id), part_id)
+            if series is None:
+                continue
+            frames, points, scores = series
+            i = int(np.searchsorted(frames, frame_idx))
+            if i < len(frames) and int(frames[i]) == int(frame_idx):
+                out[int(track_id)] = (points[i], scores[i])
+        return out
+
+    def _load(self, track_id: int, part_id: str):
+        key = (track_id, part_id)
+        with self._lock:
+            if key not in self._series:
+                if part_id in self.run.part_ids(track_id):
+                    rows = self.run.rows(track_id, part_id)
+                    self._series[key] = (
+                        np.asarray(rows["frame_idx"]),
+                        np.asarray(rows["points"], dtype=np.float32),
+                        np.asarray(rows["point_scores"], dtype=np.float32),
+                    )
+                else:
+                    self._series[key] = None
+            return self._series[key]
+
+
+def _clip_heading_definition(
+    experiment_dir: Path, meta: dict, names: tuple[str, ...]
+) -> tuple[dict | None, str | None]:
+    """``(definition, None)`` or ``(None, why there is none)`` for the clip popup's body axis:
+    the aligned embedding's own, else the experiment's single saved definition that fits.
+    """
+    from detail.analysis import body_axis
+    from detail.storage import heading_definitions
+
+    own = meta.get("heading_definition")
+    if own:
+        try:
+            return body_axis.validate_definition(dict(own), names), None
+        except ValueError as exc:
+            return None, f"The embedding's heading definition does not fit: {exc}"
+    fitting = [
+        d
+        for d in heading_definitions.list_definitions(experiment_dir)
+        if heading_definitions.fits(d, names) is None
+    ]
+    if len(fitting) == 1:
+        return body_axis.validate_definition(fitting[0], names), None
+    if not fitting:
+        return None, (
+            "No heading definition says which keypoints are the front and the back. Make "
+            "one with Define... beside Heading on the embedding form (it is saved for the "
+            "experiment) to measure the body's length, bend and turning and to align the "
+            "pose."
+        )
+    return None, (
+        "Several saved heading definitions fit this skeleton "
+        f"({', '.join(sorted(str(d.get('name')) for d in fitting))}) and the embedding was "
+        "not aligned by one, so none is chosen for you."
+    )
+
+
+def _heading_settings(recording_dir: Path, meta: dict, points: "_ClipPoints") -> dict:
+    """``headings_for_run``'s settings for a montage's turn (§22 *Align to heading*): the
+    embedding run's own when it carries a heading, else its keypoint run and the definition
+    the clip window chose, at the embedding's defaults — ``align`` is how the run aligned,
+    and ``rotate`` for a run that did not."""
+    from detail.pipeline import embedding as embedding_pipeline
+
+    if meta.get("heading_definition"):
+        settings = embedding_pipeline._alignment_settings(meta)
+        if settings["align"] == "none":
+            settings["align"] = "rotate"
+        return settings
+    from detail.storage.keypoint_runs import KeypointDetectRun
+
+    # `point_cutoff` reads the detect run only when the track method names no cut-off.
+    detect = (
+        None
+        if "decode_cutoff" in (points.run.meta.get("config") or {})
+        else KeypointDetectRun(recording_dir, points.run.meta["detect_run_id"])
+    )
+    defaults = embedding_pipeline._ALIGNMENT_DEFAULTS
+    return {
+        **embedding_pipeline._alignment_settings({}),
+        "align": "rotate",
+        "keypoint_run_id": str(meta["keypoint_run_id"]),
+        "heading_definition": {
+            "front": list(points.definition["front"]),
+            "back": list(points.definition["back"]),
+        },
+        "heading_cutoff": embedding_pipeline.point_cutoff(points.run, detect),
+        "max_gap_s": float(defaults["max_gap_s"]),
+        "mirror_hold_s": float(defaults["mirror_hold_s"]),
+        "facing_camera_ratio": float(defaults["facing_camera_ratio"]),
+    }
+
+
+def _clip_headings(
+    recording_dir: Path,
+    tracking_run_id: str,
+    track_id: int,
+    settings: dict,
+    frame_hw: tuple[int, int],
+) -> dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    """``{part_id: (local frame_idx, deg, mirrored)}`` for one subject at every frame —
+    ``headings_for_run`` with ``every_n_frames=1``, cached against the tracking run."""
+    from detail.pipeline.embedding import headings_for_run
+    from detail.storage import read_cache
+
+    key = (
+        "montage_clip_headings",
+        str(recording_dir),
+        tracking_run_id,
+        int(track_id),
+        repr(sorted((k, repr(v)) for k, v in settings.items())),
+        tuple(int(v) for v in frame_hw),
+    )
+
+    def compute():
+        per_part = headings_for_run(
+            recording_dir, tracking_run_id, [int(track_id)], 1, settings, frame_hw
+        )
+        return {
+            part_id: (
+                np.asarray(h["frame_idx"], dtype=np.int64),
+                np.asarray(h["deg"], dtype=np.float32),
+                np.asarray(h["mirrored"], dtype=bool),
+            )
+            for (_track, part_id), h in per_part.items()
+        }
+
+    stamp = Path(recording_dir) / "tracking" / tracking_run_id / "track.yaml"
+    return read_cache.cached_read(key, stamp, compute)
+
+
 class ClipQueryPreview:
-    """Experiment-level read boundary for the shared clip engine (``analysis/clip_query.py``)
-    — the API seam the GUI reads through (Tenet 2). Loads subject trajectories, runs an interactive
-    preview search, scores example agreement, and renders a scrub frame (source + silhouette); the
+    """Experiment-level read boundary for the clip-query analysis (§16) — the API seam the
+    GUI reads through (Tenet 2). Loads subject trajectories, runs an interactive preview
+    search, scores example agreement, and renders a scrub frame (source + silhouette); the
     pure matcher lives in ``analysis/``."""
 
     def __init__(self, experiment_dir: Path | str) -> None:
@@ -1431,14 +2397,16 @@ class ClipQueryPreview:
         # another — see `_scrub_ctx`. `_scrub_guard` only guards handing out the locks.
         self._scrub_locks: dict[tuple[str, str], threading.Lock] = {}
         self._scrub_guard = threading.Lock()
-        # The clip window's reads, each once per key, under one lock: the keypoints an
-        # embedding run read, the onion skin's past masks, a recording's frame size, and a
-        # track's kinematics slice (for the centre trail).
-        self._clip_guard = threading.Lock()
-        self._points: dict[tuple[str, str], object] = {}
-        self._mask_histories: dict[tuple[str, str], object] = {}
+        # (recording_id, embed_run_id) -> the keypoints that run read, for the clip popup.
+        self._points: dict[tuple[str, str], _ClipPoints] = {}
+        # (recording_id, embed_run_id) -> the reader of its clip signals, parts kept.
+        self._signals: dict[tuple[str, str], object] = {}
+        # recording_id -> its field of view and regions, for the masks pane.
+        self._arenas: dict[str, _ClipArena] = {}
+        # (recording_id, embed_run_id) -> the subject masks the masks pane's trail has read.
+        self._mask_histories: dict[tuple[str, str], _MaskHistory] = {}
+        # recording_id -> its footage's (height, width), or None when the record has none.
         self._frame_sizes: dict[str, tuple[int, int] | None] = {}
-        self._kinematics: dict[tuple[str, str, int], object] = {}
 
     def load_databases(
         self, subjects: list[tuple[str, int]], embed_run_id: str
@@ -1525,7 +2493,7 @@ class ClipQueryPreview:
         timelines: dict[tuple[str, int], tuple | str] = {}
         out = []
         for spec in examples:
-            subject = (spec["recording_id"], int(spec["track_id"]))
+            subject = (spec["recording_id"], coerce_series_key(spec["track_id"]))
             if subject not in timelines:
                 timelines[subject] = self._timeline_or_reason(subject, embed_run_id)
             loaded = timelines[subject]
@@ -1620,14 +2588,18 @@ class ClipQueryPreview:
         Slow enough on a real recording that it is done once.
         """
         recording_dir = experiment_store.recording_path(self._dir, recording_id)
-        meta = _embedding_meta(recording_dir, embed_run_id)
+        meta = _source_meta(recording_dir, embed_run_id)
         data = recording_store.read_recording(recording_dir)
         tracking_run_id = meta["tracking_run_id"]
         detection_run_id = {r["id"]: r for r in data.get("tracking_runs", [])}[
             tracking_run_id
         ]["detection_run_id"]
-        preview = InputImagePreview(
-            recording_dir, tracking_run_id, meta["renderer_spec"]
+        # Frames, masks and parts are the tracking run's either way; only an embedding run's
+        # own input image (`frame_view`) needs its renderer, which a ClipSource has none of.
+        preview = (
+            TrackingPreview(recording_dir, tracking_run_id)
+            if isinstance(embed_run_id, ClipSource)
+            else InputImagePreview.for_embedding_run(recording_dir, meta)
         )
         # Source frame times concatenated over parts → one array aligned with the
         # scrub frames (every run's rows index the source video).
@@ -1760,342 +2732,6 @@ class ClipQueryPreview:
         t_ns = int(source_t_ns[global_frame]) if global_frame < len(source_t_ns) else 0
         return rgb, int(actual), t_ns
 
-    # --- the clip window (§22): one read, three pictures, the strips ------------------- #
-    def clip_frame(
-        self,
-        recording_id: str,
-        embed_run_id: str,
-        track_id: int,
-        global_frame: int,
-        settings,
-        *,
-        footage: bool = True,
-    ):
-        """One frame of a clip, read (``api.clip_views.ClipFrame``): the footage (one decode)
-        or none, its detections with masks, the keypoints placed on it, and the trails
-        ``settings`` ask for — or ``None`` when the position yields no frame.
-
-        The points are **the keypoint run the embedding used** (``keypoint_run_id`` on its
-        ``embedding.yaml``), never a run picked here, so the pose shown is the one the
-        clusters were built with. Masks are decoded on every frame whatever the ticks: the
-        masks pane needs them.
-
-        ``footage=False`` is for a caller that shows only the masks and the keypoints — the
-        enlarged pane, its export, a Raw-off montage tile — and **decodes no video**: the masks
-        and points are stored data, and the picture's size is ``recording.yaml``'s.
-
-        Raises:
-            ValueError: ``footage=False`` on a recording whose record carries no
-                ``video.resolution``: there is no size to draw the panes at without a decode,
-                and this never decodes behind a caller's back. The caller decides.
-        """
-        from detail.api import clip_views as views_api
-
-        preview, source_t_ns = self._scrub_ctx(recording_id, embed_run_id)
-        part_index, local = _global_to_part(preview.part_frame_counts, global_frame)
-        if footage:
-            result = preview.frame(part_index, local, with_masks=True)
-            if result is None:
-                return None
-            actual, rgb, detections = result
-            frame_hw = (int(rgb.shape[0]), int(rgb.shape[1]))
-        else:
-            frame_hw = self._frame_hw(recording_id)
-            if frame_hw is None:
-                raise ValueError(
-                    f"{recording_id}: recording.yaml records no video.resolution, so a "
-                    "picture without the footage has no size; read the frame with "
-                    "footage=True, or re-import the video so its size is recorded"
-                )
-            rgb = None
-            actual, detections = preview.detections_at(
-                part_index, local, mask_hw=frame_hw
-            )
-        t_ns = int(source_t_ns[global_frame]) if global_frame < len(source_t_ns) else 0
-        counts = list(preview.part_frame_counts)
-        shown = views_api.source_frame_of(counts, part_index, actual)
-        span = (
-            max(
-                int(
-                    round(
-                        settings.trail_s * self.frame_rate(recording_id, embed_run_id)
-                    )
-                ),
-                2,
-            )
-            if settings.trail_s > 0
-            else 0
-        )
-
-        points = self.clip_points(recording_id, embed_run_id)
-        has_points = points.run is not None
-        placed = (
-            points.at(points.part_stems[part_index], int(actual)) if has_points else {}
-        )
-        point_trail = None
-        centre_trail = None
-        if settings.trail and span:
-            if has_points:
-                names = list(points.skeleton.names)
-                wanted = set(
-                    names if settings.trail_points is None else settings.trail_points
-                )
-                kept = np.array([name in wanted for name in names], dtype=bool)
-                xy, scores = points.window(
-                    int(track_id), counts, max(shown - span, 0), shown
-                )
-                from detail.core.visualize import KEYPOINT_COLORS, keypoint_roles
-
-                colours = tuple(
-                    KEYPOINT_COLORS[role] for role in keypoint_roles(points.skeleton)
-                )
-                point_trail = views_api.PointTrail(xy, scores, colours, kept)
-            else:
-                centre_trail = self._centre_trail(
-                    recording_id,
-                    embed_run_id,
-                    int(track_id),
-                    max(shown - span, 0),
-                    shown,
-                )
-        mask_history = None
-        if settings.mask_trail and span:
-            mask_history = self._mask_history(recording_id, embed_run_id).layers(
-                preview,
-                part_index,
-                int(track_id),
-                list(range(max(int(actual) - span, 0), int(actual))),
-                frame_hw,
-            )
-        return views_api.ClipFrame(
-            rgb=rgb,
-            frame_hw=frame_hw,
-            detections=detections,
-            actual=int(actual),
-            shown=int(shown),
-            t_ns=t_ns,
-            placed=placed,
-            skeleton=points.skeleton if has_points else None,
-            pose_note=points.note,
-            axis=points.axis(int(track_id)) if has_points else None,
-            align_note=points.axis_note,
-            point_trail=point_trail,
-            centre_trail=centre_trail,
-            mask_history=mask_history,
-        )
-
-    def clip_views(
-        self,
-        recording_id: str,
-        embed_run_id: str,
-        track_id: int,
-        global_frame: int,
-        settings,
-        *,
-        footage: bool = True,
-    ):
-        """The three pictures of one frame the clip window shows
-        (``api.clip_views.ClipViews``), from one :meth:`clip_frame`; ``None`` when the
-        position yields no frame. With ``footage=False`` the footage picture is ``None``.
-        """
-        from detail.api import clip_views as views_api
-
-        frame = self.clip_frame(
-            recording_id,
-            embed_run_id,
-            track_id,
-            global_frame,
-            settings,
-            footage=footage,
-        )
-        if frame is None:
-            return None
-        picture, masks, pose, _turned = views_api.turn_views(
-            frame,
-            settings,
-            track_id,
-            views_api.draw_footage(frame, settings, track_id) if footage else None,
-            views_api.draw_masks_pane(frame, settings, track_id),
-            views_api.draw_pose_pane(frame, settings, track_id),
-        )
-        return views_api.ClipViews(
-            frame=picture,
-            masks=masks,
-            pose=pose,
-            pose_note=frame.pose_note,
-            actual=frame.actual,
-            t_ns=frame.t_ns,
-            align_note=frame.align_note,
-            skeleton=frame.skeleton,
-            trail_note=views_api.trail_note(frame, settings),
-        )
-
-    def clip_curves(
-        self,
-        recording_id: str,
-        embed_run_id: str,
-        track_id: int,
-        first: int,
-        last: int,
-    ):
-        """What the clip's animal is doing over the window ``[first, last]`` (inclusive global
-        frames): ``api.clip_curves.read_clip_curves`` with the recording's calibration and,
-        when the embedding read keypoints and a heading definition names the body's ends, its
-        keypoints over the window for the body's length, bend and turning."""
-        from detail.api import clip_curves as curves_api
-        from detail.api.recording import Recording
-
-        recording_dir = experiment_store.recording_path(self._dir, recording_id)
-        try:
-            ppm = Recording(self._dir, recording_id).pixels_per_mm
-        except ValueError:  # a calibration that cannot describe this video: no mm
-            ppm = None
-        points = self.clip_points(recording_id, embed_run_id)
-        pose = None
-        if points.run is not None:
-            axis = points.axis(int(track_id))
-            if axis is not None:
-                preview, _t = self._scrub_ctx(recording_id, embed_run_id)
-                xy, scores = points.window(
-                    int(track_id),
-                    list(preview.part_frame_counts),
-                    int(first),
-                    int(last),
-                )
-                pose = (xy, scores, axis)
-        return curves_api.read_clip_curves(
-            recording_dir,
-            embed_run_id=embed_run_id,
-            track_id=int(track_id),
-            first=int(first),
-            last=int(last),
-            pixels_per_mm=ppm,
-            pose=pose,
-        )
-
-    def clip_points(self, recording_id: str, embed_run_id: str):
-        """The keypoints an embedding run read (``api.clip_views.ClipPoints``), opened once
-        per (recording, run)."""
-        from detail.api.clip_views import ClipPoints
-
-        key = (recording_id, embed_run_id)
-        with self._clip_guard:
-            found = self._points.get(key)
-            if found is None:
-                recording_dir = experiment_store.recording_path(self._dir, recording_id)
-                found = ClipPoints.of(
-                    self._dir,
-                    recording_dir,
-                    _embedding_meta(recording_dir, embed_run_id),
-                    embed_run_id,
-                )
-                self._points[key] = found
-        return found
-
-    def clip_has_points(self, recording_id: str, embed_run_id: str) -> str | None:
-        """``None`` when the embedding run read a keypoint run the clip window can draw, else
-        why not — for a control that only means something when there are points."""
-        return self.clip_points(recording_id, embed_run_id).note
-
-    def _mask_history(self, recording_id: str, embed_run_id: str):
-        """The masks pane's onion-skin cache for one (recording, run)."""
-        from detail.api.clip_views import MaskHistory
-
-        key = (recording_id, embed_run_id)
-        with self._clip_guard:
-            found = self._mask_histories.get(key)
-            if found is None:
-                found = self._mask_histories[key] = MaskHistory()
-        return found
-
-    def frame_size(self, recording_id: str) -> tuple[int, int] | None:
-        """The footage's ``(height, width)`` as ``recording.yaml`` records it, or ``None``
-        when it does not — what :meth:`clip_frame` needs to draw the panes with
-        ``footage=False``. A window asks this first and decides; the API never decodes
-        behind a caller's back."""
-        return self._frame_hw(recording_id)
-
-    def clip_boxes(
-        self,
-        recording_id: str,
-        embed_run_id: str,
-        track_id: int,
-        first: int,
-        last: int,
-    ) -> np.ndarray:
-        """The clip's animal's normalized ``(x0, y0, x1, y1)`` box on each global frame
-        ``first..last`` inclusive — ``(n, 4)`` float64, a NaN row where it has no detection —
-        read off the detection rows (``DetectionPreview.subject_boxes``), never by decoding
-        video. What a montage fixes its crop from (``api.clip_montage.crop_box``)."""
-        preview, _ = self._scrub_ctx(recording_id, embed_run_id)
-        first, last = int(first), int(last)
-        out = np.full((max(last - first + 1, 0), 4), np.nan, dtype=np.float64)
-        offset = 0
-        for part_index, count in enumerate(preview.part_frame_counts):
-            lo, hi = max(first, offset), min(last, offset + int(count) - 1)
-            if lo <= hi:
-                frames, boxes = preview.subject_boxes(
-                    part_index, int(track_id), lo - offset, hi - offset
-                )
-                out[frames + offset - first] = boxes
-            offset += int(count)
-        return out
-
-    def _frame_hw(self, recording_id: str) -> tuple[int, int] | None:
-        """The footage's ``(height, width)`` from ``recording.yaml``'s ``video.resolution``
-        (``[width, height]``, every part's, §11), read once; ``None`` when not recorded.
-        """
-        with self._clip_guard:
-            if recording_id not in self._frame_sizes:
-                data = recording_store.read_recording(
-                    experiment_store.recording_path(self._dir, recording_id)
-                )
-                resolution = (data.get("video") or {}).get("resolution") or (0, 0)
-                width, height = (int(v) for v in resolution[:2])
-                self._frame_sizes[recording_id] = (
-                    (height, width) if width > 0 and height > 0 else None
-                )
-            return self._frame_sizes[recording_id]
-
-    def _centre_trail(
-        self, recording_id: str, embed_run_id: str, track_id: int, first: int, last: int
-    ) -> np.ndarray | None:
-        """The subject's centroid over global frames ``[first, last]`` from the kinematics
-        sidecar (``frame_slices.from_kinematics``, read once per track), ``(n, 2)`` normalized
-        oldest first with a NaN row where two rows are not adjacent at the run's stride, so a
-        trail breaks across a gap; ``None`` when the run has no sidecar."""
-        from detail.api import frame_slices
-
-        key = (recording_id, embed_run_id, int(track_id))
-        with self._clip_guard:
-            if key not in self._kinematics:
-                self._kinematics[key] = frame_slices.from_kinematics(
-                    experiment_store.recording_path(self._dir, recording_id),
-                    embed_run_id=embed_run_id,
-                    track_id=int(track_id),
-                )
-            slice_ = self._kinematics[key]
-        if slice_ is None or slice_.centroid is None:
-            return None
-        frame_hw = self._frame_hw(recording_id)
-        if frame_hw is None:
-            return None
-        frame_idx = np.asarray(slice_.frame_idx, dtype=np.int64)
-        lo = int(np.searchsorted(frame_idx, int(first), side="left"))
-        hi = int(np.searchsorted(frame_idx, int(last), side="right"))
-        if hi <= lo:
-            return None
-        frames = frame_idx[lo:hi]
-        centroid = np.asarray(slice_.centroid, dtype=np.float64)[lo:hi] / np.array(
-            [frame_hw[1], frame_hw[0]], dtype=np.float64
-        )
-        rows = [centroid[0]]
-        for i in range(1, len(frames)):
-            if int(frames[i]) - int(frames[i - 1]) != int(slice_.stride):
-                rows.append(np.array([np.nan, np.nan]))
-            rows.append(centroid[i])
-        return np.asarray(rows, dtype=np.float64)
-
     def frame_masked(
         self,
         recording_id: str,
@@ -2118,6 +2754,9 @@ class ClipQueryPreview:
         the animal is still visible and a judgment about it is still meaningful, where a blank
         pane would read as a decode failure. ``mask_drawn`` in the caller distinguishes them if
         it needs to.
+
+        A location export's tile of several animals (:func:`_tile_colors`) blends each in its
+        own colour rather than in ``tint``.
         """
         from detail.core.visualize import MASK_TINT, draw_mask
 
@@ -2128,11 +2767,660 @@ class ClipQueryPreview:
             return None
         actual, rgb, detections = result
         t_ns = int(source_t_ns[global_frame]) if global_frame < len(source_t_ns) else 0
+        several = _tile_colors(embed_run_id)
+        if several is not None:
+            for mask, colour in _colour_layers(detections, several):
+                rgb = draw_mask(rgb, mask, colour, alpha=alpha)
+            return rgb, int(actual), t_ns
         det = next((d for d in detections if d.object_id == int(track_id)), None)
         if det is not None and det.mask is not None:
             colour = tuple(int(c) for c in (tint or MASK_TINT))
             rgb = draw_mask(rgb, det.mask, colour, alpha=alpha)
         return rgb, int(actual), t_ns
+
+    def clip_views(
+        self,
+        recording_id: str,
+        embed_run_id: str,
+        track_id: int,
+        global_frame: int,
+        settings=None,
+        *,
+        masks_on_frame: bool | None = None,
+        points_on_frame: bool | None = None,
+        trail: bool = False,
+        trail_points: Sequence[str] | None = None,
+        mask_trail: bool = False,
+        pose_aligned: bool = False,
+        aligned: bool = False,
+        mask_trail_on_frame: bool = False,
+        mask_outline: bool = False,
+        footage: bool = True,
+        trail_s: float | None = None,
+        subject_data: bool = False,
+    ) -> "ClipViews | None":
+        """The three pictures of one frame the clip popup shows, from **one** decode, or
+        ``None`` when the position yields no picture.
+
+        - ``frame``: the footage, with the subject's mask (``masks_on_frame``, as
+          :meth:`frame_masked` draws it) and the subject's keypoints (``points_on_frame``)
+          drawn on it — or neither.
+        - ``masks``: every tracked animal's mask alone on white, the subject in the mask tint
+          and the others grey, so a second animal is visible as one without the footage. A
+          location export's tile of several animals (:func:`_tile_colors`) has each in its own
+          colour, here, on the footage and in both onion skins.
+        - ``pose``: every subject's keypoints alone on white, the subject in its role colours
+          and the others greyed — or ``None`` with ``pose_note`` saying why, when the embedding
+          run read no keypoint run.
+
+        The points are **the keypoint run the embedding used** (``keypoint_run_id`` on its
+        ``embedding.yaml``: an aligned or pose-carrying run), never a run picked here, so the
+        pose shown is the one the clusters were built with. Masks are decoded on every frame
+        whatever the toggles, because the masks pane needs them.
+
+        ``trail`` draws where the subject has just been, over the last :data:`CLIP_TRAIL_S`,
+        as lines that fade into the past: with keypoints, **each point's own path** in its
+        role colour (only ``trail_points``, by name, when given; every point when ``None``) on
+        the footage and on the pose pane; without keypoints, the centre of its box, in white,
+        on the footage. ``trail_note`` says which.
+
+        ``mask_trail`` draws the subject's masks over the same span **under** the current
+        ones on the masks pane, fading with age — an onion skin of how its outline moved and
+        changed. They are read from the detection run's rows and decoded from their RLE
+        (:class:`_MaskHistory`, kept between frames); no extra video frame is decoded.
+
+        ``mask_trail_on_frame`` draws the same onion skin on the **footage**, under the subject's
+        tint — what a clip montage's Raw + Mask trail tile shows, where there is no masks pane to
+        carry it.
+
+        ``mask_outline`` hands the subject's mask (``subject_mask``) and that onion skin
+        (``mask_history``) back **as data** instead of tinting them onto the footage, for a
+        caller that draws them as outlines at its own scale — the clip montage, whose tiles are
+        cropped and shrunk after this, so a line drawn here at the frame's resolution would be
+        a different width in every tile.
+
+        ``pose_aligned`` draws the pose pane **body-aligned**: the clip's animal alone, its body
+        axis (the heading definition's back to front) pointing up, its middle at the centre and
+        its typical length a fixed share of the pane, so two clips' postures compare directly
+        whatever way the animals faced. Without a heading definition the pane is drawn as
+        usual and ``align_note`` says why; a frame where the axis cannot be found is left
+        blank with a line saying so. Its trails turn each past frame by **that** frame's
+        axis (:func:`_aligned_window`): the points' paths relative to the body.
+
+        ``aligned`` is the clip window's **Aligned** orientation: the footage, the masks pane
+        and the pose pane each turned by the one ``api.clip_views.turn_matrix`` of this frame's
+        body axis, so the animal points up about its middle at the picture's centre, at the
+        frame's own size. A frame with no axis for the subject is drawn as recorded and marked
+        (``clip_views.mark_no_axis``); a run with no axis at all (no keypoints, no heading
+        definition, a tile of several animals) is untouched, with ``align_note`` saying why. The pose pane is
+        not turned again when ``pose_aligned`` has drawn it body-aligned already.
+
+        ``footage`` off is for a caller that shows only the masks and the keypoints — a Raw-off
+        montage tile, a side pane's export, the enlarged pane — and **decodes no video**: the
+        masks and points are stored data, and the frame's size is ``recording.yaml``'s.
+        ``frame`` is then a white canvas with nothing drawn on it (the ``*_on_frame`` marks and
+        the footage's trail are skipped); ``masks`` and ``pose`` are what the decode draws,
+        pixel for pixel, at the frame the decode lands on when the timestamp map describes the
+        video. A recording with no recorded resolution is decoded as before.
+
+        ``subject_data`` is for a caller that draws the clip's animal itself — the montage's
+        overlay (§22 *Overlay*): the subject's mask (``subject_mask``), its onion skin with
+        ``mask_trail`` (``mask_history``) and its keypoints (``subject_points``) come back as
+        data, and neither pane is drawn. A tile of several animals has no one subject and gets
+        none.
+
+        ``settings`` (a ``clip_pane_export.ClipViewSettings``) gives the view ticks as one object —
+        ``masks_on_frame``, ``points_on_frame``, ``trail``, ``trail_points``, ``mask_trail``,
+        ``pose_aligned`` and ``aligned`` — in place of the keywords of the same names; without
+        it ``masks_on_frame`` and ``points_on_frame`` must be given.
+
+        Raises:
+            TypeError: neither ``settings`` nor both of ``masks_on_frame`` and
+                ``points_on_frame``.
+        """
+        from detail.core.visualize import (
+            KEYPOINT_COLORS,
+            MASK_TINT,
+            draw_mask,
+            keypoint_roles,
+        )
+
+        if settings is not None:
+            masks_on_frame = settings.masks_on_frame
+            points_on_frame = settings.points_on_frame
+            trail = settings.trail
+            trail_points = settings.trail_points
+            mask_trail = settings.mask_trail
+            pose_aligned = settings.pose_aligned
+            aligned = settings.aligned
+        elif masks_on_frame is None or points_on_frame is None:
+            raise TypeError(
+                "clip_views needs settings, or both masks_on_frame and points_on_frame"
+            )
+
+        aligned_view = bool(aligned)
+        preview, source_t_ns = self._scrub_ctx(recording_id, embed_run_id)
+        part_index, local = _global_to_part(preview.part_frame_counts, global_frame)
+        frame_hw = None if footage else self._frame_hw(recording_id)
+        if frame_hw is None:
+            footage = True
+            result = preview.frame(part_index, local, with_masks=True)
+        else:
+            masks_on_frame = points_on_frame = mask_trail_on_frame = False
+            result = preview.blank_frame(part_index, local, frame_hw)
+        if result is None:
+            return None
+        actual, rgb, detections = result
+        t_ns = int(source_t_ns[global_frame]) if global_frame < len(source_t_ns) else 0
+        shown = int(source_frame_of(preview, part_index, actual))
+        trail_seconds = CLIP_TRAIL_S if trail_s is None else float(trail_s)
+        span = (
+            max(
+                int(round(trail_seconds * self.frame_rate(recording_id, embed_run_id))),
+                2,
+            )
+            if trail or mask_trail or mask_trail_on_frame
+            else 0
+        )
+
+        # A ClipSource names its animals and their colours itself (a location export's tile):
+        # each in its own colour, on the footage, the masks pane and both onion skins.
+        pair = _tile_colors(embed_run_id)
+        own = dict(pair or {})
+        several = pair is not None
+
+        def is_subject(det: Detection) -> bool:
+            if several:
+                return det.object_id is not None and int(det.object_id) in own
+            return det.object_id is not None and int(det.object_id) == int(track_id)
+
+        def colour_of(det: Detection) -> tuple[int, int, int]:
+            if not is_subject(det):
+                return _OTHER_ANIMAL
+            if pair is None or det.object_id is None:
+                return MASK_TINT
+            return own.get(int(det.object_id), MASK_TINT)
+
+        if subject_data:
+            return self._subject_data(
+                recording_id,
+                embed_run_id,
+                track_id,
+                preview,
+                part_index,
+                result,
+                t_ns,
+                span if mask_trail else 0,
+            )
+
+        frame = rgb
+        onion = None
+        skins: list[tuple[list, tuple[int, int, int]]] = []
+        if mask_trail or mask_trail_on_frame:
+            history = self._mask_history(recording_id, embed_run_id)
+            before = list(range(max(int(actual) - span, 0), int(actual)))
+
+            def skin_of(subject: int | None) -> list:
+                return history.layers(
+                    preview, part_index, subject, before, rgb.shape[:2]
+                )
+
+            if pair is None or mask_outline:
+                onion = skin_of(None if several else track_id)
+            skins = (
+                [(skin_of(oid), colour) for oid, colour in own.items()]
+                if pair is not None
+                else [(onion, MASK_TINT)]
+            )
+        if mask_trail_on_frame and not mask_outline:
+            for layers, colour in skins:
+                frame = visualize.draw_onion_skin(frame, layers, colour)
+        subject_mask = None
+        # A ClipSource's tile outlines each chosen animal in its own colour, as it fills them
+        # without the footage.
+        own_outlines = mask_outline and several
+        subject_outlines = None
+        if masks_on_frame and own_outlines:
+            subject_outlines = [
+                (np.asarray(det.mask, dtype=bool), own[int(det.object_id)])
+                for det in detections
+                if is_subject(det) and det.mask is not None
+            ]
+        elif masks_on_frame and pair is not None and not mask_outline:
+            for mask, colour in _colour_layers(detections, own):
+                frame = draw_mask(frame, mask, colour, alpha=0.35)
+        elif masks_on_frame:
+            subject = next((d for d in detections if is_subject(d)), None)
+            if subject is not None and subject.mask is not None:
+                if mask_outline:
+                    subject_mask = np.asarray(subject.mask, dtype=bool)
+                else:
+                    frame = draw_mask(frame, subject.mask, MASK_TINT, alpha=0.35)
+        masks = np.full_like(rgb, 255)
+        if mask_trail:
+            for layers, colour in skins:
+                masks = visualize.draw_onion_skin(masks, layers, colour)
+        for det in sorted(detections, key=is_subject):  # the subject on top
+            if det.mask is not None:
+                masks = draw_mask(masks, det.mask, colour_of(det), alpha=1.0)
+        masks = _draw_arena(
+            masks,
+            self._clip_arena(recording_id).at(shown),
+            [d for d in detections if is_subject(d)],
+            [d for d in detections if not is_subject(d)],
+        )
+
+        points = self._clip_points(recording_id, embed_run_id)
+        trail_note = None
+        # ((n, K, 2) normalized, (n, K) scores, colour per point, kept per point)
+        point_trail = None
+        if trail and several:
+            # One trail per animal, in that animal's colour: two animals' paths in the
+            # per-point colours could not be told apart.
+            for oid, colour in own.items():
+                if points.run is not None:
+                    xy, _scores = points.window(
+                        int(oid),
+                        list(preview.part_frame_counts),
+                        max(shown - span, 0),
+                        shown,
+                    )
+                    names = list(points.skeleton.names)
+                    wanted = set(names if trail_points is None else trail_points)
+                    kept = np.array([name in wanted for name in names], dtype=bool)
+                    paths, colours = xy[:, kept], [colour] * int(kept.sum())
+                else:
+                    centre = (
+                        self._clip_signal_reader(recording_id, embed_run_id)
+                        .read(int(oid), max(shown - span, 0), shown, source_t_ns)
+                        .centre
+                    )
+                    paths, colours = centre[:, None, :], [colour]
+                if footage:
+                    frame = visualize.draw_fading_paths(frame, paths, colours)
+            trail_note = "Each animal's path, in its colour, on the footage."
+        elif trail and points.run is not None:
+            names = list(points.skeleton.names)
+            wanted = set(names if trail_points is None else trail_points)
+            kept = np.array([name in wanted for name in names], dtype=bool)
+            xy, scores = points.window(
+                int(track_id),
+                list(preview.part_frame_counts),
+                max(shown - span, 0),
+                shown,
+            )
+            colours = [
+                KEYPOINT_COLORS[role] for role in keypoint_roles(points.skeleton)
+            ]
+            point_trail = (xy, scores, colours, kept)
+            if footage:
+                frame = visualize.draw_fading_paths(
+                    frame, xy[:, kept], [c for c, k in zip(colours, kept) if k]
+                )
+            trail_note = (
+                "Each ticked keypoint's path over the last half second, in its colour, on "
+                "the footage and the Keypoints pane."
+            )
+        elif trail:
+            if footage:
+                centre = (
+                    self._clip_signal_reader(recording_id, embed_run_id)
+                    .read(int(track_id), max(shown - span, 0), shown, source_t_ns)
+                    .centre
+                )
+                frame = visualize.draw_fading_paths(
+                    frame, centre[:, None, :], [_CENTRE_TRAIL]
+                )
+            trail_note = (
+                "This run has no keypoints, so the trail is the centre of the animal's "
+                "box over the last half second, on the footage."
+            )
+
+        pose = None
+        aligned = pose_aligned and not several and points.axis_columns is not None
+        subject_placed = None
+        if points.run is not None:
+            stem = points.part_stems[part_index]
+            pose = np.full_like(rgb, 255)
+            placed = points.at(stem, int(actual))
+            subject_placed = None if several else placed.get(int(track_id))
+            if point_trail is not None:
+                xy, scores, colours, kept = point_trail
+                if aligned:
+                    xy = _aligned_window(
+                        points, xy, scores, track_id, (rgb.shape[1], rgb.shape[0])
+                    )
+                pose = visualize.draw_fading_paths(
+                    pose, xy[:, kept], [c for c, k in zip(colours, kept) if k]
+                )
+            if aligned:
+                pose = _draw_aligned_pose(
+                    pose, points, placed.get(int(track_id)), track_id
+                )
+                placed = {}
+            for subject_id in sorted(placed, key=lambda t: several or t == track_id):
+                xy, scores = placed[subject_id]
+                own = several or subject_id == track_id
+                pose = draw_keypoints(
+                    pose,
+                    xy,
+                    points.skeleton,
+                    scores=scores if own else np.zeros_like(scores),
+                    edge_color=_POSE_EDGE,
+                )
+                if own and points_on_frame:
+                    frame = draw_keypoints(frame, xy, points.skeleton, scores=scores)
+        if aligned_view and not several and points.axis_columns is not None:
+            frame, masks, pose = _turn_clip_views(
+                points,
+                subject_placed,
+                frame,
+                masks,
+                pose,
+                footage=footage,
+                pose_turned=aligned,
+            )
+        return ClipViews(
+            frame=frame,
+            masks=masks,
+            pose=pose,
+            pose_note=points.note,
+            actual=int(actual),
+            t_ns=t_ns,
+            align_note=(
+                "A tile of several animals follows no one animal, so there is no body to "
+                "align."
+                if several and points.run is not None
+                else points.axis_note
+            ),
+            skeleton=points.skeleton if points.run is not None else None,
+            trail_note=trail_note,
+            subject_mask=subject_mask,
+            mask_history=onion if (mask_outline and mask_trail_on_frame) else None,
+            subject_outlines=subject_outlines,
+            history_outlines=(
+                skins if (own_outlines and mask_trail_on_frame) else None
+            ),
+        )
+
+    def _subject_data(
+        self,
+        recording_id: str,
+        embed_run_id: str,
+        track_id: int,
+        preview,
+        part_index: int,
+        result,
+        t_ns: int,
+        span: int,
+    ) -> "ClipViews":
+        """:meth:`clip_views`' ``subject_data`` answer: the subject's mask, onion skin and
+        points on one frame, as data, with no pane drawn."""
+        actual, rgb, detections = result
+        points = self._clip_points(recording_id, embed_run_id)
+        mask = history = placed = None
+        if _tile_colors(embed_run_id) is None:
+            subject = next(
+                (
+                    d
+                    for d in detections
+                    if d.object_id is not None and int(d.object_id) == int(track_id)
+                ),
+                None,
+            )
+            if subject is not None and subject.mask is not None:
+                mask = np.asarray(subject.mask, dtype=bool)
+            if span:
+                history = self._mask_history(recording_id, embed_run_id).layers(
+                    preview,
+                    part_index,
+                    track_id,
+                    list(range(max(int(actual) - span, 0), int(actual))),
+                    rgb.shape[:2],
+                )
+            if points.run is not None:
+                placed = points.at(points.part_stems[part_index], int(actual)).get(
+                    int(track_id)
+                )
+        return ClipViews(
+            frame=rgb,
+            masks=rgb,
+            pose=None,
+            pose_note=points.note,
+            actual=int(actual),
+            t_ns=int(t_ns),
+            skeleton=points.skeleton if points.run is not None else None,
+            subject_mask=mask,
+            mask_history=history,
+            subject_points=placed,
+        )
+
+    def subject_headings(
+        self,
+        recording_id: str,
+        embed_run_id: str,
+        track_id: int,
+        first: int,
+        last: int,
+    ) -> ClipHeadings:
+        """The subject's heading on each global frame ``first..last`` (inclusive), by the
+        embedding's own rule (§22 *Align to heading*): the run's keypoint track run, its heading
+        definition (else the experiment's one that fits, as the clip window's body axis
+        chooses), and ``pipeline.embedding.headings_for_run`` at every frame, with the run's own
+        gap, facing-camera and cut-off settings when it has a heading and the embedding's
+        defaults when it does not. NaN where the embedding would write no row.
+
+        Read once per (recording, tracking run, subject, settings) and cached against the
+        tracking run, so every page and every clip of a recording share it.
+        """
+        n = max(int(last) - int(first) + 1, 0)
+
+        def none(note: str | None, mode: str = "rotate") -> ClipHeadings:
+            return ClipHeadings(
+                np.full(n, np.nan, dtype=np.float32),
+                np.zeros(n, dtype=bool),
+                mode,
+                note,
+            )
+
+        if _tile_colors(embed_run_id) is not None:
+            return none("A tile of several animals has no one heading.")
+        points = self._clip_points(recording_id, embed_run_id)
+        if points.run is None:
+            return none(points.note)
+        if points.definition is None:
+            return none(points.axis_note)
+        from detail.storage.keypoint_runs import is_legacy_run_id
+
+        recording_dir = experiment_store.recording_path(self._dir, recording_id)
+        meta = _source_meta(recording_dir, embed_run_id)
+        if is_legacy_run_id(str(meta.get("keypoint_run_id") or "")):
+            return none(
+                f"{_source_name(embed_run_id)} read a keypoints run from before keypoint "
+                "track runs (§26), which has no heading series to turn by."
+            )
+        settings = _heading_settings(recording_dir, meta, points)
+        frame_hw = self._frame_hw(recording_id)
+        if frame_hw is None:
+            frame_hw = (points.frame_wh[1], points.frame_wh[0])
+        per_part = _clip_headings(
+            recording_dir,
+            str(meta["tracking_run_id"]),
+            int(track_id),
+            settings,
+            frame_hw,
+        )
+        preview, _t = self._scrub_ctx(recording_id, embed_run_id)
+        deg = np.full(n, np.nan, dtype=np.float32)
+        mirrored = np.zeros(n, dtype=bool)
+        start = 0
+        for stem, count in zip(points.part_stems, preview.part_frame_counts):
+            lo, hi = max(int(first), start), min(int(last), start + int(count) - 1)
+            found = per_part.get(stem)
+            if lo <= hi and found is not None:
+                frames, part_deg, part_mirrored = found
+                local = np.arange(lo, hi + 1, dtype=np.int64) - start
+                at = np.searchsorted(frames, local)
+                inside = at < frames.size
+                hit = inside.copy()
+                hit[inside] = frames[at[inside]] == local[inside]
+                rows = np.flatnonzero(hit) + (lo - int(first))
+                deg[rows] = part_deg[at[hit]]
+                mirrored[rows] = part_mirrored[at[hit]]
+            start += int(count)
+        return ClipHeadings(deg, mirrored, settings["align"], None)
+
+    def subject_boxes(
+        self,
+        recording_id: str,
+        embed_run_id: str,
+        track_id: int,
+        first: int,
+        last: int,
+    ) -> np.ndarray:
+        """``(n, 4)`` normalized boxes of the clip's animal over ``[first, last]`` (inclusive
+        global frames), NaN where it was not tracked; a location export's tile of several
+        animals (:func:`_tile_colors`) gets their union. Read from the tracking run's rows;
+        nothing is decoded.
+        """
+        reader = self._clip_signal_reader(recording_id, embed_run_id)
+        if _tile_colors(embed_run_id) is not None:
+            # The chosen animals' union, not every animal's: an animal left out of the tile
+            # must not widen its crop.
+            boxes = [
+                reader.boxes(oid, int(first), int(last))
+                for oid in embed_run_id.subject_ids
+            ]
+            union = boxes[0].copy()
+            for more in boxes[1:]:
+                union[:, :2] = np.fmin(union[:, :2], more[:, :2])
+                union[:, 2:] = np.fmax(union[:, 2:], more[:, 2:])
+            return union
+        return reader.boxes(int(track_id), int(first), int(last))
+
+    def clip_has_points(self, recording_id: str, embed_run_id: str) -> str | None:
+        """``None`` when the embedding run read a keypoint run the popup can draw, else why
+        not — for a control that only means something when there are points."""
+        return self._clip_points(recording_id, embed_run_id).note
+
+    def clip_signals(
+        self,
+        recording_id: str,
+        embed_run_id: str,
+        track_id: int,
+        first: int,
+        last: int,
+    ):
+        """What the clip's animal is doing over the window ``[first, last]`` (inclusive
+        global frames): speed, mask area, distance to the nearest other animal, and the
+        frames not to trust (``api.clip_signals``) — then, when the embedding read keypoints
+        and a heading definition names the body's ends, its length, bend and turning
+        (``clip_signals.pose_signals``). A location export's tile of several animals
+        (:func:`_tile_colors`) has no one animal to follow, so it gets none: ``None``.
+        """
+        from dataclasses import replace
+
+        from detail.api.clip_signals import pose_signals
+
+        if _tile_colors(embed_run_id) is not None:
+            return None
+        reader = self._clip_signal_reader(recording_id, embed_run_id)
+        preview, source_t_ns = self._scrub_ctx(recording_id, embed_run_id)
+        signals = reader.read(int(track_id), int(first), int(last), source_t_ns)
+        points = self._clip_points(recording_id, embed_run_id)
+        columns = points.axis_columns
+        if columns is None:
+            return signals
+        front, back, middle = columns
+        xy, scores = points.window(
+            int(track_id), list(preview.part_frame_counts), int(first), int(last)
+        )
+        shape = pose_signals(
+            xy,
+            scores,
+            signals.t_ns,
+            front=front,
+            back=back,
+            middle=middle,
+            frame_wh=points.frame_wh,
+            cutoff=points.cutoff,
+            typical_length_px=points.typical_length(int(track_id)),
+        )
+        return replace(signals, signals=[*signals.signals, *shape])
+
+    def _clip_signal_reader(self, recording_id: str, embed_run_id: str):
+        """The reader of a run's clip signals, opened once per (recording, run)."""
+        key = (recording_id, embed_run_id)
+        reader = self._signals.get(key)
+        if reader is None:
+            reader = self._signal_reader(recording_id, embed_run_id)
+            self._signals[key] = reader
+        return reader
+
+    def _mask_history(self, recording_id: str, embed_run_id: str) -> "_MaskHistory":
+        """The masks pane's onion-skin cache for one (recording, run)."""
+        key = (recording_id, embed_run_id)
+        found = self._mask_histories.get(key)
+        if found is None:
+            found = self._mask_histories.setdefault(key, _MaskHistory())
+        return found
+
+    def _signal_reader(self, recording_id: str, embed_run_id: str):
+        from detail.api.clip_signals import ClipSignalReader
+        from detail.api.recording import Recording
+
+        recording_dir = experiment_store.recording_path(self._dir, recording_id)
+        meta = _source_meta(recording_dir, embed_run_id)
+        data = recording_store.read_recording(recording_dir)
+        preview, _ = self._scrub_ctx(recording_id, embed_run_id)
+        try:
+            ppm = Recording(self._dir, recording_id).pixels_per_mm
+        except ValueError:  # a calibration that cannot describe this video: no mm
+            ppm = None
+        resolution = (data.get("video") or {}).get("resolution") or (0, 0)
+        return ClipSignalReader(
+            recording_dir,
+            str(meta["tracking_run_id"]),
+            [recording_store.part_stem(f) for f in recording_store.video_files(data)],
+            list(preview.part_frame_counts),
+            (int(resolution[0]), int(resolution[1])),
+            ppm,
+        )
+
+    def _frame_hw(self, recording_id: str) -> tuple[int, int] | None:
+        """The footage's ``(height, width)`` from ``recording.yaml``'s ``video.resolution``
+        (``[width, height]``, every part's, §11), read once; ``None`` when it is not recorded.
+        """
+        if recording_id not in self._frame_sizes:
+            data = recording_store.read_recording(
+                experiment_store.recording_path(self._dir, recording_id)
+            )
+            resolution = (data.get("video") or {}).get("resolution") or (0, 0)
+            width, height = (int(v) for v in resolution[:2])
+            self._frame_sizes[recording_id] = (
+                (height, width) if width > 0 and height > 0 else None
+            )
+        return self._frame_sizes[recording_id]
+
+    def _clip_arena(self, recording_id: str) -> "_ClipArena":
+        """The recording's field of view and regions, read once (§10)."""
+        found = self._arenas.get(recording_id)
+        if found is None:
+            found = _ClipArena.of(
+                experiment_store.recording_path(self._dir, recording_id)
+            )
+            self._arenas[recording_id] = found
+        return found
+
+    def _clip_points(self, recording_id: str, embed_run_id: str) -> "_ClipPoints":
+        """The keypoints an embedding run read, opened once per (recording, run)."""
+        key = (recording_id, embed_run_id)
+        found = self._points.get(key)
+        if found is None:
+            recording_dir = experiment_store.recording_path(self._dir, recording_id)
+            found = _ClipPoints.of(self._dir, recording_dir, embed_run_id)
+            self._points[key] = found
+        return found
 
     def source_crop_masked(
         self,
@@ -2153,6 +3441,10 @@ class ClipQueryPreview:
         are the expensive half of a frame read (COCO RLE per detection), and a plain crop must not
         pay for them.
 
+        A location export's tile of several animals (:func:`_tile_colors`) frames the union of
+        every detection in the frame (``_union_detection``), and when a tint is asked for, each
+        animal is blended in its own colour instead.
+
         Raises:
             SubjectNotDetectedError: the frame decoded but ``track_id`` has no detection in it.
         """
@@ -2162,20 +3454,15 @@ class ClipQueryPreview:
         if result is None:
             return None
         actual, rgb, detections = result
-        det = next((d for d in detections if d.object_id == int(track_id)), None)
-        if det is None or det.bbox is None:
+        crop = self._subject_crop(
+            recording_id, embed_run_id, track_id, rgb, detections, size, tint, alpha
+        )
+        if crop is None:
             raise SubjectNotDetectedError(
-                f"track {int(track_id)} has no detection at frame {actual} of "
+                f"track {track_id} has no detection at frame {actual} of "
                 f"{recording_id}"
             )
-        return _square_crop(
-            rgb,
-            det.bbox,
-            size,
-            mask=det.mask,
-            tint=None if tint is None else tuple(int(c) for c in tint),
-            alpha=alpha,
-        )
+        return crop
 
     def source_crops_masked(
         self,
@@ -2198,7 +3485,9 @@ class ClipQueryPreview:
 
         Frames where the track has no detection are skipped rather than yielded blank — the
         subject is genuinely not located there, and a hole in a clip is better than a picture
-        of the wrong thing.
+        of the wrong thing. A location export's tile of several animals is framed and coloured
+        as ``source_crop_masked`` does it, and a frame with no detections at all is skipped the
+        same way.
 
         Yields:
             The crops in presentation order.
@@ -2207,7 +3496,6 @@ class ClipQueryPreview:
         counts = preview.part_frame_counts
         first_part, first_local = _global_to_part(counts, first_frame)
         last_part, last_local = _global_to_part(counts, last_frame)
-        wanted = int(track_id)
         # Span frames already emitted, so a stride keeps its phase across a part
         # boundary instead of restarting and doubling up a frame there.
         offset = 0
@@ -2215,25 +3503,65 @@ class ClipQueryPreview:
             lo = first_local if part_index == first_part else 0
             hi = last_local if part_index == last_part else counts[part_index] - 1
             start = lo + (-offset % step)
-            for actual, rgb, detections in preview.frames_range(
+            for _actual, rgb, detections in preview.frames_range(
                 part_index,
                 start,
                 hi,
                 with_masks=tint is not None,
                 step=step,
             ):
-                det = next((d for d in detections if d.object_id == wanted), None)
-                if det is None or det.bbox is None:
-                    continue
-                yield _square_crop(
+                crop = self._subject_crop(
+                    recording_id,
+                    embed_run_id,
+                    track_id,
                     rgb,
-                    det.bbox,
+                    detections,
                     size,
-                    mask=det.mask,
-                    tint=None if tint is None else tuple(int(c) for c in tint),
-                    alpha=alpha,
+                    tint,
+                    alpha,
                 )
+                if crop is not None:
+                    yield crop
             offset += hi - lo + 1
+
+    def _subject_crop(
+        self,
+        recording_id: str,
+        embed_run_id: str,
+        track_id: int,
+        rgb: np.ndarray,
+        detections: list[Detection],
+        size: int,
+        tint: tuple[int, int, int] | None,
+        alpha: float,
+    ) -> np.ndarray | None:
+        """One frame's crop around the subject for both crop paths, or ``None`` when the
+        subject has no detection in it: one animal in ``tint``, a location export's tile of
+        several animals each in its colour.
+        """
+        several = _tile_colors(embed_run_id)
+        if several is not None:
+            det = _union_detection(detections)
+        else:
+            det = next((d for d in detections if d.object_id == int(track_id)), None)
+        if det is None or det.bbox is None:
+            return None
+        if several is not None and tint is not None:
+            return _square_crop(
+                rgb,
+                det.bbox,
+                size,
+                alpha=alpha,
+                layers=_colour_layers(detections, several),
+            )
+        return _square_crop(
+            rgb,
+            det.bbox,
+            size,
+            mask=det.mask,
+            tint=None if tint is None else tuple(int(c) for c in tint),
+            alpha=alpha,
+        )
 
 
 class QueryEvalPreview:

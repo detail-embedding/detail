@@ -45,6 +45,7 @@ from pathlib import Path
 import numpy as np
 
 from detail.core import atomic
+from detail.core import yaml_load
 from detail.core.dataclasses import LabelingProgressEvent, register_job_type
 from detail.core.keypoints import InstanceFrame, KeypointDatasetJob
 from detail.core.progress import ThrottledProgress, remaining_seconds
@@ -58,11 +59,16 @@ from detail.pipeline import subject_frames
 from detail.storage import datasets as datasets_store
 from detail.storage import example_sets
 from detail.storage import experiment as experiment_store
+from detail.storage import keypoint_runs
 from detail.storage import recording as recording_store
 from detail.storage.keypoint_runs import KeypointDetectRun
 from detail.storage.video import read_frame_at
 from detail.core.utils import resolve_device
-from detail.storage.zarr_io import DetectionPartReader, PartZarrReader
+from detail.storage.zarr_io import (
+    DetectionPartReader,
+    PartZarrReader,
+    object_ids_on_detection_rows,
+)
 
 #: The one class every tracked animal is: a pose student places points, it does not classify.
 SUBJECT_CLASS = "subject"
@@ -115,6 +121,65 @@ def label_line(
     return " ".join(parts)
 
 
+def crop_examples(
+    frame: np.ndarray, tracks: dict, crop_px: int, cutoff: float
+) -> list[tuple[int, np.ndarray, list[str]]]:
+    """``student_input: crop``: one training image per tracked animal — a square crop around
+    its box (``patch_match.view``, the patch teacher's own crop, with the inverse map the
+    student is run back through) — and a label line for **every** animal reaching into it, in
+    the crop's coordinates, so no animal in a training image goes unlabelled (the whole-frame
+    rule). A point outside the crop is taught as not visible.
+
+    ``tracks`` is ``{track_id: (bbox, points, scores, ...)}`` (the label stage's own entries;
+    what follows the scores is not a label's), all normalized full-frame.
+    """
+    from detail.models.patch_match.view import make_view, render
+
+    h, w = frame.shape[:2]
+    out = []
+    for track_id, track in sorted(tracks.items()):
+        view = make_view(tuple(track[0]), (w, h), int(crop_px), 1)
+        image = render(frame, view)
+        lines = []
+        for _other, other in sorted(tracks.items()):
+            box = _box_in_view(other[0], view, (w, h))
+            if box is None:
+                continue
+            lines.append(
+                label_line(
+                    box, _points_in_view(other[1], view, (w, h)), other[2], cutoff
+                )
+            )
+        out.append((int(track_id), image, lines))
+    return out
+
+
+def _box_in_view(bbox, view, frame_wh) -> tuple | None:
+    """A normalized full-frame box in the crop's normalized coordinates, clipped to it; None
+    when it misses the crop."""
+    w, h = frame_wh
+    u0, v0 = view.to_view(float(bbox[0]) * w, float(bbox[1]) * h)
+    u1, v1 = view.to_view(float(bbox[2]) * w, float(bbox[3]) * h)
+    size = float(view.size)
+    x0, y0 = max(u0 / size, 0.0), max(v0 / size, 0.0)
+    x1, y1 = min(u1 / size, 1.0), min(v1 / size, 1.0)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return (x0, y0, x1, y1)
+
+
+def _points_in_view(points, view, frame_wh) -> np.ndarray:
+    """Normalized full-frame points in the crop's normalized coordinates; NaN outside it."""
+    w, h = frame_wh
+    pts = np.asarray(points, dtype=np.float64)
+    u = ((pts[:, 0] * w) - view.ox) * view.s / view.size
+    v = ((pts[:, 1] * h) - view.oy) * view.s / view.size
+    out = np.stack([u, v], axis=1)
+    inside = (u >= 0) & (u <= 1) & (v >= 0) & (v <= 1)
+    out[~inside] = np.nan
+    return out
+
+
 def _audit_times(experiment_root: Path) -> dict[tuple[str, str], np.ndarray]:
     """``(recording_id, part_id) -> sorted t_ns`` of every audit set's frames."""
     out: dict[tuple[str, str], list[int]] = {}
@@ -140,19 +205,22 @@ def _complete_frames(recording_dir: Path, tracking_run_id: str) -> dict[str, set
     """Per part, the frames on which **every** detection is assigned to a track: an
     unassigned detection is an animal the student would see unlabelled."""
     tracking_dir = recording_dir / "tracking" / tracking_run_id
-    import yaml
-
-    meta = yaml.safe_load(atomic.read_text(tracking_dir / "track.yaml"))
+    meta = yaml_load.safe_load(atomic.read_text(tracking_dir / "track.yaml"))
     detection_dir = recording_dir / "detections" / meta["detection_run_id"]
     out: dict[str, set[int]] = {}
     for det_path in sorted(detection_dir.glob("part_*.zarr")):
         assignment_path = tracking_dir / "assignments" / det_path.name
         if not assignment_path.is_dir():
             continue
-        frame_idx = np.asarray(DetectionPartReader(det_path).column("frame_idx")[:])
-        object_id = np.asarray(PartZarrReader(assignment_path).read()["object_id"])
+        reader = DetectionPartReader(det_path)
+        frame_idx = np.asarray(reader.column("frame_idx")[: reader.n_rows])
+        object_id = object_ids_on_detection_rows(
+            reader, PartZarrReader(assignment_path), meta.get("class_name")
+        )
         frames = set(int(f) for f in np.unique(frame_idx))
-        frames -= set(int(f) for f in np.unique(frame_idx[object_id < 0]))
+        # -1 only: a row a class filter kept from the tracker is another kind of object,
+        # not an animal left unlabelled
+        frames -= set(int(f) for f in np.unique(frame_idx[object_id == -1]))
         out[det_path.stem] = frames
     return out
 
@@ -255,7 +323,8 @@ def _gather(experiment_root: Path, job: KeypointDatasetJob, progress=None) -> di
             "detect_meta": run.meta,
             "tracking_run_id": tracking_run_id,
             "mask_hw": pose_match.subject_mask_hw(recording_dir, tracking_run_id),
-            "example_set": run.meta.get("example_set"),
+            # every set the run learned from, keyed by class (None: one set)
+            "example_sets": keypoint_runs.detect_example_sets(run.meta),
             "candidates": candidates,
             "boxes": _boxes(frames),
             "complete": complete,
@@ -330,7 +399,14 @@ def _gather_model(
             "detection_dir": detection_dir,
             "mask_hw": pose_match.subject_mask_hw(recording_dir, tracking_run_id),
             "mask_size": subject_frames._mask_size(detection_dir),
-            "example_set": teacher.get("example_set"),
+            # every set the patch teacher learns from, keyed by class (None: one set)
+            "example_sets": (
+                dict(teacher["example_sets"])
+                if teacher.get("example_sets")
+                else (
+                    {None: teacher["example_set"]} if teacher.get("example_set") else {}
+                )
+            ),
             "candidates": candidates,
             "boxes": _boxes(frames),
             "complete": complete,
@@ -346,16 +422,37 @@ def _gather_model(
     }
 
 
-def _assign(instances: dict, cand: dict, mask_hw, match: dict, k: int) -> dict:
+def _tracked_rows(source: dict, part_id: str) -> np.ndarray | None:
+    """``pose_match.tracked_class_rows`` for a source's part, read once."""
+    cache = source.setdefault("tracked_rows", {})
+    if part_id not in cache:
+        cache[part_id] = pose_match.tracked_class_rows(
+            source["recording_dir"], source["tracking_run_id"], part_id
+        )
+    return cache[part_id]
+
+
+def _assign(
+    instances: dict,
+    cand: dict,
+    mask_hw,
+    match: dict,
+    k: int,
+    tracked_rows: np.ndarray | None,
+) -> dict:
     """One frame's instances given to its subjects by §26 *Assignment*'s function — the one
     keypoint track runs — and the frame's label rows: ``{track_id: (bbox, points, scores,
     candidates, candidate_scores)}``. A subject no instance was assigned to is still an
     animal on the frame: it is taught with its box and every point not visible, never left
     unlabelled. An instance no subject took is taught to nobody."""
+    n = len(instances["frame_idx"])
     subject_id, _inside, per_subject = pose_match.assign_part(
         instances,
         [(cand["frame_idx"], cand["t_ns"], cand["subjects"])],
         mask_hw,
+        eligible=pose_match.eligible_instances(
+            instances.get("detection_row", np.full(n, -1, np.int32)), tracked_rows
+        ),
         min_inside=match["min_inside"],
         mask_grow=match["mask_grow"],
     )
@@ -395,7 +492,12 @@ def _teach(gathered: dict, chosen: list[dict]) -> None:
         source = gathered["sources"][cand["recording_id"]]
         instances = source["detect_run"].at(cand["part_id"], cand["frame_idx"])
         cand["tracks"] = _assign(
-            instances, cand, source["mask_hw"], gathered["match"], k
+            instances,
+            cand,
+            source["mask_hw"],
+            gathered["match"],
+            k,
+            _tracked_rows(source, cand["part_id"]),
         )
 
 
@@ -431,6 +533,14 @@ def _slices(candidates: list[dict], k: int, rng: random.Random) -> list[dict]:
     ]
 
 
+def _marked_frames(source: dict):
+    """``(set id, marked frame)`` for every frame of every set a source learned from — one
+    set, or one per class (§26 *One example set per detection class*)."""
+    for example_set in (source.get("example_sets") or {}).values():
+        for mark_frame in example_set.get("marks") or []:
+            yield example_set.get("id"), mark_frame
+
+
 def _example_frames(
     gathered: dict, skeleton: Skeleton, experiment_root: Path
 ) -> list[dict]:
@@ -439,9 +549,7 @@ def _example_frames(
     out = []
     seen: set[tuple] = set()
     for recording_id, source in gathered["sources"].items():
-        example_set = source.get("example_set") or {}
-        set_id = example_set.get("id")
-        for mark_frame in example_set.get("marks") or []:
+        for set_id, mark_frame in _marked_frames(source):
             if mark_frame.get("recording_id") != recording_id:
                 continue
             key = (recording_id, mark_frame["part_id"], int(mark_frame["frame_idx"]))
@@ -574,20 +682,30 @@ def _label(job: KeypointDatasetJob, run_dir: Path, progress_cb, stop_event) -> N
     phase = "labeling frames" if by_model else "decoding frames"
 
     def _write(cand: dict, frame: np.ndarray) -> None:
-        lines = [
-            label_line(track[0], track[1], track[2], job.score_cutoff)
-            for _tid, track in sorted(cand["tracks"].items())
-        ]
         for tid, track in sorted(cand["tracks"].items()):
             raw.append((len(used), int(tid), track))
         stem = f"{cand['recording_id']}_{cand['part_id']}_{cand['frame_idx']:07d}"
-        staged.add(
-            cand["recording_id"],
-            (cand["recording_id"], cand["part_id"], cand["frame_idx"]),
-            stem,
-            frame,
-            lines,
-        )
+        key = (cand["recording_id"], cand["part_id"], cand["frame_idx"])
+        if job.student_input == "crop":
+            # One image per tracked animal under the frame's one key, so a frame's crops share
+            # its split and no frame is on both sides of it. A frame with no tracked animal
+            # gives no crop, and a crop student has no whole-frame background to learn from.
+            examples = [
+                (f"{stem}_t{tid}", image, lines)
+                for tid, image, lines in crop_examples(
+                    frame, cand["tracks"], job.student_crop_px, job.score_cutoff
+                )
+            ]
+            if not examples:
+                return
+        else:
+            lines = [
+                label_line(track[0], track[1], track[2], job.score_cutoff)
+                for _tid, track in sorted(cand["tracks"].items())
+            ]
+            examples = [(stem, frame, lines)]
+        for name, image, lines in examples:
+            staged.add(cand["recording_id"], key, name, image, lines)
         used.append(
             {
                 "recording_id": cand["recording_id"],
@@ -700,7 +818,7 @@ class _ModelTeacher:
         )
         self._sources = sources
         self._match = _match(teacher)
-        self._k = len(teacher["skeleton"]["names"])
+        self._k = len(Skeleton.from_dict(teacher["skeleton"]).names)
         self._model = build_method(
             Path(experiment_root),
             teacher["model_id"],
@@ -708,7 +826,22 @@ class _ModelTeacher:
             teacher.get("settings") or {},
             teacher.get("example_set"),
             teacher["skeleton"],
+            example_sets_by_class=teacher.get("example_sets"),
         )
+        # A per-class teacher matches each detection against its class's set, and so is
+        # handed only those classes' detections, each with its class — as the detect stage
+        # hands them; with one class named, only that class's.
+        by_class = teacher.get("example_sets") or {}
+        self._classes = (
+            frozenset(by_class)
+            if by_class
+            else (
+                frozenset({teacher["class_name"]})
+                if teacher.get("class_name")
+                else None
+            )
+        )
+        self._per_class = bool(by_class)
         self.device = resolve_device(job.compute, self._model.supported_backends)
         self._model.load(self.device)
         self._per_detection = bool(getattr(type(self._model), "per_detection", True))
@@ -734,7 +867,12 @@ class _ModelTeacher:
         for (cand, bgr), result in zip(batch, results):
             source = self._sources[cand["recording_id"]]
             tracks = _assign(
-                _instances(result), cand, source["mask_hw"], self._match, self._k
+                _instances(result),
+                cand,
+                source["mask_hw"],
+                self._match,
+                self._k,
+                _tracked_rows(source, cand["part_id"]),
             )
             out.append(({**cand, "tracks": tracks}, bgr))
         return out
@@ -743,10 +881,16 @@ class _ModelTeacher:
         """What the detect stage would hand the method for this frame."""
         boxes: dict[int, tuple] = {}
         masks = None
+        classes = None
         if self._per_detection:
             source = self._sources[cand["recording_id"]]
             det = _part_detections(source, cand["part_id"])
             rows = det["rows_on"].get(int(cand["frame_idx"]), [])
+            if self._classes is not None:
+                names = _part_classes(source, cand["part_id"])
+                rows = [r for r in rows if str(names[r]) in self._classes]
+                if self._per_class:
+                    classes = {r: str(names[r]) for r in rows}
             boxes = {r: tuple(float(v) for v in det["bbox"][r]) for r in rows}
             if self._needs_mask and source["mask_size"] is not None:
                 masks = {
@@ -759,7 +903,18 @@ class _ModelTeacher:
             frame=bgr_to_rgb(bgr),
             boxes=boxes,
             masks=masks,
+            classes=classes,
         )
+
+
+def _part_classes(source: dict, part_id: str) -> np.ndarray:
+    """A detection part's ``class_name`` column, read the first time a class-filtered
+    teacher asks for it (the sampler's columns leave it out)."""
+    cache = source.setdefault("detection_classes", {})
+    if part_id not in cache:
+        reader = DetectionPartReader(source["detection_dir"] / f"{part_id}.zarr")
+        cache[part_id] = np.asarray(reader.column("class_name")[:])
+    return cache[part_id]
 
 
 def _part_detections(source: dict, part_id: str) -> dict:
@@ -789,6 +944,11 @@ def _instances(result) -> dict:
             np.full(n, np.nan, np.float32)
             if result.confidence is None
             else np.asarray(result.confidence, np.float32)
+        ),
+        "detection_row": (
+            np.full(n, -1, np.int32)
+            if getattr(result, "detection_row", None) is None
+            else np.asarray(result.detection_row, np.int32)
         ),
     }
     if getattr(result, "candidates", None) is not None:
@@ -821,12 +981,19 @@ def _finalize(
             "skeleton": skeleton.to_dict(),
             "skeleton_digest": skeleton.digest(),
             "classes": [{"id": 0, "name": SUBJECT_CLASS}],
+            # What a training image is, so the student is run the way it was trained (§12).
+            "student_input": job.student_input,
+            "student_crop_px": (
+                int(job.student_crop_px) if job.student_input == "crop" else None
+            ),
             "keypoint_dataset": {
                 "n_frames": int(job.n_frames),
                 "val_split": float(job.val_split),
                 "score_cutoff": float(job.score_cutoff),
                 "exclude_audit_s": float(job.exclude_audit_s),
                 "every_n_frames": int(job.every_n_frames),
+                "student_input": job.student_input,
+                "student_crop_px": int(job.student_crop_px),
             },
             "excluded": dict(gathered["excluded"]),
             # Asked for, and labelled from the teacher: fewer when the tracked frames ran out
@@ -858,6 +1025,12 @@ def _source_record(job: KeypointDatasetJob, sources: dict) -> dict:
                 "id": example_set.get("id"),
                 "digest": example_set.get("digest"),
             },
+            # a per-class teacher's sets, {class: {id, digest}} (§26); absent for one set
+            **(
+                {"example_sets": _set_refs(teacher["example_sets"])}
+                if teacher.get("example_sets")
+                else {}
+            ),
             "tracking_runs": dict(teacher["tracking_runs"]),
             "match": _match(teacher),
         }
@@ -867,15 +1040,22 @@ def _source_record(job: KeypointDatasetJob, sources: dict) -> dict:
         # the subjects each detect run's instances were assigned to (§26 *Assignment*)
         "tracking_runs": {r: s["tracking_run_id"] for r, s in sources.items()},
         "match": _match(job.teacher or {}),
+        # {id, digest} per recording for a run on one set, as before per-class sets; a
+        # per-class run's as {class: {id, digest}}
         "example_sets": {
-            r: {
-                "id": s["example_set"]["id"],
-                "digest": s["example_set"].get("digest"),
-            }
+            r: _set_refs(s["example_sets"])
             for r, s in sources.items()
-            if s.get("example_set")
+            if s.get("example_sets")
         },
     }
+
+
+def _set_refs(by_class: dict) -> dict:
+    refs = {
+        cls: {"id": snap.get("id"), "digest": snap.get("digest")}
+        for cls, snap in by_class.items()
+    }
+    return refs[None] if list(refs) == [None] else refs
 
 
 #: Beside ``dataset.yaml``: what the teacher gave for every labelled (frame, track), before the

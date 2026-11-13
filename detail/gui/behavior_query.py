@@ -39,6 +39,7 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QInputDialog,
     QLabel,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -48,11 +49,13 @@ from PyQt6.QtWidgets import (
     QTableView,
     QVBoxLayout,
     QWidget,
+    QWidgetAction,
 )
 
 from detail.analysis import clip_query
 from detail.api.run_preview import DEFAULT_PREVIEW_FPS, ClipQueryPreview
 from detail.core.chart_theme import LIGHT, rgb
+from detail.core.utils import coerce_series_key
 from detail.gui.dialog import Dialog
 from detail.gui.spin import SECONDS, FloatSpin, IntSpin
 from detail.gui import example_spread
@@ -361,6 +364,26 @@ class ClipSpec:
 #: it", and four choices answer both without a field to type into mid-viewing.
 CONTEXT_CHOICES_S = (0.0, 1.0, 2.0, 5.0)
 
+#: The clip popup's Keypoints toggle, while there are keypoints to draw.
+_POINTS_TIP = "Draw the clip's animal's keypoints on the footage: the keypoint run the embedding used."
+_ALIGN_TIP = (
+    "Turn the Keypoints pane so the clip's animal always faces up, centred and at its usual "
+    "size, so postures compare from clip to clip whichever way the animal faced. With Trail "
+    "on, the pane's trails are then each point's path relative to the body."
+)
+_TRAIL_TIP = (
+    "Draw where the clip's animal has just been, over the last half second: each keypoint's "
+    "path in its own colour, on the footage and on the Keypoints pane (choose which with "
+    "Trail points). A run with no keypoints draws the centre of the animal's box instead."
+)
+_TRAIL_POINTS_TIP = (
+    "Choose which keypoints leave a trail: every point, or only some (the paws, say)."
+)
+_MASK_TRAIL_TIP = (
+    "Draw the clip's animal's masks from the last half second under the current one on the "
+    "Masks pane, fading with age, to see how its outline moved and changed."
+)
+
 #: The clip is bracketed on the bar only while it covers less than this share of it. Past that the
 #: context is a sliver either side and the brackets would sit on the bar's own ends.
 _SPAN_SHOWN_BELOW = 0.9
@@ -405,6 +428,11 @@ class _ClipPlayer(QWidget):
     # The window the scrubber spans moved or changed size (a pan, a context change), so anything
     # drawn against it must be repainted.
     window_changed = pyqtSignal()
+    # A view tick changed (Masks, Keypoints, Trail, Trail points, Mask trail, Align pose): what
+    # `view_settings` returns is different now. An enlarged pane follows it.
+    view_changed = pyqtSignal()
+    # `set_clip` showed another clip.
+    clip_changed = pyqtSignal()
 
     def __init__(
         self,
@@ -417,12 +445,18 @@ class _ClipPlayer(QWidget):
         context_s: float,
         walk_edges: bool = False,
         top: bool = False,
+        panels: bool = False,
     ) -> None:
         """``context_s`` is how much footage either side of the clip the player opens with, one
         of ``CONTEXT_CHOICES_S``. **Required**: each page decides it, because how much context a
         clip needs is a fact about what the page is for — telling two similar clusters apart
         needs a second either side, a list of matches being judged on their own does not. The
         viewer can change it from the player's own row; that lasts as long as the player.
+
+        ``panels`` shows the clip as three pictures (``gui/clip_panes.py``): the footage,
+        and beside it the masks alone and the keypoints alone, each on white, with a
+        **Keypoints** toggle beside **Masks** for drawing the subject's points on the footage.
+        The clip popup's choice; every other surface shows the footage alone.
 
         ``walk_edges`` lets the window slide when the playhead is held at either end, for the
         page that drags a clip's boundaries outward (the removed ``clip_annotation`` was that page;
@@ -521,7 +555,66 @@ class _ClipPlayer(QWidget):
         view_row.addWidget(self._context)
         view_row.addSpacing(6)
         view_row.addWidget(self._masks)
-        self._add_view_controls(view_row)
+        # The keypoints the embedding run used, drawn on the footage — only where there is a
+        # pose pane to say what they are, and greyed (with the reason) for a run with none.
+        self._points: QCheckBox | None = None
+        if panels:
+            self._points = QCheckBox("Keypoints")
+            self._points.setObjectName("clip_points")
+            self._points.setToolTip(_POINTS_TIP)
+            self._points.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            self._points.toggled.connect(self._redraw)
+            view_row.addWidget(self._points)
+            self._trail = QCheckBox("Trail")
+            self._trail.setObjectName("clip_trail")
+            self._trail.setToolTip(_TRAIL_TIP)
+            self._trail.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            self._trail.toggled.connect(self._redraw)
+            view_row.addWidget(self._trail)
+            # Which points trail: the keypoint track form's own picker, in a menu, so the row
+            # stays one line. Its skeleton arrives with the first decoded frame.
+            from detail.gui.skeleton_points import SkeletonPointsPicker
+
+            self._trail_picker = SkeletonPointsPicker(wording="trail")
+            self._trail_picker.setObjectName("clip_trail_picker")
+            self._trail_picker.changed.connect(self._on_trail_points)
+            self._trail_names: list[str] | None = None  # every point
+            self._trail_skeleton: tuple | None = None
+            self._trail_points = QPushButton("Trail points")
+            self._trail_points.setObjectName("clip_trail_points")
+            self._trail_points.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            self._trail_points.setToolTip(_TRAIL_POINTS_TIP)
+            # Its own width: a stretch in this row would make the row greedy in the flowing
+            # control row it sits in.
+            self._trail_points.setSizePolicy(
+                QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+            )
+            menu = QMenu(self._trail_points)
+            holder = QWidgetAction(menu)
+            holder.setDefaultWidget(self._trail_picker)
+            menu.addAction(holder)
+            self._trail_points.setMenu(menu)
+            view_row.addWidget(self._trail_points)
+            self._mask_trail = QCheckBox("Mask trail")
+            self._mask_trail.setObjectName("clip_mask_trail")
+            self._mask_trail.setToolTip(_MASK_TRAIL_TIP)
+            self._mask_trail.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            self._mask_trail.toggled.connect(self._redraw)
+            view_row.addWidget(self._mask_trail)
+            self._align = QCheckBox("Align pose")
+            self._align.setObjectName("clip_align")
+            self._align.setToolTip(_ALIGN_TIP)
+            self._align.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            self._align.toggled.connect(self._redraw)
+            view_row.addWidget(self._align)
+            self._loop_clip = QCheckBox("Loop clip")
+            self._loop_clip.setObjectName("clip_loop")
+            self._loop_clip.setToolTip(
+                "Play the clip itself over and over, without the context either side."
+            )
+            self._loop_clip.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            self._loop_clip.toggled.connect(self._on_loop_clip)
+            view_row.addWidget(self._loop_clip)
         self._scrubber.add_control(view_box)
         # The same row, for the same reason: a player is where you decide a clip is worth
         # keeping, so it is where taking it away belongs. One control here reaches all thirteen
@@ -541,9 +634,25 @@ class _ClipPlayer(QWidget):
         # (#396) — not the picture claiming the whole pane and the controls sinking to wherever
         # it happens to end.
         # ``top`` pins the pair to the top instead, for a player beside a list (Browse).
-        self._block = PictureWithControls(
-            self._picture_widget(), self._scrubber, top=top
-        )
+        self._panes = None
+        self._strips = None
+        self._lane_source = None
+        self._signals_generation = 0
+        #: The clip window's **Aligned** orientation (`set_aligned`): the whole view turned.
+        self._aligned = False
+        picture = self._src
+        if panels:
+            from detail.gui.clip_panes import ClipPanes
+            from detail.gui.clip_strips import ClipStrips
+
+            self._panes = ClipPanes(self._src)
+            self._panes.enlarge_wanted.connect(self.open_pane)
+            picture = self._panes
+            self._strips = ClipStrips(self._scrubber)
+            self._scrubber.set_underlay(self._strips)
+            self._scrubber.frame_changed.connect(self._strips.set_frame)
+            self.window_changed.connect(self._load_signals)
+        self._block = PictureWithControls(picture, self._scrubber, top=top)
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.addWidget(self._block)
@@ -554,53 +663,6 @@ class _ClipPlayer(QWidget):
         block is this widget's only child and its margins are zero, so the two are the same
         number, and a host embedding the player should not have to reach past it."""
         return self._block.height_for_width(width)
-
-    # -- the seams a richer player overrides (``gui/advanced_player.py``) ---------------- #
-    # Five hooks with this player's behaviour as the default, so the eleven surfaces that embed
-    # the plain player are untouched by a window that shows more: what sits where the picture
-    # goes, what joins the view row, what one frame decodes to, how a payload is shown, and
-    # whether playback runs the clip alone.
-
-    def _picture_widget(self) -> QWidget:
-        """The widget the controls sit under: the footage alone."""
-        return self._src
-
-    def _add_view_controls(self, row) -> None:
-        """More ticks after **Masks** on the view row; the plain player adds none."""
-
-    def _decode(self, clip: ClipSpec, frame: int):
-        """One frame's payload, computed **off the UI thread** (the scrubber's decoder). A
-        frame that cannot be produced raises; `_compute` classifies that into a reason
-        (`frame_source.decode`), so an override returns the payload and nothing else."""
-        if not self._masks.isChecked():
-            # `frame_plain`, not `frame_view`: this pane shows one picture, and `frame_view`
-            # decoded the masks and rendered an input image beside it that was then thrown away
-            # — 14.31 ms a frame for a 4.64 ms job.
-            return self._preview.frame_plain(  # off-thread (scrubber decoder)
-                clip.recording_id, clip.embed_run_id, clip.track_id, frame
-            )
-        return self._preview.frame_masked(  # off-thread (scrubber decoder)
-            clip.recording_id, clip.embed_run_id, clip.track_id, frame
-        )
-
-    def _show_payload(self, payload) -> None:
-        """Put a decoded payload on screen. ``frame_masked`` and ``frame_plain`` both return
-        ``(rgb, actual, t_ns)``; the first element is the picture either way."""
-        self._src.set_frame(_to_pixmap(payload[0]))
-        self._block.set_aspect(self._src.pixmap_size())
-
-    def _show_unavailable(self, text: str) -> None:
-        """Say where the picture goes why there is none."""
-        self._src.clear_frame(text)
-
-    def _clip_only(self) -> bool:
-        """Whether playback runs the clip alone rather than the whole window (context too)."""
-        return self._walk_edges
-
-    def _redraw(self, *_args) -> None:
-        """Draw the frame on screen again with the view ticks as they now are. Without this a
-        tick does nothing until you move, which reads as a broken control."""
-        self._scrubber.set_frame(self._scrubber.frame())
 
     def set_clip(self, clip: ClipSpec, *, autoplay: bool | None = None) -> None:
         """Show ``clip``. ``autoplay`` overrides the player's own setting for this clip only —
@@ -626,6 +688,63 @@ class _ClipPlayer(QWidget):
         # the one indicator that would have said why was switched off by the same act. Playing
         # begins when there is something to play; until then the overlay does its job.
         self._start_on_first_frame = self._autoplay if autoplay is None else autoplay
+        self._load_signals()
+        self.clip_changed.emit()
+
+    def clip(self) -> ClipSpec | None:
+        """The clip on screen."""
+        return self._clip
+
+    def current_frame(self) -> int:
+        """The global frame under the playhead."""
+        return int(self._bounds[0] + self._scrubber.frame())
+
+    def frame_rate(self) -> float:
+        """The clip's frames per second, as the player plays it."""
+        return self._frame_rate(self._clip) if self._clip is not None else 0.0
+
+    def view_settings(self):
+        """The view ticks as plain values (``api.clip_pane_export.ClipViewSettings``) — what
+        an enlarged pane draws with, read on the UI thread and handed to its decoder."""
+        from detail.api.clip_pane_export import ClipViewSettings
+
+        if self._panes is None:
+            return ClipViewSettings(
+                masks_on_frame=self._masks.isChecked(), aligned=self._aligned
+            )
+        names = self._trail_names
+        return ClipViewSettings(
+            masks_on_frame=self._masks.isChecked(),
+            points_on_frame=self._points.isChecked(),
+            trail=self._trail.isChecked(),
+            trail_points=None if names is None else tuple(names),
+            mask_trail=self._mask_trail.isChecked(),
+            pose_aligned=self._align.isChecked(),
+            aligned=self._aligned,
+        )
+
+    def set_aligned(self, on: bool) -> None:
+        """Draw the whole view **Aligned** — the footage, masks and keypoints turned so the
+        body points up, frame by frame (``ClipQueryPreview.clip_views``' ``aligned``) — or as
+        recorded. The clip window's orientation menu; every other surface leaves it off.
+        """
+        if bool(on) == self._aligned:
+            return
+        self._aligned = bool(on)
+        if self._clip is not None:
+            self._redraw()
+
+    def is_aligned(self) -> bool:
+        return self._aligned
+
+    def open_pane(self, pane: str):
+        """Open ``pane`` (``"masks"`` / ``"keypoints"``) large in a window of its own, which
+        follows this player's clip and ticks (``gui/clip_pane_window.py``). Returns it.
+        """
+        from detail.gui.clip_pane_window import open_pane_window
+
+        # `QWidget.window`, not `self.window()`: this class's `window()` is the frames it spans.
+        return open_pane_window(self, pane, QWidget.window(self))
 
     def _frame_rate(self, clip: ClipSpec) -> float:
         try:
@@ -672,6 +791,11 @@ class _ClipPlayer(QWidget):
             # Bracketing nearly the whole bar marks nothing: a cluster member that is one
             # unbroken run of a 30-minute video filled the bar edge to edge with "the clip".
             self._scrubber.clear_marks()
+
+    def window_timestamps(self):
+        """The recording's ``t_ns`` over the window on the bar, or ``None`` when it cannot be
+        read — for a companion view spanning the same frames (an enlarged pane)."""
+        return self._window_timestamps()
 
     def _window_timestamps(self):
         """The recording's ``t_ns`` over the window, or ``None`` when it cannot be read."""
@@ -720,10 +844,6 @@ class _ClipPlayer(QWidget):
         """The row's **Export video…** — for a host with an export of its own to hide."""
         return self._export
 
-    def current_frame(self) -> int:
-        """The global frame under the playhead."""
-        return int(self._bounds[0] + self._scrubber.frame())
-
     def focus_scrubber(self) -> None:
         """Give the scrubber keyboard focus so arrow keys scrub this player."""
         self._scrubber.setFocus()
@@ -735,6 +855,78 @@ class _ClipPlayer(QWidget):
         """
         self._masked = bool(on)
         self._redraw()
+
+    def _redraw(self, *_args) -> None:
+        """Draw the frame on screen again with the view ticks as they now are."""
+        self._scrubber.set_frame(self._scrubber.frame())
+        self.view_changed.emit()
+
+    def set_lane_source(self, source) -> None:
+        """Who fills the cluster strip: ``source(clip, start_ns, end_ns)`` returns
+        ``NodeView.lane``'s segments, read in memory. The opener's to give — only a clustering
+        page knows its clusters — and nothing is drawn without one."""
+        self._lane_source = source
+        if self._clip is not None:
+            self._load_signals()
+
+    def strips(self):
+        """The strips under the slider (``None`` on a single-picture player), for a test."""
+        return self._strips
+
+    def _on_loop_clip(self, on: bool) -> None:
+        self._scrubber.set_loop(on)
+        self._apply_playback_range()
+        if on:
+            self._scrubber.set_frame(max(self._clip_span[0] - self._bounds[0], 0))
+
+    def _load_signals(self) -> None:
+        """Read the strips for the window on screen, off the UI thread; a later window
+        supersedes an earlier read still in flight."""
+        if self._strips is None or self._clip is None:
+            return
+        from detail.gui.workers import BackgroundCall
+
+        self._signals_generation += 1
+        generation = self._signals_generation
+        clip, (first, last) = self._clip, self._bounds
+        lo, hi = self._clip_span[0] - first, self._clip_span[1] - first
+        self._strips.set_clip_span((lo, hi))
+        call = BackgroundCall(
+            lambda: self._preview.clip_signals(  # off-thread
+                clip.recording_id, clip.embed_run_id, clip.track_id, first, last
+            ),
+            receiver=self,
+        )
+        call.done.connect(lambda result: self._show_signals(generation, clip, result))
+        call.failed.connect(
+            lambda exc: generation == self._signals_generation
+            and self._strips.set_message(f"No strips: {exc}")
+        )
+        call.start()
+
+    def _show_signals(self, generation: int, clip, signals) -> None:
+        if generation != self._signals_generation:
+            return  # a newer window was asked for
+        if signals is None:
+            self._strips.set_message(
+                "A tile of several animals follows no one: no strips."
+            )
+            return
+        self._strips.set_signals(signals)
+        self._strips.set_frame(self._scrubber.frame())
+        if self._lane_source is not None and len(signals.t_ns):
+            self._strips.set_lane(
+                self._lane_source(clip, int(signals.t_ns[0]), int(signals.t_ns[-1]))
+            )
+
+    def _on_trail_points(self) -> None:
+        """Hold the picker's choice as a plain value for the decode, then redraw."""
+        self._trail_names = self._trail_picker.value()
+        self._redraw()
+
+    def trail_points(self):
+        """The keypoints that trail, by name (``None``: every point) — for a test."""
+        return self._trail_names
 
     def masks_shown(self) -> bool:
         """Whether the subject's mask is being drawn — ask this, not the checkbox behind it."""
@@ -776,7 +968,7 @@ class _ClipPlayer(QWidget):
             self.export_scope(),
             only=("clip",),
             seed={
-                "track_id": int(clip.track_id),
+                "track_id": clip.track_id,
                 "embed_run_id": clip.embed_run_id,
                 # Lists, not tuples: this rides an `ExportJob` through YAML, where a tuple
                 # writes as `!!python/tuple` and `safe_load` then refuses it.
@@ -909,8 +1101,57 @@ class _ClipPlayer(QWidget):
             return None
         frame = self._bounds[0] + min(step, self._len - 1)
         clip = self._clip
+        if self._panes is not None:
+            # One decode for all three pictures: the masks pane needs the masks whatever the
+            # toggles say, so there is no cheaper plain path here.
+            masks_on, points_on = self._masks.isChecked(), self._points.isChecked()
+            aligned = self._align.isChecked()
+            trail, mask_trail = self._trail.isChecked(), self._mask_trail.isChecked()
+            trail_points = self._trail_names
+            turned = self._aligned
+            return frame_source.decode(  # off-thread (scrubber decoder)
+                lambda: self._preview.clip_views(
+                    clip.recording_id,
+                    clip.embed_run_id,
+                    clip.track_id,
+                    frame,
+                    masks_on_frame=masks_on,
+                    points_on_frame=points_on,
+                    trail=trail,
+                    trail_points=trail_points,
+                    mask_trail=mask_trail,
+                    pose_aligned=aligned,
+                    aligned=turned,
+                )
+            )
+        if self._aligned:
+            # Turning needs the frame's keypoints, which only `clip_views` reads; the plain
+            # paths below stay the cheap ones for the as-recorded picture.
+            masks_on = self._masks.isChecked()
+            return frame_source.decode(  # off-thread (scrubber decoder)
+                lambda: self._preview.clip_views(
+                    clip.recording_id,
+                    clip.embed_run_id,
+                    clip.track_id,
+                    frame,
+                    masks_on_frame=masks_on,
+                    points_on_frame=False,
+                    aligned=True,
+                )
+            )
+        if not self._masks.isChecked():
+            # `frame_plain`, not `frame_view`: this pane shows one picture, and `frame_view`
+            # decoded the masks and rendered an input image beside it that was then thrown away
+            # — 14.31 ms a frame for a 4.64 ms job.
+            return frame_source.decode(  # off-thread (scrubber decoder)
+                lambda: self._preview.frame_plain(
+                    clip.recording_id, clip.embed_run_id, clip.track_id, frame
+                )
+            )
         return frame_source.decode(  # off-thread (scrubber decoder)
-            lambda: self._decode(clip, frame)
+            lambda: self._preview.frame_masked(
+                clip.recording_id, clip.embed_run_id, clip.track_id, frame
+            )
         )
 
     def _display(self, _step: int, view) -> None:
@@ -921,12 +1162,55 @@ class _ClipPlayer(QWidget):
             # An undecodable clip never plays, and must not leave autoplay armed for the next
             # frame that happens to arrive.
             self._start_on_first_frame = False
-            self._show_unavailable(frame_source.unavailable_text(reason))
+            self._src.clear_frame(frame_source.unavailable_text(reason))
+            if self._panes is not None:
+                self._panes.clear("")
             return
-        self._show_payload(payload)
+        if self._panes is not None:
+            self._src.set_frame(_to_pixmap(payload.frame))
+            self._panes.show_views(payload)
+            # Read off the frame, not asked of the run on the UI thread: a run with no
+            # keypoints greys the toggle and says why.
+            has_points = payload.pose is not None
+            self._points.setEnabled(has_points)
+            self._points.setToolTip(
+                _POINTS_TIP if has_points else (payload.pose_note or "No keypoints")
+            )
+            # The same for alignment, which also needs a heading definition.
+            self._align.setEnabled(payload.align_note is None)
+            self._align.setToolTip(payload.align_note or _ALIGN_TIP)
+            self._show_trail_controls(payload)
+            self._panes.set_frame_aspect(self._src.pixmap_size())
+            self._block.set_aspect(self._panes.aspect_size(self._src.pixmap_size()))
+        else:
+            # `frame_masked` and `frame_plain` both return (rgb, actual, t_ns); the first
+            # element is the picture either way. Aligned, it is `clip_views`' footage.
+            picture = payload.frame if hasattr(payload, "frame") else payload[0]
+            self._src.set_frame(_to_pixmap(picture))
+            self._block.set_aspect(self._src.pixmap_size())
         if self._start_on_first_frame:
             self._start_on_first_frame = False
             self.play()
+
+    def _show_trail_controls(self, payload) -> None:
+        """Give the picker the clip's skeleton, or grey it with the reason when there is
+        none; and say on the Trail tick what it is drawing for this clip."""
+        skeleton = payload.skeleton
+        if skeleton is None:
+            self._trail_points.setEnabled(False)
+            self._trail_points.setToolTip(
+                (payload.pose_note or "No keypoints for this run.")
+                + " Trail follows the centre of the animal's box instead."
+            )
+        else:
+            self._trail_points.setEnabled(True)
+            self._trail_points.setToolTip(_TRAIL_POINTS_TIP)
+            shape = (tuple(skeleton.names), tuple(skeleton.pairs))
+            if shape != self._trail_skeleton:
+                self._trail_skeleton = shape
+                self._trail_picker.set_skeleton(*shape)
+                self._trail_names = self._trail_picker.value()
+        self._trail.setToolTip(payload.trail_note or _TRAIL_TIP)
 
     def show_message(self, text: str) -> None:
         """Put a message where the video goes, and stop playing.
@@ -991,7 +1275,8 @@ class _ClipPlayer(QWidget):
         clip would run to the end of the recording, which is not what a boundary editor's
         preview is for.
         """
-        if not self._clip_only():
+        loop_clip = self._strips is not None and self._loop_clip.isChecked()
+        if not self._walk_edges and not loop_clip:
             return 0, self._len - 1
         lo = self._clip_span[0] - self._bounds[0]
         hi = self._clip_span[1] - self._bounds[0]
@@ -1019,6 +1304,11 @@ def behavior_name_problem(name: str, existing) -> str | None:
 
 def _with_article(word: str) -> str:
     return f"an {word}" if word[0] in "aeiou" else f"a {word}"
+
+
+def _series_cell(track_id) -> QStandardItem:
+    """A subject cell: an animal's track id, sorting as a number."""
+    return num_cell(coerce_series_key(track_id))
 
 
 def _span_text(spec: dict) -> str:
@@ -1104,10 +1394,6 @@ class ClipExampleDialog(Dialog):
         super().__init__(parent)
         self._multi = behaviors is not None
         self.setWindowTitle("Mark examples" if self._multi else "Pick example clips")
-        if self._multi:
-            self.resize(1100, 740)
-        else:
-            self.resize(960, 700)
         self._preview = ClipQueryPreview(experiment.dir)
         self._embed = embed_run_id
         self._recordings = recordings
@@ -1148,7 +1434,13 @@ class ClipExampleDialog(Dialog):
         self._pending_frame: int | None = None  # where that start is, for its tick
         # The balance picker's columns and values: one metadata file, read once on open.
         self._metadata = experiment.recording_metadata if self._multi else {}
-        self._metadata_columns = experiment.metadata_columns if self._multi else []
+        # Only a column with a value somewhere can split the samples; a blank one (the
+        # reserved acquisition_setup, before anyone fills it) would be one group of "".
+        self._metadata_columns = [
+            column
+            for column in (experiment.metadata_columns if self._multi else [])
+            if any(row.get(column) for row in self._metadata.values())
+        ]
         # A clip selected on another recording or track: seek there once its continuity lands.
         self._pending_seek: tuple[str, int, dict] | None = None
         self._continuity: dict | None = None  # current subject's timeline + runs
@@ -1657,7 +1949,7 @@ class ClipExampleDialog(Dialog):
                         if recording is not None
                         else spec["recording_id"]
                     ),
-                    num_cell(int(spec["track_id"])),
+                    _series_cell(spec["track_id"]),
                     QStandardItem(f"⚠ {note}" if note else ""),
                 ]
             )
@@ -1671,7 +1963,9 @@ class ClipExampleDialog(Dialog):
         )
         # Track the same way: on a one-animal video every clip is track 0 and the column says
         # nothing. It appears once clips are on two animals, where it tells them apart.
-        tracks = {int(spec["track_id"]) for _b, _kind, spec in self._clips}
+        tracks = {
+            coerce_series_key(spec["track_id"]) for _b, _kind, spec in self._clips
+        }
         self._clip_table.setColumnHidden(4, len(tracks) <= 1)
         self._clip_table.resizeColumnsToContents()
         any_clips = bool(self._clips)
@@ -1706,7 +2000,10 @@ class ClipExampleDialog(Dialog):
         recording_id, track = self._subject()
         spans = []
         for b, kind, spec in self._clips:
-            if spec["recording_id"] != recording_id or int(spec["track_id"]) != track:
+            if (
+                spec["recording_id"] != recording_id
+                or coerce_series_key(spec["track_id"]) != track
+            ):
                 continue
             first, last = self._frames_of(spec)
             spans.append((first, last, self._behavior_color(b), kind == "negatives"))
@@ -1751,7 +2048,7 @@ class ClipExampleDialog(Dialog):
         if key is None:
             return
         spec = self._clips[key][2]
-        subject = (spec["recording_id"], int(spec["track_id"]))
+        subject = (spec["recording_id"], coerce_series_key(spec["track_id"]))
         if subject == self._subject() and self._continuity is not None:
             self._seek_to(spec)
             return

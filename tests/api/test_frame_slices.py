@@ -1,205 +1,282 @@
-"""`api.frame_slices.from_kinematics`: the second loader the module's docstring promised.
+"""`frame_slices.from_tracking` over a recording of more than one video part.
 
-What it has to get right that `from_tracking` already does: pixels not normalized units, one
-global frame axis across parts (offsets from each part's timestamp map, never from the sidecar's
-own rows), the run's true row stride. What is its own: the sidecar's clock, and refusing to
-invent pixels when the record carries no frame size.
+**The class: a cumulative part offset added to a timestamp map that already carries it.** A
+part's active timestamp CSV is written recording-global (`Recording.add_video_part` stores
+`local_t_ns + offset_ns`, Tenet 8: time is nanoseconds from the start of the *first* part), but
+the loader added the earlier parts' elapsed time again, so every row after part 1 sat a whole
+earlier-parts-length too late. `between()` then searched the right span in the wrong place and
+returned nothing, and a measurement of a bout in part 2 or later came out empty or NaN with no
+error: the number was plausible, the rows were just somewhere else.
+
+How it hid: no test called the real loader (`measurements._load_slice` is monkeypatched in
+`tests/gui/test_measurements.py`), and every fixture was a single part, where the offset is zero
+and the bug has nothing to add.
+
+The fixture writes part 2's timestamps the way the import does. A fixture whose second part
+restarted at zero would pass the old code and encode the opposite of the contract.
+
+**The sibling class: a part-local frame number compared with a recording-wide one.** An
+embedding store's `frame_idx` is the detection part's own and restarts at zero in every video
+part, while a slice's frames are recording-wide. `_embeddings_for` merged every part's local numbers
+into one list and joined it against the slice, so for a bout after part 1 it found nothing (the
+appearance change came out NaN) or found another part's frame with the same number (the wrong
+embedding, with no error). The same single-part fixtures hid it. `_series_parts` now carries each
+part's offset.
 """
 
 import numpy as np
 import pytest
 import yaml
 
-from detail.api import frame_slices
-from detail.pipeline import kinematics_backfill
+from detail.api.frame_slices import between, from_tracking
+from detail.api.recording import Recording
+from detail.storage import experiment as experiment_store
 from detail.storage import recording as recording_store
-from detail.storage.zarr_io import KinematicsPartWriter, kinematics_part_path
+from detail.storage.zarr_io import (
+    AssignmentPartWriter,
+    DetectionPartWriter,
+    EmbeddingPartWriter,
+    KinematicsPartWriter,
+    kinematics_part_path,
+)
 
-from tests.experiments import write_embedding_run
-
-EMB = "emb_01"
-
-
-def _sidecar_run(recording_dir, frames, t_ns, *, cx, cy):
-    """An embedding run over ``frames`` whose sidecar says the subject was at ``(cx, cy)``."""
-    return write_embedding_run(
-        recording_dir,
-        np.zeros((len(frames), 4), np.float32),
-        np.asarray(frames),
-        np.asarray(t_ns),
-        tracking_run_id="track_01",  # the recording-level id `processed_recording` writes
-        cx=cx,
-        cy=cy,
-    )
+PERIOD = 100_000_000  # 0.1 s per frame
+FRAMES = 10  # per part
+PRESENT = (3, 4)  # part-local frames the track is detected in, in every part
 
 
-def _set_embedding_cadence(run_dir, every_n_frames: int) -> None:
-    path = run_dir / "embedding.yaml"
-    meta = yaml.safe_load(path.read_text(encoding="utf-8-sig"))
-    meta["every_n_frames"] = every_n_frames
-    path.write_text(yaml.dump(meta, sort_keys=False), encoding="utf-8")
+def _box(animal, part):
+    """Animal 0 sits still; animal 1 comes 10 px closer in every part (centres on a line, y=10).
+
+    So the distance between them is 60 px in part 1, 50 in part 2, 40 in part 3: a number that
+    changes with the part, which is what lets a mix-up of parts show.
+    """
+    if animal == 0:
+        return (0.0, 0.0, 0.2, 0.2)
+    return (0.6 - 0.1 * part, 0.0, 0.8 - 0.1 * part, 0.2)
 
 
-def _set_tracking_cadence(recording_dir, every_n_frames: int) -> None:
-    data = recording_store.read_recording(recording_dir)
-    data["tracking_runs"][0]["every_n_frames"] = every_n_frames
-    recording_store.write_recording(recording_dir, data)
+def _vector(part, frame):
+    """An embedding that says which recording-wide frame it belongs to."""
+    return np.array([part * FRAMES + frame + 1, 1.0, 0.0, 0.0], dtype=np.float32)
 
 
-def _embedding_part(run_dir, name, frames, t_ns):
-    """The embedding part a sidecar sits beside: the loader finds sidecars through them, so a
-    sidecar with no part is not a sidecar at all."""
-    from detail.storage.zarr_io import EmbeddingPartWriter
-
-    with EmbeddingPartWriter(
-        run_dir / "track_0" / f"{name}.zarr", output_dim=4
-    ) as writer:
-        for frame, t in zip(frames, t_ns):
-            writer.add_row(int(frame), int(t), 0, np.zeros(4, np.float32))
-
-
-def test_a_run_without_a_sidecar_is_none_not_an_error(processed_recording):
-    sdir = processed_recording.recording.dir
-    write_embedding_run(
-        sdir, np.zeros((3, 4), np.float32), [0, 1, 2], [0, 1000, 2000],
-        tracking_run_id="track_01",
-    )  # fmt: skip
-    assert frame_slices.from_kinematics(sdir, embed_run_id=EMB, track_id=0) is None
-
-
-def test_the_sidecar_is_read_in_pixels_on_the_recordings_frame(processed_recording):
-    """40x40 recording, so px == norm * 40: centroid, area and box all land in pixels, the
-    clock is the sidecar's own, and both index columns are int64."""
-    sdir = processed_recording.recording.dir
-    _sidecar_run(sdir, [0, 2, 4], [0, 2000, 4000], cx=[0.25, 0.5, 0.75], cy=[0.5] * 3)
-
-    got = frame_slices.from_kinematics(sdir, embed_run_id=EMB, track_id=0)
-
-    assert got is not None
-    np.testing.assert_array_equal(got.frame_idx, [0, 2, 4])
-    np.testing.assert_array_equal(got.t_ns, [0, 2000, 4000])
-    assert got.frame_idx.dtype == np.int64 and got.t_ns.dtype == np.int64
-    np.testing.assert_allclose(got.centroid, [[10, 20], [20, 20], [30, 20]])
-    np.testing.assert_allclose(got.area, [0.05 * 40 * 40] * 3)  # the helper writes 0.05
-    np.testing.assert_allclose(got.bbox, [[0, 0, 40, 40]] * 3)
-    assert got.stride == 1
-    assert got.embeddings is None and got.labels is None
-    assert len(got) == 3
+def _write_embeddings(sdir, stem, part, t_ns, series, *, sidecar):
+    store = sdir / "embeddings" / "emb_01" / f"track_{series}" / f"{stem}.zarr"
+    store.parent.mkdir(parents=True, exist_ok=True)
+    with EmbeddingPartWriter(store, output_dim=4) as writer:
+        for frame in PRESENT:
+            writer.add_row(frame, int(t_ns[frame]), 0, _vector(part, frame))
+    if sidecar:
+        # The union of the two boxes, and a footprint that differs by part.
+        with KinematicsPartWriter(kinematics_part_path(store)) as kin:
+            for frame in PRESENT:
+                kin.add_row(
+                    frame,
+                    int(t_ns[frame]),
+                    0.4,
+                    0.1,
+                    0.05 + 0.01 * part,
+                    np.array([0.0, 0.0, 0.8 - 0.1 * part, 0.2], dtype=np.float32),
+                )
 
 
-def test_the_stride_is_the_rows_true_step_in_video_frames(processed_recording):
-    """The embed pass keeps ``frame % every_n_frames == 0`` on top of the tracking cadence, so
-    rows sit at multiples of both: lcm(4, 3) = 12, and either alone is itself."""
-    sdir = processed_recording.recording.dir
-    run_dir = _sidecar_run(sdir, [0], [0], cx=[0.5], cy=[0.5])
+def _recording(tmp_path, n_parts, *, animals=(0,), embedded=None, sidecar=None):
+    """`n_parts` parts of FRAMES frames each, `animals` seen at PRESENT in every part.
 
-    _set_tracking_cadence(sdir, 4)
-    assert frame_slices.from_kinematics(sdir, embed_run_id=EMB, track_id=0).stride == 4
-    _set_embedding_cadence(run_dir, 3)
-    assert frame_slices.from_kinematics(sdir, embed_run_id=EMB, track_id=0).stride == 12
-    _set_tracking_cadence(sdir, 1)
-    assert frame_slices.from_kinematics(sdir, embed_run_id=EMB, track_id=0).stride == 3
-
-
-def test_frame_idx_is_made_global_from_each_parts_timestamp_map(processed_recording):
-    """Part 2's rows continue part 1's frame axis by part 1's *frame count* (5, from its
-    timestamp map), not by its sidecar's last row (2). The sidecar's clock restarts with the
-    part, and is kept as recorded."""
-    sdir = processed_recording.recording.dir
-    run_dir = _sidecar_run(sdir, [0, 2], [0, 2000], cx=[0.5, 0.5], cy=[0.5, 0.5])
-
-    second = "video/timestamps/generated/part_002.csv"
-    recording_store.write_timestamps_csv(
-        sdir / second, np.arange(5, dtype=np.int64) * 1000
-    )
-    data = recording_store.read_recording(sdir)
-    data["video"]["files"].append(
-        {
-            "index": 1,
-            "file": "video/part_002.mp4",
-            "timestamps": {"generated": second, "user": None, "active": "generated"},
-        }
-    )
-    recording_store.write_recording(sdir, data)
-    _embedding_part(run_dir, "part_002", [0, 2], [0, 2000])
-    with KinematicsPartWriter(
-        kinematics_part_path(run_dir / "track_0" / "part_002.zarr")
-    ) as kin:
-        for frame, t in ((0, 0), (2, 2000)):
-            kin.add_row(frame, t, 0.5, 0.5, 0.05, [0.0, 0.0, 1.0, 1.0])
-
-    got = frame_slices.from_kinematics(sdir, embed_run_id=EMB, track_id=0)
-
-    np.testing.assert_array_equal(got.frame_idx, [0, 2, 5, 7])
-    np.testing.assert_array_equal(got.t_ns, [0, 2000, 0, 2000])
-
-
-def test_a_backfilled_sidecar_agrees_with_the_detection_store(processed_recording):
-    """The same track read by both loaders: identical frames and boxes (the union box, in
-    pixels), and a position within a pixel — the mask's centre of mass against the box's
-    centre, on a filled square."""
-    it = processed_recording
-    moving = [
-        (f, 0, (0.1 + 0.05 * f, 0.1, 0.5 + 0.05 * f, 0.5), it.square(4, 20, 4 + 2 * f, 20 + 2 * f))
-        for f in range(5)
-    ]  # fmt: skip
-    recording = it.add_recording("recording_002", detections=moving, object_ids=[0] * 5)
+    ``embedded`` writes an embedding series beside it: ``"0"`` for an ordinary track's.
+    """
+    proj_dir = experiment_store.create_experiment(tmp_path, "p")
+    recording_store.create_recording(proj_dir, "s1")
+    recording = Recording(proj_dir, "s1")
     sdir = recording.dir
-    write_embedding_run(
-        sdir, np.zeros((5, 4), np.float32), list(range(5)), np.arange(5) * 1000,
-        tracking_run_id="track_01",
-    )  # fmt: skip
-    assert kinematics_backfill.backfill_run(sdir, EMB) == 1
+    ddir = sdir / "detections" / "det_01"
+    adir = sdir / "tracking" / "track_01" / "assignments"
+    ddir.mkdir(parents=True)
+    adir.mkdir(parents=True)
 
-    from_store = frame_slices.from_tracking(
-        sdir, tracking_run_id="track_01", track_id=0
+    files = []
+    for part in range(n_parts):
+        stem = f"part_{part + 1:03d}"
+        # Recording-global, as the import writes it: part k starts where part k-1 ended.
+        t_ns = (part * FRAMES + np.arange(FRAMES, dtype=np.int64)) * PERIOD
+        recording_store.write_timestamps_csv(
+            sdir / "video" / "timestamps" / "generated" / f"{stem}.csv", t_ns
+        )
+        files.append(
+            {
+                "index": part,
+                "file": f"video/{stem}.mp4",
+                "timestamps": {
+                    "generated": f"video/timestamps/generated/{stem}.csv",
+                    "user": None,
+                    "active": "generated",
+                },
+            }
+        )
+        with DetectionPartWriter(ddir / f"{stem}.zarr") as writer:
+            for frame in PRESENT:
+                for animal in animals:
+                    writer.add_row(
+                        frame,
+                        int(t_ns[frame]),
+                        animal,
+                        "mouse",
+                        0.9,
+                        _box(animal, part),
+                        "",
+                    )
+        with AssignmentPartWriter(adir / f"{stem}.zarr") as writer:
+            for _ in PRESENT:
+                for animal in animals:
+                    writer.add_object_id(animal)
+        if embedded is not None:
+            _write_embeddings(
+                sdir,
+                stem,
+                part,
+                t_ns,
+                embedded,
+                sidecar=bool(sidecar),
+            )
+
+    (sdir / "tracking" / "track_01" / "track.yaml").write_text(
+        yaml.dump(
+            {
+                "schema_version": 1,
+                "id": "track_01",
+                "detection_run_id": "det_01",
+                "class_name": None,
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
     )
-    from_sidecar = frame_slices.from_kinematics(sdir, embed_run_id=EMB, track_id=0)
-
-    np.testing.assert_array_equal(from_sidecar.frame_idx, from_store.frame_idx)
-    np.testing.assert_allclose(from_sidecar.bbox, from_store.bbox, atol=1e-6)
-    np.testing.assert_allclose(from_sidecar.position, from_store.position, atol=1.0)
-    assert from_sidecar.area is not None and (from_sidecar.area > 0).all()
-    assert (
-        from_store.area is None
-    )  # the store loader leaves the mass-centre inputs unset
-
-
-def test_a_record_without_a_frame_size_is_refused_rather_than_guessed(
-    processed_recording,
-):
-    sdir = processed_recording.recording.dir
-    _sidecar_run(sdir, [0], [0], cx=[0.5], cy=[0.5])
     data = recording_store.read_recording(sdir)
-    del data["video"]["resolution"]
+    data["video"] = {
+        "storage": "default",
+        "fps_container": 10.0,
+        "fps_actual": 10.0,
+        "fps_source": "container",
+        "resolution": [100, 100],
+        "total_duration_s": n_parts * FRAMES * PERIOD / 1e9,
+        "files": files,
+    }
+    data.setdefault("detection_runs", []).append(
+        {"id": "det_01", "status": "complete", "downsampling_run_id": None}
+    )
+    data.setdefault("tracking_runs", []).append(
+        {"id": "track_01", "status": "complete", "detection_run_id": "det_01"}
+    )
     recording_store.write_recording(sdir, data)
-
-    with pytest.raises(ValueError, match="video.resolution"):
-        frame_slices.from_kinematics(sdir, embed_run_id=EMB, track_id=0)
+    return recording
 
 
-def test_a_sidecar_for_a_part_the_recording_does_not_list_is_refused(
-    processed_recording,
-):
-    sdir = processed_recording.recording.dir
-    run_dir = _sidecar_run(sdir, [0], [0], cx=[0.5], cy=[0.5])
-    _embedding_part(run_dir, "part_009", [0], [0])
-    with KinematicsPartWriter(
-        kinematics_part_path(run_dir / "track_0" / "part_009.zarr")
-    ) as kin:
-        kin.add_row(0, 0, 0.5, 0.5, 0.05, [0.0, 0.0, 1.0, 1.0])
-
-    with pytest.raises(ValueError, match="part_009"):
-        frame_slices.from_kinematics(sdir, embed_run_id=EMB, track_id=0)
+def _global_t_ns(n_parts):
+    return [
+        (part * FRAMES + frame) * PERIOD for part in range(n_parts) for frame in PRESENT
+    ]
 
 
-def test_between_cuts_a_clip_out_by_the_sidecars_clock(processed_recording):
-    sdir = processed_recording.recording.dir
-    _sidecar_run(sdir, [0, 2, 4], [0, 2000, 4000], cx=[0.2, 0.5, 0.8], cy=[0.5] * 3)
-    whole = frame_slices.from_kinematics(sdir, embed_run_id=EMB, track_id=0)
+@pytest.mark.parametrize("n_parts", [1, 2, 3])
+def test_each_row_keeps_its_recording_global_time(tmp_path, n_parts):
+    """The time on a row is the time in the part's own map, which is already global."""
+    recording = _recording(tmp_path, n_parts)
+    slice_ = from_tracking(recording.dir, tracking_run_id="track_01", track_id=0)
+    assert slice_.t_ns.tolist() == _global_t_ns(n_parts)
+    assert slice_.frame_idx.tolist() == [
+        part * FRAMES + frame for part in range(n_parts) for frame in PRESENT
+    ]
 
-    clip = frame_slices.between(whole, 2000, 4000)
 
-    np.testing.assert_array_equal(clip.frame_idx, [2, 4])
-    np.testing.assert_allclose(clip.centroid[:, 0], [20, 32])
-    assert clip.stride == whole.stride
+def test_a_bout_in_a_later_part_is_found_where_it_happened(tmp_path):
+    """The user-visible half: a span in part 2, stated in recording time, has rows."""
+    recording = _recording(tmp_path, 2)
+    slice_ = from_tracking(recording.dir, tracking_run_id="track_01", track_id=0)
+    start, end = (FRAMES + PRESENT[0]) * PERIOD, (FRAMES + PRESENT[1]) * PERIOD
+    bout = between(slice_, start, end)
+    assert len(bout) == len(PRESENT)
+    assert bout.t_ns.tolist() == [start, end]
+
+
+# --- the sibling: part-local frame numbers compared with recording-wide ones ------------- #
+# A store's `frame_idx` restarts at zero in every video part, while a slice's frames are
+# recording-wide. The embeddings join compared the two directly: a row of part 2 found nothing (a
+# NaN appearance change) or found another part's frame with the same number (a wrong embedding).
+WIDE_FRAMES = [part * FRAMES + frame for part in range(2) for frame in PRESENT]
+
+
+def test_embeddings_follow_the_part_they_were_made_in(tmp_path):
+    recording = _recording(tmp_path, 2, embedded="0")
+    slice_ = from_tracking(
+        recording.dir, tracking_run_id="track_01", track_id=0, embed_run_id="emb_01"
+    )
+    assert slice_.embeddings is not None
+    assert slice_.embeddings[:, 0].tolist() == [f + 1 for f in WIDE_FRAMES]
+
+
+# --- one animal from its sidecar, and the chooser ---------------------------------------- #
+def test_one_animals_sidecar_gives_mask_centroid_and_area_on_the_wide_scale(tmp_path):
+    from detail.api.frame_slices import from_kinematics
+
+    recording = _recording(tmp_path, 2, embedded="0", sidecar=True)
+    slice_ = from_kinematics(
+        recording.dir, embed_run_id="emb_01", track_id=0, every_n_frames=3
+    )
+    assert slice_.frame_idx.tolist() == WIDE_FRAMES
+    assert slice_.t_ns.tolist() == _global_t_ns(2)
+    assert slice_.stride == 3, "the embedding run's cadence"
+    assert slice_.centroid.ravel().tolist() == pytest.approx([40, 10] * 4)
+    assert slice_.area.tolist() == pytest.approx([500, 500, 600, 600])
+    assert slice_.embeddings[:, 0].tolist() == [f + 1 for f in WIDE_FRAMES]
+
+
+def test_no_sidecar_is_none_not_an_error(tmp_path):
+    from detail.api.frame_slices import from_kinematics
+
+    recording = _recording(tmp_path, 1, embedded="0", sidecar=False)
+    assert from_kinematics(recording.dir, embed_run_id="emb_01", track_id=0) is None
+
+
+@pytest.mark.parametrize("sidecar", [True, False])
+def test_track_slice_prefers_the_sidecar_and_falls_back_to_the_boxes(tmp_path, sidecar):
+    from detail.api.frame_slices import track_slice
+
+    recording = _recording(tmp_path, 2, embedded="0", sidecar=sidecar)
+    record = {"id": "emb_01", "tracking_run_id": "track_01", "every_n_frames": 1}
+    slice_ = track_slice(recording, record, 0)
+    assert slice_.t_ns.tolist() == _global_t_ns(2)
+    assert (slice_.centroid is not None) == sidecar
+    assert slice_.bbox is not None
+    assert track_slice(recording, {"id": "emb_01"}, 0) is None
+
+
+def test_between_cuts_every_per_row_field_and_carries_the_rest():
+    """By inspection, not a list: a field added to `FrameSlice` reaches every bout cut."""
+    import dataclasses
+
+    from detail.analysis.descriptors import FrameSlice
+
+    n = 10
+    rows = np.arange(n)
+    whole = FrameSlice(
+        frame_idx=rows,
+        t_ns=rows.astype(np.int64) * 10,
+        centroid=np.zeros((n, 2)),
+        area=np.ones(n),
+        bbox=np.zeros((n, 4)),
+        embeddings=np.zeros((n, 3)),
+        labels=rows,
+        shape={"top": rows.astype(float), "bottom": rows.astype(float) + 1},
+        body_length=42.0,
+        camera_view="side",
+        stride=2,
+    )
+    cut = between(whole, 20, 50)
+    assert len(cut) == 4
+    for f in dataclasses.fields(FrameSlice):
+        value = getattr(cut, f.name)
+        if isinstance(value, np.ndarray):
+            assert value.shape[0] == 4, f.name
+    assert cut.shape["top"].tolist() == [2.0, 3.0, 4.0, 5.0]
+    assert (cut.body_length, cut.camera_view, cut.stride) == (42.0, "side", 2)

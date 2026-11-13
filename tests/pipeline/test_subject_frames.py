@@ -7,6 +7,7 @@ import pytest
 from detail.core.skeleton import Skeleton
 from detail.pipeline import subject_frames as sf
 from detail.storage import example_sets
+from detail.storage import metadata as metadata_store
 from tests import experiments
 
 SK = Skeleton(names=("nose", "tail_base"), edges=(("nose", "tail_base"),))
@@ -61,6 +62,64 @@ def test_choose_recordings_is_stratified_and_seeded():
     assert sf.choose_recordings(ids, 99) == ids
     with pytest.raises(ValueError, match="1 or more"):
         sf.choose_recordings(ids, 0)
+
+
+def _setups(sizes: dict[str, int]) -> tuple[list[str], dict[str, str]]:
+    ids, groups = [], {}
+    for value, n in sizes.items():
+        for _ in range(n):
+            rid = f"recording_{len(ids):03d}"
+            ids.append(rid)
+            groups[rid] = value
+    return ids, groups
+
+
+@pytest.mark.parametrize(
+    ("sizes", "k", "want"),
+    [
+        ({"1": 10, "2": 8, "3": 10, "4": 8}, 8, {"1": 2, "2": 2, "3": 2, "4": 2}),
+        # a value with too few gives its unused share to the others
+        ({"1": 10, "2": 1, "3": 10}, 9, {"1": 4, "2": 1, "3": 4}),
+        # a remainder goes to the values with the most recordings left
+        ({"1": 4, "2": 9, "3": 4}, 7, {"1": 2, "2": 3, "3": 2}),
+    ],
+)
+def test_choose_recordings_splits_evenly_across_metadata_values(sizes, k, want):
+    ids, groups = _setups(sizes)
+    picked = sf.choose_recordings(ids, k, seed=3, groups=groups)
+    got = {value: sum(groups[r] == value for r in picked) for value in sizes}
+    assert got == want
+    assert picked == [r for r in ids if r in picked], "not in list order"
+    assert sf.choose_recordings(ids, k, seed=3, groups=groups) == picked
+
+
+def test_choose_recordings_by_value_ignores_list_position():
+    # imported in one block per setup: by position alone, 4 of 40 would miss setups entirely
+    ids, groups = _setups({"A": 34, "B": 2, "C": 2, "D": 2})
+    by_position = sf.choose_recordings(ids, 4, seed=0)
+    by_value = sf.choose_recordings(ids, 4, seed=0, groups=groups)
+    assert {groups[r] for r in by_position} != {"A", "B", "C", "D"}
+    assert {groups[r] for r in by_value} == {"A", "B", "C", "D"}
+
+
+def test_a_recording_with_no_value_is_its_own_group():
+    ids, groups = _setups({"A": 6})
+    ids.append("recording_blank")
+    picked = sf.choose_recordings(ids, 2, seed=0, groups=groups)
+    assert "recording_blank" in picked
+
+
+def test_spreading_by_an_unknown_column_names_the_columns(tmp_path):
+    metadata_store.upsert_row(tmp_path, "recording_000", {"setup": "1"})
+    assert sf.recording_groups(tmp_path, "setup") == {"recording_000": "1"}
+    with pytest.raises(ValueError, match=r"no metadata column 'box'.*'setup'"):
+        sf.recording_groups(tmp_path, "box")
+
+
+def test_strategy_ids_come_from_the_one_table():
+    assert sf.STRATEGIES == tuple(s.id for s in sf.STRATEGY_TABLE)
+    assert len(set(sf.STRATEGIES)) == len(sf.STRATEGIES)
+    assert sf.DEFAULT_STRATEGY in sf.STRATEGIES
 
 
 def test_choose_takes_the_typical_rows_then_farthest_first():
@@ -232,6 +291,32 @@ def test_sampling_never_draws_a_frame_the_set_holds(tracked):
         sf.sample_frames(
             tracked.experiment.dir, created.id, tracked.sources, 1, strategy="spread"
         )
+
+
+@pytest.mark.parametrize("strategy", ["spread", "varied"])
+def test_a_frame_refused_for_every_bucket_is_never_drawn(
+    tracked, monkeypatch, strategy
+):
+    monkeypatch.setattr(sf, "installed_backbone", lambda: None)
+    root = tracked.experiment.dir
+    created = example_sets.create_set(root, "rats", SK)
+    everything = sf.sample_frames(
+        root, created.id, tracked.sources, N_FRAMES, strategy="spread"
+    )
+    keys = [f.key() for f in everything]
+    created.reject(keys[0])  # every bucket
+    created.reject(
+        keys[1], "toward"
+    )  # one bucket: a bucketless strategy may still draw it
+    example_sets.write_set(root, created)
+
+    drawn = sf.sample_frames(
+        root, created.id, tracked.sources, N_FRAMES, strategy=strategy, n_typical=0
+    )
+
+    drawn_keys = {f.key() for f in drawn}
+    assert keys[0] not in drawn_keys
+    assert keys[1] in drawn_keys
 
 
 def test_sampling_rejects_a_bad_request(tracked):

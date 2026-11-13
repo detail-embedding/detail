@@ -122,7 +122,10 @@ def test_export_import_slim_roundtrip(tmp_path):
     dest = export_store.import_experiment(archive, ws)
     assert (dest / "config.yaml").is_file()
     imported = Experiment(dest)
-    assert imported.recording_metadata["recording_001"] == {"animal_id": "M001"}
+    assert imported.recording_metadata["recording_001"] == {
+        "acquisition_setup": "",
+        "animal_id": "M001",
+    }
     sdir = dest / "recordings" / "recording_001"
     assert not list((sdir / "video").glob("*.mp4"))  # video excluded (slim)
     ts = sdir / "video" / "timestamps" / "generated" / "part_001.csv"

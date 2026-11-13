@@ -98,6 +98,54 @@ def full_frame(canvas_px: int | None = None, resize: int | None = None) -> list[
     return spec
 
 
+ALIGN_STEPS = {"rotate": "align_rotate", "mirror": "align_mirror"}
+# Steps that place or scale the finished subject image. An alignment step goes before the first
+# of them: it must turn the subject at its true pixel scale (a `resize` to a square is
+# anisotropic on a non-square crop, which would bend the axis) and before the canvas is chosen.
+_PLACEMENT_STEPS = ("center_in_square", "pad_to_square", "resize")
+
+
+def crops_to_subject(spec: list[dict]) -> bool:
+    """True when a recipe crops to the subject's box — what alignment turns."""
+    return any(step.get("type") == "crop_to_bbox" for step in spec)
+
+
+def with_pose(spec: list[dict], step: dict | None) -> list[dict]:
+    """``spec`` with the ``draw_pose`` ``step`` (§26 "Pose in the embedding"), or unchanged for
+    ``None``.
+
+    The step goes after the subject image is built and before it is placed in its canvas — the
+    same place an alignment step goes, and *before* it, so a turned or flipped image carries the
+    points with it. Unlike alignment it needs no crop: a whole-frame recipe can be drawn on too.
+    """
+    if step is None:
+        return list(spec)
+    at = next(
+        (i for i, s in enumerate(spec) if s.get("type") in _PLACEMENT_STEPS), len(spec)
+    )
+    return [*spec[:at], step, *spec[at:]]
+
+
+def check_pose_step(spec: list[dict], pose: str) -> None:
+    """A renderer_spec draws pose exactly as ``pose`` says: one ``draw_pose`` step when it is
+    ``"draw"``, none otherwise.
+
+    An explicit spec (the raw-API path) carries its own steps, and a ``draw_pose`` step with no
+    keypoints to read passes every frame through undrawn — a run recorded as drawn that is not,
+    or the reverse.
+
+    Raises:
+        ValueError: when the steps and ``pose`` disagree.
+    """
+    present = [s["type"] for s in spec if s["type"] == "draw_pose"]
+    wanted = ["draw_pose"] if pose == "draw" else []
+    if present != wanted:
+        raise ValueError(
+            f"renderer_spec has pose steps {present} but pose is {pose!r}; a run that draws "
+            f"pose needs exactly {wanted or 'no draw_pose step'} (with_pose adds it)"
+        )
+
+
 @dataclass(frozen=True)
 class Constructor:
     """A named, GUI-selectable input-image recipe."""
@@ -109,6 +157,14 @@ class Constructor:
     # True when ``build`` needs a ``bg_color`` computed from the data (the max-contrast
     # background), so the caller resolves that statistic before building the spec.
     needs_bg_color: bool = False
+
+    @property
+    def crops_to_subject(self) -> bool:
+        """Whether this recipe can be aligned to the body axis (``with_alignment``)."""
+        kwargs: dict = {"canvas_px": 1, "resize": None}
+        if self.needs_bg_color:
+            kwargs["bg_color"] = [0, 0, 0]
+        return crops_to_subject(self.build(**kwargs))
 
 
 CONSTRUCTORS: dict[str, Constructor] = {

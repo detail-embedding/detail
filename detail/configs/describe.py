@@ -8,6 +8,7 @@ registry walk imports the pipeline lazily so importing this module stays cheap."
 from pydantic import BaseModel
 
 from detail.configs.comparison import ComparisonConfig
+from detail.configs.cluster_profile import ClusterProfileConfig
 from detail.configs.keypoint_track import DespikeSmoothConfig, TemporalDecodeConfig
 from detail.configs.keypoint_dataset import KeypointDatasetConfig
 from detail.configs.labeling import LabelingConfig
@@ -40,6 +41,10 @@ _UNREGISTERED_CONFIG_MODELS: list[tuple[str, type[BaseModel], str]] = [
     # method, so the GUI's `?` on a method knob has a page.
     ("temporal_decode", TemporalDecodeConfig, "keypoint_track"),
     ("despike_smooth", DespikeSmoothConfig, "keypoint_track"),
+    # The cluster profile (§22 "Cluster profile") is asked for from a clustering run's tree, the
+    # clip window and the montage, and from `analysis profile`; it writes beside the run rather
+    # than being a run of its own, so no registry walks it.
+    ("cluster_profile", ClusterProfileConfig, "analysis"),
 ]
 
 #: ``module_id -> the surface that launches it``, for the modules with no registry of their own.
@@ -88,17 +93,26 @@ def _choices(prop: dict) -> list | None:
     inside the ``anyOf`` a ``Literal[...] | None`` produces. Reading only the top-level
     ``enum`` lost the options of the other two, so the docs table, the CLI and the form saw
     a free string.
+
+    An ``anyOf`` is a choice only when every branch but ``null`` is one: ``int | Literal["auto"]``
+    is a free number that may also be one word, not a one-item choice — reading its ``const``
+    alone would make the form a combo of the one word and lose every number.
     """
     if "enum" in prop:
         return list(prop["enum"])
     if "const" in prop:
         return [prop["const"]]
+    values: list = []
     for branch in prop.get("anyOf", []):
+        if branch.get("type") == "null":
+            continue
         if "enum" in branch:
-            return list(branch["enum"])
-        if "const" in branch:
-            return [branch["const"]]
-    return None
+            values.extend(branch["enum"])
+        elif "const" in branch:
+            values.append(branch["const"])
+        else:
+            return None  # a free branch: the field is not a choice
+    return values or None
 
 
 def _optional(prop: dict) -> bool:
@@ -470,6 +484,9 @@ _DISPLAY_NAMES = {
     "query": "Behavior scan",
     "query_eval": "Behavior-query eval",
     "temporal_clustering": "Behavior clustering",
+    "track_merge": "Merge tracks",
+    "profile_describe": "Profile clusters",
+    "cluster_lookalikes": "Find look-alike clusters",
     # The importer's own `display_name`, which is what the picker shows. Left to the
     # fallback the page would be titled "Timeseries csv" while the app says "Time-series
     # CSV (sensor data)" — the exact drift this table exists to close.

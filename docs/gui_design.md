@@ -340,6 +340,8 @@ Configuration   full-width — the Get-started checklist; each step drills in:
                   Install a model    → opens the Model manager (§5)
                   Distill a model    → opens the Model manager (§12)
                   See it segment     → prompt check on a clip (planned)
+                  Cluster profile    optional: Install SHAP (the analysis extra,
+                                     into the running env, streamed + Cancel) (§1, §22)
 Model manager   full-width — one page: Global models (imported/promoted, metadata +
                   preview), the active experiment's trained models, and the Hugging Face
                   foundation models (suggested first, then installed); four rows each, then
@@ -450,7 +452,8 @@ Project rail (only inside a project — open an experiment from Home):
   is above them. Enforced for every page by `requirements.py`'s
   `a_page_puts_its_create_action_above_the_list_it_fills`, which is why a page added tomorrow
   inherits it; an exemption carries its reason, as every allowlist here does.
-- **Index/list tables size to their content, up to a row budget.** A `QTableView` defaults
+- **Index/list tables size to their content, up to a row budget — on a page.** In a pop-up
+  there is no row budget; see the pop-up bullet below. A `QTableView` defaults
   to vertical `Expanding`, so a table with a few rows stretches and shows blank space below
   its rows; and its `sizeHint` is a constant 192px ≈ 5 rows *whatever* it holds, so a cap
   alone is a height it never reaches. **Three numbers, three jobs**: `fit_table_height` assigns
@@ -712,14 +715,40 @@ Project rail (only inside a project — open an experiment from Home):
   little more than 1440x810. 1440x810
   sits under every machine in play, above the declining 1366x768, and is a round 16:9. Adobe
   Premiere Pro, the nearest commercial comparison, states a 1920x1080 minimum; Fiji, napari and
-  EthoVision publish none at all. **A window does not get all of it** — a title bar and the menu
-  bar take roughly 60px, so `USABLE_H = TARGET_H - 60` (against `TARGET_W, TARGET_H = 1440, 810`)
-  is what a dialog's opening size is measured against. Three dialogs had drifted past it —
-  1040x800, 1120x780, 1240x760 — because nothing checked, and a window that opens taller than the
-  display puts its own bottom under the Dock. Dialogs scroll now, so this is the size they **open
-  at**, not a floor they impose. The constants and the check live in
-  `tests/gui/test_dialog_space.py`, whose comment defers to this bullet for the reasoning and the
-  market share behind it.
+  EthoVision publish none at all. It is what a *page* has to lay out in
+  (`tests/gui/test_run_page_fits.py`); a pop-up is no longer sized against it.
+- **A pop-up opens at the size of its content, up to 90% of its screen, centred.** Every dialog
+  and pop-up window — the clip window, the montage, an enlarged pane, Export clips… — is a
+  `gui.dialog.Dialog`, and `Dialog.showEvent` sizes it each time it opens through
+  `sizing.fit_to_content`: its body unscrolled, every table and list in it whole, every picture at
+  its natural size (`ImageView.natural_size` — the frame's own pixels, or what a host composing
+  to fit, like the montage's tile grid at `DRAW_PX`, declares), capped at `sizing.SCREEN_SHARE`
+  of the available area of the screen it opens on, centred on its parent; past the cap the body
+  scrolls. Content that arrives later (a decoded frame, a filled list) grows it up to the cap
+  around the same centre, never shrinks it, and never undoes a size the user dragged. Nothing is
+  remembered between opens. This **replaces** typed opening sizes, which were the bug: forty
+  dialogs called `self.resize(…)` with a size picked against one screen and one fixture, and on
+  real data most opened smaller than their content (reported: *"most pop-ups open much smaller
+  than their content"*) while the 1440x810 check on them could only catch one that was too big.
+  `a_dialog_never_types_its_opening_size` and `a_dialog_opens_showing_its_content`
+  (`gui/requirements.py`) and `tests/gui/test_popup_size.py` hold it.
+- **A list or table in a pop-up shows every row, and has an edge to drag.** The row cap
+  (`tables.max_visible_rows`, `fit_list_height(max_rows=…)`, a hand-typed `setMaximumHeight`) is
+  a *page's*: a page shares the window with everything on it. A pop-up is sized to its content,
+  so a capped list in one only hides rows the window had room for — the New analysis dialog
+  showed eight of thirty recordings with 383px to spare. Asked whether a pop-up's lists should
+  grow past the cap, the user answered *"Yes, they should and should also be manually scalable
+  by user within larger window."* So `Dialog.SHOWS_EVERY_ROW` tells both row fits
+  (`sizing.shows_every_row`) to show every row, as the view's floor; `sizing.refit_rows` re-runs
+  each fit once the view is in its dialog, and fits a view nobody sized; and
+  `sizing.attach_row_grips` puts a `RowsGrip` — the `ResizeHandle` the bands use — under every
+  list and table, in the view's own layout rather than around it, so code that finds the view
+  through its layout (`QFormLayout.setRowVisible(view, …)`) still does. Dragging it changes the list's height, not the window's: the body
+  scrolls, the window stops re-fitting for that open, and later rows do not undo the drag.
+  Nothing is remembered between opens. A view in a `QSplitter` keeps the splitter's divider.
+  `a_list_in_a_dialog_shows_every_row` and `a_list_in_a_dialog_has_an_edge_to_drag` sweep every
+  dialog, built over 24 recordings (`subjects.a_crowded_experiment`), since over one nothing is
+  long enough to hide.
 - **A plot follows the chart theme, and sets its range after its items.** Build it with
   `plot_theme.themed_plot()` and colour its marks by role (`theme.identity(i)`, `theme.neutral`,
   `theme.handle`) — never `setBackground("w")` or a literal pen. This **reverses** the rule that
@@ -1327,7 +1356,7 @@ detail/gui/
 ├── collapse.py          # CollapsibleBand — a foldable section with a drag handle
 ├── busy.py              # run_busy / run_progress / decode_overlay — off-thread loads
 ├── workers.py           # GuiWorker (every thread names its receiver=) + BackgroundCall
-├── lifetime.py          # whether a Qt object is still there to be talked to
+├── lifetime.py          # whether a Qt object is still there to be talked to; tree_items
 ├── image_view.py        # the one pane that shows a picture; `zoomable` has no default
 ├── scrubber.py          # FrameScrubber — the shared frame/playback control
 ├── frame_source.py      # why a scrub position produced no pixels, and what to say

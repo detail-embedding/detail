@@ -122,3 +122,23 @@ def test_the_rle_check_would_catch_a_corrupt_run():
         rle.RunMask.from_counts_str(flipped, mask.shape)
     with pytest.raises(ValueError, match="RLE runs cover"):
         rle.RunMask(np.array([5, 5]), (3, 3))
+
+
+def test_a_mask_asked_for_at_another_size_decodes_at_its_own_then_resizes():
+    """A detection run encodes masks at its ``mask_resolution``; a video that decodes larger
+    than the run saw it asks for them at the frame's size. Decoded straight at that size an RLE
+    comes out striped and repeated (what a montage showed with Raw on); with ``encoded`` it is
+    the same animal, scaled."""
+    import cv2
+
+    from detail.core.utils import decode_mask
+
+    small = np.zeros((36, 64), dtype=np.uint8)
+    small[10:20, 5:15] = 1
+    counts = mask_utils.encode(np.asfortranarray(small))["counts"].decode("ascii")
+    expected = cv2.resize(small, (96, 54), interpolation=cv2.INTER_NEAREST) > 0
+    right = decode_mask(counts, (54, 96), encoded=(36, 64))
+    assert right.shape == (54, 96) and np.array_equal(right, expected)
+    wrong = decode_mask(counts, (54, 96))
+    assert not np.array_equal(wrong, expected)  # the garbling this guards against
+    assert np.array_equal(decode_mask(counts, (36, 64), encoded=(36, 64)), small > 0)

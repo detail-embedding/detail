@@ -22,12 +22,14 @@ The filename is ``export_run.yaml``, not ``export.yaml``: that name is already t
 export folder — and three documents behind one name is how a reader stops trusting any of them.
 """
 
+import contextlib
 import shutil
 from pathlib import Path
 
 import yaml
 
 from detail.core import atomic
+from detail.core import yaml_load
 from detail.storage import dirscan
 from detail.storage import experiment as experiment_store
 from detail.storage import read_cache
@@ -105,7 +107,7 @@ def write_export_yaml(run_dir: Path | str, record: dict) -> None:
     tmp = path.parent / (path.name + ".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         yaml.dump(ordered, f, sort_keys=False)
-    atomic.replace(tmp, path)
+    read_cache.replace_document(tmp, path)
 
 
 def read_export_yaml(run_dir: Path | str) -> dict:
@@ -117,7 +119,7 @@ def read_export_yaml(run_dir: Path | str) -> dict:
     path = Path(run_dir) / EXPORT_FILENAME
     try:
         return read_cache.cached_document(
-            path, lambda: yaml.safe_load(atomic.read_text(path))
+            path, lambda: yaml_load.safe_load(atomic.read_text(path))
         )
     except FileNotFoundError:
         raise FileNotFoundError(f"no {EXPORT_FILENAME} in {run_dir}") from None
@@ -131,11 +133,19 @@ def set_export_status(
     ``error`` is recorded so a surface can say why a run failed. Nothing validates ``status``:
     the reconciler writes whatever the executor envelope settled on, and a store that argued
     with it would be a second opinion about a fact it does not own.
+
+    Also merges in ``duration_s`` from the job's own envelope (§ run location,
+    duration, cost) — export runs are local-only today, so no ``compute``/cost,
+    just timing.
     """
+    from detail.executor import run_metrics
+
     record = read_export_yaml(run_dir)
     record["status"] = status
     if error is not None:
         record["error"] = error
+    with contextlib.suppress(Exception):
+        record.update(run_metrics.completion_fields(run_dir, None))
     write_export_yaml(run_dir, record)
 
 

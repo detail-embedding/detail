@@ -8,6 +8,8 @@ lists every clip, and the tests below hold each node's clips to the method's own
 that node and each clip's typicality to a computation from the full member vectors.
 """
 
+import dataclasses
+
 import numpy as np
 import pytest
 import yaml
@@ -215,8 +217,10 @@ def test_a_clip_order_is_typical_atypical_or_a_shuffle_seeded_by_the_node(
         clips.order("longest")
 
 
-def _tiny_view(rec_time: np.ndarray):
-    """A NodeView over three leaves ((0, 1) then 2) and the given leaf x recording times."""
+def _tiny_view(rec_time: np.ndarray, *, run_rows: bool = False):
+    """A NodeView over three leaves ((0, 1) then 2) and the given leaf x recording times;
+    ``run_rows`` gives each run its row count, as every cache built since clips were listed
+    has (without it the view is a legacy cache, which reads as stale for that alone)."""
     from detail.api.node_view import NodeView
     from detail.core.dataclasses import ClusterTree
 
@@ -242,6 +246,8 @@ def _tiny_view(rec_time: np.ndarray):
         run_leaf=np.array([0, 1, 2], dtype=np.int32),
         separation=np.array([np.nan, np.nan, np.nan, 0.4, 0.2], dtype=np.float32),
     )
+    if run_rows:
+        tables = dataclasses.replace(tables, run_rows=np.ones(3, dtype=np.int32))
     return NodeView(store.NodeCache(leaves=tables, built_from={}), tree)
 
 
@@ -681,6 +687,17 @@ def test_an_instant_on_a_boundary_belongs_to_the_run_that_contains_it(
     got = view.cluster_of_spans([(rid, subject, edge, edge)], {left, right})
     assert got == [int(owner[i + 1])], "the instant went to the run it only touches"
     assert np.all(ends[lo:hi] >= starts[lo:hi])
+
+
+def test_a_cache_that_records_its_subject_is_judged_by_it(cached):
+    """A cache built now names its subject, and another subject reads as stale."""
+    from detail.api.node_view import NodeView
+
+    run_dir, state, method, fit, cache = cached
+    assert cache.built_from["subject"] == str(state.track_id)
+    view = NodeView(cache, method.hierarchy_of(fit))
+    assert view.stale_reason({"subject": str(state.track_id)}) is None
+    assert "track 1" in view.stale_reason({"subject": "1"})
 
 
 # --- review fixes ----------------------------------------------------------------------

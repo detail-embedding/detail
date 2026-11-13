@@ -60,6 +60,11 @@ Then install:
 uv pip install -e ".[yolo,torch,gui,analysis,sam3]"
 ```
 
+To run keypoint models exported from SLEAP, add the `keypoints_onnx` extra
+(`uv pip install -e ".[keypoints_onnx]"`). On Windows and Linux it installs the GPU build of
+onnxruntime, which runs on CUDA when your PyTorch build is for the same CUDA major version
+(CUDA 13 for onnxruntime 1.30). If you installed plain `onnxruntime` before, run
+`uv pip uninstall onnxruntime` first: the two builds cannot be installed together.
 The `yolo` extra installs Ultralytics 8.4.x (`ultralytics>=8.4,<8.5`), the series the detector and keypoint trainers are tested against. Each trained model records the exact version it used.
 
 Launch the desktop app:

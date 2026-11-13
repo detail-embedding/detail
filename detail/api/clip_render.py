@@ -28,6 +28,7 @@ from pathlib import Path
 import numpy as np
 
 from detail.api.run_preview import _global_to_part, _square_crop
+from detail.core.video_codecs import DEFAULT_VIDEO_CODEC
 
 _FALLBACK_FPS = 30.0
 
@@ -88,10 +89,31 @@ def track_rows(part: dict, track_id: int) -> dict[int, tuple[np.ndarray, str]]:
     reader, assignment = part.get("reader"), part.get("assignment")
     if reader is None or assignment is None or not reader.n_rows:
         return {}
-    frames = np.asarray(reader.column("frame_idx")[:])
-    boxes = reader.column("bbox")[:]
-    rle = reader.column("mask_rle")[:]
-    object_id = np.asarray(assignment.column("object_id")[:], dtype=np.int64)
+    raw_rows = part.get("raw_rows")
+    if raw_rows is not None:
+        # _build_parts already resolved this run's own class filter (§13), if it had
+        # one, plus the shorter-wins bound against a crash-torn store
+        # (storage/zarr_io.py): raw_rows maps each already-paired position back to
+        # the reader's own row, so reading bbox/mask_rle through it keeps them
+        # aligned with object_id the way reading a raw contiguous slice would not
+        # be the moment a class filter made row i of the assignment something other
+        # than the reader's own row i.
+        frames = np.asarray(part["frame_idx"])
+        boxes = np.asarray(reader.column("bbox")[raw_rows])
+        rle = np.asarray(reader.column("mask_rle")[raw_rows])
+        object_id = np.asarray(
+            assignment.column("object_id")[: len(raw_rows)], dtype=np.int64
+        )
+    else:
+        # A plain part dict with no _build_parts pairing info (e.g. a lightweight
+        # stand-in reader in tests) — reader and assignment are the only shape
+        # possible without that info: row-aligned 1:1.
+        frames = np.asarray(reader.column("frame_idx")[:])
+        boxes = np.asarray(reader.column("bbox")[:])
+        rle = np.asarray(reader.column("mask_rle")[:])
+        object_id = np.asarray(assignment.column("object_id")[:], dtype=np.int64)
+        n = min(len(frames), len(boxes), len(rle), len(object_id))
+        frames, boxes, rle, object_id = frames[:n], boxes[:n], rle[:n], object_id[:n]
     keep = object_id == int(track_id)
     return {
         int(f): (box, str(counts))
@@ -101,25 +123,20 @@ def track_rows(part: dict, track_id: int) -> dict[int, tuple[np.ndarray, str]]:
     }
 
 
-def fit_within(
-    width: int,
-    height: int,
-    *,
-    max_width: int | None = None,
-    max_longest: int | None = None,
-) -> tuple[int, int]:
-    """Scale ``(width, height)`` down — never up — so the width is at most ``max_width`` and
-    the longest side at most ``max_longest``, keeping the aspect; at least 2 by 2.
+def _decode(mask_rle: str, src: tuple[int, int], encoded=None) -> np.ndarray:
+    """``decode_mask`` of one RLE; ``encoded`` is the size the run encoded it at
+    (``decode_mask``'s)."""
+    from detail.core.utils import decode_mask
 
-    Even dimensions: several mp4 encoders reject an odd width or height outright. This is the
-    one rule for the size an exported picture takes — the clip renders here (longest side) and
-    ``api.animation``'s GIF and mp4 writers (width) — so a frame is never sized two ways.
+    return decode_mask(mask_rle, src, encoded=encoded)
+
+
+def _fit(width: int, height: int, longest: int) -> tuple[int, int]:
+    """Scale ``(width, height)`` down so its longest side is ``longest``, keeping the aspect.
+
+    Even dimensions: several mp4 encoders reject an odd width or height outright.
     """
-    scale = 1.0
-    if max_longest is not None:
-        scale = min(scale, float(max_longest) / max(width, height))
-    if max_width is not None:
-        scale = min(scale, float(max_width) / width)
+    scale = min(1.0, longest / max(width, height))
     return max(2, int(width * scale) // 2 * 2), max(2, int(height * scale) // 2 * 2)
 
 
@@ -186,6 +203,7 @@ def render_part(
     renders: Sequence[str],
     crop: bool = True,
     progress=None,
+    codec: str = DEFAULT_VIDEO_CODEC,
 ) -> None:
     """Render every job of one video part in a single forward pass, writing each clip in place.
 
@@ -272,14 +290,23 @@ def render_part(
             row = rows.get(frame_idx)
             if row is not None:
                 if not crop and sample is None:
-                    out_size = fit_within(bgr.shape[1], bgr.shape[0], max_longest=size)
+                    out_size = _fit(bgr.shape[1], bgr.shape[0], size)
                     sample = _sample_index(bgr.shape[:2], out_size)
                 # One decode, every requested flavour. This is the saving: re-decoding the
                 # source once per flavour is what a separate call per flavour would cost, and
                 # decode is the bill this whole module exists to pay once.
                 payloads = {
                     render: np.ascontiguousarray(
-                        _payload(render, bgr, row, size, out_size, sample, crop)
+                        _payload(
+                            render,
+                            bgr,
+                            row,
+                            size,
+                            out_size,
+                            sample,
+                            crop,
+                            encoded=part.get("mask_hw"),
+                        )
                     )
                     for render in wanted
                 }
@@ -288,7 +315,7 @@ def render_part(
                         writer = job["writers"].get(render)
                         if writer is None:
                             writer, _ = video_store.open_video_writer(
-                                job["paths"][render], job["fps"], *out_size
+                                job["paths"][render], job["fps"], *out_size, codec=codec
                             )
                             job["writers"][render] = writer
                         writer.write(payload)
@@ -313,13 +340,16 @@ def _payload(
     out_size: tuple[int, int],
     sample: tuple[np.ndarray, np.ndarray] | None,
     crop: bool,
+    *,
+    encoded=None,
 ) -> np.ndarray:
-    """One decoded frame, drawn and framed for one flavour."""
+    """One decoded frame, drawn and framed for one flavour. ``encoded`` is the size the masks
+    were encoded at, which the decoded frame need not be."""
     import cv2
 
     box, mask_rle = row
     if render == MASK:
-        binary = _mask_image(bgr.shape[:2], mask_rle)
+        binary = _mask_image(bgr.shape[:2], mask_rle, encoded)
         # `_square_crop` is channel-agnostic, so the mask crops with the same call the frame
         # does — and cropping *before* the resize keeps the mask's own edges rather than
         # inventing intermediate greys.
@@ -333,24 +363,24 @@ def _payload(
         cropped = _square_crop(bgr, box, size)
         if render == RAW:
             return cropped
-        return _blend_cropped(cropped, mask_rle, bgr.shape[:2], box, size)
+        return _blend_cropped(
+            cropped, mask_rle, bgr.shape[:2], box, size, encoded=encoded
+        )
     if render == RAW:
         return cv2.resize(bgr, out_size, interpolation=cv2.INTER_AREA)
-    return _overlay(bgr, mask_rle, out_size, sample)
+    return _overlay(bgr, mask_rle, out_size, sample, encoded=encoded)
 
 
-def _mask_image(src: tuple[int, int], mask_rle: str) -> np.ndarray:
+def _mask_image(src: tuple[int, int], mask_rle: str, encoded=None) -> np.ndarray:
     """The subject's mask as a black-and-white BGR frame at the source resolution.
 
     Three channels because the mp4 writers take them; the values stay strictly 0 or 255, which
     is what makes this loadable as a binary mask on the other side rather than as a grey image
     somebody has to threshold and guess at.
     """
-    from detail.core.utils import decode_mask
-
     if not mask_rle:
         return np.zeros((*src, 3), np.uint8)
-    mask = decode_mask(mask_rle, src)
+    mask = _decode(mask_rle, src, encoded)
     return np.repeat((mask.astype(np.uint8) * 255)[:, :, None], 3, axis=2)
 
 
@@ -360,6 +390,8 @@ def _blend_cropped(
     src: tuple[int, int],
     box: np.ndarray,
     size: int,
+    *,
+    encoded=None,
 ) -> np.ndarray:
     """A cropped frame with the subject's mask blended on, in the crop's own frame.
 
@@ -369,12 +401,11 @@ def _blend_cropped(
     the copy was the largest cost in building a node cache
     and, because it holds the GIL, what serialised the parts decoded in parallel.
     """
-    from detail.core.utils import decode_mask
     from detail.core.visualize import MASK_TINT, bgr_to_rgb, draw_mask, rgb_to_bgr
 
     if not mask_rle:
         return cropped
-    ones = decode_mask(mask_rle, src).view(np.uint8)
+    ones = _decode(mask_rle, src, encoded).view(np.uint8)
     window = _square_crop(np.broadcast_to(ones[:, :, None], (*src, 3)), box, size)
     return rgb_to_bgr(draw_mask(bgr_to_rgb(cropped), window[:, :, 0] > 0, MASK_TINT))
 
@@ -399,6 +430,8 @@ def _overlay(
     mask_rle: str,
     out_size: tuple[int, int],
     sample: tuple[np.ndarray, np.ndarray],
+    *,
+    encoded=None,
 ) -> np.ndarray:
     """The frame at ``out_size`` with the subject's mask blended on (BGR in, BGR out).
 
@@ -412,14 +445,15 @@ def _overlay(
     """
     import cv2
 
-    from detail.core.utils import decode_mask
     from detail.core.visualize import MASK_TINT, bgr_to_rgb, draw_mask, rgb_to_bgr
 
     out = cv2.resize(bgr, out_size, interpolation=cv2.INTER_AREA)
     if not mask_rle:
         return out
-    mask = decode_mask(mask_rle, bgr.shape[:2])[sample[0]][:, sample[1]]
-    return rgb_to_bgr(draw_mask(bgr_to_rgb(out), mask, MASK_TINT))
+    mask = _decode(mask_rle, bgr.shape[:2], encoded)
+    return rgb_to_bgr(
+        draw_mask(bgr_to_rgb(out), mask[sample[0]][:, sample[1]], MASK_TINT)
+    )
 
 
 def _close(job: dict) -> None:

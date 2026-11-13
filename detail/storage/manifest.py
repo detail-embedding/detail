@@ -20,7 +20,6 @@ import re
 import typing
 from pathlib import Path
 
-import yaml
 from pydantic import (
     BaseModel,
     Field,
@@ -29,6 +28,7 @@ from pydantic import (
     model_validator,
 )
 
+from detail.core import yaml_load
 from detail.core.registries import STREAM_IMPORTERS
 from detail.importers import import_stream_importers
 from detail.storage import video as video_store
@@ -170,7 +170,7 @@ def load_manifest(bundle_dir: Path | str) -> dict:
             f"no manifest ({' or '.join(MANIFEST_NAMES)}) in {bundle_dir}"
         )
     with open(path, encoding="utf-8-sig") as f:
-        data = yaml.safe_load(f)
+        data = yaml_load.safe_load(f)
     if not isinstance(data, dict) or not isinstance(data.get("recordings"), list):
         raise ValueError("manifest must be a mapping with a 'recordings' list")
     return data

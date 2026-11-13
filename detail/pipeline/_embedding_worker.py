@@ -38,6 +38,7 @@ from detail.storage.zarr_io import (
     KinematicsPartWriter,
     PartZarrReader,
     kinematics_part_path,
+    resolve_assignment_rows,
 )
 
 PROGRESS_DIRNAME = "parts"
@@ -48,7 +49,8 @@ _WORKER_STATE: dict = {}
 
 
 def progress_json_name(track_id: int, part_id: str) -> str:
-    return f"track_{int(track_id)}_{part_id}.json"
+    """The progress file name of one (track_id, part) unit."""
+    return f"track_{track_id}_{part_id}.json"
 
 
 def _render_workers() -> int:
@@ -146,7 +148,9 @@ def embed_one(
     batch_size: int,
     gpu_idx: int | None,
     every_n_frames: int = 1,
+    class_name: str | None = None,
     heading: dict | None = None,
+    pose: dict | None = None,
 ) -> dict:
     """Embed one (track_id, part_index) unit with a pre-loaded model + renderer.
 
@@ -164,22 +168,41 @@ def embed_one(
     this cadence. A frame whose ``source`` is ``SOURCE_NONE`` has no heading within the gap
     and is **not embedded**; the rest carry ``heading_deg`` / ``align_mirrored`` into the
     render context and onto the part's alignment columns.
+
+    ``pose`` (§14 *Pose in the embedding*) is the unit's per-frame keypoints as
+    ``_build_units`` joined them — ``{mode, weight, frame_idx, xy, score, vec, n_visible}``.
+    ``draw`` hands each frame's points to the ``draw_pose`` step through the render context;
+    ``append`` writes the mask's vector at unit length followed by ``weight`` times the frame's
+    pose block, so the row is ``output_dim + pose_dim`` wide. Either records ``pose_points``.
     """
     # Imports here so the module stays torch-free at import time (Tenet 13).
     import torch
 
     from detail.pipeline.embedding import DetectionMaskDataset
 
-    det = DetectionPartReader(Path(det_zarr_path)).read()
-    object_id = PartZarrReader(Path(assignment_zarr_path)).read()["object_id"]
+    det_reader = DetectionPartReader(Path(det_zarr_path))
+    assign_reader = PartZarrReader(Path(assignment_zarr_path))
+    # object_id is parallel to the detection rows the tracker actually kept when it
+    # ran (§13) — every row when this run had no class filter, only one class's
+    # otherwise (anchor_tracker et al. build object_ids from filter_by_class'd
+    # data). raw_rows recovers which reader row each assignment row really is;
+    # reading "the first N rows" of the unfiltered reader instead silently pairs
+    # the wrong detection with each assignment row the moment a class filter
+    # narrowed what the tracker saw.
+    raw_rows = resolve_assignment_rows(det_reader, assign_reader, class_name)
+    det = {k: np.asarray(v)[raw_rows] for k, v in det_reader.read().items()}
+    object_id = assign_reader.read()["object_id"][: len(raw_rows)]
+    frame_col = np.asarray(det["frame_idx"])
+    t_ns_col = np.asarray(det["t_ns"])
+    conf_col = np.asarray(det["confidence"])
+    bbox_col = np.asarray(det["bbox"])
+    aux_per_frame: list[dict] | None = None
+
     keep_idx = np.where(np.asarray(object_id) == int(track_id))[0]
     # Group the track's detections by frame: a frame may hold more than one
     # detection (e.g. anchor_tracker secondaries), OR-merged into one subject
     # image downstream — so one embedding row per frame. The representative row
     # (highest confidence) is recorded as det_row for traceability.
-    frame_col = np.asarray(det["frame_idx"])
-    t_ns_col = np.asarray(det["t_ns"])
-    conf_col = np.asarray(det["confidence"])
     by_frame: dict[int, list[int]] = {}
     for row in keep_idx.tolist():
         by_frame.setdefault(int(frame_col[row]), []).append(row)
@@ -187,7 +210,6 @@ def embed_one(
     # the same rule at every stage and composes with whatever detection already skipped —
     # a stride that is a multiple of detection's (validated) selects a subset of these rows.
     frames = [f for f in sorted(by_frame) if f % every_n_frames == 0]
-    aux_per_frame: list[dict] | None = None
     if heading is not None:
         from detail.analysis.body_axis import SOURCE_NONE
 
@@ -212,6 +234,21 @@ def embed_one(
             for f in kept
         ]
         frames = kept
+    if pose is not None:
+        pose_at = {int(f): i for i, f in enumerate(pose["frame_idx"])}
+        if aux_per_frame is None:
+            aux_per_frame = [{} for _ in frames]
+        for aux, f in zip(aux_per_frame, frames):
+            i = pose_at.get(int(f))
+            if pose["mode"] == "draw" and i is not None:
+                xy = np.asarray(pose["xy"][i], dtype=np.float64)
+                if np.isfinite(xy).any():
+                    aux["pose"] = {
+                        "xy": xy,
+                        "score": np.asarray(pose["score"][i], dtype=np.float64),
+                    }
+            aux["pose_points"] = int(pose["n_visible"][i]) if i is not None else 0
+            aux["pose_row"] = i
     rep_rows = [max(by_frame[f], key=lambda r: float(conf_col[r])) for f in frames]
     frame_indices = np.asarray(frames, dtype=np.int64)
     frame_t_ns = np.asarray([int(t_ns_col[r]) for r in rep_rows], dtype=np.int64)
@@ -220,7 +257,6 @@ def embed_one(
     ]
     # Union bbox over the frame's detections (matching render_preview) so the
     # centered constructors crop to the subject, not the frame center (§14).
-    bbox_col = np.asarray(det["bbox"])
     bbox_per_frame = [
         (
             min(float(bbox_col[r][0]) for r in by_frame[f]),
@@ -231,7 +267,6 @@ def embed_one(
         for f in frames
     ]
     frames_total = int(len(frames))
-
     out_zarr_path = Path(out_zarr_path)
     out_zarr_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -263,6 +298,16 @@ def embed_one(
             aux_per_frame=aux_per_frame,
         )
         aux_by_frame = {int(f): aux for f, aux in zip(frames, aux_per_frame or [])}
+        appended = pose is not None and pose["mode"] == "append"
+        pose_vec = (
+            np.asarray(pose["vec"], dtype=np.float32).reshape(
+                len(pose["frame_idx"]), -1
+            )
+            if appended
+            else None
+        )
+        pose_dim = int(pose_vec.shape[1]) if appended else 0
+        pose_weight = float(pose.get("weight") or 1.0) if appended else 0.0
         stopped = False
         written_so_far = 0  # touched only by the writer thread
 
@@ -292,20 +337,34 @@ def embed_one(
             arr, f_idx, t_ns_b, rows = item
             for b in range(arr.shape[0]):
                 aux = aux_by_frame.get(int(f_idx[b]))
+                vector = arr[b]
+                if appended:
+                    # Both halves at unit length, so the weight alone sets how much the
+                    # pose counts against the mask (§14).
+                    norm = float(np.linalg.norm(vector))
+                    mask_part = vector / norm if norm > 0 else vector
+                    row = aux.get("pose_row") if aux is not None else None
+                    pose_part = (
+                        pose_vec[row]
+                        if row is not None
+                        else np.zeros(pose_dim, dtype=np.float32)
+                    )
+                    vector = np.concatenate(
+                        [mask_part, pose_weight * pose_part]
+                    ).astype(np.float32)
+                extra: dict = {}
+                if heading is not None and aux is not None:
+                    extra.update(
+                        heading_deg=aux["heading_deg"],
+                        heading_source=aux["heading_source"],
+                        align_mirrored=aux["align_mirrored"],
+                    )
+                if pose is not None:
+                    extra["pose_points"] = (
+                        aux.get("pose_points", 0) if aux is not None else 0
+                    )
                 writer.add_row(
-                    int(f_idx[b]),
-                    int(t_ns_b[b]),
-                    int(rows[b]),
-                    arr[b],
-                    **(
-                        {
-                            "heading_deg": aux["heading_deg"],
-                            "heading_source": aux["heading_source"],
-                            "align_mirrored": aux["align_mirrored"],
-                        }
-                        if aux is not None
-                        else {}
-                    ),
+                    int(f_idx[b]), int(t_ns_b[b]), int(rows[b]), vector, **extra
                 )
                 # Same rows, same order, written from the geometry the dataset collected
                 # while it had the merged mask in hand. A frame the renderer never reached
@@ -319,6 +378,7 @@ def embed_one(
                     geom.cy_norm,
                     geom.mask_area_norm,
                     geom.bbox_norm,
+                    geom.shape,
                 )
             written_so_far += arr.shape[0]
             if progress_json_path is not None:
@@ -339,7 +399,10 @@ def embed_one(
         try:
             with (
                 EmbeddingPartWriter(
-                    out_zarr_path, output_dim=output_dim, aligned=heading is not None
+                    out_zarr_path,
+                    output_dim=output_dim + pose_dim,
+                    aligned=heading is not None,
+                    posed=pose is not None,
                 ) as writer,
                 KinematicsPartWriter(kinematics_part_path(out_zarr_path)) as kinematics,
             ):
@@ -361,14 +424,24 @@ def embed_one(
         error = f"{type(e).__name__}: {e}"
 
     result = {
-        "track_id": int(track_id),
+        "track_id": track_id,
         "part_index": int(part_index),
         "part_id": part_id,
         "gpu": gpu_idx,
         "status": status,
         "frames_done": int(frames_done),
         "frames_total": frames_total,
-        "output_dim": int(output_dim),
+        "output_dim": int(output_dim)
+        + (
+            len(pose["vec"][0])
+            if pose is not None and pose["mode"] == "append" and pose["vec"]
+            else 0
+        ),
+        "pose_dim": (
+            len(pose["vec"][0])
+            if pose is not None and pose["mode"] == "append" and pose["vec"]
+            else 0
+        ),
         "error": error,
     }
     if progress_json_path is not None:
@@ -459,11 +532,13 @@ def pool_run_one(args: dict) -> dict:
             batch_size=int(args["batch_size"]),
             every_n_frames=int(args.get("every_n_frames", 1) or 1),
             gpu_idx=_WORKER_STATE.get("gpu_idx"),
+            class_name=args.get("class_name"),
             heading=args.get("heading"),
+            pose=args.get("pose"),
         )
     except Exception as e:
         return {
-            "track_id": int(args["track_id"]),
+            "track_id": args["track_id"],
             "part_index": int(args["part_index"]),
             "part_id": args["part_id"],
             "gpu": _WORKER_STATE.get("gpu_idx"),
@@ -498,7 +573,7 @@ def _write_progress_json(
     tmp.write_text(
         json.dumps(
             {
-                "track_id": int(track_id),
+                "track_id": track_id,
                 "part_id": part_id,
                 "frames_done": int(frames_done),
                 "frames_total": int(frames_total),

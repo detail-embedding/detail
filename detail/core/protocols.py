@@ -252,6 +252,9 @@ class Trainer(ABC):
     # for their type/bounds/default/help/label; feeds validate_hyperparams, the
     # GUI form, and the CLI. None until a trainer declares one.
     config_model: type | None = None
+    # The model-dir-relative files `metric_history` reads, which a remote run mirrors back as
+    # each epoch is reported — without them the curve of a cluster run is empty until it ends.
+    live_files: tuple[str, ...] = ()
 
     @abstractmethod
     def is_ready(self) -> bool:
@@ -1006,6 +1009,18 @@ class PoseClusterMethod(ABC):
         become an instance.
         """
 
+    def run_blocks(self, fit: object, params: dict) -> list[tuple[int, int]]:
+        """The continuity blocks ``instances_for`` cuts runs on, as half-open row ranges.
+
+        Required where ``instances_are_runs``: the module joins two runs of one label only inside
+        one block, so a run on each side of a tracking gap stays two. Joining them claimed the gap
+        as time in the behavior, which nobody observed, and pushed the coverage line past 100%.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} builds runs (instances_are_runs) and must declare the "
+            f"blocks it cuts them on (run_blocks)"
+        )
+
     def assign(self, fit: object, trajectory: np.ndarray, params: dict) -> list:
         """Label a recording that was not in the fit. Only if ``supports_apply``.
 
@@ -1234,6 +1249,18 @@ class TemporalClusterMethod(ABC):
         Unlike the pose protocol there is no run-length encoding step: a bout is already an extent,
         so the minimum duration was applied during segmentation, before the comparison existed.
         """
+
+    def run_blocks(self, fit: object, params: dict) -> list[tuple[int, int]]:
+        """The continuity blocks ``instances_for`` cuts runs on, as half-open row ranges.
+
+        Required where ``instances_are_runs``: the module joins two runs of one label only inside
+        one block, so a run on each side of a tracking gap stays two. Joining them claimed the gap
+        as time in the behavior, which nobody observed, and pushed the coverage line past 100%.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} builds runs (instances_are_runs) and must declare the "
+            f"blocks it cuts them on (run_blocks)"
+        )
 
     @abstractmethod
     def resolve(self, fit: object, instance) -> dict:

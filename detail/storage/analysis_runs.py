@@ -15,12 +15,14 @@ reads it, so a plain truncating write would let a reader see a torn/empty file
 datasets/models stores predate the rule and are borderline, not a template here).
 """
 
+import contextlib
 import shutil
 from pathlib import Path
 
 import yaml
 
 from detail.core import atomic
+from detail.core import yaml_load
 from detail.storage import dirscan
 from detail.storage import experiment as experiment_store
 from detail.storage import read_cache
@@ -119,7 +121,7 @@ def write_analysis_yaml(run_dir: Path | str, record: dict) -> None:
     tmp = path.parent / (path.name + ".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         yaml.dump(ordered, f, sort_keys=False)
-    atomic.replace(tmp, path)
+    read_cache.replace_document(tmp, path)
 
 
 def read_analysis_yaml(run_dir: Path | str) -> dict:
@@ -131,7 +133,7 @@ def read_analysis_yaml(run_dir: Path | str) -> dict:
     path = Path(run_dir) / ANALYSIS_FILENAME
     try:
         return read_cache.cached_document(
-            path, lambda: yaml.safe_load(atomic.read_text(path))
+            path, lambda: yaml_load.safe_load(atomic.read_text(path))
         )
     except FileNotFoundError:
         raise FileNotFoundError(f"no {ANALYSIS_FILENAME} in {run_dir}") from None
@@ -143,12 +145,18 @@ def set_analysis_status(
     """Update the ``status`` field of an existing ``analysis.yaml``, in place.
 
     ``error`` (a failure message) is recorded so the GUI detail page can show why
-    a run failed.
+    a run failed. Also merges in ``duration_s`` from the job's own envelope (§ run
+    location, duration, cost) — analysis runs are local-only today, so no
+    ``compute``/cost, just timing.
     """
+    from detail.executor import run_metrics
+
     record = read_analysis_yaml(run_dir)
     record["status"] = status
     if error is not None:
         record["error"] = error
+    with contextlib.suppress(Exception):
+        record.update(run_metrics.completion_fields(run_dir, None))
     write_analysis_yaml(run_dir, record)
 
 

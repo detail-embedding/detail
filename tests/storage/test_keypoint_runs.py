@@ -56,6 +56,7 @@ def _track_job() -> KeypointTrackJob:
         config={"smooth_window_s": 0.133, "despike": True},
         skeleton=SKELETON,
         created_at="2026-10-08T00:00:00Z",
+        compute=ComputeTarget("remote", None, None, None, "tillicum"),
     )
 
 
@@ -78,11 +79,12 @@ def test_jobs_round_trip_and_an_old_job_is_refused():
 def test_detect_yaml_is_written_at_start_and_completed_at_the_end(tmp_path):
     run_dir = keypoint_runs.detect_run_dir(tmp_path / "recording_001", "kd_01")
     record = keypoint_runs.detect_record(_job(), "4b7e")
-    assert list(record)[:5] == [
+    assert list(record)[:6] == [
         "schema_version",  # Tenet 7
         "id",
         "created_at",
         "detection_run_id",
+        "class_name",  # beside the detection run whose boxes it chooses among
         "min_pose_confidence",
     ]
     keypoint_runs.write_detect_yaml(run_dir, record)
@@ -90,6 +92,7 @@ def test_detect_yaml_is_written_at_start_and_completed_at_the_end(tmp_path):
     assert text.startswith("schema_version: 1\n")
     data = yaml.safe_load(text)
     assert data["detection_run_id"] == "det_01" and data["min_pose_confidence"] is None
+    assert data["class_name"] is None  # every detection's class
     assert "tracking_run_id" not in data and "track_ids" not in data
     assert data["backbone"] == {"id": "dinov3_vit", "variant": "vit_base"}
     assert data["skeleton_digest"] == "4b7e" and data["resolved"] == {}
@@ -177,6 +180,7 @@ def test_track_yaml_and_reader(tmp_path):
     assert list(record)[0] == "schema_version"
     assert record["tracking_run_id"] == "track_01"
     assert record["match"] == {"min_inside": 0.5, "mask_grow": 0.05}
+    assert record["compute"]["remote_target"] == "tillicum"
     keypoint_runs.write_track_yaml(run_dir, record)
     text = (run_dir / "track.yaml").read_text(encoding="utf-8-sig")
     assert text.startswith("schema_version: 1\n") and "status" not in text

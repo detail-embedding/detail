@@ -66,6 +66,9 @@ def main(argv: list[str] | None = None) -> int:
             # same record) drives only the recordings that aren't complete. Empty on a
             # fresh run, where every recording is pending.
             per_recording=record.get("per_recording") or {},
+            # A retry's earlier time, so the run's duration is the whole run's and not just
+            # what has passed since Retry was pressed (0 on a fresh run, which has none).
+            prior_duration_s=record.get("duration_s") or 0.0,
         ).run()
     except KeyboardInterrupt:
         _mark_terminal(experiment_root, run_id, "cancelled", "interrupted (SIGINT)")

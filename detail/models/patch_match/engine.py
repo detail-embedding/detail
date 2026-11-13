@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -50,6 +51,19 @@ from detail.models.patch_match.view import (
 
 #: Example crops run through the backbone this many at a time at ``load()``.
 _EXAMPLE_BATCH = 16
+
+
+@dataclass
+class _Learned:
+    """What ``load()`` learns from one example set: the bank, the mirrored bank, the skeleton
+    statistics, and the examples' own grids for held-out scoring. One per class for a
+    per-class method (§26 *One example set per detection class*), keyed None for one set.
+    """
+
+    bank: ExampleBank
+    mirror_bank: ExampleBank
+    stats: _decode.SkeletonStats
+    held: dict
 
 
 class PatchMatch(KeypointModel):
@@ -76,14 +90,19 @@ class PatchMatch(KeypointModel):
         *,
         examples: ExampleSet | None = None,
         example_images: Sequence[np.ndarray] | None = None,
+        class_examples: (
+            dict[str, tuple[ExampleSet, Sequence[np.ndarray]]] | None
+        ) = None,
         decode: str | None = None,
         side_rule: str | None = None,
         crop_px: int | None = None,
     ) -> None:
         """Built with the example set it learns from (§26: an example set is a config input,
-        not a prompt cue). ``decode`` / ``side_rule`` / ``crop_px`` left ``None`` resolve
-        against the set's skeleton (``resolve_settings``); the stage writes the resolved values
-        back into its config (Tenet 9)."""
+        not a prompt cue), or with one per detection class (``class_examples``: ``{class:
+        (set, images)}``, every set on one skeleton), in which case each detection is matched
+        against its own class's set. ``decode`` / ``side_rule`` / ``crop_px`` left ``None``
+        resolve against the skeleton (``resolve_settings``); the stage writes the resolved
+        values back into its config (Tenet 9)."""
         super().__init__(variant)
         if decode is not None and decode not in _decode.DECODES:
             raise ValueError(
@@ -99,20 +118,36 @@ class PatchMatch(KeypointModel):
             )
         if (examples is None) != (example_images is None):
             raise ValueError("pass examples and example_images together")
-        if examples is not None and len(example_images) != len(examples.frames):
-            raise ValueError(
-                f"one image per example frame: {len(examples.frames)} frames, "
-                f"{len(example_images)} images"
-            )
-        self.examples = examples
-        self._example_images = (
-            [np.asarray(im) for im in example_images]
-            if example_images is not None
-            else None
-        )
+        if class_examples is not None and examples is not None:
+            raise ValueError("pass examples or class_examples, not both")
+        if class_examples is not None and not class_examples:
+            raise ValueError("class_examples names no class")
+        #: The sets it learns from, keyed by detection class; None keys the one set.
+        self._sources: dict[str | None, tuple[ExampleSet, list[np.ndarray]]] = {}
         if examples is not None:
+            self._sources[None] = (examples, list(example_images))
+        for cls, (set_, images) in sorted((class_examples or {}).items()):
+            self._sources[str(cls)] = (set_, list(images))
+        digests = {s.skeleton.digest() for s, _ in self._sources.values()}
+        if len(digests) > 1:
+            raise ValueError("every class's example set must be on the same skeleton")
+        for set_, images in self._sources.values():
+            if len(images) != len(set_.frames):
+                raise ValueError(
+                    f"one image per example frame: {len(set_.frames)} frames, "
+                    f"{len(images)} images"
+                )
+        self._sources = {
+            key: (set_, [np.asarray(im) for im in images])
+            for key, (set_, images) in self._sources.items()
+        }
+        #: The one set, or the first class's: its skeleton is every class's.
+        self.examples = next(iter(self._sources.values()))[0] if self._sources else None
+        #: Whether each detection is matched against its own class's set.
+        self.per_class = class_examples is not None
+        if self.examples is not None:
             self.settings = self.resolve_settings(
-                examples.skeleton, decode, side_rule, crop_px
+                self.examples.skeleton, decode, side_rule, crop_px
             )
         else:
             self.settings = {
@@ -121,10 +156,8 @@ class PatchMatch(KeypointModel):
                 "crop_px": int(crop_px) if crop_px is not None else DEFAULT_CROP_PX,
             }
         self._backbone = None
-        self._bank: ExampleBank | None = None
-        self._mirror_bank: ExampleBank | None = None
+        self._learned: dict[str | None, _Learned] = {}
         self._plan: _decode.DecodePlan | None = None
-        self._stats = _decode.SkeletonStats()
 
     # -- the backbone ------------------------------------------------------- #
     @classmethod
@@ -224,12 +257,23 @@ class PatchMatch(KeypointModel):
             raise ValueError(f"{self.model_id} needs an example set to load")
         if not is_importable("torch"):
             raise RuntimeError(f"{self.model_id} needs PyTorch: pip install torch")
-        self.examples.check_runnable()
+        for set_, _images in self._sources.values():
+            set_.check_runnable()
         backbone = self._make_backbone()
         backbone.load(device)  # local files only, never the network (§5)
         self._backbone = backbone
-        skeleton = self.examples.skeleton
-        self._plan = _decode.DecodePlan.from_skeleton(skeleton)
+        self._plan = _decode.DecodePlan.from_skeleton(self.examples.skeleton)
+        # One backbone, one bank per set: each class learns from its own clicks only.
+        self._learned = {
+            key: self._learn(set_, images)
+            for key, (set_, images) in self._sources.items()
+        }
+
+    def _learn(
+        self, examples: ExampleSet, example_images: list[np.ndarray]
+    ) -> _Learned:
+        """The banks, skeleton statistics and held-out grids from one set's clicks."""
+        skeleton = examples.skeleton
         swap = {
             a: b
             for left, right in skeleton.pairs
@@ -239,7 +283,7 @@ class PatchMatch(KeypointModel):
         views: list[View] = []
         crops: list[np.ndarray] = []
         clicks: list[tuple[dict, float]] = []
-        for frame, rgb in zip(self.examples.frames, self._example_images):
+        for frame, rgb in zip(examples.frames, example_images):
             wh = (rgb.shape[1], rgb.shape[0])
             view = make_view(frame.bbox, wh, crop_px, self.patch_size)
             views.append(view)
@@ -266,14 +310,34 @@ class PatchMatch(KeypointModel):
                 mirror_rows.setdefault(swap.get(name, name), []).append(
                     (i, sample_at(flipped, view.size - u, v, view.size))
                 )
-        self._bank = ExampleBank.build(skeleton.names, rows)
-        self._mirror_bank = ExampleBank.build(skeleton.names, mirror_rows)
-        self._stats = _decode.learn_skeleton(
-            clicks, self._plan, self.settings["side_rule"]
+        return _Learned(
+            bank=ExampleBank.build(skeleton.names, rows),
+            mirror_bank=ExampleBank.build(skeleton.names, mirror_rows),
+            stats=_decode.learn_skeleton(
+                clicks, self._plan, self.settings["side_rule"]
+            ),
+            # Kept for score_held_out: the examples' own grids and rows, so each example
+            # can be scored against the others without running the backbone again.
+            held={"grids": grids, "views": views, "clicks": clicks, "rows": rows},
         )
-        # Kept for score_held_out: the examples' own grids and rows, so each example can be
-        # scored against the others without running the backbone again.
-        self._held = {"grids": grids, "views": views, "clicks": clicks, "rows": rows}
+
+    def _learned_for(self, sf: InstanceFrame, det_row: int) -> _Learned:
+        """The bank a detection is matched against: its class's, or the one set's.
+
+        Raises:
+            ValueError: A per-class method handed a detection with no class, or of a class
+                it has no set for (the runner filters by class, so this is a wiring bug).
+        """
+        if not self.per_class:
+            return self._learned[None]
+        cls = (sf.classes or {}).get(det_row)
+        if cls not in self._learned:
+            raise ValueError(
+                f"detection row {det_row} on frame {sf.frame_idx} is of class {cls!r}, "
+                f"which has no example set; this method has sets for "
+                f"{sorted(k for k in self._learned if k is not None)}"
+            )
+        return self._learned[cls]
 
     def _grids(self, images: list[np.ndarray]) -> list:
         out: list = []
@@ -285,17 +349,15 @@ class PatchMatch(KeypointModel):
     # Split in three for keypoint_detect's stages (§26 *Execution*): crops and mask cells on
     # the prep thread, the backbone and the bank matmuls on the model's thread (every copy to
     # the host there), decode and rows on the writer thread. ``finish_batch`` only reads
-    # ``_plan`` / ``_stats`` / ``settings``; ``score_held_out`` swaps ``_stats`` but is a
-    # preview path, never called while a stage runs.
+    # ``_plan`` / ``settings`` and each detection's ``_Learned``, which ``load()`` alone writes.
     def predict_batch(self, frames: list[InstanceFrame]) -> list[FrameResult]:
         return self.finish_batch(self.run_prepared(self.prepare_batch(frames)))
 
     def prepare_batch(self, frames: list[InstanceFrame]) -> tuple:
-        """Each detection's view, crop and allowed cells: CPU only."""
+        """Each detection's view, crop, allowed cells and bank: CPU only."""
         self._require_loaded()
-        dets: list[tuple] = (
-            []
-        )  # (frame index, detection_row, view, allowed, body scale)
+        # (frame index, detection_row, view, allowed, body scale, learned)
+        dets: list[tuple] = []
         crops: list[np.ndarray] = []
         for fi, sf in enumerate(frames):
             wh = (sf.frame.shape[1], sf.frame.shape[0])
@@ -305,20 +367,38 @@ class PatchMatch(KeypointModel):
                 crops.append(render(sf.frame, view))
                 mask = sf.masks.get(det_row) if sf.masks else None
                 allowed = allowed_cells(mask, view, wh)
-                dets.append((fi, det_row, view, allowed, body_scale(box, wh)))
+                learned = self._learned_for(sf, det_row)
+                dets.append((fi, det_row, view, allowed, body_scale(box, wh), learned))
         return frames, dets, crops
 
     def run_prepared(self, prepared: tuple) -> tuple:
         """The backbone over the crops and both banks' similarities, copied to the host once
-        per bank: ``(frames, dets, sims, mirror_sims, grid_hw)``, numpy only."""
+        per bank: ``(frames, dets, sims, mirror_sims, grid_hw)``, numpy only. A per-class
+        method's banks differ in size, so each bank's detections are stacked on their own.
+        """
         frames, dets, crops = prepared
         if not crops:
             return frames, dets, None, None, None
         import torch
 
         grids = self._grids(crops)
-        sims = torch.stack([self._bank.sims(g) for g in grids]).cpu().numpy()
-        mirror = torch.stack([self._mirror_bank.sims(g) for g in grids]).cpu().numpy()
+        sims: list = [None] * len(dets)
+        mirror: list = [None] * len(dets)
+        by_bank: dict[int, list[int]] = {}
+        for i, det in enumerate(dets):
+            by_bank.setdefault(id(det[5]), []).append(i)
+        for idx in by_bank.values():
+            learned = dets[idx[0]][5]
+            own = torch.stack([learned.bank.sims(grids[i]) for i in idx]).cpu().numpy()
+            own_mirror = (
+                torch.stack([learned.mirror_bank.sims(grids[i]) for i in idx])
+                .cpu()
+                .numpy()
+            )
+            for j, i in enumerate(idx):
+                sims[i], mirror[i] = own[j], own_mirror[j]
+        if len(by_bank) == 1:  # one set: one array per bank, as the writer reads it
+            sims, mirror = np.stack(sims), np.stack(mirror)
         return frames, dets, sims, mirror, (grids[0].shape[1], grids[0].shape[2])
 
     def finish_batch(self, raw: tuple) -> list[FrameResult]:
@@ -327,14 +407,14 @@ class PatchMatch(KeypointModel):
         names = self._plan.names
         k_pts, n_cand = len(names), self.n_candidates
         per_frame: dict[int, list[dict]] = {fi: [] for fi in range(len(frames))}
-        for i, (fi, det_row, view, allowed, scale) in enumerate(dets):
+        for i, (fi, det_row, view, allowed, scale, learned) in enumerate(dets):
             sf = frames[fi]
             wh = (sf.frame.shape[1], sf.frame.shape[0])
-            maps, winners = self._bank.maps_from_sims(sims[i], *grid_hw, allowed)
+            maps, winners = learned.bank.maps_from_sims(sims[i], *grid_hw, allowed)
             cands = _decode.candidates(maps, view)
-            placed = self._place(cands, view, scale)
+            placed = self._place(cands, view, scale, learned.stats)
             pool = _decode.candidate_pool(cands, self._plan)
-            mirror_maps, _ = self._mirror_bank.maps_from_sims(
+            mirror_maps, _ = learned.mirror_bank.maps_from_sims(
                 mirror_sims[i], *grid_hw, allowed
             )
             mirrored = ExampleBank.best_from_maps(mirror_maps)
@@ -397,7 +477,7 @@ class PatchMatch(KeypointModel):
         return results
 
     def _require_loaded(self) -> None:
-        if self._backbone is None or self._bank is None or self._plan is None:
+        if self._backbone is None or not self._learned or self._plan is None:
             raise RuntimeError(
                 f"{type(self).__name__}.load() must run before predict_batch()"
             )
@@ -414,75 +494,107 @@ class PatchMatch(KeypointModel):
         statistics without its clicks. No mask is applied (example frames keep none), so this
         is the method on the cell grid alone. Empty with fewer than two example frames.
         ``progress(done, total)`` hears each example frame as it is scored.
+
+        A per-class method scores each class's frames against that class's other frames
+        only — its own bank, as a detection of that class is matched — and each row also
+        carries ``class``; ``frame`` is then the index within that class's set.
         """
-        held = getattr(self, "_held", None)
-        if held is None or self._plan is None:
+        if not self._learned or self._plan is None:
             raise RuntimeError(f"{type(self).__name__}.load() must run first")
+        total = sum(len(learned.held["clicks"]) for learned in self._learned.values())
+        out: list[dict] = []
+        done = 0
+        for key, learned in self._learned.items():
+            rows = self._held_out_rows(learned, progress, done, total)
+            if self.per_class:
+                rows = [{**row, "class": key} for row in rows]
+            out.extend(rows)
+            done += len(learned.held["clicks"])
+        return out
+
+    def _held_out_rows(self, learned: _Learned, progress, done: int, total: int):
+        held = learned.held
         clicks, views, grids = held["clicks"], held["views"], held["grids"]
         if len(clicks) < 2:
             return []
         names = self._plan.names
         out: list[dict] = []
-        stats = self._stats
-        try:
-            for i, (pts, scale) in enumerate(clicks):
-                if progress is not None:
-                    progress(i, len(clicks))
-                if not pts:
-                    continue
-                others = {
-                    n: [r for r in held["rows"].get(n, []) if r[0] != i] for n in names
-                }
-                try:
-                    bank = ExampleBank.build(names, others)
-                except ValueError:
-                    continue  # no other example marks anything visible
-                self._stats = _decode.learn_skeleton(
-                    [c for j, c in enumerate(clicks) if j != i],
-                    self._plan,
-                    self.settings["side_rule"],
+        for i, (pts, scale) in enumerate(clicks):
+            if progress is not None:
+                progress(done + i, total)
+            if not pts:
+                continue
+            others = {
+                n: [r for r in held["rows"].get(n, []) if r[0] != i] for n in names
+            }
+            try:
+                bank = ExampleBank.build(names, others)
+            except ValueError:
+                continue  # no other example marks anything visible
+            stats = _decode.learn_skeleton(
+                [c for j, c in enumerate(clicks) if j != i],
+                self._plan,
+                self.settings["side_rule"],
+            )
+            maps, _winners = bank.score_maps(grids[i], None)
+            placed = self._place(
+                _decode.candidates(maps, views[i]), views[i], scale, stats
+            )
+            for name, (cx, cy) in pts.items():
+                if name in placed:
+                    (x, y), score, _cell = placed[name]
+                    error = float(np.hypot(x - cx, y - cy))
+                else:
+                    score, error = float("nan"), float("nan")
+                out.append(
+                    {
+                        "frame": i,
+                        "point": name,
+                        "score": float(score),
+                        "error_px": error,
+                        "body_px": float(scale),
+                    }
                 )
-                maps, _winners = bank.score_maps(grids[i], None)
-                placed = self._place(
-                    _decode.candidates(maps, views[i]), views[i], scale
-                )
-                for name, (cx, cy) in pts.items():
-                    if name in placed:
-                        (x, y), score, _cell = placed[name]
-                        error = float(np.hypot(x - cx, y - cy))
-                    else:
-                        score, error = float("nan"), float("nan")
-                    out.append(
-                        {
-                            "frame": i,
-                            "point": name,
-                            "score": float(score),
-                            "error_px": error,
-                            "body_px": float(scale),
-                        }
-                    )
-        finally:
-            self._stats = stats
         return out
 
-    def _place(self, cands: dict, view: View, scale_px: float) -> dict:
+    def _place(
+        self,
+        cands: dict,
+        view: View,
+        scale_px: float,
+        stats: _decode.SkeletonStats,
+    ) -> dict:
         """One subject's points from its candidates: ``{target: (xy, score, cell)}``."""
         if self.settings["decode"] == "per_point":
             return _decode.decode_per_point(cands)
         return _decode.decode_skeleton(
-            cands, self._plan, self._stats, scale_px, view.patch_px
+            cands, self._plan, stats, scale_px, view.patch_px
         )
 
     def resolved(self) -> dict:
         """What ``load()`` decided from the clicks — each left/right pair's side rule (``auto``
-        picks per pair) — and the matching constants the run should record. Empty before load.
+        picks per pair) — and the matching constants the run should record; per class
+        (``by_class``) for a per-class method, since each class learns from its own clicks.
+        Empty before load.
         """
-        if self._plan is None:
+        if self._plan is None or not self._learned:
             return {}
-        return {
-            "side_rules": {
-                f"{left}/{right}": self._stats.rules.get((left, right), "none")
+
+        def side_rules(learned: _Learned) -> dict:
+            return {
+                f"{left}/{right}": learned.stats.rules.get((left, right), "none")
                 for left, right in self._plan.pairs
-            },
+            }
+
+        if self.per_class:
+            return {
+                "by_class": {
+                    key: {"side_rules": side_rules(learned)}
+                    for key, learned in self._learned.items()
+                },
+                "matching": dict(_decode.MATCHING),
+            }
+        return {
+            "side_rules": side_rules(self._learned[None]),
             "matching": dict(_decode.MATCHING),
         }

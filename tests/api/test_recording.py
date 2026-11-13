@@ -5,6 +5,7 @@ import os
 import cv2
 import numpy as np
 import pytest
+import yaml
 
 import detail.api.recording as api_recording
 from detail.api.experiment import Experiment
@@ -92,6 +93,12 @@ def test_run_tracking_end_to_end(tmp_path):
     assert runs[0]["detection_run_id"] == "det_01"
     assert runs[0]["output"] == f"tracking/{run.id}/"
     assert runs[0]["status"] == "complete"
+    # A real run through a real local subprocess worker, end to end — confirms
+    # rundir.set_status's timestamps actually flow through _adopt_status into the
+    # recording.yaml record (§ run location, duration, cost), not just in a
+    # synthetic envelope test.
+    assert runs[0]["duration_s"] is not None and runs[0]["duration_s"] >= 0
+    assert runs[0].get("compute") is None  # tracking has no ComputeTarget
 
 
 def test_run_tracking_accepts_no_hyperparams(tmp_path):
@@ -131,6 +138,31 @@ def test_run_tracking_with_no_tracker_records_the_one_it_resolved(tmp_path):
     assert set(record["hyperparams"]) == set(
         TRACKERS[DEFAULT_TRACKER].HYPERPARAMS_SCHEMA
     )
+
+
+def test_subject_labels_is_none_for_an_ordinary_tracking_run(tmp_path):
+    recording = _setup(tmp_path)
+    run = recording.run_tracking("det_01", "iou_single_tracker", {})
+    run.wait()
+    assert recording.subject_labels(run.id) is None
+
+
+def test_subject_labels_reads_a_track_runs_own_mapping(tmp_path):
+    """§13: resolve_track_id's input — a track-merge run writes this; a plain
+    tracker writes null, which is what the test above covers."""
+    recording = _setup(tmp_path)
+    run = recording.run_tracking("det_01", "iou_single_tracker", {})
+    run.wait()
+    track_yaml = recording.dir / "tracking" / run.id / "track.yaml"
+    data = yaml.safe_load(track_yaml.read_text(encoding="utf-8-sig"))
+    data["subject_labels"] = {0: "black mouse"}
+    track_yaml.write_text(yaml.dump(data, sort_keys=False), encoding="utf-8")
+    assert recording.subject_labels(run.id) == {0: "black mouse"}
+
+
+def test_subject_labels_is_none_when_the_tracking_run_has_no_track_yaml(tmp_path):
+    recording = _setup(tmp_path)
+    assert recording.subject_labels("track_nonexistent") is None
 
 
 def test_run_tracking_unknown_detection_run(tmp_path):
@@ -1067,6 +1099,29 @@ def test_run_prompt_test_zero_samples_rejected(tmp_path):
             )
 
 
+@pytest.mark.parametrize(
+    ("start", "end", "message"),
+    [
+        (5, 5, "must be after t_start_ns"),
+        (9, 3, "must be after t_start_ns"),
+        (-1, None, "t_start_ns must be >= 0"),
+    ],
+)
+def test_run_prompt_test_bad_time_range_rejected(tmp_path, start, end, message):
+    recording = _make_recording(tmp_path)
+    _add_video(recording)
+    with _registered_fake_model():
+        with pytest.raises(ValueError, match=message):
+            recording.run_prompt_test(
+                "fake_detector",
+                [_text_prompt()],
+                n_sample_frames=1,
+                compute=_cpu(),
+                t_start_ns=start,
+                t_end_ns=end,
+            )
+
+
 def test_run_prompt_test_empty_prompts_rejected(tmp_path):
     recording = _make_recording(tmp_path)
     _add_video(recording)
@@ -1557,9 +1612,12 @@ def test_dependency_edges_come_from_the_module_registry():
             refs.append(module.lineage_ref)
         refs.extend(getattr(module, "aux_refs", ()))
         for parent, ref_field in refs:
-            assert (module.module_id, module.runs_key, ref_field) in (
-                recording_api._downstream_edges(parent)
-            ), f"{module.module_id} reads {parent} but is not among its dependents"
+            # by the list it writes: a module sharing another's runs list (track_merge's
+            # tracking_runs) is spoken for by the list's owner, not listed twice
+            assert (module.runs_key, ref_field) in {
+                (runs_key, field)
+                for _m, runs_key, field in recording_api._downstream_edges(parent)
+            }, f"{module.module_id} reads {parent} but is not among its dependents"
 
 
 def test_dependency_edges_fill_the_registry_before_reading_it(monkeypatch):
@@ -1703,12 +1761,18 @@ def test_full_pipeline_end_to_end(tmp_path, monkeypatch):
 
     det = recording.run_detection("fake_detector", _text_prompt(), _cpu()).wait()
     assert det.status == "complete"
+    det_record = next(r for r in recording.detection_runs if r["id"] == det.id)
+    assert det_record["compute"]["backend"] == "cpu"
+    assert det_record["duration_s"] is not None
     track = recording.run_tracking(
         det.id, "anchor_tracker", {"iou_threshold": 0.3}
     ).wait()
     assert track.status == "complete"
     emb = recording.run_embedding(track.id, [0], "fake_embedder", EMB_RENDERER).wait()
     assert emb.status == "complete"
+    emb_record = next(r for r in recording.embedding_runs if r["id"] == emb.id)
+    assert emb_record["compute"]["backend"] == "cpu"
+    assert emb_record["duration_s"] is not None
 
     embz = PartZarrReader(
         recording.dir / "embeddings" / emb.id / "track_0" / "part_001.zarr"
@@ -2132,6 +2196,43 @@ def test_a_calibration_whose_video_changed_shape_is_refused_on_read(tmp_path):
     assert "1080x1920" in rec.calibration_refusal()
     with pytest.raises(ValueError, match="different video shape"):
         rec.pixels_per_mm
+
+
+# --- keypoint teacher window (§26, #717) ------------------------------------ #
+def test_tracking_inherits_a_teacher_window_and_records_it(tmp_path):
+    """Tracking never chooses a window: it takes its detection run's, the way it takes the
+    cadence, and records it so everything downstream can tell it is a teacher run."""
+    from detail.pipeline.tracking import TrackingModule
+
+    recording = _setup(tmp_path)
+    module = TrackingModule()
+
+    def validated():
+        data = recording_store.read_recording(recording.dir)
+        return module.validate(
+            recording.dir,
+            data,
+            {"detection_run_id": "det_01", "tracker_id": "iou_single_tracker"},
+        )
+
+    assert validated()["teacher_window_s"] is None
+    data = recording_store.read_recording(recording.dir)
+    data["detection_runs"][0]["teacher_window_s"] = 300.0
+    recording_store.write_recording(recording.dir, data)
+    config = validated()
+    assert config["teacher_window_s"] == 300.0
+    assert module.extra_record_fields(config)["teacher_window_s"] == 300.0
+
+
+def test_location_export_refuses_a_teacher_tracking_run(tmp_path):
+    recording = _setup(tmp_path)
+    data = recording_store.read_recording(recording.dir)
+    data["tracking_runs"] = [
+        {"id": "trk_01", "status": "complete", "teacher_window_s": 300.0}
+    ]
+    recording_store.write_recording(recording.dir, data)
+    with pytest.raises(ValueError, match="location export needs a run over the whole"):
+        recording._require_complete_tracking("trk_01")
 
 
 def test_embedding_validate_asks_the_install_whether_it_runs_on_the_backend(tmp_path):

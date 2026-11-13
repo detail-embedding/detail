@@ -5,11 +5,14 @@ is split into plain functions (testable without Qt) that the QThread workers
 call, emitting progress as Qt signals.
 """
 
+import time
 from collections.abc import Callable
 
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
 
-from detail.core.progress import format_duration, remaining_seconds
+from detail.api.experiment import Experiment
+from detail.core.dataclasses import processing_inflight_fraction
+from detail.core.progress import PhaseClock, format_duration, remaining_seconds
 from detail.gui.lifetime import alive
 
 
@@ -21,26 +24,53 @@ def _with_eta(status: str, eta_s: float | None) -> str:
     return status
 
 
-#: Workers with an emission in flight, so a caller's scope ending cannot collect them.
+class StageStatusLine:
+    """One status sentence per ``(stage, fraction, detail)`` report, with an ETA.
+
+    The GUI's mapping for a synchronous operation that reports in stages — pre-run validation
+    is *Validating recordings* then *Estimating disk space*, each its own pass over every
+    recording. The ETA is the **stage's own**: a stage that has just started has no estimate
+    until it has measured something, and the clock restarts when the stage changes, since
+    the second pass is not paced by the first (``PhaseClock``). Not a second mapping beside
+    ``fit_progress_fraction`` — that one renders a run handle's events, this one a callback.
+    """
+
+    def __init__(self) -> None:
+        self._clock = PhaseClock(time.monotonic())
+
+    def __call__(self, stage: str, fraction: float, detail: str) -> str:
+        eta_s = self._clock.eta(stage, fraction, time.monotonic())
+        return _with_eta(f"{stage} — {detail}" if detail else stage, eta_s)
+
+
+#: Every started :class:`GuiWorker`, from ``start()`` until its thread has finished, so the scope
+#: that created it ending cannot collect it. Two failures, one cause — a worker's only Python
+#: reference lives on whatever started it:
 #:
-#: ``run_busy`` has always rooted its worker in ``busy._active``; a **directly constructed**
-#: ``BackgroundCall`` had no such root, and that is a correctness problem rather than a tidiness
-#: one. The widget that started one typically holds it as ``self._call`` and connects a closure
-#: back to itself, so worker → connection → closure → widget → worker is a cycle with nothing
-#: outside it. When the widget goes out of scope the *cyclic* collector breaks that cycle by
-#: **clearing the closure** — ``func_clear`` drops ``__defaults__`` and blanks ``__qualname__``.
+#: - **Destroying a running QThread is fatal.** Qt aborts the process ("QThread: Destroyed while
+#:   thread is still running"), and on Windows it does so by fail-fast (``0xC0000409``), which
+#:   skips faulthandler: an xdist worker vanishes with no traceback, and in the app the window
+#:   just closes. ``ImportQueue`` is replaced on every experiment switch and held its import
+#:   thread nowhere else; a page the shell ``deleteLater``s, or a closed dialog, drops a
+#:   ``self._worker`` the same way.
+#: - **A collected closure still gets its delivery.** A widget that holds a worker as
+#:   ``self._call`` and connects a closure back to itself is a cycle with nothing outside it, and
+#:   the cyclic collector breaks it by *clearing the closure* (``func_clear`` drops
+#:   ``__defaults__`` and blanks ``__qualname__``). A ``done`` queued before that is delivered into
+#:   the cleared function: ``TypeError: () missing 1 required positional argument: 'g'``, no
+#:   traceback and no function name, in whichever test next pumps the loop (#263).
 #:
-#: The C++ side of the connection outlives that clear. So a queued ``done`` posted before the
-#: collection is later delivered into a cleared function, and a closure written in the ordinary
-#: ``lambda result, g=generation:`` idiom is suddenly missing an argument it always supplied
-#: itself. The failure surfaces as ``TypeError: () missing 1 required positional argument: 'g'``
-#: with **no traceback and no function name** — raised at the C++ boundary, before any Python
-#: frame — and lands in whichever test happens to be pumping the event loop, which is why it read
-#: as an unrelated flake for weeks.
-#:
-#: Rooting here rather than at each call site is deliberate: the four sites that had the idiom are
-#: not special, and the next one written would have inherited the bug.
+#: Rooted in the base class, not per subclass. ``BackgroundCall`` and ``StageProgressWorker``
+#: rooted themselves here, ``FitProgressWorker`` kept a second register of its own, and the other
+#: six subclasses had neither. ``tests/gui/test_workers.py`` holds every subclass to the base.
 _IN_FLIGHT: set = set()
+
+
+def _awaited() -> set:
+    """The started workers whose finishing something may wait on: every one in
+    :data:`_IN_FLIGHT` but those that serve a widget for as long as it is shown
+    (:attr:`GuiWorker.serves_a_view`)."""
+    return {w for w in _IN_FLIGHT if not getattr(w, "serves_a_view", False)}
 
 
 class GuiWorker(QThread):
@@ -64,6 +94,13 @@ class GuiWorker(QThread):
     different things, and the difference is invisible at the line where it is written.
     """
 
+    #: A worker that serves a widget for as long as the widget is shown — a live montage's
+    #: picture thread, busy while its clips play — rather than one job whose result someone
+    #: waits on. It is rooted like every worker, but :func:`_awaited` leaves it out: waiting for
+    #: it to finish waits for the widget to stop playing, which a widget on screen never does.
+    #: Its widget stops it when the widget is destroyed.
+    serves_a_view = False
+
     #: ``(bound signal, args)`` — the hop that puts the liveness check on the UI thread.
     #: Emitted from the worker thread; ``self`` lives on the UI thread, so Qt queues it
     #: there and ``_deliver`` re-emits the real signal from the thread widgets live on.
@@ -73,6 +110,16 @@ class GuiWorker(QThread):
         super().__init__()
         self._receiver = receiver
         self._delivery.connect(self._deliver)
+
+    def start(self, *args, **kwargs) -> None:  # noqa: D102 — QThread's own docstring
+        if self not in _IN_FLIGHT:
+            _IN_FLIGHT.add(self)
+            # `finished` fires on the worker thread's exit, after `run` has emitted, so the root
+            # is held across the whole window in which a delivery can still be queued. The lambda
+            # runs on the UI thread, where it was connected: releasing the last reference from
+            # the worker's own thread would destroy the QThread from inside itself.
+            self.finished.connect(lambda: _IN_FLIGHT.discard(self))
+        super().start(*args, **kwargs)
 
     def emit_to_ui(self, signal, *args: object) -> None:
         """Emit ``signal`` on the UI thread — unless ``receiver`` is gone by the time it
@@ -92,30 +139,35 @@ class BackgroundCall(GuiWorker):
     For one-shot, no-progress operations that can still be slow (a multi-GB
     experiment export/import) — keeps the shell responsive without bespoke workers.
 
-    **Self-rooting while it runs** (see :data:`_IN_FLIGHT`): the instance keeps itself reachable
-    from ``start()`` until it has emitted, so neither it nor the closures connected to it can be
-    collected with a delivery still queued. ``receiver`` names the widget the result is *for*
-    (:class:`GuiWorker`) — being rooted is what keeps a delivery from arriving corrupted, and
-    naming a receiver is what keeps it from arriving at a widget that no longer exists.
+    Self-rooting while it runs, like every :class:`GuiWorker` (see :data:`_IN_FLIGHT`).
+    ``receiver`` names the widget the result is *for* — being rooted is what keeps a delivery
+    from arriving corrupted, and naming a receiver is what keeps it from arriving at a widget
+    that no longer exists.
     """
 
     done = pyqtSignal(object)  # the callable's return value
     failed = pyqtSignal(object)  # the raised exception
+    #: ``(stage, fraction, detail)`` — only when constructed with ``reports_progress=True``,
+    #: where the callable is handed the callback that drives it.
+    tick = pyqtSignal(str, float, str)
 
-    def __init__(self, fn: Callable[[], object], *, receiver: QObject | None) -> None:
+    def __init__(
+        self,
+        fn: Callable[..., object],
+        *,
+        receiver: QObject | None,
+        reports_progress: bool = False,
+    ) -> None:
         super().__init__(receiver=receiver)
         self._fn = fn
+        self._reports_progress = reports_progress
 
-    def start(self, *args, **kwargs) -> None:  # noqa: D102 — QThread's own docstring
-        _IN_FLIGHT.add(self)
-        # `finished` fires on the worker thread's exit, after `run` has emitted, so the root is
-        # held across the whole window in which a delivery can still be queued.
-        self.finished.connect(lambda: _IN_FLIGHT.discard(self))
-        super().start(*args, **kwargs)
+    def _report(self, stage: str, fraction: float, detail: str) -> None:
+        self.emit_to_ui(self.tick, stage, float(fraction), detail)
 
     def run(self) -> None:
         try:
-            result = self._fn()
+            result = self._fn(self._report) if self._reports_progress else self._fn()
         except Exception as exc:  # noqa: BLE001 — boundary: report to the UI
             self.emit_to_ui(self.failed, exc)
             return
@@ -144,13 +196,6 @@ class StageProgressWorker(GuiWorker):
         self._work = work
         self._stop = False
         self._cancel = False
-
-    def start(self, *args, **kwargs) -> None:  # noqa: D102 — QThread's own docstring
-        # Self-rooting while it runs, as BackgroundCall is (see _IN_FLIGHT): a caller that
-        # connects closures and keeps the worker only on its own widget is that cycle.
-        _IN_FLIGHT.add(self)
-        self.finished.connect(lambda: _IN_FLIGHT.discard(self))
-        super().start(*args, **kwargs)
 
     def request_stop(self) -> None:
         """Ask the work to end early. It is polled, not interrupted: the op finishes the
@@ -244,9 +289,9 @@ def fit_progress_fraction(event) -> tuple[float, str]:
         stotal = event.recordings_total or 0
         within = event.frames_done / event.frames_total if event.frames_total else 0.0
         fraction = (event.recordings_done + within) / stotal if stotal else 0.0
-        # Always show recordings completed/total AND the phase message (not either/or). An event
-        # names its own units, as the CLI's `_stream_*` reads it: an export's are *targets*, and
-        # "recording 1/2" over a bundle and its metadata CSV is a wrong answer (#916).
+        # Always show recordings completed/total AND the phase message (not either/or). An
+        # event names its own units (an export's targets, a batch's clusters): "recording
+        # 1/1" over a 159-cluster job is a wrong answer, not a cosmetic one.
         noun = getattr(event, "unit_label", None) or "recording"
         status = f"{noun} {_recording_position(event.recordings_done, stotal)}/{stotal}"
         if event.message:
@@ -265,37 +310,25 @@ def fit_progress_fraction(event) -> tuple[float, str]:
     return fraction, _with_eta(status, eta_s)
 
 
-# A FitProgressWorker is a parentless QThread whose only Python reference lives on the page
-# that started it. The shell's page swap ``deleteLater``s the outgoing page, so that
-# reference drops while the thread is still polling its run — and destroying a *running*
-# QThread is a Qt fatal abort, not an exception. Holding the worker here until it emits
-# ``finished`` decouples its lifetime from the page's. A late tick cannot reach the dead
-# page either: Qt disconnects a receiver automatically when it is destroyed.
-_LIVE_WORKERS: set = set()
-
-
 class FitProgressWorker(GuiWorker):
     """Consume a run handle's ``progress()`` off the UI thread, forwarding each event as a
     Qt signal (the run executes in its own worker process; this only marshals progress to
-    the UI). Outlives the page that started it — see ``_LIVE_WORKERS``."""
+    the UI). Outlives the page that started it — the shell's page swap ``deleteLater``s the
+    page while this still polls — because every started worker is rooted (``_IN_FLIGHT``).
+    """
 
     tick = pyqtSignal(int, str)  # permille (0..1000), status text
     #: The raw event itself, for a surface that shows the run's *parts* rather than only the
     #: folded bar — the ``RunProgressWorker.progress`` signal's sibling, and the same reason:
     #: `tick` is a rendering (a fraction and a sentence), and a distill's two stages each need
-    #: their own fraction, which is on the event and thrown away by `fit_progress_fraction`
-    #: before it reaches the page.
+    #: their own fraction (thrown away by `fit_progress_fraction` before it reaches the page),
+    #: the same way an analysis run's phases (§16, issue #393) need the event undrawn.
     progress = pyqtSignal(object)
     finished_run = pyqtSignal(str)  # the run's error message, "" if it succeeded
 
     def __init__(self, handle, *, receiver: QObject | None) -> None:
         super().__init__(receiver=receiver)
         self._handle = handle
-
-    def start(self, *args, **kwargs) -> None:
-        _LIVE_WORKERS.add(self)
-        self.finished.connect(lambda: _LIVE_WORKERS.discard(self))
-        super().start(*args, **kwargs)
 
     def run(self) -> None:
         for event in self._handle.progress():
@@ -317,16 +350,17 @@ def processing_progress_fraction(event) -> tuple[float, str]:
     'Progress reporting'.
     """
     total = event.recordings_total or 0
-    within = 0.0
+    # The recordings' worth of work in flight: one recording's fraction for a serial run (the
+    # formula this always was), their **sum** when a run keeps several on a cluster at once.
+    within = processing_inflight_fraction(event)
     label = (
         f"recording {_recording_position(event.recordings_done, total)}/{total or 1}"
     )
+    live = getattr(event, "live", None) or {}
     inner = event.inner
-    if inner is not None:
-        frames_total = getattr(inner, "frames_total", 0) or 0
-        frames_done = getattr(inner, "frames_done", 0) or 0
-        if frames_total:
-            within = min(frames_done / frames_total, 1.0)
+    if len(live) > 1:
+        label = f"{len(live)} recordings in flight ({event.recordings_done}/{total or 1} done)"
+    elif inner is not None:
         label = (
             f"{event.current_recording} "
             f"({_recording_position(event.recordings_done, total)}/{total or 1})"
@@ -334,7 +368,7 @@ def processing_progress_fraction(event) -> tuple[float, str]:
         message = getattr(inner, "message", None)
         if message:
             label += f" — {message}"
-    fraction = (event.recordings_done + within) / total if total else 0.0
+    fraction = min((event.recordings_done + within) / total, 1.0) if total else 0.0
     # A whole-run ETA from the elapsed the coordinator publishes — more useful for a
     # durable multi-recording run than a per-recording estimate. The "(N/total)" above
     # always shows recordings completed/left.

@@ -292,6 +292,98 @@ def test_masks_schema_and_rows(processed_recording, write_vfr_video):
         assert (got == want).all(), source
 
 
+def _built_masks(recording) -> tuple:
+    """``(MaskRows, FrameRows)`` of the recording's ``track_01`` masks, built now."""
+    recording.build_preview()
+    key = _key(recording)
+    data = recording_store.read_recording(recording.dir)
+    path = store.masks_path(
+        key,
+        "track_01",
+        store.masks_digest(data["tracking_runs"][0], data["detection_runs"][0]),
+    )
+    return store.read_masks(path), store.read_frames(key)
+
+
+def test_a_class_filtered_tracking_run_draws_each_animal_on_its_own_mask(
+    processed_recording, write_vfr_video
+):
+    """A tracker with a class filter writes one assignment row per detection row **of that
+    class**, so assignment row ``i`` is the ``i``-th mouse row, not detection row ``i``
+    (``run_preview._build_part``'s ``raw_rows``). Paired by position, every frame after the
+    first cable row drew the mouse on the cable's mask (docs/recorded_classes.md, "two arrays a
+    filter made not parallel")."""
+    built = processed_recording
+    sq = built.square
+    detections, classes, object_ids = [], [], []
+    for frame in range(60):
+        c0 = 2 + frame // 4
+        detections.append((frame, 0, (0.0, 0.8, 0.1, 0.9), sq(32, 36, 0, 4)))
+        classes.append("cable")
+        detections.append(
+            (frame, 1, (c0 / 40, 0.1, (c0 + 10) / 40, 0.4), sq(4, 16, c0, c0 + 10))
+        )
+        classes.append("mouse")
+        object_ids.append(0)
+    recording = built.add_recording(
+        "recording_002",
+        detections=detections,
+        object_ids=object_ids,
+        classes=classes,
+        class_name="mouse",
+    )
+    data = recording_store.read_recording(recording.dir)
+    data["tracking_runs"][0]["class_name"] = "mouse"
+    recording_store.write_recording(recording.dir, data)
+    _with_video(built, recording, write_vfr_video)
+    rows, frames = _built_masks(recording)
+    from detail.core.utils import decode_mask
+
+    assert set(rows.object_id.tolist()) == {0}
+    assert len(rows.object_id) == len(frames.src_frame), "the mouse on every frame"
+    for row in range(len(rows.object_id)):
+        source = int(frames.src_frame[rows.proxy_frame[row]])
+        c0 = 2 + source // 4
+        got = decode_mask(str(rows.mask_rle[row]), (40, 40))
+        assert (got == sq(4, 16, c0, c0 + 10).astype(bool)).all(), source
+
+
+def test_masks_encoded_at_another_size_are_decoded_at_their_own(
+    processed_recording, write_vfr_video
+):
+    """A detection run records the size its RLEs were encoded at (``mask_resolution``); one
+    that is not the video's decodes there and is resized, rather than striped."""
+    import json
+
+    from pycocotools import mask as mask_utils
+
+    from detail.storage.zarr_io import DetectionPartWriter
+
+    built = processed_recording
+    recording = built.add_recording(
+        "recording_002",
+        detections=[(f, 0, (0.1, 0.1, 0.6, 0.6), built.square(4, 24, 4, 24)) for f in range(60)],
+        object_ids=[0] * 60,
+    )  # fmt: skip
+    det_dir = recording.dir / "detections" / "det_01"
+    small = np.zeros((20, 20), np.uint8)
+    small[2:12, 2:12] = 1
+    rle = mask_utils.encode(np.asfortranarray(small))["counts"].decode("ascii")
+    shutil.rmtree(det_dir / "part_001.zarr")
+    with DetectionPartWriter(det_dir / "part_001.zarr") as writer:
+        for f in range(60):
+            writer.add_row(f, f * 1000, 0, "mouse", 0.9, (0.1, 0.1, 0.6, 0.6), rle)
+    envelope = json.loads((det_dir / "job.json").read_text(encoding="utf-8-sig"))
+    envelope["mask_resolution"] = [20, 20]
+    (det_dir / "job.json").write_text(json.dumps(envelope), encoding="utf-8")
+    _with_video(built, recording, write_vfr_video)
+    rows, _frames = _built_masks(recording)
+    from detail.core.utils import decode_mask
+
+    got = decode_mask(str(rows.mask_rle[0]), (40, 40))
+    assert (got == built.square(4, 24, 4, 24).astype(bool)).all()
+
+
 def test_a_rerun_under_the_same_id_is_missing_again(
     processed_recording, write_vfr_video
 ):
@@ -570,3 +662,54 @@ def test_a_part_s_proxy_is_sized_from_its_own_video(vfr_recording):
     width, height = video.probe_video(recording.source_path)["resolution"]
     assert (frames.width, frames.height) == previews.proxy_size(width, height)
     assert (frames.source_width, frames.source_height) == (width, height)
+
+
+def _pure(tile: np.ndarray, channel: int) -> int:
+    """Pixels whose ``channel`` stands well above the other two."""
+    rgb = tile.astype(int)
+    others = [c for c in range(3) if c != channel]
+    return int(
+        (
+            (rgb[..., channel] > rgb[..., others[0]] + 60)
+            & (rgb[..., channel] > rgb[..., others[1]] + 60)
+        ).sum()
+    )
+
+
+def test_a_keypoint_trail_draws_each_chosen_points_path(
+    processed_recording, write_vfr_video
+):
+    """**Keypoint trail**: each point's path over the last half second, fading, in its role
+    colour; ``trail_points`` keeps only the ones named, and none named draws no trail.
+    """
+    from detail.core.skeleton import Skeleton
+
+    built, recording, _ = _tracked_recording(processed_recording, write_vfr_video)
+    recording.build_preview()
+    reader = previews.PreviewReader.open(recording, 0, "track_01")
+    timestamps = _timestamps(recording)
+    clip = reader.clip(None, int(timestamps[0]), int(timestamps[30]), 96, footage=False)
+    n = len(clip)
+    assert n > 3
+    skeleton = Skeleton(names=("nose", "tail"), edges=(("nose", "tail"),))
+    xs = np.linspace(0.1, 0.9, n)
+    points = np.stack(
+        [np.stack([xs, np.full(n, 0.3)], 1), np.stack([xs, np.full(n, 0.7)], 1)], 1
+    )
+    scores = np.ones((n, 2))
+    last = n - 1
+
+    def drawn(**trail):
+        clip.set_pose(points=(points, scores, skeleton), **trail)
+        return clip.frame_at(last)
+
+    plain = drawn()
+    trailed = drawn(trail=True)
+    assert not np.array_equal(plain, trailed), "the trail is drawn"
+    rows = np.flatnonzero((trailed != plain).any(axis=(1, 2)))
+    assert rows.min() < 96 * 0.5 < rows.max(), "both points leave a trail"
+    nose_only = drawn(trail=True, trail_points=["nose"])
+    rows = np.flatnonzero((nose_only != plain).any(axis=(1, 2)))
+    assert rows.max() < 96 * 0.5, "only the nose (the upper row) trails"
+    assert np.array_equal(drawn(trail=True, trail_points=[]), plain)
+    clip.close()

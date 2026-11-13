@@ -29,6 +29,7 @@ and refused on a snapshot or a finalized run, as every audit write is.
 
 import numpy as np
 
+from detail.core.utils import subject_key
 from detail.storage import clip_edits as clip_edits_store
 from detail.storage import clip_review as review_store
 
@@ -68,7 +69,10 @@ class ClipReviewOperations:
             table = table.take(np.flatnonzero(own))
             clips = [
                 clip_edits_store.ClipRef(
-                    table.recording_ids[int(r)], int(s), int(t0), int(t1)
+                    table.recording_ids[int(r)],
+                    subject_key(s),
+                    int(t0),
+                    int(t1),
                 )
                 for r, s, t0, t1 in zip(
                     table.recording, table.subject, table.start_ns, table.end_ns

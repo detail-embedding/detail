@@ -28,10 +28,12 @@ from detail.gui.modules._common import (
     arena_items,
     arena_name_groups,
     covered_ids,
+    detected_class_groups,
     repopulate_combo,
     repopulate_spec_combo,
     spec_groups,
     spec_items,
+    widest_group,
 )
 from detail.gui.help_ui import field_label
 from detail.gui.modules._every_n import EveryNRow, source_rate
@@ -47,6 +49,7 @@ from detail.gui.status_color import WARN
 from detail.storage import read_cache
 
 _NO_ARENA = "(whole frame)"
+_NO_CLASS = "(every class)"
 # The tracker's own knobs are a group inside Advanced Settings, so the form opens on the
 # four choices that decide the run and the tuning sits one click away.
 _KNOBS = "Tracker parameters"
@@ -135,6 +138,10 @@ class _TrackingConfig(ConfigWidget):
         self._form.addRow(
             field_label("tracking", "arena_ids", "Field of view:"), self._arena
         )
+        self._class = QComboBox()
+        self._class.setToolTip(field_meta(TrackingConfig, "class_name")["help"])
+        self._class.addItem(_NO_CLASS, None)
+        self._form.addRow(field_label("tracking", "class_name", "Class:"), self._class)
         every_n_meta = field_meta(TrackingConfig, "every_n_frames")
         self._every_n = EveryNRow(TrackingConfig, upstream_noun="detected")
         self._every_n.changed.connect(self._update_missed_notes)
@@ -145,6 +152,9 @@ class _TrackingConfig(ConfigWidget):
         self._recordings: list = []
         self._groups: list[dict] = []
         self._arena_groups: list[dict] = []
+        self._class_groups: list[dict] = []
+        self._class_resolve_gen = 0
+        self._class_call = None
         # Resolved once per selection by `resolve_recordings`, off the UI thread, and read by
         # `_update_missed_notes` — which used to call `source_rate` itself, a round trip per
         # recording, on every change to the every-N spin as well as on every selection change.
@@ -159,9 +169,51 @@ class _TrackingConfig(ConfigWidget):
         self._arena.currentIndexChanged.connect(
             lambda _index: self.coverage_changed.emit()
         )
+        self._class.currentIndexChanged.connect(
+            lambda _index: self.coverage_changed.emit()
+        )
         self._detection.currentIndexChanged.connect(self._sync_upstream_every_n)
+        self._detection.currentIndexChanged.connect(self._refresh_class_groups)
         self._tracker.currentTextChanged.connect(self._rebuild_hyperparams)
         self._rebuild_hyperparams()
+
+    def _refresh_class_groups(self, *_args) -> None:
+        """Off the UI thread: which classes the *selected* detection spec's own run
+        actually detected, per recording (§13). Unlike the arena list — a property of
+        the recording itself — this depends on which detection run is picked, so it
+        has to be re-resolved (reading each covered recording's detection zarr)
+        whenever that selection changes, not just whenever the recording selection
+        does. Generation-guarded like ``_load_continuity``'s pattern: a fast second
+        detection-run change must not let an earlier read overwrite the newer one.
+        """
+        from detail.gui.workers import BackgroundCall
+
+        spec = self._detection.currentData()
+        self._class_resolve_gen += 1
+        generation = self._class_resolve_gen
+        recordings = list(self._recordings)
+        call = BackgroundCall(
+            lambda: detected_class_groups(
+                recordings, spec if isinstance(spec, dict) else None
+            ),
+            receiver=self,
+        )
+        call.done.connect(
+            lambda groups, g=generation: self._apply_class_groups(g, groups)
+        )
+        call.failed.connect(lambda _exc: None)  # the class filter is optional
+        self._class_call = call
+        call.start()
+
+    def _apply_class_groups(self, generation: int, groups: list[dict]) -> None:
+        if generation != self._class_resolve_gen:
+            return  # a later detection-run selection has already superseded this
+        self._class_groups = groups
+        repopulate_combo(
+            self._class,
+            [(_NO_CLASS, None)]
+            + arena_items(self._class_groups, len(self._recordings)),
+        )
 
     def _sync_upstream_every_n(self, *_args) -> None:
         """Adopt the picked detection run's cadence: it is the floor this stage can use."""
@@ -241,14 +293,44 @@ class _TrackingConfig(ConfigWidget):
         self._model_names = experiment.model_names() if experiment is not None else {}
 
     def resolve_recordings(self, recordings: list) -> dict:
-        """Off the UI thread (CLAUDE.md): every disk read this selection needs, once.
+        """Off the UI thread (CLAUDE.md): the checked-selection-scoped read — this
+        batch's own cadence math. (The detection-spec and field-of-view options are
+        resolved separately, over every *eligible* recording, by
+        ``resolve_eligible_recordings`` below — see its docstring for why those must
+        not depend on which recordings happen to be checked.)
+        """
+        with read_cache.pinned():
+            rates = source_rate(recordings)
+        return {"recordings": recordings, "rates": rates}
+
+    def apply_recordings(self, recordings: list, resolved: dict) -> None:
+        """UI thread: install the resolved payload and repopulate. No disk."""
+        self._recordings = resolved["recordings"]
+        self._rates = resolved["rates"]
+        self._every_n.set_rates(self._rates)
+        self._sync_upstream_every_n()
+        self._update_missed_notes()
+        self._refresh_class_groups()
+
+    def on_recordings_changed(self, recordings: list) -> None:
+        """Synchronous path for direct callers (the launch dialog uses resolve→apply)."""
+        self.apply_recordings(recordings, self.resolve_recordings(recordings))
+
+    def resolve_eligible_recordings(self, recordings: list) -> dict:
+        """Off the UI thread (CLAUDE.md): every recording eligible for detection (§6.5),
+        not just the checked ones ``resolve_recordings`` gets.
 
         Before this split, a selection made a dozen `recording.yaml` round trips per
-        recording — `spec_groups` walks all four processing modules,
-        `arena_name_groups` reads each recording's arenas, and `source_rate` ran three times
-        (here, again through `_sync_upstream_every_n`, and a third time inside
-        `_every_n.set_recordings`). All of it synchronous, on every checkbox click. A wall
-        clock on this box measures ~0, which is why the number to watch is the syscall count.
+        recording — `spec_groups` walks all four processing modules and
+        `arena_name_groups` reads each recording's arenas. All of it synchronous, on
+        every checkbox click, which is also what made the bug this split now fixes
+        invisible for so long: checking recordings one at a time locked the detection and
+        field-of-view pickers to whichever recording happened to be checked first — their
+        own runs were the only ones `spec_groups`/`arena_name_groups` would ever see, so
+        every other recording's showed as "not in the selected run" even when it actually
+        matched. Resolved over the whole eligible pool instead, once per module pick
+        rather than once per checkbox click, so it does not need to repeat the per-click
+        cost.
 
         `read_cache.pinned()` is the other half: the record cache is mtime-keyed, so a hit
         still costs a `stat` *per property*, and this form asks for several of each recording.
@@ -256,49 +338,45 @@ class _TrackingConfig(ConfigWidget):
         with read_cache.pinned():
             groups = spec_groups(recordings, "detection", self._model_names)
             arena_groups = arena_name_groups(recordings)
-            rates = source_rate(recordings)
         return {
-            "recordings": recordings,
             "groups": groups,
             "arena_groups": arena_groups,
-            "rates": rates,
+            "total": len(recordings),
         }
 
-    def apply_recordings(self, recordings: list, resolved: dict) -> None:
+    def apply_eligible_recordings(self, recordings: list, resolved: dict) -> None:
         """UI thread: install the resolved payload and repopulate. No disk."""
-        self._recordings = resolved["recordings"]
         self._groups = resolved["groups"]
         self._arena_groups = resolved["arena_groups"]
-        self._rates = resolved["rates"]
+        total = resolved["total"]
         repopulate_spec_combo(
             self._detection,
-            spec_items(self._groups, len(self._recordings))
-            or [("(no detection run in the selected recordings)", None)],
+            spec_items(self._groups, total)
+            or [("(no detection run in this experiment)", None)],
+            fallback=widest_group(self._groups)["spec"] if self._groups else None,
         )
         repopulate_combo(
             self._arena,
-            [(_NO_ARENA, None)]
-            + arena_items(self._arena_groups, len(self._recordings)),
+            [(_NO_ARENA, None)] + arena_items(self._arena_groups, total),
         )
-        self._every_n.set_rates(self._rates)
-        self._sync_upstream_every_n()
-        self._update_missed_notes()
-
-    def on_recordings_changed(self, recordings: list) -> None:
-        """Synchronous path for direct callers (the launch dialog uses resolve→apply)."""
-        self.apply_recordings(recordings, self.resolve_recordings(recordings))
 
     def covered_recording_ids(self) -> set[str] | None:
-        """Recordings that have **both** the chosen detection run and the chosen field of
-        view. Two independent narrowings, so they intersect — a recording with the
-        detection spec but no arena of that name would otherwise be launched and then
-        tracked whole-frame, which is a different run from the one that was asked for.
+        """Recordings that have the chosen detection run, the chosen field of view, and
+        the chosen class, all three. Three independent narrowings, so they intersect —
+        a recording missing any one of them would otherwise be launched and validated
+        against a choice it doesn't have (whole-frame instead of the named field of
+        view, or ``_resolve_class_name``'s hard failure for a class the run never
+        detected on that recording).
         """
         detection = covered_ids(self._groups, self._detection.currentData())
         arena = arena_covered_ids(self._arena_groups, self._arena.currentData())
-        if detection is None:
-            return arena
-        return detection if arena is None else detection & arena
+        cls = arena_covered_ids(self._class_groups, self._class.currentData())
+        narrowed = None
+        for ids in (detection, arena, cls):
+            if ids is None:
+                continue
+            narrowed = ids if narrowed is None else narrowed & ids
+        return narrowed
 
     def _detection_conf(self) -> float | None:
         """The selected detection spec's confidence threshold, or None. Read straight
@@ -374,6 +452,9 @@ class _TrackingConfig(ConfigWidget):
         arena_name = config.get("arena_name")
         index = self._arena.findData(arena_name) if arena_name else -1
         self._arena.setCurrentIndex(index if index >= 0 else 0)
+        class_name = config.get("class_name")
+        class_index = self._class.findData(class_name) if class_name else -1
+        self._class.setCurrentIndex(class_index if class_index >= 0 else 0)
         # A substituted tracker keeps **its own** defaults. Copying the run's knobs across
         # would carry only the names the two happen to share, and a shared name is not a
         # shared meaning: `iou_threshold` was frame-to-frame association on the removed
@@ -399,6 +480,7 @@ class _TrackingConfig(ConfigWidget):
             # A **name**. `TrackingModule.validate` turns it into this recording's own
             # arena id, which is what the job and the run record store.
             "arena_name": self._arena.currentData(),
+            "class_name": self._class.currentData(),
             "every_n_frames": self._every_n.value(),
         }
 
@@ -415,7 +497,51 @@ class TrackingModuleUI(ModuleUI):
     def config_widget(self) -> ConfigWidget:
         return _TrackingConfig()
 
-    def preview_widget(self, recording, run_id: str) -> QWidget | None:
+    def result_widget(self, experiment, run_record: dict) -> QWidget:
         from detail.gui.run_preview import TrackingRunPreview
 
-        return TrackingRunPreview(recording, run_id)
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        recordings = [
+            (sid, info.get("run_id"))
+            for sid, info in run_record.get("per_recording", {}).items()
+            if info.get("status") == "complete"
+        ]
+        if not recordings:
+            layout.addWidget(QLabel("(no completed tracking to preview)"))
+            return widget
+        picker = QComboBox()
+        for sid, rid in recordings:
+            picker.addItem(f"{sid}  ·  {rid}", (sid, rid))
+        layout.addWidget(picker)
+        holder = QVBoxLayout()
+        layout.addLayout(holder, 1)
+        current = {"widget": None}
+
+        def show(index: int) -> None:
+            sid, rid = picker.itemData(index)
+            if current["widget"] is not None:
+                current["widget"].deleteLater()
+            current["widget"] = TrackingRunPreview(
+                experiment.get_recording(sid),
+                rid,
+                experiment_dir=experiment.dir,
+                parent_run_id=run_record.get("id"),
+            )
+            holder.addWidget(current["widget"])
+
+        picker.currentIndexChanged.connect(show)
+        show(0)
+        return widget
+
+    def preview_widget(
+        self, recording, run_id: str, *, experiment_dir, parent_run_id
+    ) -> QWidget | None:
+        from detail.gui.run_preview import TrackingRunPreview
+
+        return TrackingRunPreview(
+            recording,
+            run_id,
+            experiment_dir=experiment_dir,
+            parent_run_id=parent_run_id,
+        )

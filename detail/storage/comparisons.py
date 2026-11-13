@@ -20,6 +20,7 @@ from pathlib import Path
 import yaml
 
 from detail.core import atomic
+from detail.core import yaml_load
 from detail.storage import dirscan
 from detail.storage import experiment as experiment_store
 
@@ -81,7 +82,7 @@ def read_comparison_yaml(comparison_dir: Path | str) -> dict:
     path = Path(comparison_dir) / COMPARISON_FILENAME
     if not path.is_file():
         raise FileNotFoundError(f"no {COMPARISON_FILENAME} in {comparison_dir}")
-    record = yaml.safe_load(atomic.read_text(path))
+    record = yaml_load.safe_load(atomic.read_text(path))
     if not isinstance(record, dict):
         raise ValueError(f"{path} is not a mapping")
     if record.get("schema_version") != SCHEMA_VERSION:

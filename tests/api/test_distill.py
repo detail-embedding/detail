@@ -5,8 +5,10 @@ import types
 
 import pytest
 
-from detail.api.experiment import DistillOrchestrator, Experiment
+from detail.api.experiment import DistillOrchestrator, Experiment, _stage_metrics
+from detail.configs.remote import RemoteTargetConfig
 from detail.core.dataclasses import (
+    ComputeTarget,
     LabelingClass,
     LabelingProgressEvent,
     TrainingProgressEvent,
@@ -14,6 +16,7 @@ from detail.core.dataclasses import (
 from detail.core.registries import TRAINERS
 from detail.core.utils import default_compute
 from detail.storage import distill_runs as distill_store
+from detail.storage import remote_targets
 
 
 # --- fakes / helpers -------------------------------------------------------- #
@@ -173,7 +176,359 @@ def test_distill_reserves_record_then_spawns_the_distill_coordinator(
     assert rec["stages"]["label"]["status"] == "pending"
     assert rec["stages"]["train"]["status"] == "pending"
     assert rec["config"]["classes"][0]["prompt"] == "a mouse"
+
+
+def _register_remote_target(monkeypatch, tmp_path, name="tillicum"):
+    cfg_dir = tmp_path / "config" / "detail"
+    monkeypatch.setattr(remote_targets, "CONFIG_DIR", cfg_dir)
+    monkeypatch.setattr(
+        remote_targets, "REMOTE_TARGETS_PATH", cfg_dir / "remote_targets.yaml"
+    )
+    remote_targets.register_remote_target(
+        RemoteTargetConfig(name=name, host=name, remote_workdir="/scratch/x")
+    )
+
+
+def test_distill_remote_label_compute_skips_the_local_model_access_check(
+    tmp_path, monkeypatch
+):
+    """The label model is not accessible *here*, but a remote job never loads it
+    here — the shepherd's own readiness probe checks it on the cluster before the
+    sbatch submission. distill() validates this union up front (Tenet 10), and its
+    own check_model_access call was unconditional even though label_dataset's
+    identical call had already been fixed to skip for remote — found by
+    inspection, same class."""
+    proj = Experiment.create("p", tmp_path)
+    _pass_validation(proj, monkeypatch)
+    monkeypatch.setattr(
+        proj,
+        "check_model_access",
+        lambda mid: types.SimpleNamespace(ready=False, message="not installed"),
+    )
+    # A cuda-capable model, so effective_backend("remote") -> "cuda" is supported —
+    # isolating the local-access skip from the (separately tested) backend check.
+    monkeypatch.setattr(
+        "detail.api.models.supported_backends", lambda mid: ["cpu", "cuda"]
+    )
+    _register_remote_target(monkeypatch, tmp_path, name="tillicum")
+    monkeypatch.setattr(
+        "detail.api.experiment.spawn_coordinator", lambda run_dir, mods, **k: 4321
+    )
+    proj.distill(
+        "m",
+        classes=[LabelingClass(0, "mouse", "a mouse")],
+        n_frames=2,
+        source_recording_ids=["recording_001"],
+        trainer_id="faketrainer",
+        label_compute=ComputeTarget(
+            "remote", None, None, None, remote_target="tillicum"
+        ),
+    )
+    rec = distill_store.read_run(proj.dir, "distill_001")
+    assert rec["status"] == "running"
+    assert rec["config"]["label_compute"]["backend"] == "remote"
+
+
+def test_distill_remote_train_compute_skips_the_local_trainer_readiness_check(
+    tmp_path, monkeypatch
+):
+    """Same class, the training side: the trainer framework is not importable
+    *here*, but training happens entirely on the cluster for a remote job."""
+
+    class _NotReadyTrainer(_FakeTrainer):
+        # cuda-capable, so effective_backend("remote") -> "cuda" is supported —
+        # isolating the local-readiness skip from the (separately tested) backend
+        # check.
+        supported_backends = ["cpu", "cuda"]
+
+        def is_ready(self):
+            return False
+
+    proj = Experiment.create("p", tmp_path)
+    _pass_validation(proj, monkeypatch)
+    monkeypatch.setitem(TRAINERS, "faketrainer", _NotReadyTrainer)
+    _register_remote_target(monkeypatch, tmp_path, name="tillicum")
+    monkeypatch.setattr(
+        "detail.api.experiment.spawn_coordinator", lambda run_dir, mods, **k: 4321
+    )
+    proj.distill(
+        "m",
+        classes=[LabelingClass(0, "mouse", "a mouse")],
+        n_frames=2,
+        source_recording_ids=["recording_001"],
+        trainer_id="faketrainer",
+        train_compute=ComputeTarget(
+            "remote", None, None, None, remote_target="tillicum"
+        ),
+    )
+    rec = distill_store.read_run(proj.dir, "distill_001")
+    assert rec["status"] == "running"
+    assert rec["config"]["train_compute"]["backend"] == "remote"
     assert distill_store.read_coordinator_pid(proj.dir, "distill_001") == 4321
+
+
+# --- the opt-in background video upload (stage_videos) ------------------------------------- #
+def _distill_kwargs():
+    return dict(
+        classes=[LabelingClass(0, "mouse", "a mouse")],
+        n_frames=2,
+        source_recording_ids=["recording_001"],
+        trainer_id="faketrainer",
+    )
+
+
+def _remote(name="tillicum"):
+    return ComputeTarget("remote", None, None, None, remote_target=name)
+
+
+def _stageable(proj, monkeypatch, tmp_path):
+    """Validation stubbed, a cuda-capable label model and trainer, and a registered target."""
+    _pass_validation(proj, monkeypatch)
+    monkeypatch.setattr(
+        "detail.api.models.supported_backends", lambda mid: ["cpu", "cuda"]
+    )
+
+    class _CudaTrainer(_FakeTrainer):
+        supported_backends = ["cpu", "cuda"]
+
+    monkeypatch.setitem(TRAINERS, "faketrainer", _CudaTrainer)
+    _register_remote_target(monkeypatch, tmp_path, name="tillicum")
+    _register_remote_target(monkeypatch, tmp_path, name="hyak")
+    monkeypatch.setattr(
+        "detail.api.experiment.spawn_coordinator", lambda run_dir, mods, **k: 4321
+    )
+
+
+def test_stage_videos_needs_a_remote_stage_to_upload_to(tmp_path, monkeypatch):
+    proj = Experiment.create("p", tmp_path)
+    _pass_validation(proj, monkeypatch)
+
+    with pytest.raises(ValueError, match="neither the labeling nor the training"):
+        proj.distill("m", stage_videos=True, **_distill_kwargs())
+
+    assert distill_store.list_runs(proj.dir) == [], "refused before reserving a run"
+
+
+@pytest.mark.parametrize(
+    "label, train, staged_to",
+    [
+        (
+            _remote("hyak"),
+            _remote("tillicum"),
+            "tillicum",
+        ),  # detection follows training
+        (_remote("hyak"), None, "hyak"),  # training local: the labeling target
+        (None, _remote("tillicum"), "tillicum"),
+    ],
+)
+def test_the_upload_goes_where_the_trained_model_will_run(
+    tmp_path, monkeypatch, label, train, staged_to
+):
+    proj = Experiment.create("p", tmp_path)
+    _stageable(proj, monkeypatch, tmp_path)
+
+    proj.distill(
+        "m",
+        label_compute=label,
+        train_compute=train,
+        stage_videos=True,
+        **_distill_kwargs(),
+    )
+
+    config = distill_store.read_run(proj.dir, "distill_001")["config"]
+    assert config["stage_videos"] is True
+    assert config["stage_video_target"] == staged_to
+
+
+def test_a_distill_stages_nothing_unless_asked(tmp_path, monkeypatch):
+    """100+ GB of the cluster's storage is not a default."""
+    proj = Experiment.create("p", tmp_path)
+    _stageable(proj, monkeypatch, tmp_path)
+
+    proj.distill("m", train_compute=_remote(), **_distill_kwargs())
+
+    config = distill_store.read_run(proj.dir, "distill_001")["config"]
+    assert config["stage_videos"] is False and config["stage_video_target"] is None
+
+
+def test_the_orchestrator_starts_the_upload_before_labeling(tmp_path, monkeypatch):
+    from detail.executor import video_staging
+
+    proj = Experiment.create("p", tmp_path)
+    record = _reserve(proj)
+    record["config"].update(stage_videos=True, stage_video_target="tillicum")
+    order = []
+    monkeypatch.setattr(
+        video_staging, "start", lambda *a: order.append(("stage", a)) or {}
+    )
+    monkeypatch.setattr(
+        proj,
+        "label_dataset",
+        lambda **kw: order.append(("label", None))
+        or _FakeRun("dataset_001", [], status="failed", error="stop here"),
+    )
+
+    DistillOrchestrator(proj, "distill_001", record, lambda _p: None).run()
+
+    assert [step for step, _ in order] == ["stage", "label"]
+    assert order[0][1] == (proj.dir, "tillicum", ["recording_001"])
+
+
+def test_the_orchestrator_stages_nothing_when_not_asked(tmp_path, monkeypatch):
+    from detail.executor import video_staging
+
+    proj = Experiment.create("p", tmp_path)
+    record = _reserve(proj)
+    monkeypatch.setattr(
+        video_staging, "start", lambda *a: pytest.fail("staged without being asked")
+    )
+    monkeypatch.setattr(
+        proj,
+        "label_dataset",
+        lambda **kw: _FakeRun("dataset_001", [], status="failed", error="stop"),
+    )
+
+    DistillOrchestrator(proj, "distill_001", record, lambda _p: None).run()
+
+
+def test_an_upload_that_cannot_start_never_fails_the_distill(
+    tmp_path, monkeypatch, capsys
+):
+    """It is an optimisation: the detection run uploads the videos itself if it has to."""
+    from detail.executor import video_staging
+
+    proj = Experiment.create("p", tmp_path)
+    record = _reserve(proj)
+    record["config"].update(stage_videos=True, stage_video_target="tillicum")
+
+    def cannot_spawn(*_a):
+        raise OSError("too many open files")
+
+    monkeypatch.setattr(video_staging, "start", cannot_spawn)
+    monkeypatch.setattr(
+        proj,
+        "label_dataset",
+        lambda **kw: _FakeRun("dataset_001", [], status="failed", error="stop here"),
+    )
+
+    DistillOrchestrator(proj, "distill_001", record, lambda _p: None).run()
+
+    rec = distill_store.read_run(proj.dir, "distill_001")
+    assert (
+        "labeling failed" in rec["error"]
+    ), "reached labeling: the upload did not stop it"
+    assert "could not start the background video upload" in capsys.readouterr().out
+
+
+def test_video_staging_reports_each_upload_and_marks_a_dead_one_failed(
+    tmp_path, monkeypatch
+):
+    from detail.executor import local, video_staging
+
+    proj = Experiment.create("p", tmp_path)
+    live = video_staging._initial_state("tillicum", ["recording_001"])
+    live.update(pid=1, files_done=3, files_total=8)
+    gone = video_staging._initial_state("hyak", ["recording_001"])
+    gone.update(pid=2)
+    video_staging._write_state(proj.dir, "tillicum", live)
+    video_staging._write_state(proj.dir, "hyak", gone)
+    monkeypatch.setattr(local, "coordinator_alive", lambda root, pid: pid == 1)
+
+    states = {s["target"]: s for s in proj.video_staging()}
+
+    assert states["tillicum"]["status"] == "running"
+    assert states["tillicum"]["files_done"] == 3
+    assert (
+        states["hyak"]["status"] == "failed"
+    ), "a record cannot say running of a dead process"
+    assert "no longer running" in states["hyak"]["error"]
+
+
+def _staging_launches(monkeypatch):
+    """``video_staging.start`` replaced by a recorder, so no process is spawned."""
+    from detail.executor import video_staging
+
+    launched = []
+    monkeypatch.setattr(
+        video_staging,
+        "start",
+        lambda root, target, ids: launched.append((target, list(ids)))
+        or {"target": target, "status": "running", "pid": 1},
+    )
+    return launched
+
+
+def test_start_video_staging_defaults_to_every_recording(tmp_path, monkeypatch):
+    proj = Experiment.create("p", tmp_path)
+    proj.create_recording("recording_001")
+    proj.create_recording("recording_002")
+    _register_remote_target(monkeypatch, tmp_path, name="tillicum")
+    launched = _staging_launches(monkeypatch)
+
+    state = proj.start_video_staging("tillicum")
+
+    assert launched == [("tillicum", ["recording_001", "recording_002"])]
+    assert state["status"] == "running"
+
+
+def test_a_restart_takes_up_the_recordings_of_the_last_upload(tmp_path, monkeypatch):
+    """Resuming a stopped upload means *that* upload, not whatever the experiment holds now."""
+    from detail.executor import video_staging
+
+    proj = Experiment.create("p", tmp_path)
+    proj.create_recording("recording_001")
+    proj.create_recording("recording_002")
+    _register_remote_target(monkeypatch, tmp_path, name="tillicum")
+    previous = video_staging._initial_state("tillicum", ["recording_002"])
+    previous["status"] = "cancelled"
+    video_staging._write_state(proj.dir, "tillicum", previous)
+    launched = _staging_launches(monkeypatch)
+
+    proj.start_video_staging("tillicum")
+    proj.start_video_staging("tillicum", ["recording_001"])
+
+    assert launched == [
+        ("tillicum", ["recording_002"]),
+        ("tillicum", ["recording_001"]),
+    ], "explicit recordings win"
+
+
+def test_start_video_staging_refuses_an_unregistered_target(tmp_path, monkeypatch):
+    proj = Experiment.create("p", tmp_path)
+    _register_remote_target(monkeypatch, tmp_path, name="tillicum")
+    launched = _staging_launches(monkeypatch)
+
+    with pytest.raises(ValueError, match="no remote target registered as 'nope'"):
+        proj.start_video_staging("nope")
+
+    assert launched == []
+
+
+def test_start_video_staging_refuses_an_unknown_recording(tmp_path, monkeypatch):
+    proj = Experiment.create("p", tmp_path)
+    _register_remote_target(monkeypatch, tmp_path, name="tillicum")
+    launched = _staging_launches(monkeypatch)
+
+    with pytest.raises(FileNotFoundError, match="recording_404"):
+        proj.start_video_staging("tillicum", ["recording_404"])
+
+    assert launched == []
+
+
+def test_stop_video_staging_stops_one_target_or_all(tmp_path, monkeypatch):
+    from detail.executor import local, video_staging
+
+    proj = Experiment.create("p", tmp_path)
+    for name, pid in (("tillicum", 1), ("hyak", 2)):
+        state = video_staging._initial_state(name, ["recording_001"])
+        state.update(pid=pid)
+        video_staging._write_state(proj.dir, name, state)
+    monkeypatch.setattr(local, "coordinator_alive", lambda root, pid: True)
+    monkeypatch.setattr(local, "kill_coordinator", lambda root, pid: None)
+
+    assert proj.stop_video_staging("hyak") == ["hyak"]
+    assert proj.stop_video_staging() == ["tillicum"], "hyak was already stopped"
+    assert {s["status"] for s in proj.video_staging()} == {"cancelled"}
 
 
 def test_distill_spawn_failure_marks_run_failed(tmp_path, monkeypatch):
@@ -540,3 +895,80 @@ def test_a_fresh_distill_starts_its_clock_at_zero(tmp_path, monkeypatch):
     monkeypatch.setattr("detail.api.experiment.time", clock)
     orchestrator = DistillOrchestrator(proj, record["id"], record, lambda e: None)
     assert orchestrator._start == pytest.approx(0.0)  # the identity for a fresh run
+
+
+# --- stage metrics rollup (§ run location, duration, cost) ------------------ #
+def test_stage_metrics_picks_only_the_present_keys():
+    record = {
+        "id": "dataset_001",
+        "compute": {"backend": "cpu"},
+        "duration_s": 12.5,
+        "estimated_cost_usd": 0.02,
+        "status": "complete",  # not one of the rolled-up keys
+    }
+    assert _stage_metrics(record) == {
+        "compute": {"backend": "cpu"},
+        "duration_s": 12.5,
+        "estimated_cost_usd": 0.02,
+    }
+
+
+def test_stage_metrics_omits_missing_keys_rather_than_inventing_none():
+    assert _stage_metrics({"id": "dataset_001", "status": "running"}) == {}
+
+
+def test_distill_stage_dicts_carry_their_own_compute_and_duration(
+    tmp_path, monkeypatch
+):
+    """The label/train stages roll up whatever set_dataset_status/set_model_status
+    already merged into dataset.yaml/model.yaml — read back, not recomputed."""
+    from detail.storage import datasets as datasets_store
+    from detail.storage import models as models_store
+
+    proj = Experiment.create("p", tmp_path)
+    record = _reserve(proj)
+    label_events = [LabelingProgressEvent(4, 4, 1, 1, 0.2, 0.0, None)]
+    train_events = [TrainingProgressEvent(5, 5, {"box_map50": 0.9}, 0.5, 0.0, None)]
+
+    def _fake_label_dataset(**kw):
+        ddir = datasets_store.dataset_dir(proj.dir, "dataset_001")
+        ddir.mkdir(parents=True, exist_ok=True)
+        datasets_store.write_dataset_yaml(
+            ddir,
+            {
+                "id": "dataset_001",
+                "status": "complete",
+                "compute": {"backend": "cpu"},
+                "duration_s": 42.0,
+            },
+        )
+        return _FakeRun("dataset_001", label_events)
+
+    def _fake_train_model(**kw):
+        mdir = models_store.model_dir(proj.dir, "model_001")
+        mdir.mkdir(parents=True, exist_ok=True)
+        models_store.write_model_yaml(
+            mdir,
+            {
+                "id": "model_001",
+                "status": "complete",
+                "compute": {"backend": "remote", "remote_target": "tillicum"},
+                "duration_s": 3600.0,
+                "estimated_cost_usd": 1.5,
+            },
+        )
+        return _FakeRun("model_001", train_events)
+
+    monkeypatch.setattr(proj, "label_dataset", _fake_label_dataset)
+    monkeypatch.setattr(proj, "train_model", _fake_train_model)
+
+    emitted = []
+    DistillOrchestrator(proj, "distill_001", record, emitted.append).run()
+
+    final = distill_store.read_run(proj.dir, "distill_001")
+    assert final["stages"]["label"]["compute"] == {"backend": "cpu"}
+    assert final["stages"]["label"]["duration_s"] == 42.0
+    assert "estimated_cost_usd" not in final["stages"]["label"]
+    assert final["stages"]["train"]["estimated_cost_usd"] == 1.5
+    assert final["total_estimated_cost_usd"] == 1.5  # only train stage had a cost
+    assert final["duration_s"] is not None and final["duration_s"] >= 0

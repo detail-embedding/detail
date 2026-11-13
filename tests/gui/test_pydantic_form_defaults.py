@@ -86,10 +86,11 @@ def _discard_widgets(qapp):
 #: Models `build_fields` builds no scalar widget for, and why. A claim, like `UNIT_EXEMPTIONS`:
 #: `test_every_no_scalar_entry_is_still_true` fails on one that has grown a field.
 NO_SCALAR_FIELDS = {
-    "LocationExportConfig": "only list-valued ROI/POI selections, no numbers or toggles",
     "TrackingConfig": "a tracker id plus that tracker's own hyperparameter dict",
     "CsvStreamConfig": "a column name, a choice, and a list of channels — every value is "
     "read off the CSV being imported, so there is no number or toggle to seed",
+    "TrackMergeConfig": "a single list of source tracking specs — no number or toggle, "
+    "the picker rows are built by hand in gui/modules/track_merge.py, not from this model",
 }
 
 
@@ -154,9 +155,10 @@ def test_a_whole_form_opens_on_the_models_defaults(qapp, model_cls):
         checked += 1
 
     # A parametrisation that asserts nothing is a green tick for a model nobody checked.
-    # `LocationExportConfig` and `TrackingConfig` build no scalar widgets at all — every field is
-    # a choice or a nested input — so they ran the loop zero times and reported a pass. Listed,
-    # with the reason, rather than silently tolerated.
+    # `TrackingConfig` builds no scalar widget at all — every field is a choice or a nested
+    # input — so it ran the loop zero times and reported a pass (`LocationExportConfig` did too,
+    # until it grew `pair_edge_distance`). Listed, with the reason, rather than silently
+    # tolerated.
     if not checked:
         assert model_cls.__name__ in NO_SCALAR_FIELDS, (
             f"{model_cls.__name__} has no scalar field to check, so this test says nothing "

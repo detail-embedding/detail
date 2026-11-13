@@ -20,6 +20,7 @@ def test_registry_lists_expected_checks():
     assert {
         "torch",
         "cuda",
+        "nvidia_gpu",
         "sam3_backend",
         "triton",
         "dinov3_backend",
@@ -53,6 +54,24 @@ def test_cuda_check_both_branches(monkeypatch):
     assert api_checks.run_check("cuda").status == CheckStatus.OK
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     assert api_checks.run_check("cuda").status == CheckStatus.WARN
+
+
+def test_nvidia_gpu_check_asks_the_driver_not_torch(monkeypatch):
+    # The check `cuda` cannot answer: a CPU-only torch wheel says "no CUDA device" on a box
+    # whose NVIDIA driver is right there. So this one reads nvidia-smi, never torch.
+    monkeypatch.setattr(
+        "detail.checks.environment.hostinfo.nvidia_smi", lambda: ("560.94", "12.6")
+    )
+    result = api_checks.run_check("nvidia_gpu")
+    assert result.status == CheckStatus.OK
+    assert "560.94" in result.detail and "12.6" in result.detail
+    monkeypatch.setattr(
+        "detail.checks.environment.hostinfo.nvidia_smi", lambda: (None, None)
+    )
+    result = api_checks.run_check("nvidia_gpu")
+    # No NVIDIA GPU is not a problem to fix, so it neither warns nor fails.
+    assert result.status == CheckStatus.SKIPPED
+    assert "no NVIDIA driver" in result.detail
 
 
 def test_triton_is_skipped_exactly_off_windows():

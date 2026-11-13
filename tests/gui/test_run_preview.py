@@ -6,6 +6,14 @@ from tests import waits  # noqa: E402
 
 pytest.importorskip("PyQt6")
 
+from PyQt6.QtWidgets import QPushButton  # noqa: E402
+
+
+def test_track_color_tells_a_track_from_no_track(qapp):
+    from detail.gui.run_preview import _track_color
+
+    assert _track_color(0) != _track_color(None)
+
 
 def test_to_pixmap_dimensions(qapp):
     from detail.gui.run_preview import _to_pixmap
@@ -162,7 +170,10 @@ def test_detection_preview_builds_and_strip_click_jumps(qapp):
 
     w = DetectionRunPreview(_FakeRunRecording(), "det_01")
     _wait_populated(w, "_strip")  # off-thread load populates the strip + scrubber
-    assert w._masks.isChecked() and w._masks_on  # masks overlaid by default
+    from detail.core.visualize import MASK_BOX_CONF
+
+    assert w._style == MASK_BOX_CONF  # mask + box + confidence, overlaid by default
+    assert w._style_picker.currentData() == MASK_BOX_CONF
     # Detection still reports detection counts. The summary moved behind a hook so
     # tracking could say something else; a refactor that quietly changed *this* line too
     # would have gone unnoticed, since nothing asserted it.
@@ -170,6 +181,142 @@ def test_detection_preview_builds_and_strip_click_jumps(qapp):
     w._strip.clicked.emit(2)  # strip click → scrubber.set_frame
     QTest.qWait(60)
     assert w._frame == 2
+
+
+def test_style_dropdown_matches_preview_styles_in_order(qapp):
+    """The GUI dropdown and the CLI's `--style` choices are both built by iterating
+    `PREVIEW_STYLES` — a fourth style added there must not need a second edit here."""
+    from detail.core.visualize import PREVIEW_STYLE_LABELS, PREVIEW_STYLES
+    from detail.gui.run_preview import DetectionRunPreview
+
+    w = DetectionRunPreview(_FakeRunRecording(), "det_01")
+    _wait_populated(w, "_strip")
+    items = [
+        (w._style_picker.itemText(i), w._style_picker.itemData(i))
+        for i in range(w._style_picker.count())
+    ]
+    assert items == [(PREVIEW_STYLE_LABELS[s], s) for s in PREVIEW_STYLES]
+
+
+def test_export_buttons_hidden_without_an_experiment(qapp):
+    """A fake recording (or a caller that predates the buttons) has nothing to seed an
+    export subject with, so the buttons hide rather than opening a dialog that always
+    fails to submit."""
+    from detail.gui.run_preview import DetectionRunPreview
+
+    w = DetectionRunPreview(_FakeRunRecording(), "det_01")
+    _wait_populated(w, "_strip")
+    buttons = [c for c in w.findChildren(QPushButton) if "Export" in c.text()]
+    assert len(buttons) == 2
+    # `isVisible()` needs a shown top-level window (this widget never is, in a test); the
+    # explicit `.hide()` this asserts is `isHidden()`, which does not.
+    assert all(b.isHidden() for b in buttons)
+
+
+class _FakeRunRecordingWithId(_FakeRunRecording):
+    id = "rec_01"
+
+
+def test_export_frame_opens_the_shared_dialog_seeded_with_the_style_and_frame(
+    qapp, tmp_path
+):
+    """`Export frame…` goes through `gui.export.open_export`, pre-answered with the run
+    subject, the frame on screen as a scope, and the style — the same "one dialog,
+    pre-answered" shape the clip player's own Export video… button uses."""
+    from detail.gui import run_preview as rp
+
+    captured = {}
+
+    def _fake_open_export(parent, subject, scope, *, only, seed):
+        captured["subject"] = subject
+        captured["scope"] = scope
+        captured["only"] = only
+        captured["seed"] = seed
+
+    import detail.gui.export as export_module
+
+    original = export_module.open_export
+    export_module.open_export = _fake_open_export
+    try:
+        w = rp.DetectionRunPreview(
+            _FakeRunRecordingWithId(),
+            "det_01",
+            experiment_dir=tmp_path,
+            parent_run_id="det_run_01",
+        )
+        _wait_populated(w, "_strip")
+        buttons = [c for c in w.findChildren(QPushButton) if "Export" in c.text()]
+        assert len(buttons) == 2 and all(not b.isHidden() for b in buttons)
+        w._frame = 2
+        w._export_frame()
+    finally:
+        export_module.open_export = original
+
+    assert captured["subject"].kind == "run"
+    assert captured["subject"].id == "det_run_01"
+    assert captured["only"] == ("preview_frame",)
+    assert captured["scope"].frames == (2, 2)
+    assert captured["seed"] == {"recording_id": "rec_01", "style": w._style}
+
+
+def test_export_video_opens_the_shared_dialog_with_no_scope(qapp, tmp_path):
+    """`Export video…` writes the whole recording, so it opens with no scope — the same
+    "everything" `masks`/`tracks` already mean for a scope-free run target."""
+    import detail.gui.export as export_module
+    from detail.gui import run_preview as rp
+
+    captured = {}
+    original = export_module.open_export
+    export_module.open_export = (
+        lambda parent, subject, scope, *, only, seed: captured.update(
+            subject=subject, scope=scope, only=only, seed=seed
+        )
+    )
+    try:
+        w = rp.DetectionRunPreview(
+            _FakeRunRecordingWithId(),
+            "det_01",
+            experiment_dir=tmp_path,
+            parent_run_id="det_run_01",
+        )
+        _wait_populated(w, "_strip")
+        w._export_video()
+    finally:
+        export_module.open_export = original
+
+    assert captured["only"] == ("preview_video",)
+    assert captured["scope"] is None
+
+
+def test_tracking_label_keeps_track_id_when_confidence_is_off(qapp):
+    """The track id is the reason a tracking preview exists, so it must survive every
+    style — unlike a detection preview, which has no label at all in that case."""
+    from detail.gui.run_preview import TrackingRunPreview
+
+    w = TrackingRunPreview(_FakeRunRecording(), "track_01")
+    _wait_populated(w, "_timeline")
+    from detail.core.dataclasses import Detection
+
+    det = Detection(
+        mask=None, bbox=(0, 0, 1, 1), class_name="mouse", confidence=0.9, object_id=2
+    )
+    assert w._label_fn(det, False) == "track 2"
+    assert w._label_fn(det, True) == "track 2 · mouse 0.90"
+    assert w._color_fn(det) is not None
+
+
+def test_detection_label_is_none_without_confidence(qapp):
+    from detail.gui.run_preview import DetectionRunPreview
+
+    w = DetectionRunPreview(_FakeRunRecording(), "det_01")
+    _wait_populated(w, "_strip")
+    from detail.core.dataclasses import Detection
+
+    det = Detection(
+        mask=None, bbox=(0, 0, 1, 1), class_name="mouse", confidence=0.9, object_id=None
+    )
+    assert w._label_fn(det, False) is None
+    assert w._label_fn(det, True) == "mouse 0.90"
 
 
 def test_tracking_preview_builds_and_timeline_click_jumps(qapp):
@@ -410,11 +557,12 @@ class _FakeRecording:
     video_fps = 25.0  # the scrubber plays at the recording's rate, so the fake has one
 
     def resolve_constructor(
-        self, constructor, tracking_run_id, track_ids, model_id=None
-    ):
+        self, constructor, tracking_run_id, track_ids, model_id=None,
+        align="none", pose="none", keypoint_run_id=None, pose_min_score=None,
+    ):  # fmt: skip
         return [{"type": "init_binary_mask"}]
 
-    def input_image_preview(self, tracking_run_id, renderer_spec):
+    def input_image_preview(self, tracking_run_id, renderer_spec, **alignment):
         return _FakePreview()
 
 
@@ -441,6 +589,12 @@ def test_input_image_scrubber(qapp):
 
 
 class _FakeEmbPreview:
+    def alignment_summary(self):
+        return None  # an unaligned run
+
+    def pose_summary(self):
+        return None  # a run without pose
+
     def metadata(self):
         return {
             "model_id": "dinov3",
@@ -542,3 +696,19 @@ def test_embedding_preview_puts_scatter_frame_and_input_side_by_side(qapp):
         assert not widget.findChildren(QTableView)
     finally:
         widget.close()
+
+
+# --- keypoints (§26) ------------------------------------------------------------- #
+
+
+def test_the_embedding_viewer_header_says_how_the_pose_went_in():
+    """§14 pose: a drawn or appended pose is part of the recipe, so the header says it; a
+    run without pose (or recorded before pose existed) adds nothing."""
+    from detail.gui.run_preview import pose_text
+
+    assert pose_text({}) is None and pose_text({"pose": "none"}) is None
+    assert pose_text({"pose": "draw"}) == "points drawn on the mask"
+    assert (
+        pose_text({"pose": "append", "pose_weight": 0.5})
+        == "pose numbers added to the vector (weight 0.5)"
+    )

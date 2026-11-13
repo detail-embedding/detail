@@ -145,6 +145,19 @@ def resolve_device(compute: ComputeTarget, supported_backends: list[str]) -> str
     )
 
 
+def effective_backend(compute: ComputeTarget) -> str:
+    """The backend a component's capability check should read.
+
+    ``"remote"`` is a routing decision — which registered cluster to submit
+    through (§6) — not a capability a model/tracker/embedder declares support
+    for; the job actually runs as ``"cuda"`` once a ``RemoteExecutor`` rewrites
+    it. A module's ``validate()`` checks *this* against ``supported_backends``,
+    not ``compute.backend`` directly, so "does this model support remote
+    execution" is answered the same way "does it support cuda" already is.
+    """
+    return "cuda" if compute.backend == "remote" else compute.backend
+
+
 def torch_device(device: str) -> str:
     """Translate ``resolve_device`` output to a torch device string.
 
@@ -264,6 +277,74 @@ def default_compute(supported_backends: list[str] | None = None) -> ComputeTarge
     return ComputeTarget(backend, device_indices, None, None)
 
 
+def preview_compute(
+    compute: ComputeTarget | None, supported_backends: list[str]
+) -> ComputeTarget:
+    """The compute target a synchronous, local-only preview actually runs on.
+
+    A preview (prompt test, keypoints test) blocks the caller and never goes through an
+    executor, so it cannot run on a cluster. A dialog hands it the *run's* target, which
+    may be ``"remote"``; that names where the full run will be submitted, not where a
+    preview runs, so it resolves to this machine's fastest supported backend — the same
+    default an omitted target gets. Any local target is kept as given.
+    """
+    if compute is None or compute.backend == "remote":
+        return default_compute(supported_backends)
+    return compute
+
+
+def series_dirname(track_id: int) -> str:
+    """The storage directory name for one embedding series (§14): ``track_0``."""
+    return f"track_{track_id}"
+
+
+def parse_series_dirname(name: str) -> int:
+    """Inverse of ``series_dirname``: ``"track_0"`` -> ``0``.
+
+    Raises:
+        ValueError: If ``name`` isn't a ``track_<id>`` directory name.
+    """
+    prefix = "track_"
+    if not name.startswith(prefix):
+        raise ValueError(f"not a track directory name: {name!r}")
+    return coerce_series_key(name[len(prefix) :])
+
+
+def coerce_series_key(value) -> int:
+    """Parse a config/CLI/GUI value into a track id: an int, an ``np.integer``, or a digit
+    string.
+
+    Raises:
+        ValueError: If ``value`` is none of those.
+    """
+    if isinstance(value, (int, np.integer)):
+        return int(value)
+    if isinstance(value, str) and value.lstrip("-").isdigit():
+        return int(value)
+    raise ValueError(f"not a valid track selector: {value!r} (an integer track id)")
+
+
+def series_words(track_id) -> str:
+    """A series as a sentence says it: ``track 0``."""
+    return f"track {track_id}"
+
+
+def subject_key(value) -> int:
+    """A subject read back from data, as a track id — the one way to read one.
+
+    A behavior row's ``subject``, a clip spec's ``track_id``, a clustering member's
+    ``subject``: each is a track's int, possibly stored as an ``np.integer`` or a digit
+    string. ``None`` or ``""`` (a stream with no subject column) is track ``0``, which is what
+    those sites' ``or 0`` meant.
+
+    Raises:
+        ValueError: If ``value`` is not a track id.
+    """
+    if value is None or (isinstance(value, str) and not value):
+        return 0
+    return coerce_series_key(value)
+
+
 def resolve_track_id(track_id: int | str, subject_labels: dict | None) -> int:
     """Resolve a track selector to a concrete integer track id.
 
@@ -294,16 +375,15 @@ def check_track_is_unambiguous(
 
     Track ids are assigned **in order of first appearance within one tracking run** (§13), so an
     integer names a position, not an animal. With a single track that position is unambiguous —
-    there is one subject and the int finds it, which is every recording in this project today.
-    With several, ``track_id=0`` is "whichever the tracker happened to number first", and that
-    can be a different animal in each recording. Pooling subjects across recordings by that
-    integer then mixes them, silently and plausibly: every recording contributes bouts, the
-    counts look right, and the vocabulary is fitted across two animals.
+    there is one subject and the int finds it. With several, ``track_id=0`` is "whichever the
+    tracker happened to number first", and that can be a different animal in each recording.
+    Pooling subjects across recordings by that integer then mixes them, silently and plausibly:
+    every recording contributes bouts, the counts look right, and the vocabulary is fitted across
+    two animals.
 
     So this raises at the point the ambiguity first exists rather than letting the run proceed.
     ``subject_labels`` on the tracking run and ``resolve_track_id`` above are the designed way
-    out (§13), and are not built — deliberately, since nothing needs them yet. This is what will
-    tell someone they do.
+    out (§13) for *selecting* one animal's track by name.
 
     Cross-recording animal *identity* is a separate thing and already solved: it is a
     recording-level fact carried by the §11 grouping variables (``metadata.csv``'s animal id
@@ -315,13 +395,29 @@ def check_track_is_unambiguous(
     if len(available) <= 1:
         return
     raise ValueError(
-        f"recording {recording_id!r} has {len(available)} tracks ({sorted(available)}) in run "
-        f"{run_id!r}, so track_id={track_id} is ambiguous: track ids are assigned in order of "
-        "first appearance within each recording, so the same integer is not the same animal "
-        "across recordings, and pooling them would mix subjects. Run this on one subject at a "
-        "time, or assign subject_labels to the tracking run so a track can be named "
-        "(DESIGN_PLAN §13 — not built yet)."
+        f"recording {recording_id!r} has {len(available)} tracks "
+        f"({sorted(available)}) in run {run_id!r}, so track_id={track_id} "
+        "is ambiguous: track ids are assigned in order of first appearance within each "
+        "recording, so the same integer is not the same animal across recordings, and pooling "
+        "them would mix subjects. Run this on one subject at a time, or assign subject_labels to "
+        "the tracking run so a track can be named (DESIGN_PLAN §13)."
     )
+
+
+def resolve_track_default(track_id: int, available: list[int]) -> int:
+    """If ``track_id`` is the untouched literal default (``0``) and a run offers exactly
+    one series that isn't it, resolve to that series instead — every module whose config
+    defaults to ``0`` would otherwise refuse such a run with "track 0 is not in this run" even
+    though there is exactly one honest answer sitting right there.
+
+    Only the untouched default is rescued. An explicitly chosen value that turns out wrong
+    is left alone, so its own caller raises its own clear error — this never silently
+    overrides a real choice (tracking.py's multi-arena refusal is the model: resolve an
+    unambiguous default, raise on an ambiguous or explicit one).
+    """
+    if track_id == 0 and track_id not in available and len(available) == 1:
+        return available[0]
+    return track_id
 
 
 def t_ns_to_seconds(t_ns: int) -> float:
@@ -403,19 +499,39 @@ def bbox_iou(
     return inter / union if union > 0 else 0.0
 
 
-def decode_mask(counts: str, size: tuple[int, int]) -> np.ndarray:
+def decode_mask(
+    counts: str, size: tuple[int, int], *, encoded: tuple[int, int] | None = None
+) -> np.ndarray:
     """Decode an ASCII COCO-RLE mask (§9) to a ``(h, w)`` bool array.
 
     ``counts`` is the RLE string stored in the detection zarr's ``mask_rle``
     column; ``size`` is ``(height, width)``. Empty ``counts`` → an all-False mask.
+
+    An RLE only decodes at the size it was **encoded** at (the detection run's
+    ``mask_resolution``); read at any other it comes out striped and repeated. So a caller
+    asking for another size — a video frame that decodes larger than the detection run saw it —
+    passes ``encoded``, and the mask is decoded there and resized, nearest-neighbour.
     """
     if not counts:
         return np.zeros(tuple(size), dtype=bool)
     from pycocotools import mask as mask_utils
 
-    return mask_utils.decode(
-        {"counts": counts.encode("ascii"), "size": list(size)}
+    at = tuple(encoded) if encoded else tuple(size)
+    mask = mask_utils.decode(
+        {"counts": counts.encode("ascii"), "size": list(at)}
     ).astype(bool)
+    if at == tuple(size):
+        return mask
+    import cv2
+
+    return (
+        cv2.resize(
+            mask.astype(np.uint8),
+            (int(size[1]), int(size[0])),
+            interpolation=cv2.INTER_NEAREST,
+        )
+        > 0
+    )
 
 
 def mask_boxes(counts, size: tuple[int, int]) -> np.ndarray:

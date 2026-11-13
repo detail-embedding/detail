@@ -66,9 +66,13 @@ recording ──────────► arena / ROI geometry (CSV)      —
                       clip  (raw|overlay|mask)        frames
 
 detection run ──────► masks (COCO JSON)               recordings | all
+                      preview_frame (PNG, 7 styles)    exactly one recording (+ frames)
+                      preview_video (mp4, 7 styles)    exactly one recording
                       performance report
 
 tracking run ───────► tracks (CSV)                    recordings | all
+                      preview_frame (PNG, 7 styles)    exactly one recording (+ frames)
+                      preview_video (mp4, 7 styles)    exactly one recording
                       performance report
 
 embedding run ──────► feature vectors                 recordings | all
@@ -95,9 +99,8 @@ gave the reader the same choice, since "the narrowing is picking a file".
 That reasoning holds when writing a file is cheap and fails exactly where it is not. From a
 keypoints run's page, **Export…** with **Keypoints video** ticked wrote every recording's video,
 far more than the drive had free, when one recording was wanted; picking a file after the
-writing is not a choice. `masks`, `tracks` and `vectors` write one file per recording and have the
-same shape at a smaller size. And the objection that no surface could supply it was already untrue
-of the run page, whose list *is* the choice of recording on screen. So:
+writing is not a choice. And the objection that no surface could supply it was already untrue of
+the run page, whose list *is* the choice of recording on screen. So:
 
 - `ExportScope.recording_ids` narrows an export to those recordings. `None`/empty is every
   recording, as for the other scopes, and it is normalised (ids, in order, once each).
@@ -106,6 +109,8 @@ of the run page, whose list *is* the choice of recording on screen. So:
   and a fail-closed scan fails any target that walks a run's recordings without declaring it.
   `metadata` and `bundle` describe the whole experiment and do not declare it, and `export list`
   shows the difference.
+- `recording_id` stays as the option the viewers' own buttons seed (one recording, named by the
+  widget showing it), honoured when the scope names none, so both spellings narrow the same way.
 - A recording the export does not span is refused where the caller can see it
   (`Experiment.run_export`, `estimate_export`), not written as an empty folder.
 - Surfaces: the API (`ExportScope(recording_ids=…)`), the CLI (`--for-recording`, repeatable, an
@@ -114,7 +119,29 @@ of the run page, whose list *is* the choice of recording on screen. So:
   and the list is where the choice is widened. The list is offered for a processing run; an
   analysis run is narrowed by recording through the API and the CLI.
 
-`SCOPE_KINDS` names `cluster`, `selection`, `frames` and `recordings`.
+**`frames` earned its keep first**, for the reason the recordings scope earned it later: there is
+no file-per-frame-range to pick instead, and the surface that supplies it is the one the user is
+already on — a clip player knows its own span, so the control is a button rather than a form. It
+narrows a *recording* subject, not a run. `SCOPE_KINDS` names `cluster`, `selection`, `frames`
+and `recordings`.
+
+**`preview_frame`/`preview_video` draw exactly one recording.** A run-level preview is drawn from
+one recording at a time — there is no "all recordings, one file each" shape for it to fall back to
+the way `masks`/`tracks` do, because a frame number only means something against one recording's
+own numbering. The recording comes from a one-recording scope (`export_targets._one_recording`),
+or from the `recording_id` option the viewers seed; **several are refused** rather than drawing
+the first and dropping the rest, which would be wrong in a way only visible once the file is
+opened. `frames` still does the scoping work — collapsed to one frame
+(`ExportScope(frames=(f, f))`) for `preview_frame`, absent for `preview_video` (the whole
+recording).
+
+**Why a second drawing vocabulary rather than reusing `clip_render.RENDERS`.** `RENDERS`
+(`raw`/`overlay`/`mask`) is pinned to exactly three flavours by an explicit ask, for bout/clip
+review. A run-level preview answers a different question — is the *model* right, not is the
+*behavior* interesting — and needs box, confidence and track-id combinations clip export never
+asked for. `core.visualize.PREVIEW_STYLES` is that vocabulary: seven styles, one
+`draw_preview_overlay()` behind the live GUI preview and both export targets, so a run draws
+identically wherever it is asked for.
 
 ### Three parts
 
@@ -215,8 +242,8 @@ says it before the first byte is written.
 
 - **`ExportTarget.estimate`** is a callable `(subject, scope, options) -> Estimate`, and **every
   target declares one**. `Estimate(bytes, seconds, basis)` is a figure plus the sentence saying how
-  it was reached; either number may be `None` with the reason in `basis` (the report, whose size
-  depends on what is installed). A target
+  it was reached; either number may be `None` with the reason in `basis` (a preview that has not
+  been told which recording to draw; the report, whose size depends on what is installed). A target
   without one is the bug, and `tests/api/test_export_estimates.py` fails on it by sweeping the
   registry — a target added tomorrow is covered the day it is added, and the figure for one
   recording must come out smaller than the figure for both

@@ -270,6 +270,148 @@ def test_no_frame_no_position(qapp):
 
 
 # --------------------------------------------------------------------------- #
+# a montage's tiles zoom together
+# --------------------------------------------------------------------------- #
+_BAND, _TILE_W, _TILE_H = 30, 320, 270
+_MARK = (255, 0, 0)
+
+
+def _montage():
+    """Two identical tiles side by side under a name band — stripes that change across each tile
+    so different regions of it look different, and a red mark at a quarter of its width.
+    """
+    from PyQt6.QtCore import QRect
+    from PyQt6.QtGui import QColor, QPainter
+
+    pixmap = QPixmap(2 * _TILE_W, _BAND + _TILE_H)
+    pixmap.fill(QColor(30, 30, 30))
+    painter = QPainter(pixmap)
+    tiles = []
+    for x in (0, _TILE_W):
+        for i in range(0, _TILE_W, 20):
+            painter.fillRect(x + i, _BAND, 10, _TILE_H, QColor(i % 255, 120, 200))
+        painter.fillRect(x + 76, _BAND + 131, 8, 8, QColor(*_MARK))
+        tiles.append(QRect(x, _BAND, _TILE_W, _TILE_H))
+    painter.end()
+    return pixmap, tiles
+
+
+def _tiled_view(qapp):
+    """Sized to the montage, so the fitted picture is drawn 1:1 and widget pixels are its own."""
+    view = _shown(ImageView(zoomable=True), qapp, size=(2 * _TILE_W, _BAND + _TILE_H))
+    pixmap, tiles = _montage()
+    view.set_tiles(tiles)
+    view.set_frame(pixmap)
+    return view
+
+
+def _wheel_at(view, x, y, notches=1):
+    from PyQt6.QtGui import QWheelEvent
+
+    at = QPointF(x, y)
+    return QWheelEvent(
+        at,
+        view.mapToGlobal(at.toPoint()).toPointF(),
+        QPoint(0, 0),
+        QPoint(0, 120 * notches),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+
+
+def _halves(view):
+    """The drawn left and right tiles, and the drawn name band."""
+    image = view.pixmap().toImage()
+    return (
+        image.copy(0, _BAND, _TILE_W, _TILE_H),
+        image.copy(_TILE_W, _BAND, _TILE_W, _TILE_H),
+        image.copy(0, 0, 2 * _TILE_W, _BAND),
+    )
+
+
+def test_a_tiled_view_zooms_every_tile_to_the_same_region(qapp):
+    """Zooming the composed picture over the left tile would fill the pane with the left tile —
+    its right half where the right tile was, so the two halves differ. Tiled, both show the same
+    region of themselves, and the names above them do not move."""
+    view = _tiled_view(qapp)
+    left, right, band = _halves(view)
+    assert left == right  # the fixture: identical tiles
+    view.wheelEvent(_wheel_at(view, 80, _BAND + 135, notches=3))
+    assert view.zoom > 1.0
+    zoomed_left, zoomed_right, zoomed_band = _halves(view)
+    assert zoomed_left != left, "the tiles were not zoomed"
+    assert zoomed_left == zoomed_right, "the tiles show different regions"
+    assert zoomed_band == band, "the name band zoomed with the tiles"
+
+    plain = _shown(ImageView(zoomable=True), qapp, size=(2 * _TILE_W, _BAND + _TILE_H))
+    plain.set_frame(_montage()[0])
+    plain.wheelEvent(_wheel_at(plain, 80, _BAND + 135, notches=3))
+    plain_left, plain_right, _band = _halves(plain)
+    assert plain_left != plain_right, "the counterexample cannot tell the two apart"
+
+
+def test_a_tiled_zoom_keeps_what_is_under_the_cursor_in_every_tile(qapp):
+    view = _tiled_view(qapp)
+    x, y = 80, _BAND + 135  # on the left tile's mark
+    view.wheelEvent(_wheel_at(view, x, y, notches=4))
+    image = view.pixmap().toImage()
+    assert image.pixelColor(x, y).getRgb()[:3] == _MARK
+    assert image.pixelColor(x + _TILE_W, y).getRgb()[:3] == _MARK
+
+
+def test_a_tiled_drag_pans_every_tile_and_fit_returns(qapp):
+    from PyQt6.QtCore import QEvent
+    from PyQt6.QtGui import QMouseEvent
+
+    view = _tiled_view(qapp)
+    fitted = _halves(view)
+    view.wheelEvent(_wheel_at(view, 160, _BAND + 135, notches=4))
+    before = _halves(view)
+
+    def mouse(kind, pos):
+        return QMouseEvent(
+            kind,
+            QPointF(*pos),
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+
+    view.mousePressEvent(mouse(QEvent.Type.MouseButtonPress, (500, 150)))
+    view.mouseMoveEvent(mouse(QEvent.Type.MouseMove, (540, 150)))
+    view.mouseReleaseEvent(mouse(QEvent.Type.MouseButtonRelease, (540, 150)))
+    left, right, band = _halves(view)
+    assert left != before[0], "a drag over the right tile did not pan"
+    assert left == right and band == before[2]
+    view.fit()
+    assert view.zoom == 1.0 and _halves(view) == fitted
+
+
+def test_a_tiled_view_names_each_tile_at_any_zoom(qapp):
+    """The names are painted after the picture is scaled, so they keep the screen's text size
+    however small the picture is drawn — and a zoom moves the footage under them, not them.
+    """
+    view = _tiled_view(qapp)
+    bare = _halves(view)
+    _pixmap, tiles = _montage()
+    view.set_tiles(tiles, ["Detection only", "Variant A: transition 1"])
+    named = _halves(view)
+    corner = (0, 0, 60, 12)  # inside the first name's plate, at the tile's top-left
+    assert named[0].copy(*corner) != bare[0].copy(*corner), "the left tile is unnamed"
+    assert named[1].copy(*corner) != bare[1].copy(*corner), "the right tile is unnamed"
+    assert named[0].copy(*corner) != named[1].copy(
+        *corner
+    ), "the names are not their own"
+    view.wheelEvent(_wheel_at(view, 200, _BAND + 200, notches=3))
+    zoomed = _halves(view)
+    assert zoomed[0].copy(*corner) == named[0].copy(
+        *corner
+    ), "the name moved with a zoom"
+
+
+# --------------------------------------------------------------------------- #
 # zoom must not reach the layout
 # --------------------------------------------------------------------------- #
 def test_zooming_does_not_change_what_the_page_asks_for(qapp):

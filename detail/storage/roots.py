@@ -20,21 +20,10 @@ own docstring calls itself *"the local-only first step of the planned ``StorageL
 abstraction"* and its aliases *"an internal detail — the user picks a video, not a location"*.
 """
 
-import os
-import time
-import uuid
-from contextlib import contextmanager
 from pathlib import Path
 
-import yaml
-
-from detail.core import atomic
 from detail.storage import locations
-from detail.storage import read_cache
-
-_LOCK_ATTEMPTS = 500
-_LOCK_RETRY_S = 0.01
-_LOCK_STALE_S = 30.0  # a holder this old was killed; take the lock over
+from detail.storage import machine_file
 
 
 class MissingRootError(RuntimeError):
@@ -61,19 +50,18 @@ def register_root(key: str, alias: str, path: Path | str) -> None:
 
     **Safe against concurrent registrations.** Importing a batch of videos runs the parts in
     parallel worker *processes*, each registering its folder, so this read-modify-write is
-    contended. It runs under ``_exclusive`` — see there for why retrying alone doesn't do it.
+    contended, and the edit is ``machine_file.editing``: one lock, and one path for the read and
+    the write.
     """
     if not alias:
         raise ValueError("root alias must be non-empty")
     resolved = Path(path).expanduser().resolve()
     if not resolved.is_dir():
         raise NotADirectoryError(f"root {resolved} is not an existing directory")
-    with _exclusive():
-        data = locations.read_storage_fresh()
+    with machine_file.editing(locations.STORAGE_PATH) as data:
         roots = dict(data.get(key) or {})
         roots[alias] = resolved.as_posix()
         data[key] = roots
-        _write(data)
 
 
 def resolve_ref(key: str, ref: dict, *, hint: str = "") -> Path:
@@ -141,65 +129,11 @@ def _auto_alias(key: str, folder: Path) -> str:
     return f"{base}_{i}"
 
 
-@contextmanager
-def _exclusive():
-    """Hold an exclusive claim on storage.yaml across a read-modify-write.
+def editing():
+    """storage.yaml as a dict, written back when the block exits without raising.
 
-    Retrying the merge is not enough on its own: two writers can both read, both write, and the
-    second's verify still passes — the loser's alias is simply gone. The entry survives in the
-    record's ``{root, rel}`` but resolves to nothing.
-
-    ``O_CREAT | O_EXCL`` is the lock (atomic on POSIX and Windows alike). A lock left behind by a
-    killed process is taken over once it is clearly stale, so a crash mid-write can't wedge every
-    future one.
+    For a writer outside this module's ``{alias: path}`` keys — the experiment locations
+    under ``storage:`` — so it takes the same lock as every other writer of the file, and
+    writes back to the file it read (``machine_file``).
     """
-    locations.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    lock = locations.CONFIG_DIR / (locations.STORAGE_PATH.name + ".lock")
-    fd = None
-    for _ in range(_LOCK_ATTEMPTS):
-        try:
-            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            break
-        except FileExistsError:
-            if _stale(lock):
-                lock.unlink(missing_ok=True)
-                continue
-            time.sleep(_LOCK_RETRY_S)
-    if fd is None:
-        raise RuntimeError(
-            f"could not lock {locations.STORAGE_PATH} — another process has held it for "
-            f"more than {_LOCK_ATTEMPTS * _LOCK_RETRY_S:.0f}s"
-        )
-    try:
-        yield
-    finally:
-        os.close(fd)
-        lock.unlink(missing_ok=True)
-
-
-def _stale(lock: Path) -> bool:
-    """Whether a lock file is old enough that its holder is presumed dead."""
-    try:
-        return time.time() - lock.stat().st_mtime > _LOCK_STALE_S
-    except FileNotFoundError:
-        return False  # released while we looked — just retry normally
-
-
-def _write(data: dict) -> None:
-    """Atomic write, with a temp name **unique to this writer**.
-
-    The house idiom is a fixed sibling ``*.tmp`` (CLAUDE.md), which is right where one process
-    rewrites a file others only read. This file is different: parallel workers write it at once,
-    and on a shared temp name the second ``os.replace`` finds the first has already moved it —
-    ``FileNotFoundError`` mid-import.
-    """
-    locations.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    path = locations.STORAGE_PATH
-    tmp = path.parent / f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"
-    try:
-        with open(tmp, "w", encoding="utf-8") as handle:
-            yaml.dump(data, handle, sort_keys=False)
-        atomic.replace(tmp, path)
-        read_cache.forget_document(path)
-    finally:
-        tmp.unlink(missing_ok=True)  # a failed replace must not leave litter behind
+    return machine_file.editing(locations.STORAGE_PATH)

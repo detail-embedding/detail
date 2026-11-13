@@ -20,9 +20,30 @@ neighbours were.
 **The rule.** Convert once, where the frame is read (``core.visualize.bgr_to_rgb`` in
 ``_iter_with_frames``); compute and store the background in RGB; record ``channel_order`` on
 every run so a run from before the fix (no key, read as ``"bgr"``) never pools with one after.
+
+A second recorded class lives here too.
+
+**The class.** A per-worker args dict rebuilt for a multi-process pool, instead of the unit
+being passed straight through the way the inline path of the same stage does. ``pool_run_one``
+reads the dict with ``.get(...)``, so a field the worker needs that never made it into the
+dict is dropped silently rather than raising — the dict's own module comment already named one
+instance (a retired temporal-stack field) before ``class_name`` became a second: ``embed_one``
+already accepted and used ``class_name`` on both paths, but ``_run_multi_gpu``'s args dict never
+set it, so a class-filtered tracking run's rows silently stopped being filtered the moment a
+unit was dispatched to a GPU worker — the same misalignment ``resolve_assignment_rows`` exists
+to prevent on every other path that reads a class-filtered assignment. A sibling gap one
+function away: ``_mean_mask_color_rgb`` called ``_collect_candidates`` without the
+``class_name`` filter its own sibling call site (``render_preview.py``) already passed.
+
+``test_multi_gpu_args_dict_covers_every_unit_field_embed_one_needs`` asserts the mechanism
+directly — every unit field ``embed_one`` accepts must survive into the args dict — rather than
+only the one field that happened to go missing this time; ``test_multi_gpu_threads_class_name_
+through_pool_args`` and ``test_mean_mask_color_rgb_applies_the_tracking_runs_class_filter`` pin
+the two concrete call sites.
 """
 
 import contextlib
+import inspect
 import json
 import shutil
 from pathlib import Path
@@ -37,7 +58,13 @@ import pytest
 import yaml
 from pycocotools import mask as mask_utils
 
-from detail.core.dataclasses import ComputeTarget, EmbeddingJob, RenderContext
+from detail.core.dataclasses import (
+    ComputeTarget,
+    EmbeddingJob,
+    ModelReadiness,
+    RenderContext,
+)
+from detail.core.protocols import ModelNotReadyError
 from detail.core.utils import decode_mask
 from detail.core.protocols import EmbeddingModel
 from detail.core.registries import (
@@ -46,6 +73,7 @@ from detail.core.registries import (
     register_embedding_model,
 )
 from detail.pipeline import embedding
+from detail.storage import recording as recording_store
 from detail.storage.zarr_io import (
     AssignmentPartWriter,
     DetectionPartWriter,
@@ -433,6 +461,14 @@ def test_build_job_and_manifest_carry_readout_and_input_size(tmp_path):
     # and they survive to the recording run record + the per-run manifest
     fields = module.extra_record_fields(config)
     assert (fields["readout"], fields["input_size"]) == ("cls_patch", 384)
+    # Where it will run is known at reservation time too (§ run location/duration/cost).
+    assert fields["compute"] == {
+        "backend": "cpu",
+        "device_indices": None,
+        "cloud_provider": None,
+        "cloud_instance": None,
+        "remote_target": None,
+    }
     path = tmp_path / "embedding.yaml"
     embedding._write_embedding_yaml(path, job, output_dim=1536, status="complete")
     data = _yaml.safe_load(path.read_text(encoding="utf-8-sig"))
@@ -1505,6 +1541,306 @@ def test_multi_gpu_unit_per_track_part(tmp_path, monkeypatch):
             assert emb["embedding"].shape == (expected[tid], D)
 
 
+# --------------------------------------------------------------------------- #
+# Multi-GPU path threads a class-filtered tracking run's class_name (§13)
+# --------------------------------------------------------------------------- #
+def _setup_class_filtered(tmp_path):
+    """One part, 4 frames, two classes per frame — 'black mouse' then 'white
+    mouse', the order a real detector writes them in. The tracking run filters
+    to 'white mouse' only, so its assignment has one row per *white-mouse*
+    detection (4 rows), not one row per detection overall (8) — exactly the
+    shape ``resolve_assignment_rows`` exists to recover (§13, tests/api/
+    test_run_preview.py has the same shape for the preview path)."""
+    recording_dir = tmp_path / "recordings" / "recording_001"
+    recording_dir.mkdir(parents=True)
+
+    n_frames = 4
+    _write_test_video(recording_dir / "video" / "part_001.mp4", n_frames)
+    (recording_dir / "recording.yaml").write_text(
+        yaml.dump(
+            {
+                "schema_version": 1,
+                "id": "recording_001",
+                "video": {
+                    "files": [
+                        {"index": 0, "file": "video/part_001.mp4", "timestamps": {}}
+                    ]
+                },
+                "detection_runs": [{"id": "det_01", "downsampling_run_id": None}],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    det_dir = recording_dir / "detections" / "det_01"
+    det_dir.mkdir(parents=True)
+    with DetectionPartWriter(det_dir / "part_001.zarr") as w:
+        for f in range(n_frames):
+            w.add_row(
+                f,
+                f * 1000,
+                0,
+                "black mouse",
+                0.9,
+                (0.1, 0.1, 0.2, 0.2),
+                _mask_counts(f),
+            )
+            w.add_row(
+                f,
+                f * 1000,
+                1,
+                "white mouse",
+                0.9,
+                (0.3, 0.3, 0.4, 0.4),
+                _mask_counts(f),
+            )
+    (det_dir / "job.json").write_text(
+        json.dumps(
+            {"schema_version": 1, "status": "complete", "mask_resolution": [H, W]}
+        ),
+        encoding="utf-8",
+    )
+
+    track_dir = recording_dir / "tracking" / "track_01"
+    (track_dir / "assignments").mkdir(parents=True)
+    with AssignmentPartWriter(track_dir / "assignments" / "part_001.zarr") as w:
+        for _ in range(n_frames):  # one row per white-mouse detection only
+            w.add_object_id(0)
+    (track_dir / "track.yaml").write_text(
+        yaml.dump(
+            {
+                "schema_version": 1,
+                "id": "track_01",
+                "detection_run_id": "det_01",
+                "class_name": "white mouse",
+            }
+        ),
+        encoding="utf-8",
+    )
+    return recording_dir
+
+
+def test_multi_gpu_threads_class_name_through_pool_args(tmp_path, monkeypatch):
+    """The multi-GPU dispatcher rebuilds each worker's call from a plain args
+    dict (unlike the inline path, which passes the unit dict straight to
+    ``embed_one``) — so a field missing from that dict silently becomes its
+    default instead of failing. ``class_name`` was exactly such a field:
+    ``pool_run_one`` already read ``args.get("class_name")`` and passed it on,
+    but ``_run_multi_gpu`` never put it in the dict, so it was always ``None``
+    on this path regardless of the tracking run's own class filter.
+
+    Uses the real ``pool_run_one``/``embed_one`` via ``_patch_pool``'s
+    synchronous pool (no fake ``pool_run_one``, unlike
+    ``test_multi_gpu_worker_failure_raises_run_failed`` and
+    ``test_multi_gpu_stop_event_marks_run_failed``, which replace it entirely
+    and so cannot see this class of bug).
+
+    Without ``class_name`` reaching the worker, ``resolve_assignment_rows``
+    falls back to the unfiltered reader: this run's 4 assignment rows get
+    paired against the first 4 *raw* detection rows (frames 0 and 1's
+    black+white pairs) instead of the 4 real white-mouse rows (frames 0-3) —
+    collapsing ``frames_total`` from 4 to 2 and silently dropping frames 2
+    and 3.
+    """
+    recording_dir = _setup_class_filtered(tmp_path)
+    run_dir = recording_dir / "embeddings" / "emb_01"
+    run_dir.mkdir(parents=True)
+    _patch_pool(monkeypatch)
+
+    with _registered_embedder():
+        embedding.run(
+            _multi_gpu_job([0, 1]),
+            run_dir,
+            progress_cb=lambda e: None,
+            stop_event=None,
+        )
+
+    emb = PartZarrReader(run_dir / "track_0" / "part_001.zarr").read()
+    assert emb["frame_idx"].tolist() == [0, 1, 2, 3]
+    assert emb["embedding"].shape == (4, D)
+
+
+def test_multi_gpu_args_dict_covers_every_unit_field_embed_one_needs(
+    tmp_path, monkeypatch
+):
+    """The general mechanism behind the ``class_name`` bug above, asserted
+    directly: ``_run_multi_gpu`` rebuilds each worker's call from a plain args
+    dict instead of passing the unit through like the inline path does, so a
+    field present on the unit and accepted by ``embed_one`` can go missing
+    from that dict with nothing louder than a silent ``.get(...)`` default.
+    This is the *second* field to go missing this way (the module's own
+    comment names the first, a retired temporal-stack field) — so this
+    guards the mechanism, not just ``class_name``, and the next field that
+    goes missing fails here instead of needing its own bug report.
+    """
+    recording_dir = _setup_class_filtered(tmp_path)
+    run_dir = recording_dir / "embeddings" / "emb_01"
+    run_dir.mkdir(parents=True)
+
+    units_built: list[list[dict]] = []
+    real_build_units = embedding._build_units
+
+    def _spy_build_units(**kwargs):
+        units = real_build_units(**kwargs)
+        units_built.append(units)
+        return units
+
+    monkeypatch.setattr(embedding, "_build_units", _spy_build_units)
+
+    captured_args: list[dict] = []
+
+    class _Recording(_SyncPool):
+        def submit(self, fn, *args, **kwargs):
+            captured_args.append(args[0])
+            return super().submit(fn, *args, **kwargs)
+
+    monkeypatch.setattr(embedding, "ProcessPoolExecutor", _Recording)
+
+    class _NoopCtx:
+        pass
+
+    import multiprocessing as mp_mod
+
+    monkeypatch.setattr(mp_mod, "get_context", lambda name: _NoopCtx())
+
+    with _registered_embedder():
+        embedding.run(
+            _multi_gpu_job([0, 1]),
+            run_dir,
+            progress_cb=lambda e: None,
+            stop_event=None,
+        )
+
+    assert units_built and captured_args
+    embed_one_params = set(inspect.signature(_ew.embed_one).parameters)
+    unit = units_built[0][0]
+    args = captured_args[0]
+    # A unit field embed_one doesn't accept (e.g. n_frames, used only for the
+    # progress-aggregation denominator) has nowhere to go and is correctly
+    # absent from the args dict — only check the fields embed_one would use.
+    missing = sorted(k for k in unit if k in embed_one_params and k not in args)
+    assert missing == [], (
+        f"{missing} present on the unit and accepted by embed_one, but "
+        "missing from _run_multi_gpu's args dict — silently dropped on the "
+        "multi-GPU path only"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# contrast_bg_color's candidate enumeration also needs the class filter
+# --------------------------------------------------------------------------- #
+def _write_split_frame_video(path: Path, h: int, w: int) -> None:
+    """One frame, two solid-colour halves — a dark top (black mouse's mask
+    region) and a bright bottom (white mouse's), so sampling the wrong class's
+    mask reads as the wrong half's colour, not a subtler numeric drift."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    vw = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (w, h))
+    if not vw.isOpened():
+        raise RuntimeError(f"cv2.VideoWriter could not open {path} with mp4v")
+    frame = np.empty((h, w, 3), dtype=np.uint8)
+    frame[: h // 2] = (10, 10, 10)
+    frame[h // 2 :] = (200, 200, 200)
+    vw.write(frame)
+    vw.release()
+
+
+def _half_mask(top: bool) -> str:
+    m = np.zeros((H, W), np.uint8)
+    if top:
+        m[: H // 2] = 1
+    else:
+        m[H // 2 :] = 1
+    return mask_utils.encode(np.asfortranarray(m))["counts"].decode("ascii")
+
+
+def _setup_class_filtered_for_color_sampling(tmp_path):
+    """One frame, one 'black mouse' detection (top-half mask) and one 'white
+    mouse' detection (bottom-half mask); the tracking run keeps only the
+    white-mouse row, so its assignment has a single entry."""
+    recording_dir = tmp_path / "recordings" / "recording_001"
+    recording_dir.mkdir(parents=True)
+    _write_split_frame_video(recording_dir / "video" / "part_001.mp4", H, W)
+    timestamps_csv = (
+        recording_dir / "video" / "timestamps" / "generated" / "part_001.csv"
+    )
+    timestamps_csv.parent.mkdir(parents=True)
+    recording_store.write_timestamps_csv(timestamps_csv, np.array([0], dtype=np.int64))
+    recording_store.write_recording(
+        recording_dir,
+        {
+            "schema_version": 1,
+            "id": "recording_001",
+            "video": {
+                "storage": "default",
+                "files": [
+                    {
+                        "index": 0,
+                        "file": "video/part_001.mp4",
+                        "timestamps": {
+                            "generated": "video/timestamps/generated/part_001.csv",
+                            "user": None,
+                            "active": "generated",
+                        },
+                    }
+                ],
+            },
+            "detection_runs": [{"id": "det_01", "downsampling_run_id": None}],
+        },
+    )
+
+    det_dir = recording_dir / "detections" / "det_01"
+    det_dir.mkdir(parents=True)
+    with DetectionPartWriter(det_dir / "part_001.zarr") as w:
+        w.add_row(
+            0, 0, 0, "black mouse", 0.9, (0.0, 0.0, 1.0, 0.5), _half_mask(top=True)
+        )
+        w.add_row(
+            0, 0, 1, "white mouse", 0.9, (0.0, 0.5, 1.0, 1.0), _half_mask(top=False)
+        )
+    (det_dir / "job.json").write_text(
+        json.dumps(
+            {"schema_version": 1, "status": "complete", "mask_resolution": [H, W]}
+        ),
+        encoding="utf-8",
+    )
+
+    track_dir = recording_dir / "tracking" / "track_01"
+    (track_dir / "assignments").mkdir(parents=True)
+    with AssignmentPartWriter(track_dir / "assignments" / "part_001.zarr") as w:
+        w.add_object_id(0)  # the single white-mouse detection
+    (track_dir / "track.yaml").write_text(
+        yaml.dump(
+            {
+                "schema_version": 1,
+                "id": "track_01",
+                "detection_run_id": "det_01",
+                "class_name": "white mouse",
+            }
+        ),
+        encoding="utf-8",
+    )
+    return recording_dir
+
+
+def test_mean_mask_color_rgb_applies_the_tracking_runs_class_filter(tmp_path):
+    """``contrast_bg_color``'s sampling helper reuses render_preview's
+    candidate enumeration (``_collect_candidates``), which takes an optional
+    ``class_name`` filter — ``render_preview.py``'s own call site passes it,
+    but this one did not. A class-filtered run's assignment is parallel to
+    only the matching class's detection rows (§13); without the filter,
+    ``resolve_assignment_rows`` pairs it against the first *raw* rows instead,
+    which here is the other class's mask (black, top half, BGR (10, 10, 10))
+    rather than the requested one (white, bottom half, BGR (200, 200, 200))."""
+    recording_dir = _setup_class_filtered_for_color_sampling(tmp_path)
+    color = embedding._mean_mask_color_rgb(
+        recording_dir, "track_01", [0], n_sample=1, seed=0
+    )
+    # Lossy mp4v encoding perturbs exact pixel values by a few counts; the two
+    # halves (10 vs 200) are still trivially distinguishable through that noise.
+    assert all(abs(c - 200) < 20 for c in color), color
+
+
 # --- real-subprocess integration (spawn pool, CPU-only fake model) -------- #
 _FAKE_CUDA_EMBEDDER_SOURCE = '''
 import numpy as np
@@ -1598,6 +1934,286 @@ def test_multi_gpu_real_spawn_pool(tmp_path, monkeypatch):
     meta = yaml.safe_load((run_dir / "embedding.yaml").read_text(encoding="utf-8-sig"))
     assert meta["status"] == "complete"
     assert meta["output_dim"] == 8
+
+
+# --------------------------------------------------------------------------- #
+# validate() + remote backend (§6) — mirrors tests/pipeline/test_detection.py's
+# equivalents; embedding is the second module wired to expose "remote".
+# --------------------------------------------------------------------------- #
+def _recording_data_with_complete_tracking_run(
+    recording_dir, tracking_run_id="track_01", detection_run_id="det_01", track_ids=(0,)
+):
+    """``_setup()`` writes detections + a tracking assignment zarr but no
+    ``tracking_runs`` record or ``tracks.zarr`` summary (the tracker's own output,
+    never exercised by this file's ``_setup``) — add both, matching what
+    ``Recording.run_embedding`` sees against a real completed tracking run."""
+    from detail.storage.zarr_io import TracksSummaryWriter
+
+    path = recording_dir / "recording.yaml"
+    data = yaml.safe_load(path.read_text(encoding="utf-8-sig"))
+    data["tracking_runs"] = [
+        {
+            "id": tracking_run_id,
+            "detection_run_id": detection_run_id,
+            "status": "complete",
+            "every_n_frames": 1,
+        }
+    ]
+    path.write_text(yaml.dump(data, sort_keys=False), encoding="utf-8")
+    tracks_path = recording_dir / "tracking" / tracking_run_id / "tracks.zarr"
+    with TracksSummaryWriter(tracks_path) as w:
+        for tid in track_ids:
+            w.add_track(
+                track_id=tid,
+                class_name="mouse",
+                first_frame=0,
+                last_frame=1,
+                n_detections=2,
+                n_gaps=0,
+                mean_conf=0.9,
+            )
+    return data
+
+
+def _remote_config(model_id="fake_embedder", *, remote_target=None):
+    return {
+        "tracking_run_id": "track_01",
+        "track_ids": [0],
+        "model_id": model_id,
+        "renderer_spec": RENDERER,
+        "batch_size": 32,
+        "compute": ComputeTarget(
+            "remote", None, None, None, remote_target=remote_target
+        ),
+    }
+
+
+def _register_remote_target(monkeypatch, tmp_path, name="tillicum"):
+    from detail.configs.remote import RemoteTargetConfig
+    from detail.storage import remote_targets
+
+    cfg_dir = tmp_path / "config" / "detail"
+    monkeypatch.setattr(remote_targets, "CONFIG_DIR", cfg_dir)
+    monkeypatch.setattr(
+        remote_targets, "REMOTE_TARGETS_PATH", cfg_dir / "remote_targets.yaml"
+    )
+    remote_targets.register_remote_target(
+        RemoteTargetConfig(name=name, host=name, remote_workdir="/scratch/x")
+    )
+
+
+class _CpuOnlyEmbedder(EmbeddingModel):
+    model_id = "cpu_only_embedder"
+    output_dim = D
+    input_size = 64
+    supported_backends = ["cpu"]
+
+    def load(self, device):
+        pass
+
+    def is_ready(self):
+        return True
+
+    def embed(self, image):
+        return np.zeros(D, dtype=np.float32)
+
+    def embed_batch(self, images):
+        return np.zeros((len(images), D), dtype=np.float32)
+
+
+class _NotInstalledEmbedder(_FakeEmbedder):
+    """A model this machine has not installed — `readiness()` reports it, unlike
+    `_FakeEmbedder`, which inherits the base class's "nothing to fetch" default."""
+
+    model_id = "not_installed_embedder"
+
+    def readiness(self):
+        return ModelReadiness(
+            ready=False,
+            reason="not_installed",
+            message="not_installed_embedder weights are not installed on this machine",
+            action_url=None,
+            repo_id=None,
+        )
+
+
+@contextlib.contextmanager
+def _registered_not_installed_embedder():
+    register_embedding_model("not_installed_embedder")(_NotInstalledEmbedder)
+    try:
+        yield
+    finally:
+        EMBEDDING_MODELS.pop("not_installed_embedder", None)
+
+
+def _write_subject_labels(recording_dir, tracking_run_id, subject_labels: dict) -> None:
+    track_yaml = recording_dir / "tracking" / tracking_run_id / "track.yaml"
+    data = yaml.safe_load(track_yaml.read_text(encoding="utf-8-sig"))
+    data["subject_labels"] = subject_labels
+    track_yaml.write_text(yaml.dump(data, sort_keys=False), encoding="utf-8")
+
+
+def test_validate_resolves_a_track_selected_by_name(tmp_path):
+    """A merged run's object_id is a position, not an animal (§13) — a string
+    selector resolves through *this recording's own* subject_labels rather than
+    assuming the same integer means the same animal everywhere."""
+    recording_dir = _setup(tmp_path, object_ids=[0, 1])
+    data = _recording_data_with_complete_tracking_run(recording_dir, track_ids=(0, 1))
+    _write_subject_labels(
+        recording_dir, "track_01", {0: "black mouse", 1: "white mouse"}
+    )
+    config = {
+        "tracking_run_id": "track_01",
+        "track_ids": ["white mouse"],
+        "model_id": "fake_embedder",
+        "renderer_spec": RENDERER,
+        "batch_size": 32,
+        "compute": ComputeTarget("cpu", None, None, None),
+    }
+    with _registered_embedder():
+        validated = embedding.EmbeddingModule().validate(recording_dir, data, config)
+    assert validated["track_ids"] == [1]
+
+
+def test_validate_rejects_an_unknown_subject_name(tmp_path):
+    recording_dir = _setup(tmp_path, object_ids=[0, 1])
+    data = _recording_data_with_complete_tracking_run(recording_dir, track_ids=(0, 1))
+    _write_subject_labels(
+        recording_dir, "track_01", {0: "black mouse", 1: "white mouse"}
+    )
+    config = {
+        "tracking_run_id": "track_01",
+        "track_ids": ["gray mouse"],
+        "model_id": "fake_embedder",
+        "renderer_spec": RENDERER,
+        "batch_size": 32,
+        "compute": ComputeTarget("cpu", None, None, None),
+    }
+    with (
+        _registered_embedder(),
+        pytest.raises(ValueError, match="not found in subject_labels"),
+    ):
+        embedding.EmbeddingModule().validate(recording_dir, data, config)
+
+
+def test_validate_rejects_a_name_selector_with_no_subject_labels(tmp_path):
+    """A plain tracking run (no track_merge, no subject_labels) has nothing for a
+    string selector to resolve through — the error names the actual gap rather than
+    a bare KeyError."""
+    recording_dir = _setup(tmp_path, object_ids=[0])
+    data = _recording_data_with_complete_tracking_run(recording_dir, track_ids=(0,))
+    config = {
+        "tracking_run_id": "track_01",
+        "track_ids": ["black mouse"],
+        "model_id": "fake_embedder",
+        "renderer_spec": RENDERER,
+        "batch_size": 32,
+        "compute": ComputeTarget("cpu", None, None, None),
+    }
+    with (
+        _registered_embedder(),
+        pytest.raises(ValueError, match="no subject_labels on this tracking run"),
+    ):
+        embedding.EmbeddingModule().validate(recording_dir, data, config)
+
+
+def test_validate_still_accepts_a_bare_int_track_id(tmp_path):
+    """No regression: an ordinary integer selector is unaffected by name resolution,
+    subject_labels or not."""
+    recording_dir = _setup(tmp_path, object_ids=[0, 1])
+    data = _recording_data_with_complete_tracking_run(recording_dir, track_ids=(0, 1))
+    _write_subject_labels(
+        recording_dir, "track_01", {0: "black mouse", 1: "white mouse"}
+    )
+    config = {
+        "tracking_run_id": "track_01",
+        "track_ids": [1],
+        "model_id": "fake_embedder",
+        "renderer_spec": RENDERER,
+        "batch_size": 32,
+        "compute": ComputeTarget("cpu", None, None, None),
+    }
+    with _registered_embedder():
+        validated = embedding.EmbeddingModule().validate(recording_dir, data, config)
+    assert validated["track_ids"] == [1]
+
+
+def test_validate_rejects_a_not_installed_model_locally(tmp_path):
+    recording_dir = _setup(tmp_path, object_ids=[0])
+    data = _recording_data_with_complete_tracking_run(recording_dir)
+    config = {
+        "tracking_run_id": "track_01",
+        "track_ids": [0],
+        "model_id": "not_installed_embedder",
+        "renderer_spec": RENDERER,
+        "batch_size": 32,
+        "compute": ComputeTarget("cpu", None, None, None),
+    }
+    with _registered_not_installed_embedder():
+        with pytest.raises(ModelNotReadyError, match="not installed on this machine"):
+            embedding.EmbeddingModule().validate(recording_dir, data, config)
+
+
+def test_validate_remote_backend_skips_local_readiness_check(tmp_path, monkeypatch):
+    # A remote job never calls load() on this machine — the cluster is where it
+    # actually runs — so this machine's own install state must not gate submission.
+    # (The cluster's readiness is checked by remote_shepherd before it submits.)
+    recording_dir = _setup(tmp_path, object_ids=[0])
+    data = _recording_data_with_complete_tracking_run(recording_dir)
+    _register_remote_target(monkeypatch, tmp_path, name="tillicum")
+    config = _remote_config(model_id="not_installed_embedder", remote_target="tillicum")
+    with _registered_not_installed_embedder():
+        validated = embedding.EmbeddingModule().validate(recording_dir, data, config)
+    assert validated["compute"].backend == "remote"
+
+
+def test_validate_remote_backend_requires_a_remote_target(tmp_path):
+    recording_dir = _setup(tmp_path, object_ids=[0])
+    data = _recording_data_with_complete_tracking_run(recording_dir)
+    config = _remote_config()
+    with (
+        _registered_embedder(),
+        pytest.raises(ValueError, match="no remote_target was given"),
+    ):
+        embedding.EmbeddingModule().validate(recording_dir, data, config)
+
+
+def test_validate_remote_backend_rejects_unregistered_target(tmp_path, monkeypatch):
+    recording_dir = _setup(tmp_path, object_ids=[0])
+    data = _recording_data_with_complete_tracking_run(recording_dir)
+    _register_remote_target(monkeypatch, tmp_path, name="tillicum")
+    config = _remote_config(remote_target="nope")
+    with (
+        _registered_embedder(),
+        pytest.raises(ValueError, match="no remote target registered"),
+    ):
+        embedding.EmbeddingModule().validate(recording_dir, data, config)
+
+
+def test_validate_remote_backend_accepts_cuda_capable_model(tmp_path, monkeypatch):
+    # fake_embedder supports ["cpu", "cuda"] — "remote" must be judged against the
+    # effective ("cuda") backend, not the literal string "remote", or a cuda-capable
+    # model could never be run remotely at all.
+    recording_dir = _setup(tmp_path, object_ids=[0])
+    data = _recording_data_with_complete_tracking_run(recording_dir)
+    _register_remote_target(monkeypatch, tmp_path, name="tillicum")
+    config = _remote_config(remote_target="tillicum")
+    with _registered_embedder():
+        validated = embedding.EmbeddingModule().validate(recording_dir, data, config)
+    assert validated["compute"].backend == "remote"
+
+
+def test_validate_remote_backend_rejects_cpu_only_model(tmp_path, monkeypatch):
+    recording_dir = _setup(tmp_path, object_ids=[0])
+    data = _recording_data_with_complete_tracking_run(recording_dir)
+    _register_remote_target(monkeypatch, tmp_path, name="tillicum")
+    register_embedding_model("cpu_only_embedder")(_CpuOnlyEmbedder)
+    try:
+        config = _remote_config(model_id="cpu_only_embedder", remote_target="tillicum")
+        with pytest.raises(ValueError, match="does not support the 'remote' backend"):
+            embedding.EmbeddingModule().validate(recording_dir, data, config)
+    finally:
+        EMBEDDING_MODELS.pop("cpu_only_embedder", None)
 
 
 # --------------------------------------------------------------------------- #
@@ -1874,9 +2490,9 @@ def test_mirror_flips_a_subject_facing_left(aligned_recording):
 @pytest.mark.parametrize(
     "overrides, fragment",
     [
-        ({"keypoint_run_id": None}, "needs both a keypoint track run"),
-        ({"heading": None}, "needs both"),
-        ({"align": "none"}, "given with align 'none'"),
+        ({"keypoint_run_id": None}, "reads a keypoint track run"),
+        ({"heading": None}, "needs a heading definition"),
+        ({"align": "none"}, "given with align and pose both 'none'"),
         ({"keypoint_run_id": "kt_99"}, "not found in recording"),
         ({"heading": "nope"}, "no heading definition named 'nope'"),
         ({"constructor": "full_frame"}, "does not crop to the subject"),

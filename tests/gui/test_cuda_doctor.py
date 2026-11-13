@@ -1,7 +1,19 @@
 """CUDA doctor — probe + pure diagnosis (§1)."""
 
+import pytest
+
+from detail.checks import commands as commands_module
 from detail.gui import cuda_doctor
 from detail.gui.cuda_doctor import ProbeResult, diagnose, probe
+
+
+@pytest.fixture(autouse=True)
+def _uv_present(monkeypatch):
+    """Same reasoning as tests/checks/test_commands.py: these fix_command assertions
+    are written against a machine that has uv (docs/getting-started.md's own
+    documented prerequisite), never whatever the box running the suite happens to
+    have. The "no uv" fallback gets its own tests below."""
+    monkeypatch.setattr(commands_module.shutil, "which", lambda name: "/usr/bin/uv")
 
 
 def _p(**kw):
@@ -38,6 +50,7 @@ def test_cpu_only_wheel_on_nvidia_box_suggests_reinstall():
     assert d.compatible  # an NVIDIA GPU is present → panel active
     assert "CPU-only build" in d.problem
     assert d.fix_command and "cu126" in d.fix_command  # matched to the driver's CUDA
+    assert d.fix_command.startswith("uv pip install --reinstall-package")
 
 
 def test_torch_cuda_newer_than_driver_says_update_driver():
@@ -61,6 +74,26 @@ def test_no_torch_says_install():
     d = diagnose(_p(torch_installed=False))
     assert "isn't installed" in d.headline
     assert d.fix_command == "uv pip install -e '.[torch]'"
+
+
+def test_no_torch_says_install_falls_back_to_plain_pip_without_uv(monkeypatch):
+    monkeypatch.setattr(commands_module.shutil, "which", lambda name: None)
+    d = diagnose(_p(torch_installed=False))
+    assert d.fix_command == "pip install -e '.[torch]'"
+
+
+def test_reinstall_command_falls_back_to_force_reinstall_without_uv(monkeypatch):
+    """uv's --reinstall-package has no plain-pip equivalent flag; --force-reinstall
+    reaches the same result (found live: a copy-pasted `uv pip install
+    --reinstall-package ...` failed `uv: command not found` on a venv without uv)."""
+    monkeypatch.setattr(commands_module.shutil, "which", lambda name: None)
+    d = diagnose(_p(driver_version="560.0", driver_cuda="12.6", torch_cuda_build=None))
+    assert d.fix_command == (
+        "pip install --force-reinstall torch torchvision "
+        "--index-url https://download.pytorch.org/whl/cu126"
+    )
+    assert "--reinstall-package" not in d.fix_command
+    assert not d.fix_command.startswith("uv ")
 
 
 def test_wheel_selection_picks_the_newest_published_tag_at_or_below_the_driver():

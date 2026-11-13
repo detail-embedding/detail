@@ -320,9 +320,11 @@ def test_an_example_frame_joins_with_the_users_clicks():
     gathered = {
         "sources": {
             "recording_002": {
-                "example_set": {
-                    "id": "ex_01",
-                    "marks": [frame, {**frame, "frame_idx": 8}],
+                "example_sets": {
+                    None: {
+                        "id": "ex_01",
+                        "marks": [frame, {**frame, "frame_idx": 8}],
+                    }
                 },
                 "boxes": {
                     ("part_001", 7): {0: (0.1, 0.1, 0.5, 0.5)},
@@ -542,3 +544,109 @@ def test_the_teachers_raw_output_is_kept_beside_the_labels(taught, patch_teacher
             i for i, f in enumerate(raw["frame"]) if frames[f]["source"] == "teacher"
         ]
         assert np.isfinite(raw["point_scores"][teacher_rows]).any()
+
+
+# --- student_input: crop (§12) ----------------------------------------------------- #
+def test_a_crop_centres_its_animal_and_labels_every_animal_reaching_into_it():
+    """One image per tracked animal, its box in the middle; a neighbour reaching into the crop
+    is labelled too (no animal in a training image unlabelled), and a point the crop cuts off
+    is taught as not visible."""
+    frame = np.zeros((100, 200, 3), np.uint8)
+    target = ((0.40, 0.40, 0.50, 0.60), np.array([[0.45, 0.45], [0.45, 0.55]]))
+    # the target's crop spans x 77..103 px (its 20 px box x 1.3, centred at 90)
+    beside = ((0.49, 0.40, 0.70, 0.60), np.array([[0.50, 0.45], [0.69, 0.55]]))
+    far = ((0.00, 0.00, 0.05, 0.10), np.array([[0.01, 0.02], [0.04, 0.08]]))
+    tracks = {
+        tid: (box, points, np.full(2, 0.9))
+        for tid, (box, points) in enumerate((target, beside, far))
+    }
+
+    examples = keypoint_dataset.crop_examples(frame, tracks, 64, 0.4)
+
+    assert [tid for tid, _image, _lines in examples] == [0, 1, 2]
+    _tid, image, lines = examples[0]
+    assert image.shape == (64, 64, 3)
+    assert len(lines) == 2, "the target and the neighbour reaching in; not the far one"
+    own = [float(v) for v in lines[0].split()[1:5]]
+    assert own[:2] == pytest.approx([0.5, 0.5], abs=1e-6)  # centred
+    neighbour = lines[1].split()
+    assert neighbour[5:8][2] == "2"  # its first point is inside the crop
+    assert neighbour[8:11] == ["0", "0", "0"]  # its far point is cut off: not visible
+
+
+def test_a_crop_dataset_writes_an_image_per_animal_and_records_how(taught):
+    it, _recording = taught
+
+    run_dir, record, _data, _events = _label(
+        it, _job(it, student_input="crop", student_crop_px=64)
+    )
+
+    split_of = {p.name: p.parent.name for p in (run_dir / "images").glob("*/*.jpg")}
+    # frames 1 and 3 hold both tracks: two crops each; frames 0 and 2 one
+    assert len(split_of) == 6
+    assert "recording_002_part_001_0000001_t1.jpg" in split_of
+    # a frame's crops share its split, and the split counts frames
+    for frame in ("0000001", "0000003"):
+        t0, t1 = (split_of[f"recording_002_part_001_{frame}_t{t}.jpg"] for t in (0, 1))
+        assert t0 == t1
+    assert record["student_input"] == "crop" and record["student_crop_px"] == 64
+    assert record["n_train"] + record["n_val"] == 4
+    assert record["keypoint_dataset"]["student_input"] == "crop"
+
+
+def test_a_whole_frame_dataset_says_so_and_records_no_crop(taught):
+    it, _recording = taught
+    _run_dir, record, _data, _events = _label(it, _job(it))
+    assert record["student_input"] == "whole_frame"
+    assert record["student_crop_px"] is None
+
+
+@pytest.mark.parametrize(
+    "classes, per_class, rows, handed",
+    [
+        # a per-class teacher (§26 *One example set per detection class*): only the
+        # mapped classes' detections, each with its class for the method to pick a bank
+        (
+            frozenset({"Resident", "Intruder"}),
+            True,
+            [0, 1, 2],
+            {0: "Resident", 2: "Intruder"},
+        ),
+        # one class named: only its detections, and no classes handed (one bank)
+        (frozenset({"Intruder"}), False, [0, 1, 2], None),
+        # no class: every detection, as before
+        (None, False, [0, 1, 2], None),
+    ],
+    ids=["per_class", "one_class", "every_class"],
+)
+def test_the_patch_teacher_hands_the_method_what_the_detect_stage_would(
+    classes, per_class, rows, handed
+):
+    """The patch teacher gives each frame's detections as the detect stage gives them: a
+    per-class teacher only the mapped classes', each with its class (row 1, a ``plate``,
+    has no set and never reaches the method)."""
+    teacher = keypoint_dataset._ModelTeacher.__new__(keypoint_dataset._ModelTeacher)
+    teacher._per_detection, teacher._needs_mask = True, False
+    teacher._classes, teacher._per_class = classes, per_class
+    boxes = np.array([[0.1, 0.1, 0.3, 0.3], [0.0, 0.0, 1.0, 1.0], [0.6, 0.6, 0.9, 0.9]])
+    teacher._sources = {
+        "recording_001": {
+            "mask_size": None,
+            "detections": {"part_001": {"bbox": boxes, "rows_on": {7: rows}}},
+            "detection_classes": {
+                "part_001": np.array(["Resident", "plate", "Intruder"])
+            },
+        }
+    }
+    cand = {"recording_id": "recording_001", "part_id": "part_001"}
+    frame = teacher._frame(
+        {**cand, "frame_idx": 7, "t_ns": 70}, np.zeros((4, 4, 3), np.uint8)
+    )
+    expected = {
+        "per_class": [0, 2],
+        "one_class": [2],
+        "every_class": [0, 1, 2],
+    }
+    kind = "per_class" if per_class else ("one_class" if classes else "every_class")
+    assert sorted(frame.boxes) == expected[kind]
+    assert frame.classes == handed

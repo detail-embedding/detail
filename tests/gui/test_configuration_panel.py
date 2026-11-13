@@ -26,14 +26,22 @@ def _signals(**kw):
     kw.setdefault(
         "sam3", kw.get("sam3_backend", False) and kw.get("sam3_weights", False)
     )
+    # A GPU torch can use is an NVIDIA one; a test of the CPU-only-torch case sets
+    # `nvidia_gpu=True, gpu=False` itself.
+    kw.setdefault("nvidia_gpu", kw.get("gpu", False))
     base = dict(
         gpu=False,
+        nvidia_gpu=False,
         hf_token=False,
         sam3=False,
         sam3_backend=False,
         sam3_weights=False,
         detection_model=False,
         has_experiment=False,
+        distilled_detector=False,
+        keypoint_student=False,
+        keypoints_skipped=False,
+        shap=False,
     )
     base.update(kw)
     return ReadinessSignals(**base)
@@ -263,6 +271,29 @@ def test_sam3_backend_page_notes_sam3_cannot_run_without_cuda(qapp):
     assert page._cant_run.isHidden() is True  # a GPU box can run SAM 3 → hide the note
 
 
+def test_sam3_backend_page_says_pytorch_cannot_use_the_gpu_rather_than_none(qapp):
+    # An NVIDIA box with a CPU-only torch wheel: `cuda` warns, the driver answers. The note
+    # must not say no NVIDIA GPU was detected, and must point at the GPU / CUDA fix.
+    page = pages.Sam3BackendPage()
+    page._render(
+        [
+            CheckResult("cuda", CheckStatus.WARN, ""),
+            CheckResult("nvidia_gpu", CheckStatus.OK, "driver 560.94"),
+        ]
+    )
+    assert page._cant_run.isHidden() is False
+    assert "None detected" not in page._cant_run.text()
+    assert "PyTorch can't use it yet" in page._cant_run.text()
+    assert "GPU / CUDA" in page._cant_run.text()
+    page._render(
+        [
+            CheckResult("cuda", CheckStatus.WARN, ""),
+            CheckResult("nvidia_gpu", CheckStatus.SKIPPED, "no NVIDIA driver found"),
+        ]
+    )
+    assert "None detected" in page._cant_run.text()
+
+
 def test_sam3_backend_page_opens_a_terminal(qapp, monkeypatch):
     # The button opens a terminal in the repo folder (never auto-running installs). Force a
     # non-None argv so the button is enabled on any CI platform, and capture the spawn.
@@ -334,3 +365,55 @@ def test_sam3_backend_page_notifies_shell_on_render(qapp):
     page = pages.Sam3BackendPage(on_readiness_changed=lambda: got.append(True))
     page._render([CheckResult("sam3_backend", CheckStatus.OK, "")])
     assert got == [True]
+
+
+# --- skipping keypoint setup (§26, #717) ----------------------------------------------- #
+def test_skipping_keypoints_says_what_it_costs_then_records_it(qapp, monkeypatch):
+    from PyQt6.QtWidgets import QMessageBox
+
+    asked, recorded, recomputed = [], [], []
+
+    def question(parent, title, text, *a, **k):
+        asked.append(text)
+        return QMessageBox.StandardButton.Yes
+
+    monkeypatch.setattr(QMessageBox, "question", question)
+    monkeypatch.setattr(pages.readiness_api, "set_keypoints_skipped", recorded.append)
+    panel = _panel(lambda kind: None)
+    monkeypatch.setattr(panel, "_compute", lambda: recomputed.append(True))
+    panel._render(_signals(gpu=True, distilled_detector=True))
+    (skip,) = [b for b in panel.findChildren(QPushButton) if b.text() == "Skip…"]
+    skip.click()
+    assert recorded == [True] and recomputed == [True]
+    (text,) = asked
+
+    for cost in pages.readiness_guide.KEYPOINTS_SKIPPED_COSTS:
+        assert cost in text
+
+
+def test_a_declined_skip_records_nothing(qapp, monkeypatch):
+    from PyQt6.QtWidgets import QMessageBox
+
+    recorded = []
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.No
+    )
+    monkeypatch.setattr(pages.readiness_api, "set_keypoints_skipped", recorded.append)
+    panel = _panel(lambda kind: None)
+    panel._render(_signals(gpu=True, distilled_detector=True))
+    (skip,) = [b for b in panel.findChildren(QPushButton) if b.text() == "Skip…"]
+    skip.click()
+    assert recorded == []
+
+
+def test_a_skip_can_be_taken_back(qapp, monkeypatch):
+    recorded = []
+    monkeypatch.setattr(pages.readiness_api, "set_keypoints_skipped", recorded.append)
+    panel = _panel(lambda kind: None)
+    monkeypatch.setattr(panel, "_compute", lambda: None)
+    panel._render(_signals(gpu=True, distilled_detector=True, keypoints_skipped=True))
+    texts = [b.text() for b in panel.findChildren(QPushButton)]
+    assert "Undo skip" in texts and "Skip…" not in texts
+    (undo,) = [b for b in panel.findChildren(QPushButton) if b.text() == "Undo skip"]
+    undo.click()
+    assert recorded == [False]

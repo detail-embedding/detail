@@ -22,6 +22,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from detail.gui.lifetime import cleared
+
 #: The trailing glyph marking a row that opens something. Text, not an icon set.
 NAV_GLYPH = "\u203a"
 
@@ -146,6 +148,8 @@ class _Slack(QObject):
         # just dragged into the columns (measured, on the Measures table).
         # `Show` as well as `Resize`: a viewport resized again while hidden gets no second
         # `Resize` (measured: one at 682px, then shown at 698 with none).
+        if cleared(self):
+            return False
         kinds = (QEvent.Type.Resize, QEvent.Type.Show)
         if event.type() in kinds and watched.width() != self._width:
             self._width = watched.width()
@@ -353,6 +357,7 @@ def fit_table_height(
     fixed: bool = False,
     max_rows: int | None = None,
     min_rows: int = MIN_VISIBLE_ROWS,
+    fill: bool = False,
 ) -> None:
     """Size a table to its rows, up to what the display can show, then scroll its own content.
 
@@ -385,6 +390,13 @@ def fit_table_height(
     panel, where a scrollbar means the panel is not showing its own N. It gets exactly its
     content height and competes for nothing.
 
+    ``fill=True`` for a table that is its page's primary content and is added to the page's
+    layout **with a stretch factor**: it asks only for its floor, and the stretch hands it the
+    rest of the *window*, up to its rows. Sized to the *screen* instead, a 60-row Recording
+    information table was 1213px in a 602px pane — the page scrolled rather than the table, and
+    the table's horizontal scrollbar, the only way to its right-hand columns, sat at its bottom
+    edge 600px below the fold. A table that scrolls on both axes has to fit the pane it is in.
+
     **Call it once before the table is first laid out** — on the empty table, where it is
     built — and again whenever its rows change. The hint is a method assigned on the instance,
     and sip looks for a Python override of a C++ virtual only until the first time C++ asks:
@@ -392,7 +404,20 @@ def fit_table_height(
     invisible to the layout. Measured on Browse, whose lists were first sized after they had been
     shown: ``sizeHint()`` read 618px from Python and 192 from the layout, and thirty instances
     showed as five rows.
+
+    **In a pop-up** (`sizing.shows_every_row`) there is no row budget: the table shows every row
+    and the window grows to hold it, up to its own cap. A table the user has dragged
+    (`sizing.RowsGrip`) keeps the height they gave it, and this returns without touching it.
     """
+    from detail.gui.sizing import remember_row_fit, shows_every_row
+
+    if not remember_row_fit(
+        table,
+        lambda: fit_table_height(
+            table, fixed=fixed, max_rows=max_rows, min_rows=min_rows, fill=fill
+        ),
+    ):
+        return
     model = table.model()
     rows = model.rowCount() if model is not None else 0
     row_height = table.verticalHeader().defaultSectionSize()
@@ -400,8 +425,18 @@ def fit_table_height(
     chrome += _horizontal_scrollbar_height(table)
     content = chrome + rows * row_height
     budget = max_visible_rows(row_height) if max_rows is None else max_rows
+    if shows_every_row(table):
+        # A pop-up shows every row and grows to hold them (`sizing.shows_every_row`); the
+        # budget above is a page's.
+        budget = rows
     shown = content if fixed else min(content, chrome + budget * row_height)
     floor = shown if fixed else min(shown, chrome + min_rows * row_height)
+    if shows_every_row(table):
+        # Every row as the *floor*, not only the hint: the hint may already have been read
+        # (see below), and a pop-up's body scrolls, so a floor here costs nothing but scrolling.
+        floor = shown
+    if fill:
+        shown = floor
 
     table.setMaximumHeight(content)
     table.setMinimumHeight(floor)

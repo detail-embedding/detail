@@ -27,6 +27,9 @@ class FakeExecutor(Executor):
             yield event
         self._status = JobStatus.COMPLETE
 
+    def run_dir(self, job_id):
+        return None
+
 
 def _events():
     return [

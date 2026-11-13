@@ -8,12 +8,17 @@ from detail.core.utils import (
     NS_PER_SECOND,
     active_polygon_at_frame,
     best_supported_backend,
+    check_track_is_unambiguous,
+    coerce_series_key,
     cuda_device_names,
     default_compute,
+    effective_backend,
+    parse_series_dirname,
     polygon_at_frame,
     resolve_device,
     resolve_track_id,
     seconds_to_t_ns,
+    series_dirname,
     t_ns_to_seconds,
     transcode_parallelism,
 )
@@ -53,6 +58,19 @@ def test_resolve_device_unmappable_backend_raises():
     # "cloud" passes the support check but has no local device mapping.
     with pytest.raises(ValueError, match="cannot map backend"):
         resolve_device(_compute("cloud"), ["cloud"])
+
+
+@pytest.mark.parametrize(
+    "backend,expected",
+    [
+        ("remote", "cuda"),
+        ("cpu", "cpu"),
+        ("cuda", "cuda"),
+        ("mps", "mps"),
+    ],
+)
+def test_effective_backend(backend, expected):
+    assert effective_backend(_compute(backend)) == expected
 
 
 # --- auto-detect backend (cuda > mps > cpu) ---------------------------------- #
@@ -136,6 +154,36 @@ def test_resolve_track_id_no_subject_labels_raises():
 def test_resolve_track_id_unknown_animal_raises():
     with pytest.raises(ValueError, match="not found in subject_labels"):
         resolve_track_id("M999", {0: "M001"})
+
+
+def test_series_dirname_round_trips_a_track_id():
+    assert series_dirname(0) == "track_0"
+    assert parse_series_dirname("track_0") == 0
+
+
+def test_parse_series_dirname_rejects_a_non_track_name():
+    with pytest.raises(ValueError, match="not a track directory name"):
+        parse_series_dirname("embeddings")
+
+
+def test_coerce_series_key_accepts_ints_and_digit_strings():
+    assert coerce_series_key(5) == 5
+    assert coerce_series_key(np.int64(5)) == 5
+    assert coerce_series_key("5") == 5
+
+
+def test_coerce_series_key_rejects_garbage():
+    with pytest.raises(ValueError, match="not a valid track selector"):
+        coerce_series_key("black mouse")
+
+
+def test_check_track_is_unambiguous_passes_for_a_single_track():
+    check_track_is_unambiguous(3, "r1", [3], run_id="emb_01")
+
+
+def test_check_track_is_unambiguous_raises_on_several_tracks():
+    with pytest.raises(ValueError, match="is ambiguous"):
+        check_track_is_unambiguous(0, "r1", [0, 1, 2], run_id="emb_01")
 
 
 def test_t_ns_seconds_conversions():

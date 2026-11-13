@@ -198,7 +198,7 @@ def test_keypoint_method_class_knows_a_student_as_well_as_a_registered_method(tm
     from detail.core.registries import KEYPOINT_MODELS
     from detail.models.resolve import keypoint_method_class
     from detail.models.yolo_pose import TrainedYoloPose
-    from detail.pipeline.embedding import _heading_cutoff
+    from detail.pipeline.embedding import point_cutoff
 
     experiment_dir = tmp_path / "exp"
     _pose_student(experiment_dir)
@@ -219,7 +219,7 @@ def test_keypoint_method_class_knows_a_student_as_well_as_a_registered_method(tm
     student_cutoff = TrainedYoloPose.score_spec.default_cutoff
     assert default_cutoff(detect) == student_cutoff, "the export's display cut-off"
     track = SimpleNamespace(meta={"config": {}})
-    assert _heading_cutoff(track, detect) == student_cutoff, "the heading's cut-off"
+    assert point_cutoff(track, detect) == student_cutoff, "the heading's cut-off"
 
 
 # --- pose models are kept out of detection (§12 *Keypoint models in the catalog*) ----- #

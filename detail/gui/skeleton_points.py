@@ -1,43 +1,45 @@
-"""A choice of a skeleton's points: one checkbox per point — the clip window's **Trail points**
-(§22), and the montage's.
+"""A choice of a skeleton's points (§26): one checkbox per point, for a setting declared with
+``ui: skeleton_points`` (``track_points`` on the keypoint track methods).
 
-It knows nothing of a body plan: the names come from whatever skeleton the window hands it, in
-column order. Every point starts ticked; :meth:`SkeletonPointsPicker.value` is ``None`` while
-they all are ("every point"), else the ticked names. A value set before the skeleton is known is
-held, reported back as it was set, and applied when the skeleton arrives; a choice made on one
-skeleton carries to the next for the names they share.
+It knows nothing of a body plan: the names and the left/right pairs come from whatever skeleton
+the form hands it, in column order. Every point starts ticked; :meth:`value` is ``None`` while
+they all are (the setting's "every point"), else the ticked names. A value set before the
+skeleton is known (a restored config) is held, reported back as it was set, and applied when the
+skeleton arrives; a choice made on one skeleton carries to the next for the names they share.
 
-:class:`SkeletonPointsButton` is the picker behind a button, in a menu, so a control row stays
-one line. It is the one place that shape is written: the port this replaced had the same
-``QMenu`` + ``QWidgetAction`` block in three windows, each with its own "k of N points" label and
-its own greying.
+``wording`` is what the ticks are *for*, which only the note under them says: ``"track"`` (the
+keypoint track form's points to track, with its note on a split left/right pair) or
+``"trail"`` (the clip window's points that leave a trail, where a split pair means nothing).
 """
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import (
-    QCheckBox,
-    QGridLayout,
-    QLabel,
-    QMenu,
-    QPushButton,
-    QVBoxLayout,
-    QWidget,
-    QWidgetAction,
-)
+from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtWidgets import QCheckBox, QGridLayout, QLabel, QVBoxLayout, QWidget
 
 _COLUMNS = 4
-_UNSET = object()
-#: The note under the ticks: no skeleton yet, none ticked, every point ticked, some ticked.
-_EMPTY = "No keypoints in this clip, so no point leaves a trail."
-_NONE = "Tick at least one point to draw its trail."
-_EVERY = "Every point leaves a trail."
-_SOME = "Only the ticked points leave a trail."
-#: The button's tooltip while there is a skeleton to choose from.
-POINTS_TIP = (
-    "Choose which keypoints leave a trail: every point, or only some (the paws, say)."
+_NO_SKELETON = (
+    "Choose a keypoint detect run to list its points; until then, every point."
 )
+_UNSET = object()
+#: The note under the ticks, by what they are for: no skeleton yet, none ticked, every point
+#: ticked, some ticked — and whether a left/right pair split by the ticks is worth a note.
+_WORDING = {
+    "track": {
+        "empty": _NO_SKELETON,
+        "none": "Tick at least one point to track.",
+        "every": "Every point is tracked.",
+        "some": "Unticked points keep the detect run's placement, untouched.",
+        "split": True,
+    },
+    "trail": {
+        "empty": "No keypoints in this clip, so no point leaves a trail.",
+        "none": "Tick at least one point to draw its trail.",
+        "every": "Every point leaves a trail.",
+        "some": "Only the ticked points leave a trail.",
+        "split": False,
+    },
+}
 
 
 class SkeletonPointsPicker(QWidget):
@@ -45,9 +47,15 @@ class SkeletonPointsPicker(QWidget):
 
     changed = pyqtSignal()
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, parent: QWidget | None = None, *, wording: str = "track"
+    ) -> None:
         super().__init__(parent)
+        if wording not in _WORDING:
+            raise ValueError(f"wording={wording!r} is not one of {sorted(_WORDING)}")
+        self._wording = _WORDING[wording]
         self._names: list[str] = []
+        self._pairs: list[tuple[str, str]] = []
         self._boxes: dict[str, QCheckBox] = {}
         self._pending = _UNSET  # a value set before the skeleton was known
         layout = QVBoxLayout(self)
@@ -56,13 +64,13 @@ class SkeletonPointsPicker(QWidget):
         self._grid = QGridLayout(host)
         self._grid.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(host)
-        self._note = QLabel(_EMPTY)
+        self._note = QLabel(self._wording["empty"])
         self._note.setWordWrap(True)
         layout.addWidget(self._note)
 
     # -- the skeleton ------------------------------------------------------------- #
-    def set_skeleton(self, names) -> None:
-        """Show ``names`` (column order), keeping the ticks of the names it already knew."""
+    def set_skeleton(self, names, pairs=()) -> None:
+        """Show ``names`` (column order), with ``pairs`` for the split-pair note."""
         if self._pending is not _UNSET:
             wanted = None if self._pending is None else set(self._pending)
             self._pending = _UNSET
@@ -73,6 +81,7 @@ class SkeletonPointsPicker(QWidget):
             self._grid.removeWidget(box)
             box.deleteLater()
         self._names = [str(n) for n in names]
+        self._pairs = [(str(a), str(b)) for a, b in pairs]
         self._boxes = {}
         for i, name in enumerate(self._names):
             box = QCheckBox(name)
@@ -88,7 +97,8 @@ class SkeletonPointsPicker(QWidget):
     # -- the value ---------------------------------------------------------------- #
     def value(self) -> list[str] | None:
         """``None`` when every point is ticked, else the ticked names in column order
-        (possibly empty). Before a skeleton: what was set."""
+        (possibly empty, which the form refuses to launch). Before a skeleton: what was set.
+        """
         if not self._boxes:
             return None if self._pending is _UNSET else self._pending
         ticked = [n for n in self._names if self._boxes[n].isChecked()]
@@ -98,7 +108,6 @@ class SkeletonPointsPicker(QWidget):
         """Tick exactly ``value`` (``None``: every point)."""
         if not self._boxes:
             self._pending = None if value is None else list(value)
-            self.changed.emit()  # what `value()` reports changed, skeleton or not
             return
         wanted = None if value is None else set(value)
         for name, box in self._boxes.items():
@@ -113,50 +122,22 @@ class SkeletonPointsPicker(QWidget):
         self.changed.emit()
 
     def _sync_note(self) -> None:
+        words = self._wording
         if not self._boxes:
-            self._note.setText(_EMPTY)
+            self._note.setText(words["empty"])
             return
-        ticked = sum(1 for box in self._boxes.values() if box.isChecked())
+        ticked = {n for n, box in self._boxes.items() if box.isChecked()}
+        split = [f"{a} / {b}" for a, b in self._pairs if (a in ticked) != (b in ticked)]
         if not ticked:
-            self._note.setText(_NONE)
-        elif ticked == len(self._boxes):
-            self._note.setText(_EVERY)
+            text = words["none"]
+        elif split and words["split"]:
+            text = (
+                "Not swapped left from right, since only one of each is tracked: "
+                + "; ".join(split)
+                + "."
+            )
+        elif len(ticked) == len(self._boxes):
+            text = words["every"]
         else:
-            self._note.setText(_SOME)
-
-
-class SkeletonPointsButton(QPushButton):
-    """A :class:`SkeletonPointsPicker` behind a button, dropped down as a menu.
-
-    ``changed`` is the picker's; :meth:`value` and :meth:`set_skeleton` reach through to it.
-    :meth:`set_reason` greys the button with why there is nothing to choose (a run with no
-    keypoints), and clears the greying with ``None`` — the one way the button is disabled, so
-    it always says why.
-    """
-
-    changed = pyqtSignal()
-
-    def __init__(
-        self, text: str = "Trail points", parent: QWidget | None = None
-    ) -> None:
-        super().__init__(text, parent)
-        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.picker = SkeletonPointsPicker()
-        self.picker.changed.connect(self.changed)
-        menu = QMenu(self)
-        holder = QWidgetAction(menu)
-        holder.setDefaultWidget(self.picker)
-        menu.addAction(holder)
-        self.setMenu(menu)
-        self.set_reason(None)
-
-    def value(self) -> list[str] | None:
-        return self.picker.value()
-
-    def set_skeleton(self, names) -> None:
-        self.picker.set_skeleton(names)
-
-    def set_reason(self, reason: str | None) -> None:
-        """Grey the button with ``reason``, or enable it (``None``) with the usual tip."""
-        self.setEnabled(reason is None)
-        self.setToolTip(POINTS_TIP if reason is None else reason)
+            text = words["some"]
+        self._note.setText(text)

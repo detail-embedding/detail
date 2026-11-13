@@ -137,7 +137,10 @@ Guard: `tests/storage/test_cache_compat.py`.
 
 **No FFmpeg** (Tenet 15). No `subprocess.run(["ffmpeg", ...])`, `os.system("ffmpeg ...")` or
 library that shells out to it in pipeline code. Use `cv2.VideoCapture` for sequential frame
-reading and writing, and `PyAV` for container metadata and PTS extraction.
+reading, and `PyAV` for container metadata and PTS extraction. **Export video is written only by
+`storage/video.open_video_writer`** (`h264` via PyAV's linked `libx264`, `mp4v` via
+`cv2.VideoWriter`); no other module opens a video for writing
+(`tests/storage/test_video_writer_seam.py`).
 
 **Sequential video reading only** (Tenet 11). Never call `cap.set(cv2.CAP_PROP_POS_FRAMES, ...)`
 inside a batch processing loop — only at part start and in preview/prompt-test paths. Never hold a
@@ -159,7 +162,7 @@ reporting*.
   `event → render` mapping (CLI and GUI are deliberately separate); a second one is the bug.
 - A synchronous API method that does real work takes a `progress` callback, and **every caller
   drives it**. A new long path, or a flag that makes a quick one long, ships with progress and a
-  test that it is wired. `Recording.export_locations` is an outstanding violation.
+  test that it is wired (`Recording.export_locations` takes one, and `locations export` drives it).
   Guard: `tests/test_progress_callers.py`.
 - GUI interactive loads (a preview, a frame decode, a one-shot export) run off the UI thread
   through `gui/busy.py` (`run_busy` / `run_progress`), never as a raw slow call in a widget
@@ -275,7 +278,9 @@ pytest -q -n auto --dist loadfile
 - A run stops after 10 failures (`--maxfail=0` lifts that). Coverage (`--cov=detail`) is a
   deliberate, slower run; `codecov.yml` says why it reports rather than gates.
 - **Never wait on a stalled run.** `scripts/suite_watchdog.py` ends a run that makes no progress
-  for 300s (exit 3) and prints what it waited on. Read that; do not re-run blindly.
+  for 300s (exit 3) and prints what it waited on. Read that; do not re-run blindly. A crashed
+  worker ends the run too (`--max-worker-restart=0`): a `[gwN] node down` is a red run naming its
+  test, never something to wait out (`run-tests` skill).
 
 **Test tiers.** `tests/tiers.py` is the one table: what a test costs (`unit` / `gui` / `slow`) and
 what it protects (`guard`), derived from the file's path. Exceptions carry a reason and are

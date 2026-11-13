@@ -19,6 +19,8 @@ from __future__ import annotations
 import numpy as np
 from PyQt6.QtWidgets import QLabel
 
+from detail.api.run_preview import locate_frame
+from detail.core import visualize
 from detail.core.visualize import draw_keypoints
 from detail.gui import frame_source
 from detail.gui.run_preview import (
@@ -69,8 +71,31 @@ def _draw_subject_points(
     return out
 
 
+def _compute_with_points(view, global_frame: int, draw):
+    """Off-thread, for every keypoint viewer: decode, the overlay in the style picked
+    (``DetectionRunPreview._overlay``), then ``draw(out, part, local, detections)`` — the
+    run's points — over it."""
+    if not view._total:
+        return ("text", "(no video)")
+    part, local = locate_frame(view._part_counts, global_frame)
+    result, reason = frame_source.decode(
+        lambda: view._preview.frame(
+            part, local, with_masks=visualize.preview_needs_mask(view._style)
+        )
+    )
+    if reason is not None:
+        return ("text", frame_source.unavailable_text(reason))
+    _actual, rgb, detections = result
+    out = view._overlay(rgb, detections)
+    return ("img", draw(out, part, local, detections))
+
+
 class KeypointDetectRunPreview(DetectionRunPreview):
     """One recording's ``keypoint_detect`` run: detection's viewer plus every pose."""
+
+    # The box alone, so a mask tint does not sit under the points and share the left side's
+    # colour; the picker still offers every style.
+    _DEFAULT_STYLE = visualize.BOX_ONLY
 
     def _make_preview(self, recording, run_id: str):
         # Off-thread (called from _load): the run's record names the detection run whose
@@ -83,17 +108,13 @@ class KeypointDetectRunPreview(DetectionRunPreview):
 
     def _compute(self, global_frame: int):
         """Off-thread: decode + the detection overlay + every pose on the frame."""
-        if not self._total:
-            return ("text", "(no video)")
-        part, local = self._locate(global_frame)
-        result, reason = frame_source.decode(
-            lambda: self._preview.frame(part, local, with_masks=self._masks_on)
+        return _compute_with_points(
+            self,
+            global_frame,
+            lambda out, part, local, _detections: _draw_instances(
+                out, self._run, self._part_stems, part, local
+            ),
         )
-        if reason is not None:
-            return ("text", frame_source.unavailable_text(reason))
-        _actual, rgb, detections = result
-        out = self._overlay(rgb, detections)  # detection's boxes and masks
-        return ("img", _draw_instances(out, self._run, self._part_stems, part, local))
 
     def _summary_text(self, overview, fps: float | None) -> str:
         """Detection's line, then the run's: per part, the frames it walked, the frames
@@ -104,6 +125,8 @@ class KeypointDetectRunPreview(DetectionRunPreview):
             f"keypoints: {meta['model_id']} · {len(self._run.skeleton)} points · "
             f"every {meta.get('every_n_frames', 1)} frame(s) · on detection run "
             f"{self._run.detection_run_id}"
+            # the frames below are then the ones with a detection of that class
+            + (f", {meta['class_name']} only" if meta.get("class_name") else "")
         )
         coverage = self._run.coverage()
         if not coverage:
@@ -115,6 +138,59 @@ class KeypointDetectRunPreview(DetectionRunPreview):
                 f"{int(part['instances']):,} poses"
             )
         return "\n".join(lines)
+
+
+class LegacyKeypointsRunPreview(TrackingRunPreview):
+    """One recording's run of the stage before §26 (``keypoints``, ``kp_NN``): tracking's
+    viewer with the run's final points, read through ``keypoint_runs.LegacyKeypointsRun``.
+    Nothing makes such a run any more; this is how an old one is still looked at."""
+
+    _DEFAULT_STYLE = visualize.BOX_ONLY
+
+    def _make_preview(self, recording, run_id: str):
+        # Off-thread (called from _load), as the detect viewer's.
+        from detail.storage.keypoint_runs import LegacyKeypointsRun
+
+        self._run = LegacyKeypointsRun(recording.dir, run_id)
+        data = recording_store.read_recording(recording.dir)
+        self._part_stems = [
+            recording_store.part_stem(f) for f in recording_store.video_files(data)
+        ]
+        return recording.tracking_preview(  # off-thread (called from _load)
+            self._run.meta["tracking_run_id"]
+        )
+
+    def _compute(self, global_frame: int):
+        """Off-thread: decode + the tracking overlay + the old run's points per subject."""
+        return _compute_with_points(
+            self,
+            global_frame,
+            lambda out, part, local, detections: _draw_subject_points(
+                out, self._run, self._part_stems, part, local, detections
+            ),
+        )
+
+    def _summary_text(self, overview, fps: float | None) -> str:
+        meta = self._run.meta
+        cutoff = self._run.min_score
+        return "\n".join(
+            [
+                TrackingRunPreview._summary_text(self, overview, fps),
+                f"keypoints (before the keypoint detect / track rebuild): "
+                f"{meta.get('model_id')} · {len(self._run.skeleton)} points"
+                + ("" if cutoff is None else f" · not visible below {cutoff:g}"),
+                "a run of the old keypoints stage: it reads and exports, and a new one is "
+                "made with keypoint detect and keypoint track",
+            ]
+        )
+
+
+def legacy_preview_widget(recording, module_id: str, run_id: str):
+    """The viewer for a run of a module this build no longer has, or None — what a run page
+    shows where no module UI is registered (hiding governs launching, not reading)."""
+    if module_id == "keypoints":
+        return LegacyKeypointsRunPreview(recording, run_id)
+    return None
 
 
 #: A point placed on fewer than this share of a track's subject frames raises the alert
@@ -129,6 +205,10 @@ class KeypointTrackRunPreview(TrackingRunPreview):
     coverage line, and an amber alert naming any point under the coverage threshold with the
     one action that fixes it (§14 *Coverage and alerts*)."""
 
+    # The box alone, so a mask tint does not sit under the points and share the left side's
+    # colour; the picker still offers every style.
+    _DEFAULT_STYLE = visualize.BOX_ONLY
+
     def _make_preview(self, recording, run_id: str):
         # Off-thread (called from _load): the tracking run is the track run's own — the one
         # whose subjects its poses were assigned to (§26 *Assignment*).
@@ -139,19 +219,10 @@ class KeypointTrackRunPreview(TrackingRunPreview):
         )
 
     def _compute(self, global_frame: int):
-        if not self._total:
-            return ("text", "(no video)")
-        part, local = self._locate(global_frame)
-        result, reason = frame_source.decode(
-            lambda: self._preview.frame(part, local, with_masks=self._masks_on)
-        )
-        if reason is not None:
-            return ("text", frame_source.unavailable_text(reason))
-        _actual, rgb, detections = result
-        out = self._overlay(rgb, detections)
-        return (
-            "img",
-            _draw_subject_points(
+        return _compute_with_points(
+            self,
+            global_frame,
+            lambda out, part, local, detections: _draw_subject_points(
                 out, self._run, self._part_stems, part, local, detections
             ),
         )

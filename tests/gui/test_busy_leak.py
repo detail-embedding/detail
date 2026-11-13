@@ -167,3 +167,95 @@ def test_the_register_does_not_double_count_a_run_busy_worker(qapp):
     assert len(busy._active | _IN_FLIGHT) == 1
 
     drain_busy_calls(qapp)
+
+
+# --- a worker the test started must have finished by the end of its teardown ---------------- #
+def test_the_outlived_check_names_only_this_tests_workers():
+    """The predicate on literals: a worker already in flight when the test began is an earlier
+    test's leak, already reported there, and must not be blamed again."""
+    from tests.gui.conftest import workers_that_outlived
+
+    class Inherited:
+        pass
+
+    class Started:
+        pass
+
+    earlier, mine = Inherited(), Started()
+    assert workers_that_outlived({earlier}, {earlier, mine}) == ["Started"]
+    assert workers_that_outlived({earlier}, {earlier}) == []
+    assert workers_that_outlived(set(), set()) == []
+
+    def read_the_index():
+        pass
+
+    class BackgroundCall:
+        _fn = staticmethod(read_the_index)
+
+    named = BackgroundCall()
+    assert workers_that_outlived(set(), {named}) == [
+        "BackgroundCall(test_the_outlived_check_names_only_this_tests_workers"
+        ".<locals>.read_the_index)"
+    ]
+
+
+def test_the_outlived_check_would_catch_a_worker_left_running(qapp):
+    """The negative case through the real register and the real drain: a started worker that
+    never finishes is still in ``_IN_FLIGHT`` when the drain gives up, so the teardown check
+    names it. Released and joined afterwards, so this test passes the very check it exercises.
+    """
+    import threading
+
+    from detail.gui import workers
+    from tests import waits
+    from tests.gui.conftest import workers_that_outlived
+
+    release = threading.Event()
+
+    class _Stuck(workers.GuiWorker):
+        def run(self) -> None:
+            release.wait(waits.WORKER_TIMEOUT_MS / 1000)
+
+    before = set(workers._IN_FLIGHT)
+    worker = _Stuck(receiver=None)
+    worker.start()
+    try:
+        drain_busy_calls(qapp, timeout_ms=200)
+        # `in`, not `==`: draining pumps, and a timer an earlier test armed can start unrelated
+        # work here (seen: `BackgroundCall(Experiment.video_staging)` under frequent collection).
+        assert "_Stuck" in workers_that_outlived(before, set(workers._IN_FLIGHT))
+    finally:
+        release.set()
+        waits.finished(worker, "the stuck worker")
+        drain_busy_calls(qapp)
+    assert "_Stuck" not in workers_that_outlived(before, set(workers._IN_FLIGHT))
+
+
+def test_work_started_by_a_drains_last_pump_is_drained_too(qapp):
+    """Pumping is what starts work: a single-shot timer a widget armed fires inside a drain's
+    final ``processEvents`` and starts a worker after that drain has decided it is done. One pass
+    of each drain leaves it in flight; ``_drain_until_quiet`` goes round again and waits for it.
+    """
+    import time
+
+    from PyQt6.QtCore import QTimer
+
+    from detail.gui import workers
+    from tests.gui.conftest import _drain_until_quiet
+
+    started: list = []
+
+    def start_one() -> None:
+        worker = workers.BackgroundCall(lambda: time.sleep(0.3), receiver=None)
+        started.append(worker)
+        worker.start()
+
+    # Nothing is outstanding, so the first busy drain only pumps once, and that pump is what
+    # fires this timer: the worker starts after the drain that would have waited for it.
+    QTimer.singleShot(0, start_one)
+    _drain_until_quiet(qapp)
+
+    assert started, "the timer never fired, so this reproduces nothing"
+    assert (
+        started[0] not in workers._IN_FLIGHT
+    ), "work a drain's own pump started was left running"

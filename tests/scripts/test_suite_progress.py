@@ -34,6 +34,7 @@ import time
 from pathlib import Path
 
 from scripts import suite_progress
+from tests.subprocesses import kill_tree, run_tree, start_tree, wait_tree
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -63,8 +64,8 @@ def _run(tmp_path, *args, sleep=0.0, env=None, wait=True):
     cmd += ["-p", "scripts.suite_progress_plugin", *args, "test_sample.py"]
     env = env or _child_env(tmp_path / "progress")
     if not wait:
-        return subprocess.Popen(cmd, cwd=tmp_path, env=env, stdout=subprocess.DEVNULL)
-    return subprocess.run(
+        return start_tree(cmd, cwd=tmp_path, env=env, stdout=subprocess.DEVNULL)
+    return run_tree(
         cmd, cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8"
     )
 
@@ -184,29 +185,31 @@ def test_the_watcher_follows_a_run_to_its_end(tmp_path):
     """End to end: the Monitor's view of a real run — milestones, the failure, the result."""
     since = time.time()
     run = _run(tmp_path, sleep=1.0, wait=False)
-    watcher = subprocess.run(
-        [
-            sys.executable,
-            str(REPO / "scripts" / "suite_progress.py"),
-            "watch",
-            "--since",
-            str(since),
-            "--root",
-            str(tmp_path),
-            "--step",
-            "20",
-            "--poll",
-            "0.1",
-            "--every",
-            "0",
-        ],
-        env=_child_env(tmp_path / "progress"),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=60,
-    )
-    run.wait(timeout=60)
+    try:
+        watcher = run_tree(
+            [
+                sys.executable,
+                str(REPO / "scripts" / "suite_progress.py"),
+                "watch",
+                "--since",
+                str(since),
+                "--root",
+                str(tmp_path),
+                "--step",
+                "20",
+                "--poll",
+                "0.1",
+                "--every",
+                "0",
+            ],
+            env=_child_env(tmp_path / "progress"),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        wait_tree(run)
+    finally:
+        kill_tree(run)
     lines = watcher.stdout.splitlines()
     assert watcher.returncode == 1, lines  # the run has a failing test
     assert "  ✗ test_sample.py::test_fails" in lines
@@ -261,25 +264,27 @@ def test_a_short_run_posts_its_failures_and_result_and_nothing_else(tmp_path):
     milestones in a row. The failure and the result still arrive."""
     since = time.time()
     run = _run(tmp_path, sleep=0.3, wait=False)
-    watcher = subprocess.run(
-        [
-            sys.executable,
-            str(REPO / "scripts" / "suite_progress.py"),
-            "watch",
-            "--since",
-            str(since),
-            "--root",
-            str(tmp_path),
-            "--poll",
-            "0.1",
-        ],
-        env=_child_env(tmp_path / "progress"),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=60,
-    )
-    run.wait(timeout=60)
+    try:
+        watcher = run_tree(
+            [
+                sys.executable,
+                str(REPO / "scripts" / "suite_progress.py"),
+                "watch",
+                "--since",
+                str(since),
+                "--root",
+                str(tmp_path),
+                "--poll",
+                "0.1",
+            ],
+            env=_child_env(tmp_path / "progress"),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        wait_tree(run)
+    finally:
+        kill_tree(run)
     lines = [
         line
         for line in watcher.stdout.splitlines()
