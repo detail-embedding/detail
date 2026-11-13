@@ -451,11 +451,11 @@ Choose **Cluster tools ▾** › **Look-alike behaviors…**. The window opens b
 from a clustering of the isometric hot plate experiment, whose clusters have been
 compared: the demo's clusters all tell apart (see the note below).
 
-![The Look-alike behaviors window for a hot plate clustering: 4 groups held together by 17 look-alike pairs, the largest, 11 behaviors that look alike as "standing upright", with each cluster's share of the run, what its label would also cover and your label; under them, why they are grouped, pair by pair, and the label box filled in with standing upright and the Label as one button. Numbered markers sit on every control.](../../assets/user-guides/single-animal/clustering/lookalikes.png)
+![The Look-alike behaviors window for a hot plate clustering: 4 groups held together by 17 look-alike pairs, the largest, 11 behaviors that look alike, with each cluster's share of the run, what its label would also cover and your label; under them, why they are grouped, pair by pair, and the label box, empty because none of the 11 has a label yet, with the Label as one button. Numbered markers sit on every control.](../../assets/user-guides/single-animal/clustering/lookalikes.png)
 
 ??? info "What everything on this screen does"
-    Each group is listed with the name it proposes, then its clusters, largest first: its
-    share of the run, what its label **would also label**, and your label if it has one. **Why they are grouped** gives, for every pair, how well the body
+    Each group is listed with the name it proposes, when one of its clusters has a label,
+    then its clusters, largest first: its share of the run, what its label **would also label**, and your label if it has one. **Why they are grouped** gives, for every pair, how well the body
     measures told it apart against chance (*body measures 51% (floor 51%)*: no better than
     chance, so alike) and how well position and facing alone did (*100%*: they differ only
     in where and which way).
