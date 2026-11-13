@@ -8218,7 +8218,12 @@ cleared is coloured and its sign says which way. The axis is fixed, as the share
 from −1 to +1 for a trend, ÷20 to ×20 for a log ratio (`match_key.effect_extent`) — with the
 floor's ticks either side of the middle and the selected cluster's effect as the tall bar
 ("selected 12.4×"); `match_key.effect_position` is the one map from an effect to the axis, for
-the key and the blocks alike (`cluster_filters.effect_shades`). A block's hover carries the
+the key and the blocks alike (`cluster_filters.effect_shades`). A profile screen's effect is a
+size whose sign belongs to each cluster's own pair, not to the measure (§24 *Designs*), so its
+axis is one-sided — 1× to ×20 on the scale's upper half, one floor tick, the caption *Differs
+across session* in place of a direction (`match_key.one_sided`; `effect_position` takes the
+magnitude) — the selected cluster's mark names its pair and direction (*selected 9.6× more under
+SA than REI*, `NodeEffect.pair`), and the hover names every block's. A block's hover carries the
 screen's sentence for it, the same words the Comparisons page prints
 (`comparison_report.suggestion`), with *kept*, *nested under a kept cluster* or *inside the
 floor* after it. Tick any clip filter beside the screen and both return to the share ramp: two
@@ -8739,7 +8744,7 @@ naming two `levels`, which turns any column into a two-level contrast.
 | is constant within each unit, or there is no unit, or several columns are chosen | **between** (above) | — (group means over units) | group shuffled **among** units |
 | varies within units and holds two values, or the user named two `levels` | **paired** | `log((b + ε) / (a + ε))` over the unit's level means | the sign flipped per unit; **exact** over all 2ⁿ flips when n ≤ 10 |
 | varies within units, is numeric with three or more values, no `levels` named | **trend** | Spearman ρ over the unit's levels | the levels shuffled **within** each unit |
-| varies within units with three or more non-numeric values and no `levels` | refused, naming the values to choose two of | | |
+| varies within units with three or more non-numeric values and no `levels` | **profile** | the largest `|mean log ratio|` over every pair of levels, each pair the paired contrast over the unit's level means, the pair on the item | the levels shuffled **within** each unit, the same largest pair taken each time |
 
 A recording with no value for a grouping column — blank, or a spelling of *not available* such as `NA`,
 `nan` or `none` (`cohort.MISSING_TOKENS`, behind the one predicate `cohort.missing`) — sits outside the
@@ -8751,6 +8756,23 @@ numeric column is a paired contrast of those two doses. Prevalence — present a
 at the other — is not a fourth design: a paired item carries the units present at each level beside
 its log ratio, which is what that statistic added. A unit with several recordings at one level
 contributes their mean, which is the aggregation path doing what it already does.
+
+**A profile** (three or more named levels within each unit) gives every pair of levels the paired
+contrast and ranks each measure by the largest `|mean log ratio|` among the pairs defined for it,
+with the pair on the item (`Effect.pair`) and the sentence naming it first: *differs most between
+REI and SA: 9.6× less under REI than SA (7 of 8 ID in that direction)*. A pair is defined where
+`min_units` units are present at either of its levels, as a paired contrast is; a measure with no
+defined pair is undefined. The null shuffles each unit's levels within it and takes the same
+largest pair each time, so the floor already pays for choosing the pair and no second correction
+is applied; it is sampled, `(k!)^n` configurations being past enumerating, and `Ranking.exact`
+says so. With two levels the profile is the paired contrast, item for item. A **between design
+over three or more groups** ranks the same way, each item the largest contrast between any two
+groups with the pair on it (`Contrast.pair`) and the null the same largest gap under the label
+shuffle, where it had no ranking before. `Ranking.profile` says when items carry their own pair,
+`Ranking.level_values` lists what was ranked over, and `ranking.csv` carries `pair_a` / `pair_b`.
+A numeric column with three or more values stays a trend: the lever for a non-monotone
+dose-response is naming two `levels`. A profile's effect is a size whose sign belongs to its
+pair, which is what INTERPRET's key reads (§22).
 
 Three rules the within designs share, each from a measurement:
 
@@ -8814,7 +8836,8 @@ reproducible.
 comparisons/<cmp_NN>/
   comparison.yaml     schema_version first, atomic: filter, group_by, aggregation_path,
                       windows, measures, source artifact run id(s), provenance, status,
-                      and the resolved design: design, design_column, levels, min_units,
+                      and the resolved design: design (between, paired, trend or profile),
+                      design_column, levels, min_units,
                       n_units, presence_s, pseudo_count_s, ranking_measure, design_reason,
                       and left_out, the recordings with no value for a grouping column;
                       source: labels only — screened_labels, the labels (as measured, from
@@ -8826,7 +8849,8 @@ comparisons/<cmp_NN>/
                       cell, the summary, the detail page's header, `comparison run`)
   stats.csv           the tidy source of truth — one row per observation with its factors
   nodes.csv           source: nodes only — the node hierarchy the ranking is suppressed over
-  ranking.csv         every ranked item: effect, floor, clears, kept, consistency, n_units
+  ranking.csv         every ranked item: effect, floor, clears, kept, consistency, n_units,
+                      pair_a / pair_b (the levels or groups the effect is between)
   tables/             per measure: groups as rows, summary columns
   figures/            dot plots, time-resolved curves, the difference ranking with its floor
   summary.md          the quick-look

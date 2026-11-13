@@ -239,3 +239,84 @@ def test_the_key_switches_to_the_effect_and_back(key):
     key.set_filter(True, selected_share=0.3, run_share=0.1)
     assert not key.is_effect()
     assert key.text() == "Clips that match | 0% … 100% | selected 30% | run 10%"
+
+
+def test_a_profile_axis_is_one_sided_by_size(key):
+    """A profile's effect belongs to a pair, so the key reads its size from 1× up with one
+    floor tick, and a block's position is its magnitude whichever way the pair runs (§22).
+    """
+    from detail.gui.match_key import (
+        LOG_RATIO_EXTENT,
+        effect_axis_labels,
+        effect_position,
+        effect_value_text,
+        one_sided,
+    )
+
+    assert one_sided("profile") and not one_sided("paired") and not one_sided("trend")
+    assert effect_axis_labels("profile") == ("1×", "×20")
+    assert effect_value_text(-math.log(2.1), "profile") == "2.1×"
+    assert effect_position(
+        -math.log(12.4), True, LOG_RATIO_EXTENT, one_sided=True
+    ) == pytest.approx(math.log(12.4) / math.log(20.0))
+    assert (
+        effect_position(math.log(400.0), True, LOG_RATIO_EXTENT, one_sided=True) == 1.0
+    )
+    assert effect_position(0.9, False, LOG_RATIO_EXTENT, one_sided=True) == 0.0
+
+    key.set_effect(
+        "Differs across session",
+        "profile",
+        floor=math.log(4.0),
+        selected_effect=-math.log(12.4),
+    )
+    assert key.is_effect()
+    assert key.text() == "Differs across session | 1× … ×20 | selected 12.4× | floor"
+    ramp = key.ramp
+    assert ramp.x_for(0.0) == pytest.approx(ramp.x_for(-1.0)), "no negative half"
+    assert ramp.x_for(0.0) < ramp.x_for(0.5) < ramp.x_for(1.0)
+    image = ramp.grab().toImage()
+    y = mk._BAR_TOP + mk._BAR_H // 2
+    theme = plot_theme.current()
+    middle = theme.diverging[len(theme.diverging) // 2]
+    assert _close(image.pixelColor(int(ramp.x_for(0.0)) + 2, y), QColor(middle))
+    assert _close(
+        image.pixelColor(int(ramp.x_for(1.0)) - 2, y), QColor(theme.diverging[-1])
+    )
+
+    key.set_effect("Less ↔ more under drug", "paired", floor=0.5, selected_effect=0.2)
+    assert ramp.x_for(0.0) == pytest.approx(ramp.width() / 2, abs=1), "two-sided again"
+
+
+def test_a_profile_mark_names_the_pair_that_drives_it(key):
+    """The tall bar says which two levels the selected cluster differs most between and which
+    way, since a one-sided axis cannot (asked for on the first real profile screen); a
+    two-sided screen's caption already says, so its mark stays the bare factor."""
+    key.set_effect(
+        "Differs across SessionType",
+        "profile",
+        floor=math.log(4.0),
+        selected_effect=math.log(9.6),
+        selected_pair=("REI", "SA"),
+    )
+    assert key.text() == (
+        "Differs across SessionType | 1× … ×20 | selected 9.6× more under SA than REI | floor"
+    )
+    key.set_effect(
+        "Differs across SessionType",
+        "profile",
+        floor=None,
+        selected_effect=-math.log(2.5),
+        selected_pair=("REI", "SA"),
+    )
+    assert key.text() == (
+        "Differs across SessionType | 1× … ×20 | selected 2.5× less under SA than REI"
+    )
+    key.set_effect(
+        "Less ↔ more under fent (against veh)",
+        "paired",
+        floor=0.4,
+        selected_effect=math.log(3.0),
+        selected_pair=("veh", "fent"),
+    )
+    assert key.text().endswith("| selected 3.0× | floor")

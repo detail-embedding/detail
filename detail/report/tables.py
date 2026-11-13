@@ -15,10 +15,24 @@ from detail.core import atomic
 def write_tidy_csv(path: Path | str, rows: list[dict], columns: list[str]) -> None:
     """Write long-form rows to ``path`` with ``columns`` as the header, atomically.
 
-    Every row must carry every column key. This is the source-of-truth stats file; keep it long
-    (one row per observation) so a notebook pivots it however it likes.
+    Every row carries every column key and no other. This is the source-of-truth stats file;
+    keep it long (one row per observation) so a notebook pivots it however it likes.
+
+    Raises:
+        KeyError: a row lacks a column.
+        ValueError: a row carries a field ``columns`` does not name. The column list is kept
+            apart from the code that builds the rows, and a field added to the rows alone was
+            dropped from the file without a word (``ranking.csv`` lost ``pair_a``/``pair_b``).
     """
     path = Path(path)
+    named = set(columns)
+    for row in rows:
+        extra = row.keys() - named
+        if extra:
+            raise ValueError(
+                f"{path.name}: row fields {sorted(extra)} are not among its columns; add "
+                f"them to the column list or stop building them"
+            )
     tmp = path.parent / (path.name + ".tmp")
     with open(tmp, "w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=columns, extrasaction="raise")

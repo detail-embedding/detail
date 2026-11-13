@@ -19,6 +19,17 @@ on exactly that. An effect below ``min_units`` *present* units is undefined, nev
 configurations; a sampled 95th percentile moved three nodes in and out of a kept set with its
 seed. Ten or fewer units enumerate every flip.
 
+**The fourth: a search the floor did not pay for.** A profile over three or more levels ranks
+each measure by the largest of its pairwise contrasts, which is a search over pairs; a null that
+took one fixed pair would set a floor the real search clears by luck. The null takes the same
+largest pair under each within-unit shuffle, and the no-signal cohort shows it keeps nothing.
+
+**The fifth: one cell, read two ways.** The design stripped a padded ``"fent "`` while the
+observations grouped it raw, so a paired contrast resolved to ``fent`` and then found no group
+by that name and ranked nothing; ``NaN`` was no value to the design and a value to the subject
+inference. Every reader of a grouping cell reads it through ``cohort.cell`` (stripped, ``""``
+when missing).
+
 Every guard here is shown to fail: the wrong null is run beside the right one, the planted node
 is planted, the seed is varied.
 """
@@ -151,16 +162,29 @@ def test_levels_on_a_numeric_column_contrast_those_two_doses():
     assert design.levels == ("0", "75")
 
 
-def test_more_than_two_text_values_without_levels_is_refused_naming_them():
+def test_three_or_more_text_values_within_units_is_a_profile_naming_them():
+    """Three sessions within each animal are not a refusal to pick two of: the design is a
+    profile over all of them, and naming two is still the lever that contrasts just those.
+    """
     meta = {}
     for a in ("A", "B"):
         for s in ("saline", "fent", "nalox"):
             meta[f"{a}_{s}"] = {"animal": a, "session": s}
-    with pytest.raises(c.ComparisonError, match="name the two to contrast") as info:
-        c.resolve_design(
-            meta, list(meta), group_by=["session"], aggregate_to=["animal"]
-        )
-    assert "fent, nalox, saline" in str(info.value)
+    design = c.resolve_design(
+        meta, list(meta), group_by=["session"], aggregate_to=["animal"]
+    )
+    assert design.kind == c.PROFILE
+    assert design.levels is None and design.column == "session"
+    assert "fent, nalox, saline" in design.reason
+    assert "largest difference between any two" in design.reason
+    paired = c.resolve_design(
+        meta,
+        list(meta),
+        group_by=["session"],
+        aggregate_to=["animal"],
+        levels=["saline", "fent"],
+    )
+    assert paired.kind == c.PAIRED and paired.levels == ("saline", "fent")
 
 
 def test_a_level_the_column_does_not_hold_is_refused():
@@ -569,6 +593,164 @@ def test_a_missing_token_is_no_value_either():
     assert not c._is_number("NA")
     assert not c._is_number("inf")
     assert c._is_number("25")
+
+
+# --------------------------------------------------------------------------- #
+# the profile design: three or more levels, the largest pair (§24 *Designs*)
+# --------------------------------------------------------------------------- #
+
+
+def _profile_ranking(shares, **kwargs):
+    meta, rows = _crossover(shares)
+    design = c.resolve_design(
+        meta, list(meta), group_by=["session"], aggregate_to=["animal"]
+    )
+    assert design.kind == c.PROFILE
+    obs = c.observations(rows, meta, group_by=["session"], aggregate_to=["animal"])
+    defaults = dict(
+        draws=200,
+        seed=0,
+        min_units=1,
+        presence_ns=0,
+        pseudo=_pseudo(0.0),
+        ranking_measure="time_fraction",
+    )
+    return c.rank_by_design(obs, design, **{**defaults, **kwargs})
+
+
+def test_a_profile_effect_is_the_largest_pairwise_contrast_with_its_pair():
+    """Over fent, nalox and saline (level order), every pair gets the paired contrast and the
+    measure carries the largest, read as the later level against the earlier."""
+    ranking = _profile_ranking(
+        {
+            ("A", "saline"): {"x": 0.10},
+            ("A", "fent"): {"x": 0.20},
+            ("A", "nalox"): {"x": 0.05},
+            ("B", "saline"): {"x": 0.30},
+            ("B", "fent"): {"x": 0.30},
+            ("B", "nalox"): {"x": 0.10},
+            ("C", "saline"): {"x": 0.05},
+            ("C", "fent"): {"x": 0.40},
+            ("C", "nalox"): {"x": 0.04},
+        }
+    )
+    (item,) = ranking.contrasts
+    # fent -> nalox, the largest of the three pairs (fent -> saline is 0.92, nalox -> saline
+    # 0.67 in |mean log ratio|).
+    fent_nalox = (
+        math.log(0.05 / 0.20) + math.log(0.10 / 0.30) + math.log(0.04 / 0.40)
+    ) / 3
+    assert item.pair == ("fent", "nalox")
+    assert item.effect == pytest.approx(fent_nalox)
+    assert item.consistency == 3 and item.n_units == 3
+    assert item.a.group == ("fent",) and item.b.group == ("nalox",)
+    assert ranking.design == c.PROFILE and ranking.profile
+    assert ranking.level_values == ("fent", "nalox", "saline")
+    assert ranking.levels is None
+    assert not ranking.exact, "(k!)^n configurations are sampled, never enumerated"
+
+
+def test_a_profile_over_two_levels_is_the_paired_contrast():
+    """With two levels there is one pair, so the profile's items are the paired design's, item
+    for item -- the two-level designs are the profile's special case, and nothing saved changes.
+    """
+    shares = _baseline_spread_cohort(n=6)
+    meta, rows = _crossover(shares)
+    obs = c.observations(rows, meta, group_by=["session"], aggregate_to=["animal"])
+    paired = c.resolve_design(
+        meta, list(meta), group_by=["session"], aggregate_to=["animal"]
+    )
+    assert paired.kind == c.PAIRED and paired.levels == ("fent", "veh")
+    forced = c.Design(c.PROFILE, "session", None, ("animal",), "forced")
+    kwargs = dict(min_units=1, pseudo=_pseudo(0.0), ranking_measure="time_fraction")
+    a = c.rank_by_design(obs, paired, **kwargs)
+    b = c.rank_by_design(obs, forced, **kwargs)
+    assert [i.effect for i in a.contrasts] == pytest.approx(
+        [i.effect for i in b.contrasts]
+    )
+    assert [i.pair for i in a.contrasts] == [i.pair for i in b.contrasts]
+    assert [i.pair for i in b.contrasts] == [("fent", "veh")]
+    assert [i.consistency for i in a.contrasts] == [i.consistency for i in b.contrasts]
+    assert [i.n_present for i in a.contrasts] == [i.n_present for i in b.contrasts]
+
+
+def test_the_profile_null_takes_the_same_statistic():
+    """A cohort with no signal over three sessions keeps nothing in at least 19 of 20 seeds,
+    and one node planted in one session clears in every seed: the null's largest pair is the
+    same search the ranking ran, so choosing the pair is already paid for."""
+    kept_noise, planted_cleared = 0, 0
+    for seed in range(20):
+        rng = np.random.default_rng(seed)
+        shares = {}
+        for i in range(8):
+            for session in ("veh", "fent", "nalox"):
+                labels = {f"n{k}": 0.05 * (10 ** rng.normal(0, 0.1)) for k in range(60)}
+                labels["planted"] = 0.05 * (3.0 if session == "nalox" else 1.0)
+                shares[(f"A{i}", session)] = labels
+        ranking = _profile_ranking(
+            shares, seed=seed, min_units=4, presence_ns=NS, pseudo=_pseudo()
+        )
+        clearing = {item.measure_key[1] for item in ranking.clearing()}
+        planted_cleared += "planted" in clearing
+        kept_noise += bool(clearing - {"planted"})
+        planted = next(i for i in ranking.contrasts if i.measure_key[1] == "planted")
+        assert planted.pair in {("fent", "nalox"), ("nalox", "veh")}
+    assert planted_cleared == 20
+    assert kept_noise <= 1, f"noise cleared the floor in {kept_noise} of 20 seeds"
+
+
+def test_a_profile_pair_is_defined_only_with_enough_present_units():
+    """A node two of eight animals ever show, under one session only: no pair reaches
+    `min_units`, so the measure is undefined with no pair, never the largest."""
+    shares = {}
+    for i in range(8):
+        present = i < 2
+        for session in ("veh", "fent", "nalox"):
+            shares[(f"A{i}", session)] = {
+                "rare": 0.1 if (present and session == "nalox") else 0.0,
+                "common": {"veh": 0.10, "fent": 0.12, "nalox": 0.11}[session],
+            }
+    ranking = _profile_ranking(shares, min_units=4, presence_ns=NS, pseudo=_pseudo())
+    by_label = {item.measure_key[1]: item for item in ranking.contrasts}
+    assert by_label["rare"].effect is None and by_label["rare"].pair is None
+    assert by_label["rare"].n_present == 2
+    assert by_label["common"].effect is not None
+    assert by_label["common"].pair is not None
+    assert ranking.contrasts[0].measure_key[1] == "common"
+
+
+def test_a_between_design_over_three_groups_ranks_the_largest_gap():
+    """Three strains, each animal in one: the item is the largest contrast between any two
+    groups with the pair on it, and two groups are the one contrast there is, unchanged.
+    """
+    meta, rows = {}, []
+    for strain, share in (("a", 0.10), ("b", 0.12), ("c", 0.30)):
+        for i in range(4):
+            rid = f"{strain}{i}"
+            meta[rid] = {"animal": rid, "strain": strain}
+            rows += _rows(rid, "x", share * (1 + 0.01 * i))
+    design = c.resolve_design(
+        meta, list(meta), group_by=["strain"], aggregate_to=["animal"]
+    )
+    assert design.kind == c.BETWEEN
+    obs = [
+        o
+        for o in c.observations(
+            rows, meta, group_by=["strain"], aggregate_to=["animal"]
+        )
+        if o.measure_key[0] == "time_fraction"
+    ]
+    ranking = c.rank_by_difference(obs, (("a",), ("b",), ("c",)), draws=200)
+    (item,) = ranking.contrasts
+    assert ranking.profile and ranking.level_values == ("a", "b", "c")
+    assert ranking.levels is None, "no single pair names the whole ranking"
+    assert item.pair == ("a", "c")
+    assert item.magnitude == pytest.approx(math.log(item.b.mean / item.a.mean))
+    assert item.magnitude == pytest.approx(math.log(3.0), abs=0.05)
+    two = c.rank_by_difference(obs, (("a",), ("c",)), draws=200)
+    assert two.levels == ("a", "c") and not two.profile
+    assert two.contrasts[0].magnitude == pytest.approx(item.magnitude)
+    assert two.contrasts[0].pair == ("a", "c")
 
 
 def test_a_padded_cell_is_its_level_in_the_design_and_the_groups_alike():

@@ -1,4 +1,18 @@
-"""Table writers: tidy CSV + the pivoted results grid (LaTeX booktabs / Markdown / CSV)."""
+"""Table writers: tidy CSV + the pivoted results grid (LaTeX booktabs / Markdown / CSV).
+
+**The class: a row field dropped by a writer whose column list is kept apart from the code
+that builds the rows.** ``write_tidy_csv`` is every tidy CSV's one writer — ``stats.csv``,
+``ranking.csv``, ``nodes.csv``, the per-measure tables, the measures table — and each caller
+passes a column list that lives beside, not inside, the function building its rows. It wrote
+``{c: row[c] for c in columns}``, so a field added to the rows alone vanished from the file
+without a word: ``ranking.csv``'s rows gained ``pair_a``/``pair_b`` (the two levels a profile's
+effect is between, without which its signed effect cannot be read) and ``RANKING_COLUMNS`` did
+not, so the export shipped without them although §24's export tree lists them.
+
+**The rule:** a row carries every column and no other field. A missing column raises
+``KeyError`` (it always did); a field the columns do not name raises ``ValueError`` naming it,
+before the file is opened, so nothing half-written is left behind.
+"""
 
 import csv
 
@@ -31,6 +45,18 @@ def test_write_tidy_csv_raises_on_missing_column(tmp_path):
 
     with pytest.raises(KeyError):
         tables.write_tidy_csv(tmp_path / "s.csv", [{"a": 1}], ["a", "b"])
+
+
+def test_write_tidy_csv_refuses_a_field_its_columns_do_not_name(tmp_path):
+    """The column list lives apart from the code that builds the rows. ``ranking.csv``'s
+    rows gained ``pair_a``/``pair_b`` (the levels a profile's effect is between) and its
+    column list did not, so the file shipped without them and nothing said so."""
+    import pytest
+
+    path = tmp_path / "ranking.csv"
+    with pytest.raises(ValueError, match=r"\['pair_a'\] are not among its columns"):
+        tables.write_tidy_csv(path, [{"a": 1, "pair_a": "veh"}], ["a"])
+    assert not path.exists() and not list(tmp_path.glob("*.tmp"))
 
 
 def test_pivot_marks_best_per_column():

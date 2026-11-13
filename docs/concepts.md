@@ -451,8 +451,11 @@ Two things to know:
 - **You choose the column; the tool picks the design.** A column that is the same for all of an
   animal's recordings (sex, genotype) compares *between* animals. A column that changes within
   an animal (session, dose) compares *within* each animal: two values are a paired contrast,
-  and a numeric column with three or more is a trend across them. Name two values of a column
-  to contrast just those two. Every result says which design ran, and its floor is the one that
+  a numeric column with three or more is a trend across them, and three or more named values
+  (sessions) are a *profile*: each behavior is scored by the pair of values it differs most
+  between, and the floor shuffles each animal's sessions and searches the pairs the same way,
+  so picking the pair is already paid for. Name two values of a column to contrast just those
+  two. Every result says which design ran, and its floor is the one that
   design allows: shuffling labels across animals for a between design, flipping each animal's
   own direction or shuffling its sessions for a within one, so the pairing is never thrown away.
 

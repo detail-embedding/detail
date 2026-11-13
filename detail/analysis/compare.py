@@ -26,10 +26,11 @@ every group summary.
 
 **The design is resolved from the chosen column, never configured** (§24 *Designs*). A column
 constant within each unit is compared *between* units; a column that varies within units is a
-*paired* contrast of two of its levels or a *trend* over its numeric values, and the permutation
-behind the floor is the one that design allows — sign flips or within-unit shuffles, never a
-relabelling across units that would break the pairing the design exists to use. The user chooses
-the variables; :func:`resolve_design` says what they imply, in one sentence every surface prints.
+*paired* contrast of two of its levels, a *trend* over its numeric values or a *profile* over three
+or more named ones (the largest difference between any two), and the permutation behind the floor
+is the one that design allows — sign flips or within-unit shuffles, never a relabelling across
+units that would break the pairing the design exists to use. The user chooses the variables;
+:func:`resolve_design` says what they imply, in one sentence every surface prints.
 """
 
 import dataclasses
@@ -72,8 +73,8 @@ STATS_COLUMNS = [
 ]
 
 #: The designs a comparison resolves to (§24 *Designs*). The values are what the record stores.
-BETWEEN, PAIRED, TREND = "between", "paired", "trend"
-DESIGNS = (BETWEEN, PAIRED, TREND)
+BETWEEN, PAIRED, TREND, PROFILE = "between", "paired", "trend", "profile"
+DESIGNS = (BETWEEN, PAIRED, TREND, PROFILE)
 
 #: A sign-flip null with this many units or fewer is enumerated exactly (2^n configurations)
 #: rather than sampled: at eight units the sampled 95th percentile moved three nodes in and out
@@ -397,20 +398,32 @@ class Contrast:
             return None
         return (hi - lo) / lo * 100.0
 
+    @property
+    def pair(self) -> tuple[str, str]:
+        """The two groups the contrast is between, ``(a, b)`` read as *b against a*. Over two
+        groups it is the same for every item; over more it is the pair this measure differs
+        most between (§24 *Designs*)."""
+        return ("|".join(self.a.group), "|".join(self.b.group))
+
 
 @dataclass(frozen=True)
 class Effect:
     """One measure's within-unit effect under a paired or trend design (§24 *Designs*).
 
     The thing ranked is the **mean of the per-unit effects** — a log ratio of the unit's level
-    means for a paired contrast, a Spearman ρ over the unit's levels for a trend — never a ratio
-    of group means, which would let one animal's four sessions outvote another's one and would
-    permit the across-unit relabelling the design forbids. What makes it readable rides with it:
-    how many units had an effect, how many were *present*, how many share the sign, and whether
-    the sign survives dropping any one unit.
+    means for a paired contrast, a Spearman ρ over the unit's levels for a trend, the largest of
+    the pairwise log ratios for a profile — never a ratio of group means, which would let one
+    animal's four sessions outvote another's one and would permit the across-unit relabelling
+    the design forbids. What makes it readable rides with it: how many units had an effect, how
+    many were *present*, how many share the sign, and whether the sign survives dropping any
+    one unit.
 
     ``effect`` is ``None`` where the item is undefined — fewer than ``min_units`` present units —
     which is "not shown to differ", not "shown not to", and ranks last rather than large.
+
+    ``pair`` is the two levels the effect is between, ``(a, b)`` read as *b against a*: the
+    paired contrast's levels, or the pair a profile's measure differs most between. ``None`` for
+    a trend and for an undefined profile item.
     """
 
     measure_key: tuple
@@ -423,6 +436,7 @@ class Effect:
     b: GroupSummary | None = None
     present_a: int | None = None
     present_b: int | None = None
+    pair: tuple[str, str] | None = None
 
     @property
     def magnitude(self) -> float | None:
@@ -492,6 +506,9 @@ class Ranking:
     ``design`` says which permutation produced the floor (§24 *Designs*); ``contrasts`` holds
     :class:`Contrast` items for a between design and :class:`Effect` items otherwise. ``kept`` is
     the set after nesting suppression (:func:`suppress_nesting`), ``None`` where none was applied.
+    ``level_values`` is every level (or group) the ranking ran over, in the order the record
+    prints them; :attr:`profile` says whether each item's effect is the largest difference
+    between any two of them, with the pair on the item.
     """
 
     contrasts: list
@@ -510,6 +527,17 @@ class Ranking:
     #: The floor enumerated every configuration of its null rather than sampling ``draws``.
     exact: bool = False
     kept: tuple[tuple, ...] | None = None
+    level_values: tuple[str, ...] = ()
+
+    @property
+    def profile(self) -> bool:
+        """Whether each item is the largest difference between any two of three or more levels
+        (§24 *Designs*): a profile design, or a between design over more than two groups. The
+        pair then rides on the item (``item.pair``), and the effect is a size whose sign belongs
+        to that pair rather than to the measure."""
+        return self.design == PROFILE or (
+            self.design == BETWEEN and len(self.level_values) > 2
+        )
 
     def clears_floor(self, item) -> bool:
         """Whether this measure's change exceeds the floor.
@@ -560,20 +588,23 @@ def _largest_magnitude(
 
     A measure whose fold change is unbounded under this labelling contributes nothing — there is
     no finite value to take a maximum with.
+
+    Over more than two groups the measure's value is the largest ``|log ratio|`` between any two
+    of them — the ranked statistic (§24 *Designs*) — so the floor pays for choosing the pair.
     """
     by_key: dict[tuple, dict[tuple, list[float]]] = {}
     for measure_key, group, value in zip(keys, labels, values):
         by_key.setdefault(measure_key, {}).setdefault(group, []).append(value)
     best = 0.0
     for measure_key, per_group in by_key.items():
-        a, b = per_group.get(groups[0]), per_group.get(groups[1])
-        if not a or not b:
-            continue
         eps = epsilon.get(measure_key, 0.0)
-        lo, hi = statistics.fmean(a) + eps, statistics.fmean(b) + eps
-        if lo <= 0 or hi <= 0:
+        centres = [
+            statistics.fmean(per_group[g]) + eps for g in groups if per_group.get(g)
+        ]
+        positive = [c for c in centres if c > 0]
+        if len(positive) < 2:
             continue
-        best = max(best, abs(math.log(hi / lo)))
+        best = max(best, math.log(max(positive) / min(positive)))
     return best
 
 
@@ -604,8 +635,7 @@ def _vacuous_permutation(obs: Sequence[Observation], groups: tuple) -> str | Non
     if not per_measure:
         return "there are no observations to relabel"
     movable = any(
-        counts.get(groups[0], 0) > 1 or counts.get(groups[1], 0) > 1
-        for counts in per_measure.values()
+        counts.get(g, 0) > 1 for counts in per_measure.values() for g in groups
     )
     if movable:
         return None
@@ -650,6 +680,11 @@ def rank_by_difference(
 ) -> Ranking:
     """Rank every measure by ``|log ratio|`` between two groups, and compute the floor beside it.
 
+    Over three or more groups each measure's item is the **largest contrast between any two of
+    them** (§24 *Designs*), read as the later group against the earlier, with the pair on the
+    item (:attr:`Contrast.pair`); the null takes the same largest contrast under each shuffle.
+    Over two groups that is the one contrast there is, so nothing already saved changes.
+
     **Not by raw difference**, which the name still carries for the callers and records that use
     it: a set of measures that do not share a unit has no common linear scale, and ranking by
     difference put a 45-count change beside a 2.5e11-nanosecond one and drew the count as a bar of
@@ -671,17 +706,26 @@ def rank_by_difference(
     """
     import random
 
-    if len(groups) != 2:
-        raise ComparisonError(f"a contrast needs exactly two groups, got {groups}")
+    if len(groups) < 2:
+        raise ComparisonError(f"a contrast needs at least two groups, got {groups}")
     epsilon = _epsilon_by_measure(obs, pseudo)
     summaries = {(s.group, s.measure_key): s for s in summarize(obs)}
     contrasts = []
     for measure_key in sorted({row.measure_key for row in obs}):
-        a = summaries.get((groups[0], measure_key))
-        b = summaries.get((groups[1], measure_key))
-        if a is None or b is None:
+        present = [
+            s
+            for s in (summaries.get((g, measure_key)) for g in groups)
+            if s is not None
+        ]
+        if len(present) < 2:
             continue
-        contrasts.append(contrast(a, b, epsilon=epsilon.get(measure_key, 0.0)))
+        eps = epsilon.get(measure_key, 0.0)
+        candidates = [
+            contrast(a, b, epsilon=eps)
+            for i, a in enumerate(present)
+            for b in present[i + 1 :]
+        ]
+        contrasts.append(max(candidates, key=_rank_key))
     contrasts.sort(key=_rank_key, reverse=True)
 
     rng = random.Random(seed)
@@ -706,8 +750,13 @@ def rank_by_difference(
         ordered,
         reason,
         design=BETWEEN,
-        levels=(("|".join(groups[0]), "|".join(groups[1])) if contrasts else None),
+        levels=(
+            ("|".join(groups[0]), "|".join(groups[1]))
+            if contrasts and len(groups) == 2
+            else None
+        ),
         n_units=len({o.key for o in obs}),
+        level_values=tuple("|".join(g) for g in groups),
     )
 
 
@@ -721,7 +770,8 @@ class Design:
     """What the chosen column implies, resolved once and printed everywhere.
 
     ``kind`` is one of :data:`DESIGNS`; ``column`` is the one grouping column of a within-unit
-    design; ``levels`` is the paired contrast's ``(a, b)``, read as *b against a*; ``unit`` is the
+    design; ``levels`` is the paired contrast's ``(a, b)``, read as *b against a*, and ``None``
+    for a trend or a profile, which run over every value the column holds; ``unit`` is the
     aggregation path; ``reason`` is the sentence a surface shows, which is also the record's
     ``design_reason``.
     """
@@ -835,9 +885,14 @@ def _design_from_pairs(
         if len(distinct) == 2:
             chosen = (distinct[0], distinct[1])
         else:
-            raise ComparisonError(
-                f"'{column}' takes {len(distinct)} values within one {word} "
-                f"({', '.join(distinct)}): name the two to contrast as levels"
+            return Design(
+                PROFILE,
+                column,
+                None,
+                unit,
+                f"'{column}' varies within each {word} over {len(distinct)} values "
+                f"({', '.join(distinct)}): a profile, the largest difference between any "
+                f"two of them, measured within each {word}",
             )
     both = sum(1 for values in by_unit.values() if set(chosen) <= values)
     return Design(
@@ -969,8 +1024,17 @@ def rank_by_design(
 
     The null **respects the design**: a paired contrast flips each unit's sign (every configuration
     when the cohort has ``EXACT_FLIPS_MAX_UNITS`` units or fewer, so the floor is deterministic),
-    and a trend shuffles each unit's levels within that unit. The family-wise floor is the 95th
-    percentile of the largest |effect| over the ranked family, as for :func:`rank_by_difference`.
+    and a trend or a profile shuffles each unit's levels within that unit. The family-wise floor
+    is the 95th percentile of the largest |effect| over the ranked family, as for
+    :func:`rank_by_difference`.
+
+    A **profile** (three or more named levels) gives every pair of levels the paired contrast and
+    ranks each measure by the largest ``|mean log ratio|`` among the pairs defined for it, with
+    the pair on the item. A pair is defined where ``min_units`` units are present at either of
+    its levels, as a paired contrast is; a measure with no defined pair is undefined. The null
+    takes the same largest pair under each within-unit shuffle, so the floor already pays for
+    choosing the pair and no second correction is applied. Its null is sampled: ``(k!)^n``
+    configurations cannot be enumerated at any realistic size.
     """
     if design.kind == BETWEEN:
         raise ComparisonError("a between design is ranked by rank_by_difference")
@@ -979,6 +1043,11 @@ def rank_by_design(
     unit_index = {u: i for i, u in enumerate(units)}
     if design.kind == PAIRED:
         level_values = list(design.levels or ())
+    elif design.kind == PROFILE:
+        level_values = sorted(
+            {o.group[0] for o in obs if o.group and not missing(o.group[0])},
+            key=_level_sort_key,
+        )
     else:
         level_values = sorted(
             {o.group[0] for o in obs if o.group and _is_number(o.group[0])}, key=float
@@ -1021,6 +1090,7 @@ def rank_by_design(
 
     exact = False
     present_a = present_b = None
+    pair_of: list[tuple[str, str] | None] = [None] * N
     if design.kind == PAIRED:
         EA = np.zeros((N, U))
         EB = np.zeros((N, U))
@@ -1044,6 +1114,80 @@ def rank_by_design(
         present_a = (valid & present_level[:, :, 0]).sum(axis=1)
         present_b = (valid & present_level[:, :, 1]).sum(axis=1)
         per_unit = D
+    elif design.kind == PROFILE:
+        E = np.zeros((N, U, L))
+        if pseudo is not None:
+            for key, n in key_index.items():
+                for u in range(U):
+                    for j in range(L):
+                        E[n, u, j] = pseudo(key, _finite_or_none(Den[n, u, j]))
+        shifted = X + E
+        with np.errstate(invalid="ignore", divide="ignore"):
+            LX = np.where(np.isnan(shifted) | (shifted <= 0), np.nan, np.log(shifted))
+        # Every pair of levels, (i, j) with i before j in level order, read as j against i.
+        I_, J_ = np.triu_indices(L, k=1)
+        D = LX[:, :, J_] - LX[:, :, I_]
+        valid_p = ~np.isnan(D)
+        present_p = present_level[:, :, I_] | present_level[:, :, J_]
+        n_units_p = valid_p.sum(axis=1)
+        n_present_p = (valid_p & present_p).sum(axis=1)
+        enough_p = n_present_p >= max(int(min_units), 1)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            mean_p = np.where(
+                enough_p, np.nansum(D, axis=1) / np.maximum(n_units_p, 1), np.nan
+            )
+        # The measure's pair: the largest |mean| among its defined pairs. An undefined pair is
+        # below every defined one, and a measure with none is undefined, never large.
+        size = np.where(np.isnan(mean_p), -1.0, np.abs(mean_p))
+        rows = np.arange(N)
+        if N and len(I_):
+            best = size.argmax(axis=1)
+            defined = size[rows, best] >= 0
+        else:
+            best = np.zeros(N, dtype=int)
+            defined = np.zeros(N, dtype=bool)
+        if len(I_):
+            per_unit = D[rows, :, best]
+            valid = valid_p[rows, :, best]
+            n_units = n_units_p[rows, best]
+            n_present = np.where(
+                defined, n_present_p[rows, best], n_present_p.max(axis=1)
+            )
+            enough = enough_p[rows, best]
+            present_a = (valid & present_level[rows, :, I_[best]]).sum(axis=1)
+            present_b = (valid & present_level[rows, :, J_[best]]).sum(axis=1)
+        else:
+            per_unit = np.full((N, U), np.nan)
+            valid = np.zeros((N, U), dtype=bool)
+            n_units = n_present = np.zeros(N, dtype=int)
+            enough = np.zeros(N, dtype=bool)
+            present_a = present_b = np.zeros(N, dtype=int)
+        pair_of = [
+            (level_values[I_[b]], level_values[J_[b]]) if d else None
+            for b, d in zip(best, defined)
+        ]
+        # The null: each unit's levels shuffled within it (the levels it has data for), and
+        # the same largest pair taken each time, so the floor pays for choosing the pair.
+        have = ~np.isnan(X).all(axis=0) if N else np.zeros((U, L), dtype=bool)
+        null_sum = np.zeros((N, draws))
+        null_count = np.ones((N, draws))
+        for d in range(draws):
+            perm = np.tile(np.arange(L), (U, 1))
+            for u in range(U):
+                idx = np.flatnonzero(have[u])
+                if len(idx) > 1:
+                    perm[u, idx] = rng.permutation(idx)
+            LXp = np.take_along_axis(LX, np.broadcast_to(perm[None], (N, U, L)), axis=2)
+            Dp = LXp[:, :, J_] - LXp[:, :, I_]
+            count = (~np.isnan(Dp)).sum(axis=1)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                mp = np.where(
+                    enough_p & (count > 0),
+                    np.nansum(Dp, axis=1) / np.maximum(count, 1),
+                    0.0,
+                )
+            if mp.size:
+                null_sum[:, d] = np.abs(mp).max(axis=1)
     else:
         rho = np.full((N, U), np.nan)
         null_sum = np.zeros((N, draws))
@@ -1109,9 +1253,12 @@ def rank_by_design(
     items = []
     for key, n in key_index.items():
         a = b = None
+        pair = pair_of[n]
         if design.kind == PAIRED:
-            a = summaries.get(((level_values[0],), key))
-            b = summaries.get(((level_values[1],), key))
+            pair = (level_values[0], level_values[1])
+        if pair is not None:
+            a = summaries.get(((pair[0],), key))
+            b = summaries.get(((pair[1],), key))
         value = float(effect[n])
         items.append(
             Effect(
@@ -1125,6 +1272,7 @@ def rank_by_design(
                 b=b,
                 present_a=None if present_a is None else int(present_a[n]),
                 present_b=None if present_b is None else int(present_b[n]),
+                pair=pair,
             )
         )
     items.sort(key=_rank_key, reverse=True)
@@ -1141,6 +1289,7 @@ def rank_by_design(
         n_units=U,
         min_units=int(min_units),
         exact=exact,
+        level_values=tuple(level_values),
     )
 
 

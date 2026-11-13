@@ -1612,3 +1612,90 @@ def test_effect_shades_is_one_map_from_a_screen_to_the_blocks():
     assert texts[5].endswith("inside the floor")
     assert texts[3] == "undefined: present in 2 ID(s)"
     assert 6 not in texts
+
+
+def test_effect_shades_read_a_profile_as_a_size():
+    """A profile screen's blocks sit on the 0..+1 half by magnitude, whichever way each
+    cluster's own pair runs, and inside the floor is still neutral (§22)."""
+    import math
+
+    from detail.gui.match_key import LOG_RATIO_EXTENT
+
+    choice = cf.ScreenChoice(
+        "cmp_03",
+        "session · profile",
+        "1 kept of 2",
+        frozenset({0}),
+        effects={
+            4: cf.NodeEffect(
+                -math.log(12.4),
+                True,
+                True,
+                "differs most between fent and nalox: less under nalox than fent, 12.4×",
+            ),
+            5: cf.NodeEffect(math.log(1.3), False, False, "1.3×"),
+        },
+        floor=math.log(4.0),
+        design="profile",
+        caption="Differs across session",
+    )
+    shades, texts = cf.effect_shades(choice, 6)
+    assert shades[4] == pytest.approx(math.log(12.4) / LOG_RATIO_EXTENT), "a size"
+    assert shades[5] == 0.0
+    assert texts[4].endswith("· kept")
+
+
+def test_the_effect_caption_of_a_profile_names_what_it_differs_across(qapp):
+    """A profile's axis is a size, so its caption says what the levels are of rather than a
+    direction nobody chose; a two-level screen keeps its less-to-more words (§22)."""
+    from detail.analysis import compare
+    from detail.gui.node_workspace import _effect_caption
+
+    profile = compare.Ranking(
+        [], None, 0, 0, design="profile", level_values=("EXT", "REI", "SA")
+    )
+    assert (
+        _effect_caption(profile, {"design_column": "SessionType"})
+        == "Differs across SessionType"
+    )
+    between = compare.Ranking(
+        [], None, 0, 0, design="between", level_values=("a", "b", "c")
+    )
+    assert _effect_caption(between, {"group_by": ["strain"]}) == "Differs across strain"
+    paired = compare.Ranking([], None, 0, 0, design="paired", levels=("veh", "fent"))
+    assert _effect_caption(paired, {}) == "Less ↔ more under fent (against veh)"
+
+
+def test_a_node_effect_carries_the_pair_its_screen_found(qapp):
+    """The workspace's row for a cluster keeps the item's pair, so the key can name it at the
+    mark (§22); the sentence is the Comparisons page's, pair first."""
+    import math
+
+    from detail.analysis import compare
+    from detail.gui.node_workspace import _node_effects
+
+    item = compare.Effect(
+        ("time_fraction", "node:12", "", "whole"),
+        math.log(9.6),
+        8,
+        8,
+        7,
+        True,
+        pair=("REI", "SA"),
+    )
+    ranking = compare.Ranking(
+        [item],
+        math.log(4.0),
+        200,
+        0,
+        design="profile",
+        unit=("ID",),
+        level_values=("EXT", "REI", "SA"),
+    )
+    effects = _node_effects(
+        ranking, {"design_column": "SessionType", "aggregate_to": ["ID"]}
+    )
+    assert effects[12].pair == ("REI", "SA") and effects[12].clears
+    assert effects[12].text.startswith(
+        "differs most between REI and SA: more under SA than REI, 9.6×"
+    )

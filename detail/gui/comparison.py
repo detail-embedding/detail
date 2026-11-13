@@ -1773,18 +1773,10 @@ class ComparisonDetailPage(QWidget):
             set_label_color(note, WARN)
             out.append(note)
         if ranking is None:
-            # Not "no measures" — it has them, and they are all in the Measures tab. What it does
-            # not have is a *contrast*, because a ranking is one group against another and there
-            # are not exactly two. Saying "contrasts no measures" against a full table read as a
-            # bug, which is what a user hit on a three-group comparison.
-            out.append(
-                QLabel(
-                    f"{len(reading.groups)} groups, so there is no single contrast to rank. "
-                    "The Measures tab holds every group side by side."
-                    if len(reading.groups) > 2
-                    else "(this comparison has nothing to contrast)"
-                )
-            )
+            # Fewer than two groups: nothing to contrast. Three or more rank as the largest
+            # contrast between any two of them (§24 *Designs*), so they no longer land here;
+            # the Measures tab holds every group side by side either way.
+            out.append(QLabel("(this comparison has nothing to contrast)"))
             return out
         if not reading.contrasts:
             out.append(QLabel("(this comparison contrasts no measures)"))
@@ -1922,7 +1914,11 @@ class ComparisonDetailPage(QWidget):
         keys = sorted(by_measure, key=_measure_order)
 
         headers = ["measure", *("|".join(g) for g in groups)]
-        if ranking is not None:
+        if ranking is not None and ranking.profile:
+            # Each measure's change is between its own pair (§24 *Designs*), so the cell
+            # names it rather than the header claiming one direction for every row.
+            headers.append("change (most different pair)")
+        elif ranking is not None:
             headers.append(f"change ({' → '.join('|'.join(g) for g in groups)})")
         table = QTableWidget(len(keys), len(headers))
         # Named so a test asks for the table it means. Two tables sit on this page, `findChildren`
@@ -1941,7 +1937,11 @@ class ComparisonDetailPage(QWidget):
             for group in groups:
                 cells.append(_cell(by_measure[key].get(group), unit))
             if ranking is not None:
-                cells.append(_change(contrasts.get(key)))
+                item = contrasts.get(key)
+                change = _change(item)
+                if ranking.profile and item is not None and item.pair is not None:
+                    change = f"{change} ({item.pair[0]} → {item.pair[1]})"
+                cells.append(change)
             for column, value in enumerate(cells):
                 table.setItem(row, column, QTableWidgetItem(value))
         make_columns_resizable(table)

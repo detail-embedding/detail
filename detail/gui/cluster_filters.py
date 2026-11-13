@@ -96,7 +96,7 @@ from PyQt6.QtWidgets import (
 from detail.api.cluster_filter import CLUSTERS, LOCATION, SESSION, VIDEO, Selection
 from detail.gui import plot_theme
 from detail.gui.density_map import RegionPicker
-from detail.gui.match_key import MatchKey, effect_extent, effect_position
+from detail.gui.match_key import MatchKey, effect_extent, effect_position, one_sided
 from detail.gui.selectable import make_text_selectable
 from detail.gui.sizing import (
     ElidedLabel,
@@ -187,12 +187,15 @@ class Column:
 @dataclass(frozen=True)
 class NodeEffect:
     """One cluster's row of a screen: its effect (``None`` where undefined), whether it clears
-    the floor, whether it was kept after nesting, and the screen's sentence for it."""
+    the floor, whether it was kept after nesting, the screen's sentence for it, and ``pair``,
+    the two levels the effect is between (``(a, b)``, *b against a*) — what a profile's key
+    names at the selected cluster's mark, since its one-sided axis cannot (§22)."""
 
     effect: float | None
     clears: bool
     kept: bool
     text: str
+    pair: tuple[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -237,6 +240,7 @@ def effect_shades(
     and the hover line for it. The one map from a screen to the blocks, through
     :func:`match_key.effect_position`, which the key uses for its own mark."""
     extent = effect_extent(choice.design)
+    half = one_sided(choice.design)
     positions: dict[int, float] = {}
     texts: dict[int, str] = {}
     for node in range(int(n_nodes)):
@@ -244,7 +248,9 @@ def effect_shades(
         if row is None:
             positions[node] = float("nan")
             continue
-        positions[node] = effect_position(row.effect, row.clears, extent)
+        positions[node] = effect_position(
+            row.effect, row.clears, extent, one_sided=half
+        )
         text = row.text
         if row.kept:
             text += " · kept"
