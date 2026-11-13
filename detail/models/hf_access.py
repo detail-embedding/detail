@@ -18,6 +18,8 @@ forever, which makes every run consult the network (§5).
 """
 
 import os
+import stat
+import threading
 from collections.abc import Callable
 from pathlib import Path
 
@@ -29,6 +31,8 @@ from detail.storage import locations
 _DEFAULT_MODEL_CACHE = Path.home() / ".cache" / "detail" / "models"
 MODEL_DIR_ENV = "DETAIL_MODEL_DIR"
 TOKEN_SETTINGS_URL = "https://huggingface.co/settings/tokens"
+#: How often ``download`` reads the cache folder to report bytes fetched.
+_PROGRESS_POLL_S = 0.5
 
 
 def model_cache_dir() -> Path:
@@ -178,17 +182,132 @@ def install(
     # install() incapable of ever installing anything.
     if status.reason != "not_installed":
         raise ModelNotReadyError(status)
+    download(repo_id, files, progress_cb=progress_cb)
+
+
+def download(
+    repo_id: str,
+    files: list[str] | None,
+    *,
+    revision: str | None = None,
+    progress_cb: Callable[[InstallProgress], None] | None = None,
+) -> None:
+    """Fetch ``files`` of ``repo_id`` into ``model_cache_dir()``: the one download call.
+
+    Progress is measured, not asked for. huggingface_hub's own progress hook differs by
+    version: below 1.0, which ``transformers<5`` requires, ``hf_hub_download`` takes no
+    ``tqdm_class`` and ``snapshot_download`` hands its ``tqdm_class`` only the file-count
+    bar, so a byte-forwarding bar never moves. Every version writes the bytes into the
+    repo's cache folder, so this reads them there while the download runs.
+
+    Args:
+        repo_id: The Hub repo, ``org/name``.
+        files: The model's file manifest; ``None`` fetches the whole repo.
+        revision: A pinned commit, or ``None`` for the default branch.
+        progress_cb: Called from a watcher thread with the bytes fetched so far. An
+            exception it raises is re-raised here once the download ends.
+
+    Raises:
+        Whatever huggingface_hub raises for a failed download.
+    """
     hf = _require_hf()
-    kwargs: dict = {}
-    if progress_cb is not None:
-        kwargs["tqdm_class"] = _make_tqdm_class(progress_cb)
-    hf.snapshot_download(
-        repo_id,
-        cache_dir=str(model_cache_dir()),
-        token=credentials.get_hf_token(),
-        allow_patterns=files,
-        **kwargs,
-    )
+    cache_dir = model_cache_dir()
+    token = credentials.get_hf_token()
+
+    def fetch() -> None:
+        hf.snapshot_download(
+            repo_id,
+            revision=revision,
+            cache_dir=str(cache_dir),
+            token=token,
+            allow_patterns=files,
+        )
+
+    if progress_cb is None:
+        fetch()
+        return
+    total = _bytes_to_fetch(hf, repo_id, files, revision, token)
+    folder = cache_dir / _repo_folder_name(repo_id)
+    start = _folder_bytes(folder)
+    seen = 0
+
+    def report() -> None:
+        nonlocal seen
+        # Monotonic: a blob moved out of blobs/ on a host without symlinks dips the sum.
+        seen = max(seen, _folder_bytes(folder) - start)
+        done = min(seen, total) if total is not None else seen
+        progress_cb(
+            InstallProgress(bytes_done=done, bytes_total=total, current_file=None)
+        )
+
+    stop = threading.Event()
+    failed: list[BaseException] = []
+
+    def watch() -> None:
+        while not stop.wait(_PROGRESS_POLL_S):
+            try:
+                report()
+            except BaseException as error:  # the caller's callback: re-raised below
+                failed.append(error)
+                return
+
+    watcher = threading.Thread(target=watch, name="hf-download-progress", daemon=True)
+    watcher.start()
+    try:
+        fetch()
+    finally:
+        stop.set()
+        watcher.join()
+    if failed:
+        raise failed[0]
+    if total is not None:
+        seen = total
+    report()
+
+
+def _repo_folder_name(repo_id: str) -> str:
+    """The cache folder huggingface_hub keeps a model repo in: ``models--org--name``."""
+    return "models--" + repo_id.replace("/", "--")
+
+
+def _folder_bytes(folder: Path) -> int:
+    """Bytes in the regular files under ``folder``; a symlink counts as nothing."""
+    total = 0
+    for root, _dirs, names in os.walk(folder):
+        for name in names:
+            try:
+                info = os.lstat(os.path.join(root, name))
+            except FileNotFoundError:  # renamed mid-walk (.incomplete -> blob)
+                continue
+            if stat.S_ISREG(info.st_mode):
+                total += info.st_size
+    return total
+
+
+def _bytes_to_fetch(
+    hf, repo_id: str, files: list[str] | None, revision: str | None, token: str | None
+) -> int | None:
+    """Bytes the download will write: the manifest's files not yet in the cache.
+
+    ``None`` without a manifest; the bar then counts bytes against no total.
+    """
+    if not files:
+        return None
+    cache_dir = str(model_cache_dir())
+    missing = [
+        name
+        for name in files
+        if not isinstance(
+            hf.try_to_load_from_cache(
+                repo_id, name, cache_dir=cache_dir, revision=revision
+            ),
+            str,
+        )
+    ]
+    if not missing:
+        return 0
+    infos = hf.HfApi().get_paths_info(repo_id, missing, revision=revision, token=token)
+    return sum(int(getattr(info, "size", 0) or 0) for info in infos)
 
 
 class HFHubModel:
@@ -341,26 +460,6 @@ def _not_installed(repo_id: str, install_cmd: str | None = None) -> ModelReadine
         action_url=None,
         repo_id=repo_id,
     )
-
-
-def _make_tqdm_class(progress_cb: Callable[[InstallProgress], None]):
-    from huggingface_hub.utils import tqdm as hf_tqdm
-
-    class _ForwardingTqdm(hf_tqdm):
-        def update(self, n=1):
-            displayed = super().update(n)
-            # Forward byte-unit bars only; hf also runs a file-count bar.
-            if getattr(self, "unit", None) == "B":
-                progress_cb(
-                    InstallProgress(
-                        bytes_done=int(self.n),
-                        bytes_total=int(self.total) if self.total else None,
-                        current_file=self.desc or None,
-                    )
-                )
-            return displayed
-
-    return _ForwardingTqdm
 
 
 def _require_hf():

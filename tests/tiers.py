@@ -231,6 +231,9 @@ GUARD_FILES = frozenset(
         # job: the cost model is invisible to every behavioural test.
         "tests/storage/test_dirscan.py",
         "tests/models/test_no_implicit_network.py",
+        # Every call into huggingface_hub fits the installed version: a `tqdm_class=` written
+        # for 1.x left a model install's progress bar at zero on 0.x.
+        "tests/models/test_hf_download.py",
         # A package probe in the app answers from startup; an editable install made while
         # it is open stays invisible until the .pth files are re-read (#506).
         "tests/core/test_installed.py",
