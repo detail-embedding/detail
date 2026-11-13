@@ -1,4 +1,18 @@
-"""Table writers: tidy CSV + the pivoted results grid (LaTeX booktabs / Markdown / CSV)."""
+"""Table writers: tidy CSV + the pivoted results grid (LaTeX booktabs / Markdown / CSV).
+
+**The class: a row field dropped by a writer whose column list is kept apart from the code
+that builds the rows.** ``write_tidy_csv`` is every tidy CSV's one writer — ``stats.csv``,
+``ranking.csv``, ``nodes.csv``, the per-measure tables, the measures table — and each caller
+passes a column list that lives beside, not inside, the function building its rows. It wrote
+``{c: row[c] for c in columns}``, so a field added to the rows alone vanished from the file
+without a word: ``ranking.csv``'s rows gained ``pair_a``/``pair_b`` (the two levels a profile's
+effect is between, without which its signed effect cannot be read) and ``RANKING_COLUMNS`` did
+not, so the export shipped without them although §24's export tree lists them.
+
+**The rule:** a row carries every column and no other field. A missing column raises
+``KeyError`` (it always did); a field the columns do not name raises ``ValueError`` naming it,
+before the file is opened, so nothing half-written is left behind.
+"""
 
 import csv
 

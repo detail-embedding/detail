@@ -9,6 +9,14 @@ what I'm doing/selecting", so what is pinned here is that the screen **shows the
 every column with the values it holds, the groups a choice would produce, and the unit-of-analysis
 question **only when some animal contributed more than one recording**. A test asserting only that
 a config came out well-formed would pass on all of that being blank.
+
+**The class: a list rebuilt on every refresh of a form whose refresh its own ``itemChanged``
+triggers.** Ticking a level refreshed the form, and the refresh cleared and refilled the levels
+list (and the unit list the same way), so the row that emitted the signal was deleted inside its
+own handler. The ticks were carried across the rebuild by value, so choosing a second column
+that holds the same values arrived with the first column's ticks and contrast order. **The
+rule:** a list is rebuilt only when what it offers changes (``gui/comparison.py::_offered``), and
+a newly chosen column starts unticked. The guard compares the row objects across a tick.
 """
 
 import shutil

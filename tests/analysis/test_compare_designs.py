@@ -24,6 +24,12 @@ each measure by the largest of its pairwise contrasts, which is a search over pa
 took one fixed pair would set a floor the real search clears by luck. The null takes the same
 largest pair under each within-unit shuffle, and the no-signal cohort shows it keeps nothing.
 
+**The fifth: one cell, read two ways.** The design stripped a padded ``"fent "`` while the
+observations grouped it raw, so a paired contrast resolved to ``fent`` and then found no group
+by that name and ranked nothing; ``NaN`` was no value to the design and a value to the subject
+inference. Every reader of a grouping cell reads it through ``cohort.cell`` (stripped, ``""``
+when missing).
+
 Every guard here is shown to fail: the wrong null is run beside the right one, the planted node
 is planted, the seed is varied.
 """
