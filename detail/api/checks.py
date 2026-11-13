@@ -10,7 +10,6 @@ callers) with no spawn. A probe that can't answer degrades to ``UNKNOWN``; nothi
 import dataclasses
 import json
 import subprocess
-import sys
 from dataclasses import dataclass
 
 from detail.checks import import_checks
@@ -27,6 +26,7 @@ from detail.checks.commands import (
     wsl_browser_argv,
     wsl_explorer_argv,
 )
+from detail.core import interpreter
 from detail.core.dataclasses import CheckResult, CheckStatus
 from detail.core.registries import CHECKS
 
@@ -174,7 +174,7 @@ def _run_in_subprocess(check_ids: list[str]) -> dict[str, CheckResult]:
 
     try:
         proc = subprocess.run(
-            [sys.executable, "-m", "detail.checks._probe"],
+            interpreter.module_argv("detail.checks._probe"),
             capture_output=True,
             text=True,
             # The probe's own JSON is ASCII (`json.dumps` escapes), but backend import

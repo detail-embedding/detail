@@ -78,14 +78,15 @@ def test_submit_spawns_the_shepherd_not_the_worker(tmp_path, monkeypatch):
         job_id = ex.submit(_job())
 
     assert job_id == "det_01"
-    assert captured["argv"][:3] == [
+    assert captured["argv"][:4] == [
         sys.executable,
+        "-P",
         "-m",
         "detail.executor.remote_shepherd",
     ]
-    run_dir = Path(captured["argv"][3])
-    assert captured["argv"][4] == "tillicum"
-    assert captured["argv"][5] == str(tmp_path)
+    run_dir = Path(captured["argv"][4])
+    assert captured["argv"][5] == "tillicum"
+    assert captured["argv"][6] == str(tmp_path)
     assert rundir.read_pid(run_dir) == 424242
     assert rundir.read_job(run_dir).job_id == "det_01"
 

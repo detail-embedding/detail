@@ -202,10 +202,16 @@ Optional: SAM3 isn't on PyPI, so install it from source (same two-step install a
 [Getting started: SAM3 backend](../getting-started.md#sam3-backend)):
 
 ```
-git clone https://github.com/facebookresearch/sam3 ~/sam3
-pip install -e ~/sam3 --no-deps
+mkdir -p ~/src
+git clone https://github.com/facebookresearch/sam3 ~/src/sam3
+pip install -e ~/src/sam3 --no-deps
 pip install "setuptools<81"
 ```
+
+Keep the SAM3 checkout out of your home folder's top level (`~/src/sam3`, not `~/sam3`): a run
+that starts in your home folder sees a bare `sam3` folder there as an empty `sam3` package, which
+hides the installed one and fails at model load with `TypeError: expected str, bytes or
+os.PathLike object, not NoneType`.
 
 Optional: sign in for Hugging Face access and install the detection model (skip if you only
 plan to submit remote jobs from this machine):

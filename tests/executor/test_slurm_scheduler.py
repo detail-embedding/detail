@@ -80,7 +80,7 @@ def test_render_sbatch_script_includes_resources_and_worker_invocation():
     assert "module load cuda/12.4" in script
     assert "module load gcc/13.2" in script
     assert "conda activate detail-env" in script
-    assert "python -m detail.executor.worker /scratch/exp/runs/det_01" in script
+    assert "python -P -m detail.executor.worker /scratch/exp/runs/det_01" in script
 
 
 def test_render_sbatch_script_quotes_an_output_path_containing_a_space():
@@ -132,7 +132,7 @@ def test_render_sbatch_script_exports_runner_modules_before_the_worker_runs():
     export_line = "export DETAIL_RUNNER_MODULES=detail.pipeline.detection,detail.pipeline.tracking"
     assert export_line in script
     # the worker must see it before it runs, or the export is dead code
-    assert script.index(export_line) < script.index("python -m detail.executor.worker")
+    assert script.index(export_line) < script.index("-m detail.executor.worker")
 
 
 def test_activation_prefix_matches_the_sbatch_script_environment():

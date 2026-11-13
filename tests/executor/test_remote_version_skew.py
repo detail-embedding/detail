@@ -201,13 +201,16 @@ def test_a_run_that_fails_the_probe_ends_with_the_message_in_its_table(
 def test_python_is_only_ever_run_on_the_cluster_through_one_function():
     """The guard that makes the three sites one: a `python -` command built anywhere else would
     report its own failures, and be the place a version mismatch reads as a bare traceback.
+
+    The command is `interpreter.remote_python_command("-")`; `tests/core/test_interpreter.py`
+    fails on a remote `python` started any other way, so finding its callers finds them all.
     """
     package = pathlib.Path(remote_shepherd.__file__).parents[1]
     found = []
     for path in sorted(package.rglob("*.py")):
         lines = path.read_text(encoding="utf-8-sig").splitlines()
         for number, line in enumerate(lines):
-            if 'python -"' not in line:
+            if 'remote_python_command("-")' not in line:
                 continue
             owner = next(
                 (

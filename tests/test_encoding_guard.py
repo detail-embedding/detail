@@ -340,16 +340,22 @@ def _is_true(call: ast.Call, name: str) -> bool:
 
 
 def _child_is_this_interpreter(call: ast.Call) -> bool:
-    """A literal argv starting with ``sys.executable``.
+    """A literal argv starting with ``sys.executable``, or one built by
+    ``interpreter.module_argv`` (which is ``[sys.executable, "-P", "-m", ...]``).
 
     Exempt because the two sides of the pipe agree by construction: a Python child writes a
     pipe on the same locale codec a bare ``text=True`` decodes with (and under
     ``PYTHONUTF8=1`` both switch together). Every other program writes what *it* writes —
     git UTF-8, PowerShell the console codepage — and the locale is not a guess at that.
     """
-    if not call.args or not isinstance(call.args[0], ast.List) or not call.args[0].elts:
+    if not call.args:
         return False
-    return ast.unparse(call.args[0].elts[0]) == "sys.executable"
+    argv = call.args[0]
+    if isinstance(argv, ast.Call):
+        return ast.unparse(argv.func) in {"interpreter.module_argv", "module_argv"}
+    if not isinstance(argv, ast.List) or not argv.elts:
+        return False
+    return ast.unparse(argv.elts[0]) == "sys.executable"
 
 
 #: Calls whose child is this interpreter through a variable the AST cannot see into. Claims:
@@ -411,10 +417,12 @@ def test_the_subprocess_scan_would_catch_one():
             "subprocess.run(['git', 'log'], capture_output=True, encoding='utf-8')",
             "subprocess.run([sys.executable, '-c', 'x'], capture_output=True, text=True)",
             "subprocess.run(['git', 'log'], capture_output=True)",
+            "subprocess.run(interpreter.module_argv('x'), capture_output=True, text=True)",
+            "subprocess.run(git_argv('log'), capture_output=True, text=True)",
         ]
     )
     caught = [c.lineno for c in undeclared_subprocess_decodes(ast.parse(source))]
-    assert caught == [1, 2]
+    assert caught == [1, 2, 7]
 
 
 def test_every_subprocess_allowlist_entry_still_matches():

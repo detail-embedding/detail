@@ -10,6 +10,7 @@ import shlex
 import subprocess
 
 from detail.configs.remote import RemoteTargetConfig
+from detail.core import interpreter
 from detail.executor import ssh_transport
 from detail.executor.runners import RUNNER_MODULES_ENV
 from detail.executor.schedulers.base import JobScheduler, JobState
@@ -111,8 +112,11 @@ def render_sbatch_script(
 ) -> str:
     """The sbatch script for one job: requests the profile's resources, loads its
     modules/conda env, and runs the same worker entrypoint a local job uses
-    (``python -m detail.executor.worker <remote_run_dir>``) — unmodified, unaware it
-    is running on a compute node instead of the user's machine.
+    (``python -P -m detail.executor.worker <remote_run_dir>``) — unmodified, unaware it
+    is running on a compute node instead of the user's machine. ``-P`` because the job
+    starts where ``sbatch`` ran, which over ssh is ``$HOME``, and a checkout there
+    (``~/sam3``) would be imported in place of the installed package
+    (``core/interpreter.py``).
 
     ``runner_modules`` is the comma-joined ``DETAIL_RUNNER_MODULES`` value the local
     executor resolved (``executor/runners.py``): the remote worker is a fresh shell on
@@ -140,7 +144,11 @@ def render_sbatch_script(
     lines.append("set -e")
     lines.extend(_activation_lines(target))
     lines.append(f"export {RUNNER_MODULES_ENV}={shlex.quote(runner_modules)}")
-    lines.append(f"python -m detail.executor.worker {shlex.quote(remote_run_dir)}")
+    lines.append(
+        interpreter.remote_python_command(
+            f"-m detail.executor.worker {shlex.quote(remote_run_dir)}"
+        )
+    )
     return "\n".join(lines) + "\n"
 
 
