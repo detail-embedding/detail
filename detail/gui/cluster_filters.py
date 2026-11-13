@@ -1878,8 +1878,11 @@ class FilterBar(QObject):
         self, screens: Sequence[ScreenChoice], *, loading: bool = False
     ) -> None:
         """The run's saved difference screens, newest first — what the Differences line
-        offers. ``loading`` says the page is still reading them."""
-        self._screens = {s.key: s for s in screens}
+        offers. ``loading`` says the page is still reading them: the offer is then unknown,
+        not empty, so the screens already known stay known and a ticked one stays applied
+        until the new list lands to check it against."""
+        if not loading:
+            self._screens = {s.key: s for s in screens}
         self.screens.set_entries(screens, loading=loading)
         self._keep_showable()
         self._refresh()
@@ -1929,6 +1932,10 @@ class FilterBar(QObject):
             offered = self._screens.get(source or "")
             if offered is None or offered.leaves is None:
                 leaves, source = None, None
+            else:
+                # The screen's leaves as listed now: a re-read lists them over the view
+                # the page has now, which a rebuild may have re-cut.
+                leaves = offered.leaves
         recordings = selection.recording_ids
         if recordings is not None:
             recordings = frozenset(recordings) & {

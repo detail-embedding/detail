@@ -22,6 +22,8 @@ window, ``tests/gui/test_cluster_window.py``'s
 ``test_an_order_picked_while_the_window_ranks_draws_nothing_until_the_clips_land``.
 """
 
+import math
+
 import numpy as np
 import pytest
 from PyQt6.QtCore import QEvent, QSettings, Qt
@@ -2655,12 +2657,16 @@ def test_an_order_picked_while_a_cluster_ranks_does_not_bring_back_the_last_ones
 
 
 class _FakeScreen:
-    """A saved node screen as the page reads it: an id, a record, a ranking, kept nodes."""
+    """A saved node screen as the page reads it: an id, a record, a ranking whose kept items
+    are ``kept`` and whose ``clearing`` count clears the floor (the rest nested, on nodes the
+    tree does not have). ``rankings`` counts the re-rankings: seconds each over a real family,
+    so the page ranks a screen once per read."""
 
     def __init__(self, comparison_id: str, kept: list[int], clearing: int) -> None:
         self.id = comparison_id
         self._kept = list(kept)
-        self._clearing = clearing
+        self._clearing = max(clearing, len(kept))
+        self.rankings = 0
 
     def record(self) -> dict:
         return {
@@ -2674,20 +2680,71 @@ class _FakeScreen:
     def ranking(self):
         from detail.analysis import compare
 
+        self.rankings += 1
+        nested = [100_000 + i for i in range(self._clearing - len(self._kept))]
+        items = [
+            compare.Effect(
+                measure_key=("time_fraction", f"node:{n}", "", "whole"),
+                effect=math.log(4.0),
+                n_units=10,
+                n_present=10,
+                consistency=10,
+                loo_sign_stable=True,
+            )
+            for n in [*self._kept, *nested]
+        ]
         return compare.Ranking(
-            contrasts=[],
+            contrasts=items,
             floor=0.5,
             draws=16,
             seed=0,
             design=compare.PAIRED,
-            kept=tuple(("time_fraction", f"node:{n}", "", "whole") for n in self._kept),
+            levels=("vehicle", "drug"),
+            unit=("ID",),
+            n_units=10,
+            min_units=5,
+            kept=tuple(items[i].measure_key for i in range(len(self._kept))),
         )
 
-    def clearing_count(self) -> int:
-        return self._clearing
-
     def kept_nodes(self) -> list[int]:
-        return list(self._kept)
+        import detail.api.comparison as comparison_api
+
+        return comparison_api.kept_nodes_of(self.ranking())
+
+
+def test_without_nesting_suppression_every_clearing_cluster_is_kept_not_nested():
+    """``Ranking.kept`` is ``None`` when no suppression was applied; the findings are then
+    every clearing item (``kept_items``), and a hover calling them "nested under a kept
+    cluster" names a parent that does not exist."""
+    from detail.analysis import compare
+    from detail.gui.node_workspace import _node_effects
+
+    screen = _FakeScreen("cmp_08", [3, 5], clearing=3)
+    ranking = screen.ranking()
+    suppressed = _node_effects(ranking, screen.record())
+    assert {node: row.kept for node, row in suppressed.items()} == {
+        3: True,
+        5: True,
+        100_000: False,
+    }, "with suppression, a clearing item outside the kept set is nested"
+    unsuppressed = compare.Ranking(
+        contrasts=ranking.contrasts,
+        floor=ranking.floor,
+        draws=ranking.draws,
+        seed=ranking.seed,
+        design=ranking.design,
+        levels=ranking.levels,
+        unit=ranking.unit,
+        n_units=ranking.n_units,
+        min_units=ranking.min_units,
+        kept=None,
+    )
+    effects = _node_effects(unsuppressed, screen.record())
+    assert {node: row.kept for node, row in effects.items()} == {
+        3: True,
+        5: True,
+        100_000: True,
+    }
 
 
 def _screens_read(qapp, interpret) -> None:
@@ -2728,25 +2785,38 @@ def test_a_saved_screens_kept_clusters_shade_the_tree_through_the_filters(
     lst = bar.screens.list
     assert lst.count() == 1
     assert lst.item(0).data(Qt.ItemDataRole.UserRole) == "cmp_07"
-    assert lst.item(0).text() == "drug vs vehicle · paired   1 kept of 0 clearing"
+    assert lst.item(0).text() == "drug vs vehicle · paired   1 kept of 3 clearing"
+    assert screen.rankings == 1, "a screen is ranked once per read, not once per use"
 
     item = lst.item(0)
     item.setCheckState(Qt.CheckState.Checked)
     selection = bar.selection()
     assert selection.keys() == [CLUSTERS] and selection.leaves_source == "cmp_07"
     assert selection.leaves == view.leaves_under_nodes([node])
+    # Alone, the screen shades by its effect (the next test); beside a clip filter the
+    # share ramp returns, with the screen's leaves still ANDed in.
+    bar.set_selection(
+        Selection(
+            leaves=selection.leaves,
+            leaves_source="cmp_07",
+            recording_ids=frozenset(view.recording_ids),
+        )
+    )
+    selection = bar.selection()
     shaded = interpret._icicle.shades()
     assert shaded[node] == pytest.approx(1.0)
-    expected = view.match_shares(Selection(leaves=selection.leaves))
+    expected = view.match_shares(selection)
     for each, share in shaded.items():
         assert share == pytest.approx(expected[each], nan_ok=True)
     assert 0.0 < shaded[view.root] < 1.0
     assert bar.count_label.text().endswith("clips match")
     from detail.gui.cluster_filters import panel_name
 
-    assert panel_name(selection) == "Filters · 1 active"
+    assert panel_name(selection) == "Filters · 2 active"
 
     bar.field_row("Differences").reset_button.click()
+    assert bar.selection().leaves is None
+    bar.field_row("Video").reset_button.click()
     assert interpret._icicle.shades() is None
 
 
@@ -2782,7 +2852,8 @@ def test_run_a_new_screen_opens_the_launch_dialog_seeded_and_ticks_what_it_saved
     assert seeds == [{"source_run_id": str(interpret._run.id), "source": "nodes"}]
     _screens_read(qapp, interpret)
     assert interpret.filters().selection().leaves_source == "cmp_09"
-    assert interpret._icicle.shades()[node] == pytest.approx(1.0)
+    assert interpret.filters().selection().leaves == view.leaves_under_nodes([node])
+    assert interpret._icicle._diverging, "ticked alone, the screen shades by its effect"
 
 
 def test_a_screen_alone_shades_the_tree_by_its_effect_and_a_clip_filter_brings_the_share_back(
@@ -2912,11 +2983,14 @@ def test_a_label_written_while_a_screen_is_ticked_records_the_screen(
         "relation": "kept",
         "column": "drug",
         "screen": "drug vs vehicle · paired",
-        "text": "",
+        "text": "more under drug than vehicle, 4.0× (10 of 10 recording(s) in that direction)",
     }
     bar = interpret.label_bar()
     assert bar.origin.isVisibleTo(interpret)
-    assert bar.origin.text() == "From screen cmp_07 (drug vs vehicle · paired) · kept"
+    assert bar.origin.text() == (
+        "From screen cmp_07 (drug vs vehicle · paired): more under drug than vehicle, "
+        "4.0× (10 of 10 recording(s) in that direction) · kept"
+    )
 
     children = list(view.children(node))
     if children:

@@ -432,7 +432,7 @@ def _node_effects(ranking, record: dict) -> dict:
     """
     from detail.analysis import comparison_report, node_measures
 
-    kept = set(ranking.kept or ())
+    kept = {item.measure_key for item in ranking.kept_items()}
     out = {}
     for item in ranking.contrasts:
         node = node_measures.node_of(item.measure_key[1])
@@ -1083,7 +1083,7 @@ class NodeInterpretTab(QWidget):
                         ScreenChoice(comp.id, label, "nothing to rank", frozenset())
                     )
                     continue
-                kept = comp.kept_nodes()
+                kept = comparison_api.kept_nodes_of(ranking)
                 leaves = view.leaves_under_nodes(kept)
                 if ranking.floor is None:
                     note = f"no floor: {ranking.no_floor_reason}"

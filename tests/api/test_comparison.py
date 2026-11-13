@@ -960,6 +960,50 @@ def test_the_node_source_refuses_windows(tmp_path, monkeypatch):
         )
 
 
+@pytest.mark.parametrize(
+    ("override", "match"),
+    [
+        ({"source_snapshot": "snap_01"}, "current node cache"),
+        ({"measures": ["rate"]}, "always measures"),
+        ({"measures": ["rate", "time_fraction", "total_time"]}, "always measures"),
+    ],
+)
+def test_the_node_source_refuses_what_it_would_ignore(
+    tmp_path, monkeypatch, override, match
+):
+    """A snapshot pins the labelled artifact, which the node source does not read; a screen
+    without share of time ranks nothing, and without total time cannot tell presence. Each
+    was silently ignored or silently broke the screen."""
+    import detail.api.comparison as api
+    from tests.analysis.test_node_measures import synthetic_view
+
+    exp = _cohort(tmp_path, CROSSOVER)
+    monkeypatch.setattr(
+        api, "_node_view", lambda e, r: synthetic_view(recording_ids=tuple(CROSSOVER))
+    )
+    config = {
+        "source_run_id": "an_01",
+        "source": "nodes",
+        "group_by": ["drug"],
+        "aggregate_to": ["animal"],
+        **override,
+    }
+    with pytest.raises(ComparisonRunError, match=match):
+        run_comparison(exp, config)
+    assert exp.comparisons == [], "refused before anything was written"
+
+
+def test_the_node_source_takes_its_own_four_measures_named(tmp_path, monkeypatch):
+    """A record seeds its measures back; the four the node source always takes are no
+    subset."""
+    from detail.analysis import node_measures
+
+    _exp, _view, comp = _node_screen(
+        tmp_path, monkeypatch, measures=list(reversed(node_measures.MEASURES))
+    )
+    assert comp.ranking() is not None
+
+
 def test_the_node_source_refuses_a_run_that_has_no_nodes(tmp_path):
     exp = _cohort(tmp_path, CROSSOVER)
     with pytest.raises(ComparisonRunError, match="not a clustering run"):

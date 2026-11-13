@@ -185,7 +185,7 @@ def _determines(
     for recording, value in _values(metadata, recordings, source):
         if not value:
             continue
-        other = (metadata.get(recording, {}).get(target) or "").strip()
+        other = cell(metadata.get(recording, {}), target)
         if not other:
             continue
         if seen.setdefault(value, other) != other:
@@ -211,8 +211,7 @@ def _crossing(
     crossed = 0
     for members in _levels(metadata, recordings, column).values():
         groups = {
-            tuple((metadata.get(r, {}).get(g) or "").strip() for g in group_by)
-            for r in members
+            tuple(cell(metadata.get(r, {}), g) for g in group_by) for r in members
         }
         if len(groups) > 1:
             crossed += 1

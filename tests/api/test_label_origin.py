@@ -243,7 +243,7 @@ def test_the_origin_from_a_saved_screen_carries_its_sentence(tmp_path, monkeypat
     thing. The synthetic fixture clears nothing on its own, so the ranking is stood in for:
     one kept cluster, node 4, with node 0 beneath it and node 2 beside it."""
     from detail.analysis import compare, comparison_report
-    from detail.api.comparison import Comparison, label_origin
+    from detail.api.comparison import Comparison, label_origin, label_origins
     from tests.api.test_comparison import _node_screen
 
     exp, view, comp = _node_screen(tmp_path, monkeypatch)
@@ -276,6 +276,15 @@ def test_the_origin_from_a_saved_screen_carries_its_sentence(tmp_path, monkeypat
     under = label_origin(exp, comp.id, 0, ancestors_of=view.ancestors)
     assert under.relation == "under" and under.kept == "4" and under.text == origin.text
     assert label_origin(exp, comp.id, 2, ancestors_of=view.ancestors) is None
+
+    # Several nodes, one ranking: re-ranking re-reads stats.csv and redraws the null.
+    rankings = []
+    monkeypatch.setattr(
+        Comparison, "ranking", lambda self: rankings.append(1) or ranking
+    )
+    many = label_origins(exp, comp.id, [4, 0, 2], ancestors_of=view.ancestors)
+    assert many == {4: origin, 0: under, 2: None}
+    assert len(rankings) == 1
 
 
 def test_a_labels_comparison_is_not_a_screen_to_label_from(tmp_path):

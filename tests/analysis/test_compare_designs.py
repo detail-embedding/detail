@@ -569,3 +569,93 @@ def test_a_missing_token_is_no_value_either():
     assert not c._is_number("NA")
     assert not c._is_number("inf")
     assert c._is_number("25")
+
+
+def test_a_padded_cell_is_its_level_in_the_design_and_the_groups_alike():
+    """``"fent "`` from a spreadsheet: the design read it stripped and the observations read
+    it raw, so the paired contrast resolved to ``fent`` and then found no group by that name
+    and ranked nothing. Every reader goes through ``cohort.cell``."""
+    shares = {
+        ("A", "veh"): {"x": 0.10},
+        ("A", "fent"): {"x": 0.20},
+        ("B", "veh"): {"x": 0.30},
+        ("B", "fent"): {"x": 0.30},
+        ("C", "veh"): {"x": 0.05},
+        ("C", "fent"): {"x": 0.40},
+    }
+    clean = _paired_ranking(shares, levels=["veh", "fent"])
+    meta, rows = _crossover(shares)
+    for row in meta.values():
+        row["session"] = f" {row['session']} "
+        row["animal"] = f"{row['animal']} "
+    design = c.resolve_design_from_rows(
+        rows,
+        meta,
+        group_by=["session"],
+        aggregate_to=["animal"],
+        levels=["veh", "fent"],
+    )
+    assert design.kind == c.PAIRED and design.levels == ("veh", "fent")
+    obs = c.observations(rows, meta, group_by=["session"], aggregate_to=["animal"])
+    assert {o.group for o in obs} == {("veh",), ("fent",)}
+    padded = c.rank_by_design(
+        obs,
+        design,
+        draws=200,
+        seed=0,
+        min_units=1,
+        presence_ns=0,
+        pseudo=_pseudo(0.0),
+        ranking_measure="time_fraction",
+    )
+    (item,) = padded.contrasts
+    assert item.effect == pytest.approx(clean.contrasts[0].effect)
+    assert item.n_units == 3
+
+
+def test_a_missing_token_is_no_value_in_the_groups_and_the_subject_inference():
+    """``NaN`` was a level of its own in the observations and a value in the subject
+    inference while the design and the left-out rule read it as no value at all."""
+    from detail.analysis import cohort
+
+    meta, rows = _crossover(
+        {
+            ("A", "veh"): {"x": 0.1},
+            ("A", "fent"): {"x": 0.2},
+            ("B", "veh"): {"x": 0.3},
+            ("B", "fent"): {"x": 0.3},
+        }
+    )
+    meta["rec003"]["session"] = "NaN"
+    obs = c.observations(rows, meta, group_by=["session"], aggregate_to=["animal"])
+    assert ("NaN",) not in {o.group for o in obs}
+    # `sex` determines nothing once NaN is no value: A is f twice, B is m once and NaN once.
+    for recording, sex in zip(sorted(meta), ["f", "f", "m", "NaN"]):
+        meta[recording]["sex"] = sex
+    assert cohort._determines(meta, list(meta), "animal", "sex")
+    # A blank and a NaN are one no-value: animal A is not across two sessions, B is.
+    meta["rec000"]["session"] = ""
+    meta["rec001"]["session"] = "NaN"
+    meta["rec003"]["session"] = "fent"
+    assert cohort._crossing(meta, list(meta), "animal", ["session"]) == 1
+
+
+@pytest.mark.parametrize(
+    ("measure", "on"),
+    [
+        ("time_fraction", 30 * NS / HOUR),
+        ("total_time", 30 * NS),
+        ("duration_mean", 30 * NS),
+        ("n_instances", 1.0),
+        ("rate", NS / HOUR),
+    ],
+)
+def test_a_zero_pseudo_count_adds_nothing_to_any_measure(measure, on):
+    """``pseudo_count_s: 0`` is recorded as ranking raw ratios. A rate kept one bout per
+    recording on both sides whatever the setting, so the record said 0 and the numbers did
+    not."""
+    from detail.analysis.comparison_report import pseudo_count
+
+    key = (measure, "node:1", "", "whole")
+    assert pseudo_count(0.0)(key, HOUR) == 0.0
+    assert pseudo_count(30.0)(key, HOUR) == pytest.approx(on)

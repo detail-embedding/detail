@@ -157,11 +157,24 @@ def _set_checked(listwidget: QListWidget, names: set[str]) -> None:
     """
     for i in range(listwidget.count()):
         item = listwidget.item(i)
-        selectable = bool(item.flags() & Qt.ItemFlag.ItemIsEnabled)
-        checked = selectable and item.data(Qt.ItemDataRole.UserRole) in names
+        if not item.flags() & Qt.ItemFlag.ItemIsEnabled:
+            continue  # its state is the list's to say: unticked, or ticked and fixed
+        checked = item.data(Qt.ItemDataRole.UserRole) in names
         item.setCheckState(
             Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
         )
+
+
+def _offered(listwidget: QListWidget) -> list[tuple[str, str]]:
+    """``(data, text)`` for each row: what a list offers, to rebuild it only when that changes.
+
+    A list rebuilt on every refresh is rebuilt inside its own ``itemChanged`` when ticking a
+    row refreshes the form: the row that emitted the signal is deleted in its handler.
+    """
+    return [
+        (listwidget.item(i).data(Qt.ItemDataRole.UserRole), listwidget.item(i).text())
+        for i in range(listwidget.count())
+    ]
 
 
 def _source_label(experiment, run_id: str) -> str:
@@ -314,6 +327,8 @@ class ComparisonLaunchDialog(Dialog):
         #: The ticked values in the order they were ticked: the contrast reads as the second
         #: against the first, and a list widget alone remembers only which, not when.
         self._levels_order: list[str] = []
+        #: The column whose values the list holds: another column's ticks mean nothing here.
+        self._levels_column: str | None = None
         self._levels.itemChanged.connect(lambda *_: self._on_levels_changed())
         self._levels_box = QWidget()
         levels_layout = QVBoxLayout(self._levels_box)
@@ -386,6 +401,10 @@ class ComparisonLaunchDialog(Dialog):
             )
 
         self._measures = QListWidget()
+        #: The measures the user ticked, kept while *Every cluster* shows all four fixed, so
+        #: switching back to labels restores the choice rather than the fixed four.
+        self._measures_chosen: set[str] = set()
+        self._measures_fixed = False
         self._fill_measures()
         form.addRow(
             label_with("Measures (all if none):", help_button("comparison-measures")),
@@ -461,6 +480,16 @@ class ComparisonLaunchDialog(Dialog):
         self._windows.setEnabled(not nodes)
         self._windows.setToolTip(
             "Every cluster is measured over the whole recording." if nodes else ""
+        )
+        # Nor from a pinned copy: a snapshot pins the labelled artifact, and every cluster
+        # is measured from the run's current node cache.
+        if nodes:
+            self._snapshot.setCurrentIndex(0)
+        self._snapshot.setEnabled(not nodes)
+        self._snapshot.setToolTip(
+            "Every cluster is measured from the run's current node cache."
+            if nodes
+            else ""
         )
         self._refresh()
 
@@ -575,7 +604,10 @@ class ComparisonLaunchDialog(Dialog):
 
         manifest = self._source_manifest()
         nodes = self.measure_source() == "nodes"
-        checked = set(_checked(self._measures))
+        if not self._measures_fixed:
+            self._measures_chosen = set(_checked(self._measures))
+        checked = self._measures_chosen
+        self._measures_fixed = nodes
         self._measures.blockSignals(True)
         self._measures.clear()
         for measure_id, spec in MEASURES.items():
@@ -589,6 +621,13 @@ class ComparisonLaunchDialog(Dialog):
             item.setToolTip(spec.description)
             if why:
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+            elif nodes:
+                # Every cluster is measured by all four, always: shown ticked and fixed.
+                item.setCheckState(Qt.CheckState.Checked)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+                item.setToolTip(
+                    f"{spec.description} Every cluster is measured by all four."
+                )
             elif measure_id in checked:
                 item.setCheckState(Qt.CheckState.Checked)
             self._measures.addItem(item)
@@ -658,26 +697,27 @@ class ComparisonLaunchDialog(Dialog):
         """The columns available to average within, with the inferred animal pre-checked."""
         recordings = self._selected_recordings()
         already = set(_checked(self._aggregate_to))
-        self._aggregate_to.blockSignals(True)
-        self._aggregate_to.clear()
         candidates = [
             c for c in self._columns if c not in group_by and c not in _ROW_KEYS
         ]
-        for summary in cohort.describe_columns(self._metadata, recordings, candidates):
-            self._aggregate_to.addItem(
-                _checkable(
-                    f"{summary.name}   —   {summary.describe()}", data=summary.name
-                )
+        offered = [
+            (summary.name, f"{summary.name}   —   {summary.describe()}")
+            for summary in cohort.describe_columns(
+                self._metadata, recordings, candidates
             )
+        ]
         # `window_id` is offered to *compare across* but not to average within: averaging
         # through the windows is what `kind="whole"` already does, and the row key has no
         # values here to show for itself.
         if "window_id" not in group_by:
-            self._aggregate_to.addItem(
-                _checkable(
-                    f"window_id   —   {_ROW_KEY_NOTE['window_id']}", data="window_id"
-                )
+            offered.append(
+                ("window_id", f"window_id   —   {_ROW_KEY_NOTE['window_id']}")
             )
+        self._aggregate_to.blockSignals(True)
+        if offered != _offered(self._aggregate_to):
+            self._aggregate_to.clear()
+            for name, text in offered:
+                self._aggregate_to.addItem(_checkable(text, data=name))
         _set_checked(
             self._aggregate_to,
             already or ({self._subject_column} if self._subject_column else set()),
@@ -730,7 +770,7 @@ class ComparisonLaunchDialog(Dialog):
     def levels(self) -> list[str] | None:
         """The two values to contrast, in the order ticked, or ``None`` for "let the column
         decide"."""
-        if not not self._levels_box.isHidden():
+        if self._levels_box.isHidden():
             return None
         ticked = _checked(self._levels)
         if len(ticked) != 2:
@@ -751,15 +791,25 @@ class ComparisonLaunchDialog(Dialog):
         column = group_by[0] if len(group_by) == 1 else None
         if column is None or column in _ROW_KEYS:
             self._levels_box.setVisible(False)
+            self._levels_column = None
             return
-        already = set(_checked(self._levels))
         summary = cohort.describe_columns(self._metadata, recordings, [column])[0]
+        offered = [
+            (value, f"{value}   —   {count} recording(s)")
+            for value, count in sorted(summary.counts.items(), key=lambda kv: kv[0])
+        ]
+        if column != self._levels_column:
+            self._levels_column = column
+            self._levels_order = []
+            already: set[str] = set()
+        elif offered == _offered(self._levels):
+            return  # a tick, not a new offer: the list stays, and so do its rows
+        else:
+            already = set(_checked(self._levels))
         self._levels.blockSignals(True)
         self._levels.clear()
-        for value, count in sorted(summary.counts.items(), key=lambda kv: kv[0]):
-            self._levels.addItem(
-                _checkable(f"{value}   —   {count} recording(s)", data=value)
-            )
+        for value, text in offered:
+            self._levels.addItem(_checkable(text, data=value))
         _set_checked(self._levels, already)
         self._levels.blockSignals(False)
         fit_list_height(self._levels)
@@ -981,13 +1031,21 @@ class ComparisonLaunchDialog(Dialog):
         """
         return {
             "source_run_id": self.source_run_id(),
-            "source_snapshot": self._snapshot.currentData(),
+            "source_snapshot": (
+                None
+                if self.measure_source() == "nodes"
+                else self._snapshot.currentData()
+            ),
             "source": self.measure_source(),
             "group_by": _checked(self._group_by),
             "aggregate_to": self.aggregate_to(),
             "levels": self.levels(),
             "recordings": selected_recording_ids(self._recordings) or None,
-            "measures": _checked(self._measures) or None,
+            "measures": (
+                None
+                if self.measure_source() == "nodes"
+                else _checked(self._measures) or None
+            ),
             "windows": {
                 "kind": self._windows.currentText(),
                 **{
@@ -1653,7 +1711,9 @@ class ComparisonDetailPage(QWidget):
         )
         if subject is None:
             return f"{len(recordings)} recording(s)"
-        distinct = len({(metadata.get(r) or {}).get(subject, "") for r in recordings})
+        distinct = len(
+            {cohort.cell(metadata.get(r) or {}, subject) for r in recordings} - {""}
+        )
         return f"{len(recordings)} recording(s) from {distinct} {subject}"
 
     def _overview_tab(self) -> QWidget:
