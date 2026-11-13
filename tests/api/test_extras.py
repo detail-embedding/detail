@@ -106,7 +106,7 @@ def test_only_the_plain_pypi_extras_are_installed_for_you():
 
 def test_it_installs_into_the_running_interpreter(monkeypatch):
     monkeypatch.setattr(commands, "pip_command", lambda is_current=True: "pip")
-    assert extras.install_argv(["shap"])[:3] == [sys.executable, "-m", "pip"]
+    assert extras.install_argv(["shap"])[:4] == [sys.executable, "-P", "-m", "pip"]
     monkeypatch.setattr(commands, "pip_command", lambda is_current=True: "uv pip")
     monkeypatch.setattr(extras.shutil, "which", lambda name: "/bin/uv")
     argv = extras.install_argv(["shap"])

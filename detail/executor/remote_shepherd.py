@@ -18,7 +18,7 @@ It never runs pipeline code itself — it:
 3. Rewrites the job's ``compute`` to the concrete on-cluster target
    (``backend="cuda"``) and writes the *remote* ``job.json`` — the remote worker
    never sees ``"remote"`` as a backend.
-4. Submits an sbatch script that runs ``python -m detail.executor.worker
+4. Submits an sbatch script that runs ``python -P -m detail.executor.worker
    <remote_run_dir>`` — the same, unmodified worker entrypoint a local job uses.
 5. Polls the scheduler + mirrors the remote ``progress.json``/``job.json`` into the
    local envelope until the remote job is terminal.

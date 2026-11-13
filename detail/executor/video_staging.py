@@ -31,6 +31,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from detail.core import atomic
+from detail.core import interpreter
 from detail.core import progress as core_progress
 from detail.core.progress import PhaseClock, ThrottledProgress
 from detail.core.utils import utc_timestamp
@@ -142,14 +143,12 @@ def start(experiment_root, target_name: str, recording_ids: list[str]) -> dict:
     _write_state(experiment_root, target_name, state)
     with rundir.open_log(staging_dir(experiment_root), f"{target_name}.log") as log:
         proc = subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
+            interpreter.module_argv(
                 "detail.executor.video_staging",
                 str(experiment_root),
                 target_name,
                 *recording_ids,
-            ],
+            ),
             stdout=log,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,

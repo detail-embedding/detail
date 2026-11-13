@@ -302,14 +302,19 @@ Install it. This downloads a few gigabytes and can take 15 minutes or more:
 pip install --no-cache-dir -e ".[yolo,torch,gui,analysis,sam3]"
 ```
 
-Then install SAM 3's software, the same way as the SAM 3 step in Configure DETAIL:
+Then install SAM 3's software. Download it into a `src` folder inside your home folder,
+not straight into your home folder (see *About this step* for why):
 
 ```
-git clone https://github.com/facebookresearch/sam3 ~/sam3
+mkdir -p ~/src
 ```
 
 ```
-pip install --no-cache-dir -e ~/sam3 --no-deps
+git clone https://github.com/facebookresearch/sam3 ~/src/sam3
+```
+
+```
+pip install --no-cache-dir -e ~/src/sam3 --no-deps
 ```
 
 ```
@@ -322,7 +327,15 @@ pip install --no-cache-dir "setuptools<81"
 detail --help
 ```
 
-A list of DETAIL commands prints.
+A list of DETAIL commands prints. Then check that SAM 3 is found from your home folder,
+which is where DETAIL's jobs on Tillicum start:
+
+```
+cd ~ && python -c 'import sam3; print(sam3)'
+```
+
+It prints `<module 'sam3' from '...src/sam3/sam3/__init__.py'>`, a real path. If it says
+`(namespace)` instead, see *If this doesn't work* below.
 
 ??? info "About this step"
     `module load` makes conda available, because Tillicum keeps most software switched off
@@ -331,6 +344,11 @@ A list of DETAIL commands prints.
 
     `--no-cache-dir` stops the installer keeping a spare copy of every download in your home
     folder, which would fill it.
+
+    SAM 3 goes in `~/src/sam3`, not `~/sam3`, because DETAIL's jobs on Tillicum start in
+    your home folder, and Python looks there first. A downloaded folder called `sam3` right
+    in your home folder looks to Python like the `sam3` package itself, but an empty one, so
+    it hides the real SAM 3 you installed. In `~/src` it is out of the way.
 
 ??? warning "If this doesn't work"
     - **`gh: command not found`:** install it into the environment with
@@ -341,6 +359,20 @@ A list of DETAIL commands prints.
       create it again.
     - **"destination path already exists" when downloading:** it was downloaded before. Run
       `cd ~/detail` and carry on.
+    - **The SAM 3 check prints `(namespace)`, or a run on Tillicum fails at "loading model"
+      with `TypeError: expected str, bytes or os.PathLike object, not NoneType`:** SAM 3 was
+      downloaded straight into your home folder, as `~/sam3`, which an earlier version of
+      this page said to do. Move it into `~/src` and install it again from there:
+
+        ```
+        mkdir -p ~/src && mv ~/sam3 ~/src/sam3
+        ```
+
+        ```
+        pip install --no-cache-dir -e ~/src/sam3 --no-deps
+        ```
+
+        Then run the SAM 3 check again, and start the run again in DETAIL.
 
 ### Find the GPU partition
 
@@ -547,6 +579,11 @@ pip install --no-cache-dir -e ".[yolo,torch,gui,analysis,sam3]"
 ```
 
 Then type `exit` to log out.
+
+If you set up Tillicum before SAM 3 moved to `~/src/sam3` and still have a `~/sam3` folder,
+move it now: see the SAM 3 item under *If this doesn't work* in
+[step 4](#4-install-detail-on-tillicum). Until you do, runs that use SAM 3 on Tillicum fail at
+"loading model".
 
 ## Next
 

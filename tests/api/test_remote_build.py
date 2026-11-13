@@ -89,7 +89,7 @@ def test_the_cluster_is_asked_for_its_own_build_in_the_targets_environment(monke
     api_remote.check_remote_build("tillicum")
 
     ((host, command, script, kwargs),) = sent
-    assert host == "tillicum" and command.endswith("python -")
+    assert host == "tillicum" and command.endswith("python -P -")
     assert "buildinfo.report()" in script
     assert (
         kwargs["timeout_s"] == api_remote.DEFAULT_TEST_TIMEOUT_S

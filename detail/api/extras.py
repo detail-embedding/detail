@@ -44,6 +44,7 @@ from dataclasses import dataclass
 
 from detail.checks import commands
 from detail.core import installed
+from detail.core import interpreter
 
 #: The extras this tool installs for you: PyPI-only, no build step, no hardware choice.
 INSTALLABLE: tuple[str, ...] = ("analysis",)
@@ -164,7 +165,7 @@ def install_argv(packages: list[str] | tuple[str, ...]) -> list[str]:
     uv = shutil.which("uv") if commands.pip_command() == "uv pip" else None
     if uv is not None:
         return [uv, "pip", "install", "--python", sys.executable, *packages]
-    return [sys.executable, "-m", "pip", "install", *packages]
+    return interpreter.module_argv("pip", "install", *packages)
 
 
 def _quote(arg: str, *, windows: bool) -> str:

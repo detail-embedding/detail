@@ -156,8 +156,8 @@ def test_start_launches_a_detached_process_and_records_its_pid(
     state = video_staging.start(root, "tillicum", ["recording_001", "recording_002"])
 
     ((argv, kwargs),) = launched
-    assert argv[1:3] == ["-m", "detail.executor.video_staging"]
-    assert argv[3:] == [
+    assert argv[1:4] == ["-P", "-m", "detail.executor.video_staging"]
+    assert argv[4:] == [
         str(root.resolve()),
         "tillicum",
         "recording_001",
