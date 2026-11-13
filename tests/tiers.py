@@ -234,6 +234,9 @@ GUARD_FILES = frozenset(
         # A package probe in the app answers from startup; an editable install made while
         # it is open stays invisible until the .pth files are re-read (#506).
         "tests/core/test_installed.py",
+        # Every interpreter DETAIL starts runs with `-P`: a checkout in the folder it starts
+        # in (`~/sam3` under a Slurm job's `$HOME`) is otherwise imported as an empty package.
+        "tests/core/test_interpreter.py",
         # An `os.open` without O_BINARY is a text-mode descriptor on Windows, which cut a
         # trailing 0x1A off one zarr chunk in 256 when a run was flushed.
         "tests/core/test_binary_open.py",
@@ -453,6 +456,10 @@ UNIT_EXEMPTIONS = {
     "sent, here, because a script naming something that does not exist passes every test that "
     "is handed a finished answer — 0.6 s; every other `subprocess.run` in the file is a fake, "
     "and the file's tests total ~1.3 s, no workload",
+    "tests/core/test_interpreter.py": "six fresh interpreters that import nothing but a "
+    "one-line stand-in package, because which folder lands on `sys.path` is a fact about how "
+    "a process starts and nothing in-process can model it — no workload, no `detail` import; "
+    "the file's time is the repo scan",
     "tests/api/test_test_keypoints_registry.py": "one fresh interpreter, because the registry of "
     "built-in methods is a fact about a process and this suite's own has long since imported "
     "them all, so an in-process test passes with the fix removed — 1.4 s (importing "

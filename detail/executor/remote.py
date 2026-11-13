@@ -19,9 +19,9 @@ killed, nor on a live handle.
 
 import os
 import subprocess
-import sys
 from pathlib import Path
 
+from detail.core import interpreter
 from detail.core.dataclasses import ComputeTarget, Job, job_type_tag
 from detail.executor import rundir
 from detail.executor.local import LocalExecutor, new_process_group_kwargs
@@ -79,14 +79,12 @@ class RemoteExecutor(LocalExecutor):
         env = {**os.environ, RUNNER_MODULES_ENV: ",".join(self._runner_modules)}
         with rundir.open_log(run_dir, SHEPHERD_LOG_FILENAME) as log:
             proc = subprocess.Popen(
-                [
-                    sys.executable,
-                    "-m",
+                interpreter.module_argv(
                     "detail.executor.remote_shepherd",
                     str(run_dir),
                     self._target,
                     str(self._experiment_root),
-                ],
+                ),
                 env=env,
                 stdout=log,
                 stderr=subprocess.STDOUT,

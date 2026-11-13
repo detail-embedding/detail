@@ -11,12 +11,12 @@ import json
 import os
 import signal
 import subprocess
-import sys
 import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
 
+from detail.core import interpreter
 from detail.core.dataclasses import Job, JobStatus, ProgressEvent, job_type_tag
 from detail.executor import rundir
 from detail.executor.base import Executor
@@ -214,7 +214,7 @@ def spawn_coordinator(
     env = {**os.environ, RUNNER_MODULES_ENV: ",".join(runner_modules)}
     with rundir.open_log(run_dir, rundir.COORDINATOR_LOG_FILENAME) as log:
         proc = subprocess.Popen(
-            [sys.executable, "-m", entrypoint, str(run_dir)],
+            interpreter.module_argv(entrypoint, str(run_dir)),
             env=env,
             stdout=log,
             stderr=subprocess.STDOUT,
@@ -421,7 +421,7 @@ class LocalExecutor(Executor):
         # launching console (rundir.open_log)
         with rundir.open_log(run_dir) as log:
             proc = subprocess.Popen(
-                [sys.executable, "-m", "detail.executor.worker", str(run_dir)],
+                interpreter.module_argv("detail.executor.worker", str(run_dir)),
                 env=env,
                 stdout=log,
                 stderr=subprocess.STDOUT,

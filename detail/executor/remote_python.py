@@ -10,6 +10,7 @@ scans the package and fails if a second place builds it.
 
 import re
 
+from detail.core import interpreter
 from detail.executor import ssh_transport
 from detail.executor.schedulers.slurm import activation_prefix
 
@@ -32,30 +33,6 @@ def remote_version_skew(output: str) -> str | None:
         return None
     module, name, source = match.groups()
     return module or f"{source}.{name}"
-
-
-#: Put first in every snippet: the working directory is not on ``sys.path``.
-#:
-#: ``python -`` puts the working directory first, and an ssh login's is ``$HOME`` -- where DETAIL's
-#: own checkout is, by the install instructions, a folder called ``detail``. A repo root has no
-#: ``__init__.py``, so ``import detail`` there is a *namespace package* (``<module 'detail'
-#: (unknown location)>``) that a path-hook install (``pip install -e``'s finder, which sits after
-#: the path finder) never gets to answer for. ``from detail.core import x`` still worked, because the
-#: finder serves submodules, so the first snippet to ask for a name *on* ``detail``
-#: (``from detail import __version__``, the build check's) failed with ``cannot import name
-#: '__version__' from 'detail' (unknown location)``, which reads as "cluster too old".
-#:
-#: Only the start-up entry (``sys.path[0]``) goes. Later entries, ``PYTHONPATH``'s among them, are
-#: the environment's own choice and stay, even when one of them happens to be the same directory.
-_NEUTRAL_PATH = (
-    "import os, sys\n"
-    "if sys.path and os.path.abspath(sys.path[0] or '.') == os.getcwd(): del sys.path[0]\n"
-)
-
-
-def probe_script(script: str) -> str:
-    """``script`` as it is sent to the cluster: run from no particular directory."""
-    return _NEUTRAL_PATH + script
 
 
 def remote_python(
@@ -84,18 +61,20 @@ def remote_python(
     Raises:
         RuntimeError: the snippet exited non-zero.
     """
-    command = f"{activation_prefix(target)}python -"
+    # `-P`: an ssh login starts in `$HOME`, where a checkout folder (`~/detail`) would otherwise
+    # be imported as an empty namespace package (`core/interpreter.py`).
+    command = activation_prefix(target) + interpreter.remote_python_command("-")
     if on_line is None:
         result = ssh_transport.run_remote(
             target.host,
             command,
-            stdin_text=probe_script(script),
+            stdin_text=script,
             timeout_s=timeout_s,
             check=False,
         )
     else:
         result = ssh_transport.run_remote_lines(
-            target.host, command, on_line, stdin_text=probe_script(script)
+            target.host, command, on_line, stdin_text=script
         )
     if result.returncode == 0:
         return result
