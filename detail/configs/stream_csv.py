@@ -25,10 +25,10 @@ from pydantic import BaseModel, Field, field_validator
 #: stream-relative seconds anchored at the first data row, and rides the ``stream_seconds``
 #: path like ``seconds`` and ``t_ns``.
 #:
-#: ``auto`` is a member rather than a ``None`` default because ``Literal[...] | None`` lands
-#: in the schema's ``anyOf`` and its ``enum`` disappears, so ``describe_config`` reports no
-#: ``choices`` and every surface reading them (the docs table, ``choice_combo``) silently
-#: loses the option list.
+#: ``auto`` is a member rather than a ``None`` default. It was chosen when a
+#: ``Literal[...] | None`` lost its ``enum`` inside the schema's ``anyOf``; ``describe_config``
+#: now reads it from there (and ``choice_combo`` adds an "auto" row for the None), so either
+#: shape works — this one stays because stored configs carry ``"auto"``.
 TimeKind = Literal["auto", "frame", "seconds", "t_ns", "utc"]
 
 

@@ -1,4 +1,4 @@
-﻿# GUI guide
+# GUI guide
 
 The desktop app does everything the [CLI](cli.md) does, plus tools that need a mouse: draw a field of view, test detection prompts, preview the embedding input image, browse results. New here? Read [Concepts](concepts.md) first.
 
@@ -10,11 +10,26 @@ The desktop app does everything the [CLI](cli.md) does, plus tools that need a m
 
 ```bash
 uv pip install -e ".[gui]"      # GUI deps (PyQt6, pyqtgraph); add a backend, e.g. ".[gui,yolo]"
+uv pip install -e ".[gui,analysis]"   # also the clustering libraries and SHAP, for Analysis
 ```
+
+The `analysis` extra holds the clustering libraries and SHAP, which [Cluster profile](#cluster-profile-setup) uses to explain a cluster. Without SHAP the profile uses permutation importance and says so. You can also install it later from inside the app, at **Configuration ▸ Cluster profile**.
 
 Launch with `detail-gui` (equivalently `python -m detail.gui`). There is no `detail gui` subcommand. On a machine that already has the tool installed, see [Launch it again later](getting-started.md#launch-it-again-later).
 
-The app opens on **Experiments**, listing the experiments in your [managed workspace](concepts.md#where-experiments-live-the-managed-workspace) (`~/Documents/DetailExperiments` by default).
+The app opens on **Experiments**, listing the experiments in every [experiment location](concepts.md#where-experiments-live-the-managed-workspace) on this machine (`~/Documents/DetailExperiments` by default, plus any folder you added, such as one on an external drive).
+
+### On WSL {#wsl-display}
+
+On WSL (Windows' Linux subsystem) the app should run on Qt's **X11** display, not the **Wayland** one WSLg also offers: on Wayland, opening a drop-down inside a dialog (a skeleton editor was the case that crashed) ended the whole app with a segmentation fault, no message, no traceback. DETAIL picks X11 by itself when it can. Qt's X11 plugin needs a few system libraries a fresh WSL Ubuntu does not have, so install them once:
+
+```bash
+sudo apt install -y libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-shape0 libxcb-xkb1 libxcb-util1 libxkbcommon-x11-0
+```
+
+Until then the app starts on Wayland and prints this same command in the terminal. To keep Wayland and hide the message, launch with `QT_QPA_PLATFORM=wayland`; any `QT_QPA_PLATFORM` you set yourself is always respected. If the app ever closes without a message, launch it with `PYTHONFAULTHANDLER=1 detail-gui 2>&1 | tee -a ~/detail-gui.log`: a crash then prints where it happened into that file.
+
+A link (**Open full docs ↗**, the Hugging Face links) opens in your Windows browser: WSL usually has no Linux browser, so DETAIL hands the link to Windows. If no browser can be opened at all, a message shows the link with **Copy link**, to paste into a browser yourself.
 
 ## First-run setup
 
@@ -54,7 +69,7 @@ Model manager   every model on one page: global models, the open experiment's
 Keypoints manager  the skeleton library: draw, import, export skeletons
 Quick tools     one-off runs, no experiment (rail on the left):
                   Quick segment        run it, and browse its saved runs
-Docs            open the full docs in your browser (offline)
+Docs            open the user guides, or the full docs, in your browser (offline)
 
 Inside a project (rail on the left):
   Overview              the experiment itself: name, Export, Delete
@@ -85,7 +100,7 @@ facts are on the command line as [`detail version`](cli.md#version).
 
 ### Active processes {#active-processes}
 
-**Active processes** lists everything in flight across every experiment (what it is, which experiment it belongs to, and when it started), plus anything that failed while you were away, which is the other thing you came looking for. Double-click a row to open that run's own page, where its bars are. Nothing is started from here; runs are launched from an experiment, and exports from **Export…** on any screen.
+**Active processes** lists everything in flight across every experiment (what it is, which experiment it belongs to, where it is running: local, or a named remote target, and when it started), plus anything that failed while you were away, which is the other thing you came looking for. **Runs** also shows an estimated cost for anything running on a remote target that has a cost per GPU-hour set (see [Remote targets](#remote-targets)), live while it runs, final once it finishes. Double-click a row to open that run's own page, where its bars are. Nothing is started from here; runs are launched from an experiment, and exports from **Export…** on any screen.
 
 Three sections, because they answer different questions:
 
@@ -96,6 +111,11 @@ Three sections, because they answer different questions:
   remembers where they went.
 - **Imports** is video being copied in, plus your ten most recent finished imports. On a local
   disk an import is usually done before you get here.
+
+**Archive** clears finished rows from this list (they stay on their own experiments' pages).
+Select as many rows as you like (Ctrl-click or Shift-click) and press **Archive** under that
+section: every finished row in the selection is archived at once. A run that is still going is
+left in the list, and **Archive** is greyed out when nothing selected has finished.
 
 A row names the recording; double-click it to open that recording. When a batch of imports
 finishes, the strip under **Export…** names the recordings that came in and any that failed,
@@ -112,6 +132,8 @@ A **?** next to a field or section opens a short in-app explanation (from the bu
 ### Scrubbing frames
 
 Every frame view (run viewers, input-image preview, field-of-view editor, stream preview) shares one scrubber, so the controls are the same wherever video appears.
+
+**Pop-up windows open at the size of what they hold.** A dialog, the clip window or an enlarged pane opens large enough to show all of its content, pictures at their own size, up to 90% of the screen it opens on, centred; anything more scrolls. When more arrives after it opens (a frame decoded, a list filled), it grows to fit, up to the same limit. It never shrinks on its own, and once you resize it yourself it stays the size you chose. A list or table in one shows all of its rows, and you can drag the grip on its bottom edge to make it taller or shorter; the window stays the same size and scrolls if it has to. Each time a window opens it is sized afresh; no size is remembered.
 
 **Every frame zooms.** Scroll over the picture to zoom in where you point, drag to pan, and press **Fit** (it appears in the corner once you have zoomed) to come back to the whole frame. The zoom stays put as you scrub or play, so you can follow one animal up close through a bout. Hold **Alt** while scrolling to scroll the page instead of zooming the picture.
 
@@ -139,107 +161,132 @@ A clip player also has **Context: off · 1 s · 2 s · 5 s**, the footage shown 
 clip. The clip sits between the brackets, and playing starts at the left edge so you watch the
 lead-in. A clip that fills nearly the whole bar (a cluster member that runs most of the video,
 say) gets no brackets, since there is no context to set it apart from. Near the start or end of a video you get whatever footage there is. Each screen picks
-its own starting amount (1 s on the clustering page's clip window and on Behavior Scan's AUDIT,
-off elsewhere); a change lasts until you close the player.
+its own starting amount (1 s on Behavior Scan's AUDIT, off elsewhere, the clip window included);
+a change lasts until you close the player.
 
-**A clip in its own window** (double-click a clip, or a tile of the clustering page's montage)
-opens in the **Advanced view**: untick **Advanced view** at its top for the plain one-picture
-player, and tick it again to come back. **Blind mode** beside it names
-recordings A, B, C… instead of by name, since a name can give away a treatment or group. The
-window remembers both for next time. The same top row says how long the clip is and where it
-starts in its recording (hover it for the whole line), and holds **◀ previous** / **next ▶**,
-which step through the clips the window was opened with (a montage tile opens them in the
-montage's order, and says so).
+**A clip in its own window.** Double-click a clip on INTERPRET's montage, in a cluster window or on
+AUDIT (or press **Space** over it there) to open it, whole frame and from the full video, in the
+**clip window**. It sits beside the page rather than blocking it, and each page has one: while it is
+open, the next clip you double-click shows in the same window, which comes to the front. It closes
+with the page. It opens in the **Advanced view**: untick **Advanced view** at its top for the plain
+one-picture player, and tick it again to come back. **Blind mode** beside it names recordings A, B,
+C… instead of by name, since a name can give away a treatment or group. The window remembers both
+for next time. The same top row holds the orientation menu and **Export ▾** (both below), says how
+long the clip is and where it starts in its recording (hover it for the whole line), and holds
+**◀ previous** / **next ▶**, which step through the clips the page showed, in its order, with your
+place and that order beside them (*3 of 182 (most typical first)*; on AUDIT, *Least typical first*,
+or *Removed first, then kept* once the cluster is reviewed).
 
-The clip window does not block the page that opened it: you can keep using the page while it is
-open, and **double-clicking another clip shows it in the same window** (with that clip's
-previous / next) rather than opening a second one. Each page has its own clip window, and it
-closes when you leave the page.
+**As recorded** / **Aligned**, the menu in the top row, turns the footage, and the masks and
+keypoints with it, so the animal's body points up, frame by frame, as **Aligned** does on a clip
+grid. A frame with no body axis plays as recorded, marked *no axis*. It needs the keypoint run the
+embedding read and a heading definition; without them **Aligned** is greyed and says why. The window
+remembers the choice. **Align pose** (below) is a different thing: it redraws only the Keypoints
+pane, with the animal alone, centred and at its usual size.
 
-The **As recorded** menu in the same top row (choose **Aligned**) turns the picture so the clip's animal faces
-**up** in every frame: the footage, the masks and keypoints drawn on it and the two side panes
-all turn together, about the middle of the animal's body. It needs the keypoints the embedding
-read and a heading definition (see **Align pose** below); without them the menu is greyed and
-says why on hover. A frame where the body's axis cannot be measured plays as recorded, with a
-small *no axis* mark in its corner. The window remembers your choice.
+**Export ▾** in the top row writes what the window shows, as it is on screen: the footage alone, or
+with its two panes in the Advanced view, with every tick and the orientation. **Video of what you
+see…** writes an MP4 (the save dialog's file type picks the codec: **MP4 video, H.264**, the
+default, or **MP4 video, MPEG-4 Part 2 (mp4v)**) and **GIF of what you see…** a GIF (it asks for
+the width and frame rate first), both over the whole span on the bar, the clip and its context,
+behind a bar with **Cancel**. **This frame as PNG…** writes the frame on screen. The window then says
+where the file went.
 
-**Export ▾** in the top row writes what the window shows. **Video of what you see…** and **GIF of
-what you see…** write the picture as it is on screen (the footage alone in the plain view, the
-footage with its two panes in the Advanced view; every tick; the orientation) over every frame on
-the bar, so the clip's context is included. **This frame as PNG…** saves the frame under the
-playhead. Each runs in the background; video and GIF show a progress bar with **Cancel**, and the
-window says where the file went.
+The Advanced view is laid out so you can see the behaviour: the picture takes the window's
+whole width and most of its height, and everything else (the strips, the controls, the
+labelling) is a thin row under it. It shows three pictures of each frame. The footage is on
+the left, large; beside it, the **Masks** pane shows every tracked animal's outline on white (the
+clip's animal in orange, any other grey), and under that the **Keypoints** pane shows the points
+on white (the clip's animal in colour, any other grey). The side panes are never drawn over the
+footage. For that, the footage has its own two ticks under the slider: **Masks** tints the clip's
+animal, and **Keypoints** draws its points. The points are the keypoint run the embedding used
+(an embedding aligned by keypoints, or one that drew or appended the pose). An embedding that
+used none has no points to show, so the Keypoints pane says so and its tick is greyed. Every
+frame decodes its masks, for the Masks pane, so playback is about as fast as with **Masks** on in
+any other player.
 
-The Advanced view is laid out so you can see the behaviour: the picture takes the window's whole
-width and most of its height, and everything else is a thin row under it. The window opens
-nearly as wide as the screen and only as tall as the picture and its rows need, so no empty band
-sits above the picture or above **Close**. When the window is too narrow for the controls under
-the slider to fit on one line, the view ticks move to a second line together, with the frame
-counter at its end. It shows three pictures
-of each frame. The footage is on the left, large; beside it, the **Masks** pane shows every
-tracked animal's outline on white (the clip's animal in orange, any other grey), and under that
-the **Keypoints** pane shows the points on white (the clip's animal in colour, any other grey).
-The side panes are never drawn over the footage. For that, the footage has its own two ticks
-under the slider: **Masks** tints the clip's animal, and **Keypoints** draws its points. The
-points are the keypoint run the embedding used (an embedding aligned by keypoints, or one that
-drew or appended the pose). An embedding that used none has no points to show, so the Keypoints
-pane says so and its tick is greyed. **Loop clip** plays the clip itself over and over, without
-the context either side.
-
-Under the slider, on the slider's own timeline, thin strips in small print show what the clip's
-animal is doing, read from the embedding's kinematics: **speed** and **area** (its mask area, in
-pixels, or in mm on a recording with a [distance calibration](concepts.md#distance-calibration)),
-and under them a grey lane marking the frames where the animal has no tracked row. Each is
-scaled to the window, and the number at the right end is the value at the playhead; hover a
-strip for its value and unit there. The strips follow the embedding's own frame cadence, so a
-run that embedded every third frame has a point every third frame. An embedding made before
-kinematics were kept shows no strips and says to run `detail recording backfill-kinematics`.
+Under the slider, on the slider's own timeline, thin strips in small print show what the
+clip's animal is doing:
+**speed**, **area** (its mask area, where 1.00 is its typical size, so a top-view rear shows as
+a dip) and **nearest** (the distance to the closest other tracked animal). Each is scaled to the
+window, and the number at the right end is the value at the playhead; hover a strip for its
+value and unit there. Distances are in mm on a recording with a [distance
+calibration](concepts.md#distance-calibration), and otherwise in **body sizes** (the square root of the animal's typical
+mask area). **quality** marks, in red, the frames where the animal is not tracked or its
+detection is unsure, so a jump there is the tracking, not the animal. **clusters** shows which
+cluster each moment belongs to, the one you opened marked **(this)** and labelled ones by their
+label, so you can see what comes before and after (only when the window was opened from
+INTERPRET or a cluster window). **Loop clip** plays the clip itself over and over, without the context
+either side.
 
 **Trail** draws where the clip's animal has just been, over the last half second: each keypoint's
-path, in that point's own colour (blue for a left point, vermillion for a right one, green on the
-midline), fading into the past, on the footage and on the Keypoints pane. **Trail points** beside
-it chooses which points leave a trail (the paws only, say); every point does until you untick
-some. With **Align pose** on, the Keypoints pane's trails are each point's path *relative to the
-body* (every past frame turned by its own body axis), so they show a paw stepping or the head
-turning, not the animal crossing the arena; the footage shows that. A run with no keypoints has
-no points to trail, so **Trail points** is greyed with the reason and **Trail** draws the centre
-of the animal instead, in white.
+path, in that point's own colour (blue for a left point, vermillion for a right one, green on
+the midline), fading into the past, on the footage and on the Keypoints pane. **Trail points**
+beside it chooses which points leave a trail (the paws only, say); every point does until you
+untick some. With **Align pose** on, the Keypoints pane's trails are each point's path *relative
+to the body* (every past frame turned by its own body axis), so they show a paw stepping or the
+head turning, not the animal crossing the arena; the footage shows that. A run with no keypoints
+has no points to trail, so **Trail points** is greyed with the reason and **Trail** draws the
+centre of the animal's box instead, in white.
 
-**Mask trail** draws the clip's animal's masks from the last half second under its current one on
-the Masks pane, fainter the older they are, so you can see how its outline moved and changed
+**Mask trail** draws the clip's animal's masks from the last half second under its current one
+on the Masks pane, fainter the older they are, so you can see how its outline moved and changed
 shape. Only the clip's animal leaves one. The past masks are read from the detection run rather
 than decoded from the video, so it costs playback little.
-
-When the embedding read keypoints and a **heading** definition says which points are the front
-and the back, three more strips show the body's shape: **length** (the front-to-back length,
-where 1.00 is the animal's usual length, so a stretch reads above 1 and a hunch below), **bend**
-(degrees at the body's middle, 0 for a straight body; it needs a point on the midline between the
-front and the back, and is drawn either side of zero by the way it bends) and **turning** (degrees
-per second; positive is clockwise on screen). **Align pose** redraws the Keypoints pane with the
-clip's animal alone, centred, front up and at its usual size, so postures compare from clip to
-clip whichever way the animals faced. The heading is the one the embedding was aligned by;
-otherwise the experiment's one saved heading that fits the skeleton (make one with **Define…**
-beside **Heading** on the embedding form). With none, or with several and an embedding aligned by
-none of them, the three strips are left out and **Align pose** is greyed, with the reason on
-hover.
 
 **Click the Masks or Keypoints pane to open it large.** The pointer turns into a hand over either
 pane, and hovering says **Click to enlarge**. The pane opens in a window of its own that you can
 resize to the whole screen, drawn at the video's full resolution rather than the thumbnail made
-bigger; clicking the pane again brings that window forward rather than opening a second. It has
-its own **Play**, **Prev frame** / **Next frame**, slider, speed and **Loop**, and starts on the
-frame the clip window was showing. It follows the clip window as you work: tick **Mask trail**,
-**Trail**, **Trail points**, **Align pose** or **Context** there and the large pane changes with
-it, and **◀ previous** / **next ▶** move it to the next clip. It closes with the clip window, and
-stops playing when you close it. It draws from the masks and keypoints already stored for the
-clip and never reads the video, and so do its exports; the one exception is a recording whose
-record carries no frame size, where it decodes the footage to size the pane and says so at the
-top. **Export video…** writes the pane as an mp4, every frame at full size. **Export GIF…** first
-asks for the GIF's width (640 px unless you change it) and frame rate (12 fps), then where to
-save it; the GIF keeps real time at any rate, so a lower rate skips frames rather than playing
+bigger. It has its own **Play**, **Prev frame** / **Next frame**, slider, speed and **Loop**, and
+starts on the frame the clip window was showing. It follows the clip window as you work: tick
+**Mask trail**, **Trail**, **Trail points**, **Align pose** or **Context** there and the large pane
+changes with it, and **◀ previous** / **next ▶** move it to the next clip. Clicking the same pane
+again brings its window to the front rather than opening a second. It closes with the clip
+window, and closing it stops its playback. It draws from the masks and keypoints already stored for the clip and never reads the
+video, and so do its exports. **Export video…** writes the pane as an mp4, every frame at full size; the save dialog's file type picks the codec: **MP4 video, H.264** (the default, which PowerPoint plays) or **MP4 video, MPEG-4 Part 2 (mp4v)**. **Export GIF…**
+first asks for the GIF's width (640 px unless you change it) and frame rate (12 fps), then where
+to save it; the GIF keeps real time at any rate, so a lower rate skips frames rather than playing
 slower. Both cover the frames on the window's bar: the clip itself, or the clip with its context
 when **Context** is on, and the GIF dialog says which. A bar shows the export's progress, with
 **Cancel**; the window then says where the file went.
+
+When the embedding read keypoints and a **heading** definition says which points are the front
+and the back, three more strips show the body's shape: **length** (the front-to-back length,
+where 1.00 is the animal's usual length, so a stretch reads above 1 and a hunch below), **bend**
+(degrees at the body's middle, 0 for a straight body; it needs a point on the midline between
+the front and the back, and is drawn either side of zero by the way it bends) and **turning**
+(degrees per second; positive is clockwise on screen). **Align pose** redraws the Keypoints pane
+with the clip's animal alone, centred, front up and at its usual size, so postures compare from
+clip to clip whichever way the animals faced. The heading is the one the embedding was aligned
+by; otherwise the experiment's one saved heading that fits the skeleton (make one with
+**Define…** beside **Heading** on the embedding form). With none, or with several and an
+embedding aligned by none of them, the three strips are left out and **Align pose** is greyed,
+with the reason on hover.
+
+Opened from INTERPRET or a cluster window, the Advanced view has a labelling row under the
+controls. **Label cluster** gives the cluster the label in the box (pick one you have used, or type
+a new one), exactly as the page's label bar does, undo included. **Does this clip fit?** takes **Fits**,
+**Doesn't** or **Unclear** for the clip on screen (or the keys **Y**, **N**, **U**), saves it, and
+moves to the next clip. Beside the buttons is how many you have checked and roughly what share
+fit, with a 95% interval; hover it for the whole sentence. It covers the clips you looked at,
+most typical first, so it tells you about the cluster's core rather than every clip in it;
+the AUDIT tab measures a labelled cluster properly. A changed answer replaces the earlier one. A finished run takes no answers until you
+reopen it, as AUDIT does.
+
+**Cluster details**, at the end of the labelling row, opens two more sections under it (they
+take room from the picture, so they start closed, and the window remembers whether you left them
+open). **What sets this cluster apart** draws the cluster's three most distinctive
+measurements, one strip each: grey is stretches of the same animals' recordings, the dots are
+this cluster's most typical clips, and a blue line is the clip on screen, so you can see whether
+it is a typical one. It measures up to 40 clips from up to 10 recordings when the sections first
+open, says how many it used, and measures each clip over at least half a second, so a single-frame posture is read
+with the movement around it. **Compare** loops a clip of the cluster's sibling in the tree; **Another clip
+of it** steps through the sibling's most typical clips, and **Grid of 9 clips…** shows this
+cluster's nine most typical clips as stills, one click opening any of them in the window.
+
+The **Masks** pane also outlines the recording's field of view and its regions of interest,
+names the regions the clip's animal is in at its top left, and draws a line from the animal to
+the nearest other one.
 
 When the video cannot decode at the speed you picked, the rate it reaches is shown beside the
 speed menu (`72 fps`). On a narrow pane the row of controls wraps onto a second line rather than
@@ -262,7 +309,9 @@ Two surfaces show frames and deliberately do not play:
 
 ## Configuration
 
-Machine-global setup, shared across every experiment. The landing page is a **Get started** checklist (GPU / CUDA, the SAM 3 backend, Hugging Face access, a detection model, and optionally a distilled model), each with an **Open** button. It reads live state and marks each step ✓ when done.
+Machine-global setup, shared across every experiment. The landing page is a **Get started** checklist (GPU / CUDA, the SAM 3 backend, Hugging Face access, a detection model, a distilled model, keypoints, and the optional Cluster profile), each with an **Open** button. It reads live state and marks each step ✓ when done.
+
+**Set up keypoints for Analysis** is the last step. Aligning crops to the animal and pose in the embedding both need a keypoint model, so once you have distilled a detector this step counts toward setup being complete, and the experiment's **Models** page carries a banner until it is done. **Open** goes to that page, where [**Set up keypoints…**](#setup-keypoints) is. If you will not use keypoints, **Skip…** says what Analysis gives up without them (alignment, pose in the embedding and the pose-aware clustering and query that read it, keypoint exports, the keypoint audit) and, if you confirm, marks the step done as *Keypoints skipped*. **Undo skip** takes it back. The choice is this computer's, for every experiment. Afterwards every option that needs keypoints (alignment and pose on the embedding form, the keypoint exports, distilling keypoints) still shows, greyed or refused with a reason that says keypoints were skipped at setup and how to take that back.
 
 **Check readiness** re-runs the checks. It probes the environment in a fresh subprocess, so if you install something in a terminal while the app is open (a CUDA PyTorch wheel, the SAM 3 backend package), clicking it picks the change up **without restarting the app**. A newly installed SAM 3 backend is then usable straight away, Quick segment included. A reinstalled PyTorch is not: the running app keeps the PyTorch it started with, so restart DETAIL to use the new build. The same checks run headless as [`detail doctor`](cli.md#doctor). SAM 3 is only marked ready when its weights *and* its backend package (`import sam3`) are both present, so a run can't pass the check and then crash mid-run.
 
@@ -276,7 +325,88 @@ A step still to do carries a dismissable amber banner on its own screen, naming 
 
 **GPU / CUDA** shows the detected accelerator. When CUDA is broken on an NVIDIA box, the *CUDA doctor* names the gap and gives a copyable fix command plus the driver and PyTorch links. It shows how it chose the build: the newest CUDA your driver supports, and the newest PyTorch build at or below it (CUDA 13.2 gives `cu132`). Under the command it reminds you to restart DETAIL once the install finishes. On a machine without an NVIDIA GPU the panel is greyed, not hidden.
 
-**SAM 3 backend** gives the full copy-paste sequence to install SAM 3 into your environment, from opening a terminal to verifying: SAM 3 ships off PyPI, so it must be cloned and installed from source, and the detail package needs its `sam3` extra. Each OS gets one block, every command under a short `#` description; the block for the machine you're on uses the **real paths** the tool detects (your detail folder, your environment), the other OS's shows the relative forms and its own activation and Triton line. The block for your OS has an **Open Terminal** / **Open PowerShell** button (named for your platform's shell) next to **Copy** (it drops that terminal into your detail folder so you can paste the commands (greyed on Linux, where you open a terminal yourself). Run the sequence, then click **Check readiness** and the status flips without restarting the app. When the machine has no NVIDIA GPU, a note above the status says so) SAM 3 needs one to run, though the commands are still shown.
+**SAM 3 backend** gives the full copy-paste sequence to install SAM 3 into your environment, from opening a terminal to verifying: SAM 3 ships off PyPI, so it must be cloned and installed from source, and the detail package needs its `sam3` extra. Each OS gets one block, every command under a short `#` description; the block for the machine you're on uses the **real paths** the tool detects (your detail folder, your environment), the other OS's shows the relative forms and its own activation and Triton line. The block for your OS has an **Open Terminal** / **Open PowerShell** button (named for your platform's shell) next to **Copy** (it drops that terminal into your detail folder so you can paste the commands (greyed on Linux, where you open a terminal yourself). Run the sequence, then click **Check readiness** and the status flips without restarting the app. When the machine has no NVIDIA GPU, a note above the status says so) SAM 3 needs one to run, though the commands are still shown. When it has one that PyTorch can't use yet, the note says that instead and points to **GPU / CUDA**.
+
+### Cluster profile {#cluster-profile-setup}
+
+An optional step: SHAP for [Cluster profile](#cluster-profile-setup). It is not needed to run anything, so the step never blocks setup and never shows a banner. It shows ✓ when SHAP is installed; until then it reads *Optional* and names what is missing.
+
+**SHAP** shows whether it is installed, with its version, and what it changes: with SHAP, Cluster profile weighs each measure by its mean SHAP value; without it, by permutation importance, and the profile says which it used. **Install SHAP** installs the `analysis` extra's missing packages into the environment the app is running in (with `uv pip` when uv is installed, else that environment's `pip`), with a progress bar and **Cancel**. If the install fails, the installer's output appears below. The same install is shown as a command to copy, for running in a terminal yourself. When it finishes the section checks again, and Cluster profile uses SHAP on its next **Recompute** without restarting the app.
+
+The profile window links here: a profile that fell back to permutation importance shows **Install SHAP…**, which opens this page in a window.
+
+### Remote targets {#remote-targets}
+
+Machine-global Slurm cluster profiles (UW Tillicum, Hyak, a lab's own cluster) detection,
+embedding, keypoint detect, keypoint track, distillation and Profile clusters can
+submit to instead of running here. Not part of the
+Get-started checklist: zero registered targets is a normal setup, not an incomplete one,
+so it's its own **Open →** on the Configuration landing rather than a checklist step.
+First-time setup, including the Windows-only steps:
+[Connect a remote cluster](workflows/connect-a-remote-cluster.md).
+
+- **Add target**: name, SSH host, remote work directory, partition/account, conda environment,
+  modules to load, GPU/CPU/memory/walltime, how many **concurrent jobs** one run may keep on the
+  cluster (default 8; the table shows it and the walltime beside each target), and an optional
+  cost per GPU-hour (USD). The walltime defaults to `24:00:00`, the longest a Tillicum job may
+  run, because Slurm kills a job at its limit; a target saved earlier keeps the `04:00:00` it
+  was saved with until you **Edit** it. `Host`
+  should match a `Host` alias in your own `~/.ssh/config` (keys, an agent, ControlMaster, a
+  cached Duo session); DETAIL never stores or prompts for a credential. The cost per GPU-hour
+  drives an estimated cost on this target's runs (GPUs requested × the hours the job actually
+  ran × the rate; time spent waiting in Tillicum's queue is not counted), shown on a run's own
+  page and in Active processes; leave it blank to show no cost estimate. A run's **Duration**
+  is the whole run's, across a **Retry**.
+- Select a row for **Edit**, **Remove** (asks to confirm), **Test connection** (SSHes in and
+  checks `sbatch` is reachable, without submitting anything, then compares the DETAIL
+  installed there with the build this app is running: a second line says **the same build**
+  (green), or that the cluster is **behind** this app and the command to bring it up to date,
+  **ahead** of it, on a **different history**, or could not be compared, all in amber. A cluster
+  that is behind fails every recording the day this app uses something new, which this finds
+  before a run does), **Push credentials**
+  (copies every credential this machine has configured to the target's own credentials
+  file, merging rather than overwriting), **Open SSH session**, or **Update DETAIL…**. The
+  cluster buttons sit on their own row, under **Edit** and **Remove**.
+- **Update DETAIL…** checks the DETAIL on the selected target against this app and, only when it
+  is **behind**, offers to bring it up to date. The check is read-only; the question names the
+  folder and the command, and nothing changes on the cluster until you answer **Yes**. The update
+  is `git pull --ff-only` in the cluster's DETAIL checkout, in the target's own environment, then
+  a second comparison, whose result replaces the status line (green when the two now match, amber
+  when git refused or the two still differ, with the reason, and git's own message when it
+  refused). It only moves that checkout forward: if the checkout has commits or edits of its own
+  that stand in the way, git refuses and leaves it exactly as it was. Nothing is installed: if
+  `pyproject.toml` changed, it tells you to run `pip install -e .` in the target's environment.
+  Do it when no run is going on that cluster, since a run in flight keeps importing modules as it
+  goes. A cluster that is **ahead** of this app (update this app instead), on a **different
+  history**, or that could not be compared is not offered an update. The CLI twin is
+  `detail remote update`.
+- **Push credentials**: Hugging Face is the one credential this pushes today. A
+  **gated** model (SAM 3, DINOv3) needs a token *on the cluster* to check access
+  and download weights there, and this machine's own token never reaches a remote job by
+  itself, since the readiness check and the run both happen on the cluster. Do this once
+  per target before installing or running a gated model there for the first time (the CLI
+  twin is `detail remote push-credentials`). A future credential type, a cloud provider's
+  own access key, is forwarded the same way the day this machine manages one, with no new
+  button.
+- **Open SSH session** opens a real terminal running `ssh <host>`, the one-click form of
+  refreshing an expired SSH/Duo session, needed when **Test connection** or **Push
+  credentials** fail with a permission error rather than a normal failure message (Tillicum's
+  cached Kerberos ticket / Duo push times out on its own schedule, independent of DETAIL, and
+  every other remote command shells out non-interactively, so it fails fast rather than
+  prompting). **This never asks for your password or NetID inside DETAIL**: it only opens
+  the terminal your own `ssh` runs in, so the login happens exactly as if you'd typed the
+  command yourself; DETAIL never sees the password or the Duo approval. Greyed on plain Linux
+  outside WSL, where no single reliable way to open a terminal exists (open one yourself and
+  run `ssh <host>`). From WSL it opens a Windows PowerShell window that comes back into **the
+  distro DETAIL is running in** (your SSH config and known hosts live there, not on Windows). If
+  Windows refuses to start `wsl.exe` from that window, it says so and tells you to open your WSL
+  terminal and run `ssh <host>` yourself, which does the same thing.
+- Picking **Remote** as a detection, embedding, keypoint detect or keypoint track run's backend offers this list
+  to submit through. The **Auto-label**, **Train from dataset…** and **＋ Distill new model**
+  dialogs offer it the same way: a detector distill's two stages (label, train) each pick their
+  own backend, so one target can label while another (or the local machine) trains. A keypoint
+  distill and **Set up keypoints…** offer it for training (and the setup for its detection too);
+  the patch method labels on this computer, where the videos are.
 
 ## Experiments
 
@@ -284,9 +414,15 @@ One card per experiment in your workspace: a still from the middle of its footag
 
 The cards appear at once; the still and the counts fill in a moment later. On a workspace held on a network share that moment is noticeable: the reading is the slow part, not the drawing.
 
-- **New experiment**: name and optional description; created in the workspace.
-- **Import experiment**: pick a `.tar` archive from [`experiment export`](cli.md#moving-experiments-between-machines) or the Export dialog's **Experiment bundle**. A same-id collision asks whether to replace. A bar shows how far the import has got (extracting, then verifying the archive against its checksum, then finding video used in place) and the time left, and **Cancel** stops it with nothing placed; an experiment it was going to replace is left as it was. Video used in place is looked for in the folder the exporting computer kept it in; recordings whose video still isn't found are named when the import finishes.
+- **New experiment**: name, optional description, an optional default [camera view](concepts.md#camera-view) (**Other** asks for a description), and **Save in**: the location to create it in (**Default folder** unless you choose another). **Add location…** beside it adds a folder, such as one on an external drive, and selects it; an unplugged location is listed greyed out.
+- **Import experiment**: pick a `.tar` archive from [`experiment export`](cli.md#moving-experiments-between-machines) or the Export dialog's **Experiment bundle**. With more than one location connected, it asks which to import into. A same-id collision asks whether to replace. A bar shows how far the import has got (extracting, then verifying the archive against its checksum, then finding video used in place) and the time left, and **Cancel** stops it with nothing placed; an experiment it was going to replace is left as it was. Video used in place is looked for in the folder the exporting computer kept it in; recordings whose video still isn't found are named when the import finishes.
+- **Experiment locations…**: every location, its folder and whether it is connected. **Add location…**, **Change folder…** (re-point a name, e.g. a drive that came back under another letter) and **Remove** (stop listing it; nothing on disk is deleted).
+- With more than one location, each card names its location, and a line above the cards names any location that is not connected.
 - **Double-click a card** to open its project view.
+- **Archive** (on each card) hides the experiment from the list without changing or deleting
+  anything in it. **Show archived (N)** at the bottom brings archived experiments back onto the
+  list, marked *Archived*, each with **Unarchive**. An archived experiment still opens and runs.
+  Importing an archived experiment's export lands it unarchived.
 
 ## Experiment overview {#experiment}
 
@@ -302,6 +438,9 @@ Edit the experiment name and description, then **Save**.
 
 Lists the experiment's recordings and adds new ones.
 
+- **Camera view (experiment default)**, at the top: the [camera view](concepts.md#camera-view) every recording inherits. Changing it saves at once and updates every recording that has no view of its own. The table's **Camera view** column shows each recording's view, marked *(default)* when it is inherited.
+- **Class names…**, beside it: one row per detection class, as it was detected, with a field for its [name](concepts.md#class-names) in this experiment. **Save** applies every row at once, so two classes can swap names. Leave a field empty to keep the detected name. The class pickers (tracking's class, keypoint detect's class and per-class example sets, the distill dialog, **Set up keypoints…**, **Mark example frames**' floor), the detection form's per-class thresholds and run labels show the name. Exported files and rendered videos keep the detected name, which is what the runs recorded.
+
 - **Add recordings**: one row per recording, a name and an optional video file (a metadata-only recording is valid). A **Reference the video in place (don't copy it into the experiment)** checkbox uses the videos where they live instead of importing copies, for large libraries you can't duplicate ([Concepts](concepts.md#video-part)); the tool remembers each file's location automatically (nothing to configure). Imports run in the background; recordings appear at once and fill in as video imports. While they run, the status bar at the bottom of the window shows a progress bar, the recording importing now and its step (reading timestamps, copying), how many are done, and the estimated time left.
 - **Import bundle**: bulk-import recordings (video + streams + grouping variables) from a manifest folder, the GUI form of [`recording import --bundle`](cli.md#bulk-importing-recordings). See the [Manifest reference](reference/manifest.md).
 - **Import behavior labels**: batch-import ground-truth labels from a labels manifest, the GUI form of [`recording import-labels`](cli.md#importing-behavior-labels-ground-truth). Pick the manifest and importer (interval CSV or BORIS).
@@ -315,7 +454,7 @@ Every recording-level input lives here (run outputs are read-only). The top show
 **DATA PIPELINE**
 
 - **Video**: the imported part(s) and their on-disk location. **Add video part** opens the same reference-in-place checkbox as Add recordings. For a **referenced** video the location is the resolved external path; if it moved or changed, a status line flags it and **Locate video** points the part at its new file (accepted only if the content matches: a changed video means remove and re-add). You can move or rename the file while its recording page is open: the app lets go of a video a couple of seconds after it last showed a frame from it. On an experiment made on another computer, locating one video is enough: every recording whose videos are in the same folder finds them too. (Importing an experiment already looks where the exporting computer kept the video, so this is only needed when that folder isn't reachable from this computer under the same path.) A changed/missing referenced video also flags the runs below as possibly stale. **Move up** / **Move down** reorder parts, locked once anything has run against them.
-- **Scene geometry**: one section for the four things you draw on a frame.
+- **Scene geometry**: the recording's [camera view](concepts.md#camera-view) (its own, or the experiment default it inherits), then one section for the four things you draw on a frame.
     - The **field of view**, a polygon that [bounds detection and tracking](concepts.md#field-of-view).
     - The **distance calibration**: two points a known distance apart, giving
       [pixels-per-mm](concepts.md#distance-calibration), so analysis reports millimetres.
@@ -326,6 +465,8 @@ Every recording-level input lives here (run outputs are read-only). The top show
     just the frame if nothing is defined yet, or a note if no video has been imported. Click it
     to see the same picture at full size. **Edit scene geometry…**, centered underneath, opens
     the editor.
+
+    The editor's **Camera view** dropdown, at the top, sets this recording's own view. Its first option, **Experiment default (…)**, names the view the recording inherits; choose it to go back to inheriting. It is saved with everything else by **Save**.
 
     **One canvas, all four.** Whatever you are editing, the others stay on screen in their own colours, so a region is drawn against the field of view it sits inside rather than on a blank frame. Pick a definition in the list on the right to edit it (it takes its own colour and everything else greys out, so the frame says which one your drags will move. Its checkbox hides it; the **+ Field of view / + Distance calibration / + Regions of interest / + Points of interest** buttons above the list start a new one, and they are the only way to start one (clicking the frame draws nothing, which used to be an easy accident). Scroll over the frame to zoom in and out (or use the **Zoom in** / **Zoom out** buttons above it), and drag with the right mouse button to pan; **Fit** returns to the whole picture) useful for placing a vertex precisely on a high-resolution recording. Scrub to another frame and **Set keyframe here** to make a shape follow a moving camera; a region or point can be limited to part of the video with **Active window**. **Save** writes every kind and leaves the window open, it greys out when there is nothing pending, which is how you know your edits are in. **Close** asks first if they are not. Select nothing and the dialog is just a picture of the whole setup, every kind in its own colour, the cheap way to check that a copied setup landed right. A region limited to part of the video is drawn only on the frames it applies to.
 
@@ -353,13 +494,17 @@ Every recording-level input lives here (run outputs are read-only). The top show
 
 ## Recording information
 
-One row per recording. The first two columns are always there: `recording_id`, then **file**: the video's name, read from whatever you imported (the full path is in the tooltip). After that, one column per thing that varies across them (treatment, sex, day). The table is view-only until you click **Edit**. `recording_id` and `file` are always read-only. In view mode, double-click a row to jump to that recording's page.
+One row per recording. The first three columns are always there: `recording_id`, then **file**: the video's name, read from whatever you imported (the full path is in the tooltip), then **acquisition_setup**: which camera, box or rig the recording was made with. After that, one column per thing that varies across them (treatment, sex, day). The table is view-only until you click **Edit**. `recording_id` and `file` are always read-only. In view mode, double-click a row to jump to that recording's page.
+
+The table fills the window and scrolls inside it. With more columns than fit, drag the bar along its bottom edge to scroll sideways; with more recordings than fit, it scrolls down and the column names stay at the top. Both bars stay on screen however many recordings there are.
+
+**Fill in acquisition_setup for every recording.** Give recordings made the same way the same value (`box 1`, `top camera`); an experiment with one setup uses one value throughout. Keypoint setup uses it to pick one recording from each setup to learn from, so a student model sees every camera angle it will be used on. It is in every experiment and cannot be deleted; an experiment made before it existed shows it blank.
 
 Edit mode is one transaction, staged in the table until you **Save** (or **Cancel** to discard):
 
 - change cells directly (paste from a spreadsheet works),
 - **Add column** adds a variable,
-- **Delete column** removes one and its values.
+- **Delete column** removes one and its values (not `acquisition_setup`).
 
 You can also add a column from a single recording's page, columns are experiment-wide, so it appears (blank) on every recording.
 
@@ -415,21 +560,28 @@ If you've typed into a table or a form and navigate away without saving, you're 
 **Launch a run:**
 
 1. Pick a **module**, listed in pipeline order (**1. Detection** · **2. Tracking** · **3. Embedding**).
-2. Select the **recording(s)**. Only recordings whose upstream dependency is satisfied are eligible. **Select all** / **Clear** toggle every eligible one.
+2. Select the **recording(s)**. Only recordings whose upstream dependency is satisfied are eligible. **Select all** / **Clear** toggle every eligible one **that the filter is showing** (see below).
 3. Fill the module's **config** form, then run. The run fans out per recording.
 
-Before the run starts, every selected recording is checked, and over many recordings that takes a
-while. The line under the form says **Validating** and names the recording being checked with its
-place in the selection, for example `Rat 12 (3/48)`. An embedding run reads each recording once
-more beforehand for the settings the whole selection shares, such as its background colour
-(**Resolving shared settings**).
+**Choosing recordings in a large experiment.** Every list of recordings, in the Launch dialogs, the labeling and comparison forms, and *Copy to other recordings*, shows each recording's [Recording information](#recording-information) after its name (in the column order of that page, a dash where a recording has no value; hover a row for `column: value` lines) and has a filter above it:
+
+- **The text box** matches the name and every value. Several words must all match, so `drugon cd1` finds the CD1 recordings that are drug-on.
+- **One drop-down per column** that holds between two and twelve different values (Strain, Sex, Brain_state, a dose). A column with more, such as an animal id, has no drop-down; the text box still searches it.
+- **A filter only hides rows; it never changes what is selected.** A recording you ticked and then filtered out is still ticked and still runs. The line under the filter says so (`12 of 80 recordings shown · 5 selected (2 hidden by the filter)`). **Select all** and **Clear** (or **Select shown** / **Clear shown** on lists without those buttons) act on the rows shown, so *filter to CD1, Select all, filter to C57, Select all* picks both.
+- **Clear filter** appears while a filter is on.
+
+The label browser keeps its own recording search and metadata filter.
+
+**While it checks the recordings.** Launching a run (or retrying one) first reads every selected recording, which takes a while on a large selection or a network drive. The status under the form names the pass (Resolving shared settings for an embedding run, which reads each recording once more for the settings the whole selection shares, such as its background colour; then Validating recordings, then Estimating disk space), the recording it is on and the count (for example `Rat 12 (12 of 71)`) and the time left, which appears once it has measured its own pace. The run is not launched until both finish.
+
+**If it will not fit on the drive.** Before it starts, a run estimates what it will write. If that, plus 5 GB kept spare, is more than the free space on the drive holding the experiment, you are asked first: the message gives both numbers, and **No** is the default. Under WSL, the drive is the Windows drive holding WSL's disk whenever that has less room. Retrying a run's incomplete recordings asks the same way. The [CLI](cli.md#process) lists typical sizes.
 
 **Advanced Settings.** Every config form shows the parameters you are likely to change and
 keeps the rest behind one **▶ Advanced Settings** toggle at the bottom, under a divider and
 labelled with how many are inside. Click it and they all appear at once; a form with a lot of
 knobs sub-divides them under headings, *Segmentation*, *Clustering*, *Tracker parameters*.
 The window opens tall enough to show every setting outside **Advanced Settings**, and grows
-when you pick a module with a longer form, up to the height of your screen.
+when you pick a module with a longer form, up to 90% of the height of your screen.
 
 When a hidden value differs from what the form opened with the header says so
 (**▶ Advanced Settings (11 · 2 changed)**), and the section opens itself when **Start from**
@@ -464,7 +616,9 @@ away.
 **What it does not carry** is your recordings or the run's upstream artifact: the embedding
 run or the tracking run. Those are chosen for the run you are making, not copied
 from one you pointed at, and a run id means something different in another experiment. Check
-your recordings and the form offers the upstream runs they actually share.
+your recordings and the form offers the upstream runs they actually share. One exception: a
+**Behavior scan** brings back its example clips, and they belong to its embed run, so when the
+recordings you check still offer that embed run, it is chosen again. Pick another by hand and yours stands.
 
 A run has to have recorded its settings to be worth starting from. Runs made before the tool
 recorded them are listed greyed out and say so rather than vanishing,
@@ -509,10 +663,44 @@ records that the point cannot be seen on this frame, **Clear
 (Backspace)** unmarks it, **1-9** choose a point, **D** / **A** step through the set's frames,
 which are also ticks on the slider. **Add frames** copies in frames the tool picks: **Varied
 frames** reads every tracked frame's shape and chooses postures that differ (the typical ones
-first), **Spread over time** takes one per equal time slice. The bar names the recording and
-counts its frames as it reads them; **Cancel** under it (or closing the window) stops the draw
-and adds nothing. **Remove frame** asks first when the
-frame carries marks. The line at the bottom says when every keypoint has been placed visible on
+first), **Spread over time** takes one per equal time slice, and **By heading (8 directions)**
+picks the count *per direction* the animal faces as the camera sees it: toward, away, left,
+right, the four diagonals, and rearing. When a recording has several tracking runs (each
+animal's own track and their merge, in an experiment that tracks animals by class), **From
+tracking** appears above **Add frames**: choose which kind of run to sample from. An animal's
+own track gives frames of that animal only, which is what an example set for one class wants;
+the merged track gives frames of every animal. Nothing is chosen for you, and **Add frames**
+stays greyed until you choose. **Recordings** sets how many recordings Varied and By
+heading read, and **spread across** splits them evenly across a metadata column's values (an
+acquisition setup, a cohort) instead of by import order. **Floor** is off by default (**no
+floor**), which works with any detector. If your detector also segments the arena floor (a hot
+plate, an open-field base), choose that class here. A floor matters when the camera looks
+across the arena rather than straight down, as from a 45° or side view: the floor is squashed
+in the picture, so a mouse walking toward or away from the camera barely moves on screen and a
+few pixels of wobble look like walking. With the floor's outline, By heading measures that
+movement on the floor itself and checks it against the mouse getting bigger or smaller, so the
+**toward** and **away** directions are found more reliably. Without one, those directions come
+from the tail and from similar-looking frames, and are filled less often; left and right are
+unaffected. A recording in which the floor class was never detected is read as if no floor
+were chosen. The bar
+names the recording and counts its frames as it reads them; **Cancel** under it (or closing the
+window) stops the draw and adds nothing. By heading reads each recording once, the first time,
+and remembers it.
+
+By heading, **Floor** and the compass below are for a camera that looks across the arena. When
+every recording the window offers has the [camera view](concepts.md#camera-view) **Top down**,
+they are not shown, and one line says why: from above, the animal never faces toward or away
+from the camera. They stay when any recording is a side, angled or other view, or has no view
+set. If the view is wrong, change it at the top of the **Recordings** page, or for one
+recording under its **Scene geometry**, and open the window again.
+
+The **compass** below shows, per direction, how many of the set's frames face that way (marked /
+in the set); a direction short of frames is amber. Click a direction to review it: its frames in
+the set above the next best candidates. Tick candidates and **Add selected**; **Not this
+direction** never offers a candidate here again; **Reject** on a frame in the set takes it out,
+remembers it, and puts the next best guess in its place (it asks first when the frame carries
+marks). **Open** jumps the player to a frame, and **◀ Previous** / **Next ▶** step round the directions. **Remove
+frame** asks first when the frame carries marks. The line at the bottom says when every keypoint has been placed visible on
 at least one frame, which is what a run needs. The tool row offers **Point**; region and box
 marks are reserved in the file format and greyed until something reads them.
 
@@ -529,18 +717,41 @@ The method list also offers this experiment's trained students, marked *trained 
 experiment*, and the keypoint models in the Model manager's **Global models**, marked *from the
 model catalog*. A student needs no example set and no DINOv3 weights.
 For a trained student the form shows **Minimum pose confidence** instead, opening on the
-method's 0.25: a pose the student is less sure of is not stored. The decode, the left/right rule
+method's 0.25: a pose the student is less sure of is not stored. **Class** lists the classes
+the chosen detection run found and opens on *(every class)*; pick the animal's class when the
+detector also finds something else, such as the arena, and only those detections get a pose.
+It is shown only for a method that works on each detection, since a method that looks at the
+whole frame is handed no detections. **Example set per class** is for animals the detector
+tells apart as classes that look different, such as a white and a black mouse: tick **One
+example set per class** and the Class and Examples rows give way to one row per class the
+detection run found, each with a tick (place poses in that class) and its own example-set
+picker. Each class's detections are matched against its own set. Tick at least two classes, each
+with a set on the same skeleton; the box is greyed until the detection run has two classes.
+**Start from** ticks the same classes and asks again for each set. The decode, the left/right rule
 and the crop size sit under Advanced and open on *auto*, which means the method resolves them
 from the set's skeleton and records what it chose. There is no tracking run and no track list:
 a detect run places points on every detected animal and leaves giving them to tracked animals
-to keypoint track. **Start from** restores the method and its settings but asks again for the
-detection run and the example set, which name things this experiment made.
+to keypoint track. **Start from** restores the method, the class and the other settings but
+asks again for the detection run and the example set, which name things this experiment made.
+
+The **Method** list also offers methods that need no example set, so the example-set rows are
+hidden for them: the two DeepLabCut SuperAnimal models (`superanimal_topviewmouse`, mice filmed
+from above; `superanimal_quadruped`, four-legged animals from the side), installed from the
+**Model manager**, which shows their license (academic, non-commercial) when one is selected; a
+SLEAP model you imported (listed as *from the catalog*); and a student you distilled (*trained
+student*). The backend can be **Remote**, to run on a [registered cluster](#remote-targets).
+
+A keypoints run made before keypoint detect and track existed (`kp_NN`) still opens on its run
+page with its points drawn, and exports with the keypoint targets. It cannot be launched again.
 
 **Test keypoints**, the form's last row, is the keypoints counterpart of detection's **Test
 prompts**: it tries the method on a few tracked frames of the chosen detection run before a full
 run, and writes nothing. It is greyed, with the reason, until the form has a method that learns
-from an example set, an example set and a detection run with exactly one tracking run on it in
-each selected recording. Its window has the same shape as Test prompts: choose
+from an example set, an example set and a detection run with a tracking run on it in each
+selected recording. When a recording has several tracking runs on that detection run (each
+animal's track and their merge, say), **Test on tracking** appears above it: choose which one the
+test draws its frames from (the merged run tests every animal at once); nothing is chosen for
+you. Its window has the same shape as Test prompts: choose
 **Recordings** (all the selected ones, or one) and **Sample frames** (12 by default), then **Run
 keypoint test**. Each frame shows the method's points, placed with the form's size, example set
 and Advanced settings, so the test places them the way the run will. The **Score cut-off** slider
@@ -549,7 +760,8 @@ above the frames redraws without running again: a point is **filled** at or abov
 run keeps every point and its score, so the cut-off here is only for looking. Below the frames,
 the **Example set check** places each of your marked frames from the others and compares the
 result with your own clicks, as a median error in pixels and as a share of body size; **Per
-point** breaks it down by point. **Another sample** draws different frames, and double-click
+point** breaks it down by point. With an example set per class, each animal is placed with its
+own class's set, and the check scores each class's frames against that class's other frames. **Another sample** draws different frames, and double-click
 a frame to see it full size.
 
 A finished detect run opens in the detection viewer with every pose on the frame drawn,
@@ -561,13 +773,21 @@ keypoint track. A finished detect run's page offers **Run keypoint_track →**.
 **Keypoint track** asks for the detect run, the **tracking run** whose animals the poses are
 given to, and a method. The tracking run opens on *The one on the detect run's detection run*:
 the run finds it, and if that detection run has several finished tracking runs it refuses and
-names them, so pick one from the list. **Match: share inside mask** (0.5) and **Match: mask grow**
+names them, so pick one from the list. The list offers only tracking runs on the detect run's own detection run, and follows the detect run as you change it: one on another detection run is greyed, saying so, since the run would refuse it. When you track animals by class, each animal's tracking
+run gives the poses to that animal alone: combine them with **Merge tracks** first and pick the
+merged run, which the refusal names when one exists. **Match: share inside mask** (0.5) and **Match: mask grow**
 (0.05 of body size) under Advanced decide when a pose belongs to an animal; both are starting
 values, not measured ones. The method list opens on the detect run's own method, marked
 *(default)*: `temporal_decode` for `dinov3_match`, `despike_smooth` for a trained student. Pick
 the other and the form keeps your choice. The chosen method's settings appear under Advanced,
-*Method settings*, and every one of them is part of the run's identity. It runs on the CPU in
-seconds, so another tracking run, window or cut-off is a new run over the same detect run. Its
+*Method settings*, and every one of them is part of the run's identity. It uses one CPU core per
+recording, at about 200 animal-frames a second (about 4 minutes for 13 minutes of two-animal video),
+and a run works on several recordings at once, one per core for half this computer's cores (at
+most 8; eight recordings took 50 s instead of 200 s one at a time on a 16-core machine).
+**Backend** can be **Remote** when a
+[cluster is registered](#remote-targets): each recording is then its own job there, as many at
+once as the target allows, and nothing needs installing on the cluster, since there is no model.
+Another tracking run, window or cut-off is a new run over the same detect run. Its
 viewer is the tracking viewer with each animal's final points, a line per video part
 saying how many poses were given to an animal and how many were not, a line per animal saying
 how many of its frames were given a pose, a second loss row per track (frames the track had a
@@ -577,6 +797,71 @@ frames that show the point. A finished track run's page offers
 **Run embedding →**, which opens the embedding form on the run's recordings with its
 **Keypoint track run** already set to this run; choose **Egocentric alignment** yourself,
 since turning or flipping depends on the camera.
+
+**Points to track** lists the chosen detect run's own skeleton, one checkbox per point, all
+ticked. Untick a point and the track leaves it exactly where detection put it: no path, no
+smoothing, no left/right swap. Use it for a point tracking makes worse, as with the fore paws on
+the hot plate. Any combination works with any skeleton; if you untick one point of a left/right
+pair, the row notes that the pair is no longer swapped left from right, since that takes both.
+The choice is part of the run's identity, like every other setting.
+
+**Preview tracking…**, on the last row of the Keypoint track form, shows what your settings do
+before you spend a run on them, with no labels needed. A full track run gives every pose of the
+detect run to an animal, which is most of its time; the preview does that for a few seconds of a
+few recordings only, once, and then tracks those seconds with your settings and two variants in
+memory, so it takes seconds. In the window, choose up to three recordings (two of those your
+settings cover are chosen for you) and where each window starts (*middle* until you set it), and
+one duration for all (30 s by default). Below, **Try variant A** and **Try variant B** each change
+a few settings from yours: the transition scale, smoothing and its window, and despike. They start
+at a wider transition and at transition 3 with the filters off, starting points rather than advice. Click
+**Run preview**: a progress bar you can cancel, then one picture of four tiles playing together
+on the same frames, detection alone, your current settings and each variant, each with its points
+on the animal and named in its corner the way the form and the table name it (**Variant A:
+transition 1**). The mouse wheel zooms every tile at once on the same spot, dragging pans them
+all, and **Fit** shows the whole frame again, so you can compare the settings at the paws.
+**Clips of** switches recording. Under the pictures, a table describes each setting: the
+share of points placed, the median move from one frame to the next (as a share of the body),
+jumps of more than half a body length in one frame, left/right swaps per minute, how much the
+skeleton stretches, and agreement: of the points detection was most sure of, the share the
+setting keeps within a tenth of a body length. Detection alone is the first row, and its
+agreement is 100% by definition. These figures do not say which setting is right: smoothing
+lowers the move, the jumps and the swaps whether or not the points stay on the animal, so judge
+by the pictures and read the figures against detection alone. Select a row and **Use selected
+settings** puts it into the form. Nothing is written. The button is greyed, with the reason,
+until there is an experiment, a detect run, a method and a selected recording that has both the
+detect run and the tracking run.
+
+**Search the grid**, beside **Run preview**, tries every *Tune tracking* setting on the same
+windows instead of the two variants: six transition scales, smoothing off or at two windows,
+and despike off or on, 36 settings, in about the time a preview takes. It needs the
+`temporal_decode` method. The table lists detection alone and your settings, then the settings
+marked ★ in the **Front** column, then the rest. A ★ setting is one no other setting beats on
+agreement, placed, jumps and swaps together. That is a provisional rule, **not yet checked
+against labels**, and the note under the table says so; where detection jitters more than a
+tenth of a body from frame to frame, every setting's agreement sits close together and the ★
+separates little. The picture shows three tiles: detection alone, your settings, and the
+selected row, which starts on the first ★ row. Select any row to watch it, and **Use selected
+settings** to put it into the form.
+
+**Tune tracking…**, the last row of the Keypoint track form, finds the `temporal_decode` settings
+that suit your videos. The right ones depend on the recording: on 25 fps oblique hot-plate video
+the default transition scale lost a third of the paws that detection had placed, and a larger
+scale with smoothing off beat detection. The button is greyed, with the reason, until there is
+an experiment, a detect run and `temporal_decode` as the method. In the window, choose an example
+set of **labelled frames the detect run did not learn from**. The list offers only sets that can
+score: the set the detect run learned from is left out (scoring on it would score the answer
+key), and so is a set labelled on another skeleton; a line under the list names any it left out
+and why. If none is left, label a second set. Then click **Score settings**. Tracking is re-run in memory on the videos that hold
+those frames, once for each of 36 settings (transition scale, smoothing, despike), and each is
+scored against your labels beside detection alone and your current settings. It takes about a
+minute for 45 frames in 21 videos, with a progress bar you can cancel. Your labelled recordings
+are split in two: one half picks the best setting and the other half checks it, so read the
+**Check** columns (all points, left/right points, midline). After the 36 settings, the window
+also checks, point by point on the picking half, whether detection alone did better; if so it
+scores one more row that leaves those points as detected (*… as detected: left_forepaw,
+right_forepaw*), recommended only if it wins too. The recommended row is selected; **Use selected
+settings** puts that row's settings, its points to track included, or any row you select, into the
+form. Nothing is written until you run the track.
 
 **＋ Distill new model** with **Model type: Keypoints** turns the patch method, or finished
 keypoint detect runs, into a fast **student**, a YOLO-pose model that places the same skeleton with no example set
@@ -592,11 +877,53 @@ it on another machine.
 
 ### Choosing the inputs
 
-**Next stage in one click.** A completed detection run's page has **Run tracking →** (a tracking run has **Run keypoint_detect →** and **Run embedding →**, a keypoint detect run **Run keypoint_track →**); each opens the launch dialog on the next stage with this run's recordings checked. It carries no settings: the run you came from belongs to a *different* stage, so its parameters would mean nothing in the form you land on. Use **Start from** there if you want a previous tracking run's.
+**Next stage in one click.** A completed detection run's page has **Run tracking →** (a tracking run has **Run keypoint_detect →** and **Run embedding →**, a keypoint detect run **Run keypoint_track →**); each opens the launch dialog on the next stage with this run's recordings checked. Where the next stage reads that run as its second input (keypoint track from a tracking run, embedding from a keypoint track run), the form opens its other input on a run that pairs with it. It carries no settings: the run you came from belongs to a *different* stage, so its parameters would mean nothing in the form you land on. Use **Start from** there if you want a previous tracking run's.
 
-**Upstream picker.** A stage picks its input by [kind, not run id](concepts.md#detection-run): tracking's **Detection run** lists the detection kinds found across the selected recordings, each labelled with coverage (`N/M recordings`). Each recording uses its own matching run; any selected recording without it is dropped after you confirm. Recordings need not share a run id.
+**The run's own frame viewer** picks one of the run's recordings and scrubs it frame by frame,
+with a style dropdown beside the scrubber: **Mask, box, confidence** (the default), **Mask,
+box**, **Mask only**, **Box, confidence**, **Box only**, **Raw video** (no overlay), and **Raw
+mask** (each detection's real pixels cut out onto a green background, for downstream keying). A
+tracking run's box keeps its track id no matter the style, since the track id is the reason a
+tracking preview exists. **Export frame…** writes the frame on screen to a PNG; **Export video…**
+writes the whole recording, every part, to an mp4, both in the style shown, both through the
+same **Export…** dialog every other export goes through. They sit at the top right of the viewer,
+beside the line that says what it is showing, on a run's page (pick a recording in the list), and
+are left out for a run opened from a recording's Run
+history that was launched per recording from the API or CLI, because an export is of the
+experiment's run and such a run has none.
+
+**Upstream picker.** A stage picks its input by [kind, not run id](concepts.md#detection-run): tracking's **Detection run** lists the detection kinds found across the selected recordings, each labelled with coverage (`N/M recordings`). Each recording uses its own matching run; any selected recording without it is dropped after you confirm. Recordings need not share a run id. A picker opens on the row covering the most recordings, and on the newest of those when several cover the same number. Every row starts with the experiment run it reads (`run_007 · model_001 @ 0.50 (trained) · Intruder 0.20, Resident 0.50  ·  10/10 recordings`), and a downstream row also names its upstream's run after `from`, so two runs whose settings differ only in a per-class threshold or an example set still read apart. A row covering a retry with the same settings names every run in it (`run_001 + run_004`). A run made outside a processing run shows its per-recording id instead.
 
 **Field-of-view picker.** Tracking's **Field of view** works the same way, and for the same reason: it lists the field-of-view **names** found across the selected recordings with their coverage, and each recording resolves the name to its own polygon. It used to list arena *ids*, which are minted per recording, so one entry meant a different region on each of them and every run finished looking fine. A recording that has no field of view by that name is dropped after you confirm, alongside any dropped for the detection run. Leave it on **(whole frame)** to track the full picture.
+
+**Class picker.** Beside it, **Class** lists the classes the *selected detection run* actually
+detected; it rebuilds when you change the detection run, since a class isn't a property of the
+recording the way a field of view is. Every tracker here follows one subject per recording, which
+is what the rest of the pipeline is built for; if a detection model already tells two animals
+apart as two classes (say `black mouse` and `white mouse`), pick one class, launch, then launch
+again picking the other: the same detection run, run through tracking twice, giving each animal
+its own clean track instead of asking one tracker to disambiguate them. Leave it on **(every
+class)** to link every class's detections together, which is right for a single-class detection
+run.
+
+**Merge tracks**, a module of its own next to Tracking, combines two or more of these
+class-filtered tracks into one multi-subject run: pick each animal's tracking run in its
+**Track A** / **Track B** pickers (both list this recording's tracking runs by kind, the same
+picker Tracking's own upstream pickers use) and launch. Nothing is re-tracked; each source keeps
+its own subject id in the merged run. Use it when you want to *see* both animals together (the
+run preview draws every subject in the frame at once, in its own color) or feed both masks to a
+downstream stage as one run instead of two. **Track B** follows **Track A**: a tracking run on
+another detection run is greyed, saying so. It refuses two tracks built from different detection
+runs, or two picked with the same class, since neither can be combined into one meaningful
+multi-subject track.
+
+Picking a merged run in **Embedding**'s own **Tracking run** picker replaces the usual track-id
+field with one checkbox per subject name (e.g. **black mouse** / **white mouse**, checked by
+default): a merged run's track id is a position, not an animal, so the same id can mean a
+different animal in a recording whose merge happened to order its sources the other way; naming
+the subject instead resolves to the right id for *each* recording. Pick one, the other, or both
+(one embedding run per subject, same as "All tracks" would give you for an ordinary run); either
+way, location export still reads the merged run unmodified.
 
 **Use every.** Each stage's form has one (the number of frames to step by) and beside
 it, always, the rate that lands at:
@@ -632,7 +959,10 @@ your imported ones together. A model that can't run on this machine stays in the
 with the reason on it: `sam3, needs CUDA` on a machine with no NVIDIA GPU, `: not installed`
 when its weights aren't downloaded. The form opens on one that *can* run. If none can, it says
 `No detection models available. Install models via Model manager.` and won't start a run.
-Quick segment behaves the same way.
+Quick segment behaves the same way, except that on detection's form, a
+cuda-only model stays selectable with no local CUDA at all as long as a [remote
+target](#remote-targets) is registered: pick **Remote** as the backend below and the run goes
+to the cluster instead of this machine, so this machine never needs the weights or the GPU.
 
 The embedding form is the exception: it always opens on the default model, `dinov3_vit` at
 size `vit_large`, the same model the CLI and API use when you don't name one. If that size
@@ -644,7 +974,7 @@ changes every vector a run writes, so the form never switches for you.
 
 **Interactive iteration** (a button on the config form):
 
-- **Detection**: **Test prompts** previews text-prompt candidates on sample frames; for a closed-set model (no prompt) it becomes **Test detection** and previews the model's own classes. In the form, **Text prompt** is what the model searches for; **Class name** is the label stored on each detection. The preview runs the model wide open and keeps every proposal, so its **Detection confidence threshold** slider re-draws the grid at any threshold without re-running, read the value you want off it, then set the form's **Confidence threshold** (which does filter what a run stores). A grid cell is a thumbnail: on a 1080p recording a mouse is a couple of dozen pixels across in one, which is not enough to judge a mask. **Double-click a cell to open that frame full size**, where you can scroll to zoom and drag to pan; it opens at the threshold the slider is on.
+- **Detection**: for a trained model with more than one class, the form shows the **Confidence threshold** field's usual global default, then one row per class beneath it; override just the classes that need a different bar; a class left alone still uses the global default. **Test prompts…** previews text-prompt candidates on sample frames; for a closed-set model (no prompt) it becomes **Test detection…** and previews the model's own classes. Frames are drawn at random from the whole recording; tick **Time range: Only from … to …** (seconds of recording time) to draw them from one stretch instead, for example the minutes where the animal is in view. The same window opens from labeling's and Distill's **Test prompts**. Either preview always runs on this computer, even when **Backend** is set to a cluster; the window says so, and the run itself still goes to the cluster. In the form, **Text prompt** is what the model searches for; **Class name** is the label stored on each detection. The preview runs the model wide open and keeps every proposal, so each result column carries its own confidence spinbox beside its name and swatch (moving one column's value re-draws only that column, without re-running); read the value you want off it, then set the form's **Confidence threshold** (or its per-class override) to match, which is what actually filters what a run stores. A grid cell is a thumbnail: on a 1080p recording a mouse is a couple of dozen pixels across in one, which is not enough to judge a mask. **Double-click a cell to open that frame full size**, where you can scroll to zoom and drag to pan; it opens at the threshold its column's spinbox is on.
 - **Embedding**: preview the masked input image and tune the renderer before running.
 
 The embedding form's **Canvas scope** controls how the centered input images size their
@@ -667,7 +997,7 @@ selection* the subject slightly larger than the run will.
 
 **Egocentric alignment** makes every animal face right before the model sees it, the way
 Keypoint-MoSeq aligns: *Overhead camera: turn so the head points right*, or *Side camera: flip
-so the animal faces right*. It needs a **Keypoint track run** on the same tracking run and a **Heading** definition, chosen from
+so the animal faces right*. It needs a **Keypoint track run** on the same tracking run (one whose poses went to another tracking run is greyed) and a **Heading** definition, chosen from
 the experiment's saved ones or made with **Define…** (tick the skeleton points whose mean is
 the front and the ones whose mean is the back; a definition the run's skeleton cannot satisfy
 is greyed with the missing points named). Under Advanced, *Fill heading gaps up to* says how
@@ -678,11 +1008,24 @@ preview turns each frame the way the run will and shows no input where the run w
 none. Alignment needs a cropped, true-scale input image, and an aligned run never compares
 with an unaligned one.
 
+**Pose** puts the body's pose into the embedding, not only the mask's shape, and has three
+choices, each explained in its tooltip. *Mask only* is the default. *Points drawn on the mask*
+paints the keypoints onto the image the model sees, coloured by side and joined by the
+skeleton's lines, so one vector holds the mask and the pose together; the vector keeps its usual
+size. *Pose numbers added to the vector* writes the pose as numbers (each point's place
+relative to the body's centre, turned so the heading points right) after the mask's vector;
+**Pose weight** (1 = equal say) sets how much they count against the mask when frames are
+compared. Both read the **Keypoint track run** row; *Pose numbers* also needs a **Heading**.
+Under Advanced, **Pose min score** is the score below which a point is left out (blank uses the
+track run's cut-off). The track run must have placed points on every frame the embedding uses.
+Neither choice is established as the better one,
+which is why both are offered.
+
 The tracking config's hyperparameter fields adapt to the tracker you pick. See the [Tracking parameters](modules/tracking.md#tracker-parameters).
 
 ### While it runs
 
-**Monitor.** While a run is active its page shows aggregate and per-recording progress; on completion, a results summary. On failure the per-recording table shows which recordings failed and why.
+**Monitor.** While a run is active its page shows aggregate and per-recording progress; on completion, a results summary. On failure the per-recording table shows which recordings failed and why. A detection run's table adds **Frames with detections** per recording (`7,089/10,800`: frames with at least one detection, out of the frames the run processed), filled in a moment after the table opens.
 
 **Export… → Performance report** writes what the run cost: the GPU, driver, CPU, RAM and versions
 of the machine it ran on; the wall clock per recording with frames, fps, peak RAM and peak GPU
@@ -717,31 +1060,83 @@ Every run also writes `activity.csv` beside itself: a timestamped line per updat
 
 **Models** in the rail lists the experiment's trained models, newest first. The **Source** column says where each came from: the distill run that trained it, or `trained` for one trained straight from a dataset. Double-click a row to open the model. Under it, **Distill runs** lists every distill run, including one that failed before it trained anything, which is why it is a table of its own; double-click a run to watch it, or to **Resume** a failed one. **Datasets** in the rail lists the training datasets.
 
-Two buttons at the top of **Models** make a model:
+Three buttons at the top of **Models** make a model:
 
 - **＋ Distill new model** starts from nothing: it labels a frame sample, then trains on it, as one job.
+- **Set up keypoints…** makes the experiment's keypoint model in one run; see
+  [Setting up keypoints](#setup-keypoints).
 - **Train from dataset…** trains on a dataset you already have, to retrain with different settings without labelling again, or to train on a dataset built from a detection run. It is greyed out until the experiment has a completed dataset.
 
 Build a dataset two ways:
 
 - from a completed detection or tracking run, or
-- by sampling frames and labeling them with a prompt-capable model (the **Auto-label** dialog, no prior run needed). The **Teacher (labels the frames)** dropdown picks the model that labels (`sam3` by default), **Frame sampling** picks how frames are drawn (*stratified* spreads them across each timeline, *uniform* is random), and **Background share** caps how much of the dataset may be empty frames (where the model found none of the classes, kept with an empty label). **Test prompts** opens the same frame-grid preview detection uses.
+- by sampling frames and labeling them with a prompt-capable model (the **Auto-label** dialog, no prior run needed). The **Teacher (labels the frames)** dropdown picks the model that labels (`sam3` by default), **Frame sampling** picks how frames are drawn (*stratified* spreads them across each timeline, *uniform* is random), and **Background share** caps how much of the dataset may be empty frames (where the model found none of the classes, kept with an empty label). **Test prompts** opens the same frame-grid preview detection uses, and like it runs on this computer whatever the compute is set to. Compute offers a [registered remote cluster](#remote-targets) the same way detection does: SAM 3 needs CUDA, so a GPU-less machine needs one to label at all.
 
-Or do both at once: **＋ Distill new model** (on the **Models** page or the Model manager), with **Model type: Detector**, runs the whole thing as one durable job: label a frame sample with SAM 3, then train a YOLO detector on it. The form combines the labeling and training options (with the same **Test prompts** preview) and picks compute per stage (SAM 3 labeling needs CUDA). Under Advanced, **Background share** (default 0.1) keeps frames where SAM 3 found nothing, with an empty label, up to that share of the dataset, so the detector learns what an empty frame looks like. One progress bar folds `labeling → training`; under it, while a run is going, is a row per **stage** (Label frames and Train model) each a bar and its own status, because they are different-sized things: labelling is done or it isn't, training is at epoch N of the total. Once the training stage starts, its own **Training curve** and a **Stop and keep** button appear on this same page, below the stage rows (watching a distill run doesn't mean leaving the page to see whether it's still improving. The run survives closing the app, so reopen and it's still going, or **Resume distill** a failed one (it reuses a complete dataset and resumes a training that was cancelled or crashed). **Open trained model →** goes to the model's own page for everything the distill page doesn't manage) rename, weights, full lineage, and (once complete) **Promote to global**. The trained model is usable in this experiment at once.
+Or do both at once: **＋ Distill new model** (on the **Models** page or the Model manager), with **Model type: Detector**, runs the whole thing as one durable job: label a frame sample with SAM 3, then train a YOLO detector on it. The form combines the labeling and training options (with the same **Test prompts** preview) and picks compute per stage (SAM 3 labeling needs CUDA); either stage's backend can be a [registered remote cluster](#remote-targets), and the two can point at different targets (or one local, one remote). Under Advanced, **Background share** (default 0.1) keeps frames where SAM 3 found nothing, with an empty label, up to that share of the dataset, so the detector learns what an empty frame looks like. One progress bar folds `labeling → training`; under it, while a run is going, is a row per **stage** (Label frames and Train model) each a bar and its own status, because they are different-sized things: labelling is done or it isn't, training is at epoch N of the total. Once the training stage starts, its own **Training curve** and a **Stop and keep** button appear on this same page, below the stage rows (watching a distill run doesn't mean leaving the page to see whether it's still improving. The run survives closing the app, so reopen and it's still going, or **Resume distill** a failed one (it reuses a complete dataset and resumes a training that was cancelled or crashed). **Open trained model →** goes to the model's own page for everything the distill page doesn't manage) rename, weights, full lineage, and (once complete) **Promote to global**. The trained model is usable in this experiment at once.
 
-**Model type: Keypoints** is the same shape for a keypoint student (DESIGN_PLAN §12 *Distill keypoints*). **Teacher** at the top says what labels the frames. **Patch method + example set**, the default, runs the patch method itself (`dinov3_match`) on the sampled frames, so no keypoint detect run is needed first: choose its **Method** and **Size** (a size not installed on this machine is greyed, and the form opens on one that is), the **Examples** (the same skeleton and example-set rows as the keypoint detect form, with **New example set…** and **Mark frames…**), and the **Tracking** whose boxes and masks it is given (every recording with that tracking is labelled; the line says how many). It runs on the **Label** compute under Advanced and needs the accelerator for any real number of frames. **Finished keypoint detect run** lists the experiment's finished keypoint detect runs instead, one line per run as `recording · kd_NN · method`, each naming the example set its run learned from and the tracking run its poses go to (`subjects from track_NN`, the one finished tracking run on the run's detection run), read while a busy overlay covers the form; tick one per recording (a recording with a single run is pre-ticked). A ticked run whose detection run has no finished tracking run, or several, holds **Distill** with the reason; `detail keypoints distill --tracking-run` chooses among several. Either way, name the student and set **Frames to label**: frames are drawn spread over time, only where every animal on the frame is tracked, so no animal in a training image goes unlabelled. Both teachers are raw: the patch method's labels are its placement on each frame alone, and a detect run's are its stored placements, with no smoothing over time. The example set's own clicks join them where the marked animal was alone on the frame, and audit frames (with everything within **Keep clear of audit frames** of one) are never used. **Score cut-off** (a point placed below it is taught as not visible) sits with the main fields, with a line saying what the teacher's score means and its range. When the teacher's method has a default the field reads *the teacher's default (0.5)*; the patch method has none, so it reads *required: set a value* and **Distill** stays greyed until you set one. **Test cut-off…** beside the field opens a window that runs the teacher on about a dozen frames drawn the way this distill would draw them, writing nothing: each frame shows its points **filled** where they would be taught as visible and **hollow** where they fall below the cut-off; double-click a frame to see it full size and zoomable. Drag **Score cut-off** to see the effect without running the teacher again; the line beside it counts the points that would be taught visible. For the patch method a **held-out check** sits below: each example frame is placed by the others and compared with your own clicks, as a median error in pixels and as a share of body size, at or above the cut-off and below it, with counts (fewer than 8 placements shows the count only). While it runs, the bar says which step it is on: reading the tracked frames, loading the method
+**Model type: Keypoints** is the same shape for a keypoint student (DESIGN_PLAN §12 *Distill keypoints*). **Teacher** at the top says what labels the frames. **Patch method + example set**, the default, runs the patch method itself (`dinov3_match`) on the sampled frames, so no keypoint detect run is needed first: choose its **Method** and **Size** (a size not installed on this machine is greyed, and the form opens on one that is), the **Examples** (the same skeleton and example-set rows as the keypoint detect form, with **New example set…** and **Mark frames…**; or, ticking **One example set per class**, one set per class the tracking's detection run found, for animals told apart as classes that look different, as on the keypoint detect form), and the **Tracking** whose boxes and masks it is given (every recording with that tracking is labelled; the line says how many). It runs on the **Label** compute under Advanced and needs the accelerator for any real number of frames. **Finished keypoint detect run** lists the experiment's finished keypoint detect runs instead, one line per run as `recording · kd_NN · method`, each naming the example set its run learned from and the tracking run its poses go to (`subjects from track_NN`, the one finished tracking run on the run's detection run), read while a busy overlay covers the form; tick one per recording (a recording with a single run is pre-ticked). A ticked run whose detection run has no finished tracking run, or several, holds **Distill** with the reason; `detail keypoints distill --tracking-run` chooses among several. Either way, name the student and set **Frames to label**: frames are drawn spread over time, only where every animal on the frame is tracked, so no animal in a training image goes unlabelled. Both teachers are raw: the patch method's labels are its placement on each frame alone, and a detect run's are its stored placements, with no smoothing over time. The example set's own clicks join them where the marked animal was alone on the frame, and audit frames (with everything within **Keep clear of audit frames** of one) are never used. **Score cut-off** (a point placed below it is taught as not visible) sits with the main fields, with a line saying what the teacher's score means and its range. When the teacher's method has a default the field reads *the teacher's default (0.5)*; the patch method has none, so it reads *required: set a value* and **Distill** stays greyed until you set one. **Test cut-off…** beside the field opens a window that runs the teacher on about a dozen frames drawn the way this distill would draw them, writing nothing: each frame shows its points **filled** where they would be taught as visible and **hollow** where they fall below the cut-off; double-click a frame to see it full size and zoomable. Drag **Score cut-off** to see the effect without running the teacher again; the line beside it counts the points that would be taught visible. For the patch method a **held-out check** sits below: each example frame is placed by the others and compared with your own clicks, as a median error in pixels and as a share of body size, at or above the cut-off and below it, with counts (fewer than 8 placements shows the count only). While it runs, the bar says which step it is on: reading the tracked frames, loading the method
 (its weights, then your example frames), decoding frames, placing points (counted as the method
 returns them) and the held-out check; **Cancel** stops it. **Another sample** draws different
-frames; **Use this cut-off** writes the value into the field. Whenever **Distill** is greyed, the line beside it says why: an example set, a tracking run, a ticked detect run, a detect run with no single tracking run to give its poses to, or the cut-off. The training settings mirror **Train from dataset…**, with the **Student** a `-pose` checkpoint. The run has three stage rows, Label frames, Train model and **Register student**, the last filing the model under `role: keypoints` as `<name> distill_NNN` so **Keypoint detect** can offer it. A run that failed at register keeps its trained student; **Resume distill** only registers it. The **Distill runs** and **Models** tables' **Kind** column says `detector` or `keypoints`.
+frames; **Use this cut-off** writes the value into the field. Whenever **Distill** is greyed, the line beside it says why: an example set, a tracking run, a ticked detect run, a detect run with no single tracking run to give its poses to, or the cut-off. **Student input** says what the student sees: *whole_frame* (the default) trains on the whole video frame with one label per tracked animal, so one pass per frame serves every animal; *crop* trains on a square crop around each tracked animal, resized to the crop size below it, for overlapping animals or a small animal in a wide view. The student is run the way it was trained. The training settings mirror **Train from dataset…**, with the **Student** a `-pose` checkpoint. **Train** compute offers **Remote** when a [cluster is registered](#remote-targets): the training images are cut on this computer and go up with the experiment, so the cluster needs no video. If training stops with an out-of-memory error under WSL, lower **Batch size**. The run has three stage rows, Label frames, Train model and **Register student**, the last filing the model under `role: keypoints` as `<name> distill_NNN` so **Keypoint detect** can offer it. A run that failed at register keeps its trained student; **Resume distill** only registers it. The **Distill runs** and **Models** tables' **Kind** column says `detector` or `keypoints`.
+When either stage is remote, the form's **Upload videos in the background** box (off by default, greyed otherwise) copies every source recording's video to the cluster while labeling and training run, so the detection run you start afterwards finds it there instead of uploading it first. It can be 100+ GB on the cluster's storage, which is why it is opt-in. A remote run that needs the videos while the upload is still going waits for it and shows its progress in the run's status line, rather than sending the same files twice. To watch the upload itself, open **Background uploads…** at the top of the **Models** page: one row per cluster with its status, files copied, gigabytes sent, and the time left, refreshed every two seconds. Select a running row and **Stop upload** ends it; what already reached the cluster stays there, so a later run reuses it. Select a stopped or failed row and **Resume upload** starts it again: videos already on the cluster are skipped and a half-sent one continues where it stopped, so stop then resume is the nearest thing to a pause. Closing the window leaves the upload going. A distill run started with the box ticked also shows the upload on **its own page**: a **Videos:** line under Label and Train (`uploading to tillicum · 12/80 files · 19.1/116.0 GB · ~45m00s left`, then `on tillicum · 80 files, 116.0 GB` when it is done, or where to resume it if it stopped or failed) and a **Background uploads…** button that opens the same window. A run started without the box, or before the option existed, shows neither. The same actions are `detail remote staging-status`, `staging-stop` and `staging-start` ([CLI](cli.md#distill)).
 
-A trained model's detail page lists its lineage, classes, weights, and metrics (best-epoch and final mAP50), above them. **Trained with** says the Ultralytics version and the settings it was asked for (epochs, batch size, image size, patience); every other setting Ultralytics resolved is kept in the model's `model.yaml`. While a run is training (or after one has finished) a **Training curve** band plots mAP50 against epoch, marks the best epoch, and says so underneath: *Best so far: 0.832 mAP50 at epoch 31: no improvement in 7 epochs (of 60)*. The x axis spans the whole run from the first epoch, so the shape does not rescale under you as it fills in. A model imported from elsewhere has no curve, because it has no epochs here. Training runs on CUDA when available. A training that was cancelled or crashed shows a **Resume training** button that continues from the last checkpoint.
+A trained model's detail page lists its lineage, classes, weights, and metrics (best-epoch and final mAP50), above them. **Trained with** says the Ultralytics version and the settings it was asked for (epochs, batch size, image size, patience); every other setting Ultralytics resolved is kept in the model's `model.yaml`. While a run is training (or after one has finished) a **Training curve** band plots mAP50 against epoch, marks the best epoch, and says so underneath: *Best so far: 0.832 mAP50 at epoch 31: no improvement in 7 epochs (of 60)*. The x axis spans the whole run from the first epoch, so the shape does not rescale under you as it fills in. A run training on a [remote cluster](#remote-targets) fills its curve in the same way: each epoch's numbers are copied back as the cluster reports the epoch. A model imported from elsewhere has no curve, because it has no epochs here. Training runs on CUDA when available. A training that was cancelled or crashed shows a **Resume training** button that continues from the last checkpoint.
 
 **Stopping training early.** A run in progress shows two buttons, and they do different things. **Stop and keep** finishes the epoch in progress and then saves the best weights so far, use it when the curve has flattened and the model is good enough. The weights kept are the **best** epoch's, not the last one's, which is why the band marks the peak. It is not instant: training checks between epochs, so on real data expect a few minutes. The model then counts as **complete**, you chose to finish it, and its page says **Stopped early: at epoch N**. It has no **Resume training**: the run is finished, so there is nothing to resume; train a new model to train further. **Cancel model** stops the worker now and discards the run. A failed dataset or training run shows its recorded error. **Promote to global** copies a completed model into the machine-global catalog with its provenance (source experiment, dataset, base model, metrics), so any experiment can select it.
+
+### Setting up keypoints {#setup-keypoints}
+
+**Set up keypoints…** on an experiment's **Models** page makes the keypoint model the rest of the
+app uses for alignment and pose, in one run. It teaches from a few minutes of each camera or box
+(each **acquisition_setup** on [Recording information](#recording-information); fill it in for
+every recording first, or the dialog says which recordings are missing it), then trains a fast
+student on what it learned.
+
+The dialog asks for:
+
+- **Name**, and the **Detector**: a model you distilled (**＋ Distill new model**), which finds
+  the animal. **Animal (detector class)** is which of its classes gets keypoints. For two or
+  more animals the detector tells apart as classes (a resident and an intruder), tick **Two or
+  more animals** and tick each one under **Animals**: each is tracked on its own, the tracks
+  are merged, and the run asks for **one example set per animal**, so animals that look
+  different are each matched against their own clicks. One fast model is trained for all of
+  them.
+- **Use the first**: how many minutes of each teacher recording to use (5 by default). A shorter
+  recording is used whole.
+- **Teacher recordings**: one row per camera or box, set to its first recording. Pick another of
+  that setup's recordings to teach from it instead; the note beside it says how much is used.
+- **Teacher method** (`dinov3_match`) and its **Size**.
+- **I already have an example set for this animal (no pause)**: tick it and choose the set in
+  **Examples** (the shared example-set picker, see [Keypoints](#keypoints)) to let the run go
+  straight through. **Score cut-off** is then required for `dinov3_match`, which has no default.
+- The student's frames, **Student input** and training, as for a keypoint distill (see
+  [Distilling a model](#distill)). Where each part runs (**Detect**, **Label**, **Train**) is
+  under Advanced Settings; detection and training can go to a
+  [registered cluster](#remote-targets), and labelling runs on this computer.
+
+Click **Start**. The run detects and tracks the teacher recordings. Without an example set it
+then **waits for you**: its page shows the stages done so far and **Mark examples** as *waiting
+for your example set*, with the teacher recordings named. Choose an example set, or make one with
+**New example set…** and mark it with **Mark frames…** on the teacher's tracks. Set **Score
+cut-off**; **Test cut-off…** beside it shows the teacher's points on a sample of the teacher
+recordings and checks them against your clicks, and **Use this cut-off** writes the value back.
+Then **Continue setup**: the teacher labels frames and the student trains, on the same page.
+**Continue setup** stays greyed, with the reason, until there is an example set and a cut-off.
+A setup of several animals shows **Merge tracks** after **Track**, and asks for one example set
+per animal, each under that animal's name; the teacher matches each animal against its own set.
+The finished student is in **Keypoint detect**'s method list, marked *trained student*.
+**Cancel setup** stops a waiting run. The same run is
+[`keypoints setup`](cli.md#keypoints-setup) on the command line.
 
 ## Analysis
 
 Experiment-level runs that turn derived data into analysis outputs under `analysis/<an_NN>/`. **New analysis** opens a launch dialog like a processing run: pick a **module**, check the eligible **recording(s)**, fill its config, and run. Each module's parameters are on its own page (linked below).
 
+**Duplicate analysis…**, on a run's landing page beside **Delete analysis**, copies the whole run (its fit, clusters, clips, labels, measures and profiles) to a new run named *(copy)*, which you can rename in the box it asks with, and opens the copy. The original is untouched, so you can try something on the copy (relabel it, rebuild its clips at another floor, run a long batch of profiles) without risking the run. A bar shows the copy, and **Cancel** removes it. A run that is still going cannot be copied. The copy's name shows on its page and in the list beside its id.
+
+**Profile clusters** is a module that runs **Cluster profile** over many clusters of one clustering run, as one job you can leave running. It reads a run rather than recordings, so its launch dialog has no recording list: pick the **Clustering run**, then which **Clusters** (the ones with at least the run's minimum cluster time, all with members, the leaves, or a list of node ids) and the profile settings. **Estimate time** says how long it should take on this computer, from the profile settings, before you start. **Run on** sends the whole job to a remote target instead, so this computer is free; when it comes back, each cluster's profile is placed beside the run here. The same dialog opens with the run chosen from INTERPRET's **Cluster tools ▾ › Profile clusters…** (see [the interpretation workspace](#interpretation-workspace)). Its page lists each cluster with its status and how well its measures separate it, and Active processes shows it while it runs. A cluster that fails is listed as failed with why, and the job goes on; running it again skips every cluster already profiled with the same settings.
+
+**Meta-information…**, under a run's module, status and recordings and above its results, opens every file the run keeps about itself, one tab each, as it is on disk: `analysis.yaml` (its record and every setting it was launched with), the module's own file (its method settings, and the labels and names you have given it since), and where it ran and what it used (`machine.yaml`, `resources.yaml`). A long file scrolls in its tab. **Export…** saves them all to one zip, each under a folder named for the run, to send to someone or keep beside a result. The CLI equivalent is `analysis info`.
 ### An analysis run's page
 
 Every analysis run opens on its **landing page**: the module, status and recordings, your
@@ -778,6 +1173,12 @@ earlier setting and offers **Rebuild results**, which re-derives them from the s
 your current settings. The expensive pass is untouched, so this is quick relative to the run; the
 CLI equivalent is `analysis rebuild`.
 
+**A clustering run written before 2026-11-08** can hold instances that run across a stretch
+tracking lost, which counts that unseen time as the behavior and can put a coverage line above
+100%. The next label change rewrites its results without that time; to correct one without
+changing a label, run `analysis rebuild <an_NN>` from the CLI. The cluster times on INTERPRET were
+never affected.
+
 **Labelling is quick; the per-frame table catches up later.** A label or a cutoff
 commits in a few seconds however many recordings the run covers. The per-frame table that windowed
 measures, **Finish**, exports and comparisons read is brought up to date the first time one of them
@@ -786,7 +1187,15 @@ its own progress bar.
 
 ### Location export
 
-Writes per-track ROI/POI features (`tracks.csv`, `roi_relations.csv`, `point_relations.csv`). Tick a **tracking run** by kind (tick more than one when the recordings were tracked through different chains, as under [behavior clustering](#behavior-clustering)), and it writes each recording's CSVs to `analysis/<an_NN>/<recording_id>/`. The detail page has **Open output folder**. For CSVs in a folder of your choosing, use the CLI `locations export --out <dir>`. See [Location export](modules/location_export.md) and [the concept](concepts.md#location-export).
+Writes per-track ROI/POI features (`tracks.csv`, `roi_relations.csv`, `point_relations.csv`). Tick a **tracking run** by kind (tick more than one when the recordings were tracked through different chains, as under [behavior clustering](#behavior-clustering)), and it writes each recording's CSVs to `analysis/<an_NN>/<recording_id>/`. The run's landing page has **Open output folder**.
+
+The launch form also has an optional **Keypoint track run**, which adds `keypoints.csv`, and **Distance between mask edges**, which adds the nearest distance between two tracks' masks to `pair_relations.csv` (slower; off by default). The keypoint list offers only runs whose poses went to the chosen tracking run.
+
+Both pickers have a **Per recording…** button, as under [behavior clustering](#behavior-clustering): it names the exact run a recording reads, for a recording whose tracking was redone beside a bad run (a second run with a field of view, say). A recording given its own tracking run needs the keypoint track run made on that tracking run, so the keypoint **Per recording…** window offers each recording only the keypoint runs whose poses went to the tracking run it reads.
+
+Its one card, **Results**, opens on **Plots**. Pick a **Plot**: `trace` (the path), `heatmap` (where the animal spent its time), `speed` (speed over time), `trace3d` (the path against time), `distance` (the distance between two tracks over time) or `distance_hist` (how often they were at each distance). With keypoints, **Position** also lists the points, and **Keypoints** draws several on one path plot. On a distance plot, **Pairs** picks which pairs, and **Distance between** picks mask centroids, box centroids or mask edges.
+
+**Montage…** plays the ticked recordings side by side, one tile per recording with every ticked animal in its colour; tick one recording for a preview of it. Set **Start (s)** and **Length (s)** for one window shared by every recording, or tick **Full length** to play each recording to its end. **Full frame** shows the whole frame instead of a crop on the animals. Tick the layers: **Raw** (the footage), **Mask**, **Keypoints**, **Mask trail** and **Keypoint trail**. The player's speed menu sets the speed, for playing and for exporting. **Export GIF / MP4…** writes the montage (its file types offer an mp4 as H.264 or as MPEG-4 Part 2), **Save picture…** the picture on screen, and **Last tracing frame…** a PNG of the last picture with each animal's whole path drawn on it. Set **Group by** to a Recording Information column to draw one panel per group, or leave it on *(each recording)*. When recordings hold more than one animal, **Animals** lists their labels: untick one to leave it out, and tick **Group by animal** to group by label, alone or with **Group by**. A path plot shows a recording's animals together, one colour each; a heat map or speed plot gives each animal its own panel. An animal that could not be plotted is named under the title. Untick recordings to leave them out. On `trace3d`, the **Elevation** and **Rotation** sliders turn every panel together. Scroll on the picture to zoom. **Export image…** saves the plot as PNG, SVG or PDF, or as **Interactive HTML**: one page that opens in any browser, offline, where you can hover over a point to read it, zoom, and turn a 3-D plot (every 3-D panel turns together). The CSV list is on **Files**. For CSVs in a folder of your choosing, use the CLI `locations export --out <dir>`. See [Location export](modules/location_export.md) and [the concept](concepts.md#location-export).
 
 ### Behavior scan
 
@@ -843,13 +1252,17 @@ The run writes `metrics.csv`, `folds.csv`, and per-clip detail. Open it for the 
 
 ### Behavior clustering
 
-Builds one vocabulary of *behaviors* pooled across the recordings you select, with no labels and nothing to point at ([how it works](modules/temporal_clustering.md)). It cuts each subject's trajectory into **bouts** at the moments the pose changes, compares every pair of bouts, and groups them (so a cluster is a stretch of movement and an instance is one performance of it, with a real start and end you can play. **New analysis… → Behavior clustering**, check the recordings, pick the **embedding run** and **track**, and **Run**. **Method** offers two ways of doing it, and the form shows only the chosen one's knobs. **codebook_viterbi** (the default) clusters a sample of frames into a codebook and decodes the sequence; its knobs are **Share of each recording**, **Codewords** and **Minimum run**. **dtw_finch** cuts the trajectory into bouts and compares every pair; the detector, minimum bout length, DTW band and **Max bouts** are its, under *Advanced settings*. The two tie on vocabulary quality and the bout path draws slightly better boundaries, but comparing every pair of bouts grows with the square of the study, so keep **dtw_finch** for short studies: the codebook's expensive step is bounded by a number you set, not by how much data you have. **Share of each recording** is how densely every video is sampled to build the codebook, the same in a large study as a small one. **Codewords** is the cost knob: the decode costs roughly the square of it on every frame you pooled, so lower it, not raise it, when a fit is slow.
+Builds one vocabulary of *behaviors* pooled across the recordings you select, with no labels and nothing to point at ([how it works](modules/temporal_clustering.md)). It cuts each subject's trajectory into **bouts** at the moments the pose changes, compares every pair of bouts, and groups them (so a cluster is a stretch of movement and an instance is one performance of it, with a real start and end you can play). **New analysis… → Behavior clustering**, check the recordings, pick the **embedding run** and **track**, and **Run**. **Method** offers two ways of doing it, and the form shows only the chosen one's knobs. **codebook_viterbi** (the default) clusters a sample of frames into a codebook and decodes the sequence; its knobs are **Share of each recording**, **Codewords** and **Minimum run**. **dtw_finch** cuts the trajectory into bouts and compares every pair; the detector, minimum bout length, DTW band and **Max bouts** are its, under *Advanced settings*. The two tie on vocabulary quality and the bout path draws slightly better boundaries, but comparing every pair of bouts grows with the square of the study, so keep **dtw_finch** for short studies: the codebook's expensive step is bounded by a number you set, not by how much data you have. **Share of each recording** is how densely every video is sampled to build the codebook, the same in a large study as a small one. **Codewords** is the cost knob: the decode costs roughly the square of it on every frame you pooled, so lower it, not raise it, when a fit is slow.
 
 **Embedding run** lists each set of embedding settings found across the checked recordings, with how many have a run of it (`N/M recordings`); the widest is ticked. Settings include everything upstream of the embedding, so recordings detected by two different models (one per strain, say) show up as two rows even when the embedding was made identically. **Tick both** to pool every recording into one vocabulary: each reads its run of the setting it has. A recording with a run of two ticked settings is refused in the form, and the runs must share an embedding model and input image, or the launch says they are not comparable.
 
+**Per recording…** under the list names the exact run a recording reads, whatever the ticks would pick there. It is for a recording whose run was redone beside one you do not want: the redone run has different settings, so ticking only the old settings reads the bad run there, and ticking both is refused. The window lists every recording by name, those with more than one run first, each with *(as the chosen settings resolve)* or one of its finished runs. The line beside the button lists the recordings you chose a run for, and a recording given a run is no longer refused for having runs of two ticked settings. The launch checks that each chosen run is finished.
+
+**Run on** sends the fit to a remote target instead of this computer ([Remote targets](#remote-targets)), which frees it for the hours a large study takes. Each recording's embedding run is sent to the cluster again first, so the fit reads what this computer has, and the recordings' videos are copied there (once; later runs reuse them). Active processes shows the run while it is away, and it comes back here **open** when the fit is done, exactly as if it had run here.
+
 Opening the run gives the [interpretation workspace](#interpretation-workspace) described below (INTERPRET with its tree, filters and a montage of every clip; AUDIT; BROWSE), and a behavior's members are bouts. Two things worth knowing:
 
-- **A capped fit says so, and still labels everything.** Comparing every pair of bouts costs time growing with the *square* of their number, so **Max bouts** samples down the bouts the comparison sees. Every remaining bout is then matched to the nearest cluster, so the output has one instance per bout however low you set it: the cap bounds what the vocabulary is *learned from*, not what it labels. A line at the top of INTERPRET says which happened, since a capped fit is identical to a full one everywhere else on the screen. What you give up is that an assigned bout had no say in what the clusters are, which is why the tree and the member strip show the clustered ones only.
+- **A capped fit says so, and still labels everything.** Comparing every pair of bouts costs time growing with the *square* of their number, so **Max bouts** samples down the bouts the comparison sees. Every remaining bout is then matched to the nearest cluster, so the output has one instance per bout however low you set it: the cap bounds what the vocabulary is *learned from*, not what it labels. A line at the top of INTERPRET says which happened, since a capped fit is identical to a full one everywhere else on the screen.
 - **Coverage is partial on purpose.** Bouts don't tile a recording, stretches shorter than the minimum bout length are dropped, and gaps in tracking are not bouts. The CLI's coverage lines give the numbers: how much of the video was analysed, and how much of that is in a bout. Less than all of it is the honest answer, not a fault.
 
 The same choices can be made from the CLI: `analysis temporal-interpret --run <an_NN> --tree`. See the [CLI guide](cli.md#analysis).
@@ -859,11 +1272,15 @@ The same choices can be made from the CLI: `analysis temporal-interpret --run <a
 
 A clustering fit finds a whole tree of clusters, from one cluster holding everything down to the finest groups, and then prepares the evidence you will look at for every one of them, however small, so that clicking around afterwards never waits.
 
-The fit stays **open** rather than finishing complete: a vocabulary is not a result until somebody has looked at it. The run's views are the **interpretation workspace**: **INTERPRET**, **AUDIT** and **BROWSE**, and **MEASURES** (the run's [measures](#measures) table), each opened from its card on the run's page and switched between with the buttons in the row above it:
+The fit stays **open** rather than finishing complete: a vocabulary is not a result until somebody has looked at it. The run's views are the **interpretation workspace**: **INTERPRET**, **AUDIT** and **BROWSE**, and **MEASURES** (the run's [measures](#measures) table), each opened from its card on the run's page and switched between with the tabs above it:
 
 - **INTERPRET** is where you explore what the fit found and label the behaviors you care about. The **filters** sit in a column on the left. To their right, top to bottom: the **tree**, the **label bar**, and a **montage** of every clip of the cluster you picked, all playing. Nothing on the page waits on a click: picking a cluster or a filter is instant, and the montage plays from small previews of your videos kept on this computer.
 
     **The tree.** Every block is a cluster, and its width is how much time it holds. The top block is everything; each row down shows what a block divides into, largest first. Where a cluster only sheds a small piece at a time, the pieces it sheds sit side by side in one row rather than one per row. Blocks too narrow to read are drawn as thin columns of their own colour at the end of their row, with no name on them, so a filter shades even the smallest cluster without zooming; each is still clickable, and hovering over any block names it. A thin dark line separates every block from the next, so two pale clusters side by side still read as two. Click a block to open it; the open cluster is ringed in dark and white, which shows on any colour, and a thin one is ringed round the outside. Scroll the wheel over the tree (or pinch on a trackpad) to zoom in around the pointer, and drag to pan; **Shift**+wheel, or the scrollbar beside the tree, moves down the levels. A zoomed tree keeps its zoom when you widen the window, so a wider window shows more of the run. Once you zoom, a scrollbar appears above the tree: it is the whole run, and its handle is the part you are looking at. **Double-click a block to label it** (a small editor opens on the block; Enter saves). Right-click a block for **Label…**, **Remove label**, **Open in window** and **Zoom to this** (on a snapshot or a finished run the first two are greyed and say why); **Whole tree** (or Esc) shows everything again, and **+** / **−** zoom from the buttons, toward the selected block. The arrow keys walk the tree as drawn: **↑** to the block above, **↓** to the largest block below, **←** **→** along the row. A block is coloured by its label: solid where you put the label, pale where a label above it covers it, grey where nothing does. A small dot marks the clusters you have already opened. The tree opens tall enough to show **every level**. When that would leave the montage less than two rows of clips, the rows get shorter instead (names and shares then sit on one small line), so the whole tree is still on screen without scrolling. Drag the bar under the tree to set its height yourself, as short as 120px: your height is kept for next time, rows stay full height, and the tree scrolls. Drag it up to give the montage more of the page. In a window too short for the tree's height, the tree gives way first, down to 120px, so the montage keeps its rows and its whole scrollbar on screen; your height comes back when the window has room for it.
+
+    **Cluster tools ▾**, at the right of the label bar's last row beside **Open in window**, holds the tools that look across clusters: **Cluster profile…** (for the cluster you have open; greyed while the whole tree is open), **Look-alike clusters…** (*Look-alike behaviors…* on a behavior clustering), **Find look-alikes…** and **Profile clusters…**. A greyed entry says why when you hover it. **Find look-alikes…** opens the *Find look-alike clusters* job on this run. Its **Pairs to compare** is **all** (every pair of branch tops, many hours on a large run: **Run** first says how many pairs, about how long, and how many **labelled** would compare, and starts only on **Run every pair**) or **labelled** (each labelled cluster against every other, far fewer pairs). Right-clicking a block on the tree also offers **Cluster profile…**.
+
+    **Cluster profile…** opens a window that says which measures set the cluster apart and how far to trust that. **Profile this cluster** draws a random sample of its members and as many from **Compare against** (**Rest of the run**; **Its sibling**, the block it was merged with: usually the more useful question for naming; or **Another cluster**, the block whose number you enter in **Other cluster**, to ask whether two clusters in different branches are the same behaviour, kept beside the cluster's own profile rather than replacing it; under the verdict it also says how well position and facing alone tell the two apart, and when only they can, the two are one behaviour seen in another place or direction), measures both, and fits the **Explainer** you pick, in about the **Time budget** (30 s to begin with) or on a **Fixed count per side**. The first line is the verdict: the model's balanced accuracy on recordings it did not see, beside its floor (the same fit with the members shuffled). A cluster whose members all come from one recording has no such score, since no unseen recording holds any of it; the line says so instead of giving a percentage, and the chart stays folded. When it does not clear the floor by the **Separation margin**, the line says the measures don't separate the cluster and the chart stays folded behind **Show anyway**: the cluster is defined by something these measures cannot see, so look at its clips. Otherwise **What sets it apart** draws one bar per measure, to the right when higher values push toward the cluster and to the left when they push away, with this cluster's median beside the comparison's. **In plain rules** reads the same answer as two or three conditions you can check against the clips, each with how often it is right and how much of the cluster it covers. **Context** adds what usually comes before and after it, how long it lasts, when in the session it happens, and any group (a column of your recording information) it is over-represented in. The line under the verdict says what the profile was based on (mask measures from the embedding, or boxes only) and which measures it skipped and why. Where the animal is and which way it faces are measured but, with **Leave out position and facing** (on to begin with), left out of the answer, so rearing toward the left and toward the back read as one behaviour; turn it off to let them count. A profile is kept with the run, so it opens as you left it; **Recompute** makes a new one. The default explainer, a random forest explained with SHAP, needs `shap` installed; without it the forest is explained by permutation importance, the line under the verdict says so, and **Install SHAP…** opens [Cluster profile](#cluster-profile-setup). Your labels are never used. The same window opens from the clip window's **Cluster details** (**Cluster profile…**, beside **Grid of 9 clips…**); it profiles the whole cluster, not just the clips on screen.
 
     **The line above the tree** names each label in use with its colour and how much time it holds, with the zoom buttons at its end; hover it for the tree's mouse and keyboard controls.
 
@@ -874,11 +1291,21 @@ The fit stays **open** rather than finishing complete: a vocabulary is not a res
     - A field's values depend on what the column holds. A column of clock times (*14:00:21*, for example a recording's start time of day) is read as a time of day and sorted by time. Categories, and numbers, dates or times with at most 12 different values, get a checklist: how many clips each value has, a **(no value)** entry, and a search box when there are more than 20 values. Untick what you do not want, or hover a value and click **only** to keep just that one (from the keyboard, **only** sits on the current row; Tab reaches it). Numbers, dates or times with more values get a range: bars of how many clips have each value, with a handle at each end of the range to drag along them; the range is drawn in colour and its from–to values are written under the bars.
     - A column that has the same value for every clip has nothing to choose, so it is a greyed line at the bottom of the list, for example *sex  F*; hover it for why. A column with one value and some blanks keeps its checklist, because **(no value)** is a real choice.
 
-    **The montage**, under the tree, plays **every clip** of the cluster you opened, each cropped to its animal and on its own loop. The order button (**Most typical ▾**, at the right end of the label bar's first row) picks **Most typical** (the default), **Least typical** (where clips that do not belong collect) or **Random**; a cluster's random order is the same every time you open it. **Size** sets how large the tiles are: larger tiles mean fewer to a row, and the montage itself keeps its size. Only the tiles on screen play, so a cluster of two thousand clips scrolls as smoothly as one of twenty, and the clips you stop on are drawn first: a fast scroll does not leave the ones you passed to be drawn before them. **Hovering a tile pauses every other one** and shows a thin line under its picture that fills from the left as the clip plays; its tooltip gives its rank, recording, start and length, and, while a filter is on, each filter it meets or fails (*✓ animal_id A03  ✗ location*). **A clip that does not match the filters still plays, with its animal drawn grey.** A clip you removed on AUDIT stays in its cluster here, because INTERPRET shows what the clustering found: it is **faded**, with *not climb* along its bottom and a bold ✕ in its top corner (a moved clip shows *→ climb › left* and no ✕), and the label bar counts them (*48 clips · 6 removed*). Right-click it for **Put back in climb**. While a filter is on, every clip that matches has a frame in the match colour round its picture (with masks on or off), and a key at the right of the label bar's first row (beside the order button, **Show ▾**, **Size** and **Export ▾**) names that colour: *■ matches filters*. The montage has no controls row of its own, so its clips start right under the label bar. The clips are centred in the montage's width. **Every clip grid has the same toolbar**: **Most typical ▾ · Show ▾ · Size · Export ▾**, here at the right of the label bar's first row, over the clips in a cluster window, and over AUDIT's review grid (where the order is fixed, so there is no order button). **Show ▾** says what every tile draws: tick or untick **Video**, **Masks**, **Mask trail** and **Keypoints** (greyed, with the reason, when the embedding read no keypoints). With **Video** off the masks and keypoints are drawn on white; with **Masks** off the plain video plays, and a clip that does not match the filters is washed out instead of drawn grey. The last thing a tile still draws cannot be unticked. Under them, **As recorded** / **Aligned** turns every tile so the animal's body points up, frame by frame, from the keypoints the embedding read and a heading definition; on a run without them **Aligned** is greyed and says why, and a frame with no measurable axis plays as recorded with a small *no axis* mark. Last, **No context**, **1 s context**, **2 s context** or **5 s context**: that much video either side of each clip, so each tile plays the clip with its lead-in and follow-on. Each screen keeps what you choose.
+    **The montage**, under the tree, plays **every clip** of the cluster you opened, each cropped to its animal and on its own loop. The order button (**Most typical ▾**, at the right end of the label bar's first row) picks **Most typical** (the default), **Least typical** (where clips that do not belong collect) or **Random**; a cluster's random order is the same every time you open it. **Size** sets how large the tiles are: larger tiles mean fewer to a row, and the montage itself keeps its size. Only the tiles on screen play, so a cluster of two thousand clips scrolls as smoothly as one of twenty, and the clips you stop on are drawn first: a fast scroll does not leave the ones you passed to be drawn before them. **Hovering a tile pauses every other one** and shows a thin line under its picture that fills from the left as the clip plays; its tooltip gives its rank, recording, start and length, and, while a filter is on, each filter it meets or fails (*✓ animal_id A03  ✗ location*). **A clip that does not match the filters still plays, with its animal drawn grey.** A clip you removed on AUDIT stays in its cluster here, because INTERPRET shows what the clustering found: it is **faded**, with *not climb* along its bottom and a bold ✕ in its top corner (a moved clip shows *→ climb › left* and no ✕), and the label bar counts them (*48 clips · 6 removed*). Right-click it for **Put back in climb**. While a filter is on, every clip that matches has a frame in the match colour round its picture (with masks on or off), and a key at the right of the label bar's first row (beside the order button, **Show ▾**, **Size** and **Export ▾**) names that colour: *■ matches filters*. The montage has no controls row of its own, so its clips start right under the label bar. The clips are centred in the montage's width. **Every clip grid has the same toolbar**: **Most typical ▾ · Show ▾ · Size · Export ▾**, here at the right of the label bar's first row, over the clips in a cluster window, and over AUDIT's review grid (where the order is fixed, so there is no order button). **Show ▾** says what every tile draws: tick or untick **Video**, **Masks**, **Mask trail**, **Keypoints** and **Keypoint trail** (the keypoints greyed, with the reason, when the embedding read no keypoints; each trail needs its **Masks** or **Keypoints**), and choose in **Trail points** which keypoints leave a trail (every point until you untick some). With **Video** off the masks and keypoints are drawn on white; with **Masks** off the plain video plays, and a clip that does not match the filters is washed out instead of drawn grey. The last thing a tile still draws cannot be unticked. Under them, **As recorded** / **Aligned** turns every tile so the animal's body points up, frame by frame, from the keypoints the embedding read and a heading definition; on a run without them **Aligned** is greyed and says why, and a frame with no measurable axis plays as recorded with a small *no axis* mark. Last, **No context**, **1 s context**, **2 s context** or **5 s context**: that much video either side of each clip, so each tile plays the clip with its lead-in and follow-on. Each screen keeps what you choose.
 
-    **Export ▾** writes the clips **as the grid shows them**: **Video of 182 clips…** and **GIF of 182 clips…** (every clip side by side, in the grid's order; the GIF asks for its width and frame rate first), **One file per clip…** (a GIF of each into a folder, numbered in order) and **CSV list of clips…** (a clip-query CSV that `detail analysis query --from-csv` reads as example clips, with each clip's rank, recording name, subject and own times; context is not part of a clip, so the list leaves it out). A greyed line at the bottom of the menu says what they draw: *Writes what the grid shows: video + masks, as recorded, no context*, following **Show ▾**. Each asks where to save and then writes in the background from the full video, not the previews, with a progress bar and **Cancel**; a line over the clips says what was written. The same exports are `detail analysis cluster-montage` from the command line.
+    **Export ▾** writes the clips **as the grid shows them**: **Video of 182 clips…** and **GIF of 182 clips…** (every clip side by side, in the grid's order; the GIF asks for its width and frame rate first), **One file per clip…** (a GIF of each into a folder, numbered in order) and **CSV list of clips…** (a clip-query CSV that `detail analysis query --from-csv` reads as example clips, with each clip's rank, recording name, subject and own times; context is not part of a clip, so the list leaves it out). The video's save dialog picks the codec by its file type: **MP4 video, H.264** (the default, which PowerPoint plays) or **MP4 video, MPEG-4 Part 2 (mp4v)**; where this computer cannot write H.264 it writes mp4v, and the line that says where the file went says so. A greyed line at the bottom of the menu says what they draw: *Writes what the grid shows: video + masks, as recorded, no context*, following **Show ▾**. Each asks where to save and then writes in the background from the full video, not the previews, with a progress bar and **Cancel**; a line over the clips says what was written. Under them are **Export clips…**, **Export overlay…** and **New Query from 182 clips…**. The same exports are `detail analysis cluster-montage` from the command line.
 
-    **Pick clips to export…**, at the top of **Export ▾**, chooses which clips and in what order. A yellow bar appears over the clips: *Pick mode · Click clips to pick them, in order · 3 picked*, with **Pick all**, **Clear**, **Export 3 ▾** and **Quit**. Nothing is picked to start. **Click a clip to pick it**: it shows its number, 1, 2, 3 in the order you click; click it again to un-pick it. Drag across clips, or click one and **Shift**-click another, to pick a run, in the grid's order; a drag that starts on a picked clip un-picks the run. **Pick all** picks every clip in the grid's order, **Clear** un-picks them all. **Export 3 ▾** (and **Export ▾** while you pick) writes the picked clips in pick order, the same four ways; with nothing picked it is greyed and says *Pick at least one clip.* **When the export finishes, pick mode closes**: the picks are cleared and a click goes back to what it did before (nothing here; on AUDIT, removing the clip). If you cancel the export, or it fails, you stay in pick mode with your picks as they were, to try again. Opening another cluster while picking ends pick mode and clears the picks, and the line over the clips says so; changing the order keeps them. **Quit**, or **Esc**, leaves pick mode without exporting. Opening another cluster also leaves it: the picks are cleared and a line over the clips says so (a new order keeps them). An export that finishes after you have quit and started picking again leaves your new picks alone. Picking changes nothing in the run: not the cluster, not AUDIT. Double-click a tile to open the clip, whole frame and from the full video, in the clip window, which steps through the rest in the montage's order with **◀ previous** / **next ▶**.
+    **Export clips…** writes the clips as videos or GIFs in several looks at once, in a window that stays open beside the page. On the left, **Visuals**: each ticked row is written as its own set of files, in its own subfolder named after it. The first row, **Current preview settings**, is what **Show ▾** draws now, and its name follows it (for example *Mask + Mask trail*); it is ticked to begin with. Under it are fixed looks: **Raw footage**, **Raw + mask outline**, **Raw + mask outline + mask trail**, **Raw + keypoints**, **Raw + keypoints + keypoint trail**, **Mask**, **Mask + mask trail**, **Keypoints**, **Keypoints + keypoint trail** and **Mask + keypoints + both trails**. The rows that draw keypoints are greyed, with the reason on hover, when the clips' embedding runs read no keypoints. **Keypoint trail points** chooses which points leave a trail, in every row with a keypoint trail; it opens on **Show ▾**'s **Trail points**. **Align to heading** turns the fixed looks' tiles to their heading (their names and folders say *aligned to heading*); it opens on **Show ▾**'s orientation, and the current row follows **Show ▾**. **What to write** is **One montage file** (all the clips in one grid), **One file per clip**, or **Both** (to begin with); **Clips** is **All in the grid** (in the grid's order) or **Picked only** (the clips picked in pick mode, below, in pick order; it opens on that while you are picking). **Formats**: tick **MP4**, **GIF** or both, each with its own width and frame rate; the MP4 row's **codec** is H.264 unless you choose MPEG-4 Part 2. The MP4 opens at **full size**, each clip at its crop's own size in the recording (a montage file's grid stays within 3840 pixels wide), and at the recording's own frame rate; the GIF opens at 640 pixels and 12 a second. At least one format has to be ticked, and **Export** says why when it is greyed. Every clip is written with **Show ▾**'s context, and named by its own span.
+
+    On the right, the **Preview** plays the grid's first clip in the look whose **Preview** button you pressed (that button says **Previewing**), exactly as its own file will look: at the MP4's width and frame rate, or the GIF's when only GIF is ticked, and the line under it says which. **Play** and **Loop** are under it. At the bottom, **Folder** (with **Choose…**) is where the export goes; it opens beside the last folder you exported into from this experiment, named after the run and the cluster. The line under it counts what will be written, for example *Will write 2 visuals × 2 formats × (1 montage + 25 clips) = 104 files into a new subfolder per visual · about 180 MB · about 2 min*; the size and time are estimates, from what drawing and encoding a picture usually costs, so a busy computer can take longer. Each clip's file is named `rank_recording_m-ss.t`, for example `3_mouse_07_0-42.1.mp4` (`recording-C` in Blind mode), and the montage file is `montage.mp4` or `montage.gif`. **Export** writes everything behind one bar with **Cancel**; cancelling keeps the files already finished and removes the one being written. The same export is `detail analysis cluster-montage --export-dir` from the command line.
+
+    An export turns a clip by the heading its embedding run uses (its keypoint track run and heading definition, or, for an embedding that was not aligned, the one heading definition saved for the experiment that fits its skeleton), with the animal at the tile's centre, at one size for the whole clip. A frame the embedding would not turn (a gap in the heading longer than its *Max gap*, or before the first and after the last heading) is a grey tile marked *no heading*: it is never shown unturned among turned ones. A side-view embedding aligned by **mirror** is flipped as it flips, not turned.
+
+    **Export overlay…** writes the clips drawn on top of each other in one picture: each clip's outline in its own colour, turned to face up and centred, its trail fading behind it and its skeleton on top, with a key beside the picture naming each colour. It takes the picked clips while you are picking, and otherwise the grid's first 12. Its look is its own, not **Show ▾**'s. Save it as an MP4 (the codec by file type, as for the video) or a GIF of the clips playing together. It is greyed, with the reason, on a run whose clips have no heading to turn by.
+
+    **New Query from 182 clips…** opens a new behaviour Query's launch form with the clips (or the picks) as its examples, on the embedding the clustering read; nothing runs until you press **Run** there. When the clips come from several embedding runs, the form says so and leaves the embedding to you, since a Query searches one.
+
+    **Pick clips to export…**, at the top of **Export ▾**, chooses which clips and in what order. A yellow bar appears over the clips: *Pick mode · Click clips to pick them, in order · 3 picked*, with **Pick all**, **Clear**, **Export 3 ▾** and **Quit**. Nothing is picked to start. **Click a clip to pick it**: it shows its number, 1, 2, 3 in the order you click; click it again to un-pick it. Drag across clips, or click one and **Shift**-click another, to pick a run, in the grid's order; a drag that starts on a picked clip un-picks the run. **Pick all** picks every clip in the grid's order, **Clear** un-picks them all. **Export 3 ▾** (and **Export ▾** while you pick) writes the picked clips in pick order, the same four ways; with nothing picked it is greyed and says *Pick at least one clip.* **When the export finishes, pick mode closes**: the picks are cleared and a click goes back to what it did before (nothing here; on AUDIT, removing the clip). If you cancel the export, or it fails, you stay in pick mode with your picks as they were, to try again. Opening another cluster while picking ends pick mode and clears the picks, and the line over the clips says so; changing the order keeps them. **Quit**, or **Esc**, leaves pick mode without exporting. An export that finishes after you have quit and started picking again leaves your new picks alone. Picking changes nothing in the run: not the cluster, not AUDIT. Double-click a tile to open the clip, whole frame and from the full video, in the clip window, which steps through the rest in the montage's order with **◀ previous** / **next ▶**.
 
     **Open in window**, at the end of the label bar's last line (or **Open in window** on a cluster's right-click menu in the tree), opens the cluster in a **window of its own** beside the page, which stays fully usable. Open as many clusters as you like, each in its own window; opening a cluster that already has one brings that window forward. The windows close with the run's page.
 
@@ -938,7 +1365,7 @@ already quoted. A run that has not sent anything anywhere shows no list at all.
 banner on the landing page names which one you are on, and the view cards open the interpretation *as it was*,
 the same tree, montage, labels and instance list, with the labels that were pinned. Everything
 that would change it is greyed: labelling, rebuilding clips, Finish and Reopen, every AUDIT edit
-(the **Mark as** buttons, **Undo**, **Finish**, **Reopen review**, and INTERPRET's **Put back in…**; every cluster's clips still play and can be selected, since watching changes nothing) and the audit line's **Move to…** and **Remove from the label**, and the run's own **Delete analysis**,
+(removing or moving a clip, **Undo**, **Finish review**, **Reopen review**, and INTERPRET's **Put back in…**; every cluster's clips still play and can be selected, since watching changes nothing) and the audit line's **Move to…** and **Remove from the label**, and the run's own **Delete analysis**,
 **Cancel analysis**, **Start new analysis** and **Open output folder**. **Measures** is not shown at all, because it reports on the live run. Everything that changes what you are *looking at* still works, open
 any cluster, zoom the tree, play a clip. **Back to live run** returns you, and
 double-clicking another row switches straight to it. **Behavior scan** runs work the same way: a
@@ -985,7 +1412,7 @@ Statistics stop at description: there are no p-values. `stats.csv` beside the co
 
 **Model manager** (a banner tab) is the machine's whole model library on one page. It keeps distilled models from getting lost in a folder: each global model has a name, metadata, and a preview. Its three tables each show the four newest rows and scroll for the rest.
 
-**Global models** are the models every experiment can use (ones you imported, ones you restored from a zip, and ones you promoted from an experiment) in a table: **Name · From project(s) · Made by · Created · Kind**. **Kind** is *detector* or *keypoints*. **Double-click a row** to open its detail. The detail shows a **preview** (one overlay frame of the model's own segmentation, **double-click it** to see it full size and zoom in), its kind, description, notes, and classes, and a **build history** (the source project(s), dataset, model size, and metrics it was distilled from). A keypoint model's detail also shows its **skeleton**: the points, the left/right pairs, and the [Keypoints manager](#keypoints-manager) entry it matches. The model always uses its own copy of the skeleton. From the detail page you can **Edit** the metadata, **Set preview**, **Export**, or **Delete**. **Export** is also a button below the table.
+**Global models** are the models every experiment can use (ones you imported, ones you restored from a zip, and ones you promoted from an experiment) in a table: **Name · From project(s) · Made by · Created · Kind**. **Kind** is *detector* or *keypoints*. **Double-click a row** to open its detail. The detail shows a **preview** (one overlay frame of the model's own segmentation; **double-click it** to see it full size and zoom in), its kind, description, notes, and classes, and a **build history** (the source project(s), dataset, model size, and metrics it was distilled from). For a distilled model this also includes what it was trained on: the teacher model (SAM 3), how many frames it labeled and the train/val split, per-class counts, and its **training curve** (mAP50 per epoch, same as the curve shown while training), all captured at the moment you promote it, so they still show even after the source project is gone. A keypoint model's detail also shows its **skeleton**: the points, the left/right pairs, and the [Keypoints manager](#keypoints-manager) entry it matches. The model always uses its own copy of the skeleton. From the detail page you can **Edit** the metadata, **Set preview…**, **Export…**, or **Delete**. **Export…** is also a button below the table.
 
 **Models in ‹experiment›** is the open experiment's trained models, the same table as its [Models](#distill) page. Double-click one to open it inside the experiment. With no experiment open it says so.
 
@@ -993,7 +1420,7 @@ Statistics stop at description: there are no p-values. `stats.csv` beside the co
 
 **Hugging Face** holds the foundation models. The two suggested ones (`sam3` and DINOv3's `dinov3_vit` · `vit_large`, the default embedding model, whose weights the keypoint method `dinov3_match` also uses) are listed first, then whatever you have installed, then the rest. A model with several sizes gets **one row per size**, each its own download. Select a row to **Check access** (readiness plus an action URL) or **Install** (download its weights). Install is required before a run: runs never download, so an uninstalled model is greyed out in the run forms until you install it here. Store the token on **Configuration ▸ Hugging Face**.
 
-Two actions sit at the top. **＋ Distill new model** makes a fast YOLO model of either kind (**Model type**: a detector labelled by SAM 3, or a keypoint model taught by the patch method or finished keypoint detect runs): it's usable in that experiment right away, under **Models** in the rail, where the **Kind** column tells them apart. **Import model** adds an external `.pt`, capturing a name, who made it, a description, notes, and an optional preview. Once you choose the file, the dialog reads it and shows its **Kind**: a detector, with the classes in the checkpoint, or a keypoint (pose) model. A keypoint model needs the **Skeleton** its points follow: a preset, a skeleton from the Keypoints manager, or **From file…** for a skeleton YAML. The dialog checks it against the model and **Import** stays greyed until it fits: the same number of points, and left/right pairs that match the ones the model swaps when it flips an image. The check cannot catch a pair named the wrong way round (left and right swapped), because that swaps the same points. A model that records no left/right swap accepts only a skeleton without pairs.
+Two actions sit at the top. **＋ Distill new model** makes a fast YOLO model of either kind (**Model type**: a detector labelled by SAM 3, or a keypoint model taught by the patch method or finished keypoint detect runs): it's usable in that experiment right away, under **Models** in the rail, where the **Kind** column tells them apart. **Import model** adds an external file, capturing a name, who made it, a description, notes, and an optional preview. **File** picks what you import. A **Model checkpoint (.pt)**: once you choose the file, the dialog reads it and shows its **Kind**: a detector, with the classes in the checkpoint, or a keypoint (pose) model. A keypoint model needs the **Skeleton** its points follow: a preset, a skeleton from the Keypoints manager, or **From file…** for a skeleton YAML. The dialog checks it against the model and **Import** stays greyed until it fits: the same number of points, and left/right pairs that match the ones the model swaps when it flips an image. The check cannot catch a pair named the wrong way round (left and right swapped), because that swaps the same points. A model that records no left/right swap accepts only a skeleton without pairs. A **Keypoint model (SLEAP export, .onnx)** is a keypoint model exported from SLEAP (how to export one is in the [CLI guide](cli.md#model)). Its keypoint names and edges come from the export, and which points pair as left and right is guessed from the names. Its detail page shows them under **Skeleton**; **Edit roles** opens the skeleton editor to change the pairs and edges (the names are the model's outputs and stay). An imported keypoint model is offered in **Keypoint detect**'s method list in every experiment; an ONNX one needs the `keypoints_onnx` extra.
 
 A distilled model doesn't land in **Global models** on its own: a trained model stays experiment-scoped until you **promote** it, so you can try several distill attempts and only add the keeper to the shared library. From a distill run's detail page, **Open trained model →** takes you to the trained model's own page, where **Promote to global** copies it (weights, name, and preview) into **Global models**.
 
@@ -1011,7 +1438,7 @@ copied it. **+ New skeleton** and **Import…** (read a skeleton file) sit above
 **Edit…**.
 
 **+ New skeleton** and **Edit…** open the skeleton editor in a window. A new skeleton starts on an
-empty canvas; the skeleton is drawn on a plain background with no video frame behind it. Draw
+empty canvas, on a plain background. Draw
 with the scene geometry editor's gestures: click empty space to add a point, drag a point to move
 it, right-click a point to remove it and its edges, scroll to zoom and right-drag to pan. Edges are
 a gesture too: select a point, then Shift+click a second point to join them, and Shift+click it
@@ -1019,6 +1446,18 @@ again to unjoin. Under the canvas, the selected **Point**'s name, its **Pair wit
 **Side** of the pair it is, and **Remove point**. A pair's left member draws in blue and its right
 in vermillion, the midline in green. **Save** writes it and closes the window; **Cancel** with
 unsaved changes asks first.
+
+**Drawing over a frame.** With an experiment open, **Frame from a recording…** above the canvas
+puts a frame from one of its videos behind the skeleton, so you can place points on the animal.
+Pick the **Recording** by name, then find the frame with the same player as everywhere else in
+the app: **Play** with its speed menu, the slider, **Prev frame** / **Next frame**, the arrow
+keys, or a typed frame number. Drag on the frame to crop it; drag a corner to resize the crop,
+drag inside it to move it, and **Whole frame** clears it. **Use this frame** puts the crop behind
+the canvas. The crop is centred on the square canvas with grey around it, so the points keep
+their places when you go back to **Plain background**. The frame is only a guide: it is not saved
+with the skeleton, and reopening the skeleton shows the plain canvas. With no experiment open the
+button is greyed. **Edit roles** on a keypoint model opens the same editor and has the same
+button.
 
 **A skeleton something uses keeps its points.** While anything in your experiments uses it, an
 edit to its points is saved as a new skeleton: the editor's **Save** reads **Save as new**, and **Delete** is
@@ -1029,7 +1468,7 @@ can be edited or deleted again. A preset always saves as new.
 
 One-off runs that need no experiment ([Tools guide](tools.md)). The **Quick tools** screen lists each tool, and a left **rail** lists them too, expand a tool to see its saved runs, oldest first, and click one to open its result. Open a tool to launch a run and browse its saved runs.
 
-**Quick segment** runs a segmentation model on raw clips so you can judge it on real footage ([Tools guide](tools.md)). **Add** one or more videos, pick **Sample evenly across each video** (the default (the opening frames of a clip often show nothing) or **Consecutive from the start**, add one or more **prompts**, then **Run**. A sampled run compares every prompt on the same frames: the **Compare** tab is the prompt × frame grid) **double-click any cell** to open that frame full size and zoom into it (and **Play** steps through them full size) and plays them, where the sampled positions are evenly spaced, at the speed that spacing really represents (`source fps ÷ the gap`), so a run sampled every 30th frame plays a minute of footage in two seconds rather than pretending to be real time. Both share one **Detection confidence threshold** slider that re-draws and re-counts the saved run at any threshold. A consecutive run plays the overlay clip and offers **Export mp4**; tick **whole video** to segment every frame with no limit: it confirms first, and **Stop** ends it while keeping what it finished. Runs are saved and managed like project data. SAM 3 needs an NVIDIA GPU; your own imported or distilled models run anywhere.
+**Quick segment** runs a segmentation model on raw clips so you can judge it on real footage ([Tools guide](tools.md)). **Add** one or more videos, pick **Sample evenly across each video** (the default (the opening frames of a clip often show nothing) or **Consecutive from the start**, add one or more **prompts**, then **Run**. A sampled run compares every prompt on the same frames: the **Compare** tab is the prompt × frame grid) **double-click any cell** to open that frame full size and zoom into it (and **Play** steps through them full size) and plays them, where the sampled positions are evenly spaced, at the speed that spacing really represents (`source fps ÷ the gap`), so a run sampled every 30th frame plays a minute of footage in two seconds rather than pretending to be real time. Both share one **Detection confidence threshold** slider that re-draws and re-counts the saved run at any threshold. A consecutive run plays the overlay clip and offers **Export mp4**, with the codec beside it (H.264 unless you pick MPEG-4 Part 2); tick **whole video** to segment every frame with no limit: it confirms first, and **Stop** ends it while keeping what it finished. Runs are saved and managed like project data. SAM 3 needs an NVIDIA GPU; your own imported or distilled models run anywhere.
 
 ## Getting your data out {#export}
 
@@ -1077,7 +1516,8 @@ manifest. Each row's tooltip names the files it writes.
   only. From a run's results screen, **Export…** opens with the recording you have selected
   in the table already chosen, so exporting what is on screen is the default and widening it is a
   click. The list is greyed (not hidden) while nothing ticked is written per recording, and a run
-  of one recording has no list. An analysis run is narrowed by cluster or selection here;
+  of one recording has no list. A frame or video preview is drawn from exactly one recording, so
+  tick one. An analysis run is narrowed by cluster or selection here;
   narrowing it by recording is [`--for-recording`](cli.md#exporting-part-of-a-run) on the command
   line.
 - **How big, how long, and whether it fits.** Under the list the dialog says what ticking all this will write and how long it will take ("about 2.3 GB, about 4 min, 118 GB free there"), and re-asks a moment after each change. Hover it to see how each row was worked out. Video is timed on a few dozen frames of the real footage, so its seconds run high. If a row cannot be sized (the performance report, which depends on what is installed, and the SLEAP and NWB keypoint files, whose size depends on how well their arrays compress) the total says **at least**, and that row adds nothing to the free-space check. If the estimate is more than the drive under **Save to** has free, it says the export **will not fit** and **Export** is off until you tick less or pick another drive. (An export that writes one video per recording can run to hundreds of gigabytes; this is what stops it filling a drive.)
@@ -1101,6 +1541,16 @@ manifest. Each row's tooltip names the files it writes.
   position and is marked not visible; on, its position is written as empty), and for the
   video **Video: show masks and boxes**, which draws the tracking run's masks and boxes under
   the points. Every file in one export reads the same choices, so they agree point for point.
+- **The run's own preview, drawn the way it looked on screen.** A detection or tracking run's
+  frame viewer has its own **Export frame…** and **Export video…** buttons (top right of the
+  viewer; see [Processing](#runs)): the same shared dialog, pre-answered with the run, the
+  recording on screen and the style shown, so a PNG or an mp4 comes out drawn exactly the way the
+  viewer was showing it.
+- **Video codec.** When a row writes video (clips, a preview video, a keypoints video), the
+  dialog adds **Video codec**: **H.264** (the default; PowerPoint, QuickTime and every browser
+  play it) or **MPEG-4 Part 2 (mp4v)**, the older format. On a machine that cannot encode
+  H.264 the row says so under the choice, the export writes mp4v, and the folder's
+  `export.yaml` records which codec it wrote.
 
 The same catalogue is on the command line as `detail export`, see the
 [CLI guide](cli.md#getting-your-data-out) for the column meanings.

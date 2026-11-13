@@ -16,9 +16,11 @@ from __future__ import annotations
 import datetime as dt
 
 import pytest
+import yaml
 
 from detail.api import exporters
 from detail.api.exporters import ExportSubject
+from detail.core import hostinfo
 from detail.storage import activity
 from detail.storage import runs as runs_store
 
@@ -148,6 +150,20 @@ def test_the_data_behind_the_table_is_written_too(tmp_path):
     )
 
 
+def test_machine_yaml_reads_back_through_safe_load(tmp_path):
+    """The file a user pastes elsewhere opens there — no ``!!python/object`` tag in it.
+
+    Read back from disk through the real writer, because the bug was a ``TorchVersion`` that
+    only ``yaml.dump`` could tell from a ``str`` (the class: ``tests/core/test_hostinfo.py``).
+    """
+    dest, _written, _report = _write(tmp_path, [("a", (0, 100), 1000)])
+    text = (dest / "machine.yaml").read_text(encoding="utf-8-sig")
+    assert "!!python" not in text, text
+    machine = yaml.safe_load(text)
+    assert machine["schema_version"] == 1
+    assert machine["torch"] == hostinfo.collect()["torch"]
+
+
 def test_a_run_with_no_log_reports_nothing_rather_than_guessing(tmp_path):
     """Runs from before the log existed have none, and there is nothing to reconstruct one from.
 
@@ -206,8 +222,6 @@ def test_the_report_makes_no_network_call():
     """
     import ast
     import pathlib
-
-    from detail.core import hostinfo
 
     tree = ast.parse(pathlib.Path(hostinfo.__file__).read_text(encoding="utf-8-sig"))
     names = {

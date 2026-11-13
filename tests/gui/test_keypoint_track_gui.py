@@ -198,6 +198,32 @@ def test_choosing_a_method_shows_its_every_setting_and_they_round_trip(
     assert form.config()["method"] == "temporal_decode"
 
 
+def test_the_points_row_lists_the_chosen_detect_runs_skeleton_and_round_trips(
+    form, monkeypatch
+):
+    """`track_points` is rendered from its `ui: skeleton_points` hint, not by name: the
+    picker is the knob for it under either method, on the main form."""
+    from detail.api import run_spec
+
+    spec = {"module": "keypoint_detect", "identity": {"model_id": "dinov3_match"}}
+    form._skeletons = {
+        run_spec.freeze_spec(spec): (("snout", "l_fin", "r_fin"), (("l_fin", "r_fin"),))
+    }
+    monkeypatch.setattr(form._picker, "spec", lambda: spec)
+    form._sync_points()
+    assert form._knobs["track_points"] is form._points
+    assert form.config()["config"]["track_points"] is None  # every point
+    form._points._boxes["r_fin"].setChecked(False)
+    assert form.config()["config"]["track_points"] == ["snout", "l_fin"]
+    form.load_config(
+        {"method": "despike_smooth", "config": {"track_points": ["snout"]}}
+    )
+    assert form._knobs["track_points"] is form._points
+    assert form.config()["config"]["track_points"] == ["snout"]
+    form._points.set_value([])
+    assert "Tick at least one point" in form.validation_error()
+
+
 @pytest.fixture
 def track_runs(tracked):  # noqa: F811 — the imported fixture
     """``tracked``'s recording with ``kd_01`` (one pose per detection) and two track runs
@@ -230,10 +256,23 @@ def track_runs(tracked):  # noqa: F811 — the imported fixture
     return recording
 
 
+def test_the_form_reads_the_detect_runs_skeleton_off_the_ui_thread(form, track_runs):
+    """`resolve_recordings` (the launch dialog's off-thread half) reads each detect-run
+    group's skeleton from one of its runs; applying it fills the points row."""
+    from tests.pipeline.test_keypoint_detect import SKELETON
+
+    resolved = form.resolve_recordings([track_runs])
+    assert list(resolved["skeletons"].values()) == [(SKELETON.names, SKELETON.pairs)]
+    form.apply_recordings([track_runs], resolved)
+    assert form._points.names() == list(SKELETON.names)
+
+
 def _open(qapp, recording, run_id):
     from detail.gui.keypoint_run_preview import KeypointTrackRunPreview
 
-    view = GUI_MODULES["keypoint_track"].preview_widget(recording, run_id)
+    view = GUI_MODULES["keypoint_track"].preview_widget(
+        recording, run_id, experiment_dir=None, parent_run_id=None
+    )
     assert isinstance(view, KeypointTrackRunPreview)
     assert drain_until(qapp, lambda: hasattr(view, "_scrubber")), "the run never loaded"
     return view

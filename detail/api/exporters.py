@@ -36,6 +36,9 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from detail.core import yaml_load
+from detail.core.video_codecs import DEFAULT_VIDEO_CODEC
+
 #: What a target may be narrowed to. `None` scope always means the whole subject.
 SCOPE_KINDS = ("cluster", "selection", "frames", "recordings")
 
@@ -110,6 +113,9 @@ class ExportScope:
         elif self.cluster is not None:
             parts.append(f"cluster {self.cluster}")
         elif self.frames is not None:
+            # `lo == hi` is a real, existing case (a one-frame clip span) as well as a
+            # preview export's single PNG frame — the two are not distinguishable from
+            # the scope alone, so this stays "frames N-N" for both rather than guessing.
             parts.append(f"frames {self.frames[0]}-{self.frames[1]}")
         if self.recording_ids:
             parts.append(
@@ -213,6 +219,9 @@ class ExportTarget:
     #: Renders this target accepts, when it writes clips. Empty for everything else.
     renders: tuple[str, ...] = field(default_factory=tuple)
     estimate: Callable[..., Estimate] | None = None
+    #: Whether ``run`` writes MP4 video, and so takes the ``codec`` option
+    #: (``core.video_codecs``) and has ``export.yaml`` record the codec it wrote.
+    writes_video: bool = False
 
     def included_files(self) -> tuple[str, ...]:
         """Every file this target puts in the folder besides the artifact itself.
@@ -778,7 +787,16 @@ def write_export(
         if relative or any(o.status == "failed" for o in outcomes)
         else _empty_reason(wanted, scope)
     )
-    _write_manifest(dest, subject, wanted, scope, relative, empty_reason, outcomes)
+    _write_manifest(
+        dest,
+        subject,
+        wanted,
+        scope,
+        relative,
+        empty_reason,
+        outcomes,
+        codec=options.get("codec", DEFAULT_VIDEO_CODEC),
+    )
     return ExportResult(
         dest, tuple(t.id for t in wanted), relative, empty_reason, tuple(outcomes)
     )
@@ -819,14 +837,12 @@ def _relative(dest: Path, path: Path) -> str:
 
 def read_manifest(dest: Path | str) -> dict | None:
     """The manifest a previous export left in ``dest``, or ``None`` if there is none."""
-    import yaml
-
     from detail.core import atomic
 
     path = Path(dest) / MANIFEST_NAME
     if not path.exists():
         return None
-    loaded = yaml.safe_load(atomic.read_text(path))
+    loaded = yaml_load.safe_load(atomic.read_text(path))
     return loaded if isinstance(loaded, dict) else None
 
 
@@ -889,8 +905,13 @@ def _write_manifest(
     files: tuple[str, ...],
     empty_reason: str,
     outcomes: Sequence["TargetOutcome"] = (),
+    codec: str = DEFAULT_VIDEO_CODEC,
 ) -> None:
-    """Write ``export.yaml`` — schema_version first, then what this export wrote."""
+    """Write ``export.yaml`` — schema_version first, then what this export wrote.
+
+    An export with a video target records ``video_codec``: the codec asked for, the one written
+    and, when they differ, the sentence saying why, so a fallback is never only in the log.
+    """
     from datetime import datetime, timezone
 
     import yaml
@@ -907,6 +928,13 @@ def _write_manifest(
         "written_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "files": list(files),
     }
+    if any(t.writes_video for t in targets):
+        from detail.storage import video as video_store
+
+        written = video_store.written_codec(codec)
+        manifest["video_codec"] = {"asked": codec, "written": written}
+        if written != codec:
+            manifest["video_codec"]["note"] = video_store.codec_note(codec)
     # Only when something went wrong. A per-target block on every export would be noise on the
     # common one, and its absence is then readable as "all of them worked".
     if any(o.status == "failed" for o in outcomes):

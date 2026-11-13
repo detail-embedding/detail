@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import (
 
 from detail.analysis.behavior_labels import ground_truth_streams
 from detail.configs.query_eval import _PERFRAME_METHODS, QueryEvalConfig
+from detail.core.utils import coerce_series_key, subject_key
 from detail.gui import frame_source
 from detail.gui.collapse import CollapsibleBand
 from detail.gui.dialog import Dialog
@@ -393,7 +394,7 @@ class _QueryEvalConfig(ConfigWidget):
         if idx >= 0:
             self._embed.setCurrentIndex(idx)
         by_name = {name: widget for name, (_, widget) in self._fields.items()}
-        by_name["track_id"].setValue(int(config.get("track_id", 0)))
+        by_name["track_id"].setValue(subject_key(config.get("track_id")))
         if config.get("fusion"):
             self._fusion.setCurrentText(config["fusion"])
         if config.get("method"):
@@ -765,11 +766,10 @@ class _QueryEvalExploreDialog(Dialog):
         from detail.gui.scrubber import FrameScrubber
 
         self.setWindowTitle(f"Explore clips — {record.get('id', '')}")
-        self.resize(1120, 740)  # fits 1440x810 (gui_design.md §3.1)
         self._record = record
         self._run_id = record.get("id", "")
         self._embed = record.get("embed_run_id", "")
-        self._track = int(record.get("track_id", 0))
+        self._track = coerce_series_key(record.get("track_id", 0))
         self._eval = QueryEvalPreview(experiment.dir)
         self._frames = ClipQueryPreview(
             experiment.dir

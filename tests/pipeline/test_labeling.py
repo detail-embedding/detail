@@ -20,8 +20,21 @@ land on (``test_frames_are_decoded_exactly_and_a_miss_is_redrawn``).
 **Background frames** — where the teacher found none of the classes — are kept with an empty
 label up to ``background_share`` of the dataset; a frame where it found something too small to
 keep is not background, since an animal may be there.
+
+**The class guarded at the bottom: shipping the whole input to do work on a tiny sample of it.** A
+remote labeling run uploaded every referenced video to the cluster (80 recordings was ~116 GB, about
+an hour) to label ~1,000 frames, though which frames is decided from the recordings' timestamp maps
+and the dataset id alone. It hid because the upload was correct: the cost is only visible against
+what the job actually reads. The frames are now extracted where the video is (`extract_source_frames`)
+and only they cross. What the tests pin: the dataset made from the extracted frames is **byte for byte**
+the one made from the videos (with the videos deleted before the second run, so any read of one fails
+it); extraction is idempotent so a retry resumes; the manifest is written last, so an interrupted
+extraction cannot be mistaken for a finished one; and a frame the manifest names but the transfer lost
+fails loudly instead of quietly labeling fewer frames than were asked for.
 """
 
+import dataclasses
+import shutil
 from pathlib import Path
 
 import cv2
@@ -569,3 +582,164 @@ def test_sample_size_is_exact(tmp_path, monkeypatch):
     assert len(imgs) == 25  # exactly what was requested
     rec = yaml.safe_load((run_dir / "dataset.yaml").read_text(encoding="utf-8-sig"))
     assert rec["n_train"] == 25 and rec["status"] == "complete"
+
+
+# --------------------------------------------------------------------------- #
+# Extracted source frames: label ~1,000 images instead of shipping a video library
+# --------------------------------------------------------------------------- #
+# **The class: shipping the whole input to do work on a tiny sample of it.** A remote labeling run
+# uploaded every referenced video (80 recordings was ~116 GB, about an hour) to label ~1,000 frames
+# chosen from the timestamp maps and the dataset id alone. The frames are now extracted where the
+# video is and only they go; these tests pin that doing so changes nothing about the dataset.
+def _label_from_frames(proj, job, run_dir, *, drop_videos):
+    """Extract ``job``'s frames, optionally delete every video, and label from the images."""
+    n = labeling.extract_source_frames(proj, job, run_dir / labeling.SOURCE_FRAMES_DIR)
+    if drop_videos:
+        for recording_id in job.source_recording_ids:
+            video = experiment_store.recording_path(proj, recording_id) / "video"
+            (video / "part_001.mp4").unlink()
+    framed = dataclasses.replace(job, source_frames=labeling.SOURCE_FRAMES_DIR)
+    labeling.run(framed, run_dir, progress_cb=lambda e: None, stop_event=None)
+    return n
+
+
+def _dataset_files(run_dir):
+    return {
+        p.relative_to(run_dir).as_posix(): p.read_bytes()
+        for sub in ("images/train", "labels/train", "images/val", "labels/val")
+        for p in (run_dir / sub).glob("*")
+    }
+
+
+def test_labeling_from_extracted_frames_makes_the_same_dataset_as_the_videos(
+    tmp_path, monkeypatch
+):
+    """Byte for byte, and with the videos **deleted** before the second run, so a read of any
+    video fails it. The frames are PNG (lossless) because labeling re-encodes them as JPEGs: a
+    second lossy step would make a remote run's pictures differ from a local run's."""
+    monkeypatch.setitem(MODELS, "sam3", _FakeSAM3)
+    proj = _setup(tmp_path)
+    job = _job(n_frames=16, val_split=0.25)
+    run_dir = _run(proj, job)
+    expected = _dataset_files(run_dir)
+    assert len(expected) == 32, "a control that labeled nothing proves nothing"
+    shutil.rmtree(run_dir)
+    run_dir.mkdir(parents=True)
+
+    n = _label_from_frames(proj, job, run_dir, drop_videos=True)
+
+    assert n == 16
+    assert _dataset_files(run_dir) == expected
+    rec = yaml.safe_load((run_dir / "dataset.yaml").read_text(encoding="utf-8-sig"))
+    assert rec["status"] == "complete" and rec["n_train"] + rec["n_val"] == 16
+
+
+def test_the_sample_needs_no_video_to_be_drawn(tmp_path):
+    """The reason frames can be chosen on one machine and labeled on another: the sample is a
+    function of the timestamp maps and the dataset id, so it is the same with no video at all.
+    """
+    proj = _setup(tmp_path)
+    job = _job(n_frames=16)
+    with_video = labeling._sample_frames(labeling._gather_parts(proj, job), job)
+    for recording_id in job.source_recording_ids:
+        video = experiment_store.recording_path(proj, recording_id) / "video"
+        (video / "part_001.mp4").unlink()
+
+    parts = labeling._gather_parts(proj, job, resolve_video=False)
+
+    assert [p["video"] for p in parts] == [None, None]
+    assert labeling._sample_frames(parts, job) == with_video
+
+
+def test_extraction_is_idempotent_so_a_retry_resumes(tmp_path):
+    proj = _setup(tmp_path)
+    job = _job(n_frames=16)
+    out = tmp_path / "frames"
+    assert labeling.extract_source_frames(proj, job, out) == 16
+    kept = sorted(out.glob("*.png"))
+    stamps = {p.name: p.stat().st_mtime_ns for p in kept}
+    lost = kept[0]
+    lost.unlink()
+    (out / "manifest.json").unlink()
+
+    assert labeling.extract_source_frames(proj, job, out) == 16
+
+    assert lost.is_file(), "the lost frame was extracted again"
+    assert all(
+        p.stat().st_mtime_ns == stamps[p.name] for p in kept[1:]
+    ), "frames already on disk are kept, not rewritten"
+    assert not list(out.glob("*.tmp*")), "no temp file left behind"
+
+
+def test_an_interrupted_extraction_leaves_no_manifest(tmp_path, monkeypatch):
+    """The manifest is what the labeling reader trusts; an unfinished extraction must not have
+    one, or half the sample would be labeled as though it were all of it."""
+    import threading
+
+    from detail.core import progress as core_progress
+
+    monkeypatch.setattr(core_progress, "PROGRESS_INTERVAL_S", 0.0)
+    stop = threading.Event()
+    out = tmp_path / "frames"
+
+    done = labeling.extract_source_frames(
+        _setup(tmp_path),
+        _job(n_frames=16),
+        out,
+        progress_cb=lambda d, t: stop.set() if d >= 3 else None,
+        stop_event=stop,
+    )
+
+    assert done == 3 and len(list(out.glob("*.png"))) == 3
+    assert not (out / "manifest.json").exists()
+
+
+def test_labeling_refuses_frames_with_no_manifest(tmp_path, monkeypatch):
+    monkeypatch.setitem(MODELS, "sam3", _FakeSAM3)
+    proj = _setup(tmp_path)
+    job = _job(n_frames=16)
+    run_dir = labeling.run_dir_for(proj, job)
+    run_dir.mkdir(parents=True)
+    labeling.extract_source_frames(proj, job, run_dir / labeling.SOURCE_FRAMES_DIR)
+    (run_dir / labeling.SOURCE_FRAMES_DIR / "manifest.json").unlink()
+
+    with pytest.raises(FileNotFoundError, match="manifest.json"):
+        labeling.run(
+            dataclasses.replace(job, source_frames=labeling.SOURCE_FRAMES_DIR),
+            run_dir,
+            progress_cb=lambda e: None,
+            stop_event=None,
+        )
+
+
+def test_a_frame_the_manifest_names_but_the_transfer_lost_fails_loudly(
+    tmp_path, monkeypatch
+):
+    """Quietly labeling 15 of 16 frames is the failure this exists to prevent: the dataset would
+    look complete and be smaller than what was asked for."""
+    monkeypatch.setitem(MODELS, "sam3", _FakeSAM3)
+    proj = _setup(tmp_path)
+    job = _job(n_frames=16)
+    run_dir = labeling.run_dir_for(proj, job)
+    run_dir.mkdir(parents=True)
+    frames = run_dir / labeling.SOURCE_FRAMES_DIR
+    labeling.extract_source_frames(proj, job, frames)
+    sorted(frames.glob("*.png"))[3].unlink()
+
+    with pytest.raises(FileNotFoundError, match="transfer"):
+        labeling.run(
+            dataclasses.replace(job, source_frames=labeling.SOURCE_FRAMES_DIR),
+            run_dir,
+            progress_cb=lambda e: None,
+            stop_event=None,
+        )
+
+
+def test_labeling_job_carries_source_frames_and_reads_an_old_job_without_them():
+    job = _job()
+    assert job.source_frames is None
+    framed = dataclasses.replace(job, source_frames="source_frames")
+    assert LabelingJob.from_dict(framed.to_dict()) == framed
+    old = job.to_dict()
+    del old["source_frames"]  # a job.json written before the field existed
+    assert LabelingJob.from_dict(old).source_frames is None

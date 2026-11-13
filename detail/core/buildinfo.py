@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import functools
 import os
+import shlex
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -157,6 +158,161 @@ def build_info() -> BuildInfo:
         branch=None if branch in (None, "HEAD") else branch,
         local_changes=bool(status),
     )
+
+
+def report() -> dict:
+    """This build as plain data: what a cluster prints when asked which DETAIL it has.
+
+    The full SHA, not the short one, because it is compared; the checkout's folder because the
+    command that updates it is run there.
+    """
+    info = build_info()
+    return {
+        "sha": head_sha(),
+        "commit": info.commit,
+        "branch": info.branch,
+        "date": info.date,
+        "local_changes": info.local_changes,
+        "root": str(source_root()),
+    }
+
+
+SAME = "same"
+BEHIND = "behind"  # the other copy is older than this one
+AHEAD = "ahead"  # the other copy has commits this one lacks
+DIVERGED = (
+    "diverged"  # neither contains the other, or its commit is not one this copy has
+)
+UNKNOWN = "unknown"  # one side is not a git checkout, or could not be asked
+
+
+@dataclass(frozen=True)
+class BuildComparison:
+    """How the DETAIL on another machine (a remote target) compares with the one running here.
+
+    Congruence is of the **commit**: a job imports this app's modules on the cluster, so a cluster
+    on any other commit is running code the app did not write, and the failure when it is older
+    (a module the app lists that the cluster does not have) lands on every recording at once.
+    """
+
+    state: str
+    target: str
+    host: str
+    local_commit: str | None = None
+    remote_commit: str | None = None
+    local_branch: str | None = None
+    remote_branch: str | None = None
+    remote_root: str | None = None
+    remote_changes: bool = False
+    commits: int | None = None  # how far behind or ahead, when that is known
+    reason: str = ""  # why it is UNKNOWN
+
+    @property
+    def matches(self) -> bool:
+        return self.state == SAME
+
+    def update_command(self) -> str | None:
+        """The command that brings the other copy up to date, when it is the one that is behind."""
+        if self.state != BEHIND or not self.remote_root:
+            return None
+        return (
+            f"ssh {self.host} 'git -C {shlex.quote(self.remote_root)} pull --ff-only'"
+        )
+
+    def describe(self) -> str:
+        """What the comparison found, with the step to take."""
+        target = repr(self.target)
+        there = self.remote_commit or "an unknown commit"
+        here = self.local_commit or "an unknown commit"
+        branches = ""
+        if (
+            self.remote_branch
+            and self.local_branch
+            and self.remote_branch != self.local_branch
+        ):
+            branches = (
+                f" It is on {self.remote_branch}; this app is on {self.local_branch}."
+            )
+        changes = (
+            " The checkout there has local changes, so a pull may be refused."
+            if self.remote_changes
+            else ""
+        )
+        if self.state == SAME:
+            return f"DETAIL on {target} is the same build as this app ({here})."
+        if self.state == BEHIND:
+            how = "" if self.commits is None else f"{self.commits} commit(s) "
+            command = self.update_command()
+            fix = (
+                f" Update it with `detail remote update {shlex.quote(self.target)}` "
+                f"(or Update DETAIL… on the Remote targets page), or by hand: {command}"
+                if command
+                else ""
+            )
+            return (
+                f"DETAIL on {target} is {how}behind this app (it has {there}, this app "
+                f"has {here}), so a run that needs what is new will fail there.{branches}"
+                f"{changes}{fix}"
+            )
+        if self.state == AHEAD:
+            how = "" if self.commits is None else f"{self.commits} commit(s) "
+            return (
+                f"DETAIL on {target} is ahead of this app by {how}(it has {there}, this "
+                f"app has {here}). Update this app (git pull) rather than the cluster."
+                f"{branches}"
+            )
+        if self.state == DIVERGED:
+            return (
+                f"DETAIL on {target} has a different history from this app (it has {there}, "
+                f"this app has {here}); {there} is not a commit this copy has, or neither "
+                f"contains the other.{branches}{changes}"
+            )
+        return f"Could not compare DETAIL on {target} with this app: {self.reason}"
+
+
+def compare_with(remote: dict, *, target: str, host: str) -> BuildComparison:
+    """Compare a build another machine reported (:func:`report`) with this one.
+
+    Uses this checkout's own git for the ordering, so it never fetches and never touches the
+    other machine: a commit this copy does not have is reported as such, not looked up.
+    """
+    base = {
+        "target": target,
+        "host": host,
+        "remote_commit": remote.get("commit"),
+        "remote_branch": remote.get("branch"),
+        "remote_root": remote.get("root"),
+        "remote_changes": bool(remote.get("local_changes")),
+    }
+    local_sha = head_sha()
+    info = build_info()
+    base.update(local_commit=info.commit, local_branch=info.branch)
+    remote_sha = remote.get("sha")
+    if local_sha is None:
+        return BuildComparison(
+            UNKNOWN, **base, reason="this copy of DETAIL is not a git checkout"
+        )
+    if not remote_sha:
+        return BuildComparison(
+            UNKNOWN,
+            **base,
+            reason=f"the DETAIL on {target!r} is not a git checkout, so its build is unknown",
+        )
+    if remote_sha == local_sha:
+        return BuildComparison(SAME, **base)
+    # `_git` is "" on success and None on failure, so an ancestor is `is not None`. A commit this
+    # copy has never seen fails both ancestor questions, and so lands on DIVERGED below.
+    if _git("merge-base", "--is-ancestor", remote_sha, local_sha) is not None:
+        count = _git("rev-list", "--count", f"{remote_sha}..{local_sha}")
+        return BuildComparison(
+            BEHIND, **base, commits=int(count) if count and count.isdigit() else None
+        )
+    if _git("merge-base", "--is-ancestor", local_sha, remote_sha) is not None:
+        count = _git("rev-list", "--count", f"{local_sha}..{remote_sha}")
+        return BuildComparison(
+            AHEAD, **base, commits=int(count) if count and count.isdigit() else None
+        )
+    return BuildComparison(DIVERGED, **base)
 
 
 def history(limit: int = 200) -> list[HistoryEntry]:

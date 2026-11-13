@@ -298,6 +298,36 @@ def test_export_writes_csvs_and_manifest(tmp_path):
     manifest = yaml.safe_load(manifest_text)
     assert manifest["tracking_run_id"] == "track_01"
     assert manifest["detection_run_id"] == "det_01"
+    assert manifest["subject_labels"] is None  # this tracker never names its animals
+
+
+def test_export_carries_the_tracking_run_s_animal_labels(tmp_path):
+    """Who each object_id is travels with the export (§13), so plots can name animals after
+    the tracking run is deleted."""
+    recording = _one_track(tmp_path)
+    track_yaml = recording.dir / "tracking" / "track_01" / "track.yaml"
+    meta = yaml.safe_load(track_yaml.read_text(encoding="utf-8-sig"))
+    meta["subject_labels"] = {0: "white mouse"}
+    track_yaml.write_text(yaml.dump(meta), encoding="utf-8")
+    out = recording.export_locations("track_01", tmp_path / "loc_out")
+    manifest = yaml.safe_load((out / "locations.yaml").read_text(encoding="utf-8-sig"))
+    assert manifest["subject_labels"] == {0: "white mouse"}
+
+
+def test_export_reports_progress_through_to_the_write(tmp_path, monkeypatch):
+    """The synchronous export walks every tracked detection — minutes on a long recording — so
+    it reports a computing phase that starts at 0 and reaches 1, then the write."""
+    from detail.core import progress as progress_mod
+
+    monkeypatch.setattr(progress_mod, "PROGRESS_INTERVAL_S", 0.0)
+    recording = _one_track(tmp_path)
+    events = []
+    recording.export_locations(
+        "track_01", tmp_path / "loc_out", progress=lambda *e: events.append(e)
+    )
+    computing = [fraction for stage, fraction, _ in events if stage == "computing"]
+    assert computing[0] == 0.0 and computing[-1] == 1.0, events
+    assert events[-1][0] == "writing", events
 
 
 def test_export_rejects_incomplete_tracking(tmp_path):
@@ -307,3 +337,159 @@ def test_export_rejects_incomplete_tracking(tmp_path):
     recording_store.write_recording(recording.dir, data)
     with pytest.raises(ValueError, match="not complete"):
         recording.export_locations("track_01", tmp_path / "x")
+
+
+# --------------------------------------------------------------------------- #
+# pair_relations.csv and keypoints.csv (§16 *Keypoints and pairs in the export*)
+# --------------------------------------------------------------------------- #
+def _pairs(tmp_path, detections, object_ids, **kwargs):
+    from detail.analysis.locations import compute_location_tables
+
+    recording = _setup(tmp_path, detections, object_ids)
+    return _dicts(
+        compute_location_tables(recording, "track_01", **kwargs).pair_relations
+    )
+
+
+def test_every_unordered_pair_gets_a_row_per_frame_both_are_on(tmp_path):
+    # frame 0: animals 0, 1, 2 (three pairs); frame 1: animal 0 alone (no pair row)
+    left, mid, right = (
+        _mask_square(4, 10, 2, 8),
+        _mask_square(4, 10, 16, 22),
+        _mask_square(4, 10, 30, 36),
+    )
+    rows = _pairs(
+        tmp_path,
+        detections=[
+            (0, 0, (0.05, 0.1, 0.2, 0.25), left),
+            (0, 1, (0.4, 0.1, 0.55, 0.25), mid),
+            (0, 2, (0.75, 0.1, 0.9, 0.25), right),
+            (1, 0, (0.05, 0.1, 0.2, 0.25), left),
+        ],
+        object_ids=[0, 1, 2, 0],
+    )
+    assert [(r["frame_idx"], r["object_id_a"], r["object_id_b"]) for r in rows] == [
+        (0, 0, 1),
+        (0, 0, 2),
+        (0, 1, 2),
+    ]
+    first = rows[0]
+    assert first["bbox_centroid_dist_norm"] == pytest.approx(0.35, abs=1e-6)
+    assert first["bbox_centroid_dist_px"] == pytest.approx(0.35 * W, abs=0.01)
+    assert first["mask_centroid_dist_px"] == pytest.approx(14.0, abs=0.01)
+    assert first["mask_edge_dist_px"] == "" and first["bbox_centroid_dist_mm"] == ""
+
+
+def test_a_single_animal_recording_writes_a_header_only_pair_file(tmp_path):
+    recording = _one_track(tmp_path)
+    out = recording.export_locations("track_01", tmp_path / "loc_out")
+    lines = (out / "pair_relations.csv").read_text(encoding="utf-8-sig").splitlines()
+    from detail.analysis.locations import PAIR_COLUMNS
+
+    assert lines == [",".join(PAIR_COLUMNS)]
+    manifest = yaml.safe_load((out / "locations.yaml").read_text(encoding="utf-8-sig"))
+    assert manifest["files"]["pair_relations"] == "pair_relations.csv"
+    assert "keypoints" not in manifest["files"]
+    assert (
+        manifest["pair_edge_distance"] is False and manifest["keypoint_run_id"] is None
+    )
+
+
+def test_edge_distance_is_the_gap_between_masks_and_zero_when_they_touch(tmp_path):
+    rows = _pairs(
+        tmp_path,
+        detections=[
+            (0, 0, (0.0, 0.0, 0.2, 0.2), _mask_square(4, 10, 2, 8)),
+            (0, 1, (0.4, 0.0, 0.6, 0.2), _mask_square(4, 10, 12, 18)),
+            (1, 0, (0.0, 0.0, 0.2, 0.2), _mask_square(4, 10, 2, 8)),
+            (1, 1, (0.2, 0.0, 0.4, 0.2), _mask_square(4, 10, 8, 14)),
+        ],
+        object_ids=[0, 1, 0, 1],
+        pair_edge_distance=True,
+    )
+    # frame 0: columns 2..7 and 12..17 leave 4 empty columns between them (mask px = video px)
+    assert rows[0]["mask_edge_dist_px"] == pytest.approx(4.0)
+    # frame 1: columns 2..7 and 8..13 share an edge
+    assert rows[1]["mask_edge_dist_px"] == 0.0
+
+
+def test_mask_edge_gap_counts_overlap_and_an_empty_mask():
+    from detail.analysis.locations import mask_edge_gap
+
+    a = _mask_square(0, 4, 0, 4).astype(bool)
+    assert mask_edge_gap(a, _mask_square(2, 6, 2, 6).astype(bool)) == 0.0
+    assert (
+        mask_edge_gap(a, _mask_square(0, 4, 4, 8).astype(bool)) == 0.0
+    )  # side by side
+    assert mask_edge_gap(a, np.zeros_like(a)) is None
+
+
+def test_keypoints_join_tracks_on_frame_and_object_and_keep_an_unplaced_point(tmp_path):
+    from tests.experiments import write_keypoint_track_run
+
+    recording = _setup(
+        tmp_path,
+        detections=[
+            (f, 0, (0.1, 0.1, 0.5, 0.5), _mask_square(4, 20, 4, 20)) for f in range(3)
+        ],
+        object_ids=[0, 0, 0],
+    )
+    write_keypoint_track_run(
+        recording.dir, n_frames=3, offsets={"tail_base": (np.nan, np.nan)}
+    )
+    out = recording.export_locations(
+        "track_01", tmp_path / "loc_out", keypoint_run_id="kt_01"
+    )
+    columns, rows = _read(out / "keypoints.csv")
+    from detail.analysis.locations import KEYPOINT_COLUMNS
+
+    assert columns == KEYPOINT_COLUMNS
+    table = [dict(zip(columns, r)) for r in rows]
+    assert len(table) == 3 * 4  # every frame carries every point name
+    nose = [r for r in table if r["keypoint"] == "nose"]
+    assert [(r["frame_idx"], r["object_id"]) for r in nose] == [
+        ("0", "0"),
+        ("1", "0"),
+        ("2", "0"),
+    ]
+    assert float(nose[0]["x_norm"]) == pytest.approx(0.5)
+    assert float(nose[0]["x_px"]) == pytest.approx(0.5 * W)
+    assert nose[0]["x_mm"] == ""  # uncalibrated
+    tail = next(r for r in table if r["keypoint"] == "tail_base")
+    assert (tail["x_norm"], tail["score"], tail["visible"]) == ("", "", "0")
+    _t_columns, t_rows = _read(out / "tracks.csv")
+    assert {(r[0], r[2]) for r in t_rows} == {
+        (r["frame_idx"], r["object_id"]) for r in table
+    }
+    manifest = yaml.safe_load((out / "locations.yaml").read_text(encoding="utf-8-sig"))
+    assert manifest["keypoint_run_id"] == "kt_01"
+    assert manifest["keypoint_names"] == ["nose", "left_ear", "right_ear", "tail_base"]
+    assert manifest["files"]["keypoints"] == "keypoints.csv"
+
+
+def test_a_keypoint_run_of_another_tracking_run_is_refused(tmp_path):
+    from tests.experiments import write_keypoint_track_run
+
+    recording = _one_track(tmp_path)
+    write_keypoint_track_run(recording.dir, n_frames=1, tracking_run_id="track_02")
+    data = recording_store.read_recording(recording.dir)
+    data["tracking_runs"].append(
+        {"id": "track_01", "status": "complete", "detection_run_id": "det_01"}
+    )
+    recording_store.write_recording(recording.dir, data)
+    with pytest.raises(
+        ValueError, match="assigned its poses to tracking run 'track_02'"
+    ):
+        recording.export_locations("track_01", tmp_path / "x", keypoint_run_id="kt_01")
+
+
+def test_an_unknown_keypoint_run_is_refused(tmp_path):
+    recording = _one_track(tmp_path)
+    with pytest.raises(ValueError, match="keypoint track run 'kt_09' not found"):
+        recording.export_locations("track_01", tmp_path / "x", keypoint_run_id="kt_09")
+
+
+def _read(path):
+    from detail.storage.location_export import read_location_csv
+
+    return read_location_csv(path)

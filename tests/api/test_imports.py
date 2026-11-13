@@ -42,7 +42,10 @@ def test_metadata_only_spec_is_ready_immediately(tmp_path):
     recording = experiment.get_recording("recording_001")
     assert recording.import_status == "ready"
     assert recording.video_parts == []
-    assert experiment.recording_metadata["recording_001"] == {"animal_id": "M001"}
+    assert experiment.recording_metadata["recording_001"] == {
+        "acquisition_setup": "",
+        "animal_id": "M001",
+    }
 
 
 def test_create_shell_sets_queued_when_deferred_work(tmp_path):
@@ -88,7 +91,7 @@ def test_import_pending_cancel_marks_remaining_cancelled_kept(tmp_path):
     # both kept (tags preserved), marked cancelled — not deleted
     assert {s.id for s in experiment.recordings} == {"s1", "s2"}
     assert experiment.get_recording("s1").import_status == "cancelled"
-    assert experiment.recording_metadata["s2"] == {"a": "2"}
+    assert experiment.recording_metadata["s2"] == {"acquisition_setup": "", "a": "2"}
 
 
 def test_import_single_and_multi_part_video(tmp_path):

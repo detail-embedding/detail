@@ -54,6 +54,54 @@ def _record(ids, per=None):
 
 
 # --- the rows that exist ------------------------------------------------------ #
+class _LiveProgress8:
+    """A progress event that names every recording in flight, as a remote run does."""
+
+    def __init__(self, current, live):
+        self.current_recording = current
+        self.inner = live[current]
+        self.live = live
+
+
+def test_every_recording_in_flight_is_a_running_row_not_just_the_last_to_report():
+    """With eight jobs on a cluster, only `current_recording` (whichever reported last) drew as
+    running and the other seven read "queued" under a moving bar."""
+    live = {
+        "r1": _Inner(50, 100, "detecting"),
+        "r2": _Inner(10, 100, "queued on tillicum"),
+        "r3": _Inner(90, 100, "syncing results back"),
+    }
+    record = _record(["r1", "r2", "r3", "r4"])
+
+    units = processing_units(record, _LiveProgress8("r3", live))
+
+    by_name = {u.name: u for u in units}
+    assert [u.state for u in units] == [RUNNING, RUNNING, RUNNING, QUEUED]
+    assert by_name["r1"].fraction == 0.5 and by_name["r2"].fraction == 0.1
+    assert "syncing results back" in by_name["r3"].status
+    assert by_name["r4"].status == "queued"
+
+
+def test_a_finished_recording_is_done_even_if_it_is_still_in_the_live_set():
+    """The record outranks the live event: a recording reported complete is done, whatever the
+    last event said about it."""
+    live = {"r1": _Inner(99, 100), "r2": _Inner(1, 100)}
+    record = _record(["r1", "r2"], {"r1": {"status": "complete"}})
+
+    units = processing_units(record, _LiveProgress8("r2", live))
+
+    assert [u.state for u in units] == [DONE, RUNNING]
+
+
+def test_an_event_with_no_live_set_still_draws_the_one_running_row():
+    """Every record written before `live` existed."""
+    record = _record(["r1", "r2"])
+
+    units = processing_units(record, _Progress("r1", _Inner(50, 100)))
+
+    assert [u.state for u in units] == [RUNNING, QUEUED]
+
+
 def test_a_recording_the_coordinator_has_not_reached_is_still_a_row():
     """The half a live event cannot supply, and the reason the plan is read too.
 

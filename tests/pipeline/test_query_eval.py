@@ -32,12 +32,19 @@ def _trajectory():
     return emb, frame_idx, t_ns
 
 
-def _setup(experiment_dir, recording_dir, make_embedding_run, tmp_path, labels=None):
+def _setup(
+    experiment_dir,
+    recording_dir,
+    make_embedding_run,
+    tmp_path,
+    labels=None,
+    track_id=0,
+):
     emb, frame_idx, t_ns = _trajectory()
     recording_store.write_timestamps_csv(
         recording_dir / "video/timestamps/generated/part_001.csv", t_ns
     )
-    make_embedding_run(recording_dir, emb, frame_idx, t_ns)
+    make_embedding_run(recording_dir, emb, frame_idx, t_ns, track_id=track_id)
     lines = labels or (
         ["start_frame,end_frame,label"]
         + [f"{s},{e},groom" for s, e in GROOM]
@@ -481,6 +488,48 @@ def _run_module(experiment_dir, behaviors, progress=None, **over):
     )
     module.runner(job, run_dir, progress or (lambda e: None), threading.Event())
     return run_dir, config
+
+
+def test_a_run_whose_only_track_is_not_0_resolves_the_default_track_and_scores(
+    experiment_dir, recording_dir, make_embedding_run, tmp_path
+):
+    """A run whose only series is track 2. validate() must resolve the untouched default to
+    it and write it back, or every recording is ineligible and the error blames the labels
+    ("no requested recording is annotated ... at track 0")."""
+    from detail.storage import analysis_runs as ar
+
+    _setup(
+        experiment_dir,
+        recording_dir,
+        make_embedding_run,
+        tmp_path,
+        track_id=2,
+    )
+    run_dir, config = _run_module(experiment_dir, ["groom"])
+    assert config["track_id"] == 2
+    assert config["source_recording_ids"] == ["recording_001"]
+    assert (run_dir / "metrics.csv").is_file()
+    assert ar.read_analysis_yaml(run_dir)["track_id"] == 2
+
+
+def test_an_explicit_wrong_track_is_still_refused(
+    experiment_dir, recording_dir, make_embedding_run, tmp_path
+):
+    """Only the untouched default is rescued; a track the user named that the run does
+    not have keeps its own error rather than being silently swapped for the run's one.
+    """
+    _setup(
+        experiment_dir,
+        recording_dir,
+        make_embedding_run,
+        tmp_path,
+        track_id=2,
+    )
+    with pytest.raises(ValueError, match="at track 3"):
+        QueryEvalModule().validate(
+            experiment_dir,
+            {"embed_run_id": "emb_01", "behaviors": ["groom"], "track_id": 3},
+        )
 
 
 def test_query_eval_module_writes_run_outputs(

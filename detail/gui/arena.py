@@ -13,7 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
-from PyQt6.QtCore import Qt, QPointF, QRectF, pyqtSignal
+from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import (
     QBrush,
     QColor,
@@ -45,9 +45,11 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from detail.core import camera_view
 from detail.core.dataclasses import PolygonKeyframes
 from detail.core.utils import polygon_at_frame
 from detail.core.chart_theme import HUE_NAMES, LIGHT
+from detail.gui.camera_view import CameraViewPicker, inherit_label
 from detail.gui.dialog import Dialog
 from detail.gui.spin import FloatSpin
 from detail.gui import frame_source
@@ -55,7 +57,7 @@ from detail.gui.busy import decode_overlay, run_busy
 from detail.gui.scroll import OWNS_WHEEL
 from detail.gui.status_color import MUTED, set_label_color
 from detail.gui.scrubber import FrameScrubber
-from detail.gui.sizing import lines, set_available
+from detail.gui.sizing import announce_natural_size, lines, set_available
 from detail.gui.workers import BackgroundCall
 
 # Shown behind the "Decoding frame…" overlay until the first real frame decodes
@@ -222,6 +224,14 @@ class ArenaCanvas(QWidget):
         )
         self._unavailable = None
         self.update()
+        announce_natural_size(self)
+
+    def natural_size(self) -> QSize | None:
+        """The frame at its own pixels — what a window holding this canvas opens large enough
+        to show, up to its cap (`sizing.fit_to_content`). ``None`` before a frame."""
+        if self._pixmap is None:
+            return None
+        return QSize(self._width, self._height)
 
     def set_unavailable(self, text: str) -> None:
         """Show ``text`` instead of a frame, and stop taking edits until one decodes.
@@ -932,7 +942,6 @@ class SceneGeometryDialog(Dialog):
         self._recording = recording
         self._experiment = experiment
         self.setWindowTitle(f"Scene geometry — {recording.name}")
-        self.resize(1040, 740)  # fits 1440x810 (gui_design.md §3.1)
         self._part_counts = recording.part_frame_counts
         self._total = sum(self._part_counts)
         self._frame = 0
@@ -943,6 +952,20 @@ class SceneGeometryDialog(Dialog):
         self._loaded = {k.id: self._signature(k.id) for k in SPATIAL_KINDS}
 
         outer = self.body()
+        # Above everything the frame shows, because it is the one setting here that is not
+        # drawn: where the camera looks from (§10). Saved with the rest, by Save.
+        view_row = QHBoxLayout()
+        view_row.addWidget(QLabel("Camera view:"))
+        self._camera_view = CameraViewPicker(
+            unset_label=inherit_label(recording.default_camera_view)
+        )
+        resolved = recording.camera_view
+        if resolved.source == camera_view.SOURCE_RECORDING:
+            self._camera_view.set_value(resolved.view, resolved.note)
+        self._loaded_view = self._camera_view.value()
+        self._camera_view.changed.connect(self._sync_dirty)
+        view_row.addWidget(self._camera_view, 1)
+        outer.addLayout(view_row)
         body = QHBoxLayout()
 
         left = QVBoxLayout()
@@ -1101,7 +1124,7 @@ class SceneGeometryDialog(Dialog):
             # it. A surface that cannot show the frame says why and refuses input it
             # cannot show (tests/gui/test_frame_source.py).
             self._canvas.set_unavailable("No video imported")
-            self._scrubber.setEnabled(False)
+            self._scrubber.set_available(False, "No video imported")
 
     # -- load / persist ------------------------------------------------------ #
     def _on_times(self, t_ns) -> None:
@@ -1142,6 +1165,13 @@ class SceneGeometryDialog(Dialog):
     def _save_all(self) -> None:
         self._capture_current()
         title = self.windowTitle()
+        view, note = self._camera_view.value()
+        view_touched = (view, note) != self._loaded_view
+        if view_touched:
+            try:
+                camera_view.validate(view, note)
+            except ValueError as exc:
+                return self._refuse(title, str(exc))
         by_kind: dict[str, list[dict]] = {k.id: [] for k in SPATIAL_KINDS}
         for reg in self._regions:
             by_kind[reg["kind"]].append(reg)
@@ -1215,10 +1245,13 @@ class SceneGeometryDialog(Dialog):
                     self._recording.set_distance_calibration(
                         cal["keyframes"][0], float(cal["distance_mm"])
                     )
+            if view_touched:
+                self._recording.set_camera_view(view, note)
         except (ValueError, FileNotFoundError, OSError) as exc:
             QMessageBox.critical(self, title, str(exc))
             return
         self._loaded = {k.id: self._signature(k.id) for k in SPATIAL_KINDS}
+        self._loaded_view = (view, note)
         self._sync_actions()
         self._sync_dirty()
 
@@ -1226,10 +1259,14 @@ class SceneGeometryDialog(Dialog):
         QMessageBox.warning(self, title, message)
 
     def _dirty(self) -> list[str]:
-        """Which kinds differ from what was on disk when this dialog opened."""
-        return [
+        """Which kinds — and whether the camera view — differ from what was on disk when
+        this dialog opened."""
+        dirty = [
             k.id for k in SPATIAL_KINDS if self._signature(k.id) != self._loaded[k.id]
         ]
+        if self._camera_view.value() != self._loaded_view:
+            dirty.append("camera_view")
+        return dirty
 
     def _sync_dirty(self) -> None:
         """Save is live only when there is something to save — the dialog's only sign that
@@ -1879,7 +1916,6 @@ class GeometryPreviewDialog(Dialog):
     def __init__(self, recording, parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"Geometry preview — {recording.name}")
-        self.resize(1040, 740)  # fits 1440x810 (gui_design.md §3.1)
         self._canvas = ArenaCanvas(_BLANK_FRAME)
         self._canvas.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self._canvas.set_polygon([], editable=False)

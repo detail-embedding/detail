@@ -189,7 +189,7 @@ def test_export_writes_every_clip_in_grid_order_with_the_show_menus_look(
             seen["clips"] = clips_
 
         def export(self, path, layers_, labels_, **kw):
-            seen.update(layers=layers_, labels=labels_, path=path)
+            seen.update(layers=layers_, labels=labels_, path=path, codec=kw["codec"])
             return path
 
         def close(self):
@@ -202,10 +202,11 @@ def test_export_writes_every_clip_in_grid_order_with_the_show_menus_look(
         lambda target, work, *, on_written, label: on_written(work(None)),
     )
     monkeypatch.setattr(
-        animation_export, "ask_save_path", lambda *a: tmp_path / "all.mp4"
+        animation_export, "ask_mp4_path", lambda *a: (tmp_path / "all.mp4", "mp4v")
     )
     exports.button.actions_by_kind["video"].trigger()
     assert seen["clips"] == job.clips and seen["layers"] == job.layers
+    assert seen["codec"] == "mp4v", "the codec the save dialog's file type names"
     assert seen["labels"] == job.labels and seen["path"] == tmp_path / "all.mp4"
     assert "all.mp4" in exports.written.text() and exports.written.isVisibleTo(montage)
 

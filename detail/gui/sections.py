@@ -66,7 +66,10 @@ def _runs(experiment):
 
 def _analysis_runs(experiment):
     return [
-        (f"{ref.module_id}  ·  {ref.id}", (experiment, ref.id))
+        (
+            f"{ref.module_id}  ·  {ref.id}" + (f"  ·  {ref.name}" if ref.name else ""),
+            (experiment, ref.id),
+        )
         for ref in experiment.analysis_runs  # off-thread (see the docstring)
     ]
 

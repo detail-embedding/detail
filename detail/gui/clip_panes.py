@@ -1,5 +1,5 @@
 """The clip popup's picture: the footage large on the left, the masks alone and the pose alone
-stacked on the right (``ClipQueryPreview.clip_views``, drawn by ``api.clip_views``).
+stacked on the right (``ClipQueryPreview.clip_views``).
 
 **Why three pictures rather than three overlays.** Telling one behaviour from another in a
 cluster is a question about posture and contact, and the footage hides both under fur, shadow
@@ -32,9 +32,9 @@ from detail.gui.run_preview import _to_pixmap
 
 #: Pixels between the footage and the side column, and between the two side panes.
 _GAP = 6
-#: The two side panes, as ``enlarge_wanted`` names them (``api.clip_views.PANES``).
-from detail.api.clip_views import KEYPOINTS, MASKS  # noqa: E402
-
+#: The two side panes, as ``enlarge_wanted`` names them (``api.clip_pane_export.PANES``).
+MASKS = "masks"
+KEYPOINTS = "keypoints"
 ENLARGE_TIP = (
     "Click to enlarge: this pane at full size, with its own playback and export."
 )

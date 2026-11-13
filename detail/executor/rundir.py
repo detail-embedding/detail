@@ -26,9 +26,13 @@ from detail.core.dataclasses import (
     progress_event_from_dict,
     progress_event_to_dict,
 )
+from detail.core.utils import utc_timestamp
 
 SCHEMA_VERSION = 1
 JOB_FILENAME = "job.json"
+#: A remote run's shepherd writes its stdout here. It is this machine's file, never the cluster's:
+#: the copy back must not replace it (`ssh_transport.copy_from_remote(keep_local=…)`).
+SHEPHERD_LOG_FILENAME = "shepherd.log"
 CANCEL_FILENAME = "cancel"
 #: Stop-and-keep's marker — its own file, because the worker has to know *which* was asked.
 #: Both stop the runner; only a cancel makes the run `partial`. One shared marker is what made
@@ -37,9 +41,54 @@ STOP_FILENAME = "stop"
 LOG_FILENAME = "worker.log"
 COORDINATOR_LOG_FILENAME = "coordinator.log"
 
+#: Statuses a job never leaves once reached — the same set `worker.py`/`local.py`/
+#: `remote_shepherd.py` already treat as terminal, mirrored here so `set_status` knows
+#: when to stamp `completed_at` (§ run location/duration/cost).
+_TERMINAL_STATUSES = {
+    JobStatus.COMPLETE,
+    JobStatus.FAILED,
+    JobStatus.PARTIAL,
+    JobStatus.CANCELLED,
+}
+
 
 def _job_path(run_dir: Path | str) -> Path:
     return Path(run_dir) / JOB_FILENAME
+
+
+#: How deep below an experiment root a run directory can sit: `recordings/<id>/<stage>/<run>` is
+#: 4. Generous, so a layout one level deeper is still found, and a bound so the walk never goes
+#: looking through something that is not an experiment.
+RUN_DIR_MAX_DEPTH = 6
+
+
+def discover_run_dirs(experiment_root: Path | str) -> list[Path]:
+    """Every run directory under ``experiment_root``: a directory that holds a ``job.json``.
+
+    The walk **stops at a run directory** instead of descending into it, which is the point: a
+    run's outputs (a detection's zarr store is hundreds of thousands of chunk files) are by far
+    the largest part of an experiment, and listing them would make finding the few hundred runs
+    cost more than the upload it is for. ``.zarr`` stores outside a run are skipped for the same
+    reason. Unreadable directories are skipped rather than failing the caller.
+    """
+    found: list[Path] = []
+
+    def walk(directory: str, depth: int) -> None:
+        try:
+            entries = list(os.scandir(directory))
+        except OSError:
+            return
+        if any(e.name == JOB_FILENAME and e.is_file() for e in entries):
+            found.append(Path(directory))
+            return
+        if depth >= RUN_DIR_MAX_DEPTH:
+            return
+        for entry in entries:
+            if entry.is_dir(follow_symlinks=False) and not entry.name.endswith(".zarr"):
+                walk(entry.path, depth + 1)
+
+    walk(str(experiment_root), 0)
+    return sorted(found)
 
 
 def _atomic_write(path: Path, envelope: dict) -> None:
@@ -129,10 +178,39 @@ def read_progress(run_dir: Path | str) -> ProgressEvent | None:
 def set_status(
     run_dir: Path | str, status: JobStatus, error: str | None = None
 ) -> None:
+    """Change a job's status — the *only* place any job's status ever changes (the
+    worker, the executors' crash/cancel backstops, and the reconciliation backstop
+    all funnel through here), which is what makes this the single seam to stamp a
+    run's wall-clock timing (§ run location/duration/cost) rather than duplicating
+    the capture at every one of those call sites.
+
+    ``started_at`` is (re)stamped on entering ``RUNNING`` from any non-``RUNNING``
+    status — including a **resume**, re-entering ``RUNNING`` after a prior terminal
+    status — so a resumed run's duration reflects only its latest attempt, not a
+    stale start time from days ago plus whatever gap sat before the resume. The
+    matching ``completed_at`` from that earlier attempt is dropped at the same
+    point, since it no longer describes anything. A same-status call (a worker
+    re-affirming ``RUNNING``, e.g.) leaves an already-set ``started_at`` alone.
+
+    **``COMPLETE`` means the outputs are on disk, not in the cache.** The run directory is
+    flushed *before* the record says so. A run written by this machine's own worker and one
+    copied back from a cluster both end here, so one flush covers both: the copy-back used to
+    leave 1,062 files for the OS to write out whenever it chose, and a shutdown shortly after
+    turned a finished detection run into zero-filled chunks under a ``job.json`` that read
+    complete. Costs a ``fsync`` per file once per run, against a run that took minutes.
+    """
+    if status == JobStatus.COMPLETE:
+        atomic.flush_tree(run_dir)
     envelope = read_envelope(run_dir)
+    previous_status = envelope.get("status")
     envelope["status"] = status.value
     if error is not None:
         envelope["error"] = error
+    if status == JobStatus.RUNNING and previous_status != JobStatus.RUNNING.value:
+        envelope["started_at"] = utc_timestamp()
+        envelope.pop("completed_at", None)
+    elif status in _TERMINAL_STATUSES and "completed_at" not in envelope:
+        envelope["completed_at"] = utc_timestamp()
     _atomic_write(_job_path(run_dir), envelope)
 
 

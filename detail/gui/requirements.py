@@ -518,6 +518,168 @@ def a_dialog_scrolls_its_content(dialog) -> None:
     )
 
 
+def _a_dialog_opened_short():
+    """A dialog holding thirty rows, opened at a size typed for one screen — the reported shape.
+
+    Built the way every dialog was before the base sized them: one scrolled body and a button
+    box, and a typed ``resize``. Not on `Dialog`, which would size it properly at show and again
+    on every change, and so could not be made to hold the shape this rule rejects.
+    """
+    from PyQt6.QtWidgets import (
+        QApplication,
+        QDialog,
+        QDialogButtonBox,
+        QLabel,
+        QVBoxLayout,
+    )
+
+    from detail.gui.scroll import PageScroll
+
+    dialog = QDialog()
+    layout = QVBoxLayout(dialog)
+    scroll = PageScroll()
+    scroll.setWidget(QLabel("\n".join(f"row {i}" for i in range(30))))
+    layout.addWidget(scroll, 1)
+    layout.addWidget(QDialogButtonBox(QDialogButtonBox.StandardButton.Close))
+    dialog.resize(420, 160)
+    dialog.show()
+    QApplication.processEvents()
+    return dialog
+
+
+@requirement(kinds=("dialog",), counterexample=_a_dialog_opened_short)
+def a_dialog_opens_showing_its_content(dialog) -> None:
+    """A pop-up opens tall enough to show its content unscrolled, or at the cap of its screen.
+
+    **Reported from the app**: *"most pop-ups open much smaller than their content."* Measured on
+    a 1920x1080 screen before the fix, six dialogs opened with part of their body scrolled out of
+    reach while the screen had hundreds of pixels to spare — `CopyToRecordingsDialog` by 133px,
+    `KeypointLabelingDialog` by 227px — and every picture window opened at a size typed in lines,
+    whatever its picture was. Two mechanisms, one symptom: a typed opening size picked on one
+    machine, and a `QScrollArea`, whose size hint does not grow with what it holds.
+
+    The cap is :data:`~detail.gui.sizing.SCREEN_SHARE` of the dialog's screen
+    (`sizing.window_cap`); a dialog at it may scroll, which is what the scroll is for.
+    `Dialog.showEvent` is the mechanism, through `sizing.fit_to_content`.
+    """
+    from detail.gui.scroll import PageScroll
+    from detail.gui.sizing import window_cap
+
+    layout = dialog.layout()
+    scroll = None
+    if layout is not None:
+        for index in range(layout.count()):
+            widget = layout.itemAt(index).widget()
+            if isinstance(widget, PageScroll):
+                scroll = widget
+    if scroll is None or scroll.widget() is None:
+        return  # `a_dialog_scrolls_its_content` says what is wrong with that
+    hidden = scroll.verticalScrollBar().maximum()
+    cap = window_cap(dialog).height()
+    # Two pixels of slack: a frame's rounding at a fractional scale, not content.
+    assert hidden == 0 or dialog.height() >= cap - 2, (
+        f"{type(dialog).__name__} is {dialog.height()}px tall with {hidden}px of its content "
+        f"scrolled out of view, under a {cap}px cap it had room to grow into. Do not type an "
+        f"opening size: `Dialog.showEvent` sizes every dialog to its content."
+    )
+
+
+def _a_list_in_a_dialog_with_no_edge():
+    """A list in a dialog, as every one was before pop-up lists got a handle."""
+    from PyQt6.QtWidgets import QDialog, QListWidget, QVBoxLayout
+
+    dialog = QDialog()
+    listing = QListWidget()
+    listing.addItems(["a", "b", "c"])
+    QVBoxLayout(dialog).addWidget(listing)
+    listing._window = (
+        dialog  # the list is the dialog's child; keep the dialog alive with it
+    )
+    return listing
+
+
+def _in_a_dialog(view) -> bool:
+    """Whether ``view`` sits in a dialog's own window — not a combo box's drop-down list, which
+    is an item view of its own popup window and is walked with its dialog."""
+    from PyQt6.QtWidgets import QDialog
+
+    return isinstance(view.window(), QDialog)
+
+
+@requirement(
+    kinds=("table", "list"),
+    containers=("dialog",),
+    counterexample=_a_list_in_a_dialog_with_no_edge,
+)
+def a_list_in_a_dialog_has_an_edge_to_drag(view) -> None:
+    """A list or table in a pop-up has a handle on its lower edge to make it taller or shorter.
+
+    Asked, and answered by the user: lists in pop-ups should show every row when the screen has
+    room *"and should also be manually scalable by user within larger window."* `Dialog` puts a
+    `sizing.RowsGrip` under every one at show (`Dialog._fit_lists`), so no dialog has to
+    remember to. A view in a ``QSplitter`` passes: the splitter's divider already resizes it.
+    """
+    from PyQt6.QtWidgets import QSplitter
+
+    from detail.gui.sizing import row_grip
+
+    if not _in_a_dialog(view):
+        return
+    assert row_grip(view) is not None or isinstance(view.parentWidget(), QSplitter), (
+        f"{type(view).__name__} in {type(view.window()).__name__} has no edge to drag. A "
+        "`Dialog` puts a `sizing.RowsGrip` under each list at show (`attach_row_grips`); a "
+        "view in a layout it does not handle, or in none, is missed."
+    )
+
+
+def _a_list_in_a_dialog_cut_to_four_rows():
+    """Forty rows in a dialog with room for all of them, shown four at a time — a page's cap."""
+    from PyQt6.QtWidgets import QApplication, QDialog, QListWidget, QVBoxLayout
+
+    from detail.gui.sizing import fit_list_height
+
+    dialog = QDialog()
+    listing = QListWidget()
+    listing.addItems([f"recording {i}" for i in range(40)])
+    QVBoxLayout(dialog).addWidget(listing)
+    fit_list_height(listing, max_rows=4)
+    dialog.show()
+    QApplication.processEvents()
+    listing._window = (
+        dialog  # the list is the dialog's child; keep the dialog alive with it
+    )
+    return listing
+
+
+@requirement(
+    kinds=("table", "list"),
+    containers=("dialog",),
+    counterexample=_a_list_in_a_dialog_cut_to_four_rows,
+)
+def a_list_in_a_dialog_shows_every_row(view) -> None:
+    """A list or table in a pop-up shows every row, unless its window is at its screen's cap.
+
+    The row cap — `tables.max_visible_rows`, ``fit_list_height(max_rows=8)``, a hand-typed
+    ``setMaximumHeight(140)`` — is a **page's**: a page shares the window with everything on it.
+    A pop-up is sized to its content (`a_dialog_opens_showing_its_content`), so a capped list in
+    one hides rows the window had room for; the New analysis dialog showed eight of thirty
+    recordings in a window with 383px to spare. A list the user has dragged to a height of their
+    own is theirs, and is not asked about.
+    """
+    from detail.gui.sizing import _DRAGGED, hidden_extent, window_cap
+
+    if not _in_a_dialog(view) or not view.isVisible() or getattr(view, _DRAGGED, False):
+        return
+    _across, hidden = hidden_extent(view)
+    window = view.window()
+    cap = window_cap(window).height()
+    assert hidden == 0 or window.height() >= cap - 2, (
+        f"{type(view).__name__} in {type(window).__name__} hides {hidden}px of rows in a "
+        f"{window.height()}px window under a {cap}px cap. Size it with `fit_table_height` / "
+        "`fit_list_height`, which show every row in a pop-up, not with a fixed height."
+    )
+
+
 def _a_window_whose_first_button_is_remove():
     """A non-modal dialog as Qt leaves it: its push buttons auto-default, the first of them —
     here **Remove** — what Enter clicks."""
@@ -1395,7 +1557,7 @@ def the_package_animates_nothing(package) -> None:
 #: class in this repo.
 #:
 #: The house rule said *"only for destructive actions (delete a run, overwrite a experiment)"* and
-#: was written in the GUI's first mockup commit, before any of these existed. Four of them are not
+#: was written in the GUI's first mockup commit, before any of these existed. Some of them are not
 #: deletes and are right anyway — they guard an effect the user cannot see afterwards, which is
 #: the same reason a delete is guarded. They are listed here with what that effect is, so the
 #: exception is arguable rather than invisible; the one genuine nag is marked as such.
@@ -1405,12 +1567,23 @@ _CONFIRMATIONS: dict[str, str] = {
     "pages.py:AnalysisRunDetailPage._delete": "deletes an analysis run and its outputs",
     "pages.py:DatasetDetailPage._delete": "deletes a dataset and its images/labels",
     "pages.py:DistillRunDetail._delete": "deletes a distill run",
+    # Not destructive, and undoable — but a choice whose cost is invisible until an Analysis
+    # option is missing, so the prompt is where that cost is said (§26, #717).
+    "pages.py:_ReadinessPanel._skip_keypoints": "gives up alignment and pose in Analysis",
+    # The one prompt that changes something outside this machine: the code on the user's own
+    # cluster account. The pull is fast-forward only, so it destroys nothing, but the app has no
+    # way back from it, and a run in flight can end up on a mix of two commits.
+    "pages.py:RemoteTargetsPage._on_update_checked": (
+        "changes the DETAIL code on the user's cluster account (`git pull --ff-only`); a run in "
+        "flight there can end up on a mix of two commits, and going back is by hand with git"
+    ),
     "example_set_picker.py:ExampleSetPicker._delete_set": "deletes an example set, its frames and marks",
     "keypoints_manager.py:KeypointsManagerPage._delete_selected": "deletes a library skeleton nothing uses",
     "keypoints_manager.py:SkeletonEditorDialog.reject": "closing the skeleton editor with unsaved edits: Discard or Cancel",
     # A frame with marks on it: the clicks are gone with it (the PNG stays for any run that
     # lists it, which is why the delete is of the row, not the file).
     "keypoint_labeling.py:KeypointLabelingDialog._remove": "drops a marked example frame and its marks",
+    "heading_review.py:HeadingReviewDialog._reject": "rejects a marked example frame; its marks go with it",
     # The exported files are in the user's own folder and are *not* touched — which is exactly
     # why this asks: "delete export" reads like it removes them, and the prompt is where that is
     # corrected before the click rather than discovered after it.
@@ -1421,6 +1594,7 @@ _CONFIRMATIONS: dict[str, str] = {
     "pages.py:ModelDetailPage._delete": "deletes a model and its weights",
     "pages.py:ModelManagerPage._delete_selected": "deletes a model and its weights",
     "pages.py:RecordingDetailPage._delete_recording": "deletes a recording and all its runs",
+    "pages.py:RemoteTargetsPage._remove_target": "removes a registered remote (Slurm) cluster profile",
     "pages.py:RecordingDetailPage._delete_stream": "deletes a stream and its files",
     "pages.py:RunDetailPage._delete": "deletes a run and its outputs",
     "pages.py:ToolRunDetailPage._delete": "deletes a tool run",
@@ -1442,6 +1616,12 @@ _CONFIRMATIONS: dict[str, str] = {
         "starts an unbounded segmentation that 'can take hours'; the cost is invisible until "
         "it is already being paid"
     ),
+    # #743: a run past the free-space check can fill the drive while it writes. That failed
+    # the run and, on WSL, stopped the whole Linux environment with every run inside it.
+    "space_prompt.py:launch_anyway": (
+        "launches a run whose estimated output does not fit on the drive; a full drive fails "
+        "the run partway and, on WSL, can stop WSL itself"
+    ),
 }
 
 #: Dialogs deliberately opened non-modally, and why. A run config is modal so the window it
@@ -1454,7 +1634,19 @@ _NON_MODAL_DIALOGS: dict[str, str] = {
     "clip_pane_window.py": (
         "the enlarged Masks / Keypoints pane (`open_pane_window`) is a companion view of the "
         "clip window, not a config: it follows that window's ticks live, so the clip window has "
-        "to stay usable beside it; it is the clip window's child and closes with it"
+        "to stay usable beside it — it is the clip window's child and closes with it"
+    ),
+    "montage_export.py": (
+        "Export clips… (`MontageExport.open_dialog`, `export_clips.MontageExportDialog`) follows "
+        "the montage live: its Current row is named from the montage's Show ▾ ticks and its "
+        "Clips from the picks, so the montage has to stay usable beside it — it is the "
+        "montage window's child and closes with it. Every other dialog this module opens is `exec()`ed"
+    ),
+    "lookalikes.py": (
+        "Look-alike clusters (`open_lookalikes_window`) is a companion to Interpret's tree, "
+        "not a config: a member clicked in it is selected in the tree, whose card and clips "
+        "the person then reads, so the tree has to stay usable beside it — it is the page's "
+        "child and closes with it. Label as one (`LabelGroupDialog`) is `exec()`ed"
     ),
     "clip_popup.py": (
         "the clip window (`open_clip_window`) is for watching a clip while the page that opened "
@@ -1799,6 +1991,61 @@ def a_dialog_inherits_the_shared_base(package) -> None:
     assert not offenders, (
         f"{offenders} subclass QDialog directly; inherit `detail.gui.dialog.Dialog` so the "
         "dialog-wide policies (selectable text) apply without each dialog remembering them"
+    )
+
+
+#: The calls that give a window a size of its own choosing — what the base now decides.
+_SIZING_CALLS = ("resize", "setGeometry", "setFixedSize")
+
+
+@requirement(
+    kinds=("package",),
+    counterexample=lambda: _a_package_that(
+        "pass",
+        extra=(
+            "class Ask(Dialog):\n"
+            "    def __init__(self):\n"
+            "        self.resize(560, 520)\n\n\n"
+        ),
+    ),
+)
+def a_dialog_never_types_its_opening_size(package) -> None:
+    """A dialog never sizes its own window; the base sizes every one to its content.
+
+    Forty dialogs opened at a size somebody typed — ``self.resize(560, 520)``, or so many
+    lines by so many — chosen against one screen and one fixture. On real data most of them were
+    too small for what they held (*"most pop-ups open much smaller than their content"*), and a
+    few were larger than the screen they opened on. `Dialog.showEvent` now measures the content
+    and caps it at the screen (`sizing.fit_to_content`); a typed size on top of that is either
+    overruled at show, and so dead, or applied after it, and so the bug again.
+
+    Read from the class statements, so it needs no fixture: a dialog no sweep can build is
+    covered the day it is written. The window's own calls only — ``self.resize`` — since a
+    dialog sizing a *child* (a thumbnail, a picture pane) is laying out its content.
+    """
+    import ast
+
+    dialogs = _DIALOG_CLASS_NAMES(package)
+    offenders = []
+    for source in sorted(package.rglob("*.py")):
+        if source.name == "requirements.py":
+            continue  # the counterexamples
+        tree = ast.parse(source.read_text(encoding="utf-8-sig"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef) or node.name not in dialogs:
+                continue
+            for call in ast.walk(node):
+                if (
+                    isinstance(call, ast.Call)
+                    and isinstance(call.func, ast.Attribute)
+                    and call.func.attr in _SIZING_CALLS
+                    and isinstance(call.func.value, ast.Name)
+                    and call.func.value.id == "self"
+                ):
+                    offenders.append(f"{source.name}:{call.lineno} {node.name}")
+    assert not offenders, (
+        f"{offenders} give a dialog's window its own size. Delete the call: `Dialog.showEvent` "
+        "opens every dialog at its content's size, capped to its screen (`sizing`)."
     )
 
 

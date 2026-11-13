@@ -143,6 +143,7 @@ def test_a_failed_clustering_run_exits_non_zero(tmp_path, monkeypatch, command, 
     from detail.api.experiment import Experiment
 
     exp = Experiment.create("p", tmp_path)
+    exp.create_recording("recording_001")
     launched = []
 
     def fake_run_analysis(self, module_id, config):

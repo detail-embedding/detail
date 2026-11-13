@@ -33,6 +33,36 @@ def _write_video(path, n_frames):
     vw.release()
 
 
+def _write_video_with_pts_offset(path, n_frames, offset_frames):
+    """A video whose presentation-order PTS does **not** start at 0 -- muxed directly
+    via PyAV rather than cv2.VideoWriter (which never produces this shape). Mirrors
+    real camera/DVR footage with B-frame reordering or an edit-list shift: the first
+    *presented* frame's raw container PTS sits ``offset_frames`` after the stream's own
+    zero point, which is exactly what exposed generate_timestamps' unrebased-PTS bug --
+    every existing fixture here happens to encode with PTS already starting at 0, so
+    the "starts at 0" assertion in test_generate_timestamps passed by luck, not because
+    the code normalizes anything.
+    """
+    import fractions
+
+    container = av.open(str(path), mode="w")
+    stream = container.add_stream("mpeg4", rate=int(FPS))
+    stream.width = W
+    stream.height = H
+    stream.pix_fmt = "yuv420p"
+    stream.time_base = fractions.Fraction(1, int(FPS))
+    for i in range(n_frames):
+        frame = av.VideoFrame.from_ndarray(
+            np.full((H, W, 3), (i * 10) % 256, np.uint8), format="rgb24"
+        ).reformat(format="yuv420p")
+        frame.pts = offset_frames + i
+        for packet in stream.encode(frame):
+            container.mux(packet)
+    for packet in stream.encode():
+        container.mux(packet)
+    container.close()
+
+
 def _write_distinct_video(path, n_frames):
     """A video whose frames are pairwise-distinct, so a seek's output can be
     checked against the exact sequential frame it must return."""
@@ -72,6 +102,31 @@ def test_generate_timestamps(tmp_path):
     assert t[0] == 0
     assert abs(int(t[1]) - 33_333_333) < 50_000  # ~33.33 ms at 30 fps
     assert (np.diff(t) > 0).all()  # strictly increasing
+
+
+def test_generate_timestamps_rebases_a_nonzero_starting_pts(tmp_path):
+    """A container whose raw presentation-order PTS does not start at 0 (B-frame
+    reordering, an edit-list shift -- common on real camera/DVR footage) must still
+    produce a part-local map starting at 0, per generate_timestamps' own docstring.
+    Found live: a real recording's generated map had frame 0 at t_ns=-816666667 and
+    frame 49 at t_ns=0, so every frame-indexed lookup (the detection viewer's
+    FrameCursor included) was systematically off by 49 frames -- self-consistent,
+    so nothing raised, and a detection's box/mask looked plausible next to the wrong
+    moment in the video."""
+    p = tmp_path / "v.mp4"
+    _write_video_with_pts_offset(p, 9, offset_frames=20)
+    t = video.generate_timestamps(p, FPS)
+    assert int(t[0]) == 0
+    assert (np.diff(t) > 0).all()
+
+
+def test_timestamps_via_decode_also_rebases_a_nonzero_starting_pts(tmp_path):
+    """The demux fast path and the decode fallback must agree on this -- both convert
+    raw PTS to a part-local t_ns, so both need the same rebasing."""
+    p = tmp_path / "v.mp4"
+    _write_video_with_pts_offset(p, 9, offset_frames=20)
+    t = video._timestamps_via_decode(p, FPS)
+    assert int(t[0]) == 0
 
 
 def test_demux_and_decode_timestamps_agree(tmp_path):
@@ -324,51 +379,81 @@ def test_read_frame_at_missing_file_raises(tmp_path):
 
 
 # --- open_video_writer ------------------------------------------------------------------ #
-def test_open_video_writer_returns_a_usable_writer_and_names_its_codec(tmp_path):
-    """The fallback stays observable through the returned codec — that, not stderr, is the
-    contract callers can act on."""
-    out = tmp_path / "w.mp4"
-    writer, codec = video.open_video_writer(out, FPS, W, H)
-    assert codec in ("avc1", "mp4v")
+def _stream_facts(path) -> tuple[str, str, str, int, str]:
+    with av.open(str(path)) as container:
+        stream = container.streams.video[0]
+        ctx = stream.codec_context
+        frames = sum(1 for _ in container.decode(stream))
+        return ctx.name, str(ctx.profile), ctx.pix_fmt, frames, container.format.name
+
+
+def _write_frames(path, codec, n=12, size=(W, H)):
+    writer, written = video.open_video_writer(path, FPS, size[0], size[1], codec=codec)
     try:
-        writer.write(np.zeros((H, W, 3), np.uint8))
+        for i in range(n):
+            writer.write(np.full((size[1], size[0], 3), i * 15, np.uint8))
     finally:
         writer.release()
-    assert out.stat().st_size > 0
+    return written
 
 
-def test_open_video_writer_raises_when_no_codec_can_open_the_path(tmp_path):
-    missing = tmp_path / "no_such_dir" / "w.mp4"
-    with pytest.raises(RuntimeError, match="could not open a VideoWriter"):
-        video.open_video_writer(missing, FPS, W, H)
+def test_h264_is_high_profile_yuv420p_in_an_mp4(tmp_path):
+    """What PowerPoint plays: H.264 High, 4:2:0, an MP4 container — read back off the file."""
+    if not video.h264_available():
+        pytest.skip("this PyAV build has no libx264; the fallback tests cover this box")
+    out = tmp_path / "h.mp4"
+    assert _write_frames(out, "h264") == "h264"
+    name, profile, pix_fmt, frames, container = _stream_facts(out)
+    assert (name, profile, pix_fmt, frames) == ("h264", "High", "yuv420p", 12)
+    assert "mp4" in container
 
 
-def test_an_unwritable_path_does_not_convince_us_the_build_lacks_h264(
-    tmp_path, monkeypatch
-):
-    """A bad path fails at *every* codec, so it must not be mistaken for a missing encoder —
-    otherwise one unwritable destination silently downgrades the rest of the process."""
-    monkeypatch.setattr(video, "_h264_unavailable", False)
-    with pytest.raises(RuntimeError):
-        video.open_video_writer(tmp_path / "no_such_dir" / "w.mp4", FPS, W, H)
-    assert video._h264_unavailable is False
+def test_h264_drops_an_odd_last_row_and_column_rather_than_failing(tmp_path):
+    if not video.h264_available():
+        pytest.skip("this PyAV build has no libx264")
+    out = tmp_path / "odd.mp4"
+    _write_frames(out, "h264", n=3, size=(W + 1, H + 1))
+    with av.open(str(out)) as container:
+        ctx = container.streams.video[0].codec_context
+        assert (ctx.width, ctx.height) == (W, H)
 
 
-def test_the_h264_probe_is_not_repeated_once_the_build_has_failed_it(
-    tmp_path, monkeypatch
-):
-    """On a build without H.264 the probe fails every time and prints four error lines when it
-    does; repeating it per clip buries a long export in its own noise."""
-    monkeypatch.setattr(video, "_h264_unavailable", False)
-    first, codec = video.open_video_writer(tmp_path / "a.mp4", FPS, W, H)
-    first.release()
-    if codec == "avc1":
-        pytest.skip("this cv2 build has H.264, so there is no failed probe to skip")
-    assert video._h264_unavailable is True
-    with unittest.mock.patch("cv2.VideoWriter", wraps=cv2.VideoWriter) as spy:
-        second, again = video.open_video_writer(tmp_path / "b.mp4", FPS, W, H)
-    second.release()
-    assert again == "mp4v" and spy.call_count == 1
+def test_mp4v_is_mpeg4_part_2(tmp_path):
+    out = tmp_path / "m.mp4"
+    assert _write_frames(out, "mp4v") == "mp4v"
+    assert _stream_facts(out)[0] == "mpeg4"
+
+
+def test_without_libx264_h264_falls_back_to_mp4v_and_says_so(tmp_path, monkeypatch):
+    """The fallback is visible: the returned codec and a note a surface shows."""
+    monkeypatch.setattr(video, "h264_available", lambda: False)
+    out = tmp_path / "f.mp4"
+    assert _write_frames(out, "h264") == "mp4v"
+    assert _stream_facts(out)[0] == "mpeg4"
+    note = video.codec_note("h264")
+    assert note is not None and "PowerPoint" in note and "mp4v" in note
+    assert video.codec_note("mp4v") is None
+
+
+def test_no_note_when_the_asked_codec_is_written(monkeypatch):
+    monkeypatch.setattr(video, "h264_available", lambda: True)
+    assert video.codec_note("h264") is None
+    assert video.written_codec("h264") == "h264"
+
+
+def test_an_unknown_codec_is_refused():
+    with pytest.raises(ValueError, match="unknown video codec 'avc1'"):
+        video.written_codec("avc1")
+
+
+@pytest.mark.parametrize("codec", video.VIDEO_CODECS)
+def test_an_unwritable_path_raises_at_either_codec(tmp_path, codec):
+    if codec == "h264" and not video.h264_available():
+        pytest.skip("this PyAV build has no libx264")
+    with pytest.raises(RuntimeError, match="could not open"):
+        video.open_video_writer(
+            tmp_path / "no_such_dir" / "w.mp4", FPS, W, H, codec=codec
+        )
 
 
 # --- read_frames_range ------------------------------------------------------ #

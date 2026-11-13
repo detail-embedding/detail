@@ -88,6 +88,9 @@ class _Recording:
                 "id": "kt_01",
                 "status": "complete",
                 "detect_run_id": "kd_01",
+                # The tracking run its poses went to, as every record since 2026-10-21
+                # names it: the form offers it only beside that run.
+                "tracking_run_id": "track_01",
                 "method": "temporal_decode",
                 "config": {"despike": True},
             }
@@ -111,7 +114,12 @@ def test_the_embedding_form_carries_alignment_and_refuses_an_incomplete_one(
     assert config["align"] == "none" and config["keypoint_track_spec"] is None
     assert config["heading"] is None and config["max_gap_s"] == 0.5
     assert not form._keypoint.isEnabled() and not form._heading.isEnabled()
-    form.on_recordings_changed([_Recording(), _Recording("s2")])
+    recordings = [_Recording(), _Recording("s2")]
+    # The launch dialog resolves the pickers over the eligible pool, then hands the checked set.
+    form.apply_eligible_recordings(
+        recordings, form.resolve_eligible_recordings(recordings)
+    )
+    form.on_recordings_changed(recordings)
     assert form.validation_error() is None
     form._align.setCurrentIndex(form._align.findData("rotate"))
     assert form._keypoint.isEnabled() and form._heading.isEnabled()
@@ -134,3 +142,39 @@ def test_the_embedding_form_carries_alignment_and_refuses_an_incomplete_one(
     form.load_config({"align": "none"})
     assert form.config()["align"] == "none" and form.config()["heading"] is None
     assert form.validation_error() is None
+
+
+def test_the_embedding_form_carries_pose_and_asks_for_what_each_mode_reads(
+    qapp, experiment
+):
+    """§14 pose: draw reads the keypoint track run only; append also needs the heading
+    (it turns the numbers); the weight is append's alone; all three round-trip."""
+    from detail.gui.modules.embedding import _EmbeddingConfig
+
+    form = _EmbeddingConfig()
+    form.on_experiment_set(experiment)
+    recordings = [_Recording(), _Recording("s2")]
+    form.apply_eligible_recordings(
+        recordings, form.resolve_eligible_recordings(recordings)
+    )
+    form.on_recordings_changed(recordings)
+    config = form.config()
+    assert config["pose"] == "none" and config["pose_min_score"] is None
+    assert not form._pose_weight.isEnabled()
+    form._pose.setCurrentIndex(form._pose.findData("draw"))
+    assert form._keypoint.isEnabled() and not form._heading.isEnabled()
+    assert form.validation_error() is None  # a drawn pose needs no heading
+    config = form.config()
+    assert config["keypoint_track_spec"]["module"] == "keypoint_track"
+    assert config["heading"] is None and config["pose"] == "draw"
+    form._pose.setCurrentIndex(form._pose.findData("append"))
+    assert form._heading.isEnabled() and form._pose_weight.isEnabled()
+    assert "heading" in form.validation_error()
+    form._heading.set_name("nose_to_tail")
+    assert form.validation_error() is None
+    form.load_config({"pose": "append", "pose_weight": 0.5, "pose_min_score": 0.25})
+    config = form.config()
+    assert (config["pose"], config["pose_weight"]) == ("append", 0.5)
+    assert config["pose_min_score"] == pytest.approx(0.25)
+    form.load_config({"pose": "none", "pose_min_score": None})
+    assert form.config()["pose"] == "none" and form.config()["pose_min_score"] is None

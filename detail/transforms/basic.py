@@ -14,6 +14,7 @@ import numpy as np
 from detail.core.dataclasses import RenderContext
 from detail.core.protocols import MaskTransform
 from detail.core.registries import register_transform
+from detail.core.visualize import draw_keypoints
 
 
 @register_transform("init_binary_mask")
@@ -44,9 +45,9 @@ class InitBinaryMask(MaskTransform):
         return {"type": "init_binary_mask"}
 
 
-def _crop_to_bbox(arr: np.ndarray, bbox, padding: float) -> np.ndarray:
-    """Crop ``arr`` (2-D mask or H×W×C image) to the padded normalized ``bbox``."""
-    h, w = arr.shape[:2]
+def _crop_window(h: int, w: int, bbox, padding: float) -> tuple[int, int, int, int]:
+    """``(py1, py2, px1, px2)``: the pixel window the padded normalized ``bbox`` crops an
+    ``h``×``w`` array to."""
     x1, y1, x2, y2 = bbox
     bw, bh = x2 - x1, y2 - y1
     x1, x2 = x1 - bw * padding, x2 + bw * padding
@@ -54,6 +55,13 @@ def _crop_to_bbox(arr: np.ndarray, bbox, padding: float) -> np.ndarray:
     px1, px2 = max(0, round(x1 * w)), min(w, round(x2 * w))
     py1, py2 = max(0, round(y1 * h)), min(h, round(y2 * h))
     px2, py2 = max(px2, px1 + 1), max(py2, py1 + 1)  # never empty
+    return py1, py2, px1, px2
+
+
+def _crop_to_bbox(arr: np.ndarray, bbox, padding: float) -> np.ndarray:
+    """Crop ``arr`` (2-D mask or H×W×C image) to the padded normalized ``bbox``."""
+    h, w = arr.shape[:2]
+    py1, py2, px1, px2 = _crop_window(h, w, bbox, padding)
     return arr[py1:py2, px1:px2]
 
 
@@ -65,6 +73,17 @@ class CropToBbox(MaskTransform):
     def apply(self, ctx: RenderContext) -> RenderContext:
         if ctx.bbox is None:
             return ctx
+        source = ctx.image if ctx.image is not None else ctx.mask
+        if source is None:
+            source = ctx.frame
+        if source is not None and ctx.aux is not None:
+            # Where the crop sits in the source grid, so a later step that holds full-frame
+            # coordinates (``draw_pose``) can follow the crop without knowing the bbox.
+            h, w = source.shape[:2]
+            py1, py2, px1, px2 = _crop_window(h, w, ctx.bbox, self.padding)
+            # Normalized, so it holds on whichever grid the image is built from; the source
+            # size rides along for a step that sizes something in source pixels.
+            ctx.aux["crop_window"] = (px1 / w, py1 / h, px2 / w, py2 / h, w, h)
         if ctx.image is not None:
             ctx.image = _crop_to_bbox(ctx.image, ctx.bbox, self.padding)
             return ctx
@@ -206,15 +225,14 @@ class CenterInSquare(MaskTransform):
     fill: int | list[int] = 0  # canvas padding: a scalar (black) or [B, G, R]
 
     def apply(self, ctx: RenderContext) -> RenderContext:
-        h, w = ctx.image.shape[:2]
-        channels = ctx.image.shape[2] if ctx.image.ndim == 3 else 1
-        canvas = np.full(
-            (self.size, self.size, channels), self.fill, dtype=ctx.image.dtype
-        )
+        image = ctx.image
+        h, w = image.shape[:2]
+        channels = image.shape[2] if image.ndim == 3 else 1
+        canvas = np.full((self.size, self.size, channels), self.fill, dtype=image.dtype)
         ch, cw = min(h, self.size), min(w, self.size)
         sy, sx = (h - ch) // 2, (w - cw) // 2
         dy, dx = (self.size - ch) // 2, (self.size - cw) // 2
-        canvas[dy : dy + ch, dx : dx + cw] = ctx.image[sy : sy + ch, sx : sx + cw]
+        canvas[dy : dy + ch, dx : dx + cw] = image[sy : sy + ch, sx : sx + cw]
         ctx.image = canvas
         # Carry the mask into canvas coordinates so a downstream background fill
         # (noise / radiating bands) knows which pixels are the subject. No-op for the
@@ -236,6 +254,89 @@ class CenterInSquare(MaskTransform):
         spec: dict = {"type": "center_in_square", "size": self.size}
         if self.fill != 0:
             spec["fill"] = self.fill
+        return spec
+
+
+@register_transform("draw_pose")
+@dataclass
+class DrawPose(MaskTransform):
+    """Paint the subject's keypoints onto its image, so one embedding carries mask and pose
+    (§14 "Pose in the embedding").
+
+    Reads ``ctx.aux["pose"]`` (``{"xy": (K, 2) normalized full-frame, "score": (K,)}``), which the
+    embedding worker fills from a keypoint track run joined on ``(part, frame_idx)``; a frame with
+    no row passes through undrawn and the run records it (``pose_points`` 0). The points are
+    mapped through the crop (``aux["crop_window"]``, which ``crop_to_bbox`` leaves) so they land on
+    the animal, and drawn **before** any alignment step, so a rotation or flip carries them with
+    the body. Each dot is coloured by the point's side (left, right, midline: the colours the run
+    viewer draws, ``visualize.draw_keypoints``), and the skeleton's edges join them, so the model
+    sees which end is which without being told.
+
+    ``skeleton`` is the keypoint track run's own (``Skeleton.to_dict``), resolved into the spec so
+    the run records what it drew; ``min_score`` is the floor below which a point is not drawn;
+    ``size`` is a dot's radius as a fraction of the source frame's shorter side. A spec recorded
+    before §26 carries ``sides`` / ``edges`` (by column) instead, and still renders.
+    """
+
+    skeleton: dict | None = None
+    min_score: float | None = None
+    size: float = 0.01
+    sides: list | None = None  # pre-§26 specs only
+    edges: list | None = None  # pre-§26 specs only
+
+    def _skeleton(self, k: int):
+        from detail.core.skeleton import Skeleton
+
+        if self.skeleton is not None:
+            return Skeleton.from_dict(self.skeleton)
+        # A pre-§26 spec: columns named by position, the sides kept as pairs (the i-th left
+        # with the i-th right), which is all the colours read.
+        names = tuple(f"p{i}" for i in range(k))
+        sides = list(self.sides or ["midline"] * k)
+        lefts = [names[i] for i, side in enumerate(sides) if side == "left"]
+        rights = [names[i] for i, side in enumerate(sides) if side == "right"]
+        return Skeleton(
+            names=names,
+            edges=tuple((names[a], names[b]) for a, b in (self.edges or [])),
+            pairs=tuple(zip(lefts, rights)),
+        )
+
+    def apply(self, ctx: RenderContext) -> RenderContext:
+        pose = ctx.aux.get("pose") if ctx.aux else None
+        if pose is None or ctx.image is None:
+            return ctx
+        xy = np.asarray(pose["xy"], dtype=np.float64)
+        score = np.asarray(pose["score"], dtype=np.float64)
+        shown = np.isfinite(xy).all(axis=-1)
+        if self.min_score is not None:
+            shown &= ~(score < float(self.min_score))
+        if not shown.any():
+            return ctx
+        h, w = ctx.image.shape[:2]
+        x0, y0, x1, y1, src_w, src_h = ctx.aux.get(
+            "crop_window", (0.0, 0.0, 1.0, 1.0, w, h)
+        )
+        local = (xy - np.array([x0, y0])) / np.array([x1 - x0, y1 - y0])
+        ctx.image = draw_keypoints(
+            ctx.image,
+            local,
+            self._skeleton(len(xy)),
+            visible=shown,
+            radius=max(2, round(self.size * min(src_w, src_h))),
+        )
+        return ctx
+
+    def to_spec(self) -> dict:
+        spec: dict = {"type": "draw_pose"}
+        if self.skeleton is not None:
+            spec["skeleton"] = dict(self.skeleton)
+        else:
+            spec["sides"] = list(self.sides or [])
+            spec["edges"] = [list(e) for e in self.edges or []]
+        if self.min_score is not None:
+            spec["min_score"] = self.min_score
+        if self.size != 0.01:
+            spec["size"] = self.size
         return spec
 
 

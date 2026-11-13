@@ -24,9 +24,9 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-import yaml
 
 from detail.core import atomic
+from detail.core import yaml_load
 from detail.core.dataclasses import (
     RenderContext,
     RenderPreviewJob,
@@ -38,7 +38,11 @@ from detail.core.visualize import assign_colors, bgr_to_rgb, draw_mask, rgb_to_b
 from detail.executor import rundir
 from detail.storage import recording as recording_store
 from detail.storage.video import read_frame_at
-from detail.storage.zarr_io import DetectionPartReader, PartZarrReader
+from detail.storage.zarr_io import (
+    DetectionPartReader,
+    PartZarrReader,
+    resolve_assignment_rows,
+)
 from detail.transforms import basic as _basic  # noqa: F401 — registers transforms
 from detail.transforms.renderer import MaskRenderer
 
@@ -77,14 +81,16 @@ def run_render_preview(
 
     data = recording_store.read_recording(recording_dir)
     tracking_dir = recording_dir / "tracking" / job.tracking_run_id
-    track_meta = yaml.safe_load(atomic.read_text(tracking_dir / "track.yaml"))
+    track_meta = yaml_load.safe_load(atomic.read_text(tracking_dir / "track.yaml"))
     detection_dir = recording_dir / "detections" / track_meta["detection_run_id"]
     det_envelope = rundir.read_envelope(detection_dir)
     frame_h, frame_w = det_envelope["mask_resolution"]
     recording_store.raise_on_legacy_downsampling(det_envelope.get("job"))
 
     requested = set(int(t) for t in job.track_ids)
-    candidates = _collect_candidates(detection_dir, tracking_dir, requested)
+    candidates = _collect_candidates(
+        detection_dir, tracking_dir, requested, track_meta.get("class_name")
+    )
     if not candidates:
         raise ValueError(
             f"no detections found in tracking run {job.tracking_run_id!r} "
@@ -200,7 +206,10 @@ class _Candidate:
 
 
 def _collect_candidates(
-    detection_dir: Path, tracking_dir: Path, requested: set[int]
+    detection_dir: Path,
+    tracking_dir: Path,
+    requested: set[int],
+    class_name: str | None = None,
 ) -> list[_Candidate]:
     # Group detection rows by (track, part, frame); a group renders as one image
     # (its masks OR-merged), matching what the embedding stage embeds.
@@ -208,12 +217,18 @@ def _collect_candidates(
     det_parts = sorted(detection_dir.glob("part_*.zarr"))
     readers: dict[int, dict] = {}
     for part_index, part_path in enumerate(det_parts):
-        det = DetectionPartReader(part_path).read()
+        det_reader = DetectionPartReader(part_path)
+        assign_reader = PartZarrReader(tracking_dir / "assignments" / part_path.name)
+        # object_id is parallel to the detection rows the tracker actually kept
+        # when it ran (§13) — every row when this run had no class filter, only
+        # one class's otherwise (anchor_tracker et al. build object_ids from
+        # filter_by_class'd data). raw_rows recovers which reader row each
+        # assignment row really is.
+        raw_rows = resolve_assignment_rows(det_reader, assign_reader, class_name)
+        det = {k: np.asarray(v)[raw_rows] for k, v in det_reader.read().items()}
         readers[part_index] = det
-        object_id = PartZarrReader(
-            tracking_dir / "assignments" / part_path.name
-        ).read()["object_id"]
-        for row in range(len(det["frame_idx"])):
+        object_id = assign_reader.read()["object_id"][: len(raw_rows)]
+        for row in range(len(raw_rows)):
             tid = int(object_id[row])
             if tid not in requested:
                 continue

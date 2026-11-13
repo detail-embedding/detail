@@ -51,7 +51,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from detail.gui.lifetime import alive
+from detail.gui.lifetime import alive, cleared
 from detail.gui.sizing import emphasis_font, lines
 from detail.gui.status_color import ERROR, MUTED, set_label_color
 
@@ -235,6 +235,8 @@ class _FocusOutSaves(QObject):
         self._box = box
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802 — Qt override
+        if cleared(self):
+            return False
         if event.type() == QEvent.Type.FocusOut:
             self._box.save()
         return False

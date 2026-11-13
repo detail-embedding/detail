@@ -6,6 +6,7 @@ model) are present as disabled affordances and land in later slices. As pages
 grow dialogs/widgets they move into the ``pages/`` package per docs/gui_design.md.
 """
 
+import contextlib
 import subprocess
 import sys
 import time
@@ -20,12 +21,10 @@ from PyQt6.QtCore import (
     QSize,
     Qt,
     QThreadPool,
-    QUrl,
     pyqtSignal,
 )
 from PyQt6.QtGui import (
     QColor,
-    QDesktopServices,
     QFont,
     QGuiApplication,
     QImage,
@@ -73,10 +72,13 @@ from PyQt6.QtWidgets import (
 from detail import docs_access
 from detail import surfaces
 from detail.gui import sizing
+from detail.gui.camera_view import CameraViewPicker, inherit_label
 from detail.gui.dialog import Dialog
+from detail.gui import experiment_locations
 from detail.gui.full_frame import EnlargeableThumb
 from detail.gui.collapse import CollapsibleBand
-from detail.gui.lifetime import alive, discard
+from detail.gui.recording_filter import RecordingFilter
+from detail.gui.lifetime import alive, cleared, discard
 from detail.gui.sizing import (
     emphasis_font,
     clamp_width,
@@ -101,26 +103,37 @@ from detail.gui.tables import SortCell
 from detail.gui.tables import MIN_VISIBLE_ROWS
 from detail.gui import requirements
 from detail.api import models as api_models
+from detail.api import remote as api_remote
+from detail.configs.remote import RemoteTargetConfig
+from detail.gui.spin import PLAIN, FloatSpin, IntSpin
 from detail.api import skeletons as api_skeletons
 from detail.api.spatial_categories import CATEGORIES_BY_KEY, SPATIAL_CATEGORIES
 from detail.gui.arena import SPATIAL_KINDS
+from detail.storage import locations as locations_store
 from detail.storage import metadata as metadata_store
 from detail.storage import read_cache
 from detail.storage import spatial as spatial_store
 from detail.api import checks as api_checks
 from detail.api import exporters
 from detail.api import tools as api_tools
+from detail.core import buildinfo
+from detail.core import camera_view as camera_view_mod
+from detail.core import run_cost
+from detail.core.progress import format_duration
 from detail.api.experiment import Experiment
 from detail.api.experiment import RESUMABLE_TRAINING_STATUSES
 from detail.api.readiness import signals_from
 from detail.core.dataclasses import (
+    AWAITING_REFERENCES,
     ACTIVE_STATUSES,
     AUTHORED_STATUSES,
     OUTPUT_STATUSES,
     CheckStatus,
 )
 from detail.gui import cuda_doctor
+from detail.gui import open_external
 from detail.gui import modules as _gui_modules  # noqa: F401 — registers module UIs
+from detail.api import readiness as readiness_api
 from detail.gui import preview_jobs
 from detail.gui import readiness_guide
 from detail.gui.modules.registry import ANALYSIS_GUI_MODULES, GUI_MODULES
@@ -139,11 +152,13 @@ from detail.gui.workers import (
     InstallModelWorker,
     RunProgressWorker,
     StageProgressWorker,
+    StageStatusLine,
 )
 from detail.storage import analysis_runs as analysis_runs_store
 from detail.gui import run_units
 from detail.storage import clocks, credentials, read_cache
 from detail.gui.sizing import mono_font
+from detail.gui.space_prompt import launch_anyway
 
 
 def _mono() -> QFont:
@@ -457,6 +472,7 @@ def _recording_rows(experiment):
                 len(s.video_parts),
                 len(s.streams),
                 len(s.arenas),
+                camera_view_cell(s.camera_view),
                 len(s.detection_runs),
             )
             for s in recordings
@@ -492,6 +508,21 @@ def _file_name_cell(recording) -> tuple[str, str]:
         return "", ""
     extra = f"  +{len(sources) - 1} more" if len(sources) > 1 else ""
     return f"{Path(sources[0]).name}{extra}", "\n".join(sources)
+
+
+def camera_view_cell(resolved: camera_view_mod.CameraView) -> str:
+    """A camera view as a table cell: ``Side view (default)`` when the recording inherits
+    it, so a recording that sets its own is the one without the suffix."""
+    if resolved.source == camera_view_mod.SOURCE_EXPERIMENT:
+        return f"{resolved.label} (default)"
+    return resolved.label
+
+
+def _camera_view_completion(recording) -> tuple[bool, str]:
+    resolved = recording.camera_view
+    if not resolved.is_set:
+        return False, "No camera view set, here or as the experiment default"
+    return True, camera_view_cell(resolved)
 
 
 def _fov_completion(recording) -> tuple[bool, str]:
@@ -538,11 +569,20 @@ def _run_completion(runs: list[dict], noun: str) -> tuple[bool, str]:
     return True, f"{n_complete}/{n_total} {noun} {plural} complete"
 
 
+#: The header tooltip on the one column every experiment has (§11).
+_ACQUISITION_SETUP_TIP = (
+    "Which camera, box or rig this recording was made with — the same value for every "
+    "recording made the same way. Keypoint setup picks one recording per setup to learn "
+    "from. Every experiment has this column; it can't be deleted."
+)
+
+
 #: The completion columns on the metadata table (§ "Recording information"), in the
 #: order they're shown — a header and a ``Recording -> (checked, tooltip)`` function,
 #: each read off the same ``recording.yaml`` already loaded for the row (cheap under
 #: ``read_cache.pinned()``, same as ``_recording_rows`` above).
 _COMPLETION_COLUMNS: tuple[tuple[str, object], ...] = (
+    ("Camera view", _camera_view_completion),
     ("Field of view", _fov_completion),
     ("Distance calibration", _calibration_completion),
     ("ROI", lambda r: _named_entries_completion(r.rois, "ROI", "ROIs", "set")),
@@ -600,22 +640,8 @@ def surfaced_model_rows() -> list:
 def _link_button(text: str, url: str) -> QPushButton:
     """A push button that opens ``url`` in the user's browser."""
     button = QPushButton(text)
-    button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(url)))
+    button.clicked.connect(lambda: open_external.open_url(button, url))
     return button
-
-
-def _open_local_path(widget: QWidget, path: Path, what: str = "folder") -> None:
-    """Open ``path`` in the OS's file manager / default handler (#475).
-
-    ``QDesktopServices.openUrl`` returns a ``bool`` a caller must check: with no default handler
-    registered for a ``file://`` URL — a headless or minimal Linux desktop, a misconfigured
-    ``xdg-open``/``gio``, some SSH+X11 sessions — it returns ``False`` and does nothing, silently.
-    A discarded return value there makes that indistinguishable from a click that did nothing.
-    """
-    if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
-        QMessageBox.warning(
-            widget, f"Open {what}", f"Could not open a {what} for:\n{path}"
-        )
 
 
 class _ReadinessBanner(QFrame):
@@ -853,6 +879,21 @@ class IndexTable(QWidget):
         """
         self._notice.setText(text)
 
+    def set_cell(self, key, column: int, value) -> None:
+        """Replace one cell of the row stamped ``key`` — for a column read off the UI thread.
+
+        In place rather than through :meth:`set_rows`, which rebuilds the model and with it
+        the selection a page is showing results for.
+        """
+        model = self._view.model()
+        for r in range(model.rowCount()):
+            if row_id(model.index(r, 0)) == key:
+                item = _cell(value)
+                item.setFont(MONO)
+                model.setItem(r, column, item)
+        self._view.resizeColumnsToContents()
+        refit_slack(self._view)
+
     def set_rows(self, rows: list[tuple], *, ids: list | None = None) -> None:
         """Show ``rows``, or the notice when there are none.
 
@@ -1006,6 +1047,7 @@ class _ReadinessPanel(QFrame):
         self._on_navigate = on_navigate
         self._on_computed = on_computed
         self._panel_signals = None
+        self._keypoints_skipped = False
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setFrameShadow(QFrame.Shadow.Plain)
         box = QVBoxLayout(self)
@@ -1063,6 +1105,7 @@ class _ReadinessPanel(QFrame):
         _make_selectable(self)
 
     def _build_rows(self, s) -> list[QWidget]:
+        self._keypoints_skipped = s.keypoints_skipped
         rows = [self._row(step) for step in readiness_guide.readiness_steps(s)]
         rows.append(self._footer(readiness_guide.is_setup_complete(s)))
         return rows
@@ -1076,6 +1119,8 @@ class _ReadinessPanel(QFrame):
         box.addWidget(glyph)
         box.addWidget(QLabel(step.label))
         box.addStretch()
+        if step.kind == readiness_guide.KEYPOINT_STEP:
+            box.addWidget(self._keypoint_choice(skipped=self._keypoints_skipped))
         button = QPushButton("Open")
         button.setEnabled(step.kind is not None)  # None → not yet built (coming soon)
         if step.kind is not None:
@@ -1083,6 +1128,38 @@ class _ReadinessPanel(QFrame):
             button.clicked.connect(lambda: self._on_navigate(step.kind))
         box.addWidget(button)
         return row
+
+    def _keypoint_choice(self, *, skipped: bool) -> QPushButton:
+        """Skip keypoint setup (with what that gives up), or take the skip back."""
+        if skipped:
+            button = QPushButton("Undo skip")
+            button.setToolTip("Nudge for keypoint setup again")
+            button.clicked.connect(lambda: self._set_keypoints_skipped(False))
+        else:
+            button = QPushButton("Skip…")
+            button.setToolTip(
+                "Go without a keypoint model; Analysis loses alignment and pose"
+            )
+            button.clicked.connect(self._skip_keypoints)
+        return button
+
+    def _skip_keypoints(self) -> None:
+        costs = "\n".join(
+            f"  • {cost}" for cost in readiness_guide.KEYPOINTS_SKIPPED_COSTS
+        )
+        confirm = QMessageBox.question(
+            self,
+            "Skip keypoints",
+            "Without a keypoint model, Analysis cannot offer:\n\n"
+            f"{costs}\n\n"
+            "You can set keypoints up later from an experiment's Models page. Skip for now?",
+        )
+        if confirm == QMessageBox.StandardButton.Yes:
+            self._set_keypoints_skipped(True)
+
+    def _set_keypoints_skipped(self, skipped: bool) -> None:
+        readiness_api.set_keypoints_skipped(skipped)
+        self._compute()
 
     def _footer(self, complete) -> QWidget:
         row = QWidget()
@@ -1101,6 +1178,33 @@ class _ReadinessPanel(QFrame):
         return row
 
 
+class _RemoteTargetsSummary(QFrame):
+    """A non-checklist Configuration section: how many remote (Slurm) cluster profiles
+    are registered, with an Open button to manage them (§6). Kept separate from the
+    Get-started checklist below — zero registered targets is a normal setup, not an
+    incomplete one, so it has no ✓/○ to earn."""
+
+    def __init__(self, on_navigate):
+        super().__init__()
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.setFrameShadow(QFrame.Shadow.Plain)
+        box = QHBoxLayout(self)
+        box.addWidget(_heading("Remote targets"), 1)
+        self._count = QLabel("")
+        set_label_color(self._count, MUTED)
+        box.addWidget(self._count)
+        button = QPushButton("Open")
+        button.clicked.connect(lambda: on_navigate("remote_targets"))
+        box.addWidget(button)
+        self._refresh()
+
+    def _refresh(self) -> None:
+        n = len(api_remote.list_remote_targets())
+        self._count.setText(
+            "no clusters registered yet" if n == 0 else f"{n} registered"
+        )
+
+
 class ConfigurationPage(QWidget):
     """Configuration landing — machine-global setup at a glance (§1). The 'Get started'
     checklist lives here (not on Home); each item opens its own Configuration page."""
@@ -1113,6 +1217,7 @@ class ConfigurationPage(QWidget):
             _instructions("Setup checklist. Complete all items for full functionality.")
         )
         layout.addWidget(_ReadinessPanel(on_navigate, on_computed))
+        layout.addWidget(_RemoteTargetsSummary(on_navigate))
         layout.addWidget(PreviewCachePanel())
         layout.addStretch()
 
@@ -1303,6 +1408,13 @@ class GpuCudaPage(QWidget):
         return _command_row(command)
 
 
+_SAM3_NO_NVIDIA = "SAM 3 requires an NVIDIA GPU. None detected on this machine."
+_SAM3_TORCH_CANT_USE_GPU = (
+    "SAM 3 requires an NVIDIA GPU that PyTorch can use. This machine has one, but "
+    "PyTorch can't use it yet: Configuration ▸ GPU / CUDA shows the fix."
+)
+
+
 class Sam3BackendPage(QWidget):
     """Configuration ▸ SAM 3 backend — the full copy-paste sequence to install SAM 3 into
     this environment (§1).
@@ -1325,9 +1437,7 @@ class Sam3BackendPage(QWidget):
         layout.addWidget(_heading("SAM 3 backend"))
         # The GPU warning precedes the status line — SAM 3 is CUDA-only, so this frames the
         # status below it. Shown immediately on a Mac (never has CUDA), then from the check.
-        self._cant_run = QLabel(
-            "SAM 3 requires an NVIDIA GPU. None detected on this machine."
-        )
+        self._cant_run = QLabel(_SAM3_NO_NVIDIA)
         self._cant_run.setWordWrap(True)
         set_label_color(self._cant_run, WARN)
         self._cant_run.setVisible(sys.platform == "darwin")
@@ -1435,8 +1545,15 @@ class Sam3BackendPage(QWidget):
             detail = result.detail if result is not None else "status unavailable"
             self._status.setText(f"SAM 3 backend not importable — {detail}")
             set_label_color(self._status, WARN)
-        # SAM 3 needs CUDA; show the "can't run here" note whenever there's no CUDA device.
+        # SAM 3 needs CUDA; show the "can't run here" note whenever there's no CUDA device,
+        # saying which gap it is: no NVIDIA GPU, or one PyTorch can't use yet.
         cuda = by_id.get("cuda")
+        nvidia = by_id.get("nvidia_gpu")
+        self._cant_run.setText(
+            _SAM3_TORCH_CANT_USE_GPU
+            if nvidia is not None and nvidia.status == CheckStatus.OK
+            else _SAM3_NO_NVIDIA
+        )
         self._cant_run.setVisible(cuda is None or cuda.status != CheckStatus.OK)
         if self._on_readiness_changed is not None:
             self._on_readiness_changed()
@@ -1579,6 +1696,501 @@ class HuggingFacePage(QWidget):
             self._refresh_status()
         if self._on_readiness_changed is not None:
             self._on_readiness_changed()
+
+
+class _RemoteTargetDialog(Dialog):
+    """Add or edit a remote (Slurm) target profile (§6). ``existing`` is ``None`` to add
+    a new target; a target's name is its identity, so editing can't change it — remove
+    and re-add to rename one."""
+
+    def __init__(self, existing: RemoteTargetConfig | None = None, parent=None):
+        super().__init__(parent)
+        self._existing = existing
+        self.setWindowTitle("Edit target" if existing else "Add remote target")
+        layout = self.body()
+        form = QFormLayout()
+
+        self._name = QLineEdit(existing.name if existing else "")
+        if existing is not None:
+            self._name.setEnabled(False)
+            self._name.setToolTip(
+                "A target's name is its identity — remove and re-add to rename it."
+            )
+        form.addRow("Name:", self._name)
+
+        self._host = QLineEdit(existing.host if existing else "")
+        self._host.setPlaceholderText("tillicum")
+        self._host.setToolTip(
+            "Should match a Host alias in your own ~/.ssh/config, so keys, an agent, "
+            "ControlMaster, and a cached Duo session are already handled."
+        )
+        form.addRow("SSH host:", self._host)
+
+        self._workdir = QLineEdit(existing.remote_workdir if existing else "")
+        self._workdir.setPlaceholderText("/gscratch/scrubbed/<netid>/detail_runs")
+        form.addRow("Remote work directory:", self._workdir)
+
+        self._partition = QLineEdit(existing.partition or "" if existing else "")
+        form.addRow("Partition:", self._partition)
+
+        self._account = QLineEdit(existing.account or "" if existing else "")
+        form.addRow("Account:", self._account)
+
+        self._conda_env = QLineEdit(existing.conda_env or "" if existing else "")
+        form.addRow("Conda environment:", self._conda_env)
+
+        self._modules = QLineEdit(", ".join(existing.modules) if existing else "")
+        self._modules.setPlaceholderText("cuda/12.4, gcc/13.2")
+        form.addRow("Modules to load:", self._modules)
+
+        self._gpu_type = QLineEdit(existing.gpu_type or "" if existing else "")
+        form.addRow("GPU type:", self._gpu_type)
+
+        self._gpus_per_job = IntSpin()
+        self._gpus_per_job.setRange(1, 8)
+        self._gpus_per_job.setValue(existing.gpus_per_job if existing else 1)
+        form.addRow("GPUs per job:", self._gpus_per_job)
+
+        self._cpus_per_task = IntSpin()
+        self._cpus_per_task.setRange(1, 128)
+        self._cpus_per_task.setValue(existing.cpus_per_task if existing else 4)
+        form.addRow("CPUs per task:", self._cpus_per_task)
+
+        self._mem_gb = IntSpin()
+        self._mem_gb.setRange(1, 2048)
+        self._mem_gb.setValue(existing.mem_gb if existing else 32)
+        form.addRow("Memory (GB):", self._mem_gb)
+
+        walltime_field = RemoteTargetConfig.model_fields["walltime"]
+        self._walltime = QLineEdit(
+            existing.walltime if existing else walltime_field.default
+        )
+        self._walltime.setToolTip(walltime_field.description)
+        form.addRow("Walltime:", self._walltime)
+
+        jobs_field = RemoteTargetConfig.model_fields["max_concurrent_jobs"]
+        self._max_concurrent_jobs = IntSpin()
+        self._max_concurrent_jobs.setRange(1, 64)
+        self._max_concurrent_jobs.setValue(
+            existing.max_concurrent_jobs if existing else jobs_field.default
+        )
+        self._max_concurrent_jobs.setToolTip(jobs_field.description)
+        form.addRow("Concurrent jobs:", self._max_concurrent_jobs)
+
+        self._cost_per_gpu_hour = FloatSpin(PLAIN)
+        self._cost_per_gpu_hour.setRange(0, 1000)
+        self._cost_per_gpu_hour.setSpecialValueText("not set")
+        self._cost_per_gpu_hour.setValue(
+            (existing.cost_per_gpu_hour if existing else None) or 0
+        )
+        self._cost_per_gpu_hour.setToolTip(
+            "Drives a live cost estimate on this target's runs "
+            '(GPUs the job held × running hours × this rate). Leave at 0 ("not set") '
+            "to show no cost estimate."
+        )
+        # A spin box's horizontal policy is Fixed by default, unlike the QLineEdit fields
+        # above it in this same form — so of every row here, this is the one that would not
+        # grow if the dialog were resized wider. Expanding (+ a doubled floor over its natural
+        # hint) matches the other rows' behavior rather than leaving this one row inert.
+        self._cost_per_gpu_hour.setFrame(True)
+        self._cost_per_gpu_hour.setMinimumWidth(
+            self._cost_per_gpu_hour.sizeHint().width() * 2
+        )
+        self._cost_per_gpu_hour.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        form.addRow("Cost per GPU-hour (USD):", self._cost_per_gpu_hour)
+
+        layout.addLayout(form)
+
+        box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        box.button(QDialogButtonBox.StandardButton.Ok).setText(
+            "Save" if existing else "Add"
+        )
+        box.accepted.connect(self.accept)
+        box.rejected.connect(self.reject)
+        self.set_buttons(box)
+
+    def values(self) -> RemoteTargetConfig:
+        """The entered profile.
+
+        Raises:
+            ValueError: (``pydantic.ValidationError``) on a bad name/scheduler/bound —
+                the same checks ``detail remote add`` enforces.
+        """
+        modules = [m.strip() for m in self._modules.text().split(",") if m.strip()]
+        return RemoteTargetConfig(
+            name=self._name.text().strip(),
+            host=self._host.text().strip(),
+            remote_workdir=self._workdir.text().strip(),
+            partition=self._partition.text().strip() or None,
+            account=self._account.text().strip() or None,
+            conda_env=self._conda_env.text().strip() or None,
+            modules=modules,
+            gpu_type=self._gpu_type.text().strip() or None,
+            gpus_per_job=self._gpus_per_job.value(),
+            cpus_per_task=self._cpus_per_task.value(),
+            mem_gb=self._mem_gb.value(),
+            walltime=self._walltime.text().strip()
+            or RemoteTargetConfig.model_fields["walltime"].default,
+            max_concurrent_jobs=self._max_concurrent_jobs.value(),
+            cost_per_gpu_hour=self._cost_per_gpu_hour.value() or None,
+        )
+
+
+class RemoteTargetsPage(QWidget):
+    """Configuration ▸ Remote targets — machine-global Slurm cluster profiles (§6) a
+    detection run can submit to instead of running locally (``detail remote`` is the CLI
+    twin). Not part of the Get-started checklist: zero registered targets is a normal
+    setup, not an incomplete one, so this is its own Configuration destination rather
+    than a checklist step."""
+
+    _COLUMNS = [
+        "Name",
+        "Host",
+        "Scheduler",
+        "Remote workdir",
+        "GPUs/job",
+        "Concurrent jobs",
+        "Walltime",
+        "Cost/GPU-hr",
+    ]
+
+    def __init__(self):
+        super().__init__()
+        self._table = None
+        self._targets: list[RemoteTargetConfig] = []
+        self._test_worker = None
+        self._push_creds_worker = None
+        self._check_worker = None
+        self._update_worker = None
+        layout = QVBoxLayout(self)
+        layout.addWidget(_heading("Remote targets"))
+        layout.addWidget(
+            _instructions(
+                "Machine-global Slurm clusters (UW Tillicum, Hyak, a lab's own box) "
+                "detection can submit to. A target's host should match a Host alias in "
+                "your own ~/.ssh/config — DETAIL never stores or prompts for a credential."
+            )
+        )
+
+        # Add adds a row, so it goes above the table (same reasoning as GlobalModelsPage's
+        # Import); Edit/Remove/Test act on the row you selected, so they stay under it.
+        creates = QHBoxLayout()
+        self._add_btn = QPushButton("Add target")
+        self._add_btn.clicked.connect(self._add_target)
+        creates.addWidget(self._add_btn)
+        creates.addStretch()
+        layout.addLayout(creates)
+
+        self._table_holder = QVBoxLayout()
+        layout.addLayout(self._table_holder)
+
+        actions = QHBoxLayout()
+        self._edit_btn = QPushButton("Edit")
+        self._edit_btn.clicked.connect(self._edit_target)
+        self._remove_btn = QPushButton("Remove")
+        self._remove_btn.clicked.connect(self._remove_target)
+        self._test_btn = QPushButton("Test connection")
+        self._test_btn.clicked.connect(self._test_target)
+        self._push_creds_btn = QPushButton("Push credentials")
+        self._push_creds_btn.clicked.connect(self._push_credentials)
+        self._ssh_session_btn = QPushButton("Open SSH session")
+        self._ssh_session_btn.setToolTip(
+            "Opens a real terminal running `ssh <host>` — refreshes an expired "
+            "SSH/Duo session without using Test connection or Push credentials, "
+            "which fail fast rather than prompting. DETAIL never sees your "
+            "password or Duo approval; this only opens the terminal ssh runs in."
+        )
+        self._ssh_session_btn.clicked.connect(self._open_ssh_session)
+        self._update_btn = QPushButton("Update DETAIL…")
+        self._update_btn.setToolTip(
+            "Compares the DETAIL installed on the selected target with this app, and when "
+            "it is behind, updates it with `git pull --ff-only` in its checkout once you "
+            "confirm. It only moves that checkout forward (git refuses and changes nothing "
+            "if the checkout has commits or edits of its own), and installs nothing. Do it "
+            "when no run is going there."
+        )
+        self._update_btn.clicked.connect(self._update_target)
+        # Two rows by meaning, and by width: a single row of six buttons made this page's minimum
+        # width 1006px against 818px with five, which clips or scrolls on a laptop window. The
+        # first acts on the entry in the table, the second on the cluster it names.
+        for button in (self._edit_btn, self._remove_btn):
+            actions.addWidget(button)
+        actions.addStretch()
+        layout.addLayout(actions)
+        cluster_actions = QHBoxLayout()
+        for button in (
+            self._test_btn,
+            self._push_creds_btn,
+            self._ssh_session_btn,
+            self._update_btn,
+        ):
+            cluster_actions.addWidget(button)
+        cluster_actions.addStretch()
+        layout.addLayout(cluster_actions)
+
+        self._status = QLabel("")
+        self._status.setWordWrap(True)
+        layout.addWidget(self._status)
+
+        layout.addStretch()
+        self._rebuild_table()
+
+    def _rebuild_table(self) -> None:
+        self._targets = api_remote.list_remote_targets()
+        display = [
+            (
+                t.name,
+                t.host,
+                t.scheduler,
+                t.remote_workdir,
+                str(t.gpus_per_job),
+                str(t.max_concurrent_jobs),
+                t.walltime,
+                f"${t.cost_per_gpu_hour:.2f}" if t.cost_per_gpu_hour else "—",
+            )
+            for t in self._targets
+        ]
+        if self._table is not None:
+            self._table.deleteLater()
+        self._table = _table(
+            self._COLUMNS, display, ids=[t.name for t in self._targets]
+        )
+        self._table.selectionModel().currentRowChanged.connect(self._on_selection)
+        self._table_holder.addWidget(self._table)
+        self._update_actions()
+
+    def _selected(self) -> RemoteTargetConfig | None:
+        if self._table is None:
+            return None
+        name = row_id(self._table.currentIndex())
+        if name is None:
+            return None
+        return next((t for t in self._targets if t.name == name), None)
+
+    def _on_selection(self, *_args) -> None:
+        self._update_actions()
+
+    def _update_actions(self) -> None:
+        row = self._selected()
+        for button in (
+            self._edit_btn,
+            self._remove_btn,
+            self._test_btn,
+            self._push_creds_btn,
+            self._update_btn,
+        ):
+            sizing.set_available(button, row is not None, "Select a target first")
+        if not api_checks.ssh_terminal_supported():
+            # Grey out, don't hide: no reliable terminal-launch command exists on
+            # plain Linux (outside WSL) — the same gap Sam3BackendPage's terminal
+            # button leaves for the user to work around themselves.
+            sizing.set_available(
+                self._ssh_session_btn,
+                False,
+                "No terminal launcher on this machine — run `ssh <host>` yourself",
+            )
+        else:
+            sizing.set_available(
+                self._ssh_session_btn, row is not None, "Select a target first"
+            )
+
+    def _add_target(self) -> None:
+        dialog = _RemoteTargetDialog(parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            config = dialog.values()
+        except ValueError as e:
+            QMessageBox.critical(self, "Add target", str(e))
+            return
+        api_remote.add_remote_target(config)
+        self._rebuild_table()
+
+    def _edit_target(self) -> None:
+        row = self._selected()
+        if row is None:
+            return
+        dialog = _RemoteTargetDialog(existing=row, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            config = dialog.values()
+        except ValueError as e:
+            QMessageBox.critical(self, "Edit target", str(e))
+            return
+        api_remote.add_remote_target(config)  # re-points the same name
+        self._rebuild_table()
+
+    def _remove_target(self) -> None:
+        row = self._selected()
+        if row is None:
+            return
+        if (
+            QMessageBox.question(
+                self, "Remove target", f"Remove remote target {row.name!r}?"
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        api_remote.remove_remote_target(row.name)
+        self._rebuild_table()
+
+    def _test_target(self) -> None:
+        row = self._selected()
+        if row is None:
+            return
+        sizing.set_available(self._test_btn, False, "Testing…")
+        self._status.setText("Testing connection…")
+        set_label_color(self._status, MUTED)
+        self._test_worker = BackgroundCall(
+            lambda: api_remote.test_remote_target(row.name), receiver=self
+        )
+        self._test_worker.done.connect(self._on_test_done)
+        self._test_worker.failed.connect(self._on_test_failed)
+        self._test_worker.start()
+
+    def _on_test_done(self, status) -> None:
+        self._update_actions()
+        build = status.build
+        # Reachable but not running this app's build is a warning with a fix, not a pass.
+        self._status.setText(
+            status.detail if build is None else f"{status.detail}\n{build.describe()}"
+        )
+        matches = build is None or build.matches
+        set_label_color(self._status, READY if status.ok and matches else WARN)
+
+    def _on_test_failed(self, exc) -> None:
+        self._update_actions()
+        self._status.setText(str(exc))
+        set_label_color(self._status, ERROR)
+
+    def _open_ssh_session(self) -> None:
+        """Open a real terminal running an interactive ``ssh <host>`` login for the
+        selected target — refreshes an expired SSH/Duo session without DETAIL ever
+        seeing the password or the Duo approval (§6): this only opens the terminal
+        ``ssh`` itself runs in, exactly as if the user had typed the command."""
+        row = self._selected()
+        if row is None:
+            return
+        argv = api_checks.ssh_refresh_argv(row.host)
+        if argv is None:
+            return  # button is greyed out in this case; nothing to do
+        try:
+            subprocess.Popen(argv)
+        except OSError as exc:
+            QMessageBox.critical(
+                self, "Open SSH session", f"Couldn't open a terminal:\n{exc}"
+            )
+
+    def _update_target(self) -> None:
+        """Compare the selected target's DETAIL with this app; offer to update it if behind.
+
+        Two steps with a question between them, because the second one changes something on the
+        user's cluster account: the check (read-only), then, only for a target that is *behind*
+        and only after a yes, ``git pull --ff-only`` there (``api.remote.update_remote_build``,
+        which ``detail remote update`` also calls)."""
+        row = self._selected()
+        if row is None:
+            return
+        sizing.set_available(self._update_btn, False, "Checking…")
+        self._status.setText(f"Checking DETAIL on {row.name!r}…")
+        set_label_color(self._status, MUTED)
+        self._check_worker = BackgroundCall(
+            lambda: api_remote.check_remote_build(row.name), receiver=self
+        )
+        self._check_worker.done.connect(self._on_update_checked)
+        self._check_worker.failed.connect(self._on_update_failed)
+        self._check_worker.start()
+
+    def _on_update_checked(self, build) -> None:
+        self._update_actions()
+        self._status.setText(build.describe())
+        set_label_color(self._status, READY if build.matches else WARN)
+        if build.state != buildinfo.BEHIND:
+            return  # the same build needs nothing; the others say what to do instead
+        if (
+            QMessageBox.question(
+                self,
+                "Update DETAIL",
+                f"DETAIL on {build.target!r} is {build.commits or 'some'} commit(s) behind "
+                f"this app ({build.remote_commit} → {build.local_commit}).\n\n"
+                f"Run `git pull --ff-only` in {build.remote_root} on {build.host}?\n\n"
+                "It only moves that checkout forward, and installs nothing. Update when no "
+                "run is going there: a run in flight keeps importing modules as it goes.",
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        self._start_update(build)
+
+    def _start_update(self, build) -> None:
+        sizing.set_available(self._update_btn, False, "Updating…")
+        self._status.setText(f"Updating DETAIL on {build.target!r}…")
+        set_label_color(self._status, MUTED)
+        worker = StageProgressWorker(
+            lambda emit: api_remote.update_remote_build(
+                build.target, before=build, progress=emit
+            ),
+            receiver=self,
+        )
+        self._update_worker = worker
+        worker.tick.connect(self._on_update_tick)
+        worker.done.connect(self._on_update_done)
+        worker.failed.connect(self._on_update_failed)
+        worker.start()
+
+    def _on_update_tick(self, _permille: int, status: str) -> None:
+        self._status.setText(status)
+
+    def _on_update_done(self, result) -> None:
+        self._update_actions()
+        self._status.setText(
+            result.detail
+            if result.ok or not result.output
+            else f"{result.detail}\n{result.output}"
+        )
+        set_label_color(self._status, READY if result.ok else WARN)
+
+    def _on_update_failed(self, exc) -> None:
+        self._update_actions()
+        self._status.setText(str(exc))
+        set_label_color(self._status, ERROR)
+
+    def _push_credentials(self) -> None:
+        """Copy every credential this machine has configured
+        (``api.remote.CREDENTIAL_SPECS`` — Hugging Face today, a cloud provider's
+        own access key the day this machine manages one) to the selected target
+        (§6): a gated model (SAM 3, DINOv3) needs a Hugging Face token *on the
+        cluster* to check access and download weights there, and nothing forwards
+        this machine's own token there on its own — a remote job's shepherd and
+        worker both run on the cluster and never see this machine's credentials
+        file."""
+        row = self._selected()
+        if row is None:
+            return
+        sizing.set_available(self._push_creds_btn, False, "Pushing…")
+        self._status.setText("Pushing credentials…")
+        set_label_color(self._status, MUTED)
+        self._push_creds_worker = BackgroundCall(
+            lambda: api_remote.push_credentials(row.name), receiver=self
+        )
+        self._push_creds_worker.done.connect(self._on_push_credentials_done)
+        self._push_creds_worker.failed.connect(self._on_push_credentials_failed)
+        self._push_creds_worker.start()
+
+    def _on_push_credentials_done(self, status) -> None:
+        self._update_actions()
+        self._status.setText(status.detail)
+        set_label_color(self._status, READY if status.ok else WARN)
+
+    def _on_push_credentials_failed(self, exc) -> None:
+        self._update_actions()
+        self._status.setText(str(exc))
+        set_label_color(self._status, ERROR)
 
 
 class ToolsPage(QWidget):
@@ -1791,8 +2403,11 @@ class DocumentationPage(QWidget):
 
     The full site (concepts, workflows, CLI/API reference) is built into a per-user
     cache on first open and served over ``file://`` — it works with no network. The
-    in-app workflows browser lands in a later task.
+    user guides come first: they are where someone new starts.
     """
+
+    #: The page **User guides ↗** opens: the guides' overview, as a nav path without extension.
+    GUIDES_PAGE = "user-guides/index"
 
     def __init__(self):
         super().__init__()
@@ -1800,17 +2415,21 @@ class DocumentationPage(QWidget):
         layout.addWidget(_heading("Documentation"))
         layout.addWidget(
             _instructions(
-                "The full DETAIL documentation — concepts, workflows, and the CLI and "
-                "API reference. It opens in your browser and works offline. The first "
+                "Step-by-step user guides, from installing DETAIL to analyzed behavior, "
+                "and the full DETAIL documentation — concepts, workflows, and the CLI and "
+                "API reference. Both open in your browser and work offline. The first "
                 "open builds the site (a few seconds); later opens are instant."
             )
         )
+        self._guides = QPushButton("User guides ↗")
+        self._guides.clicked.connect(lambda: self._open_docs(self.GUIDES_PAGE))
         self._open = QPushButton("Open full docs ↗")
-        self._open.clicked.connect(self._open_docs)
-        row = QHBoxLayout()
-        row.addWidget(self._open)
-        row.addStretch()
-        layout.addLayout(row)
+        self._open.clicked.connect(lambda: self._open_docs("index"))
+        for button in (self._guides, self._open):
+            row = QHBoxLayout()
+            row.addWidget(button)
+            row.addStretch()
+            layout.addLayout(row)
         self._progress = QProgressBar()
         self._progress.setRange(0, 1000)
         self._progress.hide()
@@ -1821,18 +2440,18 @@ class DocumentationPage(QWidget):
         layout.addStretch()
         self._worker: StageProgressWorker | None = None
 
-    def _open_docs(self) -> None:
+    def _open_docs(self, page: str = "index") -> None:
         if not docs_access.needs_build():
-            QDesktopServices.openUrl(QUrl(docs_access.local_url()))
+            open_external.open_url(self, docs_access.local_url(page))
             return
-        self._open.setEnabled(False)
+        self._set_buttons_enabled(False)
         self._progress.setValue(0)
         self._progress.show()
         self._status.setText("Building documentation…")
 
         def work(emit):
             docs_access.ensure_site_built(progress=emit)  # off-thread (has its own bar)
-            return docs_access.local_url()
+            return docs_access.local_url(page)
 
         self._worker = StageProgressWorker(work, receiver=self)
         self._worker.tick.connect(self._on_tick)
@@ -1844,16 +2463,20 @@ class DocumentationPage(QWidget):
         self._progress.setValue(permille)
         self._status.setText(status)
 
+    def _set_buttons_enabled(self, enabled: bool) -> None:
+        self._guides.setEnabled(enabled)
+        self._open.setEnabled(enabled)
+
     def _on_built(self, url: object) -> None:
         self._progress.hide()
         self._status.setText("")
-        self._open.setEnabled(True)
-        QDesktopServices.openUrl(QUrl(str(url)))
+        self._set_buttons_enabled(True)
+        open_external.open_url(self, str(url))
 
     def _on_failed(self, exc: object) -> None:
         self._progress.hide()
         self._status.setText("")
-        self._open.setEnabled(True)
+        self._set_buttons_enabled(True)
         QMessageBox.critical(
             self, "Documentation", f"Could not build the documentation:\n{exc}"
         )
@@ -1863,8 +2486,9 @@ class DocumentationPage(QWidget):
 # Home (Home context)
 # --------------------------------------------------------------------------- #
 class NewExperimentDialog(Dialog):
-    """Experiment-level info for a new experiment — name required, description optional.
-    The experiment is created in the managed workspace (no folder picker)."""
+    """Experiment-level info for a new experiment — name required, description optional —
+    and the experiment location (§2) to create it in, the default folder unless chosen.
+    """
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1875,6 +2499,12 @@ class NewExperimentDialog(Dialog):
         form.addRow("Name:", self._name)
         self._desc = QLineEdit()
         form.addRow("Description (optional):", self._desc)
+        # The experiment-wide default every recording inherits (§10); optional here,
+        # changeable later on the Recordings page.
+        self._camera_view = CameraViewPicker(unset_label="Not set")
+        form.addRow("Camera view (optional):", self._camera_view)
+        self._location = experiment_locations.LocationPicker()
+        form.addRow("Save in:", self._location)
         layout.addLayout(form)
         box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -1888,10 +2518,23 @@ class NewExperimentDialog(Dialog):
         if not self._name.text().strip():
             QMessageBox.warning(self, "New experiment", "Name is required.")
             return
+        try:
+            camera_view_mod.validate(*self._camera_view.value())
+        except ValueError as exc:
+            QMessageBox.warning(self, "New experiment", str(exc))
+            return
         self.accept()
 
     def values(self) -> tuple[str, str]:
         return self._name.text().strip(), self._desc.text().strip()
+
+    def camera_view(self) -> tuple[str | None, str | None]:
+        """The chosen default camera view and its note — ``(None, None)`` when not set."""
+        return self._camera_view.value()
+
+    def location(self) -> str:
+        """The experiment location to create it in."""
+        return self._location.location()
 
 
 # Stages shown on an experiment card, in pipeline order. Kept short deliberately: the
@@ -1939,7 +2582,7 @@ class _ExperimentCard(QFrame):
     # sets it; the text (name, description, counts, stages) fits inside.
     _CARD_H = _THUMB_H + 16
 
-    def __init__(self, experiment, on_open):
+    def __init__(self, experiment, on_open, on_archive, *, location: str | None = None):
         super().__init__()
         self._experiment = experiment
         self._on_open = on_open
@@ -1970,7 +2613,20 @@ class _ExperimentCard(QFrame):
         font = name.font()
         font.setBold(True)
         name.setFont(font)
-        text.addWidget(name)
+        if location is None:
+            text.addWidget(name)
+        else:
+            name_row = QHBoxLayout()
+            name_row.addWidget(name)
+            where = QLabel(
+                "· Default folder"
+                if location == locations_store.DEFAULT_LOCATION
+                else f"· {location}"
+            )
+            set_label_color(where, MUTED)
+            name_row.addWidget(where)
+            name_row.addStretch()
+            text.addLayout(name_row)
         self._description = None
         if experiment.description:
             # One line, elided: a long description must not push the card taller than its
@@ -1981,7 +2637,6 @@ class _ExperimentCard(QFrame):
                 QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
             )
             text.addWidget(self._description)
-            self._elide_description()
         # The counts and the mtime are a directory listing and a run record per run, which
         # is seconds on a workspace held on a network share. They arrive via `set_facts`.
         self._summary = QLabel("…")  # the thumbnail's placeholder, for the same reason
@@ -1990,6 +2645,30 @@ class _ExperimentCard(QFrame):
         text.addWidget(self._stages)
         text.addStretch()
         row.addLayout(text, 1)
+
+        # Archive sits on the card it acts on, and reads the state back: an archived card
+        # (shown only under Show archived) says so and offers the way back.
+        side = self._side = QVBoxLayout()
+        side.setContentsMargins(0, 0, 0, 0)
+        side.addStretch()
+        archived = experiment.archived
+        if archived:
+            badge = QLabel("Archived")
+            set_label_color(badge, MUTED)
+            side.addWidget(badge, alignment=Qt.AlignmentFlag.AlignRight)
+        self.archive_button = QPushButton("Unarchive" if archived else "Archive")
+        self.archive_button.setToolTip(
+            "Put this experiment back on the list."
+            if archived
+            else "Hide this experiment from the list. Nothing in it is changed or "
+            "deleted; Show archived brings it back."
+        )
+        self.archive_button.clicked.connect(
+            lambda: on_archive(experiment, not archived)
+        )
+        side.addWidget(self.archive_button, alignment=Qt.AlignmentFlag.AlignRight)
+        row.addLayout(side)
+        self._elide_description()  # measures the button column, so after it exists
         for label in self.findChildren(QLabel):
             label.installEventFilter(self)
 
@@ -2053,9 +2732,10 @@ class _ExperimentCard(QFrame):
         available = (
             self.width()
             - self._THUMB_W
+            - self._side.sizeHint().width()
             - margins.left()
             - margins.right()
-            - row.spacing()
+            - 2 * row.spacing()
         )
         self._description.setText(
             self._description.fontMetrics().elidedText(
@@ -2081,6 +2761,8 @@ class _ExperimentCard(QFrame):
 
         Only the double-click is intercepted, so single-click and drag still select text.
         """
+        if cleared(self):
+            return False
         if event.type() == QEvent.Type.MouseButtonDblClick:
             self._on_open(self._experiment)
             return True
@@ -2097,6 +2779,11 @@ class HomePage(QWidget):
         self._layout = QVBoxLayout(self)
         self._layout.addWidget(_heading("Experiments"))
         self._layout.addWidget(_instructions("Double-click an experiment to open it."))
+        # Names a location whose drive is unplugged, so its experiments being absent from the
+        # list reads as "not here right now" rather than "gone".
+        self._not_connected = _instructions("")
+        self._not_connected.setVisible(False)
+        self._layout.addWidget(self._not_connected)
         # The cards keep their own scroll even though the content area now scrolls too: it is
         # what keeps **New experiment** anchored below them rather than letting a long
         # workspace list push the one action off the bottom (ParaView and 3D Slicer both hold
@@ -2116,6 +2803,8 @@ class HomePage(QWidget):
         # One counter for both deliveries: a refresh is the single event that invalidates
         # either, and two counters would let one of them go stale on its own.
         self._preview_gen = 0
+        self._show_archived = QCheckBox("Show archived")
+        self._show_archived.toggled.connect(lambda _on: self._refresh())
         self._refresh()
 
         row = QHBoxLayout()
@@ -2125,11 +2814,29 @@ class HomePage(QWidget):
         self._import_btn = QPushButton("Import experiment")
         self._import_btn.clicked.connect(self._import_experiment)
         row.addWidget(self._import_btn)
+        locations_btn = QPushButton("Experiment locations…")
+        locations_btn.setToolTip(
+            "The folders experiments are kept in — add one on an external drive"
+        )
+        locations_btn.clicked.connect(self._manage_locations)
+        row.addWidget(locations_btn)
         row.addStretch()
+        row.addWidget(self._show_archived)
         self._layout.addLayout(row)
 
     def _refresh(self) -> None:
-        self._experiments = Experiment.list_all()
+        found = locations_store.experiment_locations()
+        notice = experiment_locations.not_connected_notice(found)
+        self._not_connected.setText(notice)
+        self._not_connected.setVisible(bool(notice))
+        workspace = Experiment.list_all()
+        n_archived = sum(1 for e in workspace if e.archived)
+        self._show_archived.setText(f"Show archived ({n_archived})")
+        self._experiments = (
+            workspace
+            if self._show_archived.isChecked()
+            else [e for e in workspace if not e.archived]
+        )
         # Bumped here, not in `_load_previews`: it has to cover the cards going away, and
         # a refresh that finds no experiments returns before starting a worker at all.
         self._preview_gen += 1
@@ -2137,7 +2844,15 @@ class HomePage(QWidget):
             discard(card)
         self._cards = []
         for experiment in self._experiments:
-            card = _ExperimentCard(experiment, self._on_open)
+            # Which location a card is in only says something once there is more than one.
+            location = (
+                locations_store.location_of(experiment.dir, among=found)
+                if len(found) > 1
+                else None
+            )
+            card = _ExperimentCard(
+                experiment, self._on_open, self._set_archived, location=location
+            )
             # Before the trailing stretch, so cards stay top-packed as the list grows.
             self._holder.insertWidget(self._holder.count() - 1, card)
             self._cards.append(card)
@@ -2205,18 +2920,33 @@ class HomePage(QWidget):
         for card, path in zip(self._cards, paths):
             card.set_preview(path)
 
+    def _set_archived(self, experiment: Experiment, archived: bool) -> None:
+        try:
+            if archived:
+                experiment.archive()
+            else:
+                experiment.unarchive()
+        except (OSError, ValueError) as e:
+            title = "Archive experiment" if archived else "Unarchive experiment"
+            QMessageBox.critical(self, title, str(e))
+            return
+        self._refresh()
+
     def _new_experiment(self) -> None:
         dialog = NewExperimentDialog(self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         name, description = dialog.values()
         try:
-            experiment = Experiment.create(name)
-        except (FileExistsError, ValueError) as e:
+            experiment = Experiment.create(name, location=dialog.location())
+        except (FileExistsError, FileNotFoundError, ValueError) as e:
             QMessageBox.critical(self, "New experiment", str(e))
             return
         if description:
             experiment.set_metadata(description=description)
+        view, note = dialog.camera_view()
+        if view is not None:
+            experiment.set_camera_view(view, note)  # validated by the dialog's accept
         self._on_open(experiment)
 
     def _import_experiment(self) -> None:
@@ -2228,9 +2958,24 @@ class HomePage(QWidget):
         )
         if not archive:
             return
-        self._run_import(archive, replace=False)
+        location = locations_store.DEFAULT_LOCATION
+        connected = [
+            loc for loc in locations_store.experiment_locations() if loc.connected
+        ]
+        if len(connected) > 1:
+            chooser = experiment_locations.ChooseLocationDialog(self)
+            if chooser.exec() != QDialog.DialogCode.Accepted:
+                return
+            location = chooser.location()
+        self._run_import(archive, replace=False, location=location)
 
-    def _run_import(self, archive: str, *, replace: bool) -> None:
+    def _manage_locations(self) -> None:
+        dialog = experiment_locations.ExperimentLocationsDialog(self)
+        dialog.exec()
+        if dialog.changed:
+            self._refresh()
+
+    def _run_import(self, archive: str, *, replace: bool, location: str) -> None:
         """Import off the UI thread, behind a bar that says how far it has got.
 
         A slim archive of a real experiment is tens of thousands of files, and a full-video one
@@ -2244,10 +2989,10 @@ class HomePage(QWidget):
         self._import_btn.setEnabled(False)
         run_progress(
             self,
-            lambda emit: _import_and_find_video(archive, replace, emit),
+            lambda emit: _import_and_find_video(archive, replace, location, emit),
             self._on_import_done,
             label="Importing experiment…",
-            on_error=lambda exc: self._on_import_failed(archive, exc),
+            on_error=lambda exc: self._on_import_failed(archive, exc, location),
             on_cancel=self._reset_import_btn,
             # The import's fraction is weighed by measured seconds (`storage/export._PassCost`).
             eta=True,
@@ -2271,7 +3016,7 @@ class HomePage(QWidget):
                 "Every recording whose video is in the same folder will find it too.",
             )
 
-    def _on_import_failed(self, archive: str, exc: Exception) -> None:
+    def _on_import_failed(self, archive: str, exc: Exception, location: str) -> None:
         self._reset_import_btn()
         if isinstance(exc, FileExistsError):
             confirm = QMessageBox.question(
@@ -2280,19 +3025,21 @@ class HomePage(QWidget):
                 f"{exc}\n\nReplace the existing experiment with the imported one?",
             )
             if confirm == QMessageBox.StandardButton.Yes:
-                self._run_import(archive, replace=True)
+                self._run_import(archive, replace=True, location=location)
             return
         QMessageBox.critical(self, "Import experiment", str(exc))
 
 
 def _import_and_find_video(
-    archive: str, replace: bool, progress
+    archive: str, replace: bool, location: str, progress
 ) -> tuple[Experiment, list[str]]:
     """Import, then name the recordings whose referenced video is still not on this machine.
 
     In the import's worker because the check stats every referenced part, on a server share.
     """
-    experiment = Experiment.import_archive(archive, replace=replace, progress=progress)
+    experiment = Experiment.import_archive(
+        archive, replace=replace, location=location, progress=progress
+    )
     names = experiment.recording_names()
     return experiment, [names.get(r, r) for r in experiment.referenced_video_missing()]
 
@@ -2338,7 +3085,6 @@ class AddRecordingsDialog(Dialog):
         self._on_submit = on_submit  # (specs, part_kwargs) → the app import queue
         self._meta_cols = experiment.metadata_columns
         self.setWindowTitle("Add recordings")
-        self.resize(720, 420)
         layout = self.body()
         layout.addWidget(
             QLabel(
@@ -2817,7 +3563,9 @@ class ModelManagerPage(QWidget):
     def _rebuild_your_models(self) -> None:
         # Newest first, so the rows the table holds before it scrolls are the recent ones.
         self._models = sorted(
-            api_models.imported_models(), key=lambda m: m.created_at or "", reverse=True
+            api_models.imported_models(role=None),
+            key=lambda m: m.created_at or "",
+            reverse=True,
         )
         rows = []
         for m in self._models:
@@ -2884,10 +3632,9 @@ class ModelManagerPage(QWidget):
         dialog = ImportModelDialog(self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        weights, meta = dialog.values()
         self._import_worker = run_busy(
             self,
-            lambda: api_models.import_model(weights, **meta),
+            import_selected(dialog),
             lambda _mid: self.refresh(),
             label="Importing model…",
         )
@@ -3001,20 +3748,28 @@ def read_checkpoint(weights) -> dict:
 
 
 class ImportModelDialog(Dialog):
-    """Import a ``.pt`` into the catalog *with metadata* (§12): pick the weights, then name
-    it and add who-made-it / description / notes / an optional preview image. Replaces the
-    bare file-picker so a model isn't imported nameless and metadata-less.
+    """Import a model into the catalog *with metadata* (§12): pick what kind of file and the
+    file, then name it and add who-made-it / description / notes / an optional preview image.
+    Replaces the bare file-picker so a model isn't imported nameless and metadata-less.
 
-    The checkpoint's task decides what it imports as, so there is no family to type (§12
-    *Keypoint models in the catalog*): a typed family is how a pose ``.pt`` once became a
-    detector that failed when built. Once the file is read, a pose checkpoint shows the
-    **skeleton step** — pick the skeleton its points follow, and see the check against the
-    model's point count and left/right pairs — and Import waits until that check passes. A
-    detection checkpoint has no such step.
+    Two kinds of file. A **model checkpoint** (``.pt``): its task decides what it imports as,
+    so there is no family to type (§12 *Keypoint models in the catalog*): a typed family is how
+    a pose ``.pt`` once became a detector that failed when built. Once the file is read, a pose
+    checkpoint shows the **skeleton step** — pick the skeleton its points follow, and see the
+    check against the model's point count and left/right pairs — and Import waits until that
+    check passes. A detection checkpoint has no such step. A **keypoint model exported to
+    ONNX** (§26 — a sleap-nn export) carries its keypoint names, and their roles are edited on
+    the model's page afterwards, so it has neither step.
     """
 
     #: The skeleton picker's last row: choose a skeleton YAML instead of a library entry.
     FROM_FILE = "__from_file__"
+    #: What can be imported: a checkpoint (detection or pose, read from the file) or an ONNX
+    #: keypoint export.
+    _FORMATS = (
+        ("detection", "Model checkpoint (.pt)"),
+        ("keypoints", "Keypoint model (SLEAP export, .onnx)"),
+    )
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -3028,10 +3783,17 @@ class ImportModelDialog(Dialog):
         layout = self.body()
         form = QFormLayout()
 
+        self._format = QComboBox()
+        self._format.setObjectName("import_format")
+        for value, label in self._FORMATS:
+            self._format.addItem(label, value)
+        self._format.currentIndexChanged.connect(self._format_changed)
+        form.addRow("File", self._format)
+
         self._weights_label = QLabel("(no file chosen)")
-        pick = QPushButton("Choose .pt")
-        pick.clicked.connect(self._pick_weights)
-        form.addRow("Weights", _row(self._weights_label, pick))
+        self._pick = QPushButton("Choose .pt")
+        self._pick.clicked.connect(self._pick_weights)
+        form.addRow("Weights", _row(self._weights_label, self._pick))
         self._kind = QLabel("(choose a file to see what it is)")
         set_label_color(self._kind, MUTED)
         self._kind.setWordWrap(True)
@@ -3080,25 +3842,59 @@ class ImportModelDialog(Dialog):
         self.set_buttons(box)
         self._sync_ok()
 
+    # -- what kind of file ---------------------------------------------------------- #
+    def kind(self) -> str:
+        """``"keypoints"`` for an ONNX keypoint export, ``"detection"`` for a checkpoint
+        (which may itself be a pose model: the checkpoint says, not this)."""
+        return self._format.currentData()
+
+    def _format_changed(self) -> None:
+        """A file picked for the other kind does not carry over."""
+        onnx = self.kind() == "keypoints"
+        self._pick.setText("Choose .onnx" if onnx else "Choose .pt")
+        self._weights = None
+        self._checkpoint = None
+        self._weights_label.setText("(no file chosen)")
+        self._kind.setText("(choose a file to see what it is)")
+        set_label_color(self._kind, MUTED)
+        self._show_skeleton_step(False)
+        self._sync_ok()
+
     # -- the weights, and what they are ------------------------------------------ #
     def _pick_weights(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Model weights", "", "Model weights (*.pt);;All files (*)"
-        )
+        if self.kind() == "keypoints":
+            # The exporter writes export_metadata.json (and, for a downscaling model,
+            # model.onnx.data) beside the .onnx; the import reads them from there.
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Keypoint model", "", "ONNX model (*.onnx);;All files (*)"
+            )
+        else:
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Model weights", "", "Model weights (*.pt);;All files (*)"
+            )
         if path:
             self.set_weights(Path(path))
 
     def set_weights(self, weights: Path) -> None:
         """Take ``weights`` as the file to import and read what it is off the UI thread
-        (the file picker's continuation; a test calls it directly)."""
+        (the file picker's continuation; a test calls it directly). An ONNX export is read
+        by the import itself, so there is nothing to read here."""
         self._weights = Path(weights)
         self._checkpoint = None
         self._weights_label.setText(self._weights.name)
         if not self._name.text():
             self._name.setText(self._weights.stem)
+        self._show_skeleton_step(False)
+        if self.kind() == "keypoints":
+            self._kind.setText(
+                "Keypoints · a SLEAP export: its keypoint names come from the export, and "
+                "their left/right roles are set on the model's page after import."
+            )
+            self._kind.setPalette(self._weights_label.palette())  # plain text
+            self._sync_ok()
+            return
         self._kind.setText("Reading the checkpoint…")
         set_label_color(self._kind, MUTED)
-        self._show_skeleton_step(False)
         self._sync_ok()
         self._read_worker = run_busy(
             self,
@@ -3240,6 +4036,8 @@ class ImportModelDialog(Dialog):
     def _sync_ok(self) -> None:
         if self._weights is None:
             reason = "Choose a weights file first"
+        elif self.kind() == "keypoints":
+            reason = ""  # the export is read by the import itself
         elif self._checkpoint is None:
             reason = "Waiting for the checkpoint to be read"
         elif self._checkpoint["k"] is not None and not self._fits:
@@ -3257,15 +4055,27 @@ class ImportModelDialog(Dialog):
             self._preview_label.setText(self._preview.name)
 
     def values(self) -> tuple[Path, dict]:
-        """(weights_path, kwargs) for ``api_models.import_model``."""
+        """(weights_path, kwargs) for ``import_selected``'s import call."""
+        skeleton = (
+            {} if self.kind() == "keypoints" else {"skeleton": self.skeleton_source()}
+        )
         return self._weights, {
-            "skeleton": self.skeleton_source(),
+            **skeleton,
             "name": self._name.text().strip() or None,
             "made_by": self._made_by.text().strip() or None,
             "description": self._description.text().strip() or None,
             "notes": self._notes.toPlainText().strip() or None,
             "preview": self._preview,
         }
+
+
+def import_selected(dialog: "ImportModelDialog"):
+    """The import an accepted ``ImportModelDialog`` asks for, as a callable for a worker —
+    the one place either Import button turns the dialog into an API call."""
+    path, meta = dialog.values()
+    if dialog.kind() == "keypoints":
+        return lambda: api_models.import_keypoint_model(path, **meta)
+    return lambda: api_models.import_model(path, **meta)
 
 
 class _EditModelMetaDialog(Dialog):
@@ -3301,13 +4111,19 @@ class _EditModelMetaDialog(Dialog):
 
 
 class GlobalModelDetailPage(QWidget):
-    """A machine-global model's detail (§12): preview + metadata + build-history provenance,
-    with Edit / Set preview… / Export… / Delete. Reads the catalog (not an experiment), so it
-    renders a distilled/imported model no experiment owns."""
+    """A machine-global model's detail (§12): preview + metadata + build-history provenance —
+    including, for a distilled model, the dataset it was trained on (teacher model, frame
+    counts, per-class counts) and its training curve — with Edit / Set preview… / Export… /
+    Delete. Reads the catalog (not an experiment), so it renders a distilled/imported model no
+    experiment owns. The dataset/curve data is a copy captured at promote time (§12's
+    ``distilled.py``), not read live from the source experiment, so it still renders after that
+    experiment is deleted. ``experiment`` is the open one, or None: the keypoint roles editor
+    borrows a frame from it to draw over."""
 
-    def __init__(self, model_id: str, on_deleted=None, on_changed=None):
+    def __init__(self, model_id: str, on_deleted=None, on_changed=None, *, experiment):
         super().__init__()
         self._model_id = model_id
+        self._experiment = experiment
         self._on_deleted = on_deleted
         self._on_changed = on_changed
         self._layout = QVBoxLayout(self)
@@ -3364,7 +4180,12 @@ class GlobalModelDetailPage(QWidget):
         form.addRow("Description", _wrap_label(ref.description or "—"))
         form.addRow("Notes", _wrap_label(ref.notes or "—"))
         form.addRow("Created", QLabel(_short_dt(ref.created_at) or "—"))
-        form.addRow("Classes", QLabel(", ".join(ref.classes) or "—"))
+        if ref.role == "keypoints":
+            if ref.details.get("model_type"):  # an ONNX export says what it is
+                form.addRow("Format", QLabel(_keypoint_kind(ref.details)))
+            form.addRow("Keypoints", _wrap_label(", ".join(ref.classes) or "—"))
+        else:
+            form.addRow("Classes", QLabel(", ".join(ref.classes) or "—"))
         form_widget = QWidget()
         form_widget.setLayout(form)
         top.addWidget(form_widget, 1)
@@ -3391,13 +4212,47 @@ class GlobalModelDetailPage(QWidget):
             bh.addRow("Model size", QLabel(str(prov.get("base_model") or "—")))
             bh.addRow("Training framework", QLabel(str(prov.get("trainer_id") or "—")))
             bh.addRow("Metrics", QLabel(str(prov.get("metrics") or {})))
+            dataset = prov.get("dataset") or {}
+            if dataset:
+                n_train = dataset.get("n_train") or 0
+                n_val = dataset.get("n_val") or 0
+                requested = dataset.get("n_frames")
+                frames_text = f"{n_train + n_val} used"
+                if requested:
+                    frames_text += f" of {requested} requested"
+                bh.addRow("Teacher model", QLabel(str(dataset.get("model") or "—")))
+                bh.addRow("Frames labeled", QLabel(frames_text))
+                bh.addRow("Train / val split", QLabel(f"{n_train} / {n_val}"))
+                per_class = dataset.get("per_class") or {}
+                if per_class:
+                    bh.addRow("Per-class frames", QLabel(str(per_class)))
             bh_widget = QWidget()
             bh_widget.setLayout(bh)
             self._add(bh_widget)
 
+            history = prov.get("training_history") or []
+            if history:
+                from detail.gui.training_curve import TrainingCurveBand
+
+                band = TrainingCurveBand()
+                band.set_history(history)
+                self._add(band)
+
+        from detail.models import onnx_keypoints
+
+        onnx_import = onnx_keypoints.is_imported(ref.id)
+        if onnx_import and ref.skeleton is not None and not ref.skeleton.pairs:
+            self._add(
+                _wrap_label(
+                    "No left/right pairs: set them with Edit roles so a mirrored "
+                    "animal's sides are told apart."
+                )
+            )
+
         actions = QHBoxLayout()
         for label, slot in (
             ("Edit", self._edit),
+            *((("Edit roles", self._edit_roles),) if onnx_import else ()),
             ("Set preview", self._set_preview),
             ("Export", self._export),
             ("Delete", self._delete),
@@ -3426,6 +4281,23 @@ class GlobalModelDetailPage(QWidget):
         api_models.update_model_metadata(self._model_id, **dialog.values())
         self._notify_changed()
 
+    def _edit_roles(self) -> None:
+        """The left/right pairs and edges of an imported keypoints model; the names are its
+        outputs and stay (§26), which the API refuses to change with the reason."""
+        dialog = KeypointRolesDialog(
+            api_models.keypoint_model_skeleton(self._model_id),
+            experiment=self._experiment,
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            api_models.set_keypoint_model_skeleton(self._model_id, dialog.skeleton())
+        except ValueError as exc:
+            QMessageBox.critical(self, "Keypoint roles", str(exc))
+            return
+        self._notify_changed()
+
     def _set_preview(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self, "Preview image", "", "Images (*.png *.jpg *.jpeg);;All files (*)"
@@ -3449,6 +4321,59 @@ class GlobalModelDetailPage(QWidget):
         api_models.remove_imported_model(self._model_id)
         if self._on_deleted is not None:
             self._on_deleted()
+
+
+_KEYPOINT_KINDS = {
+    "single_instance": "single-instance (whole frame)",
+    "centered_instance": "centered-instance (a crop around the tracked animal)",
+    "topdown": "top-down (finds the animals, keeps the tracked one)",
+}
+
+
+def _keypoint_kind(details: dict) -> str:
+    """``SLEAP top-down (finds the animals, keeps the tracked one) · RGB · sleap-nn 0.3.3``."""
+    kind = _KEYPOINT_KINDS.get(
+        details.get("model_type"), str(details.get("model_type"))
+    )
+    channels = {1: "greyscale", 3: "RGB"}.get(details.get("channels"), "?")
+    bits = [f"SLEAP {kind}", channels]
+    if details.get("crop_size"):
+        bits.append("crop {}x{}".format(*details["crop_size"]))
+    if details.get("exporter_version"):
+        bits.append(f"sleap-nn {details['exporter_version']}")
+    return " · ".join(bits)
+
+
+class KeypointRolesDialog(Dialog):
+    """Edit an imported keypoints model's pairs and edges on the skeleton editor (§26). The
+    keypoints are the model's outputs: renaming, adding or removing one is refused on save.
+    """
+
+    def __init__(self, skeleton, *, experiment, parent=None) -> None:
+        from detail.gui.skeleton_editor import SkeletonEditor
+
+        super().__init__(parent)
+        self.setWindowTitle("Keypoint roles")
+        body = self.body()
+        note = QLabel(
+            "Set which points pair as left and right, and the edges between them. The "
+            "keypoint names are the model's outputs and stay as they are."
+        )
+        note.setWordWrap(True)
+        body.addWidget(note)
+        self._editor = SkeletonEditor(experiment=experiment)
+        self._editor.load(skeleton)
+        body.addWidget(self._editor, 1)
+        box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        box.accepted.connect(self.accept)
+        box.rejected.connect(self.reject)
+        self.set_buttons(box)
+
+    def skeleton(self):
+        return self._editor.skeleton()
 
 
 def _skeleton_form(skeleton, skeleton_ref: dict | None) -> QWidget:
@@ -3508,6 +4433,7 @@ class ExperimentRecordingsPage(QWidget):
         self._cancel_imports = cancel_imports
         self._layout = QVBoxLayout(self)
         self._layout.addWidget(_heading("Recordings"))
+        self._layout.addLayout(self._camera_view_row())
         self._table = None
         self._ids: list[str] = []
         #: Bumped by every rebuild; rows delivered against an older one are dropped.
@@ -3546,6 +4472,69 @@ class ExperimentRecordingsPage(QWidget):
         self._rebuild_table()
         self._layout.addStretch()
 
+    def _camera_view_row(self) -> QHBoxLayout:
+        """The experiment's default camera view (§10), which every recording inherits unless
+        its Scene geometry sets its own. Saved the moment it changes, like a rename."""
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Camera view (experiment default):"))
+        self._camera_view = CameraViewPicker(unset_label="Not set")
+        # Read off the UI thread like the table beside it (`test_page_read_cost`): the picker
+        # waits, greyed, until it knows what it is showing.
+        self._camera_view.setEnabled(False)
+        self._camera_view.changed.connect(self._on_camera_view_changed)
+        experiment = self._experiment
+        self._camera_view_call = BackgroundCall(
+            lambda: experiment.camera_view, receiver=self  # off-thread
+        )
+        self._camera_view_call.done.connect(self._show_camera_view)
+        self._camera_view_call.failed.connect(lambda _exc: None)
+        self._camera_view_call.start()
+        row.addWidget(self._camera_view, 1)
+        hint = QLabel("A recording from another rig sets its own in Scene geometry.")
+        set_label_color(hint, MUTED)
+        row.addWidget(hint)
+        class_names = QPushButton("Class names…")
+        class_names.setToolTip(
+            "Name each detection class as this experiment calls it (Resident, Intruder…)"
+        )
+        class_names.clicked.connect(self._edit_class_names)
+        row.addWidget(class_names)
+        return row
+
+    def _edit_class_names(self) -> None:
+        """Read the class roster off the UI thread (it reads every run record), then edit
+        it (§1 *Class names*). Nothing on this page shows a class; every surface that does
+        reads the names when it is built."""
+        from detail.gui.class_names_dialog import ClassNamesDialog
+
+        experiment = self._experiment
+
+        def edit(names) -> None:
+            ClassNamesDialog(experiment, names, parent=self).exec()
+
+        self._class_names_call = run_busy(
+            self,
+            experiment.class_names,
+            edit,
+            label="Reading classes…",
+            supersedes="class names",
+        )
+
+    def _show_camera_view(self, default) -> None:
+        self._camera_view.set_value(default.view, default.note)
+        self._camera_view.setEnabled(True)
+
+    def _on_camera_view_changed(self) -> None:
+        try:
+            self._experiment.set_camera_view(*self._camera_view.value())
+        except ValueError as exc:
+            QMessageBox.warning(self, "Camera view", str(exc))
+            default = self._experiment.camera_view
+            self._camera_view.set_value(default.view, default.note)
+            return
+        # Every inheriting row's Camera view cell just changed with it.
+        self._rebuild_table()
+
     #: Column headers, here rather than inside the build so the empty table has them before
     #: the rows arrive.
     _HEADERS = (
@@ -3555,6 +4544,7 @@ class ExperimentRecordingsPage(QWidget):
         "Parts",
         "Streams",
         "Field of view",
+        "Camera view",
         "Detections",
     )
     #: What a table with no rows says — and the two are **not** interchangeable. Reading the
@@ -3732,6 +4722,7 @@ class ExperimentRunsPage(QWidget):
             (
                 r["id"],
                 r.get("module_id"),
+                run_cost.compute_label(r.get("compute")),
                 len(r.get("recording_ids", [])),
                 r.get("status"),
                 _short_dt(r.get("created_at")),
@@ -3743,7 +4734,7 @@ class ExperimentRunsPage(QWidget):
         new_run.clicked.connect(self._launch)
         layout.addWidget(new_run, alignment=Qt.AlignmentFlag.AlignLeft)
         table = IndexTable(
-            ["Run", "Module", "Recordings", "Status", "Started"],
+            ["Run", "Module", "Where", "Recordings", "Status", "Started"],
             empty_text="(no processing runs yet — New run starts one)",
         )
         table.set_rows(rows, ids=self._ids)
@@ -3829,7 +4820,7 @@ class GlobalModelsPage(QWidget):
     ):
         super().__init__()
         # ``builtin_only`` restricts the table to the Hugging Face / foundation models —
-        # imported/distilled models live in the Model manager's "Your models" table, so
+        # imported/distilled models live in the Model manager's "Global models" table, so
         # Import/Remove are hidden here. ``embedded`` drops the page's own heading + trailing
         # stretch so it can slot under a subheading inside ModelManagerPage.
         self._builtin_only = builtin_only
@@ -3897,6 +4888,12 @@ class GlobalModelsPage(QWidget):
         self._install_status.setWordWrap(True)
         self._install_status.setVisible(False)
         layout.addWidget(self._install_status)
+        # The selected model's license, when its weights restrict use (SuperAnimal, §26): said
+        # where Install is pressed, as the CLI says it before it downloads.
+        self._license_note = QLabel("")
+        self._license_note.setWordWrap(True)
+        self._license_note.setVisible(False)
+        layout.addWidget(self._license_note)
         if not embedded:
             layout.addStretch()
         self._rebuild_table()
@@ -3995,6 +4992,11 @@ class GlobalModelsPage(QWidget):
 
     def _update_actions(self) -> None:
         row = self._selected()
+        terms = row.license if row is not None else None
+        self._license_note.setText(
+            f"License: {terms.name}. {terms.summary} {terms.url}" if terms else ""
+        )
+        self._license_note.setVisible(terms is not None)
         built_in = row is not None and row.source == "built-in"
         # While the scan is in flight (_installed is None) treat models as installed
         # so Install isn't offered before we know — it re-enables on _on_installed_scanned.
@@ -4098,14 +5100,13 @@ class GlobalModelsPage(QWidget):
 
     # --- import / remove (machine-global catalog) --------------------------- #
     def _import_model(self) -> None:
-        weights, _ = QFileDialog.getOpenFileName(
-            self, "Import model", "", "Model weights (*.pt);;All files (*)"
-        )
-        if not weights:
+        # The Model manager's dialog, not a bare .pt picker: one Import, both kinds (§26).
+        dialog = ImportModelDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         self._import_btn.setEnabled(False)
         self._import_btn.setText("Importing…")
-        worker = BackgroundCall(lambda: api_models.import_model(weights), receiver=self)
+        worker = BackgroundCall(import_selected(dialog), receiver=self)
         worker.done.connect(self._on_import_done)
         worker.failed.connect(self._on_import_failed)
         self._import_worker = worker  # keep a ref so the thread isn't collected
@@ -4161,7 +5162,6 @@ class _ImportSpatialDialog(Dialog):
         self._recording = recording
         self._experiment = experiment
         self.setWindowTitle(f"Import scene geometry — {recording.name}")
-        self.resize(560, 480)
         self._others = (
             [r for r in experiment.recordings if r.id != recording.id]
             if experiment is not None
@@ -4345,7 +5345,6 @@ class AddVideoPartDialog(Dialog):
         super().__init__(parent)
         self._recording = recording
         self.setWindowTitle("Add video part")
-        self.resize(560, 240)
         layout = self.body()
         pick = QHBoxLayout()
         self._path = QLineEdit()
@@ -4430,7 +5429,6 @@ class RelinkVideoDialog(Dialog):
 
         self._recording = recording
         self.setWindowTitle("Locate video")
-        self.resize(560, 200)
         layout = self.body()
         layout.addWidget(
             _instructions(
@@ -4532,7 +5530,6 @@ class CopyToRecordingsDialog(Dialog):
         #: action that writes to every checked recording.
         self._unchecked: set[str] = set()
         self.setWindowTitle(f"Copy to other recordings from {recording.name}")
-        self.resize(560, 520)
 
         layout = self.body()
         layout.addWidget(_heading("Copy"))
@@ -4575,6 +5572,9 @@ class CopyToRecordingsDialog(Dialog):
         # The list is what this dialog is *for*, so it takes the slack rather than being
         # capped to its rows with the remainder left dead at the bottom — `finish_dialog`
         # is then the no-op it is meant to be on a dialog whose content fills.
+        layout.addWidget(
+            RecordingFilter(self._targets, experiment, select_buttons=True)
+        )
         layout.addWidget(self._targets, 1)
 
         layout.addWidget(
@@ -4942,7 +5942,13 @@ class RecordingDetailPage(QWidget):
         self._has_runs = bool(records)
         layout.addWidget(self._runs_stale_lbl)
         history = [
-            (stage, r["id"], r.get("processing_run_id") or "—", r.get("status"))
+            (
+                stage,
+                r["id"],
+                r.get("processing_run_id") or "—",
+                run_cost.compute_label(r.get("compute")),
+                r.get("status"),
+            )
             for stage, r in records
         ]
         # double-click a row to open its result view: a experiment-backed run opens the
@@ -4951,7 +5957,7 @@ class RecordingDetailPage(QWidget):
         self._run_targets = [r.get("processing_run_id") for _, r in records]
         self._run_rows = [(stage, r["id"]) for stage, r in records]
         runs_table = IndexTable(
-            ["Stage", "Id", "From run", "Status"],
+            ["Stage", "Id", "From run", "Where", "Status"],
             empty_text="(nothing has been run on this recording yet)",
         )
         # Identity is the row's original index into `records` — both `_run_targets` and
@@ -5146,6 +6152,9 @@ class RecordingDetailPage(QWidget):
         right = QVBoxLayout()
 
         with read_cache.pinned():
+            view_label = QLabel(f"Camera view: {self._recording.camera_view.described}")
+            view_label.setContentsMargins(_SCENE_INDENT, 0, 0, 0)
+            left.addWidget(view_label)
             # The four kinds are sub-sections of this one, and the style guide forbids a
             # custom point size, so the hierarchy is carried by an indent — otherwise the
             # section heading and its four kind headings are five identical bold lines.
@@ -5587,12 +6596,32 @@ def _run_cadence(experiment, record: dict) -> tuple[str, str]:
         recording = next((r for r in recordings if r.id == sid), None)
         if recording is not None and run_id:
             try:
-                spec = run_spec.spec_from_run(recording, module_id, run_id)
-                # A run record stores the model *id*; the user reads the name (§11).
-                lineage = run_spec.spec_label(spec, experiment.model_names())
+                # A run record stores the model *id*; the user reads the name (§11). Each
+                # ancestor leads with the experiment run that made it.
+                lineage = run_spec.run_label(
+                    recording,
+                    module_id,
+                    run_id,
+                    experiment.model_names(),
+                    class_names=experiment.class_names(),
+                )
             except (KeyError, ValueError, FileNotFoundError):
                 lineage = ""
     return frames, lineage
+
+
+def _remote_cost_rate(compute: dict | None) -> float | None:
+    """``$/hour`` for a still-running remote job's live cost estimate, or ``None``
+    for a local job or a remote target with no configured rate (§ run location,
+    duration, cost). A target that has since been renamed/removed is the same as
+    "no rate" — a live estimate is a nicety, not a fact the page can insist on."""
+    if not compute or compute.get("backend") != "remote":
+        return None
+    with contextlib.suppress(Exception):
+        target = api_remote.get_remote_target(compute.get("remote_target"))
+        if target.cost_per_gpu_hour is not None:
+            return target.gpus_per_job * target.cost_per_gpu_hour
+    return None
 
 
 class RunResults(QWidget):
@@ -5635,8 +6664,12 @@ class RunResults(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
 
         names = experiment.recording_names()
+        # Detection's per-recording question is how much of each recording it found something
+        # on — asked across a run of many recordings, it is a column, not a pick per row.
+        coverage = self._module_id == "detection"
         self._table = IndexTable(
-            ["Recording", "Run id", "Status"],
+            ["Recording", "Run id", "Status"]
+            + (["Frames with detections"] if coverage else []),
             empty_text="(this run recorded no per-recording results)",
             max_rows=self.ROWS,
         )
@@ -5647,10 +6680,17 @@ class RunResults(QWidget):
                     info.get("run_id"),
                     info.get("status"),
                 )
+                + (
+                    ("…" if info.get("status") == "complete" else "",)
+                    if coverage
+                    else ()
+                )
                 for sid, info in self._per.items()
             ],
             ids=self._recording_ids,
         )
+        if coverage:
+            self._read_coverage()
         self._table.view.doubleClicked.connect(self._open_recording_row)
         # Selection, not `clicked`: the keyboard moves it too, and a list you can only drive
         # with a mouse is one half the people using it cannot.
@@ -5670,6 +6710,52 @@ class RunResults(QWidget):
         of the window.
         """
         return QSize(super().sizeHint().width(), self.minimumSizeHint().height())
+
+    #: The frames column's index: after Recording, Run id and Status.
+    _COVERAGE_COLUMN = 3
+
+    def _read_coverage(self) -> None:
+        """Fill the frames column off the UI thread — each count reads a run's store."""
+        experiment = self._experiment
+        complete = {
+            sid: str(info.get("run_id"))
+            for sid, info in self._per.items()
+            if info.get("status") == "complete"
+        }
+
+        def read() -> dict:
+            counts = {}
+            for sid, run_id in complete.items():
+                try:
+                    recording = experiment.get_recording(sid)
+                    counts[sid] = recording.detection_coverage(run_id)  # off-thread
+                except (FileNotFoundError, ValueError):
+                    counts[sid] = None  # the recording or its run is gone
+            return counts
+
+        self._coverage_call = BackgroundCall(read, receiver=self)
+        self._coverage_call.done.connect(self._on_coverage)
+        # A read that failed outright says so per row rather than leaving "…" forever.
+        self._coverage_call.failed.connect(
+            lambda _exc: self._on_coverage(dict.fromkeys(complete))
+        )
+        self._coverage_call.start()
+
+    def _on_coverage(self, counts: dict) -> None:
+        for sid, pair in counts.items():
+            if pair is None:
+                self._table.set_cell(sid, self._COVERAGE_COLUMN, "(unreadable)")
+                continue
+            with_detections, processed = pair
+            # Sorts on the fraction: 900/1,000 is the better recording than 1,000/10,000.
+            self._table.set_cell(
+                sid,
+                self._COVERAGE_COLUMN,
+                SortCell(
+                    f"{with_detections:,}/{processed:,}",
+                    with_detections / processed if processed else 0.0,
+                ),
+            )
 
     def _select_first(self) -> None:
         """Open on a recording rather than on an empty space, preferring one that completed."""
@@ -5722,12 +6808,28 @@ class RunResults(QWidget):
         status = info.get("status")
         if status != "complete":
             return self._failure_label(recording_id, info)
-        if self._ui is None:
-            return QLabel("(this module has no result view)")
         recording = self._recording(recording_id)
+        if self._ui is None:
+            from detail.gui.keypoint_run_preview import legacy_preview_widget
+
+            legacy = (
+                legacy_preview_widget(
+                    recording, str(self._module_id), str(info.get("run_id"))
+                )
+                if recording is not None
+                else None
+            )
+            return legacy or QLabel("(this module has no result view)")
         if recording is None:
             return QLabel(f"({recording_id} is no longer in this experiment)")
-        widget = self._ui.preview_widget(recording, info.get("run_id"))
+        widget = self._ui.preview_widget(
+            recording,
+            info.get("run_id"),
+            experiment_dir=self._experiment.dir,
+            parent_run_id=self._record.get(
+                "id"
+            ),  # the experiment's run, what an export is of
+        )
         if widget is not None:
             return widget
         # A module whose results are the run's, not each recording's. Built once:
@@ -5780,9 +6882,14 @@ def _next_stages(module_id: str | None) -> list[str]:
     A batch stage is left out: it consumes a *set* of runs picked on its own form, not
     the one run this page is about. Hidden surfaces (§25) are left out too.
     """
+    from detail import surfaces
     from detail.executor.runners import PROCESSING_MODULES
     from detail.gui.launch import _ordered_module_ids
 
+    # A merged-tracks run *is* a tracking run to everything downstream (it writes the same
+    # `tracking/track_NN` output), so it is offered whatever tracking is offered.
+    if module_id == "track_merge":
+        module_id = "tracking"
     return _ordered_module_ids(
         [
             m.module_id
@@ -5895,8 +7002,25 @@ class RunDetailPage(QWidget):
         form = QFormLayout(form_holder)
         form.setContentsMargins(0, 0, 0, 0)
         form.addRow("Module:", QLabel(str(record.get("module_id"))))
+        form.addRow("Where:", QLabel(run_cost.compute_label(record.get("compute"))))
         form.addRow("Status:", QLabel(str(record.get("status"))))
         form.addRow("Created:", QLabel(str(record.get("created_at"))))
+        duration_s = record.get("duration_s")
+        if duration_s is not None:
+            form.addRow("Duration:", QLabel(format_duration(duration_s)))
+        # Cost: a persisted final value once terminal; a live-updating estimate while
+        # still running, ticking off the same elapsed_s the progress bar already
+        # gets — no extra I/O per tick (§ run location, duration, cost).
+        self._cost_label = None
+        self._cost_rate_per_hour = None
+        cost = record.get("total_estimated_cost_usd")
+        if cost is not None:
+            form.addRow("Cost:", QLabel(f"${cost:.2f}"))
+        elif record.get("status") in ACTIVE_STATUSES:
+            self._cost_rate_per_hour = _remote_cost_rate(record.get("compute"))
+            if self._cost_rate_per_hour is not None:
+                self._cost_label = QLabel("$0.00")
+                form.addRow("Cost (running):", self._cost_label)
         frames, lineage = _run_cadence(self._experiment, record)
         if frames:
             form.addRow("Frames:", QLabel(frames))
@@ -5944,12 +7068,27 @@ class RunDetailPage(QWidget):
         results = None
         if record.get("status") not in ACTIVE_STATUSES:
             self._add(_heading("Results"))
+            ui = GUI_MODULES.get(record.get("module_id"))
             results = RunResults(
                 self._experiment,
                 record,
-                GUI_MODULES.get(record.get("module_id")),
+                ui,
                 on_open_recording=self._on_open_recording,
             )
+            # A module's own tabs beside the results (the keypoint track run's Audit, §26);
+            # none leaves the results as the page's fill child with no tab bar over them.
+            tabs = ui.run_tabs(self._experiment, record) if ui is not None else []
+            if tabs:
+                from PyQt6.QtWidgets import QTabWidget
+
+                holder = QTabWidget()
+                holder.setSizePolicy(
+                    QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding
+                )
+                holder.addTab(results, "Results")
+                for title, widget in tabs:
+                    holder.addTab(widget, title)
+                results = holder
             self._add(results)
         self._give_slack_to_the_body(results is not None)
 
@@ -5983,36 +7122,46 @@ class RunDetailPage(QWidget):
                 self._retry_btn = QPushButton(
                     f"Retry {len(pending)} incomplete recording{plural}"
                 )
-                self._retry_btn.clicked.connect(self._retry)
+                self._retry_btn.clicked.connect(lambda: self._retry())
                 self._add(self._retry_btn)
             delete = QPushButton("Delete run")
             delete.clicked.connect(self._delete)
             self._add(delete)
 
-    def _retry(self) -> None:
+    def _retry(self, ignore_free_space: bool = False) -> None:
         """Re-run the incomplete recordings, off the UI thread.
 
         Not shaped like ``_FitDetailPage._resume``, which calls its API inline: retry
         validates every incomplete recording and spawns a coordinator — O(recordings) disk
         work, the freeze CLAUDE.md forbids on the UI thread. No confirm: it destroys
-        nothing, and the count is in the label.
+        nothing, and the count is in the label — unless the re-run would not fit on the
+        drive, which asks (``space_prompt``, #743).
         """
         self._retry_btn.setEnabled(False)
         self._status.setText("Validating recordings…")
         self._status.setVisible(True)
-        worker = StageProgressWorker(
+        worker = BackgroundCall(
             lambda progress: self._experiment.retry_run(
-                self._run_id, progress=progress
+                self._run_id, ignore_free_space=ignore_free_space, progress=progress
             ),
             receiver=self,
+            reports_progress=True,
         )
-        worker.tick.connect(lambda _permille, status: self._status.setText(status))
+        status_line = StageStatusLine()
+        worker.tick.connect(
+            lambda stage, fraction, detail: self._status.setText(
+                status_line(stage, fraction, detail)
+            )
+        )
         worker.done.connect(self._start_live)
 
         def _failed(exc) -> None:
             self._retry_btn.setEnabled(True)
             self._status.setVisible(False)
             self._status.setText("")
+            if launch_anyway(self, "Retry run", exc):
+                self._retry(ignore_free_space=True)
+                return
             message = (
                 str(exc)
                 if isinstance(exc, (ValueError, FileNotFoundError))
@@ -6135,6 +7284,12 @@ class RunDetailPage(QWidget):
             self._recordings_done = done
             self._record_cache = self._find_record()
         self._refresh_units(getattr(self, "_record_cache", None))
+        if self._cost_label is not None and self._cost_rate_per_hour is not None:
+            elapsed_s = getattr(event, "elapsed_s", None)
+            if elapsed_s is not None:
+                self._cost_label.setText(
+                    f"${elapsed_s / 3600.0 * self._cost_rate_per_hour:.2f}"
+                )
 
     def _find_record(self):
         return next(
@@ -6215,11 +7370,30 @@ class RecordingRunDetailPage(QWidget):
         layout = QVBoxLayout(self)
         recording = experiment.get_recording(recording_id)
         layout.addWidget(_heading(f"{module_id}: {run_id}  ·  {recording.name}"))
-        record = {r["id"]: r for r in getattr(recording, f"{module_id}_runs", [])}.get(
-            run_id
-        )
+        runs = getattr(recording, f"{module_id}_runs", None)
+        if runs is None:
+            # A module this build no longer has (the stage before §26 wrote ``keypoint_runs``):
+            # its runs are still listed in recording.yaml.
+            from detail.storage import recording as recording_store
+
+            legacy_key = {"keypoints": "keypoint_runs"}.get(
+                module_id, f"{module_id}_runs"
+            )
+            runs = recording_store.read_recording(recording.dir).get(legacy_key, [])
+        record = {r["id"]: r for r in runs}.get(run_id)
         status = record.get("status") if record else None
+        if record is not None:
+            layout.addWidget(
+                QLabel(f"Where: {run_cost.compute_label(record.get('compute'))}")
+            )
         layout.addWidget(QLabel(f"Status: {status or '—'}"))
+        if record is not None:
+            duration_s = record.get("duration_s")
+            if duration_s is not None:
+                layout.addWidget(QLabel(f"Duration: {format_duration(duration_s)}"))
+            cost = record.get("estimated_cost_usd")
+            if cost is not None:
+                layout.addWidget(QLabel(f"Cost: ${cost:.2f}"))
         if record is None:
             layout.addWidget(QLabel("(run not found)"))
             layout.addStretch()
@@ -6233,11 +7407,18 @@ class RecordingRunDetailPage(QWidget):
         if error is not None:
             layout.addWidget(error)
         ui = GUI_MODULES.get(module_id)
-        preview = (
-            ui.preview_widget(recording, run_id)
-            if status == "complete" and ui is not None
-            else None
-        )
+        if status != "complete":
+            preview = None
+        elif ui is not None:
+            # No experiment-level run behind this one (it was launched per recording), so
+            # there is nothing an export could be of: the viewer leaves Export out.
+            preview = ui.preview_widget(
+                recording, run_id, experiment_dir=experiment.dir, parent_run_id=None
+            )
+        else:
+            from detail.gui.keypoint_run_preview import legacy_preview_widget
+
+            preview = legacy_preview_widget(recording, module_id, run_id)
         if preview is None:
             layout.addStretch()
         else:
@@ -6365,6 +7546,8 @@ class ModelsPage(QWidget):
         *,
         on_open_distill_run=None,
         on_distill_launched=None,
+        banner: str | None = None,
+        on_banner_dismiss=None,
     ):
         super().__init__()
         self._experiment = experiment
@@ -6374,6 +7557,8 @@ class ModelsPage(QWidget):
         self._on_distill_launched = on_distill_launched
         layout = QVBoxLayout(self)
         layout.addWidget(_heading("Models"))
+        if banner is not None:  # keypoint setup still to do (§26, #717)
+            layout.addWidget(_ReadinessBanner(banner, on_banner_dismiss))
 
         actions = QHBoxLayout()
         # One way to make any model (§12): the dialog's Model type chooses a detector or a
@@ -6381,9 +7566,22 @@ class ModelsPage(QWidget):
         distill = QPushButton("＋ Distill new model")
         distill.clicked.connect(self._distill)
         actions.addWidget(distill)
+        setup_keypoints = QPushButton("Set up keypoints…")
+        setup_keypoints.setToolTip(
+            "Teach a keypoint model from a few minutes of each camera or box, then train a "
+            "fast one on it: the keypoint model alignment and pose use (§26)"
+        )
+        setup_keypoints.clicked.connect(self._setup_keypoints)
+        actions.addWidget(setup_keypoints)
         self._train_btn = QPushButton("Train from dataset…")
         self._train_btn.clicked.connect(self._train)
         actions.addWidget(self._train_btn)
+        uploads = QPushButton("Background uploads…")
+        uploads.setToolTip(
+            "Watch, or stop, the videos a distill is copying to a cluster in the background."
+        )
+        uploads.clicked.connect(self._background_uploads)
+        actions.addWidget(uploads)
         actions.addStretch()
         layout.addLayout(actions)
 
@@ -6458,12 +7656,24 @@ class ModelsPage(QWidget):
         if dialog.exec() == QDialog.DialogCode.Accepted and self._on_distill_launched:
             self._on_distill_launched(dialog.run_handle)
 
+    def _setup_keypoints(self) -> None:
+        from detail.gui.keypoint_setup import KeypointSetupDialog
+
+        dialog = KeypointSetupDialog(self._experiment, parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted and self._on_distill_launched:
+            self._on_distill_launched(dialog.run_handle)
+
     def _train(self) -> None:
         from detail.gui.fit import TrainModelDialog
 
         dialog = TrainModelDialog(self._experiment, parent=self)
         if dialog.exec() == QDialog.DialogCode.Accepted and self._on_launched:
             self._on_launched(dialog.run_handle)
+
+    def _background_uploads(self) -> None:
+        from detail.gui.staging import BackgroundUploadsDialog
+
+        BackgroundUploadsDialog(self._experiment, parent=self).exec()
 
 
 class _FitDetailPage(QWidget):
@@ -6654,6 +7864,13 @@ class DatasetDetailPage(_FitDetailPage):
         error = self._error_label(record)
         if error is not None:
             form.addRow("Error:", error)
+        form.addRow("Where:", QLabel(run_cost.compute_label(record.get("compute"))))
+        duration_s = record.get("duration_s")
+        if duration_s is not None:
+            form.addRow("Duration:", QLabel(format_duration(duration_s)))
+        cost = record.get("estimated_cost_usd")
+        if cost is not None:
+            form.addRow("Cost:", QLabel(f"${cost:.2f}"))
         form.addRow("Source run:", QLabel(str(source.get("run_id", "—"))))
         form.addRow("Frames:", QLabel(str(source.get("frame_selection", "—"))))
         form.addRow(
@@ -6800,7 +8017,9 @@ class ExportRunDetailPage(_FitDetailPage):
 
         if destination is not None and destination.is_dir():
             open_folder = QPushButton("Open folder")
-            open_folder.clicked.connect(lambda: _open_local_path(self, destination))
+            open_folder.clicked.connect(
+                lambda: open_external.open_local_path(self, destination)
+            )
             self._add(open_folder)
 
         if record.get("status") in ACTIVE_STATUSES:
@@ -6873,6 +8092,13 @@ class ModelDetailPage(_FitDetailPage):
         error = self._error_label(record)
         if error is not None:
             form.addRow("Error:", error)
+        form.addRow("Where:", QLabel(run_cost.compute_label(record.get("compute"))))
+        duration_s = record.get("duration_s")
+        if duration_s is not None:
+            form.addRow("Duration:", QLabel(format_duration(duration_s)))
+        cost = record.get("estimated_cost_usd")
+        if cost is not None:
+            form.addRow("Cost:", QLabel(f"${cost:.2f}"))
         form.addRow("Training framework:", QLabel(str(record.get("trainer_id", ""))))
         form.addRow("Dataset:", QLabel(str(record.get("dataset_id", ""))))
         form.addRow("Family:", QLabel(str(record.get("model_family", "—"))))
@@ -7010,6 +8236,20 @@ class ModelDetailPage(_FitDetailPage):
             self._on_deleted()
 
 
+def _stage_suffix(stage: dict) -> str:
+    """`` · remote: tillicum · 12m30s · $1.50`` appended to a distill stage's line —
+    or ``""`` for a stage with none of these yet (still pending, or a legacy run
+    from before this field existed). § run location, duration, cost."""
+    bits = []
+    if stage.get("compute"):
+        bits.append(run_cost.compute_label(stage["compute"]))
+    if stage.get("duration_s") is not None:
+        bits.append(format_duration(stage["duration_s"]))
+    if stage.get("estimated_cost_usd") is not None:
+        bits.append(f"${stage['estimated_cost_usd']:.2f}")
+    return "  ·  " + "  ·  ".join(bits) if bits else ""
+
+
 class DistillRunDetail(_FitDetailPage):
     """One distill run (§12): the two stages (label → train) + their produced dataset /
     model, with a live progress bar when launched. Resume a failed/cancelled run; delete
@@ -7094,7 +8334,12 @@ class DistillRunDetail(_FitDetailPage):
         """
         if record is None:
             return
-        if record.get("status") not in ACTIVE_STATUSES:
+        # A keypoint setup waiting for its reference clicks is not over: its rows say which
+        # stages are done and which one is waiting on the person reading this page.
+        if (
+            record.get("status") not in ACTIVE_STATUSES
+            and record.get("status") != AWAITING_REFERENCES
+        ):
             self._panel.set_units([])
             return
         self._panel.set_units(
@@ -7114,10 +8359,17 @@ class DistillRunDetail(_FitDetailPage):
         error = self._error_label(record)
         if error is not None:
             form.addRow("Error:", error)
+        duration_s = record.get("duration_s")
+        if duration_s is not None:
+            form.addRow("Duration:", QLabel(format_duration(duration_s)))
+        total_cost = record.get("total_estimated_cost_usd")
+        if total_cost is not None:
+            form.addRow("Total cost:", QLabel(f"${total_cost:.2f}"))
         form.addRow(
             "Label:",
             QLabel(
                 f"{label.get('status', '—')}  ·  dataset {label.get('dataset_id') or '—'}"
+                f"{_stage_suffix(label)}"
             ),
         )
         model_id = train.get("model_id")
@@ -7130,8 +8382,20 @@ class DistillRunDetail(_FitDetailPage):
         )
         form.addRow(
             "Train:",
-            QLabel(f"{train.get('status', '—')}  ·  model {shown}"),
+            QLabel(
+                f"{train.get('status', '—')}  ·  model {shown}{_stage_suffix(train)}"
+            ),
         )
+        # A run started without the opt-in has nothing to show, and neither does one recorded
+        # before the option existed (no `config` key at all).
+        config = record.get("config") or {}
+        upload_target = (
+            config.get("stage_video_target") if config.get("stage_videos") else None
+        )
+        if upload_target:
+            from detail.gui.staging import UploadStatusLabel
+
+            form.addRow("Videos:", UploadStatusLabel(self._experiment, upload_target))
         if "register" in stages:
             # A keypoint distill's third stage (§12 *Distill keypoints*): the student joins the
             # catalog under `role: keypoints`, so the keypoint method picker can offer it.
@@ -7172,7 +8436,22 @@ class DistillRunDetail(_FitDetailPage):
             )
             open_model.clicked.connect(lambda: self._on_open_model(model_id))
             self._add(open_model)
-        if record.get("status") in ACTIVE_STATUSES:
+        if upload_target:
+            uploads = QPushButton("Background uploads…")
+            uploads.setToolTip(
+                "Watch, stop or resume the videos being copied to the cluster."
+            )
+            uploads.clicked.connect(self._background_uploads)
+            self._add(uploads)
+        if record.get("status") == AWAITING_REFERENCES:
+            self._add_examples_step(record)
+            cancel = QPushButton("Cancel setup")
+            cancel.clicked.connect(self._cancel)
+            self._add(cancel)
+            delete = QPushButton("Delete distill run")
+            delete.clicked.connect(self._delete)
+            self._add(delete)
+        elif record.get("status") in ACTIVE_STATUSES:
             cancel = QPushButton("Cancel distill")
             cancel.clicked.connect(self._cancel)
             self._add(cancel)
@@ -7184,6 +8463,173 @@ class DistillRunDetail(_FitDetailPage):
             delete = QPushButton("Delete distill run")
             delete.clicked.connect(self._delete)
             self._add(delete)
+
+    def _background_uploads(self) -> None:
+        from detail.gui.staging import BackgroundUploadsDialog
+
+        BackgroundUploadsDialog(self._experiment, parent=self).exec()
+
+    # --- a keypoint setup waiting for its example set (§26, #717) ------------------- #
+    def _add_examples_step(self, record: dict) -> None:
+        """The step only a person can do: mark an example set on the teacher's tracks (or
+        choose one already marked on this animal), then continue the run with it."""
+        from detail.api.experiment import setup_class_names, setup_teacher_tracks
+        from detail.configs.keypoint_dataset import KeypointDatasetConfig
+        from detail.gui._pydantic_form import optional_spin
+        from detail.gui.class_example_sets import ClassExampleSets
+        from detail.gui.example_set_picker import ExampleSetPicker
+        from detail.gui.keypoint_setup import method_default_cutoff
+
+        # With several animals the teacher tracks are the merged ones, and each class gets
+        # its own set (§26 *One example set per detection class*).
+        tracks = setup_teacher_tracks(record)
+        animals = setup_class_names(record)
+        names = self._experiment.recording_names()
+        what = (
+            f"one example set per animal ({', '.join(animals)}), each a few frames with "
+            "every keypoint placed on that animal"
+            if animals
+            else "an example set on them (a few frames with every keypoint placed)"
+        )
+        note = QLabel(
+            f"The teacher recordings are tracked. Mark {what}, or choose sets already "
+            "marked, then continue: the teacher labels frames with them and the fast model "
+            "trains. Teacher recordings: "
+            + ", ".join(names.get(r, r) for r in tracks)
+            + "."
+        )
+        note.setWordWrap(True)
+        self._add(note)
+        holder = QWidget()
+        form = QFormLayout(holder)
+        self._setup_animals = animals
+        self._examples = ExampleSetPicker(self._experiment, sources=tracks)
+        self._class_sets = ClassExampleSets(
+            experiment=self._experiment, checkable=False, sources=tracks
+        )
+        self._class_sets.set_classes(animals, labels=self._experiment.renamed_classes())
+        if animals:
+            self._examples.hide()
+            form.addRow(self._class_sets)
+        else:
+            self._class_sets.hide()
+            form.addRow(self._examples)
+        method_id = (record.get("config") or {}).get("keypoints_model_id") or ""
+        self._setup_default_cutoff = method_default_cutoff(self._experiment, method_id)
+        self._setup_method = method_id
+        self._setup_cutoff = optional_spin(
+            KeypointDatasetConfig,
+            "score_cutoff",
+            (
+                f"the method's default ({self._setup_default_cutoff:g})"
+                if self._setup_default_cutoff is not None
+                else "required: set a value"
+            ),
+        )
+        given = ((record.get("config") or {}).get("keypoint_dataset") or {}).get(
+            "score_cutoff"
+        )
+        if given is not None and given != self._setup_default_cutoff:
+            self._setup_cutoff.setValue(given)
+        self._setup_test = QPushButton("Test cut-off…")
+        self._setup_test.setToolTip(
+            "See the teacher's points on a sample of the teacher recordings, slide the "
+            "cut-off, and check it against your example clicks in pixels."
+        )
+        self._setup_test.clicked.connect(self._test_setup_cutoff)
+        cutoff_row = QWidget()
+        cutoff_layout = QHBoxLayout(cutoff_row)
+        cutoff_layout.setContentsMargins(0, 0, 0, 0)
+        cutoff_layout.addWidget(self._setup_cutoff, 1)
+        cutoff_layout.addWidget(self._setup_test)
+        form.addRow("Score cut-off:", cutoff_row)
+        self._setup_config = dict(record.get("config") or {})
+        self._setup_tracks = dict(tracks)
+        self._add(holder)
+        self._continue = QPushButton("Continue setup")
+        self._continue.clicked.connect(self._continue_setup)
+        self._examples.changed.connect(self._sync_continue)
+        self._class_sets.changed.connect(self._sync_continue)
+        self._setup_cutoff.valueChanged.connect(lambda _v: self._sync_continue())
+        self._sync_continue()
+        self._add(self._continue)
+
+    def _setup_sets(self) -> dict:
+        """The sets *Continue setup* and *Test cut-off…* hand on: one set, or one per
+        animal for a setup of several."""
+        if self._setup_animals:
+            return {"class_example_sets": self._class_sets.value()}
+        return {"example_set": self._examples.set_id()}
+
+    def _setup_sets_missing(self) -> str | None:
+        if self._setup_animals:
+            missing = [
+                name
+                for name in self._setup_animals
+                if name not in self._class_sets.value()
+            ]
+            return (
+                f"Choose an example set for {', '.join(missing)}" if missing else None
+            )
+        if self._examples.set_id() is None:
+            return "Choose an example set, or make one with New example set…"
+        return None
+
+    def _sync_continue(self) -> None:
+        from detail.gui._pydantic_form import optional_value
+
+        missing = self._setup_sets_missing()
+        if missing is not None:
+            reason = missing
+        elif (
+            self._setup_default_cutoff is None
+            and optional_value(self._setup_cutoff) is None
+        ):
+            reason = f"Set a score cut-off: {self._setup_method} has no default"
+        else:
+            reason = None
+        sizing.set_available(self._continue, reason is None, reason or "")
+        sizing.set_available(self._setup_test, missing is None, missing or "")
+
+    def _test_setup_cutoff(self) -> None:
+        """*Test cut-off…* on the teacher tracks with the chosen set, as the setup will
+        teach; *Use this cut-off* writes the value back."""
+        from detail.core.dataclasses import ComputeTarget
+        from detail.gui._pydantic_form import optional_value
+        from detail.gui.keypoint_test import KeypointTestDialog
+
+        cfg = self._setup_config
+        compute = cfg.get("keypoints_compute")
+        teacher = {
+            **self._setup_sets(),
+            "tracking": dict(self._setup_tracks),
+            "model_id": cfg.get("keypoints_model_id"),
+            "model_variant": cfg.get("keypoints_model_variant"),
+            "label_compute": ComputeTarget.from_dict(compute) if compute else None,
+        }
+        cutoff = optional_value(self._setup_cutoff)
+        dialog = KeypointTestDialog(
+            self._experiment,
+            teacher,
+            cutoff=cutoff if cutoff is not None else self._setup_default_cutoff,
+            parent=self,
+        )
+        if dialog.exec() and dialog.chosen_cutoff() is not None:
+            self._setup_cutoff.setValue(dialog.chosen_cutoff())
+
+    def _continue_setup(self) -> None:
+        from detail.gui._pydantic_form import optional_value
+
+        try:
+            run = self._experiment.continue_keypoint_setup(
+                self._run_id,
+                score_cutoff=optional_value(self._setup_cutoff),
+                **self._setup_sets(),
+            )
+        except (ValueError, FileNotFoundError, RuntimeError) as exc:
+            QMessageBox.warning(self, "Continue setup", str(exc).strip("'"))
+            return
+        self._start_live(run)  # stream the rest of the run on this page
 
     def _add_training_status(self, model_id: str) -> None:
         """The trained model's own curve + Stop and keep, inline.
@@ -7393,8 +8839,66 @@ class MeasuresPanel(QWidget):
         self._started = False
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        # The CSV the CLI's `measures export` writes, from the page that shows the numbers:
+        # the table was readable here and only copyable from a terminal. Above the table, so
+        # the table runs to the bottom of the tab.
+        export_row = QHBoxLayout()
+        self._export = QPushButton("Export CSV…")
+        self._export.clicked.connect(self._choose_export_folder)
+        set_available(self._export, False, "Measuring…")
+        export_row.addWidget(self._export)
+        self._exported = QLabel("")
+        self._exported.setWordWrap(True)
+        export_row.addWidget(self._exported, 1)
+        layout.addLayout(export_row)
         self._body = QLabel("Measuring…")
         layout.addWidget(self._body)
+
+    #: Shown while **Export CSV…** is available; ``set_available`` clears a tooltip on enable.
+    _EXPORT_HELP = (
+        "Save these measures as measures.csv (one row per recording, label and measure; "
+        "durations in nanoseconds), with frames.csv and measures.yaml, into a folder you "
+        "choose."
+    )
+
+    def _offer_export(self) -> None:
+        set_available(self._export, True, "")
+        self._export.setToolTip(self._EXPORT_HELP)
+
+    def _choose_export_folder(self) -> None:
+        folder = QFileDialog.getExistingDirectory(
+            self, "Export measures to", str(self._experiment.dir)
+        )
+        if folder:
+            self.export_to(Path(folder))
+
+    def export_to(self, folder: Path) -> None:
+        """Write this run's measures into ``folder / <run id>_measures``, off the UI thread.
+
+        A subfolder per run, so exporting a second run into the same folder never overwrites
+        the first's ``measures.csv``.
+        """
+        out = Path(folder) / f"{self._run_id}_measures"
+        experiment, run_id = self._experiment, self._run_id
+        set_available(self._export, False, "Exporting…")
+        self._exported.setText("")
+        run_progress(
+            self,
+            lambda emit: experiment.measures(run_id).export(out, progress=emit),
+            self._exported_into,
+            label="Exporting measures…",
+            on_error=self._export_failed,
+        )
+
+    def _exported_into(self, out) -> None:
+        self._offer_export()
+        self._exported.setText(
+            f"Wrote measures.csv, frames.csv and measures.yaml to {out}"
+        )
+
+    def _export_failed(self, exc: BaseException) -> None:
+        self._offer_export()
+        self._exported.setText(f"Could not export: {exc}")
 
     def showEvent(self, event) -> None:
         """Measure when the panel is first shown, not when it is constructed.
@@ -7457,7 +8961,11 @@ class MeasuresPanel(QWidget):
             # display's row budget, which on a 1440x847 window stopped it at y=700 with 118px
             # of tab empty under it.
             _fit_table_height(self._body, max_rows=len(rows))
-        layout.addWidget(self._body)
+        layout.addWidget(self._body)  # under the export row
+        if rows:
+            self._offer_export()
+        else:
+            set_available(self._export, False, "Nothing to export yet.")
 
 
 #: Why a view card is greyed while its run is still computing.
@@ -7556,11 +9064,14 @@ class AnalysisRunDetailPage(_FitDetailPage):
         live=None,
         on_deleted=None,
         on_new=None,
+        on_open=None,
     ):
         self._experiment = experiment
         self._run_id = run_id
         self._on_deleted = on_deleted
         self._on_new = on_new
+        #: ``on_open(run_id)`` shows another analysis run — the copy *Duplicate* just made.
+        self._on_open = on_open
         # Which snapshot this page is showing, or None for the live run (§21).
         #
         # An attribute rather than something the click handler holds, because `_build()` re-renders
@@ -7800,10 +9311,27 @@ class AnalysisRunDetailPage(_FitDetailPage):
         row.addWidget(back)
         self._add(frame)
 
+    def _open_meta_information(self) -> None:
+        """Read the run's YAML files off the UI thread, then show them (`gui/run_info`)."""
+        run_busy(
+            self,
+            lambda: self._experiment.analysis_info(self._run_id),
+            self._show_meta_information,
+            label="Reading meta-information…",
+            supersedes="meta-information",
+        )
+
+    def _show_meta_information(self, info) -> None:
+        from detail.gui.run_info import RunInfoWindow
+
+        RunInfoWindow(info, self).exec()
+
     def _render(self, record: dict) -> None:
         holder = QWidget()
         form = QFormLayout(holder)
         form.addRow("Module:", QLabel(str(record.get("module_id", ""))))
+        if record.get("name"):
+            form.addRow("Name:", QLabel(str(record["name"])))
         # In snapshot mode this describes the run, not what is on screen, so it says which.
         form.addRow(
             "Status:",
@@ -7822,6 +9350,19 @@ class AnalysisRunDetailPage(_FitDetailPage):
             ),
         )
         self._add(holder)
+        meta = QPushButton("Meta-information…")
+        meta.setToolTip(
+            "Every file this run keeps about itself (its record and settings, the module's "
+            "own settings, where it ran) in one window, with Export."
+        )
+        meta.clicked.connect(self._open_meta_information)
+        # Its own size at the left, not the page's width: a full-width bar read as a divider.
+        meta_row = QWidget()
+        row = QHBoxLayout(meta_row)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(meta)
+        row.addStretch(1)
+        self._add(meta_row)
         self._add_notes("analysis_run", self._run_id)
         self._refresh_units(record)
         # A "partial" run (some recordings failed/cancelled) still wrote CSVs for the
@@ -7894,6 +9435,14 @@ class AnalysisRunDetailPage(_FitDetailPage):
             cancel.clicked.connect(self._cancel)
             self._add(self._live_only(cancel))
         else:
+            # An exact copy to try something on, the original untouched (§16).
+            duplicate = QPushButton("Duplicate analysis…")
+            duplicate.setToolTip(
+                "Copy this run whole — fit, clusters, clips, labels and profiles — to "
+                "a new run, leaving this one as it is."
+            )
+            duplicate.clicked.connect(lambda: self._duplicate())
+            self._add(self._live_only(duplicate))
             delete = QPushButton("Delete analysis")
             delete.clicked.connect(self._delete)
             self._add(self._live_only(delete))
@@ -8190,7 +9739,7 @@ class AnalysisRunDetailPage(_FitDetailPage):
 
     def _open_folder(self) -> None:
         out_dir = self._experiment.analysis_run_dir(self._run_id)
-        _open_local_path(self, out_dir)
+        open_external.open_local_path(self, out_dir)
 
     def _cancel(self) -> None:
         _confirm_and_cancel(
@@ -8199,6 +9748,43 @@ class AnalysisRunDetailPage(_FitDetailPage):
             f"Cancel analysis {self._run_id}? Its worker will be stopped.",
             lambda: self._experiment.cancel_analysis(self._run_id),
             self._build,
+        )
+
+    def _duplicate(self, name: str | None = None) -> None:
+        """Copy the run under a new id, off the UI thread with a bar (a run can be large),
+        then open the copy. ``name`` is asked for when not given."""
+        if name is None:
+            record = self._experiment.analysis_record(self._run_id)
+            suggested = f"{record.get('name') or self._run_id} (copy)"
+            name, accepted = QInputDialog.getText(
+                self, "Duplicate analysis", "Name of the copy:", text=suggested
+            )
+            if not accepted:
+                return
+        experiment, run_id = self._experiment, self._run_id
+
+        def work(emit):
+            return experiment.duplicate_analysis(
+                run_id, name=name.strip() or None, progress=emit
+            )  # off-thread
+
+        def done(new_id) -> None:
+            if self._on_open is not None:
+                self._on_open(new_id)
+            else:
+                QMessageBox.information(
+                    self, "Duplicate analysis", f"{run_id} was copied to {new_id}."
+                )
+
+        run_progress(
+            self,
+            work,
+            done,
+            label="Copying the run…",
+            on_error=lambda exc: QMessageBox.critical(
+                self, "Duplicate analysis", str(exc)
+            ),
+            on_cancel=lambda: None,
         )
 
     def _delete(self) -> None:
@@ -8277,7 +9863,9 @@ class MetadataPage(QWidget):
         # `_enter_edit` swaps to cell selection, because in edit mode the table is a
         # grid you copy and paste single cells in, not a list you pick an item from.
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        layout.addWidget(self._table)
+        # Stretch: the table is the page, and fills the window down to its last row
+        # (`tables.fit_table_height`'s `fill` says why it must not overrun it).
+        layout.addWidget(self._table, 1)
         QShortcut(QKeySequence.StandardKey.Copy, self._table, activated=self._copy)
         QShortcut(QKeySequence.StandardKey.Paste, self._table, activated=self._paste)
 
@@ -8351,6 +9939,11 @@ class MetadataPage(QWidget):
                     *[label for label, _fn in _COMPLETION_COLUMNS],
                 ]
             )
+            for i, name in enumerate(self._cols):
+                if name == metadata_store.ACQUISITION_SETUP_KEY:
+                    self._table.horizontalHeaderItem(
+                        i + self._USER_COL_START
+                    ).setToolTip(_ACQUISITION_SETUP_TIP)
             self._table.setRowCount(len(self._recordings))
             for r, sid in enumerate(self._recordings):
                 key = QTableWidgetItem(sid)
@@ -8402,7 +9995,7 @@ class MetadataPage(QWidget):
         # and is the one that gets truncated when something else eats the width. After the
         # resize to contents, which would otherwise shrink it back to its own text.
         give_slack_to(self._table, self._FILE_COL)
-        _fit_table_height(self._table)
+        _fit_table_height(self._table, fill=True)
 
     def _open_row(self, index) -> None:
         """View mode only — in edit mode a double-click means "edit this cell", not
@@ -8483,7 +10076,7 @@ class MetadataPage(QWidget):
             (
                 "One row per recording, one column per thing that varies across them. "
                 "View-only — click Edit to change cells; Import/Export CSV for bulk work."
-                if self._cols
+                if self._user_cols()
                 else "One row per recording, one column per thing that varies across them "
                 "(treatment, day, animal id). Click Edit to add your first column, or "
                 "Import CSV to bring in a sheet you already have."
@@ -8491,8 +10084,12 @@ class MetadataPage(QWidget):
             + open_hint
         )
 
+    def _user_cols(self) -> list[str]:
+        """The columns a person added — every one but the reserved ones, which stay."""
+        return [c for c in self._cols if c not in metadata_store.RESERVED_COLUMNS]
+
     def _update_delete_enabled(self) -> None:
-        self._delete_col_btn.setEnabled(bool(self._cols))
+        self._delete_col_btn.setEnabled(bool(self._user_cols()))
 
     def _save(self) -> None:
         """Commit the whole edited table in one write — staged column adds/deletes and
@@ -8668,10 +10265,11 @@ class MetadataPage(QWidget):
 
     def _delete_column(self) -> None:
         """Remove a column from the table, staged — committed on Save, restored on Cancel."""
-        if not self._cols:
+        deletable = self._user_cols()
+        if not deletable:
             return
         name, ok = QInputDialog.getItem(
-            self, "Delete column", "Column to delete:", self._cols, 0, False
+            self, "Delete column", "Column to delete:", deletable, 0, False
         )
         if not ok or not name:
             return

@@ -90,19 +90,25 @@ def export_source(clips=None):
         origin=lambda: None,
         name=lambda: "test",
         empty=lambda: "Nothing here to export.",
+        experiment=lambda: None,
     )
 
 
-def drain_busy_calls(qapp, timeout_ms: int = 5_000) -> int:
-    """Deliver every pending ``run_busy`` result, and report how many were outstanding.
+def drain_busy_calls(qapp, timeout_ms: int | None = None) -> int:
+    """Deliver every pending ``run_busy`` result and let every started worker finish; report
+    how many were outstanding.
 
     Exposed so the guard can call it directly; ``_no_leaked_busy_calls`` is what makes every
-    GUI test use it.
+    GUI test use it. The timeout is the failsafe from ``tests/waits.py``, not a budget: a worker
+    still running when it expires fails its test (``workers_that_outlived``), so a shorter one
+    would fail a slow import on a loaded box rather than a stuck one.
     """
     from PyQt6.QtTest import QTest
 
     from detail.gui import busy
     from detail.gui import workers
+
+    timeout_ms = _worker_timeout_ms() if timeout_ms is None else timeout_ms
 
     def pending() -> int:
         # The **union** of both registers. `workers._IN_FLIGHT` exists to keep a directly
@@ -110,8 +116,12 @@ def drain_busy_calls(qapp, timeout_ms: int = 5_000) -> int:
         # other half of the same fact — such a call is also not *drained*, so its result lands in
         # whichever later test next pumps the loop, and several of these callbacks are modal.
         # A union rather than a sum, because `run_busy` starts a `BackgroundCall` too and its
-        # worker is in both.
-        return len(busy._active | workers._IN_FLIGHT)
+        # worker is in both. `_IN_FLIGHT` holds every started `GuiWorker`, not only
+        # `BackgroundCall`s, since the root moved onto the base.
+        # A worker that serves a view for as long as it is shown (`serves_a_view`, a live
+        # montage's picture thread) has no result to deliver and never finishes while its view
+        # plays, so it is not waited for here; its view stops it when destroyed.
+        return len(busy._active | workers._awaited())
 
     outstanding = pending()
     waited = 0
@@ -286,7 +296,7 @@ def _outstanding_now() -> tuple[int, int]:
     from detail.gui import busy, workers
 
     return (
-        len(busy._active | workers._IN_FLIGHT),
+        len(busy._active | workers._awaited()),
         QThreadPool.globalInstance().activeThreadCount(),
     )
 
@@ -305,6 +315,57 @@ def _record_outstanding(nodeid, before, after) -> None:
             f"{nodeid}\tbusy_before={before[0]}\tpool_before={before[1]}"
             f"\tbusy_after={busy_after}\tpool_after={pool_after}\n"
         )
+
+
+def _worker_timeout_ms() -> int:
+    # Imported here, not at module level: `test_window_teardown.py` loads this file by path into a
+    # bare interpreter, where `tests` is not this repo's package.
+    from tests.waits import WORKER_TIMEOUT_MS
+
+    return WORKER_TIMEOUT_MS
+
+
+def _drain_until_quiet(qapp, timeout_ms: int | None = None) -> None:
+    """Repeat both drains until a pass starts nothing new, or the failsafe runs out.
+
+    One pass of each is not enough, because pumping is what *starts* work: the pool drain's last
+    ``processEvents`` fired a single-shot timer a review tab had armed, which started a
+    continuity read 0.02s before the outlived check looked, and the check then reported a worker
+    that had only just begun (#771, timestamped in the same run).
+    """
+    import time
+
+    timeout_ms = _worker_timeout_ms() if timeout_ms is None else timeout_ms
+    deadline = time.monotonic() + timeout_ms / 1000
+    # At least one pass even when nothing is outstanding: each drain ends by pumping, which is
+    # what delivers a result already queued. One deadline across every pass, because the hang
+    # watchdog (`faulthandler_timeout`, 120s) counts teardown too, and separate budgets per drain
+    # added up past it while a leaked poller kept every pass busy.
+    while True:
+        remaining_ms = max(int((deadline - time.monotonic()) * 1000), 1)
+        drain_busy_calls(qapp, timeout_ms=remaining_ms)
+        drain_thread_pool(qapp, timeout_ms=remaining_ms)
+        if not any(_outstanding_now()) or time.monotonic() >= deadline:
+            return
+
+
+def workers_that_outlived(started_before: set, in_flight: set) -> list[str]:
+    """The workers a test started that were still running after its bounded drain.
+
+    Pure, so the negative case can hand it literal sets. ``started_before`` is the register as
+    the test began: a worker an *earlier* test leaked already failed that test, and blaming it
+    again here would turn one leak into a cascade across the rest of the file.
+
+    A ``BackgroundCall`` is named with the callable it runs, since the class alone does not say
+    which of the forty-odd call sites it came from.
+    """
+
+    def describe(worker) -> str:
+        fn = getattr(worker, "_fn", None)
+        name = getattr(fn, "__qualname__", None)
+        return f"{type(worker).__name__}({name})" if name else type(worker).__name__
+
+    return sorted(describe(w) for w in in_flight - started_before)
 
 
 @pytest.fixture(autouse=True)
@@ -333,8 +394,19 @@ def _no_leaked_busy_calls(request, qapp, monkeypatch):
 
     The stubs are still in place during that drain: this fixture asks for ``monkeypatch``, so
     it is torn down before ``monkeypatch`` undoes anything.
+
+    **And a worker the test started must have finished once the drain gives up.** The class: *a
+    test starts a QThread and returns without joining it.* That is not only a delivery crossing
+    into the next test: a running ``QThread`` that gets collected is ``qFatal``, so the xdist
+    worker dies and every test still queued on it is lost with it. ``test_import_queue.py``
+    started a real video import, asserted on the synchronous half and returned. The workers are
+    rooted now (``workers._IN_FLIGHT``), so this is about the leak rather than the abort, and it
+    is counted from that register, which is exact; #533 measured sensing Qt thread liveness from
+    outside as noise and removed it.
     """
     from PyQt6.QtWidgets import QMessageBox
+
+    from detail.gui import workers
 
     monkeypatch.setattr(
         QMessageBox,
@@ -359,14 +431,103 @@ def _no_leaked_busy_calls(request, qapp, monkeypatch):
         "question",
         staticmethod(lambda *a, **k: QMessageBox.StandardButton.No),
     )
+    started_before = workers._awaited()
     yield
-    busy_before = drain_busy_calls(qapp)
-    # The pool half of the same class: thumbnail decoding runs on QThreadPool, which the busy
-    # drain above knows nothing about. Drained after it, because a busy callback can start one.
-    pool_before = drain_thread_pool(qapp)
-    _record_outstanding(
-        request.node.nodeid, (busy_before, pool_before), _outstanding_now()
-    )
+    before = _outstanding_now()
+    # Busy calls, then the pool half of the same class (thumbnail decoding runs on QThreadPool,
+    # which the busy drain knows nothing about, and a busy callback can start one), repeated
+    # until a pass starts nothing new.
+    _drain_until_quiet(qapp)
+    _record_outstanding(request.node.nodeid, before, _outstanding_now())
+    outlived = workers_that_outlived(started_before, workers._awaited())
+    if outlived:
+        import faulthandler
+
+        # Where the worker is sitting, in the report's captured stderr: the name says which
+        # call site started it, and only the stack says whether it is slow or stuck.
+        faulthandler.dump_traceback(all_threads=True)
+        raise AssertionError(
+            f"this test started {', '.join(outlived)} and it was still running when the "
+            f"teardown drain gave up (it waits up to {_worker_timeout_ms() / 1000:.0f}s, and "
+            "repeats while draining starts more). Join the worker before the test ends "
+            "(`tests.waits.finished`, or `waits.until` on the signal it reports with), or "
+            "drive its `run()` on this thread. Every thread's stack is in the captured stderr."
+        )
+
+
+def collect_orphaned_windows() -> int:
+    """Run the cyclic collector now, where no Qt handler is on the stack; return what it freed.
+
+    Exposed so the guard can call it directly; ``_orphaned_windows_die_with_their_test`` is what
+    makes every GUI test use it.
+
+    **Then freeze what survived.** A full pass scans the whole heap, every imported module and
+    every array, and #821 measured 232 ms a call, 722 s across one ``tests/gui`` run, a third of
+    each worker's time. Frozen survivors are no longer scanned, so the next pass costs what the
+    next test allocated. Nothing this exists for is lost: a window a test orphans was allocated
+    in that test and is still scanned here; a survivor that becomes garbage later is never
+    collected at all, so it can never be freed mid-event either.
+    """
+    import gc
+
+    freed = gc.collect()
+    gc.freeze()
+    return freed
+
+
+def collect_what_the_module_froze() -> int:
+    """Unfreeze, then collect and freeze again; return what it freed.
+
+    The freeze has a cost the per-test pass cannot pay back: a survivor that only becomes garbage
+    *later* is never collected, so it leaks, and a leaked window keeps its timers. Measured: a
+    window ``test_dialog.py`` left that way started thread-pool work inside the next file's
+    ``test_pool_work_does_not_cross_a_test_boundary``, 1 run in 2 on one xdist worker, and never
+    with the freeze off. So once per module everything is scanned again, at the module's
+    teardown, where nothing is mid-event either: one full pass per file, not per test.
+    """
+    import gc
+
+    gc.unfreeze()
+    return collect_orphaned_windows()
+
+
+# Declared **after** `_no_leaked_busy_calls`, so it is torn down *before* that drain: a window the
+# drain would pump events into must already be gone. Still inside `_slot_exceptions_are_failures`,
+# so a slot that raises while a tree is torn down fails the test that left it.
+@pytest.fixture(autouse=True)
+def _orphaned_windows_die_with_their_test():
+    """A window a test orphaned is freed at its teardown, not whenever the collector next runs.
+
+    The class: **a widget tree whose lifetime the cyclic collector decides.** Almost no GUI test
+    closes what it shows, and a widget's wrapper is commonly in a reference cycle (a closure
+    connected back to its own widget is enough), so when the test returns the window is not
+    freed: Qt keeps it as a live, visible window that still gets resizes, timers and layout
+    requests. It is destroyed when Python's cyclic collector next runs a full pass, and that
+    can happen on any allocation, including one inside that window's *own* event handler. The
+    handler's frames hold the child wrappers, not the top-level one, so the collector frees the
+    top level and Qt deletes the whole tree under the code that is still running.
+
+    It surfaced as ``Windows fatal exception: access violation`` in ``gui/flow.py``
+    ``FlowLayout._arrange`` (``item.sizeHint()`` on a freed control), reached from a clip
+    player's resize while a later teardown drain pumped events. ``FlowLayout`` was only where
+    the freed widget was read first. ``tests/gui/test_window_teardown.py`` reproduces it
+    deterministically and holds this fixture to it.
+
+    **Collected, not deleted.** Deleting every new parentless widget through Qt was tried first
+    (#821) and aborted five xdist workers in one run: it also deletes what is still referenced (a
+    Qt-owned ``QMenu``, a window another one deletes in turn). The collector frees exactly what
+    nothing references, which is the set that was going to be freed at a bad moment later, and
+    does it here, where nothing is mid-event.
+    """
+    yield
+    collect_orphaned_windows()
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _what_a_module_froze_dies_with_it():
+    """The module-end half of the window collection: see ``collect_what_the_module_froze``."""
+    yield
+    collect_what_the_module_froze()
 
 
 @pytest.fixture

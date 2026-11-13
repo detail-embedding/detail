@@ -154,7 +154,11 @@ def test_train_model_records_the_resolved_hyperparams_at_submit(tmp_path, monkey
         def submit(self, job):
             pass
 
+    import detail.executor.remote as remote_module
+
     monkeypatch.setattr(api_experiment, "LocalExecutor", _NoSubmit)
+    # remote-detail picks the executor through `executor_for`, which builds its own
+    monkeypatch.setattr(remote_module, "LocalExecutor", _NoSubmit)
     proj = _dataset(experiment_store.create_experiment(tmp_path, "p"))
     with _registered_stub():
         run = Experiment(proj).train_model(
@@ -331,7 +335,7 @@ def test_train_model_unknown_trainer(tmp_path):
 def test_train_model_unsupported_backend(tmp_path):
     proj = _dataset(experiment_store.create_experiment(tmp_path, "p"))
     with _registered_stub():
-        with pytest.raises(ValueError, match="does not support backend"):
+        with pytest.raises(ValueError, match="does not support the 'cuda' backend"):
             Experiment(proj).train_model(
                 "m",
                 "dataset_001",
@@ -750,3 +754,73 @@ def test_the_api_reads_the_history_through_the_record_s_trainer(tmp_path):
     history = exp.model_metric_history("model_001")
 
     assert [row["epoch"] for row in history] == [1, 2], history
+
+
+def test_a_pose_dataset_trains_a_keypoint_student_never_a_detector(
+    tmp_path, monkeypatch
+):
+    """The record of a model trained on keypoint labels says so: ``task: pose`` and the
+    ``yolo_pose`` family (what the keypoint resolver reads back, §26), and the skeleton it
+    learned.
+    """
+    proj = experiment_store.create_experiment(tmp_path, "p")
+    ddir = datasets_store.dataset_dir(proj, "dataset_001")
+    ddir.mkdir(parents=True)
+    skeleton = {"keypoints": [{"name": "nose", "side": "midline"}]}
+    datasets_store.write_dataset_yaml(
+        ddir,
+        {
+            "id": "dataset_001",
+            "status": "complete",
+            "task": "pose",
+            "skeleton": skeleton,
+            "student_input": "crop",
+            "student_crop_px": 320,
+            "source": {"kind": "keypoints", "crop_px": 320},
+            "classes": [{"id": 0, "name": "subject"}],
+        },
+    )
+    monkeypatch.setattr(training, "_capture_preview", lambda *a, **k: None)
+    mdir = models_store.model_dir(proj, "model_001")
+    mdir.mkdir(parents=True)
+    models_store.write_model_yaml(
+        mdir, {"id": "model_001", "dataset_id": "dataset_001", "status": "running"}
+    )
+    with _registered_stub():
+        training.run(_job(), mdir, progress_cb=lambda e: None, stop_event=None)
+    rec = models_store.read_model_yaml(mdir)
+    assert (rec["task"], rec["model_family"]) == ("pose", "yolo_pose")
+    assert rec["skeleton"] == skeleton
+    # how it must be run: the dataset's crop, carried onto the model (§12)
+    assert (rec["student_input"], rec["student_crop_px"]) == ("crop", 320)
+
+
+def test_a_pre_s26_crop_dataset_trains_a_crop_student(tmp_path, monkeypatch):
+    """A pose dataset the stage before §26 wrote records no ``student_input``, only its crop
+    size under ``source``; it is a crop dataset. Read as the whole frame, the student trained
+    on 448 px crops was recorded (and so run) on whole frames: wrong, and nothing failed
+    (``core.keypoints.student_input_of``, the one reader)."""
+    proj = experiment_store.create_experiment(tmp_path, "p")
+    ddir = datasets_store.dataset_dir(proj, "dataset_001")
+    ddir.mkdir(parents=True)
+    datasets_store.write_dataset_yaml(
+        ddir,
+        {
+            "id": "dataset_001",
+            "status": "complete",
+            "task": "pose",
+            "skeleton": {"keypoints": [{"name": "nose", "side": "midline"}]},
+            "source": {"kind": "keypoints", "n_frames": 3000, "crop_px": 448},
+            "classes": [{"id": 0, "name": "subject"}],
+        },
+    )
+    monkeypatch.setattr(training, "_capture_preview", lambda *a, **k: None)
+    mdir = models_store.model_dir(proj, "model_001")
+    mdir.mkdir(parents=True)
+    models_store.write_model_yaml(
+        mdir, {"id": "model_001", "dataset_id": "dataset_001", "status": "running"}
+    )
+    with _registered_stub():
+        training.run(_job(), mdir, progress_cb=lambda e: None, stop_event=None)
+    rec = models_store.read_model_yaml(mdir)
+    assert (rec["student_input"], rec["student_crop_px"]) == ("crop", 448)

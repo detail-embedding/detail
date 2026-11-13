@@ -1,21 +1,5 @@
-"""``storage/recording.py``: ``recording.yaml``'s writer and reader, the per-recording cache
-behind every ``Recording`` property, and the timestamp maps.
-
-**One class guarded here** (``docs/recorded_classes.md``): *a memo whose miss is check,
-compute, store*. ``read_recording`` keeps its own mtime-keyed cache, and its miss path was
-"look, parse, store" — so every thread that missed one record before the first store parsed it
-too. A montage preparing six clips of one recording on six threads parsed its 35 KB
-``recording.yaml`` six times, each parse inflated to ~160 ms by the other threads holding the
-interpreter, which was most of a cold prepare. The miss path now takes
-``read_cache.computing(("recording", key))`` and re-checks under it, so threads that miss one
-record together wait for a single parse; a thread wanting another record is not held. The
-guard (``test_threads_missing_one_record_together_parse_it_once``) holds six threads inside the
-read at once, so a racing cache counts 6 every time rather than when the scheduler happens to
-interleave; ``tests/storage/test_read_cache.py`` is the canonical write-up of the class and
-applies the same rendezvous to the two shared caches.
-"""
-
 import os
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -487,13 +471,10 @@ def test_a_pinned_reader_still_sees_a_real_write(experiment_dir):
 
 
 def test_threads_missing_one_record_together_parse_it_once(recording_dir, monkeypatch):
-    """A montage prepares its clips on several threads, and on a cold cache the clips that
-    share a recording all missed its ``recording.yaml`` at once: each one read and parsed it
-    (~160 ms a parse on a real 35 KB record while the threads fought over the interpreter). One
-    parse per change of the file, however many threads miss it (``read_cache.computing``).
-    """
-    from pathlib import Path
-
+    """A montage prepares its clips on six threads, and on a cold cache the clips that share a
+    recording all missed its ``recording.yaml`` at once: each one read and parsed it (~160 ms a
+    parse on a real 35 KB record while the threads fought over the interpreter). One parse per
+    change of the file, however many threads miss it (``read_cache.computing``)."""
     from tests.storage.test_read_cache import _miss_together
 
     recording.clear_recording_cache()

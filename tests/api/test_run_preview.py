@@ -1,24 +1,16 @@
-"""DetectionPreview: per-frame boxes + counts from a detection run's zarr — and the row-block
-cache every clip surface reads them through.
+"""DetectionPreview: per-frame boxes + counts from a detection run's zarr.
 
-**Two classes this file guards (``docs/recorded_classes.md``).**
-
-*A cached read path keyed without the flag that decides its cost.* `DetectionPreview.read_rows`
-serves a short span from a cached block of `ROW_BLOCK` rows, because each zarr column read is
-its own ~2 ms call however few rows it returns. The port this replaced keyed the block on
-``(part, block)`` and always read ``mask_rle``, so a caller that asked for no masks
-(``frame_plain``, the one path with a published 4.68 ms number) paid the masks decode for every
-block it touched. The flag is in the key, ``(part stem, block, with_masks)``, and a masks-off
-read never names the column. Two arms, because each sees one direction: a masks-off walk counts
-zero ``mask_rle`` reads (the negative arm the port's read-count guard lacked), and a masks-on
-read after a masks-off one of the same block still carries masks (what the key alone decides; a
-key change is invisible to the first arm, which is how the three-state check found the second).
-
-*A cache keyed on ``id()`` of an object a caller may rebuild.* The same block cache keyed on
-``id(part)``: the part list is rebuilt whenever a run's parts are re-read, so every cached block
-missed after a rebuild, and an ``id`` is reused once its object is collected, so a block cached
-for one part could answer for another. A key that is a value (``part["stem"]``) survives the
-rebuild and names the part.
+**The row-block cache's key (a recorded class): a cache keyed on less than what decides its
+contents, or on an object's identity.** ``DetectionPreview._read_rows`` serves short spans from a
+cached block of ``ROW_BLOCK`` rows. The block was keyed ``(id(part), block)`` and always read the
+``mask_rle`` column, so a caller that asked for no masks still decompressed every row's RLE, and a
+part dict freed and replaced could hand its ``id()`` to a different part and be served its rows.
+Neither shows in a result that looks wrong: the masks are right when asked for, and ``_parts`` is
+only built in ``__init__`` today, so the second is latent. ``main``'s #866 found both in its own
+rebuild of the clip window; remote-detail, which kept its own (#954), had both. The rule: key a
+cache on everything its stored value depends on (``with_masks``) and on a name that stays the same
+for the cache's life (the part's stem), never on ``id()``. Pinned by the three tests under *the
+row-block cache's key* below.
 """
 
 import cv2
@@ -26,7 +18,13 @@ import numpy as np
 import pytest
 import yaml
 
-from detail.api.run_preview import _square_crop, pca_project_2d
+from detail.api.run_preview import (
+    _square_crop,
+    _union_detection,
+    locate_frame,
+    pca_project_2d,
+)
+from detail.core.dataclasses import Detection
 from detail.api.recording import Recording
 from detail.storage import experiment as experiment_store
 from detail.storage import recording as recording_store
@@ -143,6 +141,55 @@ def test_detection_preview_unknown_run(tmp_path):
         recording.detection_preview("det_99")
 
 
+# --- the row-block cache's key: (part stem, block, with_masks) ---------------------------- #
+def _count_column_reads(monkeypatch) -> list:
+    """Every zarr column read, by name — the cost ``_read_rows`` exists to bound."""
+    from detail.storage.zarr_io import PartZarrReader
+
+    reads: list = []
+    real = PartZarrReader.column
+    monkeypatch.setattr(
+        PartZarrReader,
+        "column",
+        lambda self, name: reads.append(name) or real(self, name),
+    )
+    return reads
+
+
+def test_a_plain_read_decompresses_no_mask_column(tmp_path, monkeypatch):
+    """A caller that asked for no masks never pays for ``mask_rle``, not even to fill a block.
+    A block keyed without ``with_masks`` read every row's RLE for every plain read."""
+    preview = _recording_with_detection(tmp_path).detection_preview("det_01")
+    reads = _count_column_reads(monkeypatch)
+    for lo in (0, 1, 2):
+        preview._read_rows(preview._parts[0], lo, lo + 1, with_masks=False)
+    assert reads.count("mask_rle") == 0
+    assert reads.count("bbox") == 1, "one block serves every row of the span"
+
+
+def test_a_masked_read_after_a_plain_one_still_carries_masks(tmp_path):
+    """The other direction of the key: a block filled for a masks-off caller is never served
+    to a masks-on one, which would hand back no masks for as long as the block stayed cached.
+    """
+    preview = _recording_with_detection(tmp_path).detection_preview("det_01")
+    plain = preview._read_rows(preview._parts[0], 0, 2, with_masks=False)
+    assert plain["mask_rle"] is None
+    masked = preview._read_rows(preview._parts[0], 0, 2, with_masks=True)
+    assert masked["mask_rle"] is not None and len(masked["mask_rle"]) == 2
+
+
+def test_row_blocks_survive_a_rebuilt_part_list(tmp_path, monkeypatch):
+    """The block is keyed on the part's stem, not ``id(part)``: a preview whose part dicts are
+    rebuilt (or whose freed dict's id is reused for another part) still finds its own blocks.
+    """
+    preview = _recording_with_detection(tmp_path).detection_preview("det_01")
+    reads = _count_column_reads(monkeypatch)
+    preview._read_rows(preview._parts[0], 0, 2, with_masks=True)
+    preview._parts = [dict(part) for part in preview._parts]
+    preview._read_rows(preview._parts[0], 0, 2, with_masks=True)
+    assert reads.count("mask_rle") == 1
+
+
 def test_detection_preview_overlay_matches_the_picture_on_a_vfr_video(
     tmp_path, monkeypatch, write_vfr_video
 ):
@@ -177,6 +224,28 @@ def test_detection_preview_overlay_matches_the_picture_on_a_vfr_video(
         assert len(detections) == {0: 2, 2: 1}.get(k, 0)
 
 
+def _write_track_yaml(tracking_dir, *, detection_run_id, class_name=None):
+    """A real tracking run always writes one of these at completion
+    (``trackers/_common.py::write_track_yaml``) — ``TrackingPreview`` reads it for
+    the class filter the tracker actually applied, which is not always the same as
+    the run's own record (a track_merge run's record carries a joined display
+    label; its track.yaml correctly keeps ``None``). A fixture that skips this file
+    is testing a run shape that cannot occur for a ``status: complete`` run."""
+    tracking_dir.mkdir(parents=True, exist_ok=True)
+    (tracking_dir / "track.yaml").write_text(
+        yaml.dump(
+            {
+                "schema_version": 1,
+                "id": tracking_dir.name,
+                "detection_run_id": detection_run_id,
+                "class_name": class_name,
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+
 def _add_tracking(recording):
     """A tracking run over det_01: object_id parallel to its 3 detection rows."""
     sdir = recording.dir
@@ -186,6 +255,7 @@ def _add_tracking(recording):
         writer.add_object_id(0)  # frame 0, row 0 -> track 0
         writer.add_object_id(-1)  # frame 0, row 1 -> unassigned (dropped)
         writer.add_object_id(0)  # frame 2, row 0 -> track 0
+    _write_track_yaml(sdir / "tracking" / "track_01", detection_run_id="det_01")
     data = recording_store.read_recording(sdir)
     data.setdefault("tracking_runs", []).append(
         {"id": "track_01", "status": "complete", "detection_run_id": "det_01"}
@@ -213,6 +283,202 @@ def test_tracking_preview_presence(tmp_path):
     assert track_ids == [0]  # the -1 (unassigned) is not a track
     # track 0 is present where it has detections: frames 0 and 2
     assert presence[0].tolist() == [True, False, True, False, False]
+
+
+def test_tracking_preview_survives_a_detection_run_torn_by_a_crash(tmp_path):
+    """The reported bug: opening a tracking run's preview crashed with
+    ``IndexError: boolean index did not match indexed array along axis 0`` when the
+    underlying detection run had been interrupted mid-flush (a crash on a
+    remote/multi-GPU worker), leaving one part's columns at unequal length until a
+    *writer* reopens the store (``storage/zarr_io.py``). The tracking *run* itself
+    (``tests/pipeline/test_tracking.py::test_class_filter_survives_a_detection_run_torn_by_a_crash``)
+    is one exposed site; the preview — built from a *separate* detection reader and
+    assignment reader that must agree on row count — is another, and crashes on
+    ``track_presence()``/``frame()`` even when the tracking run itself completed
+    cleanly before the tear.
+    """
+    import zarr
+
+    recording = _add_tracking(_recording_with_detection(tmp_path))
+    root = zarr.open_group(
+        str(recording.dir / "detections" / "det_01" / "part_001.zarr"), mode="a"
+    )
+    # Torn: frame_idx (what _build_parts reads to index against the assignment's
+    # object_id) is left ahead of every other column, including bbox — the
+    # detection reader's own n_rows still correctly reports the shorter length,
+    # but a caller reading frame_idx raw (pre-fix) would not see that.
+    root["frame_idx"].resize((root["frame_idx"].shape[0] + 2,))
+
+    preview = recording.tracking_preview("track_01")
+    track_ids, presence = preview.track_presence()
+    assert track_ids == [0]
+    assert presence[0].tolist() == [True, False, True, False, False]
+    assert preview.frame(0, 0)[2][0].object_id == 0
+
+
+def test_tracking_preview_with_a_class_filter_is_not_a_truncated_prefix(tmp_path):
+    """The actual reported bug (distinct from the torn-store one above): a
+    class-filtered tracking run's assignment has one row per *matching* detection,
+    not one row per detection overall (anchor_tracker et al. build ``object_ids``
+    from ``filter_by_class``'d data, tests/pipeline/test_tracking.py). Reading "the
+    first N rows" of the *unfiltered* detection reader — which is what pairing by
+    raw position does — silently grabs the wrong rows: on a real 21,720-frame
+    recording this read as tracking dropping the entire trailing ~41% of an
+    otherwise fully-detected video, for either class filtered alone.
+
+    Deliberately shaped so a white-mouse-only presence bar of ``[0, 1]`` (the
+    prefix of the *raw*, both-classes row order) is a different, wrong answer
+    from the real one, ``[0, 2, 3]``.
+    """
+    recording = _recording_with_detection(tmp_path)  # video + det_01 (unused here)
+    sdir = recording.dir
+    ddir = sdir / "detections" / "det_02"
+    ddir.mkdir(parents=True)
+    with DetectionPartWriter(ddir / "part_001.zarr") as writer:
+        # frame 0: black + white; frame 1: black only; frame 2: white only;
+        # frame 3: black + white — white mouse is at frames 0, 2, 3, never 1.
+        writer.add_row(0, 0, 0, "black mouse", 0.9, (0.1, 0.1, 0.2, 0.2), "")
+        writer.add_row(0, 0, 1, "white mouse", 0.9, (0.3, 0.3, 0.4, 0.4), "")
+        writer.add_row(1, 0, 0, "black mouse", 0.9, (0.1, 0.1, 0.2, 0.2), "")
+        writer.add_row(2, 0, 0, "white mouse", 0.9, (0.3, 0.3, 0.4, 0.4), "")
+        writer.add_row(3, 0, 0, "black mouse", 0.9, (0.1, 0.1, 0.2, 0.2), "")
+        writer.add_row(3, 0, 1, "white mouse", 0.9, (0.3, 0.3, 0.4, 0.4), "")
+    data = recording_store.read_recording(sdir)
+    data["detection_runs"].append(
+        {"id": "det_02", "status": "complete", "downsampling_run_id": None}
+    )
+    adir = sdir / "tracking" / "track_02" / "assignments"
+    adir.mkdir(parents=True)
+    with AssignmentPartWriter(adir / "part_001.zarr") as writer:
+        # One row per white-mouse detection only (3 rows), all assigned to track 0.
+        writer.add_object_id(0)
+        writer.add_object_id(0)
+        writer.add_object_id(0)
+    _write_track_yaml(
+        sdir / "tracking" / "track_02",
+        detection_run_id="det_02",
+        class_name="white mouse",
+    )
+    data.setdefault("tracking_runs", []).append(
+        {
+            "id": "track_02",
+            "status": "complete",
+            "detection_run_id": "det_02",
+            "class_name": "white mouse",
+        }
+    )
+    recording_store.write_recording(sdir, data)
+
+    preview = recording.tracking_preview("track_02")
+    track_ids, presence = preview.track_presence()
+    assert track_ids == [0]
+    assert presence[0].tolist() == [True, False, True, True, False]
+
+
+def test_track_merge_preview_shows_both_subjects_in_the_same_frame(tmp_path):
+    """The actual point of track_merge (§13): one preview call over the merged run
+    returns both animals' detections for the same frame, each carrying its own
+    object_id and its own class_name — using TrackingPreview exactly as it already
+    exists (object_id-generic, fixed earlier this session), no changes needed."""
+    from detail.core.dataclasses import TrackingJob
+    from detail.pipeline import track_merge, tracking
+
+    recording = _recording_with_detection(tmp_path)  # video + det_01 (unused here)
+    sdir = recording.dir
+    ddir = sdir / "detections" / "det_02"
+    ddir.mkdir(parents=True)
+    (ddir / "job.json").write_text(
+        '{"schema_version": 1, "mask_resolution": [48, 64]}', encoding="utf-8"
+    )
+    with DetectionPartWriter(ddir / "part_001.zarr") as writer:
+        for f in range(4):
+            writer.add_row(f, 0, 0, "black mouse", 0.9, (0.1, 0.1, 0.2, 0.2), "")
+            writer.add_row(f, 0, 1, "white mouse", 0.8, (0.6, 0.6, 0.7, 0.7), "")
+    data = recording_store.read_recording(sdir)
+    data["detection_runs"].append(
+        {"id": "det_02", "status": "complete", "downsampling_run_id": None}
+    )
+    recording_store.write_recording(sdir, data)
+
+    for track_id, class_name in (
+        ("track_a", "black mouse"),
+        ("track_b", "white mouse"),
+    ):
+        job = TrackingJob(
+            job_id=track_id,
+            recording_id=recording.id,
+            track_id=track_id,
+            detection_run_id="det_02",
+            tracker_id="anchor_tracker",
+            hyperparams={"conf_threshold": 0.05},
+            arena_ids=[],
+            created_at="2026-01-01T00:00:00Z",
+            class_name=class_name,
+        )
+        run_dir = sdir / "tracking" / track_id
+        run_dir.mkdir(parents=True)
+        tracking.run(job, run_dir, progress_cb=lambda e: None, stop_event=None)
+        data = recording_store.read_recording(sdir)
+        data.setdefault("tracking_runs", []).append(
+            {
+                "id": track_id,
+                "status": "complete",
+                "detection_run_id": "det_02",
+                "tracker_id": "anchor_tracker",
+                "arena_ids": [],
+                "class_name": class_name,
+                "hyperparams": {"conf_threshold": 0.05},
+                "every_n_frames": 1,
+                "created_at": "2026-01-01T00:00:00Z",
+            }
+        )
+        recording_store.write_recording(sdir, data)
+
+    merge_job = track_merge.TrackMergeJob(
+        job_id="track_merged",
+        recording_id=recording.id,
+        track_id="track_merged",
+        detection_run_id="det_02",
+        source_run_ids=["track_a", "track_b"],
+        created_at="2026-01-01T00:00:00Z",
+        every_n_frames=1,
+    )
+    merge_run_dir = sdir / "tracking" / "track_merged"
+    merge_run_dir.mkdir(parents=True)
+    track_merge.run(
+        merge_job, merge_run_dir, progress_cb=lambda e: None, stop_event=None
+    )
+    data = recording_store.read_recording(sdir)
+    data["tracking_runs"].append(
+        {
+            "id": "track_merged",
+            "status": "complete",
+            "detection_run_id": "det_02",
+            "tracker_id": "track_merge",
+            "arena_ids": [],
+            # The real identity TrackMergeModule.extra_record_fields writes (§13) —
+            # not None — so this exercises the actual mismatch between the record's
+            # joined label and track.yaml's real (None) class filter, the gap that
+            # once made TrackingPreview read zero rows for every merged run.
+            "class_name": "black mouse+white mouse",
+            "hyperparams": {},
+            "every_n_frames": 1,
+            "source_run_ids": ["track_a", "track_b"],
+            "created_at": "2026-01-01T00:00:00Z",
+        }
+    )
+    recording_store.write_recording(sdir, data)
+
+    preview = recording.tracking_preview("track_merged")
+    track_ids, presence = preview.track_presence()
+    assert track_ids == [0, 1]
+    assert presence[0].tolist() == [True, True, True, True, False]  # black mouse
+    assert presence[1].tolist() == [True, True, True, True, False]  # white mouse
+
+    _actual, _rgb, detections = preview.frame(0, 0)
+    assert {d.object_id for d in detections} == {0, 1}
+    by_object_id = {d.object_id: d.class_name for d in detections}
+    assert by_object_id == {0: "black mouse", 1: "white mouse"}
 
 
 def test_tracking_preview_unknown_run(tmp_path):
@@ -255,7 +521,6 @@ def test_input_image_preview_filters_to_requested_track(tmp_path):
     assert preview.input_at(0, 0, 99)[2] is None
 
 
-# --- EmbeddingPreview + PCA ------------------------------------------------- #
 def _add_embedding(recording, run_id="emb_01"):
     """A completed embedding run over track 0: two embedded frames (0 and 2)."""
     edir = recording.dir / "embeddings" / run_id
@@ -284,10 +549,63 @@ def _add_embedding(recording, run_id="emb_01"):
     return recording
 
 
+def test_union_detection_unions_boxes_and_masks():
+    """``source_crop_masked`` frames a location export's tile of several animals by one box —
+    this is what stands in for a single detection there."""
+    black = np.zeros((10, 10), dtype=bool)
+    black[0:3, 0:3] = True
+    white = np.zeros((10, 10), dtype=bool)
+    white[7:10, 7:10] = True
+    detections = [
+        Detection(mask=black, bbox=(0.0, 0.0, 0.3, 0.3), class_name="black mouse",
+                   confidence=0.9, object_id=0),
+        Detection(mask=white, bbox=(0.7, 0.7, 1.0, 1.0), class_name="white mouse",
+                   confidence=0.8, object_id=1),
+    ]  # fmt: skip
+    combined = _union_detection(detections)
+    assert combined.bbox == (0.0, 0.0, 1.0, 1.0)
+    assert combined.mask[1, 1] and combined.mask[8, 8]
+    assert not combined.mask[5, 5]
+
+
+def test_union_detection_is_none_with_no_detections():
+    assert _union_detection([]) is None
+
+
+def test_union_detection_skips_a_detection_with_no_box():
+    """A detection decoded with no mask/bbox (e.g. boxes-only mode) contributes nothing to
+    the union rather than crashing on a None bbox."""
+    only = Detection(
+        mask=None, bbox=None, class_name="black mouse", confidence=0.9, object_id=0
+    )
+    assert _union_detection([only]) is None
+
+
 def test_pca_project_2d_shapes():
     assert pca_project_2d(np.random.rand(5, 8)).shape == (5, 2)
     assert pca_project_2d(np.random.rand(1, 8)).shape == (1, 2)  # degenerate, padded
     assert pca_project_2d(np.zeros((0, 8))).shape == (0, 2)  # empty
+
+
+# --- locate_frame ------------------------------------------------------------ #
+def test_locate_frame_within_the_first_part():
+    assert locate_frame([5, 5], 3) == (0, 3)
+
+
+def test_locate_frame_crosses_a_part_boundary():
+    assert locate_frame([5, 5], 5) == (1, 0)
+    assert locate_frame([5, 5], 7) == (1, 2)
+
+
+def test_locate_frame_clamps_past_the_last_frame():
+    """A run whose part shrank underfoot resolves to *something* on screen — the run
+    preview's own scrub bar and a `--frames` export both hand this a number the caller
+    already believed was in range."""
+    assert locate_frame([5, 5], 999) == (1, 4)
+
+
+def test_locate_frame_with_no_parts_clamps_to_zero():
+    assert locate_frame([], 3) == (0, 0)
 
 
 def test_embedding_preview_metadata_and_coverage(tmp_path):
@@ -420,6 +738,32 @@ def test_blending_into_the_crop_gives_the_same_picture_as_blending_the_frame(bbo
     assert np.array_equal(fast, slow)
 
 
+def test_layers_blend_each_animal_in_its_own_colour():
+    """A location export's tile pictures its animals each in its own colour (``layers``), the
+    same picture as blending each into the frame in turn and cropping.
+    """
+    from detail.api.run_preview import _square_crop
+
+    rng = np.random.default_rng(9)
+    rgb = rng.integers(0, 256, (120, 160, 3), dtype=np.uint8)
+    first = np.zeros((120, 160), dtype=bool)
+    first[20:90, 20:60] = True
+    second = np.zeros((120, 160), dtype=bool)
+    second[20:90, 100:140] = True
+    bbox, alpha = (0.1, 0.15, 0.9, 0.8), 0.35
+    blue, orange = (31, 119, 180), (230, 127, 14)
+
+    fast = _square_crop(
+        rgb, bbox, 64, alpha=alpha, layers=[(first, blue), (second, orange)]
+    )
+    from detail.core.visualize import draw_mask
+
+    both = draw_mask(
+        draw_mask(rgb, first, blue, alpha=alpha), second, orange, alpha=alpha
+    )
+    assert np.array_equal(fast, _square_crop(both, bbox, 64))
+
+
 def test_a_crop_with_no_tint_is_untouched_by_the_mask():
     """A plain crop must not pay for masks it was not asked for, and must not show one."""
     from detail.api.run_preview import _square_crop
@@ -446,118 +790,3 @@ def test_a_mask_of_the_wrong_shape_is_ignored_rather_than_raising():
         _square_crop(rgb, bbox, 32, mask=np.ones((7, 7), dtype=bool), tint=(1, 2, 3)),
         _square_crop(rgb, bbox, 32),
     )
-
-
-# --- the row-block reader: a caller pays only for the columns it asked for --------------- #
-def _count_column_reads(monkeypatch) -> list:
-    """Every zarr column read, by name — the cost ``read_rows`` exists to bound."""
-    from detail.storage.zarr_io import PartZarrReader
-
-    reads: list = []
-    real = PartZarrReader.column
-    monkeypatch.setattr(
-        PartZarrReader,
-        "column",
-        lambda self, name: reads.append(name) or real(self, name),
-    )
-    return reads
-
-
-def test_frame_plain_reads_no_mask_column(tmp_path, monkeypatch):
-    """The negative arm of the block cache: a caller that asked for no masks never pays for
-    the ``mask_rle`` column, not even to fill a block. A block keyed without ``with_masks``
-    read every row's RLE for ``frame_plain``, the one path with a published 4.68 ms number.
-    """
-    from detail.api.run_preview import ClipQueryPreview
-
-    from tests.clip_fixtures import walking  # local: that module imports this one
-
-    recording = walking(tmp_path, keypoints=False, kinematics=False)
-    preview = ClipQueryPreview(recording.dir.parent.parent)
-    reads = _count_column_reads(monkeypatch)
-    for frame in (0, 1, 2):
-        assert preview.frame_plain(recording.id, "emb_01", 0, frame) is not None
-    assert reads.count("mask_rle") == 0
-    assert reads.count("bbox") == 1, "one block serves every frame of the span"
-
-
-def test_frame_masked_reads_each_block_once(tmp_path, monkeypatch):
-    """The positive arm: with masks, the column is read once for the block, not once a
-    frame — the saving the block exists for."""
-    from detail.api.run_preview import ClipQueryPreview
-
-    from tests.clip_fixtures import walking  # local: that module imports this one
-
-    recording = walking(tmp_path, keypoints=False, kinematics=False)
-    preview = ClipQueryPreview(recording.dir.parent.parent)
-    reads = _count_column_reads(monkeypatch)
-    for frame in (0, 1, 2):
-        assert preview.frame_masked(recording.id, "emb_01", 0, frame) is not None
-    assert reads.count("mask_rle") == 1
-
-
-def test_a_masked_read_after_a_plain_one_still_carries_masks(tmp_path):
-    """The other direction of the key: a block filled for a masks-off caller is never served
-    to a masks-on one. With ``with_masks`` out of the key it was, and every frame of the block
-    came back with no masks for as long as the block stayed cached."""
-    from detail.api.run_preview import DetectionPreview
-
-    recording = _recording_with_detection(tmp_path)
-    preview = DetectionPreview(recording.dir, "det_01")
-    plain = preview.read_rows(preview._parts[0], 0, 2, with_masks=False)
-    assert plain["mask_rle"] is None
-    masked = preview.read_rows(preview._parts[0], 0, 2, with_masks=True)
-    assert masked["mask_rle"] is not None and len(masked["mask_rle"]) == 2
-
-
-def test_row_blocks_survive_a_rebuilt_part_list(tmp_path, monkeypatch):
-    """The block is keyed on the part's stem, not ``id(part)``: a preview whose part dicts
-    are rebuilt (or whose freed dict's id is reused) still finds its blocks."""
-    from detail.api.run_preview import DetectionPreview
-
-    recording = _recording_with_detection(tmp_path)
-    preview = DetectionPreview(recording.dir, "det_01")
-    reads = _count_column_reads(monkeypatch)
-    preview.read_rows(preview._parts[0], 0, 2, with_masks=True)
-    preview._parts = [dict(part) for part in preview._parts]
-    preview.read_rows(preview._parts[0], 0, 2, with_masks=True)
-    assert reads.count("mask_rle") == 1
-
-
-# --- clip_boxes: the animal's boxes over a clip, off the rows ----------------------------- #
-def test_clip_boxes_reads_the_subjects_box_per_frame_without_the_video(
-    tmp_path, monkeypatch
-):
-    """What a montage fixes its crop from: one normalized box per frame of the clip, read off
-    the detection rows — the mask column untouched, the video unopened."""
-    from detail.api.run_preview import ClipQueryPreview
-
-    from tests.clip_fixtures import H, W, count_decodes, walking
-
-    recording = walking(tmp_path, keypoints=False, kinematics=False)
-    preview = ClipQueryPreview(recording.dir.parent.parent)
-    reads = _count_column_reads(monkeypatch)
-    decodes = count_decodes(monkeypatch)
-    boxes = preview.clip_boxes(recording.id, "emb_01", 0, 1, 3)
-    assert boxes.shape == (3, 4) and boxes.dtype == np.float64
-    for row, frame in enumerate((1, 2, 3)):
-        x0 = 4 + 6 * frame
-        np.testing.assert_allclose(
-            boxes[row], (x0 / W, 4 / H, (x0 + 10) / W, 14 / H), atol=1e-6
-        )
-    other = preview.clip_boxes(recording.id, "emb_01", 1, 0, 0)
-    np.testing.assert_allclose(other[0], (4 / W, 30 / H, 14 / W, 40 / H), atol=1e-6)
-    assert reads.count("mask_rle") == 0 and decodes == []
-
-
-def test_clip_boxes_leaves_an_untracked_frame_nan(tmp_path):
-    from detail.api.run_preview import ClipQueryPreview
-
-    from tests.clip_fixtures import two_animals
-
-    recording = two_animals(tmp_path)  # track 0 on frames 0 and 2, nothing on frame 1
-    preview = ClipQueryPreview(recording.dir.parent.parent)
-    boxes = preview.clip_boxes(recording.id, "emb_01", 0, 0, 2)
-    assert np.isfinite(boxes[0]).all() and np.isnan(boxes[1]).all()
-    np.testing.assert_allclose(boxes[2], (0.5, 0.5, 0.6, 0.6), atol=1e-6)
-    assert preview.clip_boxes(recording.id, "emb_01", 0, 2, 1).shape == (0, 4)

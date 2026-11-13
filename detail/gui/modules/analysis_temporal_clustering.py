@@ -29,7 +29,14 @@ from detail.gui.cluster_workspace import (
 )
 from detail.gui.forms import ConfigForm
 from detail.gui.help_ui import field_label
-from detail.gui.modules._common import PooledSpecPicker, pooled_settings_note
+from detail.gui.modules._common import (
+    PooledSpecPicker,
+    add_run_on_row,
+    pooled_settings_note,
+    recording_names,
+    run_on_compute,
+    select_run_on,
+)
 from detail.gui.modules.registry import (
     ConfigWidget,
     ModuleUI,
@@ -98,12 +105,20 @@ class _TemporalClusteringConfig(ConfigWidget):
         self._embed = PooledSpecPicker("embedding")
         form.addRow(
             field_label("temporal_clustering", "embed_run_id", "Embedding run:"),
-            self._embed.widget,
+            self._embed.panel,
         )
         self._embed.changed.connect(self._on_embedding_ticked)
         form.addRow(
             field_label("temporal_clustering", "track_id", "Track:"),
             self._fields["track_id"],
+        )
+
+        self._where = add_run_on_row(
+            form,
+            "Where the fit runs. A remote target fits there, so this computer is free for "
+            "the hours a large selection takes; the run comes back here when the fit is "
+            "done. The recordings' videos are copied there for the cluster pictures (once; "
+            "later runs reuse them).",
         )
 
         self._method = QComboBox()
@@ -231,7 +246,10 @@ class _TemporalClusteringConfig(ConfigWidget):
 
     def resolve_recordings(self, recordings: list) -> dict:
         """Off the UI thread: the embedding settings across the selection (§6.5)."""
-        return {"groups": self._embed.resolve(recordings, self._model_names)}
+        return {
+            "groups": self._embed.resolve(recordings, self._model_names),
+            "names": recording_names(recordings),
+        }
 
     def apply_recordings(self, recordings: list, resolved: dict) -> None:
         """Offer each set of embedding settings, with how many recordings have a run of it.
@@ -241,7 +259,9 @@ class _TemporalClusteringConfig(ConfigWidget):
         a different id — and was refused, with every setting identical (#547).
         """
         self._recordings = [r.id for r in recordings]
-        self._embed.apply(resolved["groups"], len(recordings))
+        self._embed.apply(
+            resolved["groups"], len(recordings), names=resolved.get("names", {})
+        )
         self._refresh_advice()
 
     def on_recordings_changed(self, recordings: list) -> None:
@@ -290,6 +310,7 @@ class _TemporalClusteringConfig(ConfigWidget):
         if method_id in self._widgets:
             self._method.setCurrentText(method_id)
         super().load_config(config)  # track_id, from the model
+        select_run_on(self._where, config)
         widgets = self._widgets[self._method.currentText()]["widgets"]
         model_cls = METHOD_MODELS[self._method.currentText()]
         for name, value in (config.get("method_params") or {}).items():
@@ -308,7 +329,7 @@ class _TemporalClusteringConfig(ConfigWidget):
             or TemporalClusteringConfig.model_fields["method"].default
         )
         widgets = self._widgets[method_id]["widgets"]
-        return {
+        out = {
             # Narrowed to the recordings the chosen settings cover, as the launch dialog
             # narrows its own list: this key wins over the dialog's when the two merge.
             "source_recording_ids": self._covered_recordings(),
@@ -323,6 +344,10 @@ class _TemporalClusteringConfig(ConfigWidget):
                 if name in widgets
             },
         }
+        compute = run_on_compute(self._where)
+        if compute is not None:  # this computer is the default, and says nothing
+            out["compute"] = compute
+        return out
 
     @staticmethod
     def _value_of(widgets: dict, name: str):

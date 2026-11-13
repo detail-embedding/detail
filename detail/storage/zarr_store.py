@@ -26,6 +26,7 @@ staged copy into place, which is our own ``os.replace`` and belongs to
 """
 
 import asyncio
+import os
 from pathlib import Path
 
 import zarr
@@ -34,13 +35,51 @@ import zarr.storage
 from detail.core import atomic
 
 
+def _check_read(root: Path, key: str, buf, byte_range) -> None:
+    """Raise :class:`atomic.DamagedFileError` for a whole-file read of a file the OS lost.
+
+    **Why on the store:** every read of a zarr passes through ``get`` / ``get_sync``, whichever
+    array or group is asked for, so one check names the damaged file for every reader instead of
+    each parser failing in its own words. Left alone, zarr hands a zero-filled ``zarr.json`` to
+    ``json.loads`` as bytes, which sniffs leading NULs as UTF-32 and fails with ``'utf-32-be'
+    codec can't decode byte 0x00`` and no path.
+
+    An empty file is damaged anywhere in a store: zarr never writes one, and a chunk it did not
+    write at all is a missing key, not an empty file. All-NUL is checked on ``zarr.json`` only,
+    where it cannot be real. A zero-filled *chunk* is indistinguishable from data here (a
+    stored array of zeros) and is left to the codec, and nothing is copied on the hot path:
+    a chunk is checked by length alone.
+    """
+    if buf is None or byte_range is not None:
+        return
+    path = root / key
+    if len(buf) == 0:
+        raise atomic.DamagedFileError(atomic.damaged_file_message(path, "empty"))
+    if key.endswith("zarr.json") and atomic.is_lost(buf.to_bytes()):
+        raise atomic.DamagedFileError(
+            atomic.damaged_file_message(path, f"all zero bytes ({len(buf)} of them)")
+        )
+
+
 class RetryingLocalStore(zarr.storage.LocalStore):
-    """A ``LocalStore`` whose writes ride out the transient network-share replace.
+    """A ``LocalStore`` whose writes ride out the transient network-share replace, and whose
+    reads name a file the OS lost.
 
     Both write entry points are covered: ``_set`` (behind ``set`` and
     ``set_if_not_exists``, which is where the codec pipeline writes every chunk) and
-    ``set_sync``. Reads are left alone — a read never enters the rename window.
+    ``set_sync``. Reads are not retried — a read never enters the rename window — but they are
+    checked, by :func:`_check_read`, in both read entry points.
     """
+
+    async def get(self, key, prototype=None, byte_range=None):
+        buf = await super().get(key, prototype, byte_range)
+        _check_read(self.root, key, buf, byte_range)
+        return buf
+
+    def get_sync(self, key, *, prototype=None, byte_range=None):
+        buf = super().get_sync(key, prototype=prototype, byte_range=byte_range)
+        _check_read(self.root, key, buf, byte_range)
+        return buf
 
     async def _set(self, key: str, value, exclusive: bool = False) -> None:
         for attempt in range(atomic.RETRY_ATTEMPTS):
@@ -58,6 +97,34 @@ class RetryingLocalStore(zarr.storage.LocalStore):
         # a nested function.
         parent = super(RetryingLocalStore, self)
         atomic.retry_on_lock(lambda: parent.set_sync(key, value))
+
+
+def check_intact(root: Path | str) -> None:
+    """Raise :class:`atomic.DamagedFileError` if any zarr under ``root`` has lost its metadata.
+
+    Reads each ``zarr.json`` under a ``*.zarr`` directory (a handful per part), never a chunk:
+    cheap enough to run for every recording of a launch, on a network share too, which is what
+    lets a damaged run be named *before* any worker starts. A ``root`` that does not exist is
+    fine, since a run with nothing there yet is somebody else's error to report.
+    """
+    root = Path(root)
+    is_store = root.name.endswith(".zarr")  # ``root`` may itself be one store
+    for directory, _dirs, files in os.walk(root):
+        inside = Path(directory).relative_to(root).parts
+        if "zarr.json" not in files or not (
+            is_store or any(p.endswith(".zarr") for p in inside)
+        ):
+            continue
+        path = Path(directory, "zarr.json")
+        data = atomic.retry_on_lock(path.read_bytes)
+        if not data:
+            raise atomic.DamagedFileError(atomic.damaged_file_message(path, "empty"))
+        if atomic.is_lost(data):
+            raise atomic.DamagedFileError(
+                atomic.damaged_file_message(
+                    path, f"all zero bytes ({len(data)} of them)"
+                )
+            )
 
 
 def open_group(path: Path | str, *, mode: str):

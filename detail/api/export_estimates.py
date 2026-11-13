@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from detail.api.exporters import Estimate, ExportScope, ExportSubject, format_size
+from detail.core.video_codecs import DEFAULT_VIDEO_CODEC
 from detail.storage import dirscan
 
 # --------------------------------------------------------------------------- #
@@ -80,6 +81,14 @@ FRAME_LABELS_BASE_BYTES_PER_FRAME = 25
 #: approximation of its cost and the estimate's basis says so.
 DRAW_POINTS_S_PER_FRAME = 0.0003
 DRAW_OVERLAY_S_PER_FRAME = 0.0009
+#: A PNG of one frame is about half its raw RGB size on a camera image.
+PNG_BYTES_PER_PIXEL = 1.5
+PREVIEW_FRAME_SECONDS = 2.0
+#: The per-frame cost of the run preview reader's detection reads
+#: (`DetectionPreview._detections_at`: 7.7 ms, 11.8 with masks) and its PyAV decode (2.1 ms).
+PREVIEW_DETECTION_READ_S = 0.0077
+PREVIEW_MASK_READ_S = 0.0118
+PREVIEW_DECODE_S = 0.0021
 DEFAULT_DISK_BYTES_PER_S = 100e6
 _PROBE_BYTES = 16 * 1024 * 1024
 _CACHE_TTL_S = 120.0
@@ -180,6 +189,7 @@ def video_rate(
     size: int | None = None,
     fps: float = 30.0,
     frames: int = 40,
+    codec: str = DEFAULT_VIDEO_CODEC,
 ) -> VideoRate:
     """Time ``frames`` frames from the middle of ``video_path`` through the real writer.
 
@@ -199,7 +209,7 @@ def video_rate(
 
     path = Path(video_path)
     stat = path.stat()
-    key = ("video", str(path), stat.st_mtime_ns, size)
+    key = ("video", str(path), stat.st_mtime_ns, size, codec)
     cached = _RATE_CACHE.get(key)
     if cached and time.monotonic() - cached[1] < 600.0:
         return cached[0]
@@ -226,7 +236,7 @@ def video_rate(
         with tempfile.TemporaryDirectory(prefix="detail-estimate-") as scratch:
             out = Path(scratch) / "sample.mp4"
             opened = time.perf_counter()
-            writer, _codec = open_video_writer(out, fps, width, height)
+            writer, _codec = open_video_writer(out, fps, width, height, codec=codec)
             setup = time.perf_counter() - opened
             started = time.perf_counter()
             for frame in decoded[:count]:
@@ -293,8 +303,11 @@ def _timed_video(
     extra_s_per_frame: float,
     label: str,
     frames: dict[str, int] | None = None,
+    codec: str = DEFAULT_VIDEO_CODEC,
 ) -> Estimate:
-    """Video written for ``recording_ids``: frames x a per-frame cost timed on the first one.
+    """Video written for ``recording_ids``: frames x a per-frame cost timed on the first one,
+    encoded as ``codec`` — an H.264 file is a fraction of an mp4v one, so the size is timed at
+    the codec the export will write.
 
     The sample comes from one recording (the first that has its video here) and is applied to all
     of them: recordings of one experiment share a camera and a resolution, and timing each would
@@ -314,7 +327,7 @@ def _timed_video(
                 f"the video of {rid} is not on this machine, so its {label} cannot be sized",
             )
         sample_video = sample_video or video
-    rate = video_rate(sample_video, size=size)
+    rate = video_rate(sample_video, size=size, codec=codec)
     total_frames = sum(counts.values())
     per_frame_s = rate.decode_s + rate.encode_s + extra_s_per_frame
     seconds = total_frames * per_frame_s + len(recording_ids) * rate.setup_s
@@ -433,6 +446,7 @@ def clip(subject: ExportSubject, scope: ExportScope, options: dict) -> Estimate:
         extra_s_per_frame=0.0,
         label="clip",
         frames={subject.id: frames},
+        codec=options.get("codec", DEFAULT_VIDEO_CODEC),
     )
     if estimate.bytes is None:
         return estimate
@@ -718,6 +732,7 @@ def keypoints_video(
         extra_s_per_frame=extra,
         label="video",
         frames=frames,
+        codec=options.get("codec", DEFAULT_VIDEO_CODEC),
     )
     if video.bytes is None:
         return video
@@ -727,6 +742,73 @@ def keypoints_video(
         video.seconds + (data.seconds or 0.0),
         f"{video.basis}; drawing time ({extra * 1000:.1f} ms a frame) is measured on the "
         f"remote-detail engine, not this one; plus keypoints.csv ({data.basis})",
+    )
+
+
+def preview_frame(
+    subject: ExportSubject, scope: ExportScope, options: dict
+) -> Estimate:
+    from detail.api import export_targets as et
+    from detail.api.exporters import ExportError
+
+    try:
+        options = et._one_recording(scope, options)
+    except ExportError as exc:
+        return Estimate(None, None, str(exc))
+    recording_id = str(options.get("recording_id") or "")
+    if not recording_id:
+        return Estimate(None, None, "choose a recording to draw")
+    from detail.storage import experiment as experiment_store
+    from detail.storage import recording as recording_store
+
+    data = recording_store.read_recording(
+        experiment_store.recording_path(subject.experiment_dir, recording_id)
+    )
+    width, height = ((data.get("video") or {}).get("resolution") or (1920, 1080))[:2]
+    return Estimate(
+        int(width * height * PNG_BYTES_PER_PIXEL),
+        PREVIEW_FRAME_SECONDS,
+        f"one {width}x{height} frame; opening the run and decoding it takes about "
+        f"{PREVIEW_FRAME_SECONDS:.0f} s",
+    )
+
+
+def preview_video(
+    subject: ExportSubject, scope: ExportScope, options: dict
+) -> Estimate:
+    from detail.api import export_targets as et
+    from detail.api.exporters import ExportError
+    from detail.core import visualize
+
+    try:
+        options = et._one_recording(scope, options)
+    except ExportError as exc:
+        return Estimate(None, None, str(exc))
+    recording_id = str(options.get("recording_id") or "")
+    if not recording_id:
+        return Estimate(None, None, "choose a recording to draw")
+    record = et.run_record(subject) or {}
+    size = options.get("size")
+    if str(record.get("module_id") or "") in ("keypoint_detect", "keypoint_track"):
+        extra = DRAW_POINTS_S_PER_FRAME + (
+            DRAW_OVERLAY_S_PER_FRAME if options.get("overlay") else 0.0
+        )
+    else:
+        # The detection and tracking preview reads its detections a frame at a time.
+        style = options.get("style") or visualize.MASK_BOX_CONF
+        reads = (
+            PREVIEW_MASK_READ_S
+            if visualize.preview_needs_mask(style)
+            else PREVIEW_DETECTION_READ_S
+        )
+        extra = PREVIEW_DECODE_S + reads + DRAW_OVERLAY_S_PER_FRAME
+    return _timed_video(
+        subject.experiment_dir,
+        [recording_id],
+        size=int(size) if size else None,
+        extra_s_per_frame=extra,
+        label="video",
+        codec=options.get("codec", DEFAULT_VIDEO_CODEC),
     )
 
 
@@ -825,6 +907,7 @@ def clips(subject: ExportSubject, scope: ExportScope, options: dict) -> Estimate
         extra_s_per_frame=0.0,
         label="clip",
         frames={sample: frames},
+        codec=options.get("codec", DEFAULT_VIDEO_CODEC),
     )
     if estimate.bytes is None:
         return estimate

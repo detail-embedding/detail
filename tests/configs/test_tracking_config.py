@@ -14,6 +14,7 @@ def test_round_trips():
         "tracker_id": "anchor_tracker",
         "arena_ids": ["arena_01"],
         "arena_name": "rig A camera",
+        "class_name": "black mouse",
         "hyperparams": {"iou_threshold": 0.3},
         "every_n_frames": 2,
     }
@@ -29,6 +30,7 @@ def test_defaults():
         "tracker_id": "anchor_tracker",
         "arena_ids": None,
         "arena_name": None,
+        "class_name": None,
         "hyperparams": None,
         "every_n_frames": None,
     }

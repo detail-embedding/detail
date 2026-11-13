@@ -24,7 +24,10 @@ Time in session, Video, a line per metadata column), which folds to a strip; on 
   the **label field** (type a name and press Enter; **Labels ▾** lists every label with its
   colour and time, and Rename / Merge from there) with **Label**, **Remove** and **Labels ▾** —
   which opens with the run's recent labels, numbered, keys 1–9 with the tree in focus — then
-  **Undo (⌘Z)** and **Open in window**.
+  **Undo (⌘Z)**, **Open in window** and **Cluster tools ▾** (the run's per-cluster tools, one
+  menu: *Cluster profile…* for the open cluster, *Look-alike clusters…*, *Find look-alikes…* and
+  *Profile clusters…*; an entry that cannot run is greyed with why). The tree's right-click
+  adds *Cluster profile…*.
 - **The montage** (``live_montage.LiveMontage``): every clip of the selected cluster, all
   playing, most typical first (or least typical, or random). Hovering a tile pauses the rest; a
   clip outside the filters still plays, its animal drawn grey. A clip removed from its label on
@@ -78,6 +81,7 @@ from PyQt6.QtWidgets import (
 
 from detail.api import cluster_filter
 from detail.core.progress import remaining_seconds
+from detail.core.utils import subject_key
 from detail.gui import node_cache_jobs, plot_theme, preview_jobs
 from detail.gui.audit_table import audited_colour
 from detail.gui.busy import run_busy, run_progress
@@ -106,6 +110,7 @@ from detail.gui.live_montage import (
     MontageClip,
     context_span,
 )
+from detail.gui.lifetime import cleared
 from detail.gui.match_key import TreeKeyRow
 from detail.gui.node_audit import NodeAuditBlock
 from detail.gui.node_icicle import TreePane, format_time, row_px
@@ -398,7 +403,7 @@ class _PreviewWait:
 
 
 class NodeInterpretTab(QWidget):
-    """The INTERPRET tab for a pose or temporal clustering run."""
+    """The INTERPRET tab for a temporal clustering run."""
 
     #: A label landed in the output: AUDIT and BROWSE re-read it.
     changed = pyqtSignal()
@@ -479,6 +484,10 @@ class NodeInterpretTab(QWidget):
         #: What the loaded tree is (``tree_identity``): a reload that changes it closes every
         #: window and clears the history, since a node id no longer names the same cluster.
         self._tree_key = None
+        #: The tree's parent array, read once per load (``ClusterTree.parent`` derives it).
+        self._tree_parent = None
+        #: The run's Look-alike clusters window while it is open (``gui/lookalikes.py``).
+        self._lookalikes_window = None
 
         layout = QVBoxLayout(self)
 
@@ -589,6 +598,7 @@ class NodeInterpretTab(QWidget):
         self._icicle.unlabel_wanted.connect(lambda node: self._label(node, ""))
         self._icicle.zoomed.connect(lambda _node: self._sync_zoom_buttons())
         self._icicle.window_wanted.connect(self.open_window)
+        self._icicle.profile_wanted.connect(self.open_profile)
         tree_box.addWidget(self._tree, 1)
         self._tree_holder = tree_pane
         dragged = self._remembered_tree_height()
@@ -617,6 +627,7 @@ class NodeInterpretTab(QWidget):
                 origin=self._origin,
                 name=self._export_stem,
                 empty=lambda: f"Open a {self._terms.unit} in the tree to export its clips",
+                experiment=lambda: self._experiment,
             ),
         )
         # A cluster window's top is built by the same call (`build_label_bar`).
@@ -642,6 +653,29 @@ class NodeInterpretTab(QWidget):
         self._open_window.clicked.connect(lambda: self.open_window())
         set_available(self._open_window, False, "The run is still loading.")
         self._label_bar.add_action_widget(self._open_window)
+        # rd's per-cluster tools, in one menu (user, 2026-11-10): built once, its entries
+        # greyed with why each time it opens (``_sync_tools``).
+        self._tools = QPushButton("Cluster tools ▾")
+        self._tools.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self._tools_menu = QMenu(self._tools)
+        self._tools_menu.setToolTipsVisible(True)
+        self._tool_actions = {
+            "profile": self._tools_menu.addAction(
+                "Cluster profile…", lambda: self.open_profile(self._selected)
+            ),
+            "lookalikes": self._tools_menu.addAction(
+                f"Look-alike {terms.units}…", self._open_lookalikes
+            ),
+            "find": self._tools_menu.addAction(
+                "Find look-alikes…", self._find_lookalikes
+            ),
+            "describe": self._tools_menu.addAction(
+                f"Profile {terms.units}…", self._profile_describe_all
+            ),
+        }
+        self._tools.clicked.connect(self._open_tools)
+        set_available(self._tools, False, "The run is still loading.")
+        self._label_bar.add_action_widget(self._tools)
         #: Where the open cluster is concentrated, said in the figures' tooltip only — a chip
         #: of its own on row 1 left the figures 56px at 1440×847 (user, 2026-11-09).
         self.concentration = ""
@@ -663,8 +697,8 @@ class NodeInterpretTab(QWidget):
         note_row.addWidget(self._build_previews)
         self._preview_note.setVisible(False)
         self._montage.header_lines.addWidget(self._preview_note)
-        #: What happened to the page's windows (a re-fit closed them); an export says what it
-        #: wrote on the montage's own line (``montage_export``).
+        #: What happened to the page's windows (a re-fit closed them), and which job a tool
+        #: started; an export says what it wrote on the montage's own line (``montage_export``).
         self._written = QLabel("")
         self._written.setVisible(False)
         self._montage.header_lines.addWidget(self._written)
@@ -882,6 +916,7 @@ class NodeInterpretTab(QWidget):
         self._stale.setVisible(bool(stale))
         self._stale_row.setVisible(bool(stale))
         self._root_clips = loaded["root_clips"]
+        self._tree_parent = view.tree.parent
         self._groups = self._dimension_groups(view)
         self._icicle.set_view(view)
         self._schedule_tree_fit()
@@ -891,6 +926,11 @@ class NodeInterpretTab(QWidget):
         self._points_note, self._align_note = loaded.get("pose", (None, None))
         self._montage.set_alignment(self._align_note)
         self._montage.set_points(self._points_note)
+        set_available(self._tools, True, "")
+        self._tools.setToolTip(
+            "This run's tools for its clusters: the open cluster's profile, the look-alike "
+            "groups, and the jobs that find them and profile every cluster."
+        )
         set_available(self._open_window, True, "")
         self._open_window.setToolTip(
             "This cluster's clips in a window of their own, beside this page: label it there, "
@@ -995,6 +1035,8 @@ class NodeInterpretTab(QWidget):
         QSettings().setValue(TREE_HEIGHT_KEY, height)
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802 — Qt's name
+        if cleared(self):
+            return False
         # The bar grows a line (the AUDIT line) without the column changing size, and that
         # height comes out of the tree's room as much as a window resize does.
         # The event's type first: the hides of a teardown reach this filter after the page's
@@ -1277,18 +1319,22 @@ class NodeInterpretTab(QWidget):
     def _show_label_field(self, node: int) -> None:
         show_label_state(self, self._label_bar, node)
 
-    def _edit_label_inline(self, node: int, where) -> None:
-        """A small editor at ``where`` (global), for a double-click or the tree's menu."""
+    def _edit_label_inline(self, node: int, where, origin=None) -> None:
+        """A small editor at ``where`` (global), for a double-click or the tree's menu.
+
+        ``origin`` is the cluster window asking: INTERPRET's selection then stays.
+        """
         if not self._can_edit or self._view is None:
             return
-        self.select(node)
+        if origin is None:
+            self.select(node)
         editor = InlineLabelEditor(
             self._names.get(str(node), ""),
             sorted({n for n in self._names.values() if n}),
             self._terms.unit,
             self,
         )
-        editor.submitted.connect(lambda name, n=int(node): self._label(n, name))
+        editor.submitted.connect(lambda name, n=int(node): self._label(n, name, origin))
         editor.move(where)
         editor.show()
         editor.focus()
@@ -1535,7 +1581,9 @@ class NodeInterpretTab(QWidget):
         for i in self._order:
             rid = clips.recording_ids[int(clips.recording[i])]
             start, end = context_span(clips.start_ns[i], clips.end_ns[i], context)
-            rows.append(clip_tiles.TileClip(rid, int(clips.subject[i]), start, end))
+            rows.append(
+                clip_tiles.TileClip(rid, subject_key(clips.subject[i]), start, end)
+            )
         self._montage.set_source(
             clip_tiles.ClipTiles(self._catalog, rows), keep_pictures=keep_pictures
         )
@@ -1693,13 +1741,16 @@ class NodeInterpretTab(QWidget):
 
     def _play_clip(self, index: int) -> None:
         """A tile double-clicked: the clip in the clip window, from the source video, with
-        previous / next through the montage's order."""
+        previous / next through the montage's order — and the selected cluster's labelling,
+        clip checks, details and lane (``clip_labelling.PageLabelling``)."""
         from detail.gui import clip_popup
+        from detail.gui.clip_labelling import PageLabelling, page_lane
 
         clips = self._clips
         if clips is None or not (0 <= index < len(self._order)):
             return
         sequence = clip_sequence(self, clips, self._order)
+        node = self._selected
         clip_popup.open_clip_window(
             self,
             self._experiment,
@@ -1708,6 +1759,8 @@ class NodeInterpretTab(QWidget):
             index=index,
             context_s=self._montage.context_s(),
             order_note=dict(_ORDER_NOTES).get(self._montage.order(), ""),
+            labelling=None if node is None else PageLabelling(self, node),
+            lane=None if node is None else page_lane(self, node),
         )
 
     # --- previews --------------------------------------------------------------------------
@@ -1839,6 +1892,210 @@ class NodeInterpretTab(QWidget):
                     pass  # never connected, or already gone
         self._montage.clear_blocked()
 
+    # --- Cluster tools ▾ (§22) --------------------------------------------------------------
+
+    def cluster_tools_menu(self) -> QMenu:
+        """**Cluster tools ▾**'s menu, its entries greyed with why as the page stands now."""
+        self._sync_tools()
+        return self._tools_menu
+
+    def _open_tools(self) -> None:
+        # Built once in ``__init__`` and kept on the page (not `menus.open_once`, which would
+        # delete it on close); only its entries are re-synced per opening.
+        self._sync_tools()
+        self._tools_menu.popup(self._tools.mapToGlobal(QPoint(0, self._tools.height())))
+
+    def _sync_tools(self) -> None:
+        loaded = self._view is not None
+        editable = bool(getattr(self._run, "editable", False))
+        loading = "The run is still loading."
+        snapshot = (
+            "This is a snapshot of the run as it was, frozen by design (§21). Go back to "
+            "the live run to use it."
+        )
+        selected = self._selected
+        unit = self._terms.unit
+        profile_why = (
+            loading
+            if not loaded
+            else (
+                f"Open a {unit} in the tree to see its profile."
+                if selected is None
+                else (
+                    "The top of the tree is the whole run: there is nothing to set it apart "
+                    f"from. Open a {unit} under it."
+                    if int(selected) == int(self._view.root)
+                    else ""
+                )
+            )
+        )
+        job_why = loading if not loaded else ("" if editable else snapshot)
+        tips = {
+            "profile": (
+                profile_why,
+                f"Which measures set this {unit} apart, checked on recordings the model has "
+                "not seen, with plain rules and what comes before and after it.",
+            ),
+            "lookalikes": (
+                job_why,
+                f"{self._terms.units.capitalize()} in different branches that the body "
+                "measures cannot tell apart (where the animal is and which way it faces left "
+                "out), grouped, with one label for each group.",
+            ),
+            "find": (
+                job_why,
+                f"Compare pairs of this run's {self._terms.units} as one job you can leave "
+                "running (Find look-alike clusters). Pairs already compared are skipped.",
+            ),
+            "describe": (
+                job_why,
+                f"Profile many {self._terms.units} of this run as one job you can leave "
+                "running; each profile appears here as it finishes.",
+            ),
+        }
+        for key, action in self._tool_actions.items():
+            why, tip = tips[key]
+            action.setEnabled(not why)
+            action.setToolTip(why or tip)
+
+    def _say_started(self, text: str) -> None:
+        self._written.setText(text)
+        self._written.setVisible(True)
+
+    def open_profile(self, node: int | None = None, parent=None) -> None:
+        """The *Cluster profile* window for ``node`` (default: the open cluster;
+        ``gui/cluster_profile.py``) — the one window the tree's right-click and **Cluster
+        tools ▾** open."""
+        from detail.gui import cluster_profile
+
+        node = self._selected if node is None else node
+        if node is None or self._view is None:
+            return
+        name = self._names.get(str(node))
+        title = f"{self._terms.unit.capitalize()} #{node}" + (
+            f" ({name})" if name else ""
+        )
+        cluster_profile.ClusterProfileDialog(
+            self._experiment,
+            self._run,
+            int(node),
+            title=title,
+            parent=parent or self,
+        ).exec()
+
+    def _profile_describe_all(self) -> None:
+        """Open the launch dialog on *Profile clusters* with this run chosen;
+        the job runs through the executor like any analysis, so Active processes shows it.
+        """
+        from detail.gui.launch import LaunchAnalysisDialog
+
+        dialog = LaunchAnalysisDialog(
+            self._experiment,
+            self,
+            seed={"module_id": "profile_describe", "params": {}},
+            selection={"source_run_id": str(self._run.id)},
+            note=(
+                f"Profiles the {self._terms.units} of {self._run.id}. "
+                "Finished ones are skipped, so it can be run again after a stop."
+            ),
+        )
+        if not dialog.exec() or dialog.run_handle is None:
+            return
+        self._say_started(
+            f"Started {dialog.run_handle.id}: profile {self._terms.units}. "
+            "Follow it in Active processes; a cluster's profile opens here once it is done."
+        )
+
+    def _open_lookalikes(self) -> None:
+        """The run's look-alike groups, in a window beside the tree: a member clicked there is
+        selected here, and a group labelled there is written through this page's label queue.
+        """
+        from detail.gui.lookalikes import open_lookalikes_window
+
+        if self._lookalikes_window is not None:
+            self._lookalikes_window.raise_()
+            self._lookalikes_window.activateWindow()
+            return
+        window = open_lookalikes_window(
+            self._run,
+            unit=self._terms.unit,
+            names_now=lambda: dict(self._names),
+            parent_array=lambda: self._tree_parent,
+            editable=self._can_edit,
+            why_not=self._edit_reason(),
+            parent=self,
+        )
+        window.node_wanted.connect(self._select_from_lookalikes)
+        window.label_wanted.connect(self._label_lookalikes)
+        window.find_wanted.connect(self._find_lookalikes)
+        self.changed.connect(window.reload)
+        window.finished.connect(lambda _r: self._forget_lookalikes(window))
+        self._lookalikes_window = window
+
+    def _forget_lookalikes(self, window) -> None:
+        self.changed.disconnect(window.reload)
+        if self._lookalikes_window is window:
+            self._lookalikes_window = None
+
+    def _select_from_lookalikes(self, node: int) -> None:
+        if self._view is not None:
+            self.select(int(node))
+
+    def _label_lookalikes(self, nodes: list, name: str) -> None:
+        """One label for a look-alike group: shown at once, recorded for ⌘Z, written in the
+        background, in order, through ``label_lookalikes`` — which plans again against the
+        stored state."""
+        from detail.api.cluster_lookalikes import plan_join
+
+        if not self._can_edit or self._view is None:
+            return
+        plan = plan_join(self._names, self._tree_parent, nodes, name)
+        names, recent = dict(self._names), list(self._recent)
+        for step in plan.accepted:
+            names[str(step.node)] = step.joins or step.name
+        if plan.accepted:
+            recent = [name, *(n for n in recent if n != name)]
+        chosen = [step.node for step in plan.accepted]
+        run, unit = self._run, self._terms.unit
+
+        def write() -> None:
+            applied = run.label_lookalikes(chosen, name)  # off-thread: the label queue
+            if applied.skipped:
+                raise ValueError(
+                    "These could not be labelled:\n"
+                    + "\n".join(step.text(unit) for step in applied.skipped)
+                )
+
+        self._change(
+            f"Labelled {len(chosen)} look-alike {self._terms.units} “{name}”",
+            names,
+            recent,
+            write,
+        )
+
+    def _find_lookalikes(self) -> None:
+        """Open the launch dialog on *Find look-alike clusters* with this run chosen; the job
+        runs through the executor like any analysis, so Active processes shows it."""
+        from detail.gui.launch import LaunchAnalysisDialog
+
+        dialog = LaunchAnalysisDialog(
+            self._experiment,
+            self._lookalikes_window or self,
+            seed={"module_id": "cluster_lookalikes", "params": {}},
+            selection={"source_run_id": str(self._run.id)},
+            note=(
+                f"Compares pairs of {self._run.id}'s {self._terms.units} on body measures. "
+                "Pairs already compared are skipped, so it can be run again after a stop."
+            ),
+        )
+        if not dialog.exec() or dialog.run_handle is None:
+            return
+        self._say_started(
+            f"Started {dialog.run_handle.id}: find look-alike {self._terms.units}. Follow it "
+            "in Active processes; Refresh in Look-alike clusters shows the groups as pairs "
+            "finish."
+        )
+
     # --- cluster windows -------------------------------------------------------------------
 
     def open_window(self, node: int | None = None):
@@ -1874,7 +2131,7 @@ class NodeInterpretTab(QWidget):
                     rank=rank,
                     recording_id=rid,
                     recording_name=names.get(rid, rid),
-                    subject=int(clips.subject[i]),
+                    subject=subject_key(clips.subject[i]),
                     embed_run_id=self._state.embed_run_for(rid),
                     start_t_ns=int(clips.start_ns[i]),
                     end_t_ns=int(clips.end_ns[i]),
@@ -2297,7 +2554,7 @@ def clip_sequence(tab, clips, order) -> list:
         sequence.append(
             ClipSpec(
                 rid,
-                int(clips.subject[i]),
+                subject_key(clips.subject[i]),
                 tab._state.embed_run_for(rid),
                 int(clips.start_ns[i]),
                 int(clips.end_ns[i]),

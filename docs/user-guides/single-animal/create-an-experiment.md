@@ -1,0 +1,313 @@
+# 1. Create an experiment and add recordings
+
+An **experiment** holds your recordings and every result DETAIL makes from them. In this
+chapter you create one, bring your videos into it, and tell DETAIL a little about each
+recording. Everything here happens in the DETAIL window.
+
+The example is the top-down experiment: three 5-minute videos of one mouse each, filmed from
+above in three operant boxes.
+
+## The steps at a glance
+
+Each box is one step on this page. Click a box to go to that step. The tag says where the
+step is in DETAIL: the button along the top, then the page in the list on the left, then
+the dialog that opens.
+
+<div class="guide-flow" markdown>
+
+1. [Create the experiment](#1-create-the-experiment) <span class="where where-app">Experiments › New experiment</span> <span class="note">A name, and which way the camera looks.</span>
+2. [Add the recordings](#2-add-the-recordings) <span class="where where-app">Experiments › Recordings › Add recordings</span> <span class="note">One recording per video.</span>
+3. [Fill in Recording information](#3-fill-in-recording-information) <span class="where where-app">Experiments › Recording information</span> <span class="note">Every piece of information about each recording: dose, sex, date, trial.</span>
+
+</div>
+
+## 1. Create the experiment
+
+Click **Experiments** in the row of buttons along the top, then **New experiment**.
+
+![The Experiments screen with no experiments yet, and the New experiment button highlighted.](../../assets/user-guides/single-animal/create/experiments-empty.png)
+
+??? info "What everything on this screen does"
+    The buttons along the top (1 to 9) are on every screen, so this is the only place they are described.
+
+    1. **Experiments**: this screen. Every experiment shows as a card. Double-click a card to open it. **Archive** on a card hides that experiment from the list without changing or deleting anything in it.
+    2. **Active processes**: everything running now in any experiment, such as a detection run or a video import, and anything that failed.
+    3. **Configuration**: the setup checklist from [Configure DETAIL](../configure.md), and **Remote targets** for [Tillicum](../tillicum.md).
+    4. **Model manager**: every model on your computer: the downloaded ones, such as SAM 3 and DINOv3, and the ones you train.
+    5. **Keypoints manager**: the skeletons, the sets of body points chapter 4 places on the animal.
+    6. **Quick tools**: tools that need no experiment, such as trying SAM 3 on one video.
+    7. **Docs**: opens these docs in your browser. It works without the internet.
+    8. **Version History**: which version of DETAIL you are running, what changed, and **Check for updates**.
+    9. **Info**: a short explanation of the screen you are on.
+    10. **New experiment**: makes a new experiment. This step.
+    11. **Import experiment**: opens an experiment someone exported to a file (a `.tar` archive), for example to move it from another computer. A bar shows how far it has got, and **Cancel** stops it with nothing placed. Video kept outside the experiment is looked for where the other computer had it; any recording whose video is still not found is named at the end.
+    12. **Experiment locations…**: the folders your experiments are kept in, such as one on an external drive. See [Optional: keep the experiment on an external drive](#optional-keep-the-experiment-on-an-external-drive).
+    13. **Show archived (0)**: puts archived experiments back on the list, marked *Archived*, each with **Unarchive** to return it for good. The number counts them. An archived experiment still opens and runs like any other.
+
+Fill in the dialog:
+
+- **Name:** a name you will recognize, such as `Top-down demo`.
+- **Description:** optional. A sentence about the study helps when you come back to it later.
+- **Camera view:** which way the camera looks at the animal. Choose **Top down** for a camera
+  above the arena, or **Side view** for one beside it.
+- **Save in:** leave it on **Default folder**. To keep the whole experiment on an external
+  drive instead, see
+  [Optional: keep the experiment on an external drive](#optional-keep-the-experiment-on-an-external-drive)
+  below.
+
+![The New experiment dialog filled in: name Top-down demo, a description, camera view Top down, and the Create button highlighted.](../../assets/user-guides/single-animal/create/new-experiment.png)
+
+??? info "What everything on this screen does"
+    1. **Name**: what the experiment is called everywhere in DETAIL. Required. You can change it later on the Overview.
+    2. **Description**: a sentence about the study. Optional.
+    3. **Camera view**: which way the camera looks at the animal: **Top down**, **Side view**, **Angled down view**, or **Other**, which asks you to describe it. **Not set** leaves it for later.
+    4. **Save in**: the folder the experiment is made in. **Default folder** is `DetailExperiments` in your Documents folder. A drive that is not plugged in is listed but greyed out.
+    5. **Add location…**: adds another folder, such as one on an external drive, and chooses it here.
+    6. **Create**: makes the experiment and opens it.
+    7. **Cancel**: closes the dialog without making anything.
+
+Click **Create**.
+
+**Check:** the experiment opens on its **Overview**, with its sections listed down the left
+side.
+
+![The new experiment's Overview, with its sections in the list on the left and Recordings highlighted.](../../assets/user-guides/single-animal/create/overview.png)
+
+??? info "What everything on this screen does"
+    Numbers 1 to 8 are the experiment's sections, in the list on the left. They are the same in every experiment.
+
+    1. **Overview**: this page.
+    2. **Recording information**: one row per recording, with what differs between them. Step 3.
+    3. **Recordings**: add recordings and open each one's page. Step 2.
+    4. **Datasets**: frames with labels that DETAIL makes when it trains a model (chapter 3).
+    5. **Models**: the models trained for this experiment, such as a fast detector (chapter 3) and a keypoint model (chapter 4).
+    6. **Processing pipeline**: start and follow detection, tracking and embedding runs (chapters 3 and 5).
+    7. **Analysis**: behavior scan, clustering and the other analyses (chapters 6 to 8).
+    8. **Comparisons**: compare behavior between groups of recordings, such as drug on against drug off.
+    9. **Notes**: opens a box for anything you want to remember about the experiment, and folds it away again. It saves by itself, and reads **Notes ●** once a note is saved. Every page with notes has this button, here.
+    10. **Export…**: writes this screen's data to a file. On the Overview: the whole experiment as one file, or the Recording information table as a CSV.
+    11. **Name**: change it here, then click **Save**.
+    12. **Description**: change it here, then click **Save**.
+    13. **Export experiment…**: packs the whole experiment into one archive file, to back it up or move it to another computer. You choose whether to include the videos. It runs in the background, with a bar and the time left, and stays listed under **Active processes** until it is done.
+    14. **Save**: saves a changed name or description.
+    15. **Open →**: opens that section. The text beside each one counts what is in it.
+    16. **Delete experiment**: deletes the experiment and everything in its folder, after asking. It cannot be undone. Videos you referenced in place stay where they are. To take an experiment off the list without deleting anything, use **Archive** on its card on the **Experiments** screen instead.
+
+??? info "About this step"
+    DETAIL keeps each experiment in its own folder, inside a folder named
+    `DetailExperiments` in your Documents folder unless you chose another one under
+    **Save in**. The **Folder** line on the Overview shows where. With WSL, that is your
+    Documents folder inside Ubuntu, not the Windows one.
+
+    The **camera view** is a fact about how you filmed. Some measures only mean something
+    from one view: how high the animal reaches, for example, only means something from the
+    side. You can change it later on the **Recordings** page, and a recording filmed on a
+    different rig can set its own.
+
+### Optional: keep the experiment on an external drive
+
+An experiment can live in a folder on another drive, such as an external hard drive. Everything
+DETAIL makes for it then stays in that folder: the recordings it imports, and every detection,
+tracking, keypoint and embedding result and analysis. Do this when you fill in the
+**New experiment** dialog, before clicking **Create**.
+
+1. Plug in the drive.
+2. Next to **Save in**, click **Add location…**.
+3. Click **Choose…** and pick a folder on the drive. Make a new one, such as
+   `DetailExperiments`, if the drive has none yet.
+4. Give it a **Name** you will recognize, and click **Add**. **Save in** now shows it.
+
+![The Add location dialog filled in: folder E:\DetailExperiments, name Lab drive, and the Add button highlighted.](../../assets/user-guides/single-animal/create/add-location.png)
+
+The folder `E:\DetailExperiments` and the name `Lab drive` are made-up examples. Use your own
+drive and any name.
+
+??? info "What everything on this screen does"
+    1. **Folder**: the folder on the drive. Experiments made here go inside it, each in its own folder.
+    2. **Choose…**: opens a window to pick the folder.
+    3. **Name**: what this folder is called in DETAIL, under **Save in** and on each experiment's card.
+    4. **Add**: adds the folder and chooses it under **Save in**.
+    5. **Cancel**: closes the dialog without adding anything.
+
+Once your computer has more than one location, the **Experiments** screen lists the experiments
+from all of them, and each card names its location. When the drive is unplugged, its
+experiments are not listed and a line at the top says which drive is missing. Plug it back
+in to see them again.
+
+To see your locations later, click **Experiment locations…** on the **Experiments** screen.
+
+![The Experiment locations dialog listing the Default folder and a Lab drive, both connected.](../../assets/user-guides/single-animal/create/experiment-locations.png)
+
+??? info "What everything on this screen does"
+    1. **Add location…**: adds another folder, the same way as from **New experiment**.
+    2. **Change folder…**: points the name at the folder's new place, for example when Windows gives the drive a different letter.
+    3. **Remove**: stops listing the folder in DETAIL. Nothing on the drive is deleted, and adding the folder again brings its experiments back.
+    4. **Close**: closes the dialog.
+
+??? warning "If this doesn't work"
+    - **The drive is greyed out under Save in, or listed as not connected.** DETAIL cannot
+      find the folder. Check that the drive is plugged in. If it is, Windows may have given
+      it a different letter: click **Experiment locations…**, then **Change folder…** beside
+      it, and choose the folder again.
+    - **"An experiment named … already exists in location …".** Another location already has
+      an experiment with that name. Choose a different name.
+
+??? info "About this"
+    Exports go where you choose when you export, not into the experiment's folder, so pick a
+    folder on the drive when you export to keep those there too. Downloaded models such as
+    SAM 3 stay on your computer: they are shared by every experiment. A video imported with
+    **Reference the video in place** stays where it was, so leave that unticked to copy the
+    video onto the drive.
+
+    The locations are a setting on your computer, not part of the experiment, so another
+    computer needs the drive's folder added too before it lists those experiments.
+
+## 2. Add the recordings
+
+Click **Recordings** in the list on the left, then **Add recordings**.
+
+![The Recordings page of the empty experiment, with the Add recordings button highlighted.](../../assets/user-guides/single-animal/create/recordings-empty.png)
+
+??? info "What everything on this screen does"
+    1. **Camera view (experiment default)**: the camera view every recording uses, unless it sets its own. Changing it saves at once.
+    2. **Class names…**: your names for what the detector finds, such as `mouse`. Useful after chapter 3.
+    3. **Add recordings**: adds recordings from video files. This step.
+    4. **Import bundle**: adds many recordings at once, with their information and extra data files, from a folder prepared for it (see the [Manifest reference](../../reference/manifest.md)).
+    5. **Import behavior labels**: brings in behavior you scored by hand, such as BORIS exports, for many recordings at once.
+    6. **Cancel imports**: stops video imports that are still running. It is greyed out when nothing is importing.
+
+In the **Add recordings** dialog:
+
+1. Click **Add videos** and choose your video files. To choose several, hold ++ctrl++ (on a
+   Mac, ++cmd++) and click each one. Click **Open**. Each video becomes one row, named after
+   its file.
+2. **Recording name:** double-click a name to change it to something you will recognize.
+   Each name must be different.
+3. **acquisition_setup:** double-click the cell and type which camera or box the video was
+   filmed with, such as `box 1`. Give videos from the same camera the same value.
+4. Leave **Reference the video in place** unticked, unless your videos are too large to copy
+   (see the box below).
+
+![The Add recordings dialog with three rows, box1 to box3, each with its video file and its acquisition_setup filled in as box 1 to box 3, and the Create button highlighted.](../../assets/user-guides/single-animal/create/add-recordings.png)
+
+??? info "What everything on this screen does"
+    1. **The table**: one row per recording. **Recording name** is yours to change; **Video file** is the video it imports; then one column for each Recording information column, starting with **acquisition_setup**. Double-click a cell to type in it.
+    2. **Add videos**: choose video files. Each becomes a row.
+    3. **Add empty recording**: a row with no video, for a recording whose video you add later.
+    4. **Remove selected**: takes the selected rows out of the list. It deletes no files.
+    5. **Reference the video in place**: use each video where it is instead of copying it (see the box below).
+    6. **Create**: makes the recordings and starts importing their videos.
+    7. **Cancel**: closes the dialog without adding anything.
+
+Click **Create**. The dialog closes and the videos import in the background. A bar at the
+bottom of the window shows which video is importing and how long is left.
+
+**Check:** when the import is done, each recording's **Status** says **ready**. Leave DETAIL
+open until then: closing it stops the imports.
+
+![The Recordings page with box1, box2 and box3, each ready, and the camera view at the top set to Top down.](../../assets/user-guides/single-animal/create/recordings-added.png)
+
+??? info "What everything on this screen does"
+    1. **The recordings table**: one row per recording. **Status** says whether its video has finished importing (**ready**). **Source** is where the video came from. **Parts** is how many video files the recording has. **Streams** counts other data lined up with the video, such as operant-box events. **Field of view**, **Camera view** and **Detections** fill in as you work through the next chapters. Double-click a row to open that recording's page.
+
+??? info "About this step: copying or referencing the video"
+    By default DETAIL **copies** each video into the experiment folder. The experiment then
+    has everything it needs, and you can move or delete the original. It needs as much free
+    space as the videos take.
+
+    **Reference the video in place** uses each video where it is, without a copy. Use it for
+    large libraries you cannot duplicate, such as hours of video on a network drive. The
+    videos must then stay where they are: if one moves, its recording says so, and **Locate
+    video** on the recording's page points it at the new place.
+
+    With WSL, your Windows drives appear under `/mnt`: drive `C:` is `/mnt/c`, so a video in
+    `C:\Users\yourname\Videos` is in `/mnt/c/Users/yourname/Videos`.
+
+??? info "About this step: names and acquisition_setup"
+    A recording's **name** is yours to choose and change. DETAIL also gives each recording an
+    **id**, such as `recording_000`, which never changes. You can rename a recording later on
+    its own page.
+
+    **acquisition_setup** says which camera, box or rig made each recording. Chapter 4 uses it
+    to learn from one recording of each setup, so its model sees every camera it will be used
+    on. If all your recordings come from one camera, give them all the same value.
+
+??? warning "If this doesn't work"
+    - **"These names are already used":** another recording in the experiment has that name.
+      Change the name in that row.
+    - **"Video not found":** the file moved after you chose it. Remove the row with **Remove
+      selected**, then add the video again.
+    - **A recording's status stays on importing:** the import is still going. The bar at the
+      bottom of the window shows its progress. Large videos, and videos on a network drive,
+      take longer.
+    - **A recording's status says failed:** DETAIL was closed, or the computer shut down,
+      while it imported. An import cannot carry on where it stopped: double-click the
+      recording to open its page, click **Delete recording** at the bottom, then add the
+      video again with **Add recordings**.
+
+## 3. Fill in Recording information
+
+Click **Recording information** in the list on the left. It is a table with one row per
+recording. **acquisition_setup** is already filled in from step 2.
+
+**Give every piece of information about your recordings its own column**, whatever you might
+want to group, filter or compare by later. For example:
+
+| Column | Example values |
+|--------|----------------|
+| `animal` | `M17`, `M18` |
+| `sex` | `male`, `female` |
+| `drug` | `on`, `off` |
+| `dose` | `0`, `10`, `30` |
+| `date` | `2024-11-11` |
+| `session` or `trial` | `1`, `2`, `3` |
+| `group` | `control`, `treated` |
+
+Information that is not in a column cannot be used to choose recordings or compare groups,
+so add it now even if you are not sure you will need it.
+
+![The Recording information table before editing: the three recordings with their acquisition_setup, drug, animal, date and session, and the Edit button highlighted.](../../assets/user-guides/single-animal/create/recording-information-view.png)
+
+??? info "What everything on this screen does"
+    1. **The table**: one row per recording. **recording_id** and **file** are filled in by DETAIL. Your columns follow, starting with **acquisition_setup**. The tick-box columns after them fill in by themselves as you work on each recording. Double-click a row to open that recording's page.
+    2. **Edit**: lets you change the table. Nothing is saved until you click **Save**.
+    3. **Import CSV**: fills in the table from a spreadsheet saved as CSV, matching rows by recording id, name or video file name.
+    4. **Export CSV**: saves the table as a CSV, to fill in in a spreadsheet and import back.
+
+1. Click **Edit**.
+2. Click **Add column**, type the column's name, such as `drug`, and click **OK**. Do this
+   once for each column.
+3. Double-click each cell and type its value, such as `on` or `off`.
+4. Click **Save**.
+
+![The Recording information table while editing: the three recordings with columns acquisition_setup (box 1 to box 3), drug (on, off, on), animal (17, 18, 19), date and session, with the Add column and Save buttons highlighted.](../../assets/user-guides/single-animal/create/recording-information.png)
+
+??? info "What everything on this screen does"
+    1. **The table**: double-click a cell to change it. You can copy and paste cells, including from a spreadsheet.
+    2. **Save**: saves every change you made since **Edit**.
+    3. **Cancel**: throws away every change you made since **Edit**.
+    4. **Add column**: adds a column. It asks for the name.
+    5. **Delete column**: removes a column and its values. It asks which one. **acquisition_setup** cannot be deleted.
+
+**Check:** after **Save**, the table shows your columns and values, and the **Edit** button
+is back.
+
+**You can change this at any time.** Click **Edit** again to add a column, fix a value or
+fill in one you skipped, then **Save**. Each recording's own page has the same information:
+click the recording under **Recordings** in the list on the left, and its **Recording
+information** section shows one box per column, with **Add column** and **Save metadata**.
+A column added there appears on every recording, empty on the others until you fill it in.
+
+??? info "About this step"
+    Later chapters use these columns: to choose which recordings to run on, and to compare
+    groups, such as drug on against drug off. The tick-box columns on the right fill in by
+    themselves as you work on each recording, so you can see at a glance how far each one has
+    got.
+
+    For many recordings, copy the values from a spreadsheet and paste them into the table
+    while editing, or use **Import CSV**. **Export CSV** writes a table to fill in, with one
+    row per recording.
+
+## Next
+
+[2. Set up each recording](set-up-recordings.md).

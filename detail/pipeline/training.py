@@ -12,6 +12,7 @@ import contextlib
 from pathlib import Path
 
 from detail.core.dataclasses import TrainingJob
+from detail.core.keypoints import student_input_of
 from detail.core.registries import TRAINERS
 from detail.core.utils import resolve_device
 from detail.executor import rundir
@@ -109,6 +110,19 @@ def _train(job: TrainingJob, run_dir: Path, progress_cb, stop_event) -> dict:
         )
         if dataset.get("skeleton"):
             record["skeleton"] = dataset["skeleton"]
+        if dataset["task"] == "pose":
+            # how the student must be run: on the whole frame, or a crop per animal (§12)
+            # read as the loader reads it (core.keypoints.student_input_of): a pre-§26
+            # dataset recorded no student_input, only its crop size, under ``source``, and
+            # was a crop dataset
+            source_crop = (dataset.get("source") or {}).get("crop_px")
+            student = student_input_of({"crop_px": source_crop, **dataset})
+            record["student_input"] = student["student_input"]
+            record["student_crop_px"] = (
+                student["crop_px"]
+                if student["student_input"] == "crop"
+                else dataset.get("student_crop_px")
+            )
     record["weights"] = {
         "best": best.relative_to(run_dir).as_posix() if best is not None else None,
         "last": last.relative_to(run_dir).as_posix() if last is not None else None,

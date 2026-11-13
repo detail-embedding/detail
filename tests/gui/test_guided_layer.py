@@ -16,14 +16,22 @@ def _s(**kw):
     kw.setdefault(
         "sam3", kw.get("sam3_backend", False) and kw.get("sam3_weights", False)
     )
+    # A GPU torch can use is an NVIDIA one; a test of the CPU-only-torch case sets
+    # `nvidia_gpu=True, gpu=False` itself.
+    kw.setdefault("nvidia_gpu", kw.get("gpu", False))
     base = dict(
         gpu=False,
+        nvidia_gpu=False,
         hf_token=False,
         sam3=False,
         sam3_backend=False,
         sam3_weights=False,
         detection_model=False,
         has_experiment=False,
+        distilled_detector=False,
+        keypoint_student=False,
+        keypoints_skipped=False,
+        shap=False,
     )
     base.update(kw)
     return ReadinessSignals(**base)

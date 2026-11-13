@@ -288,6 +288,12 @@ def optional_spin(
     widget.setRange(unset, widget.maximum())
     widget.setSpecialValueText(auto_text)
     widget.setValue(unset)
+    # Seeded with the model's default when it has one, as `build_fields` seeds a plain field:
+    # an `X | None` whose default is a number (a batch's fixed count per side) otherwise
+    # opened on "unset" and launched the other behaviour, with nothing on screen to say so.
+    default = model_cls.model_fields[name].default
+    if default is not None and default is not PydanticUndefined:
+        widget.setValue(default)
     if field["help"]:
         widget.setToolTip(field["help"])
     return widget

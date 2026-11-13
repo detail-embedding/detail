@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -67,9 +68,9 @@ def _torch_facts(load_torch: bool = True) -> dict:
     try:
         if torch.cuda.is_available():
             facts["accelerator"] = "cuda"
-            facts["gpu"] = torch.cuda.get_device_name(0)
+            facts["gpu"] = str(torch.cuda.get_device_name(0))
             total = torch.cuda.get_device_properties(0).total_memory
-            facts["gpu_memory_gb"] = round(total / 2**30, 1)
+            facts["gpu_memory_gb"] = round(float(total) / 2**30, 1)
         elif torch.backends.mps.is_available():
             # An Apple GPU has no separate memory to report — it shares the machine's, which the
             # RAM row already gives. Saying "unknown" there would read as a failed probe.
@@ -81,28 +82,45 @@ def _torch_facts(load_torch: bool = True) -> dict:
     return facts
 
 
-def _driver() -> str:
-    """The NVIDIA driver version, which is the field a timing difference most often turns on.
+def nvidia_smi() -> tuple[str | None, str | None]:
+    """``(driver_version, driver_cuda)`` from ``nvidia-smi``, or ``(None, None)`` without one.
 
-    Read from `nvidia-smi` because torch does not expose it. Absent on every non-NVIDIA machine,
-    which is not a failure.
+    The one way this package asks whether an NVIDIA GPU is present, which is a different
+    question from whether torch can use it: a CPU-only torch wheel on an NVIDIA box answers
+    ``torch.cuda.is_available() == False`` with a working driver right there. ``driver_cuda``
+    is the newest CUDA the driver supports (the header's ``CUDA Version``), a maximum.
     """
     exe = shutil.which("nvidia-smi")
     if exe is None:
-        return UNKNOWN
+        return None, None
     try:
         out = subprocess.run(
-            [exe, "--query-gpu=driver_version", "--format=csv,noheader"],
+            [exe],
             capture_output=True,
             encoding="utf-8",
             errors="replace",
             timeout=5,
             check=False,
         )
-    except Exception:  # noqa: BLE001
-        return UNKNOWN
-    first = (out.stdout or "").strip().splitlines()
-    return first[0].strip() if first else UNKNOWN
+    except (OSError, subprocess.SubprocessError):
+        return None, None  # a binary that would not start, or one that hung
+    if out.returncode != 0:
+        return None, None
+    # Drivers from the 600 series print `KMD Version:` / `CUDA UMD Version:` where older ones
+    # printed `Driver Version:` / `CUDA Version:`; reading only the old form called a working
+    # NVIDIA GPU absent.
+    driver = re.search(r"(?:Driver|KMD) Version:\s*([\d.]+)", out.stdout or "")
+    cuda = re.search(r"CUDA (?:UMD )?Version:\s*([\d.]+)", out.stdout or "")
+    return (driver.group(1) if driver else None, cuda.group(1) if cuda else None)
+
+
+def _driver() -> str:
+    """The NVIDIA driver version, which is the field a timing difference most often turns on.
+
+    Read from `nvidia-smi` because torch does not expose it. Absent on every non-NVIDIA machine,
+    which is not a failure.
+    """
+    return nvidia_smi()[0] or UNKNOWN
 
 
 def _ram_gb():
@@ -119,13 +137,16 @@ def _ram_gb():
     except Exception:  # noqa: BLE001
         return UNKNOWN
     try:
-        return round(psutil.virtual_memory().total / 2**30, 1)
+        return round(float(psutil.virtual_memory().total) / 2**30, 1)
     except Exception:  # noqa: BLE001
         return UNKNOWN
 
 
 def collect(load_torch: bool = True) -> dict:
     """This machine, as a flat dict of strings and numbers ready to write.
+
+    Plain ``str`` / ``int`` / ``float`` only — never a library's subclass of one — so the
+    ``machine.yaml`` it becomes reads back through ``yaml.safe_load`` on a box without torch.
 
     Flat because it is written to YAML, shown in a table, and pasted into an issue; a nested
     shape would have to be flattened at each of those. ``load_torch=False`` never imports torch

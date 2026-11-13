@@ -90,6 +90,7 @@ from PyQt6.QtWidgets import (
 from detail.api.cluster_filter import LOCATION, SESSION, VIDEO, Selection
 from detail.gui import plot_theme
 from detail.gui.density_map import RegionPicker
+from detail.gui.lifetime import cleared
 from detail.gui.match_key import MatchKey
 from detail.gui.selectable import make_text_selectable
 from detail.gui.sizing import (
@@ -519,6 +520,8 @@ class Checklist(QWidget):
             self.only(self._only_key)
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802 — Qt's name
+        if cleared(self):
+            return False
         # The pointer leaving the list takes "only" with it, unless it went onto the button —
         # or the keyboard is on the list, where "only" belongs to the current row.
         if event.type() == QEvent.Type.Leave and watched is self.list.viewport():
@@ -1585,6 +1588,8 @@ class FilterBar(QObject):
 
     # -- the map's width and the Location line ------------------------------ #
     def eventFilter(self, watched, event) -> bool:  # noqa: N802 — Qt's name
+        if cleared(self):
+            return False
         dock = getattr(self, "dock", None)
         if (
             event.type() == QEvent.Type.Resize

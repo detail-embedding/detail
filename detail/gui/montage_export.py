@@ -35,6 +35,20 @@ cluster, read-only for removals, can still be picked from, since picking only ex
 
 A pick is held as its clip (recording, subject, start, end), not its place on the grid, so a new
 order or a re-marked tile keeps it.
+
+**Under the quick writers** (the user's choice, 2026-11-10, porting remote-detail's montage
+window): **Export clips…** opens ``export_clips.MontageExportDialog`` — several looks at once,
+each in its own subfolder, MP4 and/or GIF each at its own width and rate, a montage file and/or
+one file per clip, with a preview and a size and time estimate — on the grid's clips, or the
+picks while picking. **Export overlay…** writes the clips drawn over each other in one picture,
+each turned to its heading and in its own colour (``ClusterMontage.export_overlay``): an MP4 or
+GIF, or a PNG when every clip is one frame (a pose cluster's postures); the picks while
+picking, else the grid's first :data:`~detail.api.clip_montage.OVERLAY_CLIPS`. **New Query from
+N clips…** opens a behaviour Query's launch dialog with the clips as its examples, on the
+embedding the clustering read (``api.clip_montage.query_examples``); nothing runs until Run is
+pressed there. Every MP4 asks its codec — the save dialog's file types for **Video of N clips…**
+and the overlay, the dialog's own picker in **Export clips…** — and says so when this machine
+wrote another (``video_codec.with_codec_note``).
 """
 
 from __future__ import annotations
@@ -66,6 +80,12 @@ KINDS: tuple[tuple[str, str], ...] = (
     ("files", "One file per clip…"),
     ("list", "CSV list of clips…"),
 )
+#: ``(kind, menu text)`` — the entries under the quick writers, after a separator.
+MORE_KINDS: tuple[tuple[str, str], ...] = (
+    ("clips", "Export clips…"),
+    ("overlay", "Export overlay…"),
+    ("query", "New Query from {n} clips…"),
+)
 _TIPS = {
     "video": "One video of the clips side by side, as the grid shows them.",
     "gif": "One GIF of the clips side by side, as the grid shows them.",
@@ -74,7 +94,24 @@ _TIPS = {
         "The clips as a CSV list, one row each, in this order — each clip's own span (context "
         "is footage around a clip, not part of it). `analysis query --from-csv` reads it."
     ),
+    "clips": (
+        "Write the clips as videos or GIFs in as many looks as you tick: a montage of them, "
+        "one file each, or both — with a preview and an estimate of the size and time."
+    ),
+    "overlay": (
+        "The clips drawn over each other in one picture, each turned to face up by its "
+        "heading and in its own colour, with a key: an MP4 or GIF of them playing together, "
+        "or a PNG when every clip is one frame. Its look is its own, not Show ▾'s."
+    ),
+    "query": (
+        "Open a new behaviour Query with these clips as its examples, on the embedding the "
+        "clustering read. You review it and press Run."
+    ),
 }
+#: Why **Export overlay…** waits: the overlay turns every clip by its heading.
+OVERLAY_NEEDS_HEADING = (
+    "The overlay turns every clip to face up by its heading, and this run cannot: "
+)
 PICK_TEXT = "Pick clips to export…"
 PICK_TIP = (
     "Choose which clips to export, and in what order: click clips to pick them, numbered in "
@@ -96,9 +133,10 @@ class ExportSource:
     ``clips``: the grid's clips as ``api.clip_montage.MontageClip``, in grid order, one per tile,
     each its own span (the context is widened here) and ranked by its place on the grid.
     ``experiment_dir``: where the source video is read from. ``origin``: where the clips came
-    from, for the CSV list (``api.clip_montage.MontageOrigin``). ``name``: the stem a suggested
-    file name starts with ("climb"). ``empty``: why there is nothing to export while the grid
-    is empty ("Open a cluster in the tree to export its clips").
+    from, for the CSV list and a Query's name (``api.clip_montage.MontageOrigin``). ``name``:
+    the stem a suggested file name starts with ("climb"). ``empty``: why there is nothing to
+    export while the grid is empty ("Open a cluster in the tree to export its clips").
+    ``experiment``: the open experiment, which **New Query from N clips…** launches in.
     """
 
     clips: Callable[[], Sequence]
@@ -106,6 +144,7 @@ class ExportSource:
     origin: Callable[[], object]
     name: Callable[[], str]
     empty: Callable[[], str]
+    experiment: Callable[[], object]
 
 
 def describe(look, context_s: float, *, picking: bool) -> str:
@@ -137,12 +176,79 @@ def written_text(path) -> str:
 
 def clip_key(clip) -> tuple:
     """A clip as a pick holds it: what it is, never where it sits on the grid."""
+    from detail.core.utils import subject_key
+
     return (
         str(clip.recording_id),
-        int(clip.subject),
+        subject_key(clip.subject),
         int(clip.start_t_ns),
         int(clip.end_t_ns),
     )
+
+
+def as_series_clip(clip):
+    """``clip`` (an ``api.clip_montage.MontageClip``) with its subject a plain ``int``: a page
+    that read it from an ``int64`` column hands an ``np.int64``."""
+    import dataclasses
+
+    import numpy as np
+
+    from detail.core.utils import subject_key
+
+    if isinstance(clip.subject, np.integer):
+        return dataclasses.replace(clip, subject=subject_key(clip.subject))
+    return clip
+
+
+def query_prefill(clips, origin, title: str) -> dict:
+    """What **New Query from N clips…** opens the Query launch with: ``seed`` (the behaviour,
+    named for the cluster, and ``clips`` as its examples), ``recordings`` to check,
+    ``selection`` (the embedding) and the ``note`` saying what is left to choose.
+
+    The clips are the user's own — what they watched and chose — so a method given them is
+    given what a user could give it ("Labels score a method; they never build one").
+
+    Raises:
+        ValueError: no clips.
+    """
+    from detail.api import clip_montage as montage_api
+
+    clips = list(clips)
+    examples = montage_api.query_examples(clips, name=origin.behavior_name)
+    behavior = {
+        "name": examples.behavior_name,
+        "examples": [dict(c) for c in examples.examples],
+        "negatives": [],
+    }
+    params: dict = {"behaviors": [behavior], "track_id": examples.track_id}
+    left = [
+        "add any other recordings to search",
+        "check the method and its settings",
+        "press Run",
+    ]
+    if examples.embed_run_id is None:
+        embedding = (
+            "read from several embedding runs "
+            f"({', '.join(examples.embed_run_ids)}) — a Query searches one"
+        )
+        left.insert(0, "choose the embedding run")
+    else:
+        embedding = f"on {examples.embed_run_id}, the embedding the clustering read"
+    note = (
+        f"From the clips of {title}: {len(clips)} example clips of "
+        f"'{examples.behavior_name}' {embedding}, with their "
+        f"{len(examples.recording_ids)} recording(s) checked. Still to do: "
+        + "; ".join(left)
+        + "."
+    )
+    return {
+        "seed": {"module_id": "query", "params": params},
+        "recordings": list(examples.recording_ids),
+        "selection": (
+            {"embed_run_id": examples.embed_run_id} if examples.embed_run_id else {}
+        ),
+        "note": note,
+    }
 
 
 @dataclass(frozen=True)
@@ -185,13 +291,16 @@ class ExportMenu(QPushButton):
             self.pick_action.setToolTip(PICK_TIP)
             self.pick_action.triggered.connect(lambda _c=False: self.pick_wanted.emit())
             self.menu.addSeparator()
-        #: The writers, by kind.
+        #: The writers, by kind (:data:`KINDS`, then :data:`MORE_KINDS`).
         self.actions_by_kind: dict[str, QAction] = {}
-        for kind, _text in KINDS:
-            action = self.menu.addAction("")
-            action.triggered.connect(lambda _c=False, k=kind: self.requested.emit(k))
-            self.actions_by_kind[kind] = action
-        self.menu.addSeparator()
+        for group in (KINDS, MORE_KINDS):
+            for kind, _text in group:
+                action = self.menu.addAction("")
+                action.triggered.connect(
+                    lambda _c=False, k=kind: self.requested.emit(k)
+                )
+                self.actions_by_kind[kind] = action
+            self.menu.addSeparator()
         #: What a write draws, in words — greyed: a line to read, not to click.
         self.describe_action = self.menu.addAction("")
         self.describe_action.setEnabled(False)
@@ -200,16 +309,25 @@ class ExportMenu(QPushButton):
     def open_menu(self) -> None:
         self.menu.exec(self.mapToGlobal(QPoint(0, self.height())))
 
-    def sync(self, count: int, description: str, reason: str | None) -> None:
+    def sync(
+        self,
+        count: int,
+        description: str,
+        reason: str | None,
+        *,
+        overlay_reason: str | None,
+    ) -> None:
         """``count`` clips would be written, as ``description`` says; ``reason``: why nothing
-        can be (each writer greyed with it), or ``None``."""
+        can be (each writer greyed with it), or ``None``; ``overlay_reason``: why
+        **Export overlay…** cannot, past that."""
         if not self._offers_pick:
             self.setText(f"Export {count} ▾")
-        for kind, text in KINDS:
+        for kind, text in (*KINDS, *MORE_KINDS):
             action = self.actions_by_kind[kind]
+            why = reason or (overlay_reason if kind == "overlay" else None)
             action.setText(text.format(n=f"{count:,}"))
-            action.setEnabled(reason is None)
-            action.setToolTip(_TIPS[kind] if reason is None else reason)
+            action.setEnabled(why is None)
+            action.setToolTip(_TIPS[kind] if why is None else why)
         self.describe_action.setText(description)
         if not self._offers_pick:
             set_available(self, reason is None, reason or "")
@@ -303,6 +421,8 @@ class MontageExport(QObject):
         #: ``(index, when, picks before)`` of the last plain click — what a double-click on
         #: the same clip takes back, so opening a clip does not pick or un-pick it.
         self._last_click: tuple[int, float, list] | None = None
+        #: The open **Export clips…** dialog, kept in step with the grid while it is open.
+        self._dialog = None
 
         self.button = ExportMenu(offers_pick=True)
         self.button.requested.connect(self.export)
@@ -338,13 +458,14 @@ class MontageExport(QObject):
             montage.context_changed,
             montage.aligned_changed,
             montage.show_button.layer_toggled,
+            montage.look_changed,
         ):
             signal.connect(lambda *_a: self.sync())
         self.sync()
 
     # -- what the grid holds --------------------------------------------------------------- #
     def _clips(self) -> list:
-        clips = list(self._source.clips())
+        clips = [as_series_clip(c) for c in self._source.clips()]
         # Asked between a page's new order and its new tiles, the two can disagree for a moment:
         # nothing is exported from a grid that is not the one on screen.
         if len(clips) != len(self._montage.clips()):
@@ -523,14 +644,23 @@ class MontageExport(QObject):
             return NOTHING_PICKED
         return None
 
+    def overlay_reason(self) -> str | None:
+        """Why **Export overlay…** cannot run now (past :meth:`reason`), or ``None``."""
+        note = self._montage.alignment_note()
+        if note is None:
+            return None
+        return OVERLAY_NEEDS_HEADING + note[0].lower() + note[1:]
+
     def sync(self) -> None:
-        """Both menus and the pick bar say what an export would write now."""
+        """Both menus and the pick bar say what an export would write now; an open **Export
+        clips…** dialog follows."""
         reason = self.reason()
+        overlay = self.overlay_reason()
         count = len(self._picks) if self._picking else len(self._clips())
         line = describe(
             self._montage.look(), self._montage.context_s(), picking=self._picking
         )
-        self.button.sync(count, line, reason)
+        self.button.sync(count, line, reason, overlay_reason=overlay)
         if self.button.pick_action is not None:
             empty = not self._clips()
             self.button.pick_action.setEnabled(not empty and not self._picking)
@@ -542,7 +672,7 @@ class MontageExport(QObject):
                 )
             )
         bar = self.pick_bar
-        bar.export.sync(count, line, reason)
+        bar.export.sync(count, line, reason, overlay_reason=overlay)
         bar.text.setText(
             pick_preview_text(self._montage.preview())
             if self._picking and self._montage.preview() is not None
@@ -556,6 +686,8 @@ class MontageExport(QObject):
         set_available(bar.clear, bool(self._picks), "Nothing is picked.")
         if self._picks:
             bar.clear.setToolTip("Un-pick every clip, to start the order again.")
+        if self._dialog is not None:
+            self._dialog.refresh()
 
     def export(self, kind: str) -> None:
         """Ask where, then write ``kind`` (:data:`KINDS`) of the current job."""
@@ -568,12 +700,16 @@ class MontageExport(QObject):
         what = "picks" if job.picks else "montage"
         shown = describe(self._montage.look(), job.context_s, picking=job.picks)
         shown = shown.split(": ", 1)[1]
-        if kind == "video":
-            path = ax.ask_save_path(
-                owner, "Export video", self._file(what, ax.MP4), ax.MP4
-            )
-            if path is not None:
-                self.write_montage(job, path)
+        if kind == "clips":
+            self.open_dialog()
+        elif kind == "overlay":
+            self.export_overlay()
+        elif kind == "query":
+            self.use_as_query_examples()
+        elif kind == "video":
+            answer = ax.ask_mp4_path(owner, "Export video", self._file(what, ax.MP4))
+            if answer is not None:
+                self.write_montage(job, answer[0], codec=answer[1])
         elif kind == "gif":
             answer = ax.ask_gif_settings(
                 owner,
@@ -615,13 +751,19 @@ class MontageExport(QObject):
 
         return f"{safe_name(self._source.name())}_{what}.{kind}"
 
-    def write_montage(self, job: ExportJob, path, *, max_width=None, fps=None):
+    def write_montage(
+        self, job: ExportJob, path, *, max_width=None, fps=None, codec=None
+    ):
         """``job`` as one montage at ``path`` (``.mp4`` / ``.gif``), off the UI thread behind
-        a bar with Cancel."""
+        a bar with Cancel; an mp4 in ``codec`` (``core.video_codecs``; the default when
+        ``None``), the line over the grid saying so when this machine wrote another."""
         from detail.api import clip_montage as montage_api
+        from detail.core.video_codecs import DEFAULT_VIDEO_CODEC
         from detail.gui import animation_export
+        from detail.gui.video_codec import with_codec_note
 
         experiment_dir = self._source.experiment_dir()
+        codec = codec or DEFAULT_VIDEO_CODEC
 
         def work(progress):
             montage = montage_api.ClusterMontage(experiment_dir, job.clips)
@@ -633,6 +775,7 @@ class MontageExport(QObject):
                     max_width=max_width,
                     fps=fps,
                     progress=progress,
+                    codec=codec,
                 )
             finally:
                 montage.close()
@@ -640,7 +783,9 @@ class MontageExport(QObject):
         return animation_export.run_export(
             self._montage,
             work,
-            on_written=lambda written: self._finished(job, written_text(written)),
+            on_written=lambda written: self._finished(
+                job, with_codec_note(written_text(written), written, codec)
+            ),
             label=f"Exporting {len(job.clips):,} clips…",
         )
 
@@ -723,3 +868,189 @@ class MontageExport(QObject):
         self.written.setText(text)
         self.written.setToolTip(text)
         self.written.setVisible(True)
+
+    # -- Export overlay… ------------------------------------------------------------------ #
+    def overlay_clips(self, job: ExportJob) -> tuple[list, list[str]]:
+        """``(clips, labels)`` an overlay of ``job`` draws: every pick, or the grid's first
+        :data:`~detail.api.clip_montage.OVERLAY_CLIPS` (one picture of two thousand outlines
+        is no picture)."""
+        from detail.api.clip_montage import OVERLAY_CLIPS
+
+        if job.picks:
+            return list(job.clips), list(job.labels)
+        return list(job.clips[:OVERLAY_CLIPS]), list(job.labels[:OVERLAY_CLIPS])
+
+    def export_overlay(self, path=None, codec: str | None = None):
+        """**Export overlay…**: where to write it — an MP4 in the codec its file type names,
+        or a GIF; a PNG when every clip is one frame — then the export behind a bar with
+        Cancel. ``path`` (and ``codec``) skip the dialog, for a test."""
+        from detail.core.video_codecs import DEFAULT_VIDEO_CODEC
+        from detail.gui.animation_export import safe_name
+        from detail.gui.video_codec import codec_of_filter, mp4_filters
+
+        job = self.job()
+        if self.reason() is not None or self.overlay_reason() is not None:
+            return None
+        clips, labels = self.overlay_clips(job)
+        if not clips:
+            return None
+        still = all(int(c.start_t_ns) == int(c.end_t_ns) for c in clips)
+        if path is None:
+            kinds = (
+                ["PNG image (*.png)"]
+                if still
+                else [*mp4_filters(), "GIF animation (*.gif)"]
+            )
+            chosen_path, chosen = QFileDialog.getSaveFileName(
+                self._montage,
+                "Export overlay",
+                f"{safe_name(self._source.name())}_overlay",
+                ";;".join(kinds),
+            )
+            if not chosen_path:
+                return None
+            path = Path(chosen_path)
+            suffix = ".png" if still else (".gif" if "*.gif" in chosen else ".mp4")
+            if path.suffix.lower() != suffix:
+                path = path.with_name(f"{path.name}{suffix}")
+            codec = codec_of_filter(chosen)
+        return self.write_overlay(
+            job, clips, labels, Path(path), codec=codec or DEFAULT_VIDEO_CODEC
+        )
+
+    def write_overlay(self, job: ExportJob, clips, labels, path: Path, *, codec: str):
+        """The overlay of ``clips`` at ``path``, off the UI thread behind a bar with Cancel."""
+        from detail.api import clip_montage as montage_api
+        from detail.gui import animation_export
+        from detail.gui.video_codec import with_codec_note
+
+        experiment_dir = self._source.experiment_dir()
+
+        def work(progress):
+            montage = montage_api.ClusterMontage(experiment_dir, clips)
+            try:
+                return montage.export_overlay(  # off-thread (run_progress)
+                    path, labels, progress=progress, codec=codec
+                )
+            finally:
+                montage.close()
+
+        return animation_export.run_export(
+            self._montage,
+            work,
+            on_written=lambda written: self._finished(
+                job, with_codec_note(written_text(written), written, codec)
+            ),
+            label="Exporting the overlay…",
+        )
+
+    # -- New Query from N clips… ---------------------------------------------------------- #
+    def query_prefill(self) -> dict:
+        """What **New Query from N clips…** opens the Query launch with (:func:`query_prefill`)
+        — the picks while picking, else every clip; each its own span, never its context.
+        """
+        return query_prefill(
+            self.job().plain, self._source.origin(), self._source.name()
+        )
+
+    def use_as_query_examples(self):
+        """Open a new behaviour Query's launch dialog with the clips as its examples. Nothing
+        runs until the user presses Run there. Returns the dialog (closed), for a test.
+        """
+        from detail.gui.dialog import Dialog
+        from detail.gui.launch import LaunchAnalysisDialog
+
+        if self.reason() is not None:
+            return None
+        prefill = self.query_prefill()
+        dialog = LaunchAnalysisDialog(
+            self._source.experiment(),
+            self._montage.window(),
+            seed=prefill["seed"],
+            recordings=prefill["recordings"],
+            selection=prefill["selection"],
+            note=prefill["note"],
+        )
+        if dialog.exec() == Dialog.DialogCode.Accepted and dialog.run_handle:
+            self._say(
+                f"Launched {dialog.run_handle.id}: it is under Analysis while it runs."
+            )
+        return dialog
+
+    # -- Export clips… (export_clips.MontageExportDialog reads these, live) -------------- #
+    def open_dialog(self):
+        """Open **Export clips…** on the grid's clips — preset to the picks while picking —
+        or bring the open one forward."""
+        from detail.gui.export_clips import MontageExportDialog
+
+        dialog = self._dialog
+        if dialog is None:
+            dialog = MontageExportDialog(self, selected_only=self._picking)
+            dialog.finished.connect(lambda _code: self._forget_dialog(dialog))
+            self._dialog = dialog
+        else:
+            dialog.set_selected_only(self._picking)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        return dialog
+
+    def _forget_dialog(self, dialog) -> None:
+        if self._dialog is dialog:
+            self._dialog = None
+
+    def montage(self):
+        return self._montage
+
+    def members(self) -> list:
+        """Every clip of the grid, in its order, each its own span."""
+        return self._clips()
+
+    def shown_clips(self) -> list:
+        return self._clips()
+
+    def selected_clips(self) -> list:
+        """The picks, in pick order, while picking; else none."""
+        if not self._picking:
+            return []
+        clips = self._clips()
+        _keys, place = self._keys()
+        return [clips[place[k]] for k in self._picks if k in place]
+
+    def pick_session(self) -> int | None:
+        """The pick session now, or ``None`` when not picking — what an export of the picks
+        hands back to :meth:`note_written`, so only its own session ends."""
+        return self._session if self._picking else None
+
+    def context_s(self) -> float:
+        return self._montage.context_s()
+
+    def layers(self):
+        """What the tiles draw now, as an export's layers (``show_menu.layers_of``)."""
+        from detail.gui.show_menu import layers_of
+
+        return layers_of(self._montage.look())
+
+    def trail_skeleton(self):
+        """``(names, pairs)`` of the keypoints, once a tile has shown them, else ``None``."""
+        return self._montage.skeleton()
+
+    def trail_names(self) -> list[str] | None:
+        points = self._montage.look().trail_points
+        return None if points is None else list(points)
+
+    def title_text(self) -> str:
+        return str(self._source.name())
+
+    def origin(self):
+        return self._source.origin()
+
+    def experiment_dir(self) -> Path:
+        return Path(self._source.experiment_dir())
+
+    def note_written(self, text: str, *, session: int | None = None) -> None:
+        """What an export from the dialog wrote, on the line over the grid; an export of the
+        picks made in ``session`` ends that pick session, as a quick one does."""
+        self._say(text)
+        if session is not None and self._picking and session == self._session:
+            self.stop_picking()

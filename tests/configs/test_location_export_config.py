@@ -5,7 +5,12 @@ from detail.configs.location_export import LocationExportConfig
 
 def test_round_trips():
     # model_dump() reproduces the stored dict shape validate() returns into the record.
-    d = {"source_recording_ids": ["s1", "s2"], "tracking_run_id": "track_01"}
+    d = {
+        "source_recording_ids": ["s1", "s2"],
+        "tracking_run_id": "track_01",
+        "keypoint_run_id": "kt_01",
+        "pair_edge_distance": True,
+    }
     assert LocationExportConfig.model_validate(d).model_dump() == d
 
 
@@ -13,7 +18,12 @@ def test_defaults_are_empty_and_none():
     # An empty config is well-formed at the model level; validate() supplies the
     # "needs at least one recording / a tracking run" messages (experiment-aware).
     cfg = LocationExportConfig.model_validate({})
-    assert cfg.model_dump() == {"source_recording_ids": [], "tracking_run_id": None}
+    assert cfg.model_dump() == {
+        "source_recording_ids": [],
+        "tracking_run_id": None,
+        "keypoint_run_id": None,
+        "pair_edge_distance": False,
+    }
 
 
 def test_extra_keys_ignored():

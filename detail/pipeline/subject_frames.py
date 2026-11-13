@@ -14,6 +14,8 @@ Two sampling strategies, both copying tracked-subject frames into an example set
      ``choose_recordings`` cuts the full set into equal runs and picks one recording from each,
      so a large experiment is sampled from end to end rather than from its first recordings,
      and the wait stops growing with the recordings. ``from_recordings=None`` reads every one.
+     ``spread_by`` names a metadata column (an acquisition setup, a cohort) to split the
+     recordings evenly across its values instead, so every rig or group is read.
   1. **Shape pass, every tracked frame** (thinned to ``SHAPE_POOL`` per recording, no video
      decode): each frame's subject mask gives its posture and the direction of its long axis
      (``shape_row``). Frames whose box touches the frame edge, or whose area is far from the
@@ -44,25 +46,70 @@ on accuracy is **not measured** (§26 *Open questions* 11).
 from __future__ import annotations
 
 import zlib
+from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
 import numpy as np
-import yaml
 
 from detail.core import atomic
-from detail.core.examples import ExampleFrame, ExampleSet
+from detail.core import yaml_load
+from detail.core.examples import HEADING_BUCKETS, ExampleFrame, ExampleSet
 from detail.core.progress import ThrottledProgress
 from detail.core.utils import decode_mask
 from detail.core.visualize import bgr_to_rgb
 from detail.executor import rundir
 from detail.storage import example_sets
 from detail.storage import experiment as experiment_store
+from detail.storage import metadata as metadata_store
 from detail.storage import recording as recording_store
 from detail.storage.video import read_frame_at
-from detail.storage.zarr_io import DetectionPartReader, PartZarrReader
+from detail.storage.zarr_io import (
+    DetectionPartReader,
+    PartZarrReader,
+    object_ids_on_detection_rows,
+)
 
-STRATEGIES = ("varied", "spread")
+
+@dataclass(frozen=True)
+class Strategy:
+    """One sampling strategy as every surface shows it: the API's id, the GUI's label, the
+    help the GUI tooltip and CLI ``--help`` both print, and whether it reads a subset of the
+    recordings (so ``from_recordings`` / ``spread_by`` apply)."""
+
+    id: str
+    label: str
+    help: str
+    reads_subset: bool
+
+
+#: The one list of strategies. The CLI's choice and the GUI's combo are built from it, so a
+#: strategy added here reaches both (they used to hold copies of the ids).
+STRATEGY_TABLE = (
+    Strategy(
+        "varied",
+        "Varied frames",
+        "Postures that differ, the typical ones first (reads the subject's shape on every "
+        "tracked frame).",
+        reads_subset=True,
+    ),
+    Strategy(
+        "spread",
+        "Spread over time",
+        "One frame per equal time slice, across every recording.",
+        reads_subset=False,
+    ),
+    Strategy(
+        "heading",
+        "By heading (8 directions)",
+        "Frames per direction the animal faces as the camera sees it — toward, away, left, "
+        "right and the diagonals, plus rearing — from walking, the tail and similar frames; "
+        "the count is per direction. For side and angled cameras: refused when every "
+        "recording's camera view is top down.",
+        reads_subset=True,
+    ),
+)
+STRATEGIES = tuple(s.id for s in STRATEGY_TABLE)
 DEFAULT_STRATEGY = "varied"
 #: A varied sample reads the shape of every tracked frame of every recording it is given, so the
 #: wait grows with the recordings, and a few dozen already hold the postures a set needs. Above
@@ -172,7 +219,7 @@ def tracked_frame(
         raise ValueError(
             f"no tracking run {tracking_run_id!r} in recording {recording_dir.name!r}"
         )
-    track_meta = yaml.safe_load(atomic.read_text(meta_path))
+    track_meta = yaml_load.safe_load(atomic.read_text(meta_path))
     det_path = (
         recording_dir
         / "detections"
@@ -187,7 +234,14 @@ def tracked_frame(
     if rows.size == 0:
         return None
     lo, hi = int(rows[0]), int(rows[-1]) + 1  # a frame's rows are contiguous
-    object_id = np.asarray(PartZarrReader(assignment_path).column("object_id")[lo:hi])
+    assignment = PartZarrReader(assignment_path)
+    if track_meta.get("class_name"):
+        # a class-filtered run's assignment is not parallel to the part's rows
+        object_id = object_ids_on_detection_rows(
+            det, assignment, track_meta["class_name"]
+        )[lo:hi]
+    else:
+        object_id = np.asarray(assignment.column("object_id")[lo:hi])
     window = {
         "frame_idx": np.full(hi - lo, int(frame_idx)),
         "bbox": np.asarray(det.column("bbox")[lo:hi]),
@@ -219,15 +273,18 @@ def _tracked_rows(
         raise ValueError(
             f"no tracking run {tracking_run_id!r} in recording {recording_dir.name!r}"
         )
-    track_meta = yaml.safe_load(atomic.read_text(meta_path))
+    track_meta = yaml_load.safe_load(atomic.read_text(meta_path))
     detection_dir = recording_dir / "detections" / track_meta["detection_run_id"]
     out = []
     for det_path in sorted(detection_dir.glob("part_*.zarr")):
         assignment_path = tracking_dir / "assignments" / det_path.name
         if not assignment_path.is_dir():
             continue
-        det = _part_columns(DetectionPartReader(det_path))
-        object_id = np.asarray(PartZarrReader(assignment_path).read()["object_id"])
+        reader = DetectionPartReader(det_path)
+        det = _part_columns(reader)
+        object_id = object_ids_on_detection_rows(
+            reader, PartZarrReader(assignment_path), track_meta.get("class_name")
+        )
         present = sorted({int(t) for t in object_id if int(t) >= 0})
         for track_id in present if track_ids is None else track_ids:
             for item in subject_frames(det, object_id, int(track_id), 1):
@@ -374,13 +431,25 @@ def _spread(candidates: list[dict], k: int, rng: np.random.Generator) -> list[di
     return picks
 
 
-def choose_recordings(recording_ids: list[str], k: int, seed: int = 0) -> list[str]:
+def choose_recordings(
+    recording_ids: list[str],
+    k: int,
+    seed: int = 0,
+    groups: dict[str, str] | None = None,
+) -> list[str]:
     """``k`` of ``recording_ids``, **stratified across the whole list**, in list order.
 
     The list is cut into ``k`` equal runs and one recording is picked from each at random, so the
     sample reaches every part of the set: a library imported in blocks (two strains, several
     days) is represented from each block, which taking the first ``k`` would not do. The same
     ``seed`` picks the same recordings; ``k`` of the list or more returns the list as it is.
+
+    ``groups`` (recording id -> a metadata value, e.g. its acquisition setup) splits ``k``
+    **evenly across the values** rather than by list position: each value gets ``k // values``
+    recordings, the remainder going one each to the values with the most recordings left, and
+    a value with too few gives its unused share to the others. Within a value the pick is the
+    same stratified-by-position draw. A recording missing from ``groups`` is its own value
+    ``""`` (a blank cell), not dropped.
 
     Raises:
         ValueError: ``k`` is below one.
@@ -390,12 +459,61 @@ def choose_recordings(recording_ids: list[str], k: int, seed: int = 0) -> list[s
     n = len(recording_ids)
     if k >= n:
         return list(recording_ids)
-    edges = np.linspace(0, n, k + 1).astype(int)
-    rng = np.random.default_rng(seed)
-    return [
-        recording_ids[int(rng.integers(low, high))]
-        for low, high in zip(edges[:-1], edges[1:])
-    ]
+    if groups is None:
+        return _stratified(recording_ids, k, np.random.default_rng(seed))
+    by_value: dict[str, list[str]] = {}
+    for recording_id in recording_ids:
+        by_value.setdefault(groups.get(recording_id, ""), []).append(recording_id)
+    take = _even_shares([len(v) for v in by_value.values()], k)
+    chosen: set[str] = set()
+    for (value, members), count in zip(by_value.items(), take):
+        rng = np.random.default_rng(zlib.crc32(f"{value}:{seed}".encode()))
+        chosen.update(_stratified(members, count, rng))
+    return [r for r in recording_ids if r in chosen]
+
+
+def recording_groups(experiment_dir: Path | str, column: str) -> dict[str, str]:
+    """``{recording_id: value}`` of one metadata column (§11), for :func:`choose_recordings`.
+
+    Raises:
+        ValueError: ``column`` is not one of the experiment's metadata columns.
+    """
+    known = metadata_store.columns(experiment_dir)
+    if column not in known:
+        raise ValueError(
+            f"no metadata column {column!r} to spread recordings across; the experiment "
+            f"has {known or 'no metadata columns'}"
+        )
+    table = metadata_store.read_metadata(experiment_dir)
+    return {recording_id: row.get(column, "") for recording_id, row in table.items()}
+
+
+def _stratified(ids: list[str], k: int, rng: np.random.Generator) -> list[str]:
+    """One of ``ids`` at random from each of ``k`` equal runs, in list order."""
+    if k >= len(ids):
+        return list(ids)
+    if k <= 0:
+        return []
+    edges = np.linspace(0, len(ids), k + 1).astype(int)
+    return [ids[int(rng.integers(lo, hi))] for lo, hi in zip(edges[:-1], edges[1:])]
+
+
+def _even_shares(sizes: list[int], k: int) -> list[int]:
+    """``k`` split as evenly as ``sizes`` allow: equal shares, capped at each size, with what a
+    small group cannot take handed on to the groups that still have room (largest first).
+    """
+    take = [0] * len(sizes)
+    left = min(k, sum(sizes))
+    while left > 0:
+        open_ = [i for i, s in enumerate(sizes) if take[i] < s]
+        share = max(left // len(open_), 1)
+        for i in sorted(open_, key=lambda j: sizes[j] - take[j], reverse=True):
+            if left == 0:
+                break
+            give = min(share, sizes[i] - take[i], left)
+            take[i] += give
+            left -= give
+    return take
 
 
 def _check_request(sources: dict[str, str], n_frames: int) -> None:
@@ -483,6 +601,13 @@ def _copy_frame(
     return frame, (int(rgb.shape[1]), int(rgb.shape[0]))
 
 
+def refused(example_set: ExampleSet) -> set[tuple[str, str, int, int]]:
+    """The frames a strategy without heading buckets must never draw: those the user
+    rejected for every bucket (a rejection for one bucket says nothing about the others).
+    """
+    return {r.key() for r in example_set.rejected if r.bucket is None}
+
+
 def _key(row: dict) -> tuple[str, str, int, int]:
     """``ExampleFrame.key()`` for a candidate row."""
     return (row["recording_id"], row["part_id"], int(row["t_ns"]), int(row["track_id"]))
@@ -500,6 +625,9 @@ def sample_frames(
     strategy: str = DEFAULT_STRATEGY,
     n_typical: int = DEFAULT_N_TYPICAL,
     from_recordings: int | None = DEFAULT_FROM_RECORDINGS,
+    spread_by: str | None = None,
+    buckets: list[str] | None = None,
+    floor_class: str | None = None,
     track_ids: list[int] | None = None,
     seed: int = 0,
     device: str | None = None,
@@ -511,27 +639,44 @@ def sample_frames(
 
     ``varied``: ``n_frames`` farthest-first picks, opened by ``n_typical`` typical frames
     when the set is empty (module docstring), from ``from_recordings`` of the recordings when
-    there are more than that (:func:`choose_recordings`; ``None`` uses every one). ``spread``:
-    ``n_frames`` spread over time across every recording; ``n_typical`` and
-    ``from_recordings`` do not apply. Frames the set already holds are not drawn again.
+    there are more than that (:func:`choose_recordings`; ``None`` uses every one), split
+    evenly across the values of the metadata column ``spread_by`` when one is named (e.g. the
+    acquisition setup, so every rig is read). ``heading``: ``n_frames`` **per bucket** of
+    ``buckets`` (every one when None) from the same recording subset (§26 *Headings*,
+    ``pipeline.headings``); ``floor_class`` names the detection class that is the floor, if
+    the rig has one. ``spread``: ``n_frames`` spread over time across every recording;
+    ``n_typical``, ``from_recordings`` and ``spread_by`` do not apply. Frames the set already
+    holds, and frames rejected (for the bucket, or for every bucket), are not drawn again.
     ``device`` runs the DINOv3 pass (the fastest present when None).
     ``progress(stage, fraction, detail)`` names each phase as it starts.
 
     Raises:
-        ValueError: An unknown strategy, a negative ``n_typical``, a ``from_recordings``
-            below one, or ``draw_frames``' reasons.
+        ValueError: An unknown strategy or bucket, a negative ``n_typical``, a
+            ``from_recordings`` below one, a ``spread_by`` that is not a metadata column, a
+            ``floor_class`` no recording detects, or ``draw_frames``' reasons.
     """
     if strategy not in STRATEGIES:
         raise ValueError(
             f"unknown sampling strategy {strategy!r}; expected one of {STRATEGIES}"
+        )
+    unknown = sorted(set(buckets or ()) - set(HEADING_BUCKETS))
+    if unknown:
+        raise ValueError(
+            f"unknown heading buckets {unknown}; expected some of {HEADING_BUCKETS}"
+        )
+    if (buckets or floor_class) and strategy != "heading":
+        raise ValueError(
+            "buckets and floor_class are the heading strategy's; set strategy='heading' "
+            "or leave them out"
         )
     if n_typical < 0:
         raise ValueError(f"n_typical must be 0 or more; got {n_typical}")
     if from_recordings is not None and from_recordings < 1:
         raise ValueError(f"from_recordings must be 1 or more; got {from_recordings}")
     experiment_dir = Path(experiment_dir)
+    groups = recording_groups(experiment_dir, spread_by) if spread_by else None
     example_set = example_sets.read_set(experiment_dir, set_id)
-    existing = {f.key() for f in example_set.frames}
+    existing = {f.key() for f in example_set.frames} | refused(example_set)
 
     created: list[Path] = []
 
@@ -555,6 +700,9 @@ def sample_frames(
             add_image=add_image,
             n_typical=n_typical,
             from_recordings=from_recordings,
+            groups=groups,
+            buckets=buckets,
+            floor_class=floor_class,
             track_ids=track_ids,
             seed=seed,
             device=device,
@@ -580,11 +728,29 @@ def _draw(
     add_image,
     n_typical: int,
     from_recordings: int | None,
+    groups: dict[str, str] | None,
+    buckets: list[str] | None,
+    floor_class: str | None,
     track_ids: list[int] | None,
     seed: int,
     device: str | None,
     progress,
 ) -> list[ExampleFrame]:
+    if strategy == "heading":
+        return heading_frames(
+            experiment_dir,
+            example_set,
+            sources,
+            n_frames,
+            buckets=buckets,
+            floor_class=floor_class,
+            from_recordings=from_recordings,
+            groups=groups,
+            add_image=add_image,
+            seed=seed,
+            device=device,
+            progress=progress,
+        )
     if strategy == "spread":
         drawn = draw_frames(
             experiment_dir,
@@ -605,12 +771,70 @@ def _draw(
         n_frames,
         n_typical=n_typical if not example_set.frames else 0,
         from_recordings=from_recordings,
+        groups=groups,
         add_image=add_image,
         track_ids=track_ids,
         seed=seed,
         device=device,
         progress=progress,
     )
+
+
+def heading_frames(
+    experiment_dir: Path,
+    example_set: ExampleSet,
+    sources: dict[str, str],
+    per_bucket: int,
+    *,
+    buckets: list[str] | None,
+    floor_class: str | None,
+    from_recordings: int | None,
+    groups: dict[str, str] | None,
+    add_image,
+    seed: int,
+    device: str | None,
+    progress,
+) -> list[ExampleFrame]:
+    """The ``heading`` strategy: ``per_bucket`` frames for each of ``buckets``, from the
+    recording subset, each ``sampled_by`` ``heading:<bucket>:<source>``."""
+    from detail.pipeline import headings
+
+    _check_request(sources, per_bucket)
+    if from_recordings is not None:
+        chosen = choose_recordings(sorted(sources), from_recordings, seed, groups)
+        sources = {recording_id: sources[recording_id] for recording_id in chosen}
+    pool = headings.build_pool(
+        experiment_dir,
+        sources,
+        floor_class=floor_class,
+        groups=groups,
+        device=device,
+        progress=progress,
+    )
+    picks = [
+        (bucket, cand)
+        for bucket in buckets or HEADING_BUCKETS
+        for cand in headings.candidates(pool, example_set, bucket, per_bucket)
+    ]
+    if not picks:
+        raise _nothing_left(None)
+    out = []
+    for i, (bucket, cand) in enumerate(picks):
+        if progress is not None:
+            progress("copying frames", i / len(picks), f"{i}/{len(picks)} frames")
+        copied = _copy_frame(
+            experiment_dir,
+            cand["recording_id"],
+            cand["tracking_run_id"],
+            cand,
+            add_image,
+            sampled_by=f"heading:{bucket}:{cand['source'] or 'none'}",
+        )
+        if copied is not None:
+            out.append(copied[0])
+    if progress is not None:
+        progress("copying frames", 1.0, f"{len(out)}/{len(picks)} frames")
+    return out
 
 
 def draw_frames(
@@ -955,6 +1179,7 @@ def varied_frames(
     n_typical: int,
     add_image,
     from_recordings: int | None = DEFAULT_FROM_RECORDINGS,
+    groups: dict[str, str] | None = None,
     track_ids: list[int] | None = None,
     seed: int = 0,
     device: str | None = None,
@@ -966,7 +1191,8 @@ def varied_frames(
 
     With more than ``from_recordings`` sources, only that many are read, stratified across the
     whole set (:func:`choose_recordings`) and named in the progress line, so a large experiment
-    does not wait on every recording's masks. ``None`` reads every one.
+    does not wait on every recording's masks. ``None`` reads every one. ``groups``
+    (:func:`recording_groups`) splits that subset evenly across a metadata column's values.
 
     Raises:
         ValueError: No sources, ``n_frames`` below one, a ``from_recordings`` below one, or no
@@ -981,12 +1207,16 @@ def varied_frames(
             progress(stage, fraction, detail)
 
     if from_recordings is not None:
-        chosen = choose_recordings(sorted(sources), from_recordings, seed)
+        chosen = choose_recordings(sorted(sources), from_recordings, seed, groups)
         if len(chosen) < len(sources):
+            across = ""
+            if groups is not None:
+                values = {groups.get(r, "") for r in chosen}
+                across = f", across {len(values)} metadata values"
             report(
                 "choosing recordings",
                 1.0,
-                f"sampling from {len(chosen)} of {len(sources)} recordings",
+                f"sampling from {len(chosen)} of {len(sources)} recordings{across}",
             )
             sources = {recording_id: sources[recording_id] for recording_id in chosen}
 
@@ -1024,7 +1254,8 @@ def varied_frames(
         pool.extend(rows)
     report("reading shapes", 1.0, f"{len(pool)} frames")
 
-    fresh = [r for r in pool if _key(r) not in existing]
+    skip = existing | refused(example_set)
+    fresh = [r for r in pool if _key(r) not in skip]
     if not fresh:
         raise _nothing_left(track_ids)
     candidates = [r for r in fresh if r["fit"]] or fresh

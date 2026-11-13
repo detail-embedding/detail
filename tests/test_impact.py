@@ -369,7 +369,9 @@ def test_the_worked_example_check_would_catch_a_stale_number():
         for source, stated in stale.items()
         if stated != len(impact.select({source}, guards=False))
     )
-    assert len(drifted) == 3, (
-        "every one of the three counts is wrong, so a reader that flags fewer is not "
-        f"comparing anything; it flagged {drifted}"
+    # The shipped "8 for video.py" came true again when the remote-detail catch-up added a
+    # test that reaches it, so two of the three are still wrong — enough for the check to bite.
+    assert {"detail/gui/scrubber.py", "detail/api/recording.py"} <= set(drifted), (
+        "the shipped scrubber.py and recording.py counts are wrong, so a reader that does not "
+        f"flag both is not comparing anything; it flagged {drifted}"
     )

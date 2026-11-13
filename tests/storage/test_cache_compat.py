@@ -41,6 +41,7 @@ import numpy as np
 import pytest
 
 from detail.api import previews as api
+from detail.core import video_codecs
 from detail.storage import integrity
 from detail.storage import locations
 from detail.storage import node_cache
@@ -178,7 +179,10 @@ def test_the_masks_digest_reads_only_its_five_fields():
 PINNED_ENCODE = {
     "fps": 15,
     "max_wh": (480, 270),
-    "preferred codec": "avc1",
+    # The proxy goes through `storage/video.open_video_writer` (remote-detail's one writer):
+    # H.264 through PyAV's linked libx264, else mp4v. It was cv2's `avc1` FourCC, which is the
+    # same H.264 stream, so proxies already built stay valid and nothing is rebuilt.
+    "preferred codec": "h264",
     "fallback codec": "mp4v",
     "size 1920x1080": (480, 270),
     "size 1280x1024": (338, 270),
@@ -198,8 +202,12 @@ def _encode() -> dict:
     found = {
         "fps": api.PROXY_FPS,
         "max_wh": tuple(api.PROXY_MAX_WH),
-        "preferred codec": video._PREFERRED_CODEC,
-        "fallback codec": video._FALLBACK_CODEC,
+        "preferred codec": video_codecs.DEFAULT_VIDEO_CODEC,
+        "fallback codec": next(
+            c
+            for c in video_codecs.VIDEO_CODECS
+            if c != video_codecs.DEFAULT_VIDEO_CODEC
+        ),
     }
     for name in PINNED_ENCODE:
         if name.startswith("size "):

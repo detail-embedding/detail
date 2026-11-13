@@ -53,6 +53,8 @@ HELP: dict[str, HelpTopic] = {
     "comparison-floor": HelpTopic("gui", "comparison-floor"),
     "comparison-snapshot": HelpTopic("gui", "comparison-snapshot"),
     "gpu": HelpTopic("getting-started", "gpu-and-cuda"),
+    # the keypoint detect form's Test on tracking row: Test keypoints is described there
+    "test-on-tracking": HelpTopic("gui", "keypoints"),
     "hf-token": HelpTopic("getting-started", "hugging-face-access"),
 }
 
@@ -66,6 +68,8 @@ PAGE_DOCS: dict[str, HelpTopic] = {
     "gpu_cuda": HelpTopic("getting-started", "gpu-and-cuda"),
     "sam3_backend": HelpTopic("getting-started", "sam3-backend"),
     "hugging_face": HelpTopic("getting-started", "hugging-face-access"),
+    "profile_describe": HelpTopic("gui", "cluster-profile-setup"),
+    "remote_targets": HelpTopic("gui", "remote-targets"),
     "global_models": HelpTopic("gui", "models"),
     "distill_model": HelpTopic("gui", "distill"),
     "distill_run": HelpTopic("gui", "distill"),

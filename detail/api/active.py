@@ -34,7 +34,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from detail.core import run_cost
 from detail.core.dataclasses import ACTIVE_STATUSES, FAILED_STATUSES
+from detail.core.progress import format_duration
+from detail.storage import active_archive
 
 
 @dataclass(frozen=True)
@@ -57,6 +60,16 @@ class ActiveRun:
     #: reason to come back to a *finished* one. A `detail` rather than a second `label` because
     #: it is its own column and its own sort.
     detail: str = ""
+    #: "local (cuda)" / "remote: tillicum" (§ run location, duration, cost) — every family gets
+    #: this column, even the ones that can only ever read "local" (visual consistency across
+    #: the page, decided with the user), via `run_cost.compute_label` so every surface renders
+    #: it the same way.
+    where: str = "local"
+    #: "$1.23", or "" when the run is local or its target has no configured rate.
+    cost: str = ""
+    #: "45s" / "2m30s" / "1h05m" (`core.progress.format_duration`), or "" when the run has no
+    #: `duration_s` yet (still going, or a legacy record from before this field existed).
+    duration: str = ""
 
     @property
     def is_failed(self) -> bool:
@@ -95,20 +108,6 @@ class RunKind:
     label: str
     records: str
     cancel: str
-    #: How many **finished** runs of this family the listing keeps, newest first. Zero for every
-    #: family whose finished runs already have a permanent home — a completed detection run is
-    #: on its experiment's Runs page, and listing it here as well would bury the one still going.
-    #: An export has no such home: it writes into a folder outside the experiment and its record
-    #: is reachable from nothing once it is done. So it keeps its recent history here, which is
-    #: a fact about where a family *lives*, not a display preference.
-    #:
-    #: An **import** keeps its history for a different reason, and it is not that one: a finished
-    #: import does have a home, its experiment's Recordings page. It is that an import on a local
-    #: disk is over within a second of being asked for — both imports in the report that
-    #: prompted this finished inside the second they started, one of them 533 MB — so a
-    #: user who goes to look is always too late to see it running, and a section that drops
-    #: finished rows reads to them as "nothing happened".
-    keep_finished: int = 0
     #: Whether this family's work outlives the app that started it. Every *run* does: its
     #: workers are detached processes, which is the whole reason the quit prompt offers to
     #: leave them running. An **import** does not — it is a thread in this process, driven by
@@ -134,18 +133,6 @@ def _field(record, name: str, default=""):
     if isinstance(record, dict):
         return record.get(name, default)
     return getattr(record, name, default)
-
-
-#: How many finished exports the listing keeps. Bounded rather than unbounded because this is a
-#: *workspace-wide* listing: an experiment with three hundred exports would push the two that are
-#: running off the screen, which is the recorded class of a widget that is correct at the size it
-#: was written at and useless at the size the tool is for.
-_KEEP_FINISHED_EXPORTS = 10
-
-#: How many finished imports the listing keeps. The same bound for the same reason — one screen,
-#: capped across the workspace — and a separate number because the reason a finished import is
-#: listed at all is different (see `RunKind.keep_finished`), so the two can come apart.
-_KEEP_FINISHED_IMPORTS = 10
 
 
 def _describe_export(record) -> tuple[str, str]:
@@ -196,7 +183,6 @@ RUN_KINDS: tuple[RunKind, ...] = (
         "export",
         "export_runs",
         "cancel_export",
-        keep_finished=_KEEP_FINISHED_EXPORTS,
         describe=_describe_export,
     ),
     # The one family that is not a run. Its status lives on the recording rather than in a run
@@ -209,7 +195,6 @@ RUN_KINDS: tuple[RunKind, ...] = (
         "import",
         "import_runs",
         "cancel_import",
-        keep_finished=_KEEP_FINISHED_IMPORTS,
         survives_quit=False,
         describe=_describe_import,
     ),
@@ -250,7 +235,7 @@ def active_ids(experiment) -> dict[str, list[str]]:
 def _runs_of(experiment) -> list[ActiveRun]:
     name = _safe(lambda: experiment.name, "") or Path(experiment.dir).name
 
-    def make(kind, run_id, label, detail, status, created_at):
+    def make(kind, run_id, label, detail, status, created_at, where, cost, duration):
         return ActiveRun(
             kind=kind,
             experiment_dir=Path(experiment.dir),
@@ -260,6 +245,9 @@ def _runs_of(experiment) -> list[ActiveRun]:
             status=str(status or ""),
             created_at=str(created_at or ""),
             detail=detail,
+            where=where,
+            cost=cost,
+            duration=duration,
         )
 
     found: list[ActiveRun] = []
@@ -273,6 +261,22 @@ def _runs_of(experiment) -> list[ActiveRun]:
                 label, detail = _safe(
                     lambda r=record, d=spec.describe: d(r), (spec.label, "")
                 )
+            where = _safe(
+                lambda r=record: run_cost.compute_label(_field(r, "compute", None)),
+                "local",
+            )
+            # A multi-recording family (`run`, `distill`) never writes a bare
+            # `estimated_cost_usd` on its own record — only the aggregate
+            # `total_estimated_cost_usd`, summed from each per-recording/per-stage
+            # entry's own `estimated_cost_usd` (`RunOrchestrator`/`DistillOrchestrator`
+            # `_write_record`). A single-job family (dataset/model/analysis_run/
+            # clusterer/export) writes the bare key directly via
+            # `run_metrics.completion_fields`. Try the aggregate first so both shapes
+            # read correctly here, the way the run-detail page already does.
+            cost = _field(record, "total_estimated_cost_usd", None)
+            if cost is None:
+                cost = _field(record, "estimated_cost_usd", None)
+            duration_s = _field(record, "duration_s", None)
             found.append(
                 make(
                     spec.kind,
@@ -281,13 +285,17 @@ def _runs_of(experiment) -> list[ActiveRun]:
                     detail,
                     _field(record, "status"),
                     _field(record, "created_at"),
+                    where,
+                    f"${cost:.2f}" if cost is not None else "",
+                    format_duration(duration_s) if duration_s is not None else "",
                 )
             )
     return found
 
 
 def list_active(*, include_failed: bool = True) -> list[ActiveRun]:
-    """Every run that is pending or running, newest first, across every experiment.
+    """Every run that is pending or running, newest first, across every experiment — plus every
+    **finished** run that has not been archived.
 
     ``include_failed`` also returns runs that ended badly and have not been looked at. They are
     not *active*, and they are the other thing someone opening this is looking for: a run that
@@ -295,29 +303,38 @@ def list_active(*, include_failed: bool = True) -> list[ActiveRun]:
     remembering which experiment it was in. `FAILED_STATUSES`, not the literal ``"failed"``:
     a **cancelled** run is terminal and not failed, so asking for one string listed it nowhere.
 
-    A family that declares `keep_finished` also contributes that many of its most recent
-    *finished* runs. Exports and imports do, for two different reasons — see
-    `RunKind.keep_finished`.
+    A finished run (complete, cancelled, or — when ``include_failed`` — failed) stays listed
+    until :func:`archive_run` marks it archived (`storage.active_archive`), for **every** family
+    uniformly — this used to be a per-family cap (`RunKind.keep_finished`) that only export and
+    import declared; the cap is gone now that every family behaves the same way, minus the
+    auto-eviction.
     """
     from detail.api.experiment import Experiment
 
-    wanted = set(ACTIVE_STATUSES) | (set(FAILED_STATUSES) if include_failed else set())
-    keep = {spec.kind: spec.keep_finished for spec in RUN_KINDS if spec.keep_finished}
     out: list[ActiveRun] = []
-    spare: dict[str, list[ActiveRun]] = {}
     for experiment in _safe(Experiment.list_all, []):
+        archived = _safe(lambda e=experiment: active_archive.archived_ids(e.dir), {})
         for run in _runs_of(experiment):
-            if run.status in wanted:
+            if run.status in ACTIVE_STATUSES:
                 out.append(run)
-            elif run.kind in keep:
-                spare.setdefault(run.kind, []).append(run)
+            elif run.status in FAILED_STATUSES:
+                # `include_failed=False` means "not this" outright, never overridden by
+                # archive state — the flag would stop meaning what its name says the
+                # moment every family started keeping finished rows. `include_failed=True`
+                # (the default, and what the GUI reads) still lets a looked-at failure be
+                # archived away like any other finished row.
+                if include_failed and run.run_id not in archived.get(run.kind, ()):
+                    out.append(run)
+            elif run.run_id not in archived.get(run.kind, ()):
+                out.append(run)
     # Newest first: the run someone is asking about is almost always the last one they started.
     # `created_at` is an ISO stamp, so a string sort is a time sort — and a run missing one sorts
     # last rather than crashing the listing.
     newest = lambda r: r.created_at or ""  # noqa: E731
-    for kind, finished in spare.items():
-        # Capped **across the workspace**, not per experiment: the listing is one screen, so a
-        # per-experiment cap would be a workspace-wide cap of N x however many experiments there
-        # happen to be — a bound that grows with the thing it is bounding.
-        out.extend(sorted(finished, key=newest, reverse=True)[: keep[kind]])
     return sorted(out, key=newest, reverse=True)
+
+
+def archive_run(experiment_dir: Path | str, kind: str, run_id: str) -> None:
+    """Dismiss ``run_id`` (of ``kind``) from :func:`list_active` — a pure view preference, never
+    touching the run's own record (`storage.active_archive`)."""
+    active_archive.archive(experiment_dir, kind, run_id)

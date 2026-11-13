@@ -38,7 +38,8 @@ faint detections the default hides, raise it to cut noise. The caption beside it
 many of the stored detections the current setting keeps. An export bakes in whatever the
 slider is showing, since an image can't be re-thresholded later.
 
-**Export** (frames or mp4, by mode) asks where to put it and creates its own folder there,
+**Export** (frames or mp4, by mode; an mp4 is H.264 unless you pick MPEG-4 Part 2 beside the
+button) asks where to put it and creates its own folder there,
 named from the clip and the run (`openfield_01_quick-segment_run_003/`), holding the
 overlay stills plus `test.json`, or the overlay clip under the same name. Two exports never
 land on top of each other, and a folder still says what it is once it has left the app.
@@ -49,7 +50,7 @@ The Configuration checklist's **See it segment a clip** step opens this tool.
 
 ```
 detail tools quick-segment CLIP.mp4 [CLIP2.mp4 …] --prompt mouse [--prompt "mouse with tail"] [--frames 50] [--min-conf 0.25]
-detail tools quick-segment CLIP.mp4 --consecutive --prompt mouse [--whole-video] [--export out.mp4]
+detail tools quick-segment CLIP.mp4 --consecutive --prompt mouse [--whole-video] [--export out.mp4] [--codec h264|mp4v]
 ```
 
 Each `--prompt` is a **separate prompt**, compared side by side; put several classes in one

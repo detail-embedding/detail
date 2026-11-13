@@ -150,6 +150,17 @@ class Skeleton:
 
     @classmethod
     def from_dict(cls, d: dict) -> "Skeleton":
+        """A stored skeleton, in §26's shape or the shape remote-detail wrote before it.
+
+        The older shape (``keypoints``: one ``{name, side, pair}`` each, plus a ``front`` /
+        ``back`` body axis) is still on disk in model records promoted or trained before the
+        merge, and a reader that indexed ``names`` failed on every one of them. It is read
+        here, once, rather than by each reader: the names in column order, the edges, and each
+        left point paired with its partner. The body axis has no §26 counterpart (a heading is
+        the user's to define) and is dropped.
+        """
+        if "names" not in d and "keypoints" in d:
+            return _from_pre_s26(d)
         layout = d.get("layout")
         return cls(
             names=tuple(str(n) for n in d["names"]),
@@ -167,6 +178,18 @@ class Skeleton:
         return Skeleton(
             names=self.names, edges=self.edges, pairs=self.pairs, layout=layout
         )
+
+
+def _from_pre_s26(data: dict) -> Skeleton:
+    points = list(data.get("keypoints") or [])
+    names = [str(k["name"]) for k in points]
+    pairs = tuple(
+        (str(k["name"]), str(k["pair"]))
+        for k in points
+        if k.get("side") == "left" and k.get("pair") in names
+    )
+    edges = tuple((str(a), str(b)) for a, b in data.get("edges") or [])
+    return Skeleton(names=tuple(names), edges=edges, pairs=pairs)
 
 
 def flip_index(skeleton: Skeleton) -> list[int]:

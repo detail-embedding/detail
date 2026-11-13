@@ -138,11 +138,20 @@ def test_concurrent_index_writes_do_not_collide(tmp_path, write_vfr_video):
     index = store.cache_dir() / store.INDEX_FILE
     errors = []
 
+    def reset() -> None:
+        """Remove the index so the next call writes again. The test's own scaffolding: on
+        Windows another thread's open handle refuses the unlink, which is not the write
+        under test, so that one reset is skipped."""
+        try:
+            index.unlink(missing_ok=True)
+        except PermissionError:
+            pass
+
     def keys(path):
         try:
             for _ in range(15):
                 store.key_for_video(path)
-                index.unlink(missing_ok=True)  # so the next call writes again
+                reset()
         except Exception as exc:  # noqa: BLE001 — collected for the assertion
             errors.append(exc)
 

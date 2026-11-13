@@ -119,12 +119,19 @@ class TileLook:
     mask_trail: bool = True
     keypoints: bool = False
     aligned: bool = False
+    #: Each trailing keypoint's path over the last half second, fading, in its role colour.
+    #: Drawn only with ``keypoints``, as ``mask_trail`` is drawn only with ``masks``.
+    keypoint_trail: bool = False
+    #: Which keypoints leave a trail, by name; ``None`` is every point.
+    trail_points: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         if not (self.footage or self.masks or self.keypoints):
             raise ValueError(
                 "a tile draws something: turn on at least one of footage, masks, keypoints"
             )
+        if self.trail_points is not None:
+            object.__setattr__(self, "trail_points", tuple(self.trail_points))
 
     @property
     def needs_pose(self) -> bool:
@@ -134,12 +141,20 @@ class TileLook:
 
 @dataclass(frozen=True)
 class TileClip:
-    """What a tile plays: a subject of a recording from ``start_ns`` to ``end_ns`` (inclusive)."""
+    """What a tile plays: a subject of a recording from ``start_ns`` to ``end_ns`` (inclusive).
+
+    ``subject`` is a track id, held as a plain ``int`` whatever it was read from.
+    """
 
     recording_id: str
     subject: int
     start_ns: int
     end_ns: int
+
+    def __post_init__(self) -> None:
+        from detail.core.utils import subject_key
+
+        object.__setattr__(self, "subject", subject_key(self.subject))
 
 
 def tracking_runs(
@@ -304,6 +319,8 @@ class ClipTiles:
         self._bytes = 0
         #: Counted among the sources sharing the budget (:func:`share`).
         self._drawing = False
+        #: The keypoint run's skeleton, once read (:meth:`skeleton`).
+        self._skeleton = None
 
     def __len__(self) -> int:
         return len(self._clips)
@@ -410,24 +427,35 @@ class ClipTiles:
 
     def _pose(self, tile, clip: TileClip, part: int, look: TileLook) -> None:
         """Read the clip's keypoints on its tile frames, once, and hand the tile its axis ends
-        (to turn it) and its points (to draw them). A run with no keypoints or no heading
-        definition leaves the tile as recorded: the switch was greyed with the reason.
+        (to turn it), its points (to draw them) and whether they trail. A run with no keypoints
+        or no heading definition leaves the tile as recorded: the switch was greyed with the
+        reason.
         """
         points = self._catalog.points(clip.recording_id)
         if points is None or points.run is None:
             return
         source = tile.source_frames()
         stem = self._catalog.part_stem(clip.recording_id, part)
-        xy, scores = points.rows_at(clip.subject, stem, source)
+        if self._skeleton is None:
+            self._skeleton = points.skeleton
+        trail = dict(trail=look.keypoint_trail, trail_points=look.trail_points)
+        animal = clip.subject
+        xy, scores = points.rows_at(animal, stem, source)
         axes = None
         if look.aligned:
-            axis = points.axis(clip.subject)
+            axis = points.axis(animal)
             if axis is not None:
                 axes = tile_axes(xy, scores, axis)
         tile.set_pose(
             axes=axes,
             points=(xy, scores, points.skeleton) if look.keypoints else None,
+            **trail,
         )
+
+    def skeleton(self):
+        """The keypoint run's skeleton, once a tile has read keypoints, else ``None`` — what
+        **Show ▾**'s *Trail points* chooses from. Called on the picture worker."""
+        return self._skeleton
 
     def close(self) -> None:
         """Let go of every open clip and every drawn tile."""

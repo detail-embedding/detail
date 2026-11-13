@@ -444,7 +444,7 @@ class SpatialMap(QWidget):
         self._player.set_clip(
             ClipSpec(
                 recording_id=recording_id,
-                track_id=int(nearest["subject"]),
+                track_id=nearest["subject"],
                 embed_run_id=self._embed_run_ids.get(recording_id, ""),
                 start_t_ns=int(nearest["t_ns"]),
                 end_t_ns=int(nearest["end_t_ns"]),

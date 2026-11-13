@@ -25,6 +25,7 @@ import sys
 from pathlib import Path
 
 from scripts import flaky_report
+from tests.subprocesses import run_tree
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -43,7 +44,7 @@ def _run_pytest(tmp_path: Path, log: Path, *args: str) -> subprocess.CompletedPr
     env["PYTHONPATH"] = str(REPO)
     cmd = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"]
     cmd += ["-p", "scripts.suite_progress_plugin", *args, "test_sample.py"]
-    return subprocess.run(
+    return run_tree(
         cmd, cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8"
     )
 

@@ -219,55 +219,6 @@ def row_bends(
     return out
 
 
-def turning_rate(deg: np.ndarray, t_ns: np.ndarray, *, half: int = 2) -> np.ndarray:
-    """Degrees per second at each row, between the outermost rows with a heading within
-    ``half`` either side of it, the short way round the circle (positive clockwise on screen);
-    NaN without a heading on one side. Reaching a few rows out rather than one: a single
-    row's keypoint jitter is not a turn."""
-    deg = np.asarray(deg, dtype=np.float64)
-    t_ns = np.asarray(t_ns, dtype=np.int64)
-    n = len(deg)
-    out = np.full(n, np.nan)
-    known = np.isfinite(deg)
-    for i in range(n):
-        before = [j for j in range(max(i - half, 0), i + 1) if known[j]]
-        after = [j for j in range(i, min(i + half, n - 1) + 1) if known[j]]
-        if not before or not after or before[0] == after[-1]:
-            continue
-        a, b = before[0], after[-1]
-        dt = (int(t_ns[b]) - int(t_ns[a])) / 1e9
-        if dt > 0:
-            out[i] = ((float(deg[b]) - float(deg[a]) + 180.0) % 360.0 - 180.0) / dt
-    return out
-
-
-def body_shape_series(
-    points: np.ndarray, scores: np.ndarray, t_ns: np.ndarray, axis: BodyAxis
-) -> dict[str, np.ndarray]:
-    """The body's shape over rows: ``points`` ``(n, K, 2)`` normalized and ``scores`` ``(n, K)``
-    per row (NaN where the subject has no keypoints), ``t_ns`` each row's time.
-
-    Returns ``length`` (the axis length over ``axis.typical_length_px``, so 1.0 is the animal's
-    usual length), ``turning`` (:func:`turning_rate`, °/s), and ``bend`` (:func:`row_bends`, °)
-    only when the skeleton has a midline point between the axis ends — a two-point axis
-    cannot bend, and an all-NaN curve would say it never did. NaN wherever the axis is
-    undefined on that row.
-    """
-    front, back = list(axis.front), list(axis.back)
-    deg, length = row_headings(points, scores, front, back, axis.frame_wh, axis.cutoff)
-    has_axis = np.isfinite(length) & (length > 0)
-    relative = np.full(len(length), np.nan)
-    if axis.typical_length_px > 0:
-        relative[has_axis] = length[has_axis] / float(axis.typical_length_px)
-    out = {"length": relative}
-    if axis.middle:
-        out["bend"] = row_bends(
-            points, scores, front, back, list(axis.middle), axis.frame_wh, axis.cutoff
-        )
-    out["turning"] = turning_rate(np.where(has_axis, deg, np.nan), t_ns)
-    return out
-
-
 def aligned_points(
     points: np.ndarray,
     front_xy: np.ndarray,

@@ -6,6 +6,9 @@ pipeline reads use ``cv2.VideoCapture`` (see ``pipeline/``); this module owns
 container probing, the per-frame ``t_ns`` map, and the seek-and-read helpers used
 by preview / inspection paths exempted under Tenet 11 — ``read_frame_at`` for one
 frame anywhere, ``read_frames_range`` for every frame of a span.
+
+It also owns the one export writer, ``open_video_writer`` (Tenet 15): ``h264`` through
+PyAV's linked libav, ``mp4v`` through ``cv2.VideoWriter``.
 """
 
 import functools
@@ -16,15 +19,18 @@ import os
 import threading
 import time
 from collections.abc import Callable, Iterator
+from fractions import Fraction
 from pathlib import Path
 
 import av
 import cv2
 import numpy as np
 
+from detail.core.video_codecs import DEFAULT_VIDEO_CODEC
+from detail.core.video_codecs import VIDEO_CODEC_LABELS
+from detail.core.video_codecs import VIDEO_CODECS
+
 NS_PER_SECOND = 1_000_000_000
-_PREFERRED_CODEC = "avc1"  # H.264 (§4); fall back to mp4v if cv2 lacks libx264
-_FALLBACK_CODEC = "mp4v"
 
 # How deep ``read_frame_at`` will decode from frame 0 when no trustworthy seek index
 # exists. Decode runs at a few hundred fps, so this bounds that path to seconds. The
@@ -980,65 +986,146 @@ def _timestamps_via_decode(
                 progress(min(frame.pts / duration, 1.0))
     if progress is not None:
         progress(1.0)
-    return np.asarray(out, dtype=np.int64)
+    arr = np.asarray(out, dtype=np.int64)
+    # Same rebasing as _timestamps_via_demux, and for the same reason: the first
+    # decoded frame's raw PTS is this stream's zero point, not necessarily 0 itself.
+    if len(arr):
+        arr = arr - arr[0]
+    return arr
 
 
-# Set once the build has *proved* it cannot encode H.264 — see open_video_writer.
-_h264_unavailable = False
-
-
-def _try_codec(
-    out_path: Path | str, codec: str, fps: float, width: int, height: int, quiet: bool
-) -> cv2.VideoWriter | None:
-    """Open a writer at one codec, or ``None``. ``quiet`` suppresses cv2's own error log."""
-    logging = getattr(
-        getattr(cv2, "utils", None), "logging", None
-    )  # not on every build
-    previous = None
-    if quiet and logging is not None:
-        previous = logging.getLogLevel()
-        logging.setLogLevel(logging.LOG_LEVEL_SILENT)
+@functools.cache
+def h264_available() -> bool:
+    """Whether this machine's PyAV can encode H.264 (``libx264``) — asked once per process,
+    since a build does not gain an encoder mid-run."""
     try:
-        writer = cv2.VideoWriter(
-            str(out_path), cv2.VideoWriter_fourcc(*codec), float(fps), (width, height)
+        av.codec.Codec("libx264", "w")
+    except (av.codec.codec.UnknownCodecError, ValueError):
+        return False
+    return True
+
+
+def written_codec(codec: str = DEFAULT_VIDEO_CODEC) -> str:
+    """The codec an export asking for ``codec`` writes on this machine.
+
+    Raises:
+        ValueError: ``codec`` is not one of :data:`VIDEO_CODECS`.
+    """
+    if codec not in VIDEO_CODECS:
+        raise ValueError(
+            f"unknown video codec {codec!r}; choose one of {', '.join(VIDEO_CODECS)}"
         )
-    finally:
-        if previous is not None:
-            logging.setLogLevel(previous)
-    if writer.isOpened():
-        return writer
-    writer.release()
-    return None
+    if codec == "h264" and not h264_available():
+        return "mp4v"
+    return codec
+
+
+def codec_note(codec: str = DEFAULT_VIDEO_CODEC) -> str | None:
+    """What a surface tells the user when ``codec`` cannot be written here, else ``None``.
+
+    The fallback is never silent: before ``h264`` went through PyAV, every MP4 export on a
+    Linux cv2 wheel quietly became ``mp4v`` and nobody knew until PowerPoint refused it.
+    """
+    written = written_codec(codec)
+    if written == codec:
+        return None
+    return (
+        f"{VIDEO_CODEC_LABELS[codec]} is not available on this machine (its PyAV has no "
+        f"libx264 encoder), so video is written as {VIDEO_CODEC_LABELS[written]}, which "
+        "PowerPoint may not play."
+    )
+
+
+class _H264Writer:
+    """An H.264 ``.mp4`` written through PyAV's linked ``libx264`` — the ``cv2.VideoWriter``
+    shape (``write`` a BGR frame, ``release``), so a caller never knows which it holds.
+
+    High profile, ``yuv420p``, CRF 23, ``+faststart``: what PowerPoint, QuickTime and every
+    browser play. ``yuv420p`` needs even dimensions, so an odd last row or column is dropped —
+    one pixel nobody sees, against a file nothing can open.
+
+    Preset ``veryfast``, because a whole-recording export is where the time shows. Measured in
+    WSL on 300 frames of 1280x720 footage (median of 3 alternating rounds, under load):
+    ``medium`` 72 fps / 2.27 MB, ``veryfast`` 117 fps / 1.42 MB, ``mp4v`` 153 fps / 5.02 MB.
+    """
+
+    def __init__(self, out_path: Path | str, fps: float, width: int, height: int):
+        self._width, self._height = width // 2 * 2, height // 2 * 2
+        if self._width < 2 or self._height < 2:
+            raise ValueError(f"a {width}x{height} frame is too small to encode")
+        # PyAV opens the file only when the first packet is muxed; creating it here makes an
+        # unwritable destination fail at open, where the caller handles it, not mid-export.
+        with open(out_path, "wb"):
+            pass
+        self._container = av.open(
+            str(out_path), "w", format="mp4", options={"movflags": "+faststart"}
+        )
+        stream = self._container.add_stream(
+            "libx264", rate=Fraction(float(fps)).limit_denominator(1001)
+        )
+        stream.width, stream.height, stream.pix_fmt = (
+            self._width,
+            self._height,
+            "yuv420p",
+        )
+        stream.options = {"crf": "23", "preset": "veryfast", "profile": "high"}
+        self._stream = stream
+        self._open = True
+
+    def isOpened(self) -> bool:  # noqa: N802 — the cv2.VideoWriter spelling
+        return self._open
+
+    def write(self, frame_bgr: np.ndarray) -> None:
+        frame = av.VideoFrame.from_ndarray(
+            np.ascontiguousarray(frame_bgr[: self._height, : self._width]),
+            format="bgr24",
+        )
+        for packet in self._stream.encode(frame):
+            self._container.mux(packet)
+
+    def release(self) -> None:
+        if not self._open:
+            return
+        self._open = False
+        try:
+            for packet in self._stream.encode():
+                self._container.mux(packet)
+        finally:
+            self._container.close()
 
 
 def open_video_writer(
-    out_path: Path | str, fps: float, width: int, height: int
-) -> tuple[cv2.VideoWriter, str]:
-    """Open a ``.mp4`` writer, preferring H.264 (``avc1``) and falling back to
-    ``mp4v`` when the installed cv2 lacks the libx264 encoder (§4).
+    out_path: Path | str,
+    fps: float,
+    width: int,
+    height: int,
+    codec: str = DEFAULT_VIDEO_CODEC,
+):
+    """Open an ``.mp4`` writer at ``codec`` — the one way an export writes video (Tenet 15).
 
-    On a build without H.264 the first attempt is *expected* to fail, and cv2 plus its bundled
-    FFmpeg print four alarming error lines when it does — once per writer, so a clip export buries
-    its own progress under thousands of them. A cv2 build does not gain a codec mid-run, so the
-    attempt is made at most once per process and skipped thereafter, with cv2's half of the log
-    silenced for it (the FFmpeg half prints from libavcodec and no API reaches it).
+    Returns ``(writer, written)``: ``written`` is the codec actually used, which differs from
+    ``codec`` only when this machine cannot encode H.264 (:func:`codec_note` says so in words).
+    The writer has ``write(bgr_frame)`` and ``release()``.
 
-    The flag is set only when the *fallback succeeds*: that is what distinguishes "this build has
-    no H.264" from "this path is unwritable", which fails at every codec and must keep raising.
+    Raises:
+        ValueError: ``codec`` is not one of :data:`VIDEO_CODECS`.
+        RuntimeError: the writer could not be opened at ``out_path``.
     """
-    global _h264_unavailable
-    if not _h264_unavailable:
-        writer = _try_codec(out_path, _PREFERRED_CODEC, fps, width, height, quiet=True)
-        if writer is not None:
-            return writer, _PREFERRED_CODEC
-    writer = _try_codec(out_path, _FALLBACK_CODEC, fps, width, height, quiet=False)
-    if writer is not None:
-        _h264_unavailable = True
-        return writer, _FALLBACK_CODEC
-    raise RuntimeError(
-        f"OpenCV could not open a VideoWriter for {out_path} at any codec "
-        f"({_PREFERRED_CODEC}, {_FALLBACK_CODEC}) — the cv2 build lacks both."
+    written = written_codec(codec)
+    if written == "h264":
+        try:
+            return _H264Writer(out_path, fps, width, height), written
+        except (OSError, av.error.FFmpegError) as exc:
+            raise RuntimeError(
+                f"could not open an H.264 writer for {out_path}: {exc}"
+            ) from exc
+    writer = cv2.VideoWriter(
+        str(out_path), cv2.VideoWriter_fourcc(*written), float(fps), (width, height)
     )
+    if not writer.isOpened():
+        writer.release()
+        raise RuntimeError(f"OpenCV could not open a VideoWriter for {out_path}")
+    return writer, written
 
 
 class ImportStopped(Exception):

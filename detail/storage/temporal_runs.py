@@ -25,6 +25,7 @@ from pathlib import Path
 
 from detail.configs.clustering_legacy import drop_legacy_floor
 from detail.core import run_selection
+from detail.core.utils import coerce_series_key
 from detail.storage import clip_edits as clip_edits_store
 from detail.storage import run_labels
 from detail.storage import state_yaml
@@ -98,6 +99,12 @@ class TemporalClusteringState:
     #: audited reports its precision from judgments made since (§19), so choosing clusters by
     #: how they scored cannot raise the score the choice was made on. A rename is not a change.
     membership_changed_at: dict[str, str] = field(default_factory=dict)
+    #: node id -> where that node's label came from, when not typed: ``{from: lookalikes, group,
+    #: label, accepted_at}`` for a look-alike group labelled as one (``api/cluster_lookalikes``).
+    #: Valid while the node still points at ``label``; every label edit drops one that is not
+    #: (``authored_run.prune_label_sources``). Empty on a state from before it existed, which
+    #: reads as every label typed — true then, since nothing recorded a source.
+    node_label_sources: dict[str, dict] = field(default_factory=dict)
     #: label id -> name, for the labels that reach the output. Derived from ``labels`` and
     #: ``node_labels`` with the fit's tree, keyed the way ``instances.csv`` stores ``source_label``.
     resolved_names: dict[str, str] = field(default_factory=dict)
@@ -206,6 +213,9 @@ class TemporalClusteringState:
             "membership_changed_at": {
                 str(k): str(v) for k, v in self.membership_changed_at.items()
             },
+            "node_label_sources": {
+                str(k): dict(v) for k, v in self.node_label_sources.items()
+            },
             "resolved_names": {str(k): str(v) for k, v in self.resolved_names.items()},
             "resolved_paths": {str(k): str(v) for k, v in self.resolved_paths.items()},
             "names_by_granularity": {
@@ -225,7 +235,7 @@ class TemporalClusteringState:
             embed_run_ids={
                 str(k): str(v) for k, v in (data.get("embed_run_ids") or {}).items()
             },
-            track_id=int(data.get("track_id", 0)),
+            track_id=coerce_series_key(data.get("track_id", 0)),
             method=str(data["method"]),
             method_params=dict(data.get("method_params") or {}),
             source_recording_ids=list(data.get("source_recording_ids") or []),
@@ -237,6 +247,10 @@ class TemporalClusteringState:
             membership_changed_at={
                 str(k): str(v)
                 for k, v in (data.get("membership_changed_at") or {}).items()
+            },
+            node_label_sources={
+                str(k): dict(v or {})
+                for k, v in (data.get("node_label_sources") or {}).items()
             },
             resolved_names=cls._resolved_names(data),
             resolved_paths={

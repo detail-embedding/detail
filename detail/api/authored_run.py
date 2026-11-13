@@ -454,32 +454,27 @@ def labelled_instances(fit, method, state) -> list:
         found = method.instances_for(
             fit, groups, dict(state.method_params), member_groups=override
         )
-    return fuse_runs(fit, method, found)
+    return fuse_runs(fit, method, found, dict(state.method_params))
 
 
-def fuse_runs(fit, method, instances: list) -> list:
-    """Join consecutive instances of one group within one unit, where the method allows it.
+def fuse_runs(fit, method, instances: list, params: dict) -> list:
+    """Join consecutive instances of one group within one continuity block, where the method
+    allows it.
 
     A sub-floor flicker between two runs of one group was dropped by the method, and the fused
     span covers it, which is right once both sides report the same node. Only where the method
     declares ``instances_are_runs``: joining two bouts a segmenter cut apart would be a claim it
-    did not make.
+    did not make. And only inside one of the method's ``run_blocks``: a tracking gap between two
+    runs is time nobody observed, and a span across it reported that time as the behavior —
+    the coverage line read 123% "in a posture" on a recording tracking lost a fifth of.
     """
+    import numpy as np
+
     if not getattr(method, "instances_are_runs", True):
         return list(instances)
-    recording_index = getattr(fit, "row_recording_index", None)
-    if recording_index is None:
-        recording_index = fit.recording_index
-    subjects = getattr(fit, "row_subjects", None)
-    if subjects is None:
-        subjects = fit.subjects
-
-    def same_unit(a, b) -> bool:
-        left, right = int(a.end_row), int(b.start_row)
-        return (
-            recording_index[left] == recording_index[right]
-            and subjects[left] == subjects[right]
-        )
+    block_of = np.full(len(method.member_leaves(fit)), -1, dtype=np.int64)
+    for index, (lo, hi) in enumerate(method.run_blocks(fit, params)):
+        block_of[lo:hi] = index
 
     fused: list = []
     for instance in instances:
@@ -487,7 +482,7 @@ def fuse_runs(fit, method, instances: list) -> list:
         if (
             last is not None
             and last.cluster_id == instance.cluster_id
-            and same_unit(last, instance)
+            and block_of[int(last.end_row)] == block_of[int(instance.start_row)]
         ):
             fused[-1] = type(instance)(
                 last.start_row, instance.end_row, instance.cluster_id
@@ -518,6 +513,58 @@ def coverage_fragment(row: dict, inside: str) -> str:
     of_video = f"{100 * analysed / video:.1f}%" if video else "an unknown share"
     labelled = f"{100 * row['in_instance_ns'] / analysed:.1f}%" if analysed else "none"
     return f"analysed {of_video} of the video · {inside} {labelled} of that"
+
+
+def apply_names(state, wanted: dict[str, str]) -> None:
+    """``name_nodes``' change to ``state``, by name: an existing name joins that label, a new name
+    makes one (or renames a label whose only cluster this is), an empty name removes the node's own
+    label, and a label left with no cluster goes. Shared with ``label_lookalikes``, so labelling a
+    look-alike group is exactly typing its name (§22).
+    """
+    from detail.storage import run_labels
+
+    emptied = set()
+    for node, name in wanted.items():
+        if not name:
+            old = state.node_labels.pop(node, None)
+            if old:
+                emptied.add(old)
+            continue
+        label = run_labels.find(state.labels, name)
+        current = state.node_labels.get(node)
+        alone = current is not None and [
+            n for n, lab in state.node_labels.items() if lab == current
+        ] == [node]
+        if label is None and alone:
+            # The node is its label's only cluster and the name is new: that is a rename, and a
+            # rename keeps the label's id — so no instance id moves and recorded audit judgments
+            # keep joining, as renaming a node always did.
+            state.labels[current] = name
+            continue
+        if label is None:
+            label = run_labels.mint(state.labels)
+            state.labels[label] = name
+        state.node_labels[node] = label
+        if current and current != label and current not in state.node_labels.values():
+            emptied.add(current)
+    for label in emptied - set(state.node_labels.values()):
+        state.labels.pop(label, None)
+
+
+def prune_label_sources(state) -> None:
+    """Forget where a node's label came from once the node no longer carries that label.
+
+    ``node_label_sources[node]`` names the label id it was recorded for, so a rename (same id)
+    keeps it — the cluster's label still came from a look-alike group, under a name the person
+    chose — while a merge, a removal or a different name ends it: the person decided that
+    cluster's label.
+    """
+    sources = getattr(state, "node_label_sources", None)
+    if not sources:
+        return
+    for node in list(sources):
+        if state.node_labels.get(node) != (sources[node] or {}).get("label"):
+            del sources[node]
 
 
 class LabelOperations:
@@ -563,6 +610,7 @@ class LabelOperations:
             entry = change(state) or {}
             tree = self._tree()
             check_labels(state.labels, state.node_labels, tree)
+            prune_label_sources(state)
             state.resolved_names, state.resolved_paths = label_resolution(
                 tree, state.labels, state.node_labels
             )
@@ -667,41 +715,10 @@ class LabelOperations:
             ValueError: the result breaks a rule ``check_labels`` holds — a name with the path
                 separator, or a label whose clusters would sit under two parent labels.
         """
-        from detail.storage import run_labels
-
         wanted = {str(int(k)): str(v).strip() for k, v in names.items()}
 
         def change(state) -> dict:
-            emptied = set()
-            for node, name in wanted.items():
-                if not name:
-                    old = state.node_labels.pop(node, None)
-                    if old:
-                        emptied.add(old)
-                    continue
-                label = run_labels.find(state.labels, name)
-                current = state.node_labels.get(node)
-                alone = current is not None and [
-                    n for n, lab in state.node_labels.items() if lab == current
-                ] == [node]
-                if label is None and alone:
-                    # The node is its label's only cluster and the name is new: that is a rename,
-                    # and a rename keeps the label's id — so no instance id moves and recorded
-                    # audit judgments keep joining, as renaming a node always did.
-                    state.labels[current] = name
-                    continue
-                if label is None:
-                    label = run_labels.mint(state.labels)
-                    state.labels[label] = name
-                state.node_labels[node] = label
-                if (
-                    current
-                    and current != label
-                    and current not in state.node_labels.values()
-                ):
-                    emptied.add(current)
-            for label in emptied - set(state.node_labels.values()):
-                state.labels.pop(label, None)
+            apply_names(state, wanted)
             return {"node_names": wanted}
 
         return self._label_edit("name nodes", change, progress=progress)
@@ -1182,7 +1199,7 @@ class AuthoredRun(AnalysisRun):
                     "instance_id": row.instance_id,
                     "cx": float(position[0]),
                     "cy": float(position[1]),
-                    "subject": int(row.subject),
+                    "subject": row.subject,
                     "t_ns": int(row.t_ns),
                     "end_t_ns": int(row.end_t_ns),
                 }

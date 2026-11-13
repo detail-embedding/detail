@@ -298,10 +298,11 @@ def test_a_sorted_metadata_table_saves_the_edit_to_the_right_recording(qapp, tmp
     )
 
     page = MetadataPage(proj)
-    # The user's own columns do not start at 1 — `recording_id` and the derived `file`
-    # column sit in front of them. Asked for by name rather than by a literal, so the next
-    # column added in front does not quietly turn this into a test about sorting by file.
-    trial = page._USER_COL_START
+    # The user's own columns do not start at 1 — `recording_id`, the derived `file` column
+    # and the reserved `acquisition_setup` column sit in front of them. Asked for by name
+    # rather than by position, so the next column added in front does not quietly turn
+    # this into a test about sorting by some other column.
+    trial = page._cols.index("Trial") + page._USER_COL_START
     page._table.sortByColumn(
         trial, Qt.SortOrder.AscendingOrder
     )  # by Trial: s2(1), s3(2), s1(3)
@@ -336,7 +337,7 @@ def test_a_sorted_metadata_table_opens_the_recording_you_clicked(qapp, tmp_path)
 
     opened: list[str] = []
     page = MetadataPage(proj, on_open=opened.append)
-    trial = page._USER_COL_START
+    trial = page._cols.index("Trial") + page._USER_COL_START
     page._table.sortByColumn(trial, Qt.SortOrder.AscendingOrder)  # s2(1), s3(2), s1(3)
     assert [page._row_recording_id(r) for r in range(3)] == ["s2", "s3", "s1"]
 

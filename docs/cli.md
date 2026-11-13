@@ -1,4 +1,4 @@
-﻿# CLI guide
+# CLI guide
 
 Drive the full pipeline from the terminal: headless machines, batch jobs,
 scripting. It mirrors the Python API. New to experiment / recording / run / track?
@@ -89,10 +89,10 @@ A complete single-recording run. Detection uses **SAM 3** (gated, GPU); set up
 `detail model install sam3` first. Set a variable for the experiment path first:
 
 ```bash
-PROJ=~/Documents/DetailExperiments/study        # inside the managed workspace → also visible in the GUI
+PROJ=~/Documents/DetailExperiments/study        # the default location → also visible in the GUI
 
 # 1. experiment + recording
-detail experiment create study --dir ~/Documents/DetailExperiments
+detail experiment create study
 #   created experiment: /Users/you/Documents/DetailExperiments/study
 detail recording create --experiment $PROJ --name recording_001
 #   created recording: recording_001
@@ -130,7 +130,12 @@ prefix and counter: `det_01`, `track_01`, `emb_01` (a second run of the
 same stage is `…_02`). Downstream commands name the upstream run by id
 (`--detection det_01`, `--tracking track_01`), or, for a
 **batch** whose recordings carry different ids for equivalent runs, by *kind* with the
-`process`/`analysis` `--*-ref <RECORDING:run_id>` selectors.
+`process`/`analysis` `--*-ref` selectors. A ref is either the experiment run that made the
+upstream (`--detection-ref run_007`, the name a GUI picker row opens with) or one example run
+(`--detection-ref <RECORDING:det_NN>`). Either way it names a set of settings, and each recording
+reads its own run with those settings. A `run_NNN` whose recordings' runs do not share one set of
+settings (a run recorded before a setting was stored) is refused; name one of its runs as
+`RECORDING:run_id` instead.
 
 > **Real subjects, real prompts.** Detection only writes rows where it finds the
 > target. With zero detections the detection run still completes, but tracking fails
@@ -140,13 +145,36 @@ same stage is `…_02`). Downstream commands name the upstream run by id
 
 Options below are the common ones; run `detail <group> <command> --help` for
 the complete, current list. Every stage command takes `--experiment` and
-`--recording`. For every run parameter's bounds, default, and description in one
-table, see the [Parameters reference](reference/parameters.md).
+`--recording`. Wherever a command takes a recording (`--recording`, `--search`, an
+`--example` clip, the `RECORDING` in `RECORDING:track_NN`), give its name or its id. For every
+run parameter's bounds, default, and description in one table, see the
+[Parameters reference](reference/parameters.md).
 
 ### `experiment`
-- `create <name> --dir <parent>`: create `<parent>/<name>/`. Use
-  `--dir ~/Documents/DetailExperiments` to put it in the GUI's managed workspace.
-- `status --experiment <dir>`: identity + recording list + per-recording run counts.
+- `create <name> [--location <name> | --dir <parent>] [--camera-view <view> [--camera-view-note <text>]]`:
+  create `<name>/` in an [experiment location](concepts.md#where-experiments-live-the-managed-workspace)
+  (the default one unless `--location` names another) or in any `--dir <parent>`, which the GUI
+  lists only if it is a location. `--camera-view` sets the default
+  [camera view](concepts.md#camera-view) (`top_down`, `side`, `angled_down`, `other`); `other`
+  needs `--camera-view-note`.
+- `locations`: every experiment location on this machine, its folder, and `connected` or
+  `not connected` (the drive is unplugged).
+- `add-location <name> <folder>`: add `<folder>`, such as one on an external drive, as a location
+  experiments can be created in and are listed from; with a name that exists, point it at its new
+  folder.
+- `remove-location <name>`: stop listing a location. Nothing on disk is moved or deleted.
+- `status --experiment <dir>`: identity, whether it is archived, the default camera view, the
+  recording list and per-recording run counts.
+- `archive --experiment <dir> [--undo]`: hide the experiment from the GUI's **Experiments** list
+  (`--undo` puts it back). Nothing in it changes, and every command still works on it.
+- `set-camera-view --experiment <dir> <view> [--note <text>]`: set the default camera view every
+  recording inherits; `unset` removes it. `--note` describes an `other` view and is refused with
+  any other.
+- `classes --experiment <dir>`: the experiment's detection classes, each as detected and, when
+  renamed, `→` its [name](concepts.md#class-names).
+- `rename-class --experiment <dir> <class> <name>`: call a detection class `<name>` on every
+  screen. `<class>` is either of its names. `--reset` (in place of `<name>`) puts back the name
+  it was detected with. A name another class already has is refused.
 - `import-metadata --experiment <dir> --csv <file> [--key <column>] [--dry-run]`: bulk-set
   recording grouping variables from a CSV (see [Recording information](#recording-information)).
 - `export-metadata --experiment <dir> --csv <file>`: write the current metadata to a
@@ -183,6 +211,22 @@ table, see the [Parameters reference](reference/parameters.md).
 ### `recording`
 - `create --experiment <dir> --name <id>`: e.g. `--name recording_001`. (Note:
   `create` uses `--name`; the other `recording` commands use `--recording <id>`.)
+- `backfill-kinematics --experiment <dir> --recording <id> --embedding <emb_NN> [--overwrite]`:
+  write the per-frame position and mask shape for an embedding run made before they were
+  recorded, from the detection masks (no GPU, no re-embedding; minutes on a long recording). A
+  run that has the position but not the shape is brought up to date; one that has both is
+  skipped unless `--overwrite`.
+- `backfill-motion --experiment <dir> --recording <id> --embedding <emb_NN> [--overwrite]`:
+  measure the movement inside each animal's mask on every embedded frame (grooming, licking,
+  scratching: what the outline cannot see). One forward read of every video part, no GPU;
+  minutes to an hour on a long recording. The cluster profile then has **motion inside the
+  mask** and **motion at the ends**. Already-measured parts are skipped unless `--overwrite`.
+  There is no GUI button for it yet; the profile names this command when the measures are
+  missing.
+- `set-camera-view --experiment <dir> --recording <id> <view> [--note <text>]`: give one
+  recording its own camera view, overriding the experiment default (for a recording made on a
+  different rig). `default` removes the override so it inherits again. `recording status`
+  shows the view and whether it is inherited.
 - `add-video --experiment <dir> --recording <id> --video <file>`: import a video as
   the next part. Repeat to add more parts. The video is imported at its original rate
   and resolution: a stage that wants fewer frames sets `--every-n-frames` on the run, which
@@ -271,11 +315,22 @@ table, see the [Parameters reference](reference/parameters.md).
 (if the model has size options); trained/imported models are closed-set and take neither.
 Plus `--conf` (default `0.5`): a real filter here: a detection run stores only what
 clears it, and changing your mind means another run (unlike `prompt-test`, which keeps
-everything and lets you re-threshold the view). Plus `--batch-size <N>` (frames per GPU forward pass;
+everything and lets you re-threshold the view). `--class-conf NAME=VALUE` (repeatable)
+overrides `--conf` for one class at a time; a class with no override still uses `--conf`.
+Plus `--batch-size <N>` (frames per GPU forward pass;
 omit for the model default, `4` for YOLO and `1` for SAM3, bounded by GPU memory),
 `--every-n-frames N` (process every Nth source frame, 1, the default, is every frame; 4
 detects frames 0, 4, 8, … for roughly a quarter of the cost), and
 [compute flags](#compute--multi-gpu). Writes `det_NN`.
+
+`--teacher-window-s S` detects only the recording's first `S` seconds, for a keypoint teacher:
+one short window of each camera or box is enough to teach a keypoint model, and DINOv3 on hours
+of video is not. Tracking, `track merge` and keypoints on that run keep the same window (a
+merge needs every track it merges to cover the same span). Nothing else accepts a teacher run:
+embedding and location export refuse it and say so, because their results would quietly cover
+only those first minutes. Run pickers label it
+`first 5 min (teacher)`. Not on the GUI launch form: in the GUI, **Set up keypoints…** on the
+Models page sets it for you.
 
 `--every-n-frames` counts **source** frames, and rows keep that numbering, so a downstream
 stage can only go coarser by a multiple of it: after detection at 2, tracking and embedding
@@ -291,7 +346,10 @@ phrasing per candidate). For a **trained/local** model (`--model model_NN`, clos
 omit `--class`/`--prompt`; it previews its own classes, one result column each.
 Narrow with `--show-class <name>` (repeatable; default all). Common flags: `--n`
 (frames to sample, default `8`), `--min-conf` (default `0.5`), optional `--variant`,
-`--seed`, and [compute flags](#compute--multi-gpu). Prints a
+`--seed`, and [compute flags](#compute--multi-gpu). `--start` / `--end` (seconds of
+recording time) draw the sample only from that stretch; either one alone leaves the other
+end open. A stretch with fewer frames than `--n` is refused and the error says how long the
+recording is. Prints a
 per-column detection summary; `--save-as <name>` also writes overlay JPGs + a
 `test.json` under `detections/prompt_tests/<name>/`. Creates no run.
 
@@ -317,7 +375,8 @@ tracker you picked.
 
 ### `embedding run`
 `--tracking track_NN`, then either `--tracks 0` (comma-separated track ids, e.g.
-`0,1`) or `--all-tracks` (embed every track in the run; mutually exclusive),
+`0,1`, or subject names, e.g. `black mouse,white mouse`, for a merged run: see
+[Merge tracks](#merge-tracks) below) or `--all-tracks` (embed every track in the run; mutually exclusive),
 `--model` (default `dinov3_vit`, a DINOv3 ViT, at `--variant vit_large` unless you
 pick `vit_small` / `vit_base`; or `dinov3_convnext_base`),
 optional `--variant`, `--input-size` (model input resolution in px, e.g. `384`; sets the
@@ -350,6 +409,15 @@ turned masks, and the mode, the definition and the three settings are part of th
 identity: an aligned run never compares with an unaligned one. The run's parts gain
 `heading_deg`, `heading_source` (0 own, 1 interpolated) and `align_mirrored` per frame, and
 `embedding.yaml` records the heading coverage per track and part.
+
+**Pose in the embedding.** `--pose draw` paints the keypoint track run's points onto the image
+the model sees, so one vector holds the mask and the pose together; `--pose append` writes the
+pose as numbers (each point's place on the body, turned so the heading points right) after the
+mask's vector, and needs `--heading`. `--pose none` (the default) is the mask alone. Either
+needs `--keypoint-run` and points on every frame the run embeds. `--pose-weight` (append only;
+1 gives the pose numbers equal say with the mask's vector, 0.5 half, 2 twice) sets the balance
+when frames are compared, and `--pose-min-score` leaves out a point scoring below it (omit it
+for the keypoint track run's own cut-off).
 
 
 ### `keypoints`
@@ -388,8 +456,32 @@ detail keypoints examples export ex_01 --out shared/side_rats --experiment my_ex
 
 `sample` reads each recording's only complete tracking run; a recording with several needs
 `--tracking-run`. The default strategy, `varied`, reads the shape of every tracked frame, groups
-postures and picks the ones that differ (the typical ones first on an empty set); `spread` takes
-one frame per equal time slice. A sample decodes frames, so it shows a progress bar. A set's
+postures and picks the ones that differ (on an empty set, the `--typical` most typical ones first,
+5 unless you say); `spread` takes
+one frame per equal time slice; `heading` takes `-n` frames *per direction* the animal faces as
+the camera sees it (toward, away, left, right, the diagonals, rearing; `--bucket` to choose some),
+without a floor by default. `--floor-class` names a detection class that is the arena floor (a
+hot plate) when your detector segments one: from a 45° or side view the floor is squashed in the
+picture, so walking toward or away from the camera barely moves on screen, and the floor's
+outline lets that movement be measured on the floor itself. Without it the toward and away
+directions are filled less reliably; left and right are unaffected.
+`varied` and `heading` read `--from-recordings` of the recordings, split evenly across the values
+of a metadata column with `--spread-by`. A sample decodes frames, so it shows a progress bar;
+`heading` reads each recording once, the first time, and keeps what it read. `heading` is for
+a camera that looks across the arena: when every recording you name has the camera view
+`top_down`, it is refused, since from above the animal never faces toward or away from the
+camera. A recording with no camera view set is not refused (`recording set-camera-view`).
+
+```bash
+detail keypoints examples sample ex_01 --recording M09_CP1 --recording F13_HP2 \
+  --strategy heading -n 3 --floor-class plate --spread-by acquisition_setup \
+  --experiment my_experiment
+detail keypoints examples reject ex_01 4 --bucket toward --experiment my_experiment
+detail keypoints examples remove-frame ex_01 2 --experiment my_experiment
+```
+
+`reject` takes a frame out of the set and never samples it again: for one direction with
+`--bucket`, or at all without it. `remove-frame` only takes it out. A set's
 frames are copied in as PNGs; the marks are made in the GUI's labeling screen (GUI only, see
 *Not in the CLI*), or arrive with a prepared file:
 
@@ -411,8 +503,17 @@ set. Deleting a set a keypoint run lists is refused, so a run always finds its f
   trained in this experiment, or a keypoint model from the machine's catalog (`model list`
   shows them with `role=keypoint`), looked up in that order; the run records which
   (`weights_source`: `trained` or `imported`). A method that works on each animal (`dinov3_match`)
-  crops around every detection on the frame; a trained student looks at the whole frame. The
-  method `dinov3_match` learns from an example set, so it needs `--example-set <ex_NN>`; its
+  crops around every detection on the frame; a trained student looks at the whole frame.
+  `--class <name>` limits a method that works on each detection to the detections of that
+  class (for example `--class mouse` when the detector also finds the arena); a frame with no
+  detection of it is skipped. Left out, every detection gets a pose. The class must be one the
+  detection run found, and a method that looks at the whole frame refuses the option. The
+  method `dinov3_match` learns from an example set, so it needs `--example-set <ex_NN>`. When
+  the animals are told apart at detection and look different (a white and a black mouse as two
+  classes), give each class its own set instead: `--class-examples Resident=ex_02
+  --class-examples Intruder=ex_03`, once per class, in place of `--class` and `--example-set`.
+  Each class's detections are matched against its own set, poses go only in the classes named,
+  and every set must be on the same skeleton. The method's
   settings (`--decode`, `--side-rule`, `--crop-px`) can be left out, in which case they are
   resolved against the set's skeleton and recorded on the run. A trained student scores each
   whole pose, and `--min-pose-confidence` (default 0.25) is the lowest score it keeps; a pose
@@ -422,9 +523,24 @@ set. Deleting a set a keypoint run lists is refused, so a run always finds its f
   under `keypoint_detect/` holding, per video part, one row per pose: its frame, the box it was
   placed in, the points, their scores and the method's candidates. No pose belongs to an
   animal yet. `process keypoint_detect` is the same command.
+- `--backend remote --remote-target <name>` runs it on a registered cluster (see
+  [Compute & multi-GPU](#compute--multi-gpu)).
 
-**Track.** Give each pose to a tracked animal, then settle the points over time, on the CPU, in
-seconds:
+Besides `dinov3_match`, `--model` takes methods that need no example set: the two DeepLabCut
+SuperAnimal models, `superanimal_topviewmouse` (mice filmed from above) and
+`superanimal_quadruped` (four-legged animals filmed from the side), each an optional download
+(`model install`) whose weights are for academic, non-commercial use; a SLEAP model you imported
+(`model import --keypoints`, under [`model`](#model)); and a student you distilled (below). Each
+places the keypoints it was trained on, with their names, and takes no `--example-set` or
+matching options. A SuperAnimal or SLEAP model works on each animal, like `dinov3_match`.
+
+A keypoints run made before keypoint detect and track existed (`kp_NN`, from the old `keypoints
+run`) still opens and exports with the keypoint targets, read as a track run. It cannot be
+launched again.
+
+**Track.** Give each pose to a tracked animal, then settle the points over time. It uses one CPU
+core per recording, here or on a cluster, at about 200 animal-frames a second: about 4 minutes
+for 13 minutes of two-animal video at 30 fps, most of it giving poses to animals by mask:
 
 - `keypoints track --experiment <dir> --recording <id> [--recording <id> …]` plus **one** of
   `--detect <kd_NN>` or `--detect-ref <RECORDING:kd_NN>`. `--tracking <track_NN>` names the
@@ -449,6 +565,54 @@ seconds:
   `process keypoint_track` is the same command. Re-running with other settings, or against
   another tracking run, is a new `kt_NN` over the same detect run; the detect run is never
   rewritten.
+- Here, a run works on several recordings at once: one per core for half this machine's cores,
+  at most 8 (eight recordings took 50 s instead of 200 s one at a time on a 16-core machine).
+  `DETAIL_MAX_KEYPOINT_TRACK_PARALLELISM=N` sets the number instead.
+- `--backend remote --remote-target <name>` runs each recording as its own job on a registered
+  cluster, up to the target's concurrent jobs at once (see
+  [Compute & multi-GPU](#compute--multi-gpu)). `--backend` is `cpu` (the default) or `remote`:
+  there is no model, so there is no GPU to pick.
+  `--method-param track_points=nose,neck_base,tail_base` tracks only those points (any of the
+  detect run's point names, comma separated) and leaves every other point exactly as detected;
+  a name the skeleton does not have is refused with the names it does have.
+- `keypoints track-tune --experiment <dir> --example-set <ex_NN>` plus **one** of `--detect
+  <kd_NN>` or `--detect-ref <RECORDING:kd_NN>`, the tracking run and matching as for `keypoints track`
+  (`--tracking`, `--tracking-ref`, `--match-min-inside`, `--match-mask-grow`; left out, the
+  one tracking run on the detect run's detection run), and optionally `--method-param
+  NAME=VALUE` (the settings to start from) and `--seed`: tries 36 `temporal_decode` settings (transition scale,
+  smoothing, despike) against the example set's labelled frames and recommends one. Use frames
+  the detect run did not learn from: its own example set is refused. Tracking is re-run in
+  memory on the videos holding those frames; nothing is written. The labelled recordings are
+  split in two, one half picking the setting and the other checking it, and the table prints
+  PCK@0.1 on both halves (all points, then the check half's left/right points and midline) beside
+  detection alone and your current settings. Quote the check figures. A last row may leave some
+  points as detected (`track_points`), where detection placed them better on the picking half.
+  The last line is the `keypoints track` command that applies the recommendation.
+- `keypoints track-preview --experiment <dir>` plus **one** of `--detect <kd_NN>` or
+  `--detect-ref <RECORDING:kd_NN>`, and the tracking run, matching, `--method` and
+  `--method-param` exactly as for `keypoints track`: tries your settings on a few seconds of a
+  few recordings, without labels and without a run. `--recording` (up to three; left out, two
+  of the recordings the settings cover) picks the recordings, `--start RECORDING=SECONDS` where
+  each window starts (left out, the middle of the recording) and `--duration` how long every
+  window is (30 s by default, at most 120). `--variant 'NAME=VALUE NAME=VALUE'` (up to two,
+  needs `--method`) adds settings to try beside yours, e.g. `--variant 'transition_sigma_body=3
+  smooth=false'`. Each window is assigned once and every setting tracked on it in memory, so a
+  30-second window takes seconds rather than a full run's minutes. The table prints, for
+  detection alone, your settings and each variant: the share of points placed, the median move
+  from one frame to the next, jumps of more than half a body length in one frame per minute,
+  left/right swaps per minute, how much the skeleton stretches, and **agreement**: of the points
+  detection was most sure of, the share the setting keeps within a tenth of a body length.
+  **These describe, they do not rank**: smoothing lowers the moves, jumps and swaps whether or
+  not the points stay on the animal, so read each row against detection alone (the first; its
+  agreement is 100% by definition) and watch the clips in the app. The last lines are the
+  `keypoints track` command for each setting. Nothing is written.
+  `--grid` (in place of `--variant`, `temporal_decode` only) searches every *Tune tracking*
+  setting instead: six transition scales, smoothing off or at two windows, despike off or on,
+  36 settings over the same windows in about the time of a preview. Settings no other setting
+  beats on agreement, placed, jumps and swaps together are starred and listed first; that is a
+  provisional rule, **not yet checked against labels**, and on footage where detection jitters
+  more than a tenth of a body from frame to frame every setting's agreement sits close together,
+  so the star separates little. Commands print for your settings and the starred ones.
 
 **Distill.** Turn a teacher into a fast YOLO-pose **student**, a model that places the same
 skeleton on its own, with no example set and on any backend, in one durable run of three stages:
@@ -461,7 +625,11 @@ track` gives them, and become the labels, so nothing runs on the accelerator whi
 label is one YOLO-pose line per tracked animal (the tracking box, then each point with its
 visibility), frames are drawn spread over time where every animal is tracked, the example set's
 own clicks join them where the marked animal was alone on the frame, and audit frames, and every
-frame within `--exclude-audit-s` of one, are never used. The dataset also keeps what the teacher
+frame within `--exclude-audit-s` of one, are never used. `--student-input` says what the student
+sees: `whole_frame` (the default) trains on the whole video frame with one label per tracked
+animal, so one pass per frame serves every animal; `crop` trains on a square crop around each
+tracked animal, resized to `--student-crop-px`, for overlapping animals or a small animal in a
+wide view. The student is run the way it was trained. The dataset also keeps what the teacher
 gave on each frame it used (`teacher.npz`: points, scores and the other candidates), so a
 different cut-off can be applied later without running the teacher again.
 
@@ -485,10 +653,14 @@ detail distill status distill_001 --experiment my_experiment
   12), `--seed` (default 0) and `--cutoff` (default the method's own, if it has one). With
   `--teacher patch`, `--decode`, `--side-rule` and `--crop-px` set the method the way
   `keypoints detect` takes them, so a test before a detect run places points as the run will
-  (left out, the method decides, as on a run). Shows a progress bar through loading, labelling
-  and the held-out check.
+  (left out, the method decides, as on a run). `--class-examples CLASS=SET`, repeated, tests one
+  set per class in place of `--example-set`, as `keypoints detect` takes it; the held-out check
+  then scores each class's frames against that class's other frames. Shows a progress bar
+  through loading, labelling and the held-out check.
 - `keypoints distill --experiment <dir> --name <name> --n-frames N --teacher patch|detect`.
-  For `patch`: `--example-set ex_NN`, and the recordings to label as `--recording <name>`
+  For `patch`: `--example-set ex_NN` (or one set per detection class, `--class-examples
+  CLASS=SET` repeated, for animals told apart as classes that look different, labelled on a
+  merged tracking run), and the recordings to label as `--recording <name>`
   (repeatable; the recording's only complete tracking run) or `--tracking-run
   RECORDING:track_NN` (a named run, for a recording with several); `--model` (default
   `dinov3_match`), `--model-variant`, `--label-backend` / `--label-device` (where it runs; a
@@ -506,8 +678,10 @@ detail distill status distill_001 --experiment my_experiment
   dataset, and a method with no default asks for one), `--exclude-audit-s`, `--every-n-frames`.
   Training options mirror `train run`: `--base-model` (a `-pose` checkpoint, default
   `yolo11s-pose.pt`; any other is refused), `--trainer`, `--epochs` / `--batch-size` / `--imgsz` /
-  `--patience`, `--train-backend` / `--train-device`. One bar folds `labeling → training →
-  registering`; Ctrl-C detaches and `distill attach` rejoins. Writes `distill_NNN` with its
+  `--patience`, `--train-backend` / `--train-device`. `--train-backend remote
+  --train-remote-target <name>` trains on a registered cluster: the dataset is cut on this
+  computer and goes up with the experiment, so the cluster needs no video. One bar folds
+  `labeling → training → registering`; Ctrl-C detaches and `distill attach` rejoins. Writes `distill_NNN` with its
   `dataset_NNN` (task `pose`) and `model_NNN`, which the register stage names `<name> distill_NNN`
   and files under `role: keypoints`, so `keypoints detect --model <model_NNN>` can run it.
 - `dataset keypoints` builds the dataset alone, with the same teacher and label options (see
@@ -546,14 +720,82 @@ detail skeleton delete sk_01
 your experiments that copied it. While anything does, `edit --skeleton` and `delete` are refused
 with that list; `save-as-new` keeps the edit as a new skeleton instead. A rename is always allowed.
 
+### `keypoints setup`
+Build a keypoint model for the whole experiment in one run: a teacher taught on one short
+window of each acquisition setup (each camera or box), then a fast student distilled from it.
+Fill in **acquisition_setup** for every recording first (see
+[Recording information](#recording-information)).
+
+```bash
+detail keypoints setup plan --experiment my_experiment
+detail keypoints setup start --experiment my_experiment --name "rat pose" --detector model_003 --class rat
+```
+
+`plan` prints the recording each setup will teach from (the first of that setup, and how much
+of it is used) and its alternatives. Swap one with `--teacher "box 1=box1_day2"` on `start`
+(repeatable).
+
+`start` needs a distilled detector (`--detector`, a `model_NNN` from `distill run`) and which of
+its classes gets keypoints (`--class`). It detects and tracks the first `--window-s` seconds of
+each teacher recording (300 by default; a shorter recording is used whole), then **stops and
+waits for you**: it prints the tracking runs to mark an example set on (see **Example sets**
+under [`keypoints`](#keypoints); marking is done in the GUI) and the command that finishes it:
+
+```bash
+detail keypoints setup continue --experiment my_experiment --run distill_004 --example-set ex_01 --score-cutoff 0.4
+```
+
+`continue` runs the teacher (`--model`, `dinov3_match` by default) with that example set on
+frames sampled from the teacher's tracks, then distills a student from them, as
+`keypoints distill --teacher patch` does. `dinov3_match` has no default cut-off, so
+`--score-cutoff` is required; `keypoints test --teacher patch` on the teacher's tracking runs
+shows where to put it. An example set already marked on this animal can be given to `start`
+with `--example-set` (and `--score-cutoff`): the run then goes straight through without
+stopping.
+
+**Two or more animals** that the detector tells apart as classes (a resident and an intruder):
+repeat `--class`, once per animal. Each class is tracked on its own, the tracks are merged into
+one run per teacher recording, and the run waits for **one example set per animal**, so animals
+that look different are each matched against their own clicks. Finish it with one
+`--class-examples` per class instead of `--example-set`; one student is trained for all of them:
+
+```bash
+detail keypoints setup start --experiment my_experiment --name "pair pose" --detector model_003 --class Resident --class Intruder
+detail keypoints setup continue --experiment my_experiment --run distill_005 --class-examples Resident=ex_02 --class-examples Intruder=ex_03 --score-cutoff 0.4
+```
+
+`start` takes `--class-examples` as well, to go straight through.
+
+`start` also takes the teacher's settings (`--model-variant`, `--decode`, `--side-rule`,
+`--crop-px`) and the dataset and training options of `keypoints distill`, including
+`--student-input`. Each part has its own compute: `--detect-backend` (and `--detect-device`,
+`--detect-remote-target`), `--label-backend` / `--label-device` for the teacher, which runs on
+this computer, and `--train-backend` (and `--train-device`, `--train-remote-target`). The run
+survives the CLI closing; `distill list`, `status`, `attach` and `cancel` manage it like any
+distill, and `status` reads `awaiting_references` while it waits.
+
 ### `process`
 Experiment-level processing runs span a **recording selection** and record a `run_NNN`,
 the unit a dataset is built from. (The recording-scoped `detection run` /
 `tracking run` above do **not** create one.) `--recording` is repeatable.
 
-Every selected recording is checked before the run starts. A bar names each one as it goes
-(`Validating`, after `Resolving shared settings` for an embedding run that reads each recording
-for its background colour), then the run's own progress follows.
+**A launch shows its own progress before the run starts.** Those same commands read every
+selected recording before they start anything, and each pass draws a bar naming the recording
+it is on: `Resolving shared settings` (an embedding run that reads each recording for its
+background colour), `Validating recordings`, then `Estimating disk space`, so a large selection
+or a slow drive is visibly working. The run's own bar follows once it starts.
+
+**Free space is checked before a run starts.** Every command that launches or retries a run
+(`process detection`, `tracking`, `track-merge`, `embedding`, `keypoint_detect`, `retry`)
+estimates what the run will write and refuses when that, plus 5 GB kept spare, does not fit
+on the drive the experiment is on. The refusal names both numbers and the drive. After a
+launch it prints `estimated output: … ; … free at launch`. `--ignore-free-space` launches
+anyway. Remote runs are checked too, because their output is copied back into the
+experiment. Typical sizes per hour of video: embedding about 0.4 GB per tracked animal (a
+1024-wide model; it scales with the model's width and the number of tracks), detection about
+20 MB, keypoints about 10 MB, tracking almost nothing. Under WSL, the drive checked is the
+Windows drive holding WSL's disk whenever that has less room than WSL reports: an experiment
+inside WSL lives in one file on that drive, so a full `C:` stops WSL itself.
 
 - `process detection --experiment <dir> --recording <id> [--recording <id> …]` plus the
   same detection options as `detection run` (`--model` for any source; `--class` /
@@ -594,7 +836,8 @@ for its background colour), then the run's own progress follows.
   not comparable.
 - `process list --experiment <dir>`: the experiment's processing runs.
 - `process status <run_NNN> --experiment <dir>`: its module, status, and the
-  per-recording run ids it created.
+  per-recording run ids it created. A detection run also gives each recording's
+  `frames_with_detections=<with ≥1>/<processed>`.
 - `process attach <run_NNN> --experiment <dir>`: stream a live run's progress (it keeps
   running with the CLI closed). Ctrl-C detaches; it does not cancel.
 - `process retry <run_NNN> --experiment <dir>`: re-run the run's **incomplete** recordings
@@ -607,7 +850,8 @@ for its background colour), then the run's own progress follows.
   in-flight recordings. Finished recordings keep their results; `process retry` picks up the
   rest.
 
-`detection`, `tracking`, and `embedding` have `process` subcommands.
+`detection`, `tracking`, `track-merge`, `embedding`, `keypoint_detect` and `keypoint_track` have
+`process` subcommands.
 
 ### `dataset`
 - `create --experiment <dir> --name <name> --source-run <run_NNN>`: export a YOLO
@@ -649,8 +893,11 @@ for its background colour), then the run's own progress follows.
   default `100`, `0` disables), `--hyperparam KEY=VALUE`
   (repeatable), and [compute flags](#compute--multi-gpu). Writes `model_NNN`; the
   best weights land in `models/<id>/run/weights/best.pt`.
+- A keypoint dataset (`dataset keypoints`) trains a YOLO-pose model: give a `-pose` base model
+  (`yolo11n-pose.pt` and up). A base model that cannot learn the dataset's labels is refused.
 - `list` / `status <model_NNN>` / `delete <model_NNN>`: inspect and remove trained
-  models (`delete` confirms unless `--yes`). `status` prints a `trained with` line: the
+  models (`delete` confirms unless `--yes`). `list` shows each model's `role`: `detection`, or
+  `keypoints` for a pose model. `status` prints a `trained with` line: the
   Ultralytics version and the settings asked for. The model's `model.yaml` also keeps every
   setting Ultralytics resolved (`trained_with.args`).
 - `attach <model_NNN> --experiment <dir>`: stream a live training run's progress (it keeps
@@ -659,8 +906,8 @@ for its background colour), then the run's own progress follows.
   the machine-global model catalog so it's selectable in *any* experiment. Records its provenance
   (source experiment, dataset, base model, metrics); the original stays put. A keypoint student
   is promoted with its skeleton, which is also added to the skeleton library unless one with the
-  same points, edges and pairs is there; `keypoints detect --model <id>` then finds it in any
-  experiment.
+  same points, edges and pairs is there; it appears in `model list`, and
+  `keypoints detect --model <id>` then finds it in any experiment.
 
 ### `distill`
 One durable run that chains the two steps above, label a frame sample with a prompt-capable
@@ -676,20 +923,100 @@ this experiment at once; `train promote` it for cross-experiment reuse.
   `--label-backend` / `--label-device` (SAM3 needs CUDA) and `--train-backend` / `--train-device`.
   One bar shows the folded `labeling → training` progress with an ETA. Ctrl-C detaches (the run
   keeps going); `distill attach` to rejoin. Writes `distill_NNN` (+ its `dataset_NNN` / `model_NNN`).
+  `--stage-videos` (needs a remote labeling or training target) copies every source recording's
+  video to the cluster **in the background** while labeling and training run, so the detection run
+  you start afterwards finds it there instead of uploading it first. Off by default: it can be 100+
+  GB on the cluster's storage. It goes to the training target (else the labeling one); watch it with
+  `detail remote staging-status`, stop it with `detail remote staging-stop`.
 - `attach <distill_NNN>` / `resume <distill_NNN>` / `cancel <distill_NNN>`: rejoin a run, resume a
   failed/cancelled one (reuses a complete dataset, resumes a cancelled or crashed training), or stop a running one.
 - `list` / `status <distill_NNN>` / `delete <distill_NNN>`: inspect and remove distill runs.
   `delete` removes only the run record: its dataset and trained model stay (delete those with
   `dataset delete` / `train delete`). `status` prints the run's `kind` (`detection`, or
   `keypoints` for one launched by [`keypoints distill`](#keypoints), whose third stage,
-  `register`, it prints too).
+  `register`, it prints too; `keypoint_setup` for one launched by
+  [`keypoints setup`](#keypoints-setup)).
 
 ### `locations export`
 `--experiment`, `--recording`, `--tracking track_NN`, `--out <dir>`: a per-recording export
-straight to `--out`, writing `tracks.csv` / `roi_relations.csv` / `point_relations.csv` + a
-`locations.yaml` manifest (per-track position relative to the recording's ROIs/POIs,
-keyed by `t_ns`). No run record. For a recorded, batchable version, see `analysis
-run` below.
+straight to `--out`, writing `tracks.csv` / `roi_relations.csv` / `point_relations.csv` /
+`pair_relations.csv` + a `locations.yaml` manifest (per-track position relative to the
+recording's ROIs/POIs, and the distance between every pair of animals, keyed by `t_ns`). No run
+record. For a recorded, batchable version, see `analysis run` below.
+
+- `--keypoints kt_NN` also writes `keypoints.csv`: every frame × animal × point of that
+  keypoint track run, in normalized, pixel and mm units, with the point's score and whether it
+  is at or above the cut-off. The run must come from the same tracking run.
+- `--pair-edge-distance` also measures the nearest distance between two tracks' masks (0 when
+  they touch). It compares the masks on every frame, so it is slower; off by default.
+
+`pair_relations.csv` has one row per frame per pair of animals both tracked on it. A recording
+with one animal gets the header only.
+
+### `locations plot`
+Draw a completed location-export analysis run: paths, occupancy, speed over time, or the path in
+3-D.
+
+```bash
+detail locations plot --experiment ./study --run an_03 --out figs/paths
+detail locations plot --experiment ./study --run an_03 --out figs/heat --kind heatmap --group-by genotype --format png --format pdf
+```
+
+`--run an_NN` and `--out <path without extension>` are required. `--recording` (repeatable)
+narrows the plot; the default is every completed recording in the run. `--format png|svg|pdf`
+(repeatable, default `png`; `html` writes one self-contained interactive page you can hover,
+zoom and, in 3-D, turn, which opens in any browser offline) and `--theme light|dark`. The plot
+options are `--kind
+trace|heatmap|speed|trace3d|distance|distance_hist`, `--source mask|bbox|<keypoint>`, `--point
+<keypoint>` (repeatable: several points on one path plot, one colour each), `--units mm|px|norm`
+(default: mm when every plotted recording is calibrated, otherwise px), `--color-by
+auto|time|speed|subject`, `--subject <label>` (repeatable; the default is every animal),
+`--group-by <Recording Information column>`, `--split-by-subject` (also group by animal, or by
+pair on a distance plot), `--pair "<label> – <label>"` (repeatable), `--distance-by
+mask_centroid|bbox_centroid|mask_edge`, `--hist-bins`, `--bins`, `--time-bin-s`,
+`--speed-clip-pct`, `--elev`, `--azim` and `--max-points`. `--help` lists each with its range and
+default.
+
+A keypoint `--source` or `--point` needs a run exported with `--keypoints`; a point under the
+cut-off is left out of the path. `distance` is the distance between two tracks over time and
+`distance_hist` how often they were at each distance, a line per pair (`mouse – object`). In a
+group, each pair counts once. `--distance-by mask_edge` needs a run exported with
+`--pair-edge-distance`.
+
+Every animal in a recording is plotted, named by its tracking run's label (`white mouse`), or
+`subject 0`, `subject 1`, … when the run has none. `--subject` takes the label and finds that
+animal in each recording, whatever its track number there. In a group, each animal counts once.
+
+```bash
+detail locations plot --experiment ./study --run an_04 --out figs/speed --kind speed --group-by genotype --split-by-subject
+detail locations plot --experiment ./study --run an_04 --out figs/apart --kind distance_hist --group-by genotype
+```
+
+### `locations montage`
+Play a location-export run's recordings side by side, one tile per recording with every animal
+in its colour, and write it as a GIF or MP4. One `--recording` is a preview of that recording.
+Each tile is captioned with its recording's name; a name wider than the tile is cut in the middle
+(`20251103_Ra…Shot1_ArenaE`), so the end that tells two recordings apart stays.
+
+```bash
+detail locations montage --experiment ./study --run an_04 --out montage.gif --start-s 60 --length-s 20
+detail locations montage --experiment ./study --run an_04 --out last.png --last-frame --raw --keypoints --keypoint-trail
+```
+
+`--run an_NN` and `--out <file>` are required: `.gif` or `.mp4`, or `.png` with `--last-frame`.
+An mp4 is H.264 unless `--codec mp4v` says otherwise ([Video format](#video-format-codec)).
+`--recording` and `--subject` (both repeatable) narrow what plays; the default is every recording
+and every animal. `--start-s` and `--length-s` set one window for every recording, all in sync;
+`--full-length` plays each recording from its first to its last tracked frame instead, so they end
+at different times. `--full-frame` shows the whole frame instead of cropping to the animals.
+`--speed` (0.25 to 4) plays faster or slower than real time. The layers are `--raw`, `--mask` /
+`--no-mask`, `--keypoints`, `--mask-trail` / `--no-mask-trail`, `--keypoint-trail` and
+`--trail-point <name>` (repeatable). `--last-frame` writes the last picture with every trail
+covering the whole clip, one picture of where each animal went. `--width` caps the picture's
+width in pixels.
+
+The montage reads the recordings' videos and tracking runs, so a recording deleted since the
+export is left out and named.
 
 ### `export`
 Get data out of DETAIL in open formats. `export list` shows what a subject can produce;
@@ -745,7 +1072,16 @@ selection, written to `analysis/<an_NN>/`.
   full lineage, incl. the tracking run's own detection kind, and the run fails if any
   selected recording has no match). Repeat `--tracking-ref` to cover recordings tracked
   through different chains (two detection models, say): each recording reads its run of the
-  one named kind it has. Runs a
+  one named kind it has. `--tracking-for <RECORDING:track_NN>`, repeatable once per
+  recording (the recording by id or name), reads exactly that run there, whatever the other
+  flags pick. It is for a recording whose tracking was redone beside a bad run:
+  `--tracking track_01 --tracking-for "larva 26:track_02"` reads `track_02` there and
+  `track_01` everywhere else, where `--tracking track_01` alone would read the bad run and
+  naming both kinds with `--tracking-ref` is refused. With `--tracking-for`, `--tracking` /
+  `--tracking-ref` may be left out, and the one kind the other recordings share is used. The
+  run named must exist and be complete. `--keypoints <kt_NN>` / `--keypoints-ref
+  <RECORDING:kt_NN>` add `keypoints.csv`, and `--keypoints-for <RECORDING:kt_NN>` does the
+  same per recording; its poses must have gone to the tracking run read there. Runs a
   per-recording analysis module across the selection (writes `an_NN`). For
   `location_export` (the default), output lands in `analysis/<an_NN>/<recording_id>/` as
   the three CSVs. Same output as `locations export`, but recorded, with progress + batch.
@@ -826,11 +1162,13 @@ selection, written to `analysis/<an_NN>/`.
   The artifact is pinned as it is exported and the snapshot id is printed, so a figure
   built from these CSVs can cite something that survives a later re-cut of the run.
 - `temporal-clustering --experiment <dir> --recording <id> [--recording <id> …]
-  [--embed-run <emb_NN> | --embed-ref <RECORDING:emb_NN> [--embed-ref …]] [--track 0] [--method codebook_viterbi]
+  [--embed-run <emb_NN> | --embed-ref <RECORDING:emb_NN> [--embed-ref …]] [--embed-for <RECORDING:emb_NN> …] [--track 0] [--method codebook_viterbi]
   [--detector binseg] [--min-bout <s>] [--band <s>] [--max-bouts <n>]
-  [--fit-share <percent>] [--codewords <n>] [--min-run <s>]`: discover a vocabulary
-  of **behaviors** pooled across the selected recordings. With `--method dtw_finch`, each trajectory is cut into bouts at the
-  moments the pose changes, every pair of bouts is compared, and the comparison is grouped; the default, `codebook_viterbi`, is
+  [--fit-share <percent>] [--codewords <n>] [--min-run <s>] [--seed <n>]
+  [--method-param <name>=<value> …] [--remote-target <name>]`: discover a vocabulary
+  of **behaviors** pooled across the selected recordings. With
+  `--method dtw_finch`, each trajectory is cut into bouts at the moments the pose changes, every
+  pair of bouts is compared, and the comparison is grouped; the default, `codebook_viterbi`, is
   described further down. A cluster is a stretch of movement
   and an instance is one performance of it.
 
@@ -853,8 +1191,13 @@ selection, written to `analysis/<an_NN>/`.
   same embedding model, variant, read-out, input image and size), or the command is refused
   rather than pooling two kinds of vector into one vocabulary.
 
-  For `dtw_finch`, comparing every pair is what lets a slow and a fast performance of the same behavior match,
-  and it is why a fit is expensive: the cost grows with the **square** of the bout count.
+  **A run redone beside a bad one.** `--embed-for <RECORDING:emb_NN>`, repeatable once per
+  recording (the recording by id or name), reads exactly that run there, whatever
+  `--embed-run` / `--embed-ref` pick for the rest. The run must be complete and comparable
+  with the others.
+
+  For `dtw_finch`, comparing every pair is what lets a slow and a fast performance of the same
+  behavior match, and it is why a fit is expensive: the cost grows with the **square** of the bout count.
   `--max-bouts` evenly samples the bouts the comparison sees and is the only bound on it.
 
   **A cap changes what the vocabulary is learned from, not what gets labeled.** Every remaining
@@ -874,6 +1217,13 @@ selection, written to `analysis/<an_NN>/`.
   method's knobs are its own: passing one that belongs to the other is refused rather than
   ignored, with a message naming what the method does accept.
 
+  `--seed <n>` is `codebook_viterbi`'s seed for its k-means grouping: the same seed on the same
+  recordings gives the same vocabulary. Any other parameter the method declares (for example
+  `window_s` or `max_gap_s`, or `dtw_finch`'s `pool` and `penalty`) is set with
+  `--method-param <name>=<value>`, repeatable; the [codebook_viterbi](modules/codebook_viterbi.md)
+  and [dtw_finch](modules/dtw_finch.md) pages list them with bounds and defaults. A parameter given
+  both as its own option and as `--method-param` is refused.
+
   After the fit, the run prepares the evidence every cluster shows in the GUI, however small the
   cluster: counts, time per recording, positions, and the list of its clips with how typical each
   one is. Nothing is decoded from the video at this step. Time is measured from the recordings' own
@@ -882,6 +1232,13 @@ selection, written to `analysis/<an_NN>/`.
   The fit leaves the run **open**, not complete: a vocabulary is not a result until somebody has
   looked at it and labelled things. Interpret it with `temporal-interpret`.
 
+  **On a cluster.** `--remote-target <name>` runs the fit on a registered cluster (`detail remote
+  list`), which frees this computer for the hours a large study takes. Each recording's embedding
+  run is sent to the cluster again first, so the fit reads what this computer has, and the
+  recordings' videos are copied there (once; later runs reuse them). The
+  run comes back here when the fit is done, open, as if it had run here. The work is CPU, so the
+  job asks for one GPU, the fewest the cluster accepts, and that share of a node's CPUs and memory.
+
 - `temporal-interpret --experiment <dir> --run <an_NN> [--tree] [--name-node <node>=<label> …]
   [--rename-label <old>=<new> …] [--merge-label <from>=<into> …]
   [--rebuild-cache] [--finalize] [--reopen]`: label the clusters you care
@@ -889,7 +1246,12 @@ selection, written to `analysis/<an_NN>/`.
   groups, and **a label goes on any node of that tree**. Every operation is quick: it rewrites the
   run's state and rebuilds the behavior output from a fit already on disk; nothing re-fits or re-compares. Each
   command ends with a `coverage:` line per recording: how much of the video was analysed, and how
-  much of that is in a bout. A capped fit prints a `note:` line first, every time.
+  much of that is in a bout. A capped fit prints a `note:` line first, every time. Time tracking
+  lost is in neither: a bout on both sides of a gap is two instances, never one spanning it. A
+  temporal-clustering run whose results were written before that rule (2026-11-08) can still hold
+  instances that span a gap, and so report more than 100%; its results are corrected the next time
+  they are rewritten: any label change, or `analysis rebuild <an_NN>` (`--reopen` a finished run
+  first).
 
   `--tree` prints the nodes, coarsest level first: each with its parent, its time, its share of the
   run, how many clips it has, and its label (in brackets when a label above it covers it). A
@@ -926,47 +1288,6 @@ selection, written to `analysis/<an_NN>/`.
   not change any label and is allowed on a finished run. `--min-cluster-s` is gone: there is no
   size floor, and a run saved with one ignores it.
 
-- `export-temporal-clustering --experiment <dir> --run <an_NN> --out <dir>`: write one
-  behavior-stream CSV per fitted recording. Each row carries `origin: predicted`, so re-importing
-  one can never read back as ground truth.
-
-  The artifact is pinned as it is exported and the snapshot id is printed, so a figure
-  built from these CSVs can cite something that survives a later re-cut of the run.
-
-
-- `cluster-montage --experiment <dir> --run <an_NN> --node <node> [--out <file.mp4|.gif>]
-  [--per-clip-gifs <dir>] [--csv <file>] [--clips N] [--sort typical|least-typical|recording|length|random]
-  [--raw/--no-raw] [--mask/--no-mask] [--keypoints/--no-keypoints] [--mask-trail/--no-mask-trail]
-  [--keypoint-trail/--no-keypoint-trail] [--trail-point <name> …] [--aligned/--as-recorded]
-  [--context <s>] [--blind] [--max-width <px>]
-  [--fps <n>]`: exports a node's clips from the terminal, for a node of a
-  temporal-clustering run. It writes the same files a clip grid's **Export ▾** writes in the app. `--out` writes the montage itself: the node's
-  clips side by side, each cropped to its animal and labelled `#rank · recording · start`, all
-  starting together and each looping from its start the moment it ends. `--per-clip-gifs`
-  writes one GIF per clip into a folder, named `rank_recording_m-ss.t.gif`; `--csv` writes the
-  clips as a list: a clip-query CSV (`analysis query --from-csv` reads it as example clips) with
-  the clip's typicality rank, its recording's name, the subject, the times in seconds, the node
-  and the run after the standard columns. Give at least one of the three. The defaults: 25 clips,
-  most typical first, the mask and its trail on white (a clip grid's **Export ▾** in the app
-  writes every clip it shows); `--raw` draws the
-  footage with the animal outlined instead. `--sort random` shuffles the cluster's clips, the same
-  way every time for the same node, so a montage of 25 is a fair look at a large cluster rather
-  than its centre alone. `--aligned` turns each clip so the animal's body points up, frame by
-  frame, as **Aligned** does on every clip grid in the app: it needs the keypoint run the
-  embedding read and a heading definition, and without them every frame is drawn as recorded; a
-  frame whose body axis cannot be measured is drawn as recorded with a small *no axis* mark.
-  `--context 1` plays a second of footage either side of each clip (**Show ▾**'s context on a
-  clip grid); the labels and the `--csv` list still name each clip's own span. Every cluster has clips, however small. A run fitted before the node
-  cache existed has none listed until it is built: the command says so and names
-  `temporal-interpret --rebuild-cache`, which builds it. `--max-width` and `--fps` shape a picture, so they
-  are refused with only `--csv`; left out, a GIF is 640 pixels at 12 a second and an mp4 is
-  200-pixel tiles at the montage's own clock (the footage's rate, at most 15 a second).
-
-  ```bash
-  detail analysis cluster-montage --experiment $PROJ --run an_07 --node 118 --out rearing.gif
-  detail analysis cluster-montage --experiment $PROJ --run an_07 --node 118 --per-clip-gifs clips/ --csv clips.csv --sort least-typical --clips 50
-  ```
-
 - `snapshots <an_NN> --experiment <dir> [--snapshot <snap_NN>]`: list the run's **pinned
   artifacts**, frozen copies of its results, saved automatically whenever a number left the run
   (an export, a comparison, a finish). Each line gives when it was taken, why, a one-line summary of
@@ -979,8 +1300,169 @@ selection, written to `analysis/<an_NN>/`.
 
   Reopening a run and relabelling it never changes a snapshot.
 
+- `export-temporal-clustering --experiment <dir> --run <an_NN> --out <dir>`: write one
+  behavior-stream CSV per fitted recording. Each row carries `origin: predicted`, so re-importing
+  one can never read back as ground truth.
+
+  The artifact is pinned as it is exported and the snapshot id is printed, so a figure
+  built from these CSVs can cite something that survives a later re-cut of the run.
+
+- `profile --experiment <dir> --run <an_NN> --node <node> [--compare rest|sibling|node]
+  [--against <node>] [--explainer <id>] [--time-budget <s>] [--n-per-side <n>]
+  [--margin <0-1>] [--keep-place] [--seed <n>] [--no-save]`: which measures set one node
+  apart, the GUI's **Cluster profile** window as text. The first line is the verdict: balanced
+  accuracy on held-out recordings beside the shuffled floor, and whether it clears the margin,
+  or, for a cluster whose members all come from one recording, why there is no such score.
+  Then what it was based on, what it skipped, each measure's direction with both medians, the
+  plain rules, and the context. `--compare node --against <node>` compares it with one other
+  cluster instead, to ask whether two clusters in different branches are the same behaviour;
+  neither may hold the other. It also prints how well position and facing alone tell the two
+  apart: when the body measures cannot and they can, the two are one behaviour seen in another
+  place or direction, and `lookalikes` groups them. Where the animal is and which way it faces are measured but left
+  out of the fit, so rearing toward the left and toward the back read as one behaviour;
+  `--keep-place` puts them in. Kept with the run (`profiles/node_<id>/`, and a comparison with
+  another cluster under it in `against_<other>/`) unless `--no-save`. The default explainer needs `shap`
+  (`detail install-extra analysis`); without it the forest falls back to permutation
+  importance and says so. Your labels are never read.
+- `profile-all --experiment <dir> --run <an_NN> [--clusters floor|all|leaves|ids]
+  [--node <node> …] [--n-per-side <n> | --use-time-budget [--time-budget <s>]]
+  [--compare rest|sibling] [--keep-place] [--explainer <id>] [--margin <0-1>] [--seed <n>]
+  [--redo] [--remote-target <name>] [--estimate]`: `profile` over many clusters of one run, as
+  one recorded job you can leave running (overnight over a whole run, say). `--clusters floor`
+  (the default) is every cluster with at least the run's minimum cluster time (30 seconds of
+  members, or the minimum an older run recorded when it was fitted), largest first; `all` adds the nodes
+  under the floor, `leaves` the tree's leaves, and `--node` (repeatable) names the ones you
+  want. The root is never one. Before anything starts it prints how long it should take on this
+  computer: each profile at its fixed count (or the median this run's own profiles took);
+  `--estimate` prints that and stops. Each profile measures a fixed `--n-per-side`
+  members (50) so it does not depend on this computer's speed; `--use-time-budget` measures for
+  `--time-budget` seconds instead. `--margin` and `--seed` are `profile`'s, for every cluster.
+  The job writes each cluster into its own `analysis/<an_NN>/` and places it beside the
+  clustering run (`profiles/node_<id>/`), where `profile` and the GUI's INTERPRET read it.
+  **Safe to stop:** a cluster already profiled with the same settings is skipped, so running
+  the same command again does only what is left (`--redo` does every cluster again). One bar
+  covers the whole job (clusters done, plus the running one's share, and the time left); each
+  cluster's phase (`measuring`, then `fitting`) prints above it. A cluster that fails is listed
+  with why, and the job goes on. Ctrl-C cancels and keeps the finished clusters. At the end it
+  prints each cluster's status, and the time it took beside the estimate. The run is an
+  ordinary analysis run: `analysis status`, `attach`, `cancel` and `delete` work on it, and its
+  record lists every cluster. **On a cluster:** `--remote-target <name>` runs the whole job
+  there instead, freeing this computer. The clustering run is re-sent first, so the cluster
+  profiles what is on this computer now, and the profiles are placed beside it here when they
+  come back.
+- `find-lookalikes --experiment <dir> --run <an_NN> [--pairs all|labelled]
+  [--n-per-side <n> | --use-time-budget [--time-budget <s>]] [--explainer <id>] [--margin <m>]
+  [--seed <n>] [--redo] [--remote-target <name>] [--yes]`: look for clusters in different
+  branches of a run that are the same behaviour, as one recorded job you can leave running. It
+  compares pairs of the run's **branch tops** (the two halves of every split where both are at
+  least the run's minimum cluster time), each with a `profile --compare node` of one against the
+  other, with position and facing left out. Two clusters the body measures cannot tell apart
+  **look alike**. `--pairs all` (the default) compares every pair, which takes many hours on a
+  large run, so it first prints how many pairs it will compare and about how long, with the count
+  for `labelled`, and asks (`--yes` skips the question). `--pairs labelled` compares each
+  labelled cluster against every other, far fewer pairs; it needs at least one labelled cluster.
+  Each comparison is saved beside the run, where
+  `profile --compare node --against` would save it, and a pair already compared with the same
+  settings (either way round, or by hand) is skipped: safe to stop and run again (`--redo`
+  compares every pair again). One bar covers the whole job; at the end it prints how many pairs
+  look alike and the groups. `--remote-target` runs the job on a registered cluster (`detail
+  remote list`) instead of this computer, which is worth it on a large run: the comparisons
+  are placed beside the run here once they are copied back.
+- `lookalikes --experiment <dir> --run <an_NN> [--label-group <n> [--name <name>] [--include
+  <node> …] [--leave-out <node> …] [--yes]]`: the run's **look-alike groups**. Pairs that look
+  alike chain into groups: if A looks like B and B looks like C, all three are one. Each group
+  lists its clusters (share of the run and your label), a proposed name (the label most of
+  them already carry; with none, give one with `--name`), and why they are
+  grouped: each pair with how well the body measures, and position and facing alone, told it
+  apart. A label covers everything under its cluster that has no label of its own, and clusters
+  sit inside one another, so a cluster can hold others that are a different behaviour (a
+  rearing cluster holding a walking one). Under each cluster, `would also label` names the ones
+  its label would take that are outside the group, with their share of the run; such a
+  cluster is marked `[ ]`, the rest `[x]`. Every saved `profile --compare node` with position and
+  facing left out counts, however it was made. `--label-group` gives group `n`'s `[x]` clusters
+  one label, the proposed name or `--name`, adding each `--include` cluster and leaving out each
+  `--leave-out` one: it prints what each cluster would do, including what it would also label (or
+  why it is skipped: a cluster with another label of yours keeps it), and asks before writing
+  (`--yes` does not ask). Labelling the swept clusters first takes them off the list. A label
+  made this way is recorded as given to a look-alike group.
+- `cluster-montage --experiment <dir> --run <an_NN> --node <node> [--out <file.mp4|.gif>]
+  [--per-clip-gifs <dir>] [--csv <file.csv>] [--export-dir <dir>] [--clips N]
+  [--sort typical|least-typical|recording|length|random]
+  [--raw/--no-raw] [--mask/--no-mask] [--keypoints/--no-keypoints] [--mask-trail/--no-mask-trail]
+  [--keypoint-trail/--no-keypoint-trail] [--trail-point <name> …] [--aligned/--as-recorded]
+  [--context <s>] [--overlay] [--blind] [--max-width <px>] [--fps <n>]
+  [--visual <look> …] [--write montage|clips|both] [--format mp4|gif …] [--mp4-width <px>]
+  [--mp4-fps <n>] [--gif-width 640] [--gif-fps 12] [--codec h264|mp4v]`:
+  export a node's clips from the terminal, for a node of a temporal-clustering run.
+  It writes the same files a clip grid's **Export ▾** writes in the app. Give at least one of
+  the four outputs:
+  - `--out` is the montage itself: `--clips` clips (25 unless you say, any number up to the
+    whole cluster) in `--sort` order (most typical first unless you say), each cropped to its
+    animal and labelled `#rank · recording · start`, all starting together; a shorter clip holds
+    its last frame until the longest ends. The rank is always the clip's typicality rank.
+  - `--per-clip-gifs` writes one GIF per clip into a folder, named
+    `rank_recording_m-ss.t.gif` (for example `3_mouse_07_0-42.1.gif`; `recording-C` with
+    `--blind`).
+  - `--csv` writes the clips as a list: a clip-query CSV (`analysis query --from-csv` reads it
+    as example clips) with the clip's typicality rank, its recording's name and id, the subject,
+    the start and end in nanoseconds and seconds, the node and the run after the standard
+    columns, so the list (edited to the clips you want) seeds a Query's example clips.
+  - `--export-dir` is **Export ▾ ▸ Export clips…**: each `--visual` in its own subfolder of the
+    folder, in each `--format`, the montage file and/or one file per clip as `--write` says. A
+    visual is `current` (the tick flags below), `raw`, `raw-outline`, `raw-outline-trail`,
+    `raw-keypoints`, `raw-keypoints-trail`, `mask`, `mask-trail`, `keypoints`,
+    `keypoints-trail` or `mask-keypoints-trails`; repeat `--visual` and `--format` for several.
+    The defaults are the dialog's: `current`, both formats, `--write both`, the mp4 at full size
+    (each clip at its crop's own size in the recording) and the recording's own frame rate unless
+    `--mp4-width` / `--mp4-fps` say otherwise, the GIF at 640 pixels and 12 a second. The files
+    are named as in the dialog: `montage.mp4`, `3_mouse_07_0-42.1.gif`, and so on, and
+    `--trail-point` chooses every keypoint trail's points.
+
+  The flags are the clip grid's **Show ▾** layers, with the same defaults: the mask and its
+  trail, on white. `--raw` draws the footage, with the animal outlined; `--keypoints` adds the
+  keypoints; a trail needs what it trails, and the mask trail follows `--mask` unless you set it.
+  `--sort random` shuffles the cluster's clips, the same way every time for the same node, so a
+  montage of 25 is a fair look at a large cluster rather than its centre alone. `--blind` labels
+  recordings A, B, C. A GIF is 640 pixels wide at 12 frames a second unless `--max-width` /
+  `--fps` say otherwise (each per-clip GIF too); an mp4 is 200-pixel tiles at the montage's own
+  clock (the footage's rate, at most 15 a second). Every cluster has clips, however small. A run
+  fitted before the node cache existed has none listed until it is built: the command says so
+  and names `temporal-interpret --rebuild-cache`, which builds
+  it.
+
+  `--context 1` plays a second of footage either side of each clip in `--out` and
+  `--per-clip-gifs` (**Show ▾**'s context on a clip grid); the labels and the `--csv` list still
+  name each clip's own span.
+
+  `--aligned` turns every tile so its animal faces up, by the heading its embedding run uses
+  (**Aligned** on a clip grid): the run's keypoint track run and heading definition, or, for a
+  run that was not aligned, the one heading definition saved for the experiment that fits its
+  skeleton. A frame the embedding would not turn (a gap in the heading longer than its
+  `max_gap_s`) is a grey tile marked *no heading*, never the frame unturned. A run aligned by
+  `mirror` (a side view) is flipped as the run flips it rather than turned. `--aligned` applies
+  to the tick flags and to every `--visual`; when no clip has a heading the command stops and
+  says why. `--as-recorded` is the default.
+
+  `--overlay` writes `--out` as one picture of the clips drawn over each other (**Export ▾ ▸
+  Export overlay…** in the app): each clip's outline in its own colour, turned to face up and
+  centred, with its keypoint skeleton on top and a key beside it naming each colour. It shows 12
+  clips unless `--clips` says otherwise. Clips make an `.mp4` or a `.gif`, playing together.
+
+  `--codec` chooses how every MP4 is encoded: `h264` (the default; plays in PowerPoint and every
+  browser) or `mp4v`. Where this computer cannot encode H.264 the export writes `mp4v` and says
+  so.
+
+  ```bash
+  detail analysis cluster-montage --experiment $PROJ --run an_07 --node 118 --out rearing.gif
+  detail analysis cluster-montage --experiment $PROJ --run an_07 --node 118 --raw --keypoints --out grooming.gif
+  detail analysis cluster-montage --experiment $PROJ --run an_07 --node 118 --clips 40 --sort least-typical --per-clip-gifs odd_ones/ --csv odd_ones.csv
+  detail analysis cluster-montage --experiment $PROJ --run an_07 --node 118 --export-dir grooming/ --visual current --visual raw-outline --format gif
+  detail analysis cluster-montage --experiment $PROJ --run an_07 --node 118 --aligned --out grooming_aligned.mp4
+  ```
+
 - `query-eval --experiment <dir> --embed-run <emb_NN> --behavior <label> [--behavior <label> …]
-  [--search <id> …] [--stream <name>] [--band 0.5] [--fusion min|mean] [--method dtw] [--iou 0.5] [--point-window 0.5]
+  [--search <recording> …] [--stream <name>] [--band 0.5] [--fusion min|mean] [--method dtw]
+  [--keyframe-select medoid|distinctive|rare] [--n-keyframes 1] [--iou 0.5] [--point-window 0.5]
   [--n-exemplars 1] [--n-holdout <n>] [--folds 1] [--seed 0] [--split-gap <s>] [--max-results <n>] [--track 0]
   [--k 20] [--tau 0.07] [--n-negatives 500] [--negative-pool unlabeled|labeled_clean]
   --out metrics.csv [--pr-out <dir>] [--predictions-out <csv>] [--ground-truth-out <csv>]
@@ -1027,7 +1509,11 @@ selection, written to `analysis/<an_NN>/`.
   `--method` selects the scoring method, in two families. **Windowed matchers** (span-detection
   AP): `dtw` (default; banded subsequence DTW), `clip_pooled_mean`/`clip_pooled_max` (one pooled
   descriptor per clip) and `keyframe` (the most query-defining frame) return matches roughly the
-  **example's length** and are scored by temporal overlap. The **per-frame classifier** (per-frame
+  **example's length** and are scored by temporal overlap. `keyframe` picks its defining frame by
+  `--keyframe-select medoid` (the most typical, the default), `distinctive` (the farthest from the
+  background) or `rare` (the least like the rest of the database), and `--n-keyframes` (default 1)
+  sets how many such frames it takes from the query: a match scores by holding a frame close to
+  each. The **per-frame classifier** (per-frame
   AP) `soft_knn` scores every frame by a softmax-weighted vote over its `--k` nearest labeled frames
   (the example frames plus `--n-negatives` sampled background frames, `--tau` sets the softmax
   temperature), ranks all frames, and integrates a threshold-free per-frame Average Precision, so
@@ -1051,6 +1537,11 @@ selection, written to `analysis/<an_NN>/`.
   done
   ```
 - `list --experiment <dir>`: the experiment's analysis runs.
+- `info <an_NN> --experiment <dir> [--export FILE.zip]`: prints every YAML file the run
+  keeps about itself, as it is on disk: `analysis.yaml` (its record and every setting it was
+  launched with), the module's own file (method settings, labels), then the rest
+  (`machine.yaml`, `resources.yaml`). `--export` writes them to one zip instead. The GUI's
+  **Meta-information…** window shows the same files.
 - `status <an_NN> --experiment <dir>`: its module, status, recordings, **settings**, and
   artifacts. The settings block is what the run was launched with, ready to re-pass:
 
@@ -1084,12 +1575,19 @@ selection, written to `analysis/<an_NN>/`.
   this costs one pass over the outputs, not another fit or search. It is also the way to
   re-drive a run whose results write **failed**: the fit or search is still on disk, so the
   run does not have to be redone from the start.
+  Rebuild also brings a clustering run written before 2026-11-08 up to the rule that no
+  instance spans a stretch tracking lost (see `temporal-interpret`).
 
   A label or cutoff change writes the results and leaves the per-frame table for
   later, so it returns in seconds. `measures`, `--finalize` and the `export-*` commands bring that
   table up to date first, showing a progress bar only when there is something to rebuild.
 - `delete <an_NN> --experiment <dir> [--yes]`: remove the run's `analysis/<an_NN>/`
   directory. Blocked only while the run is active (cancel it first).
+- `duplicate <an_NN> --experiment <dir> [--name <text>]`: copy a run whole (its fit, tree,
+  clips, labels, measures and profiles) to a new `an_NN` named `<name> (copy)`
+  unless `--name`, leaving the original untouched; try something on the copy without risking
+  the run. The copy's records name the copy. Refused while the run is going. A bar shows the
+  copy; Ctrl-C stops it and removes what was copied.
 
 ### `measures`
 Turn a behavior result into numbers: how many bouts, how much total time, a rate against observed
@@ -1175,20 +1673,35 @@ model** catalog (shared across every experiment on the machine):
 - `check <id> [--experiment <dir>]`: readiness reason + action URL. Consults the
   network only when the model isn't installed.
 - `install <id> [--experiment <dir>]`: download weights into the global cache
-  (idempotent; prints per-file progress). The only command that downloads.
+  (idempotent; prints per-file progress). The only command that downloads. A model whose
+  weights restrict use (the SuperAnimal keypoint models: academic, non-commercial) prints
+  its license first; `list` shows it as `license=…`.
 - `import <weights.pt> [--skeleton <preset|sk_NN|file.yaml>] [--family <family>] [--name <id>]
   [--made-by] [--description] [--notes] [--preview <image>]`: register an Ultralytics
   checkpoint into the machine-global catalog with optional metadata + a preview image. The
   checkpoint's task decides what it becomes, so leave `--family` out (when given, it must
   agree). A detection checkpoint becomes a detector, its class names read from the checkpoint;
   use it as `detect --model <id>`. A pose checkpoint becomes a keypoint model and needs
-  `--skeleton`: a preset, a library skeleton or a skeleton YAML (see `skeleton`). It must have
+  `--skeleton`: a preset, a library skeleton or a skeleton YAML (see [`skeleton`](#skeleton)). It must have
   the model's number of points, and left/right pairs that match the ones the model swaps when
   it flips an image; a checkpoint that records no swap accepts only a skeleton without pairs.
   The check cannot catch a pair named the wrong way round (left and right swapped). The
   skeleton is added to the library unless an entry with the same skeleton is there, and the
   command prints the entry. Use the model as `keypoints detect --model <id>`. `--skeleton` is
   refused for a detection checkpoint.
+- `import <export folder or model.onnx> --keypoints [--skeleton <yaml>] [--name <id>] …`:
+  register a keypoint model exported from SLEAP (below), usable in any experiment as a
+  `keypoints detect --model <id>`. The keypoint names and edges come from the export; which
+  points pair as left and right is guessed from the names (`left_ear`, `right_ear`) and
+  printed, so you can check it. `--skeleton` gives the pairs and edges instead, as a skeleton
+  YAML (the export's names, in order). Needs the `keypoints_onnx` extra
+  (`pip install -e ".[keypoints_onnx]"`). A run with `--backend cuda` needs that extra's
+  GPU build of onnxruntime; with the CPU-only build the run is refused rather than run on
+  the CPU, and the message says how to switch.
+- `skeleton <id> [--yaml]`: an imported keypoint model's keypoints and left/right pairs;
+  `--yaml` prints them as a file to edit.
+- `set-skeleton <id> --skeleton <yaml>`: set its pairs and edges from that file. The names are the
+  model's outputs and cannot change; runs already made keep the skeleton they recorded.
 - `show <id>`: print one of your models' metadata + provenance (the detail page, as text),
   with its role, and for a keypoint model its skeleton: the library entry, points and pairs.
 - `set-meta <id> [--made-by] [--description] [--notes] [--preview <image>]`: edit a
@@ -1200,6 +1713,36 @@ model** catalog (shared across every experiment on the machine):
   with the same skeleton is there ("name (2)" when the name is taken by a different one), and
   the command prints the entry it matched or added.
 - `remove <id>`: delete an imported model.
+
+**Exporting a SLEAP model.** DETAIL runs SLEAP models (SLEAP 1.5 and later, which train with
+sleap-nn) exported to ONNX, without SLEAP installed. In the environment where SLEAP is
+installed:
+
+```
+pip install "sleap-nn[export]"
+sleap-nn export <model folder> -o <export folder> --format onnx
+```
+
+then `detail model import <export folder> --keypoints`. On Windows, run the export with
+`set PYTHONUTF8=1` (PowerShell: `$env:PYTHONUTF8 = "1"`) first; the exporter prints
+characters a Windows console cannot show and stops. Three kinds of model import:
+
+- **single-instance**: one animal per frame, found in the whole frame;
+- **top-down**: export the centroid and centered-instance models together
+  (`sleap-nn export <centroid folder> <centered-instance folder> --format onnx`); DETAIL keeps
+  the animal whose centroid falls on the tracked subject;
+- **centered-instance** on its own: the crop around DETAIL's tracked subject replaces SLEAP's
+  centroid model. Only a model trained at input scale 1: sleap-nn exports a scaled one with
+  its crop resize fixed at the training frame size, which misplaces every point, so the
+  import refuses it and asks for the top-down export instead.
+
+Bottom-up and multi-class models are refused at import, with the reason. An exported model is
+not quite SLEAP's own predictions: the export finds each point on the model's confidence-map
+grid (output stride ÷ input scale, often 4 px) without SLEAP's sub-pixel refinement, so a point
+can sit a few pixels from where SLEAP itself would put it. DETAIL runs the export exactly as
+sleap-nn's own ONNX runtime does, and size-matches each frame to the frame size the model was
+trained on, as SLEAP does. A model trained in SLEAP 1.4 or earlier (TensorFlow) has to be
+retrained in SLEAP 1.5+ before it can be exported.
 
 ### `modules`
 List the registered processing modules and their dependency chain.
@@ -1213,6 +1756,21 @@ prints the full copy-paste install sequence for this machine, with the real dete
 paths, from opening a terminal to verifying (the Windows Triton line only on Windows).
 Exits non-zero if any check failed. This is the headless twin of the GUI's
 **Configuration ▸ Check readiness** button and **SAM 3 backend** page.
+
+The *Analysis (optional)* group checks SHAP (for Cluster profile). It is optional: it warns,
+never fails, and the output ends with the command that sets it up.
+
+### `install-extra`
+Install an optional extra's missing packages into the environment running detail:
+`analysis` (SHAP for Cluster profile, and the clustering libraries). It uses `uv pip` when uv is installed, else
+that environment's `pip`, installs only what is missing, and shows a progress bar; if the
+installer fails, its output is printed. `--print-command` prints the command instead, to run
+it yourself. The GUI's twin is **Install SHAP** on **Configuration ▸ Cluster profile**.
+
+```bash
+detail install-extra analysis
+detail install-extra analysis --print-command
+```
 
 Where the output is not UTF-8 (a redirected stream on Windows, a `LANG=C` terminal) a
 character the encoding cannot carry is spelled in ASCII instead: the `✓` prints as `+`,
@@ -1253,12 +1811,97 @@ This computer's video previews: small copies of each video part (480×270 at mos
 - `cache previews size`: where the previews are, and how much disk they use.
 - `cache clear --previews`: delete every preview on this computer. They are rebuilt when next needed, which takes a while for a large experiment.
 
+A tracking run's masks are kept per tracking and detection run, and per class for a tracking run
+with a class filter, so such a run rebuilds its masks once, the first time they are needed after
+this was added.
+
 `recording add-video` builds the new part's preview after the import. `recording import`
 does not; run `cache previews build` afterwards. The GUI builds them in the background.
 
 ### `hf-token <token>`
 Validate and store a Hugging Face token in
 `~/.config/detail/credentials.yaml`.
+
+### `remote`
+Machine-local registry of remote Slurm clusters (UW Tillicum, Hyak, a lab's own cluster)
+DETAIL can submit jobs to (stored in `~/.config/detail/remote_targets.yaml`, never in an
+experiment). DETAIL never stores or prompts for credentials: `<host>` should match a
+`Host` entry in your own `~/.ssh/config` so keys, an agent, ControlMaster, and a cached Duo
+session are already handled.
+
+- `remote add <name> <host> --workdir <path> [--partition ...] [--account ...]
+  [--conda-env ...] [--module ... (repeatable)] [--gpu-type ...] [--gpus-per-job N]
+  [--cpus-per-task N] [--mem-gb N] [--walltime HH:MM:SS] [--max-concurrent-jobs N]
+  [--cost-per-gpu-hour RATE]`:
+  register (or re-point) cluster profile `<name>`. `--cost-per-gpu-hour` drives a live
+  cost estimate on this target's runs (GPUs held × running hours × rate: `gpus_per_job`, or one for Find look-alikes
+  and keypoint track, which are CPU work; running time is what the job spent on a GPU: time waiting in the Slurm queue is not billed); omit
+  it to show no cost estimate. **`--walltime` defaults to `24:00:00`**, the longest a Tillicum job
+  may run: Slurm kills a job at its walltime, and the old 4-hour default killed long detections.
+  **`--max-concurrent-jobs` (default 8) is how many recordings of one run are on the cluster at
+  once**, each its own Slurm job: `detail process detection --backend remote` over 80 recordings
+  keeps 8 in flight instead of going one at a time. Re-running `remote add` for an existing name
+  replaces the whole profile, so every option you leave out goes back to its default; the GUI's
+  **Edit** changes one field and keeps the rest.
+- `remote list`: list the registered profiles (name, host, scheduler, work directory, concurrent
+  jobs, walltime).
+- `remote remove <name>`: remove a profile.
+- `remote test <name>`: check SSH reachability and that `sbatch` is on the remote `PATH`, then
+  compare the DETAIL installed on the cluster with the build this copy is running. The second
+  line says the cluster is the same build, or **behind** (with `remote update` below, and the
+  `ssh … 'git -C … pull --ff-only'` it runs, to do it by hand), **ahead**, on a **different history**, or could not be
+  compared (and why). A mismatch is a warning: the exit code is the connection's alone, so a
+  script that checks reachability does not start failing. Nothing is fetched, and nothing on the
+  cluster changes.
+- `remote update <name>`: bring the DETAIL on the cluster up to date with this copy. It runs the
+  same comparison and, only when the cluster is **behind**, asks (`-y` / `--yes` skips the
+  question) and then runs `git pull --ff-only` in the cluster's DETAIL checkout, in the target's
+  own environment, and compares again. It only ever moves that checkout forward: if the checkout
+  has commits of its own, or an edit that the pull would overwrite, git refuses, the checkout is
+  left exactly as it was, and git's own message is printed. Nothing on this machine changes and
+  nothing is installed there: a changed `pyproject.toml` is reported, with the `pip install -e .`
+  to run, not run for you. A run in flight on the cluster keeps importing modules as it goes, so
+  update when none is running. **Ahead**, **different history** and **could not be compared** are
+  not updated from here; the message says what to do instead (for *ahead*, update this copy). A
+  pull can also finish without the two matching, when the cluster pulls from a remote that does
+  not have this copy's newer commits: it says so. `--check` only compares, changes nothing, and
+  exits 0 when the two are the same build and 1 when they are not. The exit code is 0 only when
+  the cluster ends up on this build.
+- `remote push-credentials <name>`: copy every credential this machine has configured to
+  `<name>`'s own `~/.config/detail/credentials.yaml`, merging rather than overwriting
+  whatever is already there. Hugging Face (`detail hf-token`) is the one credential this
+  pushes today, needed for a **gated** model (SAM 3, DINOv3) to check access and download
+  weights *on the cluster*: this machine's own token never reaches a remote job on its
+  own, since the shepherd's readiness check and the worker both run there. A future
+  credential type (a cloud provider's own access key) is forwarded the same way the day
+  this machine manages one, with no change to this command.
+
+`detection run`/`process detection`, `embedding run`/`process embedding`,
+`keypoints detect`/`process keypoint_detect`, and
+distillation's commands (`dataset label`, `train run`, `distill run`, and the training of
+`keypoints distill` and `keypoints setup`) submit through
+a registered profile (`--backend remote --remote-target <name>`, or the per-stage
+`--label-remote-target` / `--train-remote-target` / `--detect-remote-target`; see
+[Compute & multi-GPU](#compute--multi-gpu)). So do three analyses, with `--remote-target
+<name>`: `analysis temporal-clustering`, `analysis
+profile-all` and `analysis find-lookalikes`. Other stages don't take `--remote-target`
+yet.
+First-time setup, including the Windows-only steps:
+[Connect a remote cluster](workflows/connect-a-remote-cluster.md).
+
+The model does **not** need to be installed on this machine for a remote run: this machine
+only submits the job, it never loads the model itself. The cluster's own install is checked
+before the job is submitted (over ssh, in the profile's environment), so a model missing on
+the cluster still fails clearly, with a message telling you to install it there, instead of
+after it has queued and burned a GPU allocation.
+
+**A gated model needs a Hugging Face token on the cluster, not just on this machine.**
+Checking access to (or downloading) SAM 3 or DINOv3 needs an authenticated request, and
+that request happens *on the cluster*: this machine's own token, set via `detail hf-token`,
+never reaches it by itself. Run `detail remote push-credentials <name>` once per target
+(or again after changing your token) before installing or running a gated model there for
+the first time; a model whose weights are already cached on the cluster from an earlier
+manual setup doesn't need this at all, which is why detection worked without it.
 
 ### `docs [TOPIC]`
 Open the documentation in your browser. The site is built into a per-user cache on
@@ -1274,8 +1917,8 @@ prompt**, compared side by side (comma-separate to put several classes in one pr
 across each clip; `--consecutive` reads straight through from frame 0: one clip, one
 prompt, and `--whole-video` removes the limit entirely (that run can take hours; it is
 stoppable in the GUI). `--min-conf` (default `0.5`), `--backend` / `--device`, `--model`
-(default: auto, SAM 3 on an NVIDIA GPU). `--export out.mp4` renders the overlay clip and
-needs `--consecutive`, since sampled frames are not contiguous.
+(default: auto, SAM 3 on an NVIDIA GPU). `--export out.mp4` renders the overlay clip (H.264,
+or `--codec mp4v`) and needs `--consecutive`, since sampled frames are not contiguous.
 
 A run keeps every proposal the model found, so `--min-conf` only chooses what gets
 counted in the printed summary and drawn into `--export`. The saved run is the same
@@ -1309,6 +1952,17 @@ detail export list --experiment ./study --analysis-run an_01
 nothing you already have there is touched, and the folder is still identifiable months later on
 somebody else's machine.
 
+### Video format: `--codec` {#video-format-codec}
+
+Every command that writes an mp4 takes `--codec h264|mp4v`. **`h264`** (the default) is H.264,
+High profile, 4:2:0: it plays in PowerPoint, QuickTime and every browser, and is a fraction
+of the size. **`mp4v`** is MPEG-4 Part 2, the format DETAIL wrote before; PowerPoint on Windows
+often refuses it. A machine that cannot encode H.264 writes `mp4v` instead and prints a `note:`
+saying so, and an export folder's `export.yaml` records `video_codec`: the codec asked for and
+the one written. The commands are `export run` (for `clip`, `clips`, `preview_video` and
+`keypoints_video`), `analysis cluster-montage`, `locations montage` and
+`tools quick-segment --export`.
+
 ### What each subject can produce
 
 | Subject | Target | Writes |
@@ -1320,6 +1974,8 @@ somebody else's machine.
 | | `timestamps` | `frame_idx,t_ns` for every frame of every video part |
 | | `video` | the video parts DETAIL imported a copy of |
 | `--run <det_NN>` | `masks` | one COCO instance-segmentation JSON per recording |
+| `--run <det_NN>` / `<trk_NN>` | `preview_frame` | one PNG of a single frame, in the style you pick |
+| | `preview_video` | the whole recording, every part, in the style you pick, as one mp4 |
 | `--run <trk_NN>` | `tracks` | one CSV per recording: a row per frame per track |
 | `--run <emb_NN>` | `vectors` | `embeddings.npy` + `embeddings_index.csv` |
 | `--run <kd_NN / kt_NN>` | `keypoints` | one CSV per recording: a row per frame per track per keypoint, with the score, whether it is visible at the cut-off, and what the track stage changed |
@@ -1388,6 +2044,26 @@ every clip player runs.
 
 The full field of view is the default: a steady camera, where the surroundings are half the
 answer. Crop to the subject when you want the pose at a constant scale for comparing bouts.
+
+### A detection or tracking run's own preview, in seven styles
+
+`--target preview_frame` (one PNG) and `--target preview_video` (the whole recording as one mp4)
+draw a completed detection or tracking run the way its run-level preview draws it in the
+app:
+`--style` picks how: `mask_box_conf` (mask, box, confidence: the default), `mask_box`,
+`mask_only`, `box_conf`, `box_only`, `raw_video` (no overlay), or `raw_mask` (each detection's
+real pixels cut out onto a green background, for downstream keying). A tracking run's box always
+carries its track id, with or without confidence, since the track id is why a tracking preview
+exists.
+
+`preview_frame` needs a frame (pass it as a one-frame `--frames START:START`), and both need
+`--for-recording` with exactly one recording, since a run can span several and a picture is drawn
+from one (naming two is refused rather than drawing the first):
+
+```bash
+detail export run --experiment ./study --run det_01 --target preview_frame \
+    --for-recording recording_001 --frames 1200:1200 --style box_conf --out ~/exports
+```
 
 ### Keypoints, for pose tools
 
@@ -1566,7 +2242,7 @@ anything else in the directory you pointed at.
 
 ## Tracking
 
-Every tracker takes `--conf-threshold` and `--arena`.
+Three trackers ship; all take `--conf-threshold`, `--arena`, and `--class`.
 
 `--arena` takes the field of view's **name**, and that is what to pass when tracking more
 than one recording: a name is the same field of view everywhere, while an arena *id* is
@@ -1574,6 +2250,27 @@ minted per recording, so the same id is a different polygon on the recording nex
 Each recording resolves the name to its own arena, and one that has no field of view by that
 name is refused by name rather than silently tracked whole-frame. An id is still accepted
 for a single recording.
+
+**Two animals, told apart by class instead of by tracking.** Every tracker here follows
+*one* subject per recording, which is what the rest of the pipeline (embedding, query,
+clustering) is built for. If a detection model already distinguishes two animals as two
+classes (e.g. `black mouse` / `white mouse`), `--class` restricts one tracking run to a
+single class's detections, so running it twice, once per class, on the *same* detection
+run, produces two clean single-subject tracks instead of one tracker having to
+disambiguate the animals itself:
+
+```bash
+detail tracking run --experiment $PROJ --recording recording_001 \
+    --detection det_01 --tracker anchor_tracker --class "black mouse"
+detail tracking run --experiment $PROJ --recording recording_001 \
+    --detection det_01 --tracker anchor_tracker --class "white mouse"
+```
+
+Each run is an ordinary single-subject track downstream: embedding, query, clustering, and
+comparison all read it the same way they'd read a one-animal recording. `--class` is checked
+against the classes the detection run actually has; an unknown name is refused by name,
+naming the classes it does have. Omit it to link every class's detections together, which is
+right for a single-class detection run.
 
 
 The single-subject trackers are for **one animal per recording**, which is what the rest of the
@@ -1629,6 +2326,60 @@ detail tracking run --experiment $PROJ --recording recording_001 \
     --conf-threshold 0.05 --hyperparam max_missed=45 --hyperparam iou_weight=1.5
 ```
 
+## Merge tracks
+
+Combines 2+ single-subject tracking runs, typically two `--class`-filtered runs on the same
+detection run, one per animal, into one multi-subject tracking run, so both animals' masks
+show up in the same preview, the same location export, and the same embedding run. Each source
+keeps its own `object_id` in the merged run (source order = `object_id` order); nothing is
+re-tracked, the merge just relabels each source's already-clean rows.
+
+Every source must share one detection run and carry a distinct `--class`: merging two runs
+built from different detections, or two runs filtered to the same class, is refused.
+
+```bash
+detail tracking run --experiment $PROJ --recording recording_001 \
+    --detection det_01 --tracker anchor_tracker --class "black mouse"
+# submitted tracking: track_01
+detail tracking run --experiment $PROJ --recording recording_001 \
+    --detection det_01 --tracker anchor_tracker --class "white mouse"
+# submitted tracking: track_02
+
+detail track-merge run --experiment $PROJ --recording recording_001 \
+    --source track_01 --source track_02
+# submitted track-merge: track_03
+```
+
+`process track-merge` runs this across several recordings at once, resolving each source by
+spec rather than by a raw id shared across recordings: `--source-ref RECORDING:track_NN`
+derives the class and tracker settings from that one named run and finds each selected
+recording's own matching run, the same way `--detection-ref` works for `tracking`:
+
+```bash
+detail process track-merge --experiment $PROJ \
+    --recording recording_001 --recording recording_002 \
+    --source-ref recording_001:track_01 --source-ref recording_001:track_02
+```
+
+The merged run is an ordinary tracking run downstream: `export run --target preview_frame` /
+`preview_video` and location export read it unmodified. For embedding, a merged run's
+`object_id` is a *position* (source order), not an animal: the same integer can mean a
+different animal in a recording whose merge happened to order its sources the other way.
+So `embedding run --tracking track_03 --tracks` also takes the source classes by name,
+`--tracks "black mouse"` or `--tracks "black mouse,white mouse"`, resolved to the right
+`object_id` for *each* recording, rather than an integer you'd have to hope lines up:
+
+```bash
+detail embedding run --experiment $PROJ --recording recording_001 \
+    --tracking track_03 --tracks "black mouse" --model dinov3_convnext_base
+```
+
+`process embedding --tracks` takes the same names across a batch.
+
+Pooling two separately embedded animals into one clustering or query run is not supported;
+that's a modeling decision, and is refused the same way pooling two tracks from one
+recording always is.
+
 ## Compute & multi-GPU
 
 Detection and embedding take:
@@ -1644,6 +2395,61 @@ detail detection run … --backend cuda --device 0 --device 1
 ```
 
 DINOv3 and a trained/imported YOLO run on `cpu`/`mps`/`cuda`; SAM 3 is officially CUDA-only.
+
+**`detection run`/`process detection`, `embedding run`/`process embedding` and
+`keypoints detect`/`process keypoint_detect` also accept
+`--backend remote --remote-target <name>`** (§6): submits to a registered Slurm cluster
+(`detail remote add/list`, e.g. Tillicum) instead of running here. The model still needs
+to support `cuda` (the job runs as `cuda` on the cluster's GPUs) but this machine
+doesn't: a laptop with no GPU, and no local install of the model at all (no weights
+downloaded, no HF token configured), can run SAM 3 this way; only the cluster needs the
+weights. `--device` is ignored with `--backend remote` (the cluster profile decides how
+many GPUs the job gets). Tracking isn't wired to `--backend remote`: it's a CPU-only
+algorithm over already-computed detections, with no compute backend to redirect.
+
+**`keypoints track`/`process keypoint_track` also accept `--backend remote --remote-target
+<name>`.** It is CPU work with no model, so there is nothing to install on the cluster. What
+the cluster adds is more recordings side by side: here a run takes half this machine's cores (at
+most 8), there each recording is its own Slurm job, up to the target's `--max-concurrent-jobs`. Each job asks for one GPU (the fewest
+Tillicum accepts) with the target's CPUs and memory scaled down to match, so a target sized for
+a multi-GPU model does not hold idle GPUs.
+
+A **keypoint detect** run on a cluster needs the method's weights on the cluster only
+(`dinov3_match` uses `dinov3_vit`'s, and DINOv3 is gated: `remote push-credentials`). Its
+example set travels with the experiment, and so does a student distilled in it. A keypoint
+model in this machine's model catalog (one you imported with `model import --keypoints`, or a
+promoted student) lives outside the experiment, so the run uploads its folder to the cluster
+before the readiness check, the way it does an imported detection model; an imported model
+needs `onnxruntime` installed on the cluster.
+
+**Distillation (`dataset label`, `train run`, `distill run`) is wired the same way.**
+`dataset label` and `train run` take the same `--backend remote --remote-target <name>`;
+`distill run` labels and trains as two separate submissions, so it takes them per stage:
+`--label-backend remote --label-remote-target <name>` and/or `--train-backend remote
+--train-remote-target <name>`, and either stage can go to a different cluster (or stay
+local while the other goes remote). A GPU-less laptop can run the whole distill loop this
+way: SAM 3 needs `cuda` to label and the trainer supports it too, so both stages resolve to
+a cluster GPU. No other stage is wired to `--backend remote` yet.
+
+**Background video upload** (`distill run --stage-videos`). A remote distill's labeling is sent only
+its sampled frames, but the detection run after it reads every recording's video. With the flag, a
+separate background process uploads the videos to the cluster while labeling and training run, and
+keeps going after the distill ends:
+
+```bash
+detail remote staging-status --experiment $PROJ     # per target: status, files, GB, time left
+detail remote staging-stop tillicum --experiment $PROJ   # omit the target to stop every upload
+detail remote staging-start tillicum --experiment $PROJ  # start again, or resume a stopped one
+```
+
+There is no pause, but stop followed by start is one: a video already on the cluster is skipped
+and a half-sent one continues where it stopped (rsync keeps the part it sent in a hidden
+`.rsync-partial` folder beside the file, so a half-sent video never sits at the real path). `staging-start`
+takes the recordings of the last upload to that target, or `--recording <id>` (repeatable).
+
+A remote job that needs the videos while an upload is still running **waits for it** and shows its
+progress, rather than uploading the same files a second time. If the upload failed or was stopped,
+that job uploads whatever is missing itself; files that already arrived are kept.
 
 **CLI default is `cpu`; the GUI and Python API auto-detect.** The CLI keeps an explicit `cpu`
 default so a scripted or headless run is predictable; pass `--backend cuda` (or `mps`) to use an
@@ -1679,6 +2485,15 @@ accelerator. The GUI forms and the Python API instead default to the best backen
   Lists (in the app and here) leave that run out, so the rest still opens, and print
   `skipping unreadable record <run id>` to the terminal. The run can't be recovered from
   that record: move its folder out of the experiment.
+- **`<path> is all zero bytes` (or `is empty`)** names a file the machine lost the same way: it
+  shut down or lost power before the system had written the file to disk, and the file kept its
+  size but not its contents. A run that sits on top of one (tracking on a detection run, say) is
+  refused at launch, naming the recording and the file, instead of failing recording by recording
+  once it starts. The data in that file is gone; re-run the stage that wrote it. If it came from a
+  cluster, the cluster's copy is probably still intact (see
+  [connect a remote cluster](workflows/connect-a-remote-cluster.md#troubleshooting)). A run is
+  now recorded as complete only after its outputs are flushed to disk, which includes results
+  copied back from a cluster, so this should only turn up for runs finished before that.
 - Outputs live beside the inputs in the experiment tree
   (`detections/det_01/`, `tracking/track_01/`, `embeddings/emb_01/`); they are
   zarr stores read by the GUI and the Python API.
@@ -2034,7 +2849,10 @@ that disagree on fps/resolution all abort the import (nothing is created).
 ### Recording information
 
 Record what varies across your recordings (treatment, sex, day, …): one row per
-recording, one column per variable. From a CSV:
+recording, one column per variable. Every experiment has an `acquisition_setup` column:
+which camera, box or rig each recording was made with, the same value for every recording
+made the same way. Keypoint setup picks one recording per setup to learn from. It cannot be
+deleted. From a CSV:
 
 ```bash
 detail experiment export-metadata --experiment $PROJ --csv groups.csv   # template to fill in
@@ -2081,6 +2899,7 @@ Or set them one at a time, which is what a script over 30 animals wants:
 ```bash
 detail experiment add-column --experiment $PROJ dose
 detail experiment set-metadata --experiment $PROJ --recording m27_day3 --set dose=0.5 --set day=3
+detail experiment set-metadata --experiment $PROJ --recording m27_day3 --set "acquisition_setup=box 1"
 detail experiment delete-column --experiment $PROJ dose      # and its values everywhere
 ```
 
@@ -2118,18 +2937,69 @@ not the CLI:
   explicit `--embed-run <emb_NN>` (must be that id in every searched recording). Deferred:
   its embedding run also identifies the *exemplar* recordings, so the spec resolution
   is bespoke (planned).
+- **Preview tracking's clips** (the Keypoint track form's **Preview tracking…**): the settings
+  played side by side on the same frames. `keypoints track-preview` prints the same table, and
+  `Experiment.preview_keypoint_tracking` returns every setting's points per frame for a script
+  to draw; watching four clips in step is what the window is for, and a terminal cannot. The
+  same holds for the grid search's clips (`--grid` prints the table and the front).
+- **Measurements** (**Measure this run**, in a behavior scan's **Interpretation** section): the per-bout numbers
+  (speed, area, appearance change). Neither the CLI nor the Python API has an equivalent today; the
+  computation lives in `detail/gui/measurements.py` (`measure_run`), over the loaders in
+  `detail/api/frame_slices.py`. A gap rather than a design choice: moving `measure_run` behind
+  `api/` would make it reachable from both.
+
+- **Skipping keypoint setup** (the Configuration checklist's **Skip…**): a choice about what
+  the setup checklist nudges for, and the checklist is the GUI's. From Python,
+  `detail.api.readiness.set_keypoints_skipped(True)` records it the same way.
+- **Filtering recordings by a Recording-information column**: the GUI's recording pickers
+  filter by name and by column (strain, dose, brain state). A CLI command names the recordings
+  it runs over, and a script picks them from `Experiment.recording_metadata`
+  (`{recording_id: {column: value}}`) before calling the API. A `--where Strain=CD1` selector is
+  a possible addition, not built.
+- **Clip checks** (the clip window's **Fits / Doesn't / Unclear**): an answer is given while
+  watching a cluster's clip, which a terminal cannot show. The Python API records and reads them
+  (`run.check_member(node, recording_id, subject, start_ns, end_ns, verdict)`,
+  `run.member_checks(node)`), and they sit beside the run as `member_checks.csv`. Labelling a
+  cluster, which the same window also does, is `--name-node` on
+  `temporal-interpret`.
+- **The clip window's enlarged Masks and Keypoints panes**, and their **Export video…** /
+  **Export GIF…**: the pane is a view of one clip window, following its ticks as you change them,
+  so a terminal has nothing to follow. From Python the same file is
+  `detail.api.clip_pane_export.export_clip_pane(experiment_dir, recording_id=…, embed_run_id=…,
+  track_id=…, first=…, last=…, pane="masks", settings=ClipViewSettings(…), path=…)`, one clip at
+  a time. A whole cluster's clips at once is `analysis cluster-montage`.
+- **What sets a cluster apart, in the clip window**: the window's measuring of a cluster's most
+  typical clips against its animals' recordings. From Python it is
+  `detail.api.clip_fingerprint.cluster_fingerprint(experiment, run, node, clip)`; there is no
+  command, for the same reason a behavior scan's **Measure this run** has none (above).
 - **Renderer preview**: preview the masked input image embedding will use.
-- **The clip window's enlarged panes and their exports**: opening a clip's Masks or Keypoints
-  pane large, and writing it as an mp4 or GIF, is a thing you do while watching the clip window
-  it follows, so it lives there. The API is `detail.api.clip_views.export_clip_pane`, which a
-  script can call for one clip at a time; a whole cluster at once is `analysis cluster-montage`.
+- **Reviewing a heading direction**: the labeling screen's compass opens a window of one
+  direction's candidates to look at, tick and turn down. Choosing among pictures is the point,
+  so it is the GUI's; the CLI samples by direction (`examples sample --strategy heading
+  --bucket`) and turns frames down (`examples reject --bucket`), and the API's
+  `heading_pool` / `heading_candidates` / `add_heading_candidates` / `reject_candidate` are the
+  window's own calls for a script.
+- **Per-class view threshold in `detection prompt-test`**: the GUI's "Test prompts" /
+  "Test detection" grid gives each class's column its own confidence spinbox, since the
+  model already ran wide open and a threshold there only changes what's drawn/counted.
+  The CLI's `--min-conf` stays a single value across every `--show-class` column: a
+  one-shot batch command has no "move a slider and watch it re-render" to give a
+  per-column control to.
+- **Open SSH session** (Remote targets page): opens a terminal running `ssh <host>` to
+  refresh an expired session. A CLI user is already at a terminal, so running `ssh <host>`
+  directly needs no wrapper command.
 - **Picking clips to export (pick mode on any clip grid)**: clicking clips into an export, in
   the order clicked, on INTERPRET, a cluster window or AUDIT, is a way of looking, forgotten when
   pick mode ends (nothing is written to the run). The CLI writes a montage of the node's clips
   in an order it sorts (`--clips`, `--sort`, and the grid's other choices: the layers,
   `--aligned`, `--context`); a hand-picked subset in a hand-picked order is exported from the
   grid's **Export ▾**. A script picks its own clips and calls
-  `detail.api.clip_montage.ClusterMontage` with them.
+  `detail.api.clip_montage.ClusterMontage` with them. What a pick leads to is here:
+  `cluster-montage` writes **Export clips…** (`--export-dir`), one GIF per clip
+  (`--per-clip-gifs`) and the clip list (`--csv`), and `analysis query --from-csv` takes that
+  list (edited to the clips you want) as a Query's example clips: the CLI's **New Query from N
+  clips…**. From Python, `detail.api.clip_montage.query_examples(clips, name=…).config()` is the
+  Query config those clips fill in.
 - **Undo and redo of label changes (⌘Z / ⇧⌘Z)**: INTERPRET keeps a history of the label changes
   made on the page and in its cluster windows, in memory, so a slip can be taken back. The CLI's
   label commands are single explicit writes, so there is no history to step back through; to
@@ -2140,7 +3010,7 @@ not the CLI:
 - **Exporting the clip window's view as shown**: *Video of what you see…*, *GIF of what you
   see…* and *This frame as PNG…* write whatever the clip window's ticks, orientation and context
   are at that moment, so they live there. The API is
-  `detail.api.clip_views.export_clip_view` and `write_clip_frame`, with a
+  `detail.api.clip_pane_export.export_clip_view` and `write_clip_frame`, with a
   `ClipViewSettings` saying what to draw; a whole cluster at once is `analysis cluster-montage`.
 - **Filtering a cluster view by metadata, recording, region or time in session**: shading the
   cluster tree by the share of each cluster that matches a metadata value or range, a set of

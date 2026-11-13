@@ -12,6 +12,11 @@ ids, and metrics, never an absolute path into the source experiment (Tenet 6) �
 are **copied**, so the global model is self-contained and survives deleting the source
 experiment. Imports no backend (Tenet 13).
 
+The provenance also carries a copy of the dataset's composition (teacher model, frame counts,
+per-class counts) and the per-epoch training history: both are read/computed once, here, at
+promote time, and copied in — never read live from the source experiment afterward, for the
+same self-contained-and-survives-deletion reason as everything else in this module.
+
 A **keypoint student** (``task: pose``, §12 *Keypoint models in the catalog*) promotes the
 same way and carries what it is rebuilt from: its skeleton copy (added to the machine's
 skeleton library unless one with its digest is there), ``role: keypoints``, the weights'
@@ -19,12 +24,43 @@ sha256 and the teacher runs under ``provenance.teacher``. A pose student without
 is refused — the catalog copy could not be built.
 """
 
+import hashlib
 import shutil
 
 from detail.core.skeleton import Skeleton
 from detail.core.utils import utc_timestamp
 from detail.models import imported as imported_store
+from detail.storage import datasets as datasets_store
 from detail.storage import models as models_store
+
+
+def _dataset_summary(experiment_root, dataset_id: str | None) -> dict | None:
+    """The labeling composition of the dataset a model was trained on, or ``None``.
+
+    Best-effort: a dataset can be deleted independently of the model it produced (§12's own
+    ``delete_distill`` never touches a promoted model), so a missing/unreadable dataset must not
+    block promoting weights that already exist — it just means this part of the provenance is
+    unavailable, the same way an absent preview or metrics dict is tolerated elsewhere here.
+    """
+    if not dataset_id:
+        return None
+    try:
+        ds = datasets_store.read_dataset_yaml(
+            datasets_store.dataset_dir(experiment_root, dataset_id)
+        )
+    except (FileNotFoundError, OSError):
+        return None
+    source = ds.get("source") or {}
+    return {
+        "model": source.get("model"),  # the teacher, e.g. "sam3"
+        "model_variant": source.get("model_variant"),
+        "n_frames": source.get("n_frames"),  # requested
+        "logit_threshold": source.get("logit_threshold"),
+        "n_train": ds.get("n_train"),
+        "n_val": ds.get("n_val"),  # n_train + n_val = frames actually used
+        "val_split": ds.get("val_split"),
+        "per_class": ds.get("per_class") or {},
+    }
 
 
 def register_distilled_model(
@@ -34,9 +70,14 @@ def register_distilled_model(
     source_experiment_name: str,
     source_experiment_id: str,
     name: str | None = None,
+    training_history: list[dict] | None = None,
 ) -> str:
     """Copy a completed experiment-trained model into the machine-global catalog as a
     distilled model, carrying its provenance. Returns the assigned global id.
+
+    ``training_history`` is the caller's already-computed per-epoch metric series (see
+    ``Experiment.model_metric_history``) — this module reads no trainer, so it cannot compute
+    that itself (Tenet 13: no backend import here).
 
     Raises:
         FileNotFoundError: The source model (or its best-weights file) does not exist.
@@ -84,6 +125,28 @@ def register_distilled_model(
     # Carry the auto-captured overlay preview (§12) if the trained model has one, so the
     # promoted model shows the same thumbnail the experiment model does.
     preview_rel = _copy_preview(src_dir, record.get("preview"), gdir)
+
+    provenance = {
+        # A list so one model can name several source experiments later; the
+        # distill flow trains from one experiment today, so it writes one entry.
+        "source_experiments": [
+            {"name": source_experiment_name, "id": source_experiment_id}
+        ],
+        "source_dataset_id": record.get("dataset_id"),
+        "base_model": record.get("base_model"),
+        "trainer_id": record.get("trainer_id"),
+        "distilled_at": utc_timestamp(),
+        "metrics": record.get("metrics", {}),
+        # What trained it travels with it, or a promoted model forgets.
+        "hyperparams": record.get("hyperparams", {}),
+        "trained_with": record.get("trained_with", {}),
+    }
+    dataset_summary = _dataset_summary(experiment_root, record.get("dataset_id"))
+    if dataset_summary is not None:
+        provenance["dataset"] = dataset_summary
+    if training_history:
+        provenance["training_history"] = list(training_history)
+
     promoted = {
         "id": gid,
         "name": name or record.get("name") or gid,
@@ -99,19 +162,7 @@ def register_distilled_model(
         "notes": record.get("notes", ""),
         "preview": preview_rel,
         "provenance": {
-            # A list so one model can name several source experiments later; the
-            # distill flow trains from one experiment today, so it writes one entry.
-            "source_experiments": [
-                {"name": source_experiment_name, "id": source_experiment_id}
-            ],
-            "source_dataset_id": record.get("dataset_id"),
-            "base_model": record.get("base_model"),
-            "trainer_id": record.get("trainer_id"),
-            "distilled_at": utc_timestamp(),
-            "metrics": record.get("metrics", {}),
-            # What trained it travels with it, or a promoted model forgets.
-            "hyperparams": record.get("hyperparams", {}),
-            "trained_with": record.get("trained_with", {}),
+            **provenance,
         },
     }
     if pose:
@@ -125,6 +176,11 @@ def register_distilled_model(
                 skeleton, library_name, gdir / imported_store.WEIGHTS_RELPATH
             )
         )
+        # What the student was trained on travels with it, so the catalog copy runs as it
+        # learned: a crop student on crops (`resolve.student_input_of`).
+        for key in ("student_input", "student_crop_px", "crop_px"):
+            if record.get(key) is not None:
+                promoted[key] = record[key]
     models_store.write_model_yaml(gdir, promoted)
     return gid
 

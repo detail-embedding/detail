@@ -30,6 +30,7 @@ if TYPE_CHECKING:  # annotations only — this module stays numpy-free at import
     import numpy as np
 
 from detail.core import atomic
+from detail.core.utils import coerce_series_key
 from detail.storage import state_yaml
 
 QUERY_FILENAME = "query.yaml"
@@ -93,11 +94,13 @@ def write_background(run_dir: Path | str, sample: Background) -> Path:
         np.savez_compressed(
             handle,
             vectors=sample.vectors,
-            recording_ids=np.array(sample.recording_ids, dtype="str"),
-            subjects=np.array(sample.subjects, dtype=np.int64),
+            recording_ids=np.array([str(r) for r in sample.recording_ids], dtype="str"),
+            # Track ids, stored as strings (like recording_ids above); coerce_series_key
+            # restores the int.
+            subjects=np.array([str(s) for s in sample.subjects], dtype="str"),
             rows=np.array(sample.rows, dtype=np.int64),
-            strategy=np.array(sample.strategy, dtype="str"),
-            scope=np.array(sample.scope, dtype="str"),
+            strategy=np.array(str(sample.strategy), dtype="str"),
+            scope=np.array(str(sample.scope), dtype="str"),
             size=np.int64(sample.size),
             seed=np.int64(sample.seed),
         )
@@ -116,7 +119,7 @@ def read_background(run_dir: Path | str) -> Background | None:
         return Background(
             vectors=data["vectors"],
             recording_ids=[str(x) for x in data["recording_ids"]],
-            subjects=[int(x) for x in data["subjects"]],
+            subjects=[coerce_series_key(str(x)) for x in data["subjects"]],
             rows=[int(x) for x in data["rows"]],
             strategy=str(data["strategy"]),
             scope=str(data["scope"]),
@@ -209,7 +212,7 @@ class QueryState:
     def from_dict(cls, data: dict) -> "QueryState":
         return cls(
             embed_run_id=str(data["embed_run_id"]),
-            track_id=int(data.get("track_id", 0)),
+            track_id=coerce_series_key(data.get("track_id", 0)),
             method=str(data["method"]),
             method_params=dict(data.get("method_params") or {}),
             behaviors=[Behavior.from_dict(b) for b in (data.get("behaviors") or [])],
@@ -229,6 +232,7 @@ def example_instance_ids(behaviors, instances) -> set[str]:
     behavior id), on the same recording and subject, by any shared time
     (:func:`~detail.storage.behavior_output.spans_overlap`).
     """
+    from detail.core.utils import subject_key
     from detail.storage import behavior_output
 
     clips: dict[tuple[str, str, int], list[tuple[int, int]]] = {}
@@ -237,14 +241,14 @@ def example_instance_ids(behaviors, instances) -> set[str]:
             key = (
                 str(behavior.id),
                 str(spec["recording_id"]),
-                int(spec.get("track_id", 0)),
+                subject_key(spec.get("track_id")),
             )
             clips.setdefault(key, []).append(
                 (int(spec["start_t_ns"]), int(spec["end_t_ns"]))
             )
     out: set[str] = set()
     for row in instances:
-        subject = 0 if row.subject is None else int(row.subject)
+        subject = subject_key(row.subject)
         spans = clips.get((str(row.source_label), str(row.recording_id), subject), ())
         if any(
             behavior_output.spans_overlap((row.t_ns, row.end_t_ns), span)

@@ -14,6 +14,7 @@ from pathlib import Path
 import yaml
 
 from detail.core import atomic
+from detail.core import yaml_load
 from detail.storage import dirscan
 from detail.storage import locations
 
@@ -91,7 +92,7 @@ def read_tool_run(run_id: str) -> dict:
     rdir = find_run_dir(run_id)
     if rdir is None:
         raise FileNotFoundError(f"no tool run {run_id!r} in {tools_root()}")
-    return yaml.safe_load(atomic.read_text(rdir / RUN_FILENAME))
+    return yaml_load.safe_load(atomic.read_text(rdir / RUN_FILENAME))
 
 
 def delete_tool_run(run_id: str) -> None:
@@ -105,6 +106,6 @@ def list_tool_runs(tool_id: str | None = None) -> list[dict]:
     """All tool-run manifests (one tool or every tool), ordered by run id."""
     runs = dirscan.read_each(
         _run_dirs(tool_id),
-        lambda rdir: yaml.safe_load(atomic.read_text(rdir / RUN_FILENAME)),
+        lambda rdir: yaml_load.safe_load(atomic.read_text(rdir / RUN_FILENAME)),
     )
     return sorted(runs, key=lambda r: r["id"])

@@ -9,12 +9,14 @@ reads. Models are discovered by **scanning** ``models/`` — no central mutable
 list (the same pattern as recordings, runs, datasets, and analysis §16).
 """
 
+import contextlib
 import shutil
 from pathlib import Path
 
 import yaml
 
 from detail.core import atomic
+from detail.core import yaml_load
 from detail.storage import dirscan
 from detail.storage import experiment as experiment_store
 
@@ -62,7 +64,7 @@ def read_model_yaml(model_dir: Path | str) -> dict:
     path = Path(model_dir) / MODEL_FILENAME
     if not path.is_file():
         raise FileNotFoundError(f"no {MODEL_FILENAME} in {model_dir}")
-    return yaml.safe_load(atomic.read_text(path))
+    return yaml_load.safe_load(atomic.read_text(path))
 
 
 def set_model_status(
@@ -71,12 +73,27 @@ def set_model_status(
     """Update the ``status`` field of an existing ``model.yaml``, in place.
 
     ``error`` (a failure message) is recorded into the record so readers — the
-    GUI detail page in particular — can show why a run failed.
+    GUI detail page in particular — can show why a run failed. Also merges in
+    ``duration_s``/``compute``/(if remote and a rate is configured)
+    ``estimated_cost_usd`` from the job's own envelope (§ run location, duration,
+    cost) — ``model_dir`` is the run's own directory (``job.json`` lives right
+    beside ``model.yaml``), so this needs no extra argument threaded through
+    every caller.
     """
+    from detail.executor import rundir, run_metrics
+
     record = read_model_yaml(model_dir)
     record["status"] = status
     if error is not None:
         record["error"] = error
+    with contextlib.suppress(Exception):
+        job = rundir.read_job(model_dir)
+        compute = getattr(job, "compute", None)
+        record.update(
+            run_metrics.completion_fields(
+                model_dir, compute.to_dict() if compute is not None else None
+            )
+        )
     write_model_yaml(model_dir, record)
 
 

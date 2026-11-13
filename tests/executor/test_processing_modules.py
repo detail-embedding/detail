@@ -52,6 +52,9 @@ def _dummy_module_cls(module_id: str = "_dummy_test") -> type:
         def output_path(self, run_id):
             return f"_dummy/{run_id}/"
 
+        def estimate_output_bytes(self, recording_dir, recording_data, config):
+            return 0
+
     _DummyModule.module_id = module_id
     return _DummyModule
 

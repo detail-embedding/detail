@@ -126,6 +126,8 @@ EXERCISED = {
     "keypoints_sleap": "test_the_keypoint_targets_narrow_to_the_recordings_asked_for",
     "keypoints_nwb": "test_the_keypoint_targets_narrow_to_the_recordings_asked_for",
     "keypoints_video": "test_the_keypoint_targets_narrow_to_the_recordings_asked_for",
+    "preview_frame": "test_a_preview_draws_the_one_recording_in_the_scope",
+    "preview_video": "test_a_preview_draws_the_one_recording_in_the_scope",
 }
 
 
@@ -365,6 +367,41 @@ def test_the_keypoint_targets_narrow_to_the_recordings_asked_for(
         assert stems_in(one) == {"recording_003"}
     else:
         assert stems_in(one) <= {"recording_003"}, "nothing else was attempted"
+
+
+def test_a_preview_draws_the_one_recording_in_the_scope(two, tmp_path):
+    """A preview is a picture of one recording: a one-recording scope is the answer, several is
+    refused rather than drawing the first and dropping the rest."""
+    from tests import experiments
+
+    run_id = two.tracking_run_id  # the run the fixture indexes in each recording.yaml
+    for recording_id in ("recording_001", "recording_002"):
+        recording = two.experiment.get_recording(recording_id)
+        experiments.write_video(recording.dir / "video" / "part_001.mp4")
+
+    one = _export(
+        two,
+        run_id,
+        "preview_video",
+        tmp_path / "a",
+        scope=ExportScope(recording_ids=("recording_002",)),
+    )
+    assert "recording_002_preview.mp4" in one.files
+
+    refused = _export(
+        two,
+        run_id,
+        "preview_video",
+        tmp_path / "b",
+        scope=ExportScope(recording_ids=("recording_001", "recording_002")),
+    )
+    assert refused.status == "failed"
+    assert "one recording at a time" in refused.failures[0].error
+    # and the older spelling the viewers seed still works
+    seeded = _export(
+        two, run_id, "preview_video", tmp_path / "c", recording_id="recording_001"
+    )
+    assert "recording_001_preview.mp4" in seeded.files
 
 
 def test_behavior_targets_narrow_to_the_recordings_asked_for(authored_cohort, tmp_path):

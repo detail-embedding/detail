@@ -157,6 +157,92 @@ def test_a_raising_slot_does_not_abort_the_process():
     assert "boom" in done.stderr  # ...and the traceback still reaches a developer
 
 
+_WORKER_RAISES = """
+import os, sys, threading
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+from PyQt6.QtCore import QThread, QTimer
+from PyQt6.QtWidgets import QApplication, QMessageBox
+app = QApplication([])
+from detail.gui.__main__ import install_excepthook
+install_excepthook()
+shown = []
+QMessageBox.critical = staticmethod(
+    lambda *a, **k: shown.append(threading.current_thread().name)
+)
+
+class Worker(QThread):
+    def run(self):
+        raise ValueError("boom in a worker")
+
+worker = Worker()
+worker.start()
+worker.wait()
+QTimer.singleShot(400, app.quit)
+app.exec()
+print("SHOWN", shown)
+"""
+
+
+def test_an_exception_in_a_worker_thread_is_reported_on_the_ui_thread():
+    """The hook runs in the thread that raised, and a `QMessageBox` built on a worker thread
+    is a second fault. A progress worker's `ValueError` was reported that way and Qt then
+    printed `QBasicTimer::stop: Failed. Possibly trying to stop from a different thread`
+    ten times, `QBackingStore::endPaint() called with active painter`, and the process died
+    with a segmentation fault.
+
+    Asserted on the thread the dialog is built on, since whether a wrong-thread widget
+    crashes this interpreter on this box is not something a test can rely on.
+    """
+    done = subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(_WORKER_RAISES)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert done.returncode == 0, done.stderr[-800:]
+    assert "boom in a worker" in done.stderr  # the traceback still reaches a developer
+    assert "SHOWN ['MainThread']" in done.stdout, done.stdout
+
+
+def test_a_fatal_signal_prints_every_threads_python_stack():
+    """Before this a native crash left the shell's `Segmentation fault` and nothing else."""
+    done = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import faulthandler, threading, time\n"
+            "from detail.gui.__main__ import enable_crash_traces\n"
+            "enable_crash_traces()\n"
+            "threading.Thread(target=time.sleep, args=(5,), daemon=True, name='a-worker').start()\n"
+            "time.sleep(0.2)\n"
+            "faulthandler._sigsegv()\n",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert done.returncode != 0
+    assert "Fatal Python error: Segmentation fault" in done.stderr, done.stderr[-600:]
+    assert (
+        done.stderr.count("Thread 0x") >= 1 and "most recent call first" in done.stderr
+    )
+
+
+def test_enabling_crash_traces_never_blocks_a_launch_without_a_usable_stderr(
+    monkeypatch,
+):
+    """`pythonw` has no stderr and a test's capture has no file descriptor: `faulthandler`
+    cannot attach to either, and the app must still start."""
+    import io
+
+    from detail.gui import __main__ as gui_main
+
+    monkeypatch.setattr(sys, "stderr", io.StringIO())
+    gui_main.enable_crash_traces()
+    monkeypatch.setattr(sys, "stderr", None)
+    gui_main.enable_crash_traces()
+
+
 def test_without_the_hook_it_really_does_abort():
     """Guard the guard: if PyQt stopped aborting, the test above would pass vacuously."""
     done = _run("")

@@ -71,7 +71,7 @@ def test_import_reads_classes_and_writes_record(tmp_path, stub_family):
     assert rec["model_family"] == "stubfam"
     assert [c["name"] for c in rec["classes"]] == ["mouse", "pellet"]  # from introspect
     assert (imported_store.model_dir(mid) / "weights/best.pt").is_file()
-    assert imported_store.discover() == ["mouse_yolo11s"]
+    assert imported_store.discover(role=None) == ["mouse_yolo11s"]
 
 
 def test_import_name_defaults_to_filename(tmp_path, stub_family):
@@ -111,9 +111,9 @@ def test_import_missing_weights_raises(tmp_path, stub_family):
 
 def test_list_and_remove(tmp_path, stub_family):
     mid = imported_store.import_model(_weights(tmp_path), family=stub_family, name="m")
-    assert [r["id"] for r in imported_store.list_records()] == [mid]
+    assert [r["id"] for r in imported_store.list_records(role=None)] == [mid]
     imported_store.remove(mid)
-    assert imported_store.discover() == []
+    assert imported_store.discover(role=None) == []
 
 
 def test_import_stamps_created_at_and_empty_metadata(tmp_path, stub_family):
@@ -159,6 +159,82 @@ def test_set_preview_replaces_a_stale_preview(tmp_path, stub_family):
     assert imported_store.set_preview(mdir, second) == "preview.png"
     # the prior .jpg is gone — never leave a stale preview beside the new one
     assert sorted(p.name for p in mdir.glob("preview.*")) == ["preview.png"]
+
+
+# --------------------------------------------------------------------------- #
+# Roles (§26 Phase 4): a keypoints import shares the catalog and reaches no detection reader
+# --------------------------------------------------------------------------- #
+def _keypoints_import():
+    pytest.importorskip("onnxruntime")
+    from pathlib import Path
+
+    from detail.models import onnx_keypoints
+
+    data = Path(__file__).parent / "data" / "sleap_onnx" / "centered_instance"
+    return onnx_keypoints.import_model(data, name="mouse_pose")
+
+
+def test_a_record_without_a_role_is_a_detection_model(tmp_path, stub_family):
+    mid = imported_store.import_model(
+        _weights(tmp_path), family=stub_family, name="det"
+    )
+    assert "role" not in imported_store.read(
+        mid
+    )  # written as every record before roles
+    assert imported_store.role_of(imported_store.read(mid)) == "detection"
+
+
+def test_discover_filters_by_role_and_insists_on_one(tmp_path, stub_family):
+    det = imported_store.import_model(
+        _weights(tmp_path), family=stub_family, name="det"
+    )
+    pose = _keypoints_import()
+    assert imported_store.discover(role="detection") == [det]
+    assert imported_store.discover(role="keypoints") == [pose]
+    assert imported_store.discover(role=None) == sorted([det, pose])
+    with pytest.raises(ValueError, match="role must be one of"):
+        imported_store.discover(role="pose")
+    with pytest.raises(TypeError):
+        imported_store.discover()  # every caller says which role it wants
+
+
+def test_no_detection_reader_sees_a_keypoints_import(monkeypatch):
+    """The sweep, as a check: each place that asked the catalog for 'models' and meant
+    detection models, against a catalog holding only a keypoints import."""
+    from detail.api import models as api_models
+    from detail.api import readiness
+    from detail.models import resolve
+
+    pose = _keypoints_import()
+    assert [t.id for t in api_models.tool_models() if t.id == pose] == []
+    assert api_models.imported_models(role="detection") == []
+    with pytest.raises(
+        ValueError, match="imported keypoints model, not a detection model"
+    ):
+        resolve.resolve_pretrained_or_imported(pose)
+    with pytest.raises(
+        ValueError, match="imported keypoints model, not a detection model"
+    ):
+        resolve.resolve_detection_model_auto("unused-experiment", pose)
+    monkeypatch.setattr(readiness.locations, "list_experiment_dirs", lambda: [])
+    assert readiness.signals_from([]).detection_model is False
+    # the management surfaces do list it, with its role
+    rows = {r.id: r for r in api_models.list_models()}
+    assert rows[pose].role == "keypoint" and rows[pose].classes[0] == "nose"
+    assert api_models.imported_model(pose).role == "keypoints"
+
+
+def test_a_keypoints_import_is_a_method_by_id():
+    from detail.models import resolve
+
+    pose = _keypoints_import()
+    assert pose in resolve.imported_keypoint_models()
+    assert resolve.keypoint_method_class(None, pose).__name__ == "ImportedKeypointModel"
+    assert resolve.resolve_keypoint_model(pose).skeleton().names[0] == "nose"
+    with pytest.raises(ValueError, match="takes no"):
+        resolve.resolve_keypoint_model(pose, "big")
+    with pytest.raises(ValueError, match=f"unknown keypoint method 'nope'.*{pose}"):
+        resolve.resolve_keypoint_model("nope")
 
 
 # --- a pose checkpoint (§12 *Keypoint models in the catalog*) ---------------------- #
@@ -214,7 +290,7 @@ def test_a_pose_checkpoint_without_a_skeleton_is_refused(tmp_path, pose_checkpoi
         ValueError, match="pose \\(keypoint\\) checkpoint; pass the skeleton"
     ):
         imported_store.import_model(_weights(tmp_path), name="rat_pose")
-    assert imported_store.discover() == []
+    assert imported_store.discover(role=None) == []
 
 
 @pytest.mark.parametrize(
@@ -232,7 +308,7 @@ def test_a_skeleton_that_does_not_fit_is_refused(
     pose_checkpoint(*shape)
     with pytest.raises(ValueError, match=message):
         imported_store.import_model(_weights(tmp_path), skeleton=RAT, name="rat_pose")
-    assert imported_store.discover() == []
+    assert imported_store.discover(role=None) == []
     assert skeleton_library.discover() == []  # nothing added for a refused import
 
 

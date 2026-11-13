@@ -22,6 +22,7 @@ from detail.api.authored_run import (
 )
 from detail.api.clip_edits import ClipEditOperations
 from detail.api.clip_review import ClipReviewOperations
+from detail.api.cluster_lookalikes import Lookalikes
 from detail.api.clustering_nodes import NodeCacheMixin
 from detail.api.experiment import Experiment
 from detail.configs.temporal_clustering import TemporalClusteringConfig
@@ -35,6 +36,7 @@ class TemporalClusteringRun(
     ClipReviewOperations,
     ClipEditOperations,
     LabelOperations,
+    Lookalikes,
     NodeCacheMixin,
     AuthoredRun,
 ):
@@ -197,7 +199,7 @@ class TemporalClusteringRun(
         return temporal_runs.fit_path(self._run_dir(), self._method().shard_suffix)
 
     def _member_resolver(self, method, fit):
-        return temporal_pipeline.member_resolver(method, fit)
+        return temporal_pipeline.member_resolver(method, fit, self.state().track_id)
 
     def _require_fit(self) -> None:
         if not temporal_runs.has_temporal_state(self._run_dir()):

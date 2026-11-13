@@ -200,7 +200,9 @@ class AnchorTracker(Tracker):
                 break
             part_path = parts[part_index]
             _common.clear_zarr(output_dir / "assignments" / part_path.name)
-            data = DetectionPartReader(part_path).read()
+            data = _common.filter_by_class(
+                DetectionPartReader(part_path).read(), job.class_name
+            )
             n_rows = len(data["frame_idx"])
             object_ids = np.full(n_rows, -1, dtype=np.int32)
             groups = _common.group_by_frame(data["frame_idx"], every_n_frames)
@@ -330,6 +332,7 @@ class AnchorTracker(Tracker):
             "tracker_id": self.tracker_id,
             "hyperparams": params,
             "arena_ids": list(job.arena_ids),
+            "class_name": job.class_name,
             "subject_labels": None,
             "status": status,
             "n_tracks": n_tracks,

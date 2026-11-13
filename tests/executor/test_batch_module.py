@@ -54,6 +54,9 @@ def _register_fake_batch(module_id, calls, *, fail=False):
         def output_path(self, run_id):
             return f"embeddings/{run_id}/"
 
+        def estimate_output_bytes(self, recording_dir, recording_data, config):
+            return 0
+
         def validate_batch(self, experiment_root, recording_ids, config):
             calls.append(("validate_batch", tuple(recording_ids)))
             return {**config, "normalized": True}
@@ -135,6 +138,9 @@ def test_batch_progress_moves_within_a_single_recording(tmp_path):
 
             def output_path(self, run_id):
                 return f"embeddings/{run_id}/"
+
+            def estimate_output_bytes(self, recording_dir, recording_data, config):
+                return 0
 
             def validate_batch(self, experiment_root, recording_ids, config):
                 return dict(config)

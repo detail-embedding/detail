@@ -180,7 +180,7 @@ LISTINGS = [
     ("analysis_runs", _analysis, lambda e: Experiment(e).analysis_runs),
     ("export_runs", _export, lambda e: Experiment(e).export_runs),
     ("tool_runs", _tool_run, lambda e: tool_runs_store.list_tool_runs()),
-    ("imported_models", _imported_model, lambda e: imported.list_records()),
+    ("imported_models", _imported_model, lambda e: imported.list_records(role=None)),
     ("snapshots", _snapshot, _snapshots),
 ]
 
@@ -218,7 +218,10 @@ def test_a_lookup_by_id_still_raises_on_an_unreadable_record(experiment_dir):
     path = _distill_run(experiment_dir, "distill_001")
     path.write_bytes(b"\0" * path.stat().st_size)
 
-    with pytest.raises(Exception, match="special characters are not allowed"):
+    # Raised, not skipped: the listing above tolerates the record, a lookup by id must not. What
+    # it raises is PyYAML's "special characters are not allowed" with no path no longer; it is
+    # the damaged-file error, which names this file (`tests/core/test_damaged_files.py`).
+    with pytest.raises(atomic.DamagedFileError, match="distill.yaml is all zero bytes"):
         distill_store.read_run(experiment_dir, "distill_001")
 
 

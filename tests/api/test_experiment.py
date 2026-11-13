@@ -16,8 +16,10 @@ from detail.core.dataclasses import (
 )
 from detail.core.protocols import DetectionModel, ModelNotReadyError
 from detail.core.registries import MODELS, register_model
+from detail.storage import experiment as experiment_store
 from detail.storage import recording as recording_store
 from detail.storage import runs as runs_store
+from detail.storage.metadata import ACQUISITION_SETUP_KEY as SETUP
 
 
 def _fake_model(readiness: ModelReadiness):
@@ -368,6 +370,11 @@ def test_run_processing_parallel(tmp_path, monkeypatch):
     for sid in sids:
         rid = rec["per_recording"][sid]["run_id"]
         assert (proj.get_recording(sid).dir / "tracking" / rid / "tracks.zarr").is_dir()
+    # § run location, duration, cost: the aggregate record gets its own wall-clock
+    # duration, and tracking (no ComputeTarget) shows as local — a real run through
+    # the full RunOrchestrator, not a synthetic envelope.
+    assert rec["duration_s"] is not None and rec["duration_s"] >= 0
+    assert rec["compute"] is None
 
 
 def test_typed_config_restores_flattened_typed_fields():
@@ -466,6 +473,7 @@ def _spec_det(rid, **over):
         "model_variant": "large",
         "weights_source": "pretrained",
         "conf_threshold": 0.25,
+        "class_conf_thresholds_fingerprint": "ccf",
         "prompt_fingerprint": "fp",
         "prompt_classes": ["mouse"],
         **over,
@@ -660,17 +668,26 @@ def test_run_processing_survives_launcher_exit(tmp_path):
 def test_run_processing_spawn_failure_marks_run_failed(tmp_path, monkeypatch):
     # If the coordinator can't be spawned, the reserved record must be marked failed,
     # not left stuck "running" — reconcile can't recover a run with no coordinator pid.
+    #
+    # A failed spawn also leaves exactly the reservation, with nothing from a coordinator on
+    # top, so it is where `compute` is checked: the run page opens on the reserved record and
+    # builds "Where" / the live cost from it, and a remote run read "local" all its life when
+    # only the coordinator wrote it.
     def _boom(*_a, **_k):
         raise OSError("cannot fork")
 
     monkeypatch.setattr("detail.api.experiment.spawn_coordinator", _boom)
     proj = Experiment.create("proj", tmp_path)
     _video_recording(proj, "recording_001")
+    compute = ComputeTarget("cuda", [0], None, None)
     with pytest.raises(OSError):
-        proj.run_processing("tracking", ["recording_001"], dict(TRACKING_CONFIG))
+        proj.run_processing(
+            "tracking", ["recording_001"], {**TRACKING_CONFIG, "compute": compute}
+        )
     rec = proj.processing_runs[0]
     assert rec["status"] == "failed"
     assert "coordinator failed to launch" in (rec.get("error") or "")
+    assert rec["compute"] == compute.to_dict()
 
 
 def test_cancel_run_kills_coordinator(tmp_path):
@@ -1021,7 +1038,7 @@ def test_delete_model_active_detection_run_blocks_completed_does_not(tmp_path):
 def test_create_recording_seeds_metadata_row(tmp_path):
     experiment = Experiment.create("p", tmp_path)
     experiment.create_recording("recording_001")
-    assert experiment.recording_metadata == {"recording_001": {}}
+    assert experiment.recording_metadata == {"recording_001": {SETUP: ""}}
 
 
 def test_create_recording_with_metadata(tmp_path):
@@ -1030,10 +1047,11 @@ def test_create_recording_with_metadata(tmp_path):
         "recording_001", metadata={"animal_id": "M001", "treatment": "drug_A"}
     )
     assert experiment.recording_metadata["recording_001"] == {
+        SETUP: "",
         "animal_id": "M001",
         "treatment": "drug_A",
     }
-    assert experiment.metadata_columns == ["animal_id", "treatment"]
+    assert experiment.metadata_columns == [SETUP, "animal_id", "treatment"]
 
 
 def test_set_recording_metadata_merges(tmp_path):
@@ -1041,6 +1059,7 @@ def test_set_recording_metadata_merges(tmp_path):
     experiment.create_recording("recording_001", metadata={"animal_id": "M001"})
     experiment.set_recording_metadata("recording_001", {"treatment": "drug_A"})
     assert experiment.recording_metadata["recording_001"] == {
+        SETUP: "",
         "animal_id": "M001",
         "treatment": "drug_A",
     }
@@ -1058,8 +1077,8 @@ def test_delete_metadata_column_removes_it_everywhere(tmp_path):
     experiment = Experiment.create("p", tmp_path)
     experiment.create_recording("r1", metadata={"animal_id": "M001", "treatment": "d"})
     experiment.delete_metadata_column("treatment")
-    assert experiment.metadata_columns == ["animal_id"]
-    assert experiment.recording_metadata["r1"] == {"animal_id": "M001"}
+    assert experiment.metadata_columns == [SETUP, "animal_id"]
+    assert experiment.recording_metadata["r1"] == {SETUP: "", "animal_id": "M001"}
 
 
 def test_set_metadata_table_replaces_whole_table(tmp_path):
@@ -1071,8 +1090,12 @@ def test_set_metadata_table_replaces_whole_table(tmp_path):
     experiment.set_metadata_table(
         ["animal_id", "cohort"], {"r1": {"animal_id": "M1", "cohort": "A"}}
     )
-    assert experiment.metadata_columns == ["animal_id", "cohort"]
-    assert experiment.recording_metadata["r1"] == {"animal_id": "M1", "cohort": "A"}
+    assert experiment.metadata_columns == [SETUP, "animal_id", "cohort"]
+    assert experiment.recording_metadata["r1"] == {
+        SETUP: "",
+        "animal_id": "M1",
+        "cohort": "A",
+    }
 
 
 def test_metadata_only_recording_is_well_formed(tmp_path):
@@ -1329,7 +1352,7 @@ def test_import_metadata_csv_keys_on_the_name(tmp_path):
 
     assert errors == [] and applied == 2
     table = experiment.recording_metadata
-    assert table[first.id] == {"day": "3", "dose": "0.5"}
+    assert table[first.id] == {SETUP: "", "day": "3", "dose": "0.5"}
     assert table[second.id]["day"] == "4"
     assert "name" not in experiment.metadata_columns  # a key, never a stored column
 
@@ -1359,7 +1382,7 @@ def test_import_metadata_csv_prefers_the_id_when_a_csv_has_both(tmp_path):
     errors, _warnings, applied = experiment.import_metadata_csv(csv_path)
 
     assert errors == [] and applied == 1
-    assert experiment.recording_metadata[recording.id] == {"day": "3"}
+    assert experiment.recording_metadata[recording.id] == {SETUP: "", "day": "3"}
 
 
 def test_export_metadata_carries_the_name_and_file_for_the_person_filling_it_in(
@@ -1374,15 +1397,19 @@ def test_export_metadata_carries_the_name_and_file_for_the_person_filling_it_in(
     experiment.export_metadata_csv(out)
 
     header, row = out.read_text(encoding="utf-8-sig").splitlines()
-    assert header == "recording_id,name,file,dose"
+    assert header == "recording_id,name,file,acquisition_setup,dose"
     assert row.startswith(f"{recording.id},m27_day3,m27_day3.mp4,")
     # ...and the filled sheet comes back in, keyed on the id
     out.write_text(
-        f"{header}\n{recording.id},m27_day3,m27_day3.mp4,0.5\n", encoding="utf-8"
+        f"{header}\n{recording.id},m27_day3,m27_day3.mp4,rig 1,0.5\n",
+        encoding="utf-8",
     )
     errors, _warnings, applied = experiment.import_metadata_csv(out)
     assert errors == [] and applied == 1
-    assert experiment.recording_metadata[recording.id] == {"dose": "0.5"}
+    assert experiment.recording_metadata[recording.id] == {
+        SETUP: "rig 1",
+        "dose": "0.5",
+    }
     assert "file" not in experiment.metadata_columns  # derived, never stored
 
 
@@ -1434,7 +1461,7 @@ def test_import_metadata_csv_keys_on_the_video_file_name(tmp_path):
         "1.0",
         "2.0",
     ]
-    assert experiment.metadata_columns == ["dose"]  # the key is never stored
+    assert experiment.metadata_columns == [SETUP, "dose"]  # the key is never stored
 
 
 def test_import_metadata_csv_matches_any_video_part_of_a_recording(tmp_path):
@@ -1447,7 +1474,7 @@ def test_import_metadata_csv_matches_any_video_part_of_a_recording(tmp_path):
     errors, _warnings, applied = experiment.import_metadata_csv(csv_path)
 
     assert errors == [] and applied == 1
-    assert experiment.recording_metadata[recording.id] == {"dose": "0.5"}
+    assert experiment.recording_metadata[recording.id] == {SETUP: "", "dose": "0.5"}
 
 
 def test_import_metadata_csv_refuses_a_file_name_shared_across_folders(tmp_path):
@@ -1466,7 +1493,7 @@ def test_import_metadata_csv_refuses_a_file_name_shared_across_folders(tmp_path)
     assert errors == [
         "video file 'm27.mp4' matches several recordings: 'rig1_m27', 'rig2_m27'"
     ]
-    assert all(row == {} for row in experiment.recording_metadata.values())
+    assert all(row == {SETUP: ""} for row in experiment.recording_metadata.values())
 
 
 def test_import_metadata_csv_reports_every_unmatched_file_name(tmp_path):
@@ -1522,7 +1549,10 @@ def test_import_metadata_csv_keys_on_a_column_the_caller_names(tmp_path):
         csv_path, key_column="Session Clip"
     )
     assert errors == [] and applied == 1
-    assert experiment.recording_metadata[recordings["m27_day3"].id] == {"dose": "0.5"}
+    assert experiment.recording_metadata[recordings["m27_day3"].id] == {
+        SETUP: "",
+        "dose": "0.5",
+    }
 
 
 def test_import_metadata_csv_refuses_a_named_key_column_it_lacks(tmp_path):
@@ -1559,7 +1589,8 @@ def test_import_metadata_csv_unknown_recording_applies_nothing(tmp_path):
     errors, warnings, applied = experiment.import_metadata_csv(csv_path)
     assert applied == 0 and any("ghost" in e for e in errors)
     assert experiment.recording_metadata["s1"] == {
-        "animal_id": "M001"
+        SETUP: "",
+        "animal_id": "M001",
     }  # atomic — unchanged
 
 
@@ -1570,7 +1601,7 @@ def test_import_metadata_csv_dry_run_applies_nothing(tmp_path):
     csv_path.write_text("recording_id,treatment\ns1,drug_A\n", encoding="utf-8")
     errors, warnings, applied = experiment.import_metadata_csv(csv_path, dry_run=True)
     assert errors == [] and applied == 0
-    assert experiment.recording_metadata["s1"] == {}  # validated, not applied
+    assert experiment.recording_metadata["s1"] == {SETUP: ""}  # validated, not applied
 
 
 # --- experiment export / import (§15) ------------------------------------------ #
@@ -1592,7 +1623,7 @@ def test_export_import_archive_roundtrip(tmp_path, monkeypatch):
     shutil.rmtree(proj.dir)  # simulate moving to another machine
     imported = Experiment.import_archive(archive)
     assert imported.dir == ws / "study"
-    assert imported.recording_metadata["s1"] == {"animal_id": "M001"}
+    assert imported.recording_metadata["s1"] == {SETUP: "", "animal_id": "M001"}
 
 
 def test_import_archive_collision_and_name(tmp_path, monkeypatch):
@@ -1604,6 +1635,109 @@ def test_import_archive_collision_and_name(tmp_path, monkeypatch):
     Experiment.import_archive(archive, replace=True)  # ok
     other = Experiment.import_archive(archive, name="study_copy")
     assert other.dir == ws / "study_copy"
+
+
+# --- experiment locations (§2) ------------------------------------------------------ #
+def _lab_drive(tmp_path):
+    """An added experiment location standing in for an external drive."""
+    from detail.storage import locations
+
+    folder = tmp_path / "lab_drive"
+    folder.mkdir()
+    locations.add_location("Lab drive", folder)
+    return folder.resolve()
+
+
+def test_create_in_a_location_and_list_all_spans_every_location(tmp_path):
+    drive = _lab_drive(tmp_path)
+
+    home = Experiment.create("home_study")
+    away = Experiment.create("drive_study", location="Lab drive")
+
+    assert away.dir == drive / "drive_study"
+    assert (home.location, away.location) == ("default", "Lab drive")
+    assert [e.dir for e in Experiment.list_all()] == [home.dir, away.dir]
+    assert Experiment.create("loose", tmp_path / "elsewhere").location is None
+
+
+def test_create_refuses_parent_dir_and_location_together(tmp_path):
+    _lab_drive(tmp_path)
+    with pytest.raises(ValueError, match="parent_dir or location, not both"):
+        Experiment.create("x", tmp_path, location="Lab drive")
+
+
+def test_create_refuses_a_name_another_location_holds(tmp_path):
+    _lab_drive(tmp_path)
+    Experiment.create("study", location="Lab drive")
+    with pytest.raises(FileExistsError, match="already exists in location 'Lab drive'"):
+        Experiment.create("study")
+
+
+def test_create_in_an_unplugged_location_says_so(tmp_path):
+    from detail.storage import locations
+
+    drive = _lab_drive(tmp_path)
+    drive.rmdir()
+    with pytest.raises(locations.LocationNotConnectedError, match="not connected"):
+        Experiment.create("study", location="Lab drive")
+    assert not drive.exists()
+
+
+def test_import_archive_into_a_location(tmp_path):
+    import shutil
+
+    from detail.storage import locations
+
+    ws = locations.experiments_root()
+    drive = _lab_drive(tmp_path)
+    proj = Experiment.create("study")
+    archive = proj.export(tmp_path / "study.tar")
+
+    with pytest.raises(FileExistsError, match="already exists in location 'default'"):
+        Experiment.import_archive(archive, location="Lab drive")
+    shutil.rmtree(ws / "study")
+    imported = Experiment.import_archive(archive, location="Lab drive")
+
+    assert imported.dir == drive / "study"
+    assert imported.location == "Lab drive"
+
+
+def test_archive_marks_config_and_unarchive_clears_it(tmp_path):
+    proj = Experiment.create("study", tmp_path)
+    assert not proj.archived
+    proj.archive()
+    assert proj.archived
+    config = experiment_store.read_config(proj.dir)
+    assert next(iter(config)) == "schema_version"  # still the literal first key
+    assert config["archived"] is True
+    proj.archive()  # idempotent
+    assert proj.archived
+    proj.unarchive()
+    assert not proj.archived
+    # Absent, not `archived: false`: an unarchived experiment reads as one never archived.
+    assert "archived" not in experiment_store.read_config(proj.dir)
+
+
+def test_list_all_includes_archived_experiments(tmp_path, monkeypatch):
+    _managed_ws(tmp_path, monkeypatch)
+    kept = Experiment.create("kept")
+    shelved = Experiment.create("shelved")
+    shelved.archive()
+    listed = {e.dir: e.archived for e in Experiment.list_all()}
+    assert listed == {kept.dir: False, shelved.dir: True}
+
+
+def test_import_archive_of_an_archived_experiment_lands_unarchived(
+    tmp_path, monkeypatch
+):
+    import shutil
+
+    _managed_ws(tmp_path, monkeypatch)
+    proj = Experiment.create("study")
+    proj.archive()
+    archive = proj.export(tmp_path / "study.tar")
+    shutil.rmtree(proj.dir)
+    assert not Experiment.import_archive(archive).archived
 
 
 # --- cancelling active runs (kill the worker + mark cancelled) -------------- #
@@ -2365,3 +2499,19 @@ def test_a_failed_terminal_write_does_not_escape_to_the_coordinator(
     assert (
         orchestrator._status == "complete"
     ), "the status is still computed — only its persistence is best-effort"
+
+
+@pytest.mark.parametrize(
+    "task, base, fragment",
+    [
+        ("pose", "yolo11s-seg.pt", "train it from a YOLO-pose base"),
+        (None, "yolo11n-pose.pt", "holds detection labels"),
+    ],
+)
+def test_a_base_model_that_cannot_learn_the_labels_is_refused(task, base, fragment):
+    from detail.api.experiment import check_base_model_task
+
+    with pytest.raises(ValueError, match=fragment):
+        check_base_model_task("dataset_001", task, base)
+    check_base_model_task("dataset_001", "pose", "yolo11n-pose.pt")  # a match is fine
+    check_base_model_task("dataset_001", None, "yolo11s-seg.pt")

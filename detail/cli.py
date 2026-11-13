@@ -15,27 +15,36 @@ polygon editor — use the GUI) and render-preview (interactive — use the GUI)
 """
 
 import csv
+import re
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any
 from typing import get_args
 
 import click
 import tqdm
+import yaml
 
 from detail import console
 from detail import docs_access
 from detail import surfaces
 from detail.api import clip_montage as _clip_montage
+from detail.api import montage_export as _montage_export
 from detail.api.experiment import Experiment
+from detail.api.extras import INSTALLABLE as _INSTALLABLE_EXTRAS
 from detail.api import tools as api_tools
 from detail.configs.detection import DetectionConfig
 from detail.configs.display import ConfidenceView
-from detail.configs.embedding import EmbeddingConfig
+from detail.configs.embedding import POSE_CHOICES, EmbeddingConfig
+from detail.configs.distill import DistillConfig
+from detail.configs.keypoint_dataset import KeypointDatasetConfig
+from detail.configs.remote import RemoteTargetConfig
 from detail.configs.labeling import LabelingConfig
 from detail.configs.location_export import LocationExportConfig
+from detail.configs.location_plots import LocationMontageView, LocationPlotView
 from detail.configs.temporal_clustering import TemporalClusteringConfig
 from detail.configs.temporal_codebook import TemporalCodebookConfig
 from detail.configs.query import QueryConfig
@@ -44,9 +53,15 @@ from detail.configs.query_eval import QueryEvalConfig
 from detail.configs.quick_segment import QuickSegmentConfig
 from detail.configs.tracking import TrackingConfig
 from detail.configs.windows import WindowSpec
+from detail.configs.cluster_lookalikes import ClusterLookalikesConfig
+from detail.configs.cluster_profile import ClusterProfileConfig
+from detail.configs.profile_describe import ProfileDescribeConfig
 from detail.configs.training import UltralyticsYOLOConfig
-from detail.core import buildinfo
+from detail.core import atomic, buildinfo, disk_space
+from detail.core import camera_view as camera_view_mod
+from detail.core import yaml_load
 from detail.core.dataclasses import (
+    AWAITING_REFERENCES,
     ComputeTarget,
     InstallProgress,
     LabelingClass,
@@ -54,7 +69,13 @@ from detail.core.dataclasses import (
     PromptTarget,
     TextCue,
 )
+from detail.core.dataclasses import processing_inflight_fraction
 from detail.core.protocols import ModelNotReadyError
+from detail.core.utils import resolve_track_id
+from detail.core.video_codecs import DEFAULT_VIDEO_CODEC
+from detail.core.video_codecs import VIDEO_CODEC_HELP
+from detail.core.video_codecs import VIDEO_CODECS
+from detail.storage import locations as locations_store
 from detail.storage import metadata as metadata_store
 from detail.storage import snapshots as snapshots_store
 from detail.storage import streams as streams_store
@@ -66,20 +87,29 @@ from detail.transforms.constructors import surfaced_constructors
 _DET = DetectionConfig.model_fields
 _EMB = EmbeddingConfig.model_fields
 _LAB = LabelingConfig.model_fields
+_DISTILL = DistillConfig.model_fields
+_REMOTE = RemoteTargetConfig.model_fields
 _LOC = LocationExportConfig.model_fields
 _QE = QueryEvalConfig.model_fields
 _WIN = WindowSpec.model_fields
+_PROF = ClusterProfileConfig.model_fields
+_PD = ProfileDescribeConfig.model_fields
+_LA = ClusterLookalikesConfig.model_fields
 _QRY = QueryConfig.model_fields
-# The clip montage's defaults (§22), read from the API so `--help`, the window and a script
-# open on one montage (`tests/api/test_montage_surface_parity.py`).
+# The clip montage's defaults (§22), read from the API so `--help` and the window agree.
 _MONTAGE_DEFAULTS = _clip_montage.DEFAULT_LAYERS
 _MONTAGE_CLIPS = _clip_montage.DEFAULT_CLIPS
 _MONTAGE_SORTS = _clip_montage.SORTS
 _MONTAGE_SORT = _clip_montage.DEFAULT_SORT
+_OVERLAY_CLIPS = _clip_montage.OVERLAY_CLIPS
+_GIF_WIDTH = _montage_export.GIF_DEFAULT_WIDTH
+_GIF_FPS = _montage_export.GIF_DEFAULT_FPS
 _TEMPORAL = TemporalClusteringConfig.model_fields
 _CODEBOOK = TemporalCodebookConfig.model_fields
 _TRK = TrackingConfig.model_fields
 _TRAIN = UltralyticsYOLOConfig.model_fields
+_KPD = KeypointDatasetConfig.model_fields
+_KPD_DOC = {p["name"]: p for p in describe_config(KeypointDatasetConfig)}
 _DET_DOC = {p["name"]: p for p in describe_config(DetectionConfig)}
 _EMB_DOC = {p["name"]: p for p in describe_config(EmbeddingConfig)}
 _QE_DOC = {p["name"]: p for p in describe_config(QueryEvalConfig)}
@@ -99,15 +129,41 @@ def _float_range(doc: dict) -> click.FloatRange:
     return click.FloatRange(min=doc.get("minimum"), max=doc.get("maximum"))
 
 
+def _parse_track_selectors(raw: str) -> list[int | str]:
+    """``--tracks``' comma-separated value, each token an int (a track's raw
+    position) or a subject name (§13) — resolved later, per recording, through
+    that recording's own ``subject_labels`` (``core.utils.resolve_track_id``), the
+    same way ``EmbeddingModule.validate`` resolves a GUI or API selector."""
+    selectors: list[int | str] = []
+    for token in raw.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            selectors.append(int(token))
+        except ValueError:
+            selectors.append(token)
+    return selectors
+
+
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
-def _compute_target(backend: str, devices: tuple[int, ...] | None) -> ComputeTarget:
+def _compute_target(
+    backend: str,
+    devices: tuple[int, ...] | None,
+    remote_target: str | None = None,
+) -> ComputeTarget:
+    if backend == "remote" and not remote_target:
+        raise click.ClickException(
+            "--backend remote requires --remote-target <name> (see `detail remote list`)"
+        )
     return ComputeTarget(
         backend=backend,
         device_indices=list(devices) if devices else None,
         cloud_provider=None,
         cloud_instance=None,
+        remote_target=remote_target,
     )
 
 
@@ -297,6 +353,9 @@ def _stream_progress(run, label: str) -> None:
     try:
         for event in run.progress():
             data = vars(event)
+            if data.get("fold_units"):
+                bar, last_message = _fold_tick(bar, data, label, last_message)
+                continue
             # Frame-keyed for the per-frame stages; a recording-keyed event (e.g. clip query,
             # which has no within-unit frames) advances the bar over its recordings_* instead.
             frame_keyed = bool(data.get("frames_total"))
@@ -346,6 +405,43 @@ def _stream_progress(run, label: str) -> None:
             bar.close()
 
 
+def _fold_tick(bar, data: dict, label: str, last: str | None):
+    """One event of a run that asks for a single bar over the whole job (``fold_units``):
+    the bar counts units done plus the running one's share — ``(recordings_done +
+    frames_done / frames_total)`` of ``recordings_total`` — so tqdm's rate and time left are
+    the whole job's, not one unit's (a profile job over 159 clusters).
+
+    The message's head (its phase, which unit, and the unit's name) is printed above the bar
+    when it changes; the rest of it — a heartbeat's elapsed seconds, the batch in hand — rides
+    in the postfix, so a request's half-second ticks never scroll the terminal.
+    """
+    from detail.core.progress import MESSAGE_SEPARATOR
+
+    total = int(data.get("recordings_total") or 0)
+    within = (
+        data["frames_done"] / data["frames_total"] if data.get("frames_total") else 0.0
+    )
+    done = min(float(data.get("recordings_done") or 0) + within, float(total))
+    if bar is None:
+        bar = tqdm.tqdm(
+            total=total or None,
+            desc=label,
+            unit=data.get("unit_label") or "unit",
+            dynamic_ncols=True,
+            file=sys.stderr,
+            bar_format="{l_bar}{bar}| {n:.2f}/{total_fmt} [{elapsed}<{remaining}]{postfix}",
+        )
+    parts = str(data.get("message") or "").split(MESSAGE_SEPARATOR)
+    head = MESSAGE_SEPARATOR.join(parts[:3])
+    if head and head != last:
+        bar.write(f"  {label}: {head}", file=sys.stderr)
+        last = head
+    bar.n = round(done, 3)
+    bar.set_postfix_str(MESSAGE_SEPARATOR.join(parts[3:])[:80], refresh=False)
+    bar.refresh()
+    return bar, last
+
+
 def _check_status(run, label: str) -> None:
     if run.status != "complete":
         raise click.ClickException(
@@ -365,10 +461,19 @@ def _stream_processing_progress(run, label: str) -> None:
     boundary. Ctrl-C cancels the run (graceful-then-force) when the caller launched
     it; when reattaching (`RunHandle.owns_worker` is False) it just detaches, leaving the
     detached coordinator to finish the run in the background.
+
+    **A run keeping several recordings in flight (a remote target's ``max_concurrent_jobs``)
+    switches the bar to *recordings*.** One bar of frames cannot be several recordings' frames:
+    it reset at every event naming a different recording, which with eight in flight is every
+    event. From the first event that carries more than one live recording the bar counts
+    ``recordings_done + Σ live fractions`` over the recordings, the postfix says how many are in
+    flight, and each recording's phase message is printed when it changes.
     """
     bar = None
     last_message = None
     current = None
+    by_recording = False
+    seen_messages: dict[str, str] = {}
     try:
         for event in run.progress():
             if bar is None:
@@ -379,6 +484,25 @@ def _stream_processing_progress(run, label: str) -> None:
                     dynamic_ncols=True,
                     file=sys.stderr,
                 )
+            live = getattr(event, "live", None) or {}
+            if len(live) > 1 and not by_recording:
+                by_recording = True
+                bar.unit = "recording"
+                bar.reset(total=event.recordings_total or None)
+            if by_recording:
+                for sid, live_event in live.items():
+                    message = getattr(live_event, "message", None)
+                    if message and seen_messages.get(sid) != message:
+                        seen_messages[sid] = message
+                        bar.write(f"  {label} [{sid}]: {message}", file=sys.stderr)
+                bar.n = event.recordings_done + processing_inflight_fraction(event)
+                bar.set_postfix_str(
+                    f"{len(live)} in flight, "
+                    f"{event.recordings_done}/{event.recordings_total} done",
+                    refresh=False,
+                )
+                bar.refresh()
+                continue
             inner = event.inner
             if inner is not None:
                 data = vars(inner)
@@ -520,6 +644,51 @@ _EXPERIMENT_OPT = click.option(
     help="Experiment directory.",
 )
 
+#: Every command that writes MP4 video (Tenet 15): one option, so the choice and its help are
+#: the same wherever a video is written.
+_VIDEO_CODEC_OPT = click.option(
+    "--codec",
+    "codec",
+    type=click.Choice(list(VIDEO_CODECS)),
+    default=DEFAULT_VIDEO_CODEC,
+    show_default=True,
+    help=VIDEO_CODEC_HELP,
+)
+
+
+def _echo_codec_note(codec: str) -> None:
+    """Say so when this machine cannot write ``codec`` — a fallback is never silent."""
+    from detail.storage import video as video_store
+
+    note = video_store.codec_note(codec)
+    if note:
+        click.echo(f"note: {note}", err=True)
+
+
+#: Every command that launches a processing run (#743); `cli_keypoints` declares its twin
+#: from the same help text, since it cannot import this module at import time.
+_IGNORE_FREE_SPACE_OPT = click.option(
+    "--ignore-free-space",
+    "ignore_free_space",
+    is_flag=True,
+    default=False,
+    help=disk_space.IGNORE_FREE_SPACE_HELP,
+)
+
+
+def _echo_space(proj, run_id: str) -> None:
+    """Print what a launched run was checked against (#743): its estimated output and the
+    free space where the experiment is, from the run record."""
+    record = next((r for r in proj.processing_runs if r.get("id") == run_id), {})
+    space = record.get("space") or {}
+    if "estimated_output_bytes" not in space:
+        return
+    click.echo(
+        f"estimated output: {disk_space.format_size(space['estimated_output_bytes'])}; "
+        f"{disk_space.format_size(space['free_bytes_at_launch'])} free at launch"
+        + ("" if space.get("fits", True) else " (launched past the free-space check)")
+    )
+
 
 def _window_options(fn):
     """§23's window model as CLI options — shared by `comparison run` and `measures export`.
@@ -649,6 +818,29 @@ def _align_opts(command):
                 type=_float_range(_EMB_DOC["facing_camera_ratio"]),
                 help=_EMB["facing_camera_ratio"].description,
             ),
+            # §14 pose in the embedding: the same keypoint track run, read a second way
+            click.option(
+                "--pose",
+                "pose",
+                type=click.Choice(list(POSE_CHOICES)),
+                default="none",
+                show_default=True,
+                help=_EMB["pose"].description,
+            ),
+            click.option(
+                "--pose-weight",
+                "pose_weight",
+                default=None,
+                type=_float_range(_EMB_DOC["pose_weight"]),
+                help=_EMB["pose_weight"].description,
+            ),
+            click.option(
+                "--pose-min-score",
+                "pose_min_score",
+                default=None,
+                type=_float_range(_EMB_DOC["pose_min_score"]),
+                help=_EMB["pose_min_score"].description,
+            ),
         )
     ):
         command = option(command)
@@ -658,11 +850,27 @@ def _align_opts(command):
 _ALIGN_OPTS = _align_opts
 
 
-def _alignment_config(align, heading, max_gap_s, mirror_hold_s, facing_camera_ratio):
-    """The alignment fields of an embedding config; a setting left out takes the model's
-    default, so the record carries a value rather than a hole."""
+def _alignment_config(
+    align,
+    heading,
+    max_gap_s,
+    mirror_hold_s,
+    facing_camera_ratio,
+    pose=None,
+    pose_weight=None,
+    pose_min_score=None,
+):
+    """The alignment and pose fields of an embedding config; a setting left out takes the
+    model's default, so the record carries a value rather than a hole."""
     defaults = EmbeddingConfig.model_fields
     return {
+        "pose": pose or "none",
+        "pose_weight": (
+            defaults["pose_weight"].default
+            if pose_weight is None
+            else float(pose_weight)
+        ),
+        "pose_min_score": None if pose_min_score is None else float(pose_min_score),
         "align": align or "none",
         "heading": heading,
         "max_gap_s": (
@@ -694,6 +902,25 @@ _DEVICE_OPT = click.option(
     multiple=True,
     type=int,
     help="Device index (repeatable for multi-GPU; cuda only).",
+)
+# A second choice list rather than adding "remote" to the shared _BACKEND_OPT above,
+# so a command stays cpu/cuda/mps until it is deliberately wired to a RemoteExecutor —
+# picking "remote" for one that isn't would build a job no runner backing it knows how
+# to route remotely. Used by detection, embedding, keypoints, and distillation (labeling
+# + training); not yet by tracking or quick-segment.
+_BACKEND_OPT_REMOTE = click.option(
+    "--backend",
+    type=click.Choice(["cpu", "cuda", "mps", "remote"]),
+    default="cpu",
+    show_default=True,
+    help="Compute backend. 'remote' submits to a registered cluster (see "
+    "`detail remote list`) with --remote-target.",
+)
+_REMOTE_TARGET_OPT = click.option(
+    "--remote-target",
+    "remote_target",
+    default=None,
+    help="Registered remote target to submit to (required with --backend remote).",
 )
 # The CLI twin of the GUI's confidence slider (gui/confidence.ConfidenceRow). These
 # commands run the model wide open and keep every proposal, so this filters what gets
@@ -759,16 +986,50 @@ def experiment() -> None:
 @click.option(
     "--dir",
     "parent_dir",
-    required=True,
+    default=None,
     type=click.Path(file_okay=False, path_type=Path),
-    help="Parent directory to create the experiment inside.",
+    help="Parent directory to create the experiment inside. The GUI lists it only if "
+    "this directory is an experiment location (`experiment locations`).",
 )
-def experiment_create(name: str, parent_dir: Path) -> None:
-    """Create a new experiment directory at <parent_dir>/<name>/."""
+@click.option(
+    "--location",
+    "location",
+    default=None,
+    type=str,
+    help="Experiment location to create it in (`experiment locations`). With neither "
+    "this nor --dir, the default location.",
+)
+@click.option(
+    "--camera-view",
+    "camera_view",
+    default=None,
+    type=click.Choice(list(camera_view_mod.VIEWS)),
+    help="Default camera view every recording inherits (§10). Change it later with "
+    "`experiment set-camera-view`.",
+)
+@click.option(
+    "--camera-view-note",
+    "camera_view_note",
+    default=None,
+    type=str,
+    help="Describes the view; required with --camera-view other, refused otherwise.",
+)
+def experiment_create(
+    name: str,
+    parent_dir: Path | None,
+    location: str | None,
+    camera_view: str | None,
+    camera_view_note: str | None,
+) -> None:
+    """Create a new experiment directory <name>/ in a location or a parent directory."""
+    # Checked before anything is created, so a bad view leaves no half-made experiment.
     try:
-        proj = Experiment.create(name, parent_dir)
-    except (FileExistsError, ValueError) as e:
+        camera_view_mod.validate(camera_view, camera_view_note)
+        proj = Experiment.create(name, parent_dir, location=location)
+    except (FileExistsError, FileNotFoundError, ValueError) as e:
         raise click.ClickException(str(e))
+    if camera_view is not None:
+        proj.set_camera_view(camera_view, camera_view_note)
     click.echo(f"created experiment: {proj.dir}")
 
 
@@ -778,6 +1039,9 @@ def experiment_status(experiment_dir: Path) -> None:
     """Show experiment identity + recording list + per-recording run counts."""
     proj = _open_experiment(experiment_dir)
     click.echo(f"experiment: {proj.dir}")
+    if proj.archived:
+        click.echo("archived: yes (hidden from the Experiments list)")
+    click.echo(f"camera view (default): {proj.camera_view.label}")
     recordings = list(proj.recordings)
     click.echo(f"recordings: {len(recordings)}")
     for sess in recordings:
@@ -910,6 +1174,97 @@ def experiment_set_metadata(
     click.echo(f"{recording.name}: set {', '.join(sorted(values))}")
 
 
+#: The word that removes a camera view instead of naming one: the experiment's default goes
+#: away, a recording's override goes away so it inherits the default again.
+_NO_EXPERIMENT_VIEW = "unset"
+_INHERIT_VIEW = "default"
+
+
+@experiment.command("set-camera-view")
+@_EXPERIMENT_OPT
+@click.argument(
+    "view", type=click.Choice([*camera_view_mod.VIEWS, _NO_EXPERIMENT_VIEW])
+)
+@click.option(
+    "--note",
+    default=None,
+    type=str,
+    help="Describes the view; required with `other`, refused otherwise.",
+)
+def experiment_set_camera_view(
+    experiment_dir: Path, view: str, note: str | None
+) -> None:
+    """Set the experiment's default camera view, which every recording inherits unless
+    it sets its own (§10). `unset` removes the default."""
+    proj = _open_experiment(experiment_dir)
+    try:
+        proj.set_camera_view(None if view == _NO_EXPERIMENT_VIEW else view, note)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    click.echo(f"camera view (default): {proj.camera_view.label}")
+
+
+@experiment.command("classes")
+@_EXPERIMENT_OPT
+def experiment_classes(experiment_dir: Path) -> None:
+    """List the experiment's detection classes: each class's stored name (what its runs
+    recorded) and what it is called here (§1 *Class names*)."""
+    proj = _open_experiment(experiment_dir)
+    names = proj.class_names()
+    if not names:
+        click.echo("no detection classes yet")
+        return
+    for stored, name in names.items():
+        click.echo(stored if name == stored else f"{stored} → {name}")
+
+
+@experiment.command("rename-class")
+@_EXPERIMENT_OPT
+@click.argument("class_ref")
+@click.argument("name", required=False)
+@click.option(
+    "--reset",
+    is_flag=True,
+    help="Call the class by its stored name again (in place of NAME).",
+)
+def experiment_rename_class(
+    experiment_dir: Path, class_ref: str, name: str | None, reset: bool
+) -> None:
+    """Call detection class CLASS_REF (its stored name or current name) NAME on every
+    surface. No run is rewritten: runs keep the stored name, and either name is accepted
+    wherever a class is asked for."""
+    if reset == (name is not None):
+        raise click.UsageError("give NAME, or --reset to put back the stored name")
+    proj = _open_experiment(experiment_dir)
+    try:
+        stored = proj.resolve_class(class_ref)
+        proj.rename_class(stored, None if reset else name)
+    except KeyError as e:
+        raise click.ClickException(str(e.args[0]))
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    click.echo(f"{stored}: called {proj.class_label(stored)}")
+
+
+@experiment.command("archive")
+@_EXPERIMENT_OPT
+@click.option(
+    "--undo",
+    is_flag=True,
+    help="Unarchive: put the experiment back on the Experiments list.",
+)
+def experiment_archive(experiment_dir: Path, undo: bool) -> None:
+    """Archive an experiment: hide it from the GUI's Experiments list. Nothing in it
+    changes, and it still opens and runs from here and from Show archived."""
+    proj = _open_experiment(experiment_dir)
+    if undo:
+        proj.unarchive()
+        click.echo(f"unarchived: {proj.name}")
+    else:
+        proj.archive()
+        click.echo(f"archived: {proj.name}")
+
+
 @experiment.command("export")
 @_EXPERIMENT_OPT
 @click.option(
@@ -956,17 +1311,27 @@ def experiment_export(
     "--replace", is_flag=True, help="Replace an existing experiment with the same id."
 )
 @click.option("--name", default=None, type=str, help="Import under a different id.")
-def experiment_import(archive: Path, replace: bool, name: str | None) -> None:
-    """Import a experiment bundle into the managed workspace (§15).
+@click.option(
+    "--location",
+    "location",
+    default=None,
+    type=str,
+    help="Experiment location to import into (`experiment locations`); default: the "
+    "default location.",
+)
+def experiment_import(
+    archive: Path, replace: bool, name: str | None, location: str | None
+) -> None:
+    """Import a experiment bundle into an experiment location (§15).
 
     Shows a bar on stderr through reading, extracting, verifying and placing."""
     try:
         proj = _with_stage_progress(
             lambda bar: Experiment.import_archive(
-                archive, replace=replace, name=name, progress=bar
+                archive, replace=replace, name=name, location=location, progress=bar
             )
         )
-    except (ValueError, FileExistsError) as e:
+    except (ValueError, FileExistsError, FileNotFoundError) as e:
         raise click.ClickException(str(e))
     click.echo(f"imported: {proj.dir}")
     missing = proj.referenced_video_missing()
@@ -979,6 +1344,40 @@ def experiment_import(archive: Path, replace: bool, name: str | None) -> None:
             f"{shown}{more}. Relink one file (`detail recording relink`) and every "
             "recording whose video is in the same folder finds it too."
         )
+
+
+@experiment.command("locations")
+def experiment_locations() -> None:
+    """List the folders experiments live in on this machine, and whether each is there."""
+    for location in locations_store.experiment_locations():
+        state = "connected" if location.connected else "not connected"
+        click.echo(f"{location.name}\t{location.root.as_posix()}\t{state}")
+
+
+@experiment.command("add-location")
+@click.argument("name")
+@click.argument("folder", type=click.Path(file_okay=False, path_type=Path))
+def experiment_add_location(name: str, folder: Path) -> None:
+    """Add FOLDER as experiment location NAME — an external drive, say — or point an
+    existing NAME at the folder's new place. New experiments can then be created there,
+    and the experiments already in it are listed."""
+    try:
+        added = locations_store.add_location(name, folder)
+    except (ValueError, NotADirectoryError) as e:
+        raise click.ClickException(str(e))
+    click.echo(f"location {added.name!r} -> {added.root.as_posix()}")
+
+
+@experiment.command("remove-location")
+@click.argument("name")
+def experiment_remove_location(name: str) -> None:
+    """Stop listing experiment location NAME on this machine. Nothing on disk is moved
+    or deleted; add it again to see its experiments."""
+    try:
+        locations_store.remove_location(name)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    click.echo(f"removed location {name!r}")
 
 
 # --------------------------------------------------------------------------- #
@@ -1039,6 +1438,22 @@ class _StageProgress:
             self._bar = None
 
 
+def _validating(launch):
+    """Run ``launch(progress)`` under a bar for the up-front work of a processing launch.
+
+    ``run_processing`` / ``retry_run`` read every selected recording twice before they
+    start anything — *Validating recordings*, then *Estimating disk space* — which over a
+    large experiment or a network share is minutes of nothing on screen. The bar is the
+    ``(stage, fraction, detail)`` callback's one CLI rendering (tqdm owns its own ETA);
+    it is closed whether the launch returns or is refused, so the refusal prints on a clean line.
+    """
+    bar = _StageProgress()
+    try:
+        return launch(bar)
+    finally:
+        bar.close()
+
+
 def _import_with_progress(proj, specs) -> list[tuple[str, str]]:
     """Import ``specs`` under one bar for the whole batch; returns the failures.
 
@@ -1088,17 +1503,48 @@ def _import_detail(event) -> str:
     return detail
 
 
-def _with_stage_progress(call):
+def _with_stage_progress(call, *, cancellable: bool = False):
     """Run ``call(bar)`` with a :class:`_StageProgress` bar, closed however it ends.
 
     For an API call that is only *sometimes* long — a pin that has deferred frame views to
     rebuild — the bar stays unopened when nothing reports, so the quick case prints nothing.
+
+    ``cancellable``: the first Ctrl-C asks the work to stop at its next report — the bar
+    raises ``core.progress.OperationCancelled`` there, the GUI's Cancel — so work that keeps
+    what it finished (a copy that removes its partial output) can keep it; a second Ctrl-C
+    interrupts at once.
     """
+    import signal
+
     bar = _StageProgress()
+    previous = None
+    if cancellable:
+        asked = []
+
+        def on_interrupt(_signum, _frame):
+            asked.append(True)
+            signal.signal(signal.SIGINT, signal.default_int_handler)
+            click.echo(
+                "\nstopping after the request in hand (Ctrl-C again to quit)", err=True
+            )
+
+        def checked(stage: str, fraction: float, detail: str) -> None:
+            if asked:
+                from detail.core.progress import OperationCancelled
+
+                raise OperationCancelled(stage)
+            bar(stage, fraction, detail)
+
+        try:
+            previous = signal.signal(signal.SIGINT, on_interrupt)
+        except ValueError:  # not the main thread: no handler, plain Ctrl-C
+            previous = None
     try:
-        return call(bar)
+        return call(checked if previous is not None else bar)
     finally:
         bar.close()
+        if previous is not None:
+            signal.signal(signal.SIGINT, previous)
 
 
 @recording.command("add-video")
@@ -1219,7 +1665,8 @@ def recording_backfill_kinematics(
     Every run from now on records where the subject was on each embedded frame (§14). A run
     from before that has none, so nothing downstream can say *where* a behavior happened. This
     regenerates it from the detection zarr, which still holds every mask and box — no GPU, no
-    model, no video decode. Minutes on a long recording.
+    model, no video decode. Minutes on a long recording. A run whose geometry predates the
+    mask's outline (height, floor contact, elongation and the rest) is brought up to date too.
     """
     proj = _open_experiment(experiment_dir)
     sess = _recording(proj, recording_id)
@@ -1236,6 +1683,41 @@ def recording_backfill_kinematics(
         click.echo(f"{recording_id}/{embed_run_id}: already complete, nothing to do")
         return
     click.echo(f"{recording_id}/{embed_run_id}: wrote kinematics for {written} part(s)")
+
+
+@recording.command("backfill-motion")
+@_EXPERIMENT_OPT
+@_RECORDING_OPT
+@click.option(
+    "--embedding", "embed_run_id", required=True, help="Embedding run (emb_NN)."
+)
+@click.option(
+    "--overwrite",
+    is_flag=True,
+    help="Measure parts that already have motion again, instead of skipping them.",
+)
+def recording_backfill_motion(
+    experiment_dir: Path, recording_id: str, embed_run_id: str, overwrite: bool
+) -> None:
+    """Measure the movement inside each animal's mask on every embedded frame.
+
+    What the outline cannot see: a paw stroking the face, licking, scratching. One forward
+    decode of every video part (no GPU, no model), so minutes to an hour on a long recording.
+    The cluster profile then measures "motion inside the mask" and "motion at the ends".
+    """
+    proj = _open_experiment(experiment_dir)
+    sess = _recording(proj, recording_id)
+    bar = _StageProgress()
+    try:
+        written = sess.backfill_motion(embed_run_id, progress=bar, overwrite=overwrite)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    finally:
+        bar.close()
+    if written == 0:
+        click.echo(f"{recording_id}/{embed_run_id}: already measured, nothing to do")
+        return
+    click.echo(f"{recording_id}/{embed_run_id}: measured motion for {written} part(s)")
 
 
 @recording.command("verify")
@@ -1970,6 +2452,7 @@ def recording_status(experiment_dir: Path, recording_id: str) -> None:
             f"  resolution: {video['resolution'][0]}x{video['resolution'][1]} "
             f"@ {video.get('fps_actual')} fps"
         )
+    click.echo(f"  camera view: {sess.camera_view.described}")
     click.echo(
         f"  arenas: {len(sess.arenas)}  ·  rois: {len(sess.rois)}  ·  "
         f"points: {len(sess.points)}"
@@ -2183,6 +2666,30 @@ def recording_import_calibration(
     click.echo(f"calibration imported: {block['pixels_per_mm']} px/mm at {w}x{h}")
 
 
+@recording.command("set-camera-view")
+@_EXPERIMENT_OPT
+@_RECORDING_OPT
+@click.argument("view", type=click.Choice([*camera_view_mod.VIEWS, _INHERIT_VIEW]))
+@click.option(
+    "--note",
+    default=None,
+    type=str,
+    help="Describes the view; required with `other`, refused otherwise.",
+)
+def recording_set_camera_view(
+    experiment_dir: Path, recording_id: str, view: str, note: str | None
+) -> None:
+    """Set one recording's own camera view, overriding the experiment default (§10).
+    `default` removes the override, so the recording inherits the experiment's view."""
+    proj = _open_experiment(experiment_dir)
+    try:
+        sess = _recording(proj, recording_id)
+        sess.set_camera_view(None if view == _INHERIT_VIEW else view, note)
+    except (FileNotFoundError, ValueError) as e:
+        raise click.ClickException(str(e))
+    click.echo(f"{sess.name}: camera view {sess.camera_view.described}")
+
+
 @recording.command("set-calibration")
 @_EXPERIMENT_OPT
 @_RECORDING_OPT
@@ -2232,6 +2739,13 @@ def _detection_opts(f):
     is closed-set and takes neither."""
     for opt in (
         click.option(
+            "--teacher-window-s",
+            "teacher_window_s",
+            default=None,
+            type=click.FloatRange(min=0, min_open=True),
+            help=_DET["teacher_window_s"].description,
+        ),
+        click.option(
             "--every-n-frames",
             "every_n_frames",
             default=1,
@@ -2246,6 +2760,14 @@ def _detection_opts(f):
             show_default=True,
             type=float,
             help=_DET["conf_threshold"].description,
+        ),
+        click.option(
+            "--class-conf",
+            "class_conf_thresholds",
+            multiple=True,
+            metavar="NAME=VALUE",
+            help=_DET["class_conf_thresholds"].description
+            + " Repeatable, one per class.",
         ),
         click.option(
             "--batch-size",
@@ -2304,16 +2826,47 @@ def _detection_prompt(class_name: str | None, prompt: str | None) -> Prompt:
     return Prompt(targets=[])
 
 
+def _parse_class_conf(entries: tuple[str, ...]) -> dict[str, float]:
+    """Parse repeated ``--class-conf "NAME=VALUE"`` flags into a threshold map.
+
+    Which names are actually valid is a fact about the resolved model, and only
+    ``validate()`` knows that (§7) — this only enforces the flag's own shape: one
+    ``=``, and a value in ``[0, 1]``."""
+    out: dict[str, float] = {}
+    for entry in entries:
+        name, sep, raw_value = entry.partition("=")
+        if not sep or not name.strip():
+            raise click.BadParameter(
+                f"expected NAME=VALUE, got {entry!r}", param_hint="--class-conf"
+            )
+        try:
+            value = float(raw_value)
+        except ValueError:
+            raise click.BadParameter(
+                f"{raw_value!r} is not a number (in {entry!r})",
+                param_hint="--class-conf",
+            )
+        if not 0.0 <= value <= 1.0:
+            raise click.BadParameter(
+                f"{value} is outside [0, 1] (in {entry!r})", param_hint="--class-conf"
+            )
+        out[name.strip()] = value
+    return out
+
+
 def _detection_config(
     model_id: str,
     model_variant: str | None,
     class_name: str | None,
     prompt: str | None,
     conf_threshold: float,
+    class_conf_thresholds: tuple[str, ...],
     batch_size: int | None,
     every_n_frames: int,
     backend: str,
     devices: tuple[int, ...],
+    remote_target: str | None = None,
+    teacher_window_s: float | None = None,
 ) -> dict:
     """Build the detection-module config dict (shared by recording + process runs).
     ``weights_source`` is left to ``validate`` to resolve from the model id."""
@@ -2321,10 +2874,12 @@ def _detection_config(
         "model_id": model_id,
         "model_variant": model_variant,
         "prompt": _detection_prompt(class_name, prompt),
-        "compute": _compute_target(backend, devices),
+        "compute": _compute_target(backend, devices, remote_target),
         "conf_threshold": conf_threshold,
+        "class_conf_thresholds": _parse_class_conf(class_conf_thresholds),
         "batch_size": batch_size,
         "every_n_frames": every_n_frames,
+        "teacher_window_s": teacher_window_s,
     }
 
 
@@ -2337,8 +2892,9 @@ def detection() -> None:
 @_EXPERIMENT_OPT
 @_RECORDING_OPT
 @_detection_opts
-@_BACKEND_OPT
+@_BACKEND_OPT_REMOTE
 @_DEVICE_OPT
+@_REMOTE_TARGET_OPT
 def detection_run(
     experiment_dir: Path,
     recording_id: str,
@@ -2347,10 +2903,13 @@ def detection_run(
     class_name: str | None,
     prompt: str | None,
     conf_threshold: float,
+    class_conf_thresholds: tuple[str, ...],
     batch_size: int | None,
     every_n_frames: int,
+    teacher_window_s: float | None,
     backend: str,
     devices: tuple[int, ...],
+    remote_target: str | None,
 ) -> None:
     """Submit a detection run; blocks until complete."""
     proj = _open_experiment(experiment_dir)
@@ -2361,10 +2920,12 @@ def detection_run(
             model_id=model_id,
             model_variant=model_variant,
             prompt=p,
-            compute=_compute_target(backend, devices),
+            compute=_compute_target(backend, devices, remote_target),
             conf_threshold=conf_threshold,
+            class_conf_thresholds=_parse_class_conf(class_conf_thresholds),
             batch_size=batch_size,
             every_n_frames=every_n_frames,
+            teacher_window_s=teacher_window_s,
         )
     except (FileNotFoundError, ValueError, ModelNotReadyError) as e:
         raise click.ClickException(str(e))
@@ -2474,6 +3035,20 @@ def _echo_prompt_test_summary(
     type=int,
     help="Random frames to sample.",
 )
+@click.option(
+    "--start",
+    "start_s",
+    type=click.FloatRange(min=0),
+    default=None,
+    help="Sample only from this recording time on (seconds); omit for the start.",
+)
+@click.option(
+    "--end",
+    "end_s",
+    type=click.FloatRange(min=0),
+    default=None,
+    help="Sample only before this recording time (seconds); omit for the end.",
+)
 @_MIN_CONF_OPT
 @click.option(
     "--save-as",
@@ -2496,6 +3071,8 @@ def detection_prompt_test(
     prompts: tuple[str, ...],
     show_classes: tuple[str, ...],
     n_sample_frames: int,
+    start_s: float | None,
+    end_s: float | None,
     min_conf: float,
     save_as: str | None,
     seed: int | None,
@@ -2536,6 +3113,8 @@ def detection_prompt_test(
             seed=seed,
             model_variant=model_variant,
             min_conf=min_conf,
+            t_start_ns=None if start_s is None else round(start_s * 1e9),
+            t_end_ns=None if end_s is None else round(end_s * 1e9),
         )
     except (ValueError, ModelNotReadyError) as e:
         raise click.ClickException(str(e))
@@ -2589,6 +3168,12 @@ def _tracking_opts(f):
                 "recording; an id is minted per recording, so one id names a different "
                 "polygon on the recording next to it."
             ),
+        ),
+        click.option(
+            "--class",
+            "class_name",
+            type=str,
+            help=_TRK["class_name"].description,
         ),
         click.option(
             "--every-n-frames",
@@ -2660,9 +3245,17 @@ def _tracking_opts(f):
     return f
 
 
+#: An experiment run's id (``run_007``), which a ``--*-ref`` selector takes beside
+#: ``RECORDING:run_id``.
+_EXPERIMENT_RUN_RE = re.compile(r"run_\d+")
+
+
 def _parse_run_ref(ref: str) -> tuple[str, str]:
-    """Split a ``RECORDING:run_id`` upstream reference for the ``--*-ref`` selectors."""
-    sid, _, run_id = ref.partition(":")
+    """Split a ``RECORDING:run_id`` upstream reference for the ``--*-ref`` selectors.
+
+    At the *last* colon, since a run id never holds one and a recording name may.
+    """
+    sid, _, run_id = ref.rpartition(":")
     if not sid or not run_id:
         raise click.ClickException(
             f"expected RECORDING:run_id (e.g. s01:det_02), got {ref!r}"
@@ -2671,14 +3264,24 @@ def _parse_run_ref(ref: str) -> tuple[str, str]:
 
 
 def _spec_from_ref(proj, module_id: str, ref: str) -> dict:
-    """Derive an upstream spec from one named run (``RECORDING:run_id``) — the CLI
-    counterpart to the GUI spec pickers (§6.5); each recording resolves its own match.
+    """Derive an upstream spec from an experiment run (``run_NNN``, the name a GUI picker row
+    leads with) or one named run (``RECORDING:run_id``) — the CLI counterpart to the GUI spec
+    pickers (§6.5); each recording resolves its own match.
     """
     from detail.api import run_spec
 
-    sid, run_id = _parse_run_ref(ref)
     try:
-        return run_spec.spec_from_run(proj.get_recording(sid), module_id, run_id)
+        if _EXPERIMENT_RUN_RE.fullmatch(ref):
+            return run_spec.spec_from_experiment_run(proj, module_id, ref)
+        if ":" not in ref:
+            raise click.ClickException(
+                f"expected run_NNN or RECORDING:run_id (e.g. run_007 or s01:det_02), "
+                f"got {ref!r}"
+            )
+        recording_ref, run_id = _parse_run_ref(ref)
+        return run_spec.spec_from_run(
+            _recording(proj, recording_ref), module_id, run_id
+        )
     except (ValueError, FileNotFoundError) as e:
         raise click.ClickException(str(e))
 
@@ -2687,7 +3290,7 @@ def _spec_from_ref(proj, module_id: str, ref: str) -> dict:
 #: one embedding run per recording. Hand-written like ``--tracking-ref``: the spec it names is a
 #: selection, not a field of the config model.
 _EMBED_REF_OPT = click.option(
-    "--embed-ref", "embed_refs", multiple=True, metavar="RECORDING:emb_NN",
+    "--embed-ref", "embed_refs", multiple=True, metavar="run_NNN|RECORDING:emb_NN",
     help="Use the embedding settings of this run, resolved to each recording's own run with "
     "those settings, whatever its id (alternative to --embed-run). Repeat it to pool "
     "recordings whose embeddings were made through different chains (e.g. two detection "
@@ -2697,18 +3300,63 @@ _EMBED_REF_OPT = click.option(
 )  # fmt: skip
 
 
+#: ``--embed-for`` — one recording's embedding run named outright (§6.5 per-recording
+#: overrides), the embedding twin of ``--tracking-for``.
+_EMBED_FOR_OPT = click.option(
+    "--embed-for", "embed_for", multiple=True, metavar="RECORDING:emb_NN",
+    help="Read exactly this embedding run in this recording (an id or a name), whatever "
+    "--embed-run / --embed-ref resolve to elsewhere — for a recording whose run was redone "
+    "beside one you do not want. Repeatable, once per recording; the other recordings "
+    "resolve as usual.",
+)  # fmt: skip
+
+
 def _embedding_selection(
-    proj, embed_run_id: str | None, embed_refs: tuple[str, ...]
+    proj,
+    embed_run_id: str | None,
+    embed_refs: tuple[str, ...],
+    embed_for: tuple[str, ...] = (),
 ) -> dict:
     """The config fields naming an analysis's embedding runs (§6.5) — ``--embed-run`` is one
     id in every recording, ``--embed-ref`` is settings resolved per recording (repeated, several
     settings each recording picks one of), and neither leaves the module to find the one set of
-    settings every recording shares."""
+    settings every recording shares. ``--embed-for`` names a recording's run outright, ahead of
+    all three."""
     if embed_run_id and embed_refs:
         raise click.ClickException("pass at most one of --embed-run or --embed-ref")
-    return _spec_selection(proj, "embedding", embed_refs) or (
-        {"embed_run_id": embed_run_id} if embed_run_id else {}
-    )
+    return {
+        **(
+            _spec_selection(proj, "embedding", embed_refs)
+            or ({"embed_run_id": embed_run_id} if embed_run_id else {})
+        ),
+        **_override_selection(proj, "embedding", "--embed-for", embed_for),
+    }
+
+
+def _override_selection(proj, module_id: str, flag: str, refs: tuple[str, ...]) -> dict:
+    """``<module>_overrides`` from repeated ``RECORDING:run_id`` refs (§6.5 per-recording
+    overrides), the recording given by id or name; nothing for none.
+
+    Split at the *last* colon, since a run id never holds one and a recording name may.
+    """
+    overrides: dict[str, str] = {}
+    for ref in refs:
+        name, _, run_id = ref.rpartition(":")
+        if not name or not run_id:
+            raise click.ClickException(
+                f"{flag} expects RECORDING:run_id (e.g. s01:track_02), got {ref!r}"
+            )
+        try:
+            sid = proj.resolve_recording(name).id
+        except KeyError as e:
+            raise click.ClickException(f"{flag} {ref!r}: {e.args[0]}")
+        if overrides.get(sid, run_id) != run_id:
+            raise click.ClickException(
+                f"{flag} names two runs for recording {name!r} ({overrides[sid]}, "
+                f"{run_id}); name one"
+            )
+        overrides[sid] = run_id
+    return {f"{module_id}_overrides": overrides} if overrides else {}
 
 
 def _spec_selection(proj, module_id: str, refs: tuple[str, ...]) -> dict:
@@ -2832,6 +3480,7 @@ def tracking_run(
     require_contiguous: bool | None,
     raw_hyperparams: tuple[str, ...],
     arena_ref: str | None,
+    class_name: str | None,
     every_n_frames: int | None,
 ) -> None:
     """Submit a tracking run; blocks until complete."""
@@ -2858,6 +3507,7 @@ def tracking_run(
             tracker_id=tracker_id,
             hyperparams=hyperparams,
             arena_name=arena_ref,
+            class_name=class_name,
             every_n_frames=every_n_frames,
         )
     except ValueError as e:
@@ -2865,6 +3515,37 @@ def tracking_run(
     click.echo(f"submitted tracking: {run.id}")
     _stream_progress(run, "tracking")
     _check_status(run, "tracking")
+
+
+@main.group()
+def track_merge() -> None:
+    """Track-merge (§13) — combine 2+ single-subject tracking runs into one multi-subject run."""
+
+
+@track_merge.command("run")
+@_EXPERIMENT_OPT
+@_RECORDING_OPT
+@click.option(
+    "--source", "source_ids", multiple=True, required=True,
+    help="Source tracking run (track_NN) to merge in — one object_id per source, in the "
+    "order given. Each must be this recording's own class-filtered tracking run, built "
+    "from the same detection run as every other source. Repeat at least twice.",
+)  # fmt: skip
+def track_merge_run(
+    experiment_dir: Path, recording_id: str, source_ids: tuple[str, ...]
+) -> None:
+    """Submit a track-merge run; blocks until complete."""
+    if len(source_ids) < 2:
+        raise click.ClickException("pass --source at least twice")
+    proj = _open_experiment(experiment_dir)
+    sess = _recording(proj, recording_id)
+    try:
+        run = sess.run_track_merge(source_track_ids=list(source_ids))
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    click.echo(f"submitted track-merge: {run.id}")
+    _stream_progress(run, "track-merge")
+    _check_status(run, "track-merge")
 
 
 # --------------------------------------------------------------------------- #
@@ -2890,7 +3571,8 @@ def embedding() -> None:
     "track_ids",
     default=None,
     type=str,
-    help="Comma-separated track ids to embed (e.g. 0 or 0,1). "
+    help="Comma-separated track ids to embed (e.g. 0 or 0,1) — or subject names (§13, "
+    "a track-merge run's own composition), e.g. 'black mouse,white mouse'. "
     "Mutually exclusive with --all-tracks.",
 )
 @click.option(
@@ -2959,8 +3641,9 @@ def embedding() -> None:
     help=_EMB["every_n_frames"].description,
 )
 @_ALIGN_OPTS
-@_BACKEND_OPT
+@_BACKEND_OPT_REMOTE
 @_DEVICE_OPT
+@_REMOTE_TARGET_OPT
 def embedding_run(
     experiment_dir: Path,
     recording_id: str,
@@ -2981,12 +3664,18 @@ def embedding_run(
     max_gap_s: float | None,
     mirror_hold_s: float | None,
     facing_camera_ratio: float | None,
+    pose: str,
+    pose_weight: float | None,
+    pose_min_score: float | None,
     backend: str,
     devices: tuple[int, ...],
+    remote_target: str | None,
 ) -> None:
     """Submit an embedding run; blocks until complete. ``--align rotate|mirror`` with
     ``--keypoint-run kt_NN --heading NAME`` turns each animal to face right (§14).
     """
+    # before anything reads the tracking run: a remote launch missing its target fails fast
+    compute = _compute_target(backend, devices, remote_target)
     proj = _open_experiment(experiment_dir)
     sess = _recording(proj, recording_id)
     if all_tracks and track_ids:
@@ -2994,23 +3683,33 @@ def embedding_run(
     if not all_tracks and not track_ids:
         raise click.ClickException("provide --tracks or --all-tracks")
     if not all_tracks:
+        selectors = _parse_track_selectors(track_ids)
+        if not selectors:
+            raise click.ClickException(f"--tracks must not be empty, got {track_ids!r}")
+        # resolve_constructor (below) needs concrete ints to size the canvas, so a
+        # subject-name selector resolves here rather than inside run_embedding's own
+        # validate() — eagerly, against this one recording's own subject_labels (§13).
+        subject_labels = (
+            sess.subject_labels(tracking_run_id)
+            if any(isinstance(s, str) for s in selectors)
+            else None
+        )
         try:
-            ids = [int(t.strip()) for t in track_ids.split(",") if t.strip()]
-        except ValueError:
-            raise click.ClickException(
-                f"--tracks must be comma-separated ints, got {track_ids!r}"
-            )
+            ids = [resolve_track_id(s, subject_labels) for s in selectors]
+        except ValueError as e:
+            raise click.ClickException(str(e))
     try:
         if all_tracks:
             ids = sess.track_ids(tracking_run_id)
-        # One resolution path for every case: a named constructor (DEFAULT_CONSTRUCTOR
-        # when omitted) resolved per recording, with `--resize` omitted (None) deferring
-        # to the model's own input size — the same target the GUI and API resolve. An
-        # aligned run leaves the spec to `validate`, which sizes the canvas from the
-        # turned masks and inserts the alignment step (§14).
+        # One resolution path for every case: a named constructor (default
+        # `silhouette`) resolved per recording, with `--resize` omitted (None)
+        # deferring to the model's own input size — the same target the GUI and
+        # API resolve. An aligned run leaves the spec to `validate`, which sizes the
+        # canvas from the turned masks and inserts the alignment step (§14).
+        # An aligned or posed run leaves the spec to `validate`, which inserts the step.
         renderer_spec = (
             None
-            if align != "none"
+            if align != "none" or pose != "none"
             else sess.resolve_constructor(
                 constructor or DEFAULT_CONSTRUCTOR,
                 tracking_run_id,
@@ -3020,8 +3719,16 @@ def embedding_run(
                 input_size=input_size,
             )
         )
+        resolved_constructor = constructor or DEFAULT_CONSTRUCTOR
         alignment = _alignment_config(
-            align, heading, max_gap_s, mirror_hold_s, facing_camera_ratio
+            align,
+            heading,
+            max_gap_s,
+            mirror_hold_s,
+            facing_camera_ratio,
+            pose,
+            pose_weight,
+            pose_min_score,
         )
         run = sess.run_embedding(
             tracking_run_id=tracking_run_id,
@@ -3029,18 +3736,21 @@ def embedding_run(
             model_id=model_id,
             model_variant=model_variant,
             renderer_spec=renderer_spec,
-            constructor=constructor or DEFAULT_CONSTRUCTOR,
+            constructor=resolved_constructor,
             readout=readout,
             input_size=input_size,
             batch_size=batch_size,
             every_n_frames=every_n_frames,
-            compute=_compute_target(backend, devices),
+            compute=compute,
             align=alignment["align"],
             keypoint_run_id=keypoint_run_id,
             heading=alignment["heading"],
             max_gap_s=alignment["max_gap_s"],
             mirror_hold_s=alignment["mirror_hold_s"],
             facing_camera_ratio=alignment["facing_camera_ratio"],
+            pose=alignment["pose"],
+            pose_weight=alignment["pose_weight"],
+            pose_min_score=alignment["pose_min_score"],
         )
     except (ValueError, ModelNotReadyError) as e:
         raise click.ClickException(str(e))
@@ -3062,8 +3772,10 @@ def process() -> None:
 @_EXPERIMENT_OPT
 @_RECORDINGS_OPT
 @_detection_opts
-@_BACKEND_OPT
+@_BACKEND_OPT_REMOTE
 @_DEVICE_OPT
+@_REMOTE_TARGET_OPT
+@_IGNORE_FREE_SPACE_OPT
 def process_detection(
     experiment_dir: Path,
     recording_ids: tuple[str, ...],
@@ -3072,10 +3784,14 @@ def process_detection(
     class_name: str | None,
     prompt: str | None,
     conf_threshold: float,
+    class_conf_thresholds: tuple[str, ...],
     batch_size: int | None,
     every_n_frames: int,
+    teacher_window_s: float | None,
     backend: str,
     devices: tuple[int, ...],
+    remote_target: str | None,
+    ignore_free_space: bool,
 ) -> None:
     """Run detection across the selected recordings; writes a experiment run (run_NNN)."""
     proj = _open_experiment(experiment_dir)
@@ -3085,19 +3801,28 @@ def process_detection(
         class_name,
         prompt,
         conf_threshold,
+        class_conf_thresholds,
         batch_size,
         every_n_frames,
         backend,
         devices,
+        remote_target,
+        teacher_window_s=teacher_window_s,
     )
     try:
-        refs = _resolve_recording_refs(proj, recording_ids)
-        run = _with_stage_progress(
-            lambda bar: proj.run_processing("detection", refs, config, progress=bar)
+        run = _validating(
+            lambda progress: proj.run_processing(
+                "detection",
+                _resolve_recording_refs(proj, recording_ids),
+                config,
+                ignore_free_space=ignore_free_space,
+                progress=progress,
+            )
         )
     except (FileNotFoundError, ValueError, ModelNotReadyError) as e:
         raise click.ClickException(str(e))
     click.echo(f"submitted processing run: {run.id}")
+    _echo_space(proj, run.id)
     _stream_processing_progress(run, "detection")
     _check_status(run, "processing")
 
@@ -3108,9 +3833,10 @@ def process_detection(
 @_tracking_opts
 @click.option(
     "--detection-ref", "detection_ref", default=None,
-    help="RECORDING:det_NN — derive the detection kind from this run and resolve each "
+    help="run_NNN or RECORDING:det_NN — derive the detection kind from this run and resolve each "
     "recording's own match (alternative to --detection, for recordings with divergent ids).",
 )  # fmt: skip
+@_IGNORE_FREE_SPACE_OPT
 def process_tracking(
     experiment_dir: Path,
     recording_ids: tuple[str, ...],
@@ -3125,8 +3851,10 @@ def process_tracking(
     require_contiguous: bool | None,
     raw_hyperparams: tuple[str, ...],
     arena_ref: str | None,
+    class_name: str | None,
     every_n_frames: int | None,
     detection_ref: str | None,
+    ignore_free_space: bool,
 ) -> None:
     """Run tracking across the selected recordings; writes a experiment run (run_NNN).
 
@@ -3154,6 +3882,7 @@ def process_tracking(
         # id here had the GUI's bug exactly: one string applied across every selected
         # recording, where the same id is a different polygon on each of them.
         "arena_name": arena_ref,
+        "class_name": class_name,
         "every_n_frames": every_n_frames,
     }
     if detection_ref:
@@ -3161,14 +3890,60 @@ def process_tracking(
     else:
         config["detection_run_id"] = detection_run_id
     try:
-        refs = _resolve_recording_refs(proj, recording_ids)
-        run = _with_stage_progress(
-            lambda bar: proj.run_processing("tracking", refs, config, progress=bar)
+        run = _validating(
+            lambda progress: proj.run_processing(
+                "tracking",
+                _resolve_recording_refs(proj, recording_ids),
+                config,
+                ignore_free_space=ignore_free_space,
+                progress=progress,
+            )
         )
     except ValueError as e:
         raise click.ClickException(str(e))
     click.echo(f"submitted processing run: {run.id}")
+    _echo_space(proj, run.id)
     _stream_processing_progress(run, "tracking")
+    _check_status(run, "processing")
+
+
+@process.command("track-merge")
+@_EXPERIMENT_OPT
+@_RECORDINGS_OPT
+@click.option(
+    "--source-ref", "source_refs", multiple=True, required=True,
+    help="run_NNN or RECORDING:track_NN — one source tracking run, resolved to each selected "
+    "recording's own matching run by spec (§6.5). Repeat at least twice.",
+)  # fmt: skip
+@_IGNORE_FREE_SPACE_OPT
+def process_track_merge(
+    experiment_dir: Path,
+    recording_ids: tuple[str, ...],
+    source_refs: tuple[str, ...],
+    ignore_free_space: bool,
+) -> None:
+    """Run track-merge across the selected recordings; writes a experiment run (run_NNN)."""
+    if len(source_refs) < 2:
+        raise click.ClickException("pass --source-ref at least twice")
+    proj = _open_experiment(experiment_dir)
+    config = {
+        "source_specs": [_spec_from_ref(proj, "tracking", ref) for ref in source_refs]
+    }
+    try:
+        run = _validating(
+            lambda progress: proj.run_processing(
+                "track_merge",
+                _resolve_recording_refs(proj, recording_ids),
+                config,
+                ignore_free_space=ignore_free_space,
+                progress=progress,
+            )
+        )
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    click.echo(f"submitted processing run: {run.id}")
+    _echo_space(proj, run.id)
+    _stream_processing_progress(run, "track-merge")
     _check_status(run, "processing")
 
 
@@ -3186,7 +3961,7 @@ def process_tracking(
     "--tracking-ref",
     "tracking_ref",
     default=None,
-    help="RECORDING:track_NN — derive the tracking kind from this run and resolve each "
+    help="run_NNN or RECORDING:track_NN — derive the tracking kind from this run and resolve each "
     "recording's own match (alternative to --tracking, for recordings with divergent ids).",
 )
 @click.option(
@@ -3194,7 +3969,9 @@ def process_tracking(
     "track_ids",
     default=None,
     type=str,
-    help="Comma-separated track ids to embed. Mutually exclusive with --all-tracks.",
+    help="Comma-separated track ids to embed — an int (a track's raw position) or a "
+    "subject name (§13, a track-merge run's own composition), resolved per recording. "
+    "Mutually exclusive with --all-tracks.",
 )
 @click.option(
     "--all-tracks",
@@ -3274,11 +4051,13 @@ def process_tracking(
     "--keypoint-ref",
     "keypoint_ref",
     default=None,
-    help="RECORDING:kt_NN — derive the keypoint track kind from this run and resolve each "
+    help="run_NNN or RECORDING:kt_NN — derive the keypoint track kind from this run and resolve each "
     "recording's own match (alternative to --keypoint-run, for divergent ids).",
 )
-@_BACKEND_OPT
+@_BACKEND_OPT_REMOTE
 @_DEVICE_OPT
+@_REMOTE_TARGET_OPT
+@_IGNORE_FREE_SPACE_OPT
 def process_embedding(
     experiment_dir: Path,
     recording_ids: tuple[str, ...],
@@ -3301,9 +4080,14 @@ def process_embedding(
     max_gap_s: float | None,
     mirror_hold_s: float | None,
     facing_camera_ratio: float | None,
+    pose: str,
+    pose_weight: float | None,
+    pose_min_score: float | None,
     keypoint_ref: str | None,
     backend: str,
     devices: tuple[int, ...],
+    remote_target: str | None,
+    ignore_free_space: bool,
 ) -> None:
     """Embed across the selected recordings; writes a experiment run (run_NNN).
 
@@ -3322,14 +4106,11 @@ def process_embedding(
         raise click.ClickException("use either --tracks or --all-tracks, not both")
     if not all_tracks and not track_ids:
         raise click.ClickException("provide --tracks or --all-tracks")
-    ids: list[int] = []
+    ids: list[int | str] = []
     if not all_tracks:
-        try:
-            ids = [int(t.strip()) for t in track_ids.split(",") if t.strip()]
-        except ValueError:
-            raise click.ClickException(
-                f"--tracks must be comma-separated ints, got {track_ids!r}"
-            )
+        ids = _parse_track_selectors(track_ids)
+        if not ids:
+            raise click.ClickException(f"--tracks must not be empty, got {track_ids!r}")
     proj = _open_experiment(experiment_dir)
     config = {
         "model_id": model_id,
@@ -3343,9 +4124,16 @@ def process_embedding(
         "every_n_frames": every_n_frames,
         "all_tracks": all_tracks,
         "track_ids": ids,
-        "compute": _compute_target(backend, devices),
+        "compute": _compute_target(backend, devices, remote_target),
         **_alignment_config(
-            align, heading, max_gap_s, mirror_hold_s, facing_camera_ratio
+            align,
+            heading,
+            max_gap_s,
+            mirror_hold_s,
+            facing_camera_ratio,
+            pose,
+            pose_weight,
+            pose_min_score,
         ),
     }
     if tracking_ref:
@@ -3359,13 +4147,19 @@ def process_embedding(
     else:
         config["keypoint_run_id"] = keypoint_run_id
     try:
-        refs = _resolve_recording_refs(proj, recording_ids)
-        run = _with_stage_progress(
-            lambda bar: proj.run_processing("embedding", refs, config, progress=bar)
+        run = _validating(
+            lambda progress: proj.run_processing(
+                "embedding",
+                _resolve_recording_refs(proj, recording_ids),
+                config,
+                ignore_free_space=ignore_free_space,
+                progress=progress,
+            )
         )
     except (ValueError, ModelNotReadyError) as e:
         raise click.ClickException(str(e))
     click.echo(f"submitted processing run: {run.id}")
+    _echo_space(proj, run.id)
     _stream_processing_progress(run, "embedding")
     _check_status(run, "processing")
 
@@ -3391,14 +4185,30 @@ def process_list(experiment_dir: Path) -> None:
 @click.argument("run_id")
 @_EXPERIMENT_OPT
 def process_status(run_id: str, experiment_dir: Path) -> None:
-    """Show one processing run: module, status, and per-recording run ids."""
+    """Show one processing run: module, status, and per-recording run ids.
+
+    A detection run also says, per recording, how many of the frames it processed have at
+    least one detection.
+    """
     proj = _open_experiment(experiment_dir)
     record = _processing_record(proj, run_id, experiment_dir)
     click.echo(f"run: {record.get('id')}")
     click.echo(f"  module: {record.get('module_id')}")
     click.echo(f"  status: {record.get('status')}")
+    coverage = record.get("module_id") == "detection"
     for sid, info in (record.get("per_recording") or {}).items():
-        click.echo(f"  {sid}: run={info.get('run_id')} status={info.get('status')}")
+        line = f"  {sid}: run={info.get('run_id')} status={info.get('status')}"
+        if coverage and info.get("status") == "complete":
+            try:
+                recording = proj.get_recording(sid)
+                with_detections, processed = recording.detection_coverage(
+                    str(info.get("run_id"))
+                )
+            except (FileNotFoundError, ValueError):
+                line += " frames_with_detections=(unreadable)"
+            else:
+                line += f" frames_with_detections={with_detections}/{processed}"
+        click.echo(line)
 
 
 @process.command("attach")
@@ -3418,7 +4228,8 @@ def process_attach(run_id: str, experiment_dir: Path) -> None:
 @process.command("retry")
 @click.argument("run_id")
 @_EXPERIMENT_OPT
-def process_retry(run_id: str, experiment_dir: Path) -> None:
+@_IGNORE_FREE_SPACE_OPT
+def process_retry(run_id: str, experiment_dir: Path, ignore_free_space: bool) -> None:
     """Re-run a finished run's incomplete recordings, into the same run record.
 
     Every recording that isn't complete — failed, cancelled, or never launched — is run
@@ -3429,10 +4240,15 @@ def process_retry(run_id: str, experiment_dir: Path) -> None:
     proj = _open_experiment(experiment_dir)
     record = _processing_record(proj, run_id, experiment_dir)
     try:
-        handle = _with_stage_progress(lambda bar: proj.retry_run(run_id, progress=bar))
+        handle = _validating(
+            lambda progress: proj.retry_run(
+                run_id, ignore_free_space=ignore_free_space, progress=progress
+            )
+        )
     except (ValueError, ModelNotReadyError) as e:
         raise click.ClickException(str(e))
     click.echo(f"retrying processing run: {run_id}")
+    _echo_space(proj, run_id)
     _stream_processing_progress(handle, record.get("module_id") or "run")
     _check_status(handle, "processing")
 
@@ -3608,8 +4424,9 @@ def dataset_create(
     type=click.FloatRange(0.0, 0.5),
     help=_LAB["background_share"].description,
 )
-@_BACKEND_OPT
+@_BACKEND_OPT_REMOTE
 @_DEVICE_OPT
+@_REMOTE_TARGET_OPT
 def dataset_label(
     experiment_dir: Path,
     name: str,
@@ -3625,6 +4442,7 @@ def dataset_label(
     background_share: float,
     backend: str,
     devices: tuple[int, ...],
+    remote_target: str | None,
 ) -> None:
     """Label a random frame sample with a prompt-capable model into a YOLO dataset; blocks until
     complete."""
@@ -3644,12 +4462,12 @@ def dataset_label(
             name=name,
             classes=classes,
             n_frames=n_frames,
-            source_recording_ids=list(recording_ids) or None,
+            source_recording_ids=_resolve_recording_refs(proj, recording_ids) or None,
             logit_threshold=logit_threshold,
             min_contour_area=min_contour_area,
             val_split=val_split,
             background_share=background_share,
-            compute=_compute_target(backend, devices),
+            compute=_compute_target(backend, devices, remote_target),
             sampling=sampling,
             model_id=model_id,
             model_variant=model_variant,
@@ -3777,11 +4595,13 @@ def train() -> None:
 )
 @click.option(
     "--backend",
-    type=click.Choice(["cpu", "cuda", "mps"]),
+    type=click.Choice(["cpu", "cuda", "mps", "remote"]),
     default=None,
-    help="Compute backend (default: CUDA if available, else CPU).",
+    help="Compute backend (default: CUDA if available, else CPU). 'remote' submits "
+    "to a registered cluster (see `detail remote list`) with --remote-target.",
 )
 @_DEVICE_OPT
+@_REMOTE_TARGET_OPT
 def train_run(
     experiment_dir: Path,
     name: str,
@@ -3795,6 +4615,7 @@ def train_run(
     raw_hyperparams: tuple[str, ...],
     backend: str | None,
     devices: tuple[int, ...],
+    remote_target: str | None,
 ) -> None:
     """Train a detection model from a dataset; blocks until complete."""
     proj = _open_experiment(experiment_dir)
@@ -3845,7 +4666,9 @@ def train_run(
             trainer_id=trainer_id,
             base_model=base_model,
             hyperparams=hyperparams,
-            compute=_compute_target(backend, devices) if backend else None,
+            compute=(
+                _compute_target(backend, devices, remote_target) if backend else None
+            ),
         )
     except (FileNotFoundError, ValueError) as e:
         raise click.ClickException(str(e))
@@ -3936,7 +4759,7 @@ def train_list(experiment_dir: Path) -> None:
     for m in models:
         click.echo(
             f"  {m.id:10s} {m.name:20s} status={m.status:10s} "
-            f"trainer={m.trainer_id} dataset={m.dataset_id}"
+            f"role={m.role} trainer={m.trainer_id} dataset={m.dataset_id}"
         )
 
 
@@ -4146,9 +4969,11 @@ def distill() -> None:
 @click.option(
     "--label-backend",
     "label_backend",
-    type=click.Choice(["cpu", "cuda", "mps"]),
+    type=click.Choice(["cpu", "cuda", "mps", "remote"]),
     default=None,
-    help="Labeling backend (SAM3 requires CUDA; default: best available).",
+    help="Labeling backend (SAM3 requires CUDA; default: best available). 'remote' "
+    "submits to a registered cluster (see `detail remote list`) with "
+    "--label-remote-target.",
 )
 @click.option(
     "--label-device",
@@ -4158,11 +4983,18 @@ def distill() -> None:
     help="Labeling CUDA device index (repeatable).",
 )
 @click.option(
+    "--label-remote-target",
+    "label_remote_target",
+    default=None,
+    help="Registered remote target for labeling (required with --label-backend remote).",
+)
+@click.option(
     "--train-backend",
     "train_backend",
-    type=click.Choice(["cpu", "cuda", "mps"]),
+    type=click.Choice(["cpu", "cuda", "mps", "remote"]),
     default=None,
-    help="Training backend (default: CUDA if available, else CPU).",
+    help="Training backend (default: CUDA if available, else CPU). 'remote' submits "
+    "to a registered cluster (see `detail remote list`) with --train-remote-target.",
 )
 @click.option(
     "--train-device",
@@ -4170,6 +5002,20 @@ def distill() -> None:
     multiple=True,
     type=int,
     help="Training CUDA device index (repeatable).",
+)
+@click.option(
+    "--train-remote-target",
+    "train_remote_target",
+    default=None,
+    help="Registered remote target for training (required with --train-backend remote).",
+)
+@click.option(
+    "--stage-videos",
+    "stage_videos",
+    is_flag=True,
+    default=False,
+    help=_DISTILL["stage_videos"].description
+    + " Watch it with `detail remote staging-status`.",
 )
 def distill_run(
     experiment_dir: Path,
@@ -4192,8 +5038,11 @@ def distill_run(
     patience: int | None,
     label_backend: str | None,
     label_devices: tuple[int, ...],
+    label_remote_target: str | None,
     train_backend: str | None,
     train_devices: tuple[int, ...],
+    train_remote_target: str | None,
+    stage_videos: bool,
 ) -> None:
     """Label a frame sample, then train a YOLO detector on it — one durable run; blocks
     until complete (Ctrl-C detaches, the run keeps going in the background)."""
@@ -4222,7 +5071,7 @@ def distill_run(
             name=name,
             classes=classes,
             n_frames=n_frames,
-            source_recording_ids=list(recording_ids) or None,
+            source_recording_ids=_resolve_recording_refs(proj, recording_ids) or None,
             sampling=sampling,
             logit_threshold=logit_threshold,
             min_contour_area=min_contour_area,
@@ -4231,20 +5080,74 @@ def distill_run(
             label_model_id=label_model_id,
             label_model_variant=label_model_variant,
             label_compute=(
-                _compute_target(label_backend, label_devices) if label_backend else None
+                _compute_target(label_backend, label_devices, label_remote_target)
+                if label_backend
+                else None
             ),
             base_model=base_model,
             trainer_id=trainer_id,
             hyperparams=hyperparams or None,
             train_compute=(
-                _compute_target(train_backend, train_devices) if train_backend else None
+                _compute_target(train_backend, train_devices, train_remote_target)
+                if train_backend
+                else None
             ),
+            stage_videos=stage_videos,
         )
     except (FileNotFoundError, ValueError) as e:
         raise click.ClickException(str(e))
     click.echo(f"submitted distill: {run.id}")
     _stream_distill_progress(run, "distill")
     _check_status(run, "distill")
+
+
+# --------------------------------------------------------------------------- #
+# Keypoint distillation (§26): teacher keypoints runs -> pose dataset -> YOLO-pose student
+# --------------------------------------------------------------------------- #
+def _stage_compute_opts(stage: str, label: str) -> tuple:
+    """``--<stage>-backend`` / ``--<stage>-device`` / ``--<stage>-remote-target`` for a run with
+    several computes (a distill's, a keypoint setup's)."""
+    return (
+        click.option(
+            f"--{stage}-backend",
+            f"{stage}_backend",
+            type=click.Choice(["cpu", "cuda", "mps", "remote"]),
+            default=None,
+            help=f"{label} backend (default: CUDA if available, else CPU). 'remote' "
+            "submits to a registered cluster (see `detail remote list`) with "
+            f"--{stage}-remote-target.",
+        ),
+        click.option(
+            f"--{stage}-device",
+            f"{stage}_devices",
+            multiple=True,
+            type=int,
+            help=f"{label} CUDA device index (repeatable).",
+        ),
+        click.option(
+            f"--{stage}-remote-target",
+            f"{stage}_remote_target",
+            default=None,
+            help=f"Registered remote target for {label.lower()} (required with "
+            f"--{stage}-backend remote).",
+        ),
+    )
+
+
+def _stage_compute_options(stage: str, label: str):
+    """Apply :func:`_stage_compute_opts` as one decorator."""
+
+    def apply(fn):
+        for option in reversed(_stage_compute_opts(stage, label)):
+            fn = option(fn)
+        return fn
+
+    return apply
+
+
+def _stage_compute(backend, devices, remote_target) -> ComputeTarget | None:
+    """The compute a stage's three flags name, or None for the stage's own default."""
+    return _compute_target(backend, devices, remote_target) if backend else None
 
 
 @distill.command("list")
@@ -4421,6 +5324,15 @@ def model_install(
     A run gates on the exact variant it is configured with, so install the size you
     plan to run — `--variant convnext_tiny` is not covered by installing the default.
     """
+    from detail.api import models as api_models
+
+    try:
+        terms = api_models.model_license(model_id)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    if terms is not None:
+        # Said where the decision to download is made, not buried in docs (§26).
+        click.echo(f"License: {terms.name} — {terms.summary} ({terms.url})", err=True)
     proj = _experiment_or_temp(experiment_dir)
     last_file: dict[str, str | None] = {"name": None}
 
@@ -4443,6 +5355,28 @@ def model_install(
     click.echo(f"{label}: install complete")
 
 
+def _read_skeleton_yaml(path: Path):
+    """A skeleton from YAML, bare or under a ``skeleton:`` key — the shape ``model skeleton
+    --yaml`` prints and every ``--skeleton`` reads."""
+    from detail.core.skeleton import Skeleton
+
+    data = yaml_load.safe_load(atomic.read_text(path))
+    try:
+        return Skeleton.from_dict(data.get("skeleton", data))
+    except (KeyError, TypeError, AttributeError) as e:
+        raise click.ClickException(
+            f"{path} is not a skeleton (names, edges, pairs): {e}"
+        )
+
+
+def _echo_skeleton(skeleton) -> None:
+    click.echo(f"  keypoints: {', '.join(skeleton.names)}")
+    for left, right in skeleton.pairs:
+        click.echo(f"  pair: {left} / {right}")
+    if not skeleton.pairs:
+        click.echo("  no left/right pairs (set them with `model set-skeleton`)")
+
+
 #: ``model import --skeleton``'s help: the one statement of what the option takes and when.
 _IMPORT_SKELETON_HELP = (
     "The skeleton a pose (keypoint) checkpoint's points follow: a preset, a library id "
@@ -4453,14 +5387,28 @@ _IMPORT_SKELETON_HELP = (
 
 
 @model.command("import")
-@click.argument("weights", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("weights", type=click.Path(exists=True, path_type=Path))
 @click.option(
     "--family",
     default=None,
     help="Model family. Leave it out: the checkpoint's task decides (a pose checkpoint "
     "imports as yolo_pose); when given it must agree.",
 )
-@click.option("--skeleton", default=None, help=_IMPORT_SKELETON_HELP)
+@click.option(
+    "--skeleton",
+    default=None,
+    help=_IMPORT_SKELETON_HELP
+    + " With --keypoints: a skeleton YAML giving the left/right pairs and edges instead "
+    "of inferring the pairs from the names; its names must be the export's, in order.",
+)
+@click.option(
+    "--keypoints",
+    "keypoints",
+    is_flag=True,
+    default=False,
+    help="Import a keypoint model exported to ONNX (`sleap-nn export <model> --format "
+    "onnx`): pass the .onnx or the export folder. Runs as a keypoint detect method.",
+)
 @click.option(
     "--name", default=None, help="Name for the model (default: the weights filename)."
 )
@@ -4482,11 +5430,46 @@ def model_import(
     description: str | None,
     notes: str | None,
     preview: Path | None,
+    keypoints: bool,
 ) -> None:
-    """Import a checkpoint into the machine-global catalog (usable in any experiment).
-    A detection checkpoint becomes a detector, its classes read from the checkpoint; a pose
-    checkpoint becomes a keypoint model and needs --skeleton."""
+    """Import a model into the machine-global catalog (usable in any experiment).
+
+    A .pt checkpoint by default: a detection checkpoint becomes a detector, its classes read
+    from the checkpoint; a pose checkpoint becomes a keypoint model and needs --skeleton. With
+    --keypoints, a keypoint model exported to ONNX: keypoint names from the export, left/right
+    pairs inferred from them unless --skeleton gives a YAML (see `model skeleton`)."""
     proj = _experiment_or_temp(None)
+    if keypoints:
+        if skeleton is not None and not Path(skeleton).is_file():
+            raise click.ClickException(
+                "with --keypoints, --skeleton is a skeleton YAML file; "
+                f"{skeleton!r} is not one"
+            )
+        try:
+            model_id = proj.import_keypoint_model(
+                weights,
+                name=name,
+                skeleton=(
+                    _read_skeleton_yaml(Path(skeleton))
+                    if skeleton is not None
+                    else None
+                ),
+                made_by=made_by,
+                description=description,
+                notes=notes,
+                preview=preview,
+            )
+        except (FileNotFoundError, ValueError, ImportError) as e:
+            raise click.ClickException(str(e))
+        click.echo(f"imported keypoints model: {model_id}")
+        from detail.api import models as api_models
+
+        _echo_skeleton(api_models.keypoint_model_skeleton(model_id))
+        return
+    if weights.is_dir():
+        raise click.ClickException(
+            f"{weights} is a folder; detection imports take the .pt file"
+        )
     try:
         model_id = proj.import_model(
             weights,
@@ -4511,6 +5494,51 @@ def _echo_model_skeleton(model_id: str) -> None:
     entry = api_models.imported_model(model_id).skeleton_ref
     if entry:
         click.echo(f"skeleton: {entry.get('name')} ({entry.get('id')}) in the library")
+
+
+@model.command("skeleton")
+@click.argument("model_id")
+@click.option(
+    "--yaml",
+    "as_yaml",
+    is_flag=True,
+    default=False,
+    help="Print it as YAML, a file to edit and hand back to `model set-skeleton`.",
+)
+def model_skeleton(model_id: str, as_yaml: bool) -> None:
+    """Print an imported keypoints model's skeleton: its keypoints and left/right pairs."""
+    from detail.api import models as api_models
+
+    try:
+        skeleton = api_models.keypoint_model_skeleton(model_id)
+    except FileNotFoundError as e:
+        raise click.ClickException(str(e))
+    if as_yaml:
+        click.echo(yaml.safe_dump({"skeleton": skeleton.to_dict()}, sort_keys=False))
+    else:
+        _echo_skeleton(skeleton)
+
+
+@model.command("set-skeleton")
+@click.argument("model_id")
+@click.option(
+    "--skeleton",
+    "skeleton_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    required=True,
+    help="A skeleton YAML: the same keypoint names, in order, with their edges and "
+    "left/right pairs.",
+)
+def model_set_skeleton(model_id: str, skeleton_path: Path) -> None:
+    """Set an imported keypoints model's pairs and edges (the names are its outputs)."""
+    from detail.api import models as api_models
+
+    skeleton = _read_skeleton_yaml(skeleton_path)
+    try:
+        api_models.set_keypoint_model_skeleton(model_id, skeleton)
+    except (FileNotFoundError, ValueError) as e:
+        raise click.ClickException(str(e))
+    _echo_skeleton(skeleton)
 
 
 @model.command("show")
@@ -4538,7 +5566,9 @@ def model_show(model_id: str) -> None:
     click.echo(f"made_by:     {ref.made_by or '—'}")
     click.echo(f"description: {ref.description or '—'}")
     click.echo(f"notes:       {ref.notes or '—'}")
-    click.echo(f"classes:     {', '.join(ref.classes) or '—'}")
+    click.echo(f"role:        {ref.role}")
+    label = "keypoints:" if ref.role == "keypoints" else "classes:  "
+    click.echo(f"{label}   {', '.join(ref.classes) or '—'}")
     click.echo(f"preview:     {ref.preview_path or '—'}")
     if ref.source_experiments:
         projects = ", ".join(
@@ -4549,6 +5579,32 @@ def model_show(model_id: str) -> None:
         click.echo(f"base_model:  {ref.provenance.get('base_model') or '—'}")
         click.echo(f"metrics:     {ref.provenance.get('metrics') or {}}")
         click.echo(f"trained:     {api_models.training_summary(ref.provenance) or '—'}")
+        dataset = ref.provenance.get("dataset") or {}
+        if dataset:
+            n_train = dataset.get("n_train") or 0
+            n_val = dataset.get("n_val") or 0
+            requested = dataset.get("n_frames")
+            frames = f"{n_train + n_val} used"
+            if requested:
+                frames += f" of {requested} requested"
+            click.echo(f"teacher:     {dataset.get('model') or '—'}")
+            click.echo(f"frames:      {frames} ({n_train} train / {n_val} val)")
+            per_class = dataset.get("per_class") or {}
+            if per_class:
+                click.echo(f"per class:   {per_class}")
+        history = ref.provenance.get("training_history") or []
+        if history:
+            from detail.core.training_metrics import best_epoch
+
+            best = best_epoch(history)
+            click.echo(
+                f"training:    {len(history)} epochs"
+                + (
+                    f", best mAP50 {best[1]:.3f} at epoch {best[0]}"
+                    if best is not None
+                    else ""
+                )
+            )
 
 
 @model.command("export")
@@ -4660,6 +5716,8 @@ def model_list() -> None:
                 bits.append(f"skeleton={len(sk)} points ({', '.join(sk.names)})")
         if r.gated:
             bits.append("gated")
+        if r.license is not None:
+            bits.append(f"license={r.license.name}")
         click.echo(f"  {label:{width}s}  {status:13s}  {'  '.join(bits)}")
 
 
@@ -4705,16 +5763,232 @@ def locations() -> None:
 )  # fmt: skip
 @click.option(
     "--out", "out_dir", required=True, type=click.Path(file_okay=False),
-    help="Output directory for tracks/roi_relations/point_relations CSVs + locations.yaml.",
+    help="Output directory for the location CSVs + locations.yaml.",
+)  # fmt: skip
+@click.option(
+    "--keypoints", "keypoint_run_id", default=None, type=str,
+    help=_LOC["keypoint_run_id"].description,
+)  # fmt: skip
+@click.option(
+    "--pair-edge-distance", "pair_edge_distance", is_flag=True,
+    help=_LOC["pair_edge_distance"].description,
 )  # fmt: skip
 def locations_export(
-    experiment_dir: Path, recording_id: str, tracking_run_id: str, out_dir: str
+    experiment_dir: Path,
+    recording_id: str,
+    tracking_run_id: str,
+    out_dir: str,
+    keypoint_run_id: str | None,
+    pair_edge_distance: bool,
 ) -> None:
     """Write per-frame, per-track spatial features (relative to the recording's
-    ROIs/POIs) for a completed tracking run, keyed by t_ns."""
+    ROIs/POIs, and between every pair of animals) for a completed tracking run, keyed by t_ns.
+    """
     sess = _recording(_open_experiment(experiment_dir), recording_id)
-    out = sess.export_locations(tracking_run_id, out_dir)
+    bar = _StageProgress()
+    try:
+        out = sess.export_locations(
+            tracking_run_id,
+            out_dir,
+            keypoint_run_id=keypoint_run_id,
+            pair_edge_distance=pair_edge_distance,
+            progress=bar,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    finally:
+        bar.close()
     click.echo(f"exported: {out}")
+
+
+def _view_options(model):
+    """One ``--option`` per field of a view model, its choices, bounds, default and help read
+    from the model (``describe_config``) — enumerated, so a field added there is a flag here.
+    """
+
+    def decorate(fn):
+        for field in reversed(describe_config(model)):
+            flag = "--" + field["name"].replace("_", "-")
+            if field["type"] == "boolean":
+                # `--x/--no-x`, so a field that defaults on can be turned off.
+                fn = click.option(
+                    f"{flag}/--no-{flag[2:]}",
+                    field["name"],
+                    default=bool(field["default"]),
+                    show_default=True,
+                    help=field["help"],
+                )(fn)
+                continue
+            if field["type"] == "array":
+                # A list field is a repeatable flag; none given is the model's default.
+                singular = flag[:-1] if flag.endswith("s") else flag
+                fn = click.option(
+                    singular, field["name"], multiple=True, help=field["help"]
+                )(fn)
+                continue
+            if field["choices"]:
+                kind = click.Choice([str(c) for c in field["choices"]])
+            elif field["type"] == "integer":
+                kind = click.IntRange(field["minimum"], field["maximum"])
+            elif field["type"] == "number":
+                kind = click.FloatRange(field["minimum"], field["maximum"])
+            else:
+                kind = str
+            fn = click.option(
+                flag,
+                field["name"],
+                type=kind,
+                default=field["default"],
+                show_default=field["default"] is not None,
+                help=field["help"],
+            )(fn)
+        return fn
+
+    return decorate
+
+
+@locations.command("plot")
+@_EXPERIMENT_OPT
+@click.option(
+    "--run", "run_id", required=True,
+    help="Completed location-export analysis run (e.g. an_03).",
+)  # fmt: skip
+@click.option(
+    "--recording", "recording_refs", multiple=True,
+    help="Recording name (or id) to plot (repeatable). Default: every completed recording "
+    "of the run.",
+)  # fmt: skip
+@click.option(
+    "--out", "out_stem", required=True, type=click.Path(dir_okay=False),
+    help="Output path without extension; one file per --format is written beside it.",
+)  # fmt: skip
+@click.option(
+    "--format", "formats", multiple=True,
+    type=click.Choice(["png", "svg", "pdf", "html"]), default=("png",), show_default=True,
+    help="png / svg / pdf picture, or html: one self-contained interactive page you can "
+    "hover, zoom and (3-D) turn (repeatable).",
+)  # fmt: skip
+@click.option(
+    "--theme", type=click.Choice(["light", "dark"]), default="light", show_default=True,
+    help="Chart surface.",
+)  # fmt: skip
+@_view_options(LocationPlotView)
+def locations_plot(
+    experiment_dir: Path,
+    run_id: str,
+    recording_refs: tuple[str, ...],
+    out_stem: str,
+    formats: tuple[str, ...],
+    theme: str,
+    **view_fields,
+) -> None:
+    """Draw a location-export run's paths, occupancy or speed — per recording, or by a
+    Recording Information column with --group-by."""
+    proj = _open_experiment(experiment_dir)
+    view_fields = {
+        name: (list(value) or None) if isinstance(value, tuple) else value
+        for name, value in view_fields.items()
+    }
+    try:
+        view = LocationPlotView(**view_fields)
+        plots = proj.location_plots(run_id)
+        recording_ids = (
+            [proj.resolve_recording(ref).id for ref in recording_refs]
+            if recording_refs
+            else None
+        )
+    except (ValueError, KeyError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    bar = _StageProgress()
+    try:
+        paths = plots.export(
+            view, out_stem, recording_ids, formats=formats, theme=theme, progress=bar
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    finally:
+        bar.close()
+    for path in paths:
+        click.echo(f"wrote: {path}")
+
+
+@locations.command("montage")
+@_EXPERIMENT_OPT
+@click.option(
+    "--run", "run_id", required=True,
+    help="Completed location-export analysis run (e.g. an_03).",
+)  # fmt: skip
+@click.option(
+    "--out", "out_path", required=True, type=click.Path(dir_okay=False),
+    help="File to write: .gif or .mp4 for the montage, .png with --last-frame.",
+)  # fmt: skip
+@click.option(
+    "--recording", "recording_refs", multiple=True,
+    help="Recording name (or id) to play (repeatable; one is a preview). Default: every "
+    "completed recording of the run.",
+)  # fmt: skip
+@click.option(
+    "--subject", "subjects", multiple=True,
+    help="Animal label to show (repeatable). Default: every animal.",
+)  # fmt: skip
+@click.option(
+    "--last-frame", is_flag=True,
+    help="Write the montage's last picture as a PNG, with every trail covering the whole "
+    "clip.",
+)  # fmt: skip
+@click.option(
+    "--width", "max_width", type=click.IntRange(64, 4096), default=None,
+    help="Widest the picture may be, in pixels. Default: the montage export's own.",
+)  # fmt: skip
+@_VIDEO_CODEC_OPT
+@_view_options(LocationMontageView)
+def locations_montage(
+    experiment_dir: Path,
+    run_id: str,
+    out_path: str,
+    recording_refs: tuple[str, ...],
+    subjects: tuple[str, ...],
+    last_frame: bool,
+    max_width: int | None,
+    codec: str,
+    **view_fields,
+) -> None:
+    """Play a location-export run's recordings side by side (one recording is a preview), and
+    write it as a GIF / MP4, or its last tracing frame as a PNG."""
+    proj = _open_experiment(experiment_dir)
+    view_fields = {
+        name: (list(value) or None) if isinstance(value, tuple) else value
+        for name, value in view_fields.items()
+    }
+    try:
+        view = LocationMontageView(**view_fields)
+        plots = proj.location_plots(run_id)
+        recording_ids = (
+            [proj.resolve_recording(ref).id for ref in recording_refs]
+            if recording_refs
+            else None
+        )
+    except (ValueError, KeyError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    if str(out_path).lower().endswith(".mp4") and not last_frame:
+        _echo_codec_note(codec)
+    bar = _StageProgress()
+    try:
+        path = plots.export_montage(
+            view,
+            out_path,
+            recording_ids,
+            list(subjects) or None,
+            last_frame=last_frame,
+            max_width=max_width,
+            progress=bar,
+            codec=codec,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    finally:
+        bar.close()
+    click.echo(f"wrote: {path}")
 
 
 # --------------------------------------------------------------------------- #
@@ -4740,9 +6014,36 @@ def analysis() -> None:
 )  # fmt: skip
 @click.option(
     "--tracking-ref", "tracking_refs", multiple=True,
-    help="RECORDING:track_NN — derive the tracking kind from this run and resolve each "
+    help="run_NNN or RECORDING:track_NN — derive the tracking kind from this run and resolve each "
     "recording's own match (alternative to --tracking). Repeat it to cover recordings "
     "tracked through different chains: each reads its run of the one named setting it has.",
+)  # fmt: skip
+@click.option(
+    "--keypoints", "keypoint_run_id", default=None, type=str,
+    help=_LOC["keypoint_run_id"].description,
+)  # fmt: skip
+@click.option(
+    "--keypoints-ref", "keypoint_ref", default=None, type=str,
+    help="RECORDING:kt_NN — derive the keypoint track settings from this run and use each "
+    "recording's own run of them (alternative to --keypoints).",
+)  # fmt: skip
+@click.option(
+    "--tracking-for", "tracking_for", multiple=True, metavar="RECORDING:track_NN",
+    help="Read exactly this tracking run in this recording (an id or a name), whatever "
+    "--tracking / --tracking-ref resolve to elsewhere — for a recording whose tracking was "
+    "redone beside a run you do not want. Repeatable, once per recording; the other "
+    "recordings resolve as usual, and with this flag --tracking / --tracking-ref may be "
+    "left out (the one setting the rest share is used).",
+)  # fmt: skip
+@click.option(
+    "--keypoints-for", "keypoints_for", multiple=True, metavar="RECORDING:kt_NN",
+    help="Read exactly this keypoint track run in this recording (an id or a name), whatever "
+    "--keypoints / --keypoints-ref resolve to elsewhere. Its poses must have gone to the "
+    "tracking run read there. Repeatable, once per recording.",
+)  # fmt: skip
+@click.option(
+    "--pair-edge-distance", "pair_edge_distance", is_flag=True,
+    help=_LOC["pair_edge_distance"].description,
 )  # fmt: skip
 def analysis_run(
     experiment_dir: Path,
@@ -4750,16 +6051,38 @@ def analysis_run(
     module_id: str,
     tracking_run_id: str | None,
     tracking_refs: tuple[str, ...],
+    keypoint_run_id: str | None,
+    keypoint_ref: str | None,
+    tracking_for: tuple[str, ...],
+    keypoints_for: tuple[str, ...],
+    pair_edge_distance: bool,
 ) -> None:
     """Launch an analysis run over the selected recordings; writes ``an_NN``."""
-    if bool(tracking_run_id) == bool(tracking_refs):
-        raise click.ClickException("pass exactly one of --tracking or --tracking-ref")
+    if tracking_run_id and tracking_refs:
+        raise click.ClickException("pass --tracking or --tracking-ref, not both")
+    if not (tracking_run_id or tracking_refs or tracking_for):
+        raise click.ClickException(
+            "pass --tracking or --tracking-ref (and --tracking-for to name a recording's "
+            "run outright)"
+        )
+    if keypoint_run_id and keypoint_ref:
+        raise click.ClickException("pass --keypoints or --keypoints-ref, not both")
     proj = _open_experiment(experiment_dir)
-    config = {"source_recording_ids": list(recording_ids)}
+    config = {"source_recording_ids": _resolve_recording_refs(proj, recording_ids)}
     if tracking_refs:
         config.update(_spec_selection(proj, "tracking", tracking_refs))
-    else:
+    elif tracking_run_id:
         config["tracking_run_id"] = tracking_run_id
+    config.update(_override_selection(proj, "tracking", "--tracking-for", tracking_for))
+    if keypoint_ref:
+        config.update(_spec_selection(proj, "keypoint_track", (keypoint_ref,)))
+    elif keypoint_run_id:
+        config["keypoint_run_id"] = keypoint_run_id
+    config.update(
+        _override_selection(proj, "keypoint_track", "--keypoints-for", keypoints_for)
+    )
+    if pair_edge_distance:
+        config["pair_edge_distance"] = True
     try:
         run = proj.run_analysis(module_id, config)
     except ValueError as e:
@@ -4866,6 +6189,41 @@ def analysis_status(run_id: str, experiment_dir: Path) -> None:
             )
     for art in record.get("artifacts", []):
         click.echo(f"  artifact: {art.get('path')} ({art.get('kind')})")
+
+
+@analysis.command("info")
+@click.argument("run_id")
+@_EXPERIMENT_OPT
+@click.option(
+    "--export",
+    "export_path",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help="Write the files to this zip instead of printing them.",
+)
+def analysis_info(run_id: str, experiment_dir: Path, export_path: Path | None) -> None:
+    """Print every YAML file an analysis run keeps, as on disk: its meta-information.
+
+    ``analysis.yaml`` (the record and every setting as launched), the module's own file
+    (method parameters, labels), ``machine.yaml`` and ``resources.yaml``. The GUI's
+    *Meta-information…* window shows the same files. ``--export`` writes them to one zip.
+    """
+    proj = _open_experiment(experiment_dir)
+    try:
+        if export_path is not None:
+            written = proj.export_analysis_info(run_id, export_path)
+            click.echo(f"wrote {written}")
+            return
+        info = proj.analysis_info(run_id)
+    except FileNotFoundError:
+        raise click.ClickException(f"no analysis run {run_id!r} in {experiment_dir}")
+    except ValueError as exc:
+        raise click.ClickException(str(exc))
+    for i, f in enumerate(info.files):
+        if i:
+            click.echo("")
+        click.echo(f"# --- {f.name} ---")
+        click.echo(f.text.rstrip("\n"))
 
 
 @analysis.command("snapshots")
@@ -5044,6 +6402,30 @@ def analysis_delete(run_id: str, experiment_dir: Path, yes: bool) -> None:
     click.echo(f"deleted analysis: {run_id}")
 
 
+@analysis.command("duplicate")
+@click.argument("run_id")
+@_EXPERIMENT_OPT
+@click.option(
+    "--name", default=None,
+    help="What to call the copy [default: '<the run's name or id> (copy)'].",
+)  # fmt: skip
+def analysis_duplicate(run_id: str, experiment_dir: Path, name: str | None) -> None:
+    """Copy an analysis run whole — fit, tree, node cache, measures and profiles — to a
+    new an_NN, leaving the original untouched. Refused while it runs.
+    Ctrl-C stops the copy and removes it."""
+    proj = _open_experiment(experiment_dir)
+    try:
+        new_id = _with_stage_progress(
+            lambda bar: proj.duplicate_analysis(run_id, name=name, progress=bar),
+            cancellable=True,
+        )
+    except FileNotFoundError:
+        raise click.ClickException(f"no analysis run {run_id!r} in {experiment_dir}")
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    click.echo(f"duplicated analysis: {run_id} -> {new_id}")
+
+
 def _split_gap_ns(seconds: float | None) -> int | None:
     """A ``--split-gap`` in seconds as the ``t_ns`` the run records (Tenet 8)."""
     return None if seconds is None else round(seconds * 1e9)
@@ -5155,6 +6537,20 @@ def _parse_method_params(pairs: tuple[str, ...]) -> dict:
     return out
 
 
+def _merge_method_params(pairs: dict, named: dict) -> dict:
+    """``--method-param`` pairs and a command's own option for a method parameter (``--seed``,
+    ``--codewords`` …) as one ``method_params``; an option left unset is left out, so the
+    method's default stands. The same parameter given both ways is refused rather than one of
+    them winning in silence."""
+    named = {k: v for k, v in named.items() if v is not None}
+    both = sorted(set(pairs) & set(named))
+    if both:
+        raise click.UsageError(
+            f"{', '.join(both)} is given twice: as its own option and as --method-param"
+        )
+    return {**pairs, **named}
+
+
 def _parse_example(value: str, default_track: int) -> tuple[str | None, dict]:
     """Parse an ``--example`` spec into ``(query_name | None, example dict)``.
 
@@ -5207,6 +6603,18 @@ def _parse_example(value: str, default_track: int) -> tuple[str | None, dict]:
         )
 
 
+def _examples_by_id(proj, groups: dict) -> dict:
+    """``groups`` with each clip's recording given by id — an ``--example`` names it the way
+    ``--recording`` does, by name or id (§11), and the run reads ids."""
+    resolved = {}
+    for name, clips in groups.items():
+        refs = _resolve_recording_refs(proj, [clip["recording_id"] for clip in clips])
+        resolved[name] = [
+            {**clip, "recording_id": rid} for clip, rid in zip(clips, refs)
+        ]
+    return resolved
+
+
 def _query_methods() -> list[str]:
     """The §20 method ids this build offers, for `--method`'s choices.
 
@@ -5227,7 +6635,7 @@ def _query_methods() -> list[str]:
 @_EXPERIMENT_OPT
 @click.option(
     "--search", "search_recordings", multiple=True, required=True,
-    help="Recording id to search (repeatable; at least one).",
+    help="Recording name (or id) to search (repeatable; at least one).",
 )  # fmt: skip
 @click.option(
     "--embed-run", "embed_run_id", required=True,
@@ -5338,6 +6746,8 @@ def analysis_query(
     for spec in non_examples:
         name, clip = _parse_example(spec, track_id)
         negatives.setdefault(name, []).append(clip)
+    groups = _examples_by_id(proj, groups)
+    negatives = _examples_by_id(proj, negatives)
     split_gap_ns = _split_gap_ns(trajectory_split_gap_s)
     groups = _screen_example_clips(
         proj.dir, embed_run_id, groups, split_gap_ns, strict, method_id=method
@@ -5346,7 +6756,7 @@ def analysis_query(
         raise click.ClickException("no usable example clips are left")
 
     config = {
-        "source_recording_ids": list(search_recordings),
+        "source_recording_ids": _resolve_recording_refs(proj, search_recordings),
         "embed_run_id": embed_run_id,
         "track_id": track_id,
         "method": method,
@@ -5752,6 +7162,15 @@ def _temporal_method_fields(method_id: str) -> set[str]:
     return set(resolve_method(method_id).config_model.model_fields)
 
 
+def _seeded_methods() -> str:
+    """The cluster methods that take a ``seed``, as ``--seed``'s help names them: read off
+    each method's own model, so a method that gains one is named the day it registers.
+    """
+    return ", ".join(
+        m for m in _temporal_cluster_methods() if "seed" in _temporal_method_fields(m)
+    )
+
+
 def _temporal_cluster_methods() -> list[str]:
     """The registered Section 22 temporal-cluster method ids, for ``--method``'s choices.
 
@@ -5785,6 +7204,16 @@ def _pose_names(pairs: tuple[str, ...]) -> dict[str, str]:
             )
         out[cluster.strip()] = name.strip()
     return out
+
+
+def _remote_compute_config(remote_target: str | None) -> dict:
+    """``{"compute": ...}`` for a run sent to ``remote_target``, else nothing (this machine)."""
+    from detail.core.dataclasses import ComputeTarget
+
+    if not remote_target:
+        return {}
+    target = ComputeTarget("remote", None, None, None, remote_target=remote_target)
+    return {"compute": target.to_dict()}
 
 
 def _echo_coverage(proj, run, inside: str) -> None:
@@ -6017,13 +7446,14 @@ def _echo_tree(run) -> None:
 @_EXPERIMENT_OPT
 @click.option(
     "--recording", "recordings", multiple=True, required=True,
-    help="Recording id to fit the vocabulary on (repeatable; at least one).",
+    help="Recording name (or id) to fit the vocabulary on (repeatable; at least one).",
 )  # fmt: skip
 @click.option(
     "--embed-run", "embed_run_id", default=None,
     help=_TEMPORAL["embed_run_id"].description,
 )  # fmt: skip
 @_EMBED_REF_OPT
+@_EMBED_FOR_OPT
 @click.option("--track", "track_id", type=int, default=0, show_default=True,
               help=_TEMPORAL["track_id"].description)  # fmt: skip
 @click.option(
@@ -6067,11 +7497,28 @@ def _echo_tree(run) -> None:
     "into a neighbour) rather than becoming instances. Left unset, the method default is "
     "used.",
 )  # fmt: skip
+@click.option(
+    "--seed", type=int, default=None,
+    help="Seed for the method's random grouping, for the methods that take one "
+    f"({_seeded_methods()}): the same seed on the same data gives the same vocabulary. "
+    "Left unset, the method default is used; refused for a method without one.",
+)  # fmt: skip
+@click.option(
+    "--method-param", "raw_params", multiple=True, metavar="NAME=VALUE",
+    help="Any other parameter of the chosen --method, e.g. --method-param window_s=1. "
+    "Repeatable; the method's docs page lists what it takes (`detail docs`).",
+)  # fmt: skip
+@click.option(
+    "--remote-target", "remote_target", default=None,
+    help="Fit on this registered remote target (detail remote list) instead of here; the "
+    "run comes back here when the fit is done.",
+)  # fmt: skip
 def analysis_temporal_clustering(
     experiment_dir: Path,
     recordings: tuple[str, ...],
     embed_run_id: str | None,
     embed_refs: tuple[str, ...],
+    embed_for: tuple[str, ...],
     track_id: int,
     method: str,
     detector: str | None,
@@ -6082,6 +7529,9 @@ def analysis_temporal_clustering(
     fit_share: float | None,
     codewords: int | None,
     min_run_s: float | None,
+    seed: int | None,
+    raw_params: tuple[str, ...],
+    remote_target: str | None,
 ) -> None:
     """Discover a vocabulary of behaviors across a recording selection (Section 22).
 
@@ -6094,6 +7544,8 @@ def analysis_temporal_clustering(
 
     The comparison is quadratic in the number of bouts. ``--max-bouts`` bounds it, and a run
     fitted that way records what it left out so no result is quietly built on a fraction.
+
+    With --remote-target the fit runs on that cluster, and the run comes back here.
     """
     if fit_rows is not None:
         # Refused rather than converted: a row total has no equivalent share without knowing the
@@ -6102,8 +7554,9 @@ def analysis_temporal_clustering(
             "--fit-rows was removed: the codebook sample is now a share of each recording "
             "(--fit-share, percent) and the codeword count is its own setting (--codewords)."
         )
+    proj = _open_experiment(experiment_dir)
     config: dict = {
-        "source_recording_ids": list(recordings),
+        "source_recording_ids": _resolve_recording_refs(proj, recordings),
         "track_id": track_id,
         "method": method,
     }
@@ -6117,8 +7570,9 @@ def analysis_temporal_clustering(
         "fit_share": fit_share,
         "codewords": codewords,
         "min_run_s": min_run_s,
+        "seed": seed,
     }
-    method_params = {k: v for k, v in given.items() if v is not None}
+    method_params = _merge_method_params(_parse_method_params(raw_params), given)
     # A knob the chosen method does not have is **refused**, not dropped. Pydantic ignores an
     # unknown field by default, so `--band 0.5` under a method with no DTW would silently do
     # nothing and the run would look like it had honoured the flag.
@@ -6132,8 +7586,8 @@ def analysis_temporal_clustering(
     if method_params:
         config["method_params"] = method_params
 
-    proj = _open_experiment(experiment_dir)
-    config.update(_embedding_selection(proj, embed_run_id, embed_refs))
+    config.update(_embedding_selection(proj, embed_run_id, embed_refs, embed_for))
+    config.update(_remote_compute_config(remote_target))
     try:
         run = proj.run_analysis("temporal_clustering", config)
     except (KeyError, ValueError, FileNotFoundError) as e:
@@ -6159,9 +7613,10 @@ def analysis_temporal_interpret(
 ) -> None:
     """Interpret a Section 22 temporal-clustering run: label nodes of its tree, finish.
 
-    A label on a node of the tree of behaviors covers everything beneath it unless a node inside
-    has its own. Labelling rewrites the run's authored state and its output from the comparison
-    on disk; nothing re-compares. ``--tree`` shows the nodes.
+    Over a tree of behaviors, a label on a node covers
+    everything beneath it unless a node inside has its own. Labelling rewrites the run's authored
+    state and its output from the comparison on disk; nothing re-compares. ``--tree`` shows the
+    nodes.
     """
     proj = _open_experiment(experiment_dir)
     _interpret(
@@ -6212,101 +7667,80 @@ def analysis_export_temporal_clustering(
 @analysis.command("cluster-montage")
 @_EXPERIMENT_OPT
 @click.option(
-    "--run",
-    "run_id",
-    required=True,
-    help="Pose- or temporal-clustering run id (e.g. an_01).",
-)
+    "--run", "run_id", required=True,
+    help="Temporal-clustering run id (e.g. an_01).",
+)  # fmt: skip
 @click.option(
-    "--node",
-    type=int,
-    required=True,
+    "--node", type=int, required=True,
     help="The node of the run's tree (as `temporal-interpret --tree` lists them).",
-)
+)  # fmt: skip
 @click.option(
-    "--out",
-    "out_path",
-    type=click.Path(dir_okay=False, path_type=Path),
-    default=None,
-    help="Write the montage itself: an .mp4 or .gif.",
-)
+    "--out", "out_path", type=click.Path(dir_okay=False, path_type=Path), default=None,
+    help="Write the montage itself: an .mp4 or .gif. With --overlay, the overlay: an .mp4, "
+    ".gif, or .png (the one choice when the clips are single frames, a pose cluster's).",
+)  # fmt: skip
 @click.option(
-    "--per-clip-gifs",
-    "gif_dir",
-    type=click.Path(file_okay=False, path_type=Path),
+    "--per-clip-gifs", "gif_dir", type=click.Path(file_okay=False, path_type=Path),
     default=None,
     help="Write one GIF per clip into this folder, named rank_recording_m-ss.t.gif.",
-)
+)  # fmt: skip
 @click.option(
-    "--csv",
-    "csv_path",
-    type=click.Path(dir_okay=False, path_type=Path),
-    default=None,
-    help="Write the clips as a CSV list: a clip-query CSV (`detail analysis query "
-    "--from-csv` reads it as example clips) with rank, recording name, subject, times in "
-    "seconds, node and run after the standard columns.",
-)
+    "--csv", "csv_path", type=click.Path(dir_okay=False, path_type=Path), default=None,
+    help="Write the clips as a CSV list (rank, recording, subject, times, node, run). It "
+    "reads back as Query examples: `detail analysis query --from-csv`.",
+)  # fmt: skip
 @click.option(
-    "--raw/--no-raw",
-    default=_MONTAGE_DEFAULTS.raw,
-    show_default=True,
+    "--raw/--no-raw", default=_MONTAGE_DEFAULTS.raw, show_default=True,
     help="Draw the footage, with the animal outlined. Without it, masks and keypoints are "
     "drawn on white.",
-)
+)  # fmt: skip
 @click.option(
-    "--mask/--no-mask",
-    default=_MONTAGE_DEFAULTS.mask,
-    show_default=True,
+    "--mask/--no-mask", default=_MONTAGE_DEFAULTS.mask, show_default=True,
     help="Draw the clip's animal: outlined on the footage, filled on white.",
-)
+)  # fmt: skip
 @click.option(
-    "--keypoints/--no-keypoints",
-    default=_MONTAGE_DEFAULTS.keypoints,
-    show_default=True,
+    "--keypoints/--no-keypoints", default=_MONTAGE_DEFAULTS.keypoints, show_default=True,
     help="Draw the keypoints the embedding run used.",
-)
+)  # fmt: skip
 @click.option(
-    "--mask-trail/--no-mask-trail",
-    default=None,
+    "--mask-trail/--no-mask-trail", default=None,
     help="Draw the outline's last half second, fading. Default: on with --mask.",
-)
+)  # fmt: skip
 @click.option(
-    "--keypoint-trail/--no-keypoint-trail",
-    default=_MONTAGE_DEFAULTS.keypoint_trail,
+    "--keypoint-trail/--no-keypoint-trail", default=_MONTAGE_DEFAULTS.keypoint_trail,
     show_default=True,
     help="Draw each keypoint's path over the last half second (needs --keypoints).",
-)
+)  # fmt: skip
 @click.option(
-    "--trail-point",
-    "trail_points",
-    multiple=True,
+    "--trail-point", "trail_points", multiple=True,
     help="A keypoint that leaves a trail, by name. Repeatable; default every point.",
-)
+)  # fmt: skip
 @click.option(
-    "--aligned/--as-recorded",
-    default=_MONTAGE_DEFAULTS.aligned,
-    show_default=True,
-    help="Turn each clip so the animal's body points up, frame by frame, from the keypoint "
-    "run the embedding read and its heading definition. A frame with no body axis is drawn "
-    "as recorded and marked.",
-)
+    "--aligned/--as-recorded", default=_MONTAGE_DEFAULTS.aligned, show_default=True,
+    help="Turn every tile so its animal faces up, by the heading the embedding uses (its "
+    "keypoint run and heading definition). A frame it would not turn is a grey tile. "
+    "Applies to the ticks and to every --visual.",
+)  # fmt: skip
 @click.option(
-    "--context",
-    "context_s",
-    type=click.FloatRange(0.0, 60.0),
-    default=0.0,
+    "--align", "align", is_flag=True, default=False, hidden=True,
+    help="The same as --aligned (its earlier name).",
+)  # fmt: skip
+@click.option(
+    "--context", "context_s", type=click.FloatRange(0.0, 60.0), default=0.0,
     show_default=True,
     help="Seconds of footage either side of each clip: each tile plays the clip and its "
-    "context. Labels still name the clip's own start.",
-)
+    "context. Labels and --csv still name the clip's own start and end.",
+)  # fmt: skip
 @click.option(
-    "--clips",
-    "limit",
-    type=click.IntRange(min=1),
-    default=_MONTAGE_CLIPS,
-    show_default=True,
-    help="How many clips, counted from the top of --sort's order.",
-)
+    "--overlay", is_flag=True, default=False,
+    help="With --out: draw the clips on top of each other in one picture, each outline in "
+    "its own colour, turned to face up and centred, with its skeleton and a key.",
+)  # fmt: skip
+@click.option(
+    "--clips", "limit", type=click.IntRange(min=1), default=None,
+    help=f"How many clips, counted from the top of --sort's order. Default: "
+    f"{_MONTAGE_CLIPS}, or {_OVERLAY_CLIPS} with --overlay.",
+)  # fmt: skip
 @click.option(
     "--sort",
     type=click.Choice(list(_MONTAGE_SORTS)),
@@ -6316,25 +7750,57 @@ def analysis_export_temporal_clustering(
     "longest first, or random (the same shuffle for a node every time).",
 )
 @click.option(
-    "--blind",
-    is_flag=True,
-    default=False,
+    "--blind", is_flag=True, default=False,
     help="Label recordings A, B, C instead of by name (GIF names too).",
-)
+)  # fmt: skip
 @click.option(
-    "--max-width",
-    type=click.IntRange(64, 7680),
-    default=None,
-    help="Width in pixels of --out or each --per-clip-gifs GIF. Default: 640 for a GIF, "
-    "200-pixel tiles for an mp4.",
-)
+    "--max-width", type=click.IntRange(64, 7680), default=None,
+    help="Width in pixels. Default: 640 for a GIF (each per-clip GIF too), 200-pixel tiles "
+    "for an mp4.",
+)  # fmt: skip
 @click.option(
-    "--fps",
-    type=click.FloatRange(1.0, 60.0),
+    "--fps", type=click.FloatRange(1.0, 60.0), default=None,
+    help="Frames a second. Default: 12 for a GIF, the montage's own clock for an mp4.",
+)  # fmt: skip
+@click.option(
+    "--export-dir", "export_dir", type=click.Path(file_okay=False, path_type=Path),
     default=None,
-    help="Frames a second of --out or each --per-clip-gifs GIF. Default: 12 for a GIF, the "
-    "montage's own clock for an mp4.",
-)
+    help="Export clips as the montage window's Export clips... does: each --visual in its "
+    "own subfolder of this folder, in each --format, as --write says.",
+)  # fmt: skip
+@click.option(
+    "--visual", "visuals", multiple=True,
+    type=click.Choice(list(_montage_export.VISUAL_CHOICES)),
+    help="With --export-dir: a look to export, repeatable. `current` is the tick options "
+    "(--raw, --mask, ...). Default: current.",
+)  # fmt: skip
+@click.option(
+    "--write", "write_what", type=click.Choice(list(_montage_export.WRITES)),
+    default=_montage_export.DEFAULT_WRITE, show_default=True,
+    help="With --export-dir: the montage file, one file per clip, or both.",
+)  # fmt: skip
+@click.option(
+    "--format", "export_formats", multiple=True, type=click.Choice(["mp4", "gif"]),
+    help="With --export-dir: a format to write, repeatable. Default: both.",
+)  # fmt: skip
+@click.option(
+    "--mp4-width", type=click.IntRange(64, 7680), default=None,
+    help="With --export-dir: the mp4s' width in pixels. Default: full size, each clip at "
+    "its crop's own size in the recording.",
+)  # fmt: skip
+@click.option(
+    "--mp4-fps", type=click.FloatRange(1.0, 120.0), default=None,
+    help="With --export-dir: the mp4s' frames a second. Default: the footage's own rate.",
+)  # fmt: skip
+@click.option(
+    "--gif-width", type=click.IntRange(64, 3840), default=_GIF_WIDTH, show_default=True,
+    help="With --export-dir: the GIFs' width in pixels.",
+)  # fmt: skip
+@click.option(
+    "--gif-fps", type=click.FloatRange(1.0, 50.0), default=_GIF_FPS, show_default=True,
+    help="With --export-dir: the GIFs' frames a second.",
+)  # fmt: skip
+@_VIDEO_CODEC_OPT
 def analysis_cluster_montage(
     experiment_dir: Path,
     run_id: str,
@@ -6349,42 +7815,60 @@ def analysis_cluster_montage(
     keypoint_trail: bool,
     trail_points: tuple[str, ...],
     aligned: bool,
+    align: bool,
     context_s: float,
-    limit: int,
+    overlay: bool,
+    limit: int | None,
     sort: str,
     blind: bool,
     max_width: int | None,
     fps: float | None,
+    export_dir: Path | None,
+    visuals: tuple[str, ...],
+    write_what: str,
+    export_formats: tuple[str, ...],
+    mp4_width: int | None,
+    mp4_fps: float | None,
+    gif_width: int,
+    gif_fps: float,
+    codec: str,
 ) -> None:
     """Write a cluster montage: a node's clips side by side, one GIF per clip, or a CSV list.
 
-    An export of a node's clips, the same files a clip grid's Export ▾ writes in the app
-    (Section 22): 25 clips unless --clips says otherwise, most typical first unless --sort says
-    otherwise, each cropped to its animal and labelled `#rank · recording · start`, all starting
-    together and each looping from its start the moment it ends. Drawn by default as the mask
-    and its trail, on white. Give at least one of --out, --per-clip-gifs and --csv.
+    The files a clip grid's Export ▾ writes in the app (Section 22): 25 clips unless --clips
+    says otherwise, most typical first unless --sort says otherwise, each cropped to its animal
+    and labelled `#rank · recording · start`, all starting together, shorter clips holding their
+    last frame until the longest ends. Drawn by default as the mask and its trail, on white. Give at least one of --out, --per-clip-gifs, --csv and --export-dir.
+
+    --export-dir is the window's Export clips...: several looks (--visual) and formats (--format,
+    each with its own width and rate) at once, the montage and/or one file per clip (--write),
+    each look in its own subfolder. Its defaults are the window's: the current ticks, a
+    full-size mp4 at the footage's rate and a 640-pixel 12 fps GIF, the montage and every clip.
+
+    --aligned turns every tile so its animal faces up, by the heading its embedding uses.
+    --context plays that many seconds of footage either side of each clip.
+    --overlay writes --out as one picture of the clips drawn over each other (12 unless --clips
+    says otherwise), each turned and centred in its own colour with its skeleton: an .mp4 or
+    .gif of clips, or a .png of single frames.
     """
     from detail.api.animation import GIF_DEFAULT_FPS, GIF_DEFAULT_WIDTH
     from detail.api.clip_montage import (
         ClusterMontage,
         MontageLayers,
-        clip_file_stem,
-        cluster_montage,
-        montage_labels,
-        montage_origin,
+        export_cluster_clip_gifs,
+        export_cluster_clip_list,
+        export_cluster_montage,
+        export_cluster_overlay,
     )
-    from detail.api.clip_views import blind_aliases
 
-    if out_path is None and gif_dir is None and csv_path is None:
-        raise click.UsageError("give at least one of --out, --per-clip-gifs and --csv")
-    if (
-        (max_width is not None or fps is not None)
-        and out_path is None
-        and gif_dir is None
-    ):
+    if out_path is None and gif_dir is None and csv_path is None and export_dir is None:
         raise click.UsageError(
-            "--max-width and --fps shape a picture: give --out or --per-clip-gifs with them"
+            "give at least one of --out, --per-clip-gifs, --csv and --export-dir"
         )
+    if overlay and out_path is None:
+        raise click.UsageError("--overlay writes --out: give --out x.mp4, .gif or .png")
+    if limit is None:
+        limit = _OVERLAY_CLIPS if overlay else _MONTAGE_CLIPS
     proj = _open_experiment(experiment_dir)
     run = proj.authored_run(run_id)
     if run is None or not hasattr(run, "typical_members"):
@@ -6399,66 +7883,660 @@ def analysis_cluster_montage(
             mask_trail=mask_trail,
             keypoint_trail=keypoint_trail,
             trail_points=tuple(trail_points) or None,
-            aligned=aligned,
+            aligned=aligned or align,
         )
-
-        def work(bar) -> list[str]:
-            lines_out: list[str] = []
-            with cluster_montage(
-                proj,
-                run,
-                node,
-                limit=limit,
-                sort=sort,
-                context_s=context_s,
-                progress=bar,
-            ) as (montage, clips):
-                aliases = (
-                    blind_aliases([c.recording_id for c in clips]) if blind else {}
+        chosen = {"limit": limit, "sort": sort}
+        writes_mp4 = (out_path is not None and out_path.suffix.lower() == ".mp4") or (
+            export_dir is not None and "mp4" in (export_formats or ("mp4",))
+        )
+        if writes_mp4:
+            _echo_codec_note(codec)
+        if out_path is not None and overlay:
+            written = _with_stage_progress(
+                lambda bar: export_cluster_overlay(
+                    proj, run, node, out_path, blind=blind, fps=fps, progress=bar,
+                    codec=codec, **chosen,
                 )
-                labels = montage_labels(clips, blind=blind, aliases=aliases or None)
-                if out_path is not None:
-                    written = montage.export(
-                        out_path,
-                        layers,
-                        labels,
-                        max_width=max_width,
-                        fps=fps,
-                        progress=bar,
-                    )
-                    lines_out.append(f"wrote {written}")
-                if gif_dir is not None:
-                    gifs = montage.export_clip_gifs(
-                        gif_dir,
-                        layers,
-                        labels,
-                        [clip_file_stem(c, aliases.get(c.recording_id)) for c in clips],
-                        max_width=max_width or GIF_DEFAULT_WIDTH,
-                        fps=fps or GIF_DEFAULT_FPS,
-                        progress=bar,
-                    )
-                    lines_out.append(f"wrote {len(gifs)} GIFs to {gif_dir}")
-                if csv_path is not None:
-                    # The list names the clips themselves, never their context.
-                    lister = (
-                        ClusterMontage(proj.dir, clips, workers=1)
-                        if context_s
-                        else montage
-                    )
-                    try:
-                        listed = lister.export_clip_list(
-                            csv_path, montage_origin(run, node), progress=bar
-                        )
-                    finally:
-                        if lister is not montage:
-                            lister.close()
-                    lines_out.append(f"wrote {listed}")
-            return lines_out
+            )  # fmt: skip
+            click.echo(f"wrote {written}")
+        elif out_path is not None:
+            written = _with_stage_progress(
+                lambda bar: export_cluster_montage(
+                    proj, run, node, out_path, layers, blind=blind, max_width=max_width,
+                    fps=fps, progress=bar, codec=codec, context_s=context_s, **chosen,
+                )
+            )  # fmt: skip
+            click.echo(f"wrote {written}")
+        if gif_dir is not None:
+            gifs = _with_stage_progress(
+                lambda bar: export_cluster_clip_gifs(
+                    proj, run, node, gif_dir, layers, blind=blind,
+                    max_width=max_width or GIF_DEFAULT_WIDTH, fps=fps or GIF_DEFAULT_FPS,
+                    progress=bar, context_s=context_s, **chosen,
+                )
+            )  # fmt: skip
+            click.echo(f"wrote {len(gifs)} GIFs to {gif_dir}")
+        if export_dir is not None:
+            from detail.api.montage_export import (
+                CURRENT,
+                ExportFormat,
+                export_cluster_clips,
+            )
 
-        for line in _with_stage_progress(work):
-            click.echo(line)
+            kinds = export_formats or ("mp4", "gif")
+            formats = [
+                (
+                    ExportFormat("mp4", mp4_width, mp4_fps, codec)
+                    if kind == "mp4"
+                    else ExportFormat("gif", gif_width, gif_fps)
+                )
+                for kind in dict.fromkeys(kinds)
+            ]
+            exported = _with_stage_progress(
+                lambda bar: export_cluster_clips(
+                    proj, run, node, export_dir, visuals or (CURRENT,), current=layers,
+                    trail_points=tuple(trail_points) or None, formats=formats,
+                    write=write_what, blind=blind, align=aligned or align, progress=bar, **chosen,
+                )
+            )  # fmt: skip
+            click.echo(f"wrote {len(exported)} files into {export_dir}")
+        if csv_path is not None:
+            listed = _with_stage_progress(
+                lambda bar: export_cluster_clip_list(
+                    proj, run, node, csv_path, progress=bar, **chosen
+                )
+            )
+            click.echo(f"wrote {listed}")
     except (KeyError, ValueError, FileNotFoundError, IndexError) as e:
         raise click.ClickException(str(e))
+
+
+@analysis.command("profile")
+@_EXPERIMENT_OPT
+@click.option(
+    "--run", "run_id", required=True,
+    help="Temporal-clustering run id (e.g. an_01).",
+)  # fmt: skip
+@click.option(
+    "--node", type=int, required=True,
+    help="The node of the run's tree (as `temporal-interpret --tree` lists them).",
+)  # fmt: skip
+@click.option(
+    "--compare", type=click.Choice(list(get_args(_PROF["compare"].annotation))),
+    default=_PROF["compare"].default, show_default=True,
+    help=_PROF["compare"].description,
+)  # fmt: skip
+@click.option(
+    "--against", type=int, default=None, help=_PROF["against"].description,
+)  # fmt: skip
+@click.option(
+    "--explainer", type=click.Choice(list(get_args(_PROF["explainer"].annotation))),
+    default=_PROF["explainer"].default, show_default=True,
+    help=_PROF["explainer"].description,
+)  # fmt: skip
+@click.option(
+    "--time-budget", "time_budget_s", type=float,
+    default=_PROF["time_budget_s"].default, show_default=True,
+    help=_PROF["time_budget_s"].description,
+)  # fmt: skip
+@click.option(
+    "--n-per-side", type=int, default=None, help=_PROF["n_per_side"].description,
+)  # fmt: skip
+@click.option(
+    "--margin", type=float, default=_PROF["margin"].default, show_default=True,
+    help=_PROF["margin"].description,
+)  # fmt: skip
+@click.option(
+    "--leave-out-place/--keep-place", default=_PROF["leave_out_place"].default,
+    show_default=True, help=_PROF["leave_out_place"].description,
+)  # fmt: skip
+@click.option(
+    "--seed", type=int, default=_PROF["seed"].default, show_default=True,
+    help=_PROF["seed"].description,
+)  # fmt: skip
+@click.option(
+    "--save/--no-save", default=True, show_default=True,
+    help="Keep the profile beside the run (profiles/node_<id>/, or against_<other>/ under "
+    "it for a comparison with another cluster), where the GUI reopens it.",
+)  # fmt: skip
+def analysis_profile(
+    experiment_dir: Path,
+    run_id: str,
+    node: int,
+    compare: str,
+    against: int | None,
+    explainer: str,
+    time_budget_s: float,
+    n_per_side: int | None,
+    margin: float,
+    leave_out_place: bool,
+    seed: int,
+    save: bool,
+) -> None:
+    """Profile one cluster: which measures set it apart, and how far to trust that (§22).
+
+    Samples the node's members at random and as many from the comparison, measures both with
+    every registered measure the data supports, and fits an explainer scored on held-out
+    recordings beside a shuffled floor. The first line says whether the measures separate the
+    cluster at all; read the rest only if they do. `--compare node --against <id>` asks it
+    of two clusters: whether a cluster in another branch is the same behaviour.
+    """
+    from pydantic import ValidationError
+
+    from detail.api.cluster_profile import profile_dir
+
+    proj = _open_experiment(experiment_dir)
+    config = dict(
+        compare=compare,
+        against=against,
+        explainer=explainer,
+        time_budget_s=time_budget_s,
+        n_per_side=n_per_side,
+        margin=margin,
+        leave_out_place=leave_out_place,
+        seed=seed,
+    )
+    try:
+        profile = _with_stage_progress(
+            lambda bar: proj.profile_cluster(
+                run_id, node, config, save=save, progress=bar
+            )
+        )
+    except ValidationError as e:
+        raise click.ClickException(str(e))
+    except (KeyError, ValueError, FileNotFoundError, IndexError) as e:
+        raise click.ClickException(str(e))
+    for line in _profile_lines(profile):
+        click.echo(line)
+    if save:
+        folder = profile_dir(proj.analysis_run_dir(run_id), node, against)
+        click.echo(f"saved: {folder}")
+
+
+def _profile_lines(profile) -> list[str]:
+    """A profile as text: the verdict first, then what it rests on, then the measures."""
+    e = profile.explanation
+    lines = [profile.headline]
+    compared = {
+        "rest": "rest of the run",
+        "sibling": f"sibling #{profile.comparison_node}",
+        "node": f"cluster #{profile.comparison_node}",
+    }.get(profile.compare, profile.compare)
+    lines.append(
+        f"based on: {profile.basis} · {len(e.measures_used)} measures · "
+        f"{e.n_cluster} members vs {e.n_comparison} ({compared}) · "
+        f"explainer {e.explainer}"
+    )
+    if e.note:
+        lines.append(f"note: {e.note}")
+    from detail.api.cluster_profile import place_text
+
+    place = place_text(profile)
+    if place:
+        lines.append(place)
+    for name, why in e.measures_dropped.items():
+        lines.append(f"skipped: {profile.labels.get(name, name)} ({why})")
+    if e.rows_dropped:
+        lines.append(f"rows dropped for a gap: {e.rows_dropped}")
+    if e.importances:
+        lines.append("what sets it apart:")
+        for i in e.importances[:8]:
+            arrow = {1: "higher", -1: "lower", 0: "mixed"}[i.direction]
+            unit = profile.units.get(i.name, "")
+            lines.append(
+                f"  {profile.labels.get(i.name, i.name):<24} {arrow:<6} "
+                f"{i.cluster_median:.3g} vs {i.comparison_median:.3g} {unit}"
+                f"   (weight {i.value:.3g})"
+            )
+    for rule in e.rules:
+        lines.append(
+            f"rule: {rule.text} -> this cluster "
+            f"(right {rule.precision:.0%}, covers {rule.coverage:.0%})"
+        )
+    c = profile.context
+    for side, items in (("comes after", c.before), ("leads to", c.after)):
+        if items:
+            named = ", ".join(
+                f"{n['name'] or '#' + str(n['node'])} {n['share']:.0%}" for n in items
+            )
+            lines.append(f"{side}: {named}")
+    if c.bout_median_s == c.bout_median_s:  # not NaN
+        lines.append(
+            f"bout length: {c.bout_median_s:.2f} s median "
+            f"({c.bout_p10_s:.2f}-{c.bout_p90_s:.2f} s)"
+        )
+    if c.session_thirds:
+        early, middle, late = c.session_thirds
+        lines.append(
+            f"in the session: {early:.0%} early, {middle:.0%} middle, {late:.0%} late"
+        )
+    for o in c.over_represented:
+        lines.append(
+            f"over-represented: {o['column']} = {o['value']} "
+            f"({o['ratio']:.2f}x the run's share, chance reaches {o['floor']:.2f}x)"
+        )
+    return lines
+
+
+@analysis.command("profile-all")
+@_EXPERIMENT_OPT
+@click.option(
+    "--run", "run_id", required=True,
+    help="Temporal-clustering run id (e.g. an_10).",
+)  # fmt: skip
+@click.option(
+    "--clusters", type=click.Choice(list(get_args(_PD["clusters"].annotation))),
+    default=_PD["clusters"].default, show_default=True, help=_PD["clusters"].description,
+)  # fmt: skip
+@click.option(
+    "--node", "node_ids", type=int, multiple=True,
+    help="A node to run (repeat it); implies --clusters ids.",
+)  # fmt: skip
+@click.option(
+    "--compare", type=click.Choice(list(get_args(_PD["compare"].annotation))),
+    default=_PD["compare"].default, show_default=True, help=_PD["compare"].description,
+)  # fmt: skip
+@click.option(
+    "--leave-out-place/--keep-place", default=_PD["leave_out_place"].default,
+    show_default=True, help=_PD["leave_out_place"].description,
+)  # fmt: skip
+@click.option(
+    "--explainer", type=click.Choice(list(get_args(_PD["explainer"].annotation))),
+    default=_PD["explainer"].default, show_default=True,
+    help=_PD["explainer"].description,
+)  # fmt: skip
+@click.option(
+    "--time-budget", "time_budget_s", type=float,
+    default=_PD["time_budget_s"].default, show_default=True,
+    help=_PD["time_budget_s"].description,
+)  # fmt: skip
+@click.option(
+    "--n-per-side", type=int, default=_PD["n_per_side"].default, show_default=True,
+    help=_PD["n_per_side"].description,
+)  # fmt: skip
+@click.option(
+    "--use-time-budget", is_flag=True, default=False,
+    help="Measure each profile for --time-budget seconds instead of a fixed count per side "
+    "(results then depend on how fast this computer reads tracks).",
+)  # fmt: skip
+@click.option(
+    "--margin", type=float, default=_PD["margin"].default, show_default=True,
+    help=_PD["margin"].description,
+)  # fmt: skip
+@click.option(
+    "--seed", type=int, default=_PD["seed"].default, show_default=True,
+    help=_PD["seed"].description,
+)  # fmt: skip
+@click.option(
+    "--skip-existing/--redo", "skip_existing", default=_PD["skip_existing"].default,
+    show_default=True, help=_PD["skip_existing"].description,
+)  # fmt: skip
+@click.option(
+    "--remote-target", "remote_target", default=None,
+    help="Run the job on this registered remote target (detail remote list) instead of "
+    "here; the profiles are placed beside the run here once they are copied back.",
+)  # fmt: skip
+@click.option(
+    "--estimate", "estimate_only", is_flag=True, default=False,
+    help="Print how long it should take on this computer, and start nothing.",
+)  # fmt: skip
+def analysis_profile_all(
+    experiment_dir: Path,
+    run_id: str,
+    clusters: str,
+    node_ids: tuple[int, ...],
+    compare: str,
+    leave_out_place: bool,
+    explainer: str,
+    time_budget_s: float,
+    n_per_side: int | None,
+    use_time_budget: bool,
+    margin: float,
+    seed: int,
+    skip_existing: bool,
+    remote_target: str | None,
+    estimate_only: bool,
+) -> None:
+    """Profile many clusters of a clustering run as one recorded job (§22).
+
+    Each cluster is `analysis profile`, saved beside the run where its Interpret tab shows
+    it; the job's own an_NN lists every cluster's status. The time it should take is printed
+    first. Clusters already profiled with these settings are skipped, so running it again
+    after a stop does only what is left. Ctrl-C cancels and keeps the finished clusters; a
+    cluster that fails is listed and the job goes on.
+
+    With --remote-target the job runs on that cluster, and its profiles are placed beside the
+    run here once they are copied back.
+    """
+    from pydantic import ValidationError
+
+    from detail.core.progress import format_duration
+
+    proj = _open_experiment(experiment_dir)
+    config = dict(
+        clusters="ids" if node_ids else clusters,
+        node_ids=list(node_ids),
+        compare=compare,
+        leave_out_place=leave_out_place,
+        explainer=explainer,
+        time_budget_s=time_budget_s,
+        n_per_side=None if use_time_budget else n_per_side,
+        margin=margin,
+        seed=seed,
+        skip_existing=skip_existing,
+    )
+    config.update(_remote_compute_config(remote_target))
+    try:
+        guess = proj.estimate_profile_describe(run_id, config)
+    except ValidationError as e:
+        raise click.ClickException(str(e))
+    except (KeyError, ValueError, FileNotFoundError) as e:
+        raise click.ClickException(str(e))
+    click.echo(guess.text(), err=True)
+    if estimate_only:
+        return
+    try:
+        run = proj.profile_describe_clusters(run_id, config)
+    except ValidationError as e:
+        raise click.ClickException(str(e))
+    except (KeyError, ValueError, FileNotFoundError) as e:
+        raise click.ClickException(str(e))
+    click.echo(f"submitted analysis: {run.id}")
+    started = time.monotonic()
+    _stream_progress(run, "profile clusters")
+    record = proj.analysis_record(run.id)
+    for line in _cluster_lines(record):
+        click.echo(line)
+    actual = time.monotonic() - started
+    click.echo(
+        f"took {format_duration(actual)} (estimated {format_duration(guess.seconds)})",
+        err=True,
+    )
+    _check_status(run, "profile clusters")
+
+
+def _cluster_lines(record: dict) -> list[str]:
+    """A batch's clusters as text: status, node and name, then why it stopped when it did."""
+    lines = []
+    for c in record.get("clusters") or []:
+        name = f" ({c['name']})" if c.get("name") else ""
+        what = c.get("error") or ""
+        lines.append(f"  {c['status']:<9} node {c['node']}{name}: {what}".rstrip(": "))
+    counts = record.get("counts") or {}
+    if counts:
+        lines.append(
+            "clusters: " + ", ".join(f"{n} {status}" for status, n in counts.items())
+        )
+    return lines
+
+
+@analysis.command("find-lookalikes")
+@_EXPERIMENT_OPT
+@click.option(
+    "--run", "run_id", required=True,
+    help="Temporal-clustering run id (e.g. an_17).",
+)  # fmt: skip
+@click.option(
+    "--pairs", type=click.Choice(list(get_args(_LA["pairs"].annotation))),
+    default=_LA["pairs"].default, show_default=True,
+    help=_LA["pairs"].description,
+)  # fmt: skip
+@click.option(
+    "--explainer", type=click.Choice(list(get_args(_LA["explainer"].annotation))),
+    default=_LA["explainer"].default, show_default=True,
+    help=_LA["explainer"].description,
+)  # fmt: skip
+@click.option(
+    "--n-per-side", type=int, default=_LA["n_per_side"].default, show_default=True,
+    help=_LA["n_per_side"].description,
+)  # fmt: skip
+@click.option(
+    "--use-time-budget", is_flag=True, default=False,
+    help="Measure each pair for --time-budget seconds instead of a fixed count per side "
+    "(results then depend on how fast this computer reads tracks).",
+)  # fmt: skip
+@click.option(
+    "--time-budget", "time_budget_s", type=float,
+    default=_LA["time_budget_s"].default, show_default=True,
+    help=_LA["time_budget_s"].description,
+)  # fmt: skip
+@click.option(
+    "--margin", type=float, default=_LA["margin"].default, show_default=True,
+    help=_LA["margin"].description,
+)  # fmt: skip
+@click.option(
+    "--seed", type=int, default=_LA["seed"].default, show_default=True,
+    help=_LA["seed"].description,
+)  # fmt: skip
+@click.option(
+    "--skip-existing/--redo", "skip_existing", default=_LA["skip_existing"].default,
+    show_default=True, help=_LA["skip_existing"].description,
+)  # fmt: skip
+@click.option(
+    "--remote-target", "remote_target", default=None,
+    help="Run the job on this registered remote target (detail remote list) instead of "
+    "here; the comparisons are placed beside the run here once they are copied back.",
+)  # fmt: skip
+@click.option("--yes", is_flag=True, help="Skip the confirmation prompt.")
+def analysis_find_lookalikes(
+    experiment_dir: Path,
+    run_id: str,
+    pairs: str,
+    explainer: str,
+    n_per_side: int | None,
+    use_time_budget: bool,
+    time_budget_s: float,
+    margin: float,
+    seed: int,
+    skip_existing: bool,
+    remote_target: str | None,
+    yes: bool,
+) -> None:
+    """Find clusters in different branches of a clustering run that look like one behaviour
+    (Section 22 "Look-alike clusters").
+
+    Compares pairs of the run's branch tops (the two halves of every split where both are at
+    least its minimum cluster time) — every pair, or with --pairs labelled each labelled
+    branch top against every other — each a cluster profile of one against the other on body
+    measures, with position and facing left out. Every pair is compute intensive: it prints
+    how many pairs each mode compares, and about how long, and asks before starting (--yes
+    skips the question). Each comparison is saved beside the run, as
+    `analysis profile --compare node` saves one; the job's own an_NN lists every pair. Pairs
+    already compared with these settings are skipped, so running it again after a stop does
+    only what is left; Ctrl-C cancels and keeps the finished pairs. The groups are listed at
+    the end, and by `analysis lookalikes`.
+
+    With --remote-target the job runs on that cluster (worth it on a large run, which takes
+    many hours), and its comparisons are placed beside the run here once they are copied back.
+    """
+    from pydantic import ValidationError
+
+    from detail.configs.cluster_lookalikes import PAIRS_ALL
+
+    proj = _open_experiment(experiment_dir)
+    config = dict(
+        pairs=pairs,
+        explainer=explainer,
+        n_per_side=None if use_time_budget else n_per_side,
+        time_budget_s=time_budget_s,
+        margin=margin,
+        seed=seed,
+        skip_existing=skip_existing,
+    )
+    config.update(_remote_compute_config(remote_target))
+    if pairs == PAIRS_ALL:
+        try:
+            counts = proj.count_lookalike_pairs(run_id, config)
+        except ValidationError as e:
+            raise click.ClickException(str(e))
+        except (KeyError, ValueError, FileNotFoundError) as e:
+            raise click.ClickException(str(e))
+        # Nothing left to compare (no pair at all, which the job's own refusal explains, or
+        # every pair already compared): nothing costly to warn about.
+        if counts.to_compare(PAIRS_ALL):
+            click.echo(counts.warning(), err=True)
+            if not yes:
+                click.confirm("Compare every pair?", abort=True)
+    try:
+        run = proj.find_lookalikes(run_id, config)
+    except ValidationError as e:
+        raise click.ClickException(str(e))
+    except (KeyError, ValueError, FileNotFoundError) as e:
+        raise click.ClickException(str(e))
+    click.echo(f"submitted analysis: {run.id}")
+    _stream_progress(run, "find look-alikes")
+    record = proj.analysis_record(run.id)
+    counts = record.get("counts") or {}
+    if counts:
+        click.echo(
+            "pairs: "
+            + ", ".join(f"{n} {status}" for status, n in counts.items())
+            + f"; {record.get('looks_alike', 0)} compared here look alike"
+        )
+    _check_status(run, "find look-alikes")
+    _echo_lookalikes(proj.authored_run(run_id))
+
+
+@analysis.command("lookalikes")
+@_EXPERIMENT_OPT
+@click.option(
+    "--run", "run_id", required=True,
+    help="Temporal-clustering run id (e.g. an_17).",
+)  # fmt: skip
+@click.option(
+    "--label-group", "group", type=int, default=None, metavar="N",
+    help="Give group N (as listed) one label: --name, else its proposed name. Labels the "
+    "members marked [x]: those whose label would cover no cluster outside the group. "
+    "A cluster with another label of its own keeps it.",
+)  # fmt: skip
+@click.option(
+    "--include", "include", type=int, multiple=True, metavar="NODE",
+    help="With --label-group: label member NODE too, though its label would also cover the "
+    "clusters listed under it. Repeatable.",
+)  # fmt: skip
+@click.option(
+    "--leave-out", "leave_out", type=int, multiple=True, metavar="NODE",
+    help="With --label-group: leave NODE out of the label. Repeatable.",
+)  # fmt: skip
+@click.option(
+    "--name", default=None,
+    help="With --label-group: the label's name, instead of the group's proposed one.",
+)  # fmt: skip
+@click.option(
+    "--yes", is_flag=True, default=False,
+    help="Write the label without asking, after printing what it does.",
+)  # fmt: skip
+def analysis_lookalikes(
+    experiment_dir: Path,
+    run_id: str,
+    group: int | None,
+    include: tuple[int, ...],
+    leave_out: tuple[int, ...],
+    name: str | None,
+    yes: bool,
+) -> None:
+    """List a clustering run's look-alike groups, and give one group one label (Section 22).
+
+    A group is clusters whose body measures could not be told apart, pair by pair, with
+    position and facing left out, chained: A like B and B like C make one group. Made by
+    `analysis find-lookalikes`, and by any pair compared with `analysis profile --compare
+    node`. A group is a suggestion until labelled; labelling goes through the run's own label
+    edit and records that the label came from a look-alike group, and what it would do is
+    printed, and asked about, before anything is written.
+
+    A label covers everything under its cluster with no label of its own, and clusters nest,
+    so a member can hold clusters outside the group; those are listed under it, and
+    the member is labelled only with --include.
+    """
+    from detail.api.cluster_lookalikes import plan_text
+
+    proj = _open_experiment(experiment_dir)
+    run = proj.authored_run(run_id)
+    if run is None or not hasattr(run, "lookalike_groups"):
+        raise click.ClickException(
+            f"{run_id} is not a temporal-clustering run of this experiment"
+        )
+    if group is None and (include or leave_out or name):
+        raise click.UsageError(
+            "--include, --leave-out and --name go with --label-group"
+        )
+    try:
+        groups = run.lookalike_groups()
+        if group is None:
+            _echo_lookalikes(run, groups)
+            return
+        if not 1 <= group <= len(groups):
+            raise click.ClickException(
+                f"there is no group {group}; {run_id} has {len(groups)} "
+                "(`analysis lookalikes` lists them)"
+            )
+        chosen = groups[group - 1]
+        unknown = sorted((set(include) | set(leave_out)) - set(chosen.nodes))
+        if unknown:
+            raise click.ClickException(
+                f"{', '.join(f'#{n}' for n in unknown)} not in group {group} "
+                f"({', '.join(f'#{n}' for n in chosen.nodes)})"
+            )
+        label = (name if name is not None else chosen.name).strip()
+        if not label:
+            raise click.ClickException(
+                f"group {group} has no proposed name (no label among its clusters); "
+                "give one with --name"
+            )
+        wanted = set(chosen.ticked) | set(include)
+        nodes = [n for n in chosen.nodes if n in wanted and n not in leave_out]
+        if not nodes:
+            raise click.ClickException(
+                f"no member of group {group} is chosen: each one marked [ ] would also label "
+                "the clusters listed under it, and any marked [x] was left out; add one "
+                "with --include NODE"
+            )
+        plan = run.plan_lookalike_label(nodes, label)
+        click.echo(plan_text(plan, label, sweeps=chosen.sweeps))
+        if not plan.accepted:
+            return
+        if not yes:
+            click.confirm("Write this label?", abort=True)
+        applied = _with_stage_progress(
+            lambda bar: run.label_lookalikes(nodes, label, progress=bar)
+        )
+        click.echo(f"labelled {len(applied.accepted)} node(s) “{label}”")
+        if applied != plan:
+            click.echo("the run changed since the summary; what was written:")
+            click.echo(plan_text(applied, label, sweeps=chosen.sweeps))
+        _echo_coverage(proj, run, "labelled")
+    except (KeyError, ValueError, FileNotFoundError) as e:
+        raise click.ClickException(str(e))
+
+
+def _echo_lookalikes(run, groups=None) -> None:
+    """Each group: its number, members with share and names, the proposed name, the links."""
+    groups = run.lookalike_groups() if groups is None else groups
+    if not groups:
+        click.echo(
+            "no look-alike groups: compare pairs with `analysis find-lookalikes`, or one pair "
+            "with `analysis profile --compare node --against OTHER`"
+        )
+        return
+    for number, g in enumerate(groups, 1):
+        name = f"“{g.name}” ({g.named})" if g.name else "no name yet"
+        click.echo(f"group {number}: {len(g.nodes)} clusters — proposed {name}")
+        for node in g.nodes:
+            said = []
+            if node in g.labels:
+                said.append(f"your label {g.labels[node]!r}")
+            mark = "[x]" if node in g.ticked else "[ ]"
+            click.echo(
+                f"  {mark} #{node:<6} {g.share(node):6.1%}  " + ("; ".join(said) or "—")
+            )
+            for swept in g.sweeps.get(node, ()):
+                click.echo(f"        would also label {swept.text()}")
+        for link in g.links:
+            click.echo(f"    {link.text()}")
+    click.echo(
+        f"{len(groups)} group(s); `analysis lookalikes --label-group N` labels a group's [x] "
+        "members (--include NODE adds one marked [ ])"
+    )
 
 
 @analysis.command("query-eval")
@@ -6609,11 +8687,9 @@ def analysis_query_eval(
     )
     from detail.storage import query_eval_csv
 
-    _open_experiment(
-        experiment_dir
-    )  # friendly error if the experiment is missing/invalid
+    proj = _open_experiment(experiment_dir)
     config = {
-        "source_recording_ids": list(search_recordings),
+        "source_recording_ids": _resolve_recording_refs(proj, search_recordings),
         "embed_run_id": embed_run_id,
         "behaviors": list(behaviors),
         "stream_name": stream_name,
@@ -6782,20 +8858,63 @@ def doctor() -> None:
                     needs_install = True
     if needs_install:
         # The full install sequence for this machine — open a terminal to done. SAM 3
-        # needs an NVIDIA GPU, so flag when this machine can't actually run it.
+        # needs an NVIDIA GPU PyTorch can use, so flag when this machine can't run it yet,
+        # and which gap it is: no NVIDIA GPU, or one PyTorch can't use.
         cuda = results.get("cuda")
-        gpu_note = (
-            ""
-            if cuda is not None and cuda.status.value == "ok"
-            else " — SAM 3 needs an NVIDIA GPU to run"
-        )
+        nvidia = results.get("nvidia_gpu")
+        if cuda is not None and cuda.status.value == "ok":
+            gpu_note = ""
+        elif nvidia is not None and nvidia.status.value == "ok":
+            gpu_note = " — SAM 3 needs PyTorch to use this NVIDIA GPU (see CUDA)"
+        else:
+            gpu_note = " — SAM 3 needs an NVIDIA GPU to run"
         script = api_checks.current_script()
         click.echo(f"\nInstall commands ({script.os_label}, this machine){gpu_note}:")
         for step in script.steps:
             click.echo(f"  # {step.note}")
             click.echo(f"  {step.command}")
+    _doctor_optional(results)
     if failed:
         raise SystemExit(1)
+
+
+def _doctor_optional(results: dict) -> None:
+    """The optional Cluster profile step's way forward, when it is not done — the CLI's twin
+    of that Configuration page. Never a failure: it is optional."""
+    shap = results.get("shap")
+    if shap is not None and shap.status.value != "ok":
+        click.echo("\nOptional (Cluster profile):")
+        click.echo("  detail install-extra analysis        # SHAP, for Cluster profile")
+
+
+@main.command("install-extra")
+@click.argument("extra", type=click.Choice(list(_INSTALLABLE_EXTRAS)))
+@click.option(
+    "--print-command", is_flag=True,
+    help="Print the install command instead of running it, to run it yourself.",
+)  # fmt: skip
+def install_extra(extra: str, print_command: bool) -> None:
+    """Install an optional extra's missing packages into the environment running detail.
+
+    EXTRA is `analysis` (SHAP for Cluster profile, and the clustering libraries). Uses
+    `uv pip` when uv is on PATH, else this interpreter's pip, and only installs what is
+    missing. Shows a progress bar and, if the installer fails, its output.
+    """
+    from detail.api import extras
+
+    if print_command:
+        click.echo(extras.command_text(extra))
+        return
+    before = extras.status(extra)
+    if before.installed:
+        click.echo(f"{extra}: everything is already installed")
+        return
+    click.echo(f"installing {', '.join(before.missing)} into {sys.executable}")
+    try:
+        _with_stage_progress(lambda bar: extras.install_extra(extra, bar))
+    except extras.InstallError as e:
+        raise click.ClickException(str(e))
+    click.echo(f"{extra}: installed {', '.join(before.missing)}")
 
 
 @main.command("version")
@@ -6884,6 +9003,323 @@ def video_root_list() -> None:
         return
     for alias, path in sorted(roots.items()):
         click.echo(f"{alias}\t{path}")
+
+
+# --------------------------------------------------------------------------- #
+# remote (§6) — Slurm cluster profiles (Tillicum, Hyak, ...) DETAIL can submit to
+# --------------------------------------------------------------------------- #
+@main.group("remote")
+def remote_group() -> None:
+    """Configure remote Slurm clusters (e.g. Tillicum, Hyak) DETAIL can submit jobs to."""
+
+
+@remote_group.command("add")
+@click.argument("name")
+@click.argument("host")
+@click.option(
+    "--workdir",
+    "remote_workdir",
+    required=True,
+    help="Scratch directory on the cluster DETAIL stages job data under.",
+)
+@click.option("--partition", default=None, help="Slurm partition (sbatch --partition).")
+@click.option(
+    "--account", default=None, help="Slurm account/allocation (sbatch --account)."
+)
+@click.option(
+    "--conda-env",
+    "conda_env",
+    default=None,
+    help="Conda environment on the cluster with `detail` installed.",
+)
+@click.option(
+    "--module",
+    "modules",
+    multiple=True,
+    help="LMOD module to load before running (repeatable, e.g. --module cuda/12.4).",
+)
+@click.option(
+    "--gpu-type",
+    default=None,
+    help="GPU type to request, if the cluster's Slurm " "distinguishes types.",
+)
+@click.option("--gpus-per-job", default=1, type=int, show_default=True)
+@click.option("--cpus-per-task", default=4, type=int, show_default=True)
+@click.option("--mem-gb", default=32, type=int, show_default=True)
+@click.option(
+    "--walltime",
+    default=_REMOTE["walltime"].default,
+    show_default=True,
+    help=_REMOTE["walltime"].description,
+)
+@click.option(
+    "--max-concurrent-jobs",
+    "max_concurrent_jobs",
+    default=_REMOTE["max_concurrent_jobs"].default,
+    type=click.IntRange(1, 64),
+    show_default=True,
+    help=_REMOTE["max_concurrent_jobs"].description,
+)
+@click.option(
+    "--cost-per-gpu-hour",
+    "cost_per_gpu_hour",
+    default=None,
+    type=float,
+    help="Estimated $/GPU-hour this target bills, for a live cost estimate on its runs. "
+    "Omit to show no cost estimate for runs on this target.",
+)
+def remote_add(
+    name: str,
+    host: str,
+    remote_workdir: str,
+    partition: str | None,
+    account: str | None,
+    conda_env: str | None,
+    modules: tuple[str, ...],
+    gpu_type: str | None,
+    gpus_per_job: int,
+    cpus_per_task: int,
+    mem_gb: int,
+    walltime: str,
+    max_concurrent_jobs: int,
+    cost_per_gpu_hour: float | None,
+) -> None:
+    """Register (or re-point) remote cluster target NAME, reachable over SSH as HOST.
+
+    HOST should match a `Host` entry in `~/.ssh/config` so keys, an agent, ControlMaster
+    connection-sharing, and a cached Duo session are already handled — DETAIL never stores or
+    prompts for credentials itself.
+    """
+    from pydantic import ValidationError
+
+    from detail.api import remote as api_remote
+
+    try:
+        config = RemoteTargetConfig(
+            name=name,
+            host=host,
+            remote_workdir=remote_workdir,
+            partition=partition,
+            account=account,
+            conda_env=conda_env,
+            modules=list(modules),
+            gpu_type=gpu_type,
+            gpus_per_job=gpus_per_job,
+            cpus_per_task=cpus_per_task,
+            mem_gb=mem_gb,
+            walltime=walltime,
+            max_concurrent_jobs=max_concurrent_jobs,
+            cost_per_gpu_hour=cost_per_gpu_hour,
+        )
+        api_remote.add_remote_target(config)
+    except ValidationError as e:
+        raise click.ClickException(str(e))
+    click.echo(f"remote target {name!r} -> {host}")
+
+
+@remote_group.command("list")
+def remote_list() -> None:
+    """List the remote cluster targets registered on this machine."""
+    from detail.api import remote as api_remote
+
+    targets = api_remote.list_remote_targets()
+    if not targets:
+        click.echo("no remote targets registered")
+        return
+    for config in targets:
+        click.echo(
+            f"{config.name}\t{config.host}\t{config.scheduler}\t{config.remote_workdir}"
+            f"\t{config.max_concurrent_jobs} jobs\t{config.walltime}"
+        )
+
+
+@remote_group.command("remove")
+@click.argument("name")
+def remote_remove(name: str) -> None:
+    """Remove the registered remote target NAME."""
+    from detail.api import remote as api_remote
+
+    try:
+        api_remote.remove_remote_target(name)
+    except KeyError as e:
+        raise click.ClickException(str(e))
+    click.echo(f"removed remote target {name!r}")
+
+
+@remote_group.command("test")
+@click.argument("name")
+def remote_test(name: str) -> None:
+    """Check SSH connectivity and that `sbatch` is reachable for remote target NAME.
+
+    Also compares the DETAIL installed there with the build this app is running, and says what
+    to run when the cluster is behind it. That is a warning, not a failure: the exit code is the
+    connection's alone."""
+    from detail.api import remote as api_remote
+
+    try:
+        status = api_remote.test_remote_target(name)
+    except KeyError as e:
+        raise click.ClickException(str(e))
+    click.echo(status.detail)
+    if status.build is not None:
+        click.echo(status.build.describe())
+    if not status.ok:
+        raise SystemExit(1)
+
+
+@remote_group.command("update")
+@click.argument("name")
+@click.option(
+    "--check",
+    "check_only",
+    is_flag=True,
+    help="Only compare the DETAIL on NAME with this app and say what an update would do; "
+    "change nothing there. Exits 0 when they are the same build, 1 when they are not.",
+)
+@click.option(
+    "-y",
+    "--yes",
+    "assume_yes",
+    is_flag=True,
+    help="Update without asking first.",
+)
+def remote_update(name: str, check_only: bool, assume_yes: bool) -> None:
+    """Bring the DETAIL on remote target NAME up to date with this app.
+
+    Compares the two builds, and when the cluster is **behind** runs `git pull --ff-only` in its
+    DETAIL checkout, in the target's own environment, then compares again. It only ever moves that
+    checkout forward: git refuses, and changes nothing, when the checkout has commits of its own
+    or a local change in the way. Nothing on this machine changes and nothing is installed there
+    (a changed pyproject.toml is reported, not reinstalled).
+
+    A run in flight on the cluster keeps importing modules as it goes, so update when none is
+    running. Ahead, diverged and unknown are not updated from here: the message says what to do
+    instead.
+    """
+    from detail.api import remote as api_remote
+    from detail.core import buildinfo
+
+    try:
+        click.echo(f"Checking DETAIL on {name!r}…", err=True)
+        before = api_remote.check_remote_build(name)
+    except KeyError as e:
+        raise click.ClickException(str(e))
+    click.echo(before.describe())
+    if check_only or before.state != buildinfo.BEHIND:
+        raise SystemExit(0 if before.matches else 1)
+    if not assume_yes and not click.confirm(
+        f"Run `git pull --ff-only` in {before.remote_root} on {name!r} now?"
+    ):
+        raise SystemExit(1)
+
+    progress = _StageProgress()
+    try:
+        result = api_remote.update_remote_build(name, before=before, progress=progress)
+    except KeyError as e:
+        raise click.ClickException(str(e))
+    finally:
+        progress.close()
+    click.echo(result.detail)
+    if result.output and not result.ok:
+        click.echo(result.output, err=True)
+    if not result.ok:
+        raise SystemExit(1)
+
+
+@remote_group.command("push-credentials")
+@click.argument("name")
+def remote_push_credentials(name: str) -> None:
+    """Copy this machine's configured credentials to remote target NAME.
+
+    Hugging Face is the one credential this pushes today (`detail hf-token`) — a
+    gated model (SAM 3, DINOv3) needs a token *on the cluster* to check access and
+    download weights there, and this machine's own token never reaches a remote
+    job on its own. Writes to the same `~/.config/detail/credentials.yaml` a local
+    install would use, merging rather than overwriting whatever is already there.
+    A future credential type (a cloud provider's own access key) is forwarded the
+    same way the day this machine manages one, with no change to this command.
+    """
+    from detail.api import remote as api_remote
+
+    try:
+        status = api_remote.push_credentials(name)
+    except KeyError as e:
+        raise click.ClickException(str(e))
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    click.echo(status.detail)
+    if not status.ok:
+        raise SystemExit(1)
+
+
+@remote_group.command("staging-status")
+@_EXPERIMENT_OPT
+def remote_staging_status(experiment_dir: Path) -> None:
+    """Show the background video uploads this experiment started (`distill --stage-videos`)."""
+    from detail.core.progress import format_duration
+
+    proj = _open_experiment(experiment_dir)
+    states = proj.video_staging()
+    if not states:
+        click.echo("no background video uploads")
+        return
+    for state in states:
+        eta = state.get("eta_s")
+        click.echo(
+            f"{state['target']}\t{state['status']}\t"
+            f"{state['files_done']}/{state['files_total']} files\t"
+            f"{state['bytes_done'] / 1e9:.1f}/{state['bytes_total'] / 1e9:.1f} GB"
+            + (f"\t~{format_duration(eta)} left" if eta else "")
+            + (f"\t{state['error']}" if state.get("error") else "")
+        )
+
+
+@remote_group.command("staging-start")
+@click.argument("target")
+@_EXPERIMENT_OPT
+@click.option(
+    "--recording",
+    "recording_ids",
+    multiple=True,
+    help="Recording to upload the videos of (repeatable). Default: the same recordings the "
+    "last upload to TARGET had, else every recording in the experiment.",
+)
+def remote_staging_start(
+    target: str, experiment_dir: Path, recording_ids: tuple[str, ...]
+) -> None:
+    """Start, or resume, the background video upload to TARGET.
+
+    Videos already on the cluster are skipped and a half-sent one continues, so restarting an
+    upload you stopped (or that failed) costs only what was missing. Watch it with
+    `staging-status`.
+    """
+    proj = _open_experiment(experiment_dir)
+    try:
+        state = proj.start_video_staging(
+            target, _resolve_recording_refs(proj, recording_ids) or None
+        )
+    except (FileNotFoundError, ValueError) as e:
+        raise click.ClickException(str(e))
+    click.echo(
+        f"background video upload to {state['target']}: {state['status']} "
+        f"(pid {state['pid']}); watch it with `detail remote staging-status`"
+    )
+
+
+@remote_group.command("staging-stop")
+@click.argument("target", required=False)
+@_EXPERIMENT_OPT
+def remote_staging_stop(target: str | None, experiment_dir: Path) -> None:
+    """Stop the background video upload to TARGET (every one when omitted).
+
+    What already reached the cluster stays there; a later run reuses it.
+    """
+    proj = _open_experiment(experiment_dir)
+    stopped = proj.stop_video_staging(target)
+    if not stopped:
+        click.echo("no background video upload was running")
+        return
+    click.echo(f"stopped the background video upload to: {', '.join(stopped)}")
 
 
 # --------------------------------------------------------------------------- #
@@ -7134,8 +9570,9 @@ def comparison_run(
     answer is a question with one possible response.
     """
     proj = _open_experiment(experiment_dir)
+    recording_ids = _resolve_recording_refs(proj, recordings)
     if not aggregate_to:
-        _refuse_unanswered_unit(proj, list(group_by or ()), list(recordings or ()))
+        _refuse_unanswered_unit(proj, list(group_by or ()), recording_ids)
     path = [] if tuple(aggregate_to) == ("none",) else list(aggregate_to)
     from detail.api.comparison import run_comparison
 
@@ -7147,7 +9584,7 @@ def comparison_run(
             "source_snapshot": source_snapshot,
             "group_by": list(group_by),
             "aggregate_to": path,
-            "recordings": list(recordings) or None,
+            "recordings": recording_ids or None,
             "measures": list(measures_opt) or None,
             "windows": _window_spec(windows, every_s, parts, length_s, step_s),
             "draws": draws,
@@ -7317,6 +9754,7 @@ def tools() -> None:
     default=None,
     help="Also render the overlay clip to this .mp4 (playback is GUI-only).",
 )
+@_VIDEO_CODEC_OPT
 def tools_quick_segment(
     videos: tuple[Path, ...],
     prompts: tuple[str, ...],
@@ -7328,6 +9766,7 @@ def tools_quick_segment(
     backend: str,
     devices: tuple[int, ...],
     export_path: Path | None,
+    codec: str,
 ) -> None:
     """Segment VIDEOS with one or more prompts and save a managed tool run."""
     if model_id is None:
@@ -7380,9 +9819,17 @@ def tools_quick_segment(
     if export_path is not None:
         from detail.tools.quick_segment import export_mp4
 
+        _echo_codec_note(codec)
         ebar = _StageProgress()
         try:
-            export_mp4(run_dir, record, export_path, progress=ebar, min_conf=min_conf)
+            export_mp4(
+                run_dir,
+                record,
+                export_path,
+                progress=ebar,
+                min_conf=min_conf,
+                codec=codec,
+            )
         finally:
             ebar.close()
         click.echo(f"exported {export_path} at --min-conf {min_conf}")
@@ -7509,6 +9956,8 @@ def _resolve_subject(
             raise click.ClickException(
                 f"--subject {subject_kind} contradicts {_SUBJECT_FLAGS[kind]}"
             )
+        if kind == "recording":
+            value = _recording(_open_experiment(experiment_dir), value).id
         return ExportSubject(kind, experiment_dir, value)
     if subject_kind and subject_kind != "experiment":
         raise click.ClickException(
@@ -7531,9 +9980,9 @@ def export() -> None:
 @export.command("list")
 @_EXPERIMENT_OPT
 @_SUBJECT_OPT
-@click.option("--recording", help="Recording id to export from.")
+@click.option("--recording", help="Recording name (or id) to export from.")
 @click.option(
-    "--run", help="Processing run id (det_NN / trk_NN / emb_NN) to export from."
+    "--run", help="Processing run id (det_NN / trk_NN / emb_NN / kp_NN) to export from."
 )
 @click.option("--analysis-run", "analysis_run", help="Analysis run id (an_NN).")
 @_DISTILL_RUN_OPT
@@ -7584,6 +10033,16 @@ def _clip_renders() -> list[str]:
     return list(clip_render.RENDERS)
 
 
+def _preview_styles() -> list[str]:
+    """The `--style` choices `--target preview_frame`/`preview_video` draw with, read from
+    `core.visualize` rather than retyped here — the same reason `_clip_renders` reads
+    `clip_render.RENDERS` instead of a hand-copied list.
+    """
+    from detail.core import visualize
+
+    return list(visualize.PREVIEW_STYLES)
+
+
 def _frame_range(text: str | None) -> tuple[int, int] | None:
     """``"1200:1340"`` → ``(1200, 1340)``, inclusive. ``None`` stays ``None``.
 
@@ -7604,9 +10063,9 @@ def _frame_range(text: str | None) -> tuple[int, int] | None:
 @export.command("run")
 @_EXPERIMENT_OPT
 @_SUBJECT_OPT
-@click.option("--recording", help="Recording id to export from.")
+@click.option("--recording", help="Recording name (or id) to export from.")
 @click.option(
-    "--run", help="Processing run id (det_NN / trk_NN / emb_NN) to export from."
+    "--run", help="Processing run id (det_NN / trk_NN / emb_NN / kp_NN) to export from."
 )
 @click.option("--analysis-run", "analysis_run", help="Analysis run id (an_NN).")
 @_DISTILL_RUN_OPT
@@ -7655,13 +10114,15 @@ def _frame_range(text: str | None) -> tuple[int, int] | None:
 )  # fmt: skip
 @click.option(
     "--size", "size", type=int, default=None,
-    help="Longest side of an exported clip, in pixels (default 640).",
+    help="Longest side of an exported clip, in pixels (default 640), or of a keypoint "
+         "video (default: the source size).",
 )  # fmt: skip
 @click.option(
     "--for-recording", "for_recordings", multiple=True,
     help="Export only this recording (an id or a name) of a run or analysis run. Repeatable. "
          "Without it every recording is exported, which for video is the size of the "
-         "whole run: see `--estimate`. A target that writes one file for the "
+         "whole run: see `--estimate`. Needed, with exactly one, by "
+         "`--target preview_frame`/`preview_video`. A target that writes one file for the "
          "whole run says so in `export list` (no `recordings` under its scopes).",
 )  # fmt: skip
 @click.option(
@@ -7677,9 +10138,18 @@ def _frame_range(text: str | None) -> tuple[int, int] | None:
          "drive fails an hour in.",
 )  # fmt: skip
 @click.option(
+    "--style", "style", default=None,
+    type=click.Choice(_preview_styles()),
+    help="What a run preview draws: masks, boxes, confidence in combination — or raw "
+         "video, or a green-screen mask cutout. What `--target preview_frame`/ "
+         "`preview_video` draws for a detection or tracking run (default: mask, box, "
+         "confidence).",
+)  # fmt: skip
+@click.option(
     "--theme", "theme", type=click.Choice(_figure_themes()), default=None,
     help=_THEME_HELP,
 )  # fmt: skip
+@_VIDEO_CODEC_OPT
 def export_run(
     experiment_dir: Path,
     subject_kind: str | None,
@@ -7700,7 +10170,9 @@ def export_run(
     for_recordings: tuple[str, ...],
     estimate_only: bool,
     ignore_free_space: bool,
+    style: str | None,
     theme: str | None,
+    codec: str,
 ) -> None:
     """Write the chosen targets into one new folder under ``--out``, as a run.
 
@@ -7747,8 +10219,18 @@ def export_run(
         options["track_id"] = track_id
     if embed_run_id:
         options["embed_run_id"] = embed_run_id
+    if style:
+        options["style"] = style
     if theme is not None:
         options["theme"] = theme
+    # Only for a target that writes video: the codec means nothing to the rest.
+    if any(
+        exporters.target(subject.kind, target_id).writes_video
+        for target_id in target_ids
+        if _known_target(exporters, subject.kind, target_id)
+    ):
+        options["codec"] = codec
+        _echo_codec_note(codec)
     # What it will cost, before it is spent. Asked of the same catalogue the dialog asks, with
     # the same options, so the two surfaces cannot disagree about the same export.
     try:
@@ -7777,6 +10259,16 @@ def export_run(
     click.echo(f"submitted export: {handle.id}")
     _stream_progress(handle, "export")
     _echo_export_result(proj, handle.id)
+
+
+def _known_target(exporters, subject_kind: str, target_id: str) -> bool:
+    """Whether ``target_id`` is in the catalogue for ``subject_kind``; an unknown one is left
+    for the estimate below to refuse with its own message."""
+    try:
+        exporters.target(subject_kind, target_id)
+    except exporters.ExportError:
+        return False
+    return True
 
 
 def _echo_estimate(asked, *, detailed: bool, out_dir: Path) -> None:

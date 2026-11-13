@@ -465,18 +465,46 @@ def test_train_model_dialog_backend_defaults_to_mps_without_cuda(
     assert dialog._compute.backend.currentText() == "mps"
 
 
-def test_label_dataset_dialog_backend_defaults_to_best_available(
+def test_label_dataset_dialog_backend_is_narrowed_to_the_selected_models_backends(
     qapp, tmp_path, monkeypatch
 ):
+    """The default teacher (SAM3) is CUDA-only (detail/models/sam3.py), so the compute
+    row must reflect *that*, not just this machine's hardware — offering "mps" here
+    would build a job SAM3 rejects the moment it runs (§12's own model/backend check).
+    """
     from detail.gui import fit as fitmod
 
     monkeypatch.setattr("detail.core.utils.cuda_available", lambda: False)
     monkeypatch.setattr("detail.core.utils.mps_available", lambda: True)
     experiment = _experiment_with_run(tmp_path)
     dialog = fitmod.GenerateLabelingDialog(experiment)
-    assert (
-        dialog._compute.backend.currentText() == "mps"
-    )  # best device, not a hardcoded cuda
+    assert dialog._compute.backend.currentText() == "(none available)"
+
+
+def test_label_dataset_dialog_offers_a_registered_remote_target(
+    qapp, tmp_path, monkeypatch
+):
+    from detail.configs.remote import RemoteTargetConfig
+    from detail.gui import fit as fitmod
+    from detail.storage import remote_targets
+
+    cfg = tmp_path / "config" / "detail"
+    monkeypatch.setattr(remote_targets, "CONFIG_DIR", cfg)
+    monkeypatch.setattr(
+        remote_targets, "REMOTE_TARGETS_PATH", cfg / "remote_targets.yaml"
+    )
+    remote_targets.register_remote_target(
+        RemoteTargetConfig(
+            name="tillicum", host="tillicum", remote_workdir="/scratch/x"
+        )
+    )
+    monkeypatch.setattr("detail.core.utils.cuda_available", lambda: False)
+    monkeypatch.setattr("detail.core.utils.mps_available", lambda: False)
+    experiment = _experiment_with_run(tmp_path)
+    dialog = fitmod.GenerateLabelingDialog(experiment)
+    assert dialog._compute.backend.currentText() == "remote"
+    assert dialog._compute.remote_target.currentText() == "tillicum"
+    assert dialog._compute.compute_target().remote_target == "tillicum"
 
 
 def test_dataset_detail_hides_delete_while_active(qapp, tmp_path):
@@ -529,6 +557,119 @@ def test_distill_dialog_renders_and_launches(qapp, tmp_path, monkeypatch):
     assert captured["label_compute"] is not None
     assert captured["train_compute"] is not None
     assert dialog.run_handle is not None
+
+
+def test_distill_dialog_offers_a_registered_remote_target_for_both_stages(
+    qapp, tmp_path, monkeypatch
+):
+    """Both stages are wired through executor_for() (§6: label_dataset/train_model), so
+    each of the dialog's two ComputeTargetRows must offer a registered cluster —
+    labeling's default teacher (SAM3) is CUDA-only, so a GPU-less machine needs remote
+    to run it at all (and defaults to it, having nothing local to offer); training's
+    trainer also supports cpu, so it stays on the working local default and offers
+    remote as a choice rather than switching to it underneath the user."""
+    from detail.configs.remote import RemoteTargetConfig
+    from detail.gui.fit import DistillDialog
+    from detail.storage import locations, remote_targets
+
+    cfg = tmp_path / "config" / "detail"
+    monkeypatch.setattr(remote_targets, "CONFIG_DIR", cfg)
+    monkeypatch.setattr(
+        remote_targets, "REMOTE_TARGETS_PATH", cfg / "remote_targets.yaml"
+    )
+    remote_targets.register_remote_target(
+        RemoteTargetConfig(
+            name="tillicum", host="tillicum", remote_workdir="/scratch/x"
+        )
+    )
+    monkeypatch.setattr("detail.core.utils.cuda_available", lambda: False)
+    monkeypatch.setattr("detail.core.utils.mps_available", lambda: False)
+    monkeypatch.setattr(locations, "experiments_root", lambda: tmp_path)
+    experiment = Experiment.create("p", tmp_path)
+    dialog = DistillDialog(experiment)
+    assert dialog._compute.backend.currentText() == "remote"
+    assert dialog._compute.remote_target.currentText() == "tillicum"
+
+    def _items(combo):
+        return [combo.itemText(i) for i in range(combo.count())]
+
+    assert dialog._train_compute.backend.currentText() == "cpu"
+    assert "remote" in _items(dialog._train_compute.backend)
+    assert _items(dialog._train_compute.remote_target) == ["tillicum"]
+
+
+def _distill_dialog_with_a_cluster(tmp_path, monkeypatch, *, cluster):
+    from detail.configs.remote import RemoteTargetConfig
+    from detail.gui.fit import DistillDialog
+    from detail.storage import locations, remote_targets
+
+    cfg = tmp_path / "config" / "detail"
+    monkeypatch.setattr(remote_targets, "CONFIG_DIR", cfg)
+    monkeypatch.setattr(
+        remote_targets, "REMOTE_TARGETS_PATH", cfg / "remote_targets.yaml"
+    )
+    if cluster:
+        remote_targets.register_remote_target(
+            RemoteTargetConfig(
+                name="tillicum", host="tillicum", remote_workdir="/scratch/x"
+            )
+        )
+    monkeypatch.setattr("detail.core.utils.cuda_available", lambda: False)
+    monkeypatch.setattr("detail.core.utils.mps_available", lambda: False)
+    monkeypatch.setattr(locations, "experiments_root", lambda: tmp_path)
+    experiment = Experiment.create("p", tmp_path)
+    captured = {}
+    monkeypatch.setattr(
+        experiment,
+        "distill",
+        lambda name, **kwargs: captured.update(kwargs) or object(),
+    )
+    dialog = DistillDialog(experiment)
+    dialog._name.setText("m")
+    dialog._class_rows[0][0].setText("mouse")
+    dialog._class_rows[0][1].setText("a mouse")
+    return dialog, captured
+
+
+def test_distill_dialog_offers_the_background_upload_only_for_a_remote_run(
+    qapp, tmp_path, monkeypatch
+):
+    """Greyed rather than hidden (the GUI style rule), and cleared when it greys: a tick left over
+    from a remote choice must not reach ``distill`` once both stages are local again."""
+    # A teacher that runs anywhere, so each stage can be switched between local and remote here.
+    monkeypatch.setattr("detail.gui.fit.supported_backends", lambda _m: ["cpu", "cuda"])
+    dialog, captured = _distill_dialog_with_a_cluster(
+        tmp_path, monkeypatch, cluster=True
+    )
+    assert dialog._compute.backend.currentText() == "cpu"
+    assert dialog._train_compute.backend.currentText() == "cpu"
+    assert not dialog._stage_videos.isEnabled(), "nothing remote to upload to"
+
+    dialog._compute.backend.setCurrentText("remote")
+    assert dialog._stage_videos.isEnabled()
+    assert not dialog._stage_videos.isChecked(), "100+ GB is not a default"
+    dialog._stage_videos.setChecked(True)
+    dialog._run()
+    assert captured["stage_videos"] is True
+
+    dialog._compute.backend.setCurrentText("cpu")
+    assert not dialog._stage_videos.isEnabled()
+    assert not dialog._stage_videos.isChecked(), "a stale tick must not reach distill"
+
+    dialog._train_compute.backend.setCurrentText("remote")
+    assert dialog._stage_videos.isEnabled(), "either stage being remote is enough"
+
+
+def test_distill_dialog_with_no_cluster_cannot_stage_videos(
+    qapp, tmp_path, monkeypatch
+):
+    dialog, captured = _distill_dialog_with_a_cluster(
+        tmp_path, monkeypatch, cluster=False
+    )
+
+    assert not dialog._stage_videos.isEnabled()
+    dialog._run()
+    assert captured["stage_videos"] is False
 
 
 @pytest.mark.parametrize("dialog_name", ["GenerateLabelingDialog", "DistillDialog"])
@@ -640,6 +781,60 @@ def test_distill_run_detail_opens_trained_model(qapp, tmp_path):
     assert opened["model_id"] == "model_001"
 
 
+def test_distill_run_detail_shows_where_duration_and_cost_per_stage(qapp, tmp_path):
+    """§ run location, duration, cost: each stage's line grows a `· where · duration
+    · cost` suffix, and the run gets its own top-level Duration/Total cost rows."""
+    from PyQt6.QtWidgets import QFormLayout
+
+    from detail.gui.pages import DistillRunDetail
+    from detail.storage import distill_runs as distill_store
+
+    experiment = _experiment_with_run(tmp_path)
+    distill_store.write_run(
+        experiment.dir,
+        "distill_003",
+        {
+            "id": "distill_003",
+            "name": "m",
+            "status": "complete",
+            "duration_s": 3900.0,
+            "total_estimated_cost_usd": 2.5,
+            "stages": {
+                "label": {
+                    "status": "complete",
+                    "dataset_id": "dataset_001",
+                    "compute": {"backend": "remote", "remote_target": "tillicum"},
+                    "duration_s": 300.0,
+                    "estimated_cost_usd": 0.5,
+                },
+                "train": {
+                    "status": "complete",
+                    "model_id": "model_001",
+                    "compute": {"backend": "remote", "remote_target": "tillicum"},
+                    "duration_s": 3600.0,
+                    "estimated_cost_usd": 2.0,
+                },
+            },
+        },
+    )
+    page = DistillRunDetail(experiment, "distill_003")
+
+    form = page.findChildren(QFormLayout)[0]
+    rows = {
+        form.itemAt(i, QFormLayout.ItemRole.LabelRole)
+        .widget()
+        .text(): form.itemAt(i, QFormLayout.ItemRole.FieldRole)
+        .widget()
+        .text()
+        for i in range(form.rowCount())
+    }
+    assert rows["Duration:"] == "1h05m"
+    assert rows["Total cost:"] == "$2.50"
+    assert "remote: tillicum" in rows["Label:"] and "5m00s" in rows["Label:"]
+    assert "$0.50" in rows["Label:"]
+    assert "$2.00" in rows["Train:"]
+
+
 def test_distill_run_detail_hides_open_model_before_training_completes(qapp, tmp_path):
     from PyQt6.QtWidgets import QPushButton
 
@@ -677,3 +872,24 @@ def test_distill_dialog_picks_experiment_from_workspace(qapp, tmp_path, monkeypa
     assert (
         dialog._recordings.count() == 1
     )  # the selected experiment's recordings populate
+
+
+# --- KeypointDistillDialog (§26) -------------------------------------------- #
+def _keypoints_run(experiment, run_id="run_004", per_recording=None):
+    runs_store.write_run(
+        experiment.dir,
+        run_id,
+        {
+            "id": run_id,
+            "name": "rats dino",
+            "module_id": "keypoints",
+            "recording_ids": ["recording_001", "recording_002"],
+            "status": "complete",
+            "per_recording": per_recording
+            or {
+                "recording_001": {"run_id": "kp_01", "status": "complete"},
+                "recording_002": {"run_id": "kp_01", "status": "failed"},
+            },
+            "config": {"model_id": "dinov3_match"},
+        },
+    )

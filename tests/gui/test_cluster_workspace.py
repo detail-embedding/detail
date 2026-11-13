@@ -663,6 +663,9 @@ _LIVE_ON_A_SNAPSHOT = {
     # A cluster's window plays its clips beside the page; its label row is greyed on a
     # snapshot with the page's reason (`test_cluster_window.py`).
     ("QPushButton", "Open in window"): "opening a cluster's clips is looking at them",
+    # Opening the menu is looking; inside it every entry that launches a job or labels is
+    # greyed with the snapshot's reason, and Cluster profile… reads the run.
+    ("QPushButton", "Cluster tools ▾"): "opening the tools menu is reading its entries",
     ("QPushButton", "◀ back (←)"): "stepping through the audit queue is reading it",
     ("QPushButton", "next (→) ▶"): "stepping through the audit queue is reading it",
     ("QPushButton", "▲ load more confident"): (
@@ -2563,7 +2566,10 @@ def test_right_click_put_back_reaches_the_run(qapp, fitted_temporal, monkeypatch
     assert _drain(qapp, lambda: any(c.faded for c in montage.clips()))
     index = next(i for i, c in enumerate(montage.clips()) if c.tag == "→ rear")
     menus = []
-    with monkeypatch.context() as patch:
+    # Through monkeypatch, which puts back the class's own descriptor: `QMenu.popup = real`
+    # with `real = QMenu.popup` left every later `menu.popup(point)` in the worker raising
+    # "first argument of unbound method must have type 'QMenu'".
+    with pytest.MonkeyPatch.context() as patch:
         patch.setattr(QMenu, "popup", lambda self, *_a: menus.append(self))
         montage.clip_context_requested.emit(index, QPoint(0, 0))
     (menu,) = menus

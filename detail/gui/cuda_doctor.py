@@ -6,10 +6,10 @@ The page renders the ``Diagnosis``. ``nvidia-smi`` is a GUI-side diagnostic, not
 code, so the FFmpeg-subprocess rule (Tenet 15) does not apply.
 """
 
-import re
-import subprocess
 from dataclasses import dataclass
 
+from detail.checks.commands import pip_command
+from detail.core.hostinfo import nvidia_smi
 from detail.core.utils import cuda_available, cuda_device_names, mps_available
 
 # PyTorch's CUDA wheel tags, newest first. The suggestion is the newest tag at or below the
@@ -57,29 +57,10 @@ class Diagnosis:
     fix_reason: str | None  # why this wheel: the driver's CUDA → the tag it can run
 
 
-def _run_nvidia_smi() -> tuple[str | None, str | None]:
-    """(driver_version, driver_cuda) from ``nvidia-smi``, or (None, None) if absent."""
-    try:
-        out = subprocess.run(
-            ["nvidia-smi"],
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None, None  # a missing binary, or one that hung
-    if out.returncode != 0:
-        return None, None
-    driver = re.search(r"Driver Version:\s*([\d.]+)", out.stdout)
-    cuda = re.search(r"CUDA Version:\s*([\d.]+)", out.stdout)
-    return (driver.group(1) if driver else None, cuda.group(1) if cuda else None)
-
-
 def probe() -> ProbeResult:
     """Gather the machine's CUDA facts. Off the UI thread — imports torch lazily and
     shells out to ``nvidia-smi``."""
-    driver_version, driver_cuda = _run_nvidia_smi()
+    driver_version, driver_cuda = nvidia_smi()
     try:
         import torch
 
@@ -135,10 +116,15 @@ def _wheel_reason(driver_cuda: str | None, wheel: str | None) -> str | None:
 
 
 def _reinstall_command(wheel: str) -> str:
-    return (
-        "uv pip install --reinstall-package torch --reinstall-package torchvision "
-        f"torch torchvision --index-url https://download.pytorch.org/whl/{wheel}"
-    )
+    index = f"--index-url https://download.pytorch.org/whl/{wheel}"
+    if pip_command() == "uv pip":
+        # uv's own reinstall-just-these-packages flag; plain pip has no equivalent, so
+        # the pip branch below reaches the same result with --force-reinstall instead.
+        return (
+            "uv pip install --reinstall-package torch --reinstall-package torchvision "
+            f"torch torchvision {index}"
+        )
+    return f"pip install --force-reinstall torch torchvision {index}"
 
 
 def _is_newer(a: str | None, b: str | None) -> bool:
@@ -195,7 +181,7 @@ def diagnose(p: ProbeResult) -> Diagnosis:
             compatible,
             checks,
             "DETAIL needs PyTorch to use a GPU. Install the torch extra.",
-            "uv pip install -e '.[torch]'",
+            f"{pip_command()} install -e '.[torch]'",
             links,
             None,
         )

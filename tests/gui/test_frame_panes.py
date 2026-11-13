@@ -46,6 +46,11 @@ ALLOWED: dict[str, str] = {
         "a strip cell — a single click marks it and loads it into the player beside the row, "
         "and a double click opens the clip in a window of its own"
     ),
+    "heading_review.py:_Tile.show_picture": (
+        "a candidate's or set frame's crop in the heading review window — for telling frames "
+        "apart at a glance; a double click opens the whole frame, zoomable, in a window of its "
+        "own (_Thumb.mouseDoubleClickEvent)"
+    ),
     "cluster_strip.py:_Thumb._paint": (
         "a cluster member's crop — a click plays it in place, a double click opens the whole "
         "frame in a player; the crop is for telling members apart, not for studying one"

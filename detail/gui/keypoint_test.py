@@ -128,8 +128,6 @@ class KeypointTestDialog(Dialog):
     :class:`KeypointDetectTestDialog`, which overrides the layout hooks below.
     """
 
-    fits_content = True
-
     def __init__(
         self,
         experiment,
@@ -142,7 +140,6 @@ class KeypointTestDialog(Dialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle(title)
-        self.resize(lines(78), lines(46))
         self._experiment = experiment
         self._teacher = dict(teacher)
         self._result = None

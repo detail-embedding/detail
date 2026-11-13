@@ -18,7 +18,11 @@ from detail.core.dataclasses import (
 )
 from detail.executor import rundir
 from detail.executor.runners import PROCESSING_MODULES, import_runner_modules
-from detail.pipeline.detection import prompt_classes, prompt_fingerprint
+from detail.pipeline.detection import (
+    class_conf_thresholds_fingerprint,
+    prompt_classes,
+    prompt_fingerprint,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -39,6 +43,7 @@ def _det(rid, **over):
         "model_variant": "large",
         "weights_source": "pretrained",
         "conf_threshold": 0.25,
+        "class_conf_thresholds_fingerprint": "ccf",
         "prompt_fingerprint": "abc123",
         "prompt_classes": ["mouse"],
     }
@@ -153,6 +158,70 @@ def test_distinct_arena_ids():
     a = _key(data, "tracking", _track("t1", arena_ids=[]))
     b = _key(data, "tracking", _track("t2", arena_ids=["arena_a"]))
     assert a != b
+
+
+def test_distinct_class_name():
+    """Two tracking runs on the same detection run differing only in which class they
+    filtered to (§13) are different runs — a black-mouse track and a white-mouse track
+    must never be treated as interchangeable inputs downstream."""
+    data = {"detection_runs": [_det("det_01")]}
+    a = _key(data, "tracking", _track("t1", class_name="black mouse"))
+    b = _key(data, "tracking", _track("t2", class_name="white mouse"))
+    c = _key(data, "tracking", _track("t3", class_name=None))
+    assert a != b != c and a != c
+
+
+def test_tracking_label_shows_class_name():
+    """Same tracker + same hyperparams, different class filter → distinguishable in the
+    picker label, not just in the opaque spec key (the same class of bug
+    ``test_detection_label_shows_prompt_classes`` above already guards for a prompt).
+    Regression: two class-filtered tracking runs (§13) with identical hyperparams
+    rendered identically in every spec picker (track-merge, embedding, location export),
+    so a user could not tell which combo entry was which animal's track."""
+    data = {"detection_runs": [_det("det_01")]}
+    black = run_spec.spec_of(data, "tracking", _track("t1", class_name="black mouse"))
+    white = run_spec.spec_of(data, "tracking", _track("t2", class_name="white mouse"))
+    label_black, label_white = run_spec.spec_label(black), run_spec.spec_label(white)
+    assert label_black != label_white
+    assert "black mouse" in label_black and "white mouse" in label_white
+
+
+def test_class_name_absent_from_a_legacy_record_defaults_to_none():
+    """A record written before ``class_name`` existed reads as ``None`` (no filter), the
+    same one honest reading ``every_n_frames`` defaults a legacy record to — not a
+    per-run sentinel, which would false-split every pre-existing tracking run's identity
+    from itself the moment this field shipped."""
+    data = {"detection_runs": [_det("det_01")]}
+    legacy = _track("t1")  # no class_name key at all, as every pre-feature record is
+    assert "class_name" not in legacy
+    modern = _track("t2", class_name=None)
+    assert _key(data, "tracking", legacy) == _key(data, "tracking", modern)
+
+
+def test_track_merge_record_resolves_through_trackings_own_identity_fields():
+    """A track_merge run (§13) writes into the same ``tracking_runs`` collection as an
+    ordinary tracking run — sharing ``runs_key``, the same way ``DeriveModule`` shares
+    ``embedding_runs`` with ``EmbeddingModule``. ``spec_of``/``_parent_spec`` resolve
+    *any* record reached via a ``lineage_ref`` pointing at ``"tracking"`` (e.g.
+    embedding's own ``lineage_ref``) through ``TrackingModule``'s identity_fields
+    regardless of which module actually wrote the record — so a merge record that
+    doesn't carry ``tracker_id``/``arena_ids``/``hyperparams``/``every_n_frames`` would
+    fall into the legacy-recovery path and raise (``TrackMergeJob`` has no
+    ``hyperparams`` attribute for ``recompute_identity_from_job`` to read). Confirms
+    ``TrackMergeModule.extra_record_fields`` writes all four, so it never does."""
+    data = {"detection_runs": [_det("det_01")]}
+    merge_record = _track(
+        "track_merged",
+        tracker_id="track_merge",
+        class_name=None,
+        source_run_ids=["track_a", "track_b"],
+    )
+    spec = run_spec.spec_of(data, "tracking", merge_record, recording_dir=None)
+    assert spec["identity"]["tracker_id"] == "track_merge"
+    # Resolves cleanly with no recording_dir at all (no legacy fallback needed, since
+    # every identity field is already present) — the failure mode this guards against
+    # is an uncaught AttributeError from job.json recovery, not a wrong value.
+    assert run_spec.freeze_spec(spec) == run_spec.freeze_spec(spec)
 
 
 # --------------------------------------------------------------------------- #
@@ -345,6 +414,11 @@ def test_identity_fields_are_recorded():
             assert (
                 ref_field in record
             ), f"{module_id}.{ref_field} (lineage) not recorded"
+        for (
+            _aux,
+            ref_field,
+        ) in module.aux_refs:  # §26: an auxiliary input is lineage too
+            assert ref_field in record, f"{module_id}.{ref_field} (aux) not recorded"
 
 
 def test_legacy_hyperparams_recovered_from_job_json(tmp_path):
@@ -420,8 +494,10 @@ def test_legacy_detection_fingerprint_recovered_from_job_json(tmp_path):
             weights_source="pretrained",
         ),
     )
-    # A legacy detection record: no prompt_fingerprint / prompt_classes (written before
-    # they were recorded) — both are recovered from the run's job.json.
+    # A legacy detection record: no prompt_fingerprint / prompt_classes /
+    # class_conf_thresholds_fingerprint (written before any of them were recorded) —
+    # all three are recovered from the run's job.json (class_conf_thresholds defaults
+    # to {} on a job this old, same as it does today for a job that never sets one).
     legacy = {
         "id": "det_01",
         "status": "complete",
@@ -437,6 +513,7 @@ def test_legacy_detection_fingerprint_recovered_from_job_json(tmp_path):
         "det_02",
         prompt_fingerprint=prompt_fingerprint(prompt),
         prompt_classes=prompt_classes(prompt),
+        class_conf_thresholds_fingerprint=class_conf_thresholds_fingerprint({}),
     )
     modern_key = _key({"detection_runs": [modern]}, "detection", modern)
     assert legacy_key == modern_key
@@ -553,3 +630,244 @@ def test_resolve_upstream_spec_resolves_an_auxiliary_input_too():
     untouched = {"keypoint_run_id": "kt_01", "tracking_run_id": "track_01"}
     module.resolve_upstream_spec("s1", data, untouched)
     assert untouched == {"keypoint_run_id": "kt_01", "tracking_run_id": "track_01"}
+
+
+# --------------------------------------------------------------------------- #
+# A picker row names the experiment run(s) it reads
+# --------------------------------------------------------------------------- #
+def _stand_in(sid, **runs):
+    return types.SimpleNamespace(id=sid, dir=None, **runs)
+
+
+def test_every_module_labels_each_row_with_its_experiment_run():
+    """Two runs with different settings must read differently in a picker, and each row must
+    name the run a user knows it by (``run_NNN``) — for every processing module, since any of
+    them is some later stage's upstream.
+
+    The class: a picker row built from the settings alone. A setting the identity holds only
+    as a digest (per-class thresholds, example sets) cannot be printed, so two runs read the
+    same — what a user hit choosing between run_001 and run_007, whose detections differ only
+    in the Intruder threshold. Data-driven over ``PROCESSING_MODULES``, so a new stage is
+    covered the day it is registered.
+    """
+    for module_id, module in sorted(PROCESSING_MODULES.items()):
+        fields = module.identity_fields
+        varied = [f for f in fields if f not in ("every_n_frames", "teacher_window_s")]
+        if not varied:
+            continue
+        records = [
+            {
+                "id": f"x_0{i}",
+                "status": "complete",
+                "created_at": f"2026-01-0{i}T00:00",
+                "processing_run_id": f"run_00{i}",
+                # Unset everywhere but one field, whose two values a label may not show
+                # (a digest): the run name has to be what tells the rows apart.
+                **{f: (f"v{i}" if f == varied[-1] else None) for f in fields},
+            }
+            for i in (1, 2)
+        ]
+        recording = _stand_in("s1", **{module.runs_key: records})
+        groups = run_spec.group_specs([recording], module_id)
+        labels = sorted(g["label"] for g in groups)
+        assert len(labels) == 2, f"{module_id}: {labels}"
+        assert labels[0] != labels[1], f"{module_id}: two runs read the same: {labels}"
+        for i, label in enumerate(labels, start=1):
+            assert label.startswith(f"run_00{i} · "), f"{module_id}: {label!r}"
+
+
+def _det_with_thresholds(rid, run, thresholds, **over):
+    return _det(
+        rid,
+        processing_run_id=run,
+        model_id="model_001",
+        model_variant=None,
+        weights_source="trained",
+        conf_threshold=0.5,
+        prompt_classes=[],
+        class_conf_thresholds=thresholds,
+        class_conf_thresholds_fingerprint=class_conf_thresholds_fingerprint(thresholds),
+        **over,
+    )
+
+
+def test_detection_rows_show_run_and_per_class_thresholds():
+    """The reported case: two detection runs of one model at one overall threshold, differing
+    only per class. Before, both rows read ``model_001 @ 0.50 (trained)``."""
+    recordings = [
+        _stand_in(
+            sid,
+            detection_runs=[
+                _det_with_thresholds(
+                    "det_01", "run_001", {"Intruder": 0.5, "Resident": 0.5}
+                ),
+                _det_with_thresholds(
+                    "det_03",
+                    "run_007",
+                    {"Intruder": 0.2, "Resident": 0.5},
+                    created_at="2026-02-01T00:00",
+                ),
+            ],
+        )
+        for sid in ("s1", "s2")
+    ]
+    labels = [g["label"] for g in run_spec.group_specs(recordings, "detection")]
+    assert labels == [
+        "run_001 · model_001 @ 0.50 (trained) · Intruder 0.50, Resident 0.50",
+        "run_007 · model_001 @ 0.50 (trained) · Intruder 0.20, Resident 0.50",
+    ]
+    named = run_spec.group_specs(
+        recordings, "detection", class_names={"Intruder": "Stranger"}
+    )
+    assert "Stranger 0.20" in named[1]["label"]
+
+
+def test_a_row_spanning_several_runs_names_each():
+    """A row is one set of settings, so a retry launched later joins it: the row names every
+    run it reads, then ``+N more``. A run made outside a processing run has no run_NNN, so its
+    per-recording id stands in rather than nothing."""
+    recordings = [
+        _stand_in(f"s{i}", detection_runs=[_det("det_01", processing_run_id=run)])
+        for i, run in enumerate(["run_004", "run_001", "run_004"])
+    ]
+    (group,) = run_spec.group_specs(recordings, "detection")
+    assert group["label"].startswith("run_001 + run_004 · sam3/large")
+    assert group["provenance"]["runs"] == ["run_001", "run_004"]
+
+    many = [
+        _stand_in(
+            f"s{i}", detection_runs=[_det("det_01", processing_run_id=f"run_00{i}")]
+        )
+        for i in range(1, 6)
+    ]
+    (group,) = run_spec.group_specs(many, "detection")
+    assert group["label"].startswith("run_001 + run_002 + run_003 + 2 more · ")
+
+    legacy = [_stand_in("s1", detection_runs=[_det("det_02")])]
+    (group,) = run_spec.group_specs(legacy, "detection")
+    assert group["label"].startswith("det_02 · sam3/large")
+
+
+def test_a_downstream_row_names_its_upstreams_run():
+    """Two tracking runs with one tracker on two detection runs read apart by the detection
+    run they came from, not only by their own."""
+    recording = _stand_in(
+        "s1",
+        detection_runs=[
+            _det_with_thresholds("det_01", "run_001", {"Intruder": 0.5}),
+            _det_with_thresholds("det_03", "run_007", {"Intruder": 0.2}),
+        ],
+        tracking_runs=[
+            _track("track_01", "det_01", processing_run_id="run_002"),
+            _track("track_03", "det_03", processing_run_id="run_008"),
+        ],
+    )
+    labels = [g["label"] for g in run_spec.group_specs([recording], "tracking")]
+    assert labels == [
+        "run_002 · anchor_tracker @ conf 0.50 · from run_001 · model_001 @ 0.50 (trained)"
+        " · Intruder 0.50",
+        "run_008 · anchor_tracker @ conf 0.50 · from run_007 · model_001 @ 0.50 (trained)"
+        " · Intruder 0.20",
+    ]
+
+
+def test_keypoint_rows_show_their_settings():
+    """Keypoint detect and keypoint track labels used to be the stage's name and nothing else,
+    so two detect runs with different example sets read the same."""
+    fields = PROCESSING_MODULES["keypoint_detect"].identity_fields
+    detect = {
+        **{f: None for f in fields},
+        "id": "kd_02",
+        "status": "complete",
+        "processing_run_id": "run_011",
+        "detection_run_id": "det_01",
+        "model_id": "dinov3_match",
+        "model_variant": "vit_large",
+        "class_example_sets": {"Intruder": "ex_04", "Resident": "ex_05"},
+        "class_example_digests": {"Intruder": "a", "Resident": "b"},
+    }
+    track = {
+        "id": "kt_03",
+        "status": "complete",
+        "processing_run_id": "run_012",
+        "detect_run_id": "kd_02",
+        "tracking_identity": None,
+        "match": {"min_inside": 0.5, "mask_grow": 0.05},
+        "method": "temporal_decode",
+        "config": {"despike": True, "smooth": False, "track_points": ["nose", "tail"]},
+    }
+    recording = _stand_in(
+        "s1",
+        detection_runs=[_det("det_01", processing_run_id="run_001")],
+        keypoint_detect_runs=[detect],
+        keypoint_track_runs=[track],
+    )
+    (kd,) = run_spec.group_specs([recording], "keypoint_detect")
+    assert kd["label"].startswith(
+        "run_011 · dinov3_match/vit_large · examples Intruder ex_04, Resident ex_05"
+        " · from run_001 · sam3/large"
+    )
+    (kt,) = run_spec.group_specs([recording], "keypoint_track")
+    assert kt["label"].startswith(
+        "run_012 · temporal_decode · despike · 2 points · from run_011 · dinov3_match"
+    )
+
+
+def test_a_legacy_record_with_no_cadence_still_labels():
+    """Keypoint detect has no default for ``every_n_frames``, so a record written before it
+    resolves to the per-run sentinel string; the label skips a cadence it cannot know rather
+    than crash every keypoint form on that experiment."""
+    record = {
+        **{f: None for f in PROCESSING_MODULES["keypoint_detect"].identity_fields},
+        "id": "kd_01",
+        "status": "complete",
+        "model_id": "dinov3_match",
+    }
+    del record["every_n_frames"]
+    (group,) = run_spec.group_specs(
+        [_stand_in("s1", keypoint_detect_runs=[record])], "keypoint_detect"
+    )
+    assert group["label"] == "kd_01 · dinov3_match"
+
+
+def test_run_label_names_each_ancestors_run():
+    """A run page's lineage line reads like a picker row, a run name at every level."""
+    recording = _stand_in(
+        "s1",
+        detection_runs=[_det_with_thresholds("det_03", "run_007", {"Intruder": 0.2})],
+        tracking_runs=[_track("track_03", "det_03", processing_run_id="run_008")],
+    )
+    label = run_spec.run_label(recording, "tracking", "track_03")
+    assert label.startswith("run_008 · anchor_tracker")
+    assert "from run_007 · model_001 @ 0.50 (trained) · Intruder 0.20" in label
+    with pytest.raises(ValueError, match="no tracking run"):
+        run_spec.run_label(recording, "tracking", "track_99")
+
+
+def test_a_spec_saved_before_the_pair_cut_still_matches_its_embedding_run():
+    """A saved spec outlives the build that wrote it.
+
+    Every embedding record from before the single-animal build states ``joint: false`` and
+    ``joint_subjects: null``, and so does every spec a saved config carries (Start from, a stored
+    selector). Specs compare by exact equality, so the two fields stay declared, inert, with those
+    defaults: dropping them made such a saved spec match none of the runs it was made from.
+    """
+    data = {"detection_runs": [_det("det_01")], "tracking_runs": [_track("track_01")]}
+    base = {
+        "id": "emb_01",
+        "status": "complete",
+        "output": "embeddings/emb_01/",
+        "tracking_run_id": "track_01",
+        "model_id": "dinov3_convnext_base",
+        "constructor": "masked_color_centered",
+        "track_ids": [0],
+    }
+    data["embedding_runs"] = [base]
+    fresh = run_spec.spec_of(data, "embedding", base)
+    # The spec as the build before the cut wrote it into a saved config.
+    saved = {
+        **fresh,
+        "identity": {**fresh["identity"], "joint": False, "joint_subjects": None},
+    }
+    saved = json.loads(json.dumps(saved))
+    assert run_spec.freeze_spec(saved) == run_spec.freeze_spec(fresh)

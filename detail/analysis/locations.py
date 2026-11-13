@@ -18,14 +18,14 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-import yaml
 
 from detail.core import atomic
+from detail.core import yaml_load
 from detail.core.utils import active_polygon_at_frame, decode_mask
 from detail.executor import rundir
 from detail.storage import recording as recording_store
 from detail.storage import spatial as spatial_store
-from detail.storage.zarr_io import PartZarrReader
+from detail.storage.zarr_io import PartZarrReader, resolve_assignment_rows
 
 SCHEMA_VERSION = 1
 
@@ -53,6 +53,20 @@ POINT_COLUMNS = [
     "point_in_bbox", "point_in_mask",
     "centroid_dist_mm", "mask_centroid_dist_mm",
 ]  # fmt: skip
+#: One row per frame per unordered pair of subjects both tracked on it (§16 *Keypoints and pairs
+#: in the export*); the edge columns are blank unless the run measured them.
+PAIR_COLUMNS = [
+    "frame_idx", "t_ns", "object_id_a", "object_id_b",
+    "mask_centroid_dist_norm", "mask_centroid_dist_px", "mask_centroid_dist_mm",
+    "bbox_centroid_dist_norm", "bbox_centroid_dist_px", "bbox_centroid_dist_mm",
+    "mask_edge_dist_px", "mask_edge_dist_mm",
+]  # fmt: skip
+#: One row per frame x subject x skeleton point of a keypoint track run; a point the run did not
+#: place has blank coordinates and score, and ``visible`` 0.
+KEYPOINT_COLUMNS = [
+    "frame_idx", "t_ns", "object_id", "keypoint",
+    "x_norm", "y_norm", "x_px", "y_px", "x_mm", "y_mm", "score", "visible",
+]  # fmt: skip
 
 
 @dataclass
@@ -67,6 +81,11 @@ class LocationTables:
     tracks: tuple[list[str], list[tuple]]
     roi_relations: tuple[list[str], list[tuple]]
     point_relations: tuple[list[str], list[tuple]]
+    pair_relations: tuple[list[str], list[tuple]] = field(
+        default_factory=lambda: (PAIR_COLUMNS, [])
+    )
+    #: ``None`` when the export was given no keypoint track run.
+    keypoints: tuple[list[str], list[tuple]] | None = None
     source: dict = field(default_factory=dict)
 
 
@@ -167,6 +186,104 @@ def _r(v, nd):
     return round(float(v), nd)
 
 
+def mask_edge_gap(mask_a: np.ndarray, mask_b: np.ndarray) -> float | None:
+    """The gap between two masks' nearest pixels, in mask pixels: ``0`` when they touch (share
+    an edge or a corner) or overlap. ``None`` when either mask is empty.
+
+    The distance transform of "not A" gives every pixel's distance to A's nearest pixel centre;
+    the nearest of B's pixels is the centre-to-centre distance, and one pixel of that is the two
+    pixels' own half-widths, so the gap between their edges is one less.
+    """
+    if not mask_a.any() or not mask_b.any():
+        return None
+    if (mask_a & mask_b).any():
+        return 0.0
+    to_a = cv2.distanceTransform(
+        (~mask_a).astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_PRECISE
+    )
+    return max(float(to_a[mask_b].min()) - 1.0, 0.0)
+
+
+def _pair_row(frame: int, t: int, a: dict, b: dict, fw: float, fh: float, mm, edge_px):
+    """One ``pair_relations`` row from two subjects' rounded centroids (the values
+    ``tracks.csv`` holds, so the distance is reproducible from it)."""
+
+    def dist(key_x: str, key_y: str) -> tuple[float, float]:
+        dx, dy = a[key_x] - b[key_x], a[key_y] - b[key_y]
+        return float(np.hypot(dx, dy)), float(np.hypot(dx * fw, dy * fh))
+
+    mask_n, mask_px = dist("mcx", "mcy")
+    box_n, box_px = dist("cx", "cy")
+    return (
+        frame, t, a["oid"], b["oid"],
+        _r(mask_n, 6), _r(mask_px, 2), mm(mask_px),
+        _r(box_n, 6), _r(box_px, 2), mm(box_px),
+        "" if edge_px is None else _r(edge_px, 2),
+        "" if edge_px is None else mm(edge_px),
+    )  # fmt: skip
+
+
+def keypoint_table(
+    recording,
+    keypoint_run_id: str,
+    tracking_run_id: str,
+    frame_wh: tuple[float, float],
+    mm,
+) -> tuple[tuple[list[str], list[tuple]], dict]:
+    """``keypoints.csv`` for one keypoint track run, and what the manifest records of it.
+
+    Read through ``api.keypoint_export.PointSource`` (the track run, the detect method's display
+    cut-off, coordinates kept under it) so this table and every keypoint export agree. Frames
+    are lifted to recording-global numbering with the offsets ``tracks.csv`` uses.
+
+    Raises:
+        ValueError: The keypoint track run assigned its poses to another tracking run, whose
+            ``object_id``s are not this export's.
+    """
+    from detail.api.keypoint_export import PointSource
+
+    source = PointSource(recording.dir, keypoint_run_id)
+    if source.tracking_run_id != tracking_run_id:
+        raise ValueError(
+            f"keypoint track run {keypoint_run_id!r} assigned its poses to tracking run "
+            f"{source.tracking_run_id!r}, not {tracking_run_id!r}; its subjects are not this "
+            "export's, so its points would land on the wrong animal"
+        )
+    offsets = recording_store.part_frame_offsets(Path(recording.dir)) or [0]
+    stems = source.part_stems()
+    names = list(source.skeleton.names)
+    fw, fh = frame_wh
+    rows: list[tuple] = []
+    for part_id in source.part_ids():
+        index = stems.index(part_id) if part_id in stems else 0
+        offset = offsets[index] if index < len(offsets) else offsets[-1]
+        for object_id, part in source.rows_in(part_id).items():
+            for i in range(len(part.frame_idx)):
+                frame, t = int(part.frame_idx[i]) + offset, int(part.t_ns[i])
+                for k, name in enumerate(names):
+                    x, y = float(part.points[i, k, 0]), float(part.points[i, k, 1])
+                    score = float(part.scores[i, k])
+                    if np.isfinite(x) and np.isfinite(y):
+                        place = (
+                            _r(x, 6), _r(y, 6), _r(x * fw, 2), _r(y * fh, 2),
+                            mm(x * fw), mm(y * fh),
+                        )  # fmt: skip
+                    else:
+                        place = ("",) * 6
+                    rows.append((
+                        frame, t, int(object_id), name, *place,
+                        _r(score, 6) if np.isfinite(score) else "",
+                        int(bool(part.visible[i, k])),
+                    ))  # fmt: skip
+    rows.sort(key=lambda row: (row[0], row[2]))  # stable: points stay in skeleton order
+    meta = {
+        "keypoint_run_id": keypoint_run_id,
+        "keypoint_cutoff": source.cutoff,
+        "keypoint_names": names,
+    }
+    return (KEYPOINT_COLUMNS, rows), meta
+
+
 # --------------------------------------------------------------------------- #
 # Orchestrator (reads zarrs; the only filesystem-touching code)
 # --------------------------------------------------------------------------- #
@@ -186,6 +303,9 @@ def compute_location_tables(
     recording,
     tracking_run_id: str,
     on_progress: Callable[[int, int], None] | None = None,
+    *,
+    pair_edge_distance: bool = False,
+    keypoint_run_id: str | None = None,
 ) -> LocationTables:
     """Compute the three tables for a completed tracking run of ``recording``.
 
@@ -202,8 +322,9 @@ def compute_location_tables(
     """
     recording_dir = Path(recording.dir)
     tracking_dir = recording_dir / "tracking" / tracking_run_id
-    track_meta = yaml.safe_load(atomic.read_text(tracking_dir / "track.yaml"))
+    track_meta = yaml_load.safe_load(atomic.read_text(tracking_dir / "track.yaml"))
     detection_run_id = track_meta["detection_run_id"]
+    class_name = track_meta.get("class_name")
     detection_dir = recording_dir / "detections" / detection_run_id
     det_env = rundir.read_envelope(detection_dir)
     mask_h, mask_w = (int(v) for v in det_env["mask_resolution"])
@@ -232,6 +353,25 @@ def compute_location_tables(
     point_defs = [_spatial_def(recording_dir, "point", p) for p in recording.points]
 
     track_rows: list[tuple] = []
+    pair_rows: list[tuple] = []
+    # The subjects of the frame being walked, flushed into pair rows when the frame changes:
+    # groups arrive in frame order, so this holds one frame, never the recording.
+    frame_subjects: list[dict] = []
+    frame_key: tuple[int, int] | None = None
+
+    def flush_pairs() -> None:
+        subjects = sorted(frame_subjects, key=lambda sub: sub["oid"])
+        for i, a in enumerate(subjects):
+            for b in subjects[i + 1 :]:
+                edge = None
+                if pair_edge_distance:
+                    gap = mask_edge_gap(a["mask"], b["mask"])
+                    edge = None if gap is None else gap * fw / mask_w
+                pair_rows.append(
+                    _pair_row(frame_key[0], frame_key[1], a, b, fw, fh, _mm, edge)
+                )
+        frame_subjects.clear()
+
     roi_rows: list[tuple] = []
     point_rows: list[tuple] = []
 
@@ -252,9 +392,18 @@ def compute_location_tables(
     rows_done = 0
 
     for part_index, det_part in enumerate(parts):
-        det = PartZarrReader(det_part).read()
-        assign = PartZarrReader(tracking_dir / "assignments" / det_part.name).read()
-        object_id = np.asarray(assign["object_id"])
+        det_reader = PartZarrReader(det_part)
+        assign_reader = PartZarrReader(tracking_dir / "assignments" / det_part.name)
+        # object_id is parallel to the detection rows the tracker actually kept
+        # when it ran (§13) — every row when this run had no class filter, only
+        # one class's otherwise (anchor_tracker et al. build object_ids from
+        # filter_by_class'd data). raw_rows recovers which reader row each
+        # assignment row really is.
+        raw_rows = resolve_assignment_rows(det_reader, assign_reader, class_name)
+        n = len(raw_rows)
+        det = {k: np.asarray(v)[raw_rows] for k, v in det_reader.read().items()}
+        assign = assign_reader.read()
+        object_id = np.asarray(assign["object_id"][:n])
         frame_idx = np.asarray(det["frame_idx"])
         t_ns = np.asarray(det["t_ns"])
         bbox = np.asarray(det["bbox"])
@@ -304,6 +453,17 @@ def compute_location_tables(
             mf = _mask_features(
                 mask, mask_w, mask_h, fw, fh, (bf["cx_norm"], bf["cy_norm"])
             )
+            if frame_key is not None and frame_key[0] != gframe:
+                flush_pairs()
+            frame_key = (gframe, t)
+            frame_subjects.append(
+                {
+                    "oid": oid,
+                    "mcx": _r(mf["cx_norm"], 6), "mcy": _r(mf["cy_norm"], 6),
+                    "cx": _r(bf["cx_norm"], 6), "cy": _r(bf["cy_norm"], 6),
+                    "mask": mask if pair_edge_distance else None,
+                }
+            )  # fmt: skip
             feat = {
                 **bf,
                 "mcx_norm": mf["cx_norm"], "mcy_norm": mf["cy_norm"],
@@ -351,16 +511,29 @@ def compute_location_tables(
                 rows_done += len(idxs)
                 on_progress(rows_done, rows_total)
 
+    if frame_subjects:
+        flush_pairs()
     track_rows.sort(key=lambda row: (row[0], row[2]))
     roi_rows.sort(key=lambda row: (row[0], row[2], row[3]))
     point_rows.sort(key=lambda row: (row[0], row[2], row[3]))
+    pair_rows.sort(key=lambda row: (row[0], row[2], row[3]))
+    keypoints, keypoint_meta = None, {"keypoint_run_id": None}
+    if keypoint_run_id is not None:
+        keypoints, keypoint_meta = keypoint_table(
+            recording, keypoint_run_id, tracking_run_id, (fw, fh), _mm
+        )
     return LocationTables(
         tracks=(TRACKS_COLUMNS, track_rows),
         roi_relations=(ROI_COLUMNS, roi_rows),
         point_relations=(POINT_COLUMNS, point_rows),
+        pair_relations=(PAIR_COLUMNS, pair_rows),
+        keypoints=keypoints,
         source={
             "schema_version": SCHEMA_VERSION,
             "tracking_run_id": tracking_run_id,
+            # §13 ``{object_id: label}`` (a track merge names its animals), so the export
+            # carries who each ``object_id`` is even after its tracking run is gone.
+            "subject_labels": track_meta.get("subject_labels"),
             "detection_run_id": detection_run_id,
             "every_n_frames": every_n_frames,
             "mask_resolution": [mask_h, mask_w],
@@ -368,5 +541,7 @@ def compute_location_tables(
             "pixels_per_mm": ppm,
             "roi_ids": [d[0] for d in roi_defs],
             "point_ids": [d[0] for d in point_defs],
+            "pair_edge_distance": bool(pair_edge_distance),
+            **keypoint_meta,
         },
     )

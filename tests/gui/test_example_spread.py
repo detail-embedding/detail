@@ -1,5 +1,6 @@
 """The spread hint beside Mark examples (detail/gui/example_spread.py): which gap it names, in
-which order, and what it refuses to call a gap."""
+which order, and what it refuses to call a gap.
+"""
 
 from detail.gui.example_spread import missing_values, spread_hint, spread_text
 

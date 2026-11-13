@@ -27,6 +27,8 @@ from collections.abc import Callable, Hashable
 from collections.abc import Iterator
 from pathlib import Path
 
+from detail.core import atomic
+
 _LOCK = threading.Lock()
 _CACHE: dict[Hashable, tuple[int, object]] = {}
 _DOCUMENTS: dict[str, tuple[tuple[int, int], object]] = {}
@@ -43,6 +45,23 @@ def clear_read_cache() -> None:
     with _LOCK:
         _CACHE.clear()
         _DOCUMENTS.clear()
+
+
+def replace_document(tmp: Path, path: Path) -> None:
+    """Move a finished ``tmp`` onto ``path`` — the way every writer of a
+    :func:`cached_document` record commits — and drop that record's cache entry.
+
+    The drop is what keeps :func:`pinned` honest. A pin returns a hit without the ``stat``
+    that would have noticed the rewrite, so a writer that only replaced the file left the
+    old parse in place for the next pinned read: setting an experiment's default camera
+    view and then building the recordings table under a pin showed every row the view from
+    before the write. ``write_recording`` always dropped its entry; the four
+    ``cached_document`` writers (``config.yaml``, ``run.yaml``, ``analysis.yaml``,
+    ``export.yaml``) never did. A write in another process is still only seen once a read
+    re-validates — the pin's documented bound ("never around a wait").
+    """
+    atomic.replace(tmp, path)
+    forget_document(path)
 
 
 def forget_document(path: Path) -> None:
@@ -63,9 +82,9 @@ def computing(key: Hashable) -> threading.RLock:
 
     **A cache every caller races is a cache nobody has.** A memo whose miss is "check, then
     compute, then store" lets every thread that arrives before the first store compute too. A
-    montage prepares its clips on several threads, and on a cold cache the clips that share a
-    recording all missed its ``recording.yaml`` together: a 35 KB file parsed once per thread,
-    each parse inflated from 64 ms to ~160 ms by the other threads holding the interpreter.
+    montage prepares its clips on six threads, and on a cold cache the clips that share a
+    recording all missed its ``recording.yaml`` together: a 35 KB file parsed twice, each parse
+    inflated from 64 ms to ~160 ms by the other threads holding the interpreter.
     ``ClipQueryPreview._scrub_ctx`` learned the same lesson for its decode contexts.
 
     Per key, never global: a thread computing one recording's record must not hold up a thread

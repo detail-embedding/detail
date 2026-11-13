@@ -23,6 +23,16 @@ the strip under Export…, where an export's equivalent news already went, by na
 failures, and the section keeps recent finished imports. The notice tests below assert the whole
 sentence, and the shell test drives the queue's real handlers with a recording named apart from its
 id, so printing the id cannot pass.
+
+**The third class.** *An action that reads the cursor where the user made a selection.* The
+Archive button asked the table for its **current** row, so with several rows highlighted it
+archived one and left the rest, and the table was single-selection besides, so the "several" a user
+reached for was never really selectable. Nothing failed: one run vanished from the list and the
+others sat there looking unprocessed. The button now reads the selected rows (by ``row_id``, since
+sorting moves positions), archives the finished ones in a single re-scan, and leaves a run still
+going alone. The tests drive the click with real Ctrl-click input, because the selection mode is
+what the person meets, and they fail on the old read, on a single-selection table, and on one
+re-scan per run.
 """
 
 from pathlib import Path
@@ -34,6 +44,8 @@ pytest.importorskip("PyQt6")
 from detail.api import active  # noqa: E402
 from detail.api.experiment import Experiment  # noqa: E402
 from detail.gui.active_processes import (  # noqa: E402
+    _COLUMNS,
+    _EXPORT_COLUMNS,
     _IMPORT_COLUMNS,
     ActiveProcessesPage,
 )
@@ -41,7 +53,15 @@ from detail.gui.app import _quit_message  # noqa: E402
 from detail.storage import recording as recording_store  # noqa: E402
 
 
-def _row(kind, run_id, status="running", label="thing", experiment_dir=None, name="p"):
+def _row(
+    kind,
+    run_id,
+    status="running",
+    label="thing",
+    experiment_dir=None,
+    name="p",
+    duration="",
+):
     return active.ActiveRun(
         kind=kind,
         experiment_dir=experiment_dir or Path("/tmp/exp"),
@@ -50,6 +70,7 @@ def _row(kind, run_id, status="running", label="thing", experiment_dir=None, nam
         label=label,
         status=status,
         created_at="2026-09-13T12:00:00Z",
+        duration=duration,
     )
 
 
@@ -181,6 +202,213 @@ def test_imports_get_their_own_section_rather_than_a_run_row(qapp):
         == "Habituation day 1"
     )
     assert imports.index(0, _IMPORT_COLUMNS.index("id")).data() == "rec_01"
+
+
+def test_a_remote_run_shows_where_and_cost_in_the_runs_table(qapp):
+    """§ run location, duration, cost — the Runs section's own bonus column."""
+    page = ActiveProcessesPage(on_open=lambda _r: None)
+    remote_row = active.ActiveRun(
+        kind="run",
+        experiment_dir=Path("/tmp/exp"),
+        experiment_name="p",
+        run_id="run_01",
+        label="detection",
+        status="running",
+        created_at="2026-09-13T12:00:00Z",
+        where="remote: tillicum",
+        cost="$1.50",
+    )
+    page._show([remote_row])
+
+    model = page._runs._table.view.model()
+    assert model.index(0, _COLUMNS.index("where")).data() == "remote: tillicum"
+    assert model.index(0, _COLUMNS.index("cost")).data() == "$1.50"
+
+
+def test_export_and_import_sections_show_where_but_not_cost(qapp):
+    """Export/import can only ever be local — a cost column there would be a
+    column that never has anything in it."""
+    assert "cost" not in _EXPORT_COLUMNS
+    assert "cost" not in _IMPORT_COLUMNS
+    assert "where" in _EXPORT_COLUMNS
+    assert "where" in _IMPORT_COLUMNS
+
+
+def test_duration_is_shown_for_runs_and_exports_but_not_imports(qapp):
+    """Runs and exports get `duration_s` written by `run_metrics.completion_fields`; an import
+    never does, so its column list omits one rather than always reading blank."""
+    assert "duration" in _COLUMNS
+    assert "duration" in _EXPORT_COLUMNS
+    assert "duration" not in _IMPORT_COLUMNS
+
+
+def test_a_finished_run_shows_its_duration_in_the_runs_table(qapp):
+    page = ActiveProcessesPage(on_open=lambda _r: None)
+    page._show([_row("run", "run_01", status="complete", duration="2m05s")])
+
+    model = page._runs._table.view.model()
+    assert model.index(0, _COLUMNS.index("duration")).data() == "2m05s"
+
+
+def test_archive_button_disabled_with_nothing_selected(qapp):
+    page = ActiveProcessesPage(on_open=lambda _r: None)
+    page._show([_row("run", "run_01", status="complete")])
+
+    assert not page._runs._archive_btn.isEnabled()
+
+
+def test_archive_button_disabled_for_an_active_row(qapp):
+    """Archiving is a dismiss for a *finished* row — a run still going has no reason to be
+    hidden from the one place that says so."""
+    page = ActiveProcessesPage(on_open=lambda _r: None)
+    page._show([_row("run", "run_01", status="running")])
+    page._runs._table.view.selectRow(0)
+
+    assert not page._runs._archive_btn.isEnabled()
+
+
+def test_archive_button_enabled_for_a_finished_row(qapp):
+    page = ActiveProcessesPage(on_open=lambda _r: None)
+    page._show([_row("run", "run_01", status="complete")])
+    page._runs._table.view.selectRow(0)
+
+    assert page._runs._archive_btn.isEnabled()
+
+
+def test_clicking_archive_dismisses_the_selected_run(qapp, monkeypatch):
+    calls = []
+    monkeypatch.setattr(active, "archive_run", lambda d, k, r: calls.append((d, k, r)))
+    monkeypatch.setattr(ActiveProcessesPage, "refresh", lambda self: None)
+
+    page = ActiveProcessesPage(on_open=lambda _r: None)
+    page._show(
+        [_row("run", "run_01", status="complete", experiment_dir=Path("/tmp/exp"))]
+    )
+    page._runs._table.view.selectRow(0)
+    page._runs._archive_selected()
+
+    assert calls == [(Path("/tmp/exp"), "run", "run_01")]
+
+
+def _archiving_page(qapp, monkeypatch, rows):
+    """The page over ``rows`` with ``archive_run`` recorded, and the re-scan counted."""
+    calls, refreshes = [], []
+    monkeypatch.setattr(active, "archive_run", lambda d, k, r: calls.append(r))
+    monkeypatch.setattr(
+        ActiveProcessesPage, "refresh", lambda self: refreshes.append(1)
+    )
+    page = ActiveProcessesPage(on_open=lambda _r: None)
+    page._show(rows)
+    refreshes.clear()  # the page scans once on construction; only the archive's own counts
+    return page, calls, refreshes
+
+
+def _select_rows(section, rows):
+    from PyQt6.QtCore import QItemSelectionModel
+
+    view = section._table.view
+    model = view.model()
+    flags = (
+        QItemSelectionModel.SelectionFlag.Select
+        | QItemSelectionModel.SelectionFlag.Rows
+    )
+    view.clearSelection()
+    for row in rows:
+        view.selectionModel().select(model.index(row, 0), flags)
+
+
+def test_archive_dismisses_every_selected_finished_run(qapp, monkeypatch):
+    """The report: several rows selected, one archived per click.
+
+    The button read the table's *current* row, so whatever else was highlighted was left behind and
+    a batch of finished runs took one click each.
+    """
+    rows = [
+        _row("run", f"run_0{i}", status="complete", experiment_dir=Path(f"/tmp/e{i}"))
+        for i in range(1, 5)
+    ]
+    page, calls, refreshes = _archiving_page(qapp, monkeypatch, rows)
+    _select_rows(page._runs, [0, 1, 2])
+
+    page._runs._archive_selected()
+
+    assert sorted(calls) == [
+        "run_01",
+        "run_02",
+        "run_03",
+    ]  # not run_04, which was not picked
+    assert len(refreshes) == 1  # one re-scan for the batch, not one per run
+
+
+def test_a_selection_that_includes_a_running_run_archives_only_the_finished(
+    qapp, monkeypatch
+):
+    rows = [
+        _row("run", "run_01", status="complete"),
+        _row("run", "run_02", status="running"),
+        _row("run", "run_03", status="failed"),
+    ]
+    page, calls, _ = _archiving_page(qapp, monkeypatch, rows)
+    _select_rows(page._runs, [0, 1, 2])
+
+    assert (
+        page._runs._archive_btn.isEnabled()
+    )  # something in the selection can be archived
+    page._runs._archive_selected()
+
+    assert sorted(calls) == [
+        "run_01",
+        "run_03",
+    ]  # run_02 is still going and stays listed
+
+
+def test_a_selection_of_only_running_runs_cannot_be_archived(qapp, monkeypatch):
+    rows = [
+        _row("run", "run_01", status="running"),
+        _row("run", "run_02", status="running"),
+    ]
+    page, calls, _ = _archiving_page(qapp, monkeypatch, rows)
+    _select_rows(page._runs, [0, 1])
+
+    assert not page._runs._archive_btn.isEnabled()
+    page._runs._archive_selected()
+    assert calls == []
+
+
+def test_every_section_lets_several_rows_be_selected(qapp):
+    """Exports and imports archive from the same button, so they need the same selection."""
+    from PyQt6.QtWidgets import QAbstractItemView
+
+    page = ActiveProcessesPage(on_open=lambda _r: None)
+
+    for section in (page._runs, page._exports, page._imports):
+        mode = section._table.view.selectionMode()
+        assert mode == QAbstractItemView.SelectionMode.ExtendedSelection
+
+
+def test_ctrl_click_selects_a_second_row_and_archive_takes_both(qapp, monkeypatch):
+    """Through real mouse input, not the selection model: the mode is what the user meets."""
+    from PyQt6.QtCore import QPoint, Qt
+    from PyQt6.QtTest import QTest
+
+    rows = [_row("run", f"run_0{i}", status="complete") for i in range(1, 4)]
+    page, calls, _ = _archiving_page(qapp, monkeypatch, rows)
+    page.resize(900, 700)
+    page.show()
+    qapp.processEvents()
+    view = page._runs._table.view
+
+    def click(row, modifier):
+        y = view.rowViewportPosition(row) + view.rowHeight(row) // 2
+        QTest.mouseClick(
+            view.viewport(), Qt.MouseButton.LeftButton, modifier, QPoint(30, y)
+        )
+
+    click(0, Qt.KeyboardModifier.NoModifier)
+    click(2, Qt.KeyboardModifier.ControlModifier)
+    page._runs._archive_selected()
+
+    assert sorted(calls) == ["run_01", "run_03"]
 
 
 def test_a_family_with_no_section_of_its_own_lands_in_runs(qapp):

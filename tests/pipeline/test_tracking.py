@@ -3,6 +3,7 @@ import time
 
 import numpy as np
 import pytest
+import zarr
 
 from detail.core.dataclasses import JobStatus, TrackingJob
 from detail.executor.local import LocalExecutor
@@ -54,6 +55,30 @@ def _build_detection_run(experiment_root):
     # The visible trackers read the mask grid from the detection run's envelope.
     (det / "job.json").write_text(
         json.dumps({"schema_version": 1, "mask_resolution": [24, 32]}), encoding="utf-8"
+    )
+
+
+def _build_two_class_detection_run(experiment_root):
+    """Both a black mouse and a white mouse detected in every frame — the shape a
+    2-class detection run has when two animals are told apart by class rather than
+    by tracking (§13's class filter)."""
+    det = experiment_root / "recordings" / "recording_001" / "detections" / "det_01"
+    det.mkdir(parents=True)
+    (det / "job.json").write_text(
+        json.dumps({"schema_version": 1, "mask_resolution": [24, 32]}), encoding="utf-8"
+    )
+    _write_part(
+        det / "part_001.zarr",
+        [
+            (
+                f,
+                [
+                    (_drift((0.1, 0.1, 0.2, 0.2), f), 0.9, "black mouse"),
+                    (_drift((0.6, 0.6, 0.7, 0.7), f), 0.8, "white mouse"),
+                ],
+            )
+            for f in range(4)
+        ],
     )
 
 
@@ -156,6 +181,91 @@ def test_runner_loads_arena_polygons_and_passes_through(
     assert captured["arena_polygons"][arena_id].n_vertices == 4
     # single part -> offsets just [0]
     assert captured["part_frame_offsets"] == [0]
+
+
+def test_tracker_class_filter_produces_two_independent_clean_tracks(tmp_path):
+    """The actual end-to-end proof: two classes, two single-subject tracking runs on
+    the *same* detection run, each producing a track with only its own animal's
+    detections — no cross-contamination, and no genuine multi-object association
+    layer needed since detection already told the two animals apart.
+
+    Without the filter, anchor_tracker's own selection (highest confidence wins) would
+    *always* pick the black mouse (0.9 > 0.8) — proof the white-mouse run genuinely
+    filtered the black mouse's rows out of its candidate pool before selection ever ran,
+    rather than merely losing a tie-break.
+    """
+    _build_two_class_detection_run(tmp_path)
+
+    for class_name in ("black mouse", "white mouse"):
+        job = _tracking_job(tracker_id="anchor_tracker")
+        job.track_id = f"track_{class_name.split()[0]}"
+        job.hyperparams = {"conf_threshold": 0.05}
+        job.class_name = class_name
+        run_dir = tmp_path / "recordings" / "recording_001" / "tracking" / job.track_id
+        run_dir.mkdir(parents=True)
+        tracking.run(job, run_dir, progress_cb=lambda e: None, stop_event=None)
+
+        assigned = PartZarrReader(run_dir / "assignments" / "part_001.zarr").read()
+        assert (assigned["object_id"] >= 0).all(), f"{class_name}: subject not found"
+        tracks = PartZarrReader(run_dir / "tracks.zarr").read()
+        assert tracks["class_name"].tolist() == [class_name]
+
+
+def test_class_filter_survives_a_detection_run_torn_by_a_crash(tmp_path):
+    """The user-facing bug this class of fix closes: a detection run interrupted
+    mid-flush (a crash on a remote/multi-GPU worker) leaves one part's columns at
+    unequal length until a *writer* reopens it (`storage/zarr_io.py`'s own
+    documented recovery) — but tracking only ever opens it with a read-only
+    `DetectionPartReader`. Before the reader learned the same "shortest column
+    wins" policy, `filter_by_class`'s mask (built from `class_name`) crashed with
+    `IndexError: boolean index did not match indexed array along axis 0` the
+    moment it was applied to a column of a different length — with no traceback
+    reaching the GUI, just that message, since the failure happens inside the
+    tracking worker subprocess.
+    """
+    _build_two_class_detection_run(tmp_path)
+    det = tmp_path / "recordings" / "recording_001" / "detections" / "det_01"
+    root = zarr.open_group(str(det / "part_001.zarr"), mode="a")
+    root["bbox"].resize((root["bbox"].shape[0] + 2, 4))  # torn: one column ahead
+
+    job = _tracking_job(tracker_id="anchor_tracker")
+    job.hyperparams = {"conf_threshold": 0.05}
+    job.class_name = "white mouse"
+    run_dir = tmp_path / "recordings" / "recording_001" / "tracking" / "track_01"
+    run_dir.mkdir(parents=True)
+    tracking.run(job, run_dir, progress_cb=lambda e: None, stop_event=None)
+
+    tracks = PartZarrReader(run_dir / "tracks.zarr").read()
+    assert tracks["class_name"].tolist() == ["white mouse"]
+
+
+def test_resolve_class_name_accepts_a_class_the_detection_run_has(tmp_path):
+    _build_two_class_detection_run(tmp_path)
+    recording_dir = tmp_path / "recordings" / "recording_001"
+    resolved = tracking.TrackingModule._resolve_class_name(
+        {"class_name": "black mouse"}, recording_dir, "det_01", "recording_001"
+    )
+    assert resolved == "black mouse"
+
+
+def test_resolve_class_name_none_is_a_true_passthrough(tmp_path):
+    _build_two_class_detection_run(tmp_path)
+    recording_dir = tmp_path / "recordings" / "recording_001"
+    assert (
+        tracking.TrackingModule._resolve_class_name(
+            {}, recording_dir, "det_01", "recording_001"
+        )
+        is None
+    )
+
+
+def test_resolve_class_name_rejects_an_unknown_class(tmp_path):
+    _build_two_class_detection_run(tmp_path)
+    recording_dir = tmp_path / "recordings" / "recording_001"
+    with pytest.raises(ValueError, match="no class named 'orange mouse'"):
+        tracking.TrackingModule._resolve_class_name(
+            {"class_name": "orange mouse"}, recording_dir, "det_01", "recording_001"
+        )
 
 
 def test_tracking_end_to_end_via_local_executor(tmp_path):
@@ -340,3 +450,14 @@ def test_tracker_stride_ignores_rows_off_its_cadence(tmp_path):
         int(f) for f, oid in zip(frame_idx, assigned["object_id"]) if int(oid) >= 0
     }
     assert linked == {0, 4, 8}
+
+
+def test_tracking_record_never_gains_a_compute_field():
+    """Tracking has no ComputeTarget (it always runs local) — locked down so a
+    future "helpful" change doesn't add one it can't act on (§ run
+    location/duration/cost scope decision)."""
+    module = tracking.TrackingModule()
+    fields = module.extra_record_fields(
+        {"detection_run_id": "det_01", "tracker_id": "anchor_tracker"}
+    )
+    assert "compute" not in fields

@@ -12,6 +12,7 @@ but pulls in no torch/sam3. ``find_spec`` locates a package without importing it
 
 import os
 
+from detail.core import hostinfo
 from detail.core.dataclasses import CheckResult, CheckStatus
 from detail.core.installed import is_importable
 from detail.core.protocols import Check
@@ -82,6 +83,33 @@ class CudaAvailable(Check):
             CheckStatus.WARN,
             "no CUDA device (SAM 3 needs one; CPU/MPS models still run)",
         )
+
+
+@register_check("nvidia_gpu")
+class NvidiaGpu(Check):
+    """Whether this machine has an NVIDIA GPU at all, which ``cuda`` cannot say.
+
+    ``cuda`` asks torch, and a first install's CPU-only torch wheel answers "no CUDA
+    device" on a box with a working NVIDIA driver. This asks the driver, so the setup
+    checklist can tell "no NVIDIA GPU here" from "PyTorch can't use the one that is".
+    """
+
+    check_id = "nvidia_gpu"
+    label = "NVIDIA GPU (driver)"
+    group = "Environment"
+    isolation = "subprocess"
+    fix = HelpTopic("getting-started", "gpu-and-cuda")
+
+    def run(self, target=None) -> CheckResult:
+        driver, driver_cuda = hostinfo.nvidia_smi()
+        if driver is None:
+            # Not a problem to fix: most machines have no NVIDIA GPU, and `cuda` already
+            # says what that costs.
+            return CheckResult(
+                self.check_id, CheckStatus.SKIPPED, "no NVIDIA driver found"
+            )
+        supports = f", supports CUDA up to {driver_cuda}" if driver_cuda else ""
+        return CheckResult(self.check_id, CheckStatus.OK, f"driver {driver}{supports}")
 
 
 @register_check("sam3_backend")

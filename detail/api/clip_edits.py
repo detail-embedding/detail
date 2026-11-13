@@ -23,6 +23,7 @@ from typing import Self
 import numpy as np
 
 from detail.core.protocols import KEEP_GROUP
+from detail.core.utils import subject_key
 from detail.storage import clip_edits as clip_edits_store
 from detail.storage.clip_edits import ClipRef
 from detail.storage.clip_edits import clip_ref
@@ -45,6 +46,10 @@ def member_groups(method, fit, state, leaf_groups: np.ndarray) -> np.ndarray | N
 
     ``leaf_groups`` is ``label_groups``' partition (groups numbered in ``run_labels.order``), so a
     member's current label is read off it, and a moved clip gets its target label's group.
+
+    A clustering run has one subject, ``state.track_id``, and every member is placed under it,
+    as the node cache places them, never under the fit's own ``subject`` column (the method's
+    bookkeeping). So an edit applies when it names the run's subject.
     """
     from detail.storage import run_labels
 
@@ -57,21 +62,20 @@ def member_groups(method, fit, state, leaf_groups: np.ndarray) -> np.ndarray | N
     current = np.asarray(leaf_groups, dtype=np.int64)[
         np.asarray(method.member_leaves(fit), dtype=np.int64)
     ]
+    run_subject = subject_key(getattr(state, "track_id", 0))
     recording = np.asarray(places.recording_index, dtype=np.int64)
-    subject = np.asarray(places.subject, dtype=np.int64)
     start = np.asarray(places.start_ns, dtype=np.int64)
     end = np.asarray(places.end_ns, dtype=np.int64)
-    sorted_members = np.lexsort((start, subject, recording))
-    units: dict[tuple[int, int], tuple[int, int]] = {}
+    sorted_members = np.lexsort((start, recording))
+    units: dict[int, tuple[int, int]] = {}
     begin = 0
     for i in range(1, len(sorted_members) + 1):
-        if i == len(sorted_members) or (
-            recording[sorted_members[i]] != recording[sorted_members[begin]]
-            or subject[sorted_members[i]] != subject[sorted_members[begin]]
+        if (
+            i == len(sorted_members)
+            or recording[sorted_members[i]] != recording[sorted_members[begin]]
         ):
             if begin < len(sorted_members):
-                first = sorted_members[begin]
-                units[(int(recording[first]), int(subject[first]))] = (begin, i)
+                units[int(recording[sorted_members[begin]])] = (begin, i)
             begin = i
     sorted_start = start[sorted_members]
     index = {rid: i for i, rid in enumerate(places.recording_ids)}
@@ -80,7 +84,9 @@ def member_groups(method, fit, state, leaf_groups: np.ndarray) -> np.ndarray | N
     for edit in edits:
         if edit["from_label"] not in state.labels:
             continue
-        bounds = units.get((index.get(edit["recording_id"], -1), int(edit["subject"])))
+        if subject_key(edit["subject"]) != run_subject:
+            continue
+        bounds = units.get(index.get(edit["recording_id"], -1))
         if bounds is None:
             continue
         lo, hi = bounds

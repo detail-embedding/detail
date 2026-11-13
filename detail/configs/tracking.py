@@ -48,6 +48,19 @@ class TrackingConfig(BaseModel):
         ),
         json_schema_extra={"label": "Field of view (resolved)"},
     )
+    class_name: str | None = Field(
+        None,
+        description=(
+            "Restrict tracking to detections of this class only, by the label the "
+            "detection run stored on them (e.g. `black mouse`). Omit to link every "
+            "class's detections together, which is right for a single-class detection "
+            "run; a multi-class run (two animals told apart by detection instead of by "
+            "tracking) needs one tracking run per class to get one clean track each. "
+            "`validate()` checks the name against the classes the detection run actually "
+            "has."
+        ),
+        json_schema_extra={"label": "Class"},
+    )
     every_n_frames: int | None = Field(
         None,
         ge=1,

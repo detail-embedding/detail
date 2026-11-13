@@ -1,4 +1,4 @@
-﻿<!-- Prepended (prose only, no heading) to the generated modules/temporal_clustering.md page. -->
+<!-- Prepended (prose only, no heading) to the generated modules/temporal_clustering.md page. -->
 Behavior clustering builds one vocabulary of **behaviors** across a selection of recordings, with
 no labels and nothing to point at. Two methods do the grouping. The default, `codebook_viterbi`,
 clusters a sample of frames into a codebook and decodes every frame against it, so its cost grows

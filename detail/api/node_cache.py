@@ -10,15 +10,25 @@ figures and per-leaf-run sums, from which any node's clips and their typicality 
 runs (``NodeView.clips``). The method says how clips are cut and scored (``clip_scoring``).
 """
 
+import dataclasses
 import os
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
+import numpy as np
+
 from detail.analysis import node_cache as tables_lib
+from detail.core.utils import subject_key
 from detail.storage import experiment as experiment_store
 from detail.storage import node_cache as store
 
 Progress = Callable[[str, float, str], None] | None
+
+
+def current_subject(subject: int) -> dict:
+    """The ``built_from`` entry a cache built now records about its subject, and what a reader
+    compares a stored cache's against (``NodeView.stale_reason``)."""
+    return {"subject": str(subject_key(subject))}
 
 
 def fit_digest(fit_path: Path | str) -> dict:
@@ -39,6 +49,7 @@ def build_node_cache(
     params: dict,
     embed_run_for: Callable[[str], str],
     built_from: dict,
+    subject: int = 0,
     trajectories: Sequence | None = None,
     progress: Progress = None,
 ) -> store.NodeCache:
@@ -47,6 +58,10 @@ def build_node_cache(
     ``params`` are the run's method params and ``trajectories`` the fit's own inputs, both handed
     to ``method.clip_scoring``; a method whose typicality needs every member's vector (pose)
     needs the trajectories, and a caller that has none loads them first.
+
+    ``subject`` is the run's one subject, its track id, and is what every member is stored
+    under in the cache's ``int64`` columns. It is given rather than read off the fit because a
+    fit's own ``subject`` column is the method's bookkeeping.
     """
 
     def report(detail: str, fraction: float) -> None:
@@ -56,6 +71,10 @@ def build_node_cache(
     tree = method.hierarchy_of(fit)
     report("member time", 0.0)
     places = method.member_places(fit)
+    places = dataclasses.replace(
+        places,
+        subject=np.full(len(places.subject), subject_key(subject), dtype=np.int64),
+    )
     leaves = method.member_leaves(fit)
     report("positions", 0.05)
     kinematics = _kinematics(
@@ -111,7 +130,7 @@ def _kinematics(experiment_dir, places, embed_run_for, step=None) -> dict:
             step(done, len(units))
         recording_dir = experiment_store.recording_path(experiment_dir, recording_id)
         found = load_track_kinematics(
-            recording_dir, embed_run_for(recording_id), subject
+            recording_dir, embed_run_for(recording_id), subject_key(subject)
         )
         if found is not None:
             kinematics[(recording_id, subject)] = found
@@ -127,6 +146,7 @@ def write_for_run(
     fit_path,
     params: dict,
     embed_run_for: Callable[[str], str],
+    subject: int = 0,
     trajectories: Sequence | None = None,
     progress: Progress = None,
 ) -> Path:
@@ -137,7 +157,8 @@ def write_for_run(
         fit=fit,
         params=params,
         embed_run_for=embed_run_for,
-        built_from=fit_digest(fit_path),
+        built_from={**fit_digest(fit_path), **current_subject(subject)},
+        subject=subject,
         trajectories=trajectories,
         progress=progress,
     )

@@ -2,12 +2,22 @@
 
 The apply side of a keypoint distill: load the ``best.pt`` a pose training run produced and
 place the student's own skeleton on every animal it finds, no example set, one candidate per
-point. It sees the **whole frame** (``per_detection = False``; the student is trained on whole
-frames, §12) and returns **every pose whose box confidence is at least ``min_pose_confidence``**
-(§26 *Visibility*: 0.25 by default, Ultralytics' own), each with its box, its confidence and
-``detection_row = −1``. It assigns no subject: identity is tracking's, and ``keypoint_track``
-gives each pose to a subject by mask (§26 *Assignment*). Before 2026-10-21 the student matched
-itself to tracks by box IoU here; that is gone.
+point. It assigns no subject: identity is tracking's, and ``keypoint_track`` gives each pose to
+a subject by mask (§26 *Assignment*). Before 2026-10-21 the student matched itself to tracks by
+box IoU here; that is gone. It is run the way it was trained (the dataset's ``student_input``,
+§12):
+
+- **whole frame** (the default; ``per_detection = False``): one forward pass per frame, and
+  **every pose whose box confidence is at least ``min_pose_confidence``** comes back (§26
+  *Visibility*: 0.25 by default, Ultralytics' own), each with its box, its confidence and
+  ``detection_row = −1``.
+- **crop** (``per_detection = True`` on the instance): one square crop per **detection**
+  (``patch_match.view``, the crop the dataset was cut with); the pose nearest the crop's centre
+  is that detection's instance, ``detection_row`` its row, and its points go back to the frame
+  through the same view. The way forward for animals that overlap.
+
+Either way the image is handed over **BGR**: Ultralytics reads a numpy array as BGR and the
+student was trained on ``cv2.imwrite``'d images (#749 on main, #757 on remote-detail).
 
 The threshold reaches the model through ``set_min_pose_confidence`` after ``load()`` — the
 detection models' ``set_conf_threshold`` shape — rather than the constructor, because the
@@ -64,15 +74,38 @@ class TrainedYoloPose(KeypointModel):
     )
     default_track_method: ClassVar[str] = "despike_smooth"
 
-    def __init__(self, weights_path: Path | str, skeleton: Skeleton) -> None:
+    def __init__(
+        self,
+        weights_path: Path | str,
+        skeleton: Skeleton,
+        *,
+        student_input: str = "whole_frame",
+        crop_px: int = 448,
+    ) -> None:
         super().__init__(None)  # no size variants: the weights are the model
         skeleton.validate()
+        if student_input not in ("whole_frame", "crop"):
+            raise ValueError(
+                f"student_input must be whole_frame or crop, got {student_input!r}"
+            )
         self._weights_path = Path(weights_path)
         self._skeleton = skeleton
+        self._student_input = student_input
+        self._crop_px = int(crop_px)
+        # A crop student reads one crop per detection, so the detect stage hands it the
+        # detections' boxes; a whole-frame one reads the frame and finds every animal itself.
+        self.per_detection = student_input == "crop"
         self._model = None
         self._device = "cpu"
         self._min_pose_confidence = DEFAULT_MIN_POSE_CONFIDENCE
         self._split = None
+
+    def resolved(self) -> dict:
+        """How the student was run, which is how it was trained (Tenet 9)."""
+        out: dict = {"student_input": self._student_input}
+        if self._student_input == "crop":
+            out["student_crop_px"] = self._crop_px
+        return out
 
     def skeleton(self) -> Skeleton:
         return self._skeleton
@@ -148,22 +181,30 @@ class TrainedYoloPose(KeypointModel):
         return self.finish_batch(self.run_prepared(self.prepare_batch(frames)))
 
     def prepare_batch(self, frames: list[InstanceFrame]) -> object:
-        """Ultralytics' letterbox, on the CPU (§26 *Execution*)."""
+        """Ultralytics' letterbox, on the CPU (§26 *Execution*); a crop student's crops are
+        cut here too, one per detection."""
         split = self._split_predict()
         # An InstanceFrame is RGB; Ultralytics reads a numpy array as BGR, and the student was
         # trained on BGR images (cv2.imwrite), so it must see BGR here too.
-        bgr = [rgb_to_bgr(f.frame) for f in frames]
-        return split, split.prepare(bgr), bgr, frames
+        if self._student_input == "crop":
+            jobs, images = self._crops(frames)
+        else:
+            jobs, images = None, [rgb_to_bgr(f.frame) for f in frames]
+        tensor = split.prepare(images) if images else None
+        return split, tensor, images, frames, jobs
 
     def run_prepared(self, prepared: object) -> object:
-        """One batched forward pass and NMS on the device, then each frame's boxes, scores
+        """One batched forward pass and NMS on the device, then each image's boxes, scores
         and keypoints copied to the host."""
-        split, tensor, bgr, frames = prepared
-        results = split.run(tensor, bgr)
-        return [(frame, _host_pose_arrays(r)) for frame, r in zip(frames, results)]
+        split, tensor, images, frames, jobs = prepared
+        results = split.run(tensor, images) if images else []
+        return frames, jobs, [_host_pose_arrays(r) for r in results]
 
     def finish_batch(self, raw: object) -> list[FrameResult]:
-        return [self._poses(frame, arrays) for frame, arrays in raw]
+        frames, jobs, arrays = raw
+        if jobs is not None:
+            return self._from_crops(frames, jobs, arrays)
+        return [self._poses(frame, a) for frame, a in zip(frames, arrays)]
 
     def _split_predict(self) -> SplitPredict:
         if self._model is None:
@@ -178,6 +219,104 @@ class TrainedYoloPose(KeypointModel):
                 verbose=False,
             )
         return self._split
+
+    def _crops(self, frames: list[InstanceFrame]) -> tuple[list, list]:
+        """One BGR crop per detection, and ``(frame index, detection row, view)`` for each."""
+        from detail.models.patch_match.view import make_view, render
+
+        jobs = []  # (frame index, detection row, view)
+        crops = []
+        for i, frame in enumerate(frames):
+            h, w = frame.frame.shape[:2]
+            bgr = rgb_to_bgr(frame.frame)
+            for det_row in sorted(frame.boxes):
+                view = make_view(tuple(frame.boxes[det_row]), (w, h), self._crop_px, 1)
+                jobs.append((i, int(det_row), view))
+                crops.append(render(bgr, view))
+        return jobs, crops
+
+    def _from_crops(self, frames, jobs, arrays) -> list[FrameResult]:
+        """Each detection takes the pose nearest its crop's centre, mapped back through the
+        crop's view."""
+        k = len(self._skeleton)
+        placed: dict[int, list] = {i: [] for i in range(len(frames))}
+        for (i, det_row, view), found_arrays in zip(jobs, arrays):
+            h, w = frames[i].frame.shape[:2]
+            found = self._from_crop(found_arrays, view, (w, h), k)
+            if found is not None and found[0] >= self._min_pose_confidence:
+                placed[i].append((det_row, *found))
+        out = []
+        for i, frame in enumerate(frames):
+            rows = placed[i]
+            n = len(rows)
+            out.append(
+                FrameResult(
+                    frame_idx=int(frame.frame_idx),
+                    t_ns=int(frame.t_ns),
+                    n=n,
+                    confidence=np.array([r[1] for r in rows], np.float32).reshape(n),
+                    bbox=np.array([r[2] for r in rows], np.float32).reshape(n, 4),
+                    detection_row=np.array([r[0] for r in rows], np.int32).reshape(n),
+                    points=np.array([r[3] for r in rows], np.float32).reshape(n, k, 2),
+                    point_scores=np.array([r[4] for r in rows], np.float32).reshape(
+                        n, k
+                    ),
+                )
+            )
+        return out
+
+    def _from_crop(self, arrays: tuple | None, view, frame_wh, k: int):
+        """``(confidence, bbox, points, scores)`` in normalized frame coordinates for the
+        pose nearest the crop's centre — the detection the crop was cut around — or None when
+        the student found nothing, or nothing covering the centre."""
+        if arrays is None:
+            return None
+        xyxyn, conf, xyn, kp_conf = arrays
+        det_boxes = xyxyn.astype(np.float64).reshape(-1, 4)
+        det_conf = conf.astype(np.float32).reshape(-1)
+        xy = xyn.astype(np.float64).reshape(len(det_boxes), -1, 2)
+        kp_conf = (
+            kp_conf.astype(np.float32).reshape(len(det_boxes), -1)
+            if kp_conf is not None
+            else np.ones(xy.shape[:2], dtype=np.float32)
+        )
+        if xy.shape[1] != k:
+            raise ValueError(
+                f"the student places {xy.shape[1]} points but its skeleton names {k}"
+            )
+        centre = np.array([0.5, 0.5])
+        covers = (
+            (det_boxes[:, 0] <= 0.5)
+            & (det_boxes[:, 2] >= 0.5)
+            & (det_boxes[:, 1] <= 0.5)
+            & (det_boxes[:, 3] >= 0.5)
+        )
+        if not covers.any():
+            return None  # another animal reaching into the crop is not this detection
+        middles = (det_boxes[:, :2] + det_boxes[:, 2:]) / 2
+        distance = np.where(covers, np.linalg.norm(middles - centre, axis=1), np.inf)
+        best = int(np.argmin(distance))
+        w, h = frame_wh
+        size = float(view.size)
+
+        def back(u: float, v: float) -> tuple[float, float]:
+            x, y = view.to_source(u * size, v * size)
+            return x / w, y / h
+
+        x0, y0 = back(*det_boxes[best, :2])
+        x1, y1 = back(*det_boxes[best, 2:])
+        points = np.full((k, 2), np.nan, dtype=np.float32)
+        scores = np.full(k, np.nan, dtype=np.float32)
+        seen = kp_conf[best] > 0.0
+        for j in np.flatnonzero(seen):
+            points[j] = back(*xy[best, j])
+            scores[j] = kp_conf[best, j]
+        return (
+            float(det_conf[best]),
+            np.array([x0, y0, x1, y1], dtype=np.float32),
+            points,
+            scores,
+        )
 
     def _poses(self, frame: InstanceFrame, arrays: tuple | None) -> FrameResult:
         """Every pose the student returned at or above the threshold, one row each."""

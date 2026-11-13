@@ -32,7 +32,12 @@ import numpy as np
 
 from detail.core.skeleton import Skeleton
 from detail.storage import recording as recording_store
-from detail.storage.keypoint_runs import KeypointDetectRun, KeypointTrackRun
+from detail.storage.keypoint_runs import (
+    KeypointDetectRun,
+    KeypointTrackRun,
+    LegacyKeypointsRun,
+    is_legacy_run_id,
+)
 
 SOURCES = ("track", "detect")
 
@@ -130,7 +135,18 @@ class PointSource:
         self.run_id = run_id
         #: The tracking run whose subjects the rows belong to; None for unassigned instances.
         self.tracking_run_id: str | None = None
-        if run_id.startswith("kt_"):
+        legacy_cutoff = None
+        if is_legacy_run_id(run_id):
+            # A run of the stage before §26: final points, read as a track run. It is its own
+            # "detect" too (the method and the cut-off come from its record).
+            self.run = self.detect = LegacyKeypointsRun(self.recording_dir, run_id)
+            self.kind = "track"
+            self.method = str(self.run.meta.get("model_id") or "")
+            self.tracking_run_id = (
+                str(self.run.meta.get("tracking_run_id") or "") or None
+            )
+            legacy_cutoff = self.run.min_score
+        elif run_id.startswith("kt_"):
             track = KeypointTrackRun(self.recording_dir, run_id)
             self.detect = KeypointDetectRun(
                 self.recording_dir, track.meta["detect_run_id"]
@@ -149,7 +165,14 @@ class PointSource:
             self.method = str(self.detect.meta.get("model_id") or "")
         self._instance_series: dict[str, dict[int, PartRows]] = {}
         self.skeleton: Skeleton = self.run.skeleton
-        self.cutoff = default_cutoff(self.detect) if cutoff is None else float(cutoff)
+        if cutoff is not None:
+            self.cutoff = float(cutoff)
+        elif legacy_cutoff is not None:
+            self.cutoff = (
+                legacy_cutoff  # the cut-off the old run's points were read with
+            )
+        else:
+            self.cutoff = default_cutoff(self.detect)
         self.blank_below_cutoff = bool(blank_below_cutoff)
         video = self.recording.get("video") or {}
         resolution = video.get("resolution") or (0, 0)
@@ -702,7 +725,8 @@ def write_nwb(
         dimension=[w, h],
         rate=source.fps(part_id),
         starting_time=0.0,
-        num_samples=source.frame_count(part_id),
+        # the spec's own dtype: a plain int is int64, and hdmf warns as it converts it
+        num_samples=np.uint64(source.frame_count(part_id)),
         unit="n.a.",
     )
     nwbfile.add_acquisition(video)

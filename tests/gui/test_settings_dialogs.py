@@ -9,11 +9,12 @@ launch dialogs opened at a typed 560x520 and sized their width floor once, in ``
 then replace their whole form when you pick another module, and nothing re-asked either
 question — so Query's behavior buttons sat below the fold of a form that fit on the screen, and its
 row of five buttons was crushed to the first module's width. ``Dialog._refit`` now runs at show
-**and** whenever the body changes; a dialog declaring ``fits_content`` also grows to its form.
+**and** whenever the body changes, and grows the window to its form.
 
-**Discovered, not listed.** Which dialogs are settings dialogs is read off what they hold — a
-module's ``ConfigWidget`` or a ``ConfigForm``'s ``AdvancedSection`` — across every dialog the
-builder can make, so a settings dialog added tomorrow fails here until it says ``fits_content``.
+Every dialog fits its content now (`Dialog.showEvent`, `gui/requirements.py`'s
+`a_dialog_opens_showing_its_content`), so the opt-in this file once checked every settings dialog
+declared — ``fits_content`` — is gone, and the check with it. What stays is the reported path:
+a form swapped in *after* the show.
 """
 
 import pytest
@@ -27,9 +28,9 @@ from PyQt6.QtWidgets import (  # noqa: E402
     QPushButton,
 )
 
-from detail import surfaces  # noqa: E402
 from detail.gui import modules as _gui_modules  # noqa: E402,F401 (registers module UIs)
 from detail.gui.modules import registry  # noqa: E402
+from detail.gui.sizing import window_cap  # noqa: E402
 from tests.gui import subjects  # noqa: E402
 
 pytestmark = pytest.mark.guard
@@ -58,13 +59,6 @@ def experiment(tmp_path_factory):
     )
 
 
-@pytest.fixture
-def fresh_experiment(tmp_path):
-    """Its own experiment, for a sweep that builds every dialog: building some of them
-    writes to the experiment, and a later dialog reading that is a different test."""
-    return _named(subjects.an_experiment_with_completed_runs(tmp_path))
-
-
 def _settle(qapp) -> None:
     # The refit is queued behind the change that asks for it, and a refit can itself resize.
     for _ in range(4):
@@ -80,12 +74,11 @@ def _assert_shows_its_form(dialog) -> None:
     problems = []
     scroll = dialog._scroll
     overflow = scroll.verticalScrollBar().maximum()
-    screen = dialog.screen().availableGeometry().height()
-    frame = dialog.frameGeometry().height() - dialog.height()
-    if overflow and dialog.height() < screen - frame - 1:
+    cap = window_cap(dialog).height()
+    if overflow and dialog.height() < cap - 2:
         problems.append(
             f"{dialog.height()}px tall with {overflow}px of its form scrolled out of view, "
-            f"on a {screen}px screen it has room to grow into"
+            f"under a {cap}px cap it has room to grow into"
         )
     body = scroll.widget()
     viewport = scroll.viewport()
@@ -149,55 +142,6 @@ def test_a_module_picked_after_the_dialog_opened_still_fits(
         _assert_shows_its_form(dialog)
     finally:
         dialog.close()
-
-
-def _holds_a_settings_form(dialog) -> bool:
-    from detail.gui.forms import AdvancedSection
-    from detail.gui.modules.registry import ConfigWidget
-
-    return bool(
-        dialog.findChildren(ConfigWidget) or dialog.findChildren(AdvancedSection)
-    )
-
-
-def _settings_dialogs(experiment):
-    recording = experiment.get_recording("recording_001")
-    found = []
-    for cls in subjects.buildable_dialogs():
-        dialog = subjects.build_dialog(cls, experiment, recording)
-        if _holds_a_settings_form(dialog):
-            found.append(cls)
-        dialog.close()
-        dialog.deleteLater()
-    return found
-
-
-def test_every_settings_dialog_says_it_fits_its_content(qapp, fresh_experiment):
-    undeclared = [
-        cls.__name__
-        for cls in _settings_dialogs(fresh_experiment)
-        if not cls.fits_content and cls.__name__ not in EXEMPT
-    ]
-    assert not undeclared, (
-        f"{undeclared} hold a config form but do not set `fits_content = True`, so they open "
-        "at whatever size was typed and scroll a form that would fit on the screen"
-    )
-
-
-def test_there_are_settings_dialogs_to_check(qapp, fresh_experiment):
-    """Guard the guard: a discovery that finds nothing passes forever."""
-    found = {cls.__name__ for cls in _settings_dialogs(fresh_experiment)}
-    assert {"LaunchRunDialog", "LaunchAnalysisDialog", "DistillDialog"} <= found, found
-
-
-def test_every_exemption_is_still_true():
-    """An exemption names a hidden surface. The day it is switched back on, it is a real
-    settings dialog again and has to declare itself."""
-    for name, surface in EXEMPT.items():
-        assert surface in surfaces.HIDDEN, (
-            f"{name} is exempt because {surface} is hidden, and it no longer is — give it "
-            "`fits_content = True` and drop the exemption"
-        )
 
 
 @pytest.mark.parametrize(

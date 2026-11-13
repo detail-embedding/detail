@@ -28,6 +28,7 @@ here reads it.
 from dataclasses import dataclass
 from pathlib import Path
 
+from detail.core.utils import subject_key
 from detail.core.utils import utc_timestamp
 from detail.storage.append_log import AppendLog
 from detail.storage.clip_edits import ClipRef
@@ -147,7 +148,7 @@ def read_review(run_dir: Path | str) -> list[ReviewRow]:
             out.append(
                 ReviewRow(
                     recording_id=row.get("recording_id") or "",
-                    subject=int(row.get("subject") or 0),
+                    subject=subject_key(row.get("subject")),
                     t_ns=int(row["t_ns"]),
                     end_t_ns=int(row["end_t_ns"]),
                     node=int(row.get("node") or -1),

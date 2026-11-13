@@ -1,6 +1,6 @@
 """Experiment-independent machine-global model catalog (Section 5).
 
-Built-in models (the ``MODELS`` / ``EMBEDDING_MODELS`` registries) and
+Built-in models (the ``MODELS`` / ``EMBEDDING_MODELS`` / ``KEYPOINT_MODELS`` registries) and
 machine-global imported weights are not experiment state — readiness, install, and
 the imported catalog are all shared across experiments. This is the experiment-free
 surface the GUI's top-level **Models** tab uses; ``Experiment``'s model methods
@@ -17,12 +17,18 @@ from pathlib import Path
 
 from detail.api import skeletons as skeletons_api
 from detail.api._runner_modules import PIPELINE_RUNNERS
-from detail.core.dataclasses import InstallProgress, ModelReadiness, TextCue
+from detail.core.dataclasses import (
+    InstallProgress,
+    ModelLicense,
+    ModelReadiness,
+    TextCue,
+)
 from detail.core.protocols import PatchFeatures
 from detail.core.registries import EMBEDDING_MODELS, MODEL_REGISTRIES, MODELS
 from detail.core.skeleton import Skeleton
 from detail.executor.runners import import_runner_modules
 from detail.models import imported as imported_store
+from detail.models import onnx_keypoints
 from detail.storage import models as models_store
 from detail.storage import skeleton_library
 
@@ -35,7 +41,8 @@ class ImportedModelRef:
     id: str
     name: str
     model_family: str
-    classes: list[str]
+    classes: list[str]  # detection: its classes; keypoints: its keypoint names
+    role: str = "detection"  # "detection" | "keypoints" (§26)
     source: str = (
         "imported"  # "imported" (dropped-in .pt) | "distilled" (promoted, §12)
     )
@@ -48,10 +55,12 @@ class ImportedModelRef:
     # source projects for the "from project(s)" column — a list (legacy single-source
     # records are wrapped into one entry by ``_source_experiments``)
     source_experiments: list[dict] = field(default_factory=list)
+    # What a keypoints import is (§26): the export's model type, channels, crop size and
+    # exporter version. Empty for a detection model.
+    details: dict = field(default_factory=dict)
     # What the model is (§12 *Keypoint models in the catalog*): "detection" or "keypoint",
     # from the record's task. A keypoint model also carries the skeleton it is built with and
     # the library entry that skeleton was matched or added to.
-    role: str = "detection"
     task: str | None = None
     skeleton: Skeleton | None = None
     skeleton_ref: dict | None = None
@@ -90,6 +99,9 @@ class GlobalModelRow:
     output_dim: int | None = None  # embedding-vector length; None for detection
     provenance: dict | None = None  # distilled models: where they came from (§12)
     variant: str | None = None  # the one size this row stands for (list_model_variants)
+    # The terms the weights are released under, when they restrict use (§26, SuperAnimal) —
+    # shown wherever a user decides to download.
+    license: ModelLicense | None = None
     # What the row's weights are read for: its role, plus "patch features" when the model
     # declares PatchFeatures (§14) — one download, listed once, read for both uses.
     capabilities: list[str] = field(default_factory=list)
@@ -178,12 +190,36 @@ def _model(model_id: str, variant: str | None = None):
     return cls(variant)
 
 
+def _builtin_class(model_id: str):
+    """The built-in class for ``model_id`` across every role's registry, or None."""
+    entry = all_models().get(model_id)
+    return entry[1] if entry is not None else None
+
+
+def model_license(model_id: str) -> ModelLicense | None:
+    """The license a built-in model's weights carry, when it restricts use (§26)."""
+    _ensure_registered()
+    cls = _builtin_class(model_id)
+    return getattr(cls, "license", None) if cls is not None else None
+
+
+def model_variants(model_id: str) -> list[str]:
+    """A built-in model's sizes, from its class — including a method the catalog does not list
+    as a row of its own (``dinov3_match``, over ``dinov3_vit``'s weights). Empty for a model
+    with no size axis, and for an imported or unknown id."""
+    _ensure_registered()
+    cls = _builtin_class(model_id)
+    return cls.variants() if cls is not None else []
+
+
 def supported_backends(model_id: str) -> list[str]:
     """The backends a built-in model accepts (cuda/mps/cpu), so a default compute
     lands on a device the model can actually run. Falls back to all three for a
     model not in the built-in registries (imported/trained loaders resolve by
     family, and support the full set)."""
     entry = all_models().get(model_id)
+    if entry is None and onnx_keypoints.is_imported(model_id):
+        return list(onnx_keypoints.ImportedKeypointModel.supported_backends)
     if entry is None:
         return ["cuda", "mps", "cpu"]
     return list(getattr(entry[1], "supported_backends", ["cuda", "mps", "cpu"]))
@@ -214,10 +250,11 @@ def list_models() -> list[GlobalModelRow]:
                     gated=getattr(cls, "gated", False),
                     input_size=getattr(cls, "input_size", None),
                     output_dim=getattr(cls, "output_dim", None),
+                    license=getattr(cls, "license", None),
                     capabilities=capabilities,
                 )
             )
-    for rec in imported_store.list_records():
+    for rec in imported_store.list_records(role=None):
         role = _catalog_role(rec)
         rows.append(
             GlobalModelRow(
@@ -226,7 +263,7 @@ def list_models() -> list[GlobalModelRow]:
                 architecture=rec.get("model_family", "—"),
                 source=rec.get("source", "imported"),  # "imported" | "distilled" (§12)
                 variants=[],
-                classes=[c["name"] for c in rec.get("classes", [])],
+                classes=_record_labels(rec),
                 gated=False,
                 provenance=rec.get("provenance"),
                 capabilities=[role],
@@ -236,9 +273,10 @@ def list_models() -> list[GlobalModelRow]:
 
 
 def _catalog_role(record: dict) -> str:
-    """A catalog record's ``MODEL_REGISTRIES`` role, from its task: a pose model is a
-    ``keypoint`` model, anything else a ``detection`` one (§12)."""
-    return "keypoint" if imported_store.is_pose_record(record) else "detection"
+    """A catalog record's ``MODEL_REGISTRIES`` role: a keypoints record — a pose model
+    (§12) or an imported ONNX one (§26) — is a ``keypoint`` model, anything else a
+    ``detection`` one."""
+    return "keypoint" if imported_store.role_of(record) == "keypoints" else "detection"
 
 
 def suggested_models() -> tuple[tuple[str, str | None], ...]:
@@ -322,7 +360,9 @@ def model_readiness(model_id: str, variant: str | None = None) -> ModelReadiness
 
     ``variant`` selects the size to answer for (the model's default when omitted)."""
     _ensure_registered()
-    if model_id in imported_store.discover():
+    if onnx_keypoints.is_imported(model_id):  # its file, and the runtime it needs (§26)
+        return onnx_keypoints.ImportedKeypointModel(model_id).readiness()
+    if model_id in imported_store.discover(role=None):
         return ModelReadiness(
             ready=True, reason="ok", message="", action_url=None, repo_id=None
         )
@@ -352,20 +392,21 @@ def is_installed(model_id: str, variant: str | None = None) -> bool:
     Answers for ``variant`` (the model's default when omitted) — the run gates on the
     variant it was configured with, so a variant-blind answer here is a false green."""
     _ensure_registered()
-    if model_id in imported_store.discover():
+    if model_id in imported_store.discover(role=None):
         return True
     return _model(model_id, variant).is_installed()
 
 
-def imported_models() -> list[ImportedModelRef]:
-    """The machine-global imported/distilled models (shared across all experiments) —
-    'your models' in the manager, with their catalog metadata."""
-    return [_imported_ref(rec) for rec in imported_store.list_records()]
+def imported_models(role: str | None) -> list[ImportedModelRef]:
+    """The machine-global imported/distilled models with ``role`` (``None``: every role) —
+    'your models' in the manager, with their catalog metadata. The role is required: a
+    detection picker that forgot it would offer a keypoint model as a detector."""
+    return [_imported_ref(rec) for rec in imported_store.list_records(role)]
 
 
 def imported_model(model_id: str) -> ImportedModelRef:
     """One imported/distilled model's full metadata (FileNotFoundError if absent)."""
-    if model_id not in imported_store.discover():
+    if model_id not in imported_store.discover(role=None):
         raise FileNotFoundError(f"no imported model {model_id!r}")
     return _imported_ref(imported_store.read(model_id))
 
@@ -378,7 +419,8 @@ def _imported_ref(rec: dict) -> ImportedModelRef:
         id=mid,
         name=rec.get("name", ""),
         model_family=rec.get("model_family", ""),
-        classes=[c["name"] for c in rec.get("classes", [])],
+        classes=_record_labels(rec),
+        role=imported_store.role_of(rec),
         source=rec.get("source", "imported"),
         provenance=rec.get("provenance"),
         created_at=rec.get("created_at"),
@@ -387,11 +429,32 @@ def _imported_ref(rec: dict) -> ImportedModelRef:
         notes=rec.get("notes", ""),
         preview_path=(imported_store.model_dir(mid) / preview) if preview else None,
         source_experiments=_source_experiments(rec.get("provenance")),
-        role=_catalog_role(rec),
+        details=_keypoint_details(rec),
         task=rec.get("task"),
         skeleton=Skeleton.from_dict(skeleton) if skeleton else None,
         skeleton_ref=rec.get("skeleton_ref"),
     )
+
+
+def _keypoint_details(rec: dict) -> dict:
+    if imported_store.role_of(rec) != "keypoints":
+        return {}
+    model_input = rec.get("input") or {}
+    return {
+        "format": rec.get("format"),
+        "model_type": rec.get("preset"),
+        "channels": model_input.get("channels"),
+        "crop_size": model_input.get("crop_size"),
+        "exporter_version": (rec.get("export") or {}).get("sleap_nn_version"),
+    }
+
+
+def _record_labels(rec: dict) -> list[str]:
+    """What a model outputs, by name: a detection model's classes, a keypoint model's points."""
+    if imported_store.role_of(rec) == "keypoints":
+        skeleton = rec.get("skeleton")
+        return list(Skeleton.from_dict(skeleton).names) if skeleton else []
+    return [c["name"] for c in rec.get("classes", [])]
 
 
 def training_summary(record: dict) -> str | None:
@@ -494,6 +557,62 @@ def import_model(
         notes=notes,
         preview=preview,
     )
+
+
+def import_keypoint_model(
+    path: Path | str,
+    *,
+    name: str | None = None,
+    skeleton: Skeleton | None = None,
+    made_by: str | None = None,
+    description: str | None = None,
+    notes: str | None = None,
+    preview: Path | str | None = None,
+) -> str:
+    """Import a keypoint model exported to ONNX (§26) into the machine-global catalog.
+
+    ``path`` is the ``.onnx`` file or the folder ``sleap-nn export ... --format onnx`` wrote.
+    The keypoint names and edges come from the export; its left/right pairs are inferred from
+    the names unless ``skeleton`` gives them. Returns the assigned id, which a keypoint detect
+    run names as its ``model_id``.
+
+    Raises:
+        FileNotFoundError: nothing to import at ``path``.
+        ValueError: not a sleap-nn export, a model type DETAIL cannot use (bottom-up,
+            centroid-only, multi-class), a skeleton whose names differ, or an id collision.
+        OnnxBackendMissingError: onnxruntime (the ``keypoints_onnx`` extra) is missing.
+    """
+    _ensure_registered()  # the id must not collide with any built-in registry
+    return onnx_keypoints.import_model(
+        path,
+        name=name,
+        skeleton=skeleton,
+        made_by=made_by,
+        description=description,
+        notes=notes,
+        preview=preview,
+    )
+
+
+def keypoint_model_skeleton(model_id: str) -> Skeleton:
+    """An imported keypoints model's skeleton: its keypoints in output order, its pairs and
+    edges.
+
+    Raises:
+        FileNotFoundError: not an imported keypoints model.
+    """
+    return Skeleton.from_dict(onnx_keypoints.read_record(model_id)["skeleton"])
+
+
+def set_keypoint_model_skeleton(model_id: str, skeleton: Skeleton) -> None:
+    """Set an imported keypoints model's pairs and edges. The names are its outputs and cannot
+    change; runs already made keep the skeleton they recorded.
+
+    Raises:
+        FileNotFoundError: not an imported keypoints model.
+        ValueError: different names, or a skeleton that fails validation.
+    """
+    onnx_keypoints.set_skeleton(model_id, skeleton)
 
 
 def update_model_metadata(
@@ -612,7 +731,9 @@ def _restored_skeleton(record: dict) -> Skeleton:
     skeleton = Skeleton.from_dict(body)
     skeleton.validate()
     recorded = record.get("skeleton_digest")
-    if recorded and recorded != skeleton.digest():
+    # A digest is of §26's shape. An archive of a student promoted before it carries the old
+    # shape, and whatever digest it recorded was never of this skeleton.
+    if recorded and "names" in body and recorded != skeleton.digest():
         raise ValueError(
             f"keypoint model {record.get('id')!r}'s skeleton does not match its recorded "
             f"digest ({skeleton.digest()} vs {recorded}); the archive was edited or damaged"
@@ -632,7 +753,7 @@ def _library_entry_for(record: dict, skeleton: Skeleton) -> dict:
 
 def remove_imported_model(model_id: str) -> None:
     """Delete a machine-global imported model (raises if absent)."""
-    if model_id not in imported_store.discover():
+    if model_id not in imported_store.discover(role=None):
         raise FileNotFoundError(f"no imported model {model_id!r}")
     imported_store.remove(model_id)
 
@@ -645,15 +766,13 @@ def tool_models() -> list[ToolModel]:
         ToolModel(id=mid, name=mid, prompt_capable=True)
         for mid in prompt_capable_models()
     ]
-    for ref in imported_models():
-        if ref.role != "detection":
-            continue  # a keypoint model segments nothing (§12)
+    for ref in imported_models(role="detection"):  # a tool segments; a pose model can't
         out.append(ToolModel(id=ref.id, name=ref.name or ref.id, prompt_capable=False))
     return out
 
 
 def _catalog_dir_or_raise(model_id: str) -> Path:
     """The catalog dir for an imported/distilled model, or FileNotFoundError."""
-    if model_id not in imported_store.discover():
+    if model_id not in imported_store.discover(role=None):
         raise FileNotFoundError(f"no imported model {model_id!r}")
     return imported_store.model_dir(model_id)

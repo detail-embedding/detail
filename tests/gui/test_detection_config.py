@@ -8,6 +8,27 @@ from detail.api.experiment import Experiment  # noqa: E402
 from detail.core.registries import MODELS  # noqa: E402
 from detail.gui import modules as _gui_modules  # noqa: E402,F401 (registers UIs)
 from detail.gui.modules.registry import GUI_MODULES  # noqa: E402
+from detail.storage import models as models_store  # noqa: E402
+
+
+def _trained_model(experiment, model_id="model_001", classes=None):
+    """A complete trained model with a real class list — unlike ``closed_set_model``
+    (a built-in registry stub, whose ``entry["classes"]`` is always ``[]``), this is
+    the shape that actually populates the per-class threshold rows."""
+    mdir = models_store.model_dir(experiment.dir, model_id)
+    mdir.mkdir(parents=True)
+    models_store.write_model_yaml(
+        mdir,
+        {
+            "id": model_id,
+            "name": "m",
+            "status": "complete",
+            "model_family": "yolo",
+            "classes": classes
+            or [{"id": 0, "name": "black mouse"}, {"id": 1, "name": "white mouse"}],
+            "weights": {"best": "run/best.pt", "last": None},
+        },
+    )
 
 
 @pytest.fixture
@@ -86,6 +107,77 @@ def test_prompt_rows_show_only_for_a_prompted_model(qapp, tmp_path, closed_set_m
     assert widget._prompt.isHidden()
 
 
+def test_load_config_restores_which_model_was_used(qapp, tmp_path):
+    """Refine/the settings picker must reopen on the *run's own* model, not whatever
+    _rebuild_models defaults to. Each combo row's data is the whole entry dict (kind,
+    classes, variants alongside the id), so a bare ``self._model.findData(model_id)``
+    against a plain id string never matches and silently no-ops -- caught here because
+    a fresh widget's default (the first built-in, alphabetically) is never
+    "model_001"."""
+    experiment = Experiment.create("p", tmp_path)
+    _trained_model(experiment)
+    widget = GUI_MODULES["detection"].config_widget()
+    widget.on_experiment_set(experiment)
+
+    widget.load_config({"model_id": "model_001"})
+
+    assert widget.config()["model_id"] == "model_001"
+
+
+def test_per_class_conf_rows_appear_only_for_a_multi_class_trained_model(
+    qapp, tmp_path, closed_set_model
+):
+    experiment = Experiment.create("p", tmp_path)
+    _trained_model(experiment)  # black mouse, white mouse
+    widget = GUI_MODULES["detection"].config_widget()
+    widget.on_experiment_set(experiment)
+
+    _select(widget, "sam3")  # prompt-capable: nothing to override per-class
+    assert widget._class_conf_container.isHidden()
+
+    _select(widget, closed_set_model)  # closed-set, but this stub has no classes
+    assert widget._class_conf_container.isHidden()
+    assert widget._class_conf_rows == {}
+
+    _select(widget, "model_001")  # closed-set, two known classes
+    assert not widget._class_conf_container.isHidden()
+    assert set(widget._class_conf_rows) == {"black mouse", "white mouse"}
+
+
+def test_per_class_conf_rows_seed_to_the_global_default(qapp, tmp_path):
+    experiment = Experiment.create("p", tmp_path)
+    _trained_model(experiment)
+    widget = GUI_MODULES["detection"].config_widget()
+    widget.on_experiment_set(experiment)
+    widget._conf.setValue(0.42)
+
+    _select(widget, "model_001")
+
+    assert widget._class_conf_rows["black mouse"].value() == pytest.approx(0.42)
+    assert widget._class_conf_rows["white mouse"].value() == pytest.approx(0.42)
+
+
+def test_config_round_trips_class_conf_thresholds_through_load_config(qapp, tmp_path):
+    experiment = Experiment.create("p", tmp_path)
+    _trained_model(experiment)
+    widget = GUI_MODULES["detection"].config_widget()
+    widget.on_experiment_set(experiment)
+    _select(widget, "model_001")
+    widget._class_conf_rows["black mouse"].setValue(0.7)
+
+    emitted = widget.config()
+    assert emitted["class_conf_thresholds"] == {
+        "black mouse": pytest.approx(0.7),
+        "white mouse": pytest.approx(0.5),
+    }
+
+    restored = GUI_MODULES["detection"].config_widget()
+    restored.on_experiment_set(experiment)
+    restored.load_config(emitted)
+    assert restored._class_conf_rows["black mouse"].value() == pytest.approx(0.7)
+    assert restored._class_conf_rows["white mouse"].value() == pytest.approx(0.5)
+
+
 def test_the_backend_combo_never_offers_a_device_this_machine_lacks(
     qapp, monkeypatch, real_machine
 ):
@@ -142,6 +234,28 @@ def test_refine_restores_the_prompt_in_either_of_its_two_forms(qapp):
         target = form.config()["prompt"].targets[0]
         assert target.class_name == "rat"
         assert target.cue.text == "a white rat"
+
+
+def test_an_imported_keypoint_model_is_not_offered_as_a_detector(qapp, tmp_path):
+    """§26 Phase 4: the machine catalog holds keypoint models too; the detection form lists
+    the detection ones only (a pose model handed to a detection loader cannot run)."""
+    from pathlib import Path
+
+    pytest.importorskip("onnxruntime")
+    from detail.api import models as api_models
+
+    data = (
+        Path(__file__).parents[1]
+        / "models"
+        / "data"
+        / "sleap_onnx"
+        / "centered_instance"
+    )
+    pose = api_models.import_keypoint_model(data, name="mouse_pose")
+    widget = GUI_MODULES["detection"].config_widget()
+    widget.on_experiment_set(Experiment.create("p", tmp_path))
+    offered = [widget._model.itemData(i) for i in range(widget._model.count())]
+    assert pose not in [d["id"] for d in offered if d]
 
 
 def _catalog_record(model_id: str, task: str) -> None:

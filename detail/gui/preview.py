@@ -14,6 +14,7 @@ from pathlib import Path
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QPixmap
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -32,15 +33,16 @@ from PyQt6.QtWidgets import (
 )
 
 from detail.api import run_spec
+from detail.configs.display import ConfidenceView
 from detail.core.dataclasses import Detection, Prompt, PromptTarget, TextCue
 from detail.core.utils import decode_mask
 from detail.core.visualize import assign_colors, draw_detections
-from detail.gui.confidence import ConfidenceRow, showing_caption
 from detail.gui.dialog import Dialog
 from detail.gui.full_frame import EnlargeableThumb
 from detail.gui.run_preview import _to_pixmap
-from detail.gui.spin import IntSpin
+from detail.gui.spin import SECONDS, FloatSpin, IntSpin
 from detail.gui.workers import GuiWorker
+from detail.gui._pydantic_form import field_widget
 from detail.pipeline._detection_worker import _encode_mask
 
 
@@ -81,18 +83,37 @@ class _Swatch(QLabel):
 
 
 class _PromptHeader(QWidget):
-    def __init__(self, text: str, rgb, total: int):
+    """One column's swatch, name, live total, and its own confidence spinbox.
+
+    A per-column control rather than one shared slider: the model ran wide open, so
+    moving one class's threshold changes only what that class's column shows — it never
+    needs a second class's opinion, and shouldn't wait for one.
+    """
+
+    threshold_changed = pyqtSignal(str, float)
+
+    def __init__(self, label: str, text: str, rgb, total: int):
         super().__init__()
+        self._label_key = label
         self._text = text
         row = QHBoxLayout(self)
         row.setContentsMargins(2, 2, 2, 2)
         row.addWidget(_Swatch(rgb))
         self._label = QLabel(f"{text}\n({total} total)")
         row.addWidget(self._label)
+        self._spin = field_widget(ConfidenceView, "min_conf")
+        self._spin.setValue(ConfidenceView().min_conf)
+        self._spin.valueChanged.connect(
+            lambda value: self.threshold_changed.emit(self._label_key, value)
+        )
+        row.addWidget(self._spin)
         row.addStretch()
 
+    def value(self) -> float:
+        return self._spin.value()
+
     def set_total(self, total: int) -> None:
-        """The column's total *at the current threshold* — it moves with the slider."""
+        """The column's total *at its own current threshold* — it moves with its spinbox."""
         self._label.setText(f"{self._text}\n({total} total)")
 
 
@@ -178,15 +199,18 @@ class _CompactFrame:
 
 
 class _PromptMatrix(QScrollArea):
-    """Prompt-test results as a grid: columns = prompts (color swatch + total),
-    rows = sampled frames, each cell the overlay thumbnail + its detection count.
+    """Prompt-test results as a grid: columns = prompts (color swatch, live total, and
+    the column's own confidence spinbox), rows = sampled frames, each cell the overlay
+    thumbnail + its detection count.
 
-    Renders from the run's detections rather than pre-baked JPGs, so the confidence
-    threshold can be moved after the run — a written JPG is one threshold forever. This
-    is the same shape the Quick segment comparison grid uses.
+    Renders from the run's detections rather than pre-baked JPGs, so a threshold can be
+    moved after the run — a written JPG is one threshold forever. Each column keeps its
+    own threshold rather than sharing one (the model ran wide open, at no threshold at
+    all, so nothing about one class's cut belongs to another's) — moving one column's
+    spinbox redraws only that column.
     """
 
-    def __init__(self, frames: list, prompts: list, colors: dict, min_conf: float):
+    def __init__(self, frames: list, prompts: list, colors: dict):
         super().__init__()
         self.setWidgetResizable(True)
         inner = QWidget()
@@ -195,7 +219,6 @@ class _PromptMatrix(QScrollArea):
         self._frames = frames
         self._prompts = prompts
         self._colors = colors
-        self._min_conf = min_conf
         self._cells: dict[tuple[int, str], _MatrixCell] = {}
         self._headers: dict[str, _PromptHeader] = {}
         if not frames:
@@ -203,7 +226,8 @@ class _PromptMatrix(QScrollArea):
             return
         grid.addWidget(QLabel("frame"), 0, 0)
         for col, (label, text) in enumerate(prompts, start=1):
-            header = _PromptHeader(text, colors.get(label, (200, 200, 200)), 0)
+            header = _PromptHeader(label, text, colors.get(label, (200, 200, 200)), 0)
+            header.threshold_changed.connect(self._on_column_threshold_changed)
             grid.addWidget(header, 0, col)
             self._headers[label] = header
         for row, frame in enumerate(frames, start=1):
@@ -212,43 +236,49 @@ class _PromptMatrix(QScrollArea):
                 cell = _MatrixCell()
                 grid.addWidget(cell, row, col)
                 self._cells[(row - 1, label)] = cell
-        self.set_min_conf(min_conf)
-
-    def set_min_conf(self, value: float) -> None:
-        """Redraw every cell at a new display threshold — no model, no decode."""
-        self._min_conf = value
         for label, header in self._headers.items():
-            header.set_total(sum(f.count(label, value) for f in self._frames))
+            self._redraw_column(label, header.value())
+
+    def _on_column_threshold_changed(self, label: str, value: float) -> None:
+        self._redraw_column(label, value)
+
+    def _redraw_column(self, label: str, value: float) -> None:
+        """Redraw one column's cells + its own header total — no model, no decode, and
+        no other column's cells are touched."""
+        header = self._headers.get(label)
+        if header is None:
+            return
+        header.set_total(sum(f.count(label, value) for f in self._frames))
+        color = self._colors.get(label, (255, 255, 255))
         for i, frame in enumerate(self._frames):
-            for label, _text in self._prompts:
-                cell = self._cells.get((i, label))
-                if cell is None:
-                    continue
-                dets = frame.detections(label, value)
-                color = self._colors.get(label, (255, 255, 255))
-                overlay = draw_detections(frame.frame_image, dets, color)
-                # The *current* threshold, read when the cell is opened rather than captured
-                # here: `set_min_conf` runs again on every slider move, so a cell always
-                # carries a recipe for what it is showing.
-                render = lambda f=frame, lb=label, c=color: draw_detections(
-                    f.frame_image, f.detections(lb, self._min_conf), c
-                )
-                cell.show_overlay(
-                    overlay,
-                    len(dets),
-                    render=render,
-                    title=f"frame {frame.frame_idx} · {self._prompt_text(label)}",
-                )
+            cell = self._cells.get((i, label))
+            if cell is None:
+                continue
+            dets = frame.detections(label, value)
+            overlay = draw_detections(frame.frame_image, dets, color)
+            # The *current* threshold, read when the cell is opened rather than captured
+            # here: the column's own spinbox can move again before that happens, and a
+            # cell always carries a recipe for what it is showing right now.
+            render = lambda f=frame, lb=label, c=color: draw_detections(
+                f.frame_image, f.detections(lb, self._headers[lb].value()), c
+            )
+            cell.show_overlay(
+                overlay,
+                len(dets),
+                render=render,
+                title=f"frame {frame.frame_idx} · {self._prompt_text(label)}",
+            )
 
     def _prompt_text(self, label: str) -> str:
         return next((text for lb, text in self._prompts if lb == label), label)
 
-    def counts(self, min_conf: float) -> tuple[int, int]:
-        """``(kept at min_conf, total stored)`` across every frame and prompt."""
+    def counts(self) -> tuple[int, int]:
+        """``(kept across every column at its own threshold, total stored)``."""
         kept = total = 0
         for frame in self._frames:
             for label, _text in self._prompts:
-                kept += frame.count(label, min_conf)
+                value = self._headers[label].value() if label in self._headers else 0.0
+                kept += frame.count(label, value)
                 total += frame.count(label, 0.0)
         return kept, total
 
@@ -263,7 +293,6 @@ class _PreviewDialog(Dialog):
     def __init__(self, recordings: list, parent=None):
         super().__init__(parent)
         self._recordings = recordings
-        self.resize(780, 640)
         layout = self.body()
         form = QFormLayout()
         self._recording = QComboBox()
@@ -392,37 +421,71 @@ class PromptTestDialog(_PreviewDialog):
         self._n.setRange(1, 100)
         self._n.setValue(6)
         form.addRow("Sample frames:", self._n)
+        form.addRow("Time range:", self._build_range())
         # No confidence row: the run keeps every proposal and the threshold is chosen on
         # the results below, where you can see what moving it does.
+        if self._compute is not None and self._compute.backend == "remote":
+            # The form's target is where the full run goes; a preview always runs here
+            # (``Recording.run_prompt_test`` resolves it via ``preview_compute``).
+            self._local_note = QLabel(
+                "Runs on this machine — the full run still goes to "
+                f"{self._compute.remote_target or 'the cluster'}."
+            )
+            self._local_note.setWordWrap(True)
+            form.addRow(self._local_note)
+
+    def _build_range(self) -> QWidget:
+        """Draw the sample from part of the recording rather than all of it — the stretch
+        where the animal is in view, or where a prompt is struggling."""
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self._use_range = QCheckBox("Only from")
+        self._range_start = FloatSpin(SECONDS)
+        self._range_end = FloatSpin(SECONDS)
+        for spin in (self._range_start, self._range_end):
+            spin.setRange(0.0, 24 * 3600.0)
+            spin.setSuffix(" s")
+        self._range_end.setValue(60.0)
+        layout.addWidget(self._use_range)
+        layout.addWidget(self._range_start)
+        layout.addWidget(QLabel("to"))
+        layout.addWidget(self._range_end)
+        layout.addStretch(1)
+        self._use_range.setToolTip(
+            "Sample frames only between these recording times. "
+            "Off: anywhere in the recording."
+        )
+        self._use_range.toggled.connect(self._sync_range)
+        self._sync_range()
+        return row
+
+    def _sync_range(self) -> None:
+        on = self._use_range.isChecked()
+        self._range_start.setEnabled(on)
+        self._range_end.setEnabled(on)
+
+    def time_range_ns(self) -> tuple[int | None, int | None]:
+        """The ``(t_start_ns, t_end_ns)`` the sample is drawn from; ``(None, None)`` is all."""
+        if not self._use_range.isChecked():
+            return None, None
+        return (
+            round(self._range_start.value() * 1e9),
+            round(self._range_end.value() * 1e9),
+        )
 
     def _run_label(self) -> str:
         return "Run prompt test"
 
     def _show_results(self, payload) -> int:
         frames, prompts, colors = payload
-        self._confidence = ConfidenceRow()
-        self._confidence.threshold_changed.connect(self._on_min_conf)
-        self._matrix = _PromptMatrix(frames, prompts, colors, self._confidence.value())
-        holder = QWidget()
-        column = QVBoxLayout(holder)
-        column.setContentsMargins(0, 0, 0, 0)
-        column.addWidget(self._confidence)
-        column.addWidget(self._matrix, 1)
-        self._set_results(holder)
-        self._update_caption(self._confidence.value())
+        self._matrix = _PromptMatrix(frames, prompts, colors)
+        self._set_results(self._matrix)
         return self._matrix.cell_count()
 
     def _status_text(self, count: int, payload) -> str:
         frames, prompts, _colors = payload
         return f"{len(frames)} frame(s) × {len(prompts)} prompt(s)"
-
-    def _on_min_conf(self, value: float) -> None:
-        self._matrix.set_min_conf(value)
-        self._update_caption(value)
-
-    def _update_caption(self, min_conf: float) -> None:
-        kept, total = self._matrix.counts(min_conf)
-        self._confidence.set_caption(showing_caption(kept, total))
 
     def _prompt_list(self) -> list[Prompt]:
         lines = [line.strip() for line in self._prompts.toPlainText().splitlines()]
@@ -440,6 +503,9 @@ class PromptTestDialog(_PreviewDialog):
         ]
 
     def _validate(self) -> str | None:
+        start, end = self.time_range_ns()
+        if start is not None and end <= start:
+            return "The time range's end must be after its start."
         if self._closed_set:
             if not self._checked_classes():
                 return "Select at least one class to preview."
@@ -455,6 +521,7 @@ class PromptTestDialog(_PreviewDialog):
         # Closed-set: no text prompts; preview the chosen trained classes instead.
         prompts = [] if self._closed_set else self._prompt_list()
         display_classes = self._checked_classes() if self._closed_set else None
+        t_start_ns, t_end_ns = self.time_range_ns()
         texts = (
             list(display_classes or [])
             if self._closed_set
@@ -477,6 +544,8 @@ class PromptTestDialog(_PreviewDialog):
                 display_classes=display_classes,
                 n_sample_frames=n,
                 compute=compute,
+                t_start_ns=t_start_ns,
+                t_end_ns=t_end_ns,
                 on_result=lambda result: frames.append(_CompactFrame(result)),
             )
             labels = list(frames[0].rows) if frames else []

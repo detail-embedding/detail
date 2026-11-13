@@ -368,6 +368,48 @@ def test_a_unit_is_a_behavior_times_a_recording(tmp_path):
     assert {u.behavior_id for u in job.units} == {"q01", "q02"}
 
 
+def test_resolve_clips_defaults_a_trackless_exemplar_to_the_runs_own_track(tmp_path):
+    """An exemplar spec naming no ``track_id`` of its own defaulted to a bare ``0`` rather
+    than the run's own resolved subject — harmless while every fixture here searched track
+    0, but would guarantee "no embedded rows for track 0" the moment a run searches any
+    other track."""
+    proj = Experiment.create("p", tmp_path)
+    sess = proj.create_recording("recording_001")
+    n_rows = 600
+    motif = _motif()
+    emb = np.random.default_rng(1).normal(size=(n_rows, DIM)).astype(np.float32)
+    emb[100:120] = motif
+    run_dir = sess.dir / "embeddings" / "emb_01"
+    store = run_dir / "track_1" / "part_001.zarr"
+    store.parent.mkdir(parents=True)
+    with EmbeddingPartWriter(store, output_dim=DIM) as w:
+        for i in range(n_rows):
+            w.add_row(i, i * PERIOD, 0, emb[i])
+    (run_dir / "embedding.yaml").write_text(
+        yaml.dump(
+            {
+                "schema_version": 1,
+                "id": "emb_01",
+                "tracking_run_id": "track_01",
+                "model_id": "dinov3_convnext_base",
+                "model_variant": "base",
+                "constructor": "silhouette",
+                "output_dim": DIM,
+                "track_ids": [1],
+                "renderer_spec": [{"type": "init_binary_mask"}],
+                "status": "complete",
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    config = _config(["recording_001"], plant_at=100)
+    config["track_id"] = 1
+    del config["behaviors"][0]["examples"][0]["track_id"]
+    normalized = QueryModule().validate(proj.dir, config)
+    assert normalized["behaviors"][0]["examples"][0]["track_id"] == 1
+
+
 def test_the_search_finds_the_planted_motif_in_every_recording(tmp_path):
     # Assert content, not that the call returned: the whole module exists to find this.
     recordings = ["recording_001", "recording_002"]

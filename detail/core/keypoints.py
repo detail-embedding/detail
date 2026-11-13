@@ -37,6 +37,25 @@ class InstanceFrame:
         int, tuple[float, float, float, float]
     ]  # detection_row -> normalized xyxy
     masks: dict[int, np.ndarray] | None = None  # detection_row -> (h, w) bool
+    # detection_row -> the detection's class, filled only for a method matching each class
+    # against its own example set (§26 *One example set per detection class*)
+    classes: dict[int, str] | None = None
+
+
+def student_input_of(record: dict) -> dict:
+    """``{student_input, crop_px}`` a student is trained and run with, from a stored record:
+    a model's ``model.yaml``, a pose dataset's ``dataset.yaml`` or a dataset job.
+
+    The one reader of the choice. A record written before the choice existed is a whole-frame
+    one, unless it carries ``crop_px`` and no ``student_input``: the stage before §26 trained
+    on a crop and recorded only its size. Defaulting that record to the whole frame trains or
+    runs a crop-trained student on whole frames, which is wrong without failing.
+    """
+    mode = record.get("student_input")
+    crop = record.get("student_crop_px") or record.get("crop_px")
+    if mode is None:
+        mode = "crop" if record.get("crop_px") else "whole_frame"
+    return {"student_input": str(mode), "crop_px": int(crop or 448)}
 
 
 @dataclass(frozen=True)
@@ -92,6 +111,13 @@ class KeypointDetectJob:
     # experiment's models/) or "imported" (the machine catalog); None for a registered method.
     # The worker builds from it rather than searching again, since the two can share an id.
     weights_source: str | None = None
+    # The detection class a per-detection method places poses in (§26); None: every class.
+    # Defaulted, so a job.json written before the field reads as every class, as it ran.
+    class_name: str | None = None
+    # One example-set snapshot per detection class ({class: {id, name, digest, frames,
+    # marks}}, §26 *One example set per detection class*), in place of ``example_set`` and
+    # ``class_name``. Defaulted, so a job.json written before the field reads as one set.
+    example_sets: dict | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -99,6 +125,7 @@ class KeypointDetectJob:
             "recording_id": self.recording_id,
             "detect_run_id": self.detect_run_id,
             "detection_run_id": self.detection_run_id,
+            "class_name": self.class_name,
             "min_pose_confidence": (
                 None
                 if self.min_pose_confidence is None
@@ -108,6 +135,11 @@ class KeypointDetectJob:
             "model_variant": self.model_variant,
             "backbone": None if self.backbone is None else dict(self.backbone),
             "example_set": None if self.example_set is None else dict(self.example_set),
+            "example_sets": (
+                None
+                if self.example_sets is None
+                else {cls: dict(s) for cls, s in self.example_sets.items()}
+            ),
             "skeleton": dict(self.skeleton),
             "n_candidates": int(self.n_candidates),
             "every_n_frames": int(self.every_n_frames),
@@ -173,6 +205,9 @@ class KeypointTrackJob:
     # skeleton the points follow, read by the skeleton dependents search. None when the
     # detect run had none.
     skeleton_ref: dict | None = None
+    # Where it runs: this machine's CPU, or a registered cluster (§6). None for a job written
+    # before the stage could go remote, which ran here.
+    compute: ComputeTarget | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -189,6 +224,7 @@ class KeypointTrackJob:
             "skeleton_ref": (
                 None if self.skeleton_ref is None else dict(self.skeleton_ref)
             ),
+            "compute": None if self.compute is None else self.compute.to_dict(),
         }
 
     @classmethod
@@ -198,7 +234,15 @@ class KeypointTrackJob:
                 f"keypoint track job {d.get('job_id')!r} was made from a per-track detect run "
                 "(before 2026-10-21); re-run keypoint detection, then keypoint track"
             )
-        return cls(**d)
+        compute = d.get("compute")
+        return cls(
+            **{
+                **d,
+                "compute": (
+                    None if compute is None else ComputeTarget.from_dict(compute)
+                ),
+            }
+        )
 
 
 @dataclass
@@ -247,6 +291,10 @@ class KeypointDatasetJob:
     every_n_frames: int
     created_at: str
     compute: ComputeTarget | None = None
+    # What each training image is (§12): the whole frame (the default, and every dataset
+    # written before the choice existed), or a crop around each tracked animal.
+    student_input: str = "whole_frame"
+    student_crop_px: int = 448
 
     @property
     def teacher_kind(self) -> str:
@@ -265,6 +313,8 @@ class KeypointDatasetJob:
             "exclude_audit_s": float(self.exclude_audit_s),
             "every_n_frames": int(self.every_n_frames),
             "created_at": self.created_at,
+            "student_input": self.student_input,
+            "student_crop_px": int(self.student_crop_px),
         }
 
     @classmethod
@@ -291,4 +341,6 @@ class KeypointDatasetJob:
             compute=(
                 ComputeTarget.from_dict(d["compute"]) if d.get("compute") else None
             ),
+            student_input=student_input_of(d)["student_input"],
+            student_crop_px=student_input_of(d)["crop_px"],
         )

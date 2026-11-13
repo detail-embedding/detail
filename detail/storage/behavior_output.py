@@ -39,6 +39,7 @@ from pathlib import Path
 import yaml
 
 from detail.core import atomic
+from detail.core import yaml_load
 from detail.core.ids import sorted_by_id
 from detail.storage import dirscan
 from detail.storage import experiment as experiment_store
@@ -133,7 +134,7 @@ def instance_id_for(
     payload = "\x00".join(
         [
             str(recording_id),
-            "" if subject is None else str(int(subject)),
+            "" if subject is None else str(subject),
             str(source_label),
             str(int(t_ns)),
             str(int(end_t_ns)),
@@ -795,7 +796,7 @@ def read_behavior_output(run_dir: Path | str) -> BehaviorOutput:
     manifest_path = run_dir / MANIFEST_FILENAME
     if not manifest_path.is_file():
         raise FileNotFoundError(f"no {MANIFEST_FILENAME} in {run_dir}")
-    manifest = yaml.safe_load(atomic.read_text(manifest_path)) or {}
+    manifest = yaml_load.safe_load(atomic.read_text(manifest_path)) or {}
     space = manifest.get("label_space")
     if isinstance(space, str):
         manifest["label_space"] = _LABEL_SPACE_SYNONYMS.get(space, space)

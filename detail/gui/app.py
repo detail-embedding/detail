@@ -75,6 +75,7 @@ from detail.gui.editing import confirm_leave
 from detail.gui.grip_splitter import GripSplitter
 from detail.gui.help_ui import HelpPopover
 from detail.gui.import_queue import ImportQueue
+from detail.gui.profile_describe_setup import ProfileDescribePage
 from detail.gui.lifetime import alive
 from detail.gui.scroll import PageScroll
 from detail.gui.status_color import ERROR, set_label_color
@@ -1008,6 +1009,7 @@ class MainWindow(QMainWindow):
                 model_id,
                 on_deleted=lambda: self._switch_mode("models"),
                 on_changed=self._refresh_shown,
+                experiment=self._experiment,
             ),
             f"Model manager  ›  {model_id}",
         )
@@ -1055,10 +1057,29 @@ class MainWindow(QMainWindow):
                 "Configuration  ›  Hugging Face",
             )
             self._set_page_help("hugging_face")
+        elif kind == readiness_guide.PROFILE_DESCRIBE_STEP:
+            self._show(
+                ProfileDescribePage(on_readiness_changed=self._on_readiness_changed),
+                "Configuration  ›  Cluster profile",
+            )
+            self._set_page_help(readiness_guide.PROFILE_DESCRIBE_STEP)
+        elif kind == "remote_targets":
+            self._show(
+                gui_pages.RemoteTargetsPage(), "Configuration  ›  Remote targets"
+            )
+            self._set_page_help("remote_targets")
         elif kind in ("global_models", "distill_model"):
             # Both Configuration checklist steps land on the Model manager: it hosts the
             # Hugging Face install table and the Distill button on one page.
             self._switch_mode("models")
+        elif kind == readiness_guide.KEYPOINT_STEP:
+            # Keypoint setup is an experiment's: its Models page has Set up keypoints….
+            # With none open, the experiments list is where to pick one.
+            if self._experiment is not None:
+                self._open_experiment(self._experiment)
+                self._open_models()
+            else:
+                self._switch_mode("home")
         elif kind == "quick_segment":
             # The first-run "wow": point the checklist at the tool itself, so seeing a
             # clip segmented is one click from setup rather than a dead step.
@@ -1446,7 +1467,9 @@ class MainWindow(QMainWindow):
         """The Keypoints manager mode (§26): the machine-wide skeleton library."""
         from detail.gui.keypoints_manager import KeypointsManagerPage
 
-        self._show(KeypointsManagerPage(), "Keypoints manager")
+        self._show(
+            KeypointsManagerPage(experiment=self._experiment), "Keypoints manager"
+        )
 
     def _open_models(self) -> None:
         """The experiment's trained models and the distill runs that make them — the page
@@ -1459,6 +1482,10 @@ class MainWindow(QMainWindow):
                 self._on_model_launched,
                 on_open_distill_run=self._open_distill_run,
                 on_distill_launched=self._on_distill_launched,
+                banner=self._banner_for(readiness_guide.KEYPOINT_STEP),
+                on_banner_dismiss=lambda: self._dismiss_step(
+                    readiness_guide.KEYPOINT_STEP
+                ),
             ),
             self._experiment.name,
         )
@@ -1616,6 +1643,11 @@ class MainWindow(QMainWindow):
             self._experiment.name,
         )
 
+    def _on_analysis_duplicated(self, run_id: str) -> None:
+        """A copy was made from a run page: list it, then show it."""
+        self._refresh_active_experiment()
+        self._open_analysis_run(run_id)
+
     def _open_analysis_run(self, run_id: str) -> None:
         self._show(
             gui_pages.AnalysisRunDetailPage(
@@ -1627,6 +1659,7 @@ class MainWindow(QMainWindow):
                 live=self._experiment.attach_active_analysis_run(run_id),
                 on_deleted=self._on_analysis_deleted,
                 on_new=self._new_analysis,
+                on_open=self._on_analysis_duplicated,
             ),
             f"{self._experiment.name}  ›  {run_id}",
         )
@@ -1656,6 +1689,7 @@ class MainWindow(QMainWindow):
                 live=handle,
                 on_deleted=self._on_analysis_deleted,
                 on_new=self._new_analysis,
+                on_open=self._on_analysis_duplicated,
             ),
             f"{self._experiment.name}  ›  {handle.id}",
         )

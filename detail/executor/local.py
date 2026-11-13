@@ -190,23 +190,10 @@ def new_process_group_kwargs() -> dict:
 
 
 _SPAWNED_COORDINATORS: list[subprocess.Popen] = []
-#: Every mutation of the list above happens under this lock. Its readers are the progress
-#: pollers of every surface that follows a run, and the GUI runs one per *opening* of a run
-#: page on its own thread — so two of them routinely finish the same run in the same poll.
+#: Held for every change to the list above. It is reached from every thread that submits a run
+#: (the UI's, a batch's) and from every thread that streams one's progress: a GUI worker per
+#: open run page, so two of them can reap the same run at once.
 _SPAWNED_LOCK = threading.Lock()
-
-
-def _drop_exited_coordinators() -> None:
-    """Forget every retained coordinator that has exited. Call with ``_SPAWNED_LOCK`` held.
-
-    This is a *state* ("keep only the live ones"), not an *action* ("remove this one"), so any
-    number of callers can apply it in any order and each leaves the list correct. The action
-    form — ``list.remove(proc)`` after a snapshot — asserts that the caller is the only one
-    cleaning up, and the second of two readers reaping the same finished run raised
-    ``ValueError: list.remove(x): x not in list`` out of ``AttachedRun.progress`` on the GUI's
-    worker thread, which PyQt turns into a process abort.
-    """
-    _SPAWNED_COORDINATORS[:] = [p for p in _SPAWNED_COORDINATORS if p.poll() is None]
 
 
 def spawn_coordinator(
@@ -234,7 +221,9 @@ def spawn_coordinator(
             **new_process_group_kwargs(),
         )
     with _SPAWNED_LOCK:
-        _drop_exited_coordinators()
+        _SPAWNED_COORDINATORS[:] = [
+            p for p in _SPAWNED_COORDINATORS if p.poll() is None
+        ]
         _SPAWNED_COORDINATORS.append(proc)
     return proc.pid
 
@@ -250,25 +239,25 @@ def reap_coordinator(pid: int | None) -> None:
     the same reason, since a coordinator wedged after its own last write must not hold the
     reader open, and a no-op for a pid this process did not spawn (a reattached run).
 
-    **Idempotent under concurrency, like `_reap`.** Every reader of a run's progress reaches
-    this line when the run turns terminal, and a process can hold several readers of one run
-    at once — the GUI starts a poller thread each time a run page is opened and stops none
-    of them. The wait is taken outside the lock (two readers may wait on one process at the
-    same time; `Popen.wait` allows it) and the drop is a prune of everything exited rather
-    than a `remove` of this one handle, so the second reader to arrive finds nothing to do
-    instead of an element that is no longer there.
+    **One reaper owns a handle.** It is taken out of the list under the lock *before* the wait,
+    so a second thread reaping the same run (two open pages stream one run's progress) finds
+    nothing to do. The list used to be read, waited on, and then ``remove``d by whoever got
+    there: the second ``remove`` raised ``ValueError`` out of a progress worker's ``run`` and
+    ended its stream. A coordinator still alive after the bounded wait is put back.
     """
     if pid is None:
         return
     with _SPAWNED_LOCK:
-        procs = [p for p in _SPAWNED_COORDINATORS if p.pid == pid]
-    for proc in procs:
+        mine = [p for p in _SPAWNED_COORDINATORS if p.pid == pid]
+        for proc in mine:
+            _SPAWNED_COORDINATORS.remove(proc)
+    for proc in mine:
         try:
             proc.wait(timeout=_REAP_TIMEOUT_S)
         except subprocess.TimeoutExpired:
-            pass  # still retained; a warning at exit beats hanging the caller
-    with _SPAWNED_LOCK:
-        _drop_exited_coordinators()
+            # Still running: keep the handle. A warning at exit beats hanging the caller.
+            with _SPAWNED_LOCK:
+                _SPAWNED_COORDINATORS.append(proc)
 
 
 def coordinator_alive(run_dir: Path | str, pid: int | None) -> bool:
@@ -368,12 +357,24 @@ def cancel_run_dir(run_dir: Path | str, grace_s: float = 3.0) -> None:
     if it's still alive (a blocking training call ignores the flag), kill the
     worker's process group (SIGTERM, then SIGKILL). Writes ``cancelled`` only if
     the worker didn't already land a terminal status (preserves a clean partial).
+
+    **A remote run's job is cancelled on the cluster from here.** The process here is then
+    the shepherd (``remote_shepherd``), which delivers a cancel only when its next poll reads
+    the flag — every few seconds, after an ssh round trip — so the grace above killed it first,
+    and the Slurm job ran on to its walltime holding its GPUs, with nothing left that knew
+    about it. So the ``scancel`` goes from here before the shepherd is stopped. When it could
+    not be delivered (the cluster is unreachable), the shepherd is left running instead: it is
+    the one process that asks again at every poll, and the run ends when it gets through.
     """
+    from detail.executor import remote  # remote imports this module
+
     run_dir = Path(run_dir)
     rundir.request_cancel(run_dir)
     pid = rundir.read_pid(run_dir)
     # Don't signal a recycled pid that is no longer our worker (PID reuse guard).
     killable = pid is not None and _is_our_worker(pid, run_dir)
+    if remote.cancel_scheduler_job(run_dir) is False and killable and _alive(pid):
+        return
     deadline = time.monotonic() + max(grace_s, 0.0)
     while time.monotonic() < deadline:
         if not killable or not _alive(pid) or rundir.read_status(run_dir) in _TERMINAL:
@@ -439,6 +440,9 @@ class LocalExecutor(Executor):
 
     def error(self, job_id: str) -> str | None:
         return rundir.read_envelope(self._runs[job_id]).get("error")
+
+    def run_dir(self, job_id: str) -> Path:
+        return self._runs[job_id]
 
     def cancel(self, job_id: str) -> None:
         cancel_run_dir(self._runs[job_id])

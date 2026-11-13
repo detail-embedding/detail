@@ -45,10 +45,17 @@ def _expected(clips, spans, lo, hi) -> list[bool]:
 
 
 @pytest.fixture
-def page(qapp, session_lengths):
+def page(qapp, session_lengths, monkeypatch):
+    from detail.gui import preview_jobs
     from detail.gui.cluster_workspace import ClusterWorkspace
 
     experiment, run_id, layout = session_lengths
+    # The application's preview queue, as the shell installs one per experiment and shuts it
+    # down on quitting. The page queues this run's twelve proxies on it (real videos, up to
+    # 120 min), which this test never waits for; left to the page's own queue they built for
+    # ~24 s after the test ended, past the teardown's wait under a loaded run.
+    queue = preview_jobs.PreviewQueue(experiment)
+    monkeypatch.setattr(preview_jobs, "current", lambda: queue)
     workspace = ClusterWorkspace(experiment, experiment.temporal_clustering_run(run_id))
     workspace.resize(1500, 1000)
     workspace.show()
@@ -64,6 +71,7 @@ def page(qapp, session_lengths):
     qapp.processEvents()
     yield interpret, layout
     workspace.close()
+    queue.shutdown()
 
 
 def test_dragging_time_in_session_counts_and_frames_what_each_recording_s_range_holds(

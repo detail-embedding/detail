@@ -26,7 +26,9 @@ from detail.gui import sections as gui_sections
 from detail.gui import comparison as gui_comparison  # noqa: E402
 from detail.gui import example_set_picker as gui_example_set_picker  # noqa: E402
 from detail.gui import keypoints_manager as gui_keypoints_manager  # noqa: E402
+from detail.gui import open_external  # noqa: E402
 from detail.gui import pages as gui_pages  # noqa: E402
+from detail.gui.profile_describe_setup import ProfileDescribePage  # noqa: E402
 from detail.gui.modules.registry import (  # noqa: E402
     ANALYSIS_GUI_MODULES,
     GUI_MODULES,
@@ -95,6 +97,7 @@ PAGES = {
     "ExperimentRunsPage": lambda proj: gui_pages.ExperimentRunsPage(proj, _noop),
     # top-level, machine-global (no experiment)
     "GlobalModelsPage": lambda proj: gui_pages.GlobalModelsPage(),
+    "RemoteTargetsPage": lambda proj: gui_pages.RemoteTargetsPage(),
     "DatasetsPage": lambda proj: gui_pages.DatasetsPage(proj, _noop),
     # per-experiment "Trained models"
     "ModelsPage": lambda proj: gui_pages.ModelsPage(proj, _noop),
@@ -120,7 +123,9 @@ PAGES = {
     "ToolRunPage": lambda proj: gui_pages.ToolRunPage("quick_segment", _noop),
     # -- keypoints (§26): PR 2 the Keypoints manager and the example-set picker · PR 4/5
     #    run viewers --
-    "KeypointsManagerPage": lambda proj: gui_keypoints_manager.KeypointsManagerPage(),
+    "KeypointsManagerPage": lambda proj: gui_keypoints_manager.KeypointsManagerPage(
+        experiment=proj
+    ),
     "ExampleSetPicker": lambda proj: gui_example_set_picker.ExampleSetPicker(proj),
 }
 
@@ -144,6 +149,8 @@ COVERED_ELSEWHERE = {
     "GpuCudaPage": "tests/gui/test_configuration_pages.py (probes CUDA; needs its fixtures)",
     "HuggingFacePage": "tests/gui/test_configuration_pages.py (reads the credential store)",
     "Sam3BackendPage": "tests/gui/test_configuration_panel.py (probes the sam3 import)",
+    "ProfileDescribePage": "tests/gui/test_profile_describe_setup.py (probes the env and a "
+    "local server; built there with both stood in)",
     "DocumentationPage": "tests/gui/test_configuration_panel.py (builds the docs site)",
 }
 
@@ -304,13 +311,35 @@ def test_documentation_page_opens_built_site(qapp, monkeypatch):
         lambda page="index", anchor=None: "http://x/y",
     )
     monkeypatch.setattr(
-        gui_pages.QDesktopServices,
+        open_external.QDesktopServices,
         "openUrl",
         lambda url: opened.setdefault("url", url.toString()),
     )
     page = gui_pages.DocumentationPage()
     page._open.click()
     assert opened["url"] == "http://x/y"
+
+
+def test_documentation_page_opens_the_user_guides_first(qapp, monkeypatch):
+    # The first button opens the user guides' overview, and that page exists in the docs.
+    from pathlib import Path
+
+    asked = {}
+    monkeypatch.setattr(gui_pages.docs_access, "needs_build", lambda: False)
+    monkeypatch.setattr(
+        gui_pages.docs_access,
+        "local_url",
+        lambda page="index", anchor=None: asked.setdefault("page", page)
+        and "http://x/g",
+    )
+    monkeypatch.setattr(open_external.QDesktopServices, "openUrl", lambda url: True)
+    page = gui_pages.DocumentationPage()
+    buttons = [b for b in page.findChildren(gui_pages.QPushButton) if b.text()]
+    assert buttons[0] is page._guides
+    page._guides.click()
+    assert asked["page"] == gui_pages.DocumentationPage.GUIDES_PAGE
+    docs = Path(__file__).resolve().parents[2] / "docs"
+    assert (docs / f"{gui_pages.DocumentationPage.GUIDES_PAGE}.md").is_file()
 
 
 def test_documentation_page_builds_off_thread_when_missing(qapp, monkeypatch):
@@ -330,7 +359,7 @@ def test_documentation_page_builds_off_thread_when_missing(qapp, monkeypatch):
     )
     monkeypatch.setattr(gui_pages, "StageProgressWorker", _SyncWorker)
     monkeypatch.setattr(
-        gui_pages.QDesktopServices,
+        open_external.QDesktopServices,
         "openUrl",
         lambda url: opened.setdefault("url", url.toString()),
     )
@@ -389,7 +418,7 @@ def test_help_popover_opens_full_docs_when_built(qapp, monkeypatch):
         lambda page="index", anchor=None: "http://x/tp",
     )
     monkeypatch.setattr(
-        help_ui.QDesktopServices,
+        open_external.QDesktopServices,
         "openUrl",
         lambda url: opened.setdefault("url", url.toString()),
     )
@@ -422,7 +451,7 @@ def test_open_full_docs_shows_progress_while_rebuilding(qapp, monkeypatch):
         help_ui.docs_access, "local_url", lambda page="index", anchor=None: "http://x/b"
     )
     monkeypatch.setattr(
-        help_ui.QDesktopServices,
+        open_external.QDesktopServices,
         "openUrl",
         lambda url: opened.setdefault("url", url.toString()),
     )
@@ -450,7 +479,7 @@ def test_configuration_pages_build(qapp):
         None, _noop, _noop, _noop
     )  # the unified model-manager page
     gui_pages.GlobalModelDetailPage(
-        "nope"
+        "nope", experiment=None
     )  # a machine-global model detail (not-found path)
     gui_pages.ImportModelDialog()  # the import-with-metadata dialog
 
@@ -603,6 +632,8 @@ def test_app_shell_banner_modes_and_in_project_rail(qapp, tmp_path, monkeypatch)
     assert isinstance(window._content.currentWidget(), gui_pages.Sam3BackendPage)
     window._go_to_node("hugging_face")
     assert isinstance(window._content.currentWidget(), gui_pages.HuggingFacePage)
+    window._go_to_node("profile_describe")
+    assert isinstance(window._content.currentWidget(), ProfileDescribePage)
 
     window._banner.button("models").click()
     assert isinstance(window._content.currentWidget(), gui_pages.ModelManagerPage)
@@ -1164,7 +1195,7 @@ def test_experiment_card_shows_recordings_and_completed_runs(
             },
         )
 
-    card = gui_pages._ExperimentCard(proj, lambda _e: None)
+    card = gui_pages._ExperimentCard(proj, lambda _e: None, lambda *_: None)
     card.set_facts(gui_pages._card_facts(proj))  # what HomePage's worker delivers
     labels = [lbl.text() for lbl in card.findChildren(QLabel)]
     assert "p" in labels  # the name
@@ -1181,7 +1212,7 @@ def test_experiment_card_without_runs_or_video_says_so(qapp, tmp_path, monkeypat
 
     monkeypatch.setattr(locations, "experiments_root", lambda: tmp_path)
     proj = _experiment(tmp_path)
-    card = gui_pages._ExperimentCard(proj, lambda _e: None)
+    card = gui_pages._ExperimentCard(proj, lambda _e: None, lambda *_: None)
     card.set_facts(gui_pages._card_facts(proj))
     labels = [lbl.text() for lbl in card.findChildren(QLabel)]
     assert "no runs yet" in labels  # not "detect 0 . track 0 . embed 0"
@@ -1292,7 +1323,9 @@ def test_experiment_card_is_visually_separated_from_the_page(
     from PyQt6.QtWidgets import QFrame
 
     monkeypatch.setattr(locations, "experiments_root", lambda: tmp_path)
-    card = gui_pages._ExperimentCard(_experiment(tmp_path), lambda _e: None)
+    card = gui_pages._ExperimentCard(
+        _experiment(tmp_path), lambda _e: None, lambda *_: None
+    )
     assert card.frameShape() == QFrame.Shape.Box
     assert card.lineWidth() >= 1
     assert card.autoFillBackground()
@@ -1301,6 +1334,36 @@ def test_experiment_card_is_visually_separated_from_the_page(
     assert card.palette().color(QPalette.ColorRole.Window) == card.palette().color(
         QPalette.ColorRole.Base
     )
+
+
+def test_home_archive_hides_a_card_and_show_archived_brings_it_back(
+    qapp, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(locations, "experiments_root", lambda: tmp_path)
+    Experiment.create("kept")
+    Experiment.create("shelved")
+    page = gui_pages.HomePage(_noop)
+
+    def names():
+        return [c._experiment.name for c in page._cards]
+
+    assert sorted(names()) == ["kept", "shelved"]
+    assert page._show_archived.text() == "Show archived (0)"
+    shelved = next(c for c in page._cards if c._experiment.name == "shelved")
+    assert shelved.archive_button.text() == "Archive"
+    shelved.archive_button.click()  # the user's path: the button on the card
+
+    assert names() == ["kept"]
+    assert Experiment.open(tmp_path / "shelved").archived
+    assert page._show_archived.text() == "Show archived (1)"
+
+    page._show_archived.setChecked(True)
+    assert sorted(names()) == ["kept", "shelved"]
+    shelved = next(c for c in page._cards if c._experiment.name == "shelved")
+    assert shelved.archive_button.text() == "Unarchive"
+    shelved.archive_button.click()
+    assert not Experiment.open(tmp_path / "shelved").archived
+    assert page._show_archived.text() == "Show archived (0)"
 
 
 def test_double_click_opens_from_anywhere_on_the_card(qapp, tmp_path, monkeypatch):
@@ -1314,7 +1377,7 @@ def test_double_click_opens_from_anywhere_on_the_card(qapp, tmp_path, monkeypatc
     monkeypatch.setattr(locations, "experiments_root", lambda: tmp_path)
     proj = _experiment(tmp_path)  # no video: the card is name + counts + placeholder
     opened = []
-    card = gui_pages._ExperimentCard(proj, opened.append)
+    card = gui_pages._ExperimentCard(proj, opened.append, lambda *_: None)
     card.set_facts(gui_pages._card_facts(proj))
     card.set_preview(None)
     gui_pages._make_selectable(card)  # exactly what showing the page does

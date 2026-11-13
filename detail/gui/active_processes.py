@@ -34,19 +34,49 @@ number that makes it tempting to do inline.
 
 from __future__ import annotations
 
-from PyQt6.QtWidgets import QVBoxLayout, QWidget
+from PyQt6.QtWidgets import (
+    QAbstractItemView,
+    QHBoxLayout,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from detail.gui.pages import IndexTable, _heading, _instructions
 from detail.gui.tables import fit_table_height, give_slack_to, row_id
 from detail.gui.workers import BackgroundCall
 
 #: A run's row. An export's differs — see `_EXPORT_COLUMNS` — which is the argument for sections.
-_COLUMNS = ["experiment", "what", "run", "status", "started"]
+#: "where" (local vs a remote target), "cost" (a live/final estimate, remote only), and "duration"
+#: (final once terminal, blank while running) sit next to "status" for every family here — even
+#: one that can only ever read "local" (visual consistency across the page, decided with the
+#: user), § run location, duration, cost. A finished run stays in this table (§ active-run
+#: archiving) until dismissed with the Archive button below.
+_COLUMNS = [
+    "experiment",
+    "what",
+    "run",
+    "where",
+    "cost",
+    "duration",
+    "status",
+    "started",
+]
 
 #: An export's row carries **to** as well: the folder its files went to. That column is the
 #: reason a finished export is listed here at all — the files are outside the experiment, so
 #: "where are they" is a question no run id answers, and it is the last question of every export.
-_EXPORT_COLUMNS = ["experiment", "exporting", "to", "run", "status", "started"]
+#: No "cost" column: an export can only ever be local, so the cell would always be blank noise.
+_EXPORT_COLUMNS = [
+    "experiment",
+    "exporting",
+    "to",
+    "run",
+    "where",
+    "duration",
+    "status",
+    "started",
+]
 
 #: The kind `api.active.RUN_KINDS` gives an export run. Named once so the split is one constant
 #: rather than a string repeated at each of the three places that sort rows into a section.
@@ -55,8 +85,9 @@ _EXPORT_KIND = "export"
 #: An import's row carries no run id, because an import is not a run — it is a recording being
 #: filled in. So the two identifying columns are the recording's **name**, which is what the
 #: user called it, and its id, which is what the CLI and every run record speak (§11). There is
-#: no "what" column: every row in this section is the same verb.
-_IMPORT_COLUMNS = ["experiment", "recording", "id", "status", "started"]
+#: no "what" column: every row in this section is the same verb. No "cost" column, same reason
+#: as exports — an import can only ever be local.
+_IMPORT_COLUMNS = ["experiment", "recording", "id", "where", "status", "started"]
 
 #: The kind `api.active.RUN_KINDS` gives a recording import.
 _IMPORT_KIND = "import"
@@ -74,9 +105,13 @@ class _Section(QWidget):
         *,
         stretch: int = 0,
         detail: bool = False,
+        cost: bool = False,
+        duration: bool = False,
+        on_archive=None,
     ) -> None:
         super().__init__()
         self._on_open = on_open
+        self._on_archive = on_archive
         self._rows: list = []
         #: Which column takes the slack — the one whose content genuinely varies in length. For
         #: runs that is the experiment name; for exports it is the destination path, which is
@@ -85,6 +120,14 @@ class _Section(QWidget):
         #: Whether this family's rows carry `ActiveRun.detail`. A section says so rather than
         #: the page branching on which section it is building.
         self._detail = detail
+        #: Whether this section shows a "cost" column — only the Runs section, since export/
+        #: import can only ever be local and the cell would always be blank (§ run location,
+        #: duration, cost).
+        self._cost = cost
+        #: Whether this section shows a "duration" column — Runs and Exports, since only those
+        #: two families' stores get `duration_s` written (§ run location, duration, cost); an
+        #: import never does, so its column list omits one rather than always reading blank.
+        self._duration = duration
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -92,9 +135,17 @@ class _Section(QWidget):
         self._caption = _instructions("Reading every experiment…")
         layout.addWidget(self._caption)
         self._table = IndexTable(columns, empty_text=empty_text, navigable=True)
+        # Several at once: finishing a batch leaves dozens of rows to dismiss, one click each
+        # otherwise (the shared table is single-selection).
+        self._table.view.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection
+        )
         # `view.doubleClicked` + `row_id`, not `index.row()`: every table sorts now, so a row's
         # position stops meaning what it meant the moment someone clicks a header.
         self._table.view.doubleClicked.connect(lambda idx: self._open(row_id(idx)))
+        self._table.view.selectionModel().selectionChanged.connect(
+            lambda *_: self._sync_archive_enabled()
+        )
         self._columns = columns
         self._size_columns()
         layout.addWidget(self._table)
@@ -105,6 +156,21 @@ class _Section(QWidget):
         # first thing you see on a share, where the caption alone is the weaker of the two
         # messages on screen.
         self._table.hide()
+        # Below the table, not a per-row button in it: the same select-then-act idiom the rest
+        # of the app already uses (e.g. Configuration ▸ Remote targets), rather than a new
+        # inline-action affordance on the one table widget every list in this app shares.
+        actions = QHBoxLayout()
+        self._archive_btn = QPushButton("Archive")
+        self._archive_btn.setToolTip(
+            "Dismiss the selected finished runs from Active Processes (select several with "
+            "Ctrl or Shift). They stay on their own experiments' pages — this only clears "
+            "them from this cross-workspace list. A run still going is left in the list."
+        )
+        self._archive_btn.setEnabled(False)
+        self._archive_btn.clicked.connect(self._archive_selected)
+        actions.addWidget(self._archive_btn)
+        actions.addStretch(1)
+        layout.addLayout(actions)
 
     def _size_columns(self) -> None:
         """Give `self._stretch` the slack; every column stays user-resizable.
@@ -129,6 +195,9 @@ class _Section(QWidget):
                 run.label,
                 *((run.detail,) if self._detail else ()),
                 run.run_id,
+                run.where,
+                *((run.cost,) if self._cost else ()),
+                *((run.duration,) if self._duration else ()),
                 run.status,
                 (run.created_at or "").replace("T", " ")[:16],
             )
@@ -147,12 +216,43 @@ class _Section(QWidget):
         self._caption.setText(
             summary + (" — double-click a row to open it" if rows else "")
         )
+        # `set_rows` rebuilds the model's rows, which drops whatever was selected — so whatever
+        # the button was offering to archive a moment ago may no longer be there.
+        self._sync_archive_enabled()
 
     def _open(self, index) -> None:
         if self._on_open is None or index is None:
             return
         if 0 <= int(index) < len(self._rows):
             self._on_open(self._rows[int(index)])
+
+    def _selected_runs(self) -> list:
+        """Every selected row's run, in table-source order.
+
+        **Every** selected row, not the current one: this read ``currentIndex()`` and so archived
+        whichever single row the cursor was on, whatever else was selected. Rows are identified
+        by ``row_id`` (never the row's position, which sorting changes).
+        """
+        ids = set()
+        for index in self._table.view.selectionModel().selectedRows():
+            rid = row_id(index)
+            if rid is not None and 0 <= int(rid) < len(self._rows):
+                ids.add(int(rid))
+        return [self._rows[i] for i in sorted(ids)]
+
+    def _archivable_runs(self) -> list:
+        """The selected rows that are finished: a run still going has no reason to be hidden from
+        the one place that says so, so it is left out of an archive rather than blocking it.
+        """
+        return [run for run in self._selected_runs() if not run.is_active]
+
+    def _sync_archive_enabled(self) -> None:
+        self._archive_btn.setEnabled(bool(self._archivable_runs()))
+
+    def _archive_selected(self) -> None:
+        runs = self._archivable_runs()
+        if runs and self._on_archive is not None:
+            self._on_archive(runs)
 
 
 class ActiveProcessesPage(QWidget):
@@ -170,8 +270,12 @@ class ActiveProcessesPage(QWidget):
             "Runs",
             _COLUMNS,
             "(nothing is running — a run you start from any experiment appears here, "
-            "and so does one that failed while you were away)",
+            "and so does one that failed while you were away, and it stays listed once "
+            "finished until you Archive it)",
             on_open,
+            cost=True,
+            duration=True,
+            on_archive=self._archive,
         )
         layout.addWidget(self._runs)
         self._exports = _Section(
@@ -182,6 +286,8 @@ class ActiveProcessesPage(QWidget):
             # The destination takes the slack: it is the longest cell and the one being read.
             stretch=_EXPORT_COLUMNS.index("to"),
             detail=True,
+            duration=True,
+            on_archive=self._archive,
         )
         layout.addWidget(self._exports)
         self._imports = _Section(
@@ -193,10 +299,21 @@ class ActiveProcessesPage(QWidget):
             # The recording's name takes the slack: it is what the row is *about*, and the one
             # cell whose length genuinely varies once every row names the same verb.
             stretch=_IMPORT_COLUMNS.index("recording"),
+            on_archive=self._archive,
         )
         layout.addWidget(self._imports)
         layout.addStretch()
         self.refresh()
+
+    def _archive(self, runs) -> None:
+        """Archive every run in ``runs``, then re-scan once (not once per run)."""
+        from detail.api import active
+
+        try:
+            for run in runs:
+                active.archive_run(run.experiment_dir, run.kind, run.run_id)
+        finally:
+            self.refresh()
 
     def refresh(self) -> None:
         """Re-scan, off the UI thread.

@@ -1,7 +1,15 @@
 """Machine-global imported-model catalog (Section 5/12).
 
-User-imported detection weights live **outside any experiment**, shared across all of
-them — the data-defined twin of the code-defined pretrained registry (``MODELS``).
+User-imported weights live **outside any experiment**, shared across all of
+them — the data-defined twin of the code-defined pretrained registries.
+
+A record has a **role** — ``detection`` (a ``.pt`` run through its family's
+``TRAINED_LOADERS`` loader) or ``keypoints`` (an ONNX pose model, §26, run by
+``models/onnx_keypoints.py``). A record written before roles existed is a detection
+model, which is what every record then was. ``discover`` / ``list_records`` take the
+role as a **required** argument: a caller that wants detection models has to say so,
+because a keypoint model handed to a detection loader is the failure a default would
+hide.
 Each imported model is a directory under ``model_cache_dir()/imported/<id>/``
 holding a ``model.yaml`` (the same schema as a experiment trained model — Section 12)
 and ``weights/best.pt``. Class names are read straight from the checkpoint at
@@ -28,7 +36,12 @@ import re
 import shutil
 from pathlib import Path
 
-from detail.core.registries import KEYPOINT_MODELS, MODELS, TRAINED_LOADERS
+from detail.core.registries import (
+    EMBEDDING_MODELS,
+    KEYPOINT_MODELS,
+    MODELS,
+    TRAINED_LOADERS,
+)
 from detail.core.skeleton import Skeleton
 from detail.core.skeleton import check_against_model
 from detail.core.utils import utc_timestamp
@@ -38,6 +51,7 @@ from detail.storage import models as models_store
 from detail.storage import skeleton_library
 
 WEIGHTS_RELPATH = "weights/best.pt"
+ROLES = ("detection", "keypoints")
 POSE_TASK = "pose"
 POSE_FAMILY = "yolo_pose"
 KEYPOINTS_ROLE = "keypoints"
@@ -57,14 +71,31 @@ def model_dir(model_id: str) -> Path:
     return catalog_dir() / model_id
 
 
-def discover() -> list[str]:
-    """Sorted ids of imported models (catalog subdirs holding a model.yaml)."""
+def role_of(record: dict) -> str:
+    """A record's role; one written before roles existed is a detection model, unless it is a
+    pose model (§12), which is a keypoints one whatever it wrote."""
+    if record.get("role"):
+        return record["role"]
+    return KEYPOINTS_ROLE if is_pose_record(record) else "detection"
+
+
+def discover(role: str | None) -> list[str]:
+    """Sorted ids of imported models with ``role`` (``None``: every role).
+
+    Raises:
+        ValueError: for an unknown role.
+    """
+    if role is not None and role not in ROLES:
+        raise ValueError(f"role must be one of {ROLES} or None, got {role!r}")
     root = catalog_dir()
     if not root.is_dir():
         return []
-    return sorted(
+    ids = sorted(
         p.name for p in root.iterdir() if (p / models_store.MODEL_FILENAME).is_file()
     )
+    if role is None:
+        return ids
+    return [i for i in ids if role_of(read(i)) == role]
 
 
 def read(model_id: str) -> dict:
@@ -72,13 +103,21 @@ def read(model_id: str) -> dict:
     return models_store.read_model_yaml(model_dir(model_id))
 
 
-def list_records() -> list[dict]:
-    return dirscan.read_each(discover(), read)
+def list_records(role: str | None) -> list[dict]:
+    """Every imported model's record with ``role`` (``None``: every role)."""
+    return dirscan.read_each(discover(role), read)
 
 
 def is_pose_record(record: dict) -> bool:
-    """Whether a catalog record is a keypoint (YOLO-pose) model rather than a detector."""
-    return record.get("task") == POSE_TASK
+    """Whether a catalog record is a keypoint (YOLO-pose) model rather than a detector.
+
+    The ``task`` decides. A record that wrote none falls back to ``model_family:
+    yolo_pose``: a student remote-detail promoted before §12's catalog shape (2026-10-21)
+    wrote only the family, and is still a pose model."""
+    task = record.get("task")
+    if task is not None:
+        return task == POSE_TASK
+    return record.get("model_family") == POSE_FAMILY
 
 
 def remove(model_id: str) -> None:
@@ -259,8 +298,13 @@ def _slugify(name: str) -> str:
 
 
 def _validate_id(model_id: str) -> None:
-    """Keep the global model-id namespace unambiguous for ``--model <id>``."""
-    if model_id in MODELS or model_id in KEYPOINT_MODELS:
+    """Keep the global model-id namespace unambiguous for ``--model <id>`` — across every
+    built-in registry, since a keypoints ``--model`` and a detection one share it."""
+    if (
+        model_id in MODELS
+        or model_id in EMBEDDING_MODELS
+        or model_id in KEYPOINT_MODELS
+    ):
         raise ValueError(
             f"{model_id!r} collides with a built-in model id; pass a different --name"
         )

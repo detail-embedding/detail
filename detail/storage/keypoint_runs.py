@@ -27,6 +27,7 @@ import numpy as np
 import yaml
 
 from detail.core import atomic
+from detail.core import yaml_load
 from detail.core.skeleton import Skeleton
 from detail.storage.keypoint_zarr import (
     KeypointAssignmentPartReader,
@@ -97,6 +98,8 @@ def detect_record(job, skeleton_digest: str) -> dict:
         "id": job.detect_run_id,
         "created_at": job.created_at,
         "detection_run_id": job.detection_run_id,
+        # the class a per-detection method placed poses in; None: every detection
+        "class_name": getattr(job, "class_name", None),
         "min_pose_confidence": (
             None if job.min_pose_confidence is None else float(job.min_pose_confidence)
         ),
@@ -106,6 +109,11 @@ def detect_record(job, skeleton_digest: str) -> dict:
         "weights_source": getattr(job, "weights_source", None),
         "backbone": job.backbone,
         "example_set": job.example_set,
+        # one snapshot per class (§26 *One example set per detection class*); None: one set
+        "example_sets": getattr(job, "example_sets", None),
+        "class_example_digests": _class_example_digests(
+            getattr(job, "example_sets", None)
+        ),
         "skeleton": dict(job.skeleton),
         "skeleton_digest": skeleton_digest,
         # the library entry the skeleton came from; the dependents search reads its id
@@ -126,6 +134,30 @@ def detect_record(job, skeleton_digest: str) -> dict:
     }
 
 
+def _class_example_digests(example_sets: dict | None) -> dict | None:
+    if not example_sets:
+        return None
+    return {cls: snap.get("digest") for cls, snap in example_sets.items()}
+
+
+def detect_example_sets(meta: dict) -> dict[str | None, dict]:
+    """Every example set a ``keypoint_detect`` run learned from, as ``{class: snapshot}``
+    (§26 *One example set per detection class*): one entry per class for a per-class run,
+    ``{None: snapshot}`` for a run on one set, ``{}`` for a method that takes none.
+
+    The one reader of a run's sets. A check that asks "did this run learn from that set" —
+    the delete refusal, *Tune tracking*'s refusal to score on a set that built the method,
+    the distill dataset's exclusion of example frames — reads the first-class
+    ``example_set`` alone and misses a per-class run's sets, without failing
+    (``tests/storage/test_detect_example_sets.py``).
+    """
+    by_class = meta.get("example_sets")
+    if by_class:
+        return {str(cls): dict(snap) for cls, snap in by_class.items()}
+    single = meta.get("example_set")
+    return {None: dict(single)} if single else {}
+
+
 def write_detect_yaml(run_dir: Path | str, data: dict) -> None:
     write_yaml(Path(run_dir) / DETECT_YAML, data)
 
@@ -134,7 +166,7 @@ def read_detect_yaml(run_dir: Path | str) -> dict:
     path = Path(run_dir) / DETECT_YAML
     if not path.is_file():
         raise FileNotFoundError(f"no {DETECT_YAML} in {run_dir}")
-    return yaml.safe_load(atomic.read_text(path))
+    return yaml_load.safe_load(atomic.read_text(path))
 
 
 def update_detect_yaml(run_dir: Path | str, **fields) -> dict:
@@ -203,7 +235,7 @@ class KeypointDetectRun:
 
     def reader(self, part_id: str) -> KeypointDetectPartReader:
         reader = KeypointDetectPartReader(part_path(self.dir, part_id))
-        reader.check_skeleton(tuple(self.meta["skeleton"]["names"]))
+        reader.check_skeleton(tuple(self.skeleton.names))
         return reader
 
     def rows(self, part_id: str) -> dict[str, np.ndarray]:
@@ -219,7 +251,7 @@ class KeypointDetectRun:
     def at(self, part_id: str, frame_idx: int) -> dict[str, np.ndarray]:
         """Every instance on one frame of a part — the core columns plus ``row`` (each
         instance's row index in the part) — with zero rows when there is none."""
-        k = len(self.meta["skeleton"]["names"])
+        k = len(self.skeleton.names)
         path = part_path(self.dir, part_id)
         if not path.is_dir():
             return _instance_columns(k, self.n_candidates)
@@ -268,6 +300,8 @@ def track_record(job, skeleton_digest: str) -> dict:
             if getattr(job, "skeleton_ref", None) is None
             else dict(job.skeleton_ref)
         ),
+        # Where the worker writing this ran: on a cluster, the node's own backend (§6).
+        "compute": None if job.compute is None else job.compute.to_dict(),
     }
 
 
@@ -279,7 +313,7 @@ def read_track_yaml(run_dir: Path | str) -> dict:
     path = Path(run_dir) / TRACK_YAML
     if not path.is_file():
         raise FileNotFoundError(f"no {TRACK_YAML} in {run_dir}")
-    return yaml.safe_load(atomic.read_text(path))
+    return yaml_load.safe_load(atomic.read_text(path))
 
 
 def update_track_yaml(run_dir: Path | str, **fields) -> dict:
@@ -333,7 +367,7 @@ class KeypointTrackRun:
 
     def reader(self, track_id: int, part_id: str) -> KeypointTrackPartReader:
         reader = KeypointTrackPartReader(track_part_path(self.dir, track_id, part_id))
-        reader.check_skeleton(tuple(self.meta["skeleton"]["names"]))
+        reader.check_skeleton(tuple(self.skeleton.names))
         return reader
 
     def rows(self, track_id: int, part_id: str) -> dict[str, np.ndarray]:
@@ -366,3 +400,115 @@ class KeypointTrackRun:
             np.asarray(reader.column("points")[i]),
             np.asarray(reader.column("point_scores")[i]),
         )
+
+
+# -- the stage before §26: read-only access to an old ``keypoints`` run --------------- #
+#: Where the pre-§26 ``keypoints`` stage wrote its runs (``kp_NN``), beside a recording's
+#: ``keypoint_runs`` list; nothing writes here any more.
+LEGACY_DIRNAME = "keypoints"
+
+
+def is_legacy_run_id(run_id: str) -> bool:
+    """Whether ``run_id`` names a run of the pre-§26 ``keypoints`` stage (``kp_NN``)."""
+    return str(run_id).startswith("kp_")
+
+
+class LegacyKeypointsRun:
+    """Read access to one run of the pre-§26 ``keypoints`` stage, in ``KeypointTrackRun``'s
+    shape, so every reader of a track run — the five keypoint exports among them — reads an old
+    run too. Nothing makes one any more; an experiment made before the rebuild still holds them.
+
+    Its rows were the final points (despiked and smoothed in the one stage), so it reads as a
+    track run: ``points`` / ``point_scores`` are the stored ``xy`` / ``score``, and ``changed``
+    is ``2`` (moved) where the despike replaced a point. ``min_score`` is the "not visible
+    below" score the run recorded, the cut-off its points were read with.
+    """
+
+    def __init__(self, recording_dir: Path | str, run_id: str) -> None:
+        self.recording_dir = Path(recording_dir)
+        self.run_id = run_id
+        self.dir = self.recording_dir / LEGACY_DIRNAME / run_id
+        path = self.dir / "keypoints.yaml"
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"no keypoints run {run_id!r} in recording {self.recording_dir.name!r}"
+            )
+        self.meta = yaml_load.safe_load(atomic.read_text(path)) or {}
+        self._frame_idx: dict[tuple[int, str], np.ndarray] = {}
+
+    @property
+    def skeleton(self) -> Skeleton:
+        return Skeleton.from_dict(self.meta["skeleton"])  # the pre-§26 shape too
+
+    @property
+    def detection_run_id(self) -> str:
+        """The detection run under the tracking run this old run read, for an overlay."""
+        tracking_yaml = (
+            self.recording_dir
+            / "tracking"
+            / str(self.meta["tracking_run_id"])
+            / "track.yaml"
+        )
+        return str(
+            yaml_load.safe_load(atomic.read_text(tracking_yaml))["detection_run_id"]
+        )
+
+    @property
+    def min_score(self) -> float | None:
+        value = (self.meta.get("visibility") or {}).get("min_score")
+        return None if value is None else float(value)
+
+    @property
+    def track_ids(self) -> list[int]:
+        if not self.dir.is_dir():
+            return []
+        return sorted(
+            int(p.name.split("_", 1)[1]) for p in self.dir.glob("track_*") if p.is_dir()
+        )
+
+    def part_ids(self, track_id: int) -> list[str]:
+        folder = track_dir(self.dir, track_id)
+        if not folder.is_dir():
+            return []
+        return sorted(p.stem for p in folder.glob("part_*.zarr"))
+
+    def rows(self, track_id: int, part_id: str) -> dict[str, np.ndarray]:
+        from detail.storage.zarr_io import PartZarrReader
+
+        raw = PartZarrReader(track_part_path(self.dir, track_id, part_id)).read()
+        despiked = raw.get("despiked")
+        n = len(raw["frame_idx"])
+        k = len(self.skeleton)
+        return {
+            "frame_idx": np.asarray(raw["frame_idx"]),
+            "t_ns": np.asarray(raw["t_ns"]),
+            "points": np.asarray(raw["xy"], dtype=np.float32),
+            "point_scores": np.asarray(raw["score"], dtype=np.float32),
+            "changed": (
+                np.where(np.asarray(despiked, dtype=bool), 2, 0).astype(np.int8)
+                if despiked is not None
+                else np.zeros((n, k), dtype=np.int8)
+            ),
+        }
+
+    def coverage(self) -> dict:
+        """None recorded: the old stage counted coverage in its own run viewer."""
+        return {}
+
+    def at(
+        self, track_id: int, part_id: str, frame_idx: int
+    ) -> tuple[np.ndarray, np.ndarray] | None:
+        from detail.storage.zarr_io import PartZarrReader
+
+        path = track_part_path(self.dir, track_id, part_id)
+        if not path.is_dir():
+            return None
+        reader = PartZarrReader(path)
+        key = (int(track_id), part_id)
+        if key not in self._frame_idx:
+            self._frame_idx[key] = np.asarray(reader.column("frame_idx")[:])
+        frames = self._frame_idx[key]
+        i = int(np.searchsorted(frames, frame_idx))
+        if i >= len(frames) or int(frames[i]) != int(frame_idx):
+            return None
+        return np.asarray(reader.column("xy")[i]), np.asarray(reader.column("score")[i])

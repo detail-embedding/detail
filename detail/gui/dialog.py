@@ -57,10 +57,11 @@ dialog that is not modal, and Enter reaching it clicks nothing (:meth:`keyPressE
 by ``requirements.a_non_modal_window_has_no_default_button``.
 """
 
+from collections import deque
+
 from PyQt6.QtCore import QEvent, QSize, Qt, QTimer
 from PyQt6.QtGui import QColor, QPaintEvent, QPainter, QPalette, QShowEvent
 from PyQt6.QtWidgets import (
-    QApplication,
     QDialog,
     QDialogButtonBox,
     QPushButton,
@@ -68,6 +69,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from detail.gui.lifetime import cleared
 from detail.gui.scroll import PageScroll
 from detail.gui.selectable import make_text_selectable
 
@@ -125,21 +127,23 @@ class Dialog(QDialog):
 
     Put the dialog's rows in :meth:`body` and its button box through :meth:`set_buttons`; the
     base supplies the scroll between them.
+
+    **It sizes itself, every time it opens, to its content** — the body unscrolled, every table
+    and list in it whole, every picture at its natural size — up to
+    :data:`~detail.gui.sizing.SCREEN_SHARE` of the screen, centred; past that the body scrolls.
+    A dialog never types an opening size (`a_dialog_never_types_its_opening_size`). Reported:
+    *"most pop-ups open much smaller than their content"* — typed sizes picked on one screen,
+    and a scroll area's hint that does not grow with what it holds. See :meth:`showEvent`.
+
+    **Its lists and tables show every row** (:attr:`SHOWS_EVERY_ROW`) and each has an edge the
+    user can drag (`sizing.RowsGrip`). See :meth:`_fit_lists`.
     """
 
-    #: A **settings** dialog — one built around a config form — sets this. It then opens, and
-    #: grows whenever its form changes, tall enough to show every row outside *Advanced
-    #: settings* without scrolling, up to the screen. Never shrinks: a size someone dragged
-    #: the window to is theirs.
-    #:
-    #: Reported on the launch-analysis dialog: its opening 520px put Query's behavior buttons
-    #: below the fold, where nothing said they existed. A scroll is the right answer for a
-    #: dialog whose content is genuinely longer than the screen, and the wrong one for a form
-    #: that fits and was simply opened short. Opt-in rather than for every dialog, because a
-    #: clip or frame viewer is sized for its picture, not its content; `tests/gui/
-    #: test_settings_dialogs.py` fails on a dialog that builds a config form and does not say
-    #: which it is.
-    fits_content: bool = False
+    #: Read by `sizing.shows_every_row`: a list or table in this window is not held to a page's
+    #: row cap (`tables.max_visible_rows`, ``fit_list_height(max_rows=…)``). Asked of the window
+    #: rather than passed by each caller, because the fit is commonly run in a constructor that
+    #: does not know where its list will end up — and forty callers would each have to say so.
+    SHOWS_EVERY_ROW = True
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -156,6 +160,13 @@ class Dialog(QDialog):
         self._stretch_index: int | None = None
         self._body_widget: QWidget | None = None
         self._restretch_timer: QTimer | None = None
+        #: The sizes the program gave this window since it opened, and whether the user has since
+        #: dragged it to another — see :meth:`resizeEvent`. A dragged size is theirs: content
+        #: arriving later does not move it.
+        self._asked: deque = deque(maxlen=32)
+        self._user_sized = False
+        #: Coalesces :meth:`follow_content_height`; made on first use, owned by the dialog.
+        self._follow_timer: QTimer | None = None
 
     def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802 — Qt's name
         """Outline the dialog, since its fill is otherwise indistinguishable from what's behind it.
@@ -241,7 +252,7 @@ class Dialog(QDialog):
         self._outer.addWidget(self._scroll, 1)
 
     def sizeHint(self):
-        """Open at the size the content asks for, capped to the screen.
+        """The size the body asks for unscrolled, plus the buttons and margins around it.
 
         A `QScrollArea` reports a generic hint — measured 540x360 — with no reference to what is
         inside it, so putting the body in one made every small dialog inflate:
@@ -250,24 +261,144 @@ class Dialog(QDialog):
         sets ``widgetResizable(False)`` and the policy then reads the widget's current size —
         which `PageScroll._fit` derives from the viewport. Circular; the dialog has to answer.
 
-        The cap is the other half. A dialog whose content is genuinely enormous must open at the
-        screen rather than past it — the failure this whole change exists to fix — and from
-        there the scroll takes over.
+        Uncapped: the cap is the screen's, and :func:`~detail.gui.sizing.fit_to_content`
+        applies it against the screen the dialog actually opens on.
         """
         base = super().sizeHint()
         if self._scroll is None or self._scroll.widget() is None:
             return base
         content = self._scroll.widget().sizeHint()
-        chrome = base.height() - self._scroll.sizeHint().height()
-        wanted = content.height() + max(0, chrome)
-        screen = QApplication.primaryScreen()
-        if screen is not None:
-            wanted = min(wanted, screen.availableGeometry().height())
-        return QSize(base.width(), max(self.minimumSizeHint().height(), wanted))
+        scroll = self._scroll.sizeHint()
+        chrome_h = max(0, base.height() - scroll.height())
+        chrome_w = max(0, base.width() - scroll.width())
+        return QSize(
+            max(base.width(), content.width() + chrome_w),
+            max(self.minimumSizeHint().height(), content.height() + chrome_h),
+        )
+
+    #: A window that reopens where a person left it (a cluster window restores the size and
+    #: place the last one was closed at) sets this, and its show leaves that alone instead of
+    #: fitting it to its content. Every other dialog opens at its content's size.
+    keeps_its_place = False
+
+    #: Whether content arriving after the show grows the window (``_refit``, ``content_grew``).
+    #: A window whose content scrolls by design — a cluster window's grid of clips — sets this
+    #: off: it is sized once at show, and its clips landing must not stretch it toward the
+    #: screen, which also left the grid nothing to scroll.
+    grows_with_content = True
 
     def showEvent(self, event: QShowEvent) -> None:
+        """Open at the content's size, up to most of the screen, centred — every time.
+
+        **At show, after the layout has run**, because only then are the hints real: a dialog's
+        rows are commonly finished after its constructor (the launch dialogs fill their
+        recordings list in ``_on_module_changed``), and a hint read in ``__init__`` describes a
+        dialog nobody sees. Show is also *before* the window reaches the screen — Qt sends the
+        show event and only then maps the window — so the user never sees the first size.
+
+        **Every open, not the first.** A dialog kept and shown again (Export clips… from the
+        montage) is sized from what it holds now; nothing is remembered between opens.
+
+        A *spontaneous* show is the window system's — un-minimising — and leaves the size alone.
+        """
         super().showEvent(event)
+        if not event.spontaneous() and self.keeps_its_place:
+            # A size a person left is a size a person chose: content arriving later does
+            # not undo it, as it would not undo a drag (`resizeEvent`).
+            self._user_sized = True
+        elif not event.spontaneous():
+            self._user_sized = False
+            self._asked.clear()
+            self._fit_lists(fresh=True)
+            self._fit(grow_only=False)
+            self.follow_content_height()
         self.refresh_content_policy()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 — Qt's name
+        """Notice the user resizing the window, so content arriving later does not undo it.
+
+        Every size the program sets arrives here first as a *non*-spontaneous event — Qt sends
+        it from inside ``resize()`` — and is remembered. The window system then echoes it back
+        as a spontaneous one, possibly late and out of order, so a spontaneous size is the
+        user's (a drag, a maximise) only when the program never asked for it.
+        """
+        super().resizeEvent(event)
+        size = (event.size().width(), event.size().height())
+        if not event.spontaneous():
+            self._asked.append(size)
+        elif size not in self._asked:
+            self._user_sized = True
+        # A new width is a new height for content that keeps its aspect. Only on a width
+        # change: following sets the height alone, so it never sets itself off again.
+        if event.oldSize().width() != event.size().width():
+            self.follow_content_height()
+
+    def content_height(self) -> int | None:
+        """The window height its content needs at the window's current width, or ``None``.
+
+        For a window whose content keeps an aspect — a picture whose height follows its width
+        (the clip window) — the hint cannot say this: a picture fits any box by letterboxing, so
+        a window sized to its hint opens with a band above the picture and another above the
+        buttons. A dialog that measures it here is kept at that height (capped to its screen)
+        when it opens, whenever its width changes and whenever it calls
+        :meth:`follow_content_height`. ``None``, the default: the content has no such relation.
+        """
+        return None
+
+    def follow_content_height(self) -> None:
+        """Re-ask :meth:`content_height` once the current burst of layout settles."""
+        if type(self).content_height is Dialog.content_height:
+            return
+        if self._follow_timer is None:
+            self._follow_timer = QTimer(self)
+            self._follow_timer.setSingleShot(True)
+            self._follow_timer.timeout.connect(self._follow_height)
+        self._follow_timer.start(0)
+
+    def _follow_height(self) -> None:
+        from detail.gui.sizing import fit_height
+
+        if not self.isVisible():
+            return
+        wanted = self.content_height()
+        if wanted is not None:
+            fit_height(self, wanted)
+
+    def content_grew(self) -> None:
+        """Something in the window wants more room than it had — a decoded frame larger than
+        the last (`ImageView`), say. Re-fit, growing only, once the burst settles."""
+        if self._refit_timer is not None:
+            self._refit_timer.start(0)
+        elif self.isVisible() and not self._user_sized and self.grows_with_content:
+            self._fit(grow_only=True)
+
+    def _fit_lists(self, *, fresh: bool = False) -> None:
+        """Show every row of every list and table, and give each an edge to drag.
+
+        Reported, asked and answered: should a list in a pop-up grow past its eight-row cap when
+        the screen has room — *"Yes, they should and should also be manually scalable by user
+        within larger window."* So the row fits run again here (`sizing.refit_rows`) — a list
+        sized in its constructor was sized before it was in this window, under a page's cap —
+        and every view is wrapped once in a `sizing.RowsGrip`. Both reach every dialog from
+        here rather than from each list's call site, which is where they would be forgotten.
+        """
+        from detail.gui.sizing import attach_row_grips, refit_rows
+
+        attach_row_grips(self)
+        # A fresh open forgets a list height dragged in the last one: nothing is remembered.
+        refit_rows(self, forget_drags=fresh)
+
+    def _fit(self, *, grow_only: bool) -> None:
+        """Size to the content (`sizing.fit_to_content`), centred — on the parent at open, and
+        around the window's own centre when it grows later, so it grows in place."""
+        from detail.gui.sizing import centre_on_screen, fit_to_content
+
+        before = self.frameGeometry().center() if grow_only else None
+        old = self.size()
+        self._keep_wide_enough()
+        fit_to_content(self, grow_only=grow_only)
+        if not grow_only or self.size() != old:
+            centre_on_screen(self, about=before)
 
     def refresh_content_policy(self) -> None:
         """Apply the show-time policies to whatever the body holds *now*.
@@ -360,6 +491,8 @@ class Dialog(QDialog):
             self._stretch_index = layout.count() - 1
 
     def eventFilter(self, watched, event):
+        if cleared(self):
+            return False
         if watched is self._body_widget and event.type() in (
             QEvent.Type.ChildAdded,
             QEvent.Type.LayoutRequest,
@@ -375,45 +508,29 @@ class Dialog(QDialog):
         return super().eventFilter(watched, event)
 
     def _refit(self) -> None:
-        """Size the window to its content: wide enough always, tall enough when it declares
-        :attr:`fits_content`.
+        """Re-ask the window's size now that its content has changed: wide enough always, and
+        grown to show what arrived — up to the cap, around the centre it had — unless the user
+        has sized it themselves.
 
-        **Not only at show.** Both rules were applied once, when the dialog opened — and the
+        **Not only at show.** Both rules were once applied when the dialog opened — and the
         launch dialogs replace their whole form when you pick another module, *after* that
         show. So the width floor stayed the one the first module's form needed, and Query's
         row of five buttons was crushed inside it until "Edit non-examples" read as a stub.
         The same moment the body changes is the moment its size has to be re-asked.
+
+        **Grow only.** A window that shrank whenever a shorter form was swapped in would jump
+        under the pointer that picked it.
         """
         if not self.isVisible():
             return
+        # A button that arrived with the content (a check's result, a row built off-thread) was
+        # not here when the show disarmed the rest; in a window beside its page it would be the
+        # one Enter clicks.
+        self._no_default_button()
+        self._fit_lists()
         self._keep_wide_enough()
-        if self.fits_content:
-            self._grow_to_content()
-
-    def _grow_to_content(self) -> None:
-        """Grow to what :meth:`sizeHint` asks — the body unscrolled, capped to the screen —
-        and keep the grown window on the screen."""
-        hint = self.sizeHint()
-        screen = self.screen() or QApplication.primaryScreen()
-        width = max(self.width(), hint.width())
-        height = max(self.height(), hint.height())
-        if screen is not None:
-            available = screen.availableGeometry()
-            # The cap in `sizeHint` is for the client area; the title bar comes on top of it.
-            frame = self.frameGeometry().height() - self.height()
-            height = min(height, max(available.height() - frame, self.height()))
-        if (width, height) == (self.width(), self.height()):
-            return
-        self.resize(width, height)
-        if screen is not None:
-            # A window grown downward from where it opened can put its buttons under the Dock,
-            # which is the failure the scroll exists to prevent. Slide it up instead.
-            bounds = self.frameGeometry()
-            if bounds.bottom() > available.bottom():
-                self.move(
-                    bounds.x(),
-                    max(available.top(), available.bottom() - bounds.height()),
-                )
+        if not self._user_sized and self.grows_with_content:
+            self._fit(grow_only=True)
 
     def _keep_wide_enough(self) -> None:
         """The window may never be narrower than its content needs.

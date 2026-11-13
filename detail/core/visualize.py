@@ -8,14 +8,12 @@ and from a future GUI panel that wraps the resulting frame in a ``QImage``.
 
 Scope is intentionally narrow — only the primitives an existing caller needs.
 ``draw_polygon`` (arenas / ROIs) and ``draw_point`` (PointCue handles, vertex
-editing) land when their use cases are implemented, not speculatively. The
-trail primitives at the end (``draw_fading_paths``, ``fade_weights``,
-``draw_onion_skin``) came with their caller, the clip window
-(``api/clip_views.py``), and the montage draws its mask outline through the
-same ``fade_weights`` so the two agree about how a trail fades.
+editing) land when their use cases are implemented, not speculatively.
 """
 
 import random
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Iterable, Sequence
 
 import cv2
@@ -40,6 +38,23 @@ PALETTE_OKABE_ITO: tuple[RGB, ...] = tuple(rgb(c) for c in LIGHT.categorical)
 #: was this palette's first slot before it took the chart order, kept by name so rendered clips
 #: did not change colour when the charts did.
 MASK_TINT: RGB = rgb(LIGHT.hue("orange"))
+
+
+#: The detection-run preview's one solid color — a detection has no identity across
+#: frames for a color to track, unlike a tracking run's per-track colors below.
+DETECTION_BOX_COLOR: RGB = (60, 220, 70)
+
+
+def track_color(object_id: int | None) -> RGB:
+    """The color a tracking preview draws one track in — stable across frames and
+    parts, since the same track id always lands on the same palette entry.
+
+    ``None`` (an untracked or unassigned detection) falls back to the plain detection
+    color rather than a palette entry, so it never coincides with a real track's color.
+    """
+    if object_id is None:
+        return DETECTION_BOX_COLOR
+    return PALETTE_OKABE_ITO[object_id % len(PALETTE_OKABE_ITO)]
 
 
 def assign_colors(
@@ -108,16 +123,87 @@ def _outline_bbox_into(
     p2 = (int(round(x2 * w)), int(round(y2 * h)))
     cv2.rectangle(out, p1, p2, color, thickness)
     if label:
-        cv2.putText(
-            out,
-            label,
-            (p1[0], max(0, p1[1] - 4)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            color,
-            1,
-            cv2.LINE_AA,
-        )
+        draw_text_label(out, label, p1, color)
+
+
+#: The two text inks a label may take — near-black and near-white, chosen per label by
+#: :func:`readable_text_color` so the text always contrasts with the tag behind it.
+LABEL_INK_DARK: RGB = (20, 20, 20)
+LABEL_INK_LIGHT: RGB = (245, 245, 245)
+
+
+def _relative_luminance(color: RGB) -> float:
+    """WCAG 2 relative luminance of an sRGB colour, 0 (black) to 1 (white)."""
+
+    def channel(value: int) -> float:
+        c = value / 255.0
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+    r, g, b = (channel(v) for v in color)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def readable_text_color(background: RGB) -> RGB:
+    """Dark or light ink, whichever has the higher WCAG contrast ratio on ``background``."""
+    lum = _relative_luminance(background)
+    on_dark = (_relative_luminance(LABEL_INK_LIGHT) + 0.05) / (lum + 0.05)
+    on_light = (lum + 0.05) / (_relative_luminance(LABEL_INK_DARK) + 0.05)
+    return LABEL_INK_LIGHT if on_dark >= on_light else LABEL_INK_DARK
+
+
+def label_scale(frame_height: int) -> float:
+    """The font scale a frame label takes, growing with the frame.
+
+    A fixed scale was the bug: 0.5 is ~11 px of text, which on a 1080p frame shown as a
+    thumbnail shrinks to a few unreadable pixels.
+    """
+    return max(frame_height / 900.0, 0.4)
+
+
+def draw_text_label(
+    out: np.ndarray,
+    text: str,
+    anchor_xy: tuple[int, int],
+    background: RGB,
+    *,
+    scale: float | None = None,
+    above: bool = True,
+) -> None:
+    """Draw ``text`` **in place** on a filled tag of ``background``, in whichever ink reads
+    on it — the one way text goes onto a frame.
+
+    Text drawn straight onto footage in the overlay's own colour vanished against the
+    translucent mask of that colour and against busy bedding; a solid tag behind it and a
+    contrast-picked ink make it legible on any frame and any palette entry.
+
+    ``above`` puts the tag's bottom-left at ``anchor_xy`` (a box label sitting on the box's
+    top edge); when there is no room above, or ``above`` is False, the tag hangs below the
+    anchor instead. The tag is kept inside the frame horizontally.
+    """
+    h, w = out.shape[:2]
+    if scale is None:
+        scale = label_scale(h)
+    thickness = max(1, int(round(scale * 1.5)))
+    (tw, th), base = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, thickness)
+    pad = max(2, int(round(3 * scale)))
+    box_w = tw + 2 * pad
+    box_h = th + base + 2 * pad
+    x0 = min(max(0, anchor_xy[0]), max(0, w - box_w))
+    y0 = anchor_xy[1] - box_h if above else anchor_xy[1]
+    if y0 < 0:
+        y0 = max(0, anchor_xy[1])
+    y0 = min(y0, max(0, h - box_h))
+    cv2.rectangle(out, (x0, y0), (x0 + box_w, y0 + box_h), background, cv2.FILLED)
+    cv2.putText(
+        out,
+        text,
+        (x0 + pad, y0 + pad + th),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        scale,
+        readable_text_color(background),
+        thickness,
+        cv2.LINE_AA,
+    )
 
 
 def bgr_to_rgb(frame: np.ndarray) -> np.ndarray:
@@ -223,6 +309,149 @@ def draw_detections_by_class(
 
 
 # --------------------------------------------------------------------------- #
+# Preview style — the one drawing vocabulary behind a run's live preview,
+# its frame/video export, and (eventually) the CLI.
+# --------------------------------------------------------------------------- #
+#: What a detection/tracking run preview can draw. Declaration order is dropdown/CLI
+#: order — a run-level preview needs box, confidence and track-id combinations a bout
+#: clip never asks for, which is why this is a second vocabulary rather than a reuse of
+#: `clip_render.RENDERS` (raw/overlay/mask): that one is pinned to exactly three flavours
+#: by an explicit ask, for a different surface (behavior bouts, not model QA).
+MASK_BOX_CONF = "mask_box_conf"
+MASK_BOX = "mask_box"
+MASK_ONLY = "mask_only"
+BOX_CONF = "box_conf"
+BOX_ONLY = "box_only"
+RAW_VIDEO = "raw_video"
+RAW_MASK = "raw_mask"
+PREVIEW_STYLES = (
+    MASK_BOX_CONF,
+    MASK_BOX,
+    MASK_ONLY,
+    BOX_CONF,
+    BOX_ONLY,
+    RAW_VIDEO,
+    RAW_MASK,
+)  # fmt: skip
+
+#: What a surface shows for each style — a GUI dropdown and CLI `--style` help both read
+#: this rather than retyping it, the same reason `clip_render`'s render labels exist.
+PREVIEW_STYLE_LABELS: dict[str, str] = {
+    MASK_BOX_CONF: "Mask, box, confidence",
+    MASK_BOX: "Mask, box",
+    MASK_ONLY: "Mask only",
+    BOX_CONF: "Box, confidence",
+    BOX_ONLY: "Box only",
+    RAW_VIDEO: "Raw video",
+    RAW_MASK: "Raw mask",
+}
+
+
+@dataclass(frozen=True)
+class _StyleFlags:
+    show_mask: bool
+    show_box: bool
+    show_confidence: bool
+    #: `Raw mask` only: each detection's real, unrecolored pixels cut out onto a solid
+    #: green background, for downstream keying/compositing. A genuinely different render
+    #: path (a green canvas + a literal pixel cutout) rather than a draw *on* the frame,
+    #: so it is its own branch in `draw_preview_overlay` instead of another flag combo.
+    green_screen: bool
+
+
+_STYLE_FLAGS: dict[str, _StyleFlags] = {
+    MASK_BOX_CONF: _StyleFlags(True, True, True, False),
+    MASK_BOX: _StyleFlags(True, True, False, False),
+    MASK_ONLY: _StyleFlags(True, False, False, False),
+    BOX_CONF: _StyleFlags(False, True, True, False),
+    BOX_ONLY: _StyleFlags(False, True, False, False),
+    RAW_VIDEO: _StyleFlags(False, False, False, False),
+    RAW_MASK: _StyleFlags(False, False, False, True),
+}
+
+#: Green screen, plain and unambiguous against a subject's own colours.
+_GREEN_SCREEN: RGB = (0, 255, 0)
+
+
+def resolve_preview_style(style: str) -> str:
+    """``style`` if it names a real style, or raise naming what is available."""
+    if style not in _STYLE_FLAGS:
+        raise ValueError(
+            f"unknown preview style {style!r}; expected any of {list(PREVIEW_STYLES)}"
+        )
+    return style
+
+
+def preview_needs_mask(style: str) -> bool:
+    """Whether ``style`` draws from the decoded mask — the cost `with_masks` gates.
+
+    Mask RLEs are decoded only when a style actually uses them: a box-only or raw-video
+    preview has no reason to pay for it, which is the same saving `frame`'s own
+    ``with_masks`` parameter already existed to offer — this just tells a caller which
+    styles need it.
+    """
+    flags = _STYLE_FLAGS[resolve_preview_style(style)]
+    return flags.show_mask or flags.green_screen
+
+
+def draw_preview_overlay(
+    frame: np.ndarray,
+    detections: Iterable[Detection],
+    style: str,
+    *,
+    color_fn: Callable[[Detection], RGB],
+    label_fn: Callable[[Detection, bool], str | None] | None = None,
+) -> np.ndarray:
+    """Draw one frame in the chosen preview ``style`` — the one overlay renderer behind
+    the live run preview and its frame/video export, so a run draws identically
+    wherever it is asked for.
+
+    ``color_fn`` picks a detection's color — a detection preview uses one solid color, a
+    tracking preview colors by track id. Never called for `raw_video`/`raw_mask`, which
+    draw nothing per-detection in that sense (a green-screen cutout keeps a detection's
+    own pixels, not a flat color) — a caller may still pass one unconditionally, since
+    those two styles simply never reach it.
+
+    ``label_fn(det, show_confidence)`` returns the label to draw beside a box, or
+    ``None`` for none — ``show_confidence`` is this style's own flag, not a suggestion:
+    a tracking preview keeps its track-id label even when it says ``False`` (*"the
+    track id is the reason a tracking preview exists"*), while a detection preview has
+    no label at all when it does. Only called when the style draws a box; omitted
+    entirely, no label is drawn for a style that does.
+    """
+    flags = _STYLE_FLAGS[resolve_preview_style(style)]
+    if flags.green_screen:
+        return _draw_raw_mask(frame, detections)
+    if not flags.show_mask and not flags.show_box:
+        return frame.copy()  # raw_video
+    out = frame.copy()
+    for det in detections:
+        color = color_fn(det)
+        if flags.show_mask:
+            _blend_mask_into(out, det.mask, color, 0.5)
+        if flags.show_box and det.bbox is not None:
+            label = label_fn(det, flags.show_confidence) if label_fn else None
+            _outline_bbox_into(out, det.bbox, color, label, 2)
+    return out
+
+
+def _draw_raw_mask(frame: np.ndarray, detections: Iterable[Detection]) -> np.ndarray:
+    """Every detection's real pixels, cut out onto a solid green background.
+
+    No video underneath — that is the point (downstream keying/compositing) and the
+    reason this is not "mask blended at alpha=1": a blend still starts from the source
+    frame, and green screen means the frame is gone everywhere a mask does not cover.
+    """
+    out = np.empty_like(frame)
+    out[:] = _GREEN_SCREEN
+    for det in detections:
+        if det.mask is None or det.mask.shape != frame.shape[:2]:
+            continue
+        out[det.mask] = frame[det.mask]
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # Keypoints (§26)
 # --------------------------------------------------------------------------- #
 #: A keypoint's colour by its place in the skeleton: the left member of a pair is the palette's
@@ -256,10 +485,10 @@ def draw_keypoints(
     radius: int | None = None,
     hollow: np.ndarray | None = None,
     edge_color: RGB = (235, 235, 235),
+    color: RGB | None = None,
 ) -> np.ndarray:
     """One subject's keypoints: the skeleton's edges as thin lines, then a dot per point
-    coloured by its role (``KEYPOINT_COLORS``). Returns a new frame. ``edge_color`` is the
-    skeleton's lines: near-white over footage, darker on a white background.
+    coloured by its role (``KEYPOINT_COLORS``). Returns a new frame.
 
     ``points`` is ``(K, 2)`` normalized full-frame ``x, y`` in ``[0, 1]`` (what ``FrameResult``
     and the detect zarr hold); pixels are computed here, as ``draw_bbox`` does. A NaN point is
@@ -268,7 +497,10 @@ def draw_keypoints(
     placed point stays on the picture, and low confidence is reported in the coverage rows.
     The dot scales with the frame so it reads on a 1080p frame and a 480p one alike.
     ``hollow`` (``(K,)`` bool) draws a point as a ring in its role colour instead of a dot:
-    placed, but not taught as visible (a test's score cut-off).
+    placed, but not taught as visible (a test's score cut-off). ``edge_color`` is the
+    skeleton's lines: near-white over footage, darker on a white background. ``color``
+    draws every point in one colour instead of by role — one animal among several in a
+    montage overlay, told apart from the others by its colour.
     """
     out = frame.copy()
     xy = np.asarray(points, dtype=np.float64).reshape(-1, 2)
@@ -296,23 +528,21 @@ def draw_keypoints(
             )
     roles = keypoint_roles(skeleton)
     for k in np.flatnonzero(ok):
-        color = KEYPOINT_COLORS[roles[k]]
+        ink = KEYPOINT_COLORS[roles[k]] if color is None else tuple(color)
         if scores is not None:
             s = float(np.clip(np.nan_to_num(float(scores[k]), nan=0.0), 0.0, 1.0))
-            color = tuple(
-                int(round(c * s + d * (1.0 - s))) for c, d in zip(color, _KEYPOINT_DIM)
+            ink = tuple(
+                int(round(c * s + d * (1.0 - s))) for c, d in zip(ink, _KEYPOINT_DIM)
             )
         centre = (int(px[k, 0]), int(px[k, 1]))
         if hollow is not None and bool(np.asarray(hollow).reshape(-1)[k]):
             cv2.circle(out, centre, r, (20, 20, 20), 3, cv2.LINE_AA)
-            cv2.circle(out, centre, r, color, 1, cv2.LINE_8)
+            cv2.circle(out, centre, r, ink, 1, cv2.LINE_8)
             continue
         cv2.circle(out, centre, r + 1, (20, 20, 20), -1, cv2.LINE_AA)
-        cv2.circle(out, centre, r, color, -1, cv2.LINE_AA)
+        cv2.circle(out, centre, r, ink, -1, cv2.LINE_AA)
     return out
 
-
-# --- trails: the clip window's keypoint paths and mask onion skin ----------------------- #
 
 #: The onion skin's most opaque layer (the frame just before the one shown); older layers fade
 #: linearly towards nothing. The montage's mask outline fades by the same rule.

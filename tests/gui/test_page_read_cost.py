@@ -246,7 +246,18 @@ FORMS_STILL_ON_THE_UI_THREAD: dict[str, float] = {
 
 
 def _form_slope(qapp, tmp_path, module_id, ui):
-    """Round trips per recording for one launch form's selection reaction."""
+    """Round trips per recording for one launch form's *checked-selection* reaction —
+    the cost a checkbox click pays, which is what a slow click means to the person
+    clicking it.
+
+    Mirrors the real dialog's own call order: a module pick resolves every *eligible*
+    recording once (``resolve_eligible_recordings``, §6.5's spec/coverage pickers), and
+    only after that does a checkbox click resolve the checked selection
+    (``resolve_recordings``). A spec picker's own cost lives in the first pair now — it
+    runs once per module pick, not once per click — so it is warmed here rather than
+    charged to the slope, the same way the "warm, then measure" comment below already
+    excludes whatever the first pass alone pays for.
+    """
     from detail.gui.modules.registry import ConfigWidget
 
     per_size = {}
@@ -258,6 +269,9 @@ def _form_slope(qapp, tmp_path, module_id, ui):
         form = ui.config_widget()
         form.on_experiment_set(experiment)
         # Warm, then measure: the first pass pays for caches the second would be charged for.
+        form.apply_eligible_recordings(
+            recordings, form.resolve_eligible_recordings(recordings)
+        )
         form.apply_recordings(recordings, form.resolve_recordings(recordings))
         _quiesce(qapp)
         recording_store.clear_recording_cache()
@@ -270,7 +284,11 @@ def _form_slope(qapp, tmp_path, module_id, ui):
         _quiesce(qapp)
     lo, hi = min(SIZES), max(SIZES)
     slope = (per_size[hi] - per_size[lo]) / (hi - lo)
-    off_thread = type(form).resolve_recordings is not ConfigWidget.resolve_recordings
+    off_thread = (
+        type(form).resolve_recordings is not ConfigWidget.resolve_recordings
+        or type(form).resolve_eligible_recordings
+        is not ConfigWidget.resolve_eligible_recordings
+    )
     return slope, off_thread
 
 

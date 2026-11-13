@@ -4,8 +4,9 @@ clip montage (§22). The writing is ``api.animation``'s; this is the asking.
 **A GIF asks each time** (the user's choice of 2026-10-22): its size and its frame rate decide how
 big the file is and how smooth it plays, and the right answer differs between a slide and a chat
 message. :class:`GifSettingsDialog` opens on 640 px and 12 fps and says which frames it will
-write, so the scope is never a surprise. An mp4 asks only where to save: it keeps every frame
-at the size it was drawn.
+write, so the scope is never a surprise. An mp4 asks only where to save, and in which codec, as
+the save dialog's file type (:func:`ask_mp4_path`): it keeps every frame at the size it was
+drawn.
 
 The work runs through ``busy.run_progress`` — a bar that moves, with Cancel — and the window
 says where the file went when it is done.
@@ -95,6 +96,25 @@ def ask_gif_settings(parent: QWidget, frames_note: str) -> tuple[int, float] | N
     if dialog.exec() != Dialog.DialogCode.Accepted:
         return None
     return dialog.values()
+
+
+def ask_mp4_path(
+    parent: QWidget, title: str, suggested: str
+) -> tuple[Path, str] | None:
+    """Where to write an mp4 and in which codec, from one system save dialog: the codecs are
+    its file types (``video_codec.mp4_filters``), H.264 first. ``None`` when cancelled.
+    """
+    from detail.gui.video_codec import codec_of_filter, mp4_filters
+
+    path, chosen = QFileDialog.getSaveFileName(
+        parent, title, suggested, ";;".join(mp4_filters())
+    )
+    if not path:
+        return None
+    path = Path(path)
+    if path.suffix.lower() != f".{MP4}":
+        path = path.with_name(f"{path.name}.{MP4}")
+    return path, codec_of_filter(chosen)
 
 
 def ask_save_path(

@@ -49,7 +49,12 @@ from detail.core.progress import (
     split_units,
 )
 from detail.core.registries import QUERY_METHODS
-from detail.core.utils import utc_timestamp
+from detail.core.utils import (
+    check_track_is_unambiguous,
+    coerce_series_key,
+    resolve_track_default,
+    utc_timestamp,
+)
 from detail.executor.runners import AnalysisModule, job_params, register_analysis_module
 from detail.pipeline.behavior_artifact import (
     bring_frame_views_current,
@@ -120,7 +125,7 @@ class SearchUnit:
         return cls(
             behavior_id=str(data["behavior_id"]),
             recording_id=str(data["recording_id"]),
-            subject=int(data["subject"]),
+            subject=coerce_series_key(data["subject"]),
         )
 
 
@@ -168,7 +173,7 @@ class QueryJob:
             job_id=str(data["job_id"]),
             search_recording_ids=list(data.get("search_recording_ids") or []),
             embed_run_id=str(data["embed_run_id"]),
-            track_id=int(data.get("track_id", 0)),
+            track_id=coerce_series_key(data.get("track_id", 0)),
             method=str(data["method"]),
             method_params=dict(data.get("method_params") or {}),
             behaviors=[dict(b) for b in (data.get("behaviors") or [])],
@@ -498,7 +503,7 @@ class QueryModule(AnalysisModule):
         QueryConfig.model_validate(config)
         search = list(config.get("source_recording_ids") or [])
         embed_run_id = config.get("embed_run_id")
-        track_id = int(config.get("track_id", 0))
+        track_id = coerce_series_key(config.get("track_id", 0))
         if not search:
             raise ValueError("query needs at least one recording to search")
         if not embed_run_id:
@@ -517,15 +522,25 @@ class QueryModule(AnalysisModule):
                 for sid in search
             ]
         )
-        for sid in search:
+        for i, sid in enumerate(search):
             available = embedding_track_ids(
                 experiment_store.recording_path(experiment_dir, sid), embed_run_id
             )
+            if i == 0:
+                # The untouched literal default (0) resolved against the first recording's
+                # run — a run whose only series is not 0 would otherwise refuse at the very
+                # next line with "track 0 is not in this run" despite there being exactly one
+                # honest answer.
+                track_id = resolve_track_default(track_id, available)
             if track_id not in available:
                 raise ValueError(
                     f"track {track_id} is not in embedding run {embed_run_id!r} of "
                     f"recording {sid!r} (has tracks {available})"
                 )
+            # A search pools exemplar rows across every recording in the selection, so an
+            # integer that means a different subject in each would search across animals
+            # without saying so (the same risk cluster_fit/query_eval/pose_clustering guard).
+            check_track_is_unambiguous(track_id, sid, available, run_id=embed_run_id)
 
         gap_ns = config.get("trajectory_split_gap_ns")
         if gap_ns is None and config.get("trajectory_split_gap_s") is not None:
@@ -558,6 +573,7 @@ class QueryModule(AnalysisModule):
                 timelines,
                 gap_ns,
                 method,
+                track_id,
             )
             problems.extend(issues)
             negatives, neg_issues = self._resolve_clips(
@@ -568,6 +584,7 @@ class QueryModule(AnalysisModule):
                 timelines,
                 gap_ns,
                 method,
+                track_id,
             )
             problems.extend(neg_issues)
             problems.extend(self._check_bounds(method, name, examples, negatives))
@@ -604,7 +621,7 @@ class QueryModule(AnalysisModule):
         return out
 
     def _resolve_clips(
-        self, raw, behavior_name, kind, search, timelines, gap_ns, method
+        self, raw, behavior_name, kind, search, timelines, gap_ns, method, track_id
     ) -> tuple[list[dict], list[str]]:
         """Normalize clip specs to `t_ns` spans, collecting problems rather than raising.
 
@@ -615,6 +632,10 @@ class QueryModule(AnalysisModule):
         (``ExemplarBounds.requires_contiguous``), asked here rather than assumed. Hardcoding
         it refused clips for ``soft_knn``, which pools exemplar frames into an unordered
         index and cannot tell the difference.
+
+        ``track_id`` is this run's own resolved subject — an exemplar spec that names no
+        ``track_id`` of its own defaults to *that*, not to a bare ``0``, which would find "no
+        embedded rows for track 0" on every exemplar of a run whose subject is another track.
         """
         require_contiguous = method.exemplars.requires_contiguous
         out: list[dict] = []
@@ -657,7 +678,7 @@ class QueryModule(AnalysisModule):
             out.append(
                 {
                     "recording_id": sid,
-                    "track_id": int(spec.get("track_id", 0)),
+                    "track_id": coerce_series_key(spec.get("track_id", track_id)),
                     "start_t_ns": int(check.start_t_ns),
                     "end_t_ns": int(check.end_t_ns),
                     "n_rows": int(check.end_row - check.start_row + 1),
@@ -715,7 +736,7 @@ class QueryModule(AnalysisModule):
             SearchUnit(
                 behavior_id=behavior["id"],
                 recording_id=sid,
-                subject=int(config["track_id"]),
+                subject=coerce_series_key(config["track_id"]),
             )
             for sid in config["source_recording_ids"]
             for behavior in config["behaviors"]
@@ -724,7 +745,7 @@ class QueryModule(AnalysisModule):
             job_id=run_id,
             search_recording_ids=list(config["source_recording_ids"]),
             embed_run_id=config["embed_run_id"],
-            track_id=int(config["track_id"]),
+            track_id=coerce_series_key(config["track_id"]),
             method=config["method"],
             method_params=dict(config.get("method_params") or {}),
             behaviors=[dict(b) for b in config["behaviors"]],
@@ -969,9 +990,10 @@ def _exemplar_rows(t_ns: np.ndarray, behaviors, recording_id: str, subject: int)
     taken: set = set()
     for behavior in behaviors:
         for spec in [*behavior.get("examples", []), *(behavior.get("negatives") or [])]:
-            if spec["recording_id"] != recording_id or int(
-                spec.get("track_id", 0)
-            ) != int(subject):
+            if (
+                spec["recording_id"] != recording_id
+                or coerce_series_key(spec.get("track_id", subject)) != subject
+            ):
                 continue
             lo, hi = clip_query_analysis.span_to_rows(
                 t_ns, int(spec["start_t_ns"]), int(spec["end_t_ns"])
@@ -1103,7 +1125,13 @@ def draw_background(experiment_root, job, method, run_dir):
 
 
 def instances_from(
-    candidates, *, recording_id: str, subject: int, behavior_id: str, t_ns, frame_idx
+    candidates,
+    *,
+    recording_id: str,
+    subject: int,
+    behavior_id: str,
+    t_ns,
+    frame_idx,
 ) -> list:
     """A method's candidates as §19 instances, for one unit.
 
@@ -1143,7 +1171,7 @@ def _prepare_behaviors(experiment_root, job, method, background=None) -> dict:
     cache: dict[tuple[str, int], tuple] = {}
 
     def rows(spec: dict) -> np.ndarray:
-        key = (spec["recording_id"], int(spec.get("track_id", 0)))
+        key = (spec["recording_id"], coerce_series_key(spec.get("track_id", 0)))
         if key not in cache:
             cache[key] = load_track_trajectory(
                 experiment_store.recording_path(experiment_root, key[0]),

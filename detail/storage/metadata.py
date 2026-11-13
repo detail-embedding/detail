@@ -2,8 +2,9 @@
 
 Recording-level metadata for cohort comparison (animal id, treatment, condition, …)
 lives in a single experiment-root ``metadata.csv`` — one row per recording, ``recording_id``
-the key (always the first column), all other columns user-defined and addable at any
-time. The file is the **single source of truth** (no generated/user split, no
+the key (always the first column), then the canonical ``acquisition_setup`` (always
+present, never deletable), then user-defined columns addable at any time. The file is the
+**single source of truth** (no generated/user split, no
 ``schema_version`` — it is plain user-owned CSV). Rows preserve insertion order;
 columns preserve header order with new ones appended; missing cells are empty strings.
 """
@@ -16,6 +17,13 @@ from pathlib import Path
 
 METADATA_FILENAME = "metadata.csv"
 RECORDING_KEY = "recording_id"
+#: Which camera / box / rig a recording was made with (§11). Every experiment has it, so the
+#: keypoint teacher setup (#717) can ask for one recording per setup without asking which
+#: column means "setup". Read as present whether or not the file has it yet, and written on
+#: the next save, so an experiment made before it existed needs no migration.
+ACQUISITION_SETUP_KEY = "acquisition_setup"
+#: Columns the tool keeps on every table, in this order, right after ``recording_id``.
+RESERVED_COLUMNS = (ACQUISITION_SETUP_KEY,)
 # Accepted as an import *key* and written into an export for legibility, but never stored
 # as a column: a recording's name lives in its own recording.yaml (§11).
 NAME_KEY = "name"
@@ -84,6 +92,11 @@ def detect_key_column(header: list[str]) -> str | None:
     return next((cell for cell in header if is_video_key_header(cell)), None)
 
 
+def _with_reserved(cols: list[str]) -> list[str]:
+    """``cols`` with every reserved column present and first, the user's own order kept."""
+    return [*RESERVED_COLUMNS, *(c for c in cols if c not in RESERVED_COLUMNS)]
+
+
 def metadata_path(experiment_dir: Path | str) -> Path:
     return Path(experiment_dir) / METADATA_FILENAME
 
@@ -93,14 +106,16 @@ def _read_raw(
 ) -> tuple[list[str], dict[str, dict[str, str]]]:
     """(columns excluding the key, ordered ``{recording_id: {col: value}}``).
 
-    Returns empties when the file is absent.
+    With the file absent: only the reserved columns, and no rows.
     """
     path = metadata_path(experiment_dir)
     if not path.is_file():
-        return [], {}
+        return list(RESERVED_COLUMNS), {}
     with open(path, newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
-        cols = [c for c in (reader.fieldnames or []) if c != RECORDING_KEY]
+        cols = _with_reserved(
+            [c for c in (reader.fieldnames or []) if c != RECORDING_KEY]
+        )
         rows: dict[str, dict[str, str]] = {}
         for row in reader:
             recording_id = (row.get(RECORDING_KEY) or "").strip()
@@ -110,7 +125,9 @@ def _read_raw(
 
 
 def _write_csv(path: Path, cols: list[str], rows: dict[str, dict[str, str]]) -> None:
-    """Write ``recording_id`` first, then ``cols``; one row per recording, blanks empty."""
+    """Write ``recording_id`` first, then the reserved columns, then the rest of ``cols``;
+    one row per recording, blanks empty."""
+    cols = _with_reserved(cols)
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow([RECORDING_KEY, *cols])
@@ -248,7 +265,8 @@ def infer_column_types(metadata: dict[str, dict[str, str]]) -> dict[str, str]:
 
 
 def columns(experiment_dir: Path | str) -> list[str]:
-    """User-defined columns (excluding ``recording_id``), in file order."""
+    """The table's columns excluding ``recording_id``: the reserved ones first, then the
+    user's, in file order."""
     return _read_raw(experiment_dir)[0]
 
 
@@ -301,8 +319,8 @@ def add_column(experiment_dir: Path | str, name: str) -> None:
 
 def delete_column(experiment_dir: Path | str, name: str) -> None:
     """Remove a user column and its value from every row. Idempotent (absent → no-op);
-    the reserved ``recording_id`` cannot be deleted."""
-    if name == RECORDING_KEY:
+    ``recording_id`` and the reserved columns cannot be deleted."""
+    if name == RECORDING_KEY or name in RESERVED_COLUMNS:
         raise ValueError(f"cannot delete the reserved column {name!r}")
     cols, rows = _read_raw(experiment_dir)
     if name in cols:

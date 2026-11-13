@@ -179,9 +179,6 @@ def test_the_workspace_opens_on_a_vocabulary(qapp, temporal_run):
     assert view.summary(first).time_ns > 0
 
 
-# --- the way a user actually reaches it ------------------------------------------------------
-
-
 def test_the_run_page_opens_the_workspace_while_the_run_is_open(qapp, temporal_run):
     """Through the real entry point. A temporal fit stays **open** by design (§21), so a page
     that only rendered a result view at ``complete`` would show the interpretation surface after

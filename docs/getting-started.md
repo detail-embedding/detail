@@ -87,6 +87,12 @@ Clone the repo and install the baseline extras.
 DINOv3 embedding weights are gated. Set up [Hugging Face access](#hugging-face-access)
 before running detection or embedding.
 
+**Video export and its licence.** DETAIL writes exported MP4s as H.264 through PyAV (the `av`
+package, a baseline dependency), calling the FFmpeg libraries PyAV links rather than running an
+`ffmpeg` program. PyAV's prebuilt wheels include the `libx264` encoder, which is GPL-licensed;
+DETAIL installs PyAV from PyPI and does not redistribute it. A PyAV built without `libx264`
+still works: exports are written as MPEG-4 Part 2 instead, and say so.
+
 These docs are also served locally. Run `mkdocs serve` and open
 `http://127.0.0.1:8000` for the rendered site. The doc toolchain installs with the
 package (no extra needed).

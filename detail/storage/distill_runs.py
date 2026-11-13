@@ -20,6 +20,7 @@ from pathlib import Path
 import yaml
 
 from detail.core import atomic
+from detail.core import yaml_load
 from detail.storage import dirscan
 
 SCHEMA_VERSION = 1
@@ -77,7 +78,7 @@ def read_run(experiment_dir: Path | str, run_id: str) -> dict:
         raise FileNotFoundError(
             f"no {DISTILL_FILENAME} for distill run {run_id!r} in {experiment_dir}"
         )
-    return yaml.safe_load(atomic.read_text(path))
+    return yaml_load.safe_load(atomic.read_text(path))
 
 
 def delete_run(experiment_dir: Path | str, run_id: str) -> None:

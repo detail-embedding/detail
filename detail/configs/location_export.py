@@ -18,3 +18,15 @@ class LocationExportConfig(BaseModel):
         "recording (e.g. track_01).",
         json_schema_extra={"scope": "selection", "label": "Tracking run"},
     )
+    keypoint_run_id: str | None = Field(
+        None,
+        description="A keypoint track run (kt_NN) to also export each animal's points from, "
+        "as keypoints.csv. It must come from the same tracking run. Unset: no keypoints.",
+        json_schema_extra={"scope": "selection", "label": "Keypoint track run"},
+    )
+    pair_edge_distance: bool = Field(
+        False,
+        description="Also measure the nearest distance between two tracks' masks (0 when "
+        "they touch) in pair_relations.csv. Slower: it compares the masks on every frame.",
+        json_schema_extra={"label": "Distance between mask edges", "advanced": True},
+    )

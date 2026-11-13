@@ -250,16 +250,40 @@ _NOT_RECIPE_IDENTITY: dict[str, dict[str, str]] = {
         "match_min_inside": "recorded inside match (min_inside)",
         "match_mask_grow": "recorded inside match (mask_grow)",
     },
+    # A merge run's own source_specs are portable selectors (§6.5) — validate() resolves
+    # each to *this recording's own* concrete tracking run id, which is what actually
+    # decides whether two merge runs share the same recipe. Recording the raw specs
+    # instead would compare selectors, not the runs they resolved to.
+    "track_merge": {
+        "source_specs": "resolved into the recorded source_run_ids",
+    },
 }
+
+
+def _field_default(field):
+    """A field's real default — including a ``default_factory`` field's, which pydantic
+    itself leaves as the sentinel ``PydanticUndefined`` on ``.default`` (the factory is
+    called at model-construction time, not stored as a static value). Read here instead
+    of via ``.default`` alone: `class_conf_thresholds` was the first *processing*-module
+    field to use ``default_factory``, and the unresolved sentinel isn't JSON-serializable
+    — it reached this far because nothing built a synthetic config with one before."""
+    if field.default_factory is not None:
+        return field.default_factory()
+    return field.default
 
 
 def _synthetic_config(model, module_id: str) -> dict:
     """A config dict with every model field at its default, plus the non-model keys the
     runner reads. Static enough to need no experiment on disk (the idiom above)."""
-    config = {name: field.default for name, field in model.model_fields.items()}
+    config = {name: _field_default(field) for name, field in model.model_fields.items()}
     config.update({"track_ids": [0], "every_n_frames": 1})
     for name in ("tracking_run_id", "detection_run_id", "model_id"):
         config.setdefault(name, "x")
+    # track_merge's own enriched keys (validate() resolves each source spec to a run id
+    # and each source's own class name) — placeholder lists, the same idiom track_ids
+    # above already uses.
+    config.setdefault("source_run_ids", ["x"])
+    config.setdefault("source_classes", ["x"])
     return config
 
 

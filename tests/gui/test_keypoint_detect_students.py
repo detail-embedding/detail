@@ -84,7 +84,22 @@ def test_an_incomplete_or_detection_model_is_not_offered(qapp, tmp_path):
     assert "model_002" not in offered and "model_003" not in offered
 
 
-def _catalog_pose_model(model_id="rat_pose", name="rat catalog"):
+#: The skeleton shape remote-detail wrote before §26: still in the model records of students
+#: trained or promoted then, and in every user's catalog that had one.
+PRE_S26_SKELETON = {
+    "keypoints": [
+        {"name": "nose", "side": "midline", "pair": None},
+        {"name": "left_ear", "side": "left", "pair": "right_ear"},
+        {"name": "right_ear", "side": "right", "pair": "left_ear"},
+        {"name": "tail_base", "side": "midline", "pair": None},
+    ],
+    "edges": [["nose", "tail_base"]],
+    "front": "nose",
+    "back": "tail_base",
+}
+
+
+def _catalog_pose_model(model_id="rat_pose", name="rat catalog", skeleton=None):
     from detail.models import imported as imported_store
 
     mdir = imported_store.model_dir(model_id)
@@ -101,7 +116,7 @@ def _catalog_pose_model(model_id="rat_pose", name="rat catalog"):
             "task": "pose",
             "model_family": "yolo_pose",
             "weights": {"best": "weights/best.pt"},
-            "skeleton": Skeleton(names=("nose", "tail_base")).to_dict(),
+            "skeleton": skeleton or Skeleton(names=("nose", "tail_base")).to_dict(),
         },
     )
 
@@ -137,7 +152,7 @@ def test_a_pose_model_runs_where_no_registered_method_can(qapp, tmp_path, monkey
     foundation model."""
     monkeypatch.setattr(
         "detail.gui.model_availability.unavailable_reason",
-        lambda model_id: "needs dinov3_vit vit_large installed",
+        lambda model_id, **_kw: "needs dinov3_vit vit_large installed",
     )
     form = GUI_MODULES["keypoint_detect"].config_widget()
     form._picker.spec = lambda: {"module_id": "detection"}
@@ -151,3 +166,30 @@ def test_a_pose_model_runs_where_no_registered_method_can(qapp, tmp_path, monkey
     assert form.validation_error() is None
     assert form._no_methods.isHidden()
     assert all(form._method.itemData(i) for i in range(form._method.count()))
+
+
+def test_a_catalog_student_in_the_pre_s26_skeleton_shape_still_opens_the_form(
+    qapp, tmp_path
+):
+    """A user's catalog kept every student promoted before §26, its skeleton in the old
+    shape; one of them failed every catalog read with ``KeyError: 'names'`` (the keypoint
+    detect form, the model manager, ``Experiment.imported_models``)."""
+    from detail.api import models as api_models
+    from detail.models.resolve import keypoint_students
+
+    _catalog_pose_model("old_pose", skeleton=PRE_S26_SKELETON)
+    proj = Experiment.create("p", tmp_path)
+
+    ref = api_models.imported_model("old_pose")
+    assert ref.skeleton.names == ("nose", "left_ear", "right_ear", "tail_base")
+    assert ref.skeleton.pairs == (("left_ear", "right_ear"),)
+    assert ref.classes == ["nose", "left_ear", "right_ear", "tail_base"]
+    assert "old_pose" in [r.id for r in api_models.imported_models(role=None)]
+    assert "old_pose" in [r.id for r in api_models.list_models()]
+    assert "old_pose" in [r.id for r in proj.imported_models]
+    assert "old_pose" in [s["id"] for s in keypoint_students(proj.dir)]
+
+    form = GUI_MODULES["keypoint_detect"].config_widget()
+    form.on_experiment_set(proj)
+    offered = [form._method.itemData(i) for i in range(form._method.count())]
+    assert "old_pose" in offered

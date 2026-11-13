@@ -17,34 +17,49 @@ CPU-only: no model, no torch, no video decode. The masks are re-decoded, which i
 from pathlib import Path
 
 import numpy as np
-import yaml
 
 from detail.analysis import geometry
 from detail.core import atomic
 from detail.core import cpu
 from detail.core import lookahead
+from detail.core import yaml_load
 from detail.core.utils import decode_mask
 from detail.executor import rundir
 from detail.storage.zarr_io import (
+    KINEMATICS_SHAPE_COLUMNS,
     DetectionPartReader,
     KinematicsPartWriter,
     PartZarrReader,
     kinematics_part_path,
+    resolve_assignment_rows,
 )
 
 
 def _embedding_meta(run_dir: Path) -> dict:
-    return yaml.safe_load(atomic.read_text(run_dir / "embedding.yaml"))
+    return yaml_load.safe_load(atomic.read_text(run_dir / "embedding.yaml"))
+
+
+def is_current(embedding_part: Path) -> bool:
+    """Whether a part's kinematics sibling exists **and** carries the mask's outline.
+
+    A sidecar written before the outline columns (``mask_shape``) existed is complete for where
+    the animal was and silent on what shape it was; a backfill brings it up to date rather than
+    leaving the shape measures unavailable on every run made before them.
+    """
+    sidecar = kinematics_part_path(embedding_part)
+    if not sidecar.exists():
+        return False
+    return KINEMATICS_SHAPE_COLUMNS[0] in PartZarrReader(sidecar).column_names
 
 
 def missing_parts(recording_dir: Path | str, embed_run_id: str) -> list[Path]:
-    """Embedding parts in this run with no kinematics sibling, in walk order."""
+    """Embedding parts in this run with no current kinematics sibling, in walk order."""
     run_dir = Path(recording_dir) / "embeddings" / embed_run_id
     return [
         part
         for track_dir in sorted(run_dir.glob("track_*"))
         for part in sorted(track_dir.glob("part_*.zarr"))
-        if not kinematics_part_path(part).exists()
+        if not is_current(part)
     ]
 
 
@@ -61,7 +76,8 @@ def backfill_run(
     long recording, and a silent long op is indistinguishable from a hang.
 
     Already-backfilled parts are skipped unless ``overwrite``, so a re-run after an interruption
-    resumes rather than redoing the work.
+    resumes rather than redoing the work. A part whose sidecar predates the outline columns is
+    not "already backfilled" (:func:`is_current`): it is rewritten with them.
     """
     recording_dir = Path(recording_dir)
     run_dir = recording_dir / "embeddings" / embed_run_id
@@ -71,8 +87,9 @@ def backfill_run(
         )
     meta = _embedding_meta(run_dir)
     tracking_dir = recording_dir / "tracking" / meta["tracking_run_id"]
-    track_meta = yaml.safe_load(atomic.read_text(tracking_dir / "track.yaml"))
+    track_meta = yaml_load.safe_load(atomic.read_text(tracking_dir / "track.yaml"))
     detection_dir = recording_dir / "detections" / track_meta["detection_run_id"]
+    class_name = track_meta.get("class_name")
     frame_hw = rundir.read_envelope(detection_dir)["mask_resolution"]
 
     parts = [
@@ -81,7 +98,7 @@ def backfill_run(
         for part in sorted(track_dir.glob("part_*.zarr"))
     ]
     if not overwrite:
-        parts = [p for p in parts if not kinematics_part_path(p).exists()]
+        parts = [p for p in parts if not is_current(p)]
     written = 0
     for index, part in enumerate(parts):
         track_id = int(part.parent.name.split("_")[-1])
@@ -103,7 +120,13 @@ def backfill_run(
 
         report(0.0)
         _backfill_part(
-            part, detection_dir, tracking_dir, track_id, frame_hw, progress=report
+            part,
+            detection_dir,
+            tracking_dir,
+            track_id,
+            frame_hw,
+            class_name,
+            progress=report,
         )
         written += 1
     if progress is not None:
@@ -124,16 +147,21 @@ def _backfill_part(
     tracking_dir: Path,
     track_id: int,
     frame_hw,
+    class_name: str | None = None,
     *,
     progress=None,
 ) -> None:
     """One part. Reads only this part's detection rows, so no cross-part index is ever formed."""
-    det = DetectionPartReader(detection_dir / embedding_part.name).read()
-    object_id = np.asarray(
-        PartZarrReader(tracking_dir / "assignments" / embedding_part.name).read()[
-            "object_id"
-        ]
-    )
+    det_reader = DetectionPartReader(detection_dir / embedding_part.name)
+    assign_reader = PartZarrReader(tracking_dir / "assignments" / embedding_part.name)
+    # object_id is parallel to the detection rows the tracker actually kept when it
+    # ran (§13) — every row when this run had no class filter, only one class's
+    # otherwise (anchor_tracker et al. build object_ids from filter_by_class'd
+    # data). raw_rows recovers which reader row each assignment row really is.
+    raw_rows = resolve_assignment_rows(det_reader, assign_reader, class_name)
+    n = len(raw_rows)
+    det = {k: np.asarray(v)[raw_rows] for k, v in det_reader.read().items()}
+    object_id = np.asarray(assign_reader.read()["object_id"][:n])
     frame_col = np.asarray(det["frame_idx"])
     bbox_col = np.asarray(det["bbox"])
     mine = np.where(object_id.astype(np.int64) == int(track_id))[0]
@@ -181,6 +209,7 @@ def _backfill_part(
                     geom.cy_norm,
                     geom.mask_area_norm,
                     geom.bbox_norm,
+                    geom.shape,
                 )
                 if progress is not None and i % 2000 == 0:
                     progress(i / max(len(frames), 1))

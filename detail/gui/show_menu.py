@@ -1,7 +1,7 @@
 """What a montage's tiles show — one definition of the layers, and the **Show ▾** menu.
 
-The layers a tile can draw — **Video**, **Masks**, **Mask trail**, **Keypoints** — and the
-orientation (**As recorded** / **Aligned**) are a ``clip_tiles.TileLook``. Every surface that
+The layers a tile can draw — **Video**, **Masks**, **Mask trail**, **Keypoints**, **Keypoint
+trail** (with **Trail points**, which of them trail) — and the orientation (**As recorded** / **Aligned**) are a ``clip_tiles.TileLook``. Every surface that
 offers them reads :data:`LAYERS` for their names and tips and :func:`layer_states` for which may
 change and why not, so the cluster window's Show row and INTERPRET's and AUDIT's **Show ▾** say
 the same thing the same way. What an export writes from a look is :func:`layers_of`, and how it
@@ -24,7 +24,7 @@ from dataclasses import replace
 
 from PyQt6.QtCore import QPoint, QSettings, pyqtSignal
 from PyQt6.QtGui import QAction, QActionGroup
-from PyQt6.QtWidgets import QMenu, QPushButton, QSizePolicy
+from PyQt6.QtWidgets import QMenu, QPushButton, QSizePolicy, QWidgetAction
 
 from detail.api.clip_tiles import TileLook
 
@@ -38,17 +38,27 @@ LAYERS: tuple[tuple[str, str, str], ...] = (
         "Where the animal's outline was over the last half second, fading.",
     ),
     ("keypoints", "Keypoints", "The keypoint run the embedding read."),
+    (
+        "keypoint_trail",
+        "Keypoint trail",
+        "Each chosen keypoint's path over the last half second, fading, in its colour.",
+    ),
 )
 #: Why the last layer a tile draws cannot be unticked.
 LAST_LAYER = "A tile has to show something."
 #: Why the trail is greyed with the masks off.
 TRAIL_NEEDS_MASKS = "The trail follows the masks: tick Masks."
+#: Why the keypoint trail is greyed with the keypoints off.
+TRAIL_NEEDS_POINTS = "The trail follows the keypoints: tick Keypoints."
+#: *Trail points* before a tile has read the run's skeleton.
+POINTS_UNKNOWN = "Which keypoints leave a trail — once a tile has shown the keypoints."
 #: What a look is said as, in an export's line: ``video + masks``.
 _WORDS = {
     "footage": "video",
     "masks": "masks",
     "mask_trail": "mask trail",
     "keypoints": "keypoints",
+    "keypoint_trail": "keypoint trail",
 }
 _DRAWN = ("footage", "masks", "keypoints")
 #: The context choices, in seconds of footage either side of each clip (the clip player's).
@@ -76,6 +86,12 @@ def layer_states(
             out[key] = (bool(look.keypoints), points_note)
         elif key == "mask_trail":
             out[key] = (bool(look.masks), TRAIL_NEEDS_MASKS)
+        elif key == "keypoint_trail":
+            usable = bool(look.keypoints) and points_note is None
+            out[key] = (
+                usable or bool(look.keypoint_trail),
+                points_note if points_note is not None else TRAIL_NEEDS_POINTS,
+            )
         else:
             out[key] = (drawn != [key], LAST_LAYER)
     return out
@@ -86,7 +102,9 @@ def describe_look(look: TileLook) -> str:
     shown = [
         _WORDS[key]
         for key, _label, _tip in LAYERS
-        if getattr(look, key) and (key != "mask_trail" or look.masks)
+        if getattr(look, key)
+        and (key != "mask_trail" or look.masks)
+        and (key != "keypoint_trail" or look.keypoints)
     ]
     return f"{' + '.join(shown)} · {'aligned' if look.aligned else 'as recorded'}"
 
@@ -100,12 +118,21 @@ def layers_of(look: TileLook):
         mask=look.masks,
         keypoints=look.keypoints,
         mask_trail=look.masks and look.mask_trail,
+        keypoint_trail=look.keypoints and look.keypoint_trail,
+        trail_points=(
+            look.trail_points if look.keypoints and look.keypoint_trail else None
+        ),
         aligned=look.aligned,
     )
 
 
+def _points_key(key: str) -> str:
+    return f"{key}_trail_points"
+
+
 def remembered_look(key: str, *, masks_key: str | None = None) -> TileLook:
-    """The look kept under ``key`` (``remember_look``), the orientation aside.
+    """The look kept under ``key`` (``remember_look``), the orientation aside — its trail
+    points too.
 
     ``masks_key``: the older *Show masks* setting to start from when ``key`` holds nothing yet
     — read once, so a page that had masks off opens with them off.
@@ -113,9 +140,16 @@ def remembered_look(key: str, *, masks_key: str | None = None) -> TileLook:
     stored = QSettings().value(key)
     if isinstance(stored, str):
         names = set(stored.split(",")) if stored else set()
+        points = QSettings().value(_points_key(key))
         try:
             return TileLook(
-                **{field: field in names for field, _l, _t in LAYERS}, aligned=False
+                **{field: field in names for field, _l, _t in LAYERS},
+                aligned=False,
+                trail_points=(
+                    tuple(p for p in points.split("|") if p)
+                    if isinstance(points, str)
+                    else None
+                ),
             )
         except ValueError:
             pass
@@ -129,6 +163,10 @@ def remember_look(key: str, look: TileLook) -> None:
     QSettings().setValue(
         key, ",".join(field for field, _l, _t in LAYERS if getattr(look, field))
     )
+    if look.trail_points is None:
+        QSettings().remove(_points_key(key))
+    else:
+        QSettings().setValue(_points_key(key), "|".join(look.trail_points))
 
 
 class ShowButton(QPushButton):
@@ -144,6 +182,8 @@ class ShowButton(QPushButton):
     aligned_wanted = pyqtSignal(bool)
     #: The context chosen, in seconds either side of each clip.
     context_wanted = pyqtSignal(float)
+    #: *Trail points* changed: the names that trail (``None``: every point).
+    trail_points_wanted = pyqtSignal(object)
 
     def __init__(self, parent=None) -> None:
         super().__init__("Show ▾", parent)
@@ -164,6 +204,20 @@ class ShowButton(QPushButton):
                 lambda on, k=key: self.layer_toggled.emit(k, bool(on))
             )
             self.layer_actions[key] = action
+        from detail.gui.skeleton_points import SkeletonPointsPicker
+
+        #: *Trail points*: which keypoints the keypoint trail follows (rd's montage window's
+        #: *Trail points* button, here a submenu so the toolbar keeps its four controls).
+        self.points_menu = self.menu.addMenu("Trail points")
+        self.points_menu.setToolTipsVisible(True)
+        self.points_picker = SkeletonPointsPicker(wording="trail")
+        self.points_picker.changed.connect(
+            lambda: self.trail_points_wanted.emit(self.points_picker.value())
+        )
+        holder = QWidgetAction(self.points_menu)
+        holder.setDefaultWidget(self.points_picker)
+        self.points_menu.addAction(holder)
+        self._skeleton: tuple | None = None
         self.menu.addSeparator()
         group = QActionGroup(self)
         group.setExclusive(True)
@@ -209,9 +263,11 @@ class ShowButton(QPushButton):
         align_tip: str,
         points_note: str | None,
         context_s: float,
+        skeleton: tuple | None,
     ) -> None:
         """Show ``look``, the orientation and the context; grey what cannot change, with
-        why."""
+        why. ``skeleton`` is ``(names, pairs)`` once a tile has read the keypoints — what
+        *Trail points* chooses from — else ``None``."""
         states = layer_states(look, points_note)
         for key, label, tip in LAYERS:
             action = self.layer_actions[key]
@@ -224,6 +280,48 @@ class ShowButton(QPushButton):
         align.setEnabled(align_note is None)
         align.setToolTip(align_tip if align_note is None else align_note)
         self.context_actions[float(context_s)].setChecked(True)
+        self._sync_points(look, skeleton, points_note)
+
+    def _sync_points(self, look: TileLook, skeleton, points_note) -> None:
+        picker = self.points_picker
+        if skeleton is not None and skeleton != self._skeleton:
+            self._skeleton = skeleton
+            picker.blockSignals(True)
+            picker.set_skeleton(*skeleton)
+            picker.blockSignals(False)
+        if picker.value() != (
+            None if look.trail_points is None else list(look.trail_points)
+        ):
+            picker.blockSignals(True)
+            picker.set_value(
+                None if look.trail_points is None else list(look.trail_points)
+            )
+            picker.blockSignals(False)
+        trailing = bool(look.keypoints and look.keypoint_trail)
+        action = self.points_menu.menuAction()
+        if points_note is not None:
+            why = points_note
+        elif not trailing:
+            why = "Tick Keypoint trail to choose its points."
+        elif self._skeleton is None:
+            why = POINTS_UNKNOWN
+        else:
+            why = None
+        action.setEnabled(why is None)
+        names = self._skeleton[0] if self._skeleton else ()
+        chosen = look.trail_points
+        action.setText(
+            "Trail points"
+            if why is not None
+            else (
+                f"Trail points: all {len(names)}"
+                if chosen is None
+                else f"Trail points: {len(chosen)} of {len(names)}"
+            )
+        )
+        action.setToolTip(
+            why or "Choose which keypoints leave a trail: every point, or only some."
+        )
 
 
 def toggled(look: TileLook, key: str, on: bool) -> TileLook:

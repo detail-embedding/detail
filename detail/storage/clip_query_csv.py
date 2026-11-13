@@ -15,7 +15,7 @@ tenet); mirrors ``storage/location_export.py``.
 
 import csv
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -71,37 +71,14 @@ class ClipRow:
         return self.end_frame - self.start_frame + 1
 
 
-def write_clip_csv(
-    path: Path | str,
-    rows: Sequence[ClipRow],
-    *,
-    extra: Mapping[str, Sequence] | None = None,
-) -> None:
-    """Write ``rows`` to ``path`` with the canonical header, atomically.
-
-    ``extra`` adds columns **after** the canonical ones — ``{name: values}``, one value per
-    row — for a writer that has more to say about each clip (the clip montage's list carries
-    the clip's typicality rank and its recording's name) while staying a clip-query CSV that
-    :func:`read_clip_csv` reads unchanged.
-
-    Raises:
-        ValueError: an extra column repeats a canonical one, or has a value count other than
-            the row count.
-    """
-    extra = dict(extra or {})
-    for name, values in extra.items():
-        if name in COLUMNS:
-            raise ValueError(f"extra column {name!r} is already a clip-query column")
-        if len(values) != len(rows):
-            raise ValueError(
-                f"extra column {name!r} has {len(values)} values for {len(rows)} rows"
-            )
+def write_clip_csv(path: Path | str, rows: Sequence[ClipRow]) -> None:
+    """Write ``rows`` to ``path`` with the canonical header, atomically."""
     path = Path(path)
     tmp = path.parent / (path.name + ".tmp")
     with open(tmp, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(COLUMNS + list(extra))
-        for i, r in enumerate(rows):
+        writer.writerow(COLUMNS)
+        for r in rows:
             writer.writerow(
                 [
                     r.query_id,
@@ -119,7 +96,6 @@ def write_clip_csv(
                     r.score,
                     r.example_idx,
                 ]
-                + [values[i] for values in extra.values()]
             )
     atomic.replace(tmp, path)
 

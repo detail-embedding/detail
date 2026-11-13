@@ -32,7 +32,7 @@ def environment() -> dict:
     try:
         import numpy
 
-        env["numpy"] = numpy.__version__
+        env["numpy"] = str(numpy.__version__)  # a library's type is not our contract
     except Exception:  # numpy absent is not a provenance failure
         pass
     try:

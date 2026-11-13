@@ -44,7 +44,7 @@ from detail.storage import video_roots
 PROXY_FPS = 15
 #: The box a proxy is fitted inside, aspect kept and never enlarged.
 PROXY_MAX_WH = (480, 270)
-#: Proxy frames in a mask trail: half a second (``clip_views.CLIP_TRAIL_S``) at 15 fps.
+#: Proxy frames in a mask trail: half a second (``run_preview.CLIP_TRAIL_S``) at 15 fps.
 TRAIL_FRAMES = 8
 #: How much a part's masks cost against its proxy, per source frame — measured on one real
 #: 1080p recording.
@@ -433,22 +433,38 @@ def _check_proxy_complete(proxy: Path, n_written: int, source_name: str) -> None
         )
 
 
-def _mask_resolution(recording, detection_run_id: str) -> tuple[int, int]:
-    """``(height, width)`` the detection masks were encoded at (§9: the run's job.json)."""
-    from detail.executor import rundir
+def _mask_resolution(
+    recording, detection_run_id: str, encoded: tuple[int, int] | None
+) -> tuple[int, int]:
+    """``(height, width)`` the detection masks were encoded at: the run's own
+    ``mask_resolution`` (``encoded``, what ``run_preview._build_part`` read from its envelope),
+    else the recording's video resolution."""
+    if encoded:
+        return int(encoded[0]), int(encoded[1])
+    resolution = recording.video_resolution
+    if resolution is None:
+        raise ValueError(
+            f"{recording.name}: detection run {detection_run_id} records no mask "
+            "resolution and the recording has no video resolution"
+        )
+    return int(resolution[1]), int(resolution[0])
 
+
+def _tracking_class_filter(recording, tracking_run_id: str) -> str | None:
+    """The class the tracking run's own tracker kept (``track.yaml``), or ``None``.
+
+    Not the record's ``class_name``: a ``track_merge`` run gives that a joined label for
+    display, which matches no detection row (``run_preview.TrackingPreview``).
+    """
+    from detail.core import atomic
+    from detail.core import yaml_load
+
+    path = recording.dir / "tracking" / tracking_run_id / "track.yaml"
     try:
-        envelope = rundir.read_envelope(recording.dir / "detections" / detection_run_id)
-        height, width = (int(v) for v in envelope["mask_resolution"])
-        return height, width
-    except (FileNotFoundError, KeyError, TypeError, ValueError):
-        resolution = recording.video_resolution
-        if resolution is None:
-            raise ValueError(
-                f"{recording.name}: detection run {detection_run_id} records no mask "
-                "resolution and the recording has no video resolution"
-            ) from None
-        return int(resolution[1]), int(resolution[0])
+        meta = yaml_load.safe_load(atomic.read_text(path)) or {}
+    except FileNotFoundError:
+        return None
+    return meta.get("class_name") or None
 
 
 def _build_masks(recording, part_index: int, tracking_run_id: str, report=None) -> Path:
@@ -473,6 +489,8 @@ def _build_masks(recording, part_index: int, tracking_run_id: str, report=None) 
         build_proxy(recording, part_index)
         frames = store.read_frames(key)
     cadence = tracking_cadence(data, tracking_run_id)
+    # The tracker's own class filter: its assignment rows are the filtered detection rows,
+    # so row i of one is raw_rows[i] of the other, not row i (zarr_io.resolve_assignment_rows).
     source = _build_part(
         recording.dir,
         data,
@@ -480,11 +498,12 @@ def _build_masks(recording, part_index: int, tracking_run_id: str, report=None) 
         part_index,
         cadence,
         recording.dir / "tracking" / tracking_run_id / "assignments",
+        class_name=_tracking_class_filter(recording, tracking_run_id),
         timestamps=recording_store.load_active_timestamps_cached(
             recording.dir, data, part_index
         ).values,
     )
-    mask_hw = _mask_resolution(recording, entry["detection_run_id"])
+    mask_hw = _mask_resolution(recording, entry["detection_run_id"], source["mask_hw"])
     width, height = frames.width, frames.height
     n_proxy = len(frames.src_frame)
     tmp = store.staging_dir(final)
@@ -502,6 +521,7 @@ def _build_masks(recording, part_index: int, tracking_run_id: str, report=None) 
             },
         )
         reader, frame_idx = source["reader"], np.asarray(source["frame_idx"])
+        raw_rows = np.asarray(source["raw_rows"], dtype=np.int64)
         assignment = source["assignment"]
         if reader is not None and assignment is not None and len(frame_idx):
             last = max(source["n_frames"] - 1, 0)
@@ -515,13 +535,16 @@ def _build_masks(recording, part_index: int, tracking_run_id: str, report=None) 
             block: dict = {"start": -1, "stop": -1}
 
             def rows(a: int, b: int) -> dict:
+                """Filtered positions ``a:b``: the detection rows behind them
+                (``raw_rows``) and the assignment's own rows ``a:b``."""
                 if not (block["start"] <= a and b <= block["stop"]):
                     stop = min(len(frame_idx), max(b, a + store.FLUSH_ROWS))
+                    raw = raw_rows[a:stop]
                     block.update(
                         start=a,
                         stop=stop,
-                        bbox=np.asarray(reader.column("bbox")[a:stop]),
-                        rle=np.asarray(reader.column("mask_rle")[a:stop]),
+                        bbox=np.asarray(reader.column("bbox")[raw]),
+                        rle=np.asarray(reader.column("mask_rle")[raw]),
                         oid=np.asarray(assignment.column("object_id")[a:stop]),
                     )
                 s = a - block["start"]
@@ -658,12 +681,15 @@ class PreviewClip:
     shows (the part's own timestamp map — no second map). ``crop`` is ``(x0, y0, x1, y1)`` in
     proxy pixels, fixed for the clip so a tile never jitters. Not thread-safe: one clip, one
     caller; open one per tile.
+
+    ``object_id`` is one animal, or a sequence of them; ``tint``, when given, draws every
+    animal in it (the montage's grey for a clip outside the page's filters).
     """
 
     def __init__(
         self,
         reader: "PreviewReader",
-        object_id: int | None,
+        object_id: int | Sequence[int] | None,
         proxy_frames: np.ndarray,
         crop: tuple[int, int, int, int],
         tile_px: int,
@@ -674,10 +700,14 @@ class PreviewClip:
         tint=None,
     ) -> None:
         self._reader = reader
+        ids = _object_ids(object_id)
         #: The animal's colour: the house mask tint unless the caller asks for another (the
         #: montage draws a clip outside the page's filters in grey).
         self.tint = visualize.MASK_TINT if tint is None else tuple(tint)
+        #: ``{object_id: RGB}`` each animal is drawn in, in drawing order.
+        self.tints: dict[int, tuple] = {oid: self.tint for oid in ids}
         self.object_id = object_id
+        self.object_ids = ids
         self.proxy_frames = proxy_frames
         self.t_ns = reader.proxy_t_ns[proxy_frames]
         self.crop = crop
@@ -695,22 +725,32 @@ class PreviewClip:
                 timestamps=_proxy_pts(reader.frames.video),
                 threads=TILE_DECODE_THREADS,
             )
-        self._rows: dict[int, int] = {}
+        #: ``{object_id: {proxy frame: mask row}}``.
+        self._rows: dict[int, dict[int, int]] = {}
         masks = reader.masks
-        if masks is not None and object_id is not None and len(proxy_frames):
+        if masks is not None and ids and len(proxy_frames):
             lo = int(proxy_frames[0]) - max(self._trail - 1, 0)
-            for row in masks.rows_for(object_id, lo, int(proxy_frames[-1])):
-                self._rows[int(masks.proxy_frame[row])] = int(row)
-        self._tile_masks: dict[int, np.ndarray | None] = {}
-        self._rings: dict[int, np.ndarray | None] = {}
+            for oid in ids:
+                found = {
+                    int(masks.proxy_frame[row]): int(row)
+                    for row in masks.rows_for(oid, lo, int(proxy_frames[-1]))
+                }
+                if found:
+                    self._rows[oid] = found
+        self._tile_masks: dict[tuple[int, int], np.ndarray | None] = {}
+        self._rings: dict[tuple[int, int], np.ndarray | None] = {}
         #: The **Aligned** orientation (:meth:`set_pose`): each tile frame's body-axis ends,
         #: normalized ``(n, 2, 2)`` (front, back), NaN where the frame has none; ``None`` draws
         #: every frame as recorded.
         self._axes: np.ndarray | None = None
-        #: Keypoints drawn on the tile (:meth:`set_pose`): ``(points (n, K, 2), scores (n, K),
-        #: skeleton)``, or ``None``.
-        self._points: tuple | None = None
-        self._full_masks: dict[int, np.ndarray | None] = {}
+        #: Keypoints drawn on the tile (:meth:`set_pose`): per animal, ``(points (n, K, 2),
+        #: scores (n, K), skeleton, colour or None)``; empty for none.
+        self._points: list[tuple] = []
+        #: Whether the keypoints trail (:meth:`set_pose`), and which of them by name (``None``:
+        #: every point).
+        self._trail_on = False
+        self._trail_names: tuple[str, ...] | None = None
+        self._full_masks: dict[tuple[int, int], np.ndarray | None] = {}
 
     def __len__(self) -> int:
         return len(self.proxy_frames)
@@ -729,10 +769,14 @@ class PreviewClip:
         if self._decoder is not None:
             self._decoder.close()
 
-    def _tile_mask(self, proxy_frame: int) -> np.ndarray | None:
-        if proxy_frame in self._tile_masks:
-            return self._tile_masks[proxy_frame]
-        row = self._rows.get(int(proxy_frame))
+    def _cache_room(self) -> int:
+        return 4 * max(self._trail, 1) * max(len(self.object_ids), 1)
+
+    def _tile_mask(self, proxy_frame: int, oid: int) -> np.ndarray | None:
+        key = (int(oid), int(proxy_frame))
+        if key in self._tile_masks:
+            return self._tile_masks[key]
+        row = self._rows.get(int(oid), {}).get(int(proxy_frame))
         tile = None
         if row is not None:
             from detail.core.utils import decode_mask
@@ -742,9 +786,9 @@ class PreviewClip:
             tile = _to_tile(full, self.crop, self.tile_px, mask=True)
             if not tile.any():
                 tile = None
-        if len(self._tile_masks) > 4 * max(self._trail, 1):
+        if len(self._tile_masks) > self._cache_room():
             self._tile_masks.pop(next(iter(self._tile_masks)))
-        self._tile_masks[proxy_frame] = tile
+        self._tile_masks[key] = tile
         return tile
 
     def source_frames(self) -> np.ndarray:
@@ -757,25 +801,35 @@ class PreviewClip:
         self,
         *,
         axes: np.ndarray | None = None,
-        points: tuple | None = None,
+        points: tuple | Sequence[tuple] | None = None,
+        trail: bool = False,
+        trail_points: Sequence[str] | None = None,
     ) -> None:
         """Turn the tiles so the body points up (``axes``: ``(n, 2, 2)`` normalized front and
-        back per tile frame, NaN where there is none) and/or draw the keypoints on them
-        (``points``: ``(points (n, K, 2), scores (n, K), skeleton)``), one row per tile frame.
+        back per tile frame, NaN where there is none) and/or draw the keypoints on them, one
+        row per tile frame: ``points`` is one animal's ``(points (n, K, 2), scores (n, K),
+        skeleton)``, or a sequence of ``(points, scores, skeleton, RGB)``, each animal in its
+        colour. ``trail``: each point's path over the last
+        :data:`TRAIL_FRAMES` tile frames, fading — only ``trail_points`` (by name) when given.
 
         Raises:
             ValueError: a row count that is not the clip's.
         """
-        for name, rows in (
-            ("axes", axes),
-            ("points", None if points is None else points[0]),
-        ):
+        if points is None:
+            animals: list[tuple] = []
+        elif isinstance(points[0], np.ndarray):
+            animals = [(*points, None)]
+        else:
+            animals = [tuple(p) for p in points]
+        for name, rows in (("axes", axes), *(("points", a[0]) for a in animals)):
             if rows is not None and len(rows) != len(self):
                 raise ValueError(
                     f"{name}: {len(rows)} rows for a clip of {len(self)} frames"
                 )
         self._axes = None if axes is None else np.asarray(axes, dtype=np.float64)
-        self._points = points
+        self._points = animals
+        self._trail_on = bool(trail)
+        self._trail_names = None if trail_points is None else tuple(trail_points)
 
     def _matrix(self, offset: int) -> np.ndarray | None:
         """The turn for tile ``offset`` (``clip_views.turn_matrix``), or ``None``: as recorded,
@@ -802,8 +856,8 @@ class PreviewClip:
         With footage, the proxy frame with the animal outlined and its trail as fading
         outlines; without, its filled mask and trail on white. A frame past the proxy's
         end (a short file) is a grey tile. Turned so the body points up, and the keypoints
-        drawn, when :meth:`set_pose` asked; a frame with no axis is drawn as recorded and
-        marked "no axis"."""
+        (and their trail) drawn, when :meth:`set_pose` asked; a frame with no axis is drawn as
+        recorded and marked "no axis"."""
         offset = min(max(int(offset), 0), len(self) - 1)
         proxy_frame = int(self.proxy_frames[offset])
         size = self.tile_px
@@ -823,25 +877,36 @@ class PreviewClip:
             tile = np.full((size, size, 3), 255, dtype=np.uint8)
         if self._mask and self._rows:
             outline = self._decoder is not None
-            if matrix is None:
-                history = [
-                    self._trail_layer(frame, outline)
-                    for frame in range(proxy_frame - self._trail + 1, proxy_frame)
-                ]
-                now = self._tile_mask(proxy_frame)
-                ring = self._trail_layer(proxy_frame, outline) if outline else None
-            else:
-                history = [
-                    self._turned_layer(frame, matrix, outline)
-                    for frame in range(proxy_frame - self._trail + 1, proxy_frame)
-                ]
-                now = self._turned_layer(proxy_frame, matrix, False)
-                ring = (
-                    self._turned_layer(proxy_frame, matrix, True) if outline else None
-                )
-            tile = _draw_masks(tile, history, now, ring, self.tint)
-        if self._points is not None:
-            tile = self._draw_points(tile, offset, matrix)
+            for oid in self.object_ids:
+                if oid not in self._rows:
+                    continue
+                if matrix is None:
+                    history = [
+                        self._trail_layer(frame, outline, oid)
+                        for frame in range(proxy_frame - self._trail + 1, proxy_frame)
+                    ]
+                    now = self._tile_mask(proxy_frame, oid)
+                    ring = (
+                        self._trail_layer(proxy_frame, outline, oid)
+                        if outline
+                        else None
+                    )
+                else:
+                    history = [
+                        self._turned_layer(frame, matrix, outline, oid)
+                        for frame in range(proxy_frame - self._trail + 1, proxy_frame)
+                    ]
+                    now = self._turned_layer(proxy_frame, matrix, False, oid)
+                    ring = (
+                        self._turned_layer(proxy_frame, matrix, True, oid)
+                        if outline
+                        else None
+                    )
+                tile = _draw_masks(tile, history, now, ring, self.tints[oid])
+        if self._points and self._trail_on:
+            tile = self._draw_point_trails(tile, offset, matrix)
+        for animal in self._points:
+            tile = self._draw_points(tile, offset, matrix, animal, color=animal[3])
         if self._axes is not None and matrix is None:
             from detail.api.clip_views import mark_no_axis
 
@@ -856,32 +921,76 @@ class PreviewClip:
         k = self.tile_px / side
         return np.array([[k, 0.0, k * (left - x0)], [0.0, k, k * (top - y0)]])
 
-    def _draw_points(self, tile: np.ndarray, offset: int, matrix) -> np.ndarray:
-        """The subject's keypoints on ``tile``, placed the way its picture was."""
+    def _placed(self, xy: np.ndarray, matrix) -> np.ndarray:
+        """Normalized frame points as normalized tile points, placed the way the picture
+        was."""
         from detail.api.clip_views import turn_points
-        from detail.core.visualize import draw_keypoints
 
-        points, scores, skeleton = self._points
-        xy = points[offset]
-        if not np.isfinite(xy).any():
-            return tile
-        size = (self.tile_px, self.tile_px)
-        placed = turn_points(
+        return turn_points(
             xy,
             self._crop_matrix() if matrix is None else matrix,
             self._reader.size,
-            size,
-        )
-        edge = (235, 235, 235) if self._decoder is not None else (110, 110, 110)
-        return draw_keypoints(
-            tile, placed, skeleton, scores=scores[offset], edge_color=edge
+            (self.tile_px, self.tile_px),
         )
 
-    def _full_mask(self, proxy_frame: int) -> np.ndarray | None:
-        """The subject's mask on ``proxy_frame`` at proxy size, kept for the trail's frames."""
-        if proxy_frame in self._full_masks:
-            return self._full_masks[proxy_frame]
-        row = self._rows.get(int(proxy_frame))
+    def _draw_points(
+        self, tile: np.ndarray, offset: int, matrix, animal: tuple, *, color=None
+    ) -> np.ndarray:
+        """One animal's keypoints on ``tile``, placed the way its picture was — in ``color``
+        when one is given, by role otherwise."""
+        from detail.core.visualize import draw_keypoints
+
+        points, scores, skeleton = animal[0], animal[1], animal[2]
+        xy = points[offset]
+        if not np.isfinite(xy).any():
+            return tile
+        placed = self._placed(xy, matrix)
+        edge = (235, 235, 235) if self._decoder is not None else (110, 110, 110)
+        return draw_keypoints(
+            tile,
+            placed,
+            skeleton,
+            scores=scores[offset],
+            edge_color=edge,
+            color=color,
+        )
+
+    def _draw_point_trails(self, tile: np.ndarray, offset: int, matrix) -> np.ndarray:
+        """Each trailing point's path over the last :data:`TRAIL_FRAMES` tile frames, up to
+        ``offset``, fading — in its role colour, or its animal's colour. An aligned trail
+        is placed by the current frame's turn, as an aligned mask trail is."""
+        from detail.core.visualize import (
+            KEYPOINT_COLORS,
+            draw_fading_paths,
+            keypoint_roles,
+        )
+
+        names_wanted = self._trail_names
+        first = max(offset - TRAIL_FRAMES + 1, 0)
+        if offset - first < 1:
+            return tile
+        for points, _scores, skeleton, colour in self._points:
+            names = list(skeleton.names)
+            wanted = set(names if names_wanted is None else names_wanted)
+            kept = np.array([name in wanted for name in names], dtype=bool)
+            if not kept.any():
+                continue
+            rows = points[first : offset + 1][:, kept]
+            placed = np.stack([self._placed(row, matrix) for row in rows])
+            if colour is None:
+                roles = keypoint_roles(skeleton)
+                colours = [KEYPOINT_COLORS[r] for r, k in zip(roles, kept) if k]
+            else:
+                colours = [tuple(colour)] * int(kept.sum())
+            tile = draw_fading_paths(tile, placed, colours)
+        return tile
+
+    def _full_mask(self, proxy_frame: int, oid: int) -> np.ndarray | None:
+        """An animal's mask on ``proxy_frame`` at proxy size, kept for the trail's frames."""
+        key = (int(oid), int(proxy_frame))
+        if key in self._full_masks:
+            return self._full_masks[key]
+        row = self._rows.get(int(oid), {}).get(int(proxy_frame))
         full = None
         if row is not None:
             from detail.core.utils import decode_mask
@@ -890,17 +999,17 @@ class PreviewClip:
             full = decode_mask(str(masks.mask_rle[row]), (masks.height, masks.width))
             if not full.any():
                 full = None
-        if len(self._full_masks) > 4 * max(self._trail, 1):
+        if len(self._full_masks) > self._cache_room():
             self._full_masks.pop(next(iter(self._full_masks)))
-        self._full_masks[proxy_frame] = full
+        self._full_masks[key] = full
         return full
 
-    def _turned_layer(self, proxy_frame: int, matrix, outline: bool):
+    def _turned_layer(self, proxy_frame: int, matrix, outline: bool, oid: int):
         """A frame's mask (or, ``outline``, its ring) turned by the **current** frame's matrix:
         an aligned trail is where the animal was relative to its body now."""
         from detail.api.clip_views import turn_mask
 
-        full = self._full_mask(proxy_frame)
+        full = self._full_mask(proxy_frame, oid)
         if full is None:
             return None
         turned = turn_mask(full, matrix, (self.tile_px, self.tile_px))
@@ -910,24 +1019,36 @@ class PreviewClip:
 
         return visualize.mask_outline(turned, outline_px(self.tile_px))
 
-    def _trail_layer(self, proxy_frame: int, outline: bool) -> np.ndarray | None:
+    def _trail_layer(
+        self, proxy_frame: int, outline: bool, oid: int
+    ) -> np.ndarray | None:
         """What a frame contributes to a trail: its outline ring on footage, its mask on
         white. Kept per frame, so walking a clip makes each ring once rather than once for
         every later frame whose trail it is in."""
         if not outline:
-            return self._tile_mask(proxy_frame)
-        if proxy_frame not in self._rings:
+            return self._tile_mask(proxy_frame, oid)
+        key = (int(oid), int(proxy_frame))
+        if key not in self._rings:
             from detail.api.clip_montage import outline_px
 
-            mask = self._tile_mask(proxy_frame)
-            if len(self._rings) > 4 * max(self._trail, 1):
+            mask = self._tile_mask(proxy_frame, oid)
+            if len(self._rings) > self._cache_room():
                 self._rings.pop(next(iter(self._rings)))
-            self._rings[proxy_frame] = (
+            self._rings[key] = (
                 None
                 if mask is None
                 else visualize.mask_outline(mask, outline_px(self.tile_px))
             )
-        return self._rings[proxy_frame]
+        return self._rings[key]
+
+
+def _object_ids(object_id) -> list[int]:
+    """One animal's id, several ids, or none, as a list."""
+    if object_id is None:
+        return []
+    if isinstance(object_id, (int, np.integer)):
+        return [int(object_id)]
+    return [int(oid) for oid in object_id]
 
 
 def _draw_masks(tile, history, now, ring, tint=visualize.MASK_TINT) -> np.ndarray:
@@ -1031,7 +1152,7 @@ class PreviewReader:
 
     def clip(
         self,
-        object_id: int | None,
+        object_id: int | Sequence[int] | None,
         start_t_ns: int,
         end_t_ns: int,
         tile_px: int = 160,
@@ -1054,7 +1175,10 @@ class PreviewReader:
         width, height = self.size
         boxes = np.zeros((0, 4))
         if self.masks is not None and object_id is not None:
-            rows = self.masks.rows_for(object_id, lo, hi)
+            rows = np.concatenate(
+                [self.masks.rows_for(oid, lo, hi) for oid in _object_ids(object_id)]
+                or [np.zeros(0, dtype=np.int64)]
+            )
             boxes = self.masks.bbox[rows].astype(np.float64)
         crop = crop_box(boxes, (width, height))
         return PreviewClip(

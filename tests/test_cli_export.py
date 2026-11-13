@@ -251,6 +251,40 @@ def test_a_contradicting_subject_kind_is_refused(authored_cohort):
     assert "contradicts" in result.output
 
 
+def test_run_writes_a_preview_frame_with_style_and_for_recording(tmp_path):
+    """`--for-recording` and `--style` are the two flags `preview_frame`/`preview_video`
+    need and no other target does — a real detection run, through the CLI's own option
+    parsing rather than a direct call into `write_export`."""
+    from detail.storage import runs as runs_store
+    from tests.api.test_run_preview import _recording_with_detection
+
+    recording = _recording_with_detection(tmp_path, n_frames=5)
+    experiment_dir = recording.dir.parent.parent
+    runs_store.write_run(
+        experiment_dir,
+        "det_run_01",
+        {
+            "id": "det_run_01",
+            "module_id": "detection",
+            "status": "complete",
+            "per_recording": {"s1": {"run_id": "det_01", "status": "complete"}},
+        },
+    )
+    result = _run(
+        "export", "run",
+        "--experiment", str(experiment_dir),
+        "--run", "det_run_01",
+        "--target", "preview_frame",
+        "--for-recording", "s1",
+        "--frames", "2:2",
+        "--style", "box_only",
+        "--out", str(tmp_path / "out"),
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    written = sorted(tmp_path.glob("out/*/s1_frame000002.png"))
+    assert written, result.output
+
+
 def test_a_distill_run_is_named_by_its_own_flag(authored_cohort):
     """``--distill-run`` is the subject, and the refusals name it by that flag rather than a
     spelling derived from the kind (``--distill``), which no command accepts."""
@@ -352,3 +386,32 @@ def test_every_figure_target_reads_the_theme_the_same_way():
     assert export_targets._figure_style({}).theme == "light"
     assert export_targets._figure_style({"theme": "dark"}).theme == "dark"
     assert export_targets._figure_style({"theme": None}).theme == "light"
+
+
+def test_size_reaches_a_keypoints_video_export(
+    processed_recording, tmp_path, monkeypatch
+):
+    """`--size` is the keypoints video's longest side as well as a clip's (§26)."""
+    from detail.api.experiment import Experiment
+    from detail.storage import runs as runs_store
+
+    runs_store.write_run(
+        processed_recording.experiment.dir,
+        "run_kp",
+        {"id": "run_kp", "module_id": "keypoints", "status": "complete"},
+    )
+    seen = {}
+
+    def fake_run_export(self, kind, subject_id, target_ids, out, scope=None, **options):
+        seen.update(kind=kind, subject_id=subject_id, targets=target_ids, **options)
+        raise ValueError("stop here")
+
+    monkeypatch.setattr(Experiment, "run_export", fake_run_export)
+    result = _run(
+        "export", "run",
+        "--experiment", str(processed_recording.experiment.dir),
+        "--run", "run_kp", "--target", "keypoints_video", "--size", "480",
+        "--out", str(tmp_path / "out"),
+    )  # fmt: skip
+    assert "stop here" in result.output
+    assert seen["targets"] == ["keypoints_video"] and seen["size"] == 480

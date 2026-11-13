@@ -35,6 +35,7 @@ from pathlib import Path
 import yaml
 
 from detail.core import atomic
+from detail.core import yaml_load
 from detail.core.progress import ThrottledProgress
 from detail.storage import experiment as experiment_store
 from detail.storage import integrity
@@ -583,7 +584,7 @@ def read_manifest(archive: Path | str) -> dict:
         member = next((m for m in tar if m.name == MANIFEST_NAME), None)
         if member is None:
             raise ValueError(f"not a DETAIL export (no {MANIFEST_NAME})")
-        data = yaml.safe_load(tar.extractfile(member).read())
+        data = yaml_load.safe_load(tar.extractfile(member).read())
     if not isinstance(data, dict) or "id" not in data:
         raise ValueError("malformed export manifest")
     return data

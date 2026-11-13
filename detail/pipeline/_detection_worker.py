@@ -49,6 +49,14 @@ STOP_FLAG_NAME = "stop.flag"
 _WORKER_STATE: dict = {}
 
 
+def conf_floor(conf_threshold: float, class_conf_thresholds: dict[str, float]) -> float:
+    """The value to hand the model's own ``set_conf_threshold`` — the lowest of the
+    flat default and every per-class override, so the backend's raw-inference filter
+    never discards a detection a looser per-class threshold wanted kept. The real
+    per-class cut happens afterward, in ``run_part``'s own loop."""
+    return min([conf_threshold, *class_conf_thresholds.values()])
+
+
 # --------------------------------------------------------------------------- #
 # Per-part execution (the function both paths call)
 # --------------------------------------------------------------------------- #
@@ -68,6 +76,8 @@ def run_part(
     gpu_idx: int | None,
     batch_size: int = 1,
     every_n_frames: int = 1,
+    class_conf_thresholds: dict[str, float] | None = None,
+    t_end_ns: int | None = None,
 ) -> dict:
     """Process one video part with a pre-loaded model.
 
@@ -81,6 +91,15 @@ def run_part(
     **source** frames walked, not rows written: with ``every_n_frames > 1`` the walk is
     still every frame (demux is sequential — Tenet 11) and is what the run's wall clock
     tracks, so the bar stays honest at any stride.
+
+    ``conf_threshold`` is the fallback for any class not named in
+    ``class_conf_thresholds`` — the model itself was already loaded with the *lowest*
+    of the two (``conf_floor``), so nothing needed here was discarded before it got
+    this far.
+
+    ``t_end_ns`` (a teacher run's window, §26) ends the part at the first frame at or past
+    it: a clean ``"complete"``, with ``frames_total`` the window's frames, so the bar ends at
+    100% and the frames after it are not ``dropped_frames``.
 
     **Four stages overlap** (§7 *Execution*): one thread walks the video, one runs the
     model's CPU half (``DetectionModel.prepare_batch``) a batch or two ahead, this thread runs
@@ -121,7 +140,7 @@ def run_part(
     # count the read loop bounds t_ns lookups by. Not cv2's CAP_PROP_FRAME_COUNT
     # (duration × advertised fps), which over-reports when a file's header fps
     # differs from its true PTS rate and would invent tail dropped_frames.
-    in_total = len(tsmap)
+    in_total = recording_store.frames_before(tsmap, t_end_ns)
     walk: dict = {"frame_idx": 0, "dropped": [], "mask_resolution": None}
     prepare, run_prepared, finish = (
         _model_half(model, name)
@@ -133,7 +152,15 @@ def run_part(
     def prepared_batches():
         """Prep stage (its own thread): the model's CPU half, a batch or two ahead."""
         batches = lookahead.background_iter(
-            _frame_batches(src_path, tsmap, in_total, batch_size, every_n_frames, walk),
+            _frame_batches(
+                src_path,
+                tsmap,
+                in_total,
+                batch_size,
+                every_n_frames,
+                walk,
+                window=t_end_ns is not None,
+            ),
             depth=2,
         )
         try:
@@ -169,7 +196,10 @@ def run_part(
         for (frame_idx, t_ns), result in zip(meta, finish(raw)):
             detection_idx = 0
             for det in result.detections():
-                if det.confidence < conf_threshold:
+                threshold = (class_conf_thresholds or {}).get(
+                    det.class_name, conf_threshold
+                )
+                if det.confidence < threshold:
                     continue
                 writer.add_row(
                     frame_idx,
@@ -234,7 +264,9 @@ def run_part(
     return result
 
 
-def _frame_batches(src_path, tsmap, in_total, batch_size, every_n_frames, walk):
+def _frame_batches(
+    src_path, tsmap, in_total, batch_size, every_n_frames, walk, *, window=False
+):
     """The part's frames in batches of up to ``batch_size``, from one forward walk.
 
     Demuxes every frame (sequential, no seek — Tenet 11) but pays the BGR convert only on the
@@ -242,13 +274,14 @@ def _frame_batches(src_path, tsmap, in_total, batch_size, every_n_frames, walk):
     frame index. Yields ``(frames, [(frame_idx, t_ns)], walked)``, ``walked`` being the source
     frames walked through that batch. Records ``mask_resolution``, the final ``frame_idx`` and
     the ``dropped`` tail in ``walk``; ``run_part``'s docstring has the frame-count rule.
+    With ``window`` (a teacher run's ``t_end_ns``) the walk ends cleanly at ``in_total``.
     """
     cap = cv2.VideoCapture(str(src_path))
     frame_idx = 0
     frames: list = []
     meta: list[tuple[int, int]] = []
     try:
-        while cap.grab():
+        while not (window and frame_idx >= in_total) and cap.grab():
             if frame_idx >= in_total:
                 raise _mismatch(src_path, in_total, f"more than {in_total}")
             if frame_idx % every_n_frames:
@@ -320,6 +353,7 @@ def pool_initializer(
     conf_threshold: float,
     batch_size: int,
     pipeline_runner_modules: tuple[str, ...],
+    class_conf_thresholds: dict[str, float] | None = None,
 ) -> None:
     """Pin this worker to ``gpu_idx``, load the model + prompt once. Module-
     level globals are safe in a spawn-mode pool — each worker has isolated
@@ -327,6 +361,10 @@ def pool_initializer(
 
     Must run **before any torch import** so ``CUDA_VISIBLE_DEVICES`` takes
     effect — that's why we set the env var first and then import inside.
+
+    ``conf_threshold`` here is the flat default a class with no per-class entry
+    falls back to; the model itself loads at ``conf_floor(...)`` — the caller's
+    job, since it is the one with both values in hand.
     """
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_idx)
     from detail.executor.runners import import_runner_modules
@@ -336,16 +374,18 @@ def pool_initializer(
     model = resolve_detection_model(
         experiment_root, model_id, weights_source, model_variant
     )
+    class_conf_thresholds = class_conf_thresholds or {}
     # ``model.load`` expects the Ultralytics-style index string that
     # ``resolve_device`` produces (``"0"``, ``"0,1"``), not a ``"cuda:N"`` device
     # string — backends like SAM3 prefix ``cuda:`` themselves and would otherwise
     # build ``cuda:cuda:0``. With CUDA_VISIBLE_DEVICES set to the assigned GPU,
     # the only visible device is index 0 from the child's perspective.
     model.load("0")
-    model.set_conf_threshold(conf_threshold)
+    model.set_conf_threshold(conf_floor(conf_threshold, class_conf_thresholds))
     _WORKER_STATE["model"] = model
     _WORKER_STATE["prompt"] = Prompt.from_dict(prompt_dict)
     _WORKER_STATE["conf_threshold"] = conf_threshold
+    _WORKER_STATE["class_conf_thresholds"] = class_conf_thresholds
     _WORKER_STATE["batch_size"] = batch_size
     _WORKER_STATE["gpu_idx"] = gpu_idx
 
@@ -364,6 +404,7 @@ def pool_run_part(args: dict) -> dict:
             recording_dir=Path(args["recording_dir"]),
             recording_data=args["recording_data"],
             every_n_frames=int(args.get("every_n_frames") or 1),
+            t_end_ns=args.get("t_end_ns"),
             out_zarr_path=Path(args["out_zarr_path"]),
             progress_json_path=(
                 Path(args["progress_json_path"])
@@ -376,6 +417,7 @@ def pool_run_part(args: dict) -> dict:
             model=_WORKER_STATE["model"],
             prompt=_WORKER_STATE["prompt"],
             conf_threshold=_WORKER_STATE["conf_threshold"],
+            class_conf_thresholds=_WORKER_STATE.get("class_conf_thresholds"),
             gpu_idx=_WORKER_STATE.get("gpu_idx"),
             batch_size=_WORKER_STATE.get("batch_size", 1),
         )

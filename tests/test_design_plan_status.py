@@ -44,7 +44,11 @@ import pytest
 from detail.analysis import measures
 from detail.api._runner_modules import PIPELINE_RUNNERS
 from detail.api.experiment import Experiment
-from detail.executor.runners import ANALYSIS_MODULES, import_runner_modules
+from detail.executor.runners import (
+    ANALYSIS_MODULES,
+    PROCESSING_MODULES,
+    import_runner_modules,
+)
 
 import_runner_modules(PIPELINE_RUNNERS)
 
@@ -89,6 +93,10 @@ PROBES = {
     "§24": (
         lambda: hasattr(Experiment, "run_comparison"),
         "Experiment.run_comparison exists",
+    ),
+    "§26": (
+        lambda: "keypoints" in PROCESSING_MODULES,
+        "the keypoints processing module is registered",
     ),
 }
 

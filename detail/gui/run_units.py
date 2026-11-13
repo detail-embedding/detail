@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from detail.core.dataclasses import AWAITING_REFERENCES
 from detail.core.progress import message_phase
 
 #: Row states. `done` and `queued` are groupable — they are reference, and identical to each
@@ -155,6 +156,10 @@ def processing_units(
     ids = record.get("recording_ids") or list(per)
     current = getattr(progress, "current_recording", None)
     inner = getattr(progress, "inner", None)
+    #: Every recording in flight with its own latest event: more than one when a run keeps
+    #: several jobs on a cluster at once. Without it only `current` (whichever reported last)
+    #: drew as running and the other seven jobs read "queued".
+    live = getattr(progress, "live", None) or {}
 
     units = []
     for rid in ids:
@@ -165,6 +170,10 @@ def processing_units(
             units.append(Unit(name, DONE, 1.0, entry.get("detail") or ""))
         elif status == "failed":
             units.append(Unit(name, FAILED, 0.0, _failure(entry)))
+        elif rid in live:
+            units.append(
+                Unit(name, RUNNING, _inner_fraction(live[rid]), _running(live[rid]))
+            )
         elif rid == current:
             units.append(Unit(name, RUNNING, _inner_fraction(inner), _running(inner)))
         else:
@@ -177,6 +186,16 @@ def processing_units(
 #: run's ``recording_ids`` does: it is these stages, and a record draws the ones it lists
 #: (a detector distill the first two, a keypoint distill all three — §12).
 _DISTILL_STAGES = (
+    ("detect", "detecting", "Detect"),
+    ("track", "tracking", "Track"),
+    # A keypoint setup of several animals (§26 *One example set per detection class*): the
+    # per-class tracks merged into one run per teacher recording.
+    ("merge", "merging", "Merge tracks"),
+    # A keypoint setup (§26): the pause for an example set. The two rows after it are an
+    # earlier setup's (reference clicks, then a keypoints run), drawn for a record that has them.
+    ("examples", "examples", "Mark examples"),
+    ("references", "references", "Click references"),
+    ("keypoints", "placing keypoints", "Place keypoints"),
     ("label", "labeling", "Label frames"),
     ("train", "training", "Train model"),
     ("register", "registering", "Register student"),
@@ -218,6 +237,9 @@ def distill_units(record: dict, progress=None) -> list[Unit]:
     units = []
     for key, stage_phase, name in _record_stages(record):
         status = (stages.get(key) or {}).get("status") or "pending"
+        if status == AWAITING_REFERENCES:
+            units.append(Unit(name, QUEUED, 0.0, "waiting for your example set"))
+            continue
         if _stage_trails(status, phase, stage_phase):
             status = "running"
         if status == "complete":

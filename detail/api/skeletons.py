@@ -26,6 +26,7 @@ from pathlib import Path
 import yaml
 
 from detail.core import atomic
+from detail.core import yaml_load
 from detail.core.skeleton import PRESETS, Skeleton
 from detail.storage import locations
 from detail.storage import skeleton_library as library
@@ -107,7 +108,7 @@ def resolve_skeleton(source) -> Skeleton:
     text = str(source)
     path = Path(text)
     if path.suffix.lower() in (".yaml", ".yml") and path.is_file():
-        data = yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
+        data = yaml_load.safe_load(path.read_text(encoding="utf-8-sig")) or {}
         body = data.get("skeleton", data) if isinstance(data, dict) else None
         if not isinstance(body, dict) or "names" not in body:
             raise ValueError(f"{path} holds no skeleton (no 'names')")
@@ -130,7 +131,7 @@ def skeleton_source_name(source) -> str | None:
     text = str(source)
     path = Path(text)
     if path.suffix.lower() in (".yaml", ".yml") and path.is_file():
-        data = yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
+        data = yaml_load.safe_load(path.read_text(encoding="utf-8-sig")) or {}
         stated = data.get("name") if isinstance(data, dict) else None
         return str(stated) if stated else path.stem
     try:
@@ -180,7 +181,7 @@ def dependents_by_skeleton() -> dict[str, list[dict]]:
         exp_name = exp_dir.name
         config = exp_dir / "config.yaml"
         try:
-            exp_name = (yaml.safe_load(atomic.read_text(config)) or {}).get(
+            exp_name = (yaml_load.safe_load(atomic.read_text(config)) or {}).get(
                 "name", exp_name
             )
         except (OSError, yaml.YAMLError):
@@ -188,7 +189,7 @@ def dependents_by_skeleton() -> dict[str, list[dict]]:
         for pattern, kind in _DEPENDENT_GLOBS:
             for path in sorted(exp_dir.glob(pattern)):
                 try:
-                    data = yaml.safe_load(atomic.read_text(path)) or {}
+                    data = yaml_load.safe_load(atomic.read_text(path)) or {}
                 except (OSError, yaml.YAMLError):
                     continue
                 found = (data.get("skeleton_ref") or {}).get("id")
@@ -298,6 +299,6 @@ def import_skeleton(in_path: Path | str, *, name: str | None = None) -> dict:
     path = Path(in_path)
     if not path.is_file():
         raise FileNotFoundError(f"no skeleton file at {path}")
-    data = yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
+    data = yaml_load.safe_load(path.read_text(encoding="utf-8-sig")) or {}
     stated = data.get("name") if isinstance(data, dict) else None
     return create_skeleton(name or stated or path.stem, path)

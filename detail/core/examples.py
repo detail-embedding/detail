@@ -31,6 +31,20 @@ from detail.core.skeleton import Skeleton
 MARK_KINDS = ("point", "region", "box")
 #: What a set is for. Example marks build a method; audit marks score one.
 PURPOSES = ("example", "audit")
+#: The `heading` sampler's buckets (§26 *Headings*): eight camera-relative headings, 45° apart,
+#: counter-clockwise from facing right as the camera sees it; then the frames with no floor
+#: heading. A rejection's ``bucket`` is one of these.
+HEADING_BINS = (
+    "right",
+    "right-toward",
+    "toward",
+    "left-toward",
+    "left",
+    "left-away",
+    "away",
+    "right-away",
+)
+HEADING_BUCKETS = HEADING_BINS + ("rearing", "unclear")
 _MARK_KEYS = frozenset({"target", "kind", "x", "y", "visible", "positive"})
 _FRAME_KEYS = frozenset(
     {
@@ -59,9 +73,11 @@ _SET_KEYS = frozenset(
         "skeleton_ref",
         "frames",
         "sources",
+        "rejected",
         "digest",
     }
 )
+_REJECTION_KEYS = frozenset({"recording_id", "part_id", "t_ns", "track_id", "bucket"})
 
 
 def _digest(content: dict) -> str:
@@ -198,11 +214,55 @@ class ExampleFrame:
 
 
 @dataclass
+class Rejection:
+    """A frame the user turned down, so no sampler offers it again.
+
+    ``bucket`` is the heading bucket it was refused for (§26 *Headings*): a mouse facing away is
+    a fine example of ``away`` and a wrong one of ``toward``. ``None`` refuses it for every
+    bucket and every strategy.
+    """
+
+    recording_id: str
+    part_id: str
+    t_ns: int
+    track_id: int
+    bucket: str | None = None
+    extra: dict = field(default_factory=dict)
+
+    def key(self) -> tuple[str, str, int, int]:
+        """The same ``(recording_id, part_id, t_ns, track_id)`` as ``ExampleFrame.key``."""
+        return (self.recording_id, self.part_id, int(self.t_ns), int(self.track_id))
+
+    def to_dict(self) -> dict:
+        out: dict = {
+            "recording_id": self.recording_id,
+            "part_id": self.part_id,
+            "t_ns": int(self.t_ns),
+            "track_id": int(self.track_id),
+            "bucket": self.bucket,
+        }
+        out.update(self.extra)
+        return out
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Rejection":
+        return cls(
+            recording_id=str(d["recording_id"]),
+            part_id=str(d["part_id"]),
+            t_ns=int(d["t_ns"]),
+            track_id=int(d["track_id"]),
+            bucket=None if d.get("bucket") is None else str(d["bucket"]),
+            extra={k: v for k, v in d.items() if k not in _REJECTION_KEYS},
+        )
+
+
+@dataclass
 class ExampleSet:
     """A skeleton copy, its purpose, and the frames with their marks.
 
     ``sources`` (audit sets) maps recording id -> tracking run id: the draw's population, kept
-    so a later round draws from the same one.
+    so a later round draws from the same one. ``rejected`` holds frames the user turned down;
+    it is a record of the sampling, not of what a method learns, so the digest leaves it out.
     """
 
     id: str
@@ -215,7 +275,35 @@ class ExampleSet:
     # The library skeleton this set's copy came from (§26 *The Keypoints manager*):
     # ``{id, name, digest}``; None for a set made before the library, or from a file.
     skeleton_ref: dict | None = None
+    rejected: list[Rejection] = field(default_factory=list)
     extra: dict = field(default_factory=dict)
+
+    # -- what a sampler asks ------------------------------------------------- #
+    def is_rejected(self, key: tuple, bucket: str | None = None) -> bool:
+        """Whether a sampler drawing for ``bucket`` (``None``: any strategy without buckets)
+        must skip the frame ``key``: refused for every bucket, or for this one."""
+        key = tuple(key)
+        return any(
+            r.key() == key and (r.bucket is None or r.bucket == bucket)
+            for r in self.rejected
+        )
+
+    def reject(self, key: tuple, bucket: str | None = None) -> None:
+        """Record ``key`` as refused for ``bucket``; a repeat is a no-op.
+
+        Raises:
+            ValueError: ``bucket`` is not one of ``HEADING_BUCKETS``.
+        """
+        if bucket is not None and bucket not in HEADING_BUCKETS:
+            raise ValueError(
+                f"unknown heading bucket {bucket!r}; expected one of {HEADING_BUCKETS}"
+            )
+        recording_id, part_id, t_ns, track_id = key
+        rejection = Rejection(recording_id, part_id, int(t_ns), int(track_id), bucket)
+        if not any(
+            r.key() == rejection.key() and r.bucket == bucket for r in self.rejected
+        ):
+            self.rejected.append(rejection)
 
     # -- what a method or an audit asks ------------------------------------- #
     def visible_counts(self) -> dict[str, int]:
@@ -329,6 +417,8 @@ class ExampleSet:
         if self.sources is not None:
             out["sources"] = dict(self.sources)
         out["frames"] = [f.to_dict() for f in self.frames]
+        if self.rejected:
+            out["rejected"] = [r.to_dict() for r in self.rejected]
         out.update(self.extra)
         if image_hashes is not None:
             out["digest"] = self.digest(image_hashes)
@@ -358,5 +448,6 @@ class ExampleSet:
             skeleton_ref=(
                 dict(d["skeleton_ref"]) if d.get("skeleton_ref") is not None else None
             ),
+            rejected=[Rejection.from_dict(r) for r in d.get("rejected") or []],
             extra={k: v for k, v in d.items() if k not in _SET_KEYS},
         )

@@ -140,15 +140,23 @@ def test_the_teacher_assigns_to_the_one_tracking_run_on_its_detection_run(taught
     teacher, compute = keypoint_distill.resolve_teacher(proj, ["recording_002"])
     assert teacher == RESOLVED and compute is None
     data = recording_store.read_recording(recording.dir)
+    data["tracking_runs"][0]["class_name"] = "Intruder"
     data["tracking_runs"].append(
-        {"id": "track_02", "status": "complete", "detection_run_id": "det_01"}
+        {
+            "id": "track_02",
+            "status": "complete",
+            "detection_run_id": "det_01",
+            "class_name": "Resident",
+        }
     )
     data["tracking_runs"].append(
         {"id": "track_03", "status": "complete", "detection_run_id": "det_09"}
     )
     recording_store.write_recording(recording.dir, data)
     with pytest.raises(
-        ValueError, match=r"2 complete tracking runs .*track_01, track_02"
+        ValueError,
+        match=r"2 complete tracking runs .*track_01 \(Intruder\), track_02 \(Resident\);"
+        r".*Merge tracks",
     ):
         keypoint_distill.resolve_teacher(proj, ["recording_002"])
     named, _ = keypoint_distill.resolve_teacher(
@@ -468,6 +476,73 @@ def test_the_distill_teacher_takes_and_records_the_methods_settings(patch_teache
         )
 
 
+def test_a_distill_patch_teacher_takes_one_set_per_class(taught, monkeypatch):
+    """§26 *One example set per detection class*: the class map reaches the patch teacher's
+    resolver as it reaches keypoint detect's, and one set and a map at once is refused.
+    """
+    it, _recording = taught
+    handed = []
+
+    def resolve(experiment, example_set, tracking, *rest):
+        handed.append((example_set, rest[-1]))
+        return {"kind": "model", "model_id": "dinov3_match"}, None
+
+    monkeypatch.setattr(keypoint_distill, "_resolve_patch_teacher", resolve)
+    sets = {"Resident": "ex_02", "Intruder": "ex_03"}
+    keypoint_distill.plan_keypoint_dataset(
+        it.experiment,
+        "pair",
+        n_frames=4,
+        score_cutoff=0.4,
+        class_example_sets=sets,
+        tracking=["recording_002"],
+    )
+    assert handed == [(None, sets)]
+    with pytest.raises(ValueError, match="give one teacher"):
+        keypoint_distill.plan_keypoint_dataset(
+            it.experiment,
+            "pair",
+            n_frames=4,
+            score_cutoff=0.4,
+            example_set="ex_01",
+            class_example_sets=sets,
+            tracking=["recording_002"],
+        )
+
+
+def test_a_per_class_teacher_is_recorded_on_the_student(tmp_path):
+    proj = Experiment.create("p", tmp_path)
+    _student(proj)
+    ddir = datasets_store.dataset_dir(proj.dir, "dataset_001")
+    ddir.mkdir(parents=True, exist_ok=True)
+    datasets_store.write_dataset_yaml(
+        ddir, {"id": "dataset_001", "task": "pose", "skeleton": SK.to_dict()}
+    )
+    record = _keypoint_record(
+        proj,
+        stages={
+            "label": {"status": "complete", "dataset_id": "dataset_001"},
+            "train": {"status": "complete", "model_id": "model_001"},
+            "register": {"status": "running"},
+        },
+    )
+    record["config"]["teacher"] = {
+        "kind": "model",
+        "model_id": "dinov3_match",
+        "example_set": None,
+        "example_sets": {
+            "Resident": {"id": "ex_02", "digest": "a", "marks": []},
+            "Intruder": {"id": "ex_03", "digest": "b", "marks": []},
+        },
+        "tracking_runs": {"recording_002": "track_03"},
+    }
+    model = keypoint_distill.register_student(proj, "distill_001", record)
+    assert model["teacher"]["example_sets"] == {
+        "Resident": {"id": "ex_02", "digest": "a"},
+        "Intruder": {"id": "ex_03", "digest": "b"},
+    }
+
+
 @pytest.mark.parametrize(
     "command, method",
     [
@@ -524,3 +599,88 @@ def test_the_cli_distill_takes_the_same_settings_as_keypoints_test(
         + ["--teacher", "detect", "--recording", "recording_002", "--crop-px", "96"],
     )
     assert result.exit_code != 0 and "are for --teacher patch" in result.output
+
+
+# --- training the student on a remote cluster (#718) ---------------------------- #
+class _NotReadyHereTrainer(_FakeTrainer):
+    """The training framework is absent on this machine; it trains as cuda on a cluster."""
+
+    supported_backends = ["cpu", "cuda"]
+
+    def is_ready(self):
+        return False
+
+
+def _register_remote_target(monkeypatch, tmp_path, name="tillicum"):
+    from detail.configs.remote import RemoteTargetConfig
+    from detail.storage import remote_targets
+
+    cfg_dir = tmp_path / "config" / "detail"
+    monkeypatch.setattr(remote_targets, "CONFIG_DIR", cfg_dir)
+    monkeypatch.setattr(
+        remote_targets, "REMOTE_TARGETS_PATH", cfg_dir / "remote_targets.yaml"
+    )
+    remote_targets.register_remote_target(
+        RemoteTargetConfig(name=name, host=name, remote_workdir="/scratch/x")
+    )
+
+
+def _remote(target="tillicum"):
+    from detail.core.dataclasses import ComputeTarget
+
+    return ComputeTarget("remote", None, None, None, remote_target=target)
+
+
+def test_a_remote_student_launches_without_the_trainer_installed_here(
+    taught, monkeypatch, tmp_path
+):
+    """The dataset is cut here, but the student trains entirely on the cluster, so neither
+    this machine's training framework nor ``"remote"`` missing from the trainer's backends
+    may refuse it — the gap that kept keypoint students off Tillicum."""
+    it, _recording = taught
+    monkeypatch.setitem(TRAINERS, "faketrainer", _NotReadyHereTrainer)
+    _register_remote_target(monkeypatch, tmp_path)
+    monkeypatch.setattr("detail.executor.local.spawn_coordinator", lambda *a, **k: 7)
+    it.experiment.distill_keypoints(
+        "rats",
+        ["recording_002"],
+        4,
+        score_cutoff=0.4,
+        trainer_id="faketrainer",
+        train_compute=_remote(),
+    )
+    record = distill_store.read_run(it.experiment.dir, "distill_001")
+    assert record["config"]["train_compute"]["backend"] == "remote"
+    assert record["config"]["train_compute"]["remote_target"] == "tillicum"
+
+
+def test_a_remote_student_needs_a_registered_target(taught, monkeypatch, tmp_path):
+    it, _recording = taught
+    monkeypatch.setitem(TRAINERS, "faketrainer", _NotReadyHereTrainer)
+    _register_remote_target(monkeypatch, tmp_path)
+    with pytest.raises(ValueError, match="hyak"):
+        it.experiment.distill_keypoints(
+            "rats",
+            ["recording_002"],
+            4,
+            score_cutoff=0.4,
+            trainer_id="faketrainer",
+            train_compute=_remote("hyak"),
+        )
+    assert distill_store.list_runs(it.experiment.dir) == []  # nothing reserved
+
+
+def test_a_local_student_still_needs_the_trainer_installed(taught, monkeypatch):
+    from detail.core.dataclasses import ComputeTarget
+
+    it, _recording = taught
+    monkeypatch.setitem(TRAINERS, "faketrainer", _NotReadyHereTrainer)
+    with pytest.raises(ValueError, match="is not ready"):
+        it.experiment.distill_keypoints(
+            "rats",
+            ["recording_002"],
+            4,
+            score_cutoff=0.4,
+            trainer_id="faketrainer",
+            train_compute=ComputeTarget("cpu", None, None, None),
+        )

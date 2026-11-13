@@ -435,11 +435,8 @@ class CodebookViterbiMethod(TemporalClusterMethod):
         """
         model = TemporalCodebookConfig.model_validate(params)
         min_rows = max(1, int(round(model.min_run_s * _rows_per_second(fit))))
-        max_gap_ns = (
-            None if model.max_gap_s is None else int(round(model.max_gap_s * SEC_TO_NS))
-        )
         labels = fit.row_labels_at(granularity)
-        blocks = _unit_blocks(fit, max_gap_ns)
+        blocks = self.run_blocks(fit, params)
         return [
             ClusterInstance(start, end, cluster)
             for start, end, cluster in _runs_of(labels, min_rows, blocks)
@@ -541,15 +538,20 @@ class CodebookViterbiMethod(TemporalClusterMethod):
         """
         model = TemporalCodebookConfig.model_validate(params)
         min_rows = max(1, int(round(model.min_run_s * _rows_per_second(fit))))
-        max_gap_ns = (
-            None if model.max_gap_s is None else int(round(model.max_gap_s * SEC_TO_NS))
-        )
         groups = member_groups_of(leaf_groups, self.member_leaves(fit), member_groups)
-        blocks = _unit_blocks(fit, max_gap_ns)
+        blocks = self.run_blocks(fit, params)
         return [
             ClusterInstance(start, end, group)
             for start, end, group in _runs_of(groups, min_rows, blocks)
         ]
+
+    def run_blocks(self, fit: _Fit, params: dict) -> list[tuple[int, int]]:
+        """Each recording and subject cut wherever a step exceeds ``max_gap_s`` (§22)."""
+        model = TemporalCodebookConfig.model_validate(params)
+        max_gap_ns = (
+            None if model.max_gap_s is None else int(round(model.max_gap_s * SEC_TO_NS))
+        )
+        return _unit_blocks(fit, max_gap_ns)
 
     def fit_summary(self, fit: _Fit) -> dict:
         """The rows labeled and the rows the codebook was built from.

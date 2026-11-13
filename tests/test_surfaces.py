@@ -515,7 +515,6 @@ _COUNT_WORDS = {
     9: "Nine",
     10: "Ten",
     11: "Eleven",
-    12: "Twelve",
 }
 
 

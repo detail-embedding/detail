@@ -1229,6 +1229,7 @@ def test_show_menu_draws_every_layer_and_keeps_them_for_the_page(montage, qapp):
         "Masks",
         "Mask trail",
         "Keypoints",
+        "Keypoint trail",
     ]
     montage.set_points("Embedding run emb_02 read no keypoints.")
     assert not actions["keypoints"].isEnabled()
@@ -1257,6 +1258,47 @@ def test_show_menu_draws_every_layer_and_keeps_them_for_the_page(montage, qapp):
     finally:
         again._worker.stop()
         again.deleteLater()
+
+
+def test_show_menu_keypoint_trail_and_its_points_reach_the_tiles(montage, qapp):
+    """**Keypoint trail** needs the keypoints; **Trail points** waits until a tile has read
+    the run's skeleton (the source says it, on the picture worker), then chooses which points
+    trail — kept with the page's look, and drawn by every tile asked after it."""
+    from detail.core.skeleton import Skeleton
+    from detail.gui.show_menu import TRAIL_NEEDS_POINTS, remembered_look
+
+    class _Posed(FakeSource):
+        def skeleton(self):
+            return Skeleton(names=("nose", "tail", "paw"), edges=(("nose", "tail"),))
+
+    source = _Posed()
+    montage.set_points(None)
+    actions = montage.show_button.layer_actions
+    assert not actions["keypoint_trail"].isEnabled()
+    assert actions["keypoint_trail"].toolTip() == TRAIL_NEEDS_POINTS
+    points = montage.show_button.points_menu.menuAction()
+    assert not points.isEnabled()
+    montage.set_source(source)
+    montage.set_clips(_clips(2))
+    montage._clock.stop()
+    actions["keypoints"].trigger()
+    actions["keypoint_trail"].trigger()
+    assert _drain(qapp, lambda: montage.skeleton() is not None)
+    assert points.isEnabled() and points.text() == "Trail points: all 3"
+    picker = montage.show_button.points_picker
+    picker._boxes["paw"].setChecked(False)
+    assert montage.look().trail_points == ("nose", "tail")
+    assert points.text() == "Trail points: 2 of 3"
+    assert _drain(
+        qapp,
+        lambda: source.looks
+        and source.looks[-1].keypoint_trail
+        and source.looks[-1].trail_points == ("nose", "tail"),
+    ), "the tiles draw the chosen trail"
+    kept = remembered_look("interpret/test_look")
+    assert kept.keypoint_trail and kept.trail_points == ("nose", "tail")
+    actions["keypoints"].trigger()
+    assert not montage.look().keypoint_trail, "no keypoints, no trail"
 
 
 def test_a_page_with_no_look_of_its_own_reads_the_old_show_masks_once(qapp):

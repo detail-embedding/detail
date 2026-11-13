@@ -21,6 +21,8 @@ import numpy as np
 import yaml
 
 from detail.core import atomic
+from detail.core import camera_view
+from detail.core import yaml_load
 from detail.storage import experiment
 from detail.storage import read_cache
 from detail.storage import video
@@ -128,9 +130,8 @@ def read_recording(recording_dir: Path | str) -> dict:
         cached = _RECORDING_CACHE.get(key)
     if cached is not None and cached[0] == mtime:
         return copy.deepcopy(cached[1])
-    # Per key: threads that miss one record together wait for a single parse rather than
-    # each parsing it (`read_cache.computing`); a thread wanting another record is not held.
-    with read_cache.computing(("recording", key)):
+    # One parse per change of the file, however many threads miss it at once.
+    with read_cache.computing(("recording.yaml", key)):
         with _RECORDING_CACHE_LOCK:
             cached = _RECORDING_CACHE.get(key)
         if cached is not None and cached[0] == mtime:
@@ -142,8 +143,8 @@ def read_recording(recording_dir: Path | str) -> dict:
 
 
 def _parse_recording(path: Path) -> dict:
-    """``recording.yaml`` at ``path``, read and validated: the parse the cache guards."""
-    recording = yaml.safe_load(atomic.read_text(path))
+    """Parse and validate one ``recording.yaml`` (see :func:`read_recording`)."""
+    recording = yaml_load.safe_load(atomic.read_text(path))
     if not isinstance(recording, dict):
         raise ValueError(f"{path} is not a mapping")
     if recording.get("schema_version") != SCHEMA_VERSION:
@@ -211,6 +212,20 @@ def set_name(recording_dir: Path | str, name: str) -> None:
     write_recording(recording_dir, recording)
 
 
+def set_camera_view(
+    recording_dir: Path | str, view: str | None, note: str | None = None
+) -> None:
+    """Set a recording's own camera view, or remove it (``None``) so it inherits the
+    experiment default (§10).
+
+    Raises:
+        ValueError: As ``core.camera_view.validate``.
+    """
+    with recording_lock(recording_dir):
+        recording = read_recording(recording_dir)
+        write_recording(recording_dir, camera_view.write(recording, view, note))
+
+
 def set_import_status(recording_dir: Path | str, status: str) -> None:
     """Set the recording's ``import_status`` (``ready`` | ``importing`` | ``failed``).
 
@@ -235,15 +250,17 @@ def remove_run_entry(recording_dir: Path | str, runs_key: str, run_id: str) -> b
 
 
 def set_run_status(
-    recording_dir: Path | str, runs_key: str, run_id: str, status: str
+    recording_dir: Path | str, runs_key: str, run_id: str, status: str, **extra: object
 ) -> bool:
-    """Set the ``run_id`` entry's ``status`` in ``recording.yaml[runs_key]``. Returns
-    whether an entry was updated."""
+    """Set the ``run_id`` entry's ``status`` in ``recording.yaml[runs_key]``, merging
+    in any additional fields (``duration_s``, ``estimated_cost_usd``, ... — see
+    ``executor/run_metrics.py``). Returns whether an entry was updated."""
     recording = read_recording(recording_dir)
     updated = False
     for entry in recording.get(runs_key, []):
         if entry.get("id") == run_id:
             entry["status"] = status
+            entry.update(extra)
             updated = True
     if updated:
         write_recording(recording_dir, recording)
@@ -343,6 +360,15 @@ class TimestampMap:
 
     def __len__(self) -> int:
         return len(self._t_ns)
+
+
+def frames_before(tsmap: TimestampMap, t_end_ns: int | None) -> int:
+    """How many of a part's frames fall before ``t_end_ns`` — a teacher run's window end
+    (§26). ``None`` is no window: every frame. The map is monotonic, so this is a prefix.
+    """
+    if t_end_ns is None:
+        return len(tsmap)
+    return int(np.searchsorted(tsmap.values, t_end_ns, side="left"))
 
 
 def write_timestamps_csv(path: Path | str, t_ns: np.ndarray) -> None:

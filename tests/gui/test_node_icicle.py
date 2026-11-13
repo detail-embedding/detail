@@ -633,9 +633,9 @@ def test_the_tree_paints_its_words_where_cell_text_puts_them(icicle, monkeypatch
     calls = []
     real = node_icicle.cell_text
 
-    def spy(*args):
+    def spy(*args, **kwargs):
         calls.append(args)
-        return real(*args)
+        return real(*args, **kwargs)
 
     monkeypatch.setattr(node_icicle, "cell_text", spy)
     icicle.resize(600, 200)

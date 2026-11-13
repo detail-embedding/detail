@@ -7,6 +7,15 @@ The GUI rule is grey out, don't hide: the row stays, with the reason on it.
 
 Every test here states the machine it is about (``real_machine`` opts out of the
 suite-wide "everything installed, every backend present" default in ``conftest``).
+
+**A registered remote target (§6) is the other way a "needs CUDA" row stops being true.**
+A machine with a fully-installed SAM 3 and no *working* local CUDA (a mismatched torch
+build, or simply no GPU) still showed "No detection models available" — the picker asked
+only about this machine's own hardware, never whether a registered Slurm cluster could run
+the model instead, which is exactly what `ComputeTargetRow(allow_remote=True)` next to it
+already offers. `allow_remote=True` on `apply_availability`/`unavailable_reason` is the same
+opt-in, read through the one place the condition is written
+(`compute_target.remote_targets_for`).
 """
 
 import pytest
@@ -16,6 +25,7 @@ pytest.importorskip("PyQt6")
 from PyQt6.QtWidgets import QComboBox  # noqa: E402
 
 from detail.api._runner_modules import PIPELINE_RUNNERS  # noqa: E402
+from detail.configs.remote import RemoteTargetConfig  # noqa: E402
 from detail.core.utils import available_backends  # noqa: E402
 from detail.executor.runners import import_runner_modules  # noqa: E402
 from detail.gui import modules as _gui_modules  # noqa: E402,F401 (registers UIs)
@@ -32,6 +42,7 @@ from detail.gui.model_availability import (  # noqa: E402
 )
 from detail.gui.modules.registry import GUI_MODULES  # noqa: E402
 from detail.gui.tools.registry import TOOL_GUIS, import_tool_uis  # noqa: E402
+from detail.storage import remote_targets  # noqa: E402
 
 
 @pytest.fixture
@@ -48,6 +59,34 @@ def gpu_box(monkeypatch, real_machine):
     monkeypatch.setattr("detail.api.models.is_installed", lambda *a, **k: False)
     monkeypatch.setattr("detail.core.utils.cuda_available", lambda: True)
     monkeypatch.setattr("detail.core.utils.mps_available", lambda: False)
+
+
+@pytest.fixture
+def broken_local_cuda(monkeypatch, real_machine):
+    """The reported scenario: an NVIDIA GPU is present but this torch build can't use
+    it, so `cuda_available()` (and mps) is False — indistinguishable, to this picker,
+    from a machine with no accelerator at all. Everything downloadable is downloaded.
+    """
+    monkeypatch.setattr("detail.api.models.is_installed", lambda *a, **k: True)
+    monkeypatch.setattr("detail.core.utils.cuda_available", lambda: False)
+    monkeypatch.setattr("detail.core.utils.mps_available", lambda: False)
+
+
+@pytest.fixture
+def isolated_targets(tmp_path, monkeypatch):
+    """A throwaway remote-targets store, the same isolation `test_compute_target.py`
+    uses — never touch the developer's real `~/.config/detail/remote_targets.yaml`."""
+    cfg = tmp_path / "config" / "detail"
+    monkeypatch.setattr(remote_targets, "CONFIG_DIR", cfg)
+    monkeypatch.setattr(
+        remote_targets, "REMOTE_TARGETS_PATH", cfg / "remote_targets.yaml"
+    )
+
+
+def _register_target(name="tillicum"):
+    remote_targets.register_remote_target(
+        RemoteTargetConfig(name=name, host=name, remote_workdir="/scratch/x")
+    )
 
 
 def _combo(*entries):
@@ -123,6 +162,115 @@ def test_a_model_counts_as_installed_when_any_of_its_sizes_is(
         lambda model_id, variant=None: variant == "convnext_large",
     )
     assert unavailable_reason("dinov3_convnext_base") is None
+
+
+# --------------------------------------------------------------------------- #
+# A registered remote target (§6) as a third way out of "needs CUDA"
+# --------------------------------------------------------------------------- #
+def test_a_registered_target_clears_needs_cuda_when_the_form_allows_remote(
+    qapp, isolated_targets, broken_local_cuda
+):
+    _register_target()
+    assert unavailable_reason("sam3", allow_remote=True) is None
+
+
+def test_the_form_still_has_to_opt_in(qapp, isolated_targets, broken_local_cuda):
+    """A registered target alone does nothing for a picker that never asked —
+    Quick segment isn't remote-wired and passes no ``allow_remote``."""
+    _register_target()
+    assert unavailable_reason("sam3") == "needs CUDA"
+    assert unavailable_reason("sam3", allow_remote=False) == "needs CUDA"
+
+
+def test_allow_remote_needs_a_registered_target_too(qapp, broken_local_cuda):
+    """Opting in with nothing registered is the same as not opting in — the row still
+    needs its reason, per "grey out, don't hide"."""
+    assert unavailable_reason("sam3", allow_remote=True) == "needs CUDA"
+
+
+def test_a_model_that_already_runs_locally_stays_available_with_allow_remote(
+    qapp, isolated_targets, monkeypatch, real_machine
+):
+    """``dinov3_convnext_base`` supports cpu, so it is never "needs CUDA" here — passing
+    ``allow_remote=True`` alongside a registered target must not turn an otherwise-fine
+    model's availability into a question about a cluster it doesn't need."""
+    monkeypatch.setattr("detail.core.utils.cuda_available", lambda: False)
+    monkeypatch.setattr("detail.core.utils.mps_available", lambda: False)
+    monkeypatch.setattr("detail.api.models.is_installed", lambda *a, **k: True)
+    _register_target()
+    assert unavailable_reason("dinov3_convnext_base", allow_remote=True) is None
+
+
+def test_apply_availability_offers_a_cuda_only_model_via_remote(
+    qapp, isolated_targets, broken_local_cuda
+):
+    _register_target()
+    combo = _combo("sam3")
+    assert apply_availability(combo, "detection", allow_remote=True) is None
+    assert _rows(combo) == [("sam3", True)]
+    assert selected_model_id(combo) == "sam3"
+
+
+def test_apply_availability_without_allow_remote_still_greys_it_out(
+    qapp, isolated_targets, broken_local_cuda
+):
+    """Same machine, same registered target — the picker just never asked."""
+    _register_target()
+    combo = _combo("sam3")
+    message = apply_availability(combo, "detection")
+    assert message == no_models_message("detection")
+    assert _rows(combo) == [
+        ("(no model available)", False),
+        ("sam3  — needs CUDA", False),
+    ]
+
+
+def test_the_detection_form_offers_sam3_with_no_working_local_cuda(
+    qapp, isolated_targets, broken_local_cuda
+):
+    """End-to-end through the real form, in the scenario reported live: SAM 3 fully
+    installed, this machine's CUDA unusable, a registered Tillicum target. Before the
+    fix, `_rebuild_models` called `apply_availability` with no ``allow_remote`` at
+    all, so the model row — and the whole picker — was unconditionally unavailable."""
+    from detail.gui.modules.detection import _DetectionConfig
+
+    _register_target()
+    widget = _DetectionConfig()
+    assert widget._unavailable is None
+    assert selected_model_id(widget._model) == "sam3"
+    assert widget.validation_error() is None
+
+
+def test_the_embedding_form_offers_dinov3_with_nothing_installed_locally(
+    qapp, isolated_targets, monkeypatch
+):
+    """The reported scenario: DINOv3 never downloaded on this machine at all, a
+    registered Tillicum target. DINOv3 supports cpu too, so this is not the "needs
+    CUDA" case — it is the plain "not installed" one, which a registered cluster also
+    clears (the model doesn't need this machine's disk any more than SAM 3's GPU).
+    Before the fix, embedding's own ``__init__`` called
+    ``apply_availability(self._model, "embedding")`` with no ``allow_remote`` at all
+    (a gap left when embedding was wired to ``--backend remote``, #457) — so the
+    picker fell back to "(no model available)" and the compute row's own backend combo,
+    never re-synced to the (nonexistent) selection, showed no working local backend and
+    no remote target either."""
+    from detail.gui.modules.embedding import _EmbeddingConfig
+
+    monkeypatch.setattr("detail.api.models.is_installed", lambda *a, **k: False)
+    _register_target()
+    widget = _EmbeddingConfig()
+    # Model availability, not the (separate, expected-here) "pick a tracking run" gate.
+    assert widget._unavailable is None
+    # The configured default stays selected rather than the first row (main #785)...
+    assert selected_model_id(widget._model) == "dinov3_vit"
+    assert "remote" in _rows_of(widget._compute.backend)
+    # ...and with the cluster chosen, not being on this machine's disk does not stop it.
+    widget._compute.backend.setCurrentText("remote")
+    assert "not installed" not in (widget.validation_error() or "")
+
+
+def _rows_of(combo) -> list[str]:
+    return [combo.itemText(i) for i in range(combo.count())]
 
 
 # --------------------------------------------------------------------------- #

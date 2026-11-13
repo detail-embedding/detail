@@ -3,7 +3,9 @@
 :class:`SkeletonCanvas` is the scene-geometry canvas (``gui/arena.py``'s ``ArenaCanvas``,
 subclassed, so zoom, pan, hit-testing and the right-click/right-drag distinction are one
 implementation) with named points and edges instead of one polygon, on a **plain background**:
-a skeleton belongs to no recording, so no video frame is drawn behind it.
+a skeleton belongs to no recording. *Frame from a recording…* lends it one to draw over
+(``gui/skeleton_backdrop.py``): a cropped frame of the open experiment, padded to the canvas's
+square so the layout means the same with it or without it, and never saved.
 
 :class:`SkeletonEditor` is the canvas plus the selected point's *Point* name, *Pair with*,
 *Side* and *Remove point*: the editing half of the Keypoints manager
@@ -17,6 +19,7 @@ from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QPainter, QPen
 from PyQt6.QtWidgets import (
     QComboBox,
+    QDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -29,6 +32,7 @@ from detail.core.skeleton import Skeleton, default_layout
 from detail.core.visualize import KEYPOINT_COLORS, keypoint_roles
 from detail.gui.arena import ArenaCanvas
 from detail.gui.sizing import lines, set_available
+from detail.gui.skeleton_backdrop import FramePickerDialog, square_backdrop
 
 _NONE = "(none)"
 _SIDES = ("left", "right")
@@ -37,7 +41,7 @@ HINT = (
     "click: add · drag: move · right-click: remove · Shift+click a 2nd point: join or "
     "unjoin · scroll: zoom · right-drag: pan"
 )
-#: The canvas's plain background: a skeleton is drawn on nothing, never on a video frame.
+#: The canvas's plain background, and its shape: square, which a backdrop is padded to.
 BLANK = np.full((600, 600, 3), 56, dtype=np.uint8)
 
 
@@ -90,6 +94,10 @@ class SkeletonCanvas(ArenaCanvas):
 
     def selected(self) -> int | None:
         return self._selected
+
+    def set_backdrop(self, image: np.ndarray | None) -> None:
+        """Draw over ``image`` (padded to the canvas's square), or on the plain canvas."""
+        self.set_image(BLANK if image is None else square_backdrop(image))
 
     def _select(self, index: int | None, *, announce: bool = True) -> None:
         if index is not None and not 0 <= index < len(self._points):
@@ -204,8 +212,12 @@ class SkeletonEditor(QWidget):
 
     edited = pyqtSignal()
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, *, experiment, parent=None) -> None:
+        """``experiment`` is where *Frame from a recording…* finds its recordings: the open
+        one, or None when none is (the button then says so)."""
         super().__init__(parent)
+        self._experiment = experiment
+        self._backdrop: np.ndarray | None = None
         self._loading = False
         self._names: list[str] = []
         self._edges: list[tuple[str, str]] = []
@@ -215,6 +227,19 @@ class SkeletonEditor(QWidget):
 
         column = QVBoxLayout(self)
         column.setContentsMargins(0, 0, 0, 0)
+        backdrop_row = QHBoxLayout()
+        self._backdrop_label = QLabel("")
+        self._backdrop_label.setWordWrap(True)
+        backdrop_row.addWidget(self._backdrop_label, 1)
+        self._pick_frame = QPushButton("Frame from a recording…")
+        self._pick_frame.setAutoDefault(False)
+        self._pick_frame.clicked.connect(self._choose_backdrop)
+        backdrop_row.addWidget(self._pick_frame)
+        self._plain = QPushButton("Plain background")
+        self._plain.setAutoDefault(False)
+        self._plain.clicked.connect(lambda: self.set_backdrop(None))
+        backdrop_row.addWidget(self._plain)
+        column.addLayout(backdrop_row)
         self._canvas = SkeletonCanvas()
         self._canvas.point_added.connect(self._point_added)
         self._canvas.remove_requested.connect(self._remove_point)
@@ -258,6 +283,7 @@ class SkeletonEditor(QWidget):
         self._problem = QLabel("")
         self._problem.setWordWrap(True)
         column.addWidget(self._problem)
+        self.set_backdrop(None)
         self.load(Skeleton(names=()))
 
     # -- public -------------------------------------------------------------- #
@@ -284,6 +310,38 @@ class SkeletonEditor(QWidget):
             pairs=tuple(self._pairs),
             layout=tuple((round(x, 4), round(y, 4)) for x, y in self._layout),
         )
+
+    def backdrop(self) -> np.ndarray | None:
+        """The frame drawn behind the canvas (as cropped, before padding), or None."""
+        return self._backdrop
+
+    def set_backdrop(self, image: np.ndarray | None, source: str = "") -> None:
+        """Draw over ``image``, a frame described by ``source``; None for the plain canvas.
+
+        Not an edit: the picture is not part of the skeleton and is never saved.
+        """
+        self._backdrop = image
+        self._canvas.set_backdrop(image)
+        self._backdrop_label.setText(
+            "Background: plain"
+            if image is None
+            else f"Background: {source or 'a frame'} (not saved with the skeleton)"
+        )
+        set_available(
+            self._pick_frame,
+            self._experiment is not None,
+            "Open an experiment first: the frame comes from one of its recordings.",
+        )
+        set_available(
+            self._plain, image is not None, "The background is already plain."
+        )
+
+    def _choose_backdrop(self) -> None:
+        if self._experiment is None:
+            return
+        dialog = FramePickerDialog(self._experiment, parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.image() is not None:
+            self.set_backdrop(dialog.image(), dialog.source())
 
     def problem(self) -> str | None:
         """Why the drawn skeleton is not valid yet, or None."""

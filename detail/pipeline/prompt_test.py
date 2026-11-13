@@ -115,6 +115,8 @@ def run_prompt_test(
         model,
         job.n_sample_frames,
         timestamps_for=_timestamps_for,
+        t_start_ns=job.t_start_ns,
+        t_end_ns=job.t_end_ns,
         seed=seed,
         on_result=on_result,
     )
@@ -127,6 +129,8 @@ def run_prompt_test(
                 "model_id": job.model_id,
                 "min_conf": min_conf,
                 "n_sample_frames": job.n_sample_frames,
+                "t_start_ns": job.t_start_ns,
+                "t_end_ns": job.t_end_ns,
                 "compute": job.compute.to_dict(),
             },
             job.prompts,
@@ -146,6 +150,8 @@ def run_prompt_test_on_parts(
     n_sample_frames: int,
     *,
     timestamps_for: Callable[[int], np.ndarray | None] | None = None,
+    t_start_ns: int | None = None,
+    t_end_ns: int | None = None,
     sampling: str = "random",
     seed: int | None = None,
     progress: Callable[[int, int], None] | None = None,
@@ -174,12 +180,25 @@ def run_prompt_test_on_parts(
     prompt is gigabytes. A caller that only needs each result once (to compact it, or to
     write it to a store) should take this path instead of the list.
 
+    ``t_start_ns`` / ``t_end_ns`` keep the sample inside ``[t_start_ns, t_end_ns)`` of
+    recording time (either may be ``None`` for an open end). A range is read off the
+    timestamp maps, so it needs ``timestamps_for``.
+
     Returns ``(results, samples, prompt_labels)`` — the extras are what
     ``save_prompt_test_results`` needs to write the viewer's artifacts.
     """
     part_frame_counts = [_frame_count(p) for p in paths]
+    windows = None
+    if t_start_ns is not None or t_end_ns is not None:
+        windows = _time_windows(
+            part_frame_counts, timestamps_for, t_start_ns, t_end_ns, n_sample_frames
+        )
     samples = _sample_frames(
-        part_frame_counts, n_sample_frames, seed=seed, sampling=sampling
+        part_frame_counts,
+        n_sample_frames,
+        seed=seed,
+        sampling=sampling,
+        windows=windows,
     )  # list[(part_index, local_frame_idx)]
     model.set_conf_threshold(KEEP_ALL_PROPOSALS)
     closed_set = not model.supported_cue_types
@@ -259,11 +278,59 @@ def run_prompt_test_on_parts(
 # --------------------------------------------------------------------------- #
 # Sampling
 # --------------------------------------------------------------------------- #
+def _time_windows(
+    part_frame_counts: list[int],
+    timestamps_for: Callable[[int], np.ndarray | None] | None,
+    t_start_ns: int | None,
+    t_end_ns: int | None,
+    n_sample_frames: int,
+) -> list[tuple[int, int]]:
+    """Each part's ``[lo, hi)`` local frame window inside ``[t_start_ns, t_end_ns)``.
+
+    Raises:
+        ValueError: If a part has no timestamp map, or the range holds fewer than
+            ``n_sample_frames`` frames.
+    """
+    if timestamps_for is None:
+        raise ValueError("a time range needs each part's timestamp map")
+    windows: list[tuple[int, int]] = []
+    first_ns = last_ns = None
+    for part_index, count in enumerate(part_frame_counts):
+        tsmap = timestamps_for(part_index)
+        if tsmap is None:
+            raise ValueError(
+                f"part {part_index} has no timestamp map, so a time range cannot be "
+                "placed on it"
+            )
+        count = min(count, len(tsmap))
+        lo = 0 if t_start_ns is None else int(np.searchsorted(tsmap, t_start_ns))
+        hi = count if t_end_ns is None else int(np.searchsorted(tsmap, t_end_ns))
+        windows.append((min(lo, count), min(hi, count)))
+        if count:
+            first_ns = int(tsmap[0]) if first_ns is None else first_ns
+            last_ns = int(tsmap[count - 1])
+    in_range = sum(max(0, hi - lo) for lo, hi in windows)
+    if in_range < n_sample_frames:
+        span = (
+            "it has no frames"
+            if first_ns is None
+            else f"its frames run {first_ns / 1e9:.3f}–{last_ns / 1e9:.3f} s"
+        )
+        start = 0.0 if t_start_ns is None else t_start_ns / 1e9
+        end = "the end" if t_end_ns is None else f"{t_end_ns / 1e9:.3f} s"
+        raise ValueError(
+            f"the range {start:.3f} s – {end} holds {in_range} frame(s), fewer than the "
+            f"{n_sample_frames} asked for; {span}"
+        )
+    return windows
+
+
 def _sample_frames(
     part_frame_counts: list[int],
     n_sample_frames: int,
     seed: int | None,
     sampling: str = "random",
+    windows: list[tuple[int, int]] | None = None,
 ) -> list[tuple[int, int]]:
     """Sample across parts, weighted by part frame count.
 
@@ -275,11 +342,16 @@ def _sample_frames(
     - ``"even"`` — evenly spaced across the whole range. Deterministic, and it
       guarantees the start and end are represented: a random draw can miss the tail
       of a clip, which is exactly where "there's no animal at the very end" hides.
+
+    ``windows`` narrows each part to its own ``[lo, hi)`` local frames (a time range,
+    ``_time_windows``); the sampling above then runs over those frames alone.
     """
+    if windows is None:
+        windows = [(0, n) for n in part_frame_counts]
     cumulative: list[int] = []
     total = 0
-    for n in part_frame_counts:
-        total += n
+    for lo, hi in windows:
+        total += max(0, hi - lo)
         cumulative.append(total)
     if n_sample_frames > total:
         raise ValueError(
@@ -302,7 +374,7 @@ def _sample_frames(
         while g >= cumulative[part_index]:
             part_index += 1
         prior = cumulative[part_index - 1] if part_index > 0 else 0
-        samples.append((part_index, g - prior))
+        samples.append((part_index, windows[part_index][0] + g - prior))
     samples.sort()  # group by part for cache-friendlier seeking
     return samples
 

@@ -30,11 +30,12 @@ report written per run.
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 import time
 import tomllib
 from pathlib import Path
+
+from tests.subprocesses import run_tree
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -92,15 +93,17 @@ def _run(project: Path, *args: str, budget_s: float = 150.0):
     )
     cmd = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", *args]
     started = time.monotonic()
-    proc = subprocess.run(
+    # `run_tree`, not `subprocess.run`: the scratch run starts xdist workers of its own, and
+    # on Windows a timeout on the parent alone leaves the wait on their pipes unbounded.
+    proc = run_tree(
         cmd,
+        timeout=budget_s,
         cwd=project,
         env=env,
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
-        timeout=budget_s,
     )
     return proc, time.monotonic() - started
 

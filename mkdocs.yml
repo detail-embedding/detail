@@ -43,6 +43,10 @@ theme:
     - content.tabs.link
     - toc.follow
 
+# The user guides' step flowcharts (docs/user-guides/).
+extra_css:
+  - assets/stylesheets/user-guides.css
+
 # Prose for a capability §25 hides is marked in the source and dropped here, rather than
 # deleted — so switching the capability back on republishes it (scripts/docs_surface_hook.py).
 hooks:
@@ -79,6 +83,10 @@ markdown_extensions:
   - admonition
   - attr_list
   - pymdownx.details
+  # ++ctrl+v++ key labels in the user guides.
+  - pymdownx.keys
+  # Markdown inside <div class="guide-flow" markdown>: the user guides' step flowcharts.
+  - md_in_html
   - pymdownx.superfences
   - pymdownx.tabbed:
       alternate_style: true
@@ -91,6 +99,24 @@ markdown_extensions:
   - mkdocs-click
 
 nav:
+  - User guides:
+      - Overview: user-guides/index.md
+      - Install on Windows: user-guides/install-windows.md
+      - Install on Windows with WSL: user-guides/install-windows-wsl.md
+      - Install on Linux: user-guides/install-linux.md
+      - Install on macOS: user-guides/install-macos.md
+      - Configure DETAIL: user-guides/configure.md
+      - Set up Tillicum: user-guides/tillicum.md
+      - Single animal:
+          - Overview: user-guides/single-animal/index.md
+          - 1. Create an experiment: user-guides/single-animal/create-an-experiment.md
+          - 2. Set up each recording: user-guides/single-animal/set-up-recordings.md
+          - 3. Detect and track: user-guides/single-animal/detect-and-track.md
+          - 4. Keypoints: user-guides/single-animal/keypoints.md
+          - 5. Embedding: user-guides/single-animal/embedding.md
+          - 6. Location export: user-guides/single-animal/location-export.md
+          - 7. Behavior scan: user-guides/single-animal/behavior-scan.md
+          - 8. Clustering: user-guides/single-animal/clustering.md
   - Home: index.md
   - Getting started: getting-started.md
   - Workflows:
@@ -99,6 +125,7 @@ nav:
       - Add a multi-part recording: workflows/add-a-multi-part-recording.md
       - Add stream data and metadata: workflows/add-stream-data-and-metadata.md
       - Import recordings from YAML: workflows/import-recordings-from-yaml.md
+      - Connect a remote cluster: workflows/connect-a-remote-cluster.md
   - Concepts:
       - Overview: concepts.md
       - Input images: input-images.md
@@ -113,6 +140,7 @@ nav:
   - Modules:  # generated per config model by scripts/gen_docs_modules.py
       - Detection: modules/detection.md
       - Tracking: modules/tracking.md
+      - Merge tracks: modules/track_merge.md
       - Embedding: modules/embedding.md
       - Keypoint detect: modules/keypoint_detect.md
       - Keypoint track: modules/keypoint_track.md
@@ -124,6 +152,9 @@ nav:
       - Location export: modules/location_export.md
       - Comparison: modules/comparison.md
       - Behavior clustering: modules/temporal_clustering.md
+      - Cluster profile: modules/cluster_profile.md
+      - Profile clusters: modules/profile_describe.md
+      - Find look-alike clusters: modules/cluster_lookalikes.md
       - Labeling: modules/labeling.md
       - Quick segment: modules/quick_segment.md
       - Query method - soft k-NN: modules/soft_knn.md

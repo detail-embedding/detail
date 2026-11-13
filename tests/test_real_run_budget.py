@@ -43,6 +43,17 @@ REAL_RUN_CEILING: dict[str, int] = {
     "tests/api/test_experiment.py": 14,
     "tests/pipeline/test_location_analysis.py": 6,
     "tests/api/test_analysis.py": 4,
+    # The free-space check (#743) fires before a run would start, and every launch here stubs
+    # `spawn_coordinator`: none of the nine is a real executor run. Counted because the scan is
+    # static, which is the right default; a real run added here would show in its timing. Three
+    # of the nine arrived with the launch-progress tests: the report of a launch (one
+    # parametrized call covers one recording and two), the refusal's report, and the retry's
+    # setup launch.
+    "tests/api/test_run_space.py": 9,
+    # Which executor `run_analysis` picks for a remote `compute`, and the two refusals before it:
+    # both executors are replaced by a fake whose `submit` returns at once, so none of the four
+    # is a real executor run. Counted because the scan is static.
+    "tests/api/test_remote_analysis.py": 4,
     # Two apiece: one per method the module registers, which is the thing under test.
     "tests/pipeline/test_temporal_clustering_module.py": 2,
 }

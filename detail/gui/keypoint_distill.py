@@ -44,11 +44,21 @@ from detail.configs.keypoint_dataset import KeypointDatasetConfig
 from detail.core.registries import KEYPOINT_MODELS, TRAINERS
 from detail.executor.runners import import_runner_modules
 from detail.gui import sizing
-from detail.gui._pydantic_form import build_fields, optional_spin, optional_value
+from detail.gui._pydantic_form import (
+    build_fields,
+    choice_combo,
+    optional_spin,
+    optional_value,
+)
 from detail.gui.busy import run_busy
+from detail.gui.class_example_sets import ClassExampleSets
 from detail.gui.compute_target import ComputeTargetRow
 from detail.gui.example_set_picker import ExampleSetPicker
-from detail.gui.modules._common import UpstreamSpecPicker, spec_runs
+from detail.gui.modules._common import (
+    UpstreamSpecPicker,
+    detected_class_groups,
+    spec_runs,
+)
 from detail.gui.forms import ConfigForm
 from detail.gui.help_ui import field_label
 from detail.gui.model_availability import (
@@ -93,9 +103,9 @@ def _read_teachers(experiment, tracking: UpstreamSpecPicker) -> tuple:
     recording (what the patch teacher can be given), and each group's own run per recording
     (a run id is a per-recording counter, §6.5), so launching reads nothing."""
     recordings = list(experiment.recordings)  # off-thread
-    groups = tracking.resolve(recordings)
+    groups = tracking.resolve(recordings, experiment.model_names())
     runs = spec_runs(recordings, "tracking", groups)
-    return finished_detect_runs(experiment), groups, len(recordings), runs
+    return finished_detect_runs(experiment), groups, recordings, runs
 
 
 def finished_detect_runs(experiment) -> list[dict]:
@@ -204,12 +214,30 @@ class KeypointDistillForm(QWidget):
         self._examples = ExampleSetPicker()
         self._examples.changed.connect(self._sync)
         form.addRow("Examples:", self._examples)
+        # One set per detection class, in place of Examples (§26 *One example set per
+        # detection class*): the classes are the chosen tracking's detection run's.
+        self._per_class = QCheckBox("One example set per class")
+        self._per_class.setToolTip(
+            "For animals told apart at detection that look different: each class's "
+            "detections are matched against its own example set."
+        )
+        self._per_class.toggled.connect(lambda _on: self._sync_kind())
+        form.addRow("", self._per_class)
+        self._class_sets = ClassExampleSets()
+        self._class_sets.changed.connect(self._sync)
+        form.addRow("", self._class_sets)
+        self._recordings: list = []
+        self._class_read_gen = 0
+        self._class_call = None
         self._tracking = UpstreamSpecPicker("tracking")
         self._tracking.combo.setToolTip(
             "The tracking whose boxes and masks the method is given. Every recording with "
             "this tracking is labelled."
         )
         self._tracking.combo.currentIndexChanged.connect(lambda _i: self._sync())
+        self._tracking.combo.currentIndexChanged.connect(
+            lambda _i: self._refresh_classes()
+        )
         self._tracking.combo.setPlaceholderText(
             "(no tracking run in this experiment yet)"
         )
@@ -219,8 +247,12 @@ class KeypointDistillForm(QWidget):
         self._patch_rows = (
             self._method,
             self._variant,
-            self._examples,
             self._tracking.combo,
+        )
+        set_available(
+            self._per_class,
+            False,
+            "The tracking's detection run has fewer than two classes",
         )
 
         # --- the teacher: one finished keypoint detect run per recording ---
@@ -244,6 +276,14 @@ class KeypointDistillForm(QWidget):
             self._fields[name] = widget
             form.addRow(field_label(_MODULE, name, label + ":"), widget)
         self._fields["n_frames"].setValue(DEFAULT_N_FRAMES)
+        # What the student sees (§12): the whole frame (the default), or a crop per animal;
+        # the crop size is the crop's alone.
+        self._student_input = choice_combo(KeypointDatasetConfig, "student_input")
+        self._student_input.currentIndexChanged.connect(self._sync_student_input)
+        form.addRow(
+            field_label(_MODULE, "student_input", "Student input:"), self._student_input
+        )
+        self._sync_student_input()
         self._score_cutoff = optional_spin(
             KeypointDatasetConfig, "score_cutoff", "the teacher's default"
         )
@@ -284,7 +324,9 @@ class KeypointDistillForm(QWidget):
         form.addRow("Student (the fast pose model):", self._base_model)
         self._label_compute = ComputeTargetRow()  # where the patch method runs
         self._label_compute.add_to(form.section(), prefix="Label")
-        self._train_compute = ComputeTargetRow()
+        # Training can go to a registered cluster (#718); labelling stays here, where the
+        # experiment's videos are.
+        self._train_compute = ComputeTargetRow(allow_remote=True)
         self._train_compute.add_to(form.section(), prefix="Train")
         self._hparams: dict[str, QWidget] = {}
         form.finish()
@@ -309,6 +351,7 @@ class KeypointDistillForm(QWidget):
         and the tracking runs a patch teacher can be given."""
         self._experiment = experiment
         self._examples.set_experiment(experiment)
+        self._class_sets.set_experiment(experiment)
         self._runs.clear()
         self._rows = []
         self._fit_list()
@@ -332,12 +375,14 @@ class KeypointDistillForm(QWidget):
         )
 
     def _show_teachers(self, result) -> None:
-        rows, groups, total, runs = result
+        rows, groups, recordings, runs = result
         self._reading = False
-        self._recording_total = total
+        self._recordings = list(recordings)
+        self._recording_total = len(recordings)
         self._tracking_runs = runs
-        self._tracking.apply(groups, total)
+        self._tracking.apply(groups, len(recordings))
         self._show_runs(rows)
+        self._refresh_classes()
 
     def _set_blocker(self, reason: str | None) -> None:
         self._blocker = reason
@@ -353,8 +398,14 @@ class KeypointDistillForm(QWidget):
             if row["method"]:
                 text += f" · {row['method']}"
             examples = (row.get("teacher") or {}).get("example_set")
+            by_class = (row.get("teacher") or {}).get("example_sets") or {}
             if examples:
                 text += f' · examples: {examples["id"]} "{examples["name"]}"'
+            elif by_class:
+                text += " · examples: " + ", ".join(
+                    f'{cls}: {s["id"]} "{s["name"]}"'
+                    for cls, s in sorted(by_class.items())
+                )
             text += " · " + _subjects_text(row.get("teacher") or {})
             item = QListWidgetItem(text)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
@@ -386,12 +437,59 @@ class KeypointDistillForm(QWidget):
 
     def _sync_kind(self) -> None:
         by_model = self.teacher_kind() == "model"
+        per_class = by_model and self._per_class.isChecked()
         main = self._form.main
         for widget in self._patch_rows:
             main.setRowVisible(widget, by_model)
+        main.setRowVisible(self._per_class, by_model)
+        main.setRowVisible(self._examples, by_model and not per_class)
+        main.setRowVisible(self._class_sets, per_class)
         for widget in (self._runs, self._runs_note):
             main.setRowVisible(widget, not by_model)
         self._sync()
+
+    def _per_class_active(self) -> bool:
+        return self.teacher_kind() == "model" and self._per_class.isChecked()
+
+    def _refresh_classes(self) -> None:
+        """Off the UI thread: the classes the chosen tracking's detection run detected (a
+        tracking spec's ``parent`` is its detection spec), offered one example set each.
+        """
+        from detail.gui.workers import BackgroundCall
+
+        spec = self._tracking.spec()
+        parent = spec.get("parent") if isinstance(spec, dict) else None
+        self._class_read_gen += 1
+        generation = self._class_read_gen
+        recordings = list(self._recordings)
+        call = BackgroundCall(
+            lambda: detected_class_groups(recordings, parent), receiver=self
+        )
+        call.done.connect(lambda groups, g=generation: self._apply_classes(g, groups))
+        call.failed.connect(lambda _exc: None)  # the per-class sets are optional
+        self._class_call = call
+        call.start()
+
+    def _apply_classes(self, generation: int, groups: list[dict]) -> None:
+        if generation != self._class_read_gen:
+            return  # a later tracking choice superseded this read
+        names = [group["name"] for group in groups]
+        self._class_sets.set_classes(
+            names,
+            labels={g["name"]: g.get("label", g["name"]) for g in groups},
+        )
+        several = len(names) >= 2
+        if not several and self._per_class.isChecked():
+            self._per_class.setChecked(False)
+        set_available(
+            self._per_class,
+            several,
+            (
+                ""
+                if several
+                else "The tracking's detection run has fewer than two classes"
+            ),
+        )
 
     def _sync_method(self) -> None:
         cls = KEYPOINT_MODELS.get(self._method.currentData() or "")
@@ -447,7 +545,11 @@ class KeypointDistillForm(QWidget):
                 f"{model_id} {size} is not installed: choose an installed size, or "
                 "install it in the Model manager"
             )
-        if self._examples.set_id() is None:
+        if self._per_class_active():
+            problem = self._class_sets.problem()
+            if problem:
+                return problem
+        elif self._examples.set_id() is None:
             return "Choose an example set, or make one with New example set…"
         covered = self._tracking.covered()
         if not covered:
@@ -601,8 +703,13 @@ class KeypointDistillForm(QWidget):
             reason = self._patch_blocker()
             if reason is not None:
                 raise ValueError(reason + ".")
+            sets = (
+                {"class_example_sets": self._class_sets.value()}
+                if self._per_class_active()
+                else {"example_set": self._examples.set_id()}
+            )
             return {
-                "example_set": self._examples.set_id(),
+                **sets,
                 "tracking": self.selected_tracking_runs(),
                 "model_id": self._method.currentData(),
                 "model_variant": self._variant.currentData(),
@@ -642,6 +749,11 @@ class KeypointDistillForm(QWidget):
         if dialog.exec() and dialog.chosen_cutoff() is not None:
             self._score_cutoff.setValue(dialog.chosen_cutoff())
 
+    def _sync_student_input(self, *_args) -> None:
+        self._fields["student_crop_px"].setEnabled(
+            self._student_input.currentData() == "crop"
+        )
+
     def launch(self, name: str):
         """Start the keypoint distill; the ``AttachedDistillRun``.
 
@@ -665,6 +777,8 @@ class KeypointDistillForm(QWidget):
                 score_cutoff=optional_value(self._score_cutoff),
                 exclude_audit_s=float(self._fields["exclude_audit_s"].value()),
                 every_n_frames=int(self._fields["every_n_frames"].value()),
+                student_input=self._student_input.currentData(),
+                student_crop_px=int(self._fields["student_crop_px"].value()),
                 base_model=self._base_model.currentText().strip(),
                 trainer_id=self._trainer.currentData(),
                 hyperparams=hyperparams,

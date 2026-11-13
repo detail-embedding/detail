@@ -375,7 +375,7 @@ def test_assign_part_end_to_end(tracked):
     instances = _end_to_end_instances()
     subjects = pose_match.frame_subjects(tracked, "trk_a", "part_000", 1)
     sid, inside, per_subject = pose_match.assign_part(
-        instances, subjects, (H, W), min_inside=0.5, mask_grow=0.05
+        instances, subjects, (H, W), eligible=None, min_inside=0.5, mask_grow=0.05
     )
     assert sid.tolist() == [2, 1, -1, -1, 2, -1]
     np.testing.assert_allclose(inside[[0, 1, 4]], 1.0)
@@ -424,11 +424,11 @@ def _traced_peak(subjects, instances, mask_hw):
     Each pass gets its own ``subjects()``, made before tracing starts, so a mask the first pass
     decoded and kept cannot make the measured pass look cheap.
     """
-    pose_match.assign_part(instances, subjects(), mask_hw)
+    pose_match.assign_part(instances, subjects(), mask_hw, eligible=None)
     frames = subjects()
     tracemalloc.start()
     try:
-        result = pose_match.assign_part(instances, frames, mask_hw)
+        result = pose_match.assign_part(instances, frames, mask_hw, eligible=None)
         _current, peak = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
@@ -495,9 +495,134 @@ def test_assign_part_with_no_instances_lists_every_subject_frame_unassigned(trac
         instances,
         pose_match.frame_subjects(tracked, "trk_a", "part_000", 1),
         (H, W),
+        eligible=None,
     )
     assert sid.shape == (0,) and inside.shape == (0,)
     assert [r[2] for r in per_subject[1]] == [-1, -1]
+
+
+def test_a_class_filtered_tracking_run_gives_each_subject_its_own_rows(
+    processed_recording,
+):
+    """**The class: pairing by position two arrays a filter made not parallel (§13).** A
+    tracker given ``class_name`` assigns only that class's detections, so its ``object_id``
+    column is shorter than the detection part and row ``i`` of one is not row ``i`` of the
+    other. Paired by position, every subject after the first dropped row lands on the wrong
+    frame, box and mask, and keypoint track gives it the wrong animal's pose — a plausible,
+    well-formed run. It hid because every fixture tracked one class, where the two are
+    parallel; ``zarr_io.object_ids_on_detection_rows`` is the one pairing for a reader of the
+    whole part. (Moved here from the detect stage when §26's 2026-10-21 revision moved the
+    reading of tracking into the assignment.)
+
+    Frames 0..3 hold a cat, a rat, a cat, a rat; the run tracked only rats, so the subject is
+    on frames 1 and 3, on the rat's box.
+    """
+    it = processed_recording
+    sq = it.square
+    rat_box = (0.5, 0.5, 0.9, 0.9)
+    cat_box = (0.1, 0.1, 0.5, 0.5)
+    recording = it.add_recording(
+        "recording_002",
+        [
+            (0, 0, cat_box, sq(4, 20, 4, 20)),
+            (1, 0, rat_box, sq(20, 36, 20, 36)),
+            (2, 0, cat_box, sq(4, 20, 4, 20)),
+            (3, 0, rat_box, sq(20, 36, 20, 36)),
+        ],
+        [0, 0],  # one row per rat: the tracker never saw the cats
+        classes=["cat", "rat", "cat", "rat"],
+        class_name="rat",
+    )
+    frames = list(pose_match.frame_subjects(recording.dir, "track_01", "part_001", 1))
+    assert [f for f, _t, _s in frames] == [1, 3]
+    for _f, _t, subjects in frames:
+        assert subjects[0].bbox == pytest.approx(rat_box)
+
+
+def test_a_pose_placed_on_a_box_of_another_class_is_never_given_to_a_subject(
+    processed_recording,
+):
+    """**The class: a pose matched by mask alone, whatever box it was placed on.** A
+    per-detection keypoint method places a pose in every box the detection run holds; a
+    detector that also finds the arena (``plate``) gets a pose placed in the arena's box,
+    the whole arena cropped and the animal small inside it. That pose lies on the animal as
+    squarely as the animal's own, so the mask match took it whenever it scored higher: 28% of
+    the tracked poses on the Hotplate experiment (13,750 of 48,872), the paws lost, while the
+    animal's own pose went unused. The tracking run's ``class_name`` decides which boxes'
+    poses its subjects may take.
+
+    One frame: a ``plate`` box over the whole field and the rat's box; the run tracked rats.
+    Two poses lie on the rat, the plate's more confident. The rat takes its own.
+    """
+    it = processed_recording
+    sq = it.square
+    recording = it.add_recording(
+        "recording_002",
+        [
+            (0, 0, (0.0, 0.0, 1.0, 1.0), sq(0, 40, 0, 40)),  # the plate
+            (0, 1, (0.5, 0.5, 0.9, 0.9), sq(20, 36, 20, 36)),  # the rat
+        ],
+        [0],  # the tracker saw the rat's row only
+        classes=["plate", "rat"],
+        class_name="rat",
+    )
+    pose = [[0.7, 0.7], [0.75, 0.65], [0.65, 0.75]]
+    instances = {
+        "frame_idx": np.array([0, 0], dtype=np.int32),
+        "points": np.array([pose, pose], dtype=np.float32),
+        "confidence": np.array([0.99, 0.5], dtype=np.float32),
+        "detection_row": np.array([0, 1], dtype=np.int32),  # on the plate, on the rat
+    }
+    tracked = pose_match.tracked_class_rows(recording.dir, "track_01", "part_001")
+    assert tracked.tolist() == [False, True]
+    eligible = pose_match.eligible_instances(instances["detection_row"], tracked)
+
+    def assign(offered):
+        return pose_match.assign_part(
+            instances,
+            pose_match.frame_subjects(recording.dir, "track_01", "part_001", 1),
+            pose_match.subject_mask_hw(recording.dir, "track_01"),
+            eligible=offered,
+        )[0].tolist()
+
+    assert assign(eligible) == [-1, 0], "the rat takes the pose on its own box"
+    assert assign(None) == [0, -1], "offered every pose, the plate's wins on confidence"
+
+
+def test_which_poses_a_tracking_run_offers():
+    rows = np.array([-1, 0, 1, 2, 5], dtype=np.int32)
+    tracked = np.array([False, True, False])
+    # no box (a whole-frame method): offered; a row past the part: not the tracked class
+    assert pose_match.eligible_instances(rows, tracked).tolist() == [
+        True,
+        False,
+        True,
+        False,
+        False,
+    ]
+    assert pose_match.eligible_instances(rows, None).all(), "every class tracked"
+
+
+def test_no_stage_offers_every_pose_whatever_its_box():
+    """Every caller of ``assign_part`` in ``detail/`` decides eligibility from the tracking
+    run's class (``eligible_instances``); ``eligible=None`` is for a test's direct call. A
+    stage passing it would give subjects the poses placed on other classes' boxes again.
+    """
+    import re
+    from pathlib import Path
+
+    import detail
+
+    root = Path(detail.__file__).parent
+    pattern = re.compile(r"eligible\s*=\s*None\b")
+    offenders = [
+        f"{path.relative_to(root).as_posix()}:{n}"
+        for path in sorted(root.rglob("*.py"))
+        for n, line in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), 1)
+        if pattern.search(line) and "def " not in line
+    ]
+    assert not offenders, offenders
+    assert pattern.search("eligible=None,")  # the check can fire
 
 
 # --------------------------------------------------------------------------- #
@@ -603,6 +728,7 @@ def test_assignment_rasterises_no_mask(tracked, monkeypatch):
         _end_to_end_instances(),
         pose_match.frame_subjects(tracked, "trk_a", "part_000", 1),
         (H, W),
+        eligible=None,
         min_inside=0.5,
         mask_grow=0.05,
     )

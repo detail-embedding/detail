@@ -22,8 +22,9 @@ same ones, so the two cannot drift. Line 1: the window's number and the cluster 
 Export ▾**). Line 2: the figures (clips · time · share of the run; the separation and the
 concentration in their tooltip) at the left, the status at the right. Line 3: the label field,
 **Label**, **Remove**, **Labels ▾** (opening with the page's recent labels, numbered, each greyed
-with its reason) and **Undo (⌘Z)**. Only the page's *Open in window* is left off — this is the
-window. Nothing sits between the bar and the grid but the pick bar while picking.
+with its reason) and **Undo (⌘Z)**. Only the page's *Open in window* and *Cluster tools ▾* are
+left off — this is the window. Nothing sits between the bar and the grid but the pick bar while
+picking.
 Nothing is labelled here: every request goes to the page's own write queue (``_label`` and its
 neighbours, told which window asked), so the tree, the label bar and the rings refresh as from the
 page, the window's bar and title follow from the page's refresh, and a prompt (rename, merge, a
@@ -57,13 +58,14 @@ from __future__ import annotations
 
 import numpy as np
 from PyQt6 import sip
-from PyQt6.QtCore import QByteArray, QPoint, QSettings, QSize, Qt
+from PyQt6.QtCore import QByteArray, QPoint, QSettings, Qt
 from PyQt6.QtWidgets import QDialogButtonBox, QLineEdit
 
 from detail.api.clip_tiles import TileLook
+from detail.core.utils import subject_key
 from detail.gui.dialog import Dialog
 from detail.gui.live_montage import LiveMontage, MontageClip, context_span
-from detail.gui.sizing import fit_to_screen, lines, set_available
+from detail.gui.sizing import lines, set_available
 
 #: The window's orientation (As recorded / Aligned), kept for every cluster window.
 ALIGNED_KEY = "interpret/window_aligned"
@@ -72,11 +74,6 @@ GEOMETRY_KEY = "interpret/cluster_window_geometry"
 #: What the window shows, kept between windows: ``TileLook`` fields and the context.
 LOOK_KEY = "interpret/cluster_window_look"
 CONTEXT_KEY = "interpret/cluster_window_context"
-#: The opening size, in lines: about 960 × 740 at 16 px a line, a comfortable share of a
-#: 1440 × 900 laptop screen with INTERPRET still visible beside it.
-_WIDE = 60
-_TALL = 46
-_SCREEN_SHARE = 0.85
 #: How far each further window opens from the last, so two do not sit exactly on top.
 _CASCADE_PX = 32
 #: The shortest a tile loops for: one proxy frame (``node_workspace._MIN_LOOP_NS``).
@@ -92,6 +89,9 @@ def window_mark(number: int) -> str:
 
 class ClusterWindow(Dialog):
     """One cluster's label bar (INTERPRET's) and clips, in a non-modal window."""
+
+    #: The grid of clips scrolls: clips landing after the show never stretch the window.
+    grows_with_content = False
 
     def __init__(self, interpret, node: int, parent=None, *, number: int = 1) -> None:
         """``interpret`` is the INTERPRET tab that opened it: its view, labels and write
@@ -128,6 +128,7 @@ class ClusterWindow(Dialog):
                 origin=self._origin,
                 name=self._export_stem,
                 empty=lambda: "This cluster's clips are still being read.",
+                experiment=lambda: page._experiment,
             ),
         )
         if fresh:
@@ -158,13 +159,8 @@ class ClusterWindow(Dialog):
         # closes a QDialog without a close event, which left the window on the tree's marks
         # and held in the page's list, its montage and tile cache with it.
         self.finished.connect(self._closed)
-        self.resize(
-            fit_to_screen(
-                QSize(lines(_WIDE), lines(_TALL)),
-                share=_SCREEN_SHARE,
-                screen=self.screen(),
-            )
-        )
+        # No opening size of its own: `Dialog.showEvent` sizes it to its content, capped to
+        # the screen (`a_dialog_never_types_its_opening_size`).
         self._restore_geometry()
         self.refresh_labels()
         self.load_clips()
@@ -188,8 +184,11 @@ class ClusterWindow(Dialog):
     # -- geometry -------------------------------------------------------------- #
     def _restore_geometry(self) -> None:
         stored = QSettings().value(GEOMETRY_KEY)
-        if isinstance(stored, QByteArray):
-            self.restoreGeometry(stored)
+        if isinstance(stored, QByteArray) and self.restoreGeometry(stored):
+            # The size and place the last window was left at win over the base's fit to
+            # content at show (`Dialog.keeps_its_place`): a person who sized one window
+            # sized them all.
+            self.keeps_its_place = True
 
     def cascade(self, step: int) -> None:
         """Open ``step`` windows along from the remembered place, so windows do not stack."""
@@ -348,7 +347,9 @@ class ClusterWindow(Dialog):
         for i in self._order:
             rid = clips.recording_ids[int(clips.recording[i])]
             start, end = context_span(clips.start_ns[i], clips.end_ns[i], context)
-            out.append(clip_tiles.TileClip(rid, int(clips.subject[i]), start, end))
+            out.append(
+                clip_tiles.TileClip(rid, subject_key(clips.subject[i]), start, end)
+            )
         return out
 
     def _set_source(self, *, keep_pictures: bool = False) -> None:
@@ -433,7 +434,7 @@ class ClusterWindow(Dialog):
                     rank=rank,
                     recording_id=rid,
                     recording_name=names.get(rid, rid),
-                    subject=int(clips.subject[i]),
+                    subject=subject_key(clips.subject[i]),
                     embed_run_id=page._state.embed_run_for(rid),
                     start_t_ns=int(clips.start_ns[i]),
                     end_t_ns=int(clips.end_ns[i]),
@@ -480,8 +481,10 @@ class ClusterWindow(Dialog):
 
     def _open_clip(self, index: int) -> None:
         """A tile double-clicked: the clip window, with previous / next through this
-        window's order."""
+        window's order, and this window's cluster to label, check and compare — labels through
+        INTERPRET's own queue, asked from this window."""
         from detail.gui import clip_popup
+        from detail.gui.clip_labelling import PageLabelling, page_lane
         from detail.gui.node_workspace import _ORDER_NOTES, clip_sequence
 
         if self._clips is None or not 0 <= index < len(self._order):
@@ -495,6 +498,8 @@ class ClusterWindow(Dialog):
             index=index,
             context_s=self.montage.context_s(),
             order_note=dict(_ORDER_NOTES).get(self.montage.order(), ""),
+            labelling=PageLabelling(self._page, self._node, origin=self),
+            lane=page_lane(self._page, self._node),
         )
 
 

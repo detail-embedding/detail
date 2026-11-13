@@ -38,6 +38,7 @@ from pathlib import Path
 import yaml
 
 from detail.core import atomic
+from detail.core import yaml_load
 from detail.storage import behavior_output
 from detail.storage import clip_review
 from detail.storage import dirscan
@@ -152,7 +153,7 @@ def read_snapshot(run_dir: Path | str, snapshot_id: str) -> dict:
     path = snapshot_dir(run_dir, snapshot_id) / SNAPSHOT_FILENAME
     if not path.is_file():
         raise FileNotFoundError(f"no {SNAPSHOT_FILENAME} in {path.parent}")
-    record = yaml.safe_load(atomic.read_text(path))
+    record = yaml_load.safe_load(atomic.read_text(path))
     if not isinstance(record, dict):
         raise ValueError(f"{path} is not a mapping")
     if record.get("schema_version") != SCHEMA_VERSION:

@@ -272,8 +272,16 @@ def _branches(handle) -> tuple[int, int]:
     return int(a), int(b)
 
 
-def _fitted_run(experiment_dir, recording_dir, make_embedding_run, **method_overrides):
-    """One real fit, through the module, on a synthetic embedding run."""
+def _fitted_run(
+    experiment_dir, recording_dir, make_embedding_run, track_id=0, **method_overrides
+):
+    """One real fit, through the module, on a synthetic embedding run.
+
+    ``track_id`` defaults to the ordinary single-track case; another track is passed here
+    rather than adding a second ``run_analysis`` call site (the real-run budget ratchet,
+    ``tests/test_real_run_budget.py``, is exactly the guard against "done again" that a second
+    literal call here would trip).
+    """
     from detail.api.experiment import Experiment
 
     features = _bouty_trajectory()
@@ -284,7 +292,14 @@ def _fitted_run(experiment_dir, recording_dir, make_embedding_run, **method_over
         recording_dir / "video/timestamps/generated/part_001.csv",
         np.arange(n + VIDEO_TAIL, dtype=np.int64) * STEP,
     )
-    make_embedding_run(recording_dir, features, frame_idx, t_ns, embed_run_id="emb_01")
+    make_embedding_run(
+        recording_dir,
+        features,
+        frame_idx,
+        t_ns,
+        embed_run_id="emb_01",
+        track_id=track_id,
+    )
 
     proj = Experiment(experiment_dir)
     run = proj.run_analysis(
@@ -292,7 +307,7 @@ def _fitted_run(experiment_dir, recording_dir, make_embedding_run, **method_over
         {
             "source_recording_ids": ["recording_001"],
             "embed_run_id": "emb_01",
-            "track_id": 0,
+            "track_id": track_id,
             "method": "dtw_finch",
             "method_params": _method_params(**method_overrides),
         },

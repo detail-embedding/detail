@@ -151,6 +151,28 @@ def test_an_optional_literal_keeps_its_choices():
     assert rows["maybe"]["choices"] == ["x", "y"] and rows["maybe"]["optional"]
 
 
+def test_a_number_that_may_also_be_one_word_is_not_a_choice():
+    """``int | Literal["auto"]`` is a free number that may also be one word. Reading the
+    ``const`` branch alone makes it a one-item choice: the form becomes a combo of ``"auto"``,
+    and a saved value of 3 or ``"auto"`` can no longer load.
+    """
+    from typing import Literal
+
+    from pydantic import BaseModel, Field
+
+    class Knob(BaseModel):
+        series: int | Literal["auto"] = Field(
+            0, description="d", json_schema_extra={"label": "S"}
+        )
+        either: Literal["a"] | Literal["b"] | None = Field(
+            None, description="d", json_schema_extra={"label": "E"}
+        )
+
+    rows = {r["name"]: r for r in describe_config(Knob)}
+    assert rows["series"]["choices"] is None
+    assert rows["either"]["choices"] == ["a", "b"]
+
+
 def test_every_documented_param_has_help_and_label():
     # The drift guard: a config-model field with no description or no label renders a blank cell
     # in the reference (and a missing GUI tooltip / CLI help). Fail loudly with the offenders.

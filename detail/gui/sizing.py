@@ -17,7 +17,7 @@ the helper existed, and the file that needed it could not reach it: exactly what
 `fit_table_height` before it became `gui/tables.py`.
 """
 
-from PyQt6.QtCore import QSettings, QSize, Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, QSettings, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QFont, QFontMetrics, QPainter
 from PyQt6.QtWidgets import (
     QApplication,
@@ -27,7 +27,10 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QStyle,
     QStyleOption,
+    QWidget,
 )
+
+from detail.gui.lifetime import cleared
 
 #: Qt's "no maximum" sentinel. A widget capped below it cannot absorb extra height however
 #: expansive its size policy claims to be.
@@ -94,21 +97,6 @@ def small_font(widget, steps: float = 1.5) -> QFont:
     font = QFont(widget.font())
     font.setPointSizeF(max(font.pointSizeF() - steps, 7.0))
     return font
-
-
-def fit_to_screen(size: QSize, *, share: float = 0.92, screen=None) -> QSize:
-    """``size``, or as much of the screen's free area as ``share`` allows: a window that opens
-    taller than the screen opens with its bottom rows out of reach. ``screen`` is the
-    ``QScreen`` the window will open on; ``None`` (no screen yet) returns ``size`` as it is.
-
-    One helper where #806 had the same eight lines in three windows and a fourth window that
-    needed them and skipped them."""
-    if screen is None:
-        return QSize(size)
-    free = screen.availableGeometry()
-    return QSize(size).boundedTo(
-        QSize(int(free.width() * share), int(free.height() * share))
-    )
 
 
 def lines(count: float) -> int:
@@ -185,6 +173,20 @@ def _lays_out_vertically(layout) -> bool:
     )
 
 
+def _unbounded(item) -> bool:
+    """Whether a layout item may grow past its current height at all.
+
+    A stretch factor on a widget capped at its content — a table sized to its rows in a pop-up
+    (`shows_every_row`), say — is a claim on slack the widget cannot take, and the slack then
+    lands on the word-wrapped labels around it.
+    """
+    widget = item.widget()
+    if widget is not None:
+        return widget.maximumHeight() >= UNBOUNDED_HEIGHT
+    nested = item.layout()
+    return nested is None or nested.maximumSize().height() >= UNBOUNDED_HEIGHT
+
+
 def has_slack(layout) -> bool:
     """Whether anything in ``layout`` already takes the vertical slack."""
     # `stretch(i)` is a QBoxLayout method; a QFormLayout has no per-item stretch at all, so a
@@ -197,7 +199,12 @@ def has_slack(layout) -> bool:
             continue
         if vertical and item.spacerItem() is not None:
             return True
-        if vertical and stretch_of is not None and stretch_of(i) > 0:
+        if (
+            vertical
+            and stretch_of is not None
+            and stretch_of(i) > 0
+            and _unbounded(item)
+        ):
             return True
         # A widget or a nested layout counts whichever way this one runs: a child that grows
         # vertically makes its row grow, and a row that grows takes the column's slack.
@@ -243,7 +250,8 @@ def _hbar_height(listwidget) -> int:
 
     if listwidget.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff:
         return 0
-    needed = listwidget.sizeHintForColumn(0) if listwidget.count() else 0
+    model = listwidget.model()
+    needed = listwidget.sizeHintForColumn(0) if model and model.rowCount() else 0
     available = listwidget.viewport().width() or listwidget.width()
     if available and needed <= available:
         return 0
@@ -268,11 +276,21 @@ def fit_list_height(listwidget, *, max_rows: int = 8) -> None:
     so a squeeze cannot land between rows; the **maximum** is the content height, so a short list
     still hugs its rows. Safe because the content area scrolls (``gui/scroll.py``) — a floor on a
     page that could not scroll would push the window past the display instead.
-    """
-    from PyQt6.QtCore import Qt
 
-    rows = min(max(listwidget.count(), 1), max_rows)
-    row_h = listwidget.sizeHintForRow(0) if listwidget.count() else 18
+    ``max_rows`` is a **page's** cap. In a pop-up (:func:`shows_every_row`) the list shows every
+    row and the window grows to hold it, up to its own cap; a list the user has dragged
+    (:class:`RowsGrip`) keeps the height they gave it.
+    """
+    if not remember_row_fit(
+        listwidget, lambda: fit_list_height(listwidget, max_rows=max_rows)
+    ):
+        return
+    model = listwidget.model()
+    count = model.rowCount() if model is not None else 0
+    rows = max(count, 1)
+    if not shows_every_row(listwidget):
+        rows = min(rows, max_rows)
+    row_h = listwidget.sizeHintForRow(0) if count else 18
     # Chrome is the frame plus, if the list can scroll sideways, the bar that sits *inside* the
     # height it is given — the table twin's third piece. The spare `+ 4` that used to stand in
     # for both is what left a 4px slice of row 15 showing under a 14-row band: not a missing row
@@ -433,6 +451,410 @@ class ResizeHandle(QFrame):
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802 — Qt's name
         self._press_y = None
         self.update()
+
+
+# --------------------------------------------------------------------------- #
+# a pop-up's size: its content, up to most of the screen
+# --------------------------------------------------------------------------- #
+#: The most of its screen's free area a pop-up opens at when its content is larger than that.
+#: The rest scrolls. Not the whole screen: a window edge-to-edge over the one it came from hides
+#: where it came from, and a title bar pushed to the very top is one the user cannot grab.
+SCREEN_SHARE = 0.9
+
+#: How many measure-and-grow passes a fit may take. A pass grows by what is still unseen; a
+#: layout that shares the extra between two growing panes needs a second, and nothing measured
+#: needed more than three.
+_FIT_PASSES = 6
+
+
+def fit_screen(window):
+    """The screen ``window`` opens on: its parent's, or its own, or the primary one."""
+    parent = window.parentWidget()
+    if parent is not None and parent.window().screen() is not None:
+        return parent.window().screen()
+    return window.screen() or QApplication.primaryScreen()
+
+
+def _frame_extent(window) -> QSize:
+    """The title bar and borders the window system adds around ``window``'s client area."""
+    handle = window.windowHandle()
+    if handle is None:
+        return QSize(0, 0)
+    margins = handle.frameMargins()
+    return QSize(margins.left() + margins.right(), margins.top() + margins.bottom())
+
+
+def window_cap(window) -> QSize:
+    """The largest client area ``window`` may open at: :data:`SCREEN_SHARE` of its screen's
+    free area, less the frame the window system draws around it."""
+    screen = fit_screen(window)
+    if screen is None:
+        return QSize(UNBOUNDED_HEIGHT, UNBOUNDED_HEIGHT)
+    free = screen.availableGeometry()
+    frame = _frame_extent(window)
+    return QSize(
+        int(free.width() * SCREEN_SHARE) - frame.width(),
+        int(free.height() * SCREEN_SHARE) - frame.height(),
+    )
+
+
+def _room_to_grow(widget) -> tuple[bool, bool]:
+    """Whether ``widget`` could take more width, more height, if the window gave it some."""
+    return (
+        widget.maximumWidth() > widget.width(),
+        widget.maximumHeight() > widget.height(),
+    )
+
+
+def hidden_extent(area) -> tuple[int, int]:
+    """How many **pixels** of ``area``'s content are scrolled out of view, across and down.
+
+    A scroll bar's range is pixels for most scroll areas and **items** for an item view in its
+    default ``ScrollPerItem`` mode — a table with eighteen rows hidden reports 18, and a window
+    grown by 18px shows less than one of them. A table answers exactly from its headers; any
+    other item view from the size of its first row or column.
+    """
+    from PyQt6.QtWidgets import QAbstractItemView, QTableView
+
+    across = area.horizontalScrollBar().maximum()
+    down = area.verticalScrollBar().maximum()
+    if not isinstance(area, QAbstractItemView):
+        return across, down
+    viewport = area.viewport()
+    if isinstance(area, QTableView):
+        return (
+            (
+                max(0, area.horizontalHeader().length() - viewport.width())
+                if across
+                else 0
+            ),
+            max(0, area.verticalHeader().length() - viewport.height()) if down else 0,
+        )
+    per_item = QAbstractItemView.ScrollMode.ScrollPerItem
+    if down and area.verticalScrollMode() == per_item:
+        down *= max(area.sizeHintForRow(0), 1)
+    if across and area.horizontalScrollMode() == per_item:
+        across *= max(area.sizeHintForColumn(0), 1)
+    return across, down
+
+
+def unseen(window) -> QSize:
+    """How much larger ``window`` would have to be to show everything in it unscrolled.
+
+    Three kinds of content, one answer each, and the largest per axis wins this pass:
+
+    - **The window's own scroll** (a `Dialog`'s `PageScroll`): the height the body asks for
+      past what the viewport shows.
+    - **Any other scroll area in it** — a table, a list, a text box — by its scroll range, on an
+      axis it can grow on. A list sized to its rows (`fit_list_height`) has a maximum height
+      and so says nothing: growing the window would not show it one more row.
+    - **A picture** — any widget with a ``natural_size()`` (`ImageView`, the field-of-view
+      editor's `ArenaCanvas`): that size — the frame at its own pixels, or what a host composing
+      to fit declared — past the pane it has. A pane already at that size asks for nothing.
+
+    Read off the laid-out window, so it is only true after a layout pass at the current size.
+    """
+    from PyQt6.QtWidgets import QAbstractScrollArea, QWidget
+
+    from detail.gui.scroll import PageScroll
+
+    need_w = need_h = 0
+    for area in window.findChildren(QAbstractScrollArea):
+        if not area.isVisibleTo(window):
+            continue
+        if isinstance(area, PageScroll):
+            body = area.widget()
+            if body is not None and area.parentWidget() is window:
+                need_h = max(need_h, area.verticalScrollBar().maximum())
+                need_w = max(need_w, body.sizeHint().width() - area.viewport().width())
+            continue
+        wider, taller = _room_to_grow(area)
+        across, down = hidden_extent(area)
+        off = Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        if wider and area.horizontalScrollBarPolicy() != off:
+            need_w = max(need_w, across)
+        if taller and area.verticalScrollBarPolicy() != off:
+            need_h = max(need_h, down)
+    for view in window.findChildren(QWidget):
+        natural_size = getattr(view, "natural_size", None)
+        if natural_size is None or not view.isVisibleTo(window):
+            continue
+        natural = natural_size()
+        if natural is None:
+            continue
+        need_w = max(need_w, natural.width() - view.width())
+        need_h = max(need_h, natural.height() - view.height())
+    return QSize(max(need_w, 0), max(need_h, 0))
+
+
+def announce_natural_size(widget) -> None:
+    """Tell ``widget``'s window that its picture now wants more room than it last said.
+
+    For a picture whose frame arrives after the window opened — decoded off the UI thread, as
+    every clip and frame view's is. Duck-typed on the window's ``content_grew``
+    (`gui.dialog.Dialog`'s): a page's window has none, which is right, since a pane on a page
+    is sized by the page. A frame no larger than the last (every frame of a clip) costs one
+    comparison.
+    """
+    natural = widget.natural_size()
+    if natural is None:
+        return
+    before = getattr(widget, "_announced_natural_size", None)
+    if before is not None and natural.boundedTo(before) == natural:
+        return
+    widget._announced_natural_size = QSize(natural)
+    grew = getattr(widget.window(), "content_grew", None)
+    if grew is not None:
+        grew()
+
+
+def _apply(window, size: QSize) -> None:
+    """Resize ``window`` and run its layout now, so :func:`unseen` reads the new geometry."""
+    window.resize(size)
+    QApplication.sendPostedEvents(None, QEvent.Type.LayoutRequest)
+    layout = window.layout()
+    if layout is not None:
+        layout.activate()
+
+
+def fit_to_content(window, *, grow_only: bool) -> None:
+    """Size ``window`` to show all of its content, capped at :func:`window_cap`.
+
+    Starts from the window's own hint (a `Dialog`'s is its body unscrolled), or from where it is
+    with ``grow_only``; then measures what is still :func:`unseen` and grows by it, pass by
+    pass. **An axis that did not help is given back**: content that cannot use the room — a
+    picture already letterboxed by its other side, a pane with a maximum — would otherwise turn
+    the cap into the size of every window that holds one.
+
+    ``grow_only`` is for a window already on screen: content arriving late (a frame decoded, a
+    list filled) can make it larger, never smaller.
+    """
+    # Hints are cached per layout and refreshed when its LayoutRequest is handled: read before
+    # that, a hint can describe the window as it was a moment ago (a list just refitted, a grip
+    # just added) and open it that size.
+    QApplication.sendPostedEvents(None, QEvent.Type.LayoutRequest)
+    cap = window_cap(window)
+    floor = window.minimumSizeHint().expandedTo(window.minimumSize())
+    wanted = window.sizeHint().boundedTo(cap)
+    # Growing never shrinks: a window already past the cap (put there by the program, or
+    # dragged by a user the caller did not know about) keeps its size.
+    size = (window.size().expandedTo(wanted) if grow_only else wanted).expandedTo(floor)
+    if not grow_only or size != window.size():
+        _apply(window, size)
+    for _ in range(_FIT_PASSES):
+        need = unseen(window)
+        grown = QSize(
+            min(size.width() + need.width(), max(cap.width(), size.width())),
+            min(size.height() + need.height(), max(cap.height(), size.height())),
+        )
+        if grown == size:
+            return
+        _apply(window, grown)
+        after = unseen(window)
+        kept = QSize(
+            grown.width() if after.width() < need.width() else size.width(),
+            grown.height() if after.height() < need.height() else size.height(),
+        )
+        if kept != grown:
+            _apply(window, kept)
+        if kept == size:
+            return
+        size = kept
+
+
+def fit_height(window, wanted: int) -> None:
+    """Set ``window``'s height to ``wanted`` — what its content measured it needs at its width
+    (`Dialog.content_height`) — capped at :func:`window_cap`, never under its minimum. The width
+    is left where it is."""
+    height = max(
+        min(wanted, window_cap(window).height()), window.minimumSizeHint().height()
+    )
+    if height != window.height():
+        _apply(window, QSize(window.width(), height))
+
+
+def centre_on_screen(window, *, about=None) -> None:
+    """Put ``window`` centred on ``about`` (a point; the parent window's centre by default,
+    else its screen's), then wholly inside its screen's free area."""
+    screen = fit_screen(window)
+    if screen is None:
+        return
+    free = screen.availableGeometry()
+    frame = _frame_extent(window)
+    width = window.width() + frame.width()
+    height = window.height() + frame.height()
+    if about is None:
+        parent = window.parentWidget()
+        if parent is not None and parent.window().isVisible():
+            about = parent.window().frameGeometry().center()
+        else:
+            about = free.center()
+    x = min(max(about.x() - width // 2, free.left()), free.right() + 1 - width)
+    y = min(max(about.y() - height // 2, free.top()), free.bottom() + 1 - height)
+    window.move(max(x, free.left()), max(y, free.top()))
+
+
+# --------------------------------------------------------------------------- #
+# a list in a pop-up: every row, and an edge the user can drag
+# --------------------------------------------------------------------------- #
+#: Set on a view the user has dragged to a height of their own (:class:`RowsGrip`). The row fit
+#: leaves it alone from then on, for as long as the window is open: content arriving later does
+#: not undo a size somebody chose, the same rule a dragged window keeps.
+_DRAGGED = "_detail_rows_dragged"
+
+#: Where a row fit leaves a way to run itself again (:func:`refit_rows`). A list sized while it
+#: was still being built — before it was in its dialog — was sized as a page's would be.
+_REFIT = "_detail_fit_rows"
+
+
+def shows_every_row(widget) -> bool:
+    """Whether ``widget`` is in a window whose lists and tables show every row.
+
+    A **pop-up's** (`gui.dialog.Dialog.SHOWS_EVERY_ROW`): it is sized to its content up to most
+    of the screen (:func:`fit_to_content`), so a list capped at a few rows only hides what the
+    window had room to show. A **page** keeps its cap — it shares the window with everything
+    else on it, and a page of several lists each as tall as its rows is a page of scrolling.
+    """
+    return bool(getattr(widget.window(), "SHOWS_EVERY_ROW", False))
+
+
+def remember_row_fit(view, fit) -> bool:
+    """Keep ``fit`` (a call that re-sizes ``view`` to its rows) for :func:`refit_rows`, and say
+    whether it should run now — not once the user has dragged the view."""
+    setattr(view, _REFIT, fit)
+    return not getattr(view, _DRAGGED, False)
+
+
+def refit_rows(window, *, forget_drags: bool = False) -> None:
+    """Run every list's and table's row fit again, now that they are where they will be shown.
+
+    A fit run in a constructor, before the view was in its dialog, applied a page's cap; run
+    again, :func:`shows_every_row` is true and the cap is gone. ``forget_drags`` is for a window
+    opening afresh: a height dragged in an earlier open is not remembered.
+    """
+    from PyQt6.QtWidgets import QAbstractItemView, QListView, QTableView
+
+    from detail.gui.tables import fit_table_height
+
+    for view in window.findChildren(QAbstractItemView):
+        if view.window() is not window:
+            continue  # a combo box's drop-down, in its own popup window
+        if forget_drags:
+            setattr(view, _DRAGGED, False)
+        fit = getattr(view, _REFIT, None)
+        if fit is not None:
+            fit()
+        elif isinstance(view, QTableView):
+            # Nobody sized it: on a page that is `a_table_is_sized_to_its_rows_or_declared_to_
+            # fill`'s business, and a table declared to fill may; in a pop-up every table
+            # shows its rows, so it gets the fit it would have had.
+            fit_table_height(view)
+        elif isinstance(view, QListView):
+            fit_list_height(view)
+
+
+def _layout_holding(layout, widget):
+    """The layout under ``layout`` (itself or nested) whose item is ``widget``, or ``None``."""
+    if layout is None:
+        return None
+    for index in range(layout.count()):
+        item = layout.itemAt(index)
+        if item.widget() is widget:
+            return layout
+        found = _layout_holding(item.layout(), widget)
+        if found is not None:
+            return found
+    return None
+
+
+#: Where a view keeps its :class:`RowsGrip`, so it gets one and only one, and so a check can ask.
+_GRIP = "_detail_row_grip"
+
+
+class RowsGrip(ResizeHandle):
+    """The lower edge of a list or table in a pop-up, dragged to make the view taller or shorter.
+
+    Every list and table in a pop-up gets one (:func:`attach_row_grips`). The window is not
+    resized by the drag: the view's height changes, the dialog's body grows or shrinks and
+    scrolls if it has to, and the window stops re-fitting itself for the rest of that open,
+    since the user has now chosen its layout. Nothing is remembered between opens.
+
+    A :class:`ResizeHandle`, the one band edge this package draws, so a list's edge reads the
+    same as the clip strip's and the spatial map's. It sits **beside** the view, in the view's
+    own layout, rather than around it: a container would move the view out of the layout that
+    placed it, and code that addresses it there — ``QFormLayout.setRowVisible(view, …)``, which
+    the distill form does — would silently stop finding it.
+    """
+
+    def __init__(self, view) -> None:
+        super().__init__()
+        self.view = view
+        self.setToolTip("Drag to make the list taller or shorter")
+        self.setVisible(not view.isHidden())
+        self.dragged.connect(self._drag)
+        # Shown and hidden with its view, however the view is shown or hidden.
+        view.installEventFilter(self)
+        view.destroyed.connect(self.deleteLater)
+        setattr(view, _GRIP, self)
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802 — Qt's name
+        if cleared(self):
+            return False
+        if watched is self.view:
+            if event.type() == QEvent.Type.HideToParent:
+                self.hide()
+            elif event.type() == QEvent.Type.ShowToParent:
+                self.show()
+        return False
+
+    def _drag(self, delta: int) -> None:
+        view = self.view
+        model = view.model()
+        row = view.sizeHintForRow(0) if model is not None and model.rowCount() else 0
+        floor = 2 * view.frameWidth() + max(row, lines(1))
+        height = max(floor, view.height() + delta)
+        setattr(view, _DRAGGED, True)
+        view.setMinimumHeight(height)
+        view.setMaximumHeight(height)
+        window = self.window()
+        if hasattr(window, "content_grew"):
+            window._user_sized = True
+
+
+def row_grip(view):
+    """``view``'s :class:`RowsGrip`, or ``None``."""
+    from detail.gui import lifetime
+
+    grip = getattr(view, _GRIP, None)
+    return grip if grip is not None and lifetime.alive(grip) else None
+
+
+def attach_row_grips(window) -> None:
+    """Give every list and table in ``window`` a :class:`RowsGrip`, once, under it.
+
+    Into the layout that holds the view, directly beneath it: the next item of a box layout,
+    or a row of its own under the view's in a form. So no dialog has to remember to — the
+    reason this lives on the base rather than at forty call sites. Not given one: a combo box's
+    drop-down (its own popup window), and a view in a ``QSplitter``, whose divider already
+    resizes it.
+    """
+    from PyQt6.QtWidgets import QAbstractItemView, QFormLayout, QSplitter
+
+    for view in window.findChildren(QAbstractItemView):
+        parent = view.parentWidget()
+        if view.window() is not window or parent is None or row_grip(view) is not None:
+            continue
+        if isinstance(parent, QSplitter):
+            continue
+        holder = _layout_holding(parent.layout(), view)
+        if isinstance(holder, QBoxLayout):
+            holder.insertWidget(holder.indexOf(view) + 1, RowsGrip(view))
+        elif isinstance(holder, QFormLayout):
+            row, role = holder.getWidgetPosition(view)
+            if role == QFormLayout.ItemRole.SpanningRole:
+                holder.insertRow(row + 1, RowsGrip(view))
+            elif role == QFormLayout.ItemRole.FieldRole:
+                holder.insertRow(row + 1, QWidget(), RowsGrip(view))
 
 
 class ElidedLabel(QLabel):

@@ -606,7 +606,7 @@ def test_end_to_end_matches_marked_dots_on_a_new_frame(monkeypatch):
     # the winning example row of the best candidate is this target's own example
     for j, name in enumerate(DOTS.names):
         row = int(result.extras["ref_index"][0, j, 0])
-        assert model._bank.sources[row] == (0, name)
+        assert model._learned[None].bank.sources[row] == (0, name)
     assert result.extras["mirrored"].shape == (2, 3)
     assert np.isfinite(result.extras["mirrored"]).all()
     # a frame with no detection: zero rows, every column still shaped
@@ -674,7 +674,7 @@ def test_each_example_is_scored_by_the_others(monkeypatch):
     model = DINOv3Match(examples=examples, example_images=images, crop_px=448)
     monkeypatch.setattr(model, "_make_backbone", lambda: _ColourBackbone())
     model.load("cpu")
-    bank_before = model._bank
+    bank_before = model._learned[None].bank
 
     rows = model.score_held_out()
 
@@ -685,7 +685,7 @@ def test_each_example_is_scored_by_the_others(monkeypatch):
     for r in rows:
         assert r["error_px"] < 16, r  # within one patch of the user's click
         assert np.isfinite(r["score"]) and r["body_px"] > 0
-    assert model._bank is bank_before, "the run's own bank is untouched"
+    assert model._learned[None].bank is bank_before, "the run's own bank is untouched"
 
 
 def test_one_example_frame_has_nothing_to_hold_out(monkeypatch):
@@ -774,9 +774,9 @@ def test_each_detection_is_scored_on_its_own_crop_and_mask(monkeypatch):
             view = vw.make_view(sf.boxes[det_row], wh, 448, PATCH)
             (grid,) = backbone.patch_grids([vw.render(sf.frame, view)])
             allowed = vw.allowed_cells(sf.masks.get(det_row), view, wh)
-            maps, _ = model._bank.score_maps(grid, allowed)
+            maps, _ = model._learned[None].bank.score_maps(grid, allowed)
             pool = dc.candidate_pool(dc.candidates(maps, view), model._plan)
-            mirrored = model._mirror_bank.best_scores(grid, allowed)
+            mirrored = model._learned[None].mirror_bank.best_scores(grid, allowed)
             for j, name in enumerate(model._plan.names):
                 want = [score for _xy, score, _cell in pool.get(name, [])[:5]]
                 got = result.candidate_scores[i, j, : len(want)]

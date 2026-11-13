@@ -16,7 +16,8 @@ which *creates* recordings; this one *adds to* existing ones.
 
 from pathlib import Path
 
-import yaml
+
+from detail.core import yaml_load
 
 SCHEMA_VERSION = 1
 
@@ -32,7 +33,7 @@ def load_labels_manifest(path: Path | str) -> dict:
     if not path.is_file():
         raise FileNotFoundError(f"labels manifest not found: {path}")
     with open(path, encoding="utf-8-sig") as f:
-        data = yaml.safe_load(f)
+        data = yaml_load.safe_load(f)
     if not isinstance(data, dict) or not isinstance(data.get("labels"), dict):
         raise ValueError("labels manifest must be a mapping with a 'labels' mapping")
     if data.get("schema_version") != SCHEMA_VERSION:

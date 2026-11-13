@@ -11,6 +11,7 @@ import importlib
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from pathlib import Path
 
 from detail.core.dataclasses import (
     register_job_type,
@@ -21,10 +22,28 @@ from detail.core.utils import utc_timestamp
 RUNNER_MODULES_ENV = "DETAIL_RUNNER_MODULES"
 
 
+def _no_inputs(experiment_root, job) -> list[Path]:
+    return []
+
+
+def _nothing_after_copy_back(experiment_root, job, run_dir) -> None:
+    return None
+
+
+def _target_resources(job) -> dict:
+    return {}
+
+
 @dataclass(frozen=True)
 class RunnerSpec:
     run: Callable  # (job, run_dir, progress_cb, stop_event) -> None
     run_dir_for: Callable  # (experiment_root, job) -> Path
+    # A remote run's two seams (§6 "Remote analysis"), read by the shepherd only. Run
+    # directories the job reads that the cluster's copy must be refreshed from this machine,
+    # and what this machine does with the run's results once they are copied back.
+    refreshed_inputs: Callable = _no_inputs  # (experiment_root, job) -> list[Path]
+    after_copy_back: Callable = _nothing_after_copy_back  # (root, job, run_dir) -> None
+    remote_resources: Callable = _target_resources  # (job) -> {"gpus": n} or {}
 
 
 JOB_RUNNERS: dict[str, RunnerSpec] = {}
@@ -137,6 +156,20 @@ class ProcessingModule(ABC):
     def output_path(self, run_id: str) -> str:
         """Recording-relative output directory recorded in recording.yaml."""
 
+    @abstractmethod
+    def estimate_output_bytes(
+        self, recording_dir, recording_data: dict, config: dict
+    ) -> int:
+        """Bytes this stage will write into one recording, from its **validated** config.
+
+        Checked against the free space where the experiment is before a run launches
+        (``Experiment.run_processing``, #743), local or remote alike: a remote run's output
+        is copied back into the experiment. Abstract on purpose: a stage that writes nothing
+        says ``0`` out loud, and a new stage cannot ship without saying anything. Derive it
+        from the stage's own schema (rows × bytes per row) where it has one; a measured
+        figure is cited where the size depends on the data.
+        """
+
     def resolve_shared_config(
         self,
         experiment_dir,
@@ -169,6 +202,13 @@ class ProcessingModule(ABC):
         GPU stages stay 1 because they already parallelize across devices within a
         single job, so concurrent recordings would only oversubscribe the GPU."""
         return 1
+
+    def remote_resources(self, job) -> dict:
+        """What a remote job of this stage needs of a node beside the target's own sizing:
+        ``{"gpus": 1}`` for CPU work on a cluster that refuses a job with none (Tillicum), so
+        a target sized for a multi-GPU model does not hold idle GPUs. Empty: the target's
+        ``gpus_per_job``. The analysis hook of the same name (§6 "Remote analysis")."""
+        return {}
 
     def extra_record_fields(self, config: dict) -> dict:
         """Module-specific keys merged into the recording.yaml run record."""
@@ -214,6 +254,38 @@ class ProcessingModule(ABC):
         from detail.api import run_spec
 
         return run_spec.resolve_into_config(self, recording_dir, recording_data, config)
+
+    def check_upstream_intact(
+        self, recording_dir, recording_data: dict, config: dict
+    ) -> None:
+        """Raise ``DamagedFileError`` if a run this one reads has lost its zarr metadata.
+
+        **Asked at launch, next to ``validate``, because ``validate`` cannot see it:** it reads
+        ``recording.yaml``, where a run whose chunks and ``zarr.json`` the OS lost after a
+        shutdown still says ``complete``. Without this the launch is accepted, every other
+        recording runs, and this one fails in a worker a second later with a decoder error.
+        Walks the whole lineage (embedding -> tracking -> detection), since a worker reads the
+        ancestors too. Metadata only (`zarr_store.check_intact`), so it is cheap for a launch
+        over many recordings.
+        """
+        from detail.storage import zarr_store
+
+        ref = self.lineage_ref
+        run_id = config.get(ref[1]) if ref is not None else None
+        while ref is not None and run_id:
+            upstream = PROCESSING_MODULES[ref[0]]
+            entry = next(
+                (
+                    r
+                    for r in recording_data.get(upstream.runs_key, [])
+                    if r.get("id") == run_id
+                ),
+                None,
+            )
+            output = (entry or {}).get("output") or upstream.output_path(run_id)
+            zarr_store.check_intact(Path(recording_dir) / output)
+            ref = upstream.lineage_ref
+            run_id = (entry or {}).get(ref[1]) if ref is not None else None
 
 
 @dataclass
@@ -285,7 +357,9 @@ def register_processing_module(cls: type) -> type:
     _check_id_free(instance.module_id)
     PROCESSING_MODULES[instance.module_id] = instance
     JOB_RUNNERS[instance.module_id] = RunnerSpec(
-        run=instance.runner, run_dir_for=instance.run_dir_for
+        run=instance.runner,
+        run_dir_for=instance.run_dir_for,
+        remote_resources=instance.remote_resources,
     )
     register_job_type(instance.module_id, instance.job_class)
     if instance.progress_event_class is not None:
@@ -383,6 +457,35 @@ class AnalysisModule(ABC):
     # decides "does this run have something to show" by listing status strings goes stale the
     # day a module adds a lifecycle, and nothing fails when it does.
     mutable: bool = False
+    # Whether ``run_analysis`` may send this module's job to a remote target (§6 "Remote
+    # analysis"). A module that says so carries ``compute`` from its config into its job, keeps
+    # every write inside its own run directory, and names what else it needs through the two
+    # hooks below. Every other module is refused a remote ``compute`` before it validates: its
+    # ``validate()`` would drop the key and the run would go to this machine without a word.
+    remote_capable: bool = False
+
+    def refreshed_inputs(self, experiment_root, job) -> list[Path]:
+        """Run directories ``job`` reads that the cluster's copy must take from this machine.
+
+        The upload never overwrites a run directory the cluster already holds (another job's
+        worker may be writing it), so a run this job *reads* would stay as it was the first
+        time it went up: a node cache rebuilt here, or results placed here since, would never
+        arrive. Each directory named is re-sent over the cluster's copy (its ``job.json``
+        aside). Only a remote-capable module is asked.
+        """
+        return []
+
+    def after_copy_back(self, experiment_root, job, run_dir) -> None:
+        """Called on this machine once a remote run's directory has been copied back, before
+        its final status is written — for a job whose results also belong somewhere outside
+        its run directory. Must be idempotent: a re-run calls it again."""
+
+    def remote_resources(self, job) -> dict:
+        """What this job needs of a node beside the target's own sizing: ``{"gpus": n}`` for
+        a job whose model is split across ``n`` GPUs, or ``{"gpus": 1}`` for CPU work on a
+        cluster that refuses a job with none (Tillicum). Empty: the target's ``gpus_per_job``.
+        """
+        return {}
 
     @abstractmethod
     def validate(self, experiment_dir, config: dict) -> dict:
@@ -442,7 +545,11 @@ def register_analysis_module(cls: type) -> type:
     _check_id_free(instance.module_id)
     ANALYSIS_MODULES[instance.module_id] = instance
     JOB_RUNNERS[instance.module_id] = RunnerSpec(
-        run=instance.runner, run_dir_for=instance.run_dir_for
+        run=instance.runner,
+        run_dir_for=instance.run_dir_for,
+        refreshed_inputs=instance.refreshed_inputs,
+        after_copy_back=instance.after_copy_back,
+        remote_resources=instance.remote_resources,
     )
     register_job_type(instance.module_id, instance.job_class)
     if instance.progress_event_class is not None:

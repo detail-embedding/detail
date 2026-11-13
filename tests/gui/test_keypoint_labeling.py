@@ -209,6 +209,181 @@ def test_add_frames_samples_with_the_chosen_strategy(qapp, proj):
     assert dialog._add_frames.isEnabled()
 
 
+def test_the_strategy_picker_offers_every_strategy_in_the_table(qapp, proj):
+    from detail.pipeline import subject_frames
+
+    dialog = _open(qapp, proj, proj.create_example_set("rats", SK).id)
+    offered = tuple(
+        dialog._strategy.itemData(i) for i in range(dialog._strategy.count())
+    )
+    assert offered == subject_frames.STRATEGIES
+
+
+def _offers_heading(dialog) -> bool:
+    strategies = {dialog._strategy.itemData(i) for i in range(dialog._strategy.count())}
+    shown = not dialog._heading_box.isHidden()
+    assert shown == ("heading" in strategies), "the compass and By heading disagree"
+    assert shown == dialog._compass.isVisible() == dialog._floor.isVisible()
+    assert dialog._heading_note.isVisible() != shown
+    return shown
+
+
+def test_a_top_down_experiment_drops_the_compass_and_by_heading(qapp, proj):
+    """From above the animal never faces toward or away from the camera (§26 *Headings*):
+    the compass, the floor and By heading go, and one line says why."""
+    proj.set_camera_view("top_down")
+    dialog = _open(qapp, proj, proj.create_example_set("rats", SK).id)
+
+    assert not _offers_heading(dialog)
+    assert "Top-down camera" in dialog._heading_note.text()
+    assert dialog._strategy.currentData() == "varied"
+    dialog._strategy.setCurrentIndex(dialog._strategy.findData("spread"))
+    assert not dialog._n_recordings.isEnabled()  # the strategy controls still follow
+
+
+@pytest.mark.parametrize("view", [None, "side", "angled_down"])
+def test_any_other_view_or_none_keeps_the_compass(qapp, proj, view):
+    """Not set is unknown, not top down (§10), so it keeps the sampler."""
+    if view is not None:
+        proj.set_camera_view(view)
+    dialog = _open(qapp, proj, proj.create_example_set("rats", SK).id)
+    assert _offers_heading(dialog)
+
+
+def test_a_recording_own_view_overrides_a_top_down_default(qapp, proj):
+    proj.set_camera_view("top_down")
+    proj.get_recording("recording_001").set_camera_view("side")
+    dialog = _open(qapp, proj, proj.create_example_set("rats", SK).id)
+    assert _offers_heading(dialog)
+
+
+def test_spread_over_time_greys_out_the_recordings_controls(qapp, proj):
+    proj.set_recording_metadata("recording_001", {"setup": "1"})
+    dialog = _open(qapp, proj, proj.create_example_set("rats", SK).id)
+    assert [
+        dialog._spread_by.itemData(i) for i in range(dialog._spread_by.count())
+    ] == [
+        None,
+        "acquisition_setup",
+        "setup",
+    ]
+
+    dialog._strategy.setCurrentIndex(dialog._strategy.findData("spread"))
+    assert not dialog._n_recordings.isEnabled()
+    assert not dialog._spread_by.isEnabled()
+    assert "reads every recording" in dialog._n_recordings.toolTip()
+
+    dialog._strategy.setCurrentIndex(dialog._strategy.findData("varied"))
+    assert dialog._n_recordings.isEnabled() and dialog._spread_by.isEnabled()
+
+
+def test_every_experiment_offers_its_acquisition_setup_to_spread_across(qapp, proj):
+    """Every experiment has the canonical acquisition_setup column (storage/metadata.py), so a
+    sample can always be spread across setups, even before anyone fills the column in.
+    """
+    dialog = _open(qapp, proj, proj.create_example_set("rats", SK).id)
+    dialog._strategy.setCurrentIndex(dialog._strategy.findData("varied"))
+    assert dialog._n_recordings.isEnabled() and dialog._spread_by.isEnabled()
+    assert dialog._spread_by.findData("acquisition_setup") >= 0
+
+
+def test_add_frames_passes_the_recordings_count_and_column(qapp, proj, monkeypatch):
+    proj.set_recording_metadata("recording_001", {"setup": "1"})
+    created = proj.create_example_set("rats", SK)
+    dialog = _open(qapp, proj, created.id)
+    assert dialog._n_recordings.maximum() == 1  # the fixture tracks one recording
+    dialog._strategy.setCurrentIndex(dialog._strategy.findData("varied"))
+    dialog._spread_by.setCurrentIndex(dialog._spread_by.findData("setup"))
+    seen = {}
+
+    def capture(set_id, sources, n, **options):
+        seen.update(options)
+        return proj.example_set(set_id)
+
+    monkeypatch.setattr(proj, "sample_example_frames", capture)
+    dialog._add_frames.click()
+    drain_busy_calls(qapp)
+    assert seen["strategy"] == "varied"
+    assert seen["from_recordings"] == 1 and seen["spread_by"] == "setup"
+
+
+def test_add_frames_samples_the_tracking_chosen_when_a_recording_has_several(
+    qapp, proj, monkeypatch
+):
+    """A recording with several tracking runs (each animal's track and their merge) was
+    folded into one ``{recording: run}`` map, so the last run listed always won and an
+    Intruder set sampled the merged run. *From tracking* appears then, chooses nothing for
+    the person, and the chosen kind of run is what Add frames hands the sampler."""
+    from detail.storage import recording as recording_store
+
+    created = proj.create_example_set("rats", SK)
+    dialog = _open(qapp, proj, created.id)
+    assert dialog._sample_tracking_row.isHidden()  # one tracking run: nothing to ask
+    (only,) = dialog._offered
+    assert dialog.sample_sources() == {only["recording_id"]: only["run_id"]}
+    dialog.close()
+
+    rec = proj.get_recording(only["recording_id"])
+    data = recording_store.read_recording(rec.dir)
+    first = next(e for e in data["tracking_runs"] if e["id"] == only["run_id"])
+    data["tracking_runs"].append(
+        {**first, "id": "track_09", "tracker_id": "track_merge", "class_name": "a+b"}
+    )
+    recording_store.write_recording(rec.dir, data)
+    dialog = _open(qapp, proj, created.id)
+    assert not dialog._sample_tracking_row.isHidden()
+    assert dialog._sample_tracking.currentData() is None
+    assert dialog.sample_sources() == {}
+    assert not dialog._add_frames.isEnabled()
+    assert "From tracking" in dialog._add_frames.toolTip()
+
+    index = dialog._sample_tracking.findData("a+b · track_merge")
+    assert index > 0, [
+        dialog._sample_tracking.itemText(i)
+        for i in range(dialog._sample_tracking.count())
+    ]
+    dialog._sample_tracking.setCurrentIndex(index)
+    assert dialog._add_frames.isEnabled()
+    seen = {}
+
+    def capture(set_id, sources, n, **options):
+        seen["sources"] = dict(sources)
+        return proj.example_set(set_id)
+
+    monkeypatch.setattr(proj, "sample_example_frames", capture)
+    dialog._add_frames.click()
+    drain_busy_calls(qapp)
+    assert seen["sources"] == {only["recording_id"]: "track_09"}
+
+
+def test_from_tracking_names_each_class_as_the_experiment_does(qapp, proj):
+    """*From tracking* labels runs by class: the experiment's name for each, not the stored
+    one (§1 *Class names*), and a merged run's classes each by theirs."""
+    from detail.storage import experiment as experiment_store
+    from detail.storage import recording as recording_store
+
+    created = proj.create_example_set("rats", SK)
+    dialog = _open(qapp, proj, created.id)
+    (only,) = dialog._offered
+    dialog.close()
+    rec = proj.get_recording(only["recording_id"])
+    data = recording_store.read_recording(rec.dir)
+    first = next(e for e in data["tracking_runs"] if e["id"] == only["run_id"])
+    data["tracking_runs"].append(
+        {**first, "id": "track_09", "tracker_id": "track_merge", "class_name": "a+b"}
+    )
+    recording_store.write_recording(rec.dir, data)
+    experiment_store.write_class_names(proj.dir, {"a": "Resident"})
+
+    dialog = _open(qapp, proj, created.id)
+    texts = [
+        dialog._sample_tracking.itemText(i)
+        for i in range(dialog._sample_tracking.count())
+    ]
+    assert any(t.startswith("Resident+b · track_merge") for t in texts), texts
+    assert not any("a+b" in t for t in texts), texts
+
+
 def test_removing_a_marked_frame_asks_first(qapp, proj, monkeypatch):
     created = proj.create_example_set("rats", SK)
     proj.add_example_frame(created.id, "recording_001", "track_01", "part_001", 2, 0)

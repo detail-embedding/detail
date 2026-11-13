@@ -14,8 +14,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from detail.api import clip_views
-from detail.api.clip_views import ClipViewSettings
+from detail.api import clip_pane_export, clip_views
+from detail.api.clip_pane_export import ClipViewSettings
 from detail.api.run_preview import ClipQueryPreview
 from detail.core.visualize import MASK_TINT
 from tests.clip_fixtures import H, W, two_animals, with_heading, with_keypoints
@@ -24,12 +24,18 @@ from tests.clip_fixtures import H, W, two_animals, with_heading, with_keypoints
 def _views(recording, frame=0, **kwargs):
     settings = ClipViewSettings(masks_on_frame=False, points_on_frame=False, **kwargs)
     return ClipQueryPreview(recording.dir.parent.parent).clip_views(
-        recording.id, "emb_01", 0, frame, settings
+        recording.id, "emb_01", 0, frame, **settings.views_kwargs()
     )
 
 
 def _tinted(picture) -> np.ndarray:
     return np.abs(picture.astype(int) - np.array(MASK_TINT)).sum(axis=2) < 30
+
+
+def _subject(masks) -> np.ndarray:
+    """The subject on the clip window's masks pane: its tint, under the arena's marks drawn
+    over it (``run_preview._draw_arena``), which shift a pixel's colour a little."""
+    return np.abs(masks.astype(int) - np.array(MASK_TINT)).sum(axis=2) < 80
 
 
 # --- the turn itself ------------------------------------------------------------------- #
@@ -68,12 +74,12 @@ def test_aligned_turns_the_footage_the_masks_and_the_pose_together(tmp_path):
     turned = _views(recording, aligned=True)
     # The subject faced up-left (nose 12,12 over tail 18,18): its 10-pixel mask, centred on
     # (15, 15), is turned 45° about that point and put at the picture's centre.
-    assert _tinted(plain.masks)[15, 15] and not _tinted(plain.masks)[24, 32]
-    assert _tinted(turned.masks)[24, 32], "the subject's middle at the centre"
-    assert not _tinted(turned.masks)[12, 12], "nothing left where it was"
+    assert _subject(plain.masks)[15, 15] and not _subject(plain.masks)[24, 32]
+    assert _subject(turned.masks)[24, 32], "the subject's middle at the centre"
+    assert not _subject(turned.masks)[12, 12], "nothing left where it was"
 
     def height(picture):
-        rows = np.argwhere(_tinted(picture))[:, 0]
+        rows = np.argwhere(_subject(picture))[:, 0]
         return rows.max() - rows.min()
 
     # A square turned by 45° is a diamond: taller than the square it was (its diagonal).
@@ -140,7 +146,7 @@ def test_this_frame_as_png_is_what_the_window_shows(tmp_path):
 
     recording = with_heading(with_keypoints(two_animals(tmp_path)))
     settings = ClipViewSettings(masks_on_frame=True, aligned=True)
-    path = clip_views.write_clip_frame(
+    path = clip_pane_export.write_clip_frame(
         recording.dir.parent.parent,
         recording_id=recording.id,
         embed_run_id="emb_01",
@@ -153,7 +159,7 @@ def test_this_frame_as_png_is_what_the_window_shows(tmp_path):
     assert path.suffix == ".png"
     written = np.asarray(Image.open(path).convert("RGB"))
     views = ClipQueryPreview(recording.dir.parent.parent).clip_views(
-        recording.id, "emb_01", 0, 0, settings
+        recording.id, "emb_01", 0, 0, **settings.views_kwargs()
     )
     assert np.array_equal(written, clip_views.view_picture(views, panes=True))
 
@@ -162,7 +168,7 @@ def test_a_view_export_writes_every_frame_of_the_span(tmp_path):
     import cv2
 
     recording = with_heading(with_keypoints(two_animals(tmp_path)))
-    out = clip_views.export_clip_view(
+    out = clip_pane_export.export_clip_view(
         recording.dir.parent.parent,
         recording_id=recording.id,
         embed_run_id="emb_01",
@@ -295,9 +301,15 @@ def _montage(recording):
     return montage
 
 
-def test_an_aligned_export_tile_is_turned_and_a_frame_without_an_axis_is_marked(
+def test_an_aligned_export_tile_is_turned_and_a_frame_without_a_heading_says_so(
     tmp_path,
 ):
+    """The export engine turns a tile by the embedding's heading about the animal's box
+    (``tests/api/test_montage_align.py`` pins the turn); a frame the heading does not cover is
+    the grey no-picture tile naming why, not the frame as recorded. The animal is placed by
+    its extent: the masks pane's line to the other animal crosses it, so its mean is not its
+    middle."""
+    from detail.api import clip_montage as cm
     from detail.api.clip_montage import MontageLayers
 
     recording = with_heading(with_keypoints(two_animals(tmp_path)))
@@ -306,10 +318,11 @@ def test_an_aligned_export_tile_is_turned_and_a_frame_without_an_axis_is_marked(
         plain = montage.tile(0, 0, MontageLayers(mask=True), 48)
         turned = montage.tile(0, 0, MontageLayers(mask=True, aligned=True), 48)
         assert not np.array_equal(plain, turned)
-        row, col, _tall, _wide = _tile_shape(turned)
-        assert row == pytest.approx(24, abs=1.5) and col == pytest.approx(24, abs=1.5)
+        rows, cols = np.nonzero(_tinted(turned))
+        assert (rows.min() + rows.max()) / 2 == pytest.approx(24, abs=1.5)
+        assert (cols.min() + cols.max()) / 2 == pytest.approx(24, abs=1.5)
         marked = montage.tile(0, 2, MontageLayers(mask=True, aligned=True), 48)
-        assert (marked[1, 1] == 40).all()
+        assert (marked[1, 1] == cm._NO_PICTURE).all()
         raw = montage.tile(0, 0, MontageLayers(raw=True, mask=True, aligned=True), 48)
         assert _tinted(raw).any(), "the outline is placed by the same turn"
     finally:

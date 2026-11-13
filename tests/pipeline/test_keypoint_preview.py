@@ -114,6 +114,41 @@ def test_a_test_needs_a_frame(taught):
         preview.run_teacher_test(it.experiment.dir, DETECT, n_frames=0)
 
 
+@pytest.mark.parametrize(
+    "backend, reaches",
+    [("remote", None), ("cpu", "cpu"), (None, None)],
+)
+def test_a_teacher_test_never_loads_a_model_on_a_cluster(
+    taught, monkeypatch, backend, reaches
+):
+    """A preview runs here. The forms that open it can target a cluster and hand over the
+    *run's* target, where `remote` names where the distill is submitted and is not a device
+    (`tests/api/test_preview_compute.py`: the prompt test hit this first). What reaches the
+    dataset job, and so the model's device, is the local target or nothing."""
+    from detail.core.dataclasses import ComputeTarget
+
+    it, _recording = taught
+    seen = []
+
+    class Reached(Exception):
+        pass
+
+    def stop_at_the_job(root, job, report):
+        seen.append(job.compute)
+        raise Reached
+
+    monkeypatch.setattr(preview.kds, "_gather", stop_at_the_job)
+    target = (
+        None
+        if backend is None
+        else ComputeTarget(backend, None, None, None, "tillicum")
+    )
+    with pytest.raises(Reached):
+        preview.run_teacher_test(it.experiment.dir, DETECT, compute=target, n_frames=3)
+
+    assert (seen[0].backend if seen[0] else None) == reaches
+
+
 def test_the_cli_tests_a_teacher_and_writes_nothing(taught):
     from click.testing import CliRunner
 

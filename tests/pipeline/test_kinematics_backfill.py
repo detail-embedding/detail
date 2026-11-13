@@ -153,3 +153,33 @@ def test_a_fragmented_frame_reports_the_union_not_the_representative(tmp_path):
     rebuilt = _read_all(kinematics_part_path(part))
     for name in inline:
         np.testing.assert_array_equal(rebuilt[name], inline[name], err_msg=name)
+
+
+def test_a_sidecar_without_the_outline_is_stale_and_rewritten_with_it(tmp_path):
+    """A run made before the outline columns existed: complete for where, silent on shape.
+    The backfill brings it up to date instead of calling it already done."""
+    import shutil
+
+    from detail.storage.zarr_io import (
+        _KINEMATICS_COLUMNS,
+        KINEMATICS_SHAPE_COLUMNS,
+        PartZarrWriter,
+    )
+
+    recording_dir = _setup(tmp_path, object_ids=[0, 0, -1, 0])
+    run_dir = _run_embedding(recording_dir)
+    part = run_dir / "track_0" / "part_001.zarr"
+    current = _read_all(kinematics_part_path(part))
+    shutil.rmtree(kinematics_part_path(part))
+    old_columns = _KINEMATICS_COLUMNS[: -len(KINEMATICS_SHAPE_COLUMNS)]
+    with PartZarrWriter(kinematics_part_path(part), old_columns) as old:
+        for i in range(len(current["frame_idx"])):
+            old._add_row({name: current[name][i] for name, *_ in old_columns})
+
+    assert not kinematics_backfill.is_current(part)
+    assert kinematics_backfill.missing_parts(recording_dir, "emb_01") == [part]
+    assert kinematics_backfill.backfill_run(recording_dir, "emb_01") == 1
+    assert kinematics_backfill.is_current(part)
+    rebuilt = _read_all(kinematics_part_path(part))
+    for name in KINEMATICS_SHAPE_COLUMNS:
+        np.testing.assert_array_equal(rebuilt[name], current[name], err_msg=name)

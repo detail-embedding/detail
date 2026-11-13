@@ -57,11 +57,13 @@ from detail.analysis.measures import MEASURES
 from detail.configs.comparison import ComparisonConfig
 from detail.configs.windows import WindowSpec
 from detail.core import atomic
+from detail.core import yaml_load
 from detail.gui import sizing
 from detail.gui import status_color
 from detail.gui.dialog import Dialog
 from detail.gui.lifetime import discard
 from detail.gui.notes import NotesBox
+from detail.gui import open_external
 from detail.gui.status_color import WARN, set_label_color
 from detail.gui._pydantic_form import choice_combo, field_meta, field_widget
 from detail.gui.forms import ConfigForm
@@ -76,9 +78,9 @@ from detail.gui.pages import (
     _heading,
     _index_caption,
     _instructions,
-    _open_local_path,
     fit_list_height,
 )
+from detail.gui.recording_filter import with_filter
 from detail.gui.recording_items import (
     fill_recording_list,
     select_recording_ids,
@@ -227,8 +229,6 @@ class ComparisonLaunchDialog(Dialog):
     with the inferred animal column pre-selected, named where the user can see it and change it.
     """
 
-    fits_content = True  # a settings form: show it all (Dialog.fits_content)
-
     def __init__(self, experiment, parent=None, seed: dict | None = None):
         super().__init__(parent)
         self.setWindowTitle("New comparison")
@@ -304,7 +304,7 @@ class ComparisonLaunchDialog(Dialog):
             label_with(
                 "Recordings (all if none):", help_button("comparison-recordings")
             ),
-            self._recordings,
+            with_filter(self._recordings, experiment, select_buttons=True),
             advanced=True,
         )
 
@@ -500,7 +500,7 @@ class ComparisonLaunchDialog(Dialog):
         if not path.is_file():
             return None
         try:
-            return yaml.safe_load(atomic.read_text(path)) or {}
+            return yaml_load.safe_load(atomic.read_text(path)) or {}
         except (OSError, yaml.YAMLError):
             return None
 
@@ -1058,7 +1058,7 @@ class _FigureThumb(QLabel):
         self.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
 
     def mouseDoubleClickEvent(self, _event) -> None:
-        _open_local_path(self, self._path, what="file")
+        open_external.open_local_path(self, self._path, what="file")
 
 
 def _dark_figures_box() -> QCheckBox:

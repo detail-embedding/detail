@@ -116,12 +116,13 @@ def test_metadata_page_reports_only_genuine_changes(qapp, tmp_path):
     page._enter_edit()
     assert page.unsaved_summary() is None  # editing, nothing typed
 
-    page._table.item(0, 2).setText("0.5")  # col 2: recording_id, file, then dose
+    dose = page._cols.index("dose") + page._USER_COL_START
+    page._table.item(0, dose).setText("0.5")
     assert "1 changed cell" in page.unsaved_summary()
-    page._table.item(0, 2).setText("")  # back to what the store holds
+    page._table.item(0, dose).setText("")  # back to what the store holds
     assert page.unsaved_summary() is None
 
-    page._table.item(0, 2).setText("0.5")
+    page._table.item(0, dose).setText("0.5")
     page.save_edits()
     assert experiment.recording_metadata["recording_000"]["dose"] == "0.5"
     assert page.unsaved_summary() is None
@@ -133,7 +134,7 @@ def test_metadata_page_discard_restores_the_stored_values(qapp, tmp_path):
     experiment.add_metadata_column("dose")
     page = gui_pages.MetadataPage(experiment)
     page._enter_edit()
-    page._table.item(0, 2).setText("999")
+    page._table.item(0, page._cols.index("dose") + page._USER_COL_START).setText("999")
     page.discard_edits()
     assert page.unsaved_summary() is None
     assert experiment.recording_metadata["recording_000"].get("dose", "") == ""

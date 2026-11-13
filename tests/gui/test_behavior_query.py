@@ -1,6 +1,10 @@
 """Shared clip surfaces (detail/gui/behavior_query.py): the example-clip picker and the
 clip player most clip views embed. Built against a real recording (video + detection +
 tracking + embedding).
+
+The scan form re-picks the seed's embed run while the recordings offer it
+(``prefer_selection``, outranked by a pick by hand), so the clips a scan restores come back with
+the run they were marked on.
 """
 
 import json
@@ -129,6 +133,41 @@ def _embed_video_experiment(tmp_path):
     return proj
 
 
+def _add_second_embedding_run(proj, embed_run_id="emb_02"):
+    """A second embedding run on ``recording_001``, over the same ``track_01`` tracking run
+    ``_embed_video_experiment`` already built."""
+    sess = proj.recordings[0]
+    sdir = sess.dir
+    emb_dir = sdir / "embeddings" / embed_run_id
+    rng = np.random.default_rng(1)
+    with EmbeddingPartWriter(emb_dir / "track_0" / "part_001.zarr", output_dim=8) as w:
+        for di, f in enumerate(_FRAMES):
+            w.add_row(f, f * 1000, di, rng.standard_normal(8).astype(np.float32))
+    (emb_dir / "embedding.yaml").write_text(
+        yaml.dump(
+            {
+                "schema_version": 1,
+                "id": embed_run_id,
+                "tracking_run_id": "track_01",
+                "model_id": "dinov3_convnext_base",
+                "model_variant": None,
+                "constructor": "full_frame",
+                "output_dim": 8,
+                "track_ids": [0],
+                "renderer_spec": [{"type": "init_binary_mask"}],
+                "status": "complete",
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    _append_run(
+        sdir,
+        "embedding_runs",
+        {"id": embed_run_id, "status": "complete", "tracking_run_id": "track_01"},
+    )
+
+
 def _wait_continuity(qapp, dialog, timeout_ms=3000):
     """Block until the dialog's off-thread continuity read lands (marking is greyed out
     until it does, so a test that marks straight away would race it)."""
@@ -251,6 +290,47 @@ def test_the_example_dialog_shows_time_from_the_player_not_its_own_label(
         if w.text().startswith(expected) and w not in dialog._scrubber.time_labels()
     ]
     assert not times, "a second time readout is still in the dialog"
+
+
+def _one_clip_of(track_id) -> list[dict]:
+    clip = {
+        "recording_id": "recording_001",
+        "track_id": track_id,
+        "start_t_ns": 0,
+        "end_t_ns": 4000,
+    }
+    return [{"name": "close contact", "examples": [clip], "negatives": []}]
+
+
+def test_start_from_a_scan_picks_the_scans_embed_run(qapp, tmp_path):
+    """The clips a scan restores are bound to its embed run, so the run comes back with them
+    whenever the recordings offer it — a pick by hand still wins.
+    """
+    from detail.gui.launch import LaunchAnalysisDialog
+
+    proj = _embed_video_experiment(tmp_path)
+    _add_second_embedding_run(proj)
+    seed = {
+        "id": "an_01",
+        "module_id": "query",
+        "recording_ids": ["recording_001"],
+        "params": {
+            "embed_run_id": "emb_02",
+            "track_id": 0,
+            "method": "soft_knn",
+            "behaviors": [{"id": "q01", **_one_clip_of(0)[0]}],
+        },
+    }
+    dialog = LaunchAnalysisDialog(proj, seed=seed)
+    dialog._select_all_recordings()
+    embed = dialog._config._embed
+    assert [embed.itemData(i) for i in range(embed.count())] == ["emb_01", "emb_02"]
+    assert embed.currentData() == "emb_02"
+
+    embed.setCurrentIndex(0)
+    embed.activated.emit(0)  # the user picks the other run by hand
+    dialog._select_all_recordings()
+    assert embed.currentData() == "emb_01", "a pick by hand is outranked"
 
 
 def test_edit_clips_frame_is_full_resolution_and_zooms(qapp, tmp_path):
@@ -1626,6 +1706,7 @@ def test_balance_across_offers_the_metadata_columns(qapp, tmp_path):
     proj.set_recording_metadata("recording_001", {"treatment": "saline"})
     dialog = _multi_dialog(qapp, proj)
     assert dialog._balance.findData("treatment") >= 0
+    assert dialog._balance.findData("acquisition_setup") == -1  # blank everywhere
     _mark_span(dialog, 0, 4)
     dialog._balance.setCurrentIndex(dialog._balance.findData("treatment"))
     assert "every treatment" in dialog._hint.text()
@@ -1677,16 +1758,24 @@ def test_the_setup_table_is_a_summary_with_one_way_in(qapp):
 
 
 def test_the_clip_list_fills_its_column(qapp, tmp_path):
-    """It shows every clip it has room for rather than three rows and a scrollbar."""
+    """It shows every clip rather than three rows and a scrollbar.
+
+    It used to fill its column to get there; in a pop-up every list now shows all of its rows
+    (`sizing.shows_every_row`), so the table hugs them and the window grows to hold it — which
+    answers the same complaint without blank grid under the last clip.
+    """
+    from detail.gui.sizing import hidden_extent
+
     proj = _embed_video_experiment(tmp_path)
     dialog = _multi_dialog(qapp, proj)
     _mark_span(dialog, 0, 4)
-    dialog.resize(1100, 740)
     dialog.show()
-    qapp.processEvents()
+    for _ in range(4):
+        qapp.processEvents()
     try:
-        row = dialog._clip_table.rowHeight(0)
-        assert dialog._clip_table.height() > 6 * row
+        table = dialog._clip_table
+        assert table.model().rowCount() >= 1
+        assert hidden_extent(table)[1] == 0, "a clip is scrolled out of the list"
     finally:
         dialog.close()
 

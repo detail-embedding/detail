@@ -202,6 +202,8 @@ class MeasurementsPanel(QWidget):
         self._values: dict = {}
         self._labels = np.asarray([], dtype=object)
         self._selected = None
+        #: The selected group as a person names it (a behavior's name, not its id).
+        self._selected_name: str | None = None
         self._ranked: list = []
         self._drawn_all = False
         self._open: str | None = (
@@ -322,7 +324,9 @@ class MeasurementsPanel(QWidget):
         self._ranked, self._run_ranked, self._withheld = [], [], None
         if not self._values or not len(self._labels):
             return
-        self._withheld = separation_withheld(self._labels, self._unit_noun)
+        self._withheld = separation_withheld(
+            [self._group_name(label) for label in self._labels], self._unit_noun
+        )
         if self._withheld is None:
             self._run_ranked = rank_run(self._values, self._labels)
         if self._selected is not None:
@@ -371,7 +375,7 @@ class MeasurementsPanel(QWidget):
 
     def _heading_text(self) -> str:
         count = len(next(iter(self._member_values.values()), []))
-        name = "" if self._selected is None else f" {self._selected}"
+        name = "" if self._selected is None else f" {self._selected_name}"
         if self._open is not None:
             return (
                 f"{DESCRIPTORS[self._open].label} · {self._unit_noun}{name} · "
@@ -643,7 +647,7 @@ class MeasurementsPanel(QWidget):
         player.set_clip(
             ClipSpec(
                 recording_id=instance.recording_id,
-                track_id=int(instance.subject or 0),
+                track_id=instance.subject if instance.subject is not None else 0,
                 embed_run_id=self._embed_run_ids.get(instance.recording_id, ""),
                 start_t_ns=int(instance.t_ns),
                 end_t_ns=int(instance.end_t_ns),
@@ -677,9 +681,16 @@ class MeasurementsPanel(QWidget):
         return self._player
 
     # -- measuring: on a button, off the UI thread, checked before every draw ------------- #
-    def select(self, run, source_label) -> None:
+    def _group_name(self, group):
+        """``group`` as a person names it: the selected one by the name its caller gave."""
+        if group is not None and str(group) == self._selected:
+            return self._selected_name
+        return group
+
+    def select(self, run, source_label, name: str | None = None) -> None:
         """Draw the members carrying ``source_label``, if the run is measured and still states
-        what was measured.
+        what was measured. ``name`` is how the band names that group — a behavior's name, where
+        ``source_label`` is its id — and defaults to the id.
 
         The **id**, not a predicate that selects on it. The ranking needs to know which group is
         open, so a caller passing a closure would have to pass the id as well — two ways of
@@ -692,6 +703,8 @@ class MeasurementsPanel(QWidget):
         """
         self._run = run
         self._selected = None if source_label is None else str(source_label)
+        # The id is the key — it survives a rename — and never the label: "Behavior q01".
+        self._selected_name = self._selected if name is None else str(name)
         self._generation += 1
         if self._measuring:
             return  # the measure in flight checks and draws the selection when it lands
@@ -722,7 +735,7 @@ class MeasurementsPanel(QWidget):
         cutoff leaves the same behavior selected — and the band would go on showing the old cut.
         """
         if self._run is not None:
-            self.select(self._run, self._selected)
+            self.select(self._run, self._selected, self._selected_name)
 
     def measure_now(self) -> None:
         """Measure the run, with a bar. The button's slot, and the only place measuring starts."""
@@ -756,7 +769,7 @@ class MeasurementsPanel(QWidget):
         self.posture_source = ", ".join(sorted(measured.posture_runs)) or None
         # Through the check rather than straight to a draw, so an edit made while the bar ran
         # shows as one instead of being drawn under the new ids.
-        self.select(self._run, self._selected)
+        self.select(self._run, self._selected, self._selected_name)
 
     def _on_measure_failed(self, exc: BaseException) -> None:
         self._measuring = False
@@ -796,7 +809,7 @@ class MeasurementsPanel(QWidget):
         self._clear_rows()
         self._show_table([])
         self._run_line.setText("")
-        name = "" if self._selected is None else f" {self._selected}"
+        name = "" if self._selected is None else f" {self._selected_name}"
         self._heading.setText(f"{self._unit_noun.capitalize()}{name}")
         self._caption.setText("")
         self._legend.setText("")
@@ -838,7 +851,7 @@ def artifact_spans(artifact) -> tuple:
     return tuple(
         (
             i.recording_id,
-            int(i.subject or 0),
+            i.subject if i.subject is not None else 0,
             int(i.t_ns),
             int(i.end_t_ns),
             str(i.source_label),
@@ -934,9 +947,8 @@ def measure_run(run, experiment, *, baseline: str, progress=None) -> Measured:
     spans_read = artifact_spans(artifact)
     by_unit: dict = {}
     for instance in artifact.instances:
-        by_unit.setdefault(
-            (instance.recording_id, int(instance.subject or 0)), []
-        ).append(instance)
+        subject = instance.subject if instance.subject is not None else 0
+        by_unit.setdefault((instance.recording_id, subject), []).append(instance)
 
     lengths = _span_lengths_ns(artifact.instances)
     # Each recording's own run: a run's recordings share embedding settings, not an id.
@@ -1107,23 +1119,19 @@ def _load_slice(experiment, key, embed_run_id, pose_runs):
     run when no candidate labels this unit. Unreadable is ordinary — a tracking run deleted after
     the fit — and a reason to show fewer numbers rather than to fail opening the tab.
     """
-    from detail.api.frame_slices import from_tracking, postures_from
+    from detail.api.frame_slices import postures_from, track_slice
 
     recording_id, subject = key
     try:
         recording = experiment.get_recording(recording_id)
-        tracking_run_id = None
-        for entry in recording.embedding_runs:
-            if entry.get("id") == embed_run_id:
-                tracking_run_id = entry.get("tracking_run_id")
-        if tracking_run_id is None:
-            return None, None
-        slice_ = from_tracking(
-            recording.dir,
-            tracking_run_id=tracking_run_id,
-            track_id=subject,
-            embed_run_id=embed_run_id,
+        record = next(
+            (e for e in recording.embedding_runs if e.get("id") == embed_run_id), {}
         )
+        # The sidecar when the run wrote one (mask centroid and area), the boxes otherwise:
+        # the same rows the cluster profile and the clip window measure.
+        slice_ = track_slice(recording, {"id": embed_run_id, **record}, subject)
+        if slice_ is None:
+            return None, None
     except (FileNotFoundError, KeyError, ValueError, OSError):
         return None, None
 

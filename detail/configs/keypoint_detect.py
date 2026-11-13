@@ -28,6 +28,18 @@ class KeypointDetectConfig(BaseModel):
         ),
         json_schema_extra={"label": "Detection run"},
     )
+    class_name: str | None = Field(
+        None,
+        description=(
+            "Place poses only in the detections of this class, by the label the detection "
+            "run stored on them (e.g. mouse). Omit to place a pose in every detection, "
+            "which is right for a single-class detection run; when the detector also finds "
+            "something that is not an animal (the arena, say), name the animal's class so "
+            "no time is spent on the rest. Only for a method that works per detection: a "
+            "whole-frame method finds the animals itself and is handed no detections."
+        ),
+        json_schema_extra={"label": "Class"},
+    )
     model_id: str = Field(
         ...,
         description=(
@@ -53,6 +65,17 @@ class KeypointDetectConfig(BaseModel):
             "that does not."
         ),
         json_schema_extra={"label": "Example set"},
+    )
+    class_example_sets: dict[str, str] | None = Field(
+        None,
+        description=(
+            "One example set per detection class, as class: set (e.g. Resident: ex_02, "
+            "Intruder: ex_03), for animals told apart at detection that look different: "
+            "each class's detections are matched against its own set's clicks. Poses are "
+            "placed only in the classes named. Instead of Class and Example set; every set "
+            "must be on the same skeleton."
+        ),
+        json_schema_extra={"label": "Example set per class"},
     )
     min_pose_confidence: float | None = Field(
         None,

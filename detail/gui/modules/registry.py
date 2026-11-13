@@ -67,6 +67,25 @@ class ConfigWidget(QWidget):
         implements the cheap synchronous hook still updates."""
         self.on_recordings_changed(recordings)
 
+    def resolve_eligible_recordings(self, recordings: list) -> object:
+        """Optional hook: the heavy half of reacting to *every eligible recording for this
+        module* — not the checked subset ``resolve_recordings`` gets, and not re-run per
+        checkbox click, only when the module (and so the eligible set) changes. A spec-based
+        picker (§6.5, e.g. ``spec_groups``) overrides this pair instead of
+        ``resolve_recordings``/``apply_recordings``: its whole point is offering a spec that
+        covers only *some* recordings, so its options must not depend on which ones happen to
+        be checked yet — checking one recording at a time otherwise narrows the picker to
+        that one recording's own runs, and nothing ever widens it back out. A widget that
+        wants "the id common to what I'm about to run over" (pooling, clustering) still wants
+        the checked-only pair; override this one only for a spec/coverage picker. The launch
+        dialog runs it off the UI thread and hands the result to
+        ``apply_eligible_recordings``. Default does nothing."""
+        return None
+
+    def apply_eligible_recordings(self, recordings: list, resolved: object) -> None:
+        """Optional hook: apply a ``resolve_eligible_recordings`` payload, on the UI thread.
+        Default no-op — most widgets don't need the full eligible pool."""
+
     def covered_recording_ids(self) -> set[str] | None:
         """Optional hook: the subset of the last ``on_recordings_changed`` recordings the
         current config can actually run over — e.g. those that have the selected
@@ -74,9 +93,25 @@ class ConfigWidget(QWidget):
         any dropped recordings. ``None`` (default) means "all selected are covered"."""
         return None
 
+    def prefer_selection(self, selection: dict) -> None:
+        """Optional hook: a caller that knows *this* run's selection fields — the embedding
+        run of clips the user has just chosen — offers them, keyed by config field name. The
+        form picks each one it can offer for the recordings checked, now and as they change,
+        and leaves the rest to the user. Unlike :meth:`load_config`, which never restores a
+        selection field from an old run, this is the user's choice of a moment ago. Default:
+        nothing to prefer."""
+
     def on_experiment_set(self, experiment) -> None:
         """Optional hook: receive the launch dialog's ``Experiment`` so the form can
         offer experiment-scoped choices (e.g. trained models). Default no-op."""
+
+    def launch_question(self, experiment, config: dict):
+        """Optional hook: what to ask before ``config`` launches, when it costs more than a
+        person would guess. ``None`` (the default) launches straight away; else a function
+        of no arguments the launch dialog runs **off the UI thread** (it may read the node
+        cache) through ``busy.run_busy``, returning ``None`` (nothing to ask) or a
+        ``space_prompt.LaunchQuestion`` the dialog asks with ``ask_before_launch``."""
+        return None
 
     #: The pydantic model behind this form's rows, when it has one. Set it and the base
     #: ``load_config`` below restores every field the form built with ``build_fields``, so a
@@ -125,6 +160,11 @@ class ModuleUI(ABC):
     mutable: bool = (
         False  # an authored, in-place run (§16) — no "Refine into a new run"
     )
+    #: Whether the launch dialog asks for recordings. ``False`` for a module whose input is
+    #: another **run** its form names (profile clusters reads a clustering run, §22): its
+    #: recordings are that run's, so the dialog hides the picker rather than asking for a
+    #: selection the module would ignore.
+    selects_recordings: bool = True
 
     @property
     def label(self) -> str:
@@ -167,12 +207,22 @@ class ModuleUI(ABC):
         """
         return None
 
-    def preview_widget(self, recording, run_id: str) -> QWidget | None:
+    def preview_widget(
+        self, recording, run_id: str, *, experiment_dir, parent_run_id: str | None
+    ) -> QWidget | None:
         """One **recording's** results — the frames, tracks or embeddings it produced.
 
         The run-detail page lists the run's recordings and builds this for the selected one,
         replacing it when another row is picked; so it is built often, and its expensive reads
         belong off the UI thread (every one of these opens behind `busy.run_busy`).
+
+        ``experiment_dir`` and ``parent_run_id`` are the experiment and **its** run (``run_006``,
+        not this recording's ``det_01``): what a viewer needs to offer Export, since an export is
+        of the run. Required, with no default, because they decide whether the viewer can export
+        at all and a viewer built without them looks complete and simply has no button, which is
+        how Export went missing from the run-detail page. ``parent_run_id`` is ``None`` for a
+        run with no experiment-level record (launched per recording from the API or CLI): nothing
+        to export from, so the viewer says so by not offering it.
 
         ``None`` (the default) means the module has no per-recording view, and the page falls
         back to :meth:`result_widget`.
@@ -190,6 +240,12 @@ class ModuleUI(ABC):
         an interpretation* means something — which is every module that authors one.
         """
         return None
+
+    def run_tabs(self, experiment, run_record: dict) -> list[tuple[str, QWidget]]:
+        """``(title, widget)`` tabs a **finished** run's page shows beside its results — the
+        keypoint track run's *Audit* (§26), a tab as the behavior audit is (§19). Empty (the
+        default) leaves the page as it was: the results alone, with no tab bar."""
+        return []
 
 
 GUI_MODULES: dict[str, ModuleUI] = {}

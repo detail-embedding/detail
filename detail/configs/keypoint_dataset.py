@@ -9,6 +9,8 @@ are experiment-aware inputs of ``Experiment.keypoint_dataset`` and stay outside 
 cut-off is resolved from the teacher's method when left unset and written back (Tenet 9).
 """
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -64,4 +66,27 @@ class KeypointDatasetConfig(BaseModel):
             "one posture are not drawn together."
         ),
         json_schema_extra={"advanced": True, "label": "Candidate stride"},
+    )
+    # What the student is trained on, and so what it is run on (§12 *Distill keypoints*).
+    student_input: Literal["whole_frame", "crop"] = Field(
+        "whole_frame",
+        description=(
+            "What the student sees. whole_frame: the whole video frame, one label per "
+            "tracked animal, so one pass per frame serves every animal. crop: a square crop "
+            "around each tracked animal, the animal centred, every animal reaching into it "
+            "labelled; one pass per animal, for overlapping animals or a small animal in a "
+            "wide view. The student is run the way it was trained."
+        ),
+        json_schema_extra={"label": "Student input"},
+    )
+    student_crop_px: int = Field(
+        448,
+        ge=64,
+        le=1280,
+        description=(
+            "crop only: the side of the square crop, in pixels. The crop is the tracked box's "
+            "longer side plus a margin, resized to this, so every animal is the same size to "
+            "the student."
+        ),
+        json_schema_extra={"advanced": True, "label": "Crop size", "unit": "px"},
     )

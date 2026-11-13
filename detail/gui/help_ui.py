@@ -8,8 +8,8 @@ launch dialog, where a main-window dock would be unreachable.
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QPoint, Qt, QUrl
-from PyQt6.QtGui import QDesktopServices, QGuiApplication
+from PyQt6.QtCore import QPoint, Qt
+from PyQt6.QtGui import QGuiApplication
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
 
 from detail import docs_access
 from detail import help as help_mod
+from detail.gui import open_external
 from detail.gui.busy import run_progress
 
 _POPOVER_WIDTH = 380
@@ -37,7 +38,7 @@ def build_and_open_docs(parent: QWidget, topic: help_mod.HelpTopic) -> None:
     ``#anchor``; errors surface on ``parent``."""
 
     def open_now(_result: object = None) -> None:
-        QDesktopServices.openUrl(QUrl(docs_access.local_url(topic.page, topic.anchor)))
+        open_external.open_url(parent, docs_access.local_url(topic.page, topic.anchor))
 
     if not docs_access.needs_build():
         open_now()
@@ -104,7 +105,7 @@ class HelpPopover(QFrame):
 
     def _on_link(self, href: str) -> None:
         if href.startswith("http"):
-            QDesktopServices.openUrl(QUrl(href))
+            open_external.open_url(self._host, href)
 
 
 def _topic_button(topic: help_mod.HelpTopic) -> QToolButton:

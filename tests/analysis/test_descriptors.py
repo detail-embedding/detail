@@ -156,14 +156,15 @@ def test_every_descriptor_declares_what_it_reads(name):
     assert descriptor.label and descriptor.unit
     # `position` is derived — the mask centroid when there is one, the box centre otherwise —
     # so satisfying it means clearing *both* sources rather than one.
-    assert set(descriptor.needs) <= {
-        "embeddings",
-        "centroid",
-        "area",
-        "bbox",
-        "position",
-        "labels",
+    # Derived from the slice's optional fields rather than listed: the list was extended by
+    # hand for each new input, which is the list going stale the day one is forgotten.
+    import dataclasses
+
+    optional = {f.name for f in dataclasses.fields(FrameSlice) if f.default is None} - {
+        "camera_view",
+        "points_run",
     }
+    assert set(descriptor.needs) <= optional | {"position"}
     for need in descriptor.needs:
         cleared = (
             {"centroid": None, "bbox": None} if need == "position" else {need: None}

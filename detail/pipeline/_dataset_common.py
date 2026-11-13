@@ -177,7 +177,11 @@ class StagedExamples:
         kept = labelled + kept_background
         by_group: dict[str, list] = {}
         for group, key, _stem, _bg in kept:
-            by_group.setdefault(group, []).append(key)
+            # One key may stage several images (a crop student's one per animal on a frame);
+            # it is drawn once, so they share a split and the val share counts frames.
+            keys = by_group.setdefault(group, [])
+            if key not in keys:
+                keys.append(key)
         split = assign_splits(by_group, val_split, seed)
         for _group, key, stem, _bg in kept:
             which = split[key]

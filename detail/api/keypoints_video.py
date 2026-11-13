@@ -14,9 +14,12 @@ from pathlib import Path
 import numpy as np
 
 from detail.api.keypoint_export import PointSource
+from detail.core import atomic
+from detail.core import yaml_load
 from detail.core.dataclasses import Detection
 from detail.core.progress import ThrottledProgress
 from detail.core.utils import decode_mask
+from detail.core.video_codecs import DEFAULT_VIDEO_CODEC
 from detail.core.visualize import (
     MASK_TINT,
     bgr_to_rgb,
@@ -26,7 +29,11 @@ from detail.core.visualize import (
 )
 from detail.storage import recording as recording_store
 from detail.storage import video as video_store
-from detail.storage.zarr_io import DetectionPartReader, PartZarrReader
+from detail.storage.zarr_io import (
+    DetectionPartReader,
+    PartZarrReader,
+    object_ids_on_detection_rows,
+)
 
 
 def _tracking_overlay(source: PointSource, part_id: str) -> dict[int, list[dict]]:
@@ -38,7 +45,8 @@ def _tracking_overlay(source: PointSource, part_id: str) -> dict[int, list[dict]
     det_path = detection_dir / f"{part_id}.zarr"
     if not det_path.is_dir():
         return {}
-    det = DetectionPartReader(det_path).read()
+    reader = DetectionPartReader(det_path)
+    det = reader.read()
     if source.tracking_run_id is None:
         object_id = np.full(len(det["frame_idx"]), -1, dtype=np.int64)
         keep = np.arange(len(object_id))
@@ -47,7 +55,12 @@ def _tracking_overlay(source: PointSource, part_id: str) -> dict[int, list[dict]
         assign_path = tracking_dir / "assignments" / f"{part_id}.zarr"
         if not assign_path.is_dir():
             return {}
-        object_id = np.asarray(PartZarrReader(assign_path).read()["object_id"])
+        track_meta = yaml_load.safe_load(atomic.read_text(tracking_dir / "track.yaml"))
+        # Laid onto the detection rows, not read raw: with a class filter the assignment and
+        # the detection part are not parallel (`object_ids_on_detection_rows`).
+        object_id = object_ids_on_detection_rows(
+            reader, PartZarrReader(assign_path), track_meta.get("class_name")
+        )
         keep = np.flatnonzero(object_id >= 0)
     by_frame: dict[int, list[dict]] = {}
     frames = np.asarray(det["frame_idx"])
@@ -71,8 +84,10 @@ def export_keypoints_video(
     *,
     overlay: bool = False,
     progress=None,
+    codec: str = DEFAULT_VIDEO_CODEC,
 ) -> list[Path]:
-    """Write ``<stem>_<part>_keypoints.mp4`` for every part the run has rows in.
+    """Write ``<stem>_<part>_keypoints.mp4`` for every part the run has rows in, encoded as
+    ``codec`` (``core.video_codecs.VIDEO_CODECS``).
 
     Args:
         source: the run read for export (its cut-off decides which points are drawn).
@@ -141,7 +156,7 @@ def export_keypoints_video(
                     )
                 if writer is None:
                     writer, _codec = video_store.open_video_writer(
-                        out_path, source.fps(part_id), w, h
+                        out_path, source.fps(part_id), w, h, codec=codec
                     )
                 writer.write(rgb_to_bgr(rgb))
                 frame_idx += 1

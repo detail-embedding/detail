@@ -13,40 +13,24 @@ strip's click already *marks* a clip — it is what `Cut here` acts on — and l
 player next to the row. Making that one play in place would take the gesture the cutoff flow
 depends on. So the shared gesture is the **double**-click, and these assert that both strips have
 it and that the single click still means what it meant.
-
-The second half is the window itself (``gui/clip_popup.py``, ``gui/advanced_player.py``): the
-three pictures, the view ticks and what greys them, the strips under the slider, Simple /
-Advanced and Blind mode.
 """
 
 import pathlib
 import tempfile
 
+import numpy as np
 import pytest
 
 pytest.importorskip("PyQt6")
 
 from PyQt6.QtCore import Qt  # noqa: E402
 from PyQt6.QtTest import QTest  # noqa: E402
-from PyQt6.QtWidgets import (  # noqa: E402
-    QApplication,
-    QDialogButtonBox,
-    QVBoxLayout,
-    QWidget,
-)
+from PyQt6.QtWidgets import QApplication, QVBoxLayout, QWidget  # noqa: E402
 
 import detail.gui.clip_grid as clip_grid  # noqa: E402
 from detail.gui.behavior_query import ClipSpec  # noqa: E402
 from detail.gui.cluster_strip import ClusterClipStrip  # noqa: E402
 from detail.gui.quick_preview import QuickPreview  # noqa: E402
-from detail.gui.sizing import lines  # noqa: E402
-from tests.clip_fixtures import (  # noqa: E402
-    WALKER,
-    two_animals,
-    walking,
-    with_heading,
-    with_keypoints,
-)
 
 
 class _Experiment:
@@ -214,7 +198,7 @@ def test_a_query_cell_says_it_opens_only_where_a_strip_wired_it(qapp):
 
 def test_a_popup_with_a_sequence_steps_through_it(qapp, monkeypatch):
     """The labels ethogram opens a bout with every bout of its label one step away."""
-    import detail.gui.advanced_player as advanced_player
+    import detail.gui.behavior_query as behavior_query
     from detail.gui.clip_popup import ClipPopup
 
     shown = []
@@ -235,7 +219,7 @@ def test_a_popup_with_a_sequence_steps_through_it(qapp, monkeypatch):
         def set_aligned(self, _on):
             pass
 
-    monkeypatch.setattr(advanced_player, "PlainClipPlayer", _Player)
+    monkeypatch.setattr(behavior_query, "_ClipPlayer", _Player)
     clips = _clips(3)
     popup = ClipPopup(
         _Experiment(), clips[1], sequence=clips, index=1, context_s=0, advanced=False
@@ -250,7 +234,7 @@ def test_a_popup_with_a_sequence_steps_through_it(qapp, monkeypatch):
 
 
 def test_the_position_carries_the_openers_order_note(qapp, monkeypatch):
-    import detail.gui.advanced_player as advanced_player
+    import detail.gui.behavior_query as behavior_query
     from detail.gui.clip_popup import ClipPopup
 
     class _Player(QWidget):
@@ -269,7 +253,7 @@ def test_the_position_carries_the_openers_order_note(qapp, monkeypatch):
         def set_aligned(self, _on):
             pass
 
-    monkeypatch.setattr(advanced_player, "PlainClipPlayer", _Player)
+    monkeypatch.setattr(behavior_query, "_ClipPlayer", _Player)
     second = 1_000_000_000
     clips = [
         ClipSpec("rec", 0, "emb_01", i * second, i * second + second // 2, f"c{i}")
@@ -293,34 +277,32 @@ class _ExperimentAt:
         self.dir = path
 
 
-def _open_on_frame_0(qapp, recording, *, track_id=0, frames=2):
+def _open_on_frame_0(qapp, recording, *, track_id=0):
     from tests.gui.conftest import drain_until
 
     from detail.gui.clip_popup import ClipPopup
 
-    clip = ClipSpec(
-        recording.id, track_id, "emb_01", 0, int(frames * 1e9 / 30), "a clip"
-    )
-    popup = ClipPopup(
-        _ExperimentAt(recording.dir.parent.parent), clip, context_s=0, advanced=True
-    )
+    clip = ClipSpec(recording.id, track_id, "emb_01", 0, int(2e9 / 30), "a clip")
+    popup = ClipPopup(_ExperimentAt(recording.dir.parent.parent), clip, context_s=0)
     popup.resize(1200, 600)
     popup.show()
     player = popup.player()
     player.pause()
-    assert drain_until(qapp, lambda: player.panes().masks.pixmap_size() is not None)
+    assert drain_until(qapp, lambda: player._panes.masks.pixmap_size() is not None)
     return popup, player
 
 
 def test_the_popup_shows_footage_masks_and_keypoints_side_by_side(qapp, tmp_path):
     """The footage on the left, the masks pane over the keypoints pane on the right, each
     decoded from the one frame — and a Keypoints toggle beside Masks for the footage."""
+    from tests.api.test_clip_views import _two_animals, _with_keypoints
+
     from detail.gui.clip_panes import ClipPanes
     from detail.gui.image_view import ImageView
 
-    recording = with_keypoints(two_animals(tmp_path))
+    recording = _with_keypoints(_two_animals(tmp_path))
     popup, player = _open_on_frame_0(qapp, recording)
-    panes = player.panes()
+    panes = player._panes
     assert isinstance(panes, ClipPanes)
     assert len(player.findChildren(ImageView)) == 3
     assert panes.masks.pixmap_size() == panes.pose.pixmap_size()
@@ -335,20 +317,23 @@ def test_the_popup_shows_footage_masks_and_keypoints_side_by_side(qapp, tmp_path
 
 
 def test_an_embedding_with_no_keypoints_greys_the_toggle_and_says_why(qapp, tmp_path):
-    recording = two_animals(tmp_path)
+    from tests.api.test_clip_views import _two_animals
+
+    recording = _two_animals(tmp_path)
     popup, player = _open_on_frame_0(qapp, recording)
     assert not player._points.isEnabled()
     assert "used no keypoints" in player._points.toolTip()
-    assert player.panes().pose.text() == "No keypoints for this run"
-    assert "used no keypoints" in player.panes().pose.toolTip()
+    assert player._panes.pose.text() == "No keypoints for this run"
+    assert "used no keypoints" in player._panes.pose.toolTip()
     popup.close()
 
 
 def test_the_keypoints_toggle_redraws_the_frame_on_screen(qapp, tmp_path):
     """Ticked, the footage gains the subject's points without a move of the playhead."""
+    from tests.api.test_clip_views import _two_animals, _with_keypoints
     from tests.gui.conftest import drain_until
 
-    recording = with_keypoints(two_animals(tmp_path))
+    recording = _with_keypoints(_two_animals(tmp_path))
     popup, player = _open_on_frame_0(qapp, recording)
     before = player._src.pixmap().toImage()
     player._points.setChecked(True)
@@ -361,18 +346,19 @@ def test_align_pose_turns_the_keypoints_pane_and_greys_without_a_heading(
 ):
     """Ticked, the Keypoints pane is redrawn body-aligned on the frame already on screen; a
     run with no heading definition greys the tick with the reason."""
+    from tests.api.test_clip_views import _two_animals, _with_heading, _with_keypoints
     from tests.gui.conftest import drain_until
 
-    recording = with_heading(with_keypoints(two_animals(tmp_path)))
+    recording = _with_heading(_with_keypoints(_two_animals(tmp_path)))
     popup, player = _open_on_frame_0(qapp, recording)
     assert player._align.isEnabled()
-    pose = player.panes().pose
+    pose = player._panes.pose
     before = pose.pixmap().toImage()
     player._align.setChecked(True)
     assert drain_until(qapp, lambda: pose.pixmap().toImage() != before)
     popup.close()
 
-    bare = with_keypoints(two_animals(tmp_path / "bare"))
+    bare = _with_keypoints(_two_animals(tmp_path / "bare"))
     popup, player = _open_on_frame_0(qapp, bare)
     assert not player._align.isEnabled()
     assert "No heading definition" in player._align.toolTip()
@@ -384,36 +370,37 @@ def _with_strips(qapp, recording, **kwargs):
     from tests.gui.conftest import drain_until
 
     popup, player = _open_on_frame_0(qapp, recording, **kwargs)
-    assert drain_until(qapp, lambda: player.strips().curves() is not None)
+    assert drain_until(qapp, lambda: player.strips().signals() is not None)
     return popup, player
 
 
 def test_the_strips_read_the_clips_window_under_the_slider(qapp, tmp_path):
-    """Speed and area off the kinematics sidecar, on the frames the slider spans, with the
-    reading under the pointer in the tooltip — and, with a heading, the body's shape too.
+    """Speed, area and the nearest animal, a quality row and a cluster row, on the frames the
+    slider spans, with the clip shaded and the reading under the pointer in the tooltip.
     """
-    popup, player = _with_strips(qapp, walking(tmp_path, heading=True), frames=4)
+    from tests.api.test_clip_views import _two_animals
+
+    popup, player = _with_strips(qapp, _two_animals(tmp_path))
     strips = player.strips()
-    names = strips.names()
-    assert names[:2] == ["speed", "area"] and "turning" in names
-    assert strips.curves().window == player.window()
+    names = [s.name for s in strips.signals().signals]
+    assert names == ["speed", "mask area", "to nearest animal"]
+    assert len(strips.signals().frames) == player._len
     left, span = player.scrubber().handle_travel()
-    _kind, top, height = strips._rows()[0]
-    tip = strips.describe(left + span * 0.5, top + height / 2)
-    assert tip.startswith("speed:") and "px/s" in tip
-    popup.close()
-
-
-def test_without_a_sidecar_the_strips_say_how_to_get_one(qapp, tmp_path):
-    popup, player = _with_strips(qapp, two_animals(tmp_path))
-    strips = player.strips()
-    assert strips.names() == []
-    assert "backfill-kinematics" in strips.describe(10, 3)
+    rows = strips._rows()
+    _kind, top, height = rows[2]  # to nearest animal
+    tip = strips.describe(left, top + height / 2)  # frame 0: both animals there
+    assert tip.startswith("to nearest animal:") and "body sizes" in tip
+    _kind, top, height = rows[3]  # quality
+    assert "not tracked" in strips.describe(
+        left + span * 0.5, top + 1
+    )  # frame 1 of 0..2
     popup.close()
 
 
 def test_loop_clip_plays_the_clip_and_nothing_either_side(qapp, tmp_path):
-    popup, player = _with_strips(qapp, two_animals(tmp_path))
+    from tests.api.test_clip_views import _two_animals
+
+    popup, player = _with_strips(qapp, _two_animals(tmp_path))
     player._loop_clip.setChecked(True)
     lo, hi = player.clip_span()
     first = player.window()[0]
@@ -423,13 +410,15 @@ def test_loop_clip_plays_the_clip_and_nothing_either_side(qapp, tmp_path):
 
 
 def test_the_trail_controls_follow_the_clips_keypoints(qapp, tmp_path):
-    """With keypoints, Trail points lists the skeleton (every point ticked) and a choice there
-    redraws the frame on screen; the Trail tick says what it draws."""
+    """With keypoints, Trail points lists the skeleton (the keypoint track form's picker,
+    every point ticked) and a choice there redraws the frame on screen; the Trail tick says
+    what it draws."""
+    from tests.api.test_clip_views import WALKER, _walking
     from tests.gui.conftest import drain_until
 
-    popup, player = _open_on_frame_0(qapp, walking(tmp_path), frames=4)
-    picker = player._trail_button.picker
-    assert player._trail_button.isEnabled()
+    popup, player = _open_on_frame_0(qapp, _walking(tmp_path))
+    picker = player._trail_picker
+    assert player._trail_points.isEnabled()
     assert picker.names() == list(WALKER.names) and player.trail_points() is None
     player._trail.setChecked(True)
     assert drain_until(qapp, lambda: "keypoint" in player._trail.toolTip())
@@ -439,28 +428,29 @@ def test_the_trail_controls_follow_the_clips_keypoints(qapp, tmp_path):
     walked = player._src.pixmap().toImage()
     picker.set_value(["left_paw"])
     assert player.trail_points() == ["left_paw"]
-    assert player.view_settings().trail_points == ("left_paw",)
     assert drain_until(qapp, lambda: player._src.pixmap().toImage() != walked)
     popup.close()
 
 
 def test_without_keypoints_the_points_choice_is_greyed_with_the_reason(qapp, tmp_path):
+    from tests.api.test_clip_views import _walking
     from tests.gui.conftest import drain_until
 
-    popup, player = _open_on_frame_0(qapp, walking(tmp_path, keypoints=False), frames=4)
-    assert not player._trail_button.isEnabled()
-    assert "used no keypoints" in player._trail_button.toolTip()
-    assert "centre" in player._trail_button.toolTip()
+    popup, player = _open_on_frame_0(qapp, _walking(tmp_path, keypoints=False))
+    assert not player._trail_points.isEnabled()
+    assert "used no keypoints" in player._trail_points.toolTip()
+    assert "box" in player._trail_points.toolTip()
     player._trail.setChecked(True)
-    assert drain_until(qapp, lambda: "centre of the animal" in player._trail.toolTip())
+    assert drain_until(qapp, lambda: "box" in player._trail.toolTip())
     popup.close()
 
 
 def test_the_mask_trail_tick_redraws_the_masks_pane(qapp, tmp_path):
+    from tests.api.test_clip_views import _walking
     from tests.gui.conftest import drain_until
 
-    popup, player = _open_on_frame_0(qapp, walking(tmp_path, keypoints=False), frames=4)
-    masks = player.panes().masks
+    popup, player = _open_on_frame_0(qapp, _walking(tmp_path, keypoints=False))
+    masks = player._panes.masks
     first = masks.pixmap().toImage()
     player.scrubber().set_frame(2)
     assert drain_until(qapp, lambda: masks.pixmap().toImage() != first)
@@ -470,67 +460,200 @@ def test_the_mask_trail_tick_redraws_the_masks_pane(qapp, tmp_path):
     popup.close()
 
 
+class _Labelling:
+    """What a clustering page hands the window, without the clustering."""
+
+    def __init__(self, experiment):
+        self._experiment = experiment
+
+    def title(self):
+        return "cluster #7"
+
+    def current_label(self):
+        return ""
+
+    def label_choices(self):
+        return ["rearing"]
+
+    def edit_reason(self):
+        return ""
+
+    def apply_label(self, name):
+        pass
+
+    def check(self, key, verdict):
+        pass
+
+    def node(self):
+        return 7
+
+    def load_checks(self):
+        from detail.storage import member_checks
+
+        return member_checks.summarize({})
+
+    def experiment(self):
+        return self._experiment
+
+    def fingerprint(self, clip, progress):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(rows=[])
+
+    def clip_measures(self, clip, names):
+        return {}
+
+    def sibling(self):
+        return None
+
+    def member_clips(self, n):
+        return []
+
+
 #: The clip window's picture is at least this share of the window's body (everything between
 #: the title bar and the Close button) at a realistic size, 1500 x 900, with a 4:3 frame. The
-#: layout measures ~76% there; the side-column layout it replaced measured 64% at the same size
-#: and held the picture to 21% at its own opening size.
+#: new layout measures 76% there (73% on Windows' own fonts at the opening size, and ~70% with a
+#: 16:9 frame, which runs out of width first); the side-column layout it replaced measures 64%
+#: at the same size even with the new thin strips, and held the picture to 21% (a 90px picture
+#: in a 428px body) at its own opening size.
 _PICTURE_SHARE = 0.70
-#: A strip's most height: it was 30px, and is now about half.
-_STRIP_ROW_MAX = 20
+#: A signal strip's most height: it was 30px, and is now about half.
+_STRIP_ROW_MAX = 18
 
 
 def test_the_picture_takes_most_of_the_window(qapp, tmp_path):
     """The point of the window is seeing the behaviour: the footage and its panes get the
-    width and most of the height; the strips are thin rows under the slider."""
+    width and most of the height; the strips are thin, and labelling is one row under them.
+    """
+    from tests.api.test_clip_views import _walking
     from tests.gui.conftest import drain_until
 
     from detail.gui.clip_popup import ClipPopup
+    from detail.gui.sizing import lines
 
-    recording = walking(tmp_path)
+    recording = _walking(tmp_path)
+    experiment = _ExperimentAt(recording.dir.parent.parent)
     clip = ClipSpec(recording.id, 0, "emb_01", 0, int(4e9 / 30), "a clip")
-    popup = ClipPopup(
-        _ExperimentAt(recording.dir.parent.parent), clip, context_s=0, advanced=True
-    )
-    popup.resize(1500, 900)
+    popup = ClipPopup(experiment, clip, context_s=0, labelling=_Labelling(experiment))
     popup.show()
+    # After the show: the window opens at its content's size (`Dialog.showEvent`), and this
+    # asks how a large window shares its room, whatever the fixture's small frame opens at.
+    popup.resize(1500, 900)
     player = popup.player()
     player.pause()
     strips = player.strips()
-    assert drain_until(qapp, lambda: strips.curves() is not None)
+    assert drain_until(qapp, lambda: strips.signals() is not None)
     assert drain_until(qapp, lambda: player._src.pixmap_size() is not None)
     QApplication.processEvents()
 
     body = popup._scroll.viewport()
-    share = player._src.height() / body.height()
+    picture = (
+        player._src
+    )  # placed at the frame's own aspect: its height is drawn height
+    share = picture.height() / body.height()
     assert share >= _PICTURE_SHARE, f"the picture is {share:.0%} of the window's body"
 
     rows = strips._rows()
-    curve_rows = [h for kind, _top, h in rows if kind.startswith("curve:")]
-    assert curve_rows and max(curve_rows) <= _STRIP_ROW_MAX, "a strip is a thin row"
-    assert strips.height() <= (len(curve_rows) + 2) * (_STRIP_ROW_MAX + 2)
+    signal_rows = [h for kind, _top, h in rows if kind.startswith("signal:")]
+    # A strip was 30px; now a line of fine print, about half that.
+    assert signal_rows and max(signal_rows) <= _STRIP_ROW_MAX, "a strip is a thin row"
+    assert strips.height() <= (len(signal_rows) + 2) * (_STRIP_ROW_MAX + 2)
+
+    labelling = popup._labelling_row
+    top = labelling.mapTo(popup, labelling.rect().topLeft()).y()
+    strips_bottom = strips.mapTo(popup, strips.rect().bottomLeft()).y()
+    assert top > strips_bottom, "the labelling sits under the strips"
+    assert labelling.height() <= lines(2.5), "one row"
+    assert labelling.width() >= 0.9 * body.width(), "a row across, not a side column"
+    assert popup.fingerprint_panel() is None, "the cluster sections open on request"
+    popup.close()
+
+
+def test_cluster_details_open_under_the_labelling_row_and_are_remembered(
+    qapp, tmp_path
+):
+    from tests.api.test_clip_views import _two_animals
+
+    from detail.gui import clip_popup
+
+    recording = _two_animals(tmp_path)
+    experiment = _ExperimentAt(recording.dir.parent.parent)
+    clip = ClipSpec(recording.id, 0, "emb_01", 0, int(2e9 / 30), "a clip")
+    try:
+        popup = clip_popup.ClipPopup(
+            experiment, clip, context_s=0, labelling=_Labelling(experiment)
+        )
+        popup.show()
+        popup._details_button.setChecked(True)
+        assert popup.fingerprint_panel() is not None and popup.details_shown()
+        assert clip_popup.remembered(clip_popup.DETAILS_KEY, False)
+        again = clip_popup.ClipPopup(
+            experiment, clip, context_s=0, labelling=_Labelling(experiment)
+        )
+        assert again.fingerprint_panel() is not None, "opens the way it was left"
+        again.close()
+        popup._details_button.setChecked(False)
+        assert not popup.details_shown()
+    finally:
+        clip_popup.remember(clip_popup.DETAILS_KEY, False)
+    popup.close()
+
+
+def test_an_opener_s_lane_fills_the_cluster_row(qapp, tmp_path):
+    from tests.api.test_clip_views import _two_animals
+    from tests.gui.conftest import drain_until
+
+    from detail.gui.clip_popup import ClipPopup
+
+    asked = []
+
+    def lane(clip, start_ns, end_ns):
+        asked.append((clip.recording_id, start_ns, end_ns))
+        return [
+            {
+                "start_ns": start_ns,
+                "end_ns": end_ns,
+                "kind": "this",
+                "node": 7,
+                "name": "",
+            }
+        ]
+
+    recording = _two_animals(tmp_path)
+    clip = ClipSpec(recording.id, 0, "emb_01", 0, int(2e9 / 30), "a clip")
+    popup = ClipPopup(
+        _ExperimentAt(recording.dir.parent.parent), clip, context_s=0, lane=lane
+    )
+    popup.show()
+    strips = popup.player().strips()
+    assert drain_until(qapp, strips.has_lane)
+    assert asked[0][0] == recording.id
+    assert "length" in popup._about.text()
     popup.close()
 
 
 # --- Simple / Advanced, and blind mode ----------------------------------------------- #
 def test_simple_view_is_the_plain_player_and_the_choice_is_remembered(qapp, tmp_path):
-    from detail.gui import clip_popup
-    from detail.gui.advanced_player import AdvancedClipPlayer
+    from tests.api.test_clip_views import _two_animals
 
-    recording = two_animals(tmp_path)
+    from detail.gui import clip_popup
+
+    recording = _two_animals(tmp_path)
     popup, player = _open_on_frame_0(qapp, recording)
-    assert popup.is_advanced() and isinstance(player, AdvancedClipPlayer)
+    assert popup.is_advanced() and player._panes is not None
     try:
         popup._advanced.setChecked(False)
         simple = popup.player()
         assert simple is not player
-        assert not isinstance(simple, AdvancedClipPlayer)
-        assert not hasattr(simple, "_panes") and not hasattr(simple, "_strips")
+        assert simple._panes is None and simple.strips() is None
         assert clip_popup.remembered(clip_popup.ADVANCED_KEY, True) is False
         clip = ClipSpec(recording.id, 0, "emb_01", 0, int(2e9 / 30), "a clip")
         again = clip_popup.ClipPopup(
             _ExperimentAt(recording.dir.parent.parent), clip, context_s=0
         )
-        assert not again.is_advanced(), "the next window opens the way this was left"
+        assert (
+            not again.is_advanced()
+        ), "the next window opens the way this one was left"
         again.close()
     finally:
         clip_popup.remember(clip_popup.ADVANCED_KEY, True)
@@ -538,17 +661,16 @@ def test_simple_view_is_the_plain_player_and_the_choice_is_remembered(qapp, tmp_
 
 
 def test_blind_mode_names_recordings_by_letter(qapp, tmp_path):
+    from tests.api.test_clip_views import _two_animals
+
     from detail.gui import clip_popup
 
-    recording = two_animals(tmp_path)
+    recording = _two_animals(tmp_path)
     popup, _player = _open_on_frame_0(qapp, recording)
     try:
         popup._blind.setChecked(True)
         assert popup.windowTitle() == "Clip 1 · recording A"
         assert recording.id not in popup._about.text()
-        assert clip_popup.remembered(clip_popup.BLIND_KEY, False) is True
-        popup._blind.setChecked(False)
-        assert popup.windowTitle() == "a clip"
     finally:
         clip_popup.remember(clip_popup.BLIND_KEY, False)
     popup.close()
@@ -563,54 +685,26 @@ def test_aliases_are_lettered_in_the_order_recordings_first_appear():
     assert _aliases(many)["r26"] == "AA" and _aliases(many)["r27"] == "AB"
 
 
-# --- laptop sizes (the 1440x847 render audit) ---------------------------------------- #
-def _flow_lines(player) -> dict:
-    """``{top y: [widget, ...]}`` for the visible units of the scrubber's controls row."""
-    flow = player._scrubber._controls
-    out: dict = {}
-    for i in range(flow.count()):
-        widget = flow.itemAt(i).widget()
-        if widget is not None and not widget.isHidden():
-            out.setdefault(widget.geometry().top(), []).append(widget)
-    return out
-
-
-def test_the_frame_counter_never_wraps_onto_a_line_by_itself(qapp, tmp_path):
-    """At 1324px (92% of a 1440 laptop screen) the Advanced row did not fit, and the one thing
-    that wrapped was the frame counter, alone on a second line. The view ticks are a unit of
-    their own now: when the row is short, they move down together and the counter ends their
-    line."""
-    recording = two_animals(tmp_path)
-    popup, player = _open_on_frame_0(qapp, recording)
-    try:
-        flow = player._scrubber._controls
-        one_line = flow.sizeHint().width()
-        margins = popup.width() - player._scrubber.width()
-        popup.resize(one_line + margins - 60, popup.height())
-        qapp.processEvents()
-        qapp.processEvents()
-        rows = _flow_lines(player)
-        assert len(rows) >= 2, "the row must wrap for the check to bite"
-        readout = player._scrubber._readout
-        line = rows[readout.geometry().top()]
-        assert len(line) > 1, "the frame counter is alone on its line"
-        assert player.view_ticks in line
-    finally:
-        popup.close()
-
-
+# --- laptop sizes ----------------------------------------------------------------------- #
 def test_the_window_is_no_taller_than_its_picture_and_controls(qapp, tmp_path):
     """The picture keeps its aspect, so a window opened at a fixed height is width-limited on a
     laptop and the player centred the picture in the spare height: at 1324x805, 73px empty over
-    the picture and ~60px over Close. The height now follows the width."""
+    the picture and ~60px over Close. The height follows the width (`Dialog.content_height`).
+    """
+    from PyQt6.QtWidgets import QDialogButtonBox
+
+    from tests.api.test_clip_views import _two_animals
     from tests.gui.conftest import drain_until
 
-    recording = two_animals(tmp_path)
+    from detail.gui.sizing import lines
+
+    recording = _two_animals(tmp_path)
     popup, player = _open_on_frame_0(qapp, recording)
     try:
-        # Settle the opening fit first, so nothing pending from it can do the work this test
-        # is about: it passed only when an unrelated layout request arrived after the resize.
-        assert drain_until(qapp, lambda: not popup._fit_timer.isActive())
+        assert drain_until(
+            qapp,
+            lambda: popup._follow_timer is None or not popup._follow_timer.isActive(),
+        )
         for _ in range(3):
             qapp.processEvents()
         width = 1300 if popup.width() != 1300 else 1260
@@ -637,28 +731,16 @@ def test_the_window_is_no_taller_than_its_picture_and_controls(qapp, tmp_path):
         popup.close()
 
 
-def test_the_window_opens_nearly_screen_wide_and_capped_in_height():
-    """A viewer on a laptop is short of width: it opens at 98% of the screen's free width (the
-    Advanced controls fit one line there) and 92% of its height, then trims the height.
-    """
-    from PyQt6.QtCore import QRect
-
-    from detail.gui.clip_popup import _TALL, _WIDE, opening_size
-
-    class _Screen:
-        def availableGeometry(self):
-            return QRect(0, 0, 1440, 875)
-
-    size = opening_size(_Screen())
-    assert size.width() == int(1440 * 0.98) or size.width() == lines(_WIDE)
-    assert size.height() == min(int(875 * 0.92), lines(_TALL))
-
-
 # --- non-modal, one per page, reused (11-9 meeting) ------------------------------------ #
 def test_the_clip_window_is_non_modal_and_one_per_page_reused(qapp, tmp_path):
+    from PyQt6 import sip
+
+    from tests.api.test_clip_views import _two_animals, _with_keypoints
+    from tests.gui.conftest import drain_until
+
     from detail.gui import clip_popup
 
-    recording = with_keypoints(two_animals(tmp_path))
+    recording = _with_keypoints(_two_animals(tmp_path))
     experiment = _ExperimentAt(recording.dir.parent.parent)
     page = QWidget()
     first = ClipSpec(recording.id, 0, "emb_01", 0, int(2e9 / 30), "first")
@@ -666,6 +748,7 @@ def test_the_clip_window_is_non_modal_and_one_per_page_reused(qapp, tmp_path):
     window = clip_popup.open_clip_window(page, experiment, first, context_s=0)
     assert not window.isModal() and window.isVisible()
     assert window.parent() is page, "the page's child: it closes with the page"
+    assert not window._position.isVisible(), "no sequence, no stepping"
     again = clip_popup.open_clip_window(
         page, experiment, second, context_s=0, sequence=[first, second], index=1
     )
@@ -681,10 +764,103 @@ def test_the_clip_window_is_non_modal_and_one_per_page_reused(qapp, tmp_path):
     assert fresh is not window
     fresh.close()
     elsewhere.deleteLater()
-    from tests.gui.conftest import drain_until
-    from PyQt6 import sip
-
     assert drain_until(qapp, lambda: sip.isdeleted(other)), "closes with its page"
+
+
+class _NodeLabelling(_Labelling):
+    def __init__(self, experiment, node):
+        super().__init__(experiment)
+        self._node = node
+
+    def node(self):
+        return self._node
+
+
+def _no_lane(clip, start_ns, end_ns):
+    return []
+
+
+def test_a_reused_window_takes_the_next_clips_cluster_and_lane(qapp, tmp_path):
+    """INTERPRET's next double-click may be on another cluster: the reused window labels and
+    checks that one and draws its lane; the same cluster keeps its row (and its queue).
+    """
+    from tests.api.test_clip_views import _two_animals
+
+    from detail.gui import clip_popup
+
+    recording = _two_animals(tmp_path)
+    experiment = _ExperimentAt(recording.dir.parent.parent)
+    page = QWidget()
+    clip = ClipSpec(recording.id, 0, "emb_01", 0, int(2e9 / 30), "a clip")
+    window = clip_popup.open_clip_window(
+        page,
+        experiment,
+        clip,
+        context_s=0,
+        advanced=True,
+        labelling=_NodeLabelling(experiment, 7),
+    )
+    try:
+        panel = window.label_panel()
+        assert panel is not None
+        clip_popup.open_clip_window(
+            page, experiment, clip, context_s=0, labelling=_NodeLabelling(experiment, 7)
+        )
+        assert window.label_panel() is panel, "the same cluster keeps its row"
+        clip_popup.open_clip_window(
+            page,
+            experiment,
+            clip,
+            context_s=0,
+            labelling=_NodeLabelling(experiment, 9),
+            lane=_no_lane,
+        )
+        assert window.label_panel() is not panel
+        assert window._labelling.node() == 9
+        assert window.player()._lane_source is _no_lane
+        clip_popup.open_clip_window(page, experiment, clip, context_s=0)
+        assert window.label_panel() is None, "an opener with no cluster has no row"
+    finally:
+        window.close()
+
+
+class _Page(QWidget):
+    """What `clip_labelling.PageLabelling` reads of INTERPRET, and its label queue."""
+
+    def __init__(self, experiment):
+        super().__init__()
+        from types import SimpleNamespace
+
+        self._experiment = experiment
+        self._run = SimpleNamespace()
+        self._terms = SimpleNamespace(unit="cluster")
+        self._names = {"4": "groom", "7": ""}
+        self._can_edit = True
+        self.labelled = []
+
+    def _edit_reason(self):
+        return ""
+
+    def _label(self, node, name, origin=None):
+        self.labelled.append((node, name, origin))
+
+
+def test_a_label_from_the_window_goes_through_the_pages_own_queue(qapp, tmp_path):
+    """Labels written in the clip window are the page's: its ``_label`` — so its undo history
+    and its Finish lock see them — told which cluster window asked."""
+    from detail.gui.clip_labelling import PageLabelling
+
+    page = _Page(_Experiment())
+    origin = QWidget()
+    labelling = PageLabelling(page, 7, origin=origin)
+    assert labelling.title() == "cluster #7"
+    assert labelling.label_choices() == ["groom"]
+    labelling.apply_label("rear")
+    assert page.labelled == [(7, "rear", origin)]
+    assert labelling.edit_reason() == ""
+    page._can_edit = False
+    assert labelling.edit_reason() == "This run cannot be changed here."
+    assert not hasattr(labelling, "open_profile"), "offered only where the page has one"
 
 
 def test_every_opener_goes_through_the_one_non_modal_opener():
@@ -711,7 +887,8 @@ def test_every_opener_goes_through_the_one_non_modal_opener():
                     found.append(name)
         return found
 
-    assert offenders("from x import ClipPopup\nClipPopup(e, c, self).exec()") == [
+    counterexample = "from x import ClipPopup\nClipPopup(e, c, self).exec()"
+    assert offenders(counterexample) == [
         "ClipPopup"
     ], "the scan finds a page building the window itself"
     bad = [
@@ -723,8 +900,11 @@ def test_every_opener_goes_through_the_one_non_modal_opener():
     assert not bad, f"{bad} build the clip window; call clip_popup.open_clip_window"
 
 
+# --- Export ▾ and the orientation ------------------------------------------------------- #
 def test_the_export_menu_offers_what_you_see_and_this_frame(qapp, tmp_path):
-    recording = with_heading(with_keypoints(two_animals(tmp_path)))
+    from tests.api.test_clip_views import _two_animals, _with_heading, _with_keypoints
+
+    recording = _with_heading(_with_keypoints(_two_animals(tmp_path)))
     popup, player = _open_on_frame_0(qapp, recording)
     texts = [a.text() for a in popup.export_menu().actions() if a.text()]
     assert texts == [
@@ -740,9 +920,10 @@ def test_the_export_menu_offers_what_you_see_and_this_frame(qapp, tmp_path):
 
 
 def test_this_frame_as_png_writes_off_the_ui_thread(qapp, tmp_path):
+    from tests.api.test_clip_views import _two_animals, _with_heading, _with_keypoints
     from tests.gui.conftest import drain_until
 
-    recording = with_heading(with_keypoints(two_animals(tmp_path)))
+    recording = _with_heading(_with_keypoints(_two_animals(tmp_path)))
     popup, _player = _open_on_frame_0(qapp, recording)
     target = tmp_path / "frame.png"
     popup.write_png(target)
@@ -751,14 +932,77 @@ def test_this_frame_as_png_writes_off_the_ui_thread(qapp, tmp_path):
     popup.close()
 
 
+def test_a_video_of_what_you_see_is_written_in_the_codec_chosen(
+    qapp, tmp_path, monkeypatch
+):
+    """*Video of what you see…* asks for the codec in the save dialog (``ask_mp4_path``) and
+    writes the window's picture in it, off the UI thread."""
+    from tests.api.test_clip_views import _two_animals
+    from tests.gui.conftest import drain_until
+
+    from detail.api import clip_pane_export
+    from detail.gui import animation_export
+
+    recording = _two_animals(tmp_path)
+    popup, _player = _open_on_frame_0(qapp, recording)
+    target = tmp_path / "view.mp4"
+    asked = []
+    monkeypatch.setattr(
+        animation_export,
+        "ask_mp4_path",
+        lambda parent, title, suggested: (target, "mp4v"),
+    )
+    real = clip_pane_export.export_clip_view
+
+    def spy(*args, **kwargs):
+        asked.append(kwargs["codec"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(clip_pane_export, "export_clip_view", spy)
+    popup.export_video()
+    assert drain_until(qapp, lambda: popup._written.isVisible())
+    assert asked == ["mp4v"] and target.exists()
+    popup.close()
+
+
+def test_a_gif_of_what_you_see_is_written_at_the_size_and_rate_asked(
+    qapp, tmp_path, monkeypatch
+):
+    """*GIF of what you see…* asks for a width and a rate, then a path, and writes the window's
+    picture as a GIF off the UI thread. Its import of the GIF suffix pointed at a module that
+    does not define it, so the item raised before any dialog showed."""
+    from PIL import Image
+
+    from tests.api.test_clip_views import _two_animals
+    from tests.gui.conftest import drain_until
+
+    from detail.gui import animation_export
+
+    recording = _two_animals(tmp_path)
+    popup, _player = _open_on_frame_0(qapp, recording)
+    target = tmp_path / "view.gif"
+    monkeypatch.setattr(
+        animation_export, "ask_gif_settings", lambda parent, note: (96, 5.0)
+    )
+    monkeypatch.setattr(
+        animation_export, "ask_save_path", lambda parent, title, suggested, kind: target
+    )
+    popup.export_gif()
+    assert drain_until(qapp, lambda: popup._written.isVisible())
+    with Image.open(target) as gif:
+        assert gif.size[0] <= 96
+    popup.close()
+
+
 def test_the_orientation_switch_is_greyed_with_the_reason_and_turns_the_picture(
     qapp, tmp_path
 ):
+    from tests.api.test_clip_views import _two_animals, _with_heading, _with_keypoints
     from tests.gui.conftest import drain_until
 
     from detail.gui import clip_popup
 
-    recording = with_keypoints(two_animals(tmp_path))
+    recording = _with_keypoints(_two_animals(tmp_path))
     popup, player = _open_on_frame_0(qapp, recording)
     assert drain_until(
         qapp, lambda: popup.alignment_note() != clip_popup.ALIGN_CHECKING
@@ -766,15 +1010,17 @@ def test_the_orientation_switch_is_greyed_with_the_reason_and_turns_the_picture(
     assert "No heading definition" in popup._orientation.toolTip()
     assert not popup._orientation.isEnabled()
     popup.close()
-    with_heading(recording)
+    _with_heading(recording)
     popup, player = _open_on_frame_0(qapp, recording)
     assert drain_until(qapp, lambda: popup.alignment_note() is None)
     try:
-        before = player._src.pixmap_size()
+        before = player._src.pixmap().toImage()
+        size = player._src.pixmap_size()
         popup._orientation.activated.emit(1)  # "Aligned" from the menu
         assert popup.is_aligned() and player.view_settings().aligned
         assert clip_popup.remembered(clip_popup.ALIGNED_KEY, False) is True
-        assert player._src.pixmap_size() == before, "turned at the frame's own size"
+        assert drain_until(qapp, lambda: player._src.pixmap().toImage() != before)
+        assert player._src.pixmap_size() == size, "turned at the frame's own size"
     finally:
         clip_popup.remember(clip_popup.ALIGNED_KEY, False)
         popup.close()

@@ -73,6 +73,9 @@ _BANNER_SCOPED = {
     "gpu_cuda": "a Configuration drill-in, shown full width from the checklist",
     "sam3_backend": "a Configuration drill-in, shown full width from the checklist",
     "hugging_face": "a Configuration drill-in, shown full width from the checklist",
+    "remote_targets": "a Configuration drill-in (Remote targets), reached by its own "
+    "Open -> on the Configuration landing, not the checklist -- zero registered targets "
+    "is a normal setup, not an incomplete one, so it isn't a checklist step either",
     "distill": "a distill run's page, a drill-in from the Distill runs table on the Models "
     "page — which a rail node opens, so the way back is Models, then the run's row",
 }

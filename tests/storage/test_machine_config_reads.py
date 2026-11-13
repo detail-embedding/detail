@@ -120,6 +120,10 @@ READERS = {
         locations.configured_preview_cache()
     ),
     "locations.preview_cache_dir": lambda tmp: locations.preview_cache_dir(),
+    # The experiment locations (remote-detail): every ``type: local`` alias is one.
+    "locations.experiment_locations": lambda tmp: locations.experiment_locations(),
+    "locations.location_of": lambda tmp: locations.location_of(tmp / "experiment"),
+    "locations.location_root": lambda tmp: locations.location_root("default"),
     "roots.list_roots": lambda tmp: roots.list_roots("export_roots"),
     "roots.root": lambda tmp: roots.root("export_roots", "exports"),
     "roots.resolve_ref": lambda tmp: roots.resolve_ref(
@@ -146,6 +150,10 @@ NOT_READERS = {
         "test_nothing_else_reads_the_file"
     ),
     "roots.register_root": "the writer; test_a_registration_* cover it",
+    "roots.editing": "the writers' read-modify-write (``machine_file.editing``): it reads "
+    "fresh under the file lock and commits through ``read_cache.replace_document``",
+    "locations.add_location": "a writer, through ``roots.editing``",
+    "locations.remove_location": "a writer, through ``roots.editing``",
     "video_roots.register_video_root": "the writer, by its video name",
 }
 
@@ -314,9 +322,6 @@ ALLOWED = {
     ("detail/storage/locations.py", "_parse_storage"): "the one parse",
     ("detail/storage/locations.py", "read_storage"): "hands the parse to the cache",
     ("detail/storage/locations.py", "read_storage_fresh"): "the uncached read itself",
-    ("detail/storage/roots.py", "register_root"): (
-        "read-modify-write under the file lock: it must merge into what is on disk"
-    ),
 }
 
 

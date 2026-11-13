@@ -43,6 +43,11 @@ _EXTRA_CALLER_ROOTS = ()
 # Each entry is a claim about why this function is uncalled. Three honest categories; none of
 # them is "we don't know", which is what the guard exists to stop accumulating.
 _ORPHANS_WITH_REASONS = {
+    "write_clip_csv": "the clip CSV's writer: Behavior scan's --from-csv still reads the "
+    "format (read_clip_csv), and its writers were the removed clip query, annotation and "
+    "syllable discovery; the tests write their fixtures with it",
+    "read_storage_fresh": "storage.yaml's uncached read, by name: the reads guard's negative "
+    "case swaps it in for the cached one; writers read fresh inside machine_file.editing",
     "match_curve": "called by evaluation drivers kept outside this repository",
     "smooth_min_run": "called by evaluation drivers kept outside this repository",
     "compute_metrics": "called by evaluation drivers kept outside this repository",
@@ -65,8 +70,6 @@ _ORPHANS_WITH_REASONS = {
     "human_label_for": "what a one-by-one audit answer says about the clip's own label; read "
     "for audit.csv rows and label_audit(answer=), no GUI since clip review",
     # --- built and tested, no surface reaches it yet ---------------------------------- #
-    "resolve_track_id": "DESIGN_PLAN §13's animal-id selector; every config types track_id as "
-    "int, so the str branch is unreachable. Real gap, tracked in docs/clustering_experiments.md",
     "module_topic": "help-system lookup; field_topic is wired, this one is not yet",
     "anchor_exists": "help-system link validation, used by the docs tests, not yet by a surface",
     "marked_capabilities": "reads the §25 prose markers back out of a docs page; the "

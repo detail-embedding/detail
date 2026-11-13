@@ -213,11 +213,13 @@ def test_the_clip_options_reach_the_writer(qapp, authored_cohort):
     dialog._crop.setChecked(True)
     dialog._size.setValue(320)
     dialog._max_per_cluster.setValue(5)
+    dialog._codec.set_codec("mp4v")
     assert dialog._options() == {
         "renders": (clip_render.MASK,),
         "crop": True,
         "size": 320,
         "max_per_cluster": 5,
+        "codec": "mp4v",
     }
 
 
@@ -778,3 +780,26 @@ def test_no_dark_figures_control_where_nothing_draws_one(qapp, authored_cohort):
     assert targets, "the fixture must offer something that draws no figure"
     dialog = ExportDialog(subject, targets, None)
     assert dialog._dark_figures is None
+
+
+def _keypoints_run_subject(built):
+    from detail.storage import runs as runs_store
+
+    recording = built.recording
+    run_dir = recording.dir / "keypoints" / "kp_01"
+    run_dir.mkdir(parents=True)
+    (run_dir / "keypoints.yaml").write_text("schema_version: 1\n", encoding="utf-8")
+    video = recording.dir / "video" / "part_001.mp4"
+    video.parent.mkdir(parents=True, exist_ok=True)
+    video.write_bytes(b"\0")  # availability asks only that the file is here
+    runs_store.write_run(
+        built.experiment.dir,
+        "run_kp",
+        {
+            "id": "run_kp",
+            "module_id": "keypoints",
+            "per_recording": {recording.id: {"run_id": "kp_01", "status": "complete"}},
+            "status": "complete",
+        },
+    )
+    return ExportSubject("run", built.experiment.dir, "run_kp")

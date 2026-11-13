@@ -13,6 +13,8 @@ from collections import namedtuple
 
 import numpy as np
 
+from detail.analysis import mask_shape
+
 
 def mask_centroid(mask: np.ndarray) -> tuple[float, float]:
     """Center of mass ``(x, y)`` of a ``(H, W)`` bool mask; ``(nan, nan)`` when empty.
@@ -27,9 +29,12 @@ def mask_centroid(mask: np.ndarray) -> tuple[float, float]:
     return (float(xs.mean()), float(ys.mean()))
 
 
-#: One frame's subject geometry, all normalized to the frame (§14 ``kinematics/``).
+#: One frame's subject geometry, all normalized to the frame (§14 ``kinematics/``). ``shape``
+#: is the outline (``mask_shape.FrameShape``), NaN where there was no mask.
 FrameGeometry = namedtuple(
-    "FrameGeometry", ["cx_norm", "cy_norm", "mask_area_norm", "bbox_norm"]
+    "FrameGeometry",
+    ["cx_norm", "cy_norm", "mask_area_norm", "bbox_norm", "shape"],
+    defaults=(mask_shape.NO_SHAPE,),
 )
 
 #: What a frame with nothing to describe reports. Public because the embedding worker writes it
@@ -82,4 +87,5 @@ def frame_geometry(mask: np.ndarray | None, bboxes, frame_hw) -> FrameGeometry:
             cx, cy = (mx + 0.5) / width, (my + 0.5) / height
     if not np.isfinite(cx):
         cx, cy = float((union[0] + union[2]) / 2), float((union[1] + union[3]) / 2)
-    return FrameGeometry(float(cx), float(cy), area, union)
+    shape = mask_shape.frame_shape(mask, frame_hw)
+    return FrameGeometry(float(cx), float(cy), area, union, shape)

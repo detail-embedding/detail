@@ -19,6 +19,29 @@ def test_analysis_yaml_roundtrip_schema_first(tmp_path):
     assert ar.read_analysis_yaml(adir)["status"] == "complete"
 
 
+def test_set_analysis_status_merges_duration_from_the_jobs_own_envelope(tmp_path):
+    """analysis_dir doubles as the job's own run_dir — set_analysis_status reads
+    started_at/completed_at straight from job.json, no new argument needed."""
+    from detail.core.dataclasses import JobStatus
+    from detail.executor import rundir
+
+    proj = experiment_store.create_experiment(tmp_path, "p")
+    adir = ar.analysis_dir(proj, "an_01")
+    ar.write_analysis_yaml(adir, {"id": "an_01", "status": "running"})
+    rundir._atomic_write(
+        rundir._job_path(adir),
+        {"schema_version": 1, "job": None, "progress": None, "error": None},
+    )
+    rundir.set_status(adir, JobStatus.RUNNING)
+    rundir.set_status(adir, JobStatus.COMPLETE)
+
+    ar.set_analysis_status(adir, "complete")
+
+    rec = ar.read_analysis_yaml(adir)
+    assert rec["duration_s"] is not None
+    assert rec["compute"] is None  # analysis is local-only today
+
+
 def test_set_status_records_error(tmp_path):
     proj = experiment_store.create_experiment(tmp_path, "p")
     adir = ar.analysis_dir(proj, "an_01")

@@ -202,7 +202,9 @@ class IoUSingleTracker(Tracker):
                 break
             part_path = parts[part_index]
             _common.clear_zarr(output_dir / "assignments" / part_path.name)
-            data = DetectionPartReader(part_path).read()
+            data = _common.filter_by_class(
+                DetectionPartReader(part_path).read(), job.class_name
+            )
             conf = data["confidence"]
             bbox = data["bbox"]
             mask_rle = data["mask_rle"]
@@ -362,6 +364,7 @@ class IoUSingleTracker(Tracker):
             "tracker_id": self.tracker_id,
             "hyperparams": params,
             "arena_ids": list(job.arena_ids),
+            "class_name": job.class_name,
             "subject_labels": None,
             "status": status,
             "n_tracks": n_tracks,

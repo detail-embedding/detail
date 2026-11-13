@@ -27,6 +27,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from detail.analysis import retrieval
+from detail.core.utils import coerce_series_key
 
 # A subject key: (recording_id, track_id). One continuous-run search unit per (subject, run).
 Subject = tuple[str, int]
@@ -313,7 +314,7 @@ def _resolve_example(
 ) -> tuple[Example, np.ndarray]:
     """Resolve one ``{recording_id, track_id, start_t_ns, end_t_ns}`` spec to an
     ``Example`` (with its embeddings), validating it lies within one continuous run."""
-    subject = (spec["recording_id"], int(spec["track_id"]))
+    subject = (spec["recording_id"], coerce_series_key(spec["track_id"]))
     if subject not in databases:
         raise KeyError(f"query subject {subject!r} not loaded")
     emb, frame_idx, t_ns = databases[subject]
@@ -442,7 +443,10 @@ def query_tracks(
         ]
         if labeled is not None:
             for lab in labeled:
-                if (lab["recording_id"], int(lab["track_id"])) != subject:
+                if (
+                    lab["recording_id"],
+                    coerce_series_key(lab["track_id"]),
+                ) != subject:
                     continue
                 lo, hi = span_to_rows(
                     t_ns, int(lab["start_t_ns"]), int(lab["end_t_ns"])

@@ -2,7 +2,12 @@
 typed shape of an embedding run. The nested compute target, the resolved renderer_spec, and the
 (experiment-populated, all_tracks-resolved) track_ids stay outside the model — ``EmbeddingModule.validate``
 resolves / checks them and returns the enriched config; the model only enforces the modelled scalars
-and carries the metadata each surface (GUI tooltip, CLI help, docs) reads."""
+and carries the metadata each surface (GUI tooltip, CLI help, docs) reads.
+
+A ``track_ids`` entry may be an int (a track's raw position) or a string (an animal id,
+resolved per recording through that recording's own ``subject_labels`` — §13) —
+``core.utils.resolve_track_id`` is the resolver and ``validate`` writes the resolved
+integers back, the same way it resolves ``all_tracks``."""
 
 from typing import Literal
 
@@ -18,6 +23,31 @@ from detail.transforms.constructors import DEFAULT_CONSTRUCTOR
 # colour for the whole selection, because a colour that differs per recording is a cue that
 # identifies the recording, and the encoder sees it in every frame.
 DerivedScope = Literal["per_recording", "shared"]
+# §14 pose in the embedding: how a keypoint track run's points enter it (EmbeddingConfig.pose).
+PoseMode = Literal["none", "draw", "append"]
+
+#: The three ways a keypoint track run's pose can enter an embedding (``EmbeddingConfig.pose``):
+#: a short label and one plain-language explanation each. The one wording every surface that
+#: offers the choice shows (the launch form, ``--help``, the docs), so they cannot drift apart.
+POSE_CHOICES: dict[str, tuple[str, str]] = {
+    "none": (
+        "Mask only",
+        "The model sees the mask's shape and nothing else.",
+    ),
+    "draw": (
+        "Points drawn on the mask",
+        "The body points (coloured by side, joined by the skeleton's lines) are painted onto "
+        "the image the model sees, so a single vector describes the mask and the pose together "
+        "as the model reads them. The vector keeps its usual size.",
+    ),
+    "append": (
+        "Pose numbers added to the vector",
+        "The pose is written as numbers (each point's place relative to the body's centre, "
+        "turned so the heading points right, in body lengths) and added after the mask's "
+        "vector. Mask and pose stay two separate parts of one vector, weighed against each "
+        "other by the pose weight, and the vector is that much longer.",
+    ),
+}
 
 
 class EmbeddingConfig(BaseModel):
@@ -121,8 +151,8 @@ class EmbeddingConfig(BaseModel):
     keypoint_run_id: str | None = Field(
         None,
         description=(
-            "The keypoint track run (kt_NN) the heading is read from; it must come from "
-            "this embedding's own tracking run."
+            "The keypoint track run (kt_NN) the heading and the pose are read from; it must "
+            "come from this embedding's own tracking run."
         ),
         json_schema_extra={"label": "Keypoint track run"},
     )
@@ -170,4 +200,41 @@ class EmbeddingConfig(BaseModel):
             "foreshortens its axis to noise, which is where headings flip."
         ),
         json_schema_extra={"advanced": True, "label": "Facing-camera ratio"},
+    )
+    # §14 *Pose in the embedding* (#659): the keypoint track run's points in the vector too.
+    pose: PoseMode = Field(
+        "none",
+        description=(
+            "Put the pose, not only the mask's shape, into the embedding, from the keypoint "
+            "track run. none: the mask alone. draw: the body points are painted onto the "
+            "image before the model sees it, so one vector holds the mask and the pose "
+            "together. append: the pose is written as numbers (each point's place on the "
+            "body, turned so the heading points right) and added after the mask's vector, "
+            "weighed against it by 'Pose weight'; append needs a heading. Either needs points "
+            "on every frame this run embeds."
+        ),
+        json_schema_extra={"label": "Pose"},
+    )
+    pose_weight: float = Field(
+        1.0,
+        gt=0.0,
+        le=10.0,
+        description=(
+            "append only: how much the pose numbers count against the mask's vector when "
+            "frames are compared. 1 gives them equal say, 0.5 half as much, 2 twice as much. "
+            "Both parts are scaled to the same length first, so this alone sets the balance."
+        ),
+        json_schema_extra={"label": "Pose weight"},
+    )
+    pose_min_score: float | None = Field(
+        None,
+        # every method's score lies in [-1, 1]: cosine similarity, heatmap peak, confidence
+        ge=-1.0,
+        le=1.0,
+        description=(
+            "A point scoring below this is left out of the pose (not drawn, and counted as "
+            "missing in the numbers). Omit for the keypoint track run's own cut-off, the one "
+            "the heading uses."
+        ),
+        json_schema_extra={"advanced": True, "label": "Pose min score"},
     )

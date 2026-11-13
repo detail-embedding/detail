@@ -1,4 +1,17 @@
-"""UltralyticsYOLOTrainer: registration, hyperparams, readiness (no live train)."""
+"""UltralyticsYOLOTrainer: registration, hyperparams, readiness (no live train).
+
+**The class: a resource limit of the host assumed away by a default.** Ultralytics pins every
+training batch's host memory; WSL2 stops handing out pinned memory at about 1 GiB in total
+(measured: `torch.empty(n).pin_memory()` fails with `CUDA error: out of memory` after 1,008 MiB,
+with 7 GB of VRAM free). A keypoints distill therefore died in its first epoch, on the dataloader's
+pin-memory thread, three times: batch 32 twice and, after the batch was halved on the guess that it
+was VRAM, batch 16 as well. The message says "CUDA out of memory", which is the one reading that
+points at the wrong thing, so the lesson of the first two runs was the wrong one.
+
+What is pinned here: a host that caps pinned memory builds its Ultralytics loaders unpinned, the
+patch is undone afterwards even when training raises, and a host that does not cap it is left
+alone (pinning is a real speed-up there).
+"""
 
 import importlib.util
 import sys
@@ -10,6 +23,139 @@ import pytest
 from detail.configs.training import UltralyticsYOLOConfig
 from detail.core.registries import TRAINERS
 from detail.trainers.ultralytics_yolo import UltralyticsYOLOTrainer
+
+
+@pytest.fixture(autouse=True)
+def _host_is_not_capped(monkeypatch):
+    """The fake `ultralytics` modules below carry no `data.build`; whether the box running the
+    suite is WSL must not decide whether they work."""
+    from detail.trainers import ultralytics_yolo
+
+    monkeypatch.setattr(ultralytics_yolo, "_host_caps_pinned_memory", lambda: False)
+
+
+@pytest.fixture
+def fake_loader(monkeypatch):
+    """`ultralytics.data.build.InfiniteDataLoader`, recording what it is built with."""
+    built: list[dict] = []
+
+    class InfiniteDataLoader:
+        def __init__(self, *args, **kwargs):
+            built.append(kwargs)
+
+    package = types.ModuleType("ultralytics")
+    data = types.ModuleType("ultralytics.data")
+    build = types.ModuleType("ultralytics.data.build")
+    build.InfiniteDataLoader = InfiniteDataLoader
+    data.build = build
+    package.data = data
+    monkeypatch.setitem(sys.modules, "ultralytics", package)
+    monkeypatch.setitem(sys.modules, "ultralytics.data", data)
+    monkeypatch.setitem(sys.modules, "ultralytics.data.build", build)
+    return InfiniteDataLoader, built
+
+
+def test_a_capped_host_builds_its_loaders_unpinned_and_puts_them_back(fake_loader):
+    from detail.trainers import ultralytics_yolo
+
+    loader, built = fake_loader
+    with ultralytics_yolo._training_without_pinned_memory(enabled=True):
+        loader(dataset=1, pin_memory=True, pin_memory_device="xpu", batch_size=16)
+    assert built[-1]["pin_memory"] is False
+    assert "pin_memory_device" not in built[-1]
+    assert built[-1]["batch_size"] == 16, "only the pinning is changed"
+
+    loader(dataset=1, pin_memory=True)  # outside the block it is Ultralytics' again
+    assert built[-1]["pin_memory"] is True
+
+
+def test_the_patch_is_undone_when_training_raises(fake_loader):
+    from detail.trainers import ultralytics_yolo
+
+    loader, built = fake_loader
+    with pytest.raises(RuntimeError, match="boom"):
+        with ultralytics_yolo._training_without_pinned_memory(enabled=True):
+            raise RuntimeError("boom")
+    loader(dataset=1, pin_memory=True)
+    assert built[-1]["pin_memory"] is True
+
+
+def test_a_host_that_does_not_cap_pinned_memory_is_left_alone(fake_loader):
+    from detail.trainers import ultralytics_yolo
+
+    loader, built = fake_loader
+    original = loader.__init__
+    with ultralytics_yolo._training_without_pinned_memory(enabled=False):
+        assert loader.__init__ is original
+        loader(dataset=1, pin_memory=True)
+    assert built[-1]["pin_memory"] is True
+
+
+@pytest.mark.parametrize(
+    "release, capped",
+    [
+        ("6.18.40.1-microsoft-standard-WSL2", True),
+        ("5.15.167.4-Microsoft-standard-WSL2", True),
+        ("6.8.0-45-generic", False),
+        ("10", False),  # native Windows reports its major version
+        ("25.0.0", False),  # macOS
+    ],
+)
+def test_only_wsl_is_assumed_to_cap_pinned_memory(monkeypatch, release, capped):
+    """Measured on one WSL2 box, so it is the one family the cap is assumed on; a native Linux
+    host is not guessed at."""
+    from detail.trainers import ultralytics_yolo
+
+    monkeypatch.undo()  # the autouse fixture stubs the very function under test
+    monkeypatch.setattr(ultralytics_yolo.platform, "release", lambda: release)
+    assert ultralytics_yolo._host_caps_pinned_memory() is capped
+
+
+@pytest.mark.parametrize("method", ["train", "resume"])
+def test_train_and_resume_both_run_unpinned_on_a_capped_host(
+    tmp_path, monkeypatch, fake_loader, method
+):
+    """What matters is the loaders Ultralytics builds *inside* `model.train`, for both entry
+    points: a resume after the crash would otherwise hit the same cap."""
+    from detail.core.dataclasses import ComputeTarget, TrainingJob
+    from detail.storage import datasets as datasets_store
+    from detail.trainers import ultralytics_yolo
+
+    loader, built = fake_loader
+
+    class _FakeYOLO:
+        def __init__(self, weights):
+            self.ckpt = {"epoch": 3, "optimizer": {"state": 1}}
+
+        def add_callback(self, *_args, **_kwargs):
+            pass
+
+        def train(self, **kwargs):
+            loader(dataset=1, pin_memory=True)
+
+    sys.modules["ultralytics"].YOLO = _FakeYOLO
+    monkeypatch.setattr(ultralytics_yolo, "_weights_dir", lambda: tmp_path / "cache")
+    monkeypatch.setattr(ultralytics_yolo, "_host_caps_pinned_memory", lambda: True)
+    dataset_dir = tmp_path / "dataset_001"
+    dataset_dir.mkdir()
+    datasets_store.write_data_yaml(dataset_dir, {0: "mouse"})
+    model_dir = tmp_path / "models" / "model_001"
+    (model_dir / "run" / "weights").mkdir(parents=True)
+    (model_dir / "run" / "weights" / "last.pt").write_bytes(b"x")
+    job = TrainingJob(
+        job_id="model_001",
+        model_id="model_001",
+        dataset_id="dataset_001",
+        trainer_id="ultralytics_yolo",
+        base_model="yolo11n-seg.pt",  # the dataset below has no keypoints
+        hyperparams={},
+        compute=ComputeTarget("cpu", None, None, None),
+        created_at="2026-10-08T00:00:00Z",
+    )
+
+    getattr(UltralyticsYOLOTrainer(), method)(job, dataset_dir, model_dir, "cpu")
+
+    assert built[-1]["pin_memory"] is False
 
 
 def test_registered_and_attrs():
@@ -25,7 +171,7 @@ def test_registered_and_attrs():
 
 def test_validate_hyperparams_fills_defaults():
     out = UltralyticsYOLOTrainer().validate_hyperparams({"epochs": 50})
-    assert out == {"epochs": 50, "batch_size": 32, "imgsz": 640, "patience": 100}
+    assert out == {"epochs": 50, "batch_size": 8, "imgsz": 640, "patience": 100}
 
 
 def test_validate_hyperparams_rejects_unknown_key():
@@ -410,3 +556,36 @@ def test_a_stop_event_still_stops_at_the_epoch_boundary(tmp_path, monkeypatch):
         stop_event=stop_event,
     )
     assert seen["stop"] is True
+
+
+def test_a_pose_run_is_judged_and_ranked_by_its_keypoints(tmp_path):
+    """A pose model's best.pt follows the keypoints metric, so ranking its epochs by box mAP
+    would name the wrong epoch best."""
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "results.csv").write_text(
+        "epoch,metrics/mAP50(B),metrics/mAP50(P)\n"
+        "1,0.90,0.40\n"
+        "2,0.70,0.80\n"
+        "3,0.95,0.60\n",
+        encoding="utf-8",
+    )
+    t = UltralyticsYOLOTrainer()
+    metrics = t.final_metrics(tmp_path)
+    assert metrics["final_epoch"] == 3 and metrics["pose_map50"] == 0.60
+    assert metrics["best_epoch"] == 2 and metrics["best_pose_map50"] == 0.80
+    assert [p.get("pose_map50") for p in t.metric_history(tmp_path)] == [0.4, 0.8, 0.6]
+
+
+def test_live_files_name_the_file_metric_history_reads(tmp_path):
+    """A remote run mirrors `live_files` back mid-run so the curve can be drawn; naming any other
+    file would mirror faithfully and draw nothing."""
+    (rel,) = UltralyticsYOLOTrainer.live_files
+    (tmp_path / rel).parent.mkdir(parents=True)
+    (tmp_path / rel).write_text(
+        "epoch,metrics/mAP50(B)\n1,0.5\n2,0.6\n", encoding="utf-8"
+    )
+    assert [p["epoch"] for p in UltralyticsYOLOTrainer().metric_history(tmp_path)] == [
+        1,
+        2,
+    ]

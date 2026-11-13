@@ -13,6 +13,7 @@ import contextlib
 import csv
 import hashlib
 import importlib.metadata
+import platform
 import time
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
@@ -20,6 +21,7 @@ import yaml
 
 from detail.configs.training import UltralyticsYOLOConfig
 from detail.core import atomic
+from detail.core import yaml_load
 from detail.core.dataclasses import TrainingProgressEvent
 from detail.core.installed import is_importable
 from detail.core.progress import remaining_seconds
@@ -34,6 +36,52 @@ def _weights_dir() -> Path:
     path = model_cache_dir() / "ultralytics"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def _host_caps_pinned_memory() -> bool:
+    """Whether this host stops handing out pinned (page-locked) memory long before RAM runs out.
+
+    Measured on the development box under WSL2 (kernel ``6.18.40.1-microsoft-standard-WSL2``, an
+    8 GB RTX 2070 SUPER, 32 GB of RAM, torch 2.6.0+cu124): ``torch.empty(n).pin_memory()`` succeeds
+    until about 1 GiB is pinned in total and then raises ``CUDA error: out of memory``, with 7 GB
+    of VRAM free. Ultralytics pins every training batch, with 8 workers and a prefetch of 4, so a
+    pose training died in its first epoch (batch 32 at 448 px: twice, in the first batches; batch
+    16: at the 24th of 161). Native Linux is not known to have the cap, so it is not assumed.
+    """
+    return "microsoft" in platform.release().lower()
+
+
+@contextlib.contextmanager
+def _training_without_pinned_memory(enabled: bool | None = None):
+    """Make Ultralytics build its dataloaders with ``pin_memory=False`` for the duration.
+
+    Pinning only speeds the host-to-GPU copy of a batch, which for a small pose model is far
+    below the cost of the CPU augmentation that produces it. ``InfiniteDataLoader`` is the one
+    class every Ultralytics loader is built through, and it takes ``pin_memory`` as a keyword, so
+    wrapping its ``__init__`` reaches the train and validation loaders alike without editing the
+    package (the callers import ``build_dataloader`` by name, so patching that would miss them).
+    """
+    if enabled is None:
+        enabled = _host_caps_pinned_memory()
+    if not enabled:
+        yield
+        return
+    import_ultralytics()
+    from ultralytics.data import build
+
+    loader = build.InfiniteDataLoader
+    original = loader.__init__
+
+    def unpinned(self, *args, **kwargs):
+        kwargs["pin_memory"] = False
+        kwargs.pop("pin_memory_device", None)
+        original(self, *args, **kwargs)
+
+    loader.__init__ = unpinned
+    try:
+        yield
+    finally:
+        loader.__init__ = original
 
 
 def _installed_version(package: str) -> str | None:
@@ -70,6 +118,11 @@ def _resumable(ckpt) -> bool:
     return epoch is not None and epoch >= 0 and ckpt.get("optimizer") is not None
 
 
+#: Ultralytics' per-epoch log, relative to the model dir — the one file behind both
+#: `final_metrics` and `metric_history`.
+_RESULTS_CSV = "run/results.csv"
+
+
 @register_trainer("ultralytics_yolo")
 class UltralyticsYOLOTrainer(Trainer):
     trainer_id = "ultralytics_yolo"
@@ -78,6 +131,7 @@ class UltralyticsYOLOTrainer(Trainer):
     supported_backends = ["cpu", "cuda", "mps"]
 
     config_model = UltralyticsYOLOConfig
+    live_files = (_RESULTS_CSV,)
 
     def is_ready(self) -> bool:
         return is_importable("ultralytics")
@@ -107,7 +161,7 @@ class UltralyticsYOLOTrainer(Trainer):
         weights cache (never a experiment file) at a stable name keyed by ``model_dir``
         so the path Ultralytics bakes into ``run/args.yaml`` survives for resume.
         """
-        spec = yaml.safe_load(
+        spec = yaml_load.safe_load(
             (Path(dataset_dir) / "data.yaml").read_text(encoding="utf-8-sig")
         )
         spec["path"] = str(Path(dataset_dir).resolve())
@@ -145,7 +199,7 @@ class UltralyticsYOLOTrainer(Trainer):
         with contextlib.chdir(_weights_dir()):  # base weights download into the cache
             model = YOLO(job.base_model)
         self._wire_callbacks(model, hp["epochs"], progress_cb, stop_event)
-        with contextlib.chdir(_weights_dir()):
+        with contextlib.chdir(_weights_dir()), _training_without_pinned_memory():
             model.train(
                 data=str(data_yaml),
                 epochs=hp["epochs"],
@@ -193,7 +247,7 @@ class UltralyticsYOLOTrainer(Trainer):
             progress_cb,
             stop_event,
         )
-        with contextlib.chdir(_weights_dir()):
+        with contextlib.chdir(_weights_dir()), _training_without_pinned_memory():
             model.train(resume=True)
 
     @staticmethod
@@ -201,7 +255,7 @@ class UltralyticsYOLOTrainer(Trainer):
         """``"pose"`` when the dataset's ``data.yaml`` carries ``kpt_shape`` (§12 *Distill
         keypoints*), else ``"segment"``: what a base checkpoint has to be able to learn.
         """
-        spec = yaml.safe_load(atomic.read_text(Path(dataset_dir) / "data.yaml"))
+        spec = yaml_load.safe_load(atomic.read_text(Path(dataset_dir) / "data.yaml"))
         return "pose" if (spec or {}).get("kpt_shape") else "segment"
 
     def check_base_model(self, base_model: str, dataset_dir: Path | str) -> None:
@@ -234,7 +288,7 @@ class UltralyticsYOLOTrainer(Trainer):
         args_path = Path(model_dir) / "run" / "args.yaml"
         if not args_path.is_file():
             return {}
-        args = yaml.safe_load(atomic.read_text(args_path)) or {}
+        args = yaml_load.safe_load(atomic.read_text(args_path)) or {}
         return {
             "backend": "ultralytics",
             "version": _installed_version("ultralytics"),
@@ -254,10 +308,11 @@ class UltralyticsYOLOTrainer(Trainer):
         return best if best.is_file() else None
 
     def final_metrics(self, model_dir: Path) -> dict:
-        """Metrics from Ultralytics' ``run/results.csv``: the **final** epoch's mAP50 (box/mask)
-        *and* the **best** epoch's — the epoch ``best.pt`` was saved from (max box mAP50), so an
-        interrupted or resumed run isn't judged only by its worse final epoch. ``{}`` if the file
-        is missing or empty."""
+        """Metrics from Ultralytics' ``run/results.csv``: the **final** epoch's mAP50 (box/mask,
+        or keypoints for a pose model) *and* the **best** epoch's — the epoch ``best.pt`` was
+        saved from (max pose mAP50 for a pose model, else max box mAP50), so an interrupted or
+        resumed run isn't judged only by its worse final epoch. ``{}`` if the file is missing or
+        empty."""
         rows = self._results_rows(model_dir)
         if not rows:
             return {}
@@ -312,7 +367,7 @@ class UltralyticsYOLOTrainer(Trainer):
         Read fresh every call rather than cached: this file is being appended to while a training
         run is live, which is the case the curve exists for.
         """
-        results = Path(model_dir) / "run" / "results.csv"
+        results = Path(model_dir) / _RESULTS_CSV
         if not results.is_file():
             return []
         with open(results, encoding="utf-8-sig") as f:
@@ -341,6 +396,7 @@ class UltralyticsYOLOTrainer(Trainer):
             for column, key in (
                 ("metrics/mAP50(B)", "box_map50"),
                 ("metrics/mAP50(M)", "mask_map50"),
+                ("metrics/mAP50(P)", "pose_map50"),
             ):
                 value = _num(row.get(column))
                 if value is not None:

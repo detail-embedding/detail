@@ -14,6 +14,15 @@ the useful thing to say even when the weights are also absent.
 authoritative disk check is ``api.models.is_installed`` — no network, and the same answer the
 run's pre-flight gates on.
 
+**A third way out, for a form that offers it:** a cuda-only model with no local CUDA is not
+"needs CUDA" when the caller passes ``allow_remote=True`` and a Slurm cluster is registered
+(§6) — the run can go there instead, the same reasoning `ComputeTargetRow.set_backends` uses
+to offer a "remote" backend row (`gui/compute_target.py::remote_targets_for`, the one place
+that condition is written). Neither local install state nor local hardware then blocks the
+row: a remote job's own readiness is checked on the cluster before it is submitted
+(`executor/remote_shepherd.py`), never here. Leave ``allow_remote`` at its default ``False``
+for a form whose module isn't remote-wired — a cuda-only model there still needs its reason.
+
 Call ``apply_availability`` once after building or rebuilding a picker's list, never from a
 selection handler: it moves the selection to something runnable, which fires the form's own
 sync handlers.
@@ -24,6 +33,7 @@ from PyQt6.QtGui import QColor, QPalette, QStandardItemModel
 from PyQt6.QtWidgets import QLabel
 
 from detail.core.utils import available_backends
+from detail.gui.compute_target import remote_targets_for
 from detail.gui.status_color import WARN
 
 # Appended to a row's label. Split on the separator to recover the base label, so re-marking
@@ -87,19 +97,22 @@ def _variants(model_id: str) -> list[str]:
     """
     from detail.api import models as api_models
 
-    for row in api_models.list_models():
-        if row.id == model_id:
-            return list(row.variants)
-    entry = api_models.all_models().get(model_id)
-    variants = getattr(entry[1], "variants", None) if entry else None
-    return list(variants()) if callable(variants) else []
+    return api_models.model_variants(model_id)
 
 
-def unavailable_reason(model_id: str) -> str | None:
-    """Why ``model_id`` cannot run here, or ``None`` when it can."""
+def unavailable_reason(model_id: str, *, allow_remote: bool = False) -> str | None:
+    """Why ``model_id`` cannot run here, or ``None`` when it can.
+
+    ``allow_remote`` mirrors ``ComputeTargetRow(allow_remote=...)`` on the same form: when
+    set, and a registered Slurm cluster can take this model (``remote_targets_for``), neither
+    reason below applies — the run does not need this machine's backend or its disk.
+    """
     from detail.api import models as api_models
 
     supported = api_models.supported_backends(model_id)
+    # A catalog model (an imported or distilled one) qualifies too: the run uploads it.
+    if remote_targets_for(supported, allow_remote):
+        return None
     if not [b for b in supported if b in available_backends()]:
         names = " or ".join(_BACKEND_NAMES.get(b, b.upper()) for b in supported)
         return f"needs {names}"
@@ -111,6 +124,10 @@ def unavailable_reason(model_id: str) -> str | None:
             sizes = " or ".join(_variants(model_id)) or "its weights"
             return f"needs {shared} {sizes} installed"
         return "not installed"
+    from detail.models import onnx_keypoints
+
+    if onnx_keypoints.is_imported(model_id) and not onnx_keypoints.backend_available():
+        return "needs onnxruntime"  # an imported keypoint model's runtime (§26)
     return None
 
 
@@ -124,6 +141,8 @@ def _shares_weights_with(model_id: str) -> str | None:
 def _tooltip(reason: str) -> str:
     if reason == "not installed":
         return "Not downloaded on this machine — install it from the Model manager."
+    if reason == "needs onnxruntime":
+        return "Imported keypoint models run with onnxruntime: pip install -e '.[keypoints_onnx]'"
     if reason.startswith("needs ") and reason.endswith(" installed"):
         return (
             f"This method reuses another model's weights; it {reason[:-len(' installed')]} "
@@ -145,8 +164,13 @@ def selected_model_id(combo) -> str | None:
     return None if text == _NO_MODEL_ROW else _base_label(text)
 
 
-def apply_availability(combo, role: str) -> str | None:
+def apply_availability(combo, role: str, *, allow_remote: bool = False) -> str | None:
     """Mark every row, open on one that can run, and report when none can.
+
+    ``allow_remote`` is the same required-decision as ``ComputeTargetRow(allow_remote=...)``
+    on the same form (`gui/compute_target.py`) — pass it only for a module whose executor
+    path is actually remote-wired (detection, today), so a cuda-only model there is offered
+    when a registered cluster can take it instead of the reason it would otherwise show.
 
     Returns ``None`` when something is runnable, else the sentence the form shows and
     ``validation_error`` refuses the run with.
@@ -165,7 +189,7 @@ def apply_availability(combo, role: str) -> str | None:
         model_id = _model_id_at(combo, index)
         if item is None or model_id is None:
             continue
-        reason = unavailable_reason(model_id)
+        reason = unavailable_reason(model_id, allow_remote=allow_remote)
         combo.setItemText(index, _base_label(combo.itemText(index)))
         item.setEnabled(reason is None)
         if reason is None:

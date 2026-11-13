@@ -1,4 +1,4 @@
-﻿# DETAIL concepts
+# DETAIL concepts
 
 The shared vocabulary and mental model behind the tool, referenced by the [CLI guide](cli.md) and the [GUI guide](gui.md). Read this once; the guides assume these terms.
 
@@ -15,6 +15,8 @@ experiment
 └── recording                 one experimental subject/recording (video + optional streams + metadata)
     ├── detection           find the target each frame (text-prompted model)  → det_01
     ├── tracking            link detections into a subject track over time     → track_01
+    ├── keypoint detect     (optional) named body points on the tracked animal → kd_01
+    ├── keypoint track      (optional) those points settled over time          → kt_01
     ├── embedding           embed the tracked subject's masked image per frame → emb_01
     └── analysis            experiment-level: analyze a run across recordings  → an_01
 ```
@@ -93,9 +95,13 @@ own matching run, so `det_01` in one recording and `det_02` in another are recog
 detections and tracked together.
 
 In the GUI, pick the kind from a list labelled with coverage; recordings without a match are
-dropped after you confirm. On the CLI, name one example run with `--detection-ref
-<RECORDING:det_NN>` (or `--tracking-ref`). The run fails if any selected recording has no match,
-so name a run whose kind every selected recording shares.
+dropped after you confirm. Each row opens with the experiment run that made it (`run_007 ·
+model_001 @ 0.50 (trained) · Intruder 0.20, Resident 0.50`), and so does each upstream after
+`from`. A row is one set of settings, so a retry launched later with the same settings joins
+it and the row names both (`run_001 + run_004`). On the CLI, name the run with
+`--detection-ref run_007`, or one example run with `--detection-ref <RECORDING:det_NN>` (or
+`--tracking-ref`). The run fails if any selected recording has no match, so name a run whose
+kind every selected recording shares.
 
 ### Snapshot { #snapshot }
 
@@ -114,6 +120,16 @@ snapshots`.
 
 Runs a detection model with a **text prompt** (`"mouse"`) over every frame, writing one row per
 detection: bounding box, mask, confidence. Frames with no detection have no rows.
+
+### Class names { #class-names }
+
+Each detection is labelled with a **class**: the prompt's name for a prompted model, or the class
+a trained detector was taught. You can give a class a different name for this experiment, so a
+detector that finds `white mouse` and `black mouse` can call them **Resident** and **Intruder**.
+
+Every screen shows the class's name, and wherever you are asked for a class you can type either
+name. Runs keep the name the class was detected with, so a rename changes no run and needs no
+re-run. Exported files and rendered videos carry that original name.
 
 ### Confidence threshold { #confidence-threshold }
 
@@ -142,6 +158,15 @@ frame to frame by IoU continuity, so a distractor cannot steal
 it). See the [CLI
 guide](cli.md#tracking) for when to use which.
 
+Every tracker here still tracks one subject per **run**. The supported way to end up with two
+tracked animals on one recording is to have detection tell them apart as two classes, then run
+tracking twice with `--class` (CLI) or the **Class** picker (GUI) set to one class each, giving
+each animal its own clean track without asking a tracker to disambiguate them itself. **Merge
+tracks** then combines those two single-subject runs into one multi-subject tracking run: the
+supported way to see both animals' masks in the same preview, or feed both to location export or
+embedding as one run, by relabeling each source's already-clean rows rather than re-tracking. See
+the [CLI guide](cli.md#merge-tracks).
+
 ### Embedding run { #embedding-run }
 
 For a chosen track, renders the subject's masked image each frame and embeds it into a feature
@@ -154,8 +179,21 @@ to the frame so two recordings at different resolutions are comparable. The embe
 carries no position and no orientation, so a cluster confined to one corner is invisible in the
 embedding and obvious on a map.
 
-A run made before this was captured has none. `detail recording backfill-kinematics` regenerates
-it from the detection masks without re-embedding.
+It records the mask's **shape** too: how high the top reaches and where the bottom sits, how wide
+the animal stands on the floor, how long it is against how wide, which way its long axis points,
+how filled-in and how round the outline is, and how many parts stick out of it. These are what the
+[cluster profile](#cluster-profile) measures with when there are no keypoints. Measures that only
+mean something from the side (how tall the animal stands, how wide it touches the floor) are used
+only on recordings whose [camera view](#camera-view) is a side view.
+
+Movement **inside** the outline is measured separately, because it needs the video read again:
+how much the pixels inside the mask change from one frame to the next, overall, at the body's two
+ends and in its middle. It is what tells grooming, licking or scratching from sitting still, which
+the outline alone cannot. `detail recording backfill-motion` measures it for an embedding run.
+
+A run made before this was captured has none, or has the position and not the shape. `detail
+recording backfill-kinematics` regenerates it from the detection masks without re-embedding,
+and brings an older run up to date with the shape.
 
 ### Keypoints { #keypoints }
 
@@ -165,18 +203,27 @@ animal it detected, frame by frame. It keeps the raw result and gives no pose to
 yet: each pose, the method's own score for each point, and the method's top candidates, so a
 later stage can choose among them without running the model again. The method `dinov3_match`
 works on each detection's crop and learns from an **example set**, a few frames on which you
-marked the skeleton; it needs no training. A trained student looks at the whole frame instead,
-and keeps each pose it is at least 0.25 confident in (**Minimum pose confidence**; poses below it
+marked the skeleton; it needs no training. Such a method places a pose in every detection,
+whatever its class, so when the detector also finds something that is not an animal (the arena,
+say), set **Class** to the animal's class and the other boxes are skipped. When two animals are
+told apart at detection and look different (a white and a black mouse), one example set does not
+serve both: give each class its own set, and each animal is matched against its own class's
+clicks. It is still one detect run, so keypoint track and everything after it read it the same
+way. A trained student
+looks at the whole frame instead, and keeps each pose it is at least 0.25 confident in (**Minimum pose confidence**; poses below it
 are not stored, so changing it means running again). **Keypoint track** (`kt_NN`) runs on a
 detect run and a **tracking run** made from the same detection run. It first gives each pose to
 a tracked animal: the one whose mask, grown slightly, holds the larger share of the pose's
-points, at least half of them by default, and never two poses to one animal on one frame. A
-pose that fits no animal stays unassigned, and the run counts how many did. Then it settles
+points, at least half of them by default, and never two poses to one animal on one frame. Only
+poses placed on a box of the class the tracking run follows are offered, so when the detector
+also finds something else (the arena, say) and placed a pose in that box too, that pose is
+never given to the animal. A pose that fits no animal stays unassigned, and the run counts how
+many did. Then it settles
 each animal's points over time: for `dinov3_match` a path through the stored candidates that
 keeps each point moving plausibly, left/right pairs held to one reading over frames, then a
 despike and a smooth; for a student, the despike and the smooth alone. Each detect method opens
-on its own track method. It is seconds of CPU, so another tracking run or other settings are a
-new run over the same detect run and the raw result is never rewritten. Detect runs made before
+on its own track method. It is CPU work, minutes per recording, on this computer or a
+registered cluster; another tracking run or other settings are a new run over the same detect run and the raw result is never rewritten. Detect runs made before
 this split (one row per tracked animal) are refused with a message to run keypoint detection
 again. Either run exports its points for other pose tools (DeepLabCut, SLEAP, NWB), as
 DETAIL's own long table, or as a video with the points drawn on; see
@@ -185,7 +232,20 @@ DETAIL's own long table, or as a video with the points drawn on; see
 turned to face one way before the model sees it, rotated for an overhead camera or mirrored
 for a side camera. A frame with no heading within a short gap is not embedded, so an aligned
 run never mixes turned and unturned pictures, and it never compares with an unaligned one.
+An embedding run can also carry the **pose**: the points drawn onto the image the model sees,
+or written as numbers after the mask's vector, weighed against it.
 The spec is DESIGN_PLAN §26 and §14.
+
+Methods other than `dinov3_match` need no example set: the two DeepLabCut **SuperAnimal**
+models (`superanimal_topviewmouse` for mice filmed from above, `superanimal_quadruped` for
+four-legged animals filmed from the side; optional downloads, for academic, non-commercial
+use), a model trained in **SLEAP** and imported once as an ONNX export (usable in every
+experiment), and a distilled student (below). Each places the keypoints it was trained on,
+with their names; for an imported model, which points pair as left and right is guessed from
+the names at import and can be changed.
+
+A keypoints run made before keypoint detect and track existed (`kp_NN`) still opens in its
+viewer and exports, read as a track run; no new one can be made.
 
 
 **A skeleton** is the list of points, in the order the tool stores them, plus the edges that join
@@ -205,7 +265,12 @@ made where you choose a model that needs one. It is what a
 patch-matching keypoint method learns from, the way example clips are what a behavior query
 learns from, so it is yours to make and never built from ground truth. One set belongs to the
 experiment and serves every recording. The tool samples the frames for you (varied postures by
-default, or a spread over time), and you click each point or say it is not visible. To reuse a
+default, a spread over time, or a few per direction the animal faces as the camera sees it, so
+a turning animal is shown from every side), and you click each point or say it is not visible.
+A frame you turn down is remembered and never offered again. Telling which way the animal faces
+needs nothing but the tracked masks; if your detector also segments the arena floor, naming it
+helps with frames facing toward or away from the camera when the camera looks across the arena
+rather than down on it. To reuse a
 skeleton, make a new set on it; a set's skeleton can change until its first mark, and is
 fixed after that. A run will
 record the set's digest and a copy of the marks it learned from, so a set can be edited afterwards
@@ -230,9 +295,32 @@ and keeps the teacher's raw output for those frames.
 register as one durable run; `detail dataset keypoints` builds the dataset alone. Promote the
 student to offer it in every experiment, and export it to use it on another machine (see
 [Imported model](#imported-model)).
+A student sees either the **whole frame**, with one label per tracked animal, so one pass per
+frame serves every animal (the default), or a **crop** around each tracked animal, resized to
+one size, for overlapping animals or a small animal in a wide view. It is run the way it was
+trained.
+
+**Keypoint setup** builds one student for a whole experiment in a single run. It takes one
+recording per **acquisition setup** (each camera or box, a column of the recording
+information), uses only its first minutes, detects and tracks the animal there with a distilled
+detector, then pauses for you to mark an example set on those tracks (or goes straight through
+with one already marked). The patch method then teaches a student as above, so the student
+has seen every camera it will be used on.
 
 
 ## Scene geometry
+
+### Camera view { #camera-view }
+
+Where the camera looks at the animal from: **top down**, **side view**, **angled down view**, or
+**other** with a description of your own. It is a fact about the rig, and anything whose meaning
+depends on it reads it. How high the animal reaches, for instance, only means something from
+the side.
+
+You set it once for the experiment, and every recording **inherits** that default. A recording
+made on a different rig sets its own, which overrides the default for that recording only.
+Nothing set anywhere reads as *not set*, never as a guess, and a step that needs a view skips
+what depends on it and says why.
 
 ### Field of view { #field-of-view }
 
@@ -349,10 +437,33 @@ Build with `analysis run`.
 ### Location export { #location-export }
 
 Turns a tracking run into per-frame, per-track **spatial features** around a recording's ROIs and
-POIs (`tracks.csv`, `roi_relations.csv`, `point_relations.csv`), keyed by `t_ns` so they join
-event streams on time. Distances and positions come in normalized and pixel units, plus
+POIs (`tracks.csv`, `roi_relations.csv`, `point_relations.csv`) and between tracks
+(`pair_relations.csv`: the distance between every pair tracked on a frame), keyed by `t_ns` so
+they join event streams on time. Give it a keypoint track run and it also writes
+`keypoints.csv`, every point of every animal on every frame. Distances and positions come in normalized and pixel units, plus
 millimetres (`_mm`) when the recording has a distance calibration. Run it big (`analysis run`,
 many recordings) or quick (`locations export`, one recording).
+
+A finished run also draws its **plots**: each animal's path (coloured by time or speed), an
+occupancy heat map, speed over time, the path against time in 3-D, and the distance between two
+animals over time or as a histogram. With keypoints, a point such as the nose can be the
+position, and several points can share one path plot.
+
+A run also **plays**: its recordings side by side, one tile per recording with every animal in its
+colour, through the same montage the cluster analyses use. Choose one window for every recording,
+or each recording's full length; a speed; the whole frame or a crop on the animals; and the layers
+(footage, masks, keypoints, trails). Export it as a GIF or MP4 (H.264, which PowerPoint plays, or the
+older MPEG-4 Part 2), or export the **last tracing
+frame**: the last picture with each animal's whole path drawn on it. One recording is a preview. Plot per recording, or by a
+Recording Information column such as `genotype`. Every animal in a recording is plotted, named by
+its label from the tracking run (a track merge names each one, such as "white mouse"; a run
+without labels calls them `subject 0`, `subject 1`, …). A label finds the same animal in every
+recording, whatever its track number there, and keeps its colour on every plot. You can also group
+by animal, alone or crossed with a column (`wt · resident`). A group heat map gives every animal
+equal weight: each animal's occupancy sums to 1 before the group is averaged, on normalized
+coordinates (0–1 of the frame). Plots use millimetres when every plotted recording is calibrated, otherwise
+pixels. They are drawn from the run's CSVs, so older runs get them too. Export a plot as a
+picture (PNG, SVG, PDF) or as an interactive HTML page to hover, zoom and turn.
 
 ### Query
 
@@ -413,11 +524,32 @@ the same behavior match, and is why its cost grows with the square of the bout c
 short study, slow for a long one. Measured against each other they tie on vocabulary quality, and
 the bout path draws slightly better boundaries.
 
-The fit is computed once and stays put. How many clusters the vocabulary has, and what they are
-called, are decided afterwards and cost nothing to change.
-
 Run it in the GUI (**Behavior clustering** analysis) or with `analysis temporal-clustering`, then
 `analysis temporal-interpret`.
+
+### Cluster profile { #cluster-profile }
+
+Naming a cluster from its clips alone has a limit, so a **cluster profile** adds numbers: which
+measures (speed, size, shape, how far the animal went) set one cluster apart from the rest of the
+run or from its **sibling** (the cluster it was merged with in the tree), and in which direction.
+It can also compare two clusters from different branches, to ask whether they are the same
+behaviour. Where the animal is and which way it faces are left out by default, so rearing toward
+the left and toward the back count as one behaviour. Comparing many such pairs finds
+**look-alike clusters**: groups of clusters from different branches that the body measures
+cannot tell apart, often one behaviour the tree split by place or direction, which you can give
+one label.
+It fits a small model to a random sample of the cluster's members against an equal sample from
+the comparison, and scores that model on **recordings it has not seen**. It measures from the
+masks alone when that is all there is, and adds the keypoints when a keypoint track run exists:
+with a nose, a mid back and a tailbase it also measures how high the nose is (side view), how
+bent the back is, how fast the animal turns, and how much the head moves against the body.
+
+Read the score before anything else. A model always finds *something* to lean on, so the score
+comes with a **floor**, the same fit with the members shuffled. When it does not clear the floor
+by a margin, the measures do not separate the cluster: what defines it is something they cannot
+see, and its clips are the better guide.
+
+The profile never uses your labels; it explains what the clustering did, not what you called it.
 
 
 ### Measure
@@ -465,18 +597,23 @@ The experiment **bundle** is a separate format, and the only export that imports
 
 ## Where experiments live (the managed workspace)
 
-The GUI and `Experiment.list_all()` discover experiments under a single **managed workspace**, by default `~/Documents/DetailExperiments`. Override it by creating `~/.config/detail/storage.yaml`:
+The GUI and `Experiment.list_all()` discover experiments in **experiment locations**: folders on this machine that experiments are created in and listed from. The **default** location is `~/Documents/DetailExperiments`. Add more, such as a folder on an external drive, so a whole experiment (its imported videos and every run) lives there: **Experiments → Experiment locations…** (or **Add location…** beside **Save in** in **New experiment**), `detail experiment add-location <name> <folder>`, or `locations.add_location(name, folder)`. Locations are written to `~/.config/detail/storage.yaml`:
 
 ```yaml
 storage:
   default:
-    root: /data/segexperiments
-    model_cache: /data/detail/models   # optional; shared model-weight cache
+    root: /data/segexperiments          # optional; moves the default location
+    model_cache: /data/detail/models    # optional; shared model-weight cache
+  Lab drive:
+    type: local
+    root: E:/DetailExperiments
 ```
+
+No experiment file holds the path, so a drive that mounts somewhere new is one re-point away (`add-location` with the same name, or **Change folder…**). A location whose folder is missing (the drive is unplugged) stays listed as *not connected*: its experiments drop out of the list until it is back, and the **Experiments** screen names it. Two connected locations cannot hold experiments with the same name. Machine-global folders (`tools/`, `roi_exports/`) stay in the default location.
 
 `model_cache` sets where auto-downloaded model weights live (default `~/.cache/detail/models`). Point it at a shared location so several machines use one weight cache instead of each re-downloading. `DETAIL_MODEL_DIR` overrides it for a single process.
 
-The **CLI** is explicit instead: every command takes `--experiment <dir>`, and `experiment create --dir <parent>` drops the experiment wherever you point it. To see it in the GUI too, create it inside the managed workspace (`--dir ~/Documents/DetailExperiments`). An experiment directory is self-contained with relative paths, so you can also copy or [export/import](cli.md#moving-experiments-between-machines) it between machines.
+The **CLI** takes `--experiment <dir>` on every command. `experiment create` makes the experiment in the default location, in `--location <name>`, or in any `--dir <parent>`; one made with `--dir` outside every location works from the CLI but the GUI does not list it. An experiment directory is self-contained with relative paths, so you can also copy or [export/import](cli.md#moving-experiments-between-machines) it between machines.
 
 ## What an experiment looks like on disk
 
@@ -517,7 +654,7 @@ Plain files: YAML records plus per-stage outputs. Every run is immutable and lan
 - **Promote a trained model to reuse it elsewhere.** It is usable in its own experiment at once; `detail train promote`, or the model page's **Promote to global**, joins it to the machine-global catalog as a *distilled* model carrying its provenance (source experiment, dataset, base model, metrics).
 - **Gated models** (SAM 3, DINOv3) need a Hugging Face token *and* access granted to each repo (see [Hugging Face access](getting-started.md#hugging-face-access)). `detail model check <id>` explains what's missing. Access alone isn't enough: a granted model still reports `not_installed` until you install it.
 - **DINOv3 read-out and input size** are per-run knobs. `--readout` picks how the backbone output becomes one vector (ConvNeXt: `pooler` (default) / `gap` / `gmp` / `gap_gmp`; ViT adds `cls_patch`). `--input-size` sets the model input resolution.
-- **Compute** is selected per run: `cpu`, `mps` (Apple Silicon), or `cuda`. CUDA runs can use multiple GPUs (detection and embedding fan out per device).
+- **Compute** is selected per run: `cpu`, `mps` (Apple Silicon), or `cuda`. CUDA runs can use multiple GPUs (detection and embedding fan out per device). A `remote` target submits to a registered SSH-reachable Slurm cluster (UW Tillicum, Hyak, `detail remote add/list`) instead of running locally: a shepherd process mirrors the recording's experiment data up, submits the job, and mirrors progress/outputs back, so it behaves like any other run once submitted. **Detection, embedding, keypoint detect, and distillation (labeling + training) are wired to it** (`--backend remote --remote-target <name>` on `detection run`/`process detection`, `embedding run`/`process embedding`, `keypoints detect`/`process keypoint_detect`, and `dataset label`/`train run`, plus `distill run`'s per-stage `--label-remote-target`/`--train-remote-target` and the `--train-remote-target` of `keypoints distill` and `keypoints setup`, or the GUI's launch forms); tracking has no compute backend to redirect (a CPU-only algorithm over already-computed detections), and other stages don't offer remote yet.
   {: #compute-target }
 
 ## Current scope / planned
@@ -527,7 +664,7 @@ Built today, reachable from the API, GUI and CLI:
 | | |
 |---|---|
 | Processing | Detection (SAM 3, trained and imported YOLO), tracking (`anchor_tracker`, `iou_single_tracker`), embedding (DINOv3) |
-| Scene geometry | Field of view, ROIs and POIs, distance calibration |
+| Scene geometry | Camera view, field of view, ROIs and POIs, distance calibration |
 | Streams | MED-PC operant events, CSV sensor traces and events, behavior labels |
 | Analysis | Location export, query, behavior-query evaluation, behavior clustering, measures, comparisons |
 | Detection models | Processing runs, datasets, trained models, the unified **distill** run, promotion to the machine-global catalog |

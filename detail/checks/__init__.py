@@ -14,6 +14,7 @@ CHECK_MODULES: tuple[str, ...] = (
     "detail.checks.environment",
     "detail.checks.setup",
     "detail.checks.recording",
+    "detail.checks.analysis",
 )
 
 
