@@ -1528,6 +1528,32 @@ def test_a_screen_no_longer_offered_takes_its_condition_with_it(bar):
     assert bar.field_row("Differences").summary_text() == "none"
 
 
+def test_a_ticked_screen_survives_the_list_being_read_again(bar):
+    """The page re-reads its screens on every load and after a screen is run. While it
+    reads, the offer is unknown, not empty: the ticked screen stays applied, under its
+    label, and is checked against the list when it lands."""
+    bar.set_screens(SCREENS)
+    _tick_screen(bar, "cmp_02")
+    bar.set_screens([], loading=True)
+    assert bar.selection().leaves == frozenset({0, 1})
+    assert bar.selection().leaves_source == "cmp_02"
+    assert bar.field_row("Differences").summary_text() == "drug vs vehicle · paired"
+    bar.set_screens(SCREENS)
+    assert bar.selection().leaves_source == "cmp_02"
+    assert bar.screens.value() == "cmp_02"
+
+
+def test_a_screen_read_again_over_a_re_cut_tree_applies_its_new_leaves(bar):
+    bar.set_screens(SCREENS)
+    _tick_screen(bar, "cmp_02")
+    recut = cf.ScreenChoice(
+        "cmp_02", "drug vs vehicle · paired", "1 kept of 4", frozenset({0, 1, 2})
+    )
+    bar.set_screens([recut, SCREENS[1]])
+    assert bar.selection().leaves == frozenset({0, 1, 2})
+    assert bar.seen[-1].leaves == frozenset({0, 1, 2}), "the page is told"
+
+
 def test_a_selection_naming_a_screen_shows_in_the_line(bar):
     bar.set_screens(SCREENS)
     bar.set_selection(Selection(leaves=frozenset({0, 1}), leaves_source="cmp_02"))

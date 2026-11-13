@@ -41,6 +41,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from detail.analysis.cohort import cell
 from detail.analysis.cohort import missing
 
 # The group-by keys that are not metadata columns. ``subject`` and ``window_id`` come off the
@@ -148,8 +149,13 @@ def _factors(row: dict, metadata: dict) -> dict:
     ``subject`` and ``window_id`` are group-by keys like any other even though they come off the
     row rather than out of ``metadata.csv`` — which is what makes "first third versus last third"
     the same operation as "drug A versus B" instead of a separate feature.
+
+    Each metadata value is read through :func:`cohort.cell` — stripped, ``""`` when missing —
+    the one reading the design, the left-out rule and every preview apply, so a padded
+    ``"drug "`` is the level ``drug`` everywhere and a ``NaN`` is no value everywhere.
     """
-    out = dict(metadata.get(row["recording_id"], {}))
+    values = metadata.get(row["recording_id"], {})
+    out = {column: cell(values, column) for column in values}
     out["recording_id"] = row["recording_id"]
     for key in ROW_KEYS:
         out[key] = row[key]
@@ -918,10 +924,11 @@ def resolve_design(
     column = group_by[0] if len(group_by) == 1 else None
     pairs = []
     for recording in recordings:
-        row = dict(metadata.get(recording, {}))
+        values = metadata.get(recording, {})
+        row = {name: cell(values, name) for name in values}
         row["recording_id"] = recording
-        key = tuple(str(row.get(k, "")).strip() for k in aggregate_to)
-        value = str(row.get(column, "")).strip() if column else ""
+        key = tuple(row.get(k, "") for k in aggregate_to)
+        value = row.get(column, "") if column else ""
         pairs.append((key, value))
     return _design_from_pairs(
         pairs, column=column, unit=aggregate_to, levels=levels, n_columns=len(group_by)
@@ -943,8 +950,8 @@ def resolve_design_from_rows(
     pairs = []
     for row in rows:
         factors = _factors(row, metadata)
-        key = tuple(str(factors.get(k, "")).strip() for k in aggregate_to)
-        value = str(factors.get(column, "")).strip() if column else ""
+        key = tuple(str(factors.get(k, "")) for k in aggregate_to)
+        value = str(factors.get(column, "")) if column else ""
         if (key, value, row["recording_id"]) in seen:
             continue
         seen.add((key, value, row["recording_id"]))

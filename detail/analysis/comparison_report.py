@@ -188,8 +188,10 @@ def read_hierarchy(comparison_dir: Path) -> dict[str, set[str]] | None:
 def pseudo_count(seconds: float) -> Callable[[tuple, float | None], float]:
     """``pseudo(measure_key, denominator_ns)``: ``seconds`` of time in the measure's own unit.
 
-    A share of time or a rate needs the observation's denominator to say what one second is;
-    without one it contributes nothing rather than a guess. A count's pseudo-count is one.
+    A share of time needs the observation's denominator to say what one second is; without one
+    it contributes nothing rather than a guess. A count's pseudo-count is one bout and a rate's
+    one bout over the denominator, whatever ``seconds`` is: there is no bout per second. Both
+    are off at ``seconds == 0``, so ``pseudo_count_s: 0`` ranks the raw ratios it records.
     """
     from detail.analysis.measures import MEASURES
 
@@ -201,7 +203,7 @@ def pseudo_count(seconds: float) -> Callable[[tuple, float | None], float]:
         if unit == "fraction":
             return float(seconds) * 1e9 / denominator_ns if denominator_ns else 0.0
         if unit == "1/s":
-            return 1e9 / denominator_ns if denominator_ns else 0.0
+            return 1e9 / denominator_ns if denominator_ns and seconds > 0 else 0.0
         if unit == "":
             return 1.0 if seconds > 0 else 0.0
         return 0.0

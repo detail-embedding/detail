@@ -1200,6 +1200,52 @@ def test_three_values_run_as_a_profile_until_two_are_ticked(qapp, tmp_path):
     assert "exactly two" in dialog._status.text()
 
 
+def test_ticking_a_level_keeps_its_row_and_another_column_starts_unticked(
+    qapp, tmp_path
+):
+    """The levels list was rebuilt on every refresh, and a tick refreshes the form: the row
+    that emitted ``itemChanged`` was deleted in its own handler. And the ticks were carried
+    by value, so a second column holding the same values arrived with the first's ticks.
+    """
+    from tests.api.test_comparison import THREE_SESSIONS
+
+    plan = {
+        r: ({**meta, "arm": meta["drug"]}, n) for r, (meta, n) in THREE_SESSIONS.items()
+    }
+    dialog = ComparisonLaunchDialog(_cohort(tmp_path, plan))
+    _check(dialog._group_by, "drug")
+    rows = [dialog._levels.item(i) for i in range(dialog._levels.count())]
+    _check(dialog._levels, "nalox", "veh")
+    assert [dialog._levels.item(i) for i in range(dialog._levels.count())] == rows
+    assert dialog.levels() == ["nalox", "veh"]
+
+    _row(dialog._group_by, "drug").setCheckState(Qt.CheckState.Unchecked)
+    _check(dialog._group_by, "arm")
+    assert _checked_values(dialog._levels) == []
+    assert dialog.levels() is None
+    _check(dialog._levels, "veh", "fent")
+    assert dialog.levels() == [
+        "veh",
+        "fent",
+    ], "the order is this column's, not the last"
+
+    aggregate = [
+        dialog._aggregate_to.item(i) for i in range(dialog._aggregate_to.count())
+    ]
+    _check(dialog._aggregate_to, "animal")
+    assert [
+        dialog._aggregate_to.item(i) for i in range(dialog._aggregate_to.count())
+    ] == aggregate
+
+
+def _checked_values(listwidget) -> list[str]:
+    return [
+        listwidget.item(i).data(Qt.ItemDataRole.UserRole)
+        for i in range(listwidget.count())
+        if listwidget.item(i).checkState() == Qt.CheckState.Checked
+    ]
+
+
 def test_every_cluster_is_greyed_for_a_run_without_nodes(qapp, tmp_path):
     dialog = ComparisonLaunchDialog(_cohort(tmp_path, TWO_ARMS))
     item = dialog._measure_source.model().item(1)
@@ -1208,6 +1254,44 @@ def test_every_cluster_is_greyed_for_a_run_without_nodes(qapp, tmp_path):
     assert "not a clustering run" in item.toolTip()
     assert dialog.measure_source() == "labels"
     assert dialog.config()["source"] == "labels"
+
+
+def test_every_cluster_fixes_the_four_measures_and_the_snapshot_and_gives_the_choice_back(
+    qapp, tmp_path, monkeypatch
+):
+    """The node source always takes share of time, rate, total time and mean duration from
+    the run's current node cache: the form shows that rather than offering what the run
+    refuses, and the user's own ticks come back with the labelled artifact."""
+    from detail.analysis import node_measures
+
+    monkeypatch.setattr(ComparisonLaunchDialog, "_node_cache_reason", lambda self: None)
+    dialog = ComparisonLaunchDialog(_cohort(tmp_path, TWO_ARMS))
+    _check(dialog._measures, "rate")
+    dialog._measure_source.setCurrentIndex(1)
+    assert dialog.measure_source() == "nodes"
+    fixed = {
+        dialog._measures.item(i).data(Qt.ItemDataRole.UserRole)
+        for i in range(dialog._measures.count())
+        if dialog._measures.item(i).checkState() == Qt.CheckState.Checked
+    }
+    assert fixed == set(node_measures.MEASURES)
+    assert not any(
+        dialog._measures.item(i).flags() & Qt.ItemFlag.ItemIsEnabled
+        for i in range(dialog._measures.count())
+    )
+    assert not dialog._snapshot.isEnabled()
+    config = dialog.config()
+    assert config["measures"] is None and config["source_snapshot"] is None
+    dialog._apply_seed({"source_run_id": "an_01", "source": "nodes", "measures": None})
+    assert {
+        dialog._measures.item(i).data(Qt.ItemDataRole.UserRole)
+        for i in range(dialog._measures.count())
+        if dialog._measures.item(i).checkState() == Qt.CheckState.Checked
+    } == set(node_measures.MEASURES), "a seed does not untick the fixed four"
+
+    dialog._measure_source.setCurrentIndex(0)
+    assert dialog._snapshot.isEnabled()
+    assert dialog.config()["measures"] == ["rate"], "the user's choice comes back"
 
 
 def test_a_paired_comparison_shows_its_ranking_with_its_reasons(qapp, tmp_path):

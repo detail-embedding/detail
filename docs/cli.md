@@ -1153,7 +1153,8 @@ column of `metadata.csv`, and report how the groups differ.
   (`node:<id>`), measured from the node cache over the whole recording: share of time (what the ranking is on), rate, total time and mean
   bout length. Nested nodes that clear the floor are collapsed to the best of them
   (`--no-suppress-nesting` keeps every slice). The run needs a current node cache; a stale one is
-  refused with what changed. `export` then writes `ranking.csv` with every node's effect, floor
+  refused with what changed. It always takes those four measures and reads the cache as it is
+  now, so `--measure` naming fewer and `--source-snapshot` are refused. `export` then writes `ranking.csv` with every node's effect, floor
   and verdict, and draws the tables and figures for the kept nodes and the next ten below the
   floor rather than for thousands of nodes.
 

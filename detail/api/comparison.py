@@ -27,6 +27,7 @@ import hashlib
 import json
 import math
 from collections.abc import Callable
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -181,11 +182,41 @@ def _screened_labels(
     return run_labels.screened(record.get("state") or {}, columns)
 
 
+def kept_nodes_of(ranking) -> list[int]:
+    """The node ids a node screen's ranking kept, in rank order — what the filter dock turns
+    into leaves. Empty for ``None`` (nothing to rank) or a ranking of labels.
+
+    Takes the ranking rather than the comparison: re-ranking re-reads ``stats.csv`` and redraws
+    the null, seconds over a large family, so a caller holding one ranks once."""
+    if ranking is None:
+        return []
+    out = []
+    for item in ranking.kept_items():
+        node = node_measures.node_of(item.measure_key[1])
+        if node is not None:
+            out.append(node)
+    return out
+
+
 def label_origin(experiment, comparison_id: str, node: int, *, ancestors_of):
     """The origin a label on ``node`` carries from the saved screen ``comparison_id``
     (``run_labels.LabelOrigin``), or ``None`` when the screen did not point at the node -- it
     is not a cluster the screen kept, nor under or above one. ``ancestors_of(node)`` is the
     run's root-first path above a node (``AuthoredRun.ancestors_of``).
+
+    Raises:
+        ValueError: ``comparison_id`` is not a difference screen (``source: nodes``).
+    """
+    return label_origins(experiment, comparison_id, [node], ancestors_of=ancestors_of)[
+        node
+    ]
+
+
+def label_origins(
+    experiment, comparison_id: str, nodes: Sequence[int], *, ancestors_of
+) -> dict:
+    """:func:`label_origin` for each of ``nodes``, ``{node: LabelOrigin | None}``, ranking the
+    screen once however many nodes are named.
 
     Raises:
         ValueError: ``comparison_id`` is not a difference screen (``source: nodes``).
@@ -207,14 +238,17 @@ def label_origin(experiment, comparison_id: str, node: int, *, ancestors_of):
             kept = node_measures.node_of(item.measure_key[1])
             if kept is not None:
                 kept_texts[kept] = comparison_report.suggestion(item, ranking, record)
-    return run_labels.label_origin(
-        node,
-        comparison=comparison_id,
-        kept_texts=kept_texts,
-        column=str(record.get("design_column") or ""),
-        screen=screen_label(record),
-        ancestors_of=ancestors_of,
-    )
+    return {
+        node: run_labels.label_origin(
+            node,
+            comparison=comparison_id,
+            kept_texts=kept_texts,
+            column=str(record.get("design_column") or ""),
+            screen=screen_label(record),
+            ancestors_of=ancestors_of,
+        )
+        for node in nodes
+    }
 
 
 def labels_from_screen(experiment, comparison_id: str) -> list[dict]:
@@ -331,12 +365,26 @@ def prepare_comparison(
                 f"the node source measures the whole recording; windows '{cfg.windows.kind}' "
                 f"are not available over nodes (§24)."
             )
+        # Refused rather than ignored: a snapshot pins the run's labelled artifact, which the
+        # node source does not read, and a screen without its ranking family (share of time)
+        # or its presence measure (total time) ranks nothing.
+        if cfg.source_snapshot:
+            raise ComparisonRunError(
+                f"the node source measures run {cfg.source_run_id}'s current node cache; "
+                f"snapshot {cfg.source_snapshot!r} pins its labelled artifact, which a screen "
+                f"over every cluster does not read. Leave the snapshot unset (§24)."
+            )
+        if cfg.measures and set(cfg.measures) != set(node_measures.MEASURES):
+            raise ComparisonRunError(
+                f"the node source always measures {', '.join(node_measures.MEASURES)}; "
+                f"got {', '.join(cfg.measures)}. Leave measures unset (§24)."
+            )
         report("loading", 0.0, cfg.source_run_id)
         view = _node_view(experiment, cfg.source_run_id)
         run_dir = analysis_store.analysis_dir(experiment_dir, cfg.source_run_id)
         snapshot_id = None
         covered = _check_filter(cfg, list(view.recording_ids))
-        chosen = list(cfg.measures) if cfg.measures else list(node_measures.MEASURES)
+        chosen = list(node_measures.MEASURES)
         # The node source's own floor (§24): the cache has none since every cluster has clips.
         candidate_floor = float(cfg.candidate_floor_s)
         report("measuring", 0.0, f"{len(covered)} recording(s)")
@@ -616,16 +664,9 @@ class Comparison:
 
     def kept_nodes(self) -> list[int]:
         """The node ids a node screen kept, in rank order — what the filter dock turns into
-        leaves. Empty for a labels comparison, or a screen that kept nothing."""
-        ranking = self.ranking()
-        if ranking is None:
-            return []
-        out = []
-        for item in ranking.kept_items():
-            node = node_measures.node_of(item.measure_key[1])
-            if node is not None:
-                out.append(node)
-        return out
+        leaves. Empty for a labels comparison, or a screen that kept nothing. Ranks; a caller
+        already holding :meth:`ranking` passes it to :func:`kept_nodes_of` instead."""
+        return kept_nodes_of(self.ranking())
 
     def _current_source(self, record: dict) -> dict | None:
         """Where the source is *now* — the run's current artifact, or its current node cache."""

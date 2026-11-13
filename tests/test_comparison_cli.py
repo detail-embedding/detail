@@ -357,20 +357,21 @@ def test_from_screen_records_the_origin_the_screen_gives(authored_cohort, monkey
     node = _branch(run)
     asked = []
 
-    def fake_origin(experiment, comparison_id, wanted, *, ancestors_of):
-        asked.append((comparison_id, wanted, ancestors_of(wanted)))
-        return run_labels.LabelOrigin(
-            comparison_id, str(wanted), "kept", "drug", "x · y"
-        )
+    def fake_origins(experiment, comparison_id, wanted, *, ancestors_of):
+        asked.append((comparison_id, list(wanted), [ancestors_of(n) for n in wanted]))
+        return {
+            n: run_labels.LabelOrigin(comparison_id, str(n), "kept", "drug", "x · y")
+            for n in wanted
+        }
 
-    monkeypatch.setattr(comparison_api, "label_origin", fake_origin)
+    monkeypatch.setattr(comparison_api, "label_origins", fake_origins)
     result = _run(
         "analysis", "temporal-interpret", "--experiment", str(authored_cohort.experiment.dir),
         "--run", "an_01", "--name-node", f"{node}=climb", "--from-screen", "cmp_01",
     )  # fmt: skip
     assert result.exit_code == 0, result.output
     assert "labelled 1 node(s), from screen cmp_01" in result.output
-    assert asked == [("cmp_01", node, run.ancestors_of(node))]
+    assert asked == [("cmp_01", [node], [run.ancestors_of(node)])], "one ranking"
     assert run.state().label_origins[str(node)]["comparison"] == "cmp_01"
 
 
@@ -382,7 +383,9 @@ def test_from_screen_refuses_a_node_the_screen_did_not_point_at(
     _quiet_projection(monkeypatch)
     run = authored_cohort.run()
     node = _branch(run)
-    monkeypatch.setattr(comparison_api, "label_origin", lambda *a, **k: None)
+    monkeypatch.setattr(
+        comparison_api, "label_origins", lambda _e, _c, nodes, **k: dict.fromkeys(nodes)
+    )
     monkeypatch.setattr(comparison_api.Comparison, "kept_nodes", lambda self: [3, 5])
     result = _run(
         "analysis", "temporal-interpret", "--experiment", str(authored_cohort.experiment.dir),

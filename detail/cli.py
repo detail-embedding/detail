@@ -5967,13 +5967,13 @@ def _label_origins(proj, run, names: dict, from_screen: str | None) -> dict | No
         return None
     from detail.api import comparison as comparison_api
 
+    named = [node for node, name in names.items() if name]
+    origins = comparison_api.label_origins(
+        proj, from_screen, [int(n) for n in named], ancestors_of=run.ancestors_of
+    )
     out = {}
-    for node, name in names.items():
-        if not name:
-            continue
-        origin = comparison_api.label_origin(
-            proj, from_screen, int(node), ancestors_of=run.ancestors_of
-        )
+    for node in named:
+        origin = origins[int(node)]
         if origin is None:
             kept = proj.get_comparison(from_screen).kept_nodes()
             raise click.ClickException(
