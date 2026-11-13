@@ -33,6 +33,18 @@ def test_write_tidy_csv_raises_on_missing_column(tmp_path):
         tables.write_tidy_csv(tmp_path / "s.csv", [{"a": 1}], ["a", "b"])
 
 
+def test_write_tidy_csv_refuses_a_field_its_columns_do_not_name(tmp_path):
+    """The column list lives apart from the code that builds the rows. ``ranking.csv``'s
+    rows gained ``pair_a``/``pair_b`` (the levels a profile's effect is between) and its
+    column list did not, so the file shipped without them and nothing said so."""
+    import pytest
+
+    path = tmp_path / "ranking.csv"
+    with pytest.raises(ValueError, match=r"\['pair_a'\] are not among its columns"):
+        tables.write_tidy_csv(path, [{"a": 1, "pair_a": "veh"}], ["a"])
+    assert not path.exists() and not list(tmp_path.glob("*.tmp"))
+
+
 def test_pivot_marks_best_per_column():
     grid = tables.pivot_to_grid(
         _rows(),

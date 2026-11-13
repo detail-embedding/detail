@@ -854,6 +854,8 @@ def test_three_sessions_run_as_a_profile_and_two_levels_contrast_only_those(tmp_
     """Three sessions within each animal are a profile over all three (§24 *Designs*): the
     record says so, the ranking carries each item's pair, the screen label names the column,
     and naming two levels still contrasts just those."""
+    import csv
+
     from detail.api.comparison import screen_label
 
     exp = _cohort(tmp_path, THREE_SESSIONS)
@@ -868,6 +870,16 @@ def test_three_sessions_run_as_a_profile_and_two_levels_contrast_only_those(tmp_
     assert ranking.level_values == ("fent", "nalox", "veh")
     assert all(i.pair is not None for i in ranking.contrasts if i.effect is not None)
     assert screen_label(record) == "drug · profile"
+    # Each row's effect is between its own pair: ranking.csv names it (§24 export tree).
+    comp.export(formats=("png",))
+    with open(comp.dir / "ranking.csv", newline="", encoding="utf-8-sig") as handle:
+        rows = list(csv.DictReader(handle))
+    pairs = {
+        (row["measure"], row["label"]): (row["pair_a"], row["pair_b"]) for row in rows
+    }
+    for item in ranking.contrasts:
+        if item.pair is not None:
+            assert pairs[item.measure_key[:2]] == item.pair
     record = run_comparison(exp, {**_PAIRED, "levels": ["veh", "nalox"]}).record()
     assert record["design"] == "paired"
     assert record["levels"] == ["veh", "nalox"]

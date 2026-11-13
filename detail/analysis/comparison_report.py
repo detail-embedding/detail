@@ -55,6 +55,8 @@ RANKING_COLUMNS = [
     "present_b",
     "a_mean",
     "b_mean",
+    "pair_a",
+    "pair_b",
     "suggestion",
 ]
 #: Over the node source, how many below-floor items (nesting suppressed) the per-measurement
