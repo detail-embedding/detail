@@ -131,8 +131,8 @@ def test_every_huggingface_hub_call_fits_the_installed_signatures():
 
 def test_the_scan_would_catch_the_calls_that_broke():
     assert bad_hub_calls(
-        "hf = _require_hf()\nhf.hf_hub_download(r, n, cache_dir=c, tqdm_class=T)\n"
-    ) == ["2: hf_hub_download takes no tqdm_class="]
+        "hf = _require_hf()\nhf.hf_hub_download(r, n, cache_dir=c, on_bytes=T)\n"
+    ) == ["2: hf_hub_download takes no on_bytes="]
     assert bad_hub_calls("hf.snapshot_download(r, **kwargs)\n") == [
         "1: **mapping into snapshot_download cannot be checked"
     ]
@@ -143,6 +143,19 @@ def test_the_scan_would_catch_the_calls_that_broke():
         "snapshot_download(r, progress=p)\n"
     )
     assert bad_hub_calls("hf.download_everything(r)\n")
+
+
+def test_the_keyword_that_broke_is_refused_exactly_where_the_version_refuses_it():
+    """``tqdm_class`` on ``hf_hub_download`` is 1.x-and-later only: the scan follows the version
+    it runs against, so CI on a newer hub and a user on 0.x each get that version's answer.
+    """
+    params = inspect.signature(huggingface_hub.hf_hub_download).parameters
+    flagged = bad_hub_calls("hf.hf_hub_download(r, n, tqdm_class=T)\n")
+
+    expected = (
+        [] if "tqdm_class" in params else ["1: hf_hub_download takes no tqdm_class="]
+    )
+    assert flagged == expected
 
 
 def test_the_scan_passes_calls_the_installed_version_accepts():
