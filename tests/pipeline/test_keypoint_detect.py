@@ -362,6 +362,88 @@ def test_an_explicit_min_pose_confidence_is_identity_and_reaches_the_model(track
     assert module.run_record("kd_01", config, "complete")["min_pose_confidence"] == 0.55
 
 
+def _set_detection_confidence(recording, values) -> None:
+    """Give the fixture's ``det_01`` rows these confidences (the shared fixture writes 0.9
+    for every row, which no cut-off can tell apart)."""
+    from detail.storage import zarr_store
+
+    root = zarr_store.open_group(
+        recording.dir / "detections" / "det_01" / "part_001.zarr", mode="a"
+    )
+    root["confidence"][:] = np.asarray(values, np.float32)
+
+
+def test_part_frames_keeps_only_the_detections_at_or_above_the_cut_off():
+    det = {
+        "frame_idx": np.array([0, 0, 1, 1, 2]),
+        "t_ns": np.array([0, 0, 10, 10, 20]),
+        "confidence": np.array([0.97, 0.1, 0.5, 0.95, 0.05], np.float32),
+    }
+    kept = keypoint_detect.part_frames(
+        det, np.zeros(0), 1, per_detection=True, min_detection_confidence=0.5
+    )
+    # row 2 sits on the cut-off and is kept; frame 2 has nothing left and is not visited
+    assert kept == [(0, 0, [0]), (1, 10, [2, 3])]
+    # unset keeps every row, and needs no confidence column (the run reads none then)
+    no_conf = {k: v for k, v in det.items() if k != "confidence"}
+    every = keypoint_detect.part_frames(
+        no_conf, np.zeros(0), 1, per_detection=True, min_detection_confidence=None
+    )
+    assert every == [(0, 0, [0, 1]), (1, 10, [2, 3]), (2, 20, [4])]
+
+
+def test_a_detection_cut_off_crops_only_the_detections_above_it_and_is_identity(
+    tracked,
+):
+    """A detection run kept at a low confidence holds faint boxes beside each animal, and a
+    per-detection method crops every one (§26 *Visibility*). With the cut-off it crops only the
+    rows at or above it; a frame whose rows all fall below is not visited; the record, the
+    detect.yaml and identity carry the value."""
+    it, recording = tracked
+    # DET_ROWS: frame 1's, 2's and 3's second boxes are faint, and both of frame 4's
+    _set_detection_confidence(recording, [0.9, 0.9, 0.1, 0.9, 0.2, 0.9, 0.1, 0.3, 0.05])
+    module, config, run_dir, _e = _run(
+        it, recording, _config(min_detection_confidence=0.5)
+    )
+    rows = KeypointDetectRun(recording.dir, "kd_01").rows("part_001")
+    assert rows["detection_row"].tolist() == [0, 1, 3, 5]
+    assert rows["frame_idx"].tolist() == [0, 1, 2, 3]
+    assert _FakeKeypointModel.instances[-1].frames_seen == [0, 1, 2, 3]
+    meta = read_detect_yaml(run_dir)
+    assert meta["min_detection_confidence"] == 0.5
+    assert meta["coverage"]["part_001"] == {
+        "frames": 4,
+        "frames_with_instance": 4,
+        "instances": 4,
+    }
+    assert "min_detection_confidence" in module.identity_fields
+    record = module.run_record("kd_01", config, "complete")
+    assert record["min_detection_confidence"] == 0.5
+
+
+def test_a_record_from_before_the_detection_cut_off_matches_a_run_that_leaves_it_unset(
+    tracked,
+):
+    """Every detect run written before the cut-off existed cropped every detection, so a
+    record without ``min_detection_confidence`` reads as None (``identity_defaults``) and
+    shares a spec with a new run that leaves it unset; a run that sets it is another run.
+    """
+    from detail.api import run_spec
+
+    it, recording = tracked
+    module, config, _d, _e = _run(it, recording, _config())
+    record = module.run_record("kd_01", config, "complete")
+    assert record["min_detection_confidence"] is None
+    data = recording_store.read_recording(recording.dir)
+
+    def spec(rec):
+        return run_spec.freeze_spec(run_spec.spec_of(data, "keypoint_detect", rec))
+
+    before = {k: v for k, v in record.items() if k != "min_detection_confidence"}
+    assert spec(before) == spec(record)
+    assert spec({**record, "min_detection_confidence": 0.5}) != spec(record)
+
+
 def test_every_n_frames_keeps_the_source_frame_rule(tracked):
     it, recording = tracked
     _run(it, recording, _config(every_n_frames=2))
@@ -519,6 +601,11 @@ def test_validate_resolves_and_writes_back_every_defaulted_input(tracked):
         ),
         ({"min_pose_confidence": 0.3}, "'fake_kp' reports no pose confidence"),
         ({"min_pose_confidence": 1.5}, "less than or equal to 1"),
+        (
+            {"model_id": "fake_pose", "min_detection_confidence": 0.5},
+            "'fake_pose' looks at the whole frame",
+        ),
+        ({"min_detection_confidence": -0.1}, "greater than or equal to 0"),
         ({"every_n_frames": 0}, "greater than or equal to 1"),
     ],
 )

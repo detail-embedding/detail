@@ -430,7 +430,12 @@ def test_run_keypoint_detect_shapes_the_config_for_the_module(tracked, monkeypat
         lambda self, module_id, config: seen.update(module_id=module_id, config=config),
     )
     recording.run_keypoint_detect(
-        "det_01", "fake_kp", every_n_frames=2, batch_size=4, min_pose_confidence=0.3
+        "det_01",
+        "fake_kp",
+        every_n_frames=2,
+        batch_size=4,
+        min_pose_confidence=0.3,
+        min_detection_confidence=0.6,
     )
     assert seen["module_id"] == "keypoint_detect"
     config = seen["config"]
@@ -438,6 +443,7 @@ def test_run_keypoint_detect_shapes_the_config_for_the_module(tracked, monkeypat
     assert "tracking_run_id" not in config and "track_ids" not in config
     assert config["every_n_frames"] == 2 and config["batch_size"] == 4
     assert config["min_pose_confidence"] == 0.3 and config["example_set_id"] is None
+    assert config["min_detection_confidence"] == 0.6
     assert config["compute"].backend == "cpu"  # the fake's only backend
 
 

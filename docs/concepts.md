@@ -165,7 +165,8 @@ animal it detected, frame by frame. It keeps the raw result and gives no pose to
 yet: each pose, the method's own score for each point, and the method's top candidates, so a
 later stage can choose among them without running the model again. The method `dinov3_match`
 works on each detection's crop and learns from an **example set**, a few frames on which you
-marked the skeleton; it needs no training. A trained student looks at the whole frame instead,
+marked the skeleton; it needs no training. It crops every detection the run holds, or only those
+at least **Minimum detection confidence** confident when you set one. A trained student looks at the whole frame instead,
 and keeps each pose it is at least 0.25 confident in (**Minimum pose confidence**; poses below it
 are not stored, so changing it means running again). **Keypoint track** (`kt_NN`) runs on a
 detect run and a **tracking run** made from the same detection run. It first gives each pose to

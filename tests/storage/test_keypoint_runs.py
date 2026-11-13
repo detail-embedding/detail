@@ -62,6 +62,12 @@ def _track_job() -> KeypointTrackJob:
 def test_jobs_round_trip_and_an_old_job_is_refused():
     job = _job(min_pose_confidence=0.25)
     assert KeypointDetectJob.from_dict(job.to_dict()) == job
+    cut = _job(min_detection_confidence=0.3)
+    assert KeypointDetectJob.from_dict(cut.to_dict()) == cut
+    # a job.json from before the detection cut-off loads as "every detection"
+    before = cut.to_dict()
+    del before["min_detection_confidence"]
+    assert KeypointDetectJob.from_dict(before).min_detection_confidence is None
     old = job.to_dict()
     del old["detection_run_id"]
     old["tracking_run_id"], old["track_ids"] = "track_01", [0]
@@ -107,6 +113,10 @@ def test_detect_yaml_is_written_at_start_and_completed_at_the_end(tmp_path):
     assert keypoint_runs.detect_record(_job(min_pose_confidence=0.25), "x")[
         "min_pose_confidence"
     ] == pytest.approx(0.25)
+    assert data["min_detection_confidence"] is None  # every detection cropped
+    assert keypoint_runs.detect_record(_job(min_detection_confidence=0.3), "x")[
+        "min_detection_confidence"
+    ] == pytest.approx(0.3)
     with pytest.raises(ValueError, match="schema_version must be the first key"):
         keypoint_runs.write_yaml(run_dir / "x.yaml", {"id": 1, "schema_version": 1})
 

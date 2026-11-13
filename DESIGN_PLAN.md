@@ -1882,7 +1882,7 @@ Two runs are interchangeable iff their specs are equal. `api/run_spec.py::freeze
 | detection | `model_id, model_variant, weights_source, conf_threshold, every_n_frames, prompt_fingerprint, prompt_classes` | `None` (roots at the recording's video) | **+`prompt_fingerprint`** (short digest of `Prompt.to_dict()`; the prompt is the class definition for open-set models — omitting it false-merges "mouse" vs "cage") **and +`prompt_classes`** (the sorted target names — the human-readable half, redundant for equivalence so it can only ever false-*split*) |
 | tracking | `tracker_id, arena_ids, hyperparams, every_n_frames` | `("detection","detection_run_id")` | **+`hyperparams`** (`config["hyperparams"]`, enriched in validate; was `job.json`-only) |
 | embedding | `model_id, model_variant, constructor, every_n_frames`; with alignment (§14, specified) also `align, heading, max_gap_s, mirror_hold_s, facing_camera_ratio` and the auxiliary keypoint track run's identity under `aux` | `("tracking","tracking_run_id")` (+ `aux_refs = (("keypoint_track","keypoint_run_id"),)`) | — (the constructor **name**, not the resolved `renderer_spec` — centered recipes size per-recording, so the resolved spec is intentionally recording-specific and must not be identity) |
-| keypoint_detect (§26) | `model_id, model_variant, backbone_id, backbone_variant, skeleton_digest, example_set_digest, n_candidates, every_n_frames, crop_px, decode, side_rule, matching` (the matching constants as one dict), `min_pose_confidence` | `("detection","detection_run_id")` | compute, batch size and the display cut-off are not identity |
+| keypoint_detect (§26) | `model_id, model_variant, backbone_id, backbone_variant, skeleton_digest, example_set_digest, n_candidates, every_n_frames, crop_px, decode, side_rule, matching` (the matching constants as one dict), `min_pose_confidence`, `min_detection_confidence` (`identity_defaults`: absent = None, every detection cropped, the only behaviour before it) | `("detection","detection_run_id")` | compute, batch size and the display cut-off are not identity |
 | keypoint_track (§26) | `tracking_identity` (the tracking run's settings, never its id — ids restart per recording, §6.5 *auxiliary inputs*), `match` (`min_inside`, `mask_grow`), `method` and every field of the method's config, filter constants and decode cut-off included; the detect run's identity by lineage | `("keypoint_detect","detect_run_id")` | the display cut-off is not identity |
 
 `every_n_frames` is identity on all three (§4): the same config at a different cadence is a different output. Each carries `identity_defaults = {"every_n_frames": 1}`, which is how a record written before the field existed reads — without it those runs would false-*split* from equivalent ones written since.
@@ -9318,7 +9318,14 @@ frame learn to (part affinity fields, X-Pose's instance queries). Patch matching
 signal of its own, and a detection already is one: one mask per animal. The crop keeps the scale
 the research measured on (a patch is a fixed fraction of body size). A per-detection crop costs a
 forward pass per detection rather than per tracked subject — under `anchor_tracker`, up to three
-detections where the subject was one.
+detections where the subject was one, and more on a detection run kept at a low confidence so
+the tracker can gather fragments: a 140-recording SAM3 run at `conf 0.05` held 3–15 detections
+per frame (up to 55) where one, at 0.97, was the animal and the rest scored under 0.2, and the
+detect stage's time rose with the count (about 55 crops/s on one 2080 Ti whatever the
+recording). **`min_detection_confidence`** (default None: every detection) is the lever: a
+per-detection method crops only the detections at or above it. It chooses the stage's
+*input*, as choosing a detection run does, and filters none of its output, so §26
+*Visibility*'s rule that a run's output answers every threshold stands.
 
 **`TrainedYoloPose` — the distilled student** (§12 *Distill keypoints*): a closed-set
 `KeypointModel` whose skeleton is fixed from the teacher's example set; `n_candidates = 1`;
@@ -9337,6 +9344,7 @@ class KeypointDetectJob:                        # core/keypoints.py
     job_id: str; recording_id: str; detect_run_id: str
     detection_run_id: str                        # the detections a per-detection method crops; the cadence and lineage for every method
     min_pose_confidence: float | None            # 0.25 when the method reports_confidence; None (refused if set) otherwise
+    min_detection_confidence: float | None = None  # a per-detection method crops only detections at or above it; None: every one (refused if set for a whole-frame method)
     model_id: str; model_variant: str | None
     backbone: dict | None                        # {"id": "dinov3_vit", "variant": "vit_large"}; None for a closed-set model
     example_set: dict | None                     # {"id", "digest", "frames": [...], "marks": {...}}; None when not needs_examples
@@ -9446,6 +9454,7 @@ id: "kd_01"
 created_at: "2026-10-07T10:00:00Z"
 detection_run_id: "det_01"
 min_pose_confidence: null                                    # 0.25 for a method that reports_confidence
+min_detection_confidence: null                               # a per-detection method crops only detections at or above it; null: every one
 model_id: "dinov3_match"
 model_variant: "vit_large"
 weights_source: null                                         # a student's: "trained" (models/) | "imported" (catalog), §12
@@ -9526,10 +9535,13 @@ keypoint_track_runs:
 - `points` is NaN only where the method placed nothing (nothing inside the detection's mask, a
   point the student reports absent) or, in a track run, where no instance was assigned — NaN is
   "undefined", as in kinematics (§14), never zero. The track stage never fills an absent point.
-- **`min_pose_confidence` is the one threshold applied at run time**, and only to a whole-frame
-  method: the student, asked for everything, returns hundreds of near-zero boxes per frame, and a
-  row per box would store noise. It is identity and recorded; the per-point visibility above stays
-  a view.
+- **`min_pose_confidence` is the one threshold applied to the output at run time**, and only to
+  a whole-frame method: the student, asked for everything, returns hundreds of near-zero boxes per
+  frame, and a row per box would store noise. It is identity and recorded; the per-point
+  visibility above stays a view. **`min_detection_confidence`** is a threshold on the *input*,
+  and only for a per-detection method: the detections it crops (a detection below it gets no
+  crop and no row). It is identity and recorded, None (every detection) by default, and refused
+  for a whole-frame method, which crops none.
 - **Coverage.** A detect run records, per part, the frames it walked, the frames with at least one
   instance and the instances; it knows no subjects. A track run records, per part, how many
   instances were assigned and how many were not, and per subject and part the frames placed / the
@@ -9636,7 +9648,8 @@ class KeypointDetectModule(ProcessingModule):
     identity_fields = ("model_id", "model_variant", "backbone_id", "backbone_variant",
                        "skeleton_digest", "example_set_digest", "n_candidates",
                        "every_n_frames", "crop_px", "decode", "side_rule", "matching",
-                       "min_pose_confidence")
+                       "min_pose_confidence", "min_detection_confidence")
+    identity_defaults = {"min_detection_confidence": None}   # absent: every detection cropped, the only behaviour before it
     lineage_ref = ("detection", "detection_run_id")
 
 @register_processing_module
@@ -9654,11 +9667,13 @@ class KeypointTrackModule(ProcessingModule):
 `KeypointDetectConfig`: `detection_run_id`, `model_id` — **no default**: which method fits is a
 fact about the animal and the camera, and a default is where a wrong one hides — `model_variant`,
 `example_set_id` (required iff `needs_examples`; refused otherwise), `min_pose_confidence` (0.25
-for a method that `reports_confidence`; refused otherwise), `decode`, `side_rule`, `crop_px`,
-`every_n_frames`, `batch_size`, compute. `validate()` resolves every defaulted input and writes it
-back (Tenet 9): the variant, the backbone, `decode` (`skeleton` when the skeleton has edges),
-`side_rule` (`off` when it has no pairs; an explicit `hard` without pairs refused), the matching
-constants, `min_pose_confidence`, the set's digest, frames and marks, the skeleton copy and digest.
+for a method that `reports_confidence`; refused otherwise), `min_detection_confidence` (None,
+every detection; refused for a method that is not `per_detection`), `decode`, `side_rule`,
+`crop_px`, `every_n_frames`, `batch_size`, compute. `validate()` resolves every defaulted input
+and writes it back (Tenet 9): the variant, the backbone, `decode` (`skeleton` when the skeleton
+has edges), `side_rule` (`off` when it has no pairs; an explicit `hard` without pairs refused),
+the matching constants, `min_pose_confidence`, `min_detection_confidence`, the set's digest,
+frames and marks, the skeleton copy and digest.
 `KeypointTrackConfig`: `detect_run_id`, `tracking_run_id` (default: **the one** complete tracking
 run on the detect run's detection run; several → refused, naming them — resolving to "the first"
 would make the same command assign differently tomorrow), `match_min_inside` (0.5),
@@ -9724,7 +9739,7 @@ Re-tracking a detect run is the same launch. **The GUI's next-step buttons follo
 
 | stage | identity | recorded, not identity |
 |---|---|---|
-| `keypoint_detect` | the detection run's identity (by lineage), method, variant, `weights_source`, backbone + variant, skeleton digest, example-set digest, `n_candidates`, `every_n_frames`, `crop_px`, `decode`, `side_rule`, the matching constants, `min_pose_confidence` | compute, batch size, timing, coverage |
+| `keypoint_detect` | the detection run's identity (by lineage), method, variant, `weights_source`, backbone + variant, skeleton digest, example-set digest, `n_candidates`, `every_n_frames`, `crop_px`, `decode`, `side_rule`, the matching constants, `min_pose_confidence`, `min_detection_confidence` | compute, batch size, timing, coverage |
 | `keypoint_track` | the detect run's identity (by lineage), the tracking run's identity (`tracking_identity`; the id is recorded, not identity), `match` (`min_inside`, `mask_grow`), `method`, every field of its config (filters, transition, decode cut-off) | timing, coverage, assignment counts |
 
 What #626 left out and this adds: the skeleton (a run with a renamed or reordered skeleton merged
@@ -9798,6 +9813,7 @@ still read, and the distill's rule that audit frames never build a student stays
 | Detection run `status: "complete"` | Error |
 | `model_id` in `KEYPOINT_MODELS` or a catalog record with `role: keypoints` | Error — list available methods |
 | `min_pose_confidence` in [0, 1], and set only for a method that `reports_confidence` | Error — name the method |
+| `min_detection_confidence` in [0, 1], and set only for a method that is `per_detection` | Error — name the method |
 | Model installed (`readiness()`, §5); `compute.backend` in `supported_backends`; `check_backend` passes | `ModelNotReadyError` with the install action / Error |
 | Example set given iff the model `needs_examples`; it exists and `purpose: example` | Error |
 | Every skeleton point clicked visible on at least one example frame | Error — name the keypoints with none |

@@ -411,7 +411,11 @@ set. Deleting a set a keypoint run lists is refused, so a run always finds its f
   trained in this experiment, or a keypoint model from the machine's catalog (`model list`
   shows them with `role=keypoint`), looked up in that order; the run records which
   (`weights_source`: `trained` or `imported`). A method that works on each animal (`dinov3_match`)
-  crops around every detection on the frame; a trained student looks at the whole frame. The
+  crops around every detection on the frame; a trained student looks at the whole frame.
+  `--min-detection-confidence` has such a method crop only the detections at least that
+  confident, and is refused for a whole-frame method; a detection run kept at a low confidence
+  can hold many faint boxes beside each animal, each a crop. Left out, every detection is
+  cropped. The
   method `dinov3_match` learns from an example set, so it needs `--example-set <ex_NN>`; its
   settings (`--decode`, `--side-rule`, `--crop-px`) can be left out, in which case they are
   resolved against the set's skeleton and recorded on the run. A trained student scores each

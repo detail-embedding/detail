@@ -92,6 +92,10 @@ class KeypointDetectJob:
     # experiment's models/) or "imported" (the machine catalog); None for a registered method.
     # The worker builds from it rather than searching again, since the two can share an id.
     weights_source: str | None = None
+    # The detections a per-detection method crops (§26 *Visibility*): only those at or above
+    # it; None crops every detection the run holds, the only behaviour before it existed, so
+    # a job.json written then loads as that. Always None for a whole-frame method.
+    min_detection_confidence: float | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -103,6 +107,11 @@ class KeypointDetectJob:
                 None
                 if self.min_pose_confidence is None
                 else float(self.min_pose_confidence)
+            ),
+            "min_detection_confidence": (
+                None
+                if self.min_detection_confidence is None
+                else float(self.min_detection_confidence)
             ),
             "model_id": self.model_id,
             "model_variant": self.model_variant,

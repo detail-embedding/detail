@@ -10,7 +10,9 @@ subjects. Nothing here is ever rewritten.
 
 Per part, **one** forward-sequential ``cv2.VideoCapture`` walk (Tenet 11). A per-detection
 method visits the frames that have detections at the run's cadence and is given every
-detection on the frame; a whole-frame method visits every frame at the cadence. Frames come
+detection on the frame — every one at or above ``min_detection_confidence`` when the run sets
+it, so a frame whose detections all fall below is not visited; a whole-frame method visits
+every frame at the cadence. Frames come
 from the detection part's rows or the timestamp map, never ``CAP_PROP_FRAME_COUNT``. Frames are
 batched in a bounded buffer of ``batch_size``; the writer flushes only on frame boundaries.
 Progress names each phase and forces an emit at every boundary (§6): ``counting frames`` →
@@ -92,6 +94,7 @@ def part_frames(
     every_n_frames: int,
     *,
     per_detection: bool,
+    min_detection_confidence: float | None,
 ) -> list[tuple[int, int, list[int]]]:
     """``(frame_idx, t_ns, detection rows)`` for every frame the method visits in a part, in
     frame order.
@@ -99,7 +102,13 @@ def part_frames(
     A per-detection method visits the frames with at least one detection at the cadence, each
     with its rows (global row indices within the detection part); a whole-frame method visits
     every frame at the cadence of the timestamp map, with no rows. ``det`` holds the detection
-    part's ``frame_idx`` and ``t_ns``; None when the part has no detection store.
+    part's ``frame_idx`` and ``t_ns`` (and ``confidence`` when ``min_detection_confidence`` is
+    set); None when the part has no detection store.
+
+    ``min_detection_confidence`` keeps only the rows at or above it, so a frame whose
+    detections all fall below is not visited; None keeps every row. Required rather than
+    defaulted: a caller that left it out would crop every detection while the run's record
+    said otherwise.
     """
     if not per_detection:
         return [
@@ -110,9 +119,12 @@ def part_frames(
         return []
     frame_col = np.asarray(det["frame_idx"])
     t_col = np.asarray(det["t_ns"])
+    keep = np.ones(len(frame_col), bool)
+    if min_detection_confidence is not None:
+        keep = np.asarray(det["confidence"]) >= float(min_detection_confidence)
     by_frame: dict[int, list[int]] = {}
     for row, frame in enumerate(frame_col.tolist()):
-        if frame % every_n_frames == 0:
+        if frame % every_n_frames == 0 and keep[row]:
             by_frame.setdefault(int(frame), []).append(row)
     return [
         (frame, int(t_col[rows[0]]), rows) for frame, rows in sorted(by_frame.items())
@@ -344,6 +356,26 @@ def resolve_min_pose_confidence(model_cls, model_id: str, value: float | None):
     return None
 
 
+def resolve_min_detection_confidence(model_cls, model_id: str, value: float | None):
+    """``min_detection_confidence`` for a method (§26 *Visibility*): the value for a method
+    that works on each detection (``per_detection``), None when unset. Refused for a
+    whole-frame method, which crops no detection, so a cut-off on them would be recorded as
+    identity and change nothing.
+
+    Raises:
+        ValueError: A cut-off set for a method that does not work on each detection.
+    """
+    if value is None:
+        return None
+    if not getattr(model_cls, "per_detection", False):
+        raise ValueError(
+            f"method {model_id!r} looks at the whole frame, not at each detection; leave "
+            "min_detection_confidence unset (it applies only to a method that crops each "
+            "detection, such as dinov3_match)"
+        )
+    return float(value)
+
+
 class _Progress:
     """One place the stage's events are shaped (§6): frames across the whole run, the ETA
     from the work done since this process started, and the phase message."""
@@ -385,12 +417,17 @@ class _Progress:
         )
 
 
-def _read_det(path: Path, *, with_masks: bool) -> dict | None:
-    """The detection part's columns the walk needs; ``mask_rle`` only when masks are read."""
+def _read_det(
+    path: Path, *, with_masks: bool, with_confidence: bool = False
+) -> dict | None:
+    """The detection part's columns the walk needs; ``mask_rle`` only when masks are read,
+    ``confidence`` only when the run keeps detections by it."""
     if not path.is_dir():
         return None
     reader = DetectionPartReader(path)
-    names = ["frame_idx", "t_ns", "bbox"] + (["mask_rle"] if with_masks else [])
+    names = ["frame_idx", "t_ns", "bbox"]
+    names += ["mask_rle"] if with_masks else []
+    names += ["confidence"] if with_confidence else []
     return {name: np.asarray(reader.column(name)[:]) for name in names}
 
 
@@ -433,7 +470,11 @@ def run(job: KeypointDetectJob, run_dir, progress_cb, stop_event) -> None:
     for part_index, part in enumerate(files):
         part_id = recording_store.part_stem(part)
         if per_detection:
-            det = _read_det(detection_dir / f"{part_id}.zarr", with_masks=False)
+            det = _read_det(
+                detection_dir / f"{part_id}.zarr",
+                with_masks=False,
+                with_confidence=job.min_detection_confidence is not None,
+            )
             timestamps = np.zeros(0, np.int64)
         else:
             det = None
@@ -441,7 +482,11 @@ def run(job: KeypointDetectJob, run_dir, progress_cb, stop_event) -> None:
                 recording_dir, recording_data, part_index
             ).values
         frames = part_frames(
-            det, timestamps, job.every_n_frames, per_detection=per_detection
+            det,
+            timestamps,
+            job.every_n_frames,
+            per_detection=per_detection,
+            min_detection_confidence=job.min_detection_confidence,
         )
         store = keypoint_runs.part_path(run_dir, part_id)
         last = keypoint_runs.last_frame_written(store)
@@ -645,7 +690,12 @@ class KeypointDetectModule(ProcessingModule):
         "side_rule",
         "matching",
         "min_pose_confidence",
+        "min_detection_confidence",
     )
+    # A record written before ``min_detection_confidence`` existed cropped every detection:
+    # that was the only behaviour, so its absence has one honest reading, and such a run
+    # matches a new one that leaves the cut-off unset.
+    identity_defaults = {"min_detection_confidence": None}
     lineage_ref = ("detection", "detection_run_id")
 
     def runner(self, job, run_dir, progress_cb, stop_event) -> None:
@@ -693,10 +743,12 @@ class KeypointDetectModule(ProcessingModule):
         resolve_method(experiment_dir, config, compute)
         from detail.models.resolve import keypoint_method_class
 
+        method_cls = keypoint_method_class(experiment_dir, model_id)
         config["min_pose_confidence"] = resolve_min_pose_confidence(
-            keypoint_method_class(experiment_dir, model_id),
-            model_id,
-            config.get("min_pose_confidence"),
+            method_cls, model_id, config.get("min_pose_confidence")
+        )
+        config["min_detection_confidence"] = resolve_min_detection_confidence(
+            method_cls, model_id, config.get("min_detection_confidence")
         )
         if config.get("batch_size") is None:
             config["batch_size"] = KeypointDetectConfig.model_fields[
@@ -729,12 +781,14 @@ class KeypointDetectModule(ProcessingModule):
             compute=config["compute"],
             created_at=utc_timestamp(),
             skeleton_ref=config.get("skeleton_ref"),
+            min_detection_confidence=config.get("min_detection_confidence"),
         )
 
     def extra_record_fields(self, config: dict) -> dict:
         return {
             "detection_run_id": config["detection_run_id"],
             "min_pose_confidence": config.get("min_pose_confidence"),
+            "min_detection_confidence": config.get("min_detection_confidence"),
             "model_id": config["model_id"],
             "model_variant": config.get("model_variant"),
             "weights_source": config.get("weights_source"),

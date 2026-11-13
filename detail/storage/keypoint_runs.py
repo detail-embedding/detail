@@ -100,6 +100,11 @@ def detect_record(job, skeleton_digest: str) -> dict:
         "min_pose_confidence": (
             None if job.min_pose_confidence is None else float(job.min_pose_confidence)
         ),
+        "min_detection_confidence": (
+            None
+            if getattr(job, "min_detection_confidence", None) is None
+            else float(job.min_detection_confidence)
+        ),
         "model_id": job.model_id,
         "model_variant": job.model_variant,
         # where a student's weights live: "trained" | "imported"; None for a registered method

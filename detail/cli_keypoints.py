@@ -403,6 +403,13 @@ _KD = KeypointDetectConfig.model_fields
     help=_KD["min_pose_confidence"].description,
 )
 @click.option(
+    "--min-detection-confidence",
+    "min_detection_confidence",
+    type=click.FloatRange(0.0, 1.0),
+    default=None,
+    help=_KD["min_detection_confidence"].description,
+)
+@click.option(
     "--decode",
     type=click.Choice(["skeleton", "per_point"]),
     default=None,
@@ -456,6 +463,7 @@ def keypoints_detect(
     model_variant: str | None,
     example_set_id: str | None,
     min_pose_confidence: float | None,
+    min_detection_confidence: float | None,
     decode: str | None,
     side_rule: str | None,
     crop_px: int | None,
@@ -490,6 +498,7 @@ def keypoints_detect(
         "model_variant": model_variant,
         "example_set_id": example_set_id,
         "min_pose_confidence": min_pose_confidence,
+        "min_detection_confidence": min_detection_confidence,
         "decode": decode,
         "side_rule": side_rule,
         "crop_px": crop_px,

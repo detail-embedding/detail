@@ -67,6 +67,20 @@ class KeypointDetectConfig(BaseModel):
         ),
         json_schema_extra={"label": "Minimum pose confidence"},
     )
+    min_detection_confidence: float | None = Field(
+        None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Crop only the detections whose confidence is at least this. Only for a method "
+            "that works on each detection (dinov3_match); omit to crop every detection the "
+            "run holds. A detection run kept at a low confidence can hold many faint boxes "
+            "beside each animal, and every box costs the method a crop: a cut-off between "
+            "them and the animals keeps the run's time on the animals. Detections below it "
+            "get no pose, so changing it means running again."
+        ),
+        json_schema_extra={"label": "Minimum detection confidence"},
+    )
     decode: Literal["skeleton", "per_point"] | None = Field(
         None,
         description=(

@@ -7,7 +7,9 @@ the method and its size from the ``KEYPOINT_MODELS`` registry plus the experimen
 students and the model catalog's keypoint models, and every knob read off ``KeypointDetectConfig`` (§6.5) — the two ``Literal | None``
 knobs render through ``any_field_widget`` with an *auto* row, which is what "let the method
 resolve it" means. ``min_pose_confidence`` is shown only for a method that
-``reports_confidence`` (the student), the one kind ``validate`` accepts it for.
+``reports_confidence`` (the student), the one kind ``validate`` accepts it for, and
+``min_detection_confidence`` only for a method that works on each detection
+(``per_detection``, dinov3_match), the one kind that crops detections.
 
 The detection run and the example set are **selections** (they name artifacts this experiment
 mints), so *Start from* never restores them; the method and its settings are.
@@ -135,6 +137,16 @@ class _KeypointDetectConfig(ConfigWidget):
             _MODULE, "min_pose_confidence", "Minimum pose confidence:"
         )
         form.addRow(self._min_conf_label, self._min_conf)
+        self._min_det_conf = optional_spin(
+            KeypointDetectConfig,
+            "min_detection_confidence",
+            "(every detection)",
+            step=0.05,
+        )
+        self._min_det_conf_label = field_label(
+            _MODULE, "min_detection_confidence", "Minimum detection confidence:"
+        )
+        form.addRow(self._min_det_conf_label, self._min_det_conf)
         # After the rows its selection drives exist: marking may move the selection to a
         # runnable method, which fires _sync_method.
         self._unavailable = apply_availability(self._method, "keypoint")
@@ -234,6 +246,11 @@ class _KeypointDetectConfig(ConfigWidget):
         reports = bool(getattr(cls, "reports_confidence", False))
         self._min_conf.setVisible(reports)
         self._min_conf_label.setVisible(reports)
+        # And the detection cut-off only for a method that crops each detection; a
+        # whole-frame method crops none, and `validate` refuses it there.
+        crops = bool(getattr(cls, "per_detection", False))
+        self._min_det_conf.setVisible(crops)
+        self._min_det_conf_label.setVisible(crops)
         self._sync_test()
 
     # -- Test keypoints --------------------------------------------------------- #
@@ -458,6 +475,7 @@ class _KeypointDetectConfig(ConfigWidget):
         if index >= 0:
             self._variant.setCurrentIndex(index)
         set_optional_value(self._min_conf, config.get("min_pose_confidence"))
+        set_optional_value(self._min_det_conf, config.get("min_detection_confidence"))
         self._every_n.set_value(config.get("every_n_frames"))
         super().load_config(config)  # decode, side_rule, crop_px, batch_size
 
@@ -474,6 +492,11 @@ class _KeypointDetectConfig(ConfigWidget):
             "min_pose_confidence": (
                 optional_value(self._min_conf)
                 if self._min_conf.isVisibleTo(self)
+                else None
+            ),
+            "min_detection_confidence": (
+                optional_value(self._min_det_conf)
+                if self._min_det_conf.isVisibleTo(self)
                 else None
             ),
             "decode": any_field_value(KeypointDetectConfig, "decode", self._decode),

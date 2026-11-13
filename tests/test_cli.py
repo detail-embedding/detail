@@ -4712,6 +4712,8 @@ def test_keypoints_detect_is_process_keypoint_detect_and_shapes_the_config(
             "672",
             "--side-rule",
             "hard",
+            "--min-detection-confidence",
+            "0.3",
         ],
     )
     assert result.exit_code == 1 and "stop here" in result.output
@@ -4729,6 +4731,7 @@ def test_keypoints_detect_is_process_keypoint_detect_and_shapes_the_config(
         None,
     )
     assert config["min_pose_confidence"] is None  # validate resolves it per method
+    assert config["min_detection_confidence"] == 0.3
     assert config["batch_size"] == 16  # the model's default, read off the model
     assert config["compute"].backend == "cpu"
 

@@ -529,7 +529,9 @@ The method list also offers this experiment's trained students, marked *trained 
 experiment*, and the keypoint models in the Model manager's **Global models**, marked *from the
 model catalog*. A student needs no example set and no DINOv3 weights.
 For a trained student the form shows **Minimum pose confidence** instead, opening on the
-method's 0.25: a pose the student is less sure of is not stored. The decode, the left/right rule
+method's 0.25: a pose the student is less sure of is not stored. For a method that crops each
+detection (`dinov3_match`) it shows **Minimum detection confidence**, opening on *every
+detection*: a detection less confident than it gets no crop and no pose. The decode, the left/right rule
 and the crop size sit under Advanced and open on *auto*, which means the method resolves them
 from the set's skeleton and records what it chose. There is no tracking run and no track list:
 a detect run places points on every detected animal and leaves giving them to tracked animals

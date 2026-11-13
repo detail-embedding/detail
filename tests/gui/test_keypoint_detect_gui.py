@@ -65,6 +65,30 @@ def test_min_pose_confidence_shows_only_for_a_method_that_reports_one(
     assert form.config()["min_pose_confidence"] is None  # hidden: never sent
 
 
+def test_min_detection_confidence_shows_only_for_a_method_that_crops_each_detection(
+    qapp, monkeypatch
+):
+    """The detection cut-off chooses which detections a per-detection method crops, so the
+    row shows for dinov3_match, opens on *every detection* (None) and round-trips; a
+    whole-frame method crops none and `validate` refuses it there, so the row hides and the
+    config carries None."""
+    monkeypatch.setitem(KEYPOINT_MODELS, "fake_pose", _FakePoseModel)
+    form = GUI_MODULES["keypoint_detect"].config_widget()
+    form.show()
+    form._method.setCurrentIndex(form._method.findData("dinov3_match"))
+    assert form._min_det_conf.isVisible() and form._min_det_conf_label.isVisible()
+    assert form.config()["min_detection_confidence"] is None  # every detection
+    assert "every detection" in form._min_det_conf.specialValueText()
+    form.load_config({"model_id": "dinov3_match", "min_detection_confidence": 0.3})
+    assert form.config()["min_detection_confidence"] == pytest.approx(0.3)
+    form.load_config({"model_id": "dinov3_match", "min_detection_confidence": 0.0})
+    assert form.config()["min_detection_confidence"] == 0.0  # legal, not "unset"
+    form._method.setCurrentIndex(form._method.findData("fake_pose"))
+    assert not form._min_det_conf.isVisible()
+    assert not form._min_det_conf_label.isVisible()
+    assert form.config()["min_detection_confidence"] is None  # hidden: never sent
+
+
 def test_settings_round_trip_and_selections_are_re_asked(form):
     """``load_config`` restores the method and every knob; the detection run and the example
     set name artifacts this experiment mints, so they are not carried (the stale-reference

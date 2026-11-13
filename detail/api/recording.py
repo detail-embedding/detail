@@ -2336,6 +2336,7 @@ class Recording:
         *,
         example_set_id: str | None = None,
         min_pose_confidence: float | None = None,
+        min_detection_confidence: float | None = None,
         model_variant: str | None = None,
         decode: str | None = None,
         side_rule: str | None = None,
@@ -2351,6 +2352,8 @@ class Recording:
         ``detection`` is the detection run id. ``model_id`` names the method
         (``dinov3_match``, which learns from ``example_set_id``'s marked frames, or a
         distilled student, which keeps every pose at or above ``min_pose_confidence``).
+        ``min_detection_confidence`` has a method that crops each detection crop only the
+        detections at or above it; omitted, every detection the run holds.
         ``decode`` / ``side_rule`` / ``crop_px`` left unset are resolved against the
         skeleton and written back to the run record; ``every_n_frames`` omitted inherits the
         detection run's cadence. Thin wrapper over ``run``.
@@ -2363,6 +2366,7 @@ class Recording:
             "model_variant": model_variant,
             "example_set_id": example_set_id,
             "min_pose_confidence": min_pose_confidence,
+            "min_detection_confidence": min_detection_confidence,
             "decode": decode,
             "side_rule": side_rule,
             "crop_px": crop_px,
