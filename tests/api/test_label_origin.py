@@ -372,7 +372,7 @@ def test_the_labels_written_from_a_screen_are_listed_from_the_run(
     )
     run.name_nodes({node: "climb"}, origins={node: origin})
     assert labels_from_screen(exp, screen.id) == [
-        {"node": node, "name": "climb", "kept": "4", "relation": "under"}
+        {"node": node, "name": "climb", "kept": "4", "relation": "under", "alpha": ""}
     ]
     run.name_nodes({node: ""})
     assert labels_from_screen(exp, screen.id) == []
@@ -441,3 +441,98 @@ def test_a_screened_labels_suggestion_carries_the_note(tmp_path):
         },
     )
     assert noted == f"{plain} · chosen from screen cmp_01 (cluster #7 kept)"
+
+
+# --- the strictness a screen was read at travels with the label (§22) ---------------------
+
+
+def test_an_origin_keeps_the_level_and_the_numbers_it_was_written_at():
+    """The stored shape: the level the screen was read at and the kept cluster's p's, as
+    strings like every other field; an origin written before strictness existed reads back
+    with them blank, which is the screen's own floor."""
+    origin = run_labels.LabelOrigin(
+        comparison="cmp_01",
+        kept="7",
+        relation="kept",
+        column="drug",
+        alpha="0.2",
+        family_p="0.14",
+        own_p="0.0039",
+        q="0.9",
+    )
+    assert run_labels.LabelOrigin.from_dict(origin.to_dict()) == origin
+    assert run_labels.LabelOrigin.from_dict(ORIGIN.to_dict()).alpha == ""
+    stored = {k: v for k, v in origin.to_dict().items() if k not in ("alpha", "q")}
+    read = run_labels.LabelOrigin.from_dict(stored)
+    assert read.alpha == "" and read.q == "" and read.family_p == "0.14"
+
+
+def test_label_origin_records_the_level_and_the_kept_clusters_numbers():
+    origin = run_labels.label_origin(
+        0,
+        comparison="cmp_01",
+        kept_texts={4: "more under drug"},
+        column="drug",
+        screen="drug vs vehicle · paired",
+        ancestors_of=_ancestors,
+        alpha=0.2,
+        numbers={4: {"family_p": 0.14, "own_p": 1 / 256, "q": 0.9}},
+    )
+    assert origin.relation == "under" and origin.kept == "4"
+    assert origin.alpha == "0.2"
+    assert origin.family_p == "0.14" and origin.own_p == "0.00390625"
+    assert origin.q == "0.9"
+    at_floor = run_labels.label_origin(
+        4,
+        comparison="cmp_01",
+        kept_texts={4: "more under drug"},
+        column="drug",
+        screen="",
+        ancestors_of=_ancestors,
+    )
+    assert at_floor.alpha == "" and at_floor.family_p == ""
+
+
+def test_the_origin_from_a_screen_read_looser_than_its_floor(tmp_path, monkeypatch):
+    """At p ≤ 0.2 a cluster the floor hid is kept, so a label on it carries the screen with
+    the level and the cluster's own numbers; at the screen's own floor the same node is
+    nothing to the screen. ``kept_nodes_of`` reads the same level, so the CLI's refusal and
+    the dock's leaves agree with the origin."""
+    from detail.analysis import compare
+    from detail.api.comparison import Comparison, kept_nodes_of, label_origin
+    from tests.api.test_comparison import _node_screen
+
+    exp, view, comp = _node_screen(tmp_path, monkeypatch)
+    kept_key = ("time_fraction", "node:4", "", "whole")
+    lead_key = ("time_fraction", "node:5", "", "whole")
+    kept = compare.Effect(
+        kept_key, 0.74, 4, 4, 3, True, family_p=0.02, own_p=0.0625, q=0.1
+    )
+    lead = compare.Effect(
+        lead_key, 0.31, 4, 4, 3, True, family_p=0.2, own_p=0.0625, q=0.1
+    )
+    ranking = compare.Ranking(
+        contrasts=[kept, lead],
+        floor=0.5,
+        draws=16,
+        seed=0,
+        floor_distribution=[0.1 * i for i in range(16)],
+        design=compare.PAIRED,
+        levels=("veh", "fent"),
+        unit=("animal",),
+        n_units=4,
+        min_units=2,
+        kept=(kept_key,),
+        ancestors={"node:5": set(), "node:4": set()},
+    )
+    monkeypatch.setattr(Comparison, "ranking", lambda self: ranking)
+    assert kept_nodes_of(ranking) == [4] and kept_nodes_of(ranking, 0.2) == [4, 5]
+    assert comp.kept_nodes(0.2) == [4, 5]
+    assert label_origin(exp, comp.id, 5, ancestors_of=view.ancestors) is None
+    origin = label_origin(exp, comp.id, 5, ancestors_of=view.ancestors, alpha=0.2)
+    assert origin.relation == "kept" and origin.kept == "5"
+    assert origin.alpha == "0.2" and origin.family_p == "0.2"
+    assert origin.own_p == "0.0625" and origin.q == "0.1"
+    assert "1.4×" in origin.text
+    at_floor = label_origin(exp, comp.id, 4, ancestors_of=view.ancestors)
+    assert at_floor.alpha == "" and at_floor.family_p == "0.02"

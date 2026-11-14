@@ -90,8 +90,10 @@ from detail.gui.cluster_filters import (
     RecordingChoice,
     NodeEffect,
     ScreenChoice,
+    ScreenLevel,
     effect_shades,
     breakdown,
+    numbers_text,
     panel_name,
 )
 from detail.gui.grip_splitter import GripSplitter
@@ -280,8 +282,12 @@ def show_cluster_name(page, bar: LabelBar, node: int, name: str) -> None:
 def origin_line(origin: dict | None) -> str:
     """The label bar's line for a label a difference screen chose (``run_labels.LabelOrigin``
     as stored): *From screen cmp_01 (drug vs vehicle · paired): more under drug than vehicle,
-    12.4× · kept* -- *· inside kept cluster #1375* / *· above kept cluster #1375* when the
-    labelled cluster is not the kept one itself. ``""`` for no origin."""
+    12.4× · kept · family-wise p 0.02, own p <0.01, q 0.40* -- *· inside kept cluster #1375* /
+    *· above kept cluster #1375* when the labelled cluster is not the kept one itself, *kept at
+    p ≤ 0.2* when the screen was read looser than its floor (§22). ``""`` for no origin.
+    """
+    from detail.analysis.comparison_report import kept_at_text
+
     if not origin:
         return ""
     comparison = origin.get("comparison", "?")
@@ -295,8 +301,23 @@ def origin_line(origin: dict | None) -> str:
         where = f"above kept cluster #{kept}"
     else:
         where = "kept"
+    where += kept_at_text(origin)
     text = origin.get("text", "")
-    return f"{head}: {text} · {where}" if text else f"{head} · {where}"
+    line = f"{head}: {text} · {where}" if text else f"{head} · {where}"
+    numbers = numbers_text(
+        *(_stored_number(origin.get(k)) for k in ("family_p", "own_p", "q"))
+    )
+    return f"{line} · {numbers}" if numbers else line
+
+
+def _stored_number(text) -> float | None:
+    """A number as the state stores it (a string), or ``None`` for a blank."""
+    if text is None or str(text).strip() == "":
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
 
 
 def show_figures(bar: LabelBar, clip_text: str, facts) -> None:
@@ -444,8 +465,35 @@ def _node_effects(ranking, record: dict) -> dict:
             kept=item.measure_key in kept,
             text=comparison_report.suggestion(item, ranking, record),
             pair=getattr(item, "pair", None),
+            family_p=getattr(item, "family_p", None),
+            own_p=getattr(item, "own_p", None),
+            q=getattr(item, "q", None),
         )
     return out
+
+
+def _screen_levels(ranking, view) -> tuple[ScreenLevel, ...]:
+    """The screen read at each strictness the dock's slider offers (§22): the floor at that
+    level, the clusters kept there and their leaves — all lookups over the one ranking, so
+    the slider never re-ranks. Empty for a screen with no floor."""
+    from detail.analysis import compare
+    from detail.api import comparison as comparison_api
+
+    if ranking.floor is None:
+        return ()
+    out = []
+    for alpha in compare.STRICTNESS_LEVELS:
+        kept = comparison_api.kept_nodes_of(ranking, alpha)
+        out.append(
+            ScreenLevel(
+                alpha=alpha,
+                floor=ranking.floor_at(alpha),
+                kept=tuple(int(n) for n in kept),
+                leaves=view.leaves_under_nodes(kept),
+                clearing=len(ranking.clearing_at(alpha)),
+            )
+        )
+    return tuple(out)
 
 
 def _effect_caption(ranking, record: dict) -> str:
@@ -1112,6 +1160,7 @@ class NodeInterpretTab(QWidget):
                         caption=_effect_caption(ranking, record),
                         kept=tuple(int(n) for n in kept),
                         column=str(record.get("design_column") or ""),
+                        levels=_screen_levels(ranking, view),
                     )
                 )
             return out
@@ -1569,8 +1618,11 @@ class NodeInterpretTab(QWidget):
                 return
             self._effect_screen = self._screen_alone(selection)
             if self._effect_screen is not None:
-                # A screen alone: the tree reads its statistic, grey inside the floor (§22).
-                positions, texts = effect_shades(self._effect_screen, len(self._shares))
+                # A screen alone: the tree reads its statistic, grey inside the floor (§22),
+                # at the strictness the dock is set to.
+                positions, texts = effect_shades(
+                    self._effect_screen, len(self._shares), alpha=selection.alpha
+                )
                 self._icicle.set_shades(positions, diverging=True, texts=texts)
             else:
                 self._icicle.set_shades(
@@ -1615,17 +1667,21 @@ class NodeInterpretTab(QWidget):
             return
         screen = self._effect_screen
         if screen is not None:
-            row = (
-                screen.effects.get(int(self._selected))
+            alpha = self._selection.alpha if self._selection is not None else None
+            level = screen.level(alpha)
+            selected = (
+                int(self._selected)
                 if self._selected is not None and self._selected != self._view.root
                 else None
             )
+            row = screen.effects.get(selected) if selected is not None else None
+            clears = selected is not None and screen.clears(selected, alpha)
             key.set_effect(
                 screen.caption,
                 screen.design,
-                floor=screen.floor,
-                selected_effect=None if row is None or not row.clears else row.effect,
-                selected_pair=None if row is None or not row.clears else row.pair,
+                floor=screen.floor if level is None else level.floor,
+                selected_effect=None if row is None or not clears else row.effect,
+                selected_pair=None if row is None or not clears else row.pair,
             )
             return
 
@@ -2178,15 +2234,21 @@ class NodeInterpretTab(QWidget):
         if selection is None or selection.leaves_source is None or self._view is None:
             return None
         choice = self._filters.screen(selection.leaves_source)
-        if choice is None or not choice.kept:
+        if choice is None:
+            return None
+        # At the strictness the screen is read at: a label chosen at p ≤ 0.3 says so (§22).
+        kept_texts = choice.kept_texts(selection.alpha)
+        if not kept_texts:
             return None
         return run_labels.label_origin(
             int(node),
             comparison=choice.key,
-            kept_texts=choice.kept_texts(),
+            kept_texts=kept_texts,
             column=choice.column,
             screen=choice.label,
             ancestors_of=self._view.ancestors,
+            alpha=selection.alpha,
+            numbers=choice.kept_numbers(selection.alpha),
         )
 
     def _label_id(self, name: str) -> str:

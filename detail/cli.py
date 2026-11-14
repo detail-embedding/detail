@@ -5846,6 +5846,17 @@ def _interpret_options(kind: str):
                 "above one.",
             ),
             click.option(
+                "--at-p",
+                "at_p",
+                type=float,
+                default=None,
+                metavar="LEVEL",
+                help="With --from-screen: the strictness the screen was read at, a family-wise "
+                "level in (0, 1) — the GUI's Strictness slider. Its kept set is then the "
+                "clusters clearing the floor at p <= LEVEL, and the label records the level. "
+                "Default: the screen's own 5% floor.",
+            ),
+            click.option(
                 "--rename-label",
                 "renames",
                 multiple=True,
@@ -5901,6 +5912,7 @@ def _interpret(
     renames=(),
     merges=(),
     from_screen=None,
+    at_p=None,
 ) -> None:
     """The body both interpret commands run, against either kind of run handle (§22)."""
     failed = False
@@ -5908,6 +5920,12 @@ def _interpret(
         if from_screen and not node_names:
             raise click.UsageError(
                 "--from-screen records where --name-node labels came from"
+            )
+        if at_p is not None and not from_screen:
+            raise click.UsageError("--at-p is the strictness --from-screen is read at")
+        if at_p is not None and not 0.0 < at_p < 1.0:
+            raise click.UsageError(
+                f"--at-p is a family-wise level in (0, 1), got {at_p!r}"
             )
         note = getattr(run, "subsample_note", lambda: None)()
         if note:
@@ -5925,16 +5943,17 @@ def _interpret(
         rename_pairs = _label_pairs(renames, "--rename-label", "OLD=NEW")
         merge_pairs = _label_pairs(merges, "--merge-label", "SOURCE=INTO")
         names = _pose_names(node_names) if node_names else None
-        origins = _label_origins(proj, run, names, from_screen) if names else None
+        origins = _label_origins(proj, run, names, from_screen, at_p) if names else None
         # Each edit re-projects the whole run's output, so each shows its progress.
         if names:
             extra = {"origins": origins} if origins else {}
             _with_stage_progress(
                 lambda bar: run.name_nodes(names, progress=bar, **extra)
             )
+            at = f" at p <= {at_p:g}" if at_p is not None else ""
             click.echo(
                 f"labelled {len(node_names)} node(s)"
-                + (f", from screen {from_screen}" if from_screen else "")
+                + (f", from screen {from_screen}{at}" if from_screen else "")
             )
         for old, new in rename_pairs:
             label = _label_id(run, old)
@@ -5958,10 +5977,13 @@ def _interpret(
             _echo_coverage(proj, run, inside)
 
 
-def _label_origins(proj, run, names: dict, from_screen: str | None) -> dict | None:
+def _label_origins(
+    proj, run, names: dict, from_screen: str | None, at_p: float | None = None
+) -> dict | None:
     """``{node: LabelOrigin}`` for the nodes ``--name-node`` labels, from the screen
-    ``--from-screen`` names, or ``None`` without it. A node the screen did not point at is
-    refused naming the clusters it kept: an origin that is not true is worse than none.
+    ``--from-screen`` names read at the strictness ``--at-p`` (its own floor for ``None``), or
+    ``None`` without it. A node the screen did not point at is refused naming the clusters it
+    kept: an origin that is not true is worse than none.
     """
     if not from_screen:
         return None
@@ -5969,16 +5991,21 @@ def _label_origins(proj, run, names: dict, from_screen: str | None) -> dict | No
 
     named = [node for node, name in names.items() if name]
     origins = comparison_api.label_origins(
-        proj, from_screen, [int(n) for n in named], ancestors_of=run.ancestors_of
+        proj,
+        from_screen,
+        [int(n) for n in named],
+        ancestors_of=run.ancestors_of,
+        alpha=at_p,
     )
     out = {}
     for node in named:
         origin = origins[int(node)]
         if origin is None:
-            kept = proj.get_comparison(from_screen).kept_nodes()
+            kept = proj.get_comparison(from_screen).kept_nodes(at_p)
+            at = f" at p <= {at_p:g}" if at_p is not None else ""
             raise click.ClickException(
-                f"node {node} is not one screen {from_screen} kept, nor inside or above one; "
-                f"it kept {', '.join(str(k) for k in kept) or 'nothing'}"
+                f"node {node} is not one screen {from_screen} kept{at}, nor inside or above "
+                f"one; it kept {', '.join(str(k) for k in kept) or 'nothing'}"
             )
         out[node] = origin
     return out
@@ -6210,6 +6237,7 @@ def analysis_temporal_interpret(
     finalize: bool,
     reopen: bool,
     from_screen: str | None,
+    at_p: float | None,
 ) -> None:
     """Interpret a Section 22 temporal-clustering run: label nodes of its tree, finish.
 
@@ -6230,6 +6258,7 @@ def analysis_temporal_interpret(
         reopen=reopen,
         inside="in a bout",
         from_screen=from_screen,
+        at_p=at_p,
     )
 
 

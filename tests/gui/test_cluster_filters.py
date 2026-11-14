@@ -1699,3 +1699,215 @@ def test_a_node_effect_carries_the_pair_its_screen_found(qapp):
     assert effects[12].text.startswith(
         "differs most between REI and SA: more under SA than REI, 9.6×"
     )
+
+
+# --------------------------------------------------------------------------- #
+# Strictness: a screen read looser or stricter than its floor (§22)
+# --------------------------------------------------------------------------- #
+
+LEVELS = (
+    cf.ScreenLevel(0.01, 3.0, (), frozenset(), 0),
+    cf.ScreenLevel(0.02, 2.6, (4,), frozenset({0}), 1),
+    cf.ScreenLevel(0.05, 2.0, (4,), frozenset({0, 1}), 2),
+    cf.ScreenLevel(0.1, 1.6, (4,), frozenset({0, 1}), 2),
+    cf.ScreenLevel(0.2, 1.2, (4, 5), frozenset({0, 1, 2}), 3),
+    cf.ScreenLevel(0.3, 1.0, (4, 5), frozenset({0, 1, 2}), 3),
+    cf.ScreenLevel(0.5, 0.6, (4, 5, 3), frozenset({0, 1, 2, 3}), 4),
+)
+
+
+def _levelled_screen():
+    import math
+
+    return cf.ScreenChoice(
+        "cmp_02",
+        "drug vs vehicle · paired",
+        "1 kept of 2 clearing",
+        frozenset({0, 1}),
+        effects={
+            4: cf.NodeEffect(
+                math.log(12.4),
+                True,
+                True,
+                "more under drug, 12.4×",
+                family_p=0.02,
+                own_p=0.004,
+                q=0.5,
+            ),
+            2: cf.NodeEffect(
+                -math.log(3.0),
+                True,
+                False,
+                "less under drug, 3.0×",
+                family_p=0.03,
+                own_p=0.004,
+                q=0.5,
+            ),
+            5: cf.NodeEffect(
+                math.log(2.5),
+                False,
+                False,
+                "more under drug, 2.5×",
+                family_p=0.2,
+                own_p=0.03,
+                q=0.6,
+            ),
+            3: cf.NodeEffect(
+                math.log(1.5),
+                False,
+                False,
+                "more under drug, 1.5×",
+                family_p=0.5,
+                own_p=0.4,
+                q=0.9,
+            ),
+        },
+        floor=2.0,
+        design="paired",
+        caption="Less ↔ more under drug",
+        kept=(4,),
+        column="drug",
+        levels=LEVELS,
+    )
+
+
+def test_the_strictness_slider_reads_the_ticked_screen_at_another_level(bar):
+    """Looser shows more: the slider's level picks that level's leaves and travels on the
+    selection as ``alpha``; the line under it says the level and what is kept there; the
+    Differences line's summary names it; Reset takes the screen and its level off together;
+    and a re-read of the list keeps the level, applying that level's leaves as listed now.
+    """
+    screen = _levelled_screen()
+    bar.set_screens([screen])
+    lst = bar.screens
+    assert lst.strictness_box.isHidden(), "no screen ticked: nothing to read at a level"
+    _tick_screen(bar, "cmp_02")
+    assert not lst.strictness_box.isHidden()
+    assert lst.alpha() is None and bar.selection().alpha is None
+    assert bar.selection().leaves == frozenset({0, 1})
+    assert lst.strictness_label.text() == (
+        "p ≤ 0.05 (the screen's own floor) · 1 kept of 2 clearing"
+    )
+
+    lst.strictness.setValue(cf.STRICTNESS_LEVELS.index(0.2))
+    selection = bar.seen[-1]
+    assert selection.alpha == 0.2 and selection.leaves_source == "cmp_02"
+    assert selection.leaves == frozenset(
+        {0, 1, 2}
+    ), "the level's leaves, not the floor's"
+    assert lst.strictness_label.text() == (
+        "p ≤ 0.2 (looser than its floor) · 2 kept of 3 clearing"
+    )
+    assert bar.field_row("Differences").summary_text() == (
+        "drug vs vehicle · paired · p ≤ 0.2"
+    )
+
+    lst.strictness.setValue(cf.STRICTNESS_LEVELS.index(0.01))
+    assert bar.selection().alpha == 0.01 and bar.selection().leaves == frozenset()
+    assert "stricter than its floor" in lst.strictness_label.text()
+
+    lst.strictness.setValue(cf.STRICTNESS_LEVELS.index(0.05))
+    assert bar.selection().alpha is None, "the floor itself is no level"
+    assert bar.selection().leaves == frozenset({0, 1})
+
+    lst.strictness.setValue(cf.STRICTNESS_LEVELS.index(0.2))
+    bar.set_screens([], loading=True)
+    assert bar.selection().alpha == 0.2, "a re-read in flight keeps the level"
+    recut = cf.ScreenChoice(
+        "cmp_02",
+        "drug vs vehicle · paired",
+        "1 kept of 2 clearing",
+        frozenset({0, 1}),
+        effects=screen.effects,
+        floor=2.0,
+        design="paired",
+        kept=(4,),
+        levels=tuple(
+            cf.ScreenLevel(lv.alpha, lv.floor, lv.kept, lv.leaves | {9}, lv.clearing)
+            for lv in LEVELS
+        ),
+    )
+    bar.set_screens([recut])
+    assert bar.selection().alpha == 0.2
+    assert bar.selection().leaves == frozenset({0, 1, 2, 9}), "that level's new leaves"
+    assert lst.strictness.value() == cf.STRICTNESS_LEVELS.index(0.2)
+
+    bar.field_row("Differences").reset_button.click()
+    assert bar.selection().is_empty and bar.selection().alpha is None
+    assert lst.strictness_box.isHidden()
+
+
+def test_a_screen_with_no_floor_has_no_levels_to_read_at(bar):
+    """No floor, no slider: the screen is ticked at what it is."""
+    screen = cf.ScreenChoice(
+        "cmp_05", "sex · between", "no floor: one unit", frozenset({2}), floor=None
+    )
+    bar.set_screens([screen])
+    _tick_screen(bar, "cmp_05")
+    assert bar.screens.strictness_box.isHidden()
+    assert bar.selection().leaves == frozenset({2}) and bar.selection().alpha is None
+    bar.set_selection(
+        Selection(leaves=frozenset({2}), leaves_source="cmp_05", alpha=0.2)
+    )
+    assert bar.screens.strictness_box.isHidden()
+    bar.set_screens([screen])
+    assert (
+        bar.selection().alpha is None
+    ), "a level the screen was not read at is dropped on the next read"
+    assert bar.selection().leaves == frozenset({2})
+
+
+def test_a_selection_at_a_level_shows_the_slider_there(bar):
+    bar.set_screens([_levelled_screen()])
+    bar.set_selection(
+        Selection(leaves=frozenset({0, 1, 2}), leaves_source="cmp_02", alpha=0.2)
+    )
+    assert bar.screens.value() == "cmp_02"
+    assert bar.screens.strictness.value() == cf.STRICTNESS_LEVELS.index(0.2)
+    assert bar.screens.alpha() == 0.2
+
+
+def test_effect_shades_at_a_level_take_that_levels_floor_and_kept_set_and_say_the_p():
+    """At p ≤ 0.2 the cluster the floor hid is coloured and *kept at p ≤ 0.2*; at the
+    screen's own floor it is grey and *inside the floor*; every hover carries the cluster's
+    family-wise p, its own p and its q, in one wording (``numbers_text``)."""
+    import math
+
+    from detail.gui.match_key import LOG_RATIO_EXTENT
+
+    screen = _levelled_screen()
+    shades, texts = cf.effect_shades(screen, 6)
+    assert shades[5] == 0.0
+    assert texts[5] == (
+        "more under drug, 2.5× · inside the floor · family-wise p 0.2, own p 0.03, q 0.6"
+    )
+    assert texts[4] == (
+        "more under drug, 12.4× · kept · family-wise p 0.02, own p 0.004, q 0.5"
+    )
+    shades, texts = cf.effect_shades(screen, 6, alpha=0.2)
+    assert shades[5] == pytest.approx(math.log(2.5) / LOG_RATIO_EXTENT)
+    assert texts[5] == (
+        "more under drug, 2.5× · kept at p ≤ 0.2 · family-wise p 0.2, own p 0.03, q 0.6"
+    )
+    assert texts[4].startswith("more under drug, 12.4× · kept at p ≤ 0.2 ·")
+    assert texts[2] == (
+        "less under drug, 3.0× · clears the floor at p ≤ 0.2, nested under a kept cluster"
+        " · family-wise p 0.03, own p 0.004, q 0.5"
+    )
+    assert shades[3] == 0.0
+    assert texts[3].endswith(
+        "inside the floor at p ≤ 0.2 · family-wise p 0.5, own p 0.4, q 0.9"
+    )
+    shades, _texts = cf.effect_shades(screen, 6, alpha=0.5)
+    assert shades[3] == pytest.approx(math.log(1.5) / LOG_RATIO_EXTENT)
+    # The level decides by the row's p, as the API does (`Ranking.clears_at`), so a slider's
+    # threshold and a hover's p cannot disagree.
+    assert screen.clears(5, 0.2) and not screen.clears(5, 0.1)
+    assert not screen.clears(5, None)
+    assert screen.kept_texts(0.2) == {
+        4: "more under drug, 12.4×",
+        5: "more under drug, 2.5×",
+    }
+    assert screen.kept_numbers(0.2)[5] == {"family_p": 0.2, "own_p": 0.03, "q": 0.6}
+    assert screen.kept_texts() == {4: "more under drug, 12.4×"}
+    assert cf.numbers_text(None, None, None) == ""

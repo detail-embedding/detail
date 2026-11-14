@@ -802,6 +802,12 @@ _LIVE_ON_A_SNAPSHOT = {
         "ethogram_video_picker",
     ): "finding a video on the ethogram scrolls to it; it writes nothing",
     ("QPushButton", "ethogram_whole"): "zooming the ethogram back out is looking at it",
+    # The Differences line's Strictness slider reads a saved screen looser or stricter (§22);
+    # the screen, the run and the snapshot do not move.
+    (
+        "QSlider",
+        "screen_strictness",
+    ): "reading a saved screen at another strictness is looking at it",
 }
 
 
@@ -2662,10 +2668,15 @@ class _FakeScreen:
     tree does not have). ``rankings`` counts the re-rankings: seconds each over a real family,
     so the page ranks a screen once per read."""
 
-    def __init__(self, comparison_id: str, kept: list[int], clearing: int) -> None:
+    def __init__(
+        self, comparison_id: str, kept: list[int], clearing: int, leads=()
+    ) -> None:
         self.id = comparison_id
         self._kept = list(kept)
         self._clearing = max(clearing, len(kept))
+        #: Clusters inside the floor at 5% that clear at p ≤ 0.2: what a looser reading
+        #: shows (§22).
+        self._leads = list(leads)
         self.rankings = 0
 
     def record(self) -> dict:
@@ -2682,28 +2693,47 @@ class _FakeScreen:
 
         self.rankings += 1
         nested = [100_000 + i for i in range(self._clearing - len(self._kept))]
-        items = [
-            compare.Effect(
+
+        def item(n: int, effect: float, family_p: float, own_p: float, q: float):
+            return compare.Effect(
                 measure_key=("time_fraction", f"node:{n}", "", "whole"),
-                effect=math.log(4.0),
+                effect=effect,
                 n_units=10,
                 n_present=10,
                 consistency=10,
                 loo_sign_stable=True,
+                family_p=family_p,
+                own_p=own_p,
+                q=q,
             )
-            for n in [*self._kept, *nested]
+
+        items = [
+            *(item(n, math.log(4.0), 0.02, 0.004, 0.5) for n in self._kept),
+            *(item(n, math.log(4.0), 0.03, 0.004, 0.5) for n in nested),
+            *(item(n, math.log(2.5), 0.2, 0.03, 0.6) for n in self._leads),
         ]
+        # The nested ones sit under the first kept cluster, so a reading at any level
+        # peak-picks them away as the saved screen did (`suppress_nesting`).
+        ancestors = {
+            f"node:{n}": {f"node:{self._kept[0]}"} if self._kept else set()
+            for n in nested
+        }
+        # The null's 95th percentile (index 14 of 16) is the floor, 1.0: the kept and nested
+        # items (ln 4) clear it, a lead (ln 2.5) does not — as its family-wise p says.
         return compare.Ranking(
             contrasts=items,
-            floor=0.5,
+            floor=1.0,
             draws=16,
             seed=0,
+            floor_distribution=[0.05 * i for i in range(14)] + [1.0, 1.5],
             design=compare.PAIRED,
             levels=("vehicle", "drug"),
             unit=("ID",),
             n_units=10,
             min_units=5,
+            exact=True,
             kept=tuple(items[i].measure_key for i in range(len(self._kept))),
+            ancestors=ancestors,
         )
 
     def kept_nodes(self) -> list[int]:
@@ -2984,12 +3014,18 @@ def test_a_label_written_while_a_screen_is_ticked_records_the_screen(
         "column": "drug",
         "screen": "drug vs vehicle · paired",
         "text": "more under drug than vehicle, 4.0× (10 of 10 recording(s) in that direction)",
+        # Read at the screen's own floor: no level, and the kept cluster's numbers (§22).
+        "alpha": "",
+        "family_p": "0.02",
+        "own_p": "0.004",
+        "q": "0.5",
     }
     bar = interpret.label_bar()
     assert bar.origin.isVisibleTo(interpret)
     assert bar.origin.text() == (
         "From screen cmp_07 (drug vs vehicle · paired): more under drug than vehicle, "
-        "4.0× (10 of 10 recording(s) in that direction) · kept"
+        "4.0× (10 of 10 recording(s) in that direction) · kept · family-wise p 0.02, "
+        "own p 0.004, q 0.5"
     )
 
     children = list(view.children(node))
@@ -2998,7 +3034,7 @@ def test_a_label_written_while_a_screen_is_ticked_records_the_screen(
         _label(qapp, interpret, child, "climb left", handle)
         inside = handle.state().label_origins[str(child)]
         assert inside["relation"] == "under" and inside["kept"] == str(node)
-        assert bar.origin.text().endswith(f"inside kept cluster #{node}")
+        assert f"inside kept cluster #{node} ·" in bar.origin.text()
 
     interpret.filters().field_row("Differences").reset_button.click()
     other = next(
@@ -3054,3 +3090,86 @@ def test_the_origin_line_reads_the_stored_origin():
     assert origin_line({**stored, "relation": "above", "text": ""}) == (
         "From screen cmp_01 (drug vs vehicle · paired) · above kept cluster #1375"
     )
+    # Read looser than the screen's floor, with the kept cluster's numbers (§22); a level
+    # that is the floor itself, or a blank, says nothing; a number that will not parse is
+    # left out rather than fatal.
+    numbered = {
+        **stored,
+        "relation": "kept",
+        "alpha": "0.2",
+        "family_p": "0.14",
+        "own_p": "0.0039",
+        "q": "0.9",
+    }
+    assert origin_line(numbered) == (
+        "From screen cmp_01 (drug vs vehicle · paired): more under drug than vehicle, "
+        "12.4× · kept at p ≤ 0.2 · family-wise p 0.14, own p 0.0039, q 0.9"
+    )
+    assert origin_line({**numbered, "alpha": "0.05", "q": "x"}) == (
+        "From screen cmp_01 (drug vs vehicle · paired): more under drug than vehicle, "
+        "12.4× · kept · family-wise p 0.14, own p 0.0039"
+    )
+
+
+def test_a_screen_read_looser_than_its_floor_shows_the_lead_and_the_label_records_it(
+    qapp, fitted, monkeypatch
+):
+    """The slider at p ≤ 0.2 (§22): the dock's leaves grow by the lead the floor hid, the
+    tree colours it and its hover says *kept at p ≤ 0.2* with its p's, the key's floor tick
+    moves to that level, and a label written on it records the level and the numbers — a
+    lead stays a lead for as long as the label exists. Back at the floor it is grey again.
+    """
+    from detail.analysis.compare import STRICTNESS_LEVELS
+
+    _experiment, handle, workspace = _workspace(qapp, fitted)
+    interpret = workspace._interpret
+    view = interpret._view
+    node = _kept_candidate(view)
+    lead = next(
+        n
+        for n in range(view.tree.n_nodes - 1)
+        if n != node
+        and n not in view.ancestors(node)
+        and node not in view.ancestors(n)
+        and view.summary(n).parent >= 0
+    )
+    _tick_screen(
+        qapp,
+        interpret,
+        monkeypatch,
+        _FakeScreen("cmp_12", [node], clearing=2, leads=[lead]),
+    )
+    bar = interpret.filters()
+    assert bar.selection().leaves == view.leaves_under_nodes([node])
+    assert bar.screens.strictness_label.text().endswith("1 kept of 2 clearing")
+    assert interpret._icicle._diverging
+    assert interpret._icicle.shades()[lead] == 0.0, "inside the floor: grey"
+
+    bar.screens.strictness.setValue(STRICTNESS_LEVELS.index(0.2))
+    selection = bar.selection()
+    assert selection.alpha == 0.2
+    assert selection.leaves == view.leaves_under_nodes([node, lead])
+    assert bar.screens.strictness_label.text().endswith("2 kept of 3 clearing")
+    assert interpret._icicle._diverging
+    assert interpret._icicle.shades()[lead] > 0.0, "coloured at this level"
+    assert "kept at p ≤ 0.2" in interpret._icicle._describe(lead)
+    assert "family-wise p 0.2, own p 0.03, q 0.6" in interpret._icicle._describe(lead)
+    interpret.select(lead)
+    key = bar.dock.key
+    assert key.is_effect() and "selected 2.5×" in key.text() and "floor" in key.text()
+
+    _label(qapp, interpret, lead, "lead", handle)
+    origin = handle.state().label_origins[str(lead)]
+    assert origin["relation"] == "kept" and origin["kept"] == str(lead)
+    assert origin["alpha"] == "0.2" and origin["family_p"] == "0.2"
+    assert origin["own_p"] == "0.03" and origin["q"] == "0.6"
+    assert (
+        interpret.label_bar()
+        .origin.text()
+        .endswith("· kept at p ≤ 0.2 · family-wise p 0.2, own p 0.03, q 0.6")
+    )
+
+    bar.screens.strictness.setValue(STRICTNESS_LEVELS.index(0.05))
+    assert bar.selection().alpha is None
+    assert bar.selection().leaves == view.leaves_under_nodes([node])
+    assert interpret._icicle.shades()[lead] == 0.0

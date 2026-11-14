@@ -925,7 +925,10 @@ selection, written to `analysis/<an_NN>/`.
   cluster it kept and the column it contrasted, so a later `comparison run` of the label over the
   same column can say the screen chose the cluster it scores. Each node must be one the screen
   kept, or sit inside or above one; any other is refused naming what the screen kept. `--tree`
-  shows such a label as `climb [from cmp_02]`.
+  shows such a label as `climb [from cmp_02]`. `--at-p 0.2` reads the screen looser than its own
+  5% floor, as the GUI's **Strictness** slider does: the clusters whose family-wise p is at most
+  0.2 count as kept, the refusal names what is kept at that level, and the label records the level
+  with the cluster's p's, so it stays marked as a lead rather than a finding.
 
   `--rebuild-cache` rebuilds every cluster's evidence from the fit, with a progress bar: for a run
   whose clips are reported out of date, or one prepared before every cluster listed its clips
@@ -1156,7 +1159,13 @@ column of `metadata.csv`, and report how the groups differ.
   refused with what changed. It always takes those four measures and reads the cache as it is
   now, so `--measure` naming fewer and `--source-snapshot` are refused. `export` then writes `ranking.csv` with every node's effect, floor
   and verdict, and draws the tables and figures for the kept nodes and the next ten below the
-  floor rather than for thousands of nodes.
+  floor rather than for thousands of nodes. Each row also carries `family_p` (the share of
+  shuffled cohorts whose largest effect reaches it: the floor read as a p, at most 0.05 for a node
+  that clears), `own_p` (the same share against the node's own shuffles alone, so a cluster
+  consistent in its animals but hidden by the size of the family still says so) and `q` (the
+  Benjamini–Hochberg false-discovery rate over the family's own p's). Threshold `family_p`
+  yourself to read the screen looser or stricter than its floor; that is what the GUI's
+  Strictness slider does.
 
   **A labels comparison says which of its labels a screen chose.** A label written from a
   cluster screen (`--from-screen`, or a screen ticked in the GUI) carries that screen; `run`
@@ -1195,8 +1204,8 @@ column of `metadata.csv`, and report how the groups differ.
   tree, `stats.csv` (long form, one row per observation), `tables/` (per measure: groups as rows
   with n / coverage / mean / median / sd), `figures/` (every observation as a point, plus the
   difference ranking with its chance floor), `summary.md`, and `manifest.json` with a SHA-256 per
-  artifact, plus `ranking.csv` (every ranked measure or node with its effect, floor and verdict)
-  and, for a node screen, the `nodes.csv` hierarchy. Warns if the source data has changed since
+  artifact, plus `ranking.csv` (every ranked measure or node with its effect, floor and verdict,
+  and its `family_p` / `own_p` / `q`) and, for a node screen, the `nodes.csv` hierarchy. Warns if the source data has changed since
   the comparison was run. `--theme dark`
   draws the figures on a dark background for slides; the manifest records which theme was used.
 - `list --experiment <dir>`: the experiment's comparisons, with the unit of analysis each used.
@@ -1204,8 +1213,10 @@ column of `metadata.csv`, and report how the groups differ.
   unless `--yes`.
 
 Statistics stop at description: means, medians, spreads, and a permutation floor that says whether
-a difference is bigger than shuffling the group labels would produce. There are no p-values,
-`stats.csv` is the handoff to whatever you test with.
+a difference is bigger than shuffling the group labels would produce. The only p-values are the
+floor's own (each ranked item's share of the shuffles that reach it, family-wise and on its own,
+with a false-discovery q over them), and there is no model behind them; `stats.csv` is the
+handoff to whatever you test with.
 
 ### `model`
 Built-in (registry) model readiness/install, plus the **machine-global imported

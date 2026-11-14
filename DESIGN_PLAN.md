@@ -5777,7 +5777,9 @@ rows read an empty answer.
   further. A cluster's interval keeps all of its judgments, because the cluster did not change.
 - **A label a difference screen chose carries the screen.** State keeps `label_origins` per
   labelled node (§22 *The difference screen*): the saved `cmp_NN`, the kept cluster, the node's
-  relation to it and the column contrasted. It goes with the node's own label and is restored with
+  relation to it, the column contrasted, the strictness the screen was read at (`alpha`, blank
+  for its own floor) and the kept cluster's `family_p` / `own_p` / `q` when the label was
+  written. It goes with the node's own label and is restored with
   the other maps (`label_maps()` is four maps; `restore_labels` takes four), so an undo neither
   strands an origin on an unlabelled node nor forgets one on redo.
 - **A rename or merge keeps every answer.** Answers are label paths, so renaming *climb* left
@@ -8229,6 +8231,24 @@ screen's sentence for it, the same words the Comparisons page prints
 floor* after it. Tick any clip filter beside the screen and both return to the share ramp: two
 scales on one tree are unreadable, and the screen then acts as a filter like the rest.
 
+**Strictness: a screen read looser or stricter than its floor, as a view.** Under the ticked
+screen the dock shows **Strictness**, a slider over the family-wise levels
+`compare.STRICTNESS_LEVELS` (1%, 2%, 5%, 10%, 20%, 30%, 50%; the screen's own 5% floor among
+them), with a line saying the level and what the screen keeps there (*p ≤ 0.2 (looser than its
+floor) · 6 kept of 12 clearing*). Every level is a lookup over the one saved ranking
+(`Ranking.floor_at`, `kept_at`: the same null read at another quantile, the same peak pick), so the
+slider never re-ranks and the page hands the dock each level's kept set and leaves
+(`cluster_filters.ScreenLevel`). The selection carries the level (`Selection.alpha`, `None` for the
+floor), the leaves are that level's, the key's floor ticks move to that level's floor, the tree
+colours what clears there and a block's hover reads *kept at p ≤ 0.2*. **It is a view**: the
+saved screen's floor, `kept` and record do not move, and a label written at a loosened level says
+so (below). The purpose is discovery on a cohort too small to clear a family-wise floor — to see
+which clusters would need more animals or another experiment — and every such cluster carries the
+numbers that say how far it is from clearing (*The node source*): its family-wise p, its own p and
+its q, in the hover, on the Comparisons page and in `ranking.csv`. The CLI reads a screen at a
+level with `temporal-interpret --from-screen cmp_NN --at-p LEVEL`; the slider itself has no CLI
+form, since the columns are in the export.
+
 **A label written while a screen is ticked remembers the screen.** There is no promotion of a
 suggestion to a label: the suggestion is where to look, the name is the user's, typed from the
 clips as any label is. What the screen did was choose the cluster, and that choice has to travel
@@ -8236,8 +8256,13 @@ with the label, because the label scored later across the same column is the eff
 selected it for, reported as if found independently — the *labels score a method* failure one step
 removed, and nothing fails when it happens. So the state keeps `label_origins` (node → the saved
 screen `cmp_NN`, the cluster it kept, the labelled node's relation to it — *kept*, *under*,
-*above* — the column the screen contrasted, and copies of how the screen read and the kept
-cluster's sentence, so the record reads without the comparison; `storage/run_labels.LabelOrigin`).
+*above* — the column the screen contrasted, copies of how the screen read and the kept
+cluster's sentence, so the record reads without the comparison, and the strictness the screen
+was read at with the kept cluster's p's — `alpha`, blank for the screen's own floor, and
+`family_p` / `own_p` / `q` — so a label chosen at p ≤ 0.3 says so for as long as it exists:
+the label bar reads *kept at p ≤ 0.2 · family-wise p 0.14, own p 0.0039, q 0.9*, the screen's
+page lists it *at p ≤ 0.2*, and a labels comparison's `screened_labels` note says *kept at p ≤
+0.2*; `storage/run_labels.LabelOrigin`).
 It is written by `name_nodes` / `label_nodes` with the name, travels with the node's *own* label
 (a rename in place keeps it; removal, `delete_label` and a merge that drops the node's own label
 lose it, in the one edit door), and is restored with the other three maps by `restore_labels`, so
@@ -8794,6 +8819,31 @@ Beside the effect, every within-design item reports `consistency` (units whose o
 the sign), `n_units`, `n_present`, and whether the sign survives leaving any one unit out. The
 floor is the same 95th percentile of the largest |effect| over the family, in the same pass, and is
 withheld with `no_floor_reason` when nothing can move (one unit; no measure reaching `min_units`).
+
+**The floor read as numbers.** The null the floor is taken from already says, for every item,
+how far it is from clearing, and a between ranking keeps each measure's own draws beside the
+family's largest for the same purpose (`_magnitudes`). Every item carries three (`Effect` /
+`Contrast`, `ranking.csv`, the ranking tables' *p (family · own)* column, INTERPRET's hover):
+- **`family_p`** — the share of the null's draws whose *largest* effect reaches the item: the
+  floor read as a p. Defined as the smallest family-wise level at which the item clears
+  `Ranking.floor_at` (the percentile rule rounds its position in the null, so a bare count sits one
+  draw off it at some levels), which makes `family_p ≤ α` and `magnitude > floor_at(α)` agree at
+  every level and `Ranking.clears_at` one rule for the dock's slider and the hover's p; at
+  `FLOOR_ALPHA` (0.05) it is `clears_floor`. Exact over an enumerated null.
+- **`own_p`** — the share of the item's *own* null draws reaching it, ignoring the rest of the
+  family: whether the units agree on it by itself. Exact over an enumerated null (the observed
+  configuration is one of its draws, so it is never zero); over a sample the observed labelling
+  counts as one more draw, the Monte Carlo convention, so its floor is `1 / (draws + 1)`.
+- **`q`** — Benjamini–Hochberg over the family's own p's: the smallest false-discovery rate at
+  which the item is among the discoveries. Computed because it is the standard answer to a family
+  this size, and reported knowing that at eight animals the exact null has 256 configurations, so
+  the smallest own p is 1/256 and no cluster can reach q ≤ 0.05 among ~1,350; it becomes
+  informative at twelve to sixteen units.
+All three are `None` where the effect is undefined or unbounded, or where there is no floor. What
+they are for is §22's strictness: a screen read looser than its floor shows the clusters a larger
+cohort might clear, each with the numbers that say how far it is. They are not a model: the
+permutation is the same one the floor was always built from, and `stats.csv` remains the handoff
+to whatever a user tests with.
 **The permutation respects the design**: shuffle a paired contrast's levels *across* units and the
 pairs break — a unit dealt two of one level drops out of the draw, the null's tail widens and the
 floor rises past an effect every unit showed — the guard that pins the between permutation to the
@@ -8849,8 +8899,10 @@ comparisons/<cmp_NN>/
                       cell, the summary, the detail page's header, `comparison run`)
   stats.csv           the tidy source of truth — one row per observation with its factors
   nodes.csv           source: nodes only — the node hierarchy the ranking is suppressed over
-  ranking.csv         every ranked item: effect, floor, clears, kept, consistency, n_units,
-                      pair_a / pair_b (the levels or groups the effect is between)
+  ranking.csv         every ranked item: effect, floor, clears, kept, family_p / own_p / q
+                      (the floor read as a p, the item's own p, the BH q over the family),
+                      consistency, n_units, pair_a / pair_b (the levels or groups the effect
+                      is between)
   tables/             per measure: groups as rows, summary columns
   figures/            dot plots, time-resolved curves, the difference ranking with its floor
   summary.md          the quick-look

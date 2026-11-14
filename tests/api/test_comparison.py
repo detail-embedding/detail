@@ -962,6 +962,15 @@ def test_the_node_source_measures_a_clustering_runs_nodes(tmp_path, monkeypatch)
     }
     assert {row["measure"] for row in ranked} == {"time_fraction"}
     assert all(row["suggestion"] for row in ranked)
+    # The floor read as a number, each node's own p and the BH q over them (§24): what a
+    # reader thresholds at a strictness of their own; blank only where the effect is.
+    for row in ranked:
+        if row["effect"] == "":
+            assert row["family_p"] == row["own_p"] == row["q"] == ""
+            continue
+        family_p, own_p, q = (float(row[k]) for k in ("family_p", "own_p", "q"))
+        assert 0.0 <= family_p <= 1.0 and 0.0 < own_p <= 1.0 and own_p <= q <= 1.0
+        assert (row["clears"] == "True") == (family_p <= 0.05)
     assert comp.drift() == []
 
 

@@ -130,6 +130,13 @@ class LabelOrigin:
     read when the label was written ("drug vs vehicle · paired") and ``text`` the screen's
     sentence for the kept cluster. The last two are copies, so a state reads without the
     comparison it names -- which may since have been deleted.
+
+    **The strictness the screen was read at travels with the label.** A screen is read at a
+    family-wise level (§22): its own 5% floor, or looser when the user slid the strictness to see
+    more. ``alpha`` is that level (``""`` for an origin written before strictness existed, which
+    is the floor), and ``family_p`` / ``own_p`` / ``q`` are the kept cluster's numbers when the
+    label was written -- so a label chosen at p ≤ 0.3 says so for as long as it exists, and a
+    reader can tell a finding from a lead. Every field is a string, as the state stores it.
     """
 
     comparison: str
@@ -138,6 +145,10 @@ class LabelOrigin:
     column: str
     screen: str = ""
     text: str = ""
+    alpha: str = ""
+    family_p: str = ""
+    own_p: str = ""
+    q: str = ""
 
     def to_dict(self) -> dict[str, str]:
         return {k: str(v) for k, v in dataclasses.asdict(self).items()}
@@ -152,9 +163,10 @@ class LabelOrigin:
             return None
         return cls(
             **fields,
-            column=str(data.get("column") or ""),
-            screen=str(data.get("screen") or ""),
-            text=str(data.get("text") or ""),
+            **{
+                k: str(data.get(k) or "")
+                for k in ("column", "screen", "text", "alpha", "family_p", "own_p", "q")
+            },
         )
 
 
@@ -183,6 +195,11 @@ def screen_relation(node: int, kept, ancestors_of) -> str | None:
     return None
 
 
+def _number_text(value) -> str:
+    """A p, q or level as the state stores it: ``"0.0039"``, ``""`` for none."""
+    return "" if value is None else f"{float(value):.6g}"
+
+
 def label_origin(
     node: int,
     *,
@@ -191,11 +208,15 @@ def label_origin(
     column: str,
     screen: str,
     ancestors_of,
+    alpha: float | None = None,
+    numbers: dict | None = None,
 ) -> LabelOrigin | None:
     """The origin a label on ``node`` carries from the screen ``comparison``, or ``None`` when the
-    screen did not point at the node. ``kept_texts`` is ``{kept node: its sentence}``; the one
-    the node stands to is recorded -- the node itself, the kept ancestor, or the kept node
-    beneath it (the nearest, for a node above several)."""
+    screen did not point at the node. ``kept_texts`` is ``{kept node: its sentence}`` at the
+    strictness ``alpha`` the screen was read at (``None``: its own floor); the one the node
+    stands to is recorded -- the node itself, the kept ancestor, or the kept node beneath it (the
+    nearest, for a node above several) -- with its numbers from ``numbers``,
+    ``{kept node: {"family_p", "own_p", "q"}}``, where given."""
     relation = screen_relation(node, kept_texts, ancestors_of)
     if relation is None:
         return None
@@ -208,6 +229,7 @@ def label_origin(
     else:
         below = [k for k in kept_nodes if node in ancestors_of(k)]
         chosen = min(below, key=lambda k: len(ancestors_of(k)))
+    found = (numbers or {}).get(kept_nodes[chosen]) or {}
     return LabelOrigin(
         comparison=str(comparison),
         kept=str(chosen),
@@ -215,6 +237,10 @@ def label_origin(
         column=str(column),
         screen=str(screen),
         text=str(kept_texts[kept_nodes[chosen]] or ""),
+        alpha=_number_text(alpha),
+        family_p=_number_text(found.get("family_p")),
+        own_p=_number_text(found.get("own_p")),
+        q=_number_text(found.get("q")),
     )
 
 

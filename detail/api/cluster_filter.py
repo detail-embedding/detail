@@ -67,10 +67,13 @@ class Selection:
     - ``leaves``: the leaves of the merge tree whose members match (the clusters a difference
       screen kept, as leaves), or ``None`` for every leaf; ``leaves_source`` names what picked
       them, a saved comparison's id, and is carried for the page, not the arithmetic.
+    - ``alpha``: the strictness the screen was read at — the family-wise level its kept set was
+      taken at (§22) — or ``None`` for the screen's own floor. Carried for the page, like
+      ``leaves_source``: the leaves already are the set at that level.
 
     Raises:
-        ValueError: a ``session`` outside ``0..1`` or with ``lo > hi``, or a ``leaves_source``
-            with no ``leaves``.
+        ValueError: a ``session`` outside ``0..1`` or with ``lo > hi``, a ``leaves_source`` or
+            ``alpha`` with no ``leaves``, or an ``alpha`` outside ``(0, 1)``.
     """
 
     values: Mapping[str, frozenset] = field(default_factory=dict)
@@ -80,6 +83,7 @@ class Selection:
     session: tuple[float, float] | None = None
     leaves: frozenset | None = None
     leaves_source: str | None = None
+    alpha: float | None = None
 
     def __post_init__(self) -> None:
         if self.leaves_source is not None and self.leaves is None:
@@ -87,6 +91,17 @@ class Selection:
                 f"leaves_source {self.leaves_source!r} names what picked the leaves, but no "
                 f"leaves were given"
             )
+        if self.alpha is not None:
+            if self.leaves is None:
+                raise ValueError(
+                    f"alpha {self.alpha!r} is the strictness the leaves were taken at, but no "
+                    f"leaves were given"
+                )
+            if not 0.0 < float(self.alpha) < 1.0:
+                raise ValueError(
+                    f"a strictness is a family-wise level in (0, 1), got {self.alpha!r}"
+                )
+            object.__setattr__(self, "alpha", float(self.alpha))
         if self.leaves is not None:
             object.__setattr__(self, "leaves", frozenset(int(v) for v in self.leaves))
         if self.session is None:
@@ -140,7 +155,7 @@ class Selection:
         if key == SESSION:
             return replace(self, session=None)
         if key == CLUSTERS:
-            return replace(self, leaves=None, leaves_source=None)
+            return replace(self, leaves=None, leaves_source=None, alpha=None)
         column = key[1]
         return replace(
             self,
@@ -158,7 +173,9 @@ class Selection:
         if key == SESSION:
             return Selection(session=self.session)
         if key == CLUSTERS:
-            return Selection(leaves=self.leaves, leaves_source=self.leaves_source)
+            return Selection(
+                leaves=self.leaves, leaves_source=self.leaves_source, alpha=self.alpha
+            )
         column = key[1]
         if column in self.values:
             return Selection(values={column: self.values[column]})

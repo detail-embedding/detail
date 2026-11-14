@@ -6,11 +6,16 @@ declared aggregation path, and summarizes by whatever columns the question needs
 
 Pure functions — no executor, no Qt, no disk. The record and the export tree sit above this.
 
-**Scope is descriptive, deliberately.** Effect sizes, spreads, and every observation. No tests, no
-multiple-comparison corrections, no models: behavioral counts are overdispersed, sessions within an
-animal are not independent, and getting inference right needs choices this tool has no business
-making on a user's behalf. What it owes them instead is long-form rows with their factors attached,
-which is exactly what a mixed model in R or statsmodels wants as input.
+**Scope is descriptive, deliberately.** Effect sizes, spreads, and every observation. No models:
+behavioral counts are overdispersed, sessions within an animal are not independent, and getting
+inference right needs choices this tool has no business making on a user's behalf. What it owes
+them instead is long-form rows with their factors attached, which is exactly what a mixed model in
+R or statsmodels wants as input. The one inference it does make is the permutation floor a ranking
+ships with (:class:`Ranking`), and the numbers that floor already implies: each item's
+**family-wise p** (the share of the null's draws whose largest effect reached it — the floor read
+as a p), its **own p** (the same share against its own null, ignoring the rest of the family) and
+the Benjamini–Hochberg **q** over the family's own p's, so a cohort too small to clear a
+family-wise floor can still say which items are consistent on their own.
 
 **The aggregation path is the whole ballgame.** One animal contributes four sessions and another
 one. Pool recordings and the first animal votes four times, so the group mean tilts toward whichever
@@ -83,6 +88,13 @@ EXACT_FLIPS_MAX_UNITS = 10
 
 #: The measure whose per-unit presence decides whether a unit counts toward ``min_units``.
 PRESENCE_MEASURE = "total_time"
+
+#: The floor a ranking ships with is the null's 95th percentile: a family-wise level of 5%.
+FLOOR_ALPHA = 0.05
+#: The strictness levels a screen is read at (§22 *The difference screen*): the family-wise
+#: level the floor is taken at, :data:`FLOOR_ALPHA` among them. A view over a saved ranking,
+#: never a run parameter — what the record kept is kept at :data:`FLOOR_ALPHA`.
+STRICTNESS_LEVELS = (0.01, 0.02, 0.05, 0.1, 0.2, 0.3, 0.5)
 
 
 class ComparisonError(ValueError):
@@ -333,6 +345,12 @@ class Contrast:
     difference: float | None
     ratio: float | None
     epsilon: float = 0.0
+    #: The share of the null's draws whose *largest* magnitude reached this one — the floor
+    #: read as a p — and the share whose magnitude *for this measure* did (its own null); the
+    #: Benjamini–Hochberg q over the family's own p's. ``None`` where the magnitude is.
+    family_p: float | None = None
+    own_p: float | None = None
+    q: float | None = None
 
     @property
     def magnitude(self) -> float | None:
@@ -424,6 +442,13 @@ class Effect:
     ``pair`` is the two levels the effect is between, ``(a, b)`` read as *b against a*: the
     paired contrast's levels, or the pair a profile's measure differs most between. ``None`` for
     a trend and for an undefined profile item.
+
+    ``family_p`` is the share of the null's draws whose largest |effect| over the family reached
+    this one (the floor read as a p: it clears the 5% floor when ``family_p`` is at most about
+    0.05, to the null's resolution), ``own_p`` the share whose effect *for this measure* did —
+    its own null, which says whether the units agree on it without asking it to beat a thousand
+    siblings — and ``q`` the Benjamini–Hochberg false-discovery rate over the family's own p's.
+    All ``None`` where the effect is undefined. Over an enumerated null they are exact.
     """
 
     measure_key: tuple
@@ -437,6 +462,9 @@ class Effect:
     present_a: int | None = None
     present_b: int | None = None
     pair: tuple[str, str] | None = None
+    family_p: float | None = None
+    own_p: float | None = None
+    q: float | None = None
 
     @property
     def magnitude(self) -> float | None:
@@ -509,6 +537,13 @@ class Ranking:
     ``level_values`` is every level (or group) the ranking ran over, in the order the record
     prints them; :attr:`profile` says whether each item's effect is the largest difference
     between any two of them, with the pair on the item.
+
+    **The floor at another strictness is a lookup, not a re-run.** ``floor_distribution`` is the
+    whole null, so :meth:`floor_at` reads it at any family-wise level and :meth:`kept_at` is the
+    kept set there — the same peak pick over the items clearing *that* floor, with the
+    ``ancestors`` the suppression used. At :data:`FLOOR_ALPHA` they are ``floor`` and ``kept``
+    exactly; a screen read looser or stricter (§22) is a view over this ranking, and what the
+    record says it kept does not move.
     """
 
     contrasts: list
@@ -528,6 +563,9 @@ class Ranking:
     exact: bool = False
     kept: tuple[tuple, ...] | None = None
     level_values: tuple[str, ...] = ()
+    #: The hierarchy the nesting suppression used (label → the labels above it), so the kept set
+    #: at another strictness is picked the same way; ``None`` where none was applied.
+    ancestors: Mapping[str, Collection[str]] | None = field(default=None, compare=False)
 
     @property
     def profile(self) -> bool:
@@ -566,28 +604,59 @@ class Ranking:
         kept = set(self.kept)
         return [item for item in self.contrasts if item.measure_key in kept]
 
+    def floor_at(self, alpha: float) -> float | None:
+        """The floor at the family-wise level ``alpha`` — the null's ``1 - alpha`` quantile, by
+        the same rule as ``floor`` (which it equals at :data:`FLOOR_ALPHA`). ``None`` where there
+        is no floor."""
+        if self.floor is None:
+            return None
+        if not self.floor_distribution:
+            # A ranking built with its floor and no null behind it: the floor is known at
+            # its own level and nowhere else.
+            return self.floor if abs(float(alpha) - FLOOR_ALPHA) < 1e-9 else None
+        return _percentile_floor(self.floor_distribution, alpha)
 
-def _largest_magnitude(
+    def clears_at(self, item, alpha: float) -> bool:
+        """Whether ``item`` clears the floor at the family-wise level ``alpha``: its
+        ``family_p`` is at most ``alpha``. ``family_p`` is the smallest level at which the item
+        clears :meth:`floor_at`, so this agrees with ``magnitude > floor_at(alpha)`` at every
+        level, and with :meth:`clears_floor` at :data:`FLOOR_ALPHA`; a hover's p and a
+        slider's threshold cannot disagree. ``False`` with no floor, or no p."""
+        if self.floor is None:
+            return False
+        p = getattr(item, "family_p", None)
+        return p is not None and p <= float(alpha)
+
+    def clearing_at(self, alpha: float) -> list:
+        """The items that clear the floor at ``alpha``, in rank order."""
+        return [item for item in self.contrasts if self.clears_at(item, alpha)]
+
+    def kept_at(self, alpha: float) -> list:
+        """The findings at the family-wise level ``alpha``: the items clearing that floor,
+        nesting suppressed the way ``kept`` was (every one of them where it was not). At
+        :data:`FLOOR_ALPHA` this is :meth:`kept_items`."""
+        if abs(float(alpha) - FLOOR_ALPHA) < 1e-9:
+            return self.kept_items()
+        clearing = self.clearing_at(alpha)
+        if self.kept is None:
+            return clearing
+        return _peak_pick(clearing, self.ancestors or {})
+
+
+def _magnitudes(
     keys: Sequence[tuple],
     labels: Sequence[tuple],
     values: Sequence[float],
     groups: tuple,
     epsilon: Mapping[tuple, float],
-) -> float:
-    """The biggest ``|log ratio|`` over all measures, for one labelling.
-
-    **The max across measures is the multiple-comparisons correction, not an oversight.** Rank
-    twenty measures and one of them is the largest whether or not anything is there; taking the
-    largest under shuffling too is what makes the floor a family-wise threshold rather than a
-    per-measure one. That is worth stating because it looks like a bug and removing it would
-    quietly drop the correction.
+) -> dict[tuple, float]:
+    """Each measure's ``|log ratio|`` for one labelling — the ranked statistic, so the null is
+    the null of the thing ranked. A measure whose fold change is unbounded under this labelling
+    is left out: there is no finite value for it.
 
     On ``|log ratio|`` rather than the raw difference, because the raw version made the floor a
     *nanosecond* quantity that a count measure could never reach at any sample size. Unit-free
     ranking needs a unit-free null, or the floor is not the floor of the thing being ranked.
-
-    A measure whose fold change is unbounded under this labelling contributes nothing — there is
-    no finite value to take a maximum with.
 
     Over more than two groups the measure's value is the largest ``|log ratio|`` between any two
     of them — the ranked statistic (§24 *Designs*) — so the floor pays for choosing the pair.
@@ -595,7 +664,7 @@ def _largest_magnitude(
     by_key: dict[tuple, dict[tuple, list[float]]] = {}
     for measure_key, group, value in zip(keys, labels, values):
         by_key.setdefault(measure_key, {}).setdefault(group, []).append(value)
-    best = 0.0
+    out: dict[tuple, float] = {}
     for measure_key, per_group in by_key.items():
         eps = epsilon.get(measure_key, 0.0)
         centres = [
@@ -604,8 +673,21 @@ def _largest_magnitude(
         positive = [c for c in centres if c > 0]
         if len(positive) < 2:
             continue
-        best = max(best, math.log(max(positive) / min(positive)))
-    return best
+        out[measure_key] = math.log(max(positive) / min(positive))
+    return out
+
+
+def _largest_magnitude(magnitudes: Mapping[tuple, float]) -> float:
+    """The biggest ``|log ratio|`` over all measures, for one labelling.
+
+    **The max across measures is the multiple-comparisons correction, not an oversight.** Rank
+    twenty measures and one of them is the largest whether or not anything is there; taking the
+    largest under shuffling too is what makes the floor a family-wise threshold rather than a
+    per-measure one. That is worth stating because it looks like a bug and removing it would
+    quietly drop the correction. The per-measure values it is taken over are each measure's
+    own null, kept for its ``own_p``.
+    """
+    return max(magnitudes.values(), default=0.0)
 
 
 def _vacuous_permutation(obs: Sequence[Observation], groups: tuple) -> str | None:
@@ -645,13 +727,100 @@ def _vacuous_permutation(obs: Sequence[Observation], groups: tuple) -> str | Non
     )
 
 
-def _percentile_floor(ordered: Sequence[float]) -> float | None:
-    """The 95th percentile of a sorted null distribution, by the one convention every ranking
-    uses — so a between floor and a paired floor read the same quantile of their nulls.
+def _percentile_floor(
+    ordered: Sequence[float], alpha: float = FLOOR_ALPHA
+) -> float | None:
+    """The ``1 - alpha`` quantile of a sorted null distribution (the 95th percentile by
+    default), by the one convention every ranking uses — so a between floor and a paired floor
+    read the same quantile of their nulls, and a floor read at another strictness is the same
+    rule at another level.
     """
     if not ordered:
         return None
-    return ordered[min(int(round(0.95 * (len(ordered) - 1))), len(ordered) - 1)]
+    if not 0.0 < alpha < 1.0:
+        raise ValueError(f"a family-wise level is a fraction in (0, 1), got {alpha!r}")
+    return ordered[_floor_index(len(ordered), alpha)]
+
+
+def _floor_index(n: int, alpha: float) -> int:
+    """Where the floor at ``alpha`` sits in a sorted null of ``n`` draws."""
+    position = int(round((1.0 - alpha) * (n - 1)))
+    return min(max(position, 0), n - 1)
+
+
+def _family_p(ordered: Sequence[float], magnitude: float | None) -> float | None:
+    """The smallest family-wise level at which ``magnitude`` clears the floor of a sorted
+    null: the share of the null's draws whose largest effect reaches it, read through the
+    same percentile rule as the floor. Defined that way, rather than as the bare count over
+    the draws, so ``family_p <= alpha`` and ``magnitude > floor_at(alpha)`` agree at every
+    level — the rule rounds its position in the null, and a bare count sits one draw off it
+    at some levels, which would put a cluster's hover and the slider's threshold at odds.
+    ``1`` for an effect no draw falls short of; ``None`` for no magnitude or no null."""
+    if magnitude is None or not ordered:
+        return None
+    n = len(ordered)
+    below = int(np.searchsorted(ordered, magnitude, side="left"))
+    if below == 0:
+        return 1.0
+    if n == 1:
+        return 0.0
+
+    def clears(alpha: float) -> bool:
+        return ordered[_floor_index(n, alpha)] < magnitude
+
+    # The rule's position crosses `below - 1` where (1 - alpha)(n - 1) passes below - 0.5;
+    # the round there is the one case the arithmetic cannot settle, so the estimate is
+    # nudged by a float step either way until it sits on the boundary.
+    p = min(max(1.0 - (below - 0.5) / (n - 1), 0.0), 1.0)
+    while p < 1.0 and not clears(p):
+        p = math.nextafter(p, 1.0)
+    while p > 0.0 and clears(math.nextafter(p, 0.0)):
+        p = math.nextafter(p, 0.0)
+    return p
+
+
+def _bh(p_values: Sequence[float | None]) -> list[float | None]:
+    """Benjamini–Hochberg q over the defined p's: the smallest false-discovery rate at which
+    each item is among the discoveries. ``None`` stays ``None``."""
+    by_p = sorted((p, i) for i, p in enumerate(p_values) if p is not None)
+    out: list[float | None] = [None] * len(p_values)
+    n = len(by_p)
+    running = 1.0
+    for rank in range(n, 0, -1):
+        p, i = by_p[rank - 1]
+        running = min(running, p * n / rank)
+        out[i] = running
+    return out
+
+
+def _share_reaching(
+    null: np.ndarray, magnitude: float | None, exact: bool
+) -> float | None:
+    """The share of one item's own null draws reaching ``magnitude`` (unsorted; NaN where a
+    draw had no finite value for it, which reaches nothing). Exact where the null was
+    enumerated: the observed configuration is one of its draws, so the share is never zero.
+    Over a sample the observed labelling counts as one more draw, the standard convention for
+    a Monte Carlo p, so the smallest reportable value is ``1 / (draws + 1)``."""
+    if magnitude is None or not len(null):
+        return None
+    reached = int(np.sum(null >= magnitude))
+    if exact:
+        return reached / len(null)
+    return (reached + 1) / (len(null) + 1)
+
+
+def _with_p(
+    items: list, ordered: Sequence[float], own: Sequence[float | None], exact: bool
+) -> list:
+    """``items`` with their family-wise p (against ``ordered``, the null of the family's
+    largest), their own p (``own[i]``, already a share) and the BH q over the own p's.
+    """
+    family = [_family_p(ordered, item.magnitude) for item in items]
+    q = _bh(list(own))
+    return [
+        dataclasses.replace(item, family_p=f, own_p=o, q=qq)
+        for item, f, o, qq in zip(items, family, own, q)
+    ]
 
 
 def _epsilon_by_measure(
@@ -733,15 +902,30 @@ def rank_by_difference(
     keys = [row.measure_key for row in obs]
     values = [row.value for row in obs]
     distribution: list[float] = []
-    for _ in range(draws):
+    # Each measure's own null beside the family's largest: what its own p is read from.
+    own_null = np.full((len(contrasts), draws), np.nan)
+    for d in range(draws):
         shuffled = labels[:]
         rng.shuffle(shuffled)
-        distribution.append(_largest_magnitude(keys, shuffled, values, groups, epsilon))
+        magnitudes = _magnitudes(keys, shuffled, values, groups, epsilon)
+        distribution.append(_largest_magnitude(magnitudes))
+        for n, item in enumerate(contrasts):
+            own_null[n, d] = magnitudes.get(item.measure_key, np.nan)
     ordered = sorted(distribution)
     # A floor is reported only when the permutation had something to move. Withheld with its
     # reason rather than drawn as a threshold nothing could reach.
     reason = _vacuous_permutation(obs, groups)
     floor = None if reason else _percentile_floor(ordered)
+    if not reason:
+        contrasts = _with_p(
+            contrasts,
+            ordered,
+            [
+                _share_reaching(own_null[n], item.magnitude, False)
+                for n, item in enumerate(contrasts)
+            ],
+            False,
+        )
     return Ranking(
         contrasts,
         floor,
@@ -1275,6 +1459,19 @@ def rank_by_design(
                 pair=pair,
             )
         )
+    if not reason:
+        # Each item's own null is the same draws read for that item alone; exact where the
+        # flips were enumerated, since the observed configuration is then one of them.
+        magnitude = np.abs(effect)
+        own = [
+            (
+                None
+                if math.isnan(magnitude[n])
+                else _share_reaching(np.abs(null_effect[n]), float(magnitude[n]), exact)
+            )
+            for n in range(N)
+        ]
+        items = _with_p(items, ordered, own, exact)
     items.sort(key=_rank_key, reverse=True)
     return Ranking(
         items,
@@ -1328,7 +1525,9 @@ def suppress_nesting(
     the best and dropping its ancestors and descendants leaves one item per behaviour.
     """
     kept = _peak_pick(ranking.clearing(), ancestors)
-    return dataclasses.replace(ranking, kept=tuple(item.measure_key for item in kept))
+    return dataclasses.replace(
+        ranking, kept=tuple(item.measure_key for item in kept), ancestors=ancestors
+    )
 
 
 def below_floor(

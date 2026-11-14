@@ -841,3 +841,148 @@ def test_a_zero_pseudo_count_adds_nothing_to_any_measure(measure, on):
     key = (measure, "node:1", "", "whole")
     assert pseudo_count(0.0)(key, HOUR) == 0.0
     assert pseudo_count(30.0)(key, HOUR) == pytest.approx(on)
+
+
+# --------------------------------------------------------------------------- #
+# the p's: the floor read as a number, and a strictness as a lookup (§22, §24)
+# --------------------------------------------------------------------------- #
+
+
+def test_each_item_carries_its_family_wise_p_its_own_p_and_its_q_by_hand():
+    """Three animals, eight sign flips, two measures. ``x`` doubles in every animal: its own
+    null reaches |ln 2| in 2 of 8 flips (all the same sign), so its own p is 2/8. ``y``
+    quadruples in two and quarters in the third: its mean |ln 4|/3 is reached by every flip,
+    own p 1. The family's largest per flip is {4 × ln4/3, 2 × ln2, 2 × ln4} sorted, so
+    ``x`` clears at the smallest level whose floor sits below ln 2 — one half, to the
+    rule's rounding — and ``y`` at none. The q's are Benjamini–Hochberg over the own p's.
+    """
+    ranking = _paired_ranking(
+        {
+            ("A", "veh"): {"x": 0.10, "y": 0.10},
+            ("A", "fent"): {"x": 0.20, "y": 0.40},
+            ("B", "veh"): {"x": 0.10, "y": 0.10},
+            ("B", "fent"): {"x": 0.20, "y": 0.40},
+            ("C", "veh"): {"x": 0.10, "y": 0.40},
+            ("C", "fent"): {"x": 0.20, "y": 0.10},
+        },
+        levels=["veh", "fent"],
+    )
+    assert ranking.exact and ranking.draws == 8
+    x, y = ranking.contrasts
+    assert x.measure_key[1] == "x" and y.measure_key[1] == "y"
+    assert x.own_p == pytest.approx(2 / 8)
+    assert y.own_p == pytest.approx(1.0)
+    assert sorted(ranking.floor_distribution) == pytest.approx(
+        [math.log(4) / 3] * 4 + [math.log(2)] * 2 + [math.log(4)] * 2
+    )
+    assert x.family_p == pytest.approx(0.5)
+    assert y.family_p == pytest.approx(1.0)
+    assert x.q == pytest.approx(0.5) and y.q == pytest.approx(1.0)
+    # Read as the rule reads it: `family_p <= alpha` is `magnitude > floor_at(alpha)` at
+    # every level, the floor itself the one at the ranking's own level.
+    assert ranking.floor_at(c.FLOOR_ALPHA) == ranking.floor
+    for alpha in (*c.STRICTNESS_LEVELS, 0.49, 0.51, 0.6, 0.99):
+        for item in (x, y):
+            assert ranking.clears_at(item, alpha) == (
+                item.magnitude > ranking.floor_at(alpha)
+            ), (item.measure_key, alpha)
+    assert not ranking.clears_at(x, 0.5) and ranking.clears_at(x, 0.51)
+
+
+def test_the_p_is_read_through_the_floors_own_rule_not_a_bare_count():
+    """The percentile rule rounds its position in the null, so a bare count over the draws
+    sits one draw off it at some levels: at 256 flips, 229.5 rounds down and a cluster
+    reached by 26 of 256 maxima clears at p ≤ 0.1 by the rule while its count says 0.102.
+    The family-wise p is the smallest level the rule clears at, so a slider's threshold and
+    a hover's p agree on every cluster at every level (§22)."""
+    rng = np.random.default_rng(3)
+    mismatches = 0
+    for n in (8, 16, 51, 200, 256, 1024):
+        for trial in range(12):
+            ordered = sorted(rng.exponential(size=n).tolist())
+            if trial % 3 == 0:
+                ordered = sorted(float(round(v, 1)) for v in ordered)
+            magnitudes = rng.exponential(size=30).tolist() + [ordered[0], ordered[-1]]
+            for magnitude in magnitudes:
+                p = c._family_p(ordered, magnitude)
+                for alpha in (*c.STRICTNESS_LEVELS, *rng.uniform(0.001, 0.999, 8)):
+                    by_rule = c._percentile_floor(ordered, alpha) < magnitude
+                    mismatches += by_rule != (p <= alpha)
+    assert mismatches == 0
+    # The knife edge itself: at 256 flips the rule's position at p ≤ 0.1 is 229.5, which
+    # rounds to 230 (half to even), so a value reached by 26 maxima sits exactly on the floor
+    # there and does not clear it; its p is a float step above 0.1, where a bare count says
+    # 0.102 either way. Read as the slider reads it, the two agree: not shown at p ≤ 0.1,
+    # shown a step above.
+    ordered = sorted(rng.exponential(size=256).tolist())
+    reached_by_26 = (ordered[-26] + ordered[-27]) / 2
+    p = c._family_p(ordered, reached_by_26)
+    assert 0.1 < p < 0.1 + 1e-12
+    assert not c._percentile_floor(ordered, 0.1) < reached_by_26
+    assert c._percentile_floor(ordered, p) < reached_by_26
+    reached_by_25 = (ordered[-25] + ordered[-26]) / 2
+    assert c._family_p(ordered, reached_by_25) < 0.1
+    assert c._percentile_floor(ordered, 0.1) < reached_by_25
+    assert c._family_p(ordered, ordered[0] / 2) == 1.0, "no draw falls short of it"
+    assert c._family_p(ordered, None) is None and c._family_p([], 1.0) is None
+
+
+def test_a_strictness_is_a_lookup_over_the_one_ranking():
+    """``kept_at`` reads the saved null at another level — no re-ranking, the same peak pick
+    — and is ``kept_items`` at the ranking's own level; looser is a superset of stricter;
+    the floor at a level is the null's quantile there; the record's kept set does not move.
+    """
+    shares = {}
+    for i in range(8):
+        for session, k in (("veh", 1.0), ("fent", 3.0)):
+            shares[(f"A{i}", session)] = {
+                "parent": 0.10 * k,
+                "child": 0.08 * k,
+                "sibling": 0.02 * k,
+                "lead": 0.03 * (1.6 if k > 1 and i < 6 else 1.0),
+                "noise": 0.05 * (1.0 + 0.01 * i),
+            }
+    ranking = _paired_ranking(shares, levels=["veh", "fent"], pseudo=_pseudo(0.0))
+    ancestors = {"parent": set(), "child": {"parent"}, "sibling": set(), "lead": set()}
+    kept = c.suppress_nesting(ranking, ancestors)
+    assert kept.ancestors is ancestors
+    assert kept.kept_at(c.FLOOR_ALPHA) == kept.kept_items()
+    labels = lambda items: [i.measure_key[1] for i in items]  # noqa: E731
+    assert "lead" not in labels(kept.kept_items()) and "noise" not in labels(
+        kept.kept_items()
+    )
+    assert "lead" in labels(kept.kept_at(0.5)), "looser shows the lead"
+    for item in kept.contrasts:
+        assert item.family_p is not None and item.own_p is not None
+    lead = next(i for i in kept.contrasts if i.measure_key[1] == "lead")
+    assert c.FLOOR_ALPHA < lead.family_p <= 0.5
+    assert (
+        lead.own_p < 0.05
+    ), "consistent in its own animals, hidden by the family floor"
+    previous: set = set()
+    for alpha in c.STRICTNESS_LEVELS:
+        now = set(labels(kept.clearing_at(alpha)))
+        assert previous <= now, f"stricter is a subset of looser at {alpha}"
+        previous = now
+        picked = labels(kept.kept_at(alpha))
+        for a in picked:
+            for b in picked:
+                assert a == b or a not in ancestors.get(
+                    b, ()
+                ), "peak-picked at every level"
+        assert kept.floor_at(alpha) == c._percentile_floor(
+            kept.floor_distribution, alpha
+        )
+    assert kept.kept == c.suppress_nesting(ranking, ancestors).kept
+    with pytest.raises(ValueError, match=r"\(0, 1\)"):
+        kept.floor_at(1.0)
+
+
+def test_a_ranking_with_no_floor_has_no_p_and_clears_at_no_level():
+    shares = {("A", "veh"): {"x": 0.1}, ("A", "fent"): {"x": 0.3}}
+    ranking = _paired_ranking(shares, levels=["veh", "fent"])
+    assert ranking.floor is None and ranking.no_floor_reason
+    (item,) = ranking.contrasts
+    assert item.family_p is None and item.own_p is None and item.q is None
+    assert ranking.floor_at(0.5) is None
+    assert not ranking.clears_at(item, 0.5) and ranking.kept_at(0.5) == []

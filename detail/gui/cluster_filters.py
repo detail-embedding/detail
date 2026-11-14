@@ -32,6 +32,11 @@ is selected:
     comparison launch dialog seeded to this run. Ticking one is the :data:`CLUSTERS` condition:
     the leaves under the clusters it kept, handed in by the page (:class:`ScreenChoice`), so the
     tree shades a kept cluster 100%, its parent by the time under kept children, the rest grey.
+    Under the list, while a screen is ticked, **Strictness**: a slider over the family-wise
+    levels a screen can be read at (``compare.STRICTNESS_LEVELS``, the screen's own 5% floor
+    among them), with the kept set at each level handed in by the page (:class:`ScreenLevel`).
+    Looser shows more clusters, each with its p on hover; it is a view, and what the saved
+    screen kept does not move (``Selection.alpha``).
   - **One line per field** (:class:`FieldRow`) — Video, then each metadata column: "▸ name",
     and at the right its value count or the filter set on it ("drug_A only", "2 of 3"),
     then, while it has a filter, a small Reset that removes it. The line is not a button: a
@@ -88,11 +93,13 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
     QPushButton,
     QScrollArea,
+    QSlider,
     QToolTip,
     QVBoxLayout,
     QWidget,
 )
 
+from detail.analysis.compare import FLOOR_ALPHA, STRICTNESS_LEVELS
 from detail.api.cluster_filter import CLUSTERS, LOCATION, SESSION, VIDEO, Selection
 from detail.gui import plot_theme
 from detail.gui.density_map import RegionPicker
@@ -143,6 +150,14 @@ SCREENS_HINT_TEXT = (
     "100%, its parent by the time under kept children."
 )
 RUN_SCREEN_TEXT = "New screen…"
+#: The Strictness slider under the screens: its caption and what its tooltip says.
+STRICTNESS_TEXT = "Strictness"
+STRICTNESS_RULE_TEXT = (
+    "How sure a cluster must be to show: the share of shuffled cohorts whose largest effect "
+    "reaches it (its family-wise p). The saved screen keeps at p ≤ 0.05; slide right to see "
+    "clusters that would need more animals to clear that, each with its p on hover. This "
+    "changes the view, not the saved screen."
+)
 #: The region picker's width before the dock has been laid out; from then on it fills the
 #: dock's width (:meth:`FilterBar._fit_map`), between these two.
 MAP_PX = 320
@@ -189,13 +204,32 @@ class NodeEffect:
     """One cluster's row of a screen: its effect (``None`` where undefined), whether it clears
     the floor, whether it was kept after nesting, the screen's sentence for it, and ``pair``,
     the two levels the effect is between (``(a, b)``, *b against a*) — what a profile's key
-    names at the selected cluster's mark, since its one-sided axis cannot (§22)."""
+    names at the selected cluster's mark, since its one-sided axis cannot (§22). ``family_p``,
+    ``own_p`` and ``q`` are the item's numbers (``compare.Effect``), for the hover and for a
+    label's origin; ``None`` for an undefined effect, or a row built without them."""
 
     effect: float | None
     clears: bool
     kept: bool
     text: str
     pair: tuple[str, str] | None = None
+    family_p: float | None = None
+    own_p: float | None = None
+    q: float | None = None
+
+
+@dataclass(frozen=True)
+class ScreenLevel:
+    """A screen read at one strictness (§22): the family-wise level ``alpha``, the floor at
+    it in the effect's unit (``None`` where the screen has no floor), the clusters kept there
+    in rank order, their leaves — the :data:`CLUSTERS` condition at that level — and how many
+    clusters clear that floor before nesting is suppressed."""
+
+    alpha: float
+    floor: float | None
+    kept: tuple[int, ...]
+    leaves: frozenset
+    clearing: int = 0
 
 
 @dataclass(frozen=True)
@@ -211,6 +245,10 @@ class ScreenChoice:
     ("Less ↔ more under drug"). ``kept`` is the clusters it kept, in rank order, and ``column``
     the metadata column it contrasted: what a label written while the screen is ticked records
     as its origin (``run_labels.LabelOrigin``, §22).
+
+    ``levels`` is the screen read at each strictness the slider offers
+    (:class:`ScreenLevel`); :meth:`level` finds one, and the screen's own fields stand in for
+    its own floor when none were handed in.
     """
 
     key: str
@@ -223,24 +261,94 @@ class ScreenChoice:
     caption: str = ""
     kept: tuple[int, ...] = ()
     column: str = ""
+    levels: tuple[ScreenLevel, ...] = ()
 
-    def kept_texts(self) -> dict[int, str]:
-        """``{kept cluster: its sentence}`` -- what an origin is built from."""
+    def level(self, alpha: float | None) -> ScreenLevel | None:
+        """The screen at the strictness ``alpha`` (``None``: its own floor), or ``None`` when
+        it was not read at that level."""
+        wanted = FLOOR_ALPHA if alpha is None else float(alpha)
+        for level in self.levels:
+            if abs(level.alpha - wanted) < 1e-9:
+                return level
+        if abs(wanted - FLOOR_ALPHA) < 1e-9:
+            return ScreenLevel(
+                FLOOR_ALPHA,
+                self.floor,
+                tuple(self.kept),
+                self.leaves if self.leaves is not None else frozenset(),
+                sum(1 for row in self.effects.values() if row.clears),
+            )
+        return None
+
+    def clears(self, node: int, alpha: float | None) -> bool:
+        """Whether ``node`` clears the floor at ``alpha``: the row's own verdict at the
+        screen's own floor; at another level its family-wise p against the level, as the API
+        reads it (``Ranking.clears_at``), or its size against that level's floor for a row
+        built without a p."""
+        row = self.effects.get(int(node))
+        if row is None or row.effect is None or row.effect != row.effect:
+            return False
+        if alpha is None or abs(float(alpha) - FLOOR_ALPHA) < 1e-9:
+            return row.clears
+        if row.family_p is not None:
+            return row.family_p <= float(alpha)
+        level = self.level(alpha)
+        if level is None or level.floor is None:
+            return False
+        return abs(float(row.effect)) > level.floor
+
+    def kept_texts(self, alpha: float | None = None) -> dict[int, str]:
+        """``{kept cluster: its sentence}`` at the strictness ``alpha`` -- what an origin is
+        built from. Empty when the screen was not read at that level."""
+        level = self.level(alpha)
         return {
             int(node): (self.effects[node].text if node in self.effects else "")
-            for node in self.kept
+            for node in (level.kept if level is not None else ())
+        }
+
+    def kept_numbers(self, alpha: float | None = None) -> dict[int, dict]:
+        """``{kept cluster: {"family_p", "own_p", "q"}}`` at ``alpha``, for the origin."""
+        return {
+            node: {
+                "family_p": row.family_p,
+                "own_p": row.own_p,
+                "q": row.q,
+            }
+            for node in self.kept_texts(alpha)
+            if (row := self.effects.get(node)) is not None
         }
 
 
+def numbers_text(family_p: float | None, own_p: float | None, q: float | None) -> str:
+    """``family-wise p 0.02, own p <0.01, q 0.40`` — the numbers a hover and a label's origin
+    line carry, in one wording; ``""`` when there are none."""
+    from detail.analysis.comparison_report import p_text
+
+    parts = []
+    if family_p is not None:
+        parts.append(f"family-wise p {p_text(family_p)}")
+    if own_p is not None:
+        parts.append(f"own p {p_text(own_p)}")
+    if q is not None:
+        parts.append(f"q {p_text(q)}")
+    return ", ".join(parts)
+
+
 def effect_shades(
-    choice: ScreenChoice, n_nodes: int
+    choice: ScreenChoice, n_nodes: int, alpha: float | None = None
 ) -> tuple[dict[int, float], dict[int, str]]:
     """``(positions, texts)`` for the tree in the effect mode: every node's position on the
     −1..+1 axis (NaN where it is not a candidate or its effect is undefined, 0 inside the floor)
     and the hover line for it. The one map from a screen to the blocks, through
-    :func:`match_key.effect_position`, which the key uses for its own mark."""
+    :func:`match_key.effect_position`, which the key uses for its own mark. At the strictness
+    ``alpha`` the floor and the kept set are that level's (:meth:`ScreenChoice.level`).
+    """
     extent = effect_extent(choice.design)
     half = one_sided(choice.design)
+    at_floor = alpha is None or abs(alpha - FLOOR_ALPHA) < 1e-9
+    level = None if at_floor else choice.level(alpha)
+    kept = set(level.kept) if level is not None else set()
+    at = "" if at_floor else f" at p ≤ {alpha:g}"
     positions: dict[int, float] = {}
     texts: dict[int, str] = {}
     for node in range(int(n_nodes)):
@@ -248,16 +356,20 @@ def effect_shades(
         if row is None:
             positions[node] = float("nan")
             continue
-        positions[node] = effect_position(
-            row.effect, row.clears, extent, one_sided=half
-        )
+        clears = choice.clears(node, alpha)
+        positions[node] = effect_position(row.effect, clears, extent, one_sided=half)
         text = row.text
-        if row.kept:
-            text += " · kept"
-        elif row.clears:
-            text += " · clears the floor, nested under a kept cluster"
+        # At the screen's own floor the row's verdict is the screen's; at another level the
+        # kept set is that level's.
+        if row.kept if at_floor else node in kept:
+            text += f" · kept{at}"
+        elif clears:
+            text += f" · clears the floor{at}, nested under a kept cluster"
         elif row.effect is not None:
-            text += " · inside the floor"
+            text += f" · inside the floor{at}"
+        numbers = numbers_text(row.family_p, row.own_p, row.q)
+        if numbers and row.effect is not None:
+            text += f" · {numbers}"
         texts[node] = text
     return positions, texts
 
@@ -390,12 +502,16 @@ def breakdown(
 
 
 def screen_summary(selection: Selection, screens: Mapping[str, ScreenChoice]) -> str:
-    """What the Differences line says at its right: ``none``, or the ticked screen's label."""
+    """What the Differences line says at its right: ``none``, or the ticked screen's label,
+    with the strictness after it when the screen is read away from its own floor."""
     if selection.leaves is None:
         return "none"
     source = selection.leaves_source or ""
     choice = screens.get(source)
-    return choice.label if choice is not None else source or "a screen"
+    text = choice.label if choice is not None else source or "a screen"
+    if selection.alpha is not None and abs(selection.alpha - FLOOR_ALPHA) >= 1e-9:
+        text += f" · p ≤ {selection.alpha:g}"
+    return text
 
 
 def _number_text(value: float) -> str:
@@ -1518,9 +1634,15 @@ class ScreenList(QWidget):
     all but its look; a tick box is what every other list in the dock has, and the note under
     the list says the rule. ``run_requested`` is the button: the widget reads nothing and runs
     nothing, the page answers it.
+
+    **Strictness**, under the list while a screen is ticked: a slider over
+    ``compare.STRICTNESS_LEVELS`` with a line saying the level and what the screen keeps there
+    ("p ≤ 0.2 · 6 kept of 12 clearing"). ``alpha_changed`` carries the level, ``None`` at the
+    screen's own floor. Hidden for a screen with no floor, which has no levels to read at.
     """
 
     changed = pyqtSignal(object)
+    alpha_changed = pyqtSignal(object)
     run_requested = pyqtSignal()
 
     def __init__(self, parent=None) -> None:
@@ -1534,6 +1656,54 @@ class ScreenList(QWidget):
         self.list.setObjectName("screen_list")
         self.list.itemChanged.connect(self._on_item)
         layout.addWidget(self.list)
+        self.strictness_box = QWidget()
+        box = QVBoxLayout(self.strictness_box)
+        box.setContentsMargins(0, 4, 0, 0)
+        box.setSpacing(2)
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        self.strictness_caption = QLabel(STRICTNESS_TEXT)
+        self.strictness_caption.setToolTip(STRICTNESS_RULE_TEXT)
+        head.addWidget(self.strictness_caption)
+        head.addStretch(1)
+        box.addLayout(head)
+        self.strictness = QSlider(Qt.Orientation.Horizontal)
+        self.strictness.setObjectName("screen_strictness")
+        self.strictness.setRange(0, len(STRICTNESS_LEVELS) - 1)
+        self.strictness.setPageStep(1)
+        self.strictness.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.strictness.setTickInterval(1)
+        self.strictness.setValue(STRICTNESS_LEVELS.index(FLOOR_ALPHA))
+        self.strictness.setToolTip(STRICTNESS_RULE_TEXT)
+        self.strictness.valueChanged.connect(self._on_strictness)
+        box.addWidget(self.strictness)
+        ends = QHBoxLayout()
+        ends.setContentsMargins(0, 0, 0, 0)
+        # Elided, never the text's own width: a plain label's minimum is its whole line, and
+        # three of them widened the dock past its 240px floor (the recorded class in
+        # `tests/gui/test_cluster_filters.py`).
+        self.strictness_ends = [
+            ElidedLabel(f"p ≤ {STRICTNESS_LEVELS[0]:g}"),
+            ElidedLabel("stricter ← → looser"),
+            ElidedLabel(f"p ≤ {STRICTNESS_LEVELS[-1]:g}"),
+        ]
+        for label, align in zip(
+            self.strictness_ends,
+            (
+                Qt.AlignmentFlag.AlignLeft,
+                Qt.AlignmentFlag.AlignHCenter,
+                Qt.AlignmentFlag.AlignRight,
+            ),
+        ):
+            label.setFont(small_font(label))
+            label.setAlignment(align)
+            ends.addWidget(label, 1)
+        box.addLayout(ends)
+        self.strictness_label = QLabel("")
+        self.strictness_label.setWordWrap(True)
+        self.strictness_label.setToolTip(STRICTNESS_RULE_TEXT)
+        box.addWidget(self.strictness_label)
+        layout.addWidget(self.strictness_box)
         self.run_button = QPushButton(RUN_SCREEN_TEXT)
         self.run_button.setToolTip(
             "Run a difference screen over every cluster of this run: which clusters differ "
@@ -1581,6 +1751,8 @@ class ScreenList(QWidget):
         choice = self._choices.get(picked or "")
         if choice is not None and choice.leaves is not None:
             self.set_value(picked)
+        else:
+            self._sync_strictness()
 
     def value(self) -> str | None:
         """The ticked screen's key, or ``None``."""
@@ -1598,12 +1770,65 @@ class ScreenList(QWidget):
             on = key is not None and item.data(Qt.ItemDataRole.UserRole) == key
             item.setCheckState(Qt.CheckState.Checked if on else Qt.CheckState.Unchecked)
         self._quiet = False
+        self._sync_strictness()
+
+    def alpha(self) -> float | None:
+        """The strictness the slider is at: a level of ``compare.STRICTNESS_LEVELS``, or
+        ``None`` at the screen's own floor."""
+        level = STRICTNESS_LEVELS[self.strictness.value()]
+        return None if abs(level - FLOOR_ALPHA) < 1e-9 else level
+
+    def set_alpha(self, alpha: float | None) -> None:
+        """Put the slider at ``alpha`` (the screen's own floor for ``None``) without emitting.
+        A level the slider does not offer puts it at the floor."""
+        wanted = FLOOR_ALPHA if alpha is None else float(alpha)
+        index = STRICTNESS_LEVELS.index(FLOOR_ALPHA)
+        for i, level in enumerate(STRICTNESS_LEVELS):
+            if abs(level - wanted) < 1e-9:
+                index = i
+        self._quiet = True
+        self.strictness.setValue(index)
+        self._quiet = False
+        self._sync_strictness()
+
+    def _sync_strictness(self) -> None:
+        """Show the slider while a screen with levels is ticked, and say what it keeps at the
+        level the slider is at."""
+        choice = self._choices.get(self.value() or "")
+        level = choice.level(self.alpha()) if choice is not None else None
+        shown = (
+            choice is not None
+            and choice.leaves is not None
+            and choice.floor is not None
+        )
+        self.strictness_box.setVisible(shown)
+        if not shown or level is None:
+            self.strictness_label.setText("")
+            return
+        at = (
+            "the screen's own floor"
+            if self.alpha() is None
+            else "looser than its floor"
+        )
+        if level.alpha < FLOOR_ALPHA:
+            at = "stricter than its floor"
+        self.strictness_label.setText(
+            f"p ≤ {level.alpha:g} ({at}) · {len(level.kept)} kept of "
+            f"{level.clearing} clearing"
+        )
+
+    def _on_strictness(self, _value: int) -> None:
+        self._sync_strictness()
+        if self._quiet:
+            return
+        self.alpha_changed.emit(self.alpha())
 
     def _on_item(self, item) -> None:
         if self._quiet:
             return
         key = item.data(Qt.ItemDataRole.UserRole)
         if item.checkState() != Qt.CheckState.Checked:
+            self._sync_strictness()
             self.changed.emit(None)
             return
         self.set_value(key)
@@ -1787,6 +2012,7 @@ class FilterBar(QObject):
         #: Differences: the run's saved difference screens, folding like Location's line.
         self.screens = ScreenList()
         self.screens.changed.connect(self._on_screen)
+        self.screens.alpha_changed.connect(self._on_alpha)
         self.screens.run_requested.connect(self.screen_requested)
         self.screens_row = FieldRow("Differences", self.screens)
         self.screens_row.head.setToolTip(
@@ -1933,15 +2159,23 @@ class FilterBar(QObject):
             if name in self._meta_sections
             and not isinstance(self._meta_sections[name], Checklist)
         }
-        leaves, source = selection.leaves, selection.leaves_source
+        leaves, source, alpha = (
+            selection.leaves,
+            selection.leaves_source,
+            selection.alpha,
+        )
         if self._screens is not None and leaves is not None:
             offered = self._screens.get(source or "")
+            level = offered.level(alpha) if offered is not None else None
             if offered is None or offered.leaves is None:
-                leaves, source = None, None
+                leaves, source, alpha = None, None, None
+            elif level is None or (alpha is not None and offered.floor is None):
+                # The screen was not read at that strictness (no floor, no levels): its own.
+                leaves, alpha = offered.leaves, None
             else:
-                # The screen's leaves as listed now: a re-read lists them over the view
-                # the page has now, which a rebuild may have re-cut.
-                leaves = offered.leaves
+                # The screen's leaves as listed now, at the strictness in force: a re-read
+                # lists them over the view the page has now, which a rebuild may have re-cut.
+                leaves = level.leaves
         recordings = selection.recording_ids
         if recordings is not None:
             recordings = frozenset(recordings) & {
@@ -1955,6 +2189,7 @@ class FilterBar(QObject):
             recording_ids=recordings,
             leaves=leaves,
             leaves_source=source,
+            alpha=alpha,
         )
 
     def _keep_showable(self) -> None:
@@ -2104,8 +2339,29 @@ class FilterBar(QObject):
         if choice is None or choice.leaves is None:
             self._changed(self._selection.without(CLUSTERS))
             return
-        self._changed(
-            replace(self._selection, leaves=choice.leaves, leaves_source=choice.key)
+        self._changed(self._at_strictness(choice, self.screens.alpha()))
+
+    def _on_alpha(self, alpha) -> None:
+        choice = (
+            self._screens.get(self.screens.value() or "") if self._screens else None
+        )
+        if choice is None or choice.leaves is None:
+            return
+        self._changed(self._at_strictness(choice, alpha))
+
+    def _at_strictness(self, choice: ScreenChoice, alpha: float | None) -> Selection:
+        """The selection with ``choice`` ticked at the strictness ``alpha``: that level's
+        leaves, or the screen's own where it was not read at that level."""
+        level = choice.level(alpha)
+        if level is None or (alpha is not None and choice.floor is None):
+            return replace(
+                self._selection,
+                leaves=choice.leaves,
+                leaves_source=choice.key,
+                alpha=None,
+            )
+        return replace(
+            self._selection, leaves=level.leaves, leaves_source=choice.key, alpha=alpha
         )
 
     def _sync_sections(self) -> None:
@@ -2122,6 +2378,7 @@ class FilterBar(QObject):
         self.region.blockSignals(False)
         self.session.set_value(self._selection.session)
         self.screens.set_value(self._selection.leaves_source)
+        self.screens.set_alpha(self._selection.alpha)
         if self._selection.leaves is not None:
             self.screens_row.set_open(True)
 
