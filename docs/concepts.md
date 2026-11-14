@@ -447,8 +447,8 @@ Two things to know:
   there is nothing to decide, and it runs with one observation per recording.
 - It stops at **description**: means, medians, spreads, and a permutation floor saying how big a
   difference shuffling the group labels would produce anyway. The only p-values are the floor's
-  own: for each measure or cluster, the share of the shuffles that reach it — against the whole
-  family (the floor read as a number) and against its own shuffles alone — with a
+  own: for each measure or cluster, the share of the shuffles that reach it, against the whole
+  family (the floor read as a number) and against its own shuffles alone, with a
   false-discovery q over them, so a cohort too small to clear the floor can still say which
   clusters look consistent. No model sits behind them; `stats.csv` is the handoff to whatever
   you test with.

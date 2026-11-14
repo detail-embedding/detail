@@ -1679,10 +1679,13 @@ class ScreenList(QWidget):
         box.addWidget(self.strictness)
         ends = QHBoxLayout()
         ends.setContentsMargins(0, 0, 0, 0)
+        # Elided, never the text's own width: a plain label's minimum is its whole line, and
+        # three of them widened the dock past its 240px floor (the recorded class in
+        # `tests/gui/test_cluster_filters.py`).
         self.strictness_ends = [
-            QLabel(f"p ≤ {STRICTNESS_LEVELS[0]:g}"),
-            QLabel("stricter ← → looser"),
-            QLabel(f"p ≤ {STRICTNESS_LEVELS[-1]:g}"),
+            ElidedLabel(f"p ≤ {STRICTNESS_LEVELS[0]:g}"),
+            ElidedLabel("stricter ← → looser"),
+            ElidedLabel(f"p ≤ {STRICTNESS_LEVELS[-1]:g}"),
         ]
         for label, align in zip(
             self.strictness_ends,

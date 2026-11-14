@@ -1158,13 +1158,14 @@ column of `metadata.csv`, and report how the groups differ.
   (`--no-suppress-nesting` keeps every slice). The run needs a current node cache; a stale one is
   refused with what changed. It always takes those four measures and reads the cache as it is
   now, so `--measure` naming fewer and `--source-snapshot` are refused. `export` then writes `ranking.csv` with every node's effect, floor
-  and verdict — and its `family_p` (the share of shuffled cohorts whose largest effect reaches it:
-  the floor read as a p, at most 0.05 for a node that clears), `own_p` (the same share against the
-  node's own shuffles alone, so a cluster consistent in its animals but hidden by the size of the
-  family still says so) and `q` (the Benjamini–Hochberg false-discovery rate over the family's own
-  p's) — and draws the tables and figures for the kept nodes and the next ten below the
-  floor rather than for thousands of nodes. Threshold `family_p` yourself to read the screen
-  looser or stricter than its floor; that is what the GUI's Strictness slider does.
+  and verdict, and draws the tables and figures for the kept nodes and the next ten below the
+  floor rather than for thousands of nodes. Each row also carries `family_p` (the share of
+  shuffled cohorts whose largest effect reaches it: the floor read as a p, at most 0.05 for a node
+  that clears), `own_p` (the same share against the node's own shuffles alone, so a cluster
+  consistent in its animals but hidden by the size of the family still says so) and `q` (the
+  Benjamini–Hochberg false-discovery rate over the family's own p's). Threshold `family_p`
+  yourself to read the screen looser or stricter than its floor; that is what the GUI's
+  Strictness slider does.
 
   **A labels comparison says which of its labels a screen chose.** A label written from a
   cluster screen (`--from-screen`, or a screen ticked in the GUI) carries that screen; `run`
@@ -1213,8 +1214,8 @@ column of `metadata.csv`, and report how the groups differ.
 
 Statistics stop at description: means, medians, spreads, and a permutation floor that says whether
 a difference is bigger than shuffling the group labels would produce. The only p-values are the
-floor's own — each ranked item's share of the shuffles that reach it, family-wise and on its own,
-with a false-discovery q over them — and there is no model behind them; `stats.csv` is the
+floor's own (each ranked item's share of the shuffles that reach it, family-wise and on its own,
+with a false-discovery q over them), and there is no model behind them; `stats.csv` is the
 handoff to whatever you test with.
 
 ### `model`
