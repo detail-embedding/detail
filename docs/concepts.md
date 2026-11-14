@@ -446,8 +446,12 @@ Two things to know:
   refuses to guess and records the choice on every row. When no animal contributed more than one
   there is nothing to decide, and it runs with one observation per recording.
 - It stops at **description**: means, medians, spreads, and a permutation floor saying how big a
-  difference shuffling the group labels would produce anyway. There are no p-values. `stats.csv`
-  is the handoff to whatever you test with.
+  difference shuffling the group labels would produce anyway. The only p-values are the floor's
+  own: for each measure or cluster, the share of the shuffles that reach it — against the whole
+  family (the floor read as a number) and against its own shuffles alone — with a
+  false-discovery q over them, so a cohort too small to clear the floor can still say which
+  clusters look consistent. No model sits behind them; `stats.csv` is the handoff to whatever
+  you test with.
 - **You choose the column; the tool picks the design.** A column that is the same for all of an
   animal's recordings (sex, genotype) compares *between* animals. A column that changes within
   an animal (session, dose) compares *within* each animal: two values are a paired contrast,

@@ -1523,6 +1523,9 @@ def labels_from_screen_text(labelled: list[dict]) -> str:
             where += f", inside kept cluster #{row.get('kept', '?')}"
         elif row.get("relation") == "above":
             where += f", above kept cluster #{row.get('kept', '?')}"
+        # Read looser than the screen's own floor when it was labelled (§22): said here, so
+        # the page lists a lead as a lead.
+        where += comparison_report.kept_at_text(row)
         parts.append(f"{row['name']} ({where})")
     return "Labelled from this screen: " + ", ".join(parts)
 

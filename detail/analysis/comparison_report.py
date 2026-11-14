@@ -47,6 +47,9 @@ RANKING_COLUMNS = [
     "floor",
     "clears",
     "kept",
+    "family_p",
+    "own_p",
+    "q",
     "n_units",
     "n_present",
     "consistency",
@@ -303,8 +306,26 @@ def screened_note(record: dict, label: str) -> str:
             where = f"inside {where}"
         elif relation == "above":
             where = f"above {where}"
-        parts.append(f"{origin.get('comparison', '?')} ({where} kept)")
+        parts.append(
+            f"{origin.get('comparison', '?')} ({where} kept{kept_at_text(origin)})"
+        )
     return "chosen from screen " + ", ".join(parts)
+
+
+def kept_at_text(origin: Mapping[str, str]) -> str:
+    """`` at p ≤ 0.2`` when the screen was read looser or stricter than its own floor when the
+    label was written (``LabelOrigin.alpha``, §22); ``""`` at the floor, or for an origin
+    written before strictness existed."""
+    alpha = str(origin.get("alpha") or "")
+    if not alpha:
+        return ""
+    try:
+        value = float(alpha)
+    except ValueError:
+        return ""
+    if abs(value - compare.FLOOR_ALPHA) < 1e-9:
+        return ""
+    return f" at p ≤ {value:g}"
 
 
 def screened_sentence(record: dict) -> str:
@@ -377,6 +398,30 @@ def _floor_cell(ranking, item) -> str:
     return "yes" if ranking.clears_floor(item) else "no"
 
 
+def p_text(p: float | None) -> str:
+    """A p or q as a person reads it: ``<0.001``, ``0.0039``, ``0.053``, ``0.5``; ``""`` for
+    none. Two significant figures: enough to tell ``0.053`` from the slider's ``0.05``, and
+    no more than a null of a few hundred draws can support."""
+    if p is None:
+        return ""
+    return "<0.001" if p < 0.001 else f"{p:.2g}"
+
+
+def _p_cell(item) -> str:
+    """The family-wise p with the item's own p after it: ``0.05 · own <0.01``. The first is
+    the floor read as a p; the second says whether the units agree on this item by itself.
+    """
+    family = p_text(getattr(item, "family_p", None))
+    own = p_text(getattr(item, "own_p", None))
+    if not family and not own:
+        return "—"
+    return f"{family} · own {own}" if own else family
+
+
+#: The ranking tables' header for :func:`_p_cell`.
+P_HEADER = "p (family · own)"
+
+
 def _kept_cell(ranking, item) -> str:
     """Over a hierarchical family: whether a clearing item is a finding or a slice of one."""
     if item.measure_key in set(ranking.kept):
@@ -398,7 +443,7 @@ def ranking_rows(
         within = ranking.design != compare.BETWEEN
         headers = ["measure", "between", "a", "b", "change (a \u2192 b)"]
         headers += ["in that direction", "present"] if within else []
-        headers += ["clears floor"] if with_floor else []
+        headers += ["clears floor", P_HEADER] if with_floor else []
         headers += ["kept"] if ranking.kept is not None else []
         headers += ["suggestion"]
         rows = []
@@ -422,14 +467,14 @@ def ranking_rows(
                     f"{item.consistency} of {item.n_units}",
                     f"{item.present_a} / {item.present_b}",
                 ]
-            cells += [_floor_cell(ranking, item)] if with_floor else []
+            cells += [_floor_cell(ranking, item), _p_cell(item)] if with_floor else []
             cells += [_kept_cell(ranking, item)] if ranking.kept is not None else []
             cells += [suggestion(item, ranking, record)]
             rows.append(cells)
         return headers, rows
     if ranking.design == compare.TREND:
         headers = ["measure", "mean ρ", "in that direction", "present"]
-        headers += ["clears floor"] if with_floor else []
+        headers += ["clears floor", P_HEADER] if with_floor else []
         headers += ["kept"] if ranking.kept is not None else []
         headers += ["suggestion"]
         rows = []
@@ -440,7 +485,7 @@ def ranking_rows(
                 f"{item.consistency} of {item.n_units}",
                 str(item.n_present),
             ]
-            cells += [_floor_cell(ranking, item)] if with_floor else []
+            cells += [_floor_cell(ranking, item), _p_cell(item)] if with_floor else []
             cells += [_kept_cell(ranking, item)] if ranking.kept is not None else []
             cells += [suggestion(item, ranking, record)]
             rows.append(cells)
@@ -449,7 +494,7 @@ def ranking_rows(
     headers = ["measure", *names, f"change ({names[0]} \u2192 {names[1]})"]
     if ranking.design == compare.PAIRED:
         headers += ["in that direction", "present"]
-    headers += ["clears floor"] if with_floor else []
+    headers += ["clears floor", P_HEADER] if with_floor else []
     headers += ["kept"] if ranking.kept is not None else []
     headers += ["suggestion"]
     rows = []
@@ -469,11 +514,15 @@ def ranking_rows(
                 f"{item.consistency} of {item.n_units}",
                 f"{item.present_a} / {item.present_b}",
             ]
-        cells += [_floor_cell(ranking, item)] if with_floor else []
+        cells += [_floor_cell(ranking, item), _p_cell(item)] if with_floor else []
         cells += [_kept_cell(ranking, item)] if ranking.kept is not None else []
         cells += [suggestion(item, ranking, record)]
         rows.append(cells)
     return headers, rows
+
+
+def _number_or_blank(value: float | None):
+    return "" if value is None else value
 
 
 def ranking_csv_rows(ranking, record: dict) -> list[dict]:
@@ -503,6 +552,11 @@ def ranking_csv_rows(ranking, record: dict) -> list[dict]:
                     if kept is None
                     else item.measure_key in kept
                 ),
+                # The floor read as a p, the item's own p, and the BH q over the family's own
+                # p's (§24): what a reader thresholds at a strictness of their own.
+                "family_p": _number_or_blank(item.family_p),
+                "own_p": _number_or_blank(item.own_p),
+                "q": _number_or_blank(item.q),
                 "n_units": item.n_units if is_effect else ranking.n_units,
                 "n_present": item.n_present if is_effect else "",
                 "consistency": item.consistency if is_effect else "",

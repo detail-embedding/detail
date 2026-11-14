@@ -182,38 +182,69 @@ def _screened_labels(
     return run_labels.screened(record.get("state") or {}, columns)
 
 
-def kept_nodes_of(ranking) -> list[int]:
+def kept_items_at(ranking, alpha: float | None) -> list:
+    """The ranking's findings at the family-wise level ``alpha`` (``Ranking.kept_at``), or at
+    its own floor for ``None`` (``Ranking.kept_items``): the one reading of a strictness every
+    surface shares. Empty for a ``None`` ranking."""
+    if ranking is None:
+        return []
+    return ranking.kept_items() if alpha is None else ranking.kept_at(alpha)
+
+
+def kept_nodes_of(ranking, alpha: float | None = None) -> list[int]:
     """The node ids a node screen's ranking kept, in rank order — what the filter dock turns
-    into leaves. Empty for ``None`` (nothing to rank) or a ranking of labels.
+    into leaves — at the strictness ``alpha`` (§22), or the screen's own floor for ``None``.
+    Empty for ``None`` (nothing to rank) or a ranking of labels.
 
     Takes the ranking rather than the comparison: re-ranking re-reads ``stats.csv`` and redraws
     the null, seconds over a large family, so a caller holding one ranks once."""
-    if ranking is None:
-        return []
     out = []
-    for item in ranking.kept_items():
+    for item in kept_items_at(ranking, alpha):
         node = node_measures.node_of(item.measure_key[1])
         if node is not None:
             out.append(node)
     return out
 
 
-def label_origin(experiment, comparison_id: str, node: int, *, ancestors_of):
+def item_numbers(item) -> dict[str, float | None]:
+    """A ranked item's family-wise p, own p and q, by name — what a label's origin records
+    (``run_labels.LabelOrigin``)."""
+    return {
+        "family_p": getattr(item, "family_p", None),
+        "own_p": getattr(item, "own_p", None),
+        "q": getattr(item, "q", None),
+    }
+
+
+def label_origin(
+    experiment,
+    comparison_id: str,
+    node: int,
+    *,
+    ancestors_of,
+    alpha: float | None = None,
+):
     """The origin a label on ``node`` carries from the saved screen ``comparison_id``
     (``run_labels.LabelOrigin``), or ``None`` when the screen did not point at the node -- it
     is not a cluster the screen kept, nor under or above one. ``ancestors_of(node)`` is the
-    run's root-first path above a node (``AuthoredRun.ancestors_of``).
+    run's root-first path above a node (``AuthoredRun.ancestors_of``); ``alpha`` is the
+    strictness the screen is read at (§22), its own floor for ``None``.
 
     Raises:
         ValueError: ``comparison_id`` is not a difference screen (``source: nodes``).
     """
-    return label_origins(experiment, comparison_id, [node], ancestors_of=ancestors_of)[
-        node
-    ]
+    return label_origins(
+        experiment, comparison_id, [node], ancestors_of=ancestors_of, alpha=alpha
+    )[node]
 
 
 def label_origins(
-    experiment, comparison_id: str, nodes: Sequence[int], *, ancestors_of
+    experiment,
+    comparison_id: str,
+    nodes: Sequence[int],
+    *,
+    ancestors_of,
+    alpha: float | None = None,
 ) -> dict:
     """:func:`label_origin` for each of ``nodes``, ``{node: LabelOrigin | None}``, ranking the
     screen once however many nodes are named.
@@ -233,11 +264,12 @@ def label_origins(
         )
     ranking = comparison.ranking()
     kept_texts: dict[int, str] = {}
-    if ranking is not None:
-        for item in ranking.kept_items():
-            kept = node_measures.node_of(item.measure_key[1])
-            if kept is not None:
-                kept_texts[kept] = comparison_report.suggestion(item, ranking, record)
+    numbers: dict[int, dict] = {}
+    for item in kept_items_at(ranking, alpha):
+        kept = node_measures.node_of(item.measure_key[1])
+        if kept is not None:
+            kept_texts[kept] = comparison_report.suggestion(item, ranking, record)
+            numbers[kept] = item_numbers(item)
     return {
         node: run_labels.label_origin(
             node,
@@ -246,6 +278,8 @@ def label_origins(
             column=str(record.get("design_column") or ""),
             screen=screen_label(record),
             ancestors_of=ancestors_of,
+            alpha=alpha,
+            numbers=numbers,
         )
         for node in nodes
     }
@@ -281,6 +315,7 @@ def labels_from_screen(experiment, comparison_id: str) -> list[dict]:
                 "name": names[node],
                 "kept": str(origin.get("kept", "")),
                 "relation": str(origin.get("relation", "")),
+                "alpha": str(origin.get("alpha", "")),
             }
         )
     return out
@@ -662,11 +697,12 @@ class Comparison:
             obs, self.record(), comparison_report.read_hierarchy(self.dir)
         )
 
-    def kept_nodes(self) -> list[int]:
+    def kept_nodes(self, alpha: float | None = None) -> list[int]:
         """The node ids a node screen kept, in rank order — what the filter dock turns into
-        leaves. Empty for a labels comparison, or a screen that kept nothing. Ranks; a caller
-        already holding :meth:`ranking` passes it to :func:`kept_nodes_of` instead."""
-        return kept_nodes_of(self.ranking())
+        leaves — at the strictness ``alpha``, or its own floor. Empty for a labels comparison,
+        or a screen that kept nothing. Ranks; a caller already holding :meth:`ranking` passes
+        it to :func:`kept_nodes_of` instead."""
+        return kept_nodes_of(self.ranking(), alpha)
 
     def _current_source(self, record: dict) -> dict | None:
         """Where the source is *now* — the run's current artifact, or its current node cache."""

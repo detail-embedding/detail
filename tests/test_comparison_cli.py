@@ -1,5 +1,6 @@
 """The comparison CLI makes the unit of analysis impossible to leave unsaid (§24)."""
 
+import pytest
 from click.testing import CliRunner
 
 from detail.cli import main
@@ -357,10 +358,19 @@ def test_from_screen_records_the_origin_the_screen_gives(authored_cohort, monkey
     node = _branch(run)
     asked = []
 
-    def fake_origins(experiment, comparison_id, wanted, *, ancestors_of):
-        asked.append((comparison_id, list(wanted), [ancestors_of(n) for n in wanted]))
+    def fake_origins(experiment, comparison_id, wanted, *, ancestors_of, alpha=None):
+        asked.append(
+            (comparison_id, list(wanted), [ancestors_of(n) for n in wanted], alpha)
+        )
         return {
-            n: run_labels.LabelOrigin(comparison_id, str(n), "kept", "drug", "x · y")
+            n: run_labels.LabelOrigin(
+                comparison_id,
+                str(n),
+                "kept",
+                "drug",
+                "x · y",
+                alpha="" if alpha is None else f"{alpha:g}",
+            )
             for n in wanted
         }
 
@@ -371,8 +381,44 @@ def test_from_screen_records_the_origin_the_screen_gives(authored_cohort, monkey
     )  # fmt: skip
     assert result.exit_code == 0, result.output
     assert "labelled 1 node(s), from screen cmp_01" in result.output
-    assert asked == [("cmp_01", [node], [run.ancestors_of(node)])], "one ranking"
+    assert asked == [("cmp_01", [node], [run.ancestors_of(node)], None)], "one ranking"
     assert run.state().label_origins[str(node)]["comparison"] == "cmp_01"
+    assert run.state().label_origins[str(node)]["alpha"] == ""
+
+    # --at-p reads the screen looser than its floor: the API is asked at that level, the
+    # label records it, and the line says so (§22).
+    result = _run(
+        "analysis", "temporal-interpret", "--experiment", str(authored_cohort.experiment.dir),
+        "--run", "an_01", "--name-node", f"{node}=climb", "--from-screen", "cmp_01",
+        "--at-p", "0.2",
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    assert "labelled 1 node(s), from screen cmp_01 at p <= 0.2" in result.output
+    assert asked[-1] == ("cmp_01", [node], [run.ancestors_of(node)], 0.2)
+    assert run.state().label_origins[str(node)]["alpha"] == "0.2"
+
+
+@pytest.mark.parametrize(
+    "args, message",
+    [
+        (["--at-p", "0.2"], "--at-p is the strictness --from-screen is read at"),
+        (
+            ["--from-screen", "cmp_01", "--at-p", "1.5"],
+            "--at-p is a family-wise level in (0, 1)",
+        ),
+    ],
+)
+def test_at_p_without_a_screen_or_outside_a_level_is_a_usage_error(
+    authored_cohort, args, message
+):
+    run = authored_cohort.run()
+    result = _run(
+        "analysis", "temporal-interpret", "--experiment", str(authored_cohort.experiment.dir),
+        "--run", "an_01", "--name-node", f"{_branch(run)}=climb", *args,
+    )  # fmt: skip
+    assert result.exit_code != 0
+    assert message in result.output
+    assert not run.state().node_labels, "refused before anything was written"
 
 
 def test_from_screen_refuses_a_node_the_screen_did_not_point_at(
@@ -386,7 +432,9 @@ def test_from_screen_refuses_a_node_the_screen_did_not_point_at(
     monkeypatch.setattr(
         comparison_api, "label_origins", lambda _e, _c, nodes, **k: dict.fromkeys(nodes)
     )
-    monkeypatch.setattr(comparison_api.Comparison, "kept_nodes", lambda self: [3, 5])
+    monkeypatch.setattr(
+        comparison_api.Comparison, "kept_nodes", lambda self, alpha=None: [3, 5]
+    )
     result = _run(
         "analysis", "temporal-interpret", "--experiment", str(authored_cohort.experiment.dir),
         "--run", "an_01", "--name-node", f"{node}=climb", "--from-screen", "cmp_01",
@@ -395,6 +443,12 @@ def test_from_screen_refuses_a_node_the_screen_did_not_point_at(
     assert f"node {node} is not one screen cmp_01 kept" in result.output
     assert "it kept 3, 5" in result.output
     assert not run.state().node_labels, "refused before anything was written"
+    result = _run(
+        "analysis", "temporal-interpret", "--experiment", str(authored_cohort.experiment.dir),
+        "--run", "an_01", "--name-node", f"{node}=climb", "--from-screen", "cmp_01",
+        "--at-p", "0.3",
+    )  # fmt: skip
+    assert f"node {node} is not one screen cmp_01 kept at p <= 0.3" in result.output
 
 
 def test_from_screen_without_name_node_is_a_usage_error(authored_cohort):

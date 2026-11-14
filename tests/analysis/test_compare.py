@@ -374,3 +374,42 @@ def test_measures_are_ranked_by_absolute_difference():
     obs = c.observations(rows, meta, group_by=["drug"], aggregate_to=[])
     ranking = c.rank_by_difference(obs, (("veh",), ("fent",)), draws=20)
     assert ranking.contrasts[0].measure_key[0] == "total_time"
+
+
+def test_a_between_ranking_carries_each_contrasts_p_and_q_too():
+    """The between null keeps each measure's own draws beside the family's largest, so a
+    label comparison reads its own p (the observed labelling counted as one more draw) and
+    its family-wise p (the floor read as a number) like a within design does."""
+    meta, rows = {}, []
+    for i, v in enumerate([1.0, 2.0, 1.5, 1.2, 1.8, 1.1]):
+        meta[f"a{i}"] = {"drug": "veh"}
+        rows += _rows((f"a{i}", v, "whole", "rate"))
+        rows += _rows((f"a{i}", 5.0 + 0.1 * i, "whole", "n_instances"))
+    for i, v in enumerate([8.0, 9.0, 7.5, 8.2, 9.1, 8.8]):
+        meta[f"b{i}"] = {"drug": "fent"}
+        rows += _rows((f"b{i}", v, "whole", "rate"))
+        rows += _rows((f"b{i}", 5.0 + 0.1 * i, "whole", "n_instances"))
+    obs = c.observations(rows, meta, group_by=["drug"], aggregate_to=[])
+    ranking = c.rank_by_difference(obs, (("veh",), ("fent",)), draws=200, seed=1)
+    strong = next(i for i in ranking.contrasts if i.measure_key[0] == "rate")
+    flat = next(i for i in ranking.contrasts if i.measure_key[0] == "n_instances")
+    assert ranking.clears_floor(strong) and not ranking.clears_floor(flat)
+    assert strong.family_p <= c.FLOOR_ALPHA < flat.family_p
+    assert strong.own_p == pytest.approx(
+        1 / 201
+    ), "no draw reached it: one more than none"
+    assert flat.own_p > 0.5
+    assert strong.q == pytest.approx(2 / 201) and flat.q == pytest.approx(flat.own_p)
+    for alpha in c.STRICTNESS_LEVELS:
+        for item in ranking.contrasts:
+            assert ranking.clears_at(item, alpha) == (
+                item.magnitude > ranking.floor_at(alpha)
+            )
+
+
+def test_an_unbounded_contrast_has_no_p():
+    """A behavior that appears or vanishes has no finite magnitude, so nothing to read a p
+    from — reported as itself, as its magnitude is."""
+    obs = _two_group([0.0, 0.0, 0.0], [5.0, 6.0, 7.0])
+    (item,) = c.rank_by_difference(obs, (("veh",), ("fent",)), draws=20).contrasts
+    assert item.unbounded and item.family_p is None and item.own_p is None
