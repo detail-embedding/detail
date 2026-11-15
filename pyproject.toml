@@ -91,7 +91,7 @@ dev = [
     # the floor waits for #535.
     "pytest-cov",
     "black==26.5.1",  # pin black so CI --check matches local format
-    # Runs black and cheap checks at commit, and the suite at push (`.pre-commit-config.yaml`).
+    # Runs black and cheap checks at commit; nothing runs at push (`.pre-commit-config.yaml`).
     # One `pre-commit install` per clone replaces `git config core.hooksPath scripts/hooks`,
     # which a fresh clone silently loses (#378).
     "pre-commit",
