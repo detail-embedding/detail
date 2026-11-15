@@ -20,6 +20,7 @@ behind it. Procedures are skills in `.claude/skills/`, loaded when they apply. W
 | anything under `detail/gui/` | skill `gui-surface-change`; rules in `detail/gui/requirements.py` |
 | adding a capability, config dimension, registry member, or a shared widget's parameter | skill `wire-every-surface` |
 | branching, testing, opening a PR | skill `ship-a-change` |
+| deciding whether work goes in the public or the private repository, or moving a feature across | `CONTRIBUTING.md` — *Public and private work* |
 | running tests — any pytest run, so its progress and result are visible | skill `run-tests` |
 | a stage that reports progress or an ETA | skill `long-op-progress`; contract in `DESIGN_PLAN.md` §6 |
 | testing a stage that consumes another's output | skill `schema-edge-tests` |
