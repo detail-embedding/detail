@@ -13,13 +13,13 @@ MED-PC data file (`.txt`) and its program (`.MPC`).
 
 === "GUI"
 
-    Open the recording and, in the **Streams** section, click **Add stream…**
+    Open the recording and, in the **Streams** section, click **Add stream**
     (highlighted).
 
     ![A recording detail page with the Add stream button highlighted.](../assets/workflows/add-stream-data/recording-full.png)
 
-    Choose the **MED-PC** importer, select the data file and the `.MPC` program,
-    then click **Import stream**.
+    Choose the data file, the **MED-PC (Med Associates)** importer and the `.MPC`
+    program, then click **Import stream**.
 
     ![The Add stream dialog set to the MED-PC importer with its data and program files chosen.](../assets/workflows/add-stream-data/add-stream-dialog.png)
 
@@ -33,21 +33,29 @@ MED-PC data file (`.txt`) and its program (`.MPC`).
 
 === "GUI"
 
-    Open the experiment's **Metadata** page from the sidebar (highlighted).
+    Open the experiment's **Recording information** page from the rail on the left
+    (highlighted).
 
     ![The app sidebar with the Metadata node highlighted.](../assets/workflows/add-stream-data/metadata-node.png)
 
-    Add a column per grouping variable and fill each recording's row, or use
-    **Import CSV…** to set them in bulk.
+    Click **Edit**, use **Add column** for each grouping variable, fill each
+    recording's row, then click **Save**. Or use **Import CSV** to set them in bulk.
 
-    ![The experiment metadata table with treatment and sex columns for each recording.](../assets/workflows/add-stream-data/metadata-page.png)
+    ![The Recording information table with treatment and sex columns for each recording.](../assets/workflows/add-stream-data/metadata-page.png)
 
 === "CLI"
 
-    Set grouping variables in bulk from a CSV with a `recording_id` column:
+    Set grouping variables in bulk from a CSV with a `recording_id` column (a `name`
+    or video file name column works too):
 
     ```
     detail experiment import-metadata --experiment ~/Documents/DetailExperiments/operant-study --csv metadata.csv
+    ```
+
+    Or one recording at a time:
+
+    ```
+    detail experiment set-metadata --experiment ~/Documents/DetailExperiments/operant-study --recording boxA --set treatment=drug_A --set sex=M
     ```
 
 ## Next
