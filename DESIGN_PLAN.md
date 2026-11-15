@@ -4953,9 +4953,9 @@ The pipeline's extensibility (Tenet 1) is organized into **three module families
 
 | Family | Output | Scope | Run backbone | Examples |
 |--------|--------|-------|--------------|----------|
-| **Processing** (§6.5) | derived data (zarr) | per-recording | `Recording.run(module_id, config)` | detection, tracking, embedding, keypoints; classifier-apply |
-| **Fit / train** (§12) | a reusable **model** | data in (often cross-recording) | `Experiment.train_model` | detection-model training; keypoint distill |
-| **Analysis** (this section) | artifacts (CSVs / plots / stats) | experiment (one or many recordings) | `Experiment.run_analysis(module_id, config)` | location export (per-recording); behavior-trend plots, "common behaviors", ROI stats (cohort) |
+| **Processing** (§6.5) | derived data (zarr) | per-recording | `Recording.run(module_id, config)` | detection, tracking, embedding, keypoint detect, keypoint track |
+| **Fit / train** (§12) | a reusable **model** | data in (often cross-recording) | `Experiment.train_model`; `Experiment.distill` / `distill_keypoints` (label, then train, in one run) | detection-model training; detector distill; keypoint distill |
+| **Analysis** (this section) | artifacts (CSVs / plots / stats) | experiment (one or many recordings) | `Experiment.run_analysis(module_id, config)` | location export (per-recording); query, query eval, temporal clustering (cohort) |
 
 A research workflow chains them: **fit** a model → **apply** it per recording (processing) → **analyze** across a recording selection (analysis — iterating per recording, like location export, or pooling across the cohort). "Applying a fitted model" is *not* a fourth family — it is a processing module whose config names the model id. A behavior classifier or pose clusterer therefore decomposes into a fit module (produces the model) and an apply processing module (produces per-frame labels / cluster ids), with an optional analysis module summarizing the cohort.
 
@@ -4970,11 +4970,23 @@ class AnalysisModule(ABC):
     requires: list[str]       # artifact kinds consumed, e.g. ["embedding"] —
                               #   the multi-source analogue of ProcessingModule.upstream
     job_class: type[Job]
+    phases: tuple[str, ...]   # the run's named steps, in order — required, no default:
+                              #   a run page shows the phase in flight and what is ahead
+    progress_counts_frames: bool   # is frames_total a count of frames? required, no
+                              #   default; only then may a report divide by seconds as fps
     progress_event_class: type | None = None
+    config_model: type | None = None   # the pydantic config model (§6.5)
+    selects: tuple[str, str] | None = None   # (upstream module, config ref field) read
+                              #   per recording, e.g. ("embedding", "embed_run_id")
+    mutable: bool = False     # an authored run (§21): stays open after its compute
 
     def validate(self, experiment_dir, config: dict) -> dict:
         """Confirm the selected recordings + runs exist and are complete across the
         cohort; raise specific errors (Tenet 10). Returns normalized config."""
+
+    def resolve_selection(self, experiment_dir, recording_ids, config) -> dict:
+        """Concrete: drives `selects` — {<ref>s: {recording: run_id}, <ref>: the one id
+        when every recording's agrees, else None} for validate() to write back."""
 
     def build_job(self, run_id: str, config: dict) -> Job: ...
     def runner(self, job, run_dir, progress_cb, stop_event) -> None: ...
@@ -4986,13 +4998,13 @@ class AnalysisModule(ABC):
 
 `register_analysis_module` wires `ANALYSIS_MODULES` + `JOB_RUNNERS` + the dynamic job-type map — a strict **subset** of `register_processing_module` (§6.5). An analysis run is a single **experiment-level** job (one `analysis/<run_id>/`, one executor job — the dataset-export/training execution shape of §12, *not* the per-recording fan-out of a processing run), so the module carries none of the recording-scoped record fields (`runs_key`, `output_path`, `run_record`); `build_job(run_id, config)` takes no `recording_id`. `module_id` is **experiment-globally unique** across all three families — the `JOB_RUNNERS` tag space is shared, so registration raises on a collision rather than silently clobbering. `Experiment.run_analysis(module_id, config)` is the generic backbone, mirroring `Experiment.generate_dataset`: resolve module → `validate` → allocate `an_NN` → `build_job` → pre-write `analysis.yaml` (status `running`, so the run is discoverable immediately) → submit one job → return a `RunHandle`.
 
-**Recording and discovery.** Each run writes `analysis/<run_id>/` with its own `analysis.yaml` (`schema_version: 1` first, written **atomically** — sibling `*.tmp` + `os.replace` — because the runner subprocess rewrites it on completion while the GUI's progress view reads it; Tenet "atomic writes for concurrently-read experiment files"). The experiment discovers runs by **scanning `analysis/`** — the same way it discovers datasets/models — so there is no central mutable list.
+**Recording and discovery.** Each run writes `analysis/<run_id>/` with its own `analysis.yaml` (`schema_version: 1` first, written **atomically** — sibling `*.tmp` + `core.atomic.replace` — because the runner subprocess rewrites it on completion while the GUI's progress view reads it; Tenet "atomic writes for concurrently-read experiment files"). The experiment discovers runs by **scanning `analysis/`** — the same way it discovers datasets/models — so there is no central mutable list.
 
-**Inputs.** `requires` names the artifact kinds; the config carries `source_recording_ids` plus the run id(s) the module needs — one per required kind, common to the selection (location export takes a single `tracking_run_id`). `validate` checks every referenced run exists and is complete before any compute.
+**Inputs.** `requires` names the artifact kinds; the config carries `source_recording_ids` plus the run id(s) the module needs. The upstream run is resolved **per recording**, on settings rather than on the shared id (`selects` + `resolve_selection`, §6.5 "Upstream run specs"): `validate` writes back a `{recording: run_id}` map (location export's `tracking_run_ids`) and the single id only when every recording's agrees, so a selection whose recordings hold the same settings under different ids still resolves. `validate` checks every referenced run exists and is complete before any compute.
 
 **Outputs.** No fixed schema: the module writes figures/tables/reports into its run dir and declares them via the artifacts manifest. Full lineage (recording ids + run ids + params) lives in the run's `job.json` (Tenet 9).
 
-**Now implementable — location export is the first module.** The blocker an earlier draft named here, grouping variables (§11), has since landed: `metadata.csv` is built and analyses may read it, so cohort analyses that pool across recordings are no longer gated on it. The one input still without a consumer is **streams** (§3) — ingested (MED-PC importer + canonical store + `apply_alignment`) but read by no stage yet — so a stream-joining analysis still awaits that consumer. **Location export** (per-track position relative to a recording's ROIs/POIs, §10) needs neither: it loops the selected recordings and emits a **per-recording** result, which makes it the simplest first consumer of this machinery. Cohort-pooling and stream-joining modules follow on the same contract, so the GUI and shared run machinery are designed against it once.
+**Location export was the first module; four are registered now.** **Location export** (per-track position relative to a recording's ROIs/POIs, §10) loops the selected recordings and emits a **per-recording** result, which made it the simplest first consumer of this machinery. The cohort-pooling modules followed on the same contract: `query` (§20), `temporal_clustering` (§22) and `query_eval`, which pool across the selection. **Streams** (§3) have a consumer too: `query_eval` reads a behavior stream as its ground truth (`requires=["embedding", "behavior"]`, below). Grouping variables (§11) are built, and `metadata.csv` is what §24's comparisons group by.
 
 ### Location export (the first analysis module)
 
@@ -5000,8 +5012,11 @@ class AnalysisModule(ABC):
 `requires=["tracking"]`) turns a completed tracking run into per-frame, per-track
 **spatial features relative to a recording's ROIs/POIs** — three tidy CSVs
 (`tracks` / `roi_relations` / `point_relations`) keyed by `t_ns` (so they join the
-streams CSV, §3). Its config is `{source_recording_ids, tracking_run_id}` (the
-selection plus one tracking run id common to it). The runner loops the recordings,
+streams CSV, §3). Its config is `{source_recording_ids, tracking_run_id}`, and
+`validate` resolves the selection to each recording's own complete tracking run
+(`selects = ("tracking", "tracking_run_id")`), writing back the `tracking_run_ids`
+map the job carries; `tracking_run_id` stays set only when every recording's agrees.
+The runner loops the recordings,
 calling the pure compute `analysis/locations.compute_location_tables` →
 `storage/location_export.write_location_tables` into
 `analysis/<run_id>/<recording_id>/`; `output_manifest` lists those CSVs as paths
@@ -5040,8 +5055,8 @@ there.
 - **The views are the module's to declare** (`gui/result_views.py`, re-exported from
   `gui/modules/registry.py`): a result widget that defines `views()` lists `ResultView(name,
   purpose, widget, status)`s; any other result widget is one view, "Results", carrying the
-  `ModuleUI.purpose` line. The clustering, behavior-scan and annotation workspaces are
-  `MultiViewWorkspace`s — their tab widget kept, its bar hidden, with `show_view` /
+  `ModuleUI.purpose` line. The clustering and behavior-scan (query) workspaces
+  (`ClusterWorkspace`, `_QueryWorkspace`) are `MultiViewWorkspace`s — their tab widget kept, its bar hidden, with `show_view` /
   `current_view` / `view_changed` so a hand-off inside one (AUDIT → "Open in INTERPRET") moves the
   page's row. `ModuleUI.planned_views()` names the views before the run has results, for the
   cards shown greyed ("Results appear when the run finishes") while it computes.
@@ -5069,18 +5084,20 @@ segmentation helpers live in `analysis/bout_segmentation.py`.
 `recording_id`, `track_id`, `embed_run_id`, `start_t_ns`, `end_t_ns`, `start_frame`,
 `end_frame`, `length`, `score`, `example_idx`. Query rows (the exemplars) carry no score/rank.
 Read by name (`DictReader`) so column order is safe; the query columns are optional on read (a
-pre-multi-query CSV reads as one query `q01`/`query`). The **same** schema is the query-spec
-file, the results file and the refine-from-results import: point a query at any prior clip CSV
-and take its rows as new examples. Written atomically (a background worker rewrites it while the
-GUI may read).
+pre-multi-query CSV reads as one query `q01`/`query`). Today it is an **example list**, not a
+results file: a montage's clip-list export writes it (`ClusterMontage.export_clip_list`, every clip a
+`query` row of one query named after the node), and `detail analysis query --from-csv` reads its
+rows as example clips grouped by `query_name`. No run writes `match` rows any more; the kind stays
+in the schema so an older results CSV still reads. Written atomically.
 
 ### Behavior-query eval (retrieval scored against ground truth)
 
 The **first consumer of the behavior stream** (§3): score how well the clip-query engine
 retrieves a labeled behavior, to compare embedding recipes (mask resolution, embed model,
-input-image constructor) and query params. Two surfaces, one compute — this ships the
-**scriptable** half; a recorded `AnalysisModule` (progress/batch/history) + a GUI validation
-report are the deferred second surface, reusing the same core.
+input-image constructor) and query params. Two surfaces, one compute, both built: the
+**scriptable** CLI `analysis query-eval`, and the recorded `QueryEvalModule` (progress, batch,
+history) with its GUI report (`gui/modules/analysis_query_eval.py`) — see *Output + surface*
+below.
 
 **Compute (pure, no I/O — `analysis/query_eval.py`).** Temporal IoU over `t_ns` spans; a greedy
 one-to-one match of the engine's rank-ordered predictions to ground truth (**state** behaviors
@@ -5126,8 +5143,8 @@ for tuning). Per-level rows aggregate across folds with the same macro mean as t
 level row and the `metrics.csv` row at that level agree. **Point** behaviors get one row, at
 their `point_window_s`. History: a high `recall@any` was once a tiling artifact — no better than its shifted-time null — which is exactly what this makes impossible to miss again.
 
-**Orchestration + scripting entry (`pipeline/query_eval.py::evaluate_query`, the `query_clips`
-twin).** Per behavior: keep recordings that both scored it (`is_annotated_for`) and embed the
+**Orchestration + scripting entry (`pipeline/query_eval.py::evaluate_query`, the no-executor
+entry both surfaces share).** Per behavior: keep recordings that both scored it (`is_annotated_for`) and embed the
 track; `validate_comparability` over them; pool the ground-truth intervals. Then **cross-validate**
 across `folds` (see below): each fold holds out its `n_exemplars`-subset and, for a **windowed
 matcher**, runs `analysis/clip_query.query_tracks` **permissively** (`threshold=2.0`, high
@@ -5178,12 +5195,14 @@ The engine's `min_separation` (rows, not seconds) is left at its default rather 
 
 **Matchers (`method`).** `dtw` (default), `clip_pooled_mean`, `clip_pooled_max` and `keyframe` are
 `curve_fn`s: each maps `(database_norm, query_norm, band, params)` to a per-row cost curve that
-`_extract_matches` turns into windows of roughly the example's length (`band` is the warp/duration
-tolerance). The per-frame classifier `soft_knn` is **eval-only** and takes the separate per-frame
-path documented above, not a `curve_fn` (it scores every frame, so `band`
-does not apply). The old `frame_span` fixed-proposal-cutoff span method has been removed.
+`retrieval.extract_matches` turns into windows of roughly the example's length (`band` is the
+warp/duration tolerance). In the eval, the per-frame classifier `soft_knn` takes the separate
+per-frame path documented above, not a `curve_fn` (it scores every frame, so `band` does not
+apply). It is not eval-only: the same scoring is §20 Query's one registered method, which forms
+instances from the score's peaks (§20, *Reference implementation*). The old `frame_span`
+fixed-proposal-cutoff span method has been removed.
 
-⚠️ **Score direction.** `Match.score` is a **distance** everywhere downstream — `_extract_matches`,
+⚠️ **Score direction.** `Match.score` is a **distance** everywhere downstream — `retrieval.extract_matches`,
 the eval's ranked sort and `predictions.csv` all take ascending as best-first. A matcher that ranks
 by a *similarity* (higher is better) must emit `1 - similarity`; inverting this silently reverses
 the ranking and collapses AP with no error, and is pinned by a ranking-direction test.
@@ -5299,7 +5318,7 @@ class AnnotationSet:
 
   > **`requires` nuance.** `AnnotationExportModule` accepts a detection **or** a tracking run, which the single-list `requires` (§16) does not cleanly express. v1 registers **one** module with the looser requirement and a `validate` that resolves the chosen `source_run_id`'s kind from `detection_runs` / `tracking_runs`; the GUI recording-eligibility check accepts a recording that has a run of either kind. (The alternative — two modules — was rejected as duplicative.)
 
-**Frame extraction.** When `with_frames=True`, frames are read **forward-sequentially** (Tenet 11), exactly as `pipeline/dataset_export.py` already does. Before this second consumer exists, lift `dataset_export._sequential_frames` + `_gather_parts` into a **shared helper** both call — this refactor is a prerequisite of Phase 1, not a follow-up, so the two pipelines never diverge.
+**Frame extraction.** When `with_frames=True`, frames are read **forward-sequentially** (Tenet 11), exactly as `pipeline/dataset_export.py` already does. The sequential reader is already shared: `pipeline/_dataset_common.sequential_frames`, which dataset export and labeling both call. `_gather_parts` is not — `dataset_export` and `labeling` each keep their own — and lifting it is the remaining prerequisite of `with_frames` (as *Superseded in part* above says), so the pipelines never diverge.
 
 **Storage.** A `storage/annotation_export.py` owns the run-dir layout and an `annotations.yaml` manifest (`schema_version` first; full lineage so the export reproduces from itself), mirroring `storage/location_export.py`. The codec writes the format file(s); storage owns the manifest and the per-recording directory layout (single-writer, Tenet 5).
 
@@ -5315,7 +5334,7 @@ class AnnotationSet:
 
 - **API:** `Recording.export_annotations` (P1) / `Recording.import_detections` + `import_tracks` (P2); `Experiment.run_analysis("annotation_export", …)` (P1). `Experiment.run_analysis` is already generic — no change.
 - **CLI:** a new `annotations` group — `annotations export …` (synchronous, the quick path, mirroring `locations export`) and a recorded batch command in the same group; `annotations import …` (P2). The recorded path gets its **own** command rather than overloading `analysis run`, whose options are location-export-shaped (`--tracking` required); genericizing `analysis run` is a separate, later cleanup.
-- **GUI:** the **Analysis tab** picks up `AnnotationExportModuleUI` automatically once it is registered in `ANALYSIS_GUI_MODULES` (the launch dialog enumerates that registry); a run-detail **"Export annotations…"** button mirrors the existing **"Export to dataset…"** on complete detection/tracking runs. P2 adds a recording-page **"Import annotations…"** entry mirroring "Add stream…". Long ops run off the UI thread (GUI Style). The construction smoke covers the config widget automatically (parametrized over `ANALYSIS_GUI_MODULES`); add a complete `annotation_export` run-record fixture so the run-detail test exercises the new `result_widget`.
+- **GUI:** the **Analysis tab** picks up `AnnotationExportModuleUI` automatically once it is registered in `ANALYSIS_GUI_MODULES` (the launch dialog enumerates that registry). *(Superseded for export: the built COCO masks target is reached through the export backbone's one GUI control, not a run-detail button — and there is no run-detail "Export to dataset…" to mirror; a dataset is built with **Generate dataset** on the Datasets page.)* P2 adds a recording-page **"Import annotations…"** entry mirroring "Add stream…". Long ops run off the UI thread (GUI Style). The construction smoke covers the config widget automatically (parametrized over `ANALYSIS_GUI_MODULES`); add a complete `annotation_export` run-record fixture so the run-detail test exercises the new `result_widget`.
 - **Docs (same change):** `docs/cli.md` (the `annotations` group), `docs/gui.md` (Analysis tab + the run-detail button), `docs/concepts.md` (the export/import mental model, the lossless round-trip, the format matrix, and the distinction from training dataset export).
 
 
@@ -5324,19 +5343,26 @@ class AnnotationSet:
 ## 18. Export and provenance (the shared `report/` package)
 
 
-An **export** is an on-demand step that reads a completed record and writes an `exports/` tree of
+An **export** is an on-demand step that reads a completed record and writes a tree of
 publication tables and figures. It is re-runnable, in any format, with no recompute, and the data
 artifacts re-export **byte-identically**. The module-agnostic **`report/`** package holds the
-primitives every export is built from; a §24 comparison is the writer today, and §19's behavior
-output carries the same provenance block.
+primitives every export is built from; a §24 comparison is the writer today
+(`comparison export`, `Comparison.export`), and it writes the tree into the comparison's own
+folder, `comparisons/<cmp_NN>/`, unless given another (`--out`). The experiment's `exports/`
+folder is something else: the export backbone's run records (`exports/<run_id>/export_run.yaml`
+plus the executor envelope), whose files go to a folder the user chose outside the experiment
+(`docs/export_design.md`). Of §19's behavior outputs, only Query's carries a provenance block
+today (§18.5).
 
 ### 18.3 The export tree
 
-`exports/<id>/` holds:
+The tree holds:
 
 - **`stats.csv`** — the tidy source of truth, one row per observation with its factors joined on
-  (the shape a stats package wants); a notebook reshapes it further.
+  (the shape a stats package wants); a notebook reshapes it further. Copied in when the tree is
+  written somewhere other than the comparison's own folder, so the tree stays self-contained.
 - **`tables/`** — `.tex` / `.md` / `.csv` grids pivoted from `stats.csv`. LaTeX is `booktabs`.
+- **`ranking.csv`** — when the comparison ranks its measures, the ranking with its floor (§24).
 - **`figures/`** — `.pdf` / `.svg` / `.png`, rendered deterministically (stripped dates, fixed
   `svg.hashsalt`), publication-styled (no embedded title, the chart theme's palette and type,
   editable vector text).
@@ -5365,9 +5391,12 @@ Three levels, distinct guarantees:
   of any ground-truth labels**, **video fingerprints** (size + mtime + head/tail hash, not a
   multi-GB full hash), the **code git SHA**, and the environment — in the record and in
   `manifest.json`. `drift()` names what changed (labels edited, video swapped, code moved) so a
-  stale result is caught, and an export warns on it. §24 comparisons and §19 behavior outputs use
-  this `capture` / `drift` machinery over their own records. The push-button rebuild driver is
-  deferred; cross-hardware bit-identity of GPU neural steps is a documented limit.
+  stale result is caught. Where it is used today: §24 comparisons capture at run time and use
+  `drift()` — `comparison export` warns on it and the comparison page reads it. Of §19's
+  producers, Query captures at the end of its search (`pipeline/query.py::_capture_provenance`)
+  and copies the block into its artifact; temporal clustering writes an empty block, and nothing
+  checks a behavior output for drift yet. The push-button rebuild driver is deferred;
+  cross-hardware bit-identity of GPU neural steps is a documented limit.
 
 ## 19. Behavior Output (the shared analysis artifact)
 
@@ -5385,8 +5414,8 @@ regression readout, a within-session trend analysis) inherits all of it by *emit
 never by editing the analytics layer.
 
 **It is a derived, additionally-written artifact.** A producing module keeps its native output
-(`matches.csv`, the assignment zarr, `labels.csv`) exactly as it is and writes the behavior output
-beside it. Nothing migrates; a run predating the artifact simply lacks it, and can be backfilled
+(Query's `query.yaml`, `search/` shards and `background.npz`; temporal clustering's
+`temporal_clustering.yaml` and `fit/`) exactly as it is and writes the behavior output beside it. Nothing migrates; a run predating the artifact simply lacks it, and can be backfilled
 from what it does have. That is also the escape hatch if the schema changes: regenerate, don't
 migrate.
 
@@ -5401,7 +5430,8 @@ that reads a behavior stream reads a behavior output, and re-importing a predict
 Both ends are **inclusive**: a state behavior labels a frame with `start <= t <= end`
 (`analysis/behavior_labels.py::frames_to_labels`), and `end_frame` is inclusive to match.
 
-**`instances.csv`** — the stream's six columns plus three:
+**`instances.csv`** — the stream's six columns plus five, in this order
+(`storage/behavior_output.INSTANCE_COLUMNS`):
 
 | column | meaning |
 | --- | --- |
@@ -5410,7 +5440,8 @@ Both ends are **inclusive**: a state behavior labels a frame with `start <= t <=
 | `t_ns`, `end_t_ns` | the span, `int64` ns, inclusive (Tenet 8) |
 | `start_frame`, `end_frame` | the same span in frames, inclusive, for readability |
 | `label` | the user-facing behavior name. **Empty when unnamed.** |
-| `source_label` | the producer's own id — `q01`, cluster `7`. Always present. |
+| `label_path` | the label with every label above it, joined by `/` (§22: labels nest). A producer with no hierarchy writes the label itself. |
+| `source_label` | the producer's own id — a query behavior's `q01`; a clustering run's label id (`L3`) or `unlabelled` (§22). Always present. |
 | `instance_id` | unique per underlying bout — see *Several labels* below |
 | `score` | the producer's confidence. Empty for human-authored rows. |
 
@@ -5429,7 +5460,9 @@ labels with no special case in the schema.
 A **cluster** may also carry several labels — the naming map is `{source_label: [label, ...]}`, so
 cluster 7 can be both "rearing" and "near wall". It emits **one instance row per label** over the
 same span rather than one row with a multi-valued cell: the schema stays flat, stream
-compatibility holds, and a measure over "rearing" picks up cluster 7's bouts with no change.
+compatibility holds, and a measure over "rearing" picks up cluster 7's bouts with no change. The
+schema and the writer allow it; neither producer emits it today — a query behavior has one name,
+and a clustering node carries one label, nesting instead through `label_path` (§22).
 
 This is exactly why `instance_id` exists. Rows are no longer one-per-bout, so summing durations
 over a two-label cluster **double counts** — and nothing about the arithmetic looks wrong when it
@@ -5476,14 +5509,18 @@ rather than re-derived by each of them. One zarr group per `(recording, subject)
 
 ```
 frames/<recording_id>__<subject>.zarr
-  t_ns          int64   (N,)   the frame time axis
-  observed      bool    (N,)   was this row analyzed — coverage, per frame
-  <source_label> int32  (N,)   instance_id, 0 = not active
+  t_ns           int64  (N,)   the frame time axis
+  observed       bool   (N,)   was this frame inside an analyzed span — coverage, per frame
+  instance_id    str    (B,)   the unit's bouts' instance_ids; ordinal i refers to instance_id[i - 1]
+  <source_label> int32  (N,)   0 = not active, else the bout's 1-based ordinal
 ```
+
+(`storage/frame_view.py`.) The `instance_id` strings are content hashes, so they are stored once
+per bout in their own array and each label array holds a small ordinal into it.
 
 - **Keyed by `source_label`, never by the user's name.** Renaming a cluster then rewrites nothing;
   the naming map applies at read time, and a cluster carrying two names is one array read twice with
-  a shared `instance_id`, so the double count is prevented by construction rather than by care.
+  one ordinal, so the double count is prevented by construction rather than by care.
 - **Each view records what it was built from**: group attribute `built_from`, a digest of the
   unit's bouts (`instance_id`, `source_label`, span), its coverage row and the producer's gap. A
   view is current exactly when its digest matches what `instances.csv` and `coverage.csv` now say
@@ -5500,8 +5537,8 @@ frames/<recording_id>__<subject>.zarr
   mid-edit leaves a refusal, never a silent stale view. The compute's first write and a rebuild
   write every view immediately, so an edit commits quickly and the views are paid once, by the
   first reader.
-- **`instance_id` rather than a boolean**, at identical cost: two abutting instances stay two, and
-  an audit decision has something to attach to.
+- **A bout ordinal rather than a boolean**, at identical cost: two abutting instances stay two, and
+  through the `instance_id` array an audit decision has something to attach to.
 - **Intervals stay authoritative.** If the two ever disagree, regenerate — the same rule §19 already
   gives for the artifact as a whole. This is a materialized view, not a second truth.
 - **Self-contained.** `t_ns` is stored rather than referenced from the recording's timestamp map,
@@ -5513,11 +5550,11 @@ frames/<recording_id>__<subject>.zarr
 | | 2.5 h | 100 h |
 | --- | --- | --- |
 | rows per recording-subject | 540 k | 21.6 M |
-| one `instance_id` array (int32) | 2.2 MB | 86 MB |
+| one label array (int32) | 2.2 MB | 86 MB |
 | `t_ns` axis (int64) | 4.3 MB | 173 MB |
 
-Clustering labels are usually **mutually exclusive** — one cluster per frame — so a discovery run
-stores *one* array, not one per cluster; a Query run stores a handful. Against interval storage of
+The view holds one label array per `source_label`: a discovery run stores one per label (plus
+`unlabelled`, §22), not one per cluster, and a Query run one per behavior. Against interval storage of
 roughly 180 KB per behavior over 100 hours this is about three orders of magnitude more for the
 same information, which is the honest cost of not making every consumer write its own expansion.
 
@@ -5604,14 +5641,21 @@ schema_version: 1
 producer: {module_id: query, run_id: an_07}
 origin: predicted            # predicted | ground_truth
 label_space: pooled          # pooled | per_recording
-vocabulary: [rearing, grooming]
-names: {q01: [rearing]}      # source_label -> one or more labels; partial by design
-score: {meaning: "confidence the behavior is present", direction: higher_is_better}
 overlap: allowed             # allowed | exclusive
+vocabulary: [rearing]
+names: {q01: [rearing]}      # source_label -> one or more labels; partial by design
 behavior_types: {rearing: state}
-audited: false               # whether an audit.csv accompanies this artifact
+score: {direction: higher_is_better, meaning: "confidence that the stretch is …"}
+method: {method_id: soft_knn, params: {...}, cutoffs: {q01: 0.42}, min_match_s: 0.0}
 provenance: {...}            # the §18.5 capture block — upstream DAG, weights, code SHA, env
+audited: false               # derived: whether an audit.csv sits beside the artifact
 ```
+
+That is Query's (`pipeline/query.py`), in the order it is written; `audited` is filled in by the
+writer, never taken from the producer. A temporal clustering run's (`pipeline/temporal_clustering.py`)
+adds `label_paths` — parallel to `names`, one path per label — writes no `score` (a cluster
+assignment has no confidence), declares `overlap: exclusive`, and its `method` carries
+`method_id`, `params`, `granularity` and the method's own fit-summary counts.
 
 **`score.direction` is not optional.** A producer's native score may be a confidence (Query's,
 higher is better) or a **distance** (query eval's `Match.score`, ascending best-first), and §16's
@@ -5663,8 +5707,9 @@ Two properties follow, and both are worth having deliberately:
   output.
 - **A partial run has no behavior output.** An interrupted run cannot honestly state coverage over
   recordings it did not finish, and the coverage table is the thing that separates a real zero from
-  a missing one. So the artifact appears at `complete`, never before — `partial` means the native
-  outputs are resumable, not that the artifact is half-true.
+  a missing one. So the artifact appears at `complete` (or `open`, for an authored run, §21), never
+  before — `partial` means the compute was interrupted, not that the artifact is half-true. A
+  stopped or failed analysis run is re-run as a new run; nothing resumes one mid-way.
 
 **It is also cheap to regenerate**, because it is a projection of native output plus the authored
 state (the cutoff, the naming map). That is what lets an authored run rewrite it when a user names
@@ -5683,7 +5728,9 @@ the full upstream DAG per artifact (embedding → tracking → detection → vid
 `weights_source`, a content hash of any ground-truth labels, video fingerprints, the code git SHA,
 and the environment; `drift()` names what changed since (§18.5). A behavior
 output carries the same provenance block, and any surface that renders its numbers **warns on
-drift** the way a comparison export does.
+drift** the way a comparison export does. **Partly built:** Query captures the block at the end of
+its search and copies it into the artifact; temporal clustering writes an empty one; and no
+surface checks a behavior output for drift yet — `drift()` is reached only through comparisons.
 
 Three levels, with the same distinct guarantees §18.5 draws:
 
@@ -5861,23 +5908,23 @@ in this recording. `metadata.csv` is recording-level today (§11); because the m
 carries `subject` as a column, that future join goes from keyed on `recording` to keyed on
 `(recording, subject)` with no downstream schema change. Designed to, not built.
 
-### The two layers above it (settled shape, not yet specified)
+### The two layers above it (§23, §24 — both built)
 
-- **Measures** — pure functions over the artifact producing a tidy table, one row per
+- **Measures** (§23) — pure functions over the artifact producing a tidy table, one row per
   `(recording, subject, label, measure)` with its denominator: instance count, total time, time
   fraction, rate, bout-duration mean/median/sd, latency to first, inter-bout interval, and
   label→label transition counts. A registry, so a new measure is additive.
-- **Comparison** — `filter recordings` → `group by keys` → aggregate measures → tables, figures,
-  raw export. **The grouping key is uniform**: any column or columns of `metadata.csv`, plus
-  `subject`, plus a **time bin**. That last one is what makes "rearing rate over the course of a
-  session" the same operation as "animal 1 vs animal 2" and "drug A vs drug B within one animal" —
-  a within-session trend is a grouping axis, not a module. Scope is **descriptive**: tables,
-  effect sizes, figures, and a tidy raw export for inferential work elsewhere. No tests, no
-  corrections, no models.
-- The export tree reuses §18.3's shape and the module-agnostic `report/` package wholesale —
-  `stats.csv` as the tidy source of truth (one row per observation with its factors joined on,
-  which is what a stats package wants), `tables/`, `figures/`, `summary.md`, `manifest.json`.
-  This is `report/`'s third consumer, not new infrastructure.
+- **Comparison** (§24) — a recording selection → group by keys → aggregate measures → tables,
+  figures, raw export. **The grouping key is uniform**: any `metadata.csv` column, plus `subject`,
+  plus `window_id` (a time window, §23). That last one is what makes "rearing rate over the course
+  of a session" the same operation as "animal 1 vs animal 2" and "drug A vs drug B within one
+  animal" — a within-session trend is a grouping axis, not a module. Scope is **descriptive**: tables, effect sizes, figures,
+  and a tidy raw export for inferential work elsewhere. The one inference it makes is the floor a
+  ranking ships with — a permutation p, with a family-wise p and a Benjamini–Hochberg q beside it
+  (§24) — and it fits no models.
+- The export tree is §18.3's, written by the module-agnostic `report/` package — `stats.csv` as
+  the tidy source of truth (one row per observation with its factors joined on, which is what a
+  stats package wants), `tables/`, `figures/`, `summary.md`, `manifest.json`.
 
 **Naming.** "Comparison" means this — the scientific comparison across recording metadata.
 
@@ -5926,8 +5973,9 @@ only labels that ever exist in a Query run are the example clips the user marked
 
 **Search** is computed, expensive, and immutable — a pure function of (exemplars, method, params,
 embeddings). It fans out over `(behavior × recording × subject)` under the durable coordinator
-(§15) with resume, exactly like a processing run, because a cohort search is long enough that it
-must survive the app closing.
+(§15), because a cohort search is long enough that it must survive the app closing. A stopped or
+failed search is re-run as a new run: the runner skips a shard already on disk, but nothing
+re-enters a stopped run, so a `partial` search does not resume.
 
 **Calibration** is authored, cheap, and instant — the cutoff, the behavior names, the audit
 labels. It triggers no compute. Every change reprojects the §19 artifact from stored search
@@ -5935,8 +5983,8 @@ results.
 
 **No cutoff exists during search.** The search config has no threshold field at all, so there is no
 way to spend hours searching and then discover a change of mind costs another search. Adding a
-behavior later is an incremental job into the same run directory — a fresh executor job, same
-run dir — not a new run.
+behavior later, as an incremental job into the same run directory, is **not built**: there is no
+`add_behavior` on any surface, and a behavior not searched at launch needs a new run.
 
 The record stays open until the user finalizes it, carrying the non-terminal status §21 defines
 for authored runs. Each search job still reaches its own terminal executor status; the two status
@@ -5982,8 +6030,8 @@ first and relaunching (Tenet 10 — validate everything before writing anything)
 
 **A failing behavior does not take the others down.** Shards are per `(behavior, recording,
 subject)`, so a behavior whose search fails leaves the rest complete and reviewable; the record
-names which behaviors finished. The alternative — one failure voiding a cohort-scale search — is
-the outcome resume exists to prevent.
+names which behaviors finished (`behaviors_searched`, `behaviors_failed`). The alternative — one
+failure voiding a cohort-scale search — is the outcome per-behavior shards exist to prevent.
 
 ### `QueryMethod` — the protocol
 
@@ -6010,7 +6058,8 @@ class QueryMethod(ABC):
 
     def prepare(self, exemplars, params, *, negatives=None, sample=None) -> State: ...
     def search(self, state, trajectory, runs, params, *,
-               row_offset=0, progress_cb=None) -> SearchResult: ...
+               row_offset=0, progress_cb=None, min_rows=0) -> SearchResult: ...
+                                         # min_rows: the run's min_match_s in this unit's rows
     def instances_at(self, result, cutoff, params) -> list[Instance]: ...
     def merge(self, chunk_results, state, params) -> SearchResult: ...
     def chunk_overlap_rows(self, state, params) -> int | None: ...  # intra-unit split
@@ -6024,8 +6073,9 @@ serialization. The module stores it, shards it, and hands it back.
 
 **`instances_at` is where a cutoff becomes instances, and therefore where extent is decided.** This
 is the pivotal division. A windowed matcher returns windows of roughly the exemplar's length; a
-per-frame method thresholds its score and run-length-encodes, so its extents follow the behavior.
-Both are correct definitions of "an instance" for their method, and neither is the module's
+per-frame method could threshold its score and run-length-encode, or — as `soft_knn` does — form
+its extents from the score's peaks before any cutoff and let `instances_at` filter them; either
+way its extents follow the behavior. Both are correct definitions of "an instance" for their method, and neither is the module's
 business. **A method documents how it defines extent** (`analysis/query_methods_docs.py` is the
 generated per-method doc registry), because that definition is what a duration measure will report.
 There is no post-hoc boundary-refinement step and no module-level notion of a "true" extent.
@@ -6054,9 +6104,8 @@ serves it.
 marked** — the same marking surface as the exemplars, in a negative role — plus an optional
 **sampled** set of rows. Marked negatives are the valuable half: a human pointing at the thing that
 resembles the behavior and is not it ("that rear-like posture is a stretch") carries far more
-information than a random frame, and the research backlog asks for exactly this, noting that the
-annotation loop currently uses a rejected clip only to *hide* it rather than to push down what
-resembles it.
+information than a random frame. (The removed annotation loop used a rejected clip only to *hide*
+it rather than to push down what resembles it.)
 
 **A method declares `NegativeSupport`** — `unusable` / `optional` / `required` — with its own
 bounds, the negative twin of `ExemplarBounds`. When a method cannot use negatives the control is
@@ -6069,6 +6118,10 @@ The sampled half is what the rest of this section governs:
 - The method declares a `SamplingRequest`: **size**, **scope** (`subject` | `recording` | `cohort`),
   and a named **strategy** from a small registry the module implements (uniform random over
   observed rows, temporally stratified, …). `sampling = None` means the method needs none.
+  **Built: `uniform` only** (`pipeline/query.SAMPLE_STRATEGIES`), drawn once over every searched
+  subject — the `cohort` scope `soft_knn` declares. Other strategies and the `subject` /
+  `recording` scopes are design, not built: the scope is recorded with the draw but not branched
+  on.
 - **The module draws it, never the method** — so every draw is recorded identically (strategy,
   scope, size, seed, and the rows drawn), and a run reproduces. Tenet 9's resolved-value rule: the
   record carries the sample that was used, not the request that asked for one.
@@ -6113,9 +6166,11 @@ never looks inside a result.
 
 Two rules fall out:
 
-- **The split plan is computed once, at `build_job`, and recorded.** Recomputing it at resume time
-  after the worker count changed would misalign the shards, and a "completed" shard would no longer
-  mean what it did.
+- **The split plan must not change between two passes over the same run**, or a "completed" shard
+  would no longer mean what it did. Today's rule takes no worker count: the plan is a pure function
+  of the trajectory's row count and the method's declared overlap, so the runner computes it per
+  unit (`QueryModule._search_unit`) and gets the identical plan every time. A future rule that
+  depends on the environment (a worker count) has to move to `build_job` and be recorded.
 - **Chunking bounds memory as well as wall clock.** A worker holds one subject's trajectory, and a
   long recording at full frame cadence and 1024 dimensions runs to gigabytes. The same declaration
   that enables intra-unit parallelism lets a worker stream a long run in pieces — so an
@@ -6128,16 +6183,20 @@ Two rules fall out:
 analysis/an_NN/
   analysis.yaml       lifecycle status (open until finalized)
   query.yaml          authored state: behaviors, exemplars, method + params, cutoffs, names
-  sample/             the drawn background, when scope is cohort (+ its draw record)
+  history.jsonl       append-only operation history (§21)
+  background.npz      the drawn background sample + its draw record, when the method asks for one
   search/<behavior>/<recording>__<subject>[__chunk_KK].<ext>    method-serialized, opaque
   audit.csv           optional human decisions
+  audit.yaml          each behavior's fixed score bins, from its first audit draw
   instances.csv  coverage.csv  behavior_output.yaml            the §19 artifact
+  instance_features.csv                                        §19, beside the artifact
+  frames/             the §19 frame view (+ frames/PENDING while an edit has left it stale)
+  snapshots/<snap_NN>/   frozen copies of the artifact (§21)
   job.json            transient executor envelope
 ```
 
-One shard per search unit, which the fan-out produces naturally and resume keys off: a completed
-shard is never recomputed. The shard extension is the method's, since the method owns
-serialization.
+One shard per search unit, which the fan-out produces naturally: the runner never recomputes a
+shard already on disk. The shard extension is the method's, since the method owns serialization.
 
 ### Calibration
 
@@ -6149,14 +6208,19 @@ Per behavior, one axis — confidence — and everything read against it:
 - **Its floor beside it.** A number with nothing to compare it against cannot be read (§16). For a
   method whose confidence is a per-frame classification, the floor is the behavior's prevalence at
   that cutoff; for a ranking, it is what a shuffled ranking returns. Which floor applies is the
-  method's to declare, and it is drawn on the same axes as the curve.
+  method's to declare, and it is drawn on the same axes as the curve. **Not built:**
+  `QueryRun.frequency_curve` returns `{cutoff, n_instances, capped}` per point and no floor, and
+  methods declare none.
 - **Per-recording and per-group confidence distributions**, always shown. A single cutoff that
   keeps most of one animal's behavior and little of another's biases the result *along the axis
   being compared*, and that is invisible in a pooled curve. Showing the distributions makes it
   legible; the module does not auto-correct it with per-group cutoffs, which would be tuning toward
-  the answer.
+  the answer. **Built per recording**, as instances kept at the cutoff (*Three layout decisions*,
+  below); a per-group view is not built.
 - **The audit overlay**, when one exists: precision against confidence, and the product of the two
-  — estimated true instances, which is the number that reaches a figure.
+  — estimated true instances, which is the number that reaches a figure. **Not built:** the Audit
+  tab lists precision per score bin (`audit_precision_by_score_bin`), but nothing draws it on the
+  curve and the product is not computed.
 - **The cutoff is the user's**, set by looking at what each setting returns. Nothing is suggested
   or pre-applied in v1 (see *Deferred*).
 - **The stored edge.** Where a method caps what it stores, the cap is recorded and drawn, because a
@@ -6169,8 +6233,8 @@ the cutoff — a method that re-forms extents can split one instance into two as
 — and the view renders what it is given rather than assuming a shape.
 
 **Zero matches is a first-class state.** A behavior that returns nothing says so, at every surface,
-as a result. An empty list that reads as a hang is the failure mode the backlog already records
-against the annotation module.
+as a result. An empty list that reads as a hang was a recorded failure of the removed annotation
+module.
 
 ### The audit
 
@@ -6197,8 +6261,8 @@ function of confidence*. The cutoff then reads off that curve. So:
   (a draw with no behavior chosen cut one set of bins over every behavior) are weighted by the
   recorded bins all the same, and the figure says how many of its clips that covers.
 - **The estimate is over the candidates the cutoff keeps**, not the artifact, so a cutoff below the
-  committed one has a population to weight. For both methods these are the same instances
-  (`instances_at` is a filter of one extraction).
+  committed one has a population to weight. For `soft_knn`, the one registered method, these are
+  the same instances (`instances_at` is a filter of one extraction).
 
 - **One audit serves every cutoff.** Move the cutoff afterwards as often as you like and precision
   follows, with no re-sampling and no further labeling.
@@ -6211,7 +6275,8 @@ the flow degenerates into set-cutoff → audit → re-set → re-audit. The cost
 labels spent on obviously-wrong low-confidence clips — cheap to judge, and they anchor the bottom
 of the curve.
 
-**The reference cutoff, for methods whose instances are cutoff-dependent.** A per-frame method has
+**The reference cutoff, for methods whose instances are cutoff-dependent.** (Design: `soft_knn` is
+not one — its candidates exist before any cutoff.) A per-frame method that thresholds has
 no instances until a threshold is chosen, so there is no cutoff-free candidate set to sample. The
 module enumerates at a **permissive reference cutoff**, records it with the sample, and reports
 precision at or above it — below the reference it is unknown, and says so.
@@ -6253,28 +6318,31 @@ with "is this grooming?" is error-prone in a way that corrupts the estimate quie
 any — but an unaudited count must not render like an audited one, because the difference between a
 behavior this works well on and one it does not is invisible without it.
 
-### The workspace — three tabs over one behavior
+### The workspace — four tabs over one behavior
 
-The authored half is one screen: a behavior selector, and beneath it three tabs that are three
-different jobs on the same instances. Switching behavior keeps the current tab.
+The authored half is one screen: a behavior selector, and beneath it four tabs
+(`gui/modules/analysis_query.QUERY_VIEWS`); the first three are three different jobs on the same
+instances. Switching behavior keeps the current tab.
 
 ```
- [ Rearing ]  [ Grooming ]  [ + Add behavior… ]
- ┌──────────┬───────────┬──────────┐
- │ CALIBRATE│   AUDIT   │  BROWSE  │
- └──────────┴───────────┴──────────┘
+ [ Rearing ]  [ Grooming ]
+ ┌──────────┬───────────┬──────────┬──────────┐
+ │ CALIBRATE│   AUDIT   │  BROWSE  │ MEASURES │
+ └──────────┴───────────┴──────────┴──────────┘
 ```
 
 - **Calibrate** — clips *at* the cutoff, to decide where to cut.
 - **Audit** — blind and randomized, to estimate precision.
-- **Browse** — the accepted instance set, filterable, read-only, to see what you actually got.
+- **Browse** — the accepted instance set, sortable, read-only, to see what you actually got.
+- **Measures** — §23's measures of the live artifact (`pages.MeasuresPanel`); live runs only, so it
+  is absent while a snapshot is shown (§21).
 
 **Nothing is a wizard.** Audit before or after choosing a cutoff, browse at any time, move the
 cutoff after auditing — which is the whole point of the audit being cutoff-independent (below).
 **Browse survives Finish**: completing sets the record status, it does not close the workspace, and
 reopening is only needed to *change* something.
 
-The three exist because they answer different questions and one surface cannot serve all of them.
+The first three exist because they answer different questions and one surface cannot serve all of them.
 Calibrate shows the *marginal* clips, because the decision is "is what sits at this level real?".
 Audit hides the score, because seeing it biases the judgment. Browse shows everything above the
 cutoff sorted however you like, because that is where a systematic error becomes visible — every
@@ -6308,6 +6376,10 @@ list.
 │  [ Review 50 clips… ]        [ Add behavior… ]        [ Finish ]          │
 └───────────────────────────────────────────────────────────────────────────┘
 ```
+
+Not built from this sketch: the precision line and the shuffled floor on the curve (*Calibration*
+above), and **Add behavior…** (*No cutoff exists during search*). The per-recording row and the clip
+strip were built differently, as the decisions below say.
 
 Three layout decisions, each with a reason:
 
@@ -6349,10 +6421,12 @@ where it was learned. A new surface that re-solves one of them will re-solve it 
 - **`gui/confidence.py`'s debounced threshold + live caption** — and its lesson, which is the
   calibration curve's lesson verbatim: a stored count cannot answer "how many at 0.7?", so the view
   must **recount**, and one that forgets shows a confident wrong total.
-- **The annotation workspace's per-recording span timeline** — custom-painted, scaled to full
-  duration, fit to width. That is Browse's timeline, already built.
-- **Arrow keys scrub the clip; they do not navigate the list.** Settled in the annotation review tab
-  and counterintuitive enough to be re-broken.
+- **Arrow keys scrub the clip; they do not navigate the list.** Settled in the removed annotation
+  review tab, kept by `_ClipPlayer` (focusing the player gives the scrubber the arrow keys), and
+  counterintuitive enough to be re-broken.
+
+Browse is a sortable instance table beside a `_ClipPlayer` (`_BrowseTab`). The per-recording span
+timeline it was to reuse belonged to the annotation workspace, which was removed; Browse has none.
 
 **The clip grid is the one genuinely new widget, and the decode economics shape it.** Playback here
 is a 120 ms timer stepping frame by frame — a slideshow, not decoded video — and every thumbnail is
@@ -6375,8 +6449,7 @@ Four kinds of wait, matching the four cases in the long-operation rule, none of 
 | moment | kind | requirement |
 | --- | --- | --- |
 | the search | executor-backed | `ProgressEvent` per unit, **inner fraction via `core/progress.py::split_units`**, `eta_s` from `remaining_seconds`, rendered through `fit_progress_fraction` and the CLI's `_stream_progress` |
-| opening the workspace | GUI interactive load | reading N shards is O(recordings) disk — `busy.run_busy`, never inline in a widget `__init__` |
-| building the frequency curve | one-shot, sized | `busy.run_progress`, then **cached** per behavior |
+| opening a behavior | GUI interactive load, sized | reading N shards is O(recordings) disk: `load_results` then `frequency_curve` in one `busy.run_progress` job, never inline in a widget `__init__`; the curve is then **cached** per behavior |
 | thumbnail decode, scrub, playback | interactive | off-thread, latest-wins, progressive; `busy_changed` on the player |
 
 Three specifics that are easy to get wrong and are not visible in a screenshot:
@@ -6393,8 +6466,11 @@ Three specifics that are easy to get wrong and are not visible in a screenshot:
   fan-out and is exactly the phase where the numeric fraction is pinned and a static label reads as
   a hang. That needs the phase-message test, not only the cadence test.
 
-The frequency-curve build and the shard load belong in `tests/gui/test_ui_thread_blocking.py`'s
-scan list from the start, so a later inline call fails CI rather than shipping a freeze.
+The shard load, `load_results(`, is in `tests/gui/test_ui_thread_blocking.py`'s scan list, so a
+later inline call fails CI rather than shipping a freeze. `frequency_curve(`, `candidates_at(` and
+`score_distribution(` are deliberately **not**: each is a slice over the candidates `load_results`
+already extracted, and the calibration view calls them on every drag *because* they are cheap.
+Guarding the load is what keeps them cheap.
 
 ### Exemplar guardrails
 
@@ -6418,12 +6494,12 @@ be able to mark a brief clip.
 
 **Where exemplars come from.** Always from the **search set** — a behavior demonstrated on a
 recording that is not being quantified cannot be checked against what the run returns, and the
-comparability of its embedding run would be one more thing to validate for no gain. Three ways to
-supply them, all landing in the same place: marked in the clip dialog, **imported from a CSV**, or
-**reused from a previous run**. The clip CSV is already both the result format and the query-spec
-format (§16 — "point the query at any prior clip CSV and take its rows as new examples"), so reuse
-and import are the same path and neither is new machinery. Non-examples are supplied the same three
-ways.
+comparability of its embedding run would be one more thing to validate for no gain. Built ways to
+supply them, all landing in the same place: marked in the clip dialog (`ClipExampleDialog`), typed
+on the CLI (`--example`), or **imported from a clip CSV** (`--from-csv`, §16 *The clip CSV* — for
+example a cluster montage's exported clip list). Reusing a previous Query run's exemplars directly
+is not built: a Query run writes no clip CSV. Non-examples are marked in the dialog or given with
+`--non-example`; `--from-csv` seeds examples only.
 
 **What a method requires is different, and is a refusal.** Every method declares `ExemplarBounds`
 — a minimum and maximum number of **clips**, and a minimum and maximum **total rows** across them
@@ -6454,24 +6530,28 @@ recording that *was* searched is a real zero and not a gap.
 
 ### Surfaces
 
-- **API** — `Experiment.run_analysis("query", config)` for the search; a `QueryRun` object for the
-  authored half (`set_cutoff`, `name_behavior`, `add_behavior`, `audit_sample`, `label_audit`,
-  `finalize`, `export`).
-- **CLI** — launch, status, attach, set-cutoff, export. The interactive calibration and clip review
-  are GUI-only, recorded in `docs/cli.md`'s omission ledger like every other deliberate gap.
+- **API** — `Experiment.run_analysis("query", config)` for the search; a `QueryRun` object
+  (`Experiment.query_run`) for the authored half (`set_cutoff`, `name_behavior`, `audit_sample`,
+  `label_audit`, `finalize` / `reopen`, `export`).
+- **CLI** — `analysis query` (launch), `analysis status` / `attach`, `analysis query-calibrate`
+  (cutoffs, names, the frequency curve, finalize / reopen), `analysis audit` (reads the audit's
+  precision), `export-query`. Marking clips and judging audit clips are GUI-only, recorded in
+  `docs/cli.md`'s omission ledger like every other deliberate gap.
 - **GUI** — one config form (exemplar and non-example marking through the existing
-  `ClipExampleDialog`, method in advanced settings), and the three-tab workspace above. Browse is
+  `ClipExampleDialog`, method in advanced settings), and the four-tab workspace above. Browse is
   reachable after Finish; only changing something requires a reopen.
 
 ### Reference implementation
 
 One method is registered: **`soft_knn`**, the per-frame method and the default
 (`configs/query.DEFAULT_METHOD` is the single source for the model, the CLI option and the GUI's
-opening selection). It pools every exemplar frame into one index, scores every row, and re-forms
-instances at a cutoff (threshold, gap-bridge, min-duration), so its extents follow the behavior; it
-draws a background sample; and its cost is flat in the number of exemplars. It is the default on
-cost; which kind of method retrieves better has not
-been measured (*What is measured* below).
+opening selection). It pools every exemplar frame into one index and scores every row, then forms
+instances **before any cutoff exists**: it smooths the score, takes its peaks highest first with
+non-maximum suppression, and grows each peak to `extent_fraction` of its own height
+(`query_methods/soft_knn.py`). So its extents follow the behavior, and `instances_at` is a filter
+over those candidates by peak score, not a re-formation — raising the cutoff only removes
+instances. It draws a background sample, and its cost is flat in the number of exemplars. It is
+the default on cost; which kind of method retrieves better has not been measured.
 
 The protocol is written so that a windowed path matcher fits it too: ranked candidate spans of
 roughly exemplar length ± a band, no background, a chunk overlap of `max_exemplar_rows +
@@ -6498,16 +6578,19 @@ matches once `L - band` clamps at 1 — filtering matches to the declared durati
   costs, or the guard fails on numerical noise while missing the failure it exists to catch.
   Otherwise splitting silently changes answers on exactly the long recordings it exists to serve,
   and the disagreement is data-dependent enough to read as noise.
-- **Cutoff equivalence** for methods whose candidates are cutoff-stable: `instances_at(result, c)`
-  equals a search run at `c`. Verified for the current extractor — the greedy suppression takes
-  candidates in ascending score order, so a stricter cutoff yields exactly a prefix — and it is the
-  property the whole calibration workflow rests on, so it is a test rather than an assumption.
+- **Cutoff monotonicity** for methods whose candidates are cutoff-stable: raising the cutoff only
+  ever removes instances. `soft_knn` forms its candidates before any cutoff exists, taking peaks
+  **highest score first** so a strong match is never suppressed by a weaker neighbour, and
+  `instances_at` filters them by peak — so a stricter cutoff keeps a subset of a looser one. It is
+  the property the whole calibration workflow rests on, so it is a test rather than an assumption
+  (`tests/query_methods/test_soft_knn.py`).
 - **Sample determinism**: the recorded draw reproduces the sample.
 - **Progress cadence** on a single-unit fixture — the inner pair must move, not just the unit count
   (§6) — and phase messages must advance through `loading → preparing → searching → writing`.
-- **Label leakage**: `tests/pipeline/test_label_leakage.py` already permutes labels and asserts
-  predictions are byte-identical, over every evaluated pipeline; Query inherits it the day it
-  registers.
+- **Label leakage**: `tests/pipeline/test_label_leakage.py` permutes labels and asserts
+  predictions are byte-identical — over `query_eval`'s `evaluate_query` only. Query is not driven by
+  it, because Query takes no ground truth at all: no parameter of `QueryMethod` carries a label
+  (*The protocol*), so its protection is structural rather than this test.
 - **A judgment is refused against a frame nobody saw.** The audit shows a clip and records a
   decision, so a cell whose frame did not decode must reject input and name the reason rather than
   accept a decision against a blank pane — the recorded class in `tests/gui/test_frame_source.py`,
@@ -6515,10 +6598,10 @@ matches once `L - band` clamps at 1 — filtering matches to the declared durati
 - **Dragging the cutoff reprojects nothing.** Assert that a drag reads the cached curve and that the
   artifact is rewritten only on commit, off-thread. A test that only checks the number on screen
   passes while the GUI freezes on every pixel.
-- **The workspace's slow seams are in the UI-thread scan.** The shard load and the frequency-curve
-  build are listed in `tests/gui/test_ui_thread_blocking.py`, so a later inline call fails CI rather
-  than shipping a freeze — with the negative case, per the guard-the-guard rule.
-- **Every navigable surface is constructed in a test.** The three tabs, the clip grid, and the audit
+- **The workspace's slow seam is in the UI-thread scan.** The shard load (`load_results(`) is listed
+  in `tests/gui/test_ui_thread_blocking.py`, so a later inline call fails CI rather than shipping a
+  freeze; the curve built from it is deliberately not (*Progress and loading*).
+- **Every navigable surface is constructed in a test.** The four tabs, the clip grid, and the audit
   review are each built against a fake completed run, because a renamed slot raises at construction
   and nowhere earlier.
 
@@ -6570,12 +6653,14 @@ every one meets the shell's "show results when complete" gate, so those decision
 times whether or not they are written down. Writing them down moves the decision from three places
 to one, which costs a paragraph and is not speculative.
 
-The **shared code** is a different matter and is deliberately *not* specified. `AuthoredRun`'s
-operation dispatch, an `Experiment.run_authored` launcher, and a `MutableRunWorkspace` GUI base all
-rest on exactly one implementation today. A base class designed from three specs rather than three
-implementations tends to fit none of them, and three modules then inherit the misfit. So the
-expected shapes are recorded at the end of this section as **extraction targets**, to be lifted
-once the second authored module exists and the common parts are visible rather than predicted.
+The **shared code** is a different matter and was deliberately *not* specified up front. A base
+class designed from three specs rather than three implementations tends to fit none of them, and
+three modules then inherit the misfit. So the expected shapes were recorded at the end of this
+section as **extraction targets**, to be lifted once the second authored module existed and the
+common parts were visible rather than predicted. That has happened for one of the three:
+`AuthoredRun` (`api/authored_run.py`) was extracted once Query and temporal clustering both
+existed. An `Experiment.run_authored` launcher and a `MutableRunWorkspace` GUI base were **not
+built**, and stay extraction targets (*Extraction targets*, below).
 
 What that leaves for a module being built now: follow the contract, and implement its own state
 handling. Two small utilities are the exception — see *Extraction targets*.
@@ -6595,14 +6680,15 @@ slow interaction, because a decision a user is expected to iterate on cannot cos
 ### Three kinds of operation
 
 - **State edit** — pure, instant, no executor. Rewrites the state file atomically (tmp +
-  `os.replace`; the concurrently-read-file rule). `set_cutoff`, `name_nodes`.
+  `core.atomic.replace`; the concurrently-read-file rule). `set_cutoff`, `name_nodes`.
 - **Log append** — one human decision, appended with `flush()` + `fsync()`. Deliberately *not* a
   state edit: the append-vs-rewrite difference is what makes human judgment durable, since a crash
-  loses at most the final row and a torn trailing line is tolerated on read. `label_audit`,
-  `label_match`.
+  loses at most the final row and a torn trailing line is tolerated on read. `label_audit`, and
+  the clip review's `clip_review.csv` (§22).
 - **Compute operation** — a fresh executor job into the **same** run directory, with
   `job_id = run_id`, so re-submitting overwrites only the transient `job.json` while the authored
-  state persists. `iterate`, `add_behavior`, a refit.
+  state persists. **None is built:** a refit mints a new run (*Snapshots*, below), and adding a
+  behavior to a Query run is not built (§20).
 
 These three are named because the **rules differ per kind** — atomic rewrite, crash-safe append,
 and same-dir job submission — not because a dispatcher is being specified. How a module routes them
@@ -6625,22 +6711,22 @@ analysis/<run_id>/
 
 **One writer per fact.** Status lives in `analysis.yaml` and nowhere else; authored configuration
 lives in the state yaml; human decisions live in the log; anything countable is **derived** and
-stored nowhere. `annotation_runs.py` already states this rule for one module — the framework makes
-it structural, because dual writers on a single fact is how these drift, and the drift is silent:
-both files stay well-formed and disagree.
+stored nowhere. The framework makes this structural, because dual writers on a single fact is how
+these drift, and the drift is silent: both files stay well-formed and disagree.
 
-**Two utilities are worth lifting**, because they are small, they already work, and getting
+**Two utilities were worth lifting**, because they are small, they already worked, and getting
 either subtly wrong is a data-loss bug rather than a tidiness one: `write_state_yaml` (atomic
 rewrite) and a crash-safe `AppendLog` (append + `flush()` + `fsync()`, tolerant of a torn trailing
-line on read). Both come from `annotation_runs.py`, which is an extraction from working code
-rather than a design from specs. A module that hand-rolls either is the bug.
+line on read). Both came from the removed annotation module's `annotation_runs.py` — an extraction
+from working code rather than a design from specs. A module that hand-rolls either is the bug.
 
-**`AppendLog` is lifted** — `storage/append_log.py`, extracted when §19's `audit.csv` became its
-second consumer, with `annotation_runs.py` ported onto it. It carries the header-drift migration
-too, which is not incidental: the header is written once at creation, so a log started under an
-older column set goes ragged on the next append and a positional read silently discards that
-decision and every one after it. Use it rather than re-deriving it. `write_state_yaml` is lifted
-too — `storage/state_yaml.py`, shared with §20's `query.yaml`; `annotation_runs.py` calls it.
+**Both are lifted.** `AppendLog` is `storage/append_log.py`, extracted when §19's `audit.csv` became
+its second consumer; `behavior_audit.py`, `clip_review.py` and `activity.py` use it. It carries the
+header-drift migration too, which is not incidental: the header is written once at creation, so a
+log started under an older column set goes ragged on the next append and a positional read
+silently discards that decision and every one after it. Use it rather than re-deriving it.
+`write_state_yaml` is `storage/state_yaml.py`, shared by §20's `query.yaml` and §22's
+`temporal_clustering.yaml`.
 
 ### Two status planes, orthogonal
 
@@ -6658,7 +6744,7 @@ envelope contradicts.** The runner writes `open` *before* projecting the artifac
 is supposed to have one — so a job that dies in the artifact phase leaves a record reading `open`
 over a `job.json` reading `failed`, and every surface reads the record. `core/dataclasses.py::
 reconciled_status` is the one rule, and every reconciler goes through it (`AnalysisRun.wait`,
-`AuthoredRun.wait`, `ClustererRun.wait`, `attach_job_run`, `Experiment._reconcile_job_run`):
+`AuthoredRun.wait`, `ExportRun.wait`, `attach_job_run`, `Experiment._reconcile_job_run`):
 adopt the envelope's terminal status where the runner never finalized the record, **and** where
 the envelope is `failed`/`cancelled` and the record claims anything else. `open` against a
 `complete` envelope is untouched — that is the runner's own statement, and the asymmetry is the
@@ -6676,9 +6762,9 @@ too, and the hardcoded status tuple in `gui/pages.py` reads the flag instead of 
   **raises**; it does not queue.
 
   **State edits are serialized rather than refused**, because the sentence above was quietly false
-  for them: every state edit runs off the UI thread through `gui/busy.py`, so dragging the
-  granularity slider twice, or naming while a granularity change is still in flight, runs two
-  `_edit` calls at once. Both halves then break silently — the state rewrite is read-modify-write,
+  for them: every state edit runs off the UI thread through `gui/busy.py`, so two quick edits —
+  labelling twice, or naming while another label change is still in flight (the granularity slider,
+  when there was one, §22) — run two `_edit` calls at once. Both halves then break silently — the state rewrite is read-modify-write,
   so the second writer overwrites the first; and `_project` rewrites the frame views, where two
   writers race on one zarr store (observed twice in five full-suite runs, as `an array exists ...
   at path 't_ns'` and as a vanished `zarr.<uuid>.partial`, both from one call `rmtree`-ing the
@@ -6898,7 +6984,7 @@ run's landing page, and a row of view tabs above it switches between them — th
 them in a tab widget whose bar is hidden (`gui/result_views.MultiViewWorkspace`).
 
 ```
- MutableRunWorkspace
+ a MultiViewWorkspace (_QueryWorkspace, ClusterWorkspace)
  ┌───────────────────────────────────────────────────────────────────┐
  │  [ entity selector — behaviors, or nothing ]                      │
  │  ┌────────────┬───────┬────────┬─────────────┐                    │
@@ -6911,8 +6997,8 @@ them in a tab widget whose bar is hidden (`gui/result_views.MultiViewWorkspace`)
  └───────────────────────────────────────────────────────────────────┘
 
    Query (§20)          MODULE = CALIBRATE   confidence curve, cutoff, marginal clips
-   Pose clustering      MODULE = INTERPRET   node tree, filters, montage, labels
-   Temporal clustering  MODULE = INTERPRET   the same
+   Temporal clustering  MODULE = INTERPRET   node tree, filters, montage, labels
+   Pose clustering      MODULE = INTERPRET   the same — design only; the module is not built (§22)
 ```
 
 - **AUDIT** — the §19 reliability audit: blind, randomized, budget-picked, precision with its
@@ -6920,8 +7006,8 @@ them in a tab widget whose bar is hidden (`gui/result_views.MultiViewWorkspace`)
   label* and does not care what produced the label; the layout differs — a query's is scoped by
   its behavior selector (`gui/audit_tab.py`), a clustering run's is one table of labels and
   clusters (`gui/label_check.py`).
-- **BROWSE** — the accepted instance set: filter by recording or group, sort, per-recording
-  timeline, click to play. Read-only. On a clustering run it is the **labelled** set (§22,
+- **BROWSE** — the accepted instance set: sort, click to play (a per-recording span timeline was
+  specified and is not built). Read-only. On a clustering run it is the **labelled** set (§22,
   *AUDIT and BROWSE on a clustering run*).
 - **MEASURES** — §23's whole-recording measures of this artifact, a tab of its own on live runs
   (`pages.MeasuresPanel`); the run page shows the panel directly only for a producer whose result
@@ -6936,7 +7022,10 @@ them in a tab widget whose bar is hidden (`gui/result_views.MultiViewWorkspace`)
 **Three of the four tabs are generic, and not by resemblance.** They read only the artifact and
 `metadata.csv`, which is the same fact that makes measures (§23) and comparison (§24) generic. The
 GUI therefore inherits the property the artifact exists to create: **a module added later gets
-Audit, Browse and Measures by emitting the artifact**, not by building three tabs.
+Audit, Browse and Measures by emitting the artifact**, not by building three tabs. *As built,
+only Measures is one shared widget (`pages.MeasuresPanel`)*: each module still has its own Audit and
+Browse widgets (a query's `AuditTab` / `_BrowseTab`; a clustering run's `label_check` and BROWSE),
+which share the §19 statistics rather than a widget.
 
 The module tab is where everything genuinely specific lives — a confidence curve, a node tree and
 its cards. That is two things against three whole tabs.
@@ -6948,7 +7037,7 @@ its cards. That is two things against three whole tabs.
 | clip grid — progressive fill, latest-wins per cell, decode-failure reason named | every module tab, and Browse |
 | `_ClipPlayer` (exists) | all of them |
 | blind review — randomized, score hidden until after, refuses a decision on an undecoded frame | Audit |
-| instance table + per-recording span timeline (exists, from the annotation workspace) | Browse |
+| instance table (a per-recording span timeline was the removed annotation workspace's; not built here) | Browse |
 | per-recording strip — one small bar per recording | Query's confidence-by-recording, clustering's presence-by-recording |
 | debounced threshold + live **recount** (`gui/confidence.py`, exists) | any threshold; a stored count cannot answer "how many at 0.7?" |
 
@@ -6959,21 +7048,26 @@ to the selection when there is one.
 ### Extraction targets
 
 Recorded as expected shapes, **to be lifted once a second authored module exists** and the common
-parts are visible rather than predicted. Building these now would mean designing a base class from
-specs; the note is here so the extraction is a planned step rather than a rediscovery.
+parts are visible rather than predicted, so the extraction is a planned step rather than a
+rediscovery. The second module exists (Query and temporal clustering).
 
-**`AuthoredRun(AnalysisRun)` has since been lifted** — `api/authored_run.py`: status read from
-`analysis.yaml`, an operation dispatch over the three kinds, `finalize()` / `reopen()` /
-`history()`. The two below are still expected shapes.
+**`AuthoredRun(AnalysisRun)` has been lifted** — `api/authored_run.py`: status read from
+`analysis.yaml`, the state-edit path (`_edit`: one lock per run directory, rewrite, reproject),
+`finalize()` / `reopen()`, `pin()` and the snapshots, and the audit operations. There is no
+operation dispatcher; a subclass supplies `_read_state`, `_write_state`, `_log` (its history) and
+`_project`. The two below are **not built** and are still expected shapes.
 
 - **`Experiment.run_authored(module_id, config)`** — the launcher, with the initial compute job
-  optional, since a module may open a run with nothing computed yet.
+  optional, since a module may open a run with nothing computed yet. Authored runs launch through
+  `Experiment.run_analysis` today.
 - **`MutableRunWorkspace`** — the GUI base for a stateful result widget that triggers compute: the
   freeze, the progress screen, re-enabling on terminal status. Its **tab split is specified above**
   rather than deferred, because the three generic tabs are generic by a property of the data (they
   read only the artifact) rather than by two surfaces happening to look alike. What stays an
-  extraction target is the base class itself — the freeze and progress plumbing, which is subtle and
-  still has one implementation behind it.
+  extraction target is the base class itself — the freeze and progress plumbing. Today
+  `_QueryWorkspace` and `ClusterWorkspace` share only `MultiViewWorkspace` (the hidden-bar view
+  switching, §16), and no authored run has a compute operation to freeze for (*Three kinds of
+  operation*).
 
 The trigger is the second implementation, not a date. If two authored modules are built in
 parallel by different people, extract earlier — divergence happens fastest then, and a shared base
@@ -6985,6 +7079,7 @@ is worth more than its risk at that point.
   status key and no derived counters. This cannot be caught behaviorally — both files stay
   well-formed while disagreeing — so it is a scan over what the writers emit.
 - **Sequential compute**: submitting an operation while one is running raises rather than queues.
+  (Nothing to drive yet: no compute operation is built, *Three kinds of operation*.)
 - **`open` yields an artifact, `partial` does not.** Assert the files, not that the call returned.
 - **Finalize/reopen round-trips**, and the artifact after a reopen-and-refinalize matches what the
   state says.
@@ -6999,11 +7094,15 @@ assumes a shared base class, so they stay valid whether or not the extraction ha
 
 ### Deliberately not included
 
-- **Undo, and a reducer over the log.** Deriving current state by replaying `history.jsonl` would
-  give undo for free and would remove the non-authoritative exception above. It is a larger design
-  and is deferred; the log's shape is chosen so it stays possible.
-- **Concurrent operations** and **multi-user editing**. Out of scope, and the sequential rule is
-  what keeps them out rather than a lock that would half-support them.
+- **A reducer over the log.** Deriving current state by replaying `history.jsonl` would give undo
+  for free and would remove the non-authoritative exception above. It is a larger design and is
+  deferred; the log's shape is chosen so it stays possible. Label undo exists without it:
+  INTERPRET's ⌘Z / ⇧⌘Z (`gui/label_history.py`) records each label write's before and after
+  (`AuthoredRun.label_maps`) and undoes by writing the before side back (`restore_labels`). That
+  history is the page's, in memory, and is not kept with the run.
+- **Concurrent compute operations** and **multi-user editing**. Out of scope, and the sequential
+  rule is what keeps them out. (Concurrent *state edits* from one user are serialized by a lock,
+  *Compute inside an open run*.)
 
 
 ## 22. Behavior Discovery (pose and temporal clustering)
@@ -7068,21 +7167,32 @@ the same too: **the method turns a partition of its own tree into instances.**
 class PoseClusterMethod(ABC):            # and TemporalClusterMethod: one per module, not shared
     method_id: str
     config_model: type[BaseModel]
+    granularity: GranularitySpec          # still declared; the screen no longer reads it (below)
     has_noise: bool                       # does this rule leave members unassigned
-    supports_apply: bool                  # reserved; see below
-    instances_are_runs: bool              # may adjacent instances with one label be fused
+    supports_apply: bool = False          # reserved; see below
+    shard_suffix: str                     # the extension `serialize` writes; no default
+    instances_are_runs: bool = True       # may adjacent instances with one label be fused
+    requires: tuple[str, ...] = ()        # optional-extra modules, checked at validate
 
-    def fit(self, ..., progress_cb) -> FitResult: ...
+    def fit(self, trajectories, params, progress_cb=None) -> FitResult: ...
     def hierarchy_of(self, fit) -> ClusterTree: ...
     def member_leaves(self, fit) -> np.ndarray: ...          # each member's leaf
     def member_places(self, fit) -> MemberPlaces: ...        # where it sits, its measured time
-    def instances_for(self, fit, leaf_groups, params) -> list[Instance]: ...
     def rank_members(self, fit, leaves) -> list[tuple[Instance, float]]: ...
+    def clip_scoring(self, fit, params, trajectories=None) -> ClipScoring: ...  # node cache
     def node_separations(self, fit) -> np.ndarray: ...       # one per node
-    def resolve(self, fit, instance) -> dict: ...      # temporal
+    def instances_for(self, fit, leaf_groups, params) -> list[Instance]: ...
+                                         # temporal adds member_groups=None
+    def instances_at(self, fit, granularity, params) -> list[Instance]: ...  # old runs
+    def resolve(self, fit, instance) -> dict: ...            # temporal only
+    def fit_summary(self, fit) -> dict: ...                  # temporal only
+    def subsample_note(self, fit) -> str | None: ...         # temporal only
     def assign(self, fit, trajectory, params) -> list[Instance]: ...   # only if supports_apply
-    def serialize / load(self, fit, path): ...
+    def serialize(self, fit, path) / load(self, path): ...
 ```
+
+(`core/protocols.py`. `TEMPORAL_CLUSTER_METHODS` holds `codebook_viterbi` and `dtw_finch`;
+`POSE_CLUSTER_METHODS` is empty — the pose protocol is design, not built.)
 
 - **`FitResult` is opaque to the module**, as `SearchResult` is in Query. A codebook, a distance
   matrix or a neighbour graph: the method owns its format and its serialization.
@@ -7128,9 +7238,8 @@ class PoseClusterMethod(ABC):            # and TemporalClusterMethod: one per mo
 - **`assign` is reserved.** Applying a fit to new recordings is out of the MVP (below), but declaring
   the capability now costs nothing, whereas retrofitting a base contract later is not free.
 
-**Retired with the granularity:** `granularity: GranularitySpec`, `member_order`, `representatives`
-and `projection`. Each took a granularity. `member_order`, `representatives` and `projection` are
-**removed** from both protocols and every method, with the `Projection` dataclass and the fit-time
+**Retired with the granularity:** `member_order`, `representatives` and `projection`. Each took a
+granularity, and each is **removed** from both protocols and every method, with the `Projection` dataclass and the fit-time
 UMAP/PCA layout that fed the scatter (the 3-D view had already been dropped from the screen, because
 the tree says "what merged with what", which a scatter never did). Their two settings,
 `projection_points` and `projection_layout`, are gone from every method's config;
@@ -7138,7 +7247,10 @@ the tree says "what merged with what", which a scatter never did). Their two set
 validates, and each method's `load` ignores the `projection_points` / `projection_layout` / `coords`
 an older shard carries. **`instances_at` is kept**: old runs were written through it and still read
 through it, as `instances_for(fit, tree.leaf_nodes_at(g), params)` relabelled to cluster ids, and the
-*Old and new agree* guard below needs it to hold the two together.
+*Old and new agree* guard below needs it to hold the two together. **`granularity: GranularitySpec`
+is kept too**, still a required attribute of both protocols and declared by both methods (each also
+has `granularity_of(fit)`); nothing on the screen reads it, and the manifest's `method` block still
+records the state's `granularity` for a run written with one.
 
 ### Labels, and the three label states
 
@@ -7155,8 +7267,8 @@ whole quiet branch and "resting" on one branch inside it are both kept. A restin
 `node_names` map is derived. Several nodes carrying one label are **one label**, not matching
 strings: the output groups by label (`authored_run.label_groups`, one `instances_for` group per
 label), so `source_label` is the label id, and two clusters of one label alternating make the same
-bouts as their common parent — for the pose methods, whose instances are runs; `dtw_finch`'s bouts
-are segmenter cuts and stay as cut. A rename changes no id, so it moves no instance and no audit
+bouts as their common parent — for a method whose instances are runs (`instances_are_runs`:
+`codebook_viterbi`); `dtw_finch`'s bouts are segmenter cuts and stay as cut. A rename changes no id, so it moves no instance and no audit
 judgment. Three rules, held by `check_labels` on every edit before anything is written, refusing
 rather than repairing:
 
