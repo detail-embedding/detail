@@ -96,6 +96,66 @@ A fix is expected to cover the kind of bug, not only the one instance you hit. T
 [`fix-the-class`](.claude/skills/fix-the-class/SKILL.md) procedure describes how, and
 [`docs/recorded_classes.md`](docs/recorded_classes.md) lists the kinds already guarded against.
 
+## Public and private work
+
+All work happens on feature branches and merges into `main` of the public repository,
+`github.com/detail-embedding/detail`, when it is ready.
+
+A branch pushed to the public repository is visible to everyone. A feature that must stay
+secret until it is ready keeps its branch in the private repository instead. That is the
+private repository's only purpose.
+
+### Step 1: which repository is this?
+
+Run `git remote get-url origin`.
+
+| `origin` is | you are in |
+| --- | --- |
+| `github.com/detail-embedding/detail` | the **public repository** |
+| anything else, and `git remote get-url upstream` is `github.com/detail-embedding/detail` | the **private repository** |
+| neither | unknown: stop and ask |
+
+### Rules in both repositories
+
+- A feature branch holds one piece of work: one feature, one fix, or one docs change.
+- Start it from `main`. Merge `main` into it regularly.
+- Unfinished work stays on its feature branch until it is ready. Do not merge it early and hide
+  it; `surfaces.HIDDEN` is not for work in progress.
+- Never commit credentials or unpublished data.
+
+### Rules in the public repository
+
+- Use it for everything that can be seen while in progress, including every bug fix.
+- A feature branch merges into `main` through a pull request.
+- Never name work from the private repository in a commit message, pull request or issue.
+
+### Rules in the private repository
+
+- Use it only for a feature that must stay secret until it is ready.
+- `main` here is an exact copy of the public repository's `main`. Never commit to, merge into,
+  or push to it. Update it only by fast-forwarding from `upstream/main`.
+- A feature branch here never merges into `main` here. When it is ready, it moves to the public
+  repository (below).
+- A feature that needs another secret feature starts from that feature's branch. They then move
+  to the public repository in that order.
+- `integration` is a scratch branch for testing several secret features together: `main` plus
+  those feature branches. Rebuild it from `main` when a feature changes. Never commit to it
+  directly, start a branch from it, or push it to the public repository.
+- Never push to the public repository from here, except as below.
+
+### Moving a finished feature from the private repository to the public repository
+
+Only a maintainer does this. An agent does it only on an explicit instruction.
+
+1. Merge `main` into the feature branch. CI must be green.
+2. Give the branch a neutral name. The name becomes public.
+3. Read the full diff against `upstream/main`. Anything pushed to the public repository is
+   permanent.
+4. Push that one branch to the public repository and open a pull request there.
+5. A second maintainer approves the pull request.
+6. After it merges: fast-forward `main` in the private repository, delete the feature branch
+   there, and rebuild `integration`.
+
 ## Report a bug
 
 Use the bug report form under **Issues**. [`docs/bug_reports.md`](docs/bug_reports.md) explains
