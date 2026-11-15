@@ -272,8 +272,16 @@ my_experiment/
 ├── recordings/
 ├── analysis/
 ├── models/
-└── datasets/
+├── datasets/
+├── runs/                 # experiment-level processing run records (§15): run_NNN/
+├── comparisons/          # saved comparisons (§24): cmp_NN/, created by the first one
+├── distill/              # keypoint distill runs (§12): distill_NNN/, created by the first one
+└── exports/              # export run records, not the exported files (§18), created by the first one
 ```
+
+`Experiment.create` makes `recordings/`, `analysis/`, `models/`, `datasets/` and `runs/`
+(`storage/experiment.py::SUBDIRS`); every other folder above is created by the first thing that
+writes into it.
 
 The experiment directory is fully portable. It contains no absolute paths, no machine-specific configuration, and no credentials.
 
@@ -281,31 +289,14 @@ The experiment directory is fully portable. It contains no absolute paths, no ma
 
 Written at experiment creation with identity only.
 
-*A top-level `defaults:` block was specified here and removed.* It was built, tested, and written by nothing: `set_defaults` had no caller outside its own tests, and the GUI rendered a "Per-stage defaults" table that was always empty. Pre-filling a form is now done by **Start from** (`gui/start_from.py`), which offers the model's defaults, the named baselines shipped in `configs/baselines/`, and the settings of any previous run of that module. The difference is that those are all *concrete* — a file or a run somebody made — where `defaults:` was an abstract preference a user had to author and maintain with no surface for doing so.
+*A top-level `defaults:` block was specified here and removed.* It was built, tested, and written by nothing: `set_defaults` had no caller outside its own tests, and the GUI rendered a "Per-stage defaults" table that was always empty. Pre-filling a form is now done by **Start from** (`gui/start_from.py`), which offers the model's defaults, named baselines from `configs/baselines/` (the mechanism is built; none ship yet, see that folder's README), and the settings of any previous run of that module. The difference is that those are all *concrete* — a file or a run somebody made — where `defaults:` was an abstract preference a user had to author and maintain with no surface for doing so.
+
+What `Experiment.create` writes (`storage/experiment.py::create_experiment`); `Experiment.set_metadata` edits `name` and can add a `description`:
 
 ```yaml
 schema_version: 1
 name: "my_experiment"
 created_at: "2026-05-21T10:00:00Z"
-
-# Optional — pre-fill values for the GUI's run-config dialogs. Not active
-# parameters; each run still carries its full config in its own job.json.
-# Per-stage shape is free-form (the run validators check at submit time).
-defaults:
-  detection:
-    model_id: "sam3"
-    conf_threshold: 0.5
-    compute: {backend: "cuda", device_indices: [0]}
-  tracking:
-    tracker_id: "anchor_tracker"
-    hyperparams: {conf_threshold: 0.1, iou_threshold: 0.1}
-  embedding:
-    model_id: "dinov3_vit"
-    renderer_spec:
-      - {type: "init_binary_mask"}
-      - {type: "pad_to_square"}
-      - {type: "resize", size: 224}
-    compute: {backend: "cuda", device_indices: [0]}
 ```
 
 ### What is explicitly excluded from `config.yaml`
@@ -313,7 +304,7 @@ defaults:
 - Video paths (recordings are discovered by scanning `recordings/`)
 - Output paths (all outputs are relative to experiment root)
 - HF token or any credentials
-- Per-run pipeline parameters (each run carries its full config in its own `job.json` — only *defaults* live here)
+- Pipeline parameters of any kind (each run carries its full config in its own `job.json`)
 - Machine-specific paths of any kind
 
 ### Credentials
@@ -352,6 +343,11 @@ read from or written to a experiment file (Tenet 14).
 ### Problem
 
 Video files and output data may live on a local SSD, an external hard drive, or cloud storage (S3, GCS, GDrive). The experiment config must remain portable across machines regardless of where data is stored.
+
+> **Built vs. spec.** Only local paths are built (`storage/locations.py`): the `default`
+> alias's `root`, `model_cache` and `preview_cache`, and the `video_roots` / `export_roots`
+> aliases. Cloud aliases (`type: s3` / `gdrive`), `volume_label`, the `StorageLocation`
+> abstraction below and zarr sharding are design, not built.
 
 ### Two-level config
 
@@ -399,9 +395,9 @@ The `default` alias's optional `preview_cache` key is where this machine keeps i
 
 **`storage.yaml` has one reader, and it parses the file once.** `locations.read_storage()` is what every lookup above goes through (the experiments root, the model cache, the preview cache, a `video_roots` / `export_roots` alias). It is cached on the file's `(mtime, size)` (`read_cache.cached_document`), so a lookup costs one `stat` and the file is parsed again only when it changes on disk — an edit by hand or by another process is seen by the next call, with no restart. The one writer (`roots.register_root`) reads the file fresh under its lock (`read_storage_fresh`), because a merge into a cached copy can drop another process's entry, and drops the cached entry after its replace (`read_cache.forget_document`). The resolved *location* is still never cached: the environment variable is read on every call. A lookup sits under per-item paths — a montage tile asks for the preview cache location at least twice — so a parse per lookup made a tile's cost grow with the file's size (two 82 ms parses per tile on a 227 KB file). Guard: `tests/storage/test_machine_config_reads.py`.
 
-### `StorageLocation` abstraction
+### `StorageLocation` abstraction (not built)
 
-All storage backends implement two methods:
+All storage backends would implement two methods:
 
 ```python
 class StorageLocation:
@@ -424,7 +420,7 @@ class StorageLocation:
 
 **Video files during processing**: `cv2.VideoCapture` supports HTTP/HTTPS URLs with range requests when OpenCV is built with its libavformat backend enabled (the standard distribution build). MP4 files are seekable over HTTP. Cloud video is accessed via presigned URL — only the byte ranges needed per frame are fetched. No full download. Note: this uses libavformat as a linked library, not the FFmpeg CLI — it is consistent with Tenet 15, which prohibits shelling out to the FFmpeg executable.
 
-**Zarr stores (embeddings, analysis outputs)**: Zarr natively speaks fsspec and fetches only the chunks overlapping a requested slice. A `(100000, 768)` feature array chunked as `(1000, 768)` means loading 1000 frames downloads ~3MB regardless of total store size. Dask arrays from zarr are lazy by default. On object-store backends, arrays may additionally be **sharded** (`create_array(..., shards=...)`) so many chunks live in one storage object — see "Sharding (v3)" in Section 9. This is the main reason the storage layer targets zarr v3.
+**Zarr stores (embeddings, analysis outputs)**: Zarr natively speaks fsspec and fetches only the chunks overlapping a requested slice. A `(100000, 768)` feature array chunked as `(1000, 768)` means loading 1000 frames downloads ~3MB regardless of total store size. Dask arrays from zarr are lazy by default. On object-store backends, arrays could additionally be **sharded** (`create_array(..., shards=...)`) so many chunks live in one storage object — see "Sharding (v3)" in Section 9; no writer passes `shards=` today. This is the main reason the storage layer targets zarr v3.
 
 **Local storage**: Both methods are no-ops — `video_uri()` returns a filesystem path, `fs_store()` returns a `LocalStore`. No network calls, no overhead. The local backend writes chunks-only (no shards) by default.
 
@@ -438,52 +434,49 @@ A recording is one logical recording: one or more video files representing conti
 
 ### Directory structure
 
-Each category (video, each stream) gets its own folder. Each stream folder contains the original imported files, the canonical converted data, and alignment correction files. Video parts have a `timestamps/` folder containing the generated and user-provided frame timestamp maps.
+Each category (video, each stream) gets its own folder. Each stream folder holds the original imported files (`raw/`) and the canonical converted data (`canonical/`). Video parts have a `timestamps/generated/` folder holding each part's frame timestamp map. Each stage's runs write under their own folder (Tenet 5), named in the stage's section.
 
 ```
 recordings/
 └── recording_001/
     ├── recording.yaml
     ├── video/
-    │   ├── part_001.mp4
-    │   ├── part_002.mp4
+    │   ├── part_001.mp4            # a copied part; a referenced part has no file here
     │   └── timestamps/
-    │       ├── generated/
-    │       │   ├── part_001.csv
-    │       │   └── part_002.csv
-    │       └── user/
-    │           └── part_001.csv    # only present if user has uploaded
+    │       └── generated/
+    │           ├── part_001.csv
+    │           └── part_002.csv
     ├── streams/
-        │   ├── heart_rate/
-        │   │   ├── raw/
-        │   │   │   └── hr_recording.edf
-        │   │   ├── canonical/
-        │   │   │   ├── part_001.csv
-        │   │   │   └── part_002.csv
-        │   │   └── alignment/
-        │   │       ├── generated.csv
-        │   │       └── user.csv    # only present if user has uploaded
-        │   ├── accelerometer/
-        │   │   ├── raw/
-        │   │   ├── canonical/
-        │   │   └── alignment/
-        │   │       └── generated.csv
-        │   └── key_events/
-        │       ├── raw/
-        │       ├── canonical/
-        │       └── alignment/
-        │           └── generated.csv
+    │   ├── medpc/
+    │   │   ├── raw/                # the importer's source files, verbatim
+    │   │   │   ├── m1_day3.txt
+    │   │   │   └── operant.MPC
+    │   │   └── canonical/
+    │   │       └── part_001.csv    # one continuous canonical file per stream
+    │   └── accelerometer/
+    │       ├── raw/
+    │       │   └── accel_export.csv
+    │       └── canonical/
+    │           └── part_001.csv
     ├── arenas/
     │   └── arena_001/
     │       └── keyframes.csv
-    └── rois/
-        └── roi_001/
-            └── keyframes.csv
+    ├── rois/
+    │   └── roi_001/
+    │       └── keyframes.csv
+    ├── points/
+    │   └── point_001/
+    │       └── keyframes.csv
+    ├── detections/                 # det_NN/ (§9)
+    ├── tracking/                   # track_NN/ (§13)
+    ├── embeddings/                 # emb_NN/ (§14)
+    ├── keypoint_detect/            # kd_NN/ (§26)
+    └── keypoint_track/             # kt_NN/ (§26)
 ```
 
 ### `recording.yaml`
 
-All file paths are relative to the recording directory.
+All file paths are relative to the recording directory. The `video:` block is written by `Recording.add_video_part`, each `streams:` entry by `Recording.add_stream` (`api/recording.py`).
 
 ```yaml
 schema_version: 1
@@ -494,96 +487,89 @@ created_at: "2026-05-21T10:00:00Z"
 video:
   storage: "default"
   fps_container: 30.0
-  fps_actual: 29.97
-  fps_source: "measured"        # "container" | "measured" | "user"
+  fps_actual: 30.0
+  fps_source: "container"       # the only value written today
   resolution: [1920, 1080]
   total_duration_s: 3600.0
   files:
     # A **copied** part: the tool owns the bytes, at a recording-relative path.
     - index: 0
       id: "part_001"            # stable stem for zarr / progress names
+      timestamps:
+        generated: "video/timestamps/generated/part_001.csv"
+        user: null              # always null: no user map can be uploaded yet
+        active: "generated"
       file: "video/part_001.mp4"
       origin:                   # provenance only — where it was copied *from*
         root: "scratch"
         rel: "day3/cam1.mp4"
-      timestamps:
-        generated: "video/timestamps/generated/part_001.csv"
-        user: null
-        active: "generated"     # "generated" | "user"
     # A **reference-in-place** part: the bytes stay where the user put them.
     - index: 1
       id: "part_002"
-      source:                   # resolved through storage.yaml's `video_roots` (§2)
-        root: "lab_nas"
-        rel: "day3/cam2.mp4"
-      fingerprint: "a1b2…"      # detects a moved / replaced / truncated file
-      frame_count: 53946        # len(timestamp_map), so a presence check needs no decode
       timestamps:
         generated: "video/timestamps/generated/part_002.csv"
         user: null
         active: "generated"
+      source:                   # resolved through storage.yaml's `video_roots` (§2)
+        root: "lab_nas"
+        rel: "day3/cam2.mp4"
+      fingerprint:              # integrity.file_fingerprint: detects a moved / replaced / truncated file
+        size: 2147483648
+        mtime_ns: 1747821600000000000
+        sha256_ends: "a1b2…"    # sha256 of the first and last 1 MiB
+      frame_count: 53946        # len(timestamp_map), so a presence check needs no decode
 
 streams:
-  - name: "heart_rate"
-    type: "sampled"
-    sample_rate_hz: 100.0
-    columns: ["t_ns", "bpm"]
-    importer: "EDFImporter"
+  - name: "medpc"
+    type: "events"              # legacy; `shape` is the axis readers use
+    shape: "event"
+    role: null
+    clock: "stream_seconds"
+    columns: ["t_ns", "code", "label"]
+    dtypes: {t_ns: "int64", code: "int64", label: "str"}
+    importer: "medpc"
     alignment:
       offset_ns: 3200000000     # constant shift: stream t=0 → video t_ns
-      generated: "streams/heart_rate/alignment/generated.csv"
-      user: null
-      active: "generated"       # "generated" | "user"
+      active: "offset"
     raw:
-      - index: 0
-        file: "streams/heart_rate/raw/hr_recording.edf"
+      - {index: 0, file: "streams/medpc/raw/m1_day3.txt", role: "data"}
+      - {index: 1, file: "streams/medpc/raw/operant.MPC", role: "program"}
     files:
       - index: 0
-        file: "streams/heart_rate/canonical/part_001.csv"
-      - index: 1
-        file: "streams/heart_rate/canonical/part_002.csv"
+        file: "streams/medpc/canonical/part_001.csv"
+    metadata:                   # the importer's own: MED-PC keeps header fields and the code→label map
+      subject: "M001"
+      msn: "operant"
+      event_map: {"1": "lever_press", "2": "reward"}
 
   - name: "accelerometer"
     type: "sampled"
-    sample_rate_hz: 200.0
+    shape: "continuous"
+    role: null
+    clock: "stream_seconds"
     columns: ["t_ns", "x", "y", "z"]
-    importer: "CSVImporter"
+    dtypes: {t_ns: "int64", x: "float", y: "float", z: "float"}
+    importer: "timeseries_csv"
     alignment:
       offset_ns: 0
-      generated: "streams/accelerometer/alignment/generated.csv"
-      user: null
-      active: "generated"
+      active: "offset"
     raw:
-      - index: 0
-        file: "streams/accelerometer/raw/accel_export.csv"
+      - {index: 0, file: "streams/accelerometer/raw/accel_export.csv", role: "data"}
     files:
       - index: 0
         file: "streams/accelerometer/canonical/part_001.csv"
-
-  - name: "key_events"
-    type: "events"
-    columns: ["t_ns", "label"]
-    importer: "TextImporter"
-    alignment:
-      offset_ns: 0
-      generated: "streams/key_events/alignment/generated.csv"
-      user: null
-      active: "generated"
-    raw:
-      - index: 0
-        file: "streams/key_events/raw/events_log.txt"
-    files:
-      - index: 0
-        file: "streams/key_events/canonical/part_001.csv"
+    metadata:                   # the mapping actually used, `auto` resolved
+      source: "timeseries_csv"
+      channels: ["x", "y", "z"]
+      source_columns: ["x", "y", "z"]
+      time_column: "time_s"
+      time_kind: "seconds"
+    sample_rate_hz: 200.0       # only when the importer reports one
 ```
 
-> **Built vs. spec.** The example above is the full forward-looking shape (multiple
-> importers, the generated/user alignment files). What the **MED-PC importer**
-> writes today is a subset: `columns: [t_ns, code, label]`, `alignment:
-> {offset_ns: 0, active: "offset"}` (the `generated`/`user` correction-table files
-> are the deferred advanced case), `raw:` holding the data `.txt` + the `.MPC`
-> program, and a single `canonical/part_001.csv`. `metadata:` carries the source
-> header + the code→label map. Readers default missing keys via `.get`.
+A `behavior`-role stream also carries `origin` (`ground_truth` | `predicted`, §19). Readers default
+missing keys via `.get`. The alignment correction table (`generated` / `user` files under an
+`alignment/` folder, *Stream alignment* below) is not built, so no stream has that folder.
 
 **Copied or referenced, and a reader never branches on it.** A part either carries `file` (the
 tool copied the bytes into the recording, at a recording-relative path) or `source: {root, rel}`
@@ -611,7 +597,7 @@ All timestamps are **integer nanoseconds from the start of the first video file*
 
 ### Recording import (queue + bundle manifest)
 
-Recordings are imported **non-blockingly**: the GUI hands a batch to an app-level queue (`gui/import_queue.py`) and returns immediately; one background worker drains it **sequentially** (no disk contention, trivially race-free on `metadata.csv`). At submit, **all** the recording shells are created at once (dir + metadata row + tags) so the whole bout is visible immediately — metadata-only recordings land `ready`, ones with pending video/streams land `queued`. `recording.yaml`'s `import_status` (`ready` | `queued` | `importing` | `failed` | `cancelled`) is persisted so a crashed import is visible + deletable, not stuck; on experiment open, orphaned `queued`/`importing` (no resume — in-memory queue) are reconciled to `failed` (`Experiment.reconcile_imports`). Every entry path produces the same `RecordingImportSpec` (`api/imports.py`: id + grouping vars + *optional* ordered video parts + streams) executed by one path — `create_shell` (fast) then `import_data` (video parts in order, then streams; the slow, deferrable part). The **source video path is never persisted** (Tenet 6 — it's external/absolute); a queued recording's pending source is held in the in-memory queue and shown in the Recordings view. Cancel keeps completed recordings and marks the remaining `queued` ones `cancelled` (tags preserved, not deleted).
+Recordings are imported **non-blockingly**: the GUI hands a batch to an app-level queue (`gui/import_queue.py`) and returns immediately; one background worker drains it batch by batch. Within a batch, `api/imports.py::import_pending` imports recordings **in parallel** when `core/utils.transcode_parallelism()` is above 1 (`min(4, cpu_count)`, overridden by `DETAIL_MAX_TRANSCODE_PARALLELISM`) and more than one recording has video or streams to import, and sequentially otherwise. At submit, **all** the recording shells are created at once (dir + metadata row + tags) so the whole bout is visible immediately — metadata-only recordings land `ready`, ones with pending video/streams land `queued`. `recording.yaml`'s `import_status` (`ready` | `queued` | `importing` | `failed` | `cancelled`) is persisted so a crashed import is visible + deletable, not stuck; on experiment open, orphaned `queued`/`importing` (no resume — in-memory queue) are reconciled to `failed` (`Experiment.reconcile_imports`). Every entry path produces the same `RecordingImportSpec` (`api/imports.py`: id + grouping vars + *optional* ordered video parts + streams) executed by one path — `create_shell` (fast) then `import_data` (video parts in order, then streams; the slow, deferrable part). The **source video path is never persisted** (Tenet 6 — it's external/absolute); a queued recording's pending source is held in the in-memory queue and shown in the Recordings view. Cancel keeps completed recordings and marks the remaining `queued` ones `cancelled` (tags preserved, not deleted).
 
 **Previews after import.** A finished import queues the recording's display-only previews
 (§3 *Video preview cache*) on the GUI's background queue; the CLI's `recording add-video` builds
@@ -845,7 +831,7 @@ Each video part has a `timestamps.csv` mapping `frame_idx → t_ns`. This is gen
 
 **The map describes the frames a decoder shows.** Two container facts are removed on both paths: packets an MP4 **edit list** trims (`Packet.is_discard` — kept in the file as decode references, never output by cv2 or PyAV's decode; counting them made the map longer than the video and shifted every detection row), and the file's **start time** (the first shown frame's PTS is subtracted, so `t_ns[0] == 0`; MPEG-TS, camera files and B-frame reordering all start above 0). Each PTS is rounded to integer ns *before* the origin is subtracted, so a reader re-deriving a frame's `t_ns` from its PTS reproduces the map exactly.
 
-**A count mismatch is an error, not a dropped frame.** The detection worker pairs cv2's `i`-th frame with `map[i]`. If cv2 returns more frames than the map has, it raises `FrameCountMismatchError` (no `t_ns = -1` rows). If cv2 stops early, the file's packets are recounted (`video.shown_frame_count`): agreeing with the map means the frames exist and cv2 could not decode them — a damaged tail, recorded in `dropped_frames` — and disagreeing raises. Embedding and keypoints read detection's rows, so they inherit the check. Users can upload a replacement map (e.g., from a hardware sync signal) which is stored alongside the generated map. `recording.yaml` tracks which is `active`.
+**A count mismatch is an error, not a dropped frame.** The detection worker pairs cv2's `i`-th frame with `map[i]`. If cv2 returns more frames than the map has, it raises `FrameCountMismatchError` (no `t_ns = -1` rows). If cv2 stops early, the file's packets are recounted (`video.shown_frame_count`): agreeing with the map means the frames exist and cv2 could not decode them — a damaged tail, recorded in `dropped_frames` — and disagreeing raises. Embedding and keypoints read detection's rows, so they inherit the check. A user-uploaded replacement map (e.g., from a hardware sync signal), stored alongside the generated one with `recording.yaml`'s `active` choosing between them, is **not built**: nothing writes a user map, every part's `timestamps.user` is `null`, and `active` is always `generated`. The readers already go through `active`, so the upload is the missing piece.
 
 ```
 frame_idx,t_ns
@@ -892,11 +878,11 @@ stream_t_ns,video_t_ns
 
 | `importer_id` | shape | `role` | `clock` | `config_model` |
 |---|---|---|---|---|
-| `medpc` | events | — | `stream_seconds` | — (the `.MPC` program is an `aux_input`, not config) |
-| `behavior_csv` | events | `behavior` | `video_frames` | — |
-| `boris` | events | `behavior` | `video_seconds` | — |
-| `events_csv` | events | — | `stream_seconds` | — |
-| `timeseries_csv` | sampled | — | `stream_seconds` | `CsvStreamConfig` |
+| `medpc` | event | — | `stream_seconds` | — (the `.MPC` program is an `aux_input`, not config) |
+| `behavior_csv` | interval | `behavior` | `video_frames` | — |
+| `boris` | interval | `behavior` | `video_seconds` | — |
+| `events_csv` | event | — | `stream_seconds` | — |
+| `timeseries_csv` | continuous | — | `stream_seconds` (`video_frames` when the time column is frames) | `CsvStreamConfig` |
 
 `timeseries_csv` is the worked example for everything below: a continuous CSV cannot be read
 without being told which column is time and which are channels, so it is the importer the config
@@ -954,14 +940,18 @@ The stored `config` is **not** validated by the storage layer: it is checked by 
 at use time, through the same path a direct import takes. A second copy of each importer's
 rules here is exactly the drift the config channel exists to remove.
 
-### Stream types
+### Stream shapes
 
-| Type | Description | Example streams |
+| `shape` | Description | Example streams |
 |------|-------------|-----------------|
-| `sampled` | Continuous signal at fixed sample rate | heart rate, accelerometer, temperature |
-| `events` | Sparse named timestamps | key presses, stimulus delivery, behavior annotations |
+| `continuous` | A signal sampled over time | heart rate, accelerometer, temperature |
+| `event` | Sparse named timestamps | key presses, stimulus delivery |
+| `interval` | Labelled spans with a start and an end | behavior annotations |
 
-The stream type list is extensible. Future types (ROIs, manual annotations, frame-level labels) add a new `type` value without changing the schema.
+`shape` replaced the legacy `type` (`sampled` / `events`), which the manifest still carries; a
+stream written before `shape` existed reads its shape from `type`
+(`storage/streams.py::stream_shape`). New shapes are added as new `shape` values without
+changing the schema.
 
 ### Canonical stream format
 
@@ -1110,7 +1100,11 @@ consumer is the **behavior-query eval** (§16).
 > permanent guard refuses any run record still carrying a `downsampling_run_id`.
 
 A run processes every Nth frame of the recording's video. `every_n_frames` is a config field on
-**detection**, **tracking** and **embedding**; `1` (the default) is every frame.
+**detection**, **tracking**, **embedding** and **keypoint detection** (§26); `1` (the default) is
+every frame. The keypoint distill's
+label stage (`keypoint_dataset`, §12) has a field of the same name with a different meaning: a
+stride over the teacher's rows when drawing candidate frames, so neighbouring frames of one
+posture are not drawn together.
 
 **One video, one frame space.** The stride selects which frames a stage looks at; it never
 renumbers them. A row's `frame_idx` always indexes the source video, so `t_ns`, the part frame
@@ -1246,6 +1240,8 @@ class FrameResult:
     point_scores: np.ndarray | None         # (n, K) float32, the method's own; NaN with points
     candidates: np.ndarray | None           # (n, K, C, 2) float32; absent when the model declares C = 1
     candidate_scores: np.ndarray | None     # (n, K, C) float32
+    detection_row: np.ndarray | None        # (n,) int32: the detection part row a per-detection keypoint
+                                            #   method placed each instance on; -1 = from no detection (§26)
     extras: dict[str, np.ndarray]           # method-only arrays, first axis n (§26 names dinov3_match's)
 
 @dataclass
@@ -1274,27 +1270,17 @@ Users specify what hardware to run on. This is set per detection run, not global
 @dataclass
 class ComputeTarget:
     backend: str                        # "cpu" | "cuda" | "mps" | "cloud"
-    device_indices: list[int] | None    # for cuda: [0], [0,1], etc.; None = all available
+    device_indices: list[int] | None    # for cuda: [0], [0,1], etc.; None = GPU 0 (see below)
     cloud_provider: str | None          # for cloud: "modal" | "aws" | etc.
     cloud_instance: str | None          # for cloud: "A100" | "g4dn.xlarge" | etc.
 ```
 
-The `ComputeTarget` is passed to the executor at job submission. The model receives only the resolved device string (e.g., `"cuda:0"`, `"mps"`, `"cpu"`).
-
-In `config.yaml`:
-```yaml
-detection:
-  model_id: "sam3"
-  weights_source: "pretrained"
-  compute:
-    backend: "cuda"
-    device_indices: null    # null = all available GPUs
-```
+The `ComputeTarget` rides on the job (no `config.yaml` default; §1). The model receives only the resolved device string from `core/utils.resolve_device`: Ultralytics-style indices for CUDA (`"0"`, `"0,1"`), or `"mps"` / `"cpu"`. A torch-backed model's `load` turns that into a torch device with `core/utils.torch_device` (`"0,1"` → `"cuda:0"`). `device_indices: None` resolves to GPU 0 — spreading a run over every available GPU when none are named is not built; name the indices to use more than one. The `"cloud"` backend and the two `cloud_*` fields are design (§6): `resolve_device` refuses `"cloud"`.
 
 ### Model variants (size axis)
 
 A model family that ships in several sizes/backbones declares them on the class
-via the `VariantedModel` mixin (shared by `DetectionModel` and `EmbeddingModel`):
+via the `VariantedModel` mixin (the base of `Model`, so shared by `DetectionModel`, `EmbeddingModel` and `KeypointModel`):
 `VARIANTS: dict[str, str]` (variant name → backend weight identifier, e.g. a
 `.pt` filename or an HF repo) and a `DEFAULT_VARIANT`. The model is **constructed
 with the chosen variant** — `model_cls(variant)` — which resolves `self.variant`
@@ -1305,7 +1291,8 @@ with no size options leaves `VARIANTS` empty and is constructed with
 / `EmbeddingJob.model_variant`, `None` = default), is recorded in the run record,
 and is surfaced as `--variant` (CLI) and a "Size / variant" combo (GUI).
 Registered families: `dinov3_convnext_base` (convnext tiny/small/base/large, default
-`convnext_base`) and `dinov3_vit` (vit small/base/large, default `vit_large`); `sam3` has none
+`convnext_base`), `dinov3_vit` (vit small/base/large, default `vit_large`) and the keypoint
+model `dinov3_match` (§26; `vit_large`, `vit_base`, default `vit_large`); `sam3` has none
 (its builder is fixed).
 
 ### Model protocol
@@ -1510,10 +1497,13 @@ with nothing to fetch (and keep the test fakes working unchanged).
 
 | Mixin | `readiness()` | `install()` |
 |-------|---------------|-------------|
-| `HFHubModel` | per-file `try_to_load_from_cache` → `auth_check` (when `gated`) | `snapshot_download(cache_dir=model_cache_dir(), allow_patterns=hf_files)`, forwarding progress |
-| `URLModel` | cache-check | download from a URL + checksum verify |
-| `UserProvidedModel` | are the files under `experiment/models/{model_id}/`? | no-op; raise an actionable "place the weights here" error |
-| `APIModel` | API key present / endpoint reachable | validate key (no weights) |
+| `HFHubModel` (built, `models/hf_access.py`) | per-file `try_to_load_from_cache` → `auth_check` (when `gated`) | `snapshot_download(cache_dir=model_cache_dir(), allow_patterns=hf_files)`, forwarding progress |
+| `URLModel` (not built) | cache-check | download from a URL + checksum verify |
+| `UserProvidedModel` (not built) | are the files under `experiment/models/{model_id}/`? | no-op; raise an actionable "place the weights here" error |
+| `APIModel` (not built) | API key present / endpoint reachable | validate key (no weights) |
+
+Only `HFHubModel` exists. Trained and imported models (§12) resolve their weights through
+`models/resolve.py` and the `model.yaml` beside them rather than a source mixin.
 
 `hf_files` is the model's **file manifest, not a download-size optimization**: it is
 what `is_installed()` verifies and what `install()` downloads, so the two agree by
@@ -1530,12 +1520,10 @@ class SAM3(HFHubModel, DetectionModel):
     # load()/predict() import the backend lazily (Tenet 13)
 ```
 
-HF and URL models cache to `~/.cache/detail/models/` by default (the
-`auto_download` row above) — overridable with the `DETAIL_MODEL_DIR` env var,
-and, once Section 2 lands, a `storage.yaml` entry. `UserProvidedModel`/`trained`
-resolve their path under
-`experiment/models/{model_id}/` from `config.yaml`, so those readiness checks are
-handed the experiment context by the API layer. Trainers keep their existing
+Hub models cache to `model_cache_dir()`: the `DETAIL_MODEL_DIR` env var, then
+`storage.yaml`'s `default.model_cache` (§2), then `~/.cache/detail/models/`. `trained`
+models resolve their path under `experiment/models/{model_id}/` (`models/resolve.py`), so
+those readiness checks are handed the experiment context by the API layer. Trainers keep their existing
 `is_ready()` (Section 12) for base weights; the `readiness()`/`install()` split
 can extend to them later without an interface change.
 
@@ -1582,12 +1570,19 @@ class Executor(ABC):
 class JobStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
-    PARTIAL = "partial"      # interrupted but resumable (Tenet 12)
+    PARTIAL = "partial"      # interrupted; kept what it had written (Tenet 12)
     COMPLETE = "complete"
     FAILED = "failed"
     CANCELLED = "cancelled"  # via Executor.cancel
 
-Job = DetectionJob | LabelingJob | TrainingJob | TrackingJob | EmbeddingJob
+Job = (
+    DetectionJob
+    | LabelingJob
+    | TrainingJob
+    | DatasetExportJob
+    | TrackingJob
+    | EmbeddingJob
+)
 
 ProgressEvent = (
     DetectionProgressEvent
@@ -1595,15 +1590,18 @@ ProgressEvent = (
     | TrainingProgressEvent
     | TrackingProgressEvent
     | EmbeddingProgressEvent
+    | BatchProgressEvent     # a batch module's inner event (§6.5); carries no eta_s
 )
 ```
 
+These unions name the first-party types in `core/dataclasses.py`. A processing or analysis module (and a runner such as `keypoint_dataset` or `export_run`) registers its own job and event classes on import (*Job and progress-event registration*, §6.5), so the registry holds more types than the unions list.
+
 `JobStatus` is a `str`-subclass enum (not `StrEnum`, which is 3.11+) so its members serialize as their plain string value through `json.dumps` / `yaml.dump` — `job.json` and `recording.yaml` store `status: complete`, etc., with no special handling.
 
-Two implementations:
+One implementation is built, and a second is designed:
 
-- `LocalExecutor` — runs jobs as subprocesses on the local machine. No Qt dependency. Used in all local workflows including scripts and CLI.
-- `CloudExecutor` — serializes the job, submits to a cloud service, polls for completion and streams progress back. Drops in without changing any caller code.
+- `LocalExecutor` (built) — runs jobs as subprocesses on the local machine. No Qt dependency. Used in all local workflows including scripts, the CLI and the GUI.
+- `CloudExecutor` (not built) — would serialize the job, submit it to a cloud service, poll for completion and stream progress back, without changing any caller code. Everything below about cloud compute is design.
 
 ### Jobs are fully serializable
 
@@ -1624,37 +1622,39 @@ Storage and compute pairings:
 
 ### Progress reporting
 
-`stream_progress()` returns an `Iterator[ProgressEvent]` in all cases. Scripts iterate it directly. The GUI wraps `LocalExecutor` in a `QtExecutorAdapter` that forwards each `ProgressEvent` as a Qt signal — the executor itself has no Qt dependency.
+`stream_progress()` returns an `Iterator[ProgressEvent]` in all cases. Scripts iterate it directly. The GUI consumes a run handle's `progress()` on a `QThread` (`gui/workers.py`: `RunProgressWorker` for a processing run, `FitProgressWorker` for analysis, training and distill runs) and forwards each event as a Qt signal — the executor itself has no Qt dependency.
 
 Every `ProgressEvent` carries an optional `message: str | None = None` — ephemeral phase text (e.g. `"loading model"`, `"loading detections"`) shown above the CLI bar; `None` on ordinary frame ticks. Runners emit progress per frame (throttled to ~0.5s, since each emit writes `job.json`), not only at part boundaries, so a single-part run still shows a live bar. **This cadence is enforced, not just intended.** Synchronous in-loop runners (the trackers, dataset export, labeling, and the §16 analysis modules) wrap `progress_cb` in the shared `core/progress.py::ThrottledProgress` — one initial (forced) event, throttled in-loop emits at `PROGRESS_INTERVAL_S`, a forced final event — so emitting only at a part/unit boundary (the recurring "no live bar on a single part" bug) is impossible by construction. The multiprocess coordinators (detection, embedding) instead emit by **polling** their worker progress files at the same `PROGRESS_INTERVAL_S` (a `worker.join(timeout)` loop is already incremental). The one exception is **training**, which reports per epoch — its natural unit. A `TRACKERS`-parametrized cadence test (`tests/trackers/test_tracker_progress.py`) plus per-stage cadence tests assert an intermediate `frames_done < frames_total` event on a single-part fixture, so a runner that regresses to coarse-boundary emission fails the suite. Every stage — embedding included — reports a real `frames_done` / `frames_total`, so the CLI keys the bar on frames for a true %/ETA. For embedding `frames_total` is the run-wide count of **unique frames** the selected tracks occupy (detections that share a frame, e.g. `anchor_tracker` secondaries, are OR-merged into one image, so one frame = one model input); it is pre-counted from the assignment + detection zarrs before the model loads so the denominator is stable from the first event. `EmbeddingProgressEvent` additionally carries `units_done` / `units_total` — the run-level (track, part) unit count — which the CLI shows (with the current `track_id`) in the bar postfix.
 
-**Report measured work, not counted steps, and report it from wherever the work actually is.** Two rules, both learned from §20's search on a real recording, where the bar barely moved and the ETA was far off. First, **a fraction built by counting structural steps claims they cost the same, and they do not**: a one-row continuous span beside a long one was reported as half the search, and two exemplars of very different length were reported 50/50. Weigh each step by the work it will do (for a path matcher, `span_rows x usable exemplar rows`), and let a step that does no work count for nothing. Second, **the finest thing to report against is often inside the algorithm rather than at its structural boundaries**: with one exemplar over one continuous stretch every layer above the matcher has exactly one call to make, so the search reported only its terminal `1.0`. `retrieval.subsequence_dtw` therefore reports from its own DP row loop, whose per-iteration cost is uniform, which makes a linear read of it honest rather than nominal. The nominal `LOAD_SHARE = 0.2` that used to stand in for the missing movement is gone: the trajectory load is a negligible share of a unit, so it now claims no share of the fraction and reports through its phase message instead.
+**Report measured work, not counted steps, and report it from wherever the work actually is.** Two rules, both learned from §20's search on a real recording, where the bar barely moved and the ETA was far off. First, **a fraction built by counting structural steps claims they cost the same, and they do not**: a one-row continuous span beside a long one was reported as half the search, and two exemplars of very different length were reported 50/50. Weigh each step by the work it will do (for a path matcher, `span_rows x usable exemplar rows`), and let a step that does no work count for nothing. Second, **the finest thing to report against is often inside the algorithm rather than at its structural boundaries**: with one exemplar over one continuous stretch every layer above the matcher has exactly one call to make, so the search reported only its terminal `1.0`. `retrieval.subsequence_dtw` therefore reports from its own DP row loop, whose per-iteration cost is uniform, which makes a linear read of it honest rather than nominal. The query runner (`pipeline/query.py`) dropped the nominal `LOAD_SHARE = 0.2` that used to stand in for the missing movement: the trajectory load is a negligible share of a unit, so it claims no share of the fraction and reports through its phase message instead. One copy survives: `analysis/clip_query.query_tracks`, which `query_eval` runs, still weights its bar with `_LOAD_SHARE = 0.2` (the bar only; its ETA comes from the folded fraction).
 
 ```python
-class QtExecutorAdapter(QThread):
-    progress = pyqtSignal(ProgressEvent)
-    finished = pyqtSignal()
+class RunProgressWorker(GuiWorker):          # GuiWorker is a QThread (gui/workers.py)
+    tick = pyqtSignal(int, str)              # permille (0..1000), status text
+    progress = pyqtSignal(object)            # the aggregate ProcessingProgress itself
+    finished_run = pyqtSignal()
 
-    def __init__(self, executor: Executor, job: Job): ...
-
-    def run(self):
-        job_id = self.executor.submit(self.job)
-        for event in self.executor.stream_progress(job_id):
-            self.progress.emit(event)
-        self.finished.emit()
+    def run(self) -> None:
+        for event in self._handle.progress():
+            fraction, status = processing_progress_fraction(event)
+            self.emit_to_ui(self.tick, round(fraction * 1000), status)
+            self.emit_to_ui(self.progress, event)
+        self.emit_to_ui(self.finished_run)
 ```
 
-Cloud execution writes progress events to a status channel (S3 key, Redis, webhook) that the local machine polls independently of the job. `stream_progress()` abstracts over both.
+The run is submitted by the API (`Experiment.run_processing` and its siblings), not by the worker: the worker only reads the handle, so it can reattach to a run that outlived the window.
+
+Cloud execution (not built) would write progress events to a status channel (S3 key, Redis, webhook) that the local machine polls independently of the job. `stream_progress()` abstracts over both.
 
 **Aggregation, ETA, phase text, and per-surface rendering (invariants).** Four rules stop the per-surface renderers from drifting — the recurring class of bug where one surface silently drops a field (a frozen multi-recording bar; a missing ETA; a silent model load):
 
 1. **Aggregate bars fold the inner fraction, and the inner fraction is monotonic across a recording's phases.** A multi-recording run yields `ProcessingProgress(recordings_done, recordings_total, current_recording, inner, elapsed_s)`, where `inner` is the active recording's live `ProgressEvent`. The bar fraction is `(recordings_done + inner_fraction) / recordings_total`, **never** `recordings_done / recordings_total` — else the bar sits frozen through a long recording. Nothing marshaling progress to a surface may drop `inner`, and the aggregate always shows **recordings completed / total**. A runner with *several* within-recording phases must not let one phase reset the fold: a phase with no natural sub-count (e.g. temporal clustering's `clustering` after the DTW `comparing` phase) **holds the prior fraction**, it does not report 0 — else the bar snaps back mid-recording (the "99% → 0% at clustering" bug). The runner populates the inner `frames_done`/`frames_total` so the fraction rises monotonically (phase-weighted where phases differ in cost), and a boundary emit that hands the count to `recordings_done` sends `frames_total = 0`. (`gui/workers.py::processing_progress_fraction` / `fit_progress_fraction`.)
 
-2. **`eta_s` is populated by the runner and rendered by every surface.** Every `ProgressEvent` carries `eta_s: float | None`. A runner with a `done`/`total` denominator (frames, epochs, or recordings/units) populates it via `core/progress.py::remaining_seconds(fraction, elapsed_s)` — the linear `elapsed·(1−f)/f` estimate — rather than leaving it `None`. The GUI renders it through `_with_eta` onto the status line (the multi-recording bar shows a **whole-run** ETA from `ProcessingProgress.elapsed_s`); the CLI's tqdm shows its own rate-based `{remaining}`, so it needs no `eta_s` but must not override tqdm's default `bar_format` — **unless the bar's `n` is not a count of work.** A rate estimate is only meaningful over a counter; the distill bar sets `n` from the stage-*weighted* fraction (there is no common unit between labeling frames and training epochs), so tqdm's `{remaining}` re-derived the very ~5x under-report the fold had just been fixed to avoid, printed beside the runner's correct `eta=`. That bar suppresses `{remaining}` and shows the runner's number alone. A bar whose `n` counts frames, epochs or recordings keeps tqdm's default.
+2. **`eta_s` is populated by the runner and rendered by every surface.** Every `ProgressEvent` carries `eta_s: float | None`, except `BatchProgressEvent`, which is only ever the `inner` of a `ProcessingProgress` whose whole-run ETA comes from `elapsed_s`. A runner with a `done`/`total` denominator (frames, epochs, or recordings/units) populates it via `core/progress.py::remaining_seconds(fraction, elapsed_s)` — the linear `elapsed·(1−f)/f` estimate — rather than leaving it `None`. The GUI renders it through `_with_eta` onto the status line (the multi-recording bar shows a **whole-run** ETA from `ProcessingProgress.elapsed_s`); the CLI's tqdm shows its own rate-based `{remaining}`, so it needs no `eta_s` but must not override tqdm's default `bar_format` — **unless the bar's `n` is not a count of work.** A rate estimate is only meaningful over a counter; the distill bar sets `n` from the stage-*weighted* fraction (there is no common unit between labeling frames and training epochs), so tqdm's `{remaining}` re-derived the very ~5x under-report the fold had just been fixed to avoid, printed beside the runner's correct `eta=`. That bar suppresses `{remaining}` and shows the runner's number alone. A bar whose `n` counts frames, epochs or recordings keeps tqdm's default.
 
    **The ETA's denominator is the work the emitting coordinator did — not always the bar's.** `remaining_seconds` is `elapsed·(1−f)/f`, which assumes `elapsed` bought *all* of `f`. That holds only while the two measure the same work. A **retry** (§15) breaks it: the bar legitimately starts at `29/60` (those recordings really are complete), but `elapsed_s` starts at zero for the fresh coordinator, so feeding it the run-wide fraction infers a ~30× throughput and reads *"30m left"* on a 15 h retry. `ProcessingProgress.recordings_at_start` carries the mark the coordinator began from, and the ETA divides by the work since it — `(recordings_done + inner − at_start) / (recordings_total − at_start)` — while the bar keeps spanning the run. It is `0` for a fresh run, which is the identity, so nothing else changes. Any future path that resumes a partly-done bar owes the same distinction: **a plausible ETA is indistinguishable from a correct one**, so this is pinned by `tests/gui/test_workers.py::test_processing_progress_eta_measures_only_this_coordinators_work` rather than left to review.
 
-3. **Every long op announces its phase via `message`, and the message *advances* as the phase does.** Model load, weight download, transcode, "loading detections" — any silent stretch sets `message`; both surfaces render it (the CLI writes it above the bar, the GUI appends it to the status). A long op that only moves a bar with no text reads as hung — **and so does one that sets `message` *once* and holds it through a multi-step op** (the "frozen at `starting`" bug): a static label over a stretch where the numeric fraction also can't move (a per-recording load + segmentation before the fraction-bearing inner loop) is indistinguishable from a hang. A runner with distinct phases names *each* as it enters it and **forces that phase-boundary emit past the `ThrottledProgress` throttle** so the text never lags the work — e.g. syllable discovery streams `loading embeddings` → `detecting transitions` → `comparing N bouts` → `clustering` per recording, not one `starting`. (Mid-run weight *download* streaming into the run bar — `.load()` has no progress hook — is the one gap: a pre-load `"loading model"` message is the pragmatic bar; the standalone `model install` surface shows the file + bytes on both surfaces.)
+3. **Every long op announces its phase via `message`, and the message *advances* as the phase does.** Model load, weight download, transcode, "loading detections" — any silent stretch sets `message`; both surfaces render it (the CLI writes it above the bar, the GUI appends it to the status). A long op that only moves a bar with no text reads as hung — **and so does one that sets `message` *once* and holds it through a multi-step op** (the "frozen at `starting`" bug): a static label over a stretch where the numeric fraction also can't move (a per-recording load + segmentation before the fraction-bearing inner loop) is indistinguishable from a hang. A runner with distinct phases names *each* as it enters it and **forces that phase-boundary emit past the `ThrottledProgress` throttle** so the text never lags the work — e.g. temporal clustering names `loading` → `clustering` → `persisting` → `projecting` → `caching`, with the method's own sub-phases (`segmenting`, `comparing`, `clustering`) as the note on `clustering`, not one `starting`. (Mid-run weight *download* streaming into the run bar — `.load()` has no progress hook — is the one gap: a pre-load `"loading model"` message is the pragmatic bar; the standalone `model install` surface shows the file + bytes on both surfaces.)
 
 4. **One mapping per surface, covered by a test — not one mapping across surfaces.** Each surface has exactly one `event → render` function per event shape: the GUI's `processing_progress_fraction` / `fit_progress_fraction` / `import_progress_fraction` (+ `_with_eta`); the CLI's `_stream_*` tqdm drivers and `_import_with_progress`. Rendering is never hand-rolled a second time inside a page or worker. CLI and GUI are deliberately **not** unified onto a single function — tqdm counts `n/total` and owns its own ETA, so a shared fraction mapping would fight it. The invariant is that each surface's one mapping is **tested**, so a dropped field fails CI.
 
@@ -1672,7 +1672,8 @@ Cloud execution writes progress events to a status channel (S3 key, Redis, webho
   "status": "running",
   "job": {"type": "detection", "job_id": "det_01", "...": "..."},
   "progress": {"type": "detection", "parts_done": 1, "...": "..."},
-  "error": null
+  "error": null,
+  "pid": 41237
 }
 ```
 
@@ -1680,13 +1681,14 @@ Cloud execution writes progress events to a status channel (S3 key, Redis, webho
 - `job` — the tagged job (`job_to_dict`); the worker reconstructs the right class with `job_from_dict` and dispatches on `type`.
 - `progress` — the latest tagged `ProgressEvent` (`progress_event_to_dict`) or `null`; `stream_progress()` polls and yields it on change until `status` is terminal.
 - `error` — message recorded if the worker catches an exception.
+- `pid` — the worker's process id, recorded by `LocalExecutor.submit` right after the spawn; what Cancel signals and the PID-reuse guard checks.
 - stage payload (e.g. detection's `parts[]` and `mask_resolution`, Section 7/9) lives alongside these keys and is managed entirely by the runner.
 
-Writes are atomic (`tmp` + `os.replace`) so the polling reader never sees a torn file; with one writer (the worker) and one reader (the executor) no locking is needed. One worker subprocess runs per job; multi-GPU part-parallelism lives inside the detection runner, not the executor.
+Writes are atomic — a unique temp file per write (`tempfile.mkstemp`), moved into place with `core.atomic.replace` — so the polling reader never sees a torn file. Two processes write it during a run's startup (the executor records the worker's `pid` while the worker writes `status: running`); the unique temp name is what keeps one writer's replace from consuming the other's temp, and the last replace wins. Once running, the worker is the only writer and the executor only reads, so no locking is needed. One worker subprocess runs per job; multi-GPU part-parallelism lives inside the detection runner, not the executor.
 
 **Stopping a run is two operations, and the difference is not a tuning parameter.**
 
-- **Stop and keep** (`request_stop`) writes its own `stop` marker and *never* kills. The worker polls it, sets the runner's `stop_event`, and exits with status **`complete`** — a finish the user chose, not an interruption; the run records what it produced. A trainer runs its own completion path. Its marker is not Cancel's because the worker must know which was asked: it shared the `cancel` flag until #486, so every stopped model read `partial` and was offered Resume on a checkpoint the backend had already finalized.
+- **Stop and keep** (`request_stop`; offered for training, `Experiment.stop_model`) writes its own `stop` marker and *never* kills. The worker polls it, sets the runner's `stop_event`, and exits with status **`complete`** — a finish the user chose, not an interruption; the run records what it produced. A trainer runs its own completion path. Its marker is not Cancel's because the worker must know which was asked: it shared the `cancel` flag until #486, so every stopped model read `partial` and was offered Resume on a checkpoint the backend had already finalized.
 - **Cancel** (`cancel_run_dir`) is graceful-then-force: it requests the `cancel` flag, gives a loop-based runner three seconds to land its own terminal status, then kills the worker's **process group** (SIGTERM, then SIGKILL), because a blocking backend ignores the flag and a user pressing Cancel wants it to stop. It writes `cancelled` only if the worker did not already land a terminal status, which preserves a clean `partial`. It takes a run *directory*, not a live handle, so it works from a fresh process after the GUI restarted — the orphan case. A PID-reuse guard (`_is_our_worker`) keeps it from signalling a recycled pid.
 
 ### `activity.csv` — what happened, when
@@ -1715,17 +1717,17 @@ The report's per-phase table (`activity.phase_timings`) charges each phase until
 
 ## 6.5 Processing Modules
 
-A **processing module** is one pipeline stage that consumes a single upstream input and writes its own derived output (Tenet 5), runs through the executor (§6), and is referenced by string id (Tenet 1). Detection, tracking and embedding were the first three; keypoint detection and keypoint tracking (§26) followed; behavior classification follows. The contract below makes a stage a *registry entry* so that adding one is an additive engineering task — implement a runner + its storage schema, register a module, and surface it everywhere a user reaches it (API method, CLI command, GUI) — or record a deliberate omission in `docs/cli.md`'s "Not in the CLI" — and never a change to the run backbone, the executor, other modules, or any central map.
+A **processing module** is one pipeline stage that consumes a single upstream input and writes its own derived output (Tenet 5), runs through the executor (§6), and is referenced by string id (Tenet 1). Detection, tracking and embedding were the first three; keypoint detection and keypoint tracking (§26) followed. The contract below makes a stage a *registry entry* so that adding one is an additive engineering task — implement a runner + its storage schema, register a module, and surface it everywhere a user reaches it (API method, CLI command, GUI) — or record a deliberate omission in `docs/cli.md`'s "Not in the CLI" — and never a change to the run backbone, the executor, other modules, or any central map.
 
-The executor/runner seam (§6) is already stage-agnostic (`JOB_RUNNERS`, the uniform `run(job, run_dir, progress_cb, stop_event)` signature, the generic `job.json` envelope). This section adds the layer **above** that seam — a module abstraction and one generic API run path — that today is hand-written per stage (`Recording.run_detection` / `run_tracking` / `run_embedding` are structurally identical).
+The executor/runner seam (§6) is already stage-agnostic (`JOB_RUNNERS`, the uniform `run(job, run_dir, progress_cb, stop_event)` signature, the generic `job.json` envelope). This section adds the layer **above** that seam — a module abstraction and one generic API run path, `Recording.run` — which was hand-written per stage before it (`Recording.run_detection` / `run_tracking` / `run_embedding` were structurally identical; they are now thin wrappers over `Recording.run`).
 
 ### Scope
 
 `ProcessingModule` covers **executor-backed, output-producing** stages only. The synchronous inspection tools — prompt-test (§8) and render-preview (§14) — are **not** processing modules: they have no runner, no zarr output, and no `recording.yaml` run record. Each attaches to the module whose configuration it informs (prompt-test → detection, render-preview → embedding) and stays a plain synchronous API method.
 
-**Batch modules (`BatchProcessingModule`).** The default run model is one isolated job **per recording** (the coordinator sequences `Recording.run` calls, Tenet 5). A stage that needs **cross-recording state** — a transform fit *pooled across the whole selection* for comparability — can't fit that: it must see all selected recordings at once. Such a module sets `batch = True` and implements `validate_batch(experiment_root, recording_ids, config)` + `run_batch(experiment, recording_ids, config, emit_progress, cancel)` instead of the per-recording hooks; `RunOrchestrator` then calls `run_batch` **once** over the whole subset and `run_processing` validates once. It reuses the rest of the run spine unchanged — the run record, the detached coordinator, progress, reattach/reconcile — so it still appears in the New-run dropdown like any module; only the fan-out is replaced by a single job. Retry is whole-run (a batch is atomic — all recordings complete or all fail), not per-recording gap-fill. The **derived-embedding** stage (§14) is the first batch module: it fits one transform (`drop_top` &c.) across the selection and writes each recording's `emb_NN`.
+**Batch modules (`BatchProcessingModule`).** The default run model is one isolated job **per recording** (the coordinator sequences `Recording.run` calls, Tenet 5). A stage that needs **cross-recording state** — a transform fit *pooled across the whole selection* for comparability — can't fit that: it must see all selected recordings at once. Such a module sets `batch = True` and implements `validate_batch(experiment_root, recording_ids, config)` + `run_batch(experiment, recording_ids, config, emit_progress, cancel)` instead of the per-recording hooks; `RunOrchestrator` then calls `run_batch` **once** over the whole subset and `run_processing` validates once. It reuses the rest of the run spine unchanged — the run record, the detached coordinator, progress, reattach/reconcile — so it still appears in the New-run dropdown like any module; only the fan-out is replaced by a single job. Retry is whole-run (a batch is atomic — all recordings complete or all fail), not per-recording gap-fill. **No registered module is a batch module today.** `BatchProcessingModule` (`executor/runners.py`) and the orchestrator's single-job path are built; the stage that motivated them — a derived embedding fitting one transform (`drop_top` &c.) across the selection and writing each recording's `emb_NN` — was not built.
 
-A future, experiment-scoped `AnalysisModule` (cross-recording aggregation, plots, reports) is a deliberately separate concept and is **not designed here**. The shared run machinery (the registry pattern, the generic run backbone, run-records, lineage, `RunHandle`, and the GUI module-shell) is factored so it is not welded to recording scope, leaving room for that sibling without a later refactor of this spine.
+The experiment-scoped `AnalysisModule` (cross-recording aggregation, plots, reports) is a deliberately separate concept, specified and built in §16. The shared run machinery (the registry pattern, the generic run backbone, run-records, lineage, `RunHandle`, and the GUI module-shell) is factored so it is not welded to recording scope, which is what let that sibling be added without a refactor of this spine.
 
 ### The contract
 
@@ -1757,12 +1759,16 @@ class ProcessingModule(ABC):
 
     # Provided by the base class; modules override only the extras hook.
     def run_record(self, run_id: str, config: dict, status: str) -> dict:
-        return {
+        record = {
             "id": run_id,
             "status": status,
             "output": self.output_path(run_id),
+            "created_at": utc_timestamp(),
             **self.extra_record_fields(config),   # module keys incl. the upstream run id
         }
+        if config.get("processing_run_id") is not None:   # the run_NNN that launched it (§15)
+            record["processing_run_id"] = config["processing_run_id"]
+        return record
 
     def extra_record_fields(self, config: dict) -> dict:
         return {}
@@ -1788,9 +1794,9 @@ for hand-built widgets), and the generated docs parameter reference (`describe_c
 (bounds via `ge`/`le`; cross-field via a `@model_validator`), then keeps the **experiment-aware**
 checks that need `recording_data` (an upstream run exists, resolution/fps limits, comparability). It
 returns the config dict. **Two return shapes by coverage:** when the model covers *every* key
-(location_export), `{**config, **cfg.model_dump()}` (+ e.g. `video_files`) — the
-`model_dump()` reproduces today's dict, so the stored run-record shape and the executor Job are
-unchanged. When the model covers a **subset** (detection, embedding) — nested inputs (`Prompt` /
+(`temporal_clustering`), `{**config, **cfg.model_dump()}` (+ any derived keys) — the
+`model_dump()` reproduces the dict, so the stored run-record shape and the executor Job are
+unchanged. When the model covers a **subset** (detection, embedding, `location_export`, `query`) — nested inputs (`Prompt` /
 `ComputeTarget`) or fields `validate()` *enriches* (`weights_source`, `track_ids`, `renderer_spec`)
 live outside it — `model_validate` only enforces the bounds/shape and `validate()` returns the
 enriched `config` unchanged; **do not merge a partial `model_dump()`**, it reverts the enrichment
@@ -1820,30 +1826,42 @@ class DetectionModule(ProcessingModule):  # 2) JOB_RUNNERS[module_id] = RunnerSp
     ...
 ```
 
-`PROCESSING_MODULES: dict[str, ProcessingModule]` is the new registry. It **replaces the hardcoded `PIPELINE_RUNNERS` tuple** as the source of truth for first-party modules (the `DETAIL_RUNNER_MODULES` env override is preserved): a build excludes a module by not importing it, exactly as for backends.
+`PROCESSING_MODULES: dict[str, ProcessingModule]` is the registry: what a module *is* comes from it, never from a hand-kept map. Which modules get *imported* is still a hand-kept list — the `PIPELINE_RUNNERS` tuple in `api/_runner_modules.py` (pipeline, trainer and model modules alike), which the executor hands each worker subprocess in the `DETAIL_RUNNER_MODULES` env var — so a build excludes a module by dropping it from that tuple, exactly as for backends.
 
 ### The generic run backbone
 
-One real implementation; the typed per-stage methods become thin, back-compatible wrappers:
+One real implementation (`Recording.run`, condensed); the typed per-stage methods are thin, back-compatible wrappers:
 
 ```python
 def run(self, module_id: str, config: dict) -> RunHandle:
     m = PROCESSING_MODULES[module_id]
     data = recording_store.read_recording(self.dir)
-    config = m.validate(data, config)
-    run_id = self._next_run_id(data.get(m.runs_key, []), m.id_prefix)
-    job = m.build_job(self.id, run_id, config)
-    ex = LocalExecutor(self._experiment_dir, runner_modules=...)
-    ex.submit(job)
-    self._append_run(m.runs_key, m.run_record(run_id, config, ex.status(run_id).value))
+    config = m.resolve_upstream_spec(self.dir, data, config)   # a batch spec -> this recording's run id
+    config = m.validate(self.dir, data, config)
+    # Reserve the id and commit the record as PENDING under the recording lock, so
+    # concurrent runs on one recording never collide on the id or lose an update.
+    run_id = self._reserve_run(
+        m.runs_key, m.id_prefix, lambda rid: m.run_record(rid, config, "pending")
+    )
+    ex = LocalExecutor(self._experiment_dir, runner_modules=_PIPELINE_RUNNERS)
+    try:
+        ex.submit(m.build_job(self.id, run_id, config))
+    except Exception:
+        self._set_run_status(m.runs_key, run_id, "failed")   # never an orphaned PENDING
+        raise
+    self._set_run_status(m.runs_key, run_id, ex.status(run_id).value)
     return _RecordedRun(ExecutorRunHandle(ex, run_id), self, run_id, m.runs_key)
 
-def run_detection(self, model_id, prompt, compute, every_n_frames=1,
-                  conf_threshold=0.5, confirm_fn=None) -> RunHandle:
-    return self.run("detection", {"model_id": model_id, "prompt": prompt,
-                                  "compute": compute, "every_n_frames": every_n_frames,
-                                  "conf_threshold": conf_threshold})
+def run_detection(self, model_id, prompt, compute, conf_threshold=0.5, confirm_fn=None,
+                  model_variant=None, batch_size=None, every_n_frames=1) -> RunHandle:
+    return self.run("detection", {"model_id": model_id, "model_variant": model_variant,
+                                  "prompt": prompt, "compute": compute,
+                                  "conf_threshold": conf_threshold,
+                                  "batch_size": batch_size,
+                                  "every_n_frames": every_n_frames})
 ```
+
+`run_detection` accepts `confirm_fn` and passes it nowhere (Tenet 10 reserves it; no check uses it today).
 
 `_RecordedRun` becomes a **single parameterized class** (constructed with `runs_key`) rather than the `DetectionRun` / `TrackingRun` / `EmbeddingRun` subclasses, which differed only by their `_LIST_KEY`.
 
@@ -1859,7 +1877,7 @@ def run_detection(self, model_id, prompt, compute, every_n_frames=1,
 | `keypoint_detect` | `"detection"` | §26 (revised 2026-10-21; `"tracking"` before) — raw per-instance placements, no subject, never filtered |
 | `keypoint_track` | `"keypoint_detect"` | §26; assigns instances to a tracking run's subjects, then decodes and filters per subject; re-runs whole, no resume |
 
-The chain reads `video → detection → tracking → embedding`, and **forks at detection**: `detection → tracking → embedding` and `detection → keypoint_detect → keypoint_track`. A module that needs **multiple** upstreams (a true DAG) stays out of scope; the second inputs are declared as **auxiliary inputs** — `ProcessingModule.aux_refs`, `(module_id, record_ref_field)` pairs a run *may* read beside its lineage parent — and there are two: embedding's alignment (§14), `(("keypoint_track", "keypoint_run_id"),)`, and keypoint tracking's subjects (§26 *Assignment*), `(("tracking", "tracking_run_id"),)`. One constraint keeps the chain linear: the auxiliary run and the module's own lineage must meet at one run — embedding refuses a keypoint track run whose `tracking_run_id` is not the embedding's tracking run, and keypoint track refuses a tracking run not on its detect run's detection run. Eligibility and the GUI progression read `upstream` alone; the run spec gains an `aux` entry keyed on the auxiliary run's **identity** (its settings), not its id, so per-recording runs with the same settings still match; a batch run resolves a `<module>_spec` per recording by the same machinery as the upstream spec; and the run is a dependent of what it read (`_downstream_edges`, derived from the registry, §15 *Run deletion*).
+The chain reads `video → detection → tracking → embedding`, and **forks at detection**: `detection → tracking → embedding` and `detection → keypoint_detect → keypoint_track`. A module that needs **multiple** upstreams (a true DAG) stays out of scope; the second inputs are declared as **auxiliary inputs** — `ProcessingModule.aux_refs`, `(module_id, record_ref_field)` pairs a run *may* read beside its lineage parent — and there are two: embedding's alignment (§14), `(("keypoint_track", "keypoint_run_id"),)`, and keypoint tracking's subjects (§26 *Assignment*), `(("tracking", "tracking_run_id"),)`. One constraint keeps the chain linear: the auxiliary run and the module's own lineage must meet at one run — embedding refuses a keypoint track run whose `tracking_run_id` is not the embedding's tracking run, and keypoint track refuses a tracking run not on its detect run's detection run. Eligibility and the GUI progression read `upstream` alone; the auxiliary run's **spec** (its settings and lineage, never its id) is one of the module's own identity fields — embedding's `keypoint_track_identity`, keypoint track's `tracking_identity` — so per-recording runs with the same settings still match and the spec keeps its `{module, identity, parent}` shape; a batch run resolves a `<module>_spec` per recording by the same machinery as the upstream spec; and the run is a dependent of what it read (`_downstream_edges`, derived from the registry, §15 *Run deletion*).
 
 ### Upstream run specs
 
@@ -1881,13 +1899,13 @@ Two runs are interchangeable iff their specs are equal. `api/run_spec.py::freeze
 |--------|-------------------|--------------------------------------------|---------------|
 | detection | `model_id, model_variant, weights_source, conf_threshold, every_n_frames, prompt_fingerprint, prompt_classes` | `None` (roots at the recording's video) | **+`prompt_fingerprint`** (short digest of `Prompt.to_dict()`; the prompt is the class definition for open-set models — omitting it false-merges "mouse" vs "cage") **and +`prompt_classes`** (the sorted target names — the human-readable half, redundant for equivalence so it can only ever false-*split*) |
 | tracking | `tracker_id, arena_ids, hyperparams, every_n_frames` | `("detection","detection_run_id")` | **+`hyperparams`** (`config["hyperparams"]`, enriched in validate; was `job.json`-only) |
-| embedding | `model_id, model_variant, constructor, every_n_frames`; with alignment (§14, specified) also `align, heading, max_gap_s, mirror_hold_s, facing_camera_ratio` and the auxiliary keypoint track run's identity under `aux` | `("tracking","tracking_run_id")` (+ `aux_refs = (("keypoint_track","keypoint_run_id"),)`) | — (the constructor **name**, not the resolved `renderer_spec` — centered recipes size per-recording, so the resolved spec is intentionally recording-specific and must not be identity) |
-| keypoint_detect (§26) | `model_id, model_variant, backbone_id, backbone_variant, skeleton_digest, example_set_digest, n_candidates, every_n_frames, crop_px, decode, side_rule, matching` (the matching constants as one dict), `min_pose_confidence` | `("detection","detection_run_id")` | compute, batch size and the display cut-off are not identity |
-| keypoint_track (§26) | `tracking_identity` (the tracking run's settings, never its id — ids restart per recording, §6.5 *auxiliary inputs*), `match` (`min_inside`, `mask_grow`), `method` and every field of the method's config, filter constants and decode cut-off included; the detect run's identity by lineage | `("keypoint_detect","detect_run_id")` | the display cut-off is not identity |
+| embedding | `model_id, model_variant, constructor, every_n_frames, align, heading_definition, max_gap_s, mirror_hold_s, facing_camera_ratio, keypoint_track_identity` (the last six are alignment's, §14; `keypoint_track_identity` is the auxiliary keypoint track run's spec, `None` without alignment) | `("tracking","tracking_run_id")` (+ `aux_refs = (("keypoint_track","keypoint_run_id"),)`) | — (the constructor **name**, not the resolved `renderer_spec` — centered recipes size per-recording, so the resolved spec is intentionally recording-specific and must not be identity) |
+| keypoint_detect (§26) | `model_id, model_variant, weights_source, backbone_id, backbone_variant, skeleton_digest, example_set_digest, n_candidates, every_n_frames, crop_px, decode, side_rule, matching` (the matching constants as one dict), `min_pose_confidence` | `("detection","detection_run_id")` | compute, batch size and the display cut-off are not identity |
+| keypoint_track (§26) | `tracking_identity` (the tracking run's spec, never its id — ids restart per recording, §6.5 *auxiliary inputs*), `match` (`min_inside`, `mask_grow`), `method`, `config` (every field of the method's config, filter constants and decode cut-off included); the detect run's identity by lineage | `("keypoint_detect","detect_run_id")` | the display cut-off is not identity |
 
-`every_n_frames` is identity on all three (§4): the same config at a different cadence is a different output. Each carries `identity_defaults = {"every_n_frames": 1}`, which is how a record written before the field existed reads — without it those runs would false-*split* from equivalent ones written since.
+`every_n_frames` is identity on detection, tracking, embedding and keypoint_detect (§4): the same config at a different cadence is a different output. The first three carry `identity_defaults = {"every_n_frames": 1}`, which is how a record written before the field existed reads — without it those runs would false-*split* from equivalent ones written since; embedding's also defaults its alignment fields (`align: "none"` and the rest) for the same reason. keypoint_detect arrived after the field and needs none.
 
-`lineage_ref` is distinct from `upstream`: detection's `upstream` is `"video"` (eligibility) and it has no lineage parent at all. These live as class attributes on `ProcessingModule` (record keys diverge from config-model field names — prompt/weights_source/hyperparams are enriched, not modelled — so they are **not** derived from config metadata). An **analysis** module declares `selects = (upstream_module, config_ref_field)` — explicit, since the ref field is not always `{module}_run_id` (the clip modules use `embed_run_id`); analysis reuses the processing-module spec machinery for whatever it selects.
+`lineage_ref` is distinct from `upstream`: detection's `upstream` is `"video"` (eligibility) and it has no lineage parent at all. These live as class attributes on `ProcessingModule` (record keys diverge from config-model field names — prompt/weights_source/hyperparams are enriched, not modelled — so they are **not** derived from config metadata). An **analysis** module declares `selects = (upstream_module, config_ref_field)` — explicit, since the ref field is not always `{module}_run_id` (`query`, `query_eval` and `temporal_clustering` select an embedding run by `embed_run_id`); analysis reuses the processing-module spec machinery for whatever it selects.
 
 **Storage: derived on the fly** — no persisted hash, no migration; specs recompute from records. A **legacy** record (written before the two record additions) recovers the missing field from its `job.json` via `ProcessingModule.recompute_identity_from_job` (detection → `prompt_fingerprint`, tracking → `hyperparams`); unrecoverable → a per-run sentinel that only ever *false-splits* (safe), never false-merges. `freeze_spec`'s **false-merge is the dangerous direction** — when unsure whether a field affects output, include it.
 
@@ -1901,7 +1919,7 @@ The explicit-id path (CLI names a run) stays working at all three — spec is ad
 
 **Labels always carry lineage** (`spec_label` → `anchor_tracker @ conf 0.25 · from sam3/large @ 0.25`) so "same tracker params, different detection model" is visible in the picker, not silently identical.
 
-**Known limitations (v1).** A trained/imported model whose weights change under a stable `model_id` (`resume_training`, re-import) is a `weights_source`-level match — the weights *content* is not fingerprinted. Detection identity uses the whole `Prompt.to_dict()`, so an `ImageCue`'s per-run path can false-split two otherwise-equal image prompts (text/point/box prompts — the common case — are content-stable). Both are acceptable false-*splits* / narrow, and documented rather than merged. **Embedding identity is the constructor name + model only — deliberately not `track_ids`**: an `all_tracks` run resolves to different concrete ids per recording, so including them would false-*split* the same logical run across recordings. The trade-off is a possible false-*merge* — two embedding runs over different track subsets of the same tracking parent share a spec — so a future spec-select of an embedding run (clip `--embed-ref`) could under-cover; acceptable while that path is deferred, and documented rather than merged.
+**Known limitations (v1).** A trained/imported model whose weights change under a stable `model_id` (`resume_training`, re-import) is a `weights_source`-level match — the weights *content* is not fingerprinted. Detection identity uses the whole `Prompt.to_dict()`, so an `ImageCue`'s per-run path can false-split two otherwise-equal image prompts (text/point/box prompts — the common case — are content-stable). Both are acceptable false-*splits* / narrow, and documented rather than merged. **Embedding identity is the constructor name, model, cadence and alignment — deliberately not `track_ids`**: an `all_tracks` run resolves to different concrete ids per recording, so including them would false-*split* the same logical run across recordings. The trade-off is a possible false-*merge* — two embedding runs over different track subsets of the same tracking parent share a spec — so an analysis module's spec-select of an embedding run (`embed_run_ids`, `--embed-ref`) can under-cover; documented rather than merged.
 
 ### Job and progress-event registration
 
@@ -1918,38 +1936,29 @@ This imposes an **ordering requirement**: `job_from_dict` requires the owning mo
 
 ### Config vs job parameters
 
-`config.yaml` holds experiment-level defaults that pre-populate the job creation UI. Every parameter can be overridden per job.
+There are no experiment-level defaults: `config.yaml` holds identity only (§1). A launch form starts from **Start from** — the config model's defaults, a baseline, or a previous run's settings — and every parameter is set per job.
 
-```yaml
-defaults:
-  detection:
-    model_id: "sam3"
-    weights_source: "pretrained"
-    compute:
-      backend: "cuda"
-      device_indices: null    # null = use all available GPUs
-```
-
-A detection job carries its full configuration independently of the defaults:
+A detection job carries its full configuration (`core/dataclasses.py`):
 
 ```python
 @dataclass
 class DetectionJob:
     job_id: str
     recording_id: str
-    every_n_frames: int                 # process every Nth source frame (1 = every frame)
     model_id: str
-    prompt: Prompt                    # empty for a closed-set (trained) model
+    prompt: Prompt                      # empty for a closed-set (trained) model
     conf_threshold: float
     compute: ComputeTarget
     created_at: str
-    model_variant: str | None = None  # None = the model's default variant
-    weights_source: str = "pretrained"  # "trained" → resolve a experiment model.yaml (§12)
+    model_variant: str | None = None    # None = the model's default variant
+    weights_source: str = "pretrained"  # "pretrained" | "trained" | "imported" (§5, §12); resolved in validate
+    batch_size: int = 1                 # frames per GPU forward pass (batch-capable models)
+    every_n_frames: int = 1             # process every Nth source frame (1 = every frame, §4)
 ```
 
 If the prompt contains an `ImageCue`, the API layer persists the image under the run directory and stores its experiment-relative path in the serialized job (see Prompt serialization, Section 5) before the job is submitted — the job dict never carries inline pixels.
 
-Detection emits a `DetectionProgressEvent` on the executor's progress stream. Parts run in parallel across GPUs, so the executor aggregates per-part counts into one event; per-part detail lives in `job.json`:
+Detection emits a `DetectionProgressEvent` on the executor's progress stream. Parts run in parallel across GPUs, so the coordinator aggregates per-part counts into one event; per-part detail lives in `job.json`:
 
 ```python
 @dataclass
@@ -1963,24 +1972,23 @@ class DetectionProgressEvent:
     message: str | None = None  # ephemeral phase text, e.g. "loading model"
 ```
 
-Multiple detection runs per recording are supported — different models, prompts, or compute. Each gets its own ID and output directory. `recording.yaml` is append-only — each pipeline stage adds its section as it completes. Completed runs are recorded under `detection_runs`.
+Multiple detection runs per recording are supported — different models, prompts, or compute. Each gets its own ID and output directory. Each run is a `detection_runs` entry in `recording.yaml`, appended when the run is **submitted** (as `pending`, under the recording lock) and updated as its status changes, so a running or failed run is listed too; deleting a run removes its entry (§15 *Run deletion*). The entry is a lightweight index (`ProcessingModule.run_record` + `DetectionModule.extra_record_fields`); the prompt and compute live in the run's `job.json`:
 
 ```yaml
 detection_runs:
   - id: "det_01"
-    created_at: "2026-05-22T10:00:00Z"
-    every_n_frames: 2
-    model_id: "sam3"
-    prompt:
-      targets:
-        - class_name: "mouse"
-          cue_type: "text"
-          cue: "mouse"
-    compute:
-      backend: "cuda"
-      device_indices: [0, 1]
     status: "complete"
     output: "detections/det_01/"
+    created_at: "2026-05-22T10:00:00Z"
+    model_id: "sam3"
+    model_variant: null
+    weights_source: "pretrained"
+    conf_threshold: 0.5
+    prompt_fingerprint: "3f9c2a71d0b48e15"   # sha1 of Prompt.to_dict(), 16 hex — run identity (§6.5)
+    prompt_classes: ["mouse"]
+    batch_size: 1
+    every_n_frames: 2
+    processing_run_id: "run_004"         # only when launched by an experiment-level run (§15)
 ```
 
 ### Execution: decode thread → prep → GPU → writer
@@ -2012,133 +2020,119 @@ Recording: part_001.mp4, part_002.mp4, part_003.mp4 — 2 GPUs
 
 If parts > GPUs, remaining parts queue on the same GPUs after their first part finishes. If parts < GPUs, excess GPUs are idle — acceptable.
 
-`ComputeTarget.device_indices: null` uses all available GPUs. A list of indices constrains which GPUs are used.
+A list of indices in `ComputeTarget.device_indices` names the GPUs to use; `null` runs on GPU 0 alone (§5 *Compute targeting* — using every available GPU when none are named is not built).
 
 **Implementation notes:**
 - **Single-device short-circuit.** When `compute.backend != "cuda"` or `len(device_indices) <= 1`, detection runs inline (no `ProcessPoolExecutor`) — zero subprocess overhead for the common single-GPU / CPU / MPS case.
 - **GPU pinning via env.** Each pool worker sets `CUDA_VISIBLE_DEVICES` to its assigned index **before any torch import**, then uses `cuda:0`. Cleaner than passing `cuda:N` strings, and required to make `fork`-vs-`spawn` CUDA semantics safe.
 - **`spawn` multiprocessing context.** Forking after CUDA init corrupts driver state; the pool uses `multiprocessing.get_context("spawn")`.
 - **Per-worker model load.** One `ProcessPoolExecutor(max_workers=1)` per assigned GPU; the pool's `initializer` loads the model once on that GPU. Parts dispatched round-robin reuse the loaded model.
-- **Cross-process channel.** File-based: each worker writes its per-part progress JSON under `<run_dir>/parts/<part_id>.json` (atomic via tmp + rename). Stop signal is `<run_dir>/stop.flag`; workers poll before each forward pass (*Execution* above).
-- **Stop = failed (not partial).** Detection has no resume support, so a stopped run is reported as `status="failed"` rather than `"partial"`. Tracking and embedding keep their `partial` semantics until they grow resume.
-- **One worker failure ≠ run failure (mid-run); aggregate failure is final.** A worker that raises returns `status="failed"` to the coordinator via `pool_run_part`'s exception capture, and other parts continue. After all parts complete, the coordinator raises `RuntimeError` if any part failed — surfacing to the executor envelope as `status="failed"` for the whole run. OOM per §7 follows this path.
+- **Cross-process channel.** File-based: each worker writes its per-part progress JSON under `<run_dir>/parts/<part_id>.json` (a sibling `.tmp` moved into place with `core.atomic.replace`). Stop signal is `<run_dir>/stop.flag`; workers poll before each forward pass (*Execution* above).
+- **Stop = failed (not partial).** A stopped detection run is reported as `status="failed"` rather than `"partial"`: detection does not resume, so `partial` would promise something it cannot do. A failed or stopped run is re-run, not continued (Tenet 12). Embedding treats a stop the same way (§14).
+- **One worker failure ≠ run failure (mid-run); aggregate failure is final.** A worker that raises returns `status="failed"` to the coordinator via `pool_run_part`'s exception capture, and other parts continue. After all parts complete, the coordinator raises `RuntimeError` if any part failed — surfacing to the executor envelope as `status="failed"` for the whole run. A GPU out-of-memory error follows this path (*Validation checks* below).
 
 ### Directory structure
 
 ```
 detections/
 └── det_01/
-    ├── job.json          # full job state — written before any process launches
+    ├── job.json          # the envelope (§6) + detection's payload — written before any process launches
+    ├── parts/
+    │   ├── part_001.json # live per-part progress, written by the worker for that part
+    │   └── part_002.json
     ├── part_001.zarr     # written incrementally by worker, one zarr per video part
-    └── part_002.zarr
+    ├── part_002.zarr
+    ├── activity.csv      # timestamped progress rows (§6)
+    ├── worker.log        # the worker's stdout + stderr
+    ├── machine.yaml      # what it ran on (§6), written when the job ends
+    └── resources.yaml    # peak memory (§6), written when the job ends
 ```
 
 ### Monitoring
 
-Each worker writes progress to `job.json` every N frames — updating its part's status entry in place. No per-part status files. The executor polls `job.json`. Filesystem-only IPC, no pipes or sockets.
+Each part's worker writes a small progress file, `parts/<part_id>.json` — `{frames_done, frames_total, status}` — atomically (a sibling `.tmp` moved into place with `core.atomic.replace`), and best-effort: a failed write never fails the part. The coordinator polls these files every `PROGRESS_INTERVAL_S` (0.5 s), folds them into one `DetectionProgressEvent` and publishes it to `job.json`'s `progress`, which is what the executor's `stream_progress()` yields. Filesystem-only IPC, no pipes or sockets.
+
+When every part has finished, the coordinator writes the per-part results into `job.json` as the `parts` payload, beside `mask_resolution` (§9):
 
 ```json
 {
-  "job_id": "det_01",
-  "status": "running",
   "parts": [
     {
       "id": "part_001",
       "file": "video/part_001.mp4",
       "gpu": 0,
-      "status": "running",
-      "frames_done": 1500,
+      "status": "complete",
+      "frames_done": 3600,
       "frames_total": 3600,
-      "fps": 12.3,
-      "eta_s": 173,
-      "last_update": "2026-05-22T10:04:12Z"
+      "mask_resolution": [1080, 1920],
+      "dropped_frames": [],
+      "error": null
     },
     {
       "id": "part_002",
       "file": "video/part_002.mp4",
       "gpu": 1,
-      "status": "complete",
-      "frames_done": 3200,
-      "frames_total": 3200,
-      "last_update": "2026-05-22T10:03:55Z"
+      "status": "failed",
+      "frames_done": 0,
+      "frames_total": 0,
+      "mask_resolution": null,
+      "dropped_frames": [],
+      "error": "RuntimeError: detection ran out of GPU memory at batch_size=8 (…) — lower the batch size"
     }
   ]
 }
 ```
 
-If `last_update` for a running part has not changed in more than a configurable timeout (default 60s), the executor flags that worker as stalled and alerts the user. A stalled worker is treated as `partial` — resumable.
+`file` is the part's recording-relative path for a copied part and its stem (`part_002`) for a referenced one; `gpu` is `null` on the inline single-device path. There is **no stall detection**: nothing times out a worker whose progress stops moving. `activity.csv` (§6) is how a person tells a slow run from a stuck one.
 
 ### Recovery
 
-Results are written to zarr incrementally using buffer-flush. If a worker crashes mid-part, all frames written so far are on disk. The zarr store is the checkpoint — on resume the executor restarts from the next unprocessed frame.
-
-Because the zarr is detection-indexed and frames with zero detections leave no rows, the zarr's `last_frame_idx` is a *lower bound* on frames processed. `job.json`'s per-part `frames_done` is authoritative for the resume frame; the zarr is used to repair row consistency (truncate-to-common-length, see Section 9 write idiom). The executor resumes from `job.json`'s next frame.
+Results are written to zarr incrementally using buffer-flush, so a worker that crashes mid-part leaves the frames written so far on disk — but detection does **not** resume from them. A failed or stopped detection run is re-run, not continued (Tenet 12): a processing run's retry (`Experiment.retry_run`, §15) runs each incomplete recording again, whole, under a fresh `det_NN`, so nothing appends to a half-written store.
 
 **Part status states:**
 
 | Status | Meaning |
 |--------|---------|
-| `pending` | Not started |
-| `running` | Active worker process |
-| `complete` | Finished, results verified |
-| `partial` | Interrupted — resumable from last written frame |
-| `failed` | Worker reported an error — user decides whether to retry (built at the *run* level: `Experiment.retry_run` re-runs a batch's incomplete recordings whole, §15; resuming a single interrupted recording mid-way is the part below, which is not built) |
-
-**Resume flow:**
-1. User opens app, sees `det_01` with `status: partial`
-2. User clicks Resume
-3. Executor reads `job.json`: skips `complete` parts, restarts `partial` from last written frame, reruns `failed` if user confirms, runs `pending` normally
+| `pending` | Not started (the coordinator's own view before a part's progress file exists) |
+| `running` | Its worker is processing it |
+| `complete` | Every frame walked and written |
+| `failed` | The worker raised, or the run was stopped; the error says which. Any failed part fails the run |
 
 ### Validation checks
 
-**Pre-run — before any process launches:**
+**Pre-run — before any process launches** (`DetectionModule.validate`):
 
 | Check | Action on failure |
 |-------|-------------------|
-| `model_id` present in MODELS registry | Error — list available models |
+| `model_id` resolves (pretrained, experiment-trained or machine-imported) | Error |
+| Model supports the requested backend, and this install can run on it (`check_backend`) | Error — names the backends it needs |
+| `batch_size` > 1 only on a model that batches | Error — set batch size to 1 |
+| Requested CUDA indices exist (`check_cuda_indices`) | Error — list available devices |
+| Prompt fits the model: none for a closed-set model, at least one target and only supported cue types otherwise | Error — list accepted cue types |
 | Model `readiness().ready` — weights present / token / access (Section 5) | Error — raise `ModelNotReadyError` with the actionable message and `action_url` |
-| Requested GPUs exist and are accessible | Error — list available devices |
-| Estimated VRAM fits on each assigned GPU | Warn — suggest switching to a GPU with more VRAM |
-| Input video files readable | Error — list missing or unreadable files |
-| All recording files in `recording.yaml` exist | Error — list missing files |
+| The recording has video parts and every part is present and unchanged (`video_integrity`) | Error — list missing or changed files |
 | No active detection run already on this recording | Error — prevent duplicate concurrent runs |
-| Estimated output size vs available disk space | Error before any work starts |
-| Prompt cue types supported by selected model | Error — list accepted cue types |
+| Estimated VRAM fits on each assigned GPU | **Not built** |
+| Estimated output size vs available disk space | **Not built** |
 
-**Per-part start:**
-
-| Check | Action on failure |
-|-------|-------------------|
-| Video part file readable | Error — mark part `failed` |
-| Output directory created and writable | Error |
-| Model loads successfully on assigned GPU | Mark part `failed`, release GPU, report error |
-
-**Per-frame:**
+**During a part** (`_detection_worker.run_part`):
 
 | Check | Action on failure |
 |-------|-------------------|
-| Frame read succeeds | Record as dropped frame, continue |
-| Detection output has valid shape, no NaN/inf | Record frame as failed detection, continue |
-| Mask dimensions match frame dimensions | Record frame as failed detection, continue |
+| Model loads on its device (once per device, before any part) | The run fails with the load error |
+| cv2 returns more frames than the timestamp map has | `FrameCountMismatchError` — part `failed` (§3 *Frame timestamp maps*) |
+| cv2 stops early | The file's packets are recounted: agreeing with the map means a damaged tail, recorded in `dropped_frames`; disagreeing raises — part `failed` |
+| Detection output has valid shape, no NaN/inf; mask dimensions match the frame | **Not built** |
 
-Zero detections on a frame is valid and is recorded — not skipped. Downstream stages need to know a frame was processed and returned nothing.
+Zero detections on a frame is valid — the frame is walked and simply writes no rows. `frames_done` counts it, so downstream stages know it was processed and returned nothing.
 
-**Post-part:**
-
-| Check | Action on failure |
-|-------|-------------------|
-| Frame count in zarr matches expected | Mark part `partial` |
-| No gaps in written frame indices | Mark part `partial` |
-| Output zarr readable after write | Mark part `failed` |
-
-**Post-run:**
+**After the parts:**
 
 | Check | Action on failure |
 |-------|-------------------|
-| All parts are `complete` | Report which failed/partial, offer resume |
-| Total frame count across all parts matches expected | Error — frame count mismatch; mark run `partial` |
+| All parts are `complete` | The coordinator raises `RuntimeError` naming each failed part; the run is `failed` |
 
-**OOM handling:** The worker catches the OOM error, updates `job.json` with the error message, marks the part `failed`, and exits cleanly. Other GPU workers continue unaffected. The executor surfaces a specific message suggesting the user switch to a GPU with more VRAM.
+**Out of GPU memory:** a forward pass that runs out of memory is re-raised as `RuntimeError("detection ran out of GPU memory at batch_size=N (frame resolution …) — lower the batch size")`, which fails that part; other GPU workers continue, and the run fails with the message after they finish.
 
 ---
 
@@ -2154,12 +2148,14 @@ class PromptTestJob:
     recording_id: str
     model_id: str
     prompts: list[Prompt]          # N prompts to compare
-    conf_threshold: float
     n_sample_frames: int           # M random frames
     compute: ComputeTarget
+    model_variant: str | None = None
 ```
 
-Results are returned directly — one entry per sampled frame, one detection result per prompt:
+There is no threshold on the job: the run keeps every proposal, and `Recording.run_prompt_test(..., min_conf=0.0)` takes the threshold as a **view** — what the saved images are drawn at and counted at (§9 *Confidence threshold*).
+
+Results are returned directly — one entry per sampled frame, one `FrameResult` (§5) per prompt:
 
 ```python
 @dataclass
@@ -2167,26 +2163,27 @@ class PromptTestResult:
     frame_idx: int
     t_ns: int
     frame_image: np.ndarray
-    results: dict[str, DetectionResult]   # prompt label → detections
+    results: dict[str, FrameResult]   # prompt label ("prompt_0", …) → that prompt's detections
 ```
 
-The GUI displays a grid: M rows (frames) × N columns (prompts) with masks overlaid, plus a confidence slider that re-draws and re-counts the grid at any threshold (see "Confidence threshold" above — the preview kept every proposal, so this costs no re-run). User selects the best-performing prompt and reads off the threshold, then sets both on a full detection run.
+The GUI displays a grid: M rows (frames) × N columns (prompts) with masks overlaid, plus a confidence slider that re-draws and re-counts the grid at any threshold (see "Confidence threshold" in §9 below — the preview kept every proposal, so this costs no re-run). User selects the best-performing prompt and reads off the threshold, then sets both on a full detection run.
 
 Because the preview keeps every proposal, a mask per proposal per sampled frame per prompt is far more than a run at 0.5 ever held; `run_prompt_test_on_parts` therefore takes an `on_result` sink so a caller can consume each frame and drop it rather than accumulating full-resolution masks across the whole grid.
 
-Results are optionally saved for later review (path relative to recording directory):
+Results are optionally saved for later review (`save_as=<name>`; path relative to recording directory):
 
 ```
 recordings/recording_001/detections/
 └── prompt_tests/
-    └── test_01/
-        ├── test.json          # parameters: prompts, threshold, sampled frame indices
+    └── <name>/
+        ├── test.json          # model_id, min_conf, n_sample_frames, compute; the sampled frames,
+        │                      #   the prompts and their colours, and per-frame counts at min_conf
         └── frames/
-            ├── frame_0042_prompt_0.jpg
-            └── frame_0042_prompt_1.jpg
+            ├── frame_000042_prompt_0.jpg
+            └── frame_000042_prompt_1.jpg
 ```
 
-Frame seeking snaps to the nearest keyframe in H.264 video — sampled frames may not be exactly the requested index. This is acceptable for prompt testing.
+Sampled frames are exact. Each is decoded with `video.read_frame_at` and the part's timestamp map (§3 *Frame timestamp maps*), so the picture is the requested presentation index, and `PromptTestResult.frame_idx` reports the frame actually decoded.
 
 ---
 
