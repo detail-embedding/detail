@@ -6299,7 +6299,7 @@ def analysis_export_temporal_clustering(
     "--run",
     "run_id",
     required=True,
-    help="Pose- or temporal-clustering run id (e.g. an_01).",
+    help="Temporal-clustering run id (e.g. an_01).",
 )
 @click.option(
     "--node",
@@ -7292,8 +7292,9 @@ def comparison_run(
     not choose (§24). When nobody contributed two there is nothing to decide, and demanding an
     answer is a question with one possible response.
 
-    The design — between units, paired within them, or a trend — follows from what the
-    ``--group-by`` column does within the unit, and is printed when the run ends (§24).
+    The design — between units, paired within them, a trend, or a profile across three or more
+    named values — follows from what the ``--group-by`` column does within the unit, and is
+    printed when the run ends (§24).
     ``--source nodes`` screens every node of a clustering run's node cache, named or not.
     """
     proj = _open_experiment(experiment_dir)

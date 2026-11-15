@@ -187,8 +187,9 @@ MEASURES: dict[str, MeasureSpec] = {}
 def register_measure(measure_id: str, **kwargs) -> Callable[[Callable], Callable]:
     """Register ``fn(selection, ctx) -> value`` under ``measure_id``.
 
-    Additive by registration, like every other registry here (``TRANSITION_DETECTORS``,
-    ``CLUSTER_RULES``): a new measure reaches every artifact and every surface at once.
+    Additive by registration, like the other registries in this package
+    (``segmentation.TRANSITION_DETECTORS``, ``segmentation.CLUSTER_RULES``): a new measure
+    reaches every artifact and every surface at once.
     """
 
     def deco(fn: Callable) -> Callable:
