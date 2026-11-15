@@ -120,7 +120,7 @@ All pre-run checks complete before any output directory is created or any comput
 Frame reading within a part is always forward-sequential. No `cap.set(CAP_PROP_POS_FRAMES, ...)` during batch processing loops — only at part start, for lightweight preview and prompt-test operations, and in the **labeling sampler** (`pipeline/_dataset_common.py::exact_sampled_frames`), which reads a sparse random sample by seeking to each index. That last exception is allowed because a labeling frame's index is a *label*, not a join key, so it may seek — but each frame is decoded **exactly** (`read_frame_at` with the part's timestamp map, never cv2's `CAP_PROP_POS_FRAMES`), and a frame the decoder cannot land on is redrawn rather than labelled under another frame's index. It is **not** allowed for pipeline data that must stay frame-exact — detection, embedding, and the run-export dataset source keep forward-only `sequential_frames` so each frame lines up with its zarr row. Never accumulate an unbounded / whole-video list of frames; a **bounded** buffer of up to `batch_size` frames for batched GPU inference is allowed (memory stays O(batch_size), not O(video)). This is a hard memory constraint for long recordings.
 
 **12. Zarr writes use buffer-flush. Status reflects partial progress.**
-Outputs are written to zarr incrementally in fixed-size buffers, never accumulated in memory and dumped at the end. Each flush grows the array along axis 0 — `n = arr.shape[0]; arr.resize((n + m, *arr.shape[1:])); arr[n:] = buf` (zarr v3 has no `Array.append`). Flush buffer sizes are a whole multiple of the chunk size so a completed flush writes whole chunks. A long job that fails or is stopped is **re-run**, not continued: a processing run's retry (`Experiment.retry_run`, §15) runs each incomplete recording again, whole, under a fresh stage run id, so nothing appends to a half-written store. Two stages pick up where they stopped: tracking resumes at a part boundary (§13, `part_handoff.json`), and a cancelled or failed training resumes from its last checkpoint (§12). Job status has a `"partial"` state for a run that was interrupted and kept what it had written. The storage layer targets **zarr v3** (zarr-python ≥ 3.2); see "Zarr write idiom (v3)" in Section 9 for the canonical create/grow/encode pattern.
+Outputs are written to zarr incrementally in fixed-size buffers, never accumulated in memory and dumped at the end. Each flush grows the array along axis 0 — `n = arr.shape[0]; arr.resize((n + m, *arr.shape[1:])); arr[n:] = buf` (zarr v3 has no `Array.append`). Flush buffer sizes are a whole multiple of the chunk size so a completed flush writes whole chunks. A long job that fails or is stopped is **re-run**, not continued: a processing run's retry (`Experiment.retry_run`, §15) runs each incomplete recording again, whole, under a fresh stage run id, so nothing appends to a half-written store. Only these pick up where they stopped: tracking resumes at a part boundary (§13, `part_handoff.json`); a cancelled or failed training or distill resumes from its last checkpoint (`Experiment.resume_training` / `resume_distill`, §12); and Query's runner skips search shards already on disk (§20). Job status has a `"partial"` state for a run that was interrupted and kept what it had written. The storage layer targets **zarr v3** (zarr-python ≥ 3.2); see "Zarr write idiom (v3)" in Section 9 for the canonical create/grow/encode pattern.
 
 **13. Backend-specific imports are lazy and module-local.**
 `from ultralytics import YOLO`, `import torch`, and any other backend import appears only inside the methods of the concrete implementation class, never at module top level. Excluding a backend means not importing its module — the registry never sees it and nothing else breaks.
@@ -1090,6 +1090,30 @@ manifest — each value a filename or a `{file, covered_behaviors}` map — onto
 each resolved against its own map, one bad file skipped-and-recorded). CLI: `recording add-stream`
 / `recording import-labels`. Legacy streams lacking the metadata fall back to inference. The first
 consumer is the **behavior-query eval** (§16).
+
+### Recording id and name
+
+A recording's **id is the tool's; its name is the user's.** The id names the recording's
+directory and is what every run record, export and analysis row stores; the name is the label
+every surface displays.
+
+- **Minting.** `Experiment.add_recording(name, metadata=None)` is the application path: it mints
+  the id from a counter in `config.yaml` (`storage/experiment.py::next_recording_id`:
+  `recording_000`, `recording_001`, …, zero-padded). The counter only goes up, so a deleted
+  recording's id is never handed to the next one.
+- **The explicit form.** `Experiment.create_recording(recording_id, metadata=None)` creates a
+  recording at an id the caller chooses, with the name set to the same string. It is for scripts
+  and tests, not for a surface adding a recording a user is naming.
+- **Never derive an id from a filename.** The video's filename is a good starting *name* and a
+  bad identity: the file gets moved, renamed or joined by a second part.
+- **Names are unique.** A collision the tool caused (an import proposing two files with the same
+  stem) is suffixed: `m27_day3` becomes `m27_day3_2` (`Experiment.unique_name`). A name a user
+  typed (`Recording.set_name`) is refused with a `ValueError` if another recording has it.
+- **Lookup.** `Experiment.recording_names()` is the `{recording_id: name}` display map.
+  `Experiment.resolve_recording(ref)` takes what a user types: an exact id wins, then a unique
+  name; anything else raises `KeyError` rather than guessing. Display a name wherever one will do.
+
+Guard: `tests/api/test_recording_identity.py`.
 
 ---
 
