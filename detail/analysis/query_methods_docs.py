@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import get_args
 
 from detail.configs.describe import describe_config
-from detail.configs.query_eval import QueryEvalConfig
+from detail.configs.query_eval import _PERFRAME_METHODS, QueryEvalConfig
 
 # One user-facing line per method id. A method with no entry raises in describe_query_methods.
 _SUMMARIES = {
@@ -57,6 +57,13 @@ _DESCRIPTIONS = {
 # produce no spans at all, and the windowed matchers stay near the example length.
 _VARIABLE_LENGTH: set[str] = set()
 
+# The page's "Match length" cell, one per kind of method. A per-frame method scores every frame
+# rather than returning an example-sized window, so it gets its own answer: "≈ example" there
+# contradicted the page's own intro.
+MATCH_LENGTH_EXAMPLE = "≈ example"
+MATCH_LENGTH_VARIABLE = "variable"
+MATCH_LENGTH_PER_FRAME = "not tied to the example: scores every frame"
+
 # The controls surfaced on the page: (QueryEvalConfig field, which methods it affects, what it
 # sets). The default value and unit come from the config field, not from here.
 _CONTROLS = [
@@ -90,6 +97,16 @@ class QueryMethodDoc:
     summary: str
     description: str
     variable_length: bool  # True: match length grows with the behavior, not the example
+    per_frame: bool  # True: scores every frame and returns no example-sized window
+
+    @property
+    def match_length(self) -> str:
+        """What the page's "Match length" column says for this method."""
+        if self.per_frame:
+            return MATCH_LENGTH_PER_FRAME
+        if self.variable_length:
+            return MATCH_LENGTH_VARIABLE
+        return MATCH_LENGTH_EXAMPLE
 
 
 @dataclass(frozen=True)
@@ -122,6 +139,7 @@ def describe_query_methods() -> list[QueryMethodDoc]:
                 summary=_SUMMARIES[method_id],
                 description=_DESCRIPTIONS[method_id],
                 variable_length=method_id in _VARIABLE_LENGTH,
+                per_frame=method_id in _PERFRAME_METHODS,
             )
         )
     return docs

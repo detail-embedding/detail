@@ -142,8 +142,9 @@ _table = [
     "| --- | --- | --- |",
 ]
 for method in _methods:
-    length = "variable" if method.variable_length else "≈ example"
-    _table.append(f"| `{method.method_id}` | {method.summary} | {length} |")
+    _table.append(
+        f"| `{method.method_id}` | {method.summary} | {method.match_length} |"
+    )
 
 _how = ["## How each method works", ""]
 for method in _methods:
