@@ -43,9 +43,10 @@ What it checks, exactly:
   `would_actually_catch` do not, so a few entries in the exemption list do have a negative case,
   under a name the ratchet misses.
 
-**Feed it the spellings a person would actually write.** Measured 2026-09-11: of 23 source-scanning guard files,
-11 had no negative case — including `tests/storage/test_path_serialization.py`, the one CLAUDE.md
-calls "the idiom" and four other guards were copied from. Fed real spellings, it caught
+**Feed it the spellings a person would actually write.** Measured 2026-09-11: of 23
+source-scanning guard files, 11 had no negative case — including
+`tests/storage/test_path_serialization.py`, the one CLAUDE.md calls "the idiom" and four other
+guards were copied from. Fed real spellings, it caught
 `str(path.relative_to(base))` and missed an f-string, a `%`-format, a call in the receiver, and a
 `str(` wrapped onto two lines. Nobody had ever watched it reject anything.
 
@@ -147,8 +148,8 @@ PR and `scripts/select_tests.py` adds to every edit-loop run.
 - **A file gets into the guard tier only by being added to `GUARD_FILES` by hand.** Its cost tier
   (`unit` / `gui` / `slow`) comes from its directory automatically.
 - **Nothing checks this for you.** `DIRECTORY_TIER` covers all of `tests/`, so `test_test_tiers.py`
-  passes whether or not you add the file. It fails only if a `GUARD_FILES` entry resolves to the
-  `slow` tier, because guards run at every stage of the gate.
+  passes whether or not you add the file. It fails on a `GUARD_FILES` entry only when the file is
+  missing or resolves to the `slow` tier, because guards run at every stage of the gate.
 - **Outside the guard tier**, a test still protects its class, but runs only when its own tier or
   the change selects it, and the negative-case ratchet above does not see it.
 
