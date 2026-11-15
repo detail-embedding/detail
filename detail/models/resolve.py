@@ -87,7 +87,7 @@ def resolve_pretrained_or_imported(
     model_id: str, model_variant: str | None = None
 ) -> DetectionModel:
     """Resolve a *machine-global* model (no experiment scope): a built-in registry model,
-    else an imported/distilled catalog model. This is what a **tool** (§9) uses — it has no
+    else an imported/distilled catalog model. This is what a **tool** (§27) uses — it has no
     experiment, so the experiment-trained source doesn't apply.
 
     Raises:

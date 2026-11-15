@@ -60,6 +60,7 @@ This document is the approved design for the DETAIL infrastructure redesign. Com
 | Comparison (§24) | **Built, on all three surfaces** — `analysis/compare.py`, `analysis/comparison_report.py`, `analysis/node_measures.py`, `configs/comparison.py`, `storage/comparisons.py`, `api/comparison.py`, CLI `comparison run` / `export` / `list` / `delete`. Descriptive only, saved with its outputs; the aggregation path is declared, never defaulted, the design (between / paired / trend / profile) is resolved from the chosen column and recorded, the node source screens a clustering run's unlabelled nodes, and every ranking ships with its permutation floor. The GUI section is **static by design**: a saved comparison holds its outputs; the live screen over a clustering run's clusters is INTERPRET's Differences line (§22), which reads a saved node comparison back. |
 | Surface Visibility (§25) | **Built** (#203) — `detail/surfaces.py`, sections declared once in `gui/sections.py`, fifteen enumeration points, `DETAIL_SHOW_ALL` escape hatch. Nothing is hidden: the capabilities it hid were removed from the tree on 2026-11-10; the mechanism stays. Nothing is staged. This sentence is a copy of `surfaces.HIDDEN` and had already drifted once, so `tests/test_surfaces.py` now checks it against the table. Hiding a *module or method* still needs the docs generator and the static `mkdocs.yml` nav taught about it. |
 | Keypoints (§26) | **Built; audit not kept** — spec rewritten 2026-10-07 from the keypoints review, replacing the integration branch `keypoints` (#626) rather than merging it: `dinov3_match` on a shared patch-matching engine plus a distilled YOLO-pose student; two stages, `keypoint_detect → keypoint_track`; alignment is §14's, distill §12's, the shared model layer §5's. Every planned piece landed except the audit, which was parked by the user (2026-10-09) and its API and CLI later removed, so the verdict reads built without it; the detect form's *Test keypoints* (no cut-off field, by the user's decision) has landed too. **The 2026-10-21 revision is built:** detect stores unassigned instances per part on a detection run (`keypoint_detect`'s `upstream` is `"detection"`); keypoint track assigns them to a tracking run's subjects by mask (`pipeline/pose_match.py`; §26 *Assignment*). |
+| Tools (§27) | **Built** — the `Tool` protocol, the `TOOLS` registry, `storage/tool_runs.py` (machine-global `tools/<tool_id>/run_NNN/tool.yaml`), `api/tools.py`, the GUI's Quick tools mode, and CLI `detail tools`. One tool is registered: Quick segment. Each tool's CLI command is hand-written. |
 | GUI | Built: shell + navigation, launch/run-progress, per-module config UIs, prompt-test (matrix), arena editor (time-varying), detection + tracking run previews; embedding input-image constructors + scrubber; embedding result view (Stage 1: a PCA point cloud beside the clicked point's frame and model input); deletion at every level (experiment/recording/run/arena) with a cohesive strategy (gui_design §1.1); run-table navigation + rich run labels; smooth import progress; the model manager + readiness/CUDA-doctor onboarding; every analysis module's config and result UI; the training surface (datasets, trained models, distill); the §21 authored-run workspaces (query calibration, temporal INTERPRET); the §19 reliability audit, which both of them share by emitting the artifact; and §24's comparison screen (`gui/comparison.py`: a list page, a launch dialog and a saved result). Pending: embedding result view Stage 2 (linked scrub). |
 
 
@@ -2360,7 +2361,7 @@ Two thresholds, and they are not the same thing.
 
 **A detection run's threshold** is specified at job creation. Only detections at or above it are written. Recorded in `job.json` for reproducibility. To try a different threshold, create a new detection run — the rows below it were never stored, so nothing later can recover them. This is deliberate: a full run over an experiment writes an RLE mask per row, and keeping every proposal would multiply the store without bound.
 
-**A preview's threshold is a view, not a filter.** The prompt test (§8) and the Quick segment tool (§9) push `KEEP_ALL_PROPOSALS` (`configs/display.py`) into `set_conf_threshold` and keep everything the model returns, because SAM3 filters inside `Sam3Processor` *before* returning and a threshold applied at run time destroys the low-confidence rows rather than hiding them. The threshold is then chosen while looking at the result: `ConfidenceView.min_conf`, rendered as a slider in the GUI (`gui/confidence.ConfidenceRow`, shared by every surface that shows detections) and as `--min-conf` in the CLI. It changes what is drawn, counted and exported — never what was run, so the same result answers every threshold without re-running. §13's tracking-preview slider is the same control and should reuse the same widget.
+**A preview's threshold is a view, not a filter.** The prompt test (§8) and the Quick segment tool (§27) push `KEEP_ALL_PROPOSALS` (`configs/display.py`) into `set_conf_threshold` and keep everything the model returns, because SAM3 filters inside `Sam3Processor` *before* returning and a threshold applied at run time destroys the low-confidence rows rather than hiding them. The threshold is then chosen while looking at the result: `ConfidenceView.min_conf`, rendered as a slider in the GUI (`gui/confidence.ConfidenceRow`, shared by every surface that shows detections) and as `--min-conf` in the CLI. It changes what is drawn, counted and exported — never what was run, so the same result answers every threshold without re-running. §13's tracking-preview slider is the same control and should reuse the same widget.
 
 A count computed at run time cannot answer a question asked at a different threshold, so a view that shows totals must recount from the stored confidences rather than reuse a stored number.
 
@@ -10451,3 +10452,153 @@ hybrid module, for which *Analysis and export* keeps the room); per-viewer **exp
 **alignment study** (§14 *Later*); **Quick Pose** (an earlier prototype) is superseded by this section's
 one protocol and storage.
 
+---
+
+## 27. Tools
+
+A **tool** is a one-off run that needs no experiment: point it at a file, run a model, look at
+the result. It serves the moment before there is a project (judging a model on real footage
+before committing to an experiment) and a result that can be shown to someone. The user page is
+`docs/tools.md`.
+
+### The protocol
+
+`Tool` in `core/protocols.py`:
+
+```python
+class Tool(ABC):
+    tool_id: str        # registry key + GUI/CLI id
+    label: str          # display name
+    description: str    # one line, shown in the tools list
+    category: str       # grouping in the tools list
+    config_model: type  # pydantic model for the scalar parameters (§6.5's configs rule)
+
+    def run(self, config: dict, out_dir: Path,
+            progress: Callable[[str, float, str], None] | None = None,
+            stop_check: Callable[[], bool] | None = None) -> ToolResult: ...
+```
+
+- **Synchronous, in the caller's process.** No executor, job, worker subprocess or
+  `ProgressEvent`. `progress(stage, fraction, detail)` is a plain callback: the CLI draws it as a
+  bar, and the GUI runs the tool off the UI thread in `gui/workers.py::StageProgressWorker`. The
+  long-op rule still holds: a tool drives `progress` inside any loop that can run longer than a
+  moment.
+- **Stopping is not failing.** A tool whose work is unbounded polls `stop_check()` in that same
+  loop. When it returns true the tool finishes early and returns a `ToolResult` with
+  `stopped=True` describing what it did complete, rather than raising.
+- **It writes only under `out_dir`**, a run directory the framework owns, never into an
+  experiment.
+- **Non-scalar inputs** (video paths, `Prompt`s, a `ComputeTarget`) are assembled by each surface
+  and passed in `config` beside the config model's fields.
+- **Models are resolved machine-globally**: `models/resolve.py::resolve_pretrained_or_imported`
+  (a built-in, or an imported or distilled catalog model). With no experiment, an experiment's
+  trained models are out of reach. `api/models.py::tool_models` lists what a tool can run.
+
+`ToolResult` (`core/dataclasses.py`) is JSON-native: `n_processed`, `frames_total`, `fps`,
+`resolution` (width, height), `class_counts`, `outputs` (logical name → path relative to the run
+directory), `summary`, `stopped`. Heavy output is written to `out_dir` and named in `outputs`.
+
+### Registry
+
+`TOOLS` in `core/registries.py`, keyed by `tool_id`, filled by `@register_tool(tool_id)`
+(Tenet 1). `tools/__init__.py::TOOL_MODULES` lists the tool modules and `import_tools()` imports
+them so the registry is populated before any lookup.
+
+The GUI half is a parallel registry, `gui/tools/registry.py::TOOL_GUIS`, filled by
+`@register_tool_ui` from `TOOL_UI_MODULES`. A `ToolUI` supplies the config form
+(`config_widget()`) and the view of a finished run (`result_widget(manifest)`). It lives under
+`gui/` so the core protocol imports no Qt (Tenet 3).
+
+### Where runs are stored
+
+Tool runs are machine-global, in a `tools/` tree beside the experiments in the managed workspace
+(`storage/locations.py::experiments_root()`). `storage/tool_runs.py` owns it.
+
+```
+<experiments root>/tools/
+  <tool_id>/
+    run_NNN/
+      tool.yaml     # the run record
+      ...           # what the tool wrote, named in result.outputs
+```
+
+Run ids are `run_NNN`, unique across the whole tools workspace rather than per tool, so one id
+names a run without its tool (`detail tools delete run_003`). Runs are found by scanning for
+`tool.yaml`, and deleting one removes its directory.
+
+### The run record
+
+`api/tools.py::run_tool` writes `tool.yaml` with `status: running` before the work starts, so a
+crash leaves a visible record, then rewrites it when the tool returns or raises. The GUI reads a
+manifest while the run rewrites it, so every write goes to a sibling `.tmp` and is moved into place
+with `core.atomic.replace`. `schema_version: 1` is the first key.
+
+```yaml
+schema_version: 1
+id: run_003
+tool_id: quick_segment
+label: Quick segment
+source_video: /path/to/clip.mp4     # the first of source_videos
+source_videos: [/path/to/clip.mp4]
+model_id: sam3
+model_variant: null
+prompt: {...}                       # the first of prompts (Prompt.to_dict())
+prompts: [{...}]
+compute: {...}                      # ComputeTarget.to_dict()
+config: {mode: sample, n_frames: 50, whole_video: false}   # exactly the config_model's fields
+status: complete                    # running | complete | stopped | failed
+created_at: '2026-11-15T10:00:00Z'
+result: {...}                       # ToolResult.to_dict(); written when the run returns
+error: '...'                        # only when status is failed (no result)
+```
+
+- **The source video is recorded by absolute path and read in place, never copied.** A tool run
+  is machine-local and outside any experiment, so Tenet 6 (which governs experiment files) does
+  not reach it.
+- `prompt` and `source_video` are singular aliases of the first entry of the plural keys, kept so
+  records written before a run could take several clips or prompts still read.
+
+### Quick segment, the one registered tool
+
+`tools/quick_segment.py` (`tool_id: quick_segment`, category "Detection & segmentation"), with
+config model `configs/quick_segment.py::QuickSegmentConfig`: `mode` (`sample` | `consecutive`),
+`n_frames`, `whole_video` (consecutive only). It runs a detection model on raw clips with no
+import.
+
+- **sample** (the default): `n_frames` spread evenly over each clip, every prompt run on each,
+  compared side by side. It is §8's prompt-test engine pointed at raw files. Writes one detection
+  store per prompt and clip (`<prompt label>/part_NNN.zarr`), each clip's timestamp map
+  (`timestamps/part_NNN.npy`) and a `test.json` index.
+- **consecutive**: one clip, one prompt, read straight through from frame 0, writing
+  `detections.zarr` (§9's detection schema) and `timestamps.npy`. With `whole_video` it is uncapped,
+  and so stoppable. It is the only mode an overlay mp4 can be exported from.
+
+Neither mode writes images or copies the video: overlays are drawn from the source frames and the
+saved detections when a view asks, and pictures reach disk only through an explicit export. Both
+keep every proposal the model returns (`KEEP_ALL_PROPOSALS`); the threshold a result is shown at
+is a view setting (`ConfidenceView.min_conf`, §9 *Confidence threshold*), which is why
+`QuickSegmentConfig` has no confidence field. Quick segment picks SAM 3 by default only on a
+machine with CUDA (`api/tools.py::default_model_for_machine`) and raises otherwise, unless the
+user chooses one of their own imported or distilled models.
+
+### Surfaces
+
+- **API**: `api/tools.py`, a module of functions because there is no experiment: `list_tools()`,
+  `run_tool(tool_id, config, *, progress, stop_check)`, `list_tool_runs`, `read_tool_run`,
+  `delete_tool_run`, `default_model_for_machine`.
+- **GUI**: the shell's **Quick tools** mode (`gui/app.py`): a rail listing each tool with its
+  saved runs; `ToolsPage` (the landing, grouped by category), `ToolRunPage` (the tool's form and
+  Run, off-thread with a progress bar and Stop) and `ToolRunDetailPage` (the result view and
+  Delete), all in `gui/pages.py` and generic over `TOOL_GUIS`.
+- **CLI**: the `detail tools` group in `cli.py`: `quick-segment`, `list`, `delete`.
+  **Each tool's CLI command is hand-written.** There is no generic `detail tools run <tool_id>`:
+  the non-scalar inputs (videos, prompts, model, compute) have no generic flag form, so a new tool
+  adds its own click command. `list` and `delete` are generic over every tool.
+
+### Adding a tool
+
+A `Tool` subclass in `detail/tools/` with `@register_tool`, listed in `TOOL_MODULES`; its config
+model in `detail/configs/`; a `ToolUI` in `detail/gui/tools/` with `@register_tool_ui`, listed in
+`TOOL_UI_MODULES`; its own `detail tools <name>` command; and a section in `docs/tools.md`. The
+landing page, the rail, `detail tools list` / `delete` and the config-model reference
+(`configs/describe.py::iter_config_models`) pick it up with no other change.

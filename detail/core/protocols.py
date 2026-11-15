@@ -597,7 +597,7 @@ class StreamImporter(ABC):
 
 
 class Tool(ABC):
-    """A one-off, experiment-free operation — the extensible Tools framework (Section 9).
+    """A one-off, experiment-free operation — the extensible Tools framework (Section 27).
 
     A tool takes ad-hoc inputs (e.g. a video path), runs synchronously in-process, and
     writes managed outputs to a run directory the framework owns (never into an
