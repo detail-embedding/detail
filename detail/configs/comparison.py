@@ -32,7 +32,7 @@ class ComparisonConfig(BaseModel):
         "comparison pins the run's current artifact and records the id it got, so its numbers "
         "stay reproducible after the run is reopened and re-cut. The node source reads the run's "
         "current node cache and takes no snapshot.",
-        json_schema_extra={"label": "Source snapshot"},
+        json_schema_extra={"scope": "selection", "label": "Source snapshot"},
     )
     source: Literal["labels", "nodes"] = Field(
         "labels",
@@ -65,7 +65,7 @@ class ComparisonConfig(BaseModel):
     recordings: list[str] | None = Field(
         None,
         description="Restrict to these recordings; unset compares every recording in the artifact.",
-        json_schema_extra={"label": "Recordings"},
+        json_schema_extra={"scope": "selection", "label": "Recordings"},
     )
     measures: list[str] | None = Field(
         None,
