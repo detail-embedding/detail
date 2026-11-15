@@ -83,7 +83,7 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: pip install black==26.5.1
+      - run: pip install black==26.10.1
       - run: black --check --diff detail/ tests/
 
   # The guards: source scans, registry parity, structural and anti-drift checks. They
