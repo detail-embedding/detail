@@ -9,17 +9,18 @@ A guard exists because the bug it covers is **invisible to behavioural tests** �
 the line where it is written. That is exactly the condition under which a guard can be green for the
 wrong reason and nobody finds out.
 
-**Measured in this repo: 34 PR bodies contain the word "vacuous", three admit a guard that passed
-against its own reverted fix, and 10 source scans still sit in `SCANS_WITHOUT_A_NEGATIVE_CASE`.**
-One PR wrote a guard, discovered it could not fail, and deleted it — *"A decorative test is worse
-than none."*
+**Measured in this repo: 34 PR bodies contain the word "vacuous", and three admit a guard that
+passed against its own reverted fix.** One PR wrote a guard, discovered it could not fail, and
+deleted it — *"A decorative test is worse than none."* To see how many source scans still lack a
+negative case, count the entries in `SCANS_WITHOUT_A_NEGATIVE_CASE`
+(`tests/test_guard_negative_cases.py`).
 
 Before believing a guard, **name the mutation it should fail on, then run it.**
 
 ## 1. Ship the negative case
 
 A scan that matches nothing today passes vacuously forever. Add the case that proves it still bites,
-named `test_the_*_would_catch_*` / `test_*_would_be_caught*`:
+named `test_the_*_would_catch_*`:
 
 ```python
 def test_the_save_button_scan_would_catch_one():
@@ -32,8 +33,17 @@ plant a violation usually ends up testing the fixture.
 
 `tests/test_guard_negative_cases.py` enforces this by ratchet: `SCANS_WITHOUT_A_NEGATIVE_CASE` is the
 exemption list and its `CEILING` is **lowered when a scan grows a negative case, never raised**.
+What it checks, exactly:
 
-**Feed it the spellings a person would actually write.** Measured: of 23 source-scanning guard files,
+- **Which files:** only files in `tests/tiers.py::GUARD_FILES` whose source contains `ast.parse` or
+  `rglob("*.py")`. A scan outside the guard tier is not checked at all.
+- **Which names count:** a test function whose name contains `would_catch`, `would_fail`,
+  `would_flag`, `would_notice`, `catches`, `rejects`, `detects`, `counterexample`, `negative` or
+  `not_vacuous` (`_NEGATIVE_CASE`). Nothing else counts: `would_be_caught` and
+  `would_actually_catch` do not, so a few entries in the exemption list do have a negative case,
+  under a name the ratchet misses.
+
+**Feed it the spellings a person would actually write.** Measured 2026-09-11: of 23 source-scanning guard files,
 11 had no negative case — including `tests/storage/test_path_serialization.py`, the one CLAUDE.md
 calls "the idiom" and four other guards were copied from. Fed real spellings, it caught
 `str(path.relative_to(base))` and missed an f-string, a `%`-format, a call in the receiver, and a
@@ -130,9 +140,20 @@ If the property under test is geometry, visibility or layout: `resize()` + `show
 
 ## Where the guard goes
 
-Match the guard to the shape, and give the new file a `tests/tiers.py` entry — `test_test_tiers.py`
-fails on a file no tier covers, and a guard never belongs in the `slow` tier because guards run at
-every stage of the gate.
+Match the guard to the shape. Then decide whether the file belongs in the **guard tier**: the files
+listed in `tests/tiers.py::GUARD_FILES`, which CI's `guard` job (`pytest -m guard`) runs on every
+PR and `scripts/select_tests.py` adds to every edit-loop run.
+
+- **A file gets into the guard tier only by being added to `GUARD_FILES` by hand.** Its cost tier
+  (`unit` / `gui` / `slow`) comes from its directory automatically.
+- **Nothing checks this for you.** `DIRECTORY_TIER` covers all of `tests/`, so `test_test_tiers.py`
+  passes whether or not you add the file. It fails only if a `GUARD_FILES` entry resolves to the
+  `slow` tier, because guards run at every stage of the gate.
+- **Outside the guard tier**, a test still protects its class, but runs only when its own tier or
+  the change selects it, and the negative-case ratchet above does not see it.
+
+The Guard column of `docs/recorded_classes.md` names the test that protects each class, and that
+test may sit in any tier.
 
 The class this guard covers is recorded in its **module docstring** (the canonical write-up) plus one
 line in `docs/recorded_classes.md`. That is step 6 of the `fix-the-class` skill, which is where to go

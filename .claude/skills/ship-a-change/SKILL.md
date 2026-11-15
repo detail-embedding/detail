@@ -71,7 +71,7 @@ when you are triaging a wide failure.
 
 1. `git fetch origin main && git merge origin/main`
 2. `black detail/ tests/`
-3. `pytest -q -n auto` in full, and **read the "N passed" line** — not the exit code, not a `tail` chained to
+3. `pytest -q -n auto --dist loadfile` in full, and **read the "N passed" line** — not the exit code, not a `tail` chained to
    a merge command
 4. Update user docs if the change touched the CLI, GUI, public API, install/extras or the pipeline
    model — see below
