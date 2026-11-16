@@ -704,6 +704,7 @@ class NodeInterpretTab(QWidget):
         self._before_find = None
         self._find = FindClustersBar(unit=terms.unit, units=terms.units)
         self._find.found_changed.connect(self._show_found)
+        self._find.rings_changed.connect(self._icicle_rings)
         self._find.picked.connect(self.select)
         key_line.addWidget(self._find, 1)
         self._zoom_in = QPushButton("+")
@@ -1022,9 +1023,7 @@ class NodeInterpretTab(QWidget):
         self._root_clips = loaded["root_clips"]
         self._groups = self._dimension_groups(view)
         self._icicle.set_view(view)
-        self._find.set_valid(
-            lambda node, count=len(view.node_times()): 0 <= int(node) < count
-        )
+        self._find.set_lookup(self._nodes_found_by)
         self._schedule_tree_fit()
         self._fill_filters(view)
         self._read_screens()
@@ -1059,7 +1058,7 @@ class NodeInterpretTab(QWidget):
             return
         self._history.clear()
         self._sync_undo()
-        if self._find.ids():
+        if self._find.entries():
             # The view kept before finding names a node of the old fit: drop it, not restore it.
             self._before_find = None
             self._find.clear_all()
@@ -1356,6 +1355,24 @@ class NodeInterpretTab(QWidget):
         if height != holder.height():
             holder.setFixedHeight(height)
 
+    def _nodes_found_by(self, entry) -> list[int]:
+        """The clusters a Find entry names, largest first: an id the tree has, or every
+        cluster whose own label is ``entry`` (ignoring case)."""
+        view = self._view
+        if view is None:
+            return []
+        times = view.node_times()
+        if isinstance(entry, int):
+            return [entry] if 0 <= entry < len(times) else []
+        key = entry.casefold()
+        nodes = [
+            int(k) for k, name in self._names.items() if (name or "").casefold() == key
+        ]
+        return sorted(nodes, key=lambda node: -float(times[node]))
+
+    def _icicle_rings(self, found: dict) -> None:
+        self._icicle.set_found(found)
+
     def _show_found(self, found: dict) -> None:
         """Find clusters changed: ring its ids, and zoom to the smallest cluster holding all of
         them. The view before the first zoom is kept, and an emptied list (**Clear**, or the
@@ -1452,6 +1469,12 @@ class NodeInterpretTab(QWidget):
             self._show_header(self._selected)
             self._emit_lane(self._selected)
         self._windows.refresh()
+        # A label found by name may now be on more clusters, or fewer: re-ring, do not zoom.
+        # Bands keep off the labels' colours, which fill the blocks they ring.
+        self._find.set_reserved(
+            range(len(root_slots(label_paths(view, self._names).values())))
+        )
+        self._find.refresh()
 
     # --- selection -----------------------------------------------------------------------
 
