@@ -694,7 +694,7 @@ _DEVICE_OPT = click.option(
     "devices",
     multiple=True,
     type=int,
-    help="Device index (repeatable for multi-GPU; cuda only).",
+    help="Device index (repeatable for multi-GPU; cuda only). Left out: GPU 0 alone.",
 )
 # The CLI twin of the GUI's confidence slider (gui/confidence.ConfidenceRow). These
 # commands run the model wide open and keep every proposal, so this filters what gets

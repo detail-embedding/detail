@@ -427,9 +427,9 @@ def _resolve_device_indices(job: DetectionJob) -> list[int]:
         return []
     indices = job.compute.device_indices
     if indices is None or len(indices) == 0:
-        # device_indices=None means "all available" per §5 — at runtime we let
-        # the inline path (with a single device) handle it, deferring CUDA
-        # device-count probing to the validator.
+        # device_indices=None means GPU 0 alone (§5): spreading a run over every
+        # available GPU when none are named is not built, so the inline single-device
+        # path takes it, and CUDA device-count probing stays with the validator.
         return [0]
     return list(indices)
 

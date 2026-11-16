@@ -147,7 +147,7 @@ Each tracked detection becomes a feature vector, an **embedding** (a fixed-lengt
 ## Compute and GPU support
 
 - Each run chooses its own compute target: CPU, CUDA (Nvidia GPU) or MPS (Apple Silicon). Set per run, not globally, so different runs can use different hardware. `ComputeTarget` has a `cloud` backend, which nothing runs yet.
-- `device_indices` selects which GPUs to use; null means all available.
+- `device_indices` selects which GPUs to use; null means GPU 0 alone. Using every available GPU when none are named is not built, so name the indices to use more than one.
 - Detection parallelizes across GPUs by part: one process per video part, assigned round-robin across the selected GPUs, each reading its part independently with no shared state. More parts than GPUs simply queue.
 - Embedding parallelizes across GPUs by `(track, part)` unit, on the same round-robin pattern: each unit produces an independent per-track-per-part output store, so workers never contend on storage. Within a single GPU, the embedding loop batches frames through `model.embed_batch` to amortize kernel-launch overhead.
 - Each model, tracker, and embedder declares which backends it supports. A run is rejected up front if its compute target isn't one of them.

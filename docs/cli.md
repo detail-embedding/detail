@@ -1712,7 +1712,8 @@ detail tracking run --experiment $PROJ --recording recording_001 \
 Detection and embedding take:
 
 - `--backend {cpu,cuda,mps}` (default `cpu`)
-- `--device N`: CUDA device index, **repeatable** for multiple GPUs
+- `--device N`: CUDA device index, **repeatable** for multiple GPUs. Left out, a CUDA run uses
+  GPU 0 alone, not every GPU the machine has
 
 ```bash
 # single GPU
