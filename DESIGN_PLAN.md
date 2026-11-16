@@ -7429,7 +7429,8 @@ becomes a chip in its own colour (`plot_theme.identity`, the first slot not in u
 the labels fill blocks with — `set_reserved` — kept while the entry stays listed unless a new
 label takes it); a label on several nodes is one chip ("climb · 3") and one colour. Its
 nodes' blocks wear a band in that colour just outside them (`NodeIcicle.set_found`), on each piece
-where one is a chain node. The tree re-roots on the smallest cluster holding every found node
+where one is a chain node; never inside a block (a side at the widget's edge goes without) and
+never on the zoom root, which is the whole picture. The tree re-roots on the smallest cluster holding every found node
 (`cluster_find.common_cluster`): the node itself for one. An entry that names nothing is a chip
 saying so ("not in this run", "no behavior has this label"), with no colour, no band and no part
 in the zoom. A label change re-reads the list (`FindClustersBar.refresh`, emitting
