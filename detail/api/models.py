@@ -59,7 +59,7 @@ class ImportedModelRef:
 
 @dataclass
 class ToolModel:
-    """A model a tool (Quick segment) can run — SAM 3 or one of your models (§9)."""
+    """A model a tool (Quick segment) can run — SAM 3 or one of your models (§27)."""
 
     id: str
     name: str
@@ -638,7 +638,7 @@ def remove_imported_model(model_id: str) -> None:
 
 
 def tool_models() -> list[ToolModel]:
-    """Models a tool (Quick segment §9) can run: prompt-capable built-ins (SAM 3) plus every
+    """Models a tool (Quick segment §27) can run: prompt-capable built-ins (SAM 3) plus every
     imported/distilled *detection* model (a keypoint model is not one). Closed-set models are ``prompt_capable=False`` so the tool can
     hide its prompt field and run detection directly (also unblocks the no-GPU wow)."""
     out = [

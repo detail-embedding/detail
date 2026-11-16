@@ -1,4 +1,4 @@
-"""Tools (Section 9) and their registration entrypoint.
+"""Tools (Section 27) and their registration entrypoint.
 
 A *tool* is a one-off, experiment-free operation (e.g. Quick segment: run a
 segmentation model on a short clip). Each concrete ``Tool`` lives in its own module

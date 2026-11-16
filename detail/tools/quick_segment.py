@@ -1,4 +1,4 @@
-"""Quick segment (§9) — the first tool and the first-run "wow".
+"""Quick segment (§27) — the first tool and the first-run "wow".
 
 Run a segmentation model on raw video clip(s) — no experiment, no import — in one of two
 modes:

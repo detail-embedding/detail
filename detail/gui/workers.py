@@ -124,7 +124,7 @@ class BackgroundCall(GuiWorker):
 
 class StageProgressWorker(GuiWorker):
     """Run a synchronous op that drives a ``(stage, fraction, detail)`` progress callback
-    off the UI thread — a tool run or an mp4 export (§9). Emits ``tick`` (permille +
+    off the UI thread — a tool run or an mp4 export (§27). Emits ``tick`` (permille +
     status) so a page can drive a ``QProgressBar``, then ``done`` / ``failed``.
 
     The synchronous-callback twin of ``RunProgressWorker`` (which polls a run handle's

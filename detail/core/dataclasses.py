@@ -1270,12 +1270,12 @@ class StreamImportResult:
 
 
 # --------------------------------------------------------------------------- #
-# Tools (Section 9)
+# Tools (Section 27)
 # --------------------------------------------------------------------------- #
 @dataclass
 class ToolResult:
     """What a ``Tool.run`` returns — a JSON-native summary the run store folds into
-    the ``tool.yaml`` manifest's ``result`` field (Section 9). No numpy payloads: a
+    the ``tool.yaml`` manifest's ``result`` field (Section 27). No numpy payloads: a
     tool persists its heavy output to ``out_dir`` and names it in ``outputs`` (a path
     relative to the run dir); playback / mp4 export re-read from there.
     """

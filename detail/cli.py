@@ -7476,7 +7476,7 @@ def comparison_delete(comparison_id, experiment_dir, yes) -> None:
 
 @main.group()
 def tools() -> None:
-    """Tools (§9) — one-off runs that need no experiment."""
+    """Tools (§27) — one-off runs that need no experiment."""
 
 
 @tools.command("quick-segment")

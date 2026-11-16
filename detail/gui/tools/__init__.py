@@ -1,1 +1,1 @@
-"""GUI-side Tools UIs (§9)."""
+"""GUI-side Tools UIs (§27)."""
