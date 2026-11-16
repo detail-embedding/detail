@@ -7419,6 +7419,19 @@ the label field, **U** removes the node's own label and **1**–**9** apply the 
 labels. Nothing about the tree moves when a label
 lands, so labelling never costs you your place.
 
+**Find clusters** (`gui/cluster_find.py`; on screen "Find" and the page's `WorkspaceTerms.units`,
+"Find behaviors" on a temporal run), a line above the tree: the user types one or more node
+ids (`1321, 1384`; a leading `#` is accepted, and commas, semicolons and spaces all separate) and
+presses Enter. Each id becomes a chip in its own colour (`plot_theme.identity`, the first slot not
+in use, kept while the id stays listed), and its cluster's blocks wear a band in that colour just
+outside them (`NodeIcicle.set_found`), on each piece where it is a chain node. The tree re-roots
+on the smallest cluster holding every listed id (`cluster_find.common_cluster`): the id itself for
+one. An id the tree does not have is a chip reading "not in this run", with no colour, no band and
+no part in the zoom; text that is not an id is said once on the line. Clicking a chip's id
+selects that cluster; **Clear** takes every id and band off and leaves the zoom where it is.
+Nothing is filtered, labelled or written. The list lasts the page's life and is cleared by a
+re-fit, which makes every id name a different cluster (`tree_identity`).
+
 **Layout** (`gui/node_workspace.py`). A horizontal splitter: the filter dock
 (`gui/cluster_filters.FilterDock`) on the left, which folds by the splitter's grip
 (`gui/grip_splitter.GripSplitter`, as every side panel does) to a strip reading "Filters", or

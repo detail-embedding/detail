@@ -620,6 +620,14 @@ def test_a_snapshot_renders_its_own_labels(qapp, fitted):
 #: Controls that stay live on a snapshot, keyed by ``(class, label)``, with the reason.
 _LIVE_ON_A_SNAPSHOT = {
     ("QPushButton", "Back to live run"): "the way out",
+    # Find clusters rings and zooms the tree and writes nothing, so it is looking. Keyed on the
+    # object names (`gui/cluster_find.py`): the field is otherwise ("QLineEdit", ""), which is
+    # the label field's entry in the walk's own failure check.
+    ("QLineEdit", "find_clusters_field"): "finding a cluster is looking at it",
+    ("QPushButton", "find_clusters_find"): "finding a cluster is looking at it",
+    ("QPushButton", "find_clusters_chip"): "opening a found cluster is selecting it",
+    ("QPushButton", "find_clusters_remove"): "taking an id off the list is looking",
+    ("QPushButton", "find_clusters_clear"): "clearing the list is looking",
     # Zooming a frame changes what is on screen, never what the snapshot *is* — the same
     # reason the scrubber's transport controls are here. It appears only once a view has been
     # zoomed, so a frozen page that nobody has zoomed does not show it at all.
@@ -1341,6 +1349,50 @@ def test_zooming_onto_a_block_is_on_its_menu(qapp, fitted):
     node = interpret._view.children(interpret._view.root)[0]
     texts = [a.text() for a in interpret._icicle.context_menu(node).actions()]
     assert "Label…" in texts and "Zoom to this" in texts and "Remove label" in texts
+
+
+def test_cluster_ids_typed_into_find_are_ringed_and_the_tree_zooms_to_hold_them(
+    qapp, fitted
+):
+    """The line above the tree: ids ringed in their colours, the tree re-rooted on the smallest
+    cluster holding them all, a chip's id selecting its cluster, and Clear taking it all off.
+    """
+    from detail.gui.cluster_find import common_cluster
+
+    _experiment, _handle, workspace = _workspace(qapp, fitted)
+    interpret = workspace._interpret
+    view = interpret._view
+    left, right = view.children(view.root)
+    a = view.children(left)[0] if view.children(left) else left
+    b = view.children(a)[0] if view.children(a) else a
+    c = view.children(right)[0] if view.children(right) else right
+    find = interpret._find
+    find.field.setText(f"#{b}, {c}, 999999")
+    find.submit()
+    assert set(interpret._icicle.found()) == {b, c}, "the run's ids, and only those"
+    assert interpret._icicle.zoom_root == common_cluster(view, [b, c]) == view.root
+    find.remove_id(c)
+    assert interpret._icicle.zoom_root == b, "one id zooms right onto it"
+    assert interpret._icicle.found() == {b: find.found()[b]}
+    [chip] = [chip for chip in find.chips() if chip.node == b]
+    chip.name.click()
+    assert interpret._selected == b
+    find.clear.click()
+    assert interpret._icicle.found() == {}
+    assert interpret._icicle.zoom_root == b, "Clear leaves the zoom where it is"
+
+
+def test_a_refit_clears_find_because_every_id_names_another_cluster(qapp, fitted):
+    _experiment, _handle, workspace = _workspace(qapp, fitted)
+    interpret = workspace._interpret
+    view = interpret._view
+    node = view.children(view.root)[0]
+    interpret._find.add_ids([node])
+    assert interpret._icicle.zoom_root == node
+    interpret._tree_key = ("a different fit",)
+    interpret._reloaded_tree(view)
+    assert interpret._find.ids() == [] and interpret._icicle.found() == {}
+    assert interpret._icicle.zoom_root == view.root
 
 
 # --- AUDIT: a check of one label -------------------------------------------------------------

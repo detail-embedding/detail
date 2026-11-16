@@ -96,6 +96,7 @@ from detail.gui.cluster_filters import (
     numbers_text,
     panel_name,
 )
+from detail.gui.cluster_find import FindClustersBar, common_cluster
 from detail.gui.grip_splitter import GripSplitter
 from detail.gui.label_panel import (
     LabelBar,
@@ -683,6 +684,14 @@ class NodeInterpretTab(QWidget):
         self._split.setStretchFactor(1, 1)
         self._split.set_foldable(0, panel_name(cluster_filter.Selection()))
 
+        # Row 1: Find clusters — ids typed here are ringed in the tree, and it zooms to the
+        # smallest cluster holding them all (`gui/cluster_find.py`). Above the tree's own
+        # holder, so the tree's height is not what the line costs.
+        self._find = FindClustersBar(unit=terms.unit, units=terms.units)
+        self._find.found_changed.connect(self._show_found)
+        self._find.picked.connect(self.select)
+        rows.addWidget(self._find)
+
         tree_pane = QWidget()
         tree_box = QVBoxLayout(tree_pane)
         tree_box.setContentsMargins(0, 0, 0, 0)
@@ -1012,6 +1021,9 @@ class NodeInterpretTab(QWidget):
         self._root_clips = loaded["root_clips"]
         self._groups = self._dimension_groups(view)
         self._icicle.set_view(view)
+        self._find.set_valid(
+            lambda node, count=len(view.node_times()): 0 <= int(node) < count
+        )
         self._schedule_tree_fit()
         self._fill_filters(view)
         self._read_screens()
@@ -1046,6 +1058,9 @@ class NodeInterpretTab(QWidget):
             return
         self._history.clear()
         self._sync_undo()
+        if self._find.ids():
+            self._find.clear_all()
+            self._icicle.fit()
         closed = self._windows.close_all()
         if closed:
             self._written.setText(
@@ -1337,6 +1352,14 @@ class NodeInterpretTab(QWidget):
         height = max(min(wanted, room), TREE_MIN_PX)
         if height != holder.height():
             holder.setFixedHeight(height)
+
+    def _show_found(self, found: dict) -> None:
+        """Find clusters changed: ring its ids, and zoom to the smallest cluster holding all of
+        them. An empty list takes the rings off and leaves the zoom where it is."""
+        self._icicle.set_found(found)
+        if self._view is None or not found:
+            return
+        self._icicle.zoom_to(common_cluster(self._view, list(found)))
 
     def _sync_zoom_buttons(self) -> None:
         zoomed = self._icicle.is_zoomed()
