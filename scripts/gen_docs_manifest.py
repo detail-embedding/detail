@@ -92,7 +92,7 @@ _lines = [
     "A bundle is a folder with a `" + "` or `".join(MANIFEST_NAMES) + "` plus the "
     "video and stream files it references; paths are relative to the folder. Import "
     "it with `detail recording import --bundle` or the GUI's **Import bundle…** "
-    "(see [Import recordings from YAML](../workflows/import-recordings-from-yaml.md)). "
+    "(see [Many recordings at once](../user-guides/single-animal/create-an-experiment.md#5-optional-many-recordings-at-once)). "
     "The whole manifest is validated before anything is created.",
     "",
 ]

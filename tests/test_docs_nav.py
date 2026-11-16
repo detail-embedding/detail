@@ -200,3 +200,99 @@ def test_the_section_link_scan_would_catch_an_unreachable_one():
     assert (
         _unreachable_sections(sections, {"gui.md", "w/one.md"}, _NAV_LINK_EXEMPT) == []
     )
+
+
+DOCS_DESIGN = REPO / "docs" / "docs_design.md"
+_SECTION_TABLE_HEADER = "| Section | What goes in it |"
+
+
+def _defined_sections(design: str) -> list[str]:
+    """The section names in the §4 table of ``docs/docs_design.md``, in order."""
+    lines = design.splitlines()
+    starts = [
+        i for i, line in enumerate(lines) if line.startswith(_SECTION_TABLE_HEADER)
+    ]
+    if len(starts) != 1:
+        raise ValueError(
+            f"expected one table starting {_SECTION_TABLE_HEADER!r} in "
+            f"docs/docs_design.md, found {len(starts)}"
+        )
+    names = []
+    for line in lines[starts[0] + 2 :]:  # skip the header and its rule
+        if not line.startswith("|"):
+            break
+        names.append(line.split("|")[1].strip())
+    return names
+
+
+def _section_mismatch(nav_names: list[str], defined: list[str]) -> list[str]:
+    """What differs between the nav's top level and the defined sections."""
+    problems = [
+        f"nav section {name!r} has no row in the docs_design.md §4 table"
+        for name in nav_names
+        if name not in defined
+    ]
+    problems += [
+        f"docs_design.md §4 defines {name!r}, which is not a nav section"
+        for name in defined
+        if name not in nav_names
+    ]
+    if not problems and nav_names != defined:
+        problems.append(f"order differs: nav {nav_names}, table {defined}")
+    return problems
+
+
+def test_every_nav_section_is_one_the_design_defines():
+    """The nav's top level is exactly the sections ``docs_design.md`` §4 defines.
+
+    The class: **a docs section with no written rule for what belongs in it.** A section
+    is added, or grows, by whoever needs somewhere to put a page; with no definition, the
+    next page about the same task lands in a different section.
+
+    How it hid: each page was fine alone. The site ended up with three sections that
+    explained how to do things (the Workflows task pages, the "Guides" to each surface,
+    and the user guides), three of five Workflows pages repeating two user guide chapters,
+    and one of them naming a screen the app had since renamed. Nothing failed, because no
+    check compares one page with another.
+
+    The rule: the table in ``docs/docs_design.md`` §4 lists every top-level section with
+    what goes in it and the test a page must pass. A section is defined there before it
+    is in the nav, and a task a user does in the app is a step in a user guide chapter,
+    never a page of its own.
+    """
+    nav_names = list(_nav_sections(_config()["nav"]))
+    defined = _defined_sections(DOCS_DESIGN.read_text(encoding="utf-8-sig"))
+
+    problems = _section_mismatch(nav_names, defined)
+
+    assert not problems, (
+        "mkdocs.yml's top-level nav and the section table in docs/docs_design.md §4 "
+        "disagree. Define a section in the table (what goes in it, the test for a "
+        "page) before adding it to the nav; a task belongs in a user guide chapter, "
+        "not in a new section:\n" + "\n".join(problems)
+    )
+
+
+def test_the_section_check_would_catch_an_undefined_or_missing_section():
+    """Guard the guard: the comparison must not pass vacuously."""
+    defined = ["Home", "User guides", "Manual"]
+
+    assert _section_mismatch(["Home", "User guides", "Manual"], defined) == []
+    assert _section_mismatch(
+        ["Home", "User guides", "Manual", "Workflows"], defined
+    ) == ["nav section 'Workflows' has no row in the docs_design.md §4 table"]
+    assert _section_mismatch(["Home", "User guides"], defined) == [
+        "docs_design.md §4 defines 'Manual', which is not a nav section"
+    ]
+    assert _section_mismatch(["User guides", "Home", "Manual"], defined)
+    # The table parser reads real rows and stops at the table's end.
+    table = "\n".join(
+        [
+            _SECTION_TABLE_HEADER + " x |",
+            "| --- | --- | --- |",
+            "| Home | a | b |",
+            "",
+            "| Not | a | row |",
+        ]
+    )
+    assert _defined_sections(table) == ["Home"]
