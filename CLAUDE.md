@@ -88,7 +88,8 @@ and include the one cheap command that separates the hypotheses still standing. 
 ## Hard Rules
 
 These apply to every file in `detail/`. A violation is a bug, not a style preference. Where a rule
-names a guard, the guard's module docstring holds the history of the bug behind it.
+names a guard, the guard's module docstring holds the history of the bug behind it. A rule's
+*Guard:* is the test that protects it, in any tier; the `guard` tier is narrower (*Test tiers*).
 
 **Lazy backend imports.** `import torch`, `from ultralytics import YOLO`, `import sam3` and any
 other optional backend import appear only inside methods of the concrete implementation class,
@@ -124,7 +125,8 @@ network only when not installed; `load()` never touches the network — it passe
 An un-installed model fails at `validate()`; a run never auto-installs. **Never configure a
 backend's cache with an environment variable** — backends read those at import, so a later write
 does nothing. The one exception, `YOLO_OFFLINE`, is set only in
-`models/_ultralytics.py::import_ultralytics()`, the only place allowed to import ultralytics.
+`models/_ultralytics.py::import_ultralytics()`, which a function must call before it imports
+ultralytics, in the same function.
 **`hf_files` is a model's file manifest**: what `is_installed()` verifies (per file, with
 `try_to_load_from_cache`, never `is_cached()` or `snapshot_download(local_files_only=True)`) and
 what `install()` downloads. Guard: `tests/models/test_no_implicit_network.py`.
@@ -134,7 +136,8 @@ weights are the user's. Orphaning or silently mixing them (a key's inputs, a fil
 the cache location, an encode parameter) is a user-facing breaking change. To invalidate on
 purpose, follow `DESIGN_PLAN.md` §3 *Compatibility contract*: version it, rebuild only what
 changed, tell the user first. Run outputs are never invalidated.
-Guard: `tests/storage/test_cache_compat.py`.
+Guard: `tests/storage/test_cache_compat.py` (the preview and node caches); the model cache's
+default location is pinned in `tests/models/test_hf_access.py`.
 
 **No FFmpeg** (Tenet 15). No `subprocess.run(["ffmpeg", ...])`, `os.system("ffmpeg ...")` or
 library that shells out to it in pipeline code. Use `cv2.VideoCapture` for sequential frame
@@ -195,7 +198,7 @@ index, which name a cluster carries, which rows are sampled — no user can reac
 - Guard: `tests/pipeline/test_label_leakage.py` permutes the labels with the user's inputs held
   fixed; predictions must not change.
 
-**A recording's id is the tool's, its name is the user's** (`DESIGN_PLAN.md` §11).
+**A recording's id is the tool's, its name is the user's** (`DESIGN_PLAN.md` §3).
 `Experiment.add_recording(name)` mints `recording_NNN`; `create_recording(recording_id)` is the
 explicit form for scripts. Never derive an id from a filename or display one where a name will do
 (`experiment.recording_names()`, `resolve_recording(ref)`). Names are unique: the tool suffixes a
@@ -266,28 +269,31 @@ pytest -q -n auto --dist loadfile
 - **Run what the change touches while you work, and everything once, at the end.**
   `scripts/select_tests.py` prints nothing when the honest answer is "everything", so each line
   falls back to a full run. It is a convenience, not a gate (`tests/impact.py` is its table).
-- **The full local run is the gate.** Do not count on CI to stop a merge, and there is
-  deliberately no pre-push hook. Re-check `HEAD..origin/main` right before merging; if it is
+- **The full local run is the gate.** CI gates too: `main` takes only a squash-merged PR whose
+  required checks pass (`format`, `guard`, `unit`, `gui`, `slow`, `build`), but CI runs Linux and
+  CPU only, so it does not replace the local run. There is deliberately no pre-push hook. Re-check `HEAD..origin/main` right before merging; if it is
   non-empty, merge `main` in and run the gate again. Say in the PR which command you ran.
 - **Run `pre-commit install` once per clone**; `tests/test_pre_commit_config.py` fails without it.
 - Pytest is configured in `pyproject.toml`. Do not pass `--rootdir`, `pythonpath` or `addopts`.
 - **Give the full suite an explicit 10-minute budget**; a run killed by a shorter command timeout
   looks like a hang. `-m "not slow"` is a coarse fallback when the selector cannot narrow.
 - A run stops after 10 failures (`--maxfail=0` lifts that). Coverage (`--cov=detail`) is a
-  deliberate, slower run; `codecov.yml` says why it reports rather than gates.
+  deliberate, slower run; `codecov.yml` says why nothing gates on it.
 - **Never wait on a stalled run.** `scripts/suite_watchdog.py` ends a run that makes no progress
   for 300s (exit 3) and prints what it waited on. Read that; do not re-run blindly.
 
-**Test tiers.** `tests/tiers.py` is the one table: what a test costs (`unit` / `gui` / `slow`) and
-what it protects (`guard`), derived from the file's path. Exceptions carry a reason and are
-checked by `tests/test_test_tiers.py`. A guard is never `slow`. If a run ends in a stack dump from
-the per-test hang watchdog (`faulthandler_timeout`), read the dump; do not raise the timeout.
+**Test tiers.** `tests/tiers.py` is the one table: what a test costs (`unit` / `gui` / `slow`),
+derived from the file's directory, and whether it is a `guard`: listed in `GUARD_FILES`, added by
+hand. Exceptions carry a reason and are checked by `tests/test_test_tiers.py`. A guard-tier file is
+never `slow`. If a run ends in a stack dump from the per-test hang watchdog
+(`faulthandler_timeout`), read the dump; do not raise the timeout.
 
 ### What a new test costs
 
 **Ship a guard — and its cost is part of the change.** Neither obligation is a wall-clock budget:
-- **Coverage must not drop** for the package you touched (baselines in `codecov.yml`). Replacing
-  many slow tests with one shared fixture is therefore allowed.
+- **Coverage must not drop** for the package you touched. Nothing records a baseline: run
+  `--cov=detail` on `main` and on your branch, and compare that package. Replacing many slow tests
+  with one shared fixture is therefore allowed.
 - **A module starts at most one real executor run** (`run_analysis` / `run_processing`) unless
   `tests/test_real_run_budget.py` says otherwise. Build it once in a shared fixture and copy the
   result per test. That table only comes down.
@@ -315,7 +321,7 @@ the per-test hang watchdog (`faulthandler_timeout`), read the dump; do not raise
   confounds, validate through the real run path against a measured baseline
   (`validate-a-perf-claim`).
 - **Mocking.** Scope a mock to the function or `with` block and patch at the point of use
-  (`detail.models.dino.torch.inference_mode`, not `torch.inference_mode`). Never
+  (`detail.pipeline.training.TrainedYOLO`, not `detail.models.trained_yolo.TrainedYOLO`). Never
   `sys.modules["x"] = MagicMock()` at module level.
 - **Errors and warnings.** Raise a specific exception that says what is wrong and what to fix,
   never `warnings.warn` or a broad `try/except`. `pytest` runs with `filterwarnings = error`: a
@@ -327,7 +333,8 @@ the per-test hang watchdog (`faulthandler_timeout`), read the dump; do not raise
 The CI workflow targets Linux with CPU-only torch and headless PyQt6; development is often on
 macOS with a GPU. Fix the root cause of a platform difference, not the symptom:
 - **No accelerator.** CPU-reachable code must not require CUDA/MPS. `pin_memory=True` warns on a
-  host that cannot pin, and that warning fails the test.
+  host that cannot pin; that warning is harmless, so it has one of `pyproject.toml`'s narrow
+  `ignore`s.
 - **`ps` / process semantics.** Linux `ps` truncates the command column with no tty; use
   `ps -ww`. Do not assume signal or process-group behavior matches macOS.
 - **Concurrency timing.** A torn read or an unreaped subprocess appears on a slower machine. Make

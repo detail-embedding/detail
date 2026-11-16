@@ -1,7 +1,11 @@
 # Export design — one backbone, every surface
 
-Internal design doc (agent-facing), the export counterpart to `gui_design.md`. The spec to build
-against; the work is tracked in #336.
+Internal design doc (agent-facing), the export counterpart to `gui_design.md`. The spec the
+export catalogue was built against.
+
+**PR and issue numbers here (`#336`, `#710`, ...) are from the private repository this project was
+developed in.** That history is not published, so a number cannot be looked up from here; the
+sentence around it says what the change was.
 
 It settles the open questions raised in user review. This is *what to build*.
 
@@ -12,7 +16,11 @@ video is the easy part; what matters is exporting the data needed to recreate th
 
 ---
 
-## 1. What is wrong today
+## 1. What was wrong before this design
+
+*History: the state this design replaced. `export_clusterer_videos`, `ClustererDetailPage` and the
+clusterers have since been removed, and the clustering workspace now has the shell's Export
+control (`gui/cluster_workspace.py::export_scope`).*
 
 Seventeen `export_*` functions across `api/`, `storage/` and `analysis/`, behind **seven**
 unrelated GUI dialogs, with no shared contract. Three consequences, all observed:
@@ -30,11 +38,15 @@ unrelated GUI dialogs, with no shared contract. Three consequences, all observed
 
 ## 2. The scoping rule
 
-> **Export what DETAIL made, not what you handed it.**
+> **Export what DETAIL made or holds, not a file that is already yours.**
 
-Video and streams arrived from the user and they still have them. Tracks, masks, embeddings and
-analysis results did not exist before we computed them, and have no other way out. This is what
-keeps the target list short enough to stay meaningful.
+The first version said "not what you handed it" and left video and streams out entirely. That was
+too strict: a recording now exports its streams in DETAIL's aligned form, its frame timestamps,
+and the video parts DETAIL imported a copy of. What stays out is a video part referenced in place,
+which is already the user's, under the video root it was registered from (the `video` target in
+`api/export_targets.py` skips it). Tracks, masks, embeddings and analysis results did not exist
+before we computed them, and have no other way out. This is what keeps the target list short
+enough to stay meaningful.
 
 ## 3. The two kinds of export, in one list
 
@@ -62,7 +74,10 @@ what you export from  what it can produce             how much of it
 experiment ─────────► bundle (portable)               —
                       metadata table (CSV)            —
 
-recording ──────────► arena / ROI geometry (CSV)      —
+recording ──────────► scene geometry (CSV)            —
+                      streams (aligned CSV)           —
+                      frame timestamps (CSV)          —
+                      video (imported copies)         —
                       clip  (raw|overlay|mask)        frames
 
 detection run ──────► masks (COCO JSON)               recordings | all
@@ -71,19 +86,25 @@ detection run ──────► masks (COCO JSON)               recordings |
 tracking run ───────► tracks (CSV)                    recordings | all
                       performance report
 
-embedding run ──────► feature vectors                 recordings | all
+embedding run ──────► feature vectors (npy + CSV)     recordings | all
+                      performance report
 
-keypoint run ───────► keypoints (long CSV)            recordings | all
-                      keypoints for DeepLabCut         recordings | all
+keypoint detect / ──► keypoints (long CSV)            recordings | all
+track run             keypoints for DeepLabCut         recordings | all
                       keypoints for SLEAP (HDF5)       recordings | all
                       keypoints as NWB                 recordings | all
                       keypoints video (mp4 + CSV)      recordings | all
+                      performance report
 
 analysis run ───────► clips  (raw|overlay|mask)       cluster | selection | recordings | all
                       instances (CSV, with XY)         cluster | selection | recordings | all
                       ethogram (CSV + picture)         cluster | selection | recordings | all
                       frame labels (CSV, per frame)   cluster | frames | recordings | all
                       performance report
+
+comparison ─────────► report (figures + tables)       —
+
+distill run ────────► performance report              —
 ```
 
 **A recordings scope exists, and the first draft was wrong to refuse it (#710).** The table once
@@ -172,9 +193,9 @@ The requirement: a user starts an export of everything, walks away, and comes ba
 finished result.
 
 **This section used to make `durable` a property of the target**, with a CSV staying inline and
-clips being submitted as a job. That was the wrong classification and #354 dropped it. `tracks`
-takes seconds on a test fixture and far longer on a real 1080p recording — same target,
-same code. *Long* is a property of the data, so a per-target flag is wrong the first time
+clips being submitted as a job. That was the wrong classification, and the change that made
+every export a run (#354) dropped it. `tracks` takes seconds on a test fixture and far longer
+on a real 1080p recording — same target, same code. *Long* is a property of the data, so a per-target flag is wrong the first time
 somebody exports `instances` across a sixty-recording cohort.
 
 So every export is submitted as an executor job with a run dir, and inherits progress, ETA,
@@ -297,7 +318,7 @@ second implementation of "the same" export is the class where both files look ri
    Full field of view stays the default.
 3. **Tracks as a target** on the tracking run, and the `location_export` split.
 4. **The GUI control**, placed once by the shell, and the drift sweep.
-5. **The cluster workspace** — the screen users reach for export from, which has no export at all today.
+5. **The cluster workspace** — the screen users reach for export from, which had no export at all then.
 6. *Follow-up PR:* convert the other six exporters onto the contract, behaviour unchanged.
 
 Steps 1–5 are this push. Step 6 is deliberately separate so this change does not rewrite seven
@@ -309,7 +330,7 @@ This list said "steps 1–5 are this push" and three pieces of step 3 were not i
 docs shipped describing them. Recorded here because the failure is the one this file is otherwise
 about: a rule written down, believed, and never implemented.
 
-| | in #351 | later |
+| | in the first export change (#351) | later |
 | --- | --- | --- |
 | catalogue + writer + `detail export` | ✅ | |
 | clip flavours + crop | ✅ | |
@@ -320,7 +341,7 @@ about: a rule written down, believed, and never implemented.
 | the GUI control + the drift sweep | ✅ | |
 | the cluster workspace | ✅ | |
 | the other six exporters converted (step 6) | | still open |
-| every export is a run (§6 above) | ✗ | ✅ (#354) — and the `durable` flag it was specified as turned out to be the wrong idea |
+| every export is a run (§6 above) | ✗ | ✅ (#354, the change that made every export a run) — and the `durable` flag it was specified as turned out to be the wrong idea |
 
 The sweep that could not see it was `tests/gui/test_export_reach.py`, which counts **navigation
 kinds** — and all four processing modules share the `run` kind, so `vectors` alone satisfied it.
@@ -349,20 +370,25 @@ excluded from that count because it is available for every run and would make it
 
 ## 11. Open
 
-- **OQ-EXP-A** — do embeddings export as `.npy`, CSV, or both? CSV of a 768-d vector per frame is
-  enormous; `.npy` plus a row-index CSV is probably right.
-- **OQ-EXP-B** — does `detail export` take `--run` and infer the subject, or an explicit
-  `--subject run|recording|experiment`? Inference is nicer and ambiguous once ids collide.
 - **OQ-EXP-C** — where does the GUI control live on a page that is a dialog rather than a page
   (the query finish step)? Review asked for export to replace *Open folder* there.
 
+### Settled
+
+- **OQ-EXP-A** — do embeddings export as `.npy`, CSV, or both? **`.npy` plus a row-index CSV**: the
+  `vectors` target writes `embeddings.npy` and `embeddings_index.csv`. CSV of a 768-d vector per
+  frame is enormous.
+- **OQ-EXP-B** — does `detail export` take `--run` and infer the subject, or an explicit
+  `--subject`? **Both**: the subject is inferred from whichever id flag is given (`--recording`,
+  `--run`, `--analysis-run`, `--distill-run`), and `--subject` is needed only for the experiment,
+  which has no id flag.
+
 ## 12. Specified, not built: two additions on the embedding run (2026-10-20)
 
-Asked for alongside an embedding-space figure, and built as tool features because they
+Asked for alongside an embedding-space figure, and specified as tool features because they
 are useful without it: anyone analysing exported embeddings needs to know where the animal was and
 how big its silhouette was, and anyone checking a run needs to see what the model was fed. The
-figure itself is `paper/fig_embedding/` and does not depend on either (it can read the same data
-through the Python API); `paper/README.md` says which it uses.
+figure does not depend on either; it can read the same data through the Python API.
 
 ### 12.1 `vectors` carries the kinematics
 

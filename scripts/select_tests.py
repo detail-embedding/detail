@@ -12,8 +12,8 @@ so a human can see which of those happened.
 
 This is an edit-loop tool, not a gate --- see ``tests/impact.py`` for why that division is
 the design rather than a shortcut. What runs everything is a full run someone starts by
-hand: Actions is disabled repo-wide and no hook runs the suite, so nothing narrows the
-gate because nothing automated is the gate.
+hand: CI's PR jobs run tier selections (``.github/workflows/ci.yml``), not this script's,
+and no hook runs the suite, so nothing this script prints ever narrows the gate.
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-# Checks that run on your own machine. One command sets up both stages:
+# Checks that run on your own machine. One command sets them up:
 #
 #     pre-commit install
 #
@@ -11,11 +11,11 @@
 # as many pushes, so a push-time gate charges minutes repeatedly for a single decision, and with
 # `scripts/with_suite_lock.py` those runs queue behind each other across sessions.
 #
-# The suite belongs at **merge** time, and the mechanism for that is a required status check on the
-# PR, which needs Actions (disabled repo-wide, being restored). Until then it is a documented
-# discipline rather than a hook -- CLAUDE.md "Before you merge" and the `ship-a-change` skill. Git
-# offers a pre-push hook and no merge hook, so push time was never the right moment; it was the only
-# one reachable.
+# The suite belongs at **merge** time. CI runs tier jobs on every PR (`.github/workflows/ci.yml`),
+# but they are a selection, not the whole suite, so the full run before a merge is a documented
+# discipline rather than a hook -- CLAUDE.md *Testing* and the `ship-a-change` skill. Git offers a
+# pre-push hook and no merge hook, so push time was never the right moment; it was the only one
+# reachable.
 #
 # This replaces `git config core.hooksPath scripts/hooks`, which a fresh clone silently loses
 # (#378: the hook had never run on that machine). pre-commit refuses to install while that

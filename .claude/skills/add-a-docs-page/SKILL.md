@@ -64,8 +64,8 @@ fails with "page missing".
 python -m mkdocs build --strict
 ```
 
-`.github/workflows/docs.yml` runs exactly that on every push and every PR, and it is a separate
-workflow from the test suite — easy to forget, and able to fail a PR on its own. `--strict` promotes
+`.github/workflows/docs.yml` runs `mkdocs build --strict` on every PR and every push to `main`,
+and it is a separate workflow from the test suite — easy to forget, and able to fail a PR on its own. `--strict` promotes
 mkdocs' broken-link and anchor warnings to errors; `mkdocs.yml` sets `validation.links.anchors: warn`
 so that strictness is where they bite.
 
@@ -82,6 +82,7 @@ A change that alters what a user sees or types updates its doc **in the same cha
 another is `wire-every-surface`, and a deliberate omission goes in `docs/cli.md`'s "Not in the CLI"
 with its reason.
 
-§9 is the anti-drift inventory: `test_docs_nav.py`, `test_docs_modules_nav.py`,
-`test_docs_generated_pages.py`, `test_docs_map.py`, `test_help.py`. If you add a generator or a
-surface, add its guard there too.
+The docs' anti-drift guards are `test_docs_nav.py`, `test_docs_modules_nav.py`,
+`test_docs_generated_pages.py`, `test_docs_map.py` and `test_help.py`. `docs/docs_design.md` §9 is
+the anti-drift policy, and of these it names only `test_docs_nav.py`. If you add a generator or a
+surface, add its guard beside these.
