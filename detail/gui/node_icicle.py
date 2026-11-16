@@ -900,7 +900,7 @@ class NodeIcicle(QWidget):
         if int(node) in self._window_marks:
             text += f" · open in window {self._window_marks[int(node)]}"
         if int(node) in self._found:
-            text += " · listed in Find clusters"
+            text += " · one of the ids you are finding"
         return text
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 — Qt's name

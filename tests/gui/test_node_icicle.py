@@ -692,7 +692,7 @@ def test_a_found_cluster_wears_its_colour_just_outside_its_block(icicle):
     rect = next(r for r, n in icicle._blocks if n == 4)
     assert _band_pixel(icicle, rect, "bottom").name() == _FOUND.name()
     assert icicle._found_pieces == {4: [4]}
-    assert "listed in Find clusters" in icicle._describe(4)
+    assert "one of the ids you are finding" in icicle._describe(4)
     icicle.set_found({})
     assert _band_pixel(icicle, rect, "bottom").name() != _FOUND.name()
     assert icicle._found_pieces == {}
