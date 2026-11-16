@@ -55,6 +55,7 @@ from detail.core.dataclasses import (
     TextCue,
 )
 from detail.core.protocols import ModelNotReadyError
+from detail.core.utils import best_supported_backend
 from detail.storage import metadata as metadata_store
 from detail.storage import snapshots as snapshots_store
 from detail.storage import streams as streams_store
@@ -693,7 +694,7 @@ _DEVICE_OPT = click.option(
     "devices",
     multiple=True,
     type=int,
-    help="Device index (repeatable for multi-GPU; cuda only).",
+    help="Device index (repeatable for multi-GPU; cuda only). Left out: GPU 0 alone.",
 )
 # The CLI twin of the GUI's confidence slider (gui/confidence.ConfidenceRow). These
 # commands run the model wide open and keep every proposal, so this filters what gets
@@ -992,16 +993,31 @@ def recording() -> None:
 @recording.command("create")
 @_EXPERIMENT_OPT
 @click.option(
-    "--name", required=True, type=str, help="Recording id (e.g. recording_001)."
+    "--name",
+    required=True,
+    type=str,
+    help="The recording's name: what every command's --recording and the GUI take. "
+    "The tool assigns its id (recording_000, …).",
 )
 def recording_create(experiment_dir: Path, name: str) -> None:
-    """Create a new recording under <experiment>/recordings/<name>/."""
+    """Create a new, empty recording named NAME; the tool assigns its id."""
     proj = _open_experiment(experiment_dir)
-    try:
-        proj.create_recording(name)
-    except (FileExistsError, ValueError) as e:
-        raise click.ClickException(str(e))
-    click.echo(f"created recording: {name}")
+    name = name.strip()
+    if not name:
+        raise click.ClickException("--name cannot be empty")
+    # A name a user typed is refused when taken, never suffixed the way the importer's
+    # filenames are (Recording.set_name, CLAUDE.md "A recording's id is the tool's").
+    holder = next(
+        (rid for rid, existing in proj.recording_names().items() if existing == name),
+        None,
+    )
+    if holder is not None:
+        raise click.ClickException(
+            f"another recording is already named {name!r} (id {holder}); "
+            "names identify recordings to you, so they have to be unique"
+        )
+    recording = proj.add_recording(name)
+    click.echo(f"created recording: {recording.name}  (id {recording.id})")
 
 
 class _StageProgress:
@@ -7494,20 +7510,28 @@ def tools() -> None:
     "side by side in sample mode; put several classes in one prompt by "
     "comma-separating them ('mouse,rat').",
 )
+# `mode` as two flags sharing one destination, so the option *is* the model's field: its
+# default and its help are read from QuickSegmentConfig rather than typed here.
 @click.option(
-    "--sample/--consecutive",
-    "sample",
-    default=True,
-    show_default="--sample",
-    help="--sample spreads the frames evenly across each clip (compares prompts); "
-    "--consecutive reads straight through from frame 0 (one prompt, one clip, "
-    "and the only mode an --export mp4 can be made from).",
+    "--sample",
+    "mode",
+    flag_value="sample",
+    default=_QSEG_DOC["mode"]["default"],
+    show_default=True,
+    help=_QSEG_DOC["mode"]["help"],
+)
+@click.option(
+    "--consecutive",
+    "mode",
+    flag_value="consecutive",
+    help="Select the consecutive mode described under --sample.",
 )
 @click.option(
     "--whole-video",
+    "whole_video",
     is_flag=True,
-    default=False,
-    help="With --consecutive, segment every frame (no cap). Can run for hours.",
+    default=_QSEG_DOC["whole_video"]["default"],
+    help=_QSEG_DOC["whole_video"]["help"],
 )
 @click.option(
     "--model",
@@ -7524,7 +7548,13 @@ def tools() -> None:
     help=_QSEG_DOC["n_frames"]["help"],
 )
 @_MIN_CONF_OPT
-@_BACKEND_OPT
+@click.option(
+    "--backend",
+    type=click.Choice(["cpu", "cuda", "mps"]),
+    default=None,
+    help="Compute backend (default: the best one this machine has that the model "
+    "supports: CUDA, then MPS, then CPU).",
+)
 @_DEVICE_OPT
 @click.option(
     "--export",
@@ -7536,21 +7566,28 @@ def tools() -> None:
 def tools_quick_segment(
     videos: tuple[Path, ...],
     prompts: tuple[str, ...],
-    sample: bool,
+    mode: str,
     whole_video: bool,
     model_id: str | None,
     n_frames: int,
     min_conf: float,
-    backend: str,
+    backend: str | None,
     devices: tuple[int, ...],
     export_path: Path | None,
 ) -> None:
     """Segment VIDEOS with one or more prompts and save a managed tool run."""
+    from detail.api import models as api_models
+
     if model_id is None:
         try:
             model_id = api_tools.default_model_for_machine()
         except RuntimeError as e:
             raise click.ClickException(str(e))
+    if backend is None:
+        # The GUI's compute row picks the same way (gui/compute_target.ComputeTargetRow), and
+        # the resolved backend is what the run's manifest records.
+        backend = best_supported_backend(api_models.supported_backends(model_id))
+    sample = mode == "sample"
     if not sample and len(videos) > 1:
         raise click.ClickException(
             "--consecutive reads one clip straight through; pass a single video "
@@ -7578,7 +7615,7 @@ def tools_quick_segment(
         "model_id": model_id,
         "model_variant": None,
         "compute": _compute_target(backend, devices),
-        "mode": "sample" if sample else "consecutive",
+        "mode": mode,
         "whole_video": whole_video,
         "n_frames": n_frames,
     }

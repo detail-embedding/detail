@@ -445,7 +445,7 @@ _KD = KeypointDetectConfig.model_fields
     "devices",
     multiple=True,
     type=int,
-    help="Device index (repeatable for multi-GPU; cuda only).",
+    help="Device index (repeatable for multi-GPU; cuda only). Left out: GPU 0 alone.",
 )
 def keypoints_detect(
     experiment_dir: Path,

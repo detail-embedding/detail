@@ -1,4 +1,14 @@
-"""Quick-segment engine + Tools API (§9): capped sequential segmentation over a raw clip."""
+"""Quick-segment engine + Tools API (§9): capped sequential segmentation over a raw clip.
+
+**A class guarded here: a compute default the selected model cannot run on.** The CLI's
+``tools quick-segment`` picks SAM 3 on a machine with an NVIDIA GPU, and SAM 3 runs on CUDA
+only, while ``--backend`` defaulted to ``cpu`` like the stage commands. So the command as
+documented failed on every machine it could run on, and the docs told users to pass
+``--backend cuda`` by hand. An omitted ``--backend`` now resolves with
+``best_supported_backend`` over the chosen model's own backends, as the GUI's compute row
+does, and the manifest records the backend chosen
+(``test_cli_quick_segment_with_no_backend_runs_on_one_the_model_supports``).
+"""
 
 import cv2
 import numpy as np
@@ -320,6 +330,53 @@ def test_cli_quick_segment_runs_lists_exports_deletes(
     deleted = runner.invoke(cli.main, ["tools", "delete", "run_001"])
     assert deleted.exit_code == 0
     assert api_tools.list_tool_runs() == []
+
+
+@pytest.mark.parametrize(
+    "supported,cuda,mps,expected",
+    [
+        (
+            ["cuda"],
+            True,
+            False,
+            "cuda",
+        ),  # SAM 3's shape: the default model on a GPU box
+        (["cpu", "mps", "cuda"], False, True, "mps"),
+        (["cpu", "mps", "cuda"], False, False, "cpu"),
+    ],
+)
+def test_cli_quick_segment_with_no_backend_runs_on_one_the_model_supports(
+    tmp_path, isolated_tools, monkeypatch, supported, cuda, mps, expected
+):
+    """The bare command — no ``--backend``, no ``--model`` — runs, on the best backend the
+    machine has that the model accepts, and the manifest records the one it chose.
+
+    ``--backend`` used to default to ``cpu``, and the model the command picks for a GPU
+    machine is SAM 3, which runs on CUDA only: the command as documented failed on every
+    machine it could run on. The GUI's compute row already picked this way."""
+    from click.testing import CliRunner
+
+    from detail import cli
+    from detail.core import utils
+
+    class _Picky(_StubDetector):
+        model_id = "stub_picky"
+        supported_backends = supported
+
+    register_model("stub_picky")(_Picky)
+    monkeypatch.setattr(api_tools, "default_model_for_machine", lambda: "stub_picky")
+    monkeypatch.setattr(utils, "cuda_available", lambda: cuda)
+    monkeypatch.setattr(utils, "mps_available", lambda: mps)
+    video = tmp_path / "clip.mp4"
+    _write_video(video, n_frames=6)
+
+    res = CliRunner().invoke(
+        cli.main, ["tools", "quick-segment", str(video), "--prompt", "mouse"]
+    )
+    assert res.exit_code == 0, res.output
+    (record,) = api_tools.list_tool_runs()
+    assert record["compute"]["backend"] == expected
+    assert record["config"]["mode"] == "sample"
 
 
 def test_sampled_mode_spreads_frames_across_the_whole_clip(

@@ -96,6 +96,15 @@ FLOOR_ALPHA = 0.05
 #: never a run parameter — what the record kept is kept at :data:`FLOOR_ALPHA`.
 STRICTNESS_LEVELS = (0.01, 0.02, 0.05, 0.1, 0.2, 0.3, 0.5)
 
+#: How close, relative to the observed value, a null draw must come to count as reaching it.
+#: A null recomputes the observed configuration by other arithmetic (a matrix product where the
+#: effect is a ``nansum``, a fresh ``fmean`` where the contrast read a summary's mean), so the
+#: draw that *is* the observed labelling can land a rounding step short of it. Compared exactly,
+#: that draw reached nothing: an enumerated null's own p came out 0, which it cannot be, and the
+#: observed value cleared a floor that was itself. 100 machine epsilons, scipy's
+#: ``permutation_test`` convention; read only through :func:`_reaches`.
+_TIE_RTOL = 100 * float(np.finfo(float).eps)
+
 
 class ComparisonError(ValueError):
     """A comparison asked for something the data or the metadata cannot answer."""
@@ -590,7 +599,7 @@ class Ranking:
         # also `None` and is not unbounded. Do not read a test that mutates it away as coverage.
         if self.floor is None or item.unbounded or item.magnitude is None:
             return False
-        return item.magnitude > self.floor
+        return not _reaches(self.floor, item.magnitude)
 
     def clearing(self) -> list:
         """The items that clear the floor, in rank order."""
@@ -619,8 +628,8 @@ class Ranking:
     def clears_at(self, item, alpha: float) -> bool:
         """Whether ``item`` clears the floor at the family-wise level ``alpha``: its
         ``family_p`` is at most ``alpha``. ``family_p`` is the smallest level at which the item
-        clears :meth:`floor_at`, so this agrees with ``magnitude > floor_at(alpha)`` at every
-        level, and with :meth:`clears_floor` at :data:`FLOOR_ALPHA`; a hover's p and a
+        clears :meth:`floor_at`, so this agrees with ``magnitude`` clearing
+        ``floor_at(alpha)`` at every level, and with :meth:`clears_floor` at :data:`FLOOR_ALPHA`; a hover's p and a
         slider's threshold cannot disagree. ``False`` with no floor, or no p."""
         if self.floor is None:
             return False
@@ -698,7 +707,7 @@ def _vacuous_permutation(obs: Sequence[Observation], groups: tuple) -> str | Non
 
     **The shape is one observation per group.** A measure with a single value on each side has a
     magnitude that a swap leaves unchanged, so no relabelling can produce a larger one; the null's
-    maximum *is* the observed maximum, and `clears_floor` compares with `>`. On a real
+    maximum *is* the observed maximum, and `clears_floor` asks for more than a tie. On a real
     two-recording comparison this came out as a floor equal to the observed maximum to six
     significant figures, with 0 of 19 measures clearing it. Not unlikely — impossible.
 
@@ -748,25 +757,34 @@ def _floor_index(n: int, alpha: float) -> int:
     return min(max(position, 0), n - 1)
 
 
+def _reaches(draw, observed: float):
+    """Whether a null draw (a float or an array of them) reaches ``observed``, allowing for the
+    rounding step by which a recomputed observed configuration can fall short of it
+    (:data:`_TIE_RTOL`). The one comparison every p and every floor verdict reads, so the own p,
+    the family-wise p and :meth:`Ranking.clears_floor` agree on what a tie is. ``NaN`` reaches
+    nothing."""
+    return draw >= observed - abs(observed) * _TIE_RTOL
+
+
 def _family_p(ordered: Sequence[float], magnitude: float | None) -> float | None:
     """The smallest family-wise level at which ``magnitude`` clears the floor of a sorted
     null: the share of the null's draws whose largest effect reaches it, read through the
     same percentile rule as the floor. Defined that way, rather than as the bare count over
-    the draws, so ``family_p <= alpha`` and ``magnitude > floor_at(alpha)`` agree at every
-    level — the rule rounds its position in the null, and a bare count sits one draw off it
+    the draws, so ``family_p <= alpha`` and ``magnitude`` clearing ``floor_at(alpha)``
+    agree at every level — the rule rounds its position in the null, and a bare count sits one draw off it
     at some levels, which would put a cluster's hover and the slider's threshold at odds.
     ``1`` for an effect no draw falls short of; ``None`` for no magnitude or no null."""
     if magnitude is None or not ordered:
         return None
     n = len(ordered)
-    below = int(np.searchsorted(ordered, magnitude, side="left"))
+    below = int(np.sum(~_reaches(np.asarray(ordered, dtype=float), magnitude)))
     if below == 0:
         return 1.0
     if n == 1:
         return 0.0
 
     def clears(alpha: float) -> bool:
-        return ordered[_floor_index(n, alpha)] < magnitude
+        return not _reaches(ordered[_floor_index(n, alpha)], magnitude)
 
     # The rule's position crosses `below - 1` where (1 - alpha)(n - 1) passes below - 0.5;
     # the round there is the one case the arithmetic cannot settle, so the estimate is
@@ -798,12 +816,13 @@ def _share_reaching(
 ) -> float | None:
     """The share of one item's own null draws reaching ``magnitude`` (unsorted; NaN where a
     draw had no finite value for it, which reaches nothing). Exact where the null was
-    enumerated: the observed configuration is one of its draws, so the share is never zero.
+    enumerated: the observed configuration is one of its draws, so the share is never zero
+    (that draw counts through :func:`_reaches`, which allows for its rounding).
     Over a sample the observed labelling counts as one more draw, the standard convention for
     a Monte Carlo p, so the smallest reportable value is ``1 / (draws + 1)``."""
     if magnitude is None or not len(null):
         return None
-    reached = int(np.sum(null >= magnitude))
+    reached = int(np.sum(_reaches(null, magnitude)))
     if exact:
         return reached / len(null)
     return (reached + 1) / (len(null) + 1)

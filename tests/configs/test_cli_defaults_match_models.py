@@ -66,12 +66,16 @@ def _pairs():
     a second command with its own copy of every option: ``embedding run`` and ``process
     embedding`` each declared ``--model`` separately. Pairing only the first match left the
     second copy free to invent a default, so every ``process`` command is paired too.
+
+    A §27 tool's command lives under ``tools``. Left out, ``tools quick-segment`` typed its
+    mode and whole-video defaults and help by hand beside a model that declared both, and
+    nothing compared them.
     """
     commands = dict(_commands(cli_main))
     out = []
     for module_id, model in sorted(iter_config_models()):
         dashed = module_id.replace("_", "-")
-        for path in (f"{dashed} run", f"analysis {dashed}", dashed):
+        for path in (f"{dashed} run", f"analysis {dashed}", f"tools {dashed}", dashed):
             if path in commands:
                 out.append((path, commands[path], model))
                 break
@@ -152,6 +156,21 @@ def test_the_sweep_pairs_real_commands():
     assert len(PAIRS) >= 10, f"only {len(PAIRS)} model/command pairs found"
     assert any(path == "tracking run" for path, _cmd, _model in PAIRS)
     assert any(path == "process embedding" for path, _cmd, _model in PAIRS)
+    assert any(path == "tools quick-segment" for path, _cmd, _model in PAIRS)
+
+
+def test_the_scan_would_catch_a_tool_option_that_disagrees_with_its_model():
+    """The negative case for the ``tools`` pairing, on both of quick-segment's settings
+    options: each one is named for its field, so a default typed beside the model is
+    judged rather than skipped."""
+    path, command, model = next(p for p in PAIRS if p[0] == "tools quick-segment")
+    names = {p.name for p in command.params}
+    assert {"mode", "whole_video", "n_frames"} <= names
+    for planted in (
+        click.Option(["--sample", "mode"], flag_value="sample", default="consecutive"),
+        click.Option(["--whole-video", "whole_video"], is_flag=True, default=True),
+    ):
+        assert _offences(path, click.Command(command.name, params=[planted]), model)
 
 
 @pytest.mark.parametrize("path,command,model", PAIRS, ids=[p[0] for p in PAIRS])

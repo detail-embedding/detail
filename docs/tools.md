@@ -48,15 +48,16 @@ The Configuration checklist's **See it segment a clip** step opens this tool.
 ### CLI
 
 ```
-detail tools quick-segment CLIP.mp4 [CLIP2.mp4 …] --prompt mouse [--prompt "mouse with tail"] [--frames 50] [--min-conf 0.25] --backend cuda
-detail tools quick-segment CLIP.mp4 --consecutive --prompt mouse [--whole-video] [--export out.mp4] --backend cuda
+detail tools quick-segment CLIP.mp4 [CLIP2.mp4 …] --prompt mouse [--prompt "mouse with tail"] [--frames 50] [--min-conf 0.25]
+detail tools quick-segment CLIP.mp4 --consecutive --prompt mouse [--whole-video] [--export out.mp4]
 ```
 
 Each `--prompt` is a **separate prompt**, compared side by side; put several classes in one
 prompt by comma-separating them (`--prompt "mouse,cricket"`). `--sample` (the default)
 spreads the frames across each clip; `--consecutive` reads from frame 0 and is what
-`--export` needs. `--backend` defaults to `cpu`, which SAM 3 cannot run on, so pass `--backend
-cuda` with the default model. With one of your own models (`--model <id>`), `--prompt` is still
+`--export` needs. Left out, `--backend` takes the best backend the machine has that the model
+supports (CUDA, then MPS, then CPU), so the default model, SAM 3, runs on CUDA with no flag.
+With one of your own models (`--model <id>`), `--prompt` is still
 required, but the model ignores its text and finds its own classes.
 
 ```
