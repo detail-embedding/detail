@@ -356,7 +356,7 @@ def summarize_settings(
 def iter_config_models() -> list[tuple[str, type[BaseModel]]]:
     """`(module_id, config_model)` for every registered thing that declares one — processing
     then analysis modules, the runners outside those registries (§12 dataset sources, a
-    comparison, the keypoint track methods), the §9 tools, the §20 query methods, and the §12 trainers. Each group
+    comparison, the keypoint track methods), the §27 tools, the §20 query methods, and the §12 trainers. Each group
     sorted by id, so the output is stable. Imports what it needs to populate the registries.
 
     **Every registry whose members can declare a `config_model` is walked here.** This is the

@@ -86,9 +86,10 @@ jobs:
       - run: pip install black==26.10.1
       - run: black --check --diff detail/ tests/
 
-  # The guards: source scans, registry parity, structural and anti-drift checks. They
-  # cover the bug classes in CLAUDE.md's *Recorded classes* table, which are invisible
-  # to behavioural tests, and they are cheap. Always run, never skipped, first to go red.
+  # The guards (tests/tiers.py::GUARD_FILES): source scans, registry parity, structural and
+  # anti-drift checks. They protect many of the bug classes in docs/recorded_classes.md,
+  # which are invisible to behavioural tests, and they are cheap. Always run, never
+  # skipped, first to go red.
   guard:
     runs-on: ubuntu-latest
     steps:

@@ -1,4 +1,4 @@
-"""Machine-global Tools API (§9) — the experiment-free entry point for one-off runs.
+"""Machine-global Tools API (§27) — the experiment-free entry point for one-off runs.
 
 A *tool* runs synchronously and saves a managed run under the machine-global tools
 workspace (``storage/tool_runs.py``). This module is the surface the CLI and GUI both

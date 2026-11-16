@@ -4,9 +4,10 @@
 # It is still not a *gate*, and the reason has changed. It was waiting on #535, which retires guards
 # whose class has become structurally impossible — every retirement drops coverage, so a floor set
 # first would have blocked the cleanup it protects. #535 has since landed and retired nothing
-# (97 classes live, 0 retired), so that reason is spent. What blocks the gate now is that **Actions
-# is disabled repo-wide**, so nothing uploads and a `informational: false` here would fail nothing
-# while looking like a check. Flip it when Actions returns, at the number true then.
+# (97 classes live, 0 retired), so that reason is spent. What blocks the gate now is that **nothing
+# uploads**: CI runs, but no job runs with `--cov` or sends a report, so an `informational: false`
+# here would fail nothing while looking like a check. Add the upload first, then flip it at the
+# number true then.
 #
 # The per-package shape follows napari's codecov.yml: separate targets, because one global
 # number lets a well-covered package hide a bare one. `target: auto` means "do not drop",
@@ -14,8 +15,8 @@
 # consolidating slow tests into fast ones passes where a test-count rule would not.
 
 codecov:
-  # Nothing uploads while Actions is disabled repo-wide (2026-09-30; it was #378's billing
-  # failure before that). These take effect when Actions returns, or when the repo goes public.
+  # Nothing uploads yet: no CI job runs with `--cov` or sends a report. These take effect once
+  # one does.
   require_ci_to_pass: false
 
 comment: false

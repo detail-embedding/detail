@@ -710,7 +710,7 @@ class MainWindow(QMainWindow):
             QTreeWidgetItem.ChildIndicatorPolicy.DontShowIndicatorWhenChildless
         )
 
-    # -- the Quick tools rail (§9) ------------------------------------------- #
+    # -- the Quick tools rail (§27) ------------------------------------------- #
     def _tool_rail_items(self) -> list[QTreeWidgetItem]:
         """The rail nodes for Quick tools — one folder per registered tool, its saved runs
         beneath it oldest first (store order, like every project-rail section). One sweep of
@@ -1081,7 +1081,7 @@ class MainWindow(QMainWindow):
             node.setExpanded(True)
             self._navigate(node)
 
-    # -- tools (§9) ---------------------------------------------------------- #
+    # -- tools (§27) ---------------------------------------------------------- #
     def _tool_label(self, tool_id: str) -> str:
         for info in api_tools.list_tools():
             if info.tool_id == tool_id:
