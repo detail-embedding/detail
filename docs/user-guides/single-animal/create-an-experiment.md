@@ -18,6 +18,8 @@ the dialog that opens.
 1. [Create the experiment](#1-create-the-experiment) <span class="where where-app">Experiments › New experiment</span> <span class="note">A name, and which way the camera looks.</span>
 2. [Add the recordings](#2-add-the-recordings) <span class="where where-app">Experiments › Recordings › Add recordings</span> <span class="note">One recording per video.</span>
 3. [Fill in Recording information](#3-fill-in-recording-information) <span class="where where-app">Experiments › Recording information</span> <span class="note">Every piece of information about each recording: dose, sex, date, trial.</span>
+4. [Optional: a recording in several files](#4-optional-a-recording-in-several-files) <span class="where where-app">Experiments › Recordings › a recording › Add video part</span> <span class="note">For a session the camera saved as more than one video.</span>
+5. [Optional: many recordings at once](#5-optional-many-recordings-at-once) <span class="where where-app">Experiments › Recordings › Import bundle</span> <span class="note">For a large experiment, from one file that lists every recording.</span>
 
 </div>
 
@@ -307,6 +309,93 @@ A column added there appears on every recording, empty on the others until you f
     For many recordings, copy the values from a spreadsheet and paste them into the table
     while editing, or use **Import CSV**. **Export CSV** writes a table to fill in, with one
     row per recording.
+
+## 4. Optional: a recording in several files
+
+Some cameras save one session as several video files, one after another. Keep them as **one
+recording with several parts**, not as separate recordings: DETAIL then plays and analyzes
+them as one video, on one clock. Skip this step if each session is one file.
+
+1. Add the session's **first** file as a recording ([step 2](#2-add-the-recordings)) and wait
+   until its **Status** says **ready**.
+2. Click **Recordings** in the list on the left, and double-click the recording to open its
+   page.
+3. Click **Add video part** and choose the next file. Do this once for each remaining file,
+   in the order they were filmed.
+
+![A recording's page with two video parts listed under Video parts, and the Add video part button highlighted.](../../assets/user-guides/single-animal/create/add-video-part.png)
+
+**Check:** the recording's page lists every part under **Video parts**, in the order they
+were filmed, and the heading counts them, such as **Video parts (2)**. If two are the wrong way round, choose one and click **Move up** or **Move down**.
+
+??? info "About this step"
+    Every part of a recording must have the same picture size and the same frame rate, which
+    is the case for files one camera saved in one session. DETAIL refuses a part that differs.
+
+    Set the order before you go on. Once the recording has a run, such as a detection run in
+    chapter 3, the order is fixed, because the run's results are tied to it.
+
+    The rest of the recording's page is described in [chapter 2, step
+    1](set-up-recordings.md#1-open-a-recording).
+
+## 5. Optional: many recordings at once
+
+For a large experiment, adding recordings one dialog at a time is slow. Instead you can list
+every recording in one text file, called a **manifest**, and import them together: their
+videos, their Recording information, and their streams. Skip this step if **Add recordings**
+is enough for you.
+
+1. Put the videos in one folder. This folder is the **bundle**.
+2. In the same folder, make a text file named `manifest.yaml` that lists the recordings. This
+   one makes two recordings, the first in two parts:
+
+    ```yaml
+    recordings:
+      - id: box1
+        video:
+          - box1_morning.mp4
+          - box1_afternoon.mp4
+        metadata:
+          animal: 17
+          dose: 10
+      - id: box2
+        video: [box2.mp4]
+        metadata:
+          animal: 18
+          dose: 0
+    ```
+
+3. In DETAIL, click **Recordings** in the list on the left, then **Import bundle**, and choose
+   the bundle folder.
+4. DETAIL checks the whole manifest, then asks **Import 2 recording(s) from this bundle?**
+   Click **Yes**. The videos import in the background, as in step 2.
+
+![The Recordings page with the Import bundle button highlighted.](../../assets/user-guides/single-animal/create/import-bundle.png)
+
+**Check:** every recording in the manifest is listed, and its **Status** says **ready** when
+its import is done. Each `metadata` entry is a column on **Recording information**.
+
+??? info "About this step"
+    The file names in the manifest are looked for inside the bundle folder. `metadata` takes
+    any names you like: each becomes a Recording information column, as in [step
+    3](#3-fill-in-recording-information). A recording can also list its streams
+    ([chapter 2, step 6](set-up-recordings.md#6-optional-add-streams)).
+
+    Every field the manifest takes is in the [Manifest reference](../../reference/manifest.md).
+    The same import can be run from a terminal: see [Bulk importing
+    recordings](../../cli.md#bulk-importing-recordings) in the manual.
+
+??? warning "If this doesn't work"
+    DETAIL checks the whole manifest before it creates anything. If it finds a problem it
+    lists every one in a window titled **Import bundle** and imports nothing, so you can fix
+    the file and try again. The usual problems:
+
+    - **A file is missing:** a name in the manifest does not match a file in the folder.
+      Check the spelling, and upper and lower case.
+    - **An id is already used:** a recording with that id is in the experiment, or the
+      manifest lists it twice.
+    - **Parts disagree:** the parts of one recording have different picture sizes or frame
+      rates, so they are not one session from one camera.
 
 ## Next
 

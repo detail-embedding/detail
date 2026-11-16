@@ -227,12 +227,12 @@ The other rows are set up later, once you have an experiment:
 | Row | Where |
 |-----|-------|
 | See it segment a clip | Optional: **Quick tools** tries SAM 3 on one video, without an experiment. |
-| Recommended: distill a fast model | [Single animal](single-animal/index.md), detection chapter |
-| Set up keypoints for Analysis | [Single animal](single-animal/index.md), keypoints chapter |
-| Optional: Cluster profile | [Single animal](single-animal/index.md), clustering chapter |
+| Recommended: distill a fast model | [3. Detect and track](single-animal/detect-and-track.md) |
+| Set up keypoints for Analysis | [4. Keypoints](single-animal/keypoints.md) |
+| Optional: Cluster profile | [8. Clustering](single-animal/clustering.md) |
 | Remote targets | [Set up Tillicum](tillicum.md) |
 
 ## Next
 
 - **With Tillicum:** [Set up Tillicum](tillicum.md).
-- **Without:** [Single animal](single-animal/index.md).
+- **Without:** [1. Create an experiment and add recordings](single-animal/create-an-experiment.md).

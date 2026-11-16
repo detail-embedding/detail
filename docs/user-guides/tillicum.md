@@ -587,4 +587,4 @@ move it now: see the SAM 3 item under *If this doesn't work* in
 
 ## Next
 
-[Single animal](single-animal/index.md). Each chapter says which steps can run on Tillicum.
+[1. Create an experiment and add recordings](single-animal/create-an-experiment.md). Each chapter says which steps can run on Tillicum.

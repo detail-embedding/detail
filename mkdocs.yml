@@ -99,6 +99,8 @@ markdown_extensions:
   - mkdocs-click
 
 nav:
+  - Home: index.md
+  - Getting started: getting-started.md
   - User guides:
       - Overview: user-guides/index.md
       - Install on Windows: user-guides/install-windows.md
@@ -107,25 +109,19 @@ nav:
       - Install on macOS: user-guides/install-macos.md
       - Configure DETAIL: user-guides/configure.md
       - Set up Tillicum: user-guides/tillicum.md
-      - Single animal:
-          - Overview: user-guides/single-animal/index.md
-          - 1. Create an experiment: user-guides/single-animal/create-an-experiment.md
-          - 2. Set up each recording: user-guides/single-animal/set-up-recordings.md
-          - 3. Detect and track: user-guides/single-animal/detect-and-track.md
-          - 4. Keypoints: user-guides/single-animal/keypoints.md
-          - 5. Embedding: user-guides/single-animal/embedding.md
-          - 6. Location export: user-guides/single-animal/location-export.md
-          - 7. Behavior scan: user-guides/single-animal/behavior-scan.md
-          - 8. Clustering: user-guides/single-animal/clustering.md
-  - Home: index.md
-  - Getting started: getting-started.md
-  - Workflows:
-      - Create an experiment: workflows/create-a-experiment.md
-      - Add a recording: workflows/add-a-recording.md
-      - Add a multi-part recording: workflows/add-a-multi-part-recording.md
-      - Add stream data and metadata: workflows/add-stream-data-and-metadata.md
-      - Import recordings from YAML: workflows/import-recordings-from-yaml.md
-      - Connect a remote cluster: workflows/connect-a-remote-cluster.md
+      - 1. Create an experiment: user-guides/single-animal/create-an-experiment.md
+      - 2. Set up each recording: user-guides/single-animal/set-up-recordings.md
+      - 3. Detect and track: user-guides/single-animal/detect-and-track.md
+      - 4. Keypoints: user-guides/single-animal/keypoints.md
+      - 5. Embedding: user-guides/single-animal/embedding.md
+      - 6. Location export: user-guides/single-animal/location-export.md
+      - 7. Behavior scan: user-guides/single-animal/behavior-scan.md
+      - 8. Clustering: user-guides/single-animal/clustering.md
+  - Manual:
+      - GUI: gui.md
+      - CLI: cli.md
+      - Tools: tools.md
+      - Remote cluster: workflows/connect-a-remote-cluster.md
   - Concepts:
       - Overview: concepts.md
       - Input images: input-images.md
@@ -133,10 +129,6 @@ nav:
       - Querying methods: querying-methods.md
       - Measures: measures.md
       - Glossary: glossary.md
-  - Guides:
-      - GUI: gui.md
-      - CLI: cli.md
-      - Tools: tools.md
   - Modules:  # generated per config model by scripts/gen_docs_modules.py
       - Detection: modules/detection.md
       - Tracking: modules/tracking.md

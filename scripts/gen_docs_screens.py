@@ -1,24 +1,17 @@
-"""Render GUI screens to committed PNGs for the Workflows tutorials.
+"""Render GUI screens to committed PNGs for the user guides.
 
 ``docs/docs_design.md`` §6: GUI images are auto-rendered, not hand-captured. This
-generator builds a small real experiment from the committed sample data
-(``docs/assets/sample-data/``) and grabs each documented screen offscreen via
-``QWidget.grab()``. Rerun it after a GUI change to refresh the PNGs; the docs
-build just embeds them (no Qt at build time). This is the "first documented
-screen" harness §6 defers, landed as committed PNGs (no golden-compare yet).
+generator opens the real GUI offscreen and grabs each documented screen via
+``QWidget.grab()``. Rerun a target after a GUI change to refresh its PNGs; the docs
+build just embeds them (no Qt at build time).
 
-Two kinds of image per navigating step (§6):
-
-- a **full-window** capture of the screen the step names, with the control the
-  user clicks marked by a drawn highlight box (``_save_window``), and
-- the **dialog or panel** that opens, cropped tight (``_save``).
-
-    python scripts/gen_docs_screens.py               # the Workflows screens
-    python scripts/gen_docs_screens.py user-guides   # the User guides screens
+    python scripts/gen_docs_screens.py user-guides   # install, Configure and Tillicum
+    python scripts/gen_docs_screens.py more-ways     # chapter 1's two optional steps,
+                                                     # from the committed sample clips
     python scripts/gen_docs_screens.py single-animal <demo experiment folder>
     python scripts/gen_docs_screens.py keypoints <demo experiment folder>
                                                      # chapter 4 alone
-                                                     # the Single animal guide's screens
+                                                     # the chapters' screens
     python scripts/gen_docs_screens.py clustering <demo experiment folder> <run> <node>
                                                      # chapter 8: the run's page, Interpret,
                                                      # a cluster window, the clip window,
@@ -43,6 +36,7 @@ if sys.platform == "win32":
     os.environ.setdefault("QT_QPA_FONTDIR", r"C:\Windows\Fonts")
 
 import json
+import shutil
 import tempfile
 import time
 from pathlib import Path
@@ -91,16 +85,12 @@ from detail.storage import locations
 
 _ROOT = Path(__file__).resolve().parent.parent
 _SAMPLE = _ROOT / "docs" / "assets" / "sample-data"
-_OUT = _ROOT / "docs" / "assets" / "workflows"
 _GUIDES_OUT = _ROOT / "docs" / "assets" / "user-guides"
 _WIN_SIZE = (1040, 680)
 _HIGHLIGHT = QColor("#D55E00")  # vermillion callout — a doc mark, not a UI status color
 
-# The dialogs echo whatever path the user picked. In the harness we set those
-# display-only fields to a neutral path instead of the real absolute location of
-# the committed sample files, so a screenshot never bakes in a local home dir.
-_DISPLAY_DIR = "/data/mouse-study"
-# The same rule for the Configuration screens, which print the detail folder they run from.
+# A committed image never shows this machine's paths. The Configuration screens print the
+# detail folder they run from; these stand in for it.
 _DISPLAY_REPO = Path(
     r"C:\Users\yourname\detail" if sys.platform == "win32" else "/home/yourname/detail"
 )
@@ -116,24 +106,6 @@ def _noop(*args: object, **kwargs: object) -> None:
     return None
 
 
-def _build_experiment(parent_dir: Path) -> Experiment:
-    """A real on-disk experiment loaded from the committed sample clips + stream."""
-    experiment = Experiment.create("operant-study", parent_dir=parent_dir)
-    box_a = experiment.create_recording("boxA")
-    box_a.add_video_part(_SAMPLE / "boxA_am.mp4")
-    box_a.add_video_part(_SAMPLE / "boxA_pm.mp4")
-    box_a.add_stream(
-        "medpc",
-        raw_path=_SAMPLE / "PX22.txt",
-        importer="medpc",
-        aux_paths={"program": _SAMPLE / "Golden_Liq_SelfAdmin.MPC"},
-    )
-    box_b = experiment.create_recording("boxB")
-    box_b.add_video_part(_SAMPLE / "boxB.mp4")
-    experiment.import_metadata_csv(_SAMPLE / "metadata.csv")
-    return experiment
-
-
 #: How many numbered markers each written image carries, keyed by its path under
 #: ``_GUIDES_OUT``. ``tests/test_user_guide_legends.py`` checks each image's legend against
 #: it: a legend whose lines run out of step with the markers is wrong from that line on.
@@ -142,7 +114,7 @@ _marker_counts: dict[int, int] = {}  # id(pixmap) -> markers drawn on it
 _callouts: dict[str, int] = {}
 
 
-def _write(pixmap: QPixmap, rel_path: str, out_dir: Path = _OUT) -> None:
+def _write(pixmap: QPixmap, rel_path: str, out_dir: Path = _GUIDES_OUT) -> None:
     out = out_dir / rel_path
     out.parent.mkdir(parents=True, exist_ok=True)
     pixmap.save(str(out))
@@ -162,16 +134,6 @@ def _save_callouts() -> None:
     _CALLOUTS_FILE.write_text(json.dumps(known, indent=2) + "\n", encoding="utf-8")
 
 
-def _save(widget: QWidget, rel_path: str, size: tuple[int, int] | None = None) -> None:
-    """Grab a standalone dialog or panel, cropped to itself."""
-    if size is not None:
-        widget.resize(*size)
-    widget.show()
-    QApplication.processEvents()
-    _write(widget.grab(), rel_path)
-    widget.close()
-
-
 def _find_button(root: QWidget, text: str) -> QPushButton:
     def norm(label: str) -> str:
         return label.replace("&", "").rstrip("…").strip().lower()
@@ -189,92 +151,6 @@ def _box(pixmap: QPixmap, rect: QRect) -> None:
     painter.setPen(QPen(_HIGHLIGHT, 3))
     painter.drawRoundedRect(rect.adjusted(-4, -4, 4, 4), 5, 5)
     painter.end()
-
-
-def _save_window(window: MainWindow, rel_path: str, button: str) -> None:
-    """Grab the whole app window and draw a box around the named button."""
-    window.show()
-    QApplication.processEvents()
-    pixmap = window.grab()
-    target = _find_button(window, button)
-    _box(pixmap, QRect(target.mapTo(window, QPoint(0, 0)), target.size()))
-    _write(pixmap, rel_path)
-
-
-def _save_tree_window(window: MainWindow, rel_path: str, node: str) -> None:
-    """Grab the whole app window and draw a box around a named sidebar tree node."""
-    window.show()
-    QApplication.processEvents()
-    pixmap = window.grab()
-    tree = window._tree
-    items = tree.findItems(
-        node, Qt.MatchFlag.MatchExactly | Qt.MatchFlag.MatchRecursive
-    )
-    if not items:
-        raise LookupError(f"no sidebar node labelled {node!r}")
-    rect = tree.visualItemRect(items[0])
-    top_left = tree.viewport().mapTo(window, rect.topLeft())
-    _box(pixmap, QRect(top_left, rect.size()))
-    _write(pixmap, rel_path)
-
-
-def _fill_stream_dialog(dialog: streams.AddStreamDialog) -> None:
-    index = dialog._importer.findData("medpc")
-    dialog._importer.setCurrentIndex(index)  # rebuilds the aux pickers
-    dialog._name.setText("medpc")
-    dialog._data._field.setText(f"{_DISPLAY_DIR}/PX22.txt")
-    dialog._aux_pickers["program"]._field.setText(
-        f"{_DISPLAY_DIR}/Golden_Liq_SelfAdmin.MPC"
-    )
-
-
-def _render_dialogs(experiment: Experiment) -> None:
-    """The tight dialog / panel captures."""
-    new_experiment = pages.NewExperimentDialog()
-    new_experiment._name.setText("operant-study")
-    new_experiment._desc.setText("Open-field study, two arenas")
-    _save(
-        new_experiment, "create-a-experiment/new-experiment-dialog.png", size=(480, 120)
-    )
-
-    add_recordings = pages.AddRecordingsDialog(experiment, _noop)
-    add_recordings._append_row("boxB", f"{_DISPLAY_DIR}/boxB.mp4")
-    _save(add_recordings, "add-a-recording/add-recordings-dialog.png", size=(640, 300))
-
-    add_stream = streams.AddStreamDialog(experiment.get_recording("boxA"))
-    _fill_stream_dialog(add_stream)
-    _save(add_stream, "add-stream-data/add-stream-dialog.png")
-
-    metadata = pages.MetadataPage(experiment)
-    _save(metadata, "add-stream-data/metadata-page.png", size=(560, 260))
-
-
-def _render_windows(experiment: Experiment) -> None:
-    """The full-window captures, each highlighting the button the step clicks."""
-    experiment_view = MainWindow()
-    experiment_view.resize(*_WIN_SIZE)
-    experiment_view._open_experiment(experiment)
-    _save_window(
-        experiment_view, "add-a-recording/experiment-recordings.png", "Add recordings"
-    )
-    _save_window(
-        experiment_view,
-        "import-recordings-from-yaml/experiment-recordings.png",
-        "Import bundle",
-    )
-    _save_tree_window(experiment_view, "add-stream-data/metadata-node.png", "Metadata")
-    experiment_view._open_recording("boxA")
-    experiment_view.resize(
-        _WIN_SIZE[0], 940
-    )  # the recording page is tall — show it whole
-    QApplication.processEvents()
-    _save_window(
-        experiment_view,
-        "add-a-multi-part-recording/recording-full.png",
-        "Add video part",
-    )
-    _save_window(experiment_view, "add-stream-data/recording-full.png", "Add stream")
-    experiment_view.close()
 
 
 def _settle() -> None:
@@ -346,6 +222,67 @@ def _fresh_machine() -> None:
     os.environ[locations.PREVIEW_DIR_ENV] = str(
         _DISPLAY_REPO.parent / ".cache" / "detail" / "previews"
     )
+
+
+def _render_more_ways(parent: Path) -> None:
+    """Chapter 1's optional steps: a recording in several files, and Import bundle.
+
+    Both come from a small experiment built here from the committed sample clips, so this
+    target needs no demo folder. Each image boxes the one button its step clicks and carries
+    no numbered markers: the pages themselves are numbered where the guide first shows them.
+    """
+    out = "single-animal/create"
+    # Resolved, because a stored source path is: on macOS the temp folder is behind a symlink,
+    # and an unresolved prefix would leave part of the real path in the picture.
+    parent = parent.resolve()
+    # The clips under the names the chapter's manifest uses, in a folder shown as the reader's.
+    clips = parent / "clips"
+    clips.mkdir()
+    names = {
+        "boxA_am.mp4": "box1_morning.mp4",
+        "boxA_pm.mp4": "box1_afternoon.mp4",
+        "boxB.mp4": "box2.mp4",
+    }
+    for sample, name in names.items():
+        shutil.copyfile(_SAMPLE / sample, clips / name)
+    videos = (
+        r"C:\Users\yourname\Videos"
+        if sys.platform == "win32"
+        else "/home/yourname/Videos"
+    )
+    workspace = parent / "experiments"
+    workspace.mkdir()
+    locations.experiments_root = lambda: workspace
+    experiment = Experiment.create("Top-down demo", parent_dir=workspace)
+    box1 = experiment.add_recording("box1")
+    box1.add_video_part(clips / "box1_morning.mp4")
+    box1.add_video_part(clips / "box1_afternoon.mp4")
+    experiment.add_recording("box2").add_video_part(clips / "box2.mp4")
+    # The clips folder first: it sits inside ``parent``, and a prefix is replaced in order.
+    shown = {str(clips): videos, str(workspace): str(_DISPLAY_WORKSPACE)}
+
+    window = MainWindow()
+    window._build_label.hide()
+    window.resize(*_WIN_SIZE)
+    window.show()
+    window._open_experiment(experiment)
+    _go_to_rail(window, "recordings")
+    _settle()
+    _mask_paths(window, shown)
+    shot = window.grab()
+    _box_widget(window, shot, _find_button(_page(window), "Import bundle"))
+    _write(shot, f"{out}/import-bundle.png")
+
+    window.resize(
+        _WIN_SIZE[0], 940
+    )  # the recording page is tall: show the Video part whole
+    window._open_recording(box1.id)
+    _settle()
+    _mask_paths(window, shown)
+    shot = window.grab()
+    _box_widget(window, shot, _find_button(_page(window), "Add video part"))
+    _write(shot, f"{out}/add-video-part.png")
+    window.close()
 
 
 def _render_user_guides(parent: Path) -> None:
@@ -3231,18 +3168,11 @@ def main() -> None:
             locations.experiments_root = lambda: parent
             _render_user_guides(parent)
         return
-    with tempfile.TemporaryDirectory() as tmp:
-        parent = Path(tmp)
-        locations.experiments_root = lambda: parent  # the home screen lists only this
-
-        home = MainWindow()  # empty experiments home, before any experiment exists
-        home.resize(*_WIN_SIZE)
-        _save_window(home, "create-a-experiment/experiments-home.png", "New experiment")
-        home.close()
-
-        experiment = _build_experiment(parent)
-        _render_dialogs(experiment)
-        _render_windows(experiment)
+    if sys.argv[1:] == ["more-ways"]:
+        with tempfile.TemporaryDirectory() as tmp:
+            _render_more_ways(Path(tmp))
+        return
+    raise SystemExit(__doc__)
 
 
 if __name__ == "__main__":

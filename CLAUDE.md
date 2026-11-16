@@ -41,10 +41,13 @@ building. Two copies of a shape can be tolerated; a third is when it becomes one
 
 ## User-Facing Documentation
 
-`README.md`, `docs/concepts.md`, `docs/cli.md` and `docs/gui.md` are the user-facing docs;
+`README.md`, `docs/concepts.md`, `docs/cli.md`, `docs/gui.md` and the step-by-step guides in
+`docs/user-guides/` are the user-facing docs;
 `DESIGN_PLAN.md` and specs such as `docs/gui_design.md` and `docs/backend_overview.md` are
 internal. Every file under `docs/` is a user page in `mkdocs.yml`'s nav or an internal doc in
-`exclude_docs` — there is no third state.
+`exclude_docs` — there is no third state. **Each nav section holds one kind of page, defined by
+the table in `docs/docs_design.md` §4**: a task a user does in the app is a step in a user guide
+chapter, never a page of its own; what a screen or command *is* goes in the Manual.
 
 **A change that alters anything a user sees or types updates the relevant doc in the same
 change**, not in a follow-up. The change → doc table is in `ship-a-change`; adding a page is

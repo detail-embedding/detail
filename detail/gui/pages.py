@@ -2401,7 +2401,7 @@ class ToolRunDetailPage(QWidget):
 class DocumentationPage(QWidget):
     """Documentation — opens the offline-built docs site in the browser.
 
-    The full site (concepts, workflows, CLI/API reference) is built into a per-user
+    The full site (user guides, manual, concepts, CLI/API reference) is built into a per-user
     cache on first open and served over ``file://`` — it works with no network. The
     user guides come first: they are where someone new starts.
     """
@@ -2416,7 +2416,7 @@ class DocumentationPage(QWidget):
         layout.addWidget(
             _instructions(
                 "Step-by-step user guides, from installing DETAIL to analyzed behavior, "
-                "and the full DETAIL documentation — concepts, workflows, and the CLI and "
+                "and the full DETAIL documentation — the manual, concepts, and the CLI and "
                 "API reference. Both open in your browser and work offline. The first "
                 "open builds the site (a few seconds); later opens are instant."
             )
