@@ -2,27 +2,35 @@
 
 > **Design/architecture doc — not a user guide.** For how to *use* the GUI, see
 > [`docs/gui.md`](gui.md); for the CLI, [`docs/cli.md`](cli.md). This doc records
-> the intended design; some flows here are still planned (look for `(new)` /
-> future markers).
+> the design. The few pieces not built yet say so (*planned*, *pending*, *not built*).
+> `(new)` in §2 and §4 marks an API method that did not exist when the flow was
+> designed; every one of those is built now.
+>
+> **History not published.** The issue and pull-request numbers below are from the private
+> repository this project was developed in. That history is not published, so a number
+> cannot be looked up from here; each sentence that cites one also says what the change was.
 
 Working design doc for the desktop GUI. The goal is a **strong foundation that
 guides future changes** plus a **buildable MVP**. `DESIGN_PLAN.md` remains the
 authoritative spec for the backend; this doc covers the frontend and references
 the plan (§N) for contracts it builds on.
 
-Status: **substantially built** — shell + navigation, launch/run-progress,
-per-module config UIs, prompt-test (matrix) + render-preview, the arena editor,
-and detection + tracking run previews; the embedding input-image constructors +
-scrubber and the embedding result view (Stage 1: coverage + PCA point cloud);
-deletion at every level (experiment / recording / run / arena / stream / dataset /
-model) under one cohesive strategy (§1.1); run-table navigation + rich run labels;
-video import with a smooth, staged progress bar; stream ingestion
-(the MED-PC events importer with add / sync-to-video / edit-offset / delete and an
-event-raster + video preview); the **fit/train surface** (the project rail's Datasets /
-Models — generate-dataset + train-model dialogs, live progress, trained-model
-closed-set detection — §1.2). Remaining gaps (model install/readiness UI,
-embedding result-view Stage 2, run-identity Layer 2, analysis-module UIs)
-are tracked as planned work. The API additions are folded into
+Status: **built** — the shell and navigation (the banner modes, the project and
+Quick tools rails), launch/run-progress, per-module config UIs, prompt-test (matrix) +
+render-preview, the scene-geometry canvas, and detection, tracking and keypoint run
+previews; the embedding input-image constructors + scrubber and the embedding result view
+(Stage 1: coverage + PCA point cloud); deletion at every level (experiment / recording /
+run / arena / stream / dataset / model) under one cohesive strategy (§1.1); run-table
+navigation + rich run labels; video import with a smooth, staged progress bar; stream
+ingestion (MED-PC, events CSV, time-series CSV and behavior-label importers, with add /
+sync-to-video / edit-offset / delete and an event-raster + video preview); the Recording
+information page (grouping variables, §1.3); the Model manager with install/readiness and
+the Configuration setup checklist; every analysis module's config and result UI;
+comparisons (§24); the **fit/train surface** (the project rail's Datasets / Models —
+generate-dataset + train-model dialogs, distill, live progress, trained-model closed-set
+detection — §1.2); **Active processes**; the **Keypoints manager** (§26); per-page
+**Notes**; and **Version History**. Not built: the embedding result view's Stage 2 (a
+linked scrub) and the alignment correction table (§3). The API additions are folded into
 `DESIGN_PLAN.md` §15 ("API additions for the GUI").
 
 ---
@@ -61,8 +69,9 @@ scripts) over the same API.
   `reference/gui-requirements.md`: `Fusion` (as `gui/style.py`'s `DetailStyle`, scrollbars
   without arrow buttons), no QSS, greyscale + status colors only, monospace for ids/paths,
   single `QMainWindow`, no icons. §3.1 carries the reasoning.
-- **Navigation** — two-level: a top **mode banner** (Home · Configuration · Model
-  manager · Quick tools · Docs) is the global scope switch; most modes are a **full-width
+- **Navigation** — two-level: a top **mode banner** (Experiments · Active processes ·
+  Configuration · Model manager · Keypoints manager · Quick tools · Docs) is the global
+  scope switch; most modes are a **full-width
   page** whose detail opens as a **drill-in** sub-page; a **tree rail** appears in two
   scopes — inside a project (the sections of the open experiment) and in **Quick tools**
   (each tool, expanding to its saved runs). The top bar is read-only
@@ -84,25 +93,26 @@ scripts) over the same API.
   state, not just the enabled one.
 
 **MVP scope (in):** home/experiments; experiment-data editing + recording management;
-the per-recording processing modules (detection / tracking / embedding /
-embedding) launched as **experiment-level runs over a recording selection**; the
-arena canvas; prompt-test + render-preview iteration; run summary/management;
-the experiment runs index; the **fit/train surface** (datasets + models — §1.2).
+the per-recording processing modules (detection / tracking / embedding) launched as
+**experiment-level runs over a recording selection**; the arena canvas; prompt-test +
+render-preview iteration; run summary/management; the experiment runs index; the
+**fit/train surface** (datasets + models — §1.2).
 
-**Out of MVP (placeholders only):** analysis modules; grouping variables (§11).
-Nav leaves room for them. *(Streams (§3) have a first concrete importer — MED-PC
-events, with add-stream + sync-to-video alignment on the recording page; sampled
-importers and the alignment correction table remain.)*
+**After the MVP (all built since):** the analysis modules (§16) and their result pages;
+grouping variables (§11) on the Recording information page; the keypoint stages (§26);
+streams (§3), with importers for MED-PC, event CSVs, time-series (sampled) CSVs and
+behavior labels. The alignment correction table (§3) is the one stream piece not built.
 
 ### 1.2 Fit/train surface (§12)
 
 The fit/train family is **experiment-scoped** (not per-recording), and it lives in the
 **experiment rail**: `EXPERIMENT_SECTIONS` (`gui/sections.py`) is Recording information /
-Recordings / **Datasets** / **Models** / **Example sets** / Processing pipeline / Analysis /
-Comparisons — the training sections and the keypoint example sets before
-the pipeline, in the order the work is done, since a dataset, a model and an example set are what
-a detection or keypoint run is given. Each expands to its
-datasets / trained models; `DatasetsPage` / `ModelsPage` are the index pages.
+Recordings / **Datasets** / **Models** / Processing pipeline / Analysis / Comparisons — the
+training sections before the pipeline, in the order the work is done, since a dataset and a
+model are what a detection run is given. Each expands to its datasets / trained models;
+`DatasetsPage` / `ModelsPage` are the index pages. Keypoint **example sets** have no section
+or page of their own: they are reached through the example-set picker
+(`gui/example_set_picker.py`) wherever a keypoint model that needs examples is chosen.
 
 It was a drill-in off the Model manager until #136 reworked that page and dropped the
 Trained-models link, which left `ModelsPage` reachable only through `_on_model_deleted` — found
@@ -114,7 +124,7 @@ after-delete landing to being a rail page.
 **Source** column naming the distill run that trained each — derived from the distill records,
 which name the model their train stage produced — or `trained`) and **Distill runs**. The runs
 stay a table of their own rather than rows of the first: a run that failed while labelling has
-no model, and its page is where **Resume** lives. Two launch buttons: **Distill a model**
+no model, and its page is where **Resume** lives. Two launch buttons: **＋ Distill new model**
 (label + train, one durable run) and **Train from dataset…** (train on an existing dataset;
 unavailable until one is complete). There is no separate Distill-runs page.
 
@@ -151,16 +161,18 @@ while completed dependents dangle as lineage (`Experiment.delete_dataset` /
 A recording is an experimental unit carrying *optional* video, streams, and
 **grouping variables** — video is no longer required to create one. Surfaces:
 
-- **Recording information page** (the rail's first node — `Section("metadata", "Recording
-  information")`; the *label* is the user-facing name, the `metadata` id is internal) — the
+- **Recording information page** (the rail's first section, under the **Overview** node —
+  `Section("metadata", "Recording information")`; the *label* is the user-facing name, the
+  `metadata` id is internal) — the
   experiment `metadata.csv` as a cohort table, one row per recording. **View-only by default**:
   click *Edit* to change cells and add/delete columns. Edit mode is a **transaction** — every
   change is staged in the table and nothing touches disk until *Save*, and *Cancel* discards all
   of it — which is why this is the one table in the package that declares itself an editor
   (`requirements.EDITOR_PROPERTY`). Three column groups are never editable in either mode:
   `recording_id`, the derived **file** column (the video's name, full path in its tooltip), and
-  one **completion** checkbox per thing a recording can have (field of view, calibration, ROIs,
-  POIs). Import/Export CSV are whole-table file operations and live in view mode; import is
+  one **completion** checkbox per thing a recording can have (`pages._COMPLETION_COLUMNS`: Field
+  of view, Distance calibration, ROI, POI, Streams, Detection, Tracking, Embedding). Import CSV /
+  Export CSV are whole-table file operations and live in view mode; import is
   merge-only (sets the cells present, skips blanks) and rejects unknown `recording_id`s —
   nothing applied on any error (DESIGN_PLAN §11). Double-click a row in view mode to open that
   recording. The recording detail page edits its own row inline.
@@ -177,14 +189,14 @@ A recording is an experimental unit carrying *optional* video, streams, and
   `ImportProgress` by `workers.import_progress_fraction` (DESIGN_PLAN §3). Not on the
   Active processes page, which routes rather than reports. A crash reconciles orphaned `queued`/
   `importing` → `failed` on the next open.
-- **Import bundle…** — pick a bundle folder, validate the whole YAML manifest
+- **Import bundle** — pick a bundle folder, validate the whole YAML manifest
   (errors → a report, import nothing), confirm, enqueue. Multi-part video + streams
   + metadata in one file (DESIGN_PLAN §3). Bulk-imported streams land at offset 0 →
-  a later **Sync to video…** pass aligns them if needed.
+  a later **Sync to video** pass on the recording page aligns them if needed.
 
 ### 1.1 Deletion (cohesive strategy)
 
-One model for deleting anything in a experiment, so new objects follow it without
+One model for deleting anything in an experiment, so new objects follow it without
 re-litigating. Every delete is an API method (`Experiment` / `Recording`); the GUI
 only confirms and calls it.
 
@@ -242,43 +254,49 @@ model — the lineage reference just dangles. Only **active** work blocks.
 Each step is tagged **— Screen — `API call`**. `(new)` flagged an API method
 that didn't exist at design time; all are now built (see §4 status).
 
-### F0 — Home
+### F0 — Experiments
 Land on a list of all experiments; create or open one.
-1. View experiments, pick one — **Home** — experiment discovery
-2. New experiment → F2, or open → Experiment hub
+1. View experiments, pick one — **Experiments** (the banner's first mode) — experiment discovery
+2. New experiment → F2, or open → the experiment's Overview
 
 ### F1 — First-run setup *(one-time, machine-local)*
 1. Enter HF token — **Configuration ▸ Hugging Face** (a drill-in sub-page, §3.1) — `credentials.set_hf_token`
 2. Check readiness / install weights — **Model manager (§4.6)** — `model_readiness`, `install_model`
 
-### F2 — Create a experiment
-1. Create experiment (name/description) — **Home → new** — `Experiment.create`
-2. Flow into adding the first recording → F3
+### F2 — Create an experiment
+1. Create experiment (name/description) — **Experiments → New experiment** — `Experiment.create`
+2. The new experiment opens on its Overview; add recordings from its **Recordings** section → F3
 
-### F2b — Edit experiment & manage recordings *(ongoing, from the Experiment hub)*
-1. Edit experiment data (name/description) — **Experiment · Data** — *(new)*
-2. Set per-stage defaults — **Experiment · Data/Settings** — `set_defaults`
-3. **Add recording** (any time) — **Experiment · Recordings** — `create_recording`
-4. Open/edit a recording → F3
+### F2b — Edit experiment & manage recordings *(ongoing, inside the experiment)*
+1. Edit experiment data (name/description) — **Overview** — `set_metadata` *(new)*
+2. **Add recordings** (any time) — **Recordings** — the import queue → `add_recording`
+3. Open/edit a recording → F3
+
+There are no per-stage defaults to set: a run's configuration comes from the launch dialog's
+**Start from** row (§3.2).
 
 ### F3 — Recording setup & edit
 Edit all recording-level data where it lives (raw inputs + metadata; run outputs are read-only).
 1. Add video part(s) — **Recording · Overview** — `add_video_part`
 2. Edit recording metadata — **Recording** — *(new)*
 3. Set up scene geometry (field of view, calibration, ROIs, POIs) → F3a
-4. Add streams (events via the MED-PC importer) — **Recording · Streams** — `add_stream`; align to video via "Sync to video frame" — `set_stream_offset` / `frame_t_ns`; **Preview…** opens an event-raster timeline linked to a scrubbable video frame (alignment applied, doubles as a sync check) — `stream_preview` / `frame_timestamps`
-5. *(future)* sampled-stream importers, the alignment correction table, grouping-variable values
+4. Add streams (MED-PC, events CSV, time-series CSV or behavior labels) — **Recording · Streams** — `add_stream`; align to video via **Sync to video** — `set_stream_offset` / `frame_t_ns`; **Preview** opens an event-raster timeline linked to a scrubbable video frame (alignment applied, doubles as a sync check) — `stream_preview` / `frame_timestamps`
+5. Grouping-variable values — the **Recording information** table (§1.3) or the recording's own row
+6. *(not built)* the alignment correction table (§3)
 
 ### F3a — Set up scene geometry *(one interactive canvas)*
 1. Open the scene-geometry dialog; scrub frames — **Recording · Scene geometry** — `get_frame`
 2. Select a kind (field of view / calibration / ROI / POI) and edit it on the shared canvas;
    the other three stay drawn as dimmed context
-3. **Save all** writes every kind at once — **Cancel** discards all of it (transactional)
+3. **Save** writes every kind at once and keeps the dialog open (greyed while nothing has
+   changed); **Close** asks before discarding unsaved edits
 
 ### F4 — Launch a processing run *(over a recording selection)*
 Single launch path: a run = one module + one config over 1..N recordings, fanning
-out to a per-recording execution in each. Launching from a recording pre-selects it.
-1. Choose module + recording selection — **Experiment · Runs → new** (or **Recording**, pre-selected)
+out to a per-recording execution in each. The recording page has no launch control; a
+completed run's page offers **Run <next stage> →**, which opens the launch dialog on that
+run's recordings.
+1. Choose module + recording selection — **Processing pipeline → New run**
 2. Configure (with F5 / F6 iteration for detection / embedding)
 3. Run — ***`Experiment.run_processing(module_id, recording_ids, config)` (new)*** → fans out to per-recording `Recording.run` (§6.5) → monitor (F7)
 
@@ -296,16 +314,19 @@ out to a per-recording execution in each. Launching from a recording pre-selects
 One page per run, reachable from the experiment runs index.
 1. While running: aggregate + per-recording progress — `RunHandle.progress()`
 2. On complete: results summary (status + per-recording counts; prompt/renderer grids for those tools) — run records
-3. Manage: cancel / re-run; on failure, show the `job.json` error and allow re-run with adjusted config
+3. Manage: cancel / retry; on failure, show the `job.json` error and **retry** the incomplete
+   recordings with the same config (4.14). A changed config is a new run, seeded from this one
+   through the launch dialog's **Start from** row
 
 ### F8 — Experiment runs index
-1. All runs grouped by module — **Experiment · Runs** — experiment-level run index *(new)*
-2. Multiple runs per module; open one → F7. (Processing in MVP; fit/train + analysis later.)
+1. All processing runs, oldest first (store order) — **Processing pipeline** — experiment-level run index *(new)*
+2. Multiple runs per module; open one → F7. Fit/train runs are under **Datasets** / **Models**,
+   analysis runs under **Analysis**.
 
-### Future flows (nav must accommodate, not MVP)
-- Set grouping variables (`metadata.csv`, §11)
-- Add + align a stream (§3)
-- Fit a model → apply per recording (processing) → analysis (experiment context)
+### Flows added after the MVP (all built)
+- Set grouping variables (`metadata.csv`, §11) — the Recording information page (§1.3)
+- Add + align a stream (§3) — F3 step 4, 4.15–4.17
+- Fit a model → apply per recording (processing) → analysis (experiment context) — §1.2, the Analysis section
 
 ---
 
@@ -313,12 +334,14 @@ One page per run, reachable from the experiment runs index.
 
 ### 3.1 Navigation
 
-**Navigation is two-level. A top mode banner — Home · Configuration · Model manager ·
-Quick tools · Docs — is the global scope switch: clicking a mode shows that mode's landing
+**Navigation is two-level. A top mode banner — Experiments · Active processes ·
+Configuration · Model manager · Keypoints manager · Quick tools · Docs — is the global scope
+switch: clicking a mode shows that mode's landing
 page. Sub-navigation within a mode is *drill-in* — the landing lists the mode's items and an
 `Open →` swaps in a full-width sub-page (breadcrumb in the top bar), the way a phone Settings
 screen works. A left tree rail appears in exactly two scopes, one at a time: the *project
-view*, reached by opening an experiment from Home — it holds that one experiment's sections —
+view*, reached by opening an experiment from Experiments — it holds that one experiment's
+Overview and sections —
 and *Quick tools*, which holds each registered tool with its saved runs beneath (the rail is
 up across the whole mode, its landing included). Everywhere else a mode renders full-width
 with no sidebar. The top bar is read-only identity; the shell keeps no history and has no Back
@@ -331,28 +354,37 @@ Each changes what *this* page shows and names where it goes; none walks a histor
 pages, which is the thing the shell does not keep.
 
 ```
-Banner:  [ Home ]  [ Configuration ]  [ Model manager ]  [ Quick tools ]  [ Docs ]
+Banner:  [ Experiments ] [ Active processes ] [ Configuration ] [ Model manager ]
+         [ Keypoints manager ] [ Quick tools ] [ Docs ]               <running build>
 
-Home            full-width — the experiments list (double-click a row → that project)
-Configuration   full-width — the Get-started checklist; each step drills in:
-                  GPU / CUDA         accelerator status + CUDA doctor (§1)
-                  Hugging Face       token for gated downloads (§1)
-                  Install a model    → opens the Model manager (§5)
-                  Distill a model    → opens the Model manager (§12)
-                  See it segment     → prompt check on a clip (planned)
-Model manager   full-width — one page: Global models (imported/promoted, metadata +
-                  preview), the active experiment's trained models, and the Hugging Face
-                  foundation models (suggested first, then installed); four rows each, then
-                  scroll; Distill/Import on top; a row drills into its detail page (§5/§12)
-Quick tools     one-off tools (§9), with a rail of its own (below)
-Docs            opens the bundled/local docs
+Experiments        full-width — one card per experiment (double-click a card → that project)
+Active processes   full-width — every run and export in flight, across every experiment
+Configuration      full-width — the setup checklist; each step drills in:
+                     GPU / CUDA                          accelerator status + CUDA doctor (§1)
+                     Hugging Face access                 token for gated downloads (§1)
+                     SAM 3 backend package               its own page: the pip install commands
+                     SAM 3 weights                       → opens the Model manager (§5)
+                     Install a runnable detection model  → the Model manager (no NVIDIA GPU only)
+                     See it segment a clip               → opens Quick tools
+                     Recommended: distill a fast model   → opens the Model manager (§12)
+                   then the Preview cache line (where previews live, their size, Clear)
+Model manager      full-width — one page: Global models (imported/promoted, metadata +
+                     preview), the active experiment's trained models, and the Hugging Face
+                     foundation models (suggested first, then installed); four rows each, then
+                     scroll; ＋ Distill new model / Import model / Restore from zip on top; a
+                     row drills into its detail page (§5/§12)
+Keypoints manager  full-width — the machine-wide skeleton library (§26)
+Quick tools        one-off tools (DESIGN_PLAN.md §27, Tools), with a rail of its own (below)
+Docs               opens the bundled/local docs
 
 Quick tools rail (up across the whole mode, its landing included):
   Quick segment          ▸    the tool's launch page + its saved runs; expand → each run,
                               oldest first, labelled `run_003  ·  complete`
 
-Project rail (only inside a project — open an experiment from Home):
-  Metadata                    grouping variables (§11)
+Project rail (only inside a project — open an experiment from Experiments):
+  Overview                    the experiment's own page: name, description, Export, Delete,
+                              a summary row per section (not a section itself)
+  Recording information       grouping variables + completion (§11)
   Recordings             ▸    expand: its recordings (click → recording detail)
   Datasets               ▸    expand: its training datasets (§12)
   Models                 ▸    trained models + distill runs; expand: its trained models (§12)
@@ -409,8 +441,9 @@ Project rail (only inside a project — open an experiment from Home):
     builders, `pages._recording_rows` / `_analysis_rows`) and install the table when they
     land. Two consequences, both load-bearing: the builder wraps its loop in
     `read_cache.pinned()`, because a row wants several fields of one record and each
-    `Recording` property is its own read — 9.0 round trips per recording became 1.0, and 541
-    over sixty recordings became none at all on the UI thread; and the table shows a
+    `Recording` property is its own read — 9.0 round trips per recording became 2.0 (the
+    floor: one listing probe, one read), and 541 over sixty recordings became none at all on
+    the UI thread; and the table shows a
     **reading** notice rather than its empty one, since an empty state is a claim about the
     data and zero rows mean nothing until the read is done. A page in flight sets `_reading`,
     which is what the empty-state guard settles on.
@@ -542,12 +575,14 @@ Project rail (only inside a project — open an experiment from Home):
   `setMinimumSize(0, 0)` does **not** lower a floor — zero is the default, so Qt falls back to
   the hint; only a non-zero minimum or `QSizePolicy.Ignored` does.
 - **A result view's secondary bands fold, and remember it.** Where a workspace stacks parts that
-  each want their height and none of which is wanted at once — the interpret tab's tree, table,
-  frame strip and ethograms — the secondary ones go in a `collapse.CollapsibleBand`. Folding is
-  the only move that changes the *sum* rather than redistributing it: a hidden widget is outside
-  its layout, so its floor leaves with it (measured: the tab's floor 949 → 839 → 621px as the two
-  bands fold). Both open by default — the frames are how a syllable is recognised, and a screen
-  that opens having hidden its own evidence is worse than one that scrolls — and the state is
+  each want their height and none of which is wanted at once — a behavior scan's Clips,
+  Ethograms, Locations and Interpretation; BROWSE's ethogram — the secondary ones go in a
+  `collapse.CollapsibleBand`. Folding is the only move that changes the *sum* rather than
+  redistributing it: a hidden widget is outside its layout, so its floor leaves with it
+  (measured on the clustering INTERPRET tab when it still had bands: its floor went 949 → 839 →
+  621px as two bands folded). Result bands open by default — the clips are how a behavior is
+  recognised, and a screen that opens having hidden its own evidence is worse than one that
+  scrolls; a run page's *Run details* is the exception and starts folded — and the state is
   kept per band in `QSettings`, because the page is rebuilt on every navigation. **Sections fold
   by their header; panes fold to a labelled strip.** A folded band keeps its titled header, so it
   reads as something you closed. Krita shipped per-pane collapse and removed it ("even power users
@@ -655,7 +690,8 @@ Project rail (only inside a project — open an experiment from Home):
   body, anything handed more height than its hint. The audit tab's stats pane shipped
   without one and Qt spread the slack across its headings, laying out a 17px label at 324px.
   Measured by `tests/gui/layout_checks.py::assert_top_justified`, which is applied to every
-  page in the smoke corpus.
+  page in the smoke corpus (`PAGES` in `tests/gui/test_smoke_construct.py`). That corpus is not
+  every page, which is why `NOT_YET_SWEPT` still lists this rule.
 - **An axis states the domain of its quantity.** pyqtgraph gives every `PlotWidget` free pan
   and zoom, so a view that is never told otherwise scrolls to confidence −4 and precision 3
   — coordinates the quantity cannot take, on an axis that goes on labelling them. Call
@@ -663,22 +699,25 @@ Project rail (only inside a project — open an experiment from Home):
   an axis that genuinely has no domain (projection units), and `InfiniteLine.setBounds` on
   every movable line — a draggable cutoff is a value on its way to disk. Guarded by a
   fail-closed source scan (`tests/gui/test_plot_bounds.py`).
-- **A mode is full-width unless it owns a rail.** Home / Configuration / Model manager /
-  Docs are banner modes that each render full-width with no sidebar; their detail is a
+- **A mode is full-width unless it owns a rail.** Experiments / Active processes /
+  Configuration / Model manager / Keypoints manager / Docs are banner modes that each render
+  full-width with no sidebar; their detail is a
   **drill-in** sub-page, not a rail node. The left tree rail belongs to exactly two scopes,
   and the shell names which one the shared tree holds (`self._rail`: `"project"` |
   `"tools"` | `None`) so a refresh helper keys off the *rail on screen*, never off "the tree
   is visible" — a background import finishing while Quick tools is up must not rebuild the
-  project rail into the tools tree. The scopes: a **project** (opened from Home), holding
-  that one experiment's sections — **Metadata /
-  Recordings / Datasets / Models / Processing pipeline / Analysis / Comparisons**; the experiment's
-  identity/settings live on its **overview** (the project landing), not a separate Data node.
+  project rail into the tools tree. The scopes: a **project** (opened from Experiments),
+  holding an **Overview** node and then that one experiment's sections — **Recording
+  information / Recordings / Datasets / Models / Processing pipeline / Analysis /
+  Comparisons**; the experiment's identity/settings live on its Overview, not a separate Data
+  node, and Overview is a rail node of its own rather than a section.
   And **Quick tools**, holding one folder per registered tool with that tool's saved runs
   beneath it — a new tool appears there with no shell change, since it self-registers.
   Opening a project also makes it the **active** experiment (the target of a new run and the
   import queue). The **Model manager** mode is one machine-global page — **Global models**
   (imported/promoted, with metadata + a preview + a detail page), the **active experiment's**
-  trained models, and the **Hugging Face** foundation models, Distill/Import on top. Datasets
+  trained models, and the **Hugging Face** foundation models, with **＋ Distill new model** /
+  **Import model** / **Restore from zip** on top. Datasets
   and distill runs are in the project rail, not linked from here.
 - **Built once per scope, persistent within it.** The rail is (re)built when a project opens
   or Quick tools is entered, reading only *that* scope's lists — that experiment's (never an
@@ -778,19 +817,26 @@ Each entry is a `ModuleUI` supplying bespoke widgets:
 class ModuleUI(ABC):
     module_id: str                          # pairs with the backend module
 
-    def display_name(self) -> str: ...
-        # defaults to configs.describe's name, so the picker and the module's docs
-        # page cannot disagree — they did, from a hand-written string here
+    @property
+    def label(self) -> str: ...
+        # the picker's display name, from configs.describe, so the picker and the
+        # module's docs page cannot disagree — they did, from a hand-written string here
 
     def config_widget(self) -> ConfigWidget: ...
         # the run-config form body; its interactive iterate-before-you-commit step
         # is a preview QDialog launched by a BUTTON on this form (detection ->
         # prompt-test F5; embedding -> render-preview F6; analysis query ->
-        # "Edit clips…" scrub)
+        # "Mark examples…")
 
-    def result_widget(self, experiment, run_record: dict) -> QWidget: ...
-        # how this run's results render in the run-summary page (F7).
+    def result_widget(self, experiment, run_record: dict) -> QWidget | None: ...
+        # a view of the WHOLE run's results, for the run page (F7). Every analysis
+        # module has one; no processing module does — `None`, the default.
         # The *record*, not a run handle — a completed run is a dict on disk.
+
+    def preview_widget(self, recording, run_id: str) -> QWidget | None: ...
+        # ONE recording's results (its frames, tracks or embeddings) — what a processing
+        # module answers. The run page builds it for the recording selected in its list;
+        # `None` means no per-recording view, and the page falls back to result_widget.
 
     def snapshot_widget(
         self, experiment, run_record: dict, snapshot_id: str
@@ -874,8 +920,8 @@ class MultiViewWorkspace(QWidget):           # a result widget with several view
 
 `ModuleUI` adds `purpose` (the one-view card's line) and `planned_views()` — the cards a run will
 have, shown greyed with "Results appear when the run finishes" while it computes, when there is
-no result widget to ask. The clustering, behavior-scan and annotation workspaces keep their tab
-widget with its bar hidden: the row is the one switch. Views are built **eagerly**, as the inline
+no result widget to ask. The clustering and behavior-scan workspaces (the two
+`MultiViewWorkspace`s) keep their tab widget with its bar hidden: the row is the one switch. Views are built **eagerly**, as the inline
 result was, so cross-view hand-offs keep working; the open view is page state, like snapshot
 mode, so a rebuild does not drop the user back on the landing page. With a view open the page
 asks the shell's scroll for no height, so the view is held to the window rather than scrolled.
@@ -947,7 +993,7 @@ embed_run_id: Field(..., json_schema_extra={"label": "Embedding run",
 ```
 
 A **setting** is a number, a choice, a threshold — reusable, and restored. A **selection** names
-an artifact (`embed_run_id`, `source_recording_ids`, `clusterer_id`, `tracking_run_id`); the
+an artifact (`embed_run_id`, `source_recording_ids`, `source_run_id`, `tracking_run_id`); the
 dialog re-derives those from the current recording selection and re-asks, because a config that
 carries a data reference is the thing that kills this feature in every tool that has tried it.
 Classification lives on the field, never in a denylist inside a consumer — the drift rule
@@ -993,7 +1039,8 @@ detection/embedding already do it rather than inventing a parallel surface.
 The **shell stays generic**: it enumerates modules, renders the recording-selection
 + launch dialog (hosting the module's `config_widget`), runs the job on a
 `QThread` with a progress bar, maintains the runs index, and builds the
-run-summary scaffold (hosting `result_widget`). Launching calls
+run-summary scaffold (hosting `preview_widget` for the selected recording, or `result_widget`
+for a whole-run view). Launching calls
 `Experiment.run_processing(...)`; nothing module-specific lives in the shell.
 
 **One approved exception: a stateful, compute-triggering `result_widget`.** For almost
@@ -1002,7 +1049,7 @@ every module the `result_widget` is a *static* view of a finished run. An **auth
 operations re-run compute in place on the same open run. This is allowed because the run is
 *authored data*, not a computed artifact — the whole point of the module is the loop. The
 carve-out is narrow: the mutable affordances live **inside** the result widget, so the only shell
-change is letting `RunDetailPage` render results while the run status is `open` (not just
+change is letting `AnalysisRunDetailPage` render results while the run status is `open` (not just
 `complete`/`partial`).
 Do **not** read this as
 license for a second launch surface or a bespoke authoring page — the launch is still the
@@ -1121,47 +1168,52 @@ Each screen: **purpose**, the **actions/values → API call**, and key **states*
 `(new)` flagged a then-missing API method/accessor; all are now built (status
 list at the end of this section).
 
-### 4.1 Home *(Experiments mode)*
-- **Purpose:** pick, open, or create a experiment.
+### 4.1 Experiments *(banner mode; `HomePage`)*
+- **Purpose:** pick, open, create or import an experiment.
 - **→ API:** **one card per experiment** (`HomePage`, not a table — a work surface's job here is
   recognition, per §3.1) ← `Experiment.list_all()` — the managed workspace (storage `default`
   root, §2). No folder picker (experiments live in the managed workspace, not arbitrary folders);
-  `[New experiment]` → 4.2. Machine-local setup is the **Configuration** banner mode, not a
-  dialog off this page; the readiness checklist lives there too.
-- **States:** empty (no known experiments → prompt to create/open).
+  `[New experiment]` → 4.2; `[Import experiment]` → `Experiment.import_archive`. Machine-local
+  setup is the **Configuration** banner mode, not a dialog off this page; the readiness
+  checklist lives there too.
+- **States:** empty (no experiments → no cards; the two buttons below the list are the way in).
 
 ### 4.2 New-experiment dialog *(modal)*
-- **Purpose:** create a experiment.
-- **→ API:** name (required) + optional description → `Experiment.create(name)` then `set_metadata(description=…)`; created in the managed workspace (no folder picker, no video). On success, open the Experiment hub and prompt to add the first recording (F2).
+- **Purpose:** create an experiment.
+- **→ API:** name (required) + optional description → `Experiment.create(name)` then `set_metadata(description=…)`; created in the managed workspace (no folder picker, no video). On success, the new experiment opens on its Overview (4.3); recordings are added from its Recordings section (F2).
 
-### 4.3 Experiment · Data
-- **Purpose:** view/edit experiment-level data (edit-where-it-lives).
-- **→ API:** name/description (editable) → `set_metadata`; per-stage defaults form → `Experiment.defaults` / `set_defaults`; grouping variables → *(future, §11)*; `[Delete experiment]` (confirm) → `Experiment.delete` → experiments home (§1.1).
-- **States:** clean / dirty (Save / Cancel).
+### 4.3 Experiment overview *(the rail's Overview node; it absorbed the former Data tab)*
+- **Purpose:** view/edit experiment-level data (edit-where-it-lives), and a summary of the sections.
+- **→ API:** name/description (editable, `[Save]`) → `set_metadata`; the folder (read-only); `[Export experiment…]`; one summary row per section with a live count and an **Open →**; `[Delete experiment]` (confirm) → `Experiment.delete` → the Experiments list (§1.1). There are no per-stage defaults (a configuration comes from the launch dialog's Start from row, §3.2), and grouping variables are edited on the **Recording information** page (§1.3).
+- **States:** clean / edited (Save).
 
 ### 4.4 Experiment · Recordings
 - **Purpose:** manage the cohort's recordings.
-- **→ API:** recordings table (id, #parts, #arenas, #streams, run counts) ← `Experiment.recordings` (+ per-recording `Recording` props); `[Add recording]` → 4.12 → `create_recording`; row → Recording detail (4.8).
-- **States:** empty (prompt add).
+- **→ API:** recordings table (Recording · Status · Source · Parts · Streams · Field of view · Detections) ← `Experiment.recordings` (+ per-recording `Recording` props); `[Add recordings]` → 4.12 → the import queue → `add_recording`; `[Import bundle]` (§1.3); `[Import behavior labels]`; `[Cancel imports]`; double-click a row → Recording detail (4.8).
+- **States:** reading (rows are read off the UI thread); empty (a notice naming Add recordings).
 
-### 4.5 Experiment · Runs
+### 4.5 Experiment · Processing pipeline *(the runs index)*
 - **Purpose:** runs index + launch.
-- **→ API:** runs table grouped by module (module, run id, recordings, status, time) ← experiment run index `(new)`; `[New run]` → 4.13; row → Run detail (4.14).
-- **States:** empty; running rows show live status.
+- **→ API:** runs table, oldest first in store order like every rail section (Run · Module · Recordings · Status · Started) ← experiment run index `(new)`; `[New run]` → 4.13; double-click a row → Run detail (4.14).
+- **States:** empty; the caption counts running and failed runs.
 
 ### 4.6 Model manager *(banner mode, machine-global — §5)*
-- **Purpose:** one catalog of all available models — built-in (registries) + imported
-  weights — with `[Check access]` / `[Install]` / `[Import…]` / `[Remove]`. Experiment-free;
-  a model's detail page is a **drill-in**, shown full-width, not a rail node. The
-  per-experiment *trained* models (§1.2) live in the project rail; this page shows the active
-  experiment's in a table of their own (`EXPERIMENT_MODEL_COLUMNS`, shared with `ModelsPage`),
-  whose rows open the model inside its experiment. Every table here holds
-  `ModelManagerPage.TABLE_ROWS` (4) and scrolls past it. The Hugging Face table lists
-  `api.models.suggested_models()` first, then installed, then the rest.
-- **Columns:** Id · Role · Architecture · Source · Variants · Status · Classes.
+- **Purpose:** one catalog of all available models — the Hugging Face foundation models
+  (registries) + imported and promoted weights. On top: `[＋ Distill new model]` /
+  `[Import model]` / `[Restore from zip]`. Experiment-free; a model's detail page is a
+  **drill-in**, shown full-width, not a rail node. The per-experiment *trained* models (§1.2)
+  live in the project rail; this page shows the active experiment's in a table of their own
+  (`EXPERIMENT_MODEL_COLUMNS`, shared with `ModelsPage`), whose rows open the model inside its
+  experiment. Every table here holds `ModelManagerPage.TABLE_ROWS` (4) and scrolls past it.
+  The Hugging Face table lists `api.models.suggested_models()` first, then installed, then the
+  rest.
+- **Tables:** **Global models** (Name · From project(s) · Made by · Created · Kind; `[Export]` /
+  `[Delete]` under it); **Models in <experiment>** (`EXPERIMENT_MODEL_COLUMNS`); **Hugging Face**
+  (Id · Size / variant · Role · Architecture · Source · Status · Classes — one row per model and
+  variant, because install state is per variant; `[Check access]` / `[Install]` under it).
 - **→ API:** `api.models.list_models` / `model_readiness` / `install_model` / `is_installed`
-  / `import_model` / `remove_imported_model` (the experiment-free catalog; `Experiment`'s model
-  methods delegate to it).
+  / `import_model` / `import_model_archive` / `export_model` / `remove_imported_model` (the
+  experiment-free catalog; `Experiment`'s model methods delegate to it).
 
 ### 4.7 *(retired — there is no Preferences dialog)*
 The machine-local credential settings this specified live in the **Configuration** mode's
@@ -1172,7 +1224,7 @@ cross-references above do not silently renumber.
 
 ### 4.8 Recording detail — Overview tab *(content-area detail)*
 - **Purpose:** view/edit a recording's video + metadata.
-- **→ API:** video-parts table ← `Recording.video_parts` (GUI must not read `recording.yaml` directly, Tenet 2); `[Add video part]` → 4.11 → `add_video_part`; recording name edit → `set_name`; **Run history** table (stage, id, "From run" = `processing_run_id`, status) — double-click a row → its result view: a experiment-backed run opens its experiment run (4.14); a per-recording run launched via the CLI/API (no experiment record) opens a recording-scoped result view (4.8a) keyed on `(recording, stage, run_id)`; `[Delete recording]` (confirm) → `Experiment.delete_recording` → recordings list (§1.1).
+- **→ API:** video-parts table ← `Recording.video_parts` (GUI must not read `recording.yaml` directly, Tenet 2); `[Add video part]` → 4.11 → `add_video_part`; recording name edit → `set_name`; **Run history** table (stage, id, "From run" = `processing_run_id`, status) — double-click a row → its result view: an experiment-backed run opens its experiment run (4.14); a per-recording run launched via the CLI/API (no experiment record) opens a recording-scoped result view (4.8a) keyed on `(recording, stage, run_id)`; `[Delete recording]` (confirm) → `Experiment.delete_recording` → recordings list (§1.1).
 - **States:** empty (no video → prompt add).
 
 ### 4.8a Recording run detail — per-recording result *(content-area detail)*
@@ -1182,24 +1234,25 @@ cross-references above do not silently renumber.
   instead.
 - **→ API:** `RecordingRunDetailPage(experiment, recording_id, module_id, run_id)` reads the
   stage record's status from `getattr(recording, f"{module_id}_runs")`; on `complete`
-  it reuses the module's `result_widget` (fed a synthetic single-recording record, so
-  no new preview class); on failure it shows the reason read from the run dir's
-  `job.json`; a missing run shows "(run not found)".
+  it asks the module for `preview_widget(recording, run_id)` — the same per-recording view
+  the run page's results list builds, so no new preview class; on failure it shows the
+  reason read from the run dir's `job.json`; a missing run shows "(run not found)".
 - **States:** complete (result view) / failed (reason) / not found.
 
 ### 4.9 Recording detail — Scene geometry section
 - **Purpose:** reach the one spatial-setup surface. The section summarises what the recording
   has (field of view, distance calibration, regions, points) and opens 4.10 to edit any of it.
 - **→ API:** `Recording.arenas` / `rois` / `points` / calibration for the summary; the button
-  opens `arena.SceneGeometryDialog` (`pages.py:4723`, the one call site).
+  **Edit scene geometry…** opens `arena.SceneGeometryDialog`
+  (`RecordingDetailPage._open_scene_geometry`, the one call site).
 - **Naming:** the user-facing term is **field of view**; `arena` survives as the *kind id* and
   the storage directory (`SpatialKind(id="arena", label="Field of view")`). A single field of
   view per recording — a deliberate reversal (2026-08-07) — so this is not a list to manage.
 
 ### 4.9b Recording detail — Streams section *(content-area, on the recording page)*
 - **Purpose:** import + align + inspect time-series streams (§3).
-- **→ API:** streams table (name, type, #rows, offset) ← `Recording.streams`; `[Add stream…]` → 4.15 → `add_stream`; `[Preview…]` → 4.16 → `stream_preview` / `frame_timestamps`; `[Sync to video…]` → 4.17 → `set_stream_offset` / `frame_t_ns`; `[Edit offset…]` → `set_stream_offset`; `[Delete stream]` (confirm) → `delete_stream` (§1.1).
-- **States:** empty (no streams → just `[Add stream…]`). **`[Sync to video…]` and `[Edit offset…]` are enabled per the *selected* stream's clock** — only an external-clock stream (`stream_seconds`, e.g. MED-PC) needs alignment; a video-anchored stream (`video_frames` / `video_seconds`, e.g. behavior labels) is already aligned, so both are disabled with a reason (`clocks.needs_alignment`, DESIGN_PLAN §3 "Stream alignment"). Sync additionally needs a video part.
+- **→ API:** streams table (Name · Type · Rows · Offset (s)) ← `Recording.streams`; `[Add stream]` → 4.15 → `add_stream`; `[Preview]` → 4.16 → `stream_preview` / `frame_timestamps`; `[Sync to video]` → 4.17 → `set_stream_offset` / `frame_t_ns`; `[Edit offset]` → `set_stream_offset`; `[Delete stream]` (confirm) → `delete_stream` (§1.1).
+- **States:** empty (no streams → just `[Add stream]`). **`[Sync to video]` and `[Edit offset]` are enabled per the *selected* stream's clock** — only an external-clock stream (`stream_seconds`, e.g. MED-PC) needs alignment; a video-anchored stream (`video_frames` / `video_seconds`, e.g. behavior labels) is already aligned, so both are disabled with a reason (`clocks.needs_alignment`, DESIGN_PLAN §3 "Stream alignment"). Sync additionally needs a video part.
 
 ### 4.10 Scene-geometry dialog *(one canvas, modal)*
 - **Purpose:** every piece of a recording's spatial setup on **one frame** —
@@ -1213,8 +1266,11 @@ cross-references above do not silently renumber.
   context, so preview is this dialog's resting state (select nothing) rather than a fifth
   surface to keep in step — and the frame decodes once instead of four times.
 - **→ API:** frame scrub → `get_frame`; select a definition to edit, siblings stay dimmed, a
-  checkbox hides one; **Save all** writes every kind and **Cancel** discards everything
-  (transactional). A field of view a tracking run depends on is shown, drawn, and **not**
+  checkbox hides one; **Save** writes every kind at once and keeps the dialog open, greyed
+  while nothing has changed — the dialog's one sign of pending edits — and **Close** asks
+  before discarding them. Saving used to close the dialog, which fought the *Copy to other
+  recordings…* / *Import from…* / *Export as CSV…* actions beside it: they refuse while edits
+  are pending. A field of view a tracking run depends on is shown, drawn, and **not**
   editable — the run recorded that polygon, so changing it would make the run's record a lie.
 - **States:** locked field of view (with the reason); validation → `QMessageBox`.
 
@@ -1248,18 +1304,27 @@ cross-references above do not silently renumber.
 - **→ API:**
   - header: module, config summary, recording list, overall status ← run index record `(new)`
   - running: `run_activity.LiveRunPanel` — an aggregate bar + status + **one row per unit**
-    (`gui/run_units.py`), fed by `RunHandle.progress()` on a `QThread`; `[Cancel]` →
-    `RunHandle.cancel`. **One shape, four unit kinds**: processing loops *recordings*, analysis
-    loops *phases*, distill loops *stages*, training loops *epochs* — each surface says what its
-    units are, and flattening them into one stream of text is what made them all look alike.
+    (`gui/run_units.py`), fed by `RunHandle.progress()` on a `QThread`; `[Cancel run]` →
+    `Experiment.cancel_run`. **One shape, a unit per run kind**: processing loops
+    *recordings*, analysis loops *phases*, distill loops *stages* (each with its own inner
+    unit — frames labelled, epochs trained), an export loops *targets* — each surface says what
+    its units are, and flattening them into one stream of text is what made them all look alike.
     Above `GROUP_ABOVE` = 8 units the finished and the waiting collapse to counts, because at 21
     recordings only two rows are news (the one running and the one that failed); below it
     everything lists, because at three a count is worse than the list it replaces. Every widget
     in the panel has a **pinned height** — it updates ~twice a second for hours above ordinary
-    content, so any height derived from text makes the whole page twitch. A timestamped activity
-    log folds below it. A new run kind supplies its unit noun and its rows; it does not add a
-    second progress mapping (§3.2's one `event → render` rule).
-  - complete: per-recording results table (status + counts; double-click a row → that recording's detail, 4.8); the module's `result_widget(experiment, run_record)` for the richer view (e.g. prompt/renderer grids, the embedding PCA point cloud)
+    content, so any height derived from text makes the whole page twitch. There is no activity
+    log on the page: it held a timestamped band once, and the unit rows replaced it because the
+    band only restated them a line at a time. `activity.csv` is still written for every run
+    (`storage/activity.py`) — the performance export reads it and a bug report attaches it.
+    A new run kind supplies its unit noun and its rows; it does not add a second progress
+    mapping (§3.2's one `event → render` rule).
+  - complete: `RunResults` — the run's recordings as one list (Recording · Run id · Status) that
+    is also the picker: select a row and that recording's results appear under it from the
+    module's `preview_widget(recording, run_id)` (the detection / tracking / keypoint viewers,
+    the embedding PCA point cloud); double-click a row → that recording's detail, 4.8. A module
+    with no per-recording view falls back to `result_widget(experiment, run_record)`. A
+    completed run also offers **Run <next stage> →** (F4).
   - failed / cancelled: per-recording error (from the run record) + `[Retry N incomplete
     recording(s)]` → `Experiment.retry_run(run_id)` → `_start_live` streams it on this page
   - `[Delete run]` (terminal runs only, confirm) → `Experiment.delete_run` → runs index (§1.1)
@@ -1287,7 +1352,7 @@ on the UI thread (§1.1). Seeding a fresh run remains the right shape for the **
 ### 4.17 Sync-to-video dialog *(modal)*
 - **Purpose:** set a stream's alignment offset by clicking the frame where it starts.
 - **→ API:** a whole-recording frame scrubber + an anchor-event picker; `[Set offset]` → `offset_ns = frame_t_ns(frame) − anchor_t_ns` → `set_stream_offset`. Needs a video part.
-- **Reached only for an external-clock stream** (`clocks.needs_alignment`); a video-anchored stream never opens this dialog (its `[Sync to video…]` is disabled). The anchor picker reads `t_ns` + `label` by index, so it tolerates either row shape (events / interval).
+- **Reached only for an external-clock stream** (`clocks.needs_alignment`); a video-anchored stream never opens this dialog (its `[Sync to video]` is disabled). The anchor picker reads `t_ns` + `label` by index, so it tolerates either row shape (events / interval).
 
 
 ### API additions §4 needed (status)
@@ -1297,16 +1362,16 @@ All **built**:
 3. `Recording.part_frame_counts` (per-part counts → global→(part, local) for the arena slider) — **built**.
 4. `Recording.video_parts` read accessor (Tenet 2) — **built**.
 5. `Recording.set_name` (recording metadata edit) — **built**.
-6. **Home experiment discovery** — `Experiment.list_all()` over the managed workspace (storage `default` root, §2; `storage/locations.py`) — **built**.
+6. **Experiments-list discovery** — `Experiment.list_all()` over the managed workspace (storage `default` root, §2; `storage/locations.py`) — **built**.
 
 ## 5. Package layout
 
 > **This section used to describe a 7-file package and a planned `pages/` / `dialogs/` split.**
-> Neither is the shipped layout: `detail/gui/` is 60 flat modules plus three code subpackages,
+> Neither is the shipped layout: `detail/gui/` is flat modules plus three code subpackages,
 > and the flat arrangement is what the shared-leaf rules below depend on — a helper inside a
 > package whose `__init__` imports the world is an import cycle whose failure depends on order
 > (`tests/gui/test_import_cycles.py`). The graduation is not planned; the grouping below is by
-> **role**, which is what a reader needs.
+> **role**, which is what a reader needs. `docs/package_map.md` is the package-wide map.
 
 ```
 detail/gui/
@@ -1316,19 +1381,29 @@ detail/gui/
 ├── sections.py          # EXPERIMENT_SECTIONS — the rail's nodes, declared once
 │
 │  # --- shared leaves: the widgets and rules every surface inherits -------------
+├── style.py             # the one Qt style: Fusion, scrollbars without arrow buttons
 ├── dialog.py            # the Dialog base: body() / set_buttons(), scroll + top-justify
 ├── scroll.py            # PageScroll — the page scrolls, the window never grows
 ├── sizing.py            # lines() (this package's em), mono/emphasis fonts, fit_list_height
 ├── tables.py            # sorting, resizing, row identity (stamp_row_id / row_id), heights
 ├── forms.py             # ConfigForm + AdvancedSection
-├── spin.py              # IntSpin / FloatSpin / optional_spin — never a bare QSpinBox
-├── _pydantic_form.py    # field_widget / build_fields — a form from a config model
+├── flow.py              # a row of controls that wraps instead of being squeezed
+├── spin.py              # IntSpin / FloatSpin / ThresholdSlider — never a bare QSpinBox
+├── _pydantic_form.py    # field_widget / build_fields / optional_spin — a form from a config model
 ├── plots.py             # bound_axes and the shared plot conventions
+├── plot_theme.py        # the pyqtgraph / QPainter adapter for the chart design language
+├── zoom.py              # ZoomWindow + OverviewBar — one horizontal zoom for every widget
 ├── collapse.py          # CollapsibleBand — a foldable section with a drag handle
+├── grip_splitter.py     # GripSplitter — side panels that fold to a labelled strip, remembered
 ├── busy.py              # run_busy / run_progress / decode_overlay — off-thread loads
 ├── workers.py           # GuiWorker (every thread names its receiver=) + BackgroundCall
 ├── lifetime.py          # whether a Qt object is still there to be talked to
+├── ui_thread_gc.py      # the cyclic garbage collector runs on the UI thread only
+├── throttle.py          # a drag that reports at most every 50 ms, then once on release
+├── menus.py             # a menu built for one opening is deleted when it closes
+├── timefmt.py           # one way to print a recording time
 ├── image_view.py        # the one pane that shows a picture; `zoomable` has no default
+├── full_frame.py        # a thumbnail that opens its frame full size and zoomable
 ├── scrubber.py          # FrameScrubber — the shared frame/playback control
 ├── frame_source.py      # why a scrub position produced no pixels, and what to say
 ├── decode_order.py      # which thumbnails to decode first
@@ -1336,10 +1411,19 @@ detail/gui/
 ├── cluster_strip.py     # the clip strip a cluster/behaviour is recognised from
 ├── quick_preview.py     # the small player a strip puts in a thumbnail's place
 ├── clip_popup.py        # the window a quick preview opens into
+├── clip_panes.py        # the clip window's picture: footage, masks alone, pose alone
+├── clip_pane_window.py  # one of those side panes, large, with its own playback and export
+├── clip_strips.py       # the clip window's per-frame strips under the slider
+├── advanced_player.py   # the clip window's Advanced player: footage, masks, keypoints, strips
+├── skeleton_points.py   # a choice of a skeleton's points (Trail points)
+├── show_menu.py         # what a montage's tiles show — the Show ▾ menu
+├── animation_export.py  # Export video… / Export GIF… for a picture that plays
+├── montage_export.py    # Export ▾ and pick mode — one export for every clip grid
 ├── recording_items.py   # filling a recording picker, and reading it back
 ├── confidence.py        # the confidence-view control every detection result carries
 ├── method_form.py       # a registry method's parameters, from its own config model
 ├── editing.py           # the unsaved-edits protocol the shell prompts on
+├── notes.py             # the Notes box every entry page carries, saved as you type
 ├── selectable.py        # all user-facing text is selectable
 ├── status_color.py      # the status palette and the one way to apply it
 ├── requirements.py      # the checked structural requirements; generates its own doc page
@@ -1348,16 +1432,29 @@ detail/gui/
 ├── launch.py            # 4.13 launch dialog; hosts ModuleUI.config_widget
 ├── start_from.py        # the Start from row: defaults / baselines / previous runs
 ├── run_activity.py      # LiveRunPanel — the live run page
-├── run_units.py         # one row per unit, four unit kinds, GROUP_ABOVE
+├── run_units.py         # one row per unit, a unit per run kind, GROUP_ABOVE
 ├── unit_rows.py         # the rows themselves: name, bar, status
+├── result_views.py      # ResultView / MultiViewWorkspace — an analysis run's cards and views
 ├── active_processes.py  # the Active processes banner mode
 ├── import_queue.py      # the non-blocking recording-import queue (§1.3)
+├── preview_jobs.py      # video preview builds, queued in the background (§3)
+├── node_cache_jobs.py   # node-cache builds that outlive the page that started them (§22)
 ├── arena.py             # SceneGeometryDialog — 4.10, all four SPATIAL_KINDS
 ├── streams.py           # 4.15–4.17 add-stream / preview / sync-to-video
 ├── preview.py           # prompt-test / render-preview dialogs
 ├── run_preview.py       # detection / tracking / input-image / embedding viewers
 ├── behavior_query.py    # the Query surface + the shared _ClipPlayer
+├── example_spread.py    # how a behavior's example clips spread over the cohort
 ├── cluster_workspace.py # the clustering result workspace
+├── node_workspace.py    # INTERPRET: pick a cluster, watch every clip of it, label it
+├── node_icicle.py       # INTERPRET's node tree, drawn as an icicle
+├── live_montage.py      # every clip of a cluster, all playing, under the tree
+├── cluster_filters.py   # the cluster page's filter dock
+├── match_key.py         # the match key atop the filter dock, and the label swatches
+├── cluster_window.py    # one cluster's clips in a window of their own
+├── label_panel.py       # INTERPRET's label bar, and the label arithmetic every surface shares
+├── label_history.py     # INTERPRET's undo: one history of label changes per run
+├── density_map.py       # where in the frame: the 16×16 position grid and a region picker
 ├── measurements.py      # the shared measurements band (both result pages)
 ├── spatial_map.py       # the shared spatial map (both result pages)
 ├── comparison.py        # §24 comparisons
@@ -1371,16 +1468,25 @@ detail/gui/
 ├── audit_table.py       # the one colour INTERPRET rings a reviewed cluster in
 ├── node_audit.py        # AUDIT's figure (a reviewed cluster's census) on INTERPRET's card
 ├── label_browse.py      # clustering BROWSE
+├── keypoints_manager.py # the Keypoints manager banner mode: the skeleton library (§26)
+├── skeleton_editor.py   # the skeleton editor, a skeleton drawn on a plain canvas (§26)
+├── example_set_picker.py# the example-set picker wherever a keypoint model needs examples (§26)
+├── keypoint_labeling.py # the labeling screen: marking an example set's frames (§26)
+├── keypoint_run_preview.py # the keypoint run viewers (§26)
+├── keypoint_test.py     # Test cut-off… / Test keypoints — testing a keypoint teacher (§12)
+├── keypoint_distill.py  # the keypoint half of ＋ Distill new model (§12)
 ├── readiness_guide.py   # Configuration mode: the setup checklist
 ├── cuda_doctor.py       # Configuration mode: the GPU/CUDA doctor
 ├── model_availability.py# apply_availability / selected_model_id — every model picker
 ├── compute_target.py    # ComputeTargetRow — never a fresh backend combo + device spin
 ├── help_ui.py           # the in-app help popover and its ? button
+├── version_history.py   # Version History: the running build and what changed
 │
 │  # --- registries: all module/importer/tool Qt lives here ----------------------
 ├── importers/           # ImporterUI + ConfigBand + IMPORTER_GUIS (§3.2)
 ├── modules/             # ModuleUI + GUI_MODULES (§3.2) — per-module config + result
-└── tools/               # ToolUI + register_tool_ui (§9)
+├── tools/               # ToolUI + register_tool_ui (DESIGN_PLAN.md §27, Tools)
+└── resources/           # app_icon.png
 ```
 
 `widgets/image_grid.py` was in the planned tree and is gone for good: the thumbnail grid it
@@ -1390,7 +1496,8 @@ the ad-hoc picture widgets.
 - The **shell** (`app.py`) is module-agnostic; everything stage-specific lives in
   `gui/modules/`, registered by `module_id` and paired with the backend
   `PROCESSING_MODULES` entry (§3.2). Adding a module's UI = a file in
-  `gui/modules/` + one `register_module_ui` call.
+  `gui/modules/` + one `register_module_ui` call (`register_analysis_module_ui` for an
+  analysis module, which lands in the separate `ANALYSIS_GUI_MODULES`).
 - `gui/` is the **only** package allowed Qt imports (CLAUDE.md hard rule); it
   reaches the backend exclusively through `Experiment` / `Recording` (Tenet 2).
 
@@ -1423,7 +1530,7 @@ so: shell (Home/Experiment contexts, content routing, workspace listing) → lau
 
 - **Built (see §4 status):** `Experiment.run_processing` + runs index, `Experiment.set_metadata`,
   `Recording.video_parts` / `part_frame_counts` / `set_name`.
-- **Experiments workspace** — experiments live under the storage `default` root (§2, `storage/locations.py`); Home lists them via `Experiment.list_all()`. **Built.** Full storage.yaml config / cloud `StorageLocation` still pending.
+- **Experiments workspace** — experiments live under the storage `default` root (§2, `storage/locations.py`); the Experiments mode lists them via `Experiment.list_all()`. **Built.** Full storage.yaml config / cloud `StorageLocation` still pending.
 - **Per-field editability** — principle settled (edit raw/metadata where it
   lives; run outputs read-only). Exact editable fields enumerated per screen in §4.
 - **MVP result depth** — status + per-recording counts + prompt/renderer grids;
