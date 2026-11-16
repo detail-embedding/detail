@@ -30,7 +30,13 @@ import re
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor
-from PyQt6.QtWidgets import QHBoxLayout, QLabel, QLineEdit, QPushButton, QWidget
+from PyQt6.QtWidgets import (
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QWidget,
+)
 
 from detail.gui import plot_theme
 from detail.gui import status_color
@@ -45,6 +51,11 @@ FIND_NAME = "find_clusters_find"
 CHIP_NAME = "find_clusters_chip"
 CHIP_REMOVE_NAME = "find_clusters_remove"
 CLEAR_NAME = "find_clusters_clear"
+
+#: A chip's id button: its text plus this, so the macOS bezel does not crowd the text.
+CHIP_PAD_PX = 20
+#: A chip's remove button, "×" (as the readiness banner's dismiss, `gui/pages.py`).
+REMOVE_PX = 24
 
 #: What separates ids in the field: commas, semicolons and whitespace, in any mix.
 _SEPARATORS = re.compile(r"[\s,;]+")
@@ -71,7 +82,8 @@ def parse_ids(text: str) -> tuple[list[int], list[str]]:
         if not token:
             continue
         digits = token[1:] if token.startswith("#") else token
-        if not digits.isdigit():
+        # isdecimal, not isdigit: "²" is a digit to Python and int() still refuses it.
+        if not digits.isdecimal():
             rejected.append(token)
             continue
         node = int(digits)
@@ -127,26 +139,32 @@ class FindChip(QWidget):
         else:
             self.swatch.setText(html.escape("·"))
         row.addWidget(self.swatch)
-        self.name = QPushButton(f"#{self.node}")
+        text = (
+            f"#{self.node}" if colour is not None else f"#{self.node} · not in this run"
+        )
+        self.name = QPushButton(text)
         self.name.setObjectName(CHIP_NAME)
+        # As wide as its text, not the style's 80px button floor: the chips share the tree's
+        # zoom row, so three must fit beside the field.
+        self.name.setFixedWidth(text_width(text) + CHIP_PAD_PX)
         self.name.clicked.connect(lambda: self.picked.emit(self.node))
         row.addWidget(self.name)
         if colour is None:
-            self.name.setText(f"#{self.node} · not in this run")
             set_available(
                 self.name, False, f"This run's tree has no {unit} with this id"
             )
         else:
             self.name.setToolTip(f"Open {unit} #{self.node}'s clips")
-        self.remove = QPushButton("Remove")
+        self.remove = QPushButton("×")
         self.remove.setObjectName(CHIP_REMOVE_NAME)
+        self.remove.setFixedWidth(REMOVE_PX)
         self.remove.setToolTip(f"Take #{self.node} out of the list")
         self.remove.clicked.connect(lambda: self.removed.emit(self.node))
         row.addWidget(self.remove)
 
 
 class FindClustersBar(QWidget):
-    """The line above INTERPRET's tree: a field, the ids entered as chips, and **Clear**.
+    """In INTERPRET's zoom row, between the label key and the zoom buttons: a field, the ids entered as chips, and **Clear**.
 
     ``found_changed`` carries ``{node: colour}`` for every id the run has, in the order entered;
     the page rings them and zooms. ``picked`` is a chip's id clicked. ``unit`` / ``units`` are
@@ -166,17 +184,15 @@ class FindClustersBar(QWidget):
         self._chips: list[FindChip] = []
         self._row = FlowLayout(self)
         self._row.setContentsMargins(0, 0, 0, 0)
-        self.caption = QLabel(f"Find {units}")
-        self.caption.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-        )
-        self._row.addWidget(self.caption)
+        # No caption of its own: the line shares the tree's zoom row (user, 2026-11-16: no
+        # added height), so the field's placeholder says what it is.
+        placeholder = f"Find {units}: ids, e.g. 1321, 1384"
         self.field = QLineEdit()
-        self.field.setPlaceholderText("ids, e.g. 1321, 1384")
+        self.field.setPlaceholderText(placeholder)
         self.field.setObjectName(FIELD_NAME)
         self.field.setToolTip(find_tooltip(unit))
         self.field.setClearButtonEnabled(True)
-        self.field.setMinimumWidth(text_width("ids, e.g. 1321, 1384") + 40)
+        self.field.setMinimumWidth(text_width(placeholder) + 40)
         self.field.returnPressed.connect(self.submit)
         self._row.addWidget(self.field)
         self.find = QPushButton("Find")
@@ -189,7 +205,6 @@ class FindClustersBar(QWidget):
         status_color.set_label_color(self.note, status_color.WARN)
         self.note.setVisible(False)
         self._row.addWidget(self.note)
-        self._row.addStretch(1)
         self.clear = QPushButton("Clear")
         self.clear.setObjectName(CLEAR_NAME)
         self.clear.clicked.connect(self.clear_all)
@@ -290,6 +305,6 @@ class FindClustersBar(QWidget):
         self.found_changed.emit(self.found())
 
     def _sync_clear(self) -> None:
-        set_available(self.clear, bool(self._ids), "No cluster ids are listed")
-        if self._ids:
-            self.clear.setToolTip("Take every id out of the list")
+        """**Clear** shows only while ids are listed: an idle zoom row carries the field alone."""
+        self.clear.setVisible(bool(self._ids))
+        self.clear.setToolTip("Take every id out of the list")

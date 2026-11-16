@@ -35,6 +35,8 @@ class _View:
         ("  1321,,  1321 \n 5 ", [1321, 5], []),
         ("12, abc, -4, 3.5", [12], ["abc", "-4", "3.5"]),
         ("", [], []),
+        # A digit to str.isdigit that int() refuses: rejected, not a ValueError in the slot.
+        ("7, ², #³", [7], ["²", "#³"]),
     ],
 )
 def test_ids_are_read_as_the_app_writes_them(text, ids, rejected):
@@ -119,7 +121,7 @@ def test_text_that_is_not_an_id_is_said_once_and_never_becomes_a_chip(bar):
 
 def test_the_line_speaks_the_pages_word_for_a_cluster(bar):
     _enter(bar, "4, 99, walk")
-    assert bar.caption.text() == "Find behaviors"
+    assert bar.field.placeholderText().startswith("Find behaviors:")
     assert "behavior" in bar.field.toolTip() and "cluster" not in bar.field.toolTip()
     assert bar.note.text().startswith("Not a behavior id")
     missing = [chip for chip in bar.chips() if chip.node == 99][0]
@@ -134,15 +136,16 @@ def test_clicking_an_id_picks_that_cluster(bar):
     assert picked == [6]
 
 
-def test_clear_empties_the_list_and_is_greyed_with_nothing_listed(bar):
-    assert not bar.clear.isEnabled() and bar.clear.toolTip()
+def test_clear_empties_the_list_and_shows_only_while_ids_are_listed(bar):
+    """Hidden, not greyed, with nothing listed: the idle zoom row carries the field alone."""
+    assert bar.clear.isHidden()
     _enter(bar, "4, 6")
-    assert bar.clear.isEnabled()
+    assert not bar.clear.isHidden() and bar.clear.toolTip()
     seen = []
     bar.found_changed.connect(seen.append)
     bar.clear.click()
     assert bar.ids() == [] and bar.chips() == [] and seen == [{}]
-    assert not bar.clear.isEnabled()
+    assert bar.clear.isHidden()
 
 
 def test_a_new_tree_rechecks_which_ids_it_has(bar):

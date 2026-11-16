@@ -7420,8 +7420,9 @@ labels. Nothing about the tree moves when a label
 lands, so labelling never costs you your place.
 
 **Find clusters** (`gui/cluster_find.py`; on screen "Find" and the page's `WorkspaceTerms.units`,
-"Find behaviors" on a temporal run), a line above the tree: the user types one or more node
-ids (`1321, 1384`; a leading `#` is accepted, and commas, semicolons and spaces all separate) and
+"Find behaviors" on a temporal run), in the tree's zoom row between the label key and the zoom
+buttons (no row of its own; its chips wrap onto a second line only when they overflow): the user
+types one or more node ids (`1321, 1384`; a leading `#` is accepted, and commas, semicolons and spaces all separate) and
 presses Enter. Each id becomes a chip in its own colour (`plot_theme.identity`, the first slot not
 in use, kept while the id stays listed), and its cluster's blocks wear a band in that colour just
 outside them (`NodeIcicle.set_found`), on each piece where it is a chain node. The tree re-roots

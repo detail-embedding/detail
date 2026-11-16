@@ -1382,6 +1382,33 @@ def test_cluster_ids_typed_into_find_are_ringed_and_the_tree_zooms_to_hold_them(
     assert interpret._icicle.zoom_root == b, "Clear leaves the zoom where it is"
 
 
+def test_find_shares_the_zoom_row_and_costs_the_tree_no_height(qapp, fitted):
+    """Find sits in the zoom row's spare width, not a row of its own above the tree (user,
+    2026-11-16): the row it would have added was 31px of a 171px tree pane at 1440x847. Idle,
+    the row is exactly as tall as the zoom buttons; listing ids does not move the tree.
+    """
+    _experiment, _handle, workspace = _workspace(qapp, fitted)
+    workspace.resize(1440, 847)
+    workspace.show()
+    interpret = workspace._interpret
+    find = interpret._find
+    assert (
+        find.parentWidget() is interpret._zoom_in.parentWidget()
+    ), "not in the zoom row"
+    qapp.processEvents()
+    row = find.parentWidget()
+    assert row.height() == interpret._zoom_in.height(), "the idle row grew"
+    tree_top = interpret._tree.mapTo(workspace, interpret._tree.rect().topLeft()).y()
+    view = interpret._view
+    find.add_ids(view.children(view.root))
+    qapp.processEvents()
+    assert (
+        interpret._tree.mapTo(workspace, interpret._tree.rect().topLeft()).y()
+        == tree_top
+    )
+    workspace.close()
+
+
 def test_a_refit_clears_find_because_every_id_names_another_cluster(qapp, fitted):
     _experiment, _handle, workspace = _workspace(qapp, fitted)
     interpret = workspace._interpret
