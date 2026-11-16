@@ -9,5 +9,5 @@ Training bakes machine-local paths into its checkpoint. `train resume` recovers 
 machine**, but an experiment archived and moved to another machine (the cross-machine flow in the CLI
 guide) can't resume a *partially-trained* model. A dataset moved *within* a machine resumes fine.
 
-- **Workaround:** finish training before `experiment export`, or retrain the model from its dataset on
-  the new machine.
+- **Workaround:** finish training before `experiment export`, or export with `--include-datasets`
+  (a plain export leaves datasets out) and retrain the model from its dataset on the new machine.

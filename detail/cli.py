@@ -3779,7 +3779,7 @@ def train() -> None:
     "--backend",
     type=click.Choice(["cpu", "cuda", "mps"]),
     default=None,
-    help="Compute backend (default: CUDA if available, else CPU).",
+    help="Compute backend (default: the best available: CUDA, then MPS, then CPU).",
 )
 @_DEVICE_OPT
 def train_run(
@@ -4162,7 +4162,7 @@ def distill() -> None:
     "train_backend",
     type=click.Choice(["cpu", "cuda", "mps"]),
     default=None,
-    help="Training backend (default: CUDA if available, else CPU).",
+    help="Training backend (default: the best available: CUDA, then MPS, then CPU).",
 )
 @click.option(
     "--train-device",
@@ -7748,7 +7748,7 @@ def export() -> None:
 @_SUBJECT_OPT
 @click.option("--recording", help="Recording id to export from.")
 @click.option(
-    "--run", help="Processing run id (det_NN / trk_NN / emb_NN) to export from."
+    "--run", help="Experiment-level processing run id (run_NNN) to export from."
 )
 @click.option("--analysis-run", "analysis_run", help="Analysis run id (an_NN).")
 @_DISTILL_RUN_OPT
@@ -7821,7 +7821,7 @@ def _frame_range(text: str | None) -> tuple[int, int] | None:
 @_SUBJECT_OPT
 @click.option("--recording", help="Recording id to export from.")
 @click.option(
-    "--run", help="Processing run id (det_NN / trk_NN / emb_NN) to export from."
+    "--run", help="Experiment-level processing run id (run_NNN) to export from."
 )
 @click.option("--analysis-run", "analysis_run", help="Analysis run id (an_NN).")
 @_DISTILL_RUN_OPT
@@ -7922,14 +7922,10 @@ def export_run(
     The folder is named for you — experiment, module, run, and when — so two exports never
     collide and one is still identifiable months later on somebody else's machine.
 
-    Blocks until complete. **Ctrl-C cancels it**, as on every other ``run`` command — a
-    foreground command you interrupt should stop, and somebody who sees a long estimate on a
-    ``tracks`` export and reaches for Ctrl-C means it. To start one and walk away, launch it and
-    come back with ``export attach``, or use the app, where an export never blocks anything.
-
-    (This promised the opposite when the command was written, on the reasoning that #354 made
-    every export durable. Durability is what makes walking away *possible*; it is not what makes
-    it the expected reading of an interrupt on a command you are sitting and watching.)
+    Blocks until complete. **Ctrl-C cancels it** — a foreground command you interrupt should
+    stop, and somebody who sees a long estimate on a ``tracks`` export and reaches for Ctrl-C
+    means it. To start one and walk away, launch it and come back with ``export attach``, or use
+    the app, where an export never blocks anything.
     """
     from detail.api import exporters
 

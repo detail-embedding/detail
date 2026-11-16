@@ -11,17 +11,16 @@ It answers "what does this animal *do*?": a cluster is a stretch of movement, an
 one performance of it with a real start and end.
 
 **What the hierarchy is built on.** The clusters form a **hierarchy**, a nested series of
-groupings from many small ones to a few large ones, and the granularity control moves between its
-levels. It is derived from **distance and nothing else**: for `dtw_finch`, the
+groupings from many small ones to a few large ones, and you label its nodes. It is derived from **distance and nothing else**: for `dtw_finch`, the
 distance between bouts, compared with a warp tolerance so that a slow and a fast performance of the
 same behavior can still match; for `codebook_viterbi`, the distance between the frames grouped into
 its codewords. It is not derived from how often a behavior occurs, when in the recording it
 happens, where in the arena it happens, or any label you have given it. `dtw_finch`'s levels need
 no threshold and no target count: it links each bout to its single nearest neighbour, takes the
 connected groups of that graph, and repeats on the groups, so the levels are a consequence of the
-data rather than a number anyone chose. That is why the granularity control offers particular
-counts (its *rungs*) rather than a free slider, and why a name given at one rung still means
-something at a finer one.
+data rather than a number anyone chose. There is no setting for how many clusters there are: a
+label on a coarse node covers everything under it, a label on a finer node inside it is more
+specific, and the rest stays unlabelled.
 
 The fit is one job, and it leaves the run **open** rather than complete: a vocabulary is not a
 result until somebody has looked at it. Labelling the clusters that deserve a name, anywhere in
