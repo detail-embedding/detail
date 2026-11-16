@@ -1342,8 +1342,9 @@ prompt**, compared side by side (comma-separate to put several classes in one pr
 across each clip; `--consecutive` reads straight through from frame 0: one clip, one
 prompt, and `--whole-video` removes the limit entirely (that run can take hours; it is
 stoppable in the GUI). `--min-conf` (default `0.5`), `--backend` / `--device`, `--model`
-(default: auto, SAM 3 on an NVIDIA GPU). `--backend` defaults to `cpu`, which SAM 3 cannot run
-on, so pass `--backend cuda` with the default model. A closed-set `--model` (one of your
+(default: auto, SAM 3 on an NVIDIA GPU). Left out, `--backend` takes the best backend the
+machine has that the model supports (cuda > mps > cpu), so SAM 3 runs on CUDA with no flag;
+the run records the backend it used. A closed-set `--model` (one of your
 imported or distilled models) finds its own classes and ignores the prompt's text, but
 `--prompt` is still required. `--export out.mp4` renders the overlay clip and
 needs `--consecutive`, since sampled frames are not contiguous.
@@ -1721,13 +1722,13 @@ detail detection run … --backend cuda --device 0 --device 1
 
 DINOv3 and a trained/imported YOLO run on `cpu`/`mps`/`cuda`; SAM 3 is officially CUDA-only.
 
-**Stage commands default to `cpu`; training and distilling pick the best backend.** The
-`--backend` of `detection run`, `detection prompt-test`, `embedding run`, `process detection`,
-`process embedding`, `keypoints detect`, `dataset label` and `tools quick-segment` defaults to
+**Stage commands default to `cpu`; training, distilling and quick segment pick the best
+backend.** The `--backend` of `detection run`, `detection prompt-test`, `embedding run`,
+`process detection`, `process embedding`, `keypoints detect` and `dataset label` defaults to
 `cpu`, so a scripted or headless run is predictable; pass `--backend cuda` (or `mps`) to use an
-accelerator. `train run --backend`, the `--label-backend` / `--train-backend` of `distill run`
-and `keypoints distill`, and the `--label-backend` of `keypoints test` and `dataset keypoints`
-have no default: left out, they take the best backend present (cuda > mps > cpu), narrowed to
+accelerator. `train run --backend`, `tools quick-segment --backend`, the `--label-backend` /
+`--train-backend` of `distill run` and `keypoints distill`, and the `--label-backend` of
+`keypoints test` and `dataset keypoints` have no default: left out, they take the best backend present (cuda > mps > cpu), narrowed to
 what the model or trainer supports. The GUI forms and the Python API default the same way.
 
 ## Inspecting and troubleshooting runs
