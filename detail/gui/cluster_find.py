@@ -1,39 +1,36 @@
-"""INTERPRET's **Find clusters** box: type cluster ids or labels, see each one ringed in the
-tree (§22).
+"""INTERPRET's **Find clusters** box: type a cluster id or a label, see it ringed in the tree
+(§22).
 
 On screen it uses the page's word for a cluster: "Find behaviors" on a temporal run.
 
 A real fit has hundreds of clusters, and the id a user carries in from somewhere else (a window's
-title, a comparison's row, a note: "look at #1321 and #1384") names a block that can be one
-pixel wide. A label ("climb") names every cluster the user gave it. This box takes either, gives
-each entry a colour, rings its clusters' blocks in the tree in it, and zooms the tree onto **the
-smallest cluster that holds every one of them**, so all of them are on screen at once and as wide
-as they can be. One cluster zooms right onto it.
+title, a comparison's row, a note: "look at #1321") names a block that can be one pixel wide. A
+label ("climb") names every cluster the user gave it. This box takes one or the other, rings its
+clusters' blocks in the tree in one colour, and zooms the tree onto **the smallest cluster that
+holds all of them**, so they are on screen at once and as wide as they can be. A single cluster
+zooms right onto it.
 
-**What is typed.** Commas and semicolons separate entries. An entry made only of ids ("1321",
-"#1321", "1321 1384") is those ids; anything else is a label, matched to each cluster's own label
-whole and ignoring case, so a label with a space in it ("rear up") is one entry.
+**One search at a time** (user, 2026-11-16). What is typed is one entry: an id ("1321",
+"#1321") or else a label, matched to each cluster's own label whole and ignoring case — commas
+and spaces included, so any label can be typed. A new search replaces the last; **Clear** ends
+it and puts back the view from before the first search (the page keeps that view).
 
-**A chip per entry, in the ring's colour.** The chip is how a ring is read back: the same colour
-square beside "#1321" or "climb". A label on several clusters is one chip and one colour, and
-says how many ("climb · 3"). A colour stays with its entry while it is in the list, so removing
-one never repaints the others; a new entry takes the first colour not in use
-(``plot_theme.identity``, the chart theme's categorical order) **and not a label's**
-(``set_reserved``): the tree fills a labelled block in its label's colour, from the same order,
-so a band in that colour round it vanished into its fill — and a label search always lands on
-labelled blocks. A label added later that takes an entry's colour moves that entry, chip and
-band together, to a free one.
+**A chip, in the ring's colour.** The chip is how the ring is read back: the colour square beside
+"#1321" or "climb". A label on several clusters says how many ("climb · 3"). The colour is the
+first ``plot_theme.identity`` slot **not a label's** (``set_reserved``): the tree fills a labelled
+block in its label's colour, from the same order, so a band in that colour round it vanished
+into its fill — and a label search always lands on labelled blocks.
 
-**An entry the run does not have is said to be, not dropped.** Its chip reads "#99999 · not in
-this run" or "climb · no behavior has this label", has no colour and no ring, and leaves the
-zoom alone. Labelling a cluster while it is being found re-reads the labels (``refresh``): the
-rings follow, and the tree does not move, as it never does when a label lands.
+**An entry the run does not have is said to be.** Its chip reads "#99999 · not in this run" or
+"climb · no behavior has this label", has no colour and no ring, and leaves the zoom alone.
+Labelling a cluster while its label is searched re-reads it (``refresh``): the rings follow, and
+the tree does not move, as it never does when a label lands.
 
-**Nothing here selects, filters or labels.** Clicking a chip selects its cluster (a label's
-largest), as clicking its block would; the rings are only rings. The list is the page's for as
-long as the page is open; a re-fit, which makes every id name a different cluster, clears it.
+**Nothing here selects, filters or labels.** Clicking the chip selects its cluster (a label's
+largest), as clicking its block would; the rings are only rings. A re-fit, which makes every id
+name a different cluster, clears the search.
 
-The parsing and the common cluster are plain functions (``parse_entries``, ``common_cluster``),
+The parsing and the common cluster are plain functions (``parse_entry``, ``common_cluster``),
 so they are tested without a widget.
 """
 
@@ -60,57 +57,37 @@ from detail.gui.sizing import set_available, text_width
 FIELD_NAME = "find_clusters_field"
 FIND_NAME = "find_clusters_find"
 CHIP_NAME = "find_clusters_chip"
-CHIP_REMOVE_NAME = "find_clusters_remove"
 CLEAR_NAME = "find_clusters_clear"
 
-#: A chip's name button: its text plus this, so the macOS bezel does not crowd the text.
+#: The chip's button: its text plus this, so the macOS bezel does not crowd the text.
 CHIP_PAD_PX = 20
-#: A chip's remove button, "×" (as the readiness banner's dismiss, `gui/pages.py`).
-REMOVE_PX = 24
 
-#: What separates entries in the field. Not whitespace: a label may hold a space.
-_ENTRY_SEPARATORS = re.compile(r"[,;]+")
 #: One id, as the app writes it or bare. ``\d`` would take "²", which int() refuses.
 _ID = re.compile(r"#?([0-9]+)")
 
-#: An entry in the list: a cluster id, or a label as typed.
+#: What is searched: a cluster id, or a label as typed.
 Entry = int | str
 
 
 def find_tooltip(unit: str) -> str:
     """What the field and **Find** say about themselves, in the page's word for a cluster."""
     return (
-        f"Type {unit} ids or labels, separated by commas (1321, 1384, climb), and press Enter: "
-        f"each is ringed in the tree in its own colour, and the tree zooms to the smallest "
-        f"{unit} holding all of them. Click one to open its clips."
+        f"Type a {unit} id (1321) or a label (climb) and press Enter: its {unit}s are ringed "
+        f"in the tree, and the tree zooms to the smallest {unit} holding them. A new search "
+        "replaces the last; Clear goes back to the view you had. Click the result to open its "
+        "clips."
     )
 
 
-def parse_entries(text: str) -> list[Entry]:
-    """The entries typed, in order, each once: ids as ``int``, labels as ``str``.
-
-    An entry is what lies between commas or semicolons. One whose every word is an id ("1321",
-    "#1321 1384") is those ids; any other is one label, its spaces kept to one ("rear  up" is
-    "rear up"). A label repeated in another case is the same entry.
-    """
-    out: list[Entry] = []
-    labels: set[str] = set()
-    for part in _ENTRY_SEPARATORS.split(text):
-        words = part.split()
-        if not words:
-            continue
-        matches = [_ID.fullmatch(word) for word in words]
-        if all(matches):
-            for match in matches:
-                node = int(match.group(1))
-                if node not in out:
-                    out.append(node)
-            continue
-        label = " ".join(words)
-        if label.casefold() not in labels:
-            labels.add(label.casefold())
-            out.append(label)
-    return out
+def parse_entry(text: str) -> Entry | None:
+    """What was typed: an id (``int``) if it is one, as the app writes it ("#1321") or bare;
+    otherwise the label, its runs of spaces kept to one; ``None`` for nothing."""
+    words = text.split()
+    if not words:
+        return None
+    label = " ".join(words)
+    match = _ID.fullmatch(label)
+    return int(match.group(1)) if match else label
 
 
 def common_cluster(view, nodes) -> int | None:
@@ -132,7 +109,7 @@ def common_cluster(view, nodes) -> int | None:
 
 
 def chip_text(entry: Entry, nodes: list[int], unit: str) -> str:
-    """What a chip reads: the id or label, with a count for a label on several clusters, or
+    """What the chip reads: the id or label, with a count for a label on several clusters, or
     why it rings nothing."""
     name = f"#{entry}" if isinstance(entry, int) else entry
     if not nodes:
@@ -143,12 +120,11 @@ def chip_text(entry: Entry, nodes: list[int], unit: str) -> str:
 
 
 class FindChip(QWidget):
-    """One entry in the list: its colour square, its name (a button that selects its cluster),
-    and **×**. An entry the run does not have says so and selects nothing.
+    """The search's result: its colour square and its name, a button that selects its cluster.
+    An entry the run does not have says so and selects nothing.
     """
 
     picked = pyqtSignal(int)
-    removed = pyqtSignal(object)
 
     def __init__(
         self,
@@ -181,8 +157,7 @@ class FindChip(QWidget):
         text = chip_text(entry, self.nodes, unit)
         self.name = QPushButton(text)
         self.name.setObjectName(CHIP_NAME)
-        # As wide as its text, not the style's 80px button floor: the chips share the tree's
-        # zoom row, so three must fit beside the field.
+        # As wide as its text, not the style's 80px button floor: it shares the zoom row.
         self.name.setFixedWidth(text_width(text) + CHIP_PAD_PX)
         self.name.clicked.connect(lambda: self.picked.emit(self.nodes[0]))
         row.addWidget(self.name)
@@ -201,23 +176,17 @@ class FindChip(QWidget):
             )
         else:
             self.name.setToolTip(f"Open {unit} #{self.nodes[0]}'s clips")
-        self.remove = QPushButton("×")
-        self.remove.setObjectName(CHIP_REMOVE_NAME)
-        self.remove.setFixedWidth(REMOVE_PX)
-        self.remove.setToolTip(f"Take {text.split(' · ')[0]} out of the list")
-        self.remove.clicked.connect(lambda: self.removed.emit(self.entry))
-        row.addWidget(self.remove)
 
 
 class FindClustersBar(QWidget):
     """In INTERPRET's zoom row, between the label key and the zoom buttons: a field, the
-    entries as chips, and **Clear**.
+    search's chip, and **Clear**.
 
-    ``found_changed`` carries ``{node: colour}`` for every cluster the list rings, in the order
-    entered, when the user changed the list or the tree changed (``set_lookup``): the page rings
-    them and zooms. ``rings_changed`` carries the same after ``refresh`` — the labels changed,
-    and the tree must not move. ``picked`` is a chip clicked. ``unit`` / ``units`` are the
-    page's words for a cluster (``WorkspaceTerms``).
+    ``found_changed`` carries ``{node: colour}`` for every cluster the search rings when the
+    user searched or cleared, or the tree changed (``set_lookup``): the page rings them and
+    zooms. ``rings_changed`` carries the same after ``refresh`` — the labels changed, and the
+    tree must not move. ``picked`` is the chip clicked. ``unit`` / ``units`` are the page's
+    words for a cluster (``WorkspaceTerms``).
     """
 
     found_changed = pyqtSignal(dict)
@@ -227,18 +196,17 @@ class FindClustersBar(QWidget):
     def __init__(self, *, unit: str, units: str, parent=None) -> None:
         super().__init__(parent)
         self._unit = unit
-        self._entries: list[Entry] = []
-        self._slots: dict[Entry, int] = {}
+        self._entry: Entry | None = None
+        self._nodes: list[int] = []
         #: Colour slots the page's labels fill blocks with: never a band's.
         self._reserved: frozenset[int] = frozenset()
         self._nodes_of = lambda entry: [entry] if isinstance(entry, int) else []
-        self._resolved: dict[Entry, list[int]] = {}
-        self._chips: list[FindChip] = []
+        self._chip: FindChip | None = None
         self._row = FlowLayout(self)
         self._row.setContentsMargins(0, 0, 0, 0)
         # No caption of its own: the box shares the tree's zoom row (user, 2026-11-16: no
         # added height), so the field's placeholder says what it is.
-        placeholder = f"Find {units}: ids or labels, e.g. 1321, climb"
+        placeholder = f"Find {units}: an id or a label"
         self.field = QLineEdit()
         self.field.setPlaceholderText(placeholder)
         self.field.setObjectName(FIELD_NAME)
@@ -254,6 +222,7 @@ class FindClustersBar(QWidget):
         self._row.addWidget(self.find)
         self.clear = QPushButton("Clear")
         self.clear.setObjectName(CLEAR_NAME)
+        self.clear.setToolTip("End the search and go back to the view you had")
         self.clear.clicked.connect(self.clear_all)
         self._row.addWidget(self.clear)
         self._sync_clear()
@@ -262,8 +231,8 @@ class FindClustersBar(QWidget):
 
     def set_lookup(self, nodes_of) -> None:
         """``nodes_of(entry) -> [node, ...]``: the clusters an id or label names in the run's
-        tree, largest first; empty when it names none. A new tree: re-reads the list, and zooms.
-        """
+        tree, largest first; empty when it names none. A new tree: re-reads the search, and
+        zooms."""
         self._nodes_of = nodes_of
         self._rebuild(self.found_changed)
 
@@ -273,111 +242,72 @@ class FindClustersBar(QWidget):
         self._reserved = frozenset(int(s) for s in slots)
 
     def refresh(self) -> None:
-        """The labels changed: re-read which clusters each entry names. Rings, never zooms."""
-        if self._entries:
+        """The labels changed: re-read which clusters the search names. Rings, never zooms."""
+        if self._entry is not None:
             self._rebuild(self.rings_changed)
 
-    def add(self, entries) -> None:
-        """Append ``entries`` (ids or labels, those not listed already) and say the result."""
-        for entry in entries:
-            if self._index(entry) is None:
-                self._entries.append(entry)
+    def search(self, entry: Entry) -> None:
+        """Search for ``entry`` (an id or a label), replacing any search before it."""
+        self._entry = entry
         self._rebuild(self.found_changed)
 
     def submit(self) -> None:
-        """The field's text, parsed: its entries join the list, and the field empties."""
-        entries = parse_entries(self.field.text())
+        """The field's text as a search; the field empties. Nothing typed changes nothing."""
+        entry = parse_entry(self.field.text())
         self.field.clear()
-        if entries:
-            self.add(entries)
-
-    def remove(self, entry: Entry) -> None:
-        index = self._index(entry)
-        if index is not None:
-            del self._entries[index]
-            self._rebuild(self.found_changed)
+        if entry is not None:
+            self.search(entry)
 
     def clear_all(self) -> None:
-        """Empty the list, and the field with it."""
+        """End the search, and empty the field."""
         self.field.clear()
-        if self._entries:
-            self._entries = []
+        if self._entry is not None:
+            self._entry = None
             self._rebuild(self.found_changed)
 
     # --- outputs -------------------------------------------------------------------------
 
-    def entries(self) -> list[Entry]:
-        """Every entry in the list, the run's and not, in the order entered."""
-        return list(self._entries)
+    def entry(self) -> Entry | None:
+        """What is searched for, found or not; ``None`` with no search."""
+        return self._entry
 
     def found(self) -> dict[int, QColor]:
-        """``{node: colour}`` for every cluster the list names, in the order entered; a node
-        two entries name keeps the first one's colour."""
-        out: dict[int, QColor] = {}
-        for entry in self._entries:
-            for node in self._resolved.get(entry, []):
-                out.setdefault(node, plot_theme.identity(self._slots[entry]))
-        return out
+        """``{node: colour}`` for every cluster the search names, largest first."""
+        colour = plot_theme.identity(self._slot())
+        return {node: colour for node in self._nodes}
 
-    def chips(self) -> list[FindChip]:
-        return list(self._chips)
+    def chip(self) -> FindChip | None:
+        return self._chip
 
     # --- internals -----------------------------------------------------------------------
 
-    def _index(self, entry: Entry) -> int | None:
-        """Where ``entry`` is listed: an id by value, a label ignoring case."""
-        for index, listed in enumerate(self._entries):
-            if isinstance(entry, int) and isinstance(listed, int) and entry == listed:
-                return index
-            if (
-                isinstance(entry, str)
-                and isinstance(listed, str)
-                and entry.casefold() == listed.casefold()
-            ):
-                return index
-        return None
-
-    def _assign_slots(self) -> None:
-        """Keep each listed entry's colour while it names a cluster; give a newly found one
-        the first colour not in use."""
-        named = [e for e in self._entries if self._resolved[e]]
-        self._slots = {
-            e: s
-            for e, s in self._slots.items()
-            if e in named and s not in self._reserved
-        }
-        for entry in named:
-            if entry not in self._slots:
-                used = set(self._slots.values()) | self._reserved
-                slot = 0
-                while slot in used:
-                    slot += 1
-                self._slots[entry] = slot
+    def _slot(self) -> int:
+        """The first colour slot the labels are not using."""
+        slot = 0
+        while slot in self._reserved:
+            slot += 1
+        return slot
 
     def _rebuild(self, signal) -> None:
-        self._resolved = {e: [int(n) for n in self._nodes_of(e)] for e in self._entries}
-        self._assign_slots()
-        for chip in self._chips:
-            self._row.removeWidget(chip)
-            chip.setParent(None)
-            chip.deleteLater()
-        self._chips = []
-        # Chips go after Find and before Clear, in the order entered.
-        at = self._row.indexOf(self.find) + 1
-        for entry in self._entries:
-            nodes = self._resolved[entry]
-            colour = plot_theme.identity(self._slots[entry]) if nodes else None
-            chip = FindChip(entry, nodes, colour, unit=self._unit, parent=self)
-            chip.picked.connect(self.picked)
-            chip.removed.connect(self.remove)
-            self._row.insertWidget(at, chip)
-            at += 1
-            self._chips.append(chip)
+        self._nodes = (
+            [] if self._entry is None else [int(n) for n in self._nodes_of(self._entry)]
+        )
+        if self._chip is not None:
+            self._row.removeWidget(self._chip)
+            self._chip.setParent(None)
+            self._chip.deleteLater()
+            self._chip = None
+        if self._entry is not None:
+            colour = plot_theme.identity(self._slot()) if self._nodes else None
+            self._chip = FindChip(
+                self._entry, self._nodes, colour, unit=self._unit, parent=self
+            )
+            self._chip.picked.connect(self.picked)
+            # After Find, before Clear.
+            self._row.insertWidget(self._row.indexOf(self.find) + 1, self._chip)
         self._sync_clear()
         signal.emit(self.found())
 
     def _sync_clear(self) -> None:
-        """**Clear** shows only while entries are listed: an idle zoom row carries the field
-        alone."""
-        self.clear.setVisible(bool(self._entries))
-        self.clear.setToolTip("Take everything out of the list")
+        """**Clear** shows only during a search: an idle zoom row carries the field alone."""
+        self.clear.setVisible(self._entry is not None)

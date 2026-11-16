@@ -1058,7 +1058,7 @@ class NodeInterpretTab(QWidget):
             return
         self._history.clear()
         self._sync_undo()
-        if self._find.entries():
+        if self._find.entry() is not None:
             # The view kept before finding names a node of the old fit: drop it, not restore it.
             self._before_find = None
             self._find.clear_all()

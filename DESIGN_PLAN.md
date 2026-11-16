@@ -7421,23 +7421,21 @@ lands, so labelling never costs you your place.
 
 **Find clusters** (`gui/cluster_find.py`; on screen "Find" and the page's `WorkspaceTerms.units`,
 "Find behaviors" on a temporal run), in the tree's zoom row between the label key and the zoom
-buttons (no row of its own; its chips wrap onto a second line only when they overflow). The user
-types entries separated by commas or semicolons and presses Enter (`cluster_find.parse_entries`):
-an entry whose every word is a node id (`1321`, `#1321 1384`) is those ids; any other is one
-label, matched to each node's own label whole and ignoring case (`_nodes_found_by`). Each entry
-becomes a chip in its own colour (`plot_theme.identity`, the first slot not in use and not one
-the labels fill blocks with — `set_reserved` — kept while the entry stays listed unless a new
-label takes it); a label on several nodes is one chip ("climb · 3") and one colour. Its
-nodes' blocks wear a band in that colour just outside them (`NodeIcicle.set_found`), on each piece
-where one is a chain node; never inside a block (a side at the widget's edge goes without) and
-never on the zoom root, which is the whole picture. The tree re-roots on the smallest cluster holding every found node
-(`cluster_find.common_cluster`): the node itself for one. An entry that names nothing is a chip
-saying so ("not in this run", "no behavior has this label"), with no colour, no band and no part
-in the zoom. A label change re-reads the list (`FindClustersBar.refresh`, emitting
-`rings_changed`): the bands follow and the tree does not move. Clicking a chip selects its node
-(a label's largest); **Clear** (or removing the last entry) takes every band off and puts back
-the view the tree had before the first find zoomed it (`NodeIcicle.view_state` /
-`restore_view`). Nothing is filtered, labelled or written. The list lasts the page's life and is
+buttons (no row of its own). **One search at a time**: the user types one entry and presses
+Enter (`cluster_find.parse_entry`): a node id (`1321`, `#1321`), or else a label, matched to each
+node's own label whole and ignoring case (`_nodes_found_by`); a new search replaces the last.
+Its nodes' blocks wear a band in one colour just outside them (`NodeIcicle.set_found`), on each
+piece where one is a chain node; never inside a block (a side at the widget's edge goes
+without) and never on the zoom root, which is the whole picture. The colour is the first
+`plot_theme.identity` slot the labels do not fill blocks with (`set_reserved`). A chip beside the
+field shows it, with a count for a label on several nodes ("climb · 3"). The tree re-roots on the
+smallest cluster holding every found node (`cluster_find.common_cluster`): the node itself for
+one. An entry that names nothing is a chip saying so ("not in this run", "no behavior has this
+label"), with no colour, no band and no zoom. A label change re-reads the search
+(`FindClustersBar.refresh`, emitting `rings_changed`): the bands follow and the tree does not
+move. Clicking the chip selects its node (a label's largest); **Clear** ends the search and puts
+back the view the tree had before the first search zoomed it (`NodeIcicle.view_state` /
+`restore_view`). Nothing is filtered, labelled or written. A search lasts the page's life and is
 cleared by a re-fit, which makes every id name a different cluster (`tree_identity`).
 
 **Layout** (`gui/node_workspace.py`). A horizontal splitter: the filter dock
