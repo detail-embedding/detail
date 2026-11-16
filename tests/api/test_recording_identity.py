@@ -4,6 +4,14 @@ The id used to be the video filename's stem, so the *file* was the identity: now
 put a better label, an arbitrary choice for a recording spanning several files, and no way
 to correct a bad one. These pin the split, and the forward-compatibility of every
 experiment created before it.
+
+**The class this guards: a surface handing a user's name to the explicit-id form.**
+``Experiment.create_recording(id)`` is for a caller that owns the id — a script, a test, a
+bundle restore. ``detail recording create --name X`` called it, so the CLI alone still
+made the label a user typed into the permanent id, and ``docs/cli.md`` described that as a
+feature. A surface naming a recording calls ``add_recording``, refuses a taken name the way
+``Recording.set_name`` does, and every other ``create_recording`` caller in ``detail/`` is
+listed below with its reason (``test_only_a_restore_chooses_a_recordings_id``).
 """
 
 import numpy as np
@@ -84,6 +92,93 @@ def test_renaming_a_recording_to_its_own_name_is_not_a_collision(tmp_path):
     experiment = Experiment.create("p", tmp_path)
     recording = experiment.add_recording("m27_day3")
     recording.set_name("m27_day3")  # no-op, must not raise
+
+
+# --------------------------------------------------------------------------- #
+# Every surface a user names a recording through
+# --------------------------------------------------------------------------- #
+def test_the_cli_names_a_recording_and_mints_its_id(tmp_path):
+    """``recording create --name`` called the explicit-id form, so the name a user typed
+    became the permanent id: the one surface that still made the label the identity."""
+    from click.testing import CliRunner
+
+    from detail.cli import main
+
+    experiment = Experiment.create("p", tmp_path)
+    result = CliRunner().invoke(
+        main,
+        ["recording", "create", "--experiment", str(experiment.dir), "--name", "m27"],
+    )
+    assert result.exit_code == 0, result.output
+    assert experiment.recording_names() == {"recording_000": "m27"}
+
+
+def test_the_cli_refuses_a_name_already_taken_rather_than_renaming_it(tmp_path):
+    """A name typed at the CLI is a name a user typed: refused when taken, as
+    :meth:`Recording.set_name` refuses it, never suffixed the way an import's filenames
+    are."""
+    from click.testing import CliRunner
+
+    from detail.cli import main
+
+    experiment = Experiment.create("p", tmp_path)
+    experiment.add_recording("m27")
+    result = CliRunner().invoke(
+        main,
+        ["recording", "create", "--experiment", str(experiment.dir), "--name", "m27"],
+    )
+    assert result.exit_code != 0
+    assert "already named 'm27' (id recording_000)" in result.output
+    assert experiment.recording_names() == {"recording_000": "m27"}
+
+
+#: Every caller of the explicit-id form in ``detail/``, with why it may choose the id. A
+#: surface adding a recording a user is naming calls ``add_recording`` instead.
+_EXPLICIT_ID_CALLERS = {
+    "detail/api/imports.py": "a bundle restore keeps the ids its other files reference",
+}
+
+
+def _explicit_id_callers(source: str) -> int:
+    """How many ``.create_recording(`` calls ``source`` makes (any receiver)."""
+    import ast
+
+    return sum(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "create_recording"
+        for node in ast.walk(ast.parse(source))
+    )
+
+
+def test_only_a_restore_chooses_a_recordings_id():
+    """The class behind the CLI's ``--name``: a surface calling ``create_recording`` with
+    something a user typed. Fail-closed over ``detail/``: a new caller must be listed with
+    its reason. ``Experiment.create_recording`` itself delegates to the store's function of
+    the same name, and the store is where the id is written, so both are the definition,
+    not a caller."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    found = {}
+    for path in sorted((root / "detail").rglob("*.py")):
+        rel = path.relative_to(root).as_posix()
+        if rel in ("detail/api/experiment.py", "detail/storage/recording.py"):
+            continue
+        count = _explicit_id_callers(path.read_text(encoding="utf-8"))
+        if count:
+            found[rel] = count
+    assert set(found) == set(_EXPLICIT_ID_CALLERS), found
+
+
+def test_the_explicit_id_scan_would_catch_the_old_cli():
+    """The negative case: the CLI's old body, and a call wrapped across lines."""
+    assert _explicit_id_callers("proj.create_recording(name)\n") == 1
+    assert (
+        _explicit_id_callers("x = (\n    proj\n    .create_recording(\n name)\n)\n")
+        == 1
+    )
+    assert _explicit_id_callers("proj.add_recording(name)\n") == 0
 
 
 # --------------------------------------------------------------------------- #

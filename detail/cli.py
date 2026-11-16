@@ -993,16 +993,31 @@ def recording() -> None:
 @recording.command("create")
 @_EXPERIMENT_OPT
 @click.option(
-    "--name", required=True, type=str, help="Recording id (e.g. recording_001)."
+    "--name",
+    required=True,
+    type=str,
+    help="The recording's name: what every command's --recording and the GUI take. "
+    "The tool assigns its id (recording_000, …).",
 )
 def recording_create(experiment_dir: Path, name: str) -> None:
-    """Create a new recording under <experiment>/recordings/<name>/."""
+    """Create a new, empty recording named NAME; the tool assigns its id."""
     proj = _open_experiment(experiment_dir)
-    try:
-        proj.create_recording(name)
-    except (FileExistsError, ValueError) as e:
-        raise click.ClickException(str(e))
-    click.echo(f"created recording: {name}")
+    name = name.strip()
+    if not name:
+        raise click.ClickException("--name cannot be empty")
+    # A name a user typed is refused when taken, never suffixed the way the importer's
+    # filenames are (Recording.set_name, CLAUDE.md "A recording's id is the tool's").
+    holder = next(
+        (rid for rid, existing in proj.recording_names().items() if existing == name),
+        None,
+    )
+    if holder is not None:
+        raise click.ClickException(
+            f"another recording is already named {name!r} (id {holder}); "
+            "names identify recordings to you, so they have to be unique"
+        )
+    recording = proj.add_recording(name)
+    click.echo(f"created recording: {recording.name}  (id {recording.id})")
 
 
 class _StageProgress:

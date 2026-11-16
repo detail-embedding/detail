@@ -98,34 +98,34 @@ PROJ=~/Documents/DetailExperiments/study        # inside the managed workspace �
 # 1. experiment + recording
 detail experiment create study --dir ~/Documents/DetailExperiments
 #   created experiment: /Users/you/Documents/DetailExperiments/study
-detail recording create --experiment $PROJ --name recording_001
-#   created recording: recording_001
+detail recording create --experiment $PROJ --name cage_a
+#   created recording: cage_a  (id recording_000)
 
 # 2. import a video part
-detail recording add-video --experiment $PROJ --recording recording_001 --video clip.mp4
-#   added video to recording_001 (copied): clip.mp4
+detail recording add-video --experiment $PROJ --recording cage_a --video clip.mp4
+#   added video to cage_a (copied): clip.mp4
 
 # 3. detection: text-prompted. --every-n-frames 2 halves the cost by detecting
 #    frames 0, 2, 4, … (omit it to detect every frame)
-detail detection run --experiment $PROJ --recording recording_001 \
+detail detection run --experiment $PROJ --recording cage_a \
     --model sam3 --class mouse --prompt mouse --conf 0.1 --every-n-frames 2 --backend cuda
 #   submitted detection: det_01
 #   detection: det_01 (status=complete)
 
 # 4. tracking: link detections into the subject track (track 0)
-detail tracking run --experiment $PROJ --recording recording_001 \
+detail tracking run --experiment $PROJ --recording cage_a \
     --detection det_01 --tracker anchor_tracker --conf-threshold 0.1 --secondary-conf 0.05
 #   submitted tracking: track_01
 #   tracking: track_01 (status=complete)
 
 # 5. embedding: embed the tracked subject each frame (DINOv3, gated)
-detail embedding run --experiment $PROJ --recording recording_001 \
+detail embedding run --experiment $PROJ --recording cage_a \
     --tracking track_01 --tracks 0 --backend cpu   # default model: dinov3_vit, vit_large
 #   submitted embedding: emb_01
 #   embedding: emb_01 (status=complete)
 
 # 6. inspect
-detail recording status --experiment $PROJ --recording recording_001
+detail recording status --experiment $PROJ --recording cage_a
 ```
 
 Each command blocks until its run finishes, streaming progress lines, then
@@ -185,9 +185,10 @@ table, see the [Parameters reference](reference/parameters.md).
   what they have before you commit.
 
 ### `recording`
-- `create --experiment <dir> --name <id>`: e.g. `--name recording_001`. The value is the
-  recording's **id** and also its starting name (see [Naming recordings](#naming-recordings)).
-  (Note: `create` uses `--name`; the other `recording` commands use `--recording <id>`.)
+- `create --experiment <dir> --name <name>`: e.g. `--name cage_a`. Makes an empty recording
+  with that name; the app assigns its id (`recording_000`, …) and prints both. A name already
+  taken is refused (see [Naming recordings](#naming-recordings)). The other `recording`
+  commands take it back as `--recording <name or id>`.
 - `add-video --experiment <dir> --recording <id> --video <file>`: import a video as
   the next part. Repeat to add more parts. The video is imported at its original rate
   and resolution: a stage that wants fewer frames sets `--every-n-frames` on the run, which
@@ -2182,8 +2183,10 @@ table is one shape, not one per recording.
 `--recording` takes a **name or an id**. The name is yours (it starts as the video's
 filename and you can change it on the recording's page in the GUI); the id is fixed when the
 recording is made and never changes. The app assigns it (`recording_000`, in order, never
-reused). `recording create --name <id>` and a manifest's `id` set it yourself, which is what a
-script wants, and the name starts as that id. `recording status` prints both:
+reused). `recording create --name <name>` names the recording and the app assigns its id; a
+name already taken is refused. To choose ids yourself, which is what a script restoring
+earlier data wants, give each recording an `id` in a [bulk import](#bulk-importing-recordings)
+manifest; its name then starts as that id. `recording status` prints both:
 
 ```bash
 detail recording status --experiment $PROJ --recording m27_day3
