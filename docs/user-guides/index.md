@@ -161,8 +161,8 @@ recordings need space of their own on top of this.
 - **About an hour** for installation. Most of it is waiting for downloads.
 - **Free disk space** for DETAIL, the AI models, and your videos. Plan for tens of gigabytes
   before your videos.
-- **A GitHub account.** DETAIL is shared through GitHub. The install page shows you how to
-  make one and get access.
+- **Your GitHub account.** DETAIL downloads from GitHub. The install page signs your computer
+  in to the account you read these guides with.
 - **A Hugging Face account.** The AI models download from Hugging Face. [Configure
   DETAIL](configure.md) shows you how to make one.
 - **Your videos**, one animal in each. A few minutes of video is enough to follow the guide.

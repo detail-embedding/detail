@@ -18,16 +18,15 @@ Each box is one step on this page. Click a box to go to that step. The tags say 
 
 <div class="guide-flow" markdown>
 
-1. [Create a GitHub account and get access](#1-create-a-github-account-and-get-access-to-detail) <span class="where where-web">Browser</span> <span class="note">Wait for the invitation email from GitHub.</span>
-1. [Update the NVIDIA driver](#2-update-the-nvidia-driver) <span class="where where-web">Browser</span> <span class="where where-powershell">PowerShell</span>
-1. [Install Python 3.12](#3-install-python-312) <span class="where where-powershell">PowerShell</span> <span class="note">Skip the install if you already have Python 3.12.</span>
-1. [Install Git, the GitHub CLI and uv](#4-install-git-the-github-cli-and-uv) <span class="where where-powershell">PowerShell</span>
-1. [Allow PowerShell to run scripts](#5-allow-powershell-to-run-scripts) <span class="where where-powershell">PowerShell</span>
-1. [Sign in to GitHub](#6-sign-in-to-github-from-your-computer) <span class="where where-powershell">PowerShell</span> <span class="where where-web">Browser</span>
-1. [Download DETAIL](#7-download-detail) <span class="where where-powershell">PowerShell</span>
-1. [Create the environment and install DETAIL](#8-create-the-environment-and-install-detail) <span class="where where-powershell">PowerShell, same window</span>
-1. [Turn on Developer Mode](#9-turn-on-developer-mode) <span class="where where-settings">Windows Settings</span>
-1. [Launch DETAIL](#10-launch-detail) <span class="where where-powershell">PowerShell, same window</span> <span class="where where-detail">DETAIL window</span> <span class="note">Then go on to Configure DETAIL.</span>
+1. [Update the NVIDIA driver](#1-update-the-nvidia-driver) <span class="where where-web">Browser</span> <span class="where where-powershell">PowerShell</span>
+1. [Install Python 3.12](#2-install-python-312) <span class="where where-powershell">PowerShell</span> <span class="note">Skip the install if you already have Python 3.12.</span>
+1. [Install Git, the GitHub CLI and uv](#3-install-git-the-github-cli-and-uv) <span class="where where-powershell">PowerShell</span>
+1. [Allow PowerShell to run scripts](#4-allow-powershell-to-run-scripts) <span class="where where-powershell">PowerShell</span>
+1. [Sign in to GitHub](#5-sign-in-to-github-from-your-computer) <span class="where where-powershell">PowerShell</span> <span class="where where-web">Browser</span>
+1. [Download DETAIL](#6-download-detail) <span class="where where-powershell">PowerShell</span>
+1. [Create the environment and install DETAIL](#7-create-the-environment-and-install-detail) <span class="where where-powershell">PowerShell, same window</span>
+1. [Turn on Developer Mode](#8-turn-on-developer-mode) <span class="where where-settings">Windows Settings</span>
+1. [Launch DETAIL](#9-launch-detail) <span class="where where-powershell">PowerShell, same window</span> <span class="where where-detail">DETAIL window</span> <span class="note">Then go on to Configure DETAIL.</span>
 
 </div>
 
@@ -50,30 +49,11 @@ this page.
     3. Press ++enter++.
     4. Wait for the `PS ...>` prompt to come back before running the next command.
 
-    If you close PowerShell partway through, open it again the same way. Steps 8 and later
+    If you close PowerShell partway through, open it again the same way. Steps 7 and later
     also need you to go back into the DETAIL folder and switch on its environment. The
     commands for that are under [Launch it again later](#launch-it-again-later).
 
-## 1. Create a GitHub account and get access to DETAIL
-
-DETAIL is shared through GitHub, a website for sharing software, in a private repository that
-only invited accounts can open.
-
-1. If you do not have a GitHub account, create one at [GitHub sign-up](https://github.com/signup).
-   It is free.
-2. Send your GitHub username to the DETAIL team and ask for access to the DETAIL repository.
-3. GitHub emails you an invitation. Open it and click **Accept invitation**.
-
-**Check:** while signed in to GitHub, open [the DETAIL repository](https://github.com/detail-embedding/detail).
-You see a list of folders and files.
-
-??? warning "If this doesn't work"
-    - **"404 This is not the web page you are looking for":** your invitation has not been
-      accepted yet, or you are signed in as a different account. Check your email (and spam
-      folder) for the invitation, or open
-      [your GitHub invitations](https://github.com/detail-embedding/detail/invitations).
-
-## 2. Update the NVIDIA driver
+## 1. Update the NVIDIA driver
 
 The driver is the software that lets Windows use the GPU.
 
@@ -101,7 +81,7 @@ A table prints with your GPU's name. Its top line includes `CUDA Version`.
     - **"NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver":**
       reinstall the driver, then restart.
 
-## 3. Install Python 3.12
+## 2. Install Python 3.12
 
 DETAIL needs Python version **3.12** exactly. Your computer may already have Python, possibly a
 newer version. A newer version is not enough, but you can keep it: Python 3.12 installs next
@@ -113,7 +93,7 @@ In **PowerShell**, see which versions your computer has:
 py --list
 ```
 
-- **A line containing `3.12`:** Python 3.12 is installed. Skip to step 4.
+- **A line containing `3.12`:** Python 3.12 is installed. Skip to step 3.
 - **Only other versions, such as `3.13` or `3.14`:** install 3.12 as below. Your other
   versions stay as they are.
 - **`py` is not recognized:** your computer has no Python from python.org. Install 3.12 as
@@ -144,7 +124,7 @@ It prints a version starting with `Python 3.12`.
     Several Python versions can be installed on one computer, and each program picks the one
     it asks for. The `py` launcher that comes with Python from python.org lists them all and
     starts whichever you name: `py -3.12` runs 3.12 even when a newer one is the default.
-    DETAIL's environment (step 8) asks for 3.12 by name, so your other versions, and anything
+    DETAIL's environment (step 7) asks for 3.12 by name, so your other versions, and anything
     that uses them, are not affected.
 
 ??? warning "If this doesn't work"
@@ -155,10 +135,10 @@ It prints a version starting with `Python 3.12`.
       Windows includes a `python` shortcut that opens the Store, and on a computer with
       several versions `python` may start a different one.
     - **You use Anaconda or Miniconda,** and the prompt starts with `(base)` or another name
-      in brackets: run `conda deactivate` before step 8, so the environment is made from
+      in brackets: run `conda deactivate` before step 7, so the environment is made from
       Python 3.12 rather than from conda's Python.
 
-## 4. Install Git, the GitHub CLI and uv
+## 3. Install Git, the GitHub CLI and uv
 
 These are three more free tools DETAIL needs. Install them with winget, one at a time, in **PowerShell**:
 
@@ -197,7 +177,7 @@ Each prints a version number.
 ??? info "About this step: what each tool is"
     - **Git** downloads DETAIL and later fetches its updates.
     - **The GitHub CLI** (`gh`) signs your computer in to your GitHub account, so Git can
-      download the private DETAIL repository.
+      download the DETAIL repository.
     - **uv** installs DETAIL and the libraries it uses into a separate folder, its
       *environment*, so they cannot clash with other Python software on the computer.
 
@@ -209,7 +189,7 @@ Each prints a version number.
     - **A tool is not recognized after reopening PowerShell:** close every PowerShell window
       and open a new one. If it is still not found, restart the computer.
 
-## 5. Allow PowerShell to run scripts
+## 4. Allow PowerShell to run scripts
 
 Windows blocks PowerShell scripts by default, and switching on DETAIL's environment runs one.
 In **PowerShell**, allow scripts for your own account. You do this once, and it needs no administrator:
@@ -224,7 +204,7 @@ If it asks whether to change the execution policy, type `Y` and press ++enter++.
     `RemoteSigned` lets scripts made on your computer run, and still blocks unsigned scripts
     downloaded from the internet. It changes the setting only for your Windows account.
 
-## 6. Sign in to GitHub from your computer
+## 5. Sign in to GitHub from your computer
 
 In **PowerShell**:
 
@@ -239,10 +219,10 @@ gh auth login --hostname github.com --git-protocol https --web
 **Check:** PowerShell prints `Logged in as` followed by your GitHub username.
 
 ??? info "About this step"
-    This links Git on your computer to your GitHub account, so it can download the private
+    This links Git on your computer to your GitHub account, so it can download the
     DETAIL repository. You do it once per computer.
 
-## 7. Download DETAIL
+## 6. Download DETAIL
 
 In **PowerShell**, go to your home folder:
 
@@ -268,15 +248,15 @@ cd detail
     Your home folder is `C:\Users\yourname`, so DETAIL ends up in `C:\Users\yourname\detail`.
 
 ??? warning "If this doesn't work"
-    - **"Could not resolve to a Repository":** your GitHub account does not have access yet.
-      Go back to step 1.
+    - **"Could not resolve to a Repository":** the GitHub account you signed in with
+      cannot open the DETAIL repository. Sign in again with the account that can.
     - **"destination path 'detail' already exists":** DETAIL was downloaded before. Run
-      `cd detail` and go on to step 8.
+      `cd detail` and go on to step 7.
 
-## 8. Create the environment and install DETAIL
+## 7. Create the environment and install DETAIL
 
 In the same **PowerShell** window, still inside the `detail` folder (the prompt ends
-in `\detail>`), create the environment, using the Python 3.12 from step 3:
+in `\detail>`), create the environment, using the Python 3.12 from step 2:
 
 ```
 uv venv --seed --python 3.12
@@ -318,14 +298,14 @@ A list of DETAIL commands prints.
     for clustering.
 
 ??? warning "If this doesn't work"
-    - **Activate is not recognized, or "running scripts is disabled":** do step 5, then try
+    - **Activate is not recognized, or "running scripts is disabled":** do step 4, then try
       again.
     - **`detail` is not recognized:** the environment is not on. Run
       `.venv\Scripts\Activate` from inside the `detail` folder.
     - **The install stops with an error:** run the same install command again. A dropped
       download is the usual cause, and uv keeps the files it already downloaded.
 
-## 9. Turn on Developer Mode
+## 8. Turn on Developer Mode
 
 Developer Mode lets the model downloads save space. Without it, Windows stores each
 multi-gigabyte model file twice.
@@ -340,7 +320,7 @@ multi-gigabyte model file twice.
     Windows only allows those links (symlinks) in Developer Mode. Developer Mode changes nothing
     else about how Windows works for you.
 
-## 10. Launch DETAIL
+## 9. Launch DETAIL
 
 In the same **PowerShell** window, with the environment on (the prompt starts with
 `(detail)`):
@@ -359,7 +339,7 @@ Leave it open and go on to [Configure DETAIL](configure.md).
     PowerShell stays busy while DETAIL is open, and closing PowerShell closes DETAIL. Use a
     second PowerShell window for any other commands.
 
-    The PyTorch installed in step 8 cannot use the GPU yet, because Windows downloads get a
+    The PyTorch installed in step 7 cannot use the GPU yet, because Windows downloads get a
     version without GPU support. The first step of [Configure DETAIL](configure.md) replaces
     it.
 

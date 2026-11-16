@@ -2,7 +2,7 @@
 
 This page installs DETAIL on a Linux computer with an NVIDIA GPU. The commands are for Ubuntu
 22.04 or newer. Other Linux systems work too, with their own commands for installing system
-software in steps 3 and 4.
+software in steps 2 and 3.
 
 DETAIL runs everything on your computer's NVIDIA GPU.
 
@@ -20,14 +20,13 @@ Each box is one step on this page. Click a box to go to that step. The tags say 
 
 <div class="guide-flow" markdown>
 
-1. [Create a GitHub account and get access](#1-create-a-github-account-and-get-access-to-detail) <span class="where where-web">Browser</span> <span class="note">Wait for the invitation email from GitHub.</span>
-1. [Install the NVIDIA driver](#2-install-the-nvidia-driver) <span class="where where-terminal">Terminal</span> <span class="note">Skip if nvidia-smi already shows your GPU.</span>
-1. [Install the tools DETAIL needs](#3-install-the-tools-detail-needs) <span class="where where-terminal">Terminal</span>
-1. [Install Python 3.12](#4-install-python-312) <span class="where where-terminal">Terminal</span>
-1. [Sign in to GitHub](#5-sign-in-to-github-from-your-computer) <span class="where where-terminal">Terminal</span> <span class="where where-web">Browser</span>
-1. [Download DETAIL](#6-download-detail) <span class="where where-terminal">Terminal</span>
-1. [Create the environment and install DETAIL](#7-create-the-environment-and-install-detail) <span class="where where-terminal">Terminal, same window</span>
-1. [Launch DETAIL](#8-launch-detail) <span class="where where-terminal">Terminal, same window</span> <span class="where where-detail">DETAIL window</span> <span class="note">Then go on to Configure DETAIL.</span>
+1. [Install the NVIDIA driver](#1-install-the-nvidia-driver) <span class="where where-terminal">Terminal</span> <span class="note">Skip if nvidia-smi already shows your GPU.</span>
+1. [Install the tools DETAIL needs](#2-install-the-tools-detail-needs) <span class="where where-terminal">Terminal</span>
+1. [Install Python 3.12](#3-install-python-312) <span class="where where-terminal">Terminal</span>
+1. [Sign in to GitHub](#4-sign-in-to-github-from-your-computer) <span class="where where-terminal">Terminal</span> <span class="where where-web">Browser</span>
+1. [Download DETAIL](#5-download-detail) <span class="where where-terminal">Terminal</span>
+1. [Create the environment and install DETAIL](#6-create-the-environment-and-install-detail) <span class="where where-terminal">Terminal, same window</span>
+1. [Launch DETAIL](#7-launch-detail) <span class="where where-terminal">Terminal, same window</span> <span class="where where-detail">DETAIL window</span> <span class="note">Then go on to Configure DETAIL.</span>
 
 </div>
 
@@ -49,26 +48,7 @@ Every command on this page runs in a terminal. On Ubuntu, press ++ctrl+alt+t++, 
     while asks for your password. Nothing appears while you type it, not even dots. Type it
     and press ++enter++.
 
-## 1. Create a GitHub account and get access to DETAIL
-
-DETAIL is shared through GitHub, a website for sharing software, in a private repository that
-only invited accounts can open.
-
-1. If you do not have a GitHub account, create one at [GitHub sign-up](https://github.com/signup).
-   It is free.
-2. Send your GitHub username to the DETAIL team and ask for access to the DETAIL repository.
-3. GitHub emails you an invitation. Open it and click **Accept invitation**.
-
-**Check:** while signed in to GitHub, open [the DETAIL repository](https://github.com/detail-embedding/detail).
-You see a list of folders and files.
-
-??? warning "If this doesn't work"
-    - **"404 This is not the web page you are looking for":** your invitation has not been
-      accepted yet, or you are signed in as a different account. Check your email (and spam
-      folder) for the invitation, or open
-      [your GitHub invitations](https://github.com/detail-embedding/detail/invitations).
-
-## 2. Install the NVIDIA driver
+## 1. Install the NVIDIA driver
 
 In the terminal, first check whether a working driver is already installed:
 
@@ -77,7 +57,7 @@ nvidia-smi
 ```
 
 - **A table prints with your GPU's name** and a `CUDA Version` on its top line: the driver
-  works. Skip to step 3.
+  works. Skip to step 2.
 - **`nvidia-smi` is not found, or prints an error:** install the driver.
 
 Ubuntu picks and installs the right driver for your GPU:
@@ -112,7 +92,7 @@ A table prints with your GPU's name. Its top line includes `CUDA Version`.
     - **`nvidia-smi` still fails after the restart:** ask your IT support. Some computers
       need the driver installed a different way.
 
-## 3. Install the tools DETAIL needs
+## 2. Install the tools DETAIL needs
 
 In the terminal, bring the list of available software up to date:
 
@@ -151,13 +131,13 @@ Each prints a version number.
 ??? info "About this step: what each tool is"
     - **Git** downloads DETAIL and later fetches its updates.
     - **The GitHub CLI** (`gh`) signs your computer in to your GitHub account, so Git can
-      download the private DETAIL repository.
+      download the DETAIL repository.
     - **The `libxcb` and `libxkbcommon` libraries** let DETAIL's window open. Most desktop
       installs have them already, and `apt` skips any that are.
     - **uv** installs Python, DETAIL, and the libraries DETAIL uses, into a separate folder
       (its *environment*) so they cannot clash with the system's own software.
 
-## 4. Install Python 3.12
+## 3. Install Python 3.12
 
 DETAIL needs Python version **3.12** exactly. Linux comes with its own Python, which may be a
 different version. Leave it alone: the system's own tools use it. uv installs a separate
@@ -188,10 +168,10 @@ It prints the path of a Python 3.12 program.
 
 ??? warning "If this doesn't work"
     - **You use Anaconda or Miniconda,** and the prompt starts with `(base)` or another name
-      in brackets: run `conda deactivate` before step 7, so the environment is made from
+      in brackets: run `conda deactivate` before step 6, so the environment is made from
       Python 3.12 rather than from conda's Python.
 
-## 5. Sign in to GitHub from your computer
+## 4. Sign in to GitHub from your computer
 
 In the terminal:
 
@@ -207,10 +187,10 @@ gh auth login --hostname github.com --git-protocol https --web
 **Check:** the terminal prints `Logged in as` followed by your GitHub username.
 
 ??? info "About this step"
-    This links Git on your computer to your GitHub account, so it can download the private
+    This links Git on your computer to your GitHub account, so it can download the
     DETAIL repository. You do it once per computer.
 
-## 6. Download DETAIL
+## 5. Download DETAIL
 
 In the terminal, go to your home folder:
 
@@ -236,15 +216,15 @@ cd detail
     Your home folder is `/home/yourname`, so DETAIL ends up in `/home/yourname/detail`.
 
 ??? warning "If this doesn't work"
-    - **"Could not resolve to a Repository":** your GitHub account does not have access yet.
-      Go back to step 1.
+    - **"Could not resolve to a Repository":** the GitHub account you signed in with
+      cannot open the DETAIL repository. Sign in again with the account that can.
     - **"destination path 'detail' already exists":** DETAIL was downloaded before. Run
-      `cd detail` and go on to step 7.
+      `cd detail` and go on to step 6.
 
-## 7. Create the environment and install DETAIL
+## 6. Create the environment and install DETAIL
 
 In the same terminal window, still inside the `detail` folder (the prompt ends in
-`~/detail$`), create the environment, using the Python 3.12 from step 4:
+`~/detail$`), create the environment, using the Python 3.12 from step 3:
 
 ```
 uv venv --seed --python 3.12
@@ -291,7 +271,7 @@ A list of DETAIL commands prints.
     - **The install stops with an error:** run the same install command again. A dropped
       download is the usual cause, and uv keeps the files it already downloaded.
 
-## 8. Launch DETAIL
+## 7. Launch DETAIL
 
 In the same terminal window, with the environment on (the prompt starts with
 `(detail)`):
