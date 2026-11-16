@@ -71,12 +71,13 @@ covers the negative case, the revert test, and the fixture traps. It is the step
 and the one that most often ships something green and empty.
 
 **And account for what it costs.** A guard is required; a guard that recomputes something is not.
-Coverage for the package must not drop — which is what makes *consolidating* existing tests legal
-rather than reading as deletion — and a module starts at most one real executor run
-(`run_analysis` / `run_processing`) unless `tests/test_real_run_budget.py` says otherwise with the
-number. Build an expensive artifact once in a shared fixture and copy the result per test; see
-`tests/conftest.py::_pose_fit_template`, which replaced 28 identical fits worth 12 of the suite's 36
-minutes. CLAUDE.md's *What a new test costs* is the rule; neither half is a wall-clock budget, because
+Coverage for the package must not drop (compare `--cov=detail` on `main` and on your branch) —
+which is what makes *consolidating* existing tests legal rather than reading as deletion — and a
+module starts at most one real executor run (`run_analysis` / `run_processing`) unless
+`tests/test_real_run_budget.py` says otherwise with the number. Build an expensive artifact once in
+a shared fixture and copy the result per test; see `tests/conftest.py::_temporal_fit_template`. Its
+pose-clustering predecessor, removed with that module, replaced 28 identical fits worth 12 of the
+suite's 36 minutes. CLAUDE.md's *What a new test costs* is the rule; neither half is a wall-clock budget, because
 the defect is "done again" rather than "slow" (`docs/how_we_work.md` R10).
 
 ### 5. Retire a guard whose class has become impossible
@@ -87,7 +88,9 @@ the bug — is deleted in the change that made it impossible, and its row comes 
 with nothing behind it, and it costs wall-clock on every run to say nothing.
 
 The repo holds `FILE_TIER`, `UNIT_EXEMPTIONS` and `_CONFIRMATIONS` to exactly this standard — an
-entry that excuses nothing fails — and has never held *tests* to it.
+entry that excuses nothing fails — and holds *tests* to it only in part:
+`tests/test_guard_negative_cases.py` requires a guard-tier source scan to carry a negative case.
+Nothing checks that any other guard can still fail.
 
 Note which way this cuts: the answer to a vacuous guard is to delete it **or** to give it a negative
 case that proves it still bites. Never to leave it green and unexamined.

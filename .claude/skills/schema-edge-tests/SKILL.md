@@ -24,13 +24,15 @@ from typical scenarios. Happy-path fixtures hide real bugs, and they hide them b
 
 ## Workflow edges, which is the half that gets missed
 
-Which recordings play which role is a shape the fixtures have to cover, and until recently none did. Every fixture built a clusterer whose fit recordings **were** its assigned recordings, so `pooled_index`'s assumption that the two sets match went untested — and failed on every held-out fit, the project's primary evaluation protocol.
+Which recordings play which role is a shape the fixtures have to cover. The behavior clusterers,
+since removed, are the case that taught this: every fixture built a clusterer whose fit recordings
+**were** its assigned recordings, so the assumption that the two sets match went untested — and
+failed on every held-out fit, the project's primary evaluation protocol.
 
-**Most clusterers in practice have an assignment outside their fit set: the untested shape was the normal one.**
+**Most clusterers in practice had an assignment outside their fit set: the untested shape was the normal one.**
 
 So when a stage consumes something produced elsewhere, test **fit ≠ applied**, multi-recording, and
-single-recording — not just the simplest topology. `tests/analysis/test_held_out_diagnostics.py` is
-the model.
+single-recording — not just the simplest topology.
 
 ## Assert content, not absence of an exception
 

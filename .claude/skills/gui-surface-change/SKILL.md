@@ -124,7 +124,7 @@ were written and tested at.
 ## 6. End with the launch command
 
 **Measured: 6 of 159 GUI PRs did this.** It is a standing instruction and the least-followed step in
-the repo, and the four compliant ones are the four most recent.
+the repo.
 
 Finish a GUI change with:
 

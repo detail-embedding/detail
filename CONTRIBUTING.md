@@ -14,9 +14,11 @@ tests need:
 uv pip install -e ".[torch,gui,analysis,dev]"
 ```
 
-That is the set CI tests against. A CPU-only torch is enough; no test needs a GPU. On Linux, Qt
-also needs a few system libraries (`libegl1 libgl1 libxkbcommon0 libdbus-1-3` on Debian and
-Ubuntu).
+CI tests a different set: CPU-only torch, `.[dev,gui,keypoints_export]` and a few packages from the
+other extras (`.github/actions/setup/action.yml` lists them). Add `keypoints_export` to run the
+SLEAP, DeepLabCut H5 and NWB export tests; without its packages they skip. A CPU-only torch is
+enough; no test needs a GPU. On Linux, Qt also needs a few system libraries (`libegl1 libgl1
+libxkbcommon0 libdbus-1-3` on Debian and Ubuntu).
 
 Then install the git hooks, once per clone:
 
@@ -44,10 +46,11 @@ Run `git config --unset core.hooksPath`, then install again.
 **The full suite:**
 
 ```
-pytest -q -n auto
+pytest -q -n auto --dist loadfile
 ```
 
-`-n auto` runs the tests in parallel, one worker per CPU core. The suite takes minutes, longer on a machine with fewer cores or one that is also doing other work. Without `-n auto` the same tests run one at a time and take several times as long.
+`-n auto` runs the tests in parallel, one worker per CPU core, and `--dist loadfile` keeps each
+file's tests on one worker, so expensive shared fixtures are built once. The suite takes minutes, longer on a machine with fewer cores or one that is also doing other work. Without `-n auto` the same tests run one at a time and take several times as long.
 
 **While you work, run only what your change touches:**
 
@@ -59,15 +62,16 @@ pytest -q $(python scripts/select_tests.py)
 guard test. When it cannot narrow honestly, it prints nothing, and the command runs the whole
 suite. It is for speed while you edit; run the full suite before you open a pull request.
 
-**By tier.** Every test is marked with what it costs. The mark comes from the directory it lives
-in (`tests/tiers.py` holds the table):
+**By tier.** Every test is marked with what it costs. The cost mark comes from the directory it
+lives in, with per-file exceptions; the `guard` mark comes from a list of files. Both are in
+`tests/tiers.py`:
 
 | marker | what it means | run it with |
 | --- | --- | --- |
 | `unit` | in-process, no Qt, no real workload | `pytest -q -m unit` |
 | `gui` | needs a Qt application | `pytest -q -m gui` |
 | `slow` | starts real worker processes, runs a real pipeline, or encodes video | `pytest -q -m slow` |
-| `guard` | a check on the code itself, such as a source scan or a registry sweep; can be any of the three above | `pytest -q -m guard` |
+| `guard` | a check on the code itself, such as a source scan or a registry sweep; also `unit` or `gui`, never `slow` | `pytest -q -m guard` |
 
 **The GUI tests need no display.** They set `QT_QPA_PLATFORM=offscreen` themselves, so they run
 over SSH and in CI as they do on a desktop.
@@ -87,8 +91,11 @@ warning appear, fix its cause rather than silencing it.
    ```
 
 2. Make the change. If it changes anything a user sees or types, update the matching page under
-   `docs/` in the same pull request. `CLAUDE.md` lists which page goes with which change.
-3. Run `pytest -q -n auto` and read the last line (the pass count), not just the exit code.
+   `docs/` in the same pull request. The table in
+   [`ship-a-change`](.claude/skills/ship-a-change/SKILL.md) §5 lists which page goes with which
+   change.
+3. Run `pytest -q -n auto --dist loadfile` and read the last line (the pass count), not just the
+   exit code.
 4. Open the pull request. Say what changed, which command you ran and its result line, and, if
    you fixed a bug, what test now fails without your fix.
 
