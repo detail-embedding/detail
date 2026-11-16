@@ -7429,7 +7429,7 @@ outside them (`NodeIcicle.set_found`), on each piece where it is a chain node. T
 on the smallest cluster holding every listed id (`cluster_find.common_cluster`): the id itself for
 one. An id the tree does not have is a chip reading "not in this run", with no colour, no band and
 no part in the zoom; text that is not an id is said once on the line. Clicking a chip's id
-selects that cluster; **Clear** takes every id and band off and leaves the zoom where it is.
+selects that cluster; **Clear** (or removing the last id) takes every band off and puts back the view the tree had before the first find zoomed it (`NodeIcicle.view_state` / `restore_view`).
 Nothing is filtered, labelled or written. The list lasts the page's life and is cleared by a
 re-fit, which makes every id name a different cluster (`tree_identity`).
 

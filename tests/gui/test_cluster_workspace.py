@@ -1379,7 +1379,32 @@ def test_cluster_ids_typed_into_find_are_ringed_and_the_tree_zooms_to_hold_them(
     assert interpret._selected == b
     find.clear.click()
     assert interpret._icicle.found() == {}
-    assert interpret._icicle.zoom_root == b, "Clear leaves the zoom where it is"
+    assert (
+        interpret._icicle.zoom_root == view.root
+    ), "Clear shows the view before finding"
+
+
+def test_clear_goes_back_to_the_view_before_finding(qapp, fitted):
+    """The user's own zoom, not the whole tree: Clear (and the last id's ×) put back the zoom
+    root, the visible span and the level scroll that were on screen when finding began, however
+    the zoom moved while ids were listed (user, 2026-11-16)."""
+    _experiment, _handle, workspace = _workspace(qapp, fitted)
+    interpret = workspace._interpret
+    icicle = interpret._icicle
+    view = interpret._view
+    left, right = view.children(view.root)
+    icicle.zoom_to(left)
+    icicle.zoom.set_view(0.25, 0.75)
+    before = icicle.view_state()
+    find = interpret._find
+    find.add_ids([right])
+    assert icicle.zoom_root == right
+    icicle.zoom_by(0.5)  # the user zooms about while finding
+    find.clear.click()
+    assert icicle.view_state() == before
+    find.add_ids([right])
+    find.remove_id(right)
+    assert icicle.view_state() == before, "the last id's × goes back too"
 
 
 def test_find_shares_the_zoom_row_and_costs_the_tree_no_height(qapp, fitted):

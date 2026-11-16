@@ -699,6 +699,9 @@ class NodeInterpretTab(QWidget):
         # Ids typed here are ringed in the tree, and it zooms to the smallest cluster holding
         # them all (`gui/cluster_find.py`). It takes the row's spare width, so the buttons keep
         # their own (`requirements.a_button_in_a_row_keeps_its_own_width`).
+        #: The tree's view before Find first zoomed it (`NodeIcicle.view_state`): what an
+        #: emptied list goes back to. ``None`` while nothing is being found.
+        self._before_find = None
         self._find = FindClustersBar(unit=terms.unit, units=terms.units)
         self._find.found_changed.connect(self._show_found)
         self._find.picked.connect(self.select)
@@ -1057,6 +1060,8 @@ class NodeInterpretTab(QWidget):
         self._history.clear()
         self._sync_undo()
         if self._find.ids():
+            # The view kept before finding names a node of the old fit: drop it, not restore it.
+            self._before_find = None
             self._find.clear_all()
             self._icicle.fit()
         closed = self._windows.close_all()
@@ -1353,10 +1358,19 @@ class NodeInterpretTab(QWidget):
 
     def _show_found(self, found: dict) -> None:
         """Find clusters changed: ring its ids, and zoom to the smallest cluster holding all of
-        them. An empty list takes the rings off and leaves the zoom where it is."""
+        them. The view before the first zoom is kept, and an emptied list (**Clear**, or the
+        last id's ×) takes the rings off and shows that view again (user, 2026-11-16).
+        """
         self._icicle.set_found(found)
-        if self._view is None or not found:
+        if self._view is None:
             return
+        if not found:
+            if self._before_find is not None:
+                self._icicle.restore_view(self._before_find)
+                self._before_find = None
+            return
+        if self._before_find is None:
+            self._before_find = self._icicle.view_state()
         self._icicle.zoom_to(common_cluster(self._view, list(found)))
 
     def _sync_zoom_buttons(self) -> None:

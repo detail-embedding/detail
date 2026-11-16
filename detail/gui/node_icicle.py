@@ -371,6 +371,18 @@ class NodeIcicle(QWidget):
         self.extent_changed.emit()
         self.update()
 
+    def view_state(self) -> tuple[int, tuple[float, float], float]:
+        """What the picture shows: ``(zoom root, visible span, level scroll)`` — for
+        :meth:`restore_view`."""
+        return self._root, self.zoom.view, self._scroll_y
+
+    def restore_view(self, state: tuple[int, tuple[float, float], float]) -> None:
+        """Show again what :meth:`view_state` returned (Find clusters' **Clear**)."""
+        root, (left, right), scroll_y = state
+        self.zoom_to(root)
+        self.zoom.set_view(left, right)
+        self.set_scroll_y(scroll_y)
+
     def fit(self) -> None:
         """Back to the whole tree: the run's root, nothing zoomed."""
         if self._view is not None:
