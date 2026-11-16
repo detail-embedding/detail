@@ -680,9 +680,10 @@ class Ranking:
     def clears_at(self, item, alpha: float) -> bool:
         """Whether ``item`` clears the floor at the family-wise level ``alpha``: its
         ``family_p`` is at most ``alpha``. ``family_p`` is the smallest level at which the item
-        clears :meth:`floor_at`, so this agrees with ``magnitude`` clearing
-        ``floor_at(alpha)`` at every level, and with :meth:`clears_floor` at :data:`FLOOR_ALPHA`; a hover's p and a
-        slider's threshold cannot disagree. ``False`` with no floor, or no p."""
+        clears :meth:`floor_at`, so this agrees with the item's ``score`` (its t, or its
+        magnitude) clearing ``floor_at(alpha)`` at every level, and with :meth:`clears_floor`
+        at :data:`FLOOR_ALPHA`; a hover's p and a slider's threshold cannot disagree.
+        ``False`` with no floor, or no p."""
         if self.floor is None:
             return False
         p = getattr(item, "family_p", None)
