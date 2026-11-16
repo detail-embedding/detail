@@ -6,8 +6,12 @@ described methods name the same set, so adding a method without documenting it f
 than shipping a silent gap or an unrendered lane.
 """
 
+import pathlib
+
 from detail.analysis import retrieval
 from detail.analysis.query_methods_docs import (
+    MATCH_LENGTH_EXAMPLE,
+    MATCH_LENGTH_PER_FRAME,
     describe_query_controls,
     describe_query_methods,
     query_method_ids,
@@ -52,6 +56,30 @@ def test_no_method_is_variable_length():
         doc.method_id for doc in describe_query_methods() if doc.variable_length
     }
     assert variable == set()
+
+
+def test_a_per_frame_method_is_not_described_as_example_length():
+    """The page's intro says a per-frame method's matches are not tied to the example's length,
+    and the table under it said "≈ example" for soft_knn. Each kind of method gets its own cell.
+    """
+    by_id = {doc.method_id: doc for doc in describe_query_methods()}
+    assert _PERFRAME_METHODS, "no per-frame method left to check"
+    for method_id in _PERFRAME_METHODS:
+        assert by_id[method_id].match_length == MATCH_LENGTH_PER_FRAME, method_id
+    for method_id in retrieval._CURVE_FNS:
+        assert by_id[method_id].match_length == MATCH_LENGTH_EXAMPLE, method_id
+
+
+def test_the_generator_renders_the_match_length_it_is_given():
+    """The cell comes from `QueryMethodDoc.match_length`, not a second copy in the script, which
+    is where the "≈ example" for every non-variable method was decided."""
+    script = (
+        pathlib.Path(__file__).resolve().parents[2]
+        / "scripts"
+        / "gen_docs_querying_methods.py"
+    ).read_text(encoding="utf-8-sig")
+    assert "method.match_length" in script
+    assert MATCH_LENGTH_EXAMPLE not in script
 
 
 def test_controls_are_real_config_fields_with_defaults():

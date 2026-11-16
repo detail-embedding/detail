@@ -121,11 +121,13 @@ def test_recording_create(tmp_path):
     r.invoke(main, ["experiment", "create", "p1", "--dir", str(tmp_path)])
     pdir = str(tmp_path / "p1")
     result = r.invoke(
-        main, ["recording", "create", "--experiment", pdir, "--name", "recording_001"]
+        main, ["recording", "create", "--experiment", pdir, "--name", "cage_a"]
     )
     assert result.exit_code == 0, result.output
+    # The name is the user's; the id is minted (CLAUDE.md, "A recording's id is the tool's").
+    assert result.output.strip() == "created recording: cage_a  (id recording_000)"
     assert (
-        tmp_path / "p1" / "recordings" / "recording_001" / "recording.yaml"
+        tmp_path / "p1" / "recordings" / "recording_000" / "recording.yaml"
     ).is_file()
 
 
@@ -152,8 +154,9 @@ def test_recording_add_video(tmp_path):
         ],
     )
     assert result.exit_code == 0, result.output
+    # `--recording` took the name; the files live under the id the tool minted.
     assert (
-        tmp_path / "p1" / "recordings" / "recording_001" / "video" / "part_001.mp4"
+        tmp_path / "p1" / "recordings" / "recording_000" / "video" / "part_001.mp4"
     ).is_file()
 
 
@@ -213,7 +216,7 @@ def test_cli_recording_add_video_reference(tmp_path, monkeypatch):
     )
     assert result.exit_code == 0, result.output
     assert "referenced" in result.output
-    sdir = tmp_path / "p1" / "recordings" / "recording_001"
+    sdir = tmp_path / "p1" / "recordings" / "recording_000"  # the minted id
     assert not (sdir / "video" / "part_001.mp4").exists()  # not copied
     part = recording_store.read_recording(sdir)["video"]["files"][0]
     assert part["source"]["rel"] == "m.mp4"  # relative to the auto-remembered folder
@@ -359,7 +362,8 @@ def test_recording_import_labels(tmp_path):
     manifest = tmp_path / "labels.yaml"
     manifest.write_text(
         yaml.dump(
-            {"schema_version": 1, "labels": {"recording_001": "s1.csv"}},
+            # The labels manifest keys on the id, which the tool minted.
+            {"schema_version": 1, "labels": {"recording_000": "s1.csv"}},
             sort_keys=False,
         ),
         encoding="utf-8",
@@ -378,7 +382,7 @@ def test_recording_import_labels(tmp_path):
     assert result.exit_code == 0, result.output
     assert "imported 1/1" in result.output
     assert (
-        "recording_001: done" in result.output
+        "recording_000: done" in result.output
     )  # per-recording progress callback wired
 
 
@@ -1229,7 +1233,9 @@ def test_experiment_import_metadata(tmp_path):
     pdir = str(tmp_path / "p1")
     r.invoke(main, ["recording", "create", "--experiment", pdir, "--name", "s1"])
     csv_path = tmp_path / "m.csv"
-    csv_path.write_text("recording_id,treatment\ns1,drug_A\n", encoding="utf-8")
+    csv_path.write_text(
+        "recording_id,treatment\nrecording_000,drug_A\n", encoding="utf-8"
+    )
     result = r.invoke(
         main,
         ["experiment", "import-metadata", "--experiment", pdir, "--csv", str(csv_path)],
@@ -1362,7 +1368,9 @@ def test_experiment_export_metadata(tmp_path):
     pdir = str(tmp_path / "p1")
     r.invoke(main, ["recording", "create", "--experiment", pdir, "--name", "s1"])
     csv_path = tmp_path / "m.csv"
-    csv_path.write_text("recording_id,treatment\ns1,drug_A\n", encoding="utf-8")
+    csv_path.write_text(
+        "recording_id,treatment\nrecording_000,drug_A\n", encoding="utf-8"
+    )
     r.invoke(
         main,
         ["experiment", "import-metadata", "--experiment", pdir, "--csv", str(csv_path)],
@@ -1377,7 +1385,7 @@ def test_experiment_export_metadata(tmp_path):
     # way back, never stored columns. No video yet, so the file cell is blank.
     assert (
         out.read_text(encoding="utf-8-sig")
-        == "recording_id,name,file,treatment\ns1,s1,,drug_A\n"
+        == "recording_id,name,file,treatment\nrecording_000,s1,,drug_A\n"
     )
 
 
@@ -2477,7 +2485,7 @@ def test_experiment_import_names_the_recordings_whose_video_was_not_found(
     r.invoke(main, ["experiment", "create", "study", "--dir", str(tmp_path / "src")])
     pdir = tmp_path / "src" / "study"
     r.invoke(main, ["recording", "create", "--experiment", str(pdir), "--name", "s1"])
-    directory = pdir / "recordings" / "s1"
+    directory = pdir / "recordings" / "recording_000"  # named s1; the id is minted
     data = recording_store.read_recording(directory)
     data["video"] = {
         "files": [{"id": "part_001", "source": {"root": "rig", "rel": "a.mp4"}}]

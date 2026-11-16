@@ -30,6 +30,14 @@ by that name and ranked nothing; ``NaN`` was no value to the design and a value 
 inference. Every reader of a grouping cell reads it through ``cohort.cell`` (stripped, ``""``
 when missing).
 
+**The sixth: the observed value beating itself.** An enumerated null contains the observed
+configuration, so its own p can never be 0. It came out 0 anyway: the null recomputes that
+configuration as a matrix product where the effect is a ``nansum``, the two round differently,
+and the draw that *is* the observed labelling landed one float step short of it. Compared with
+an exact ``>=`` it reached nothing; compared with ``>``, the observed value cleared a floor that
+was itself. Every comparison of an observed value against its null now goes through
+``compare._reaches``, which allows for that rounding step.
+
 Every guard here is shown to fail: the wrong null is run beside the right one, the planted node
 is planted, the seed is varied.
 """
@@ -925,6 +933,57 @@ def test_the_p_is_read_through_the_floors_own_rule_not_a_bare_count():
     assert c._percentile_floor(ordered, 0.1) < reached_by_25
     assert c._family_p(ordered, ordered[0] / 2) == 1.0, "no draw falls short of it"
     assert c._family_p(ordered, None) is None and c._family_p([], 1.0) is None
+
+
+def test_a_draw_a_rounding_step_short_still_reaches_the_observed_value():
+    """The sixth class, on a literal: the observed configuration's own draw, recomputed one
+    float step below the observed value. Every reader of the null counts it as reaching —
+    the own p, the family-wise p and the floor verdict — so none of them can say the
+    observed value beat itself."""
+    observed = 0.04763724318519285
+    own_draw = math.nextafter(observed, 0.0)
+    null = np.array([own_draw, 0.01, 0.02, 0.03])
+    assert c._share_reaching(null, observed, True) == pytest.approx(1 / 4)
+    assert c._share_reaching(null, observed, False) == pytest.approx(2 / 5)
+    assert c._family_p(sorted(null.tolist()), observed) > 0.0
+    item = c.Effect(
+        measure_key=("time_fraction", "x", "", "whole"),
+        effect=observed,
+        n_units=2,
+        n_present=2,
+        consistency=2,
+        loo_sign_stable=True,
+    )
+    ranking = c.Ranking([item], floor=own_draw, draws=4, seed=0)
+    assert not ranking.clears_floor(item)
+    # And a value that really is larger still clears: the tolerance is a rounding step, not
+    # a margin.
+    assert c.Ranking([item], floor=observed * (1 - 1e-9), draws=4, seed=0).clears_floor(
+        item
+    )
+
+
+def test_an_enumerated_own_p_is_never_below_its_two_reaching_flips():
+    """The sixth class, through the real ranking. Over an enumerated sign-flip null the
+    observed flips and their mirror image are two of the ``2^U`` draws and both reach the
+    observed |effect|, so every own p is at least ``2 / 2^U``; with four units that is 1/8,
+    so nothing can clear a 5% floor. The null's matrix product and the effect's ``nansum``
+    round differently, and compared exactly the own p came out 0 on random shares."""
+    rng = np.random.default_rng(0)
+    for _ in range(60):
+        shares = {
+            (f"A{u}", session): {
+                f"n{k}": float(rng.uniform(0.01, 0.5)) for k in range(6)
+            }
+            for u in range(4)
+            for session in ("veh", "fent")
+        }
+        ranking = _paired_ranking(shares, levels=["veh", "fent"])
+        assert ranking.exact and ranking.draws == 16
+        for item in ranking.contrasts:
+            assert item.own_p >= 2 / 16, (item.measure_key, item.own_p)
+            assert item.family_p > c.FLOOR_ALPHA, (item.measure_key, item.family_p)
+            assert not ranking.clears_floor(item), item.measure_key
 
 
 def test_a_strictness_is_a_lookup_over_the_one_ranking():

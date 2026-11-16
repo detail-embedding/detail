@@ -64,11 +64,15 @@ work offline.
 `model check` explains a model you cannot install yet:
 
 ```
-sam3: ready=True reason=ok
+sam3: ready=False reason=missing_dependency
+  message: SAM 3 needs its backend package (sam3): clone the repo and `pip install -e ../sam3` (see the SAM 3 backend setup).
+  action : https://github.com/facebookresearch/sam3
 ```
 
-`reason` is `ok` (installed and runnable), `not_installed` (fetch it with `model
-install`), or one of `no_token` / `no_access` / `bad_token` / `offline`. Each
+A ready model prints `sam3: ready=True reason=ok`. `reason` is `ok` (installed and runnable),
+`not_installed` (fetch it with `model install`), `missing_dependency` (a Python package the
+model needs is not installed), `missing_weights` (a trained or imported model's weights file
+is gone), or one of `no_token` / `no_access` / `bad_token` / `offline`. Each
 tells you which setup step to revisit, with a message and an action URL. Add
 `--variant <name>` to check one size; without it you get the model's default.
 `model check`/`install` aren't experiment state, so `--experiment` is optional (a
@@ -94,34 +98,34 @@ PROJ=~/Documents/DetailExperiments/study        # inside the managed workspace �
 # 1. experiment + recording
 detail experiment create study --dir ~/Documents/DetailExperiments
 #   created experiment: /Users/you/Documents/DetailExperiments/study
-detail recording create --experiment $PROJ --name recording_001
-#   created recording: recording_001
+detail recording create --experiment $PROJ --name cage_a
+#   created recording: cage_a  (id recording_000)
 
 # 2. import a video part
-detail recording add-video --experiment $PROJ --recording recording_001 --video clip.mp4
-#   added video to recording_001: clip.mp4
+detail recording add-video --experiment $PROJ --recording cage_a --video clip.mp4
+#   added video to cage_a (copied): clip.mp4
 
 # 3. detection: text-prompted. --every-n-frames 2 halves the cost by detecting
 #    frames 0, 2, 4, … (omit it to detect every frame)
-detail detection run --experiment $PROJ --recording recording_001 \
+detail detection run --experiment $PROJ --recording cage_a \
     --model sam3 --class mouse --prompt mouse --conf 0.1 --every-n-frames 2 --backend cuda
 #   submitted detection: det_01
 #   detection: det_01 (status=complete)
 
 # 4. tracking: link detections into the subject track (track 0)
-detail tracking run --experiment $PROJ --recording recording_001 \
+detail tracking run --experiment $PROJ --recording cage_a \
     --detection det_01 --tracker anchor_tracker --conf-threshold 0.1 --secondary-conf 0.05
 #   submitted tracking: track_01
 #   tracking: track_01 (status=complete)
 
 # 5. embedding: embed the tracked subject each frame (DINOv3, gated)
-detail embedding run --experiment $PROJ --recording recording_001 \
+detail embedding run --experiment $PROJ --recording cage_a \
     --tracking track_01 --tracks 0 --backend cpu   # default model: dinov3_vit, vit_large
 #   submitted embedding: emb_01
 #   embedding: emb_01 (status=complete)
 
 # 6. inspect
-detail recording status --experiment $PROJ --recording recording_001
+detail recording status --experiment $PROJ --recording cage_a
 ```
 
 Each command blocks until its run finishes, streaming progress lines, then
@@ -181,8 +185,10 @@ table, see the [Parameters reference](reference/parameters.md).
   what they have before you commit.
 
 ### `recording`
-- `create --experiment <dir> --name <id>`: e.g. `--name recording_001`. (Note:
-  `create` uses `--name`; the other `recording` commands use `--recording <id>`.)
+- `create --experiment <dir> --name <name>`: e.g. `--name cage_a`. Makes an empty recording
+  with that name; the app assigns its id (`recording_000`, …) and prints both. A name already
+  taken is refused (see [Naming recordings](#naming-recordings)). The other `recording`
+  commands take it back as `--recording <name or id>`.
 - `add-video --experiment <dir> --recording <id> --video <file>`: import a video as
   the next part. Repeat to add more parts. The video is imported at its original rate
   and resolution: a stage that wants fewer frames sets `--every-n-frames` on the run, which
@@ -253,14 +259,18 @@ table, see the [Parameters reference](reference/parameters.md).
 - `set-calibration --experiment <dir> --recording <id> --pixels-per-mm <value>`: set the
   recording's distance calibration from a pixels-per-mm scalar (the interactive two-point
   pick is GUI-only). `clear-calibration` removes it.
-- `status --experiment <dir> --recording <id>`: video parts, resolution/fps, spatial
-  definitions (arenas / ROIs / points), streams, and run history:
+- `status --experiment <dir> --recording <id>`: name and id, the source video files, video
+  parts, resolution/fps, spatial definitions (arenas / ROIs / points), the distance
+  calibration, streams, and the recording's detection, tracking and embedding runs. Keypoint
+  runs are not listed; `process list` and `process status` show them:
 
   ```
-  recording: recording_001
+  recording: recording_001  (id recording_001)
+    source: /Users/you/videos/clip.mp4
     video parts: 1
     resolution: 160x120 @ 30.0 fps
     arenas: 0  ·  rois: 0  ·  points: 0
+    stream  : cues (event) offset=0.000s
     detection: det_01 status=complete
   ```
 
@@ -280,8 +290,8 @@ detects frames 0, 4, 8, … for roughly a quarter of the cost), and
 `--every-n-frames` counts **source** frames, and rows keep that numbering, so a downstream
 stage can only go coarser by a multiple of it: after detection at 2, tracking and embedding
 may use 2, 4, 6, … Asking for 3 is refused rather than rounded: those frames were never
-processed. `tracking run` and `embedding run` take the same flag; omit it there to keep
-every frame the stage above produced.
+processed. `tracking run`, `embedding run` and `keypoints detect` take the same flag; omit it
+there to keep every frame the stage above produced.
 
 ### `detection prompt-test`
 A fast QC loop *before* committing to a full `detection run`. For an **open-vocab**
@@ -704,11 +714,14 @@ Options on `export run`: `--target <id>` (repeatable, several targets go into on
 `--out <dir>` (where the export folder is created), `--cluster <label>` or repeated
 `--instance <id>` to narrow the scope, `--for-recording <id or name>` (repeatable) to export only
 those recordings of a run, and `--estimate` to see how big and how long it would be without writing
-anything ([below](#how-big-and-how-long)). The subject is whichever of `--recording` /
-`--run` / `--analysis-run` you pass; pass none for the experiment itself.
+anything ([below](#how-big-and-how-long)). The subject is whichever of `--recording <id>` /
+`--run <run_NNN>` / `--analysis-run <an_NN>` / `--distill-run <distill_NNN>` you pass; pass
+none for the experiment itself. `--run` takes the experiment-level processing run id from
+`process list`, not a per-recording id such as `track_01`.
 
-Figure options, for every target that writes a figure (`instances`, `ethogram`, `report`):
+Figure options, for every target that writes a figure (`instances`, `ethogram`):
 `--theme light|dark`. Figures are light, for print, unless you pass `--theme dark` (for slides).
+A comparison's figures are exported with `comparison export`, which takes the same `--theme`.
 
 Clip options, for `--target clip` and `--target clips`: `--render raw|overlay|mask`
 (repeatable), `--crop` / `--full-frame`, and `--size <px>`. `--target clip` also takes
@@ -990,7 +1003,8 @@ selection, written to `analysis/<an_NN>/`.
   Reopening a run and relabelling it never changes a snapshot.
 
 - `query-eval --experiment <dir> --embed-run <emb_NN> --behavior <label> [--behavior <label> …]
-  [--search <id> …] [--stream <name>] [--band 0.5] [--fusion min|mean] [--method dtw] [--iou 0.5] [--point-window 0.5]
+  [--search <id> …] [--stream <name>] [--band 0.5] [--fusion min|mean] [--method dtw]
+  [--keyframe-select medoid|distinctive|rare] [--n-keyframes 1] [--iou 0.5] [--point-window 0.5]
   [--n-exemplars 1] [--n-holdout <n>] [--folds 1] [--seed 0] [--split-gap <s>] [--max-results <n>] [--track 0]
   [--k 20] [--tau 0.07] [--n-negatives 500] [--negative-pool unlabeled|labeled_clean]
   --out metrics.csv [--pr-out <dir>] [--predictions-out <csv>] [--ground-truth-out <csv>]
@@ -1030,13 +1044,14 @@ selection, written to `analysis/<an_NN>/`.
   run); the recorded, inspectable form is the `query_eval` analysis module run from the GUI (or
   `Experiment.run_analysis`), which writes those same files into `analysis/<an_NN>/`. A recording is
   scored for a behavior only if its annotation *covered* it; `--search` defaults to every eligible
-  recording. **Vary the embedding run** to compare embedding configurations (mask resolution, embed model,
-  input-image constructor); vary `--band`/`--fusion`/`--method`
+  recording. **Vary the embedding run** to compare embedding configurations (embed model and size,
+  input-image constructor, input size); vary `--band`/`--fusion`/`--method`
   for engine params.
 
   `--method` selects the scoring method, in two families. **Windowed matchers** (span-detection
   AP): `dtw` (default; banded subsequence DTW), `clip_pooled_mean`/`clip_pooled_max` (one pooled
-  descriptor per clip) and `keyframe` (the most query-defining frame) return matches roughly the
+  descriptor per clip) and `keyframe` (the most query-defining frame; `--keyframe-select` picks it
+  by `medoid`, `distinctive` or `rare`, and `--n-keyframes` sets how many) return matches roughly the
   **example's length** and are scored by temporal overlap. The **per-frame classifier** (per-frame
   AP) `soft_knn` scores every frame by a softmax-weighted vote over its `--k` nearest labeled frames
   (the example frames plus `--n-negatives` sampled background frames, `--tau` sets the softmax
@@ -1157,7 +1172,7 @@ column of `metadata.csv`, and report how the groups differ.
   bout length. Nested nodes that clear the floor are collapsed to the best of them
   (`--no-suppress-nesting` keeps every slice). The run needs a current node cache; a stale one is
   refused with what changed. It always takes those four measures and reads the cache as it is
-  now, so `--measure` naming fewer and `--source-snapshot` are refused. `export` then writes `ranking.csv` with every node's effect, floor
+  now, so `--measure` naming fewer and `--snapshot` are refused. `export` then writes `ranking.csv` with every node's effect, floor
   and verdict, and draws the tables and figures for the kept nodes and the next ten below the
   floor rather than for thousands of nodes. Each row also carries `family_p` (the share of
   shuffled cohorts whose largest effect reaches it: the floor read as a p, at most 0.05 for a node
@@ -1222,8 +1237,10 @@ handoff to whatever you test with.
 Built-in (registry) model readiness/install, plus the **machine-global imported
 model** catalog (shared across every experiment on the machine):
 
-- `list`: every model, built-in and imported, with install status, role (`detection` or
-  `keypoint`), and a keypoint model's skeleton. No network.
+- `list`: every machine-global model (built-in, imported, or promoted from an experiment),
+  one line per size, with install
+  status, role (`detection`, `embedding` or `keypoint`), and a keypoint model's skeleton. No
+  network.
 - `check <id> [--experiment <dir>]`: readiness reason + action URL. Consults the
   network only when the model isn't installed.
 - `install <id> [--experiment <dir>]`: download weights into the global cache
@@ -1233,7 +1250,7 @@ model** catalog (shared across every experiment on the machine):
   checkpoint into the machine-global catalog with optional metadata + a preview image. The
   checkpoint's task decides what it becomes, so leave `--family` out (when given, it must
   agree). A detection checkpoint becomes a detector, its class names read from the checkpoint;
-  use it as `detect --model <id>`. A pose checkpoint becomes a keypoint model and needs
+  use it as `detection run --model <id>`. A pose checkpoint becomes a keypoint model and needs
   `--skeleton`: a preset, a library skeleton or a skeleton YAML (see `skeleton`). It must have
   the model's number of points, and left/right pairs that match the ones the model swaps when
   it flips an image; a checkpoint that records no swap accepts only a skeleton without pairs.
@@ -1326,7 +1343,11 @@ prompt**, compared side by side (comma-separate to put several classes in one pr
 across each clip; `--consecutive` reads straight through from frame 0: one clip, one
 prompt, and `--whole-video` removes the limit entirely (that run can take hours; it is
 stoppable in the GUI). `--min-conf` (default `0.5`), `--backend` / `--device`, `--model`
-(default: auto, SAM 3 on an NVIDIA GPU). `--export out.mp4` renders the overlay clip and
+(default: auto, SAM 3 on an NVIDIA GPU). Left out, `--backend` takes the best backend the
+machine has that the model supports (cuda > mps > cpu), so SAM 3 runs on CUDA with no flag;
+the run records the backend it used. A closed-set `--model` (one of your
+imported or distilled models) finds its own classes and ignores the prompt's text, but
+`--prompt` is still required. `--export out.mp4` renders the overlay clip and
 needs `--consecutive`, since sampled frames are not contiguous.
 
 A run keeps every proposal the model found, so `--min-conf` only chooses what gets
@@ -1371,18 +1392,22 @@ somebody else's machine.
 | | `streams` | one CSV per stream in DETAIL's aligned form, plus `streams.csv` |
 | | `timestamps` | `frame_idx,t_ns` for every frame of every video part |
 | | `video` | the video parts DETAIL imported a copy of |
-| `--run <det_NN>` | `masks` | one COCO instance-segmentation JSON per recording |
-| `--run <trk_NN>` | `tracks` | one CSV per recording: a row per frame per track |
-| `--run <emb_NN>` | `vectors` | `embeddings.npy` + `embeddings_index.csv` |
-| `--run <kd_NN / kt_NN>` | `keypoints` | one CSV per recording: a row per frame per track per keypoint, with the score, whether it is visible at the cut-off, and what the track stage changed |
+| | `clip` | one mp4 of the frame range `--frames START:END` names, plus `clip.csv` (see [Clips, in three flavours](#clips-in-three-flavours)) |
+| `--run <run_NNN>`, a detection run | `masks` | one COCO instance-segmentation JSON per recording |
+| `--run <run_NNN>`, a tracking run | `tracks` | one CSV per recording: a row per frame per track |
+| `--run <run_NNN>`, an embedding run | `vectors` | `embeddings.npy` + `embeddings_index.csv` |
+| `--run <run_NNN>`, a keypoint detect or keypoint track run | `keypoints` | one CSV per recording: a row per frame per track per keypoint, with the score, whether it is visible at the cut-off, and what the track stage changed |
 | | `keypoints_dlc` | DeepLabCut CSV per video part (and the same table as H5 with the `keypoints_export` extra), plus `timestamps.csv` |
-| | `keypoints_sleap` | the SLEAP analysis HDF5 per video part, plus `timestamps.csv` |
-| | `keypoints_nwb` | NWB with ndx-pose per video part |
+| | `keypoints_sleap` | the SLEAP analysis HDF5 per video part, plus `timestamps.csv` (needs the `keypoints_export` extra) |
+| | `keypoints_nwb` | NWB with ndx-pose per video part (needs the `keypoints_export` extra) |
 | | `keypoints_video` | the footage with the points drawn on, one mp4 per video part, plus `keypoints.csv` |
+| `--run <run_NNN>`, any processing run | `performance` | `performance.md` (the machine it ran on and how long each part took), plus `timings.csv`, `phases.csv` and `machine.yaml` (see [How long a run took](#how-long-a-run-took-and-on-what)) |
 | `--analysis-run <an_NN>` | `clips` | one mp4 per bout + `clips.csv` |
 | | `instances` | `instances.csv`, `coverage.csv`, and the time-per-behavior and bout-duration figures |
 | | `ethogram` | the ethogram as a picture, plus one `start_frame,end_frame,label` CSV per recording |
 | | `frame_labels` | one CSV per recording and subject, one row per video frame (see [Per-frame behavior labels](#per-frame-behavior-labels)) |
+| | `performance` | the same performance report, for the analysis run |
+| `--distill-run <distill_NNN>` | `performance` | the same performance report, one unit per stage |
 
 `export list` shows **every** target the subject can have, and says why one cannot run,
 "this recording has no streams imported yet" is something you can act on, where a missing row
@@ -1435,16 +1460,17 @@ file.
 several and they come out of **one** decode pass, so three flavours cost about what one does.
 
 `clips` writes one file per bout of an analysis run. `clip` writes **one** file, of the frame
-range you name with `--frames START:END`: the same export the **Export video…** button under
-every clip player runs.
+range you name with `--frames START:END`: the same export a clip player's **Export video…**
+button runs.
 
 The full field of view is the default: a steady camera, where the surroundings are half the
 answer. Crop to the subject when you want the pose at a constant scale for comparing bouts.
 
 ### Keypoints, for pose tools
 
-A keypoint run (`kt_NN`, or a `kd_NN` for the raw placements) exports in the shapes other pose
-tools read. Every one of them is written from the same rows, so a CSV and an NWB file of the
+A keypoint track run (or a keypoint detect run, for the raw placements) exports in the shapes
+other pose tools read. Name it by its experiment-level id, `--run <run_NNN>`, not by a
+recording's `kt_NN` or `kd_NN`. Every one of them is written from the same rows, so a CSV and an NWB file of the
 same export agree point for point. A track run's poses belong to tracked animals. A detect run's
 do not: they export **unassigned**, with an empty `track_id` and each pose numbered within its
 frame (`instance`), which DeepLabCut and SLEAP read as untracked individuals. `--source detect`
@@ -1498,7 +1524,7 @@ detail export run --experiment ./study --analysis-run an_01 --target instances -
 it, repeatable, and it combines with `--cluster`.
 
 ```bash
-detail export run --experiment ./study --run trk_01 --target tracks \
+detail export run --experiment ./study --run run_002 --target tracks \
     --for-recording recording_004 --out ~/exports
 ```
 
@@ -1509,11 +1535,11 @@ Without it, **every** recording is exported, and for video that is the whole run
 `export run` prints an estimate before it starts, from the same catalogue the app's dialog asks:
 
 ```bash
-detail export run --experiment ./study --run trk_01 --target tracks \
+detail export run --experiment ./study --run run_002 --target tracks \
     --for-recording recording_004 --out ~/exports --estimate
 ```
 
-`--estimate` prints the total and one line per target with how the figure was reached, then stops; nothing is written and no folder is made. The sizes are counted from what is on disk where they can be (detections, tracks, keypoint rows), measured by writing a sample through the real writer for the keypoint CSVs, and measured on this machine for video, where a few dozen frames are timed (briefly) and scaled up. They are estimates: video seconds read high, and a total says **at least** when a target could not be sized (the performance report, whose size depends on what is installed, and the SLEAP and NWB keypoint files, which compress their arrays by an amount nothing tells you before they are written; such a row adds nothing to the free-space check). It also says how much room the drive under `--out` has. The keypoint video's drawing time is an approximation, taken from the engine on another branch.
+`--estimate` prints the total and one line per target with how the figure was reached, then stops; nothing is written and no folder is made. The sizes are counted from what is on disk where they can be (detections, tracks, keypoint rows), measured by writing a sample through the real writer for the keypoint CSVs, and measured on this machine for video, where a few dozen frames are timed (briefly) and scaled up. They are estimates: video seconds read high, and a total says **at least** when a target could not be sized (the performance report, whose size depends on what is installed, and the SLEAP and NWB keypoint files, which compress their arrays by an amount nothing tells you before they are written; such a row adds nothing to the free-space check). It also says how much room the drive under `--out` has. The keypoint video's drawing time is a fixed figure per frame measured on another machine, not timed on this one.
 
 If the estimate is larger than the free space there, the command **refuses** and says so, rather
 than failing an hour in; `--ignore-free-space` starts it anyway, for a drive that frees up or an
@@ -1583,12 +1609,12 @@ Expect **a long run per recording**: the mask centroid means decoding a mask per
 ### An export keeps going without you
 
 `export run` submits the export as a **run** and streams it. Closing the terminal, or the app,
-does not stop it; come back with `export attach`. Ctrl-C while you are watching cancels it, like
-every other `run` command. A short export is unchanged; it finishes before there is anything to
-watch.
+does not stop it; come back with `export attach`. Ctrl-C while you are watching cancels it (see
+[what Ctrl-C does](#inspecting-and-troubleshooting-runs) on each command). A short export is
+unchanged; it finishes before there is anything to watch.
 
 ```bash
-detail export run --experiment ./study --run trk_01 --target tracks --out ~/exports
+detail export run --experiment ./study --run run_002 --target tracks --out ~/exports
 detail export attach --experiment ./study export_001   # come back to it; Ctrl-C detaches, it does not cancel
 detail export cancel --experiment ./study export_001   # stop it; what it wrote is kept
 ```
@@ -1686,7 +1712,8 @@ detail tracking run --experiment $PROJ --recording recording_001 \
 Detection and embedding take:
 
 - `--backend {cpu,cuda,mps}` (default `cpu`)
-- `--device N`: CUDA device index, **repeatable** for multiple GPUs
+- `--device N`: CUDA device index, **repeatable** for multiple GPUs. Left out, a CUDA run uses
+  GPU 0 alone, not every GPU the machine has
 
 ```bash
 # single GPU
@@ -1697,15 +1724,20 @@ detail detection run … --backend cuda --device 0 --device 1
 
 DINOv3 and a trained/imported YOLO run on `cpu`/`mps`/`cuda`; SAM 3 is officially CUDA-only.
 
-**CLI default is `cpu`; the GUI and Python API auto-detect.** The CLI keeps an explicit `cpu`
-default so a scripted or headless run is predictable; pass `--backend cuda` (or `mps`) to use an
-accelerator. The GUI forms and the Python API instead default to the best backend present
-(cuda > mps > cpu), narrowed to what the chosen model/trainer supports.
+**Stage commands default to `cpu`; training, distilling and quick segment pick the best
+backend.** The `--backend` of `detection run`, `detection prompt-test`, `embedding run`,
+`process detection`, `process embedding`, `keypoints detect` and `dataset label` defaults to
+`cpu`, so a scripted or headless run is predictable; pass `--backend cuda` (or `mps`) to use an
+accelerator. `train run --backend`, `tools quick-segment --backend`, the `--label-backend` /
+`--train-backend` of `distill run` and `keypoints distill`, and the `--label-backend` of
+`keypoints test` and `dataset keypoints` have no default: left out, they take the best backend present (cuda > mps > cpu), narrowed to
+what the model or trainer supports. The GUI forms and the Python API default the same way.
 
 ## Inspecting and troubleshooting runs
 
-- `detail recording status` (above) lists every run and its status:
-  `complete`, `failed`, `partial` (interrupted, resumable), or an active state.
+- `detail recording status` (above) lists a recording's detection, tracking and embedding runs
+  and their status: `complete`, `failed`, `partial` (interrupted, resumable), or an active
+  state. `process status <run_NNN>` covers the rest, keypoint runs included.
 - A blocking command exits non-zero and points you at the details when a run
   doesn't complete. The `attach` commands are the exception: they watch a run and print
   its status, and Ctrl-C leaves the run going, so they exit 0 whatever the status says.
@@ -1734,15 +1766,21 @@ accelerator. The GUI forms and the Python API instead default to the best backen
 - Outputs live beside the inputs in the experiment tree
   (`detections/det_01/`, `tracking/track_01/`, `embeddings/emb_01/`); they are
   zarr stores read by the GUI and the Python API.
-- **What Ctrl-C does depends on whose run it is.** On a `run` command it **cancels**: the
-  worker is in that command's care, and walking away would leave it going with nothing watching
-  it. On an `attach` command it **detaches**: you did not start that worker, and reattaching
-  exists precisely so you can let go of it again. `distill run` is the one exception, launching
-  a distill detaches you from it by design, because it is the longest thing this tool does.
+- **What Ctrl-C does depends on the command.** It **cancels** a run the command started in a
+  worker of its own: `detection run`, `tracking run`, `embedding run`, the `analysis` runs,
+  `dataset create` / `label` / `keypoints`, `train run` and `export run`. The worker is in that
+  command's care, and walking away would leave it going with nothing watching it. It
+  **detaches** from an experiment-level processing run (the `process` commands, and `keypoints
+  detect` / `keypoints track`, which are `process` runs) and from a distill (`distill run`,
+  `keypoints distill`): those keep going in the background, `process attach` or `distill attach`
+  rejoins one, and `process cancel` or `distill cancel` stops it. On an `attach` command it
+  **detaches** too: you did not start that worker, and reattaching exists precisely so you can
+  let go of it again.
 - **Stopping a run you are not watching:** `<thing> cancel <id>` (`process`, `analysis`,
-  `distill`, `export`), the GUI's **Cancel** button, or `Experiment.cancel_run` /
-  `cancel_model` / `cancel_dataset` in Python. A dataset or training run has no `cancel`
-  subcommand; see [Not in the CLI](#not-in-the-cli).
+  `distill`, `export`), `train stop <model_NNN>` for a training run (it finishes the epoch in
+  progress and keeps the best weights), the GUI's **Cancel** button, or
+  `Experiment.cancel_run` / `cancel_model` / `cancel_dataset` in Python. A dataset has no
+  `cancel` subcommand; see [Not in the CLI](#not-in-the-cli).
 
 ## Workflows
 
@@ -1760,13 +1798,14 @@ detail process detection --experiment $PROJ \
     --recording recording_001 --recording recording_002 \
     --model sam3 --class mouse --prompt mouse --conf 0.05 \
     --every-n-frames 2 --backend cuda --device 0
-detail process list --experiment $PROJ          #   run_001  detection  complete
+detail process list --experiment $PROJ
+#   run_001    module=detection  status=complete   recordings=2
 
 # 2. export a YOLO dataset (every 10th frame) -> dataset_001
 detail dataset create --experiment $PROJ --name mouse_yolo \
     --source-run run_001 --every-n 10
 
-# 3. train YOLO-s (segmentation) -> model_001  (uses CUDA when available)
+# 3. train YOLO-s (segmentation) -> model_001  (uses CUDA, else MPS, when available)
 detail train run --experiment $PROJ --name mouse_yolo11s \
     --dataset dataset_001 --base-model yolo11s-seg.pt \
     --epochs 100 --batch-size 16 --patience 20
@@ -1779,8 +1818,8 @@ detail train stop model_001 --experiment $PROJ     # finish this epoch, keep the
 ```
 
 The dataset reuses the run's stored masks (no re-detection); the trained model
-lands in `models/model_001/run/weights/best.pt`. Training defaults to **CUDA when
-the machine has it**; pass `--backend cpu` to force CPU. `train resume` continues
+lands in `models/model_001/run/weights/best.pt`. Training defaults to the best backend
+the machine has (**CUDA**, else **MPS**, else CPU); pass `--backend cpu` to force CPU. `train resume` continues
 from `run/weights/last.pt` instead of restarting from epoch 0, for a training that was
 cancelled or crashed. `train stop` *finishes* the training: the model is `complete`, keeps its
 best weights, records the epoch it stopped at (`stopped_at_epoch`), and has nothing to resume.
@@ -1843,8 +1882,9 @@ detail recording add-stream --experiment $PROJ --recording recording_001 \
 ```
 
 `--importer medpc` parses Med Associates `.txt` + `.MPC` into canonical events.
-Aligning the stream to video time (an offset) and previewing it against the video
-are done in the [GUI](gui.md#recording-detail).
+Align the stream to video time with `--offset` at import or `recording set-stream-offset`
+afterwards (see [Aligning a stream](#aligning-a-stream)). Previewing it against the video,
+and finding the offset by scrubbing, are done in the [GUI](gui.md#recording-detail).
 
 ### Importing your own CSV streams
 
@@ -1883,7 +1923,7 @@ detail recording add-stream --experiment $PROJ --recording recording_001 \
   ```
   seconds,code,label
   1.0,5,press
-  2.0,release
+  2.0,,release
   ```
 
 The importer validates strictly and names the problem: no recognized time column, more than
@@ -2142,8 +2182,12 @@ table is one shape, not one per recording.
 ### Naming recordings
 
 `--recording` takes a **name or an id**. The name is yours (it starts as the video's
-filename and you can change it); the id is the tool's (`recording_000`, assigned in
-order, never reused). `recording status` prints both:
+filename and you can change it on the recording's page in the GUI); the id is fixed when the
+recording is made and never changes. The app assigns it (`recording_000`, in order, never
+reused). `recording create --name <name>` names the recording and the app assigns its id; a
+name already taken is refused. To choose ids yourself, which is what a script restoring
+earlier data wants, give each recording an `id` in a [bulk import](#bulk-importing-recordings)
+manifest; its name then starts as that id. `recording status` prints both:
 
 ```bash
 detail recording status --experiment $PROJ --recording m27_day3
@@ -2158,15 +2202,17 @@ either changing what identifies it.
 ## Not in the CLI
 
 The CLI mirrors the Python API: anything you can configure through the API or
-GUI is either a CLI flag or listed here, with the reason. This list is the
-ledger of *deliberate* omissions: interactive, iterate-until-it-looks-right
-tools that live in the [GUI](gui.md) (or the `scripts/smoke_*.py` examples),
-not the CLI:
+GUI is either a CLI flag or listed here, with the reason. Most entries are
+*deliberate* omissions: interactive, iterate-until-it-looks-right tools that live
+in the [GUI](gui.md), not the CLI. A few are gaps, and say so:
 
 - **`--embed-ref` for `analysis query`**: the `--*-ref
   <RECORDING:run_id>` spec selector (choose the upstream by *kind* so a batch's
-  recordings can carry different run ids) is wired for `process tracking`
-  (`--detection-ref`), `process embedding` (`--tracking-ref`), `analysis run` (`--tracking-ref`) and `temporal-clustering` (`--embed-ref`), but `query` still takes an
+  recordings can carry different run ids) is wired for `process tracking`, `process
+  keypoint_detect` and `keypoints detect` (`--detection-ref`), `process keypoint_track` and
+  `keypoints track` (`--detect-ref`, `--tracking-ref`), `process embedding` (`--tracking-ref`,
+  `--keypoint-ref`), `analysis run` (`--tracking-ref`) and `temporal-clustering`
+  (`--embed-ref`), but `query` still takes an
   explicit `--embed-run <emb_NN>` (must be that id in every searched recording). Deferred:
   its embedding run also identifies the *exemplar* recordings, so the spec resolution
   is bespoke (planned).
@@ -2186,9 +2232,10 @@ not the CLI:
   made on the page and in its cluster windows, in memory, so a slip can be taken back. The CLI's
   label commands are single explicit writes, so there is no history to step back through; to
   reverse one, run the opposite command (`--name-node` the old name, `--rename-label` it back). The undo
-  itself is in the Python API: `AuthoredRun.label_maps()` read before and after an edit,
-  `authored_run.label_change(before, after)`, and `AuthoredRun.restore_labels(labels,
-  node_labels)` to write either side back, by label id.
+  itself is in the Python API: `TemporalClusteringRun.label_maps()` read before and after an
+  edit, `detail.api.authored_run.label_change(before, after)`, and
+  `TemporalClusteringRun.restore_labels(labels, node_labels)` to write either side back, by
+  label id.
 - **Exporting the clip window's view as shown**: *Video of what you see…*, *GIF of what you
   see…* and *This frame as PNG…* write whatever the clip window's ticks, orientation and context
   are at that moment, so they live there. The API is
@@ -2280,12 +2327,17 @@ not the CLI:
 - **Quick-segment overlay playback**: `tools quick-segment` runs the segmentation, saves the run,
   and (`--export`) renders the overlay clip to an mp4; *watching* the overlay play back is the GUI's
   Tools result view. The CLI covers the ends: run and export.
-- **Per-cell metadata edits**: the cohort table's click-a-cell-and-type editing is the GUI's
-  **Recording information** page (and `Experiment.set_metadata_table` for scripts). Whole columns
-  *are* in the CLI, [`add-column` / `delete-column`](#recording-information) create and remove
-  one, and [`import-metadata` / `export-metadata`](#recording-information) move values in and out,
-  a CSV header adding any column it names. An exported template is where you edit values offline.
-- **Cancelling a dataset or a training run**: `process`, `analysis`, `distill` and `export` each
-  take `cancel <id>`; `dataset` and `train` do not. Stop one from the GUI's **Cancel** button or
-  with `Experiment.cancel_dataset` / `cancel_model` in Python. This is a gap rather than a
-  decision, and the two commands would be thin wrappers over methods that already exist.
+- **Cancelling a dataset, or a training run at once**: `process`, `analysis`, `distill` and
+  `export` each take `cancel <id>`; `dataset` does not, and `train` has only `train stop`, which
+  finishes the epoch in progress and keeps the best weights. Cancel either at once from the
+  GUI's **Cancel** button or with `Experiment.cancel_dataset` / `cancel_model` in Python. This
+  is a gap rather than a decision, and the two commands would be thin wrappers over methods
+  that already exist.
+- **Renaming a recording, and deleting a recording, a stream, an experiment, a processing run
+  or an export**: each is done on the GUI page that shows it. In Python they are
+  `Recording.set_name`, `Experiment.delete_recording`, `Recording.delete_stream`,
+  `Experiment.delete`, `Experiment.delete_run` and `Experiment.delete_export`. Removing one
+  marked frame from a keypoint example set is likewise the GUI's labeling screen, or
+  `Experiment.remove_example_frame`. These are gaps rather than decisions; the other kinds of
+  run and entry do have a CLI `delete` (`analysis`, `comparison`, `dataset`, `train`,
+  `distill`, `tools`, `skeleton`, `keypoints examples`, and `model remove`).

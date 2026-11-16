@@ -166,7 +166,7 @@ class KeypointTrackConfig(BaseModel):
             "Keypoint detect run to settle over time (e.g. kd_01); its candidates, scores and "
             "skeleton are what the method reads."
         ),
-        json_schema_extra={"label": "Keypoint detect run"},
+        json_schema_extra={"scope": "selection", "label": "Keypoint detect run"},
     )
     tracking_run_id: str | None = Field(
         None,
@@ -175,7 +175,7 @@ class KeypointTrackConfig(BaseModel):
             "on the detect run's detection run. Omit when exactly one such run is complete; "
             "with several, name one."
         ),
-        json_schema_extra={"label": "Tracking run"},
+        json_schema_extra={"scope": "selection", "label": "Tracking run"},
     )
     match_min_inside: float = Field(
         0.5,

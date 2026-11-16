@@ -55,6 +55,7 @@ from detail.core.dataclasses import (
     TextCue,
 )
 from detail.core.protocols import ModelNotReadyError
+from detail.core.utils import best_supported_backend
 from detail.storage import metadata as metadata_store
 from detail.storage import snapshots as snapshots_store
 from detail.storage import streams as streams_store
@@ -693,7 +694,7 @@ _DEVICE_OPT = click.option(
     "devices",
     multiple=True,
     type=int,
-    help="Device index (repeatable for multi-GPU; cuda only).",
+    help="Device index (repeatable for multi-GPU; cuda only). Left out: GPU 0 alone.",
 )
 # The CLI twin of the GUI's confidence slider (gui/confidence.ConfidenceRow). These
 # commands run the model wide open and keep every proposal, so this filters what gets
@@ -992,16 +993,31 @@ def recording() -> None:
 @recording.command("create")
 @_EXPERIMENT_OPT
 @click.option(
-    "--name", required=True, type=str, help="Recording id (e.g. recording_001)."
+    "--name",
+    required=True,
+    type=str,
+    help="The recording's name: what every command's --recording and the GUI take. "
+    "The tool assigns its id (recording_000, …).",
 )
 def recording_create(experiment_dir: Path, name: str) -> None:
-    """Create a new recording under <experiment>/recordings/<name>/."""
+    """Create a new, empty recording named NAME; the tool assigns its id."""
     proj = _open_experiment(experiment_dir)
-    try:
-        proj.create_recording(name)
-    except (FileExistsError, ValueError) as e:
-        raise click.ClickException(str(e))
-    click.echo(f"created recording: {name}")
+    name = name.strip()
+    if not name:
+        raise click.ClickException("--name cannot be empty")
+    # A name a user typed is refused when taken, never suffixed the way the importer's
+    # filenames are (Recording.set_name, CLAUDE.md "A recording's id is the tool's").
+    holder = next(
+        (rid for rid, existing in proj.recording_names().items() if existing == name),
+        None,
+    )
+    if holder is not None:
+        raise click.ClickException(
+            f"another recording is already named {name!r} (id {holder}); "
+            "names identify recordings to you, so they have to be unique"
+        )
+    recording = proj.add_recording(name)
+    click.echo(f"created recording: {recording.name}  (id {recording.id})")
 
 
 class _StageProgress:
@@ -3779,7 +3795,7 @@ def train() -> None:
     "--backend",
     type=click.Choice(["cpu", "cuda", "mps"]),
     default=None,
-    help="Compute backend (default: CUDA if available, else CPU).",
+    help="Compute backend (default: the best available: CUDA, then MPS, then CPU).",
 )
 @_DEVICE_OPT
 def train_run(
@@ -4162,7 +4178,7 @@ def distill() -> None:
     "train_backend",
     type=click.Choice(["cpu", "cuda", "mps"]),
     default=None,
-    help="Training backend (default: CUDA if available, else CPU).",
+    help="Training backend (default: the best available: CUDA, then MPS, then CPU).",
 )
 @click.option(
     "--train-device",
@@ -6299,7 +6315,7 @@ def analysis_export_temporal_clustering(
     "--run",
     "run_id",
     required=True,
-    help="Pose- or temporal-clustering run id (e.g. an_01).",
+    help="Temporal-clustering run id (e.g. an_01).",
 )
 @click.option(
     "--node",
@@ -7292,8 +7308,9 @@ def comparison_run(
     not choose (§24). When nobody contributed two there is nothing to decide, and demanding an
     answer is a question with one possible response.
 
-    The design — between units, paired within them, or a trend — follows from what the
-    ``--group-by`` column does within the unit, and is printed when the run ends (§24).
+    The design — between units, paired within them, a trend, or a profile across three or more
+    named values — follows from what the ``--group-by`` column does within the unit, and is
+    printed when the run ends (§24).
     ``--source nodes`` screens every node of a clustering run's node cache, named or not.
     """
     proj = _open_experiment(experiment_dir)
@@ -7493,20 +7510,28 @@ def tools() -> None:
     "side by side in sample mode; put several classes in one prompt by "
     "comma-separating them ('mouse,rat').",
 )
+# `mode` as two flags sharing one destination, so the option *is* the model's field: its
+# default and its help are read from QuickSegmentConfig rather than typed here.
 @click.option(
-    "--sample/--consecutive",
-    "sample",
-    default=True,
-    show_default="--sample",
-    help="--sample spreads the frames evenly across each clip (compares prompts); "
-    "--consecutive reads straight through from frame 0 (one prompt, one clip, "
-    "and the only mode an --export mp4 can be made from).",
+    "--sample",
+    "mode",
+    flag_value="sample",
+    default=_QSEG_DOC["mode"]["default"],
+    show_default=True,
+    help=_QSEG_DOC["mode"]["help"],
+)
+@click.option(
+    "--consecutive",
+    "mode",
+    flag_value="consecutive",
+    help="Select the consecutive mode described under --sample.",
 )
 @click.option(
     "--whole-video",
+    "whole_video",
     is_flag=True,
-    default=False,
-    help="With --consecutive, segment every frame (no cap). Can run for hours.",
+    default=_QSEG_DOC["whole_video"]["default"],
+    help=_QSEG_DOC["whole_video"]["help"],
 )
 @click.option(
     "--model",
@@ -7523,7 +7548,13 @@ def tools() -> None:
     help=_QSEG_DOC["n_frames"]["help"],
 )
 @_MIN_CONF_OPT
-@_BACKEND_OPT
+@click.option(
+    "--backend",
+    type=click.Choice(["cpu", "cuda", "mps"]),
+    default=None,
+    help="Compute backend (default: the best one this machine has that the model "
+    "supports: CUDA, then MPS, then CPU).",
+)
 @_DEVICE_OPT
 @click.option(
     "--export",
@@ -7535,21 +7566,28 @@ def tools() -> None:
 def tools_quick_segment(
     videos: tuple[Path, ...],
     prompts: tuple[str, ...],
-    sample: bool,
+    mode: str,
     whole_video: bool,
     model_id: str | None,
     n_frames: int,
     min_conf: float,
-    backend: str,
+    backend: str | None,
     devices: tuple[int, ...],
     export_path: Path | None,
 ) -> None:
     """Segment VIDEOS with one or more prompts and save a managed tool run."""
+    from detail.api import models as api_models
+
     if model_id is None:
         try:
             model_id = api_tools.default_model_for_machine()
         except RuntimeError as e:
             raise click.ClickException(str(e))
+    if backend is None:
+        # The GUI's compute row picks the same way (gui/compute_target.ComputeTargetRow), and
+        # the resolved backend is what the run's manifest records.
+        backend = best_supported_backend(api_models.supported_backends(model_id))
+    sample = mode == "sample"
     if not sample and len(videos) > 1:
         raise click.ClickException(
             "--consecutive reads one clip straight through; pass a single video "
@@ -7577,7 +7615,7 @@ def tools_quick_segment(
         "model_id": model_id,
         "model_variant": None,
         "compute": _compute_target(backend, devices),
-        "mode": "sample" if sample else "consecutive",
+        "mode": mode,
         "whole_video": whole_video,
         "n_frames": n_frames,
     }
@@ -7748,7 +7786,7 @@ def export() -> None:
 @_SUBJECT_OPT
 @click.option("--recording", help="Recording id to export from.")
 @click.option(
-    "--run", help="Processing run id (det_NN / trk_NN / emb_NN) to export from."
+    "--run", help="Experiment-level processing run id (run_NNN) to export from."
 )
 @click.option("--analysis-run", "analysis_run", help="Analysis run id (an_NN).")
 @_DISTILL_RUN_OPT
@@ -7821,7 +7859,7 @@ def _frame_range(text: str | None) -> tuple[int, int] | None:
 @_SUBJECT_OPT
 @click.option("--recording", help="Recording id to export from.")
 @click.option(
-    "--run", help="Processing run id (det_NN / trk_NN / emb_NN) to export from."
+    "--run", help="Experiment-level processing run id (run_NNN) to export from."
 )
 @click.option("--analysis-run", "analysis_run", help="Analysis run id (an_NN).")
 @_DISTILL_RUN_OPT
@@ -7922,14 +7960,10 @@ def export_run(
     The folder is named for you — experiment, module, run, and when — so two exports never
     collide and one is still identifiable months later on somebody else's machine.
 
-    Blocks until complete. **Ctrl-C cancels it**, as on every other ``run`` command — a
-    foreground command you interrupt should stop, and somebody who sees a long estimate on a
-    ``tracks`` export and reaches for Ctrl-C means it. To start one and walk away, launch it and
-    come back with ``export attach``, or use the app, where an export never blocks anything.
-
-    (This promised the opposite when the command was written, on the reasoning that #354 made
-    every export durable. Durability is what makes walking away *possible*; it is not what makes
-    it the expected reading of an interrupt on a command you are sitting and watching.)
+    Blocks until complete. **Ctrl-C cancels it** — a foreground command you interrupt should
+    stop, and somebody who sees a long estimate on a ``tracks`` export and reaches for Ctrl-C
+    means it. To start one and walk away, launch it and come back with ``export attach``, or use
+    the app, where an export never blocks anything.
     """
     from detail.api import exporters
 

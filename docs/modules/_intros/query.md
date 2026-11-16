@@ -1,10 +1,11 @@
-Point at a few example clips of a behavior you can already name, and Query finds every stretch
+Behavior scan is the app's name for the `query` module (`analysis query` on the CLI). Point at
+a few example clips of a behavior you can already name, and it finds every stretch
 that resembles them across the recordings you select. You then pick a confidence cutoff by
 looking at what each setting returns.
 
 It works **without ground truth**, and that shapes it. You can review what came back, so
 precision is something you can measure; you cannot know what was missed without labeling
-everything, which is the work this exists to avoid. So Query is built around calibrate-then-audit
+everything, which is the work this exists to avoid. So it is built around calibrate-then-audit
 rather than around a score.
 
 A run searches **several behaviors at once**: a cohort is usually quantified on more than one,

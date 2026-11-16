@@ -14,12 +14,12 @@ The tool is designed to support local installs as well as usage of cloud storage
 
 All operations and stages (time series data, detection, model fine-tuning, tracking) are abstracted to allow for the addition of new data types, models and methods with minimal code changes.
 
-Each stage runs as a self-contained, serializable job, which enables crash recovery, resume, and exact reproduction of any run.
+Each stage runs as a self-contained, serializable job, which enables crash recovery and exact reproduction of any run.
 
 ## Data and organization methodology
 
 - Unified time units in integer nanoseconds
-- Data organization fully handled by tool. No references to external videos or files.
+- Data organization fully handled by tool. Video is either copied into the experiment or referenced in place under a machine-local **video root** alias; an experiment file never holds a machine path.
 - Each stage writes its own output. Source data and earlier outputs are never modified.
 - Every output is self-contained with sufficient meta data to fully describe itself
 
@@ -27,27 +27,31 @@ Each stage runs as a self-contained, serializable job, which enables crash recov
 
 Every model and method sits behind a small interface (an abstract base class) and is registered under a string id. Callers reference the id (`model_id="sam3"`) and never import a concrete class. Adding a backend means implementing the interface and registering it; excluding one means not installing it.
 
-Five core protocols, each with its own registry:
+The protocols, each with its own registry. The full list is `core/protocols.py` and `core/registries.py`; the pipeline and analysis modules register in `executor/runners.py` (`PROCESSING_MODULES`, `ANALYSIS_MODULES`).
 
-| Protocol | Defines | Lives in |
-|---|---|---|
-| `DetectionModel` | how objects are found in a frame | `models/` |
-| `Tracker` | how detections are linked across frames | `trackers/` |
-| `EmbeddingModel` | how a rendered image becomes a vector | `models/` |
-| `Trainer` | how a custom model is trained | `trainers/` |
-| `MaskTransform` | one step in the render pipeline | `transforms/` |
+| Protocol | Defines | Registry | Lives in |
+|---|---|---|---|
+| `DetectionModel` | how objects are found in a frame | `MODELS` (and `TRAINED_LOADERS` for trained weights) | `models/` |
+| `Tracker` | how detections are linked across frames | `TRACKERS` | `trackers/` |
+| `EmbeddingModel` | how a rendered image becomes a vector | `EMBEDDING_MODELS` | `models/` |
+| `KeypointModel` | where an animal's keypoints are in a frame | `KEYPOINT_MODELS` | `models/` |
+| `KeypointTrackMethod` | how keypoints are smoothed and linked over time | `KEYPOINT_TRACK_METHODS` | `pipeline/keypoint_track.py` |
+| `Trainer` | how a custom model is trained | `TRAINERS` | `trainers/` |
+| `MaskTransform` | one step in the render pipeline | `TRANSFORMS` | `transforms/` |
+| `StreamImporter` | converts an external signal format to the canonical CSV, one per device or file format | `STREAM_IMPORTERS` | `importers/` |
+| `QueryMethod` | how a behavior scan scores frames against example clips | `QUERY_METHODS` | `query_methods/` |
+| `TemporalClusterMethod` | how bouts are clustered into behaviors | `TEMPORAL_CLUSTER_METHODS` | `cluster_methods/` |
+| `Tool` | a one-off operation that needs no experiment (`DESIGN_PLAN.md` §27 (Tools)) | `TOOLS` | `tools/` |
+| `Check` | a readiness or data-integrity check | `CHECKS` | `checks/` |
 
-Two more abstractions handle I/O at the edges:
-
-- `StreamImporter`: converts an external signal format to the canonical CSV. One per device or file format.
-- `StorageLocation`: resolves a video URI and a data store for a backend (local, S3, GCS, GDrive).
+Storage is local only. The `StorageLocation` abstraction (a video URI and a data store per backend: local, S3, GCS, GDrive) is designed but not built; `storage/locations.py` resolves the `default` alias to a local path, and `storage/roots.py` maps the video-root and export-root aliases.
 
 Key data types passed across these interfaces:
 
 - `Prompt` / `Cue`: what to detect. A cue is text, points, a box, or an example image.
 - `Detection` / `FrameResult`: a model's standardized output, identical across architectures.
 - `ComputeTarget`: the requested hardware.
-- `*Job` (detection, labeling, training, tracking, embedding): the serializable record that defines and runs a stage.
+- `*Job` (one per stage and per analysis module): the serializable record that defines and runs it.
 - `RenderContext`: the frame, mask, and bbox a transform reads and updates.
 
 ## Experiments and recordings
@@ -79,20 +83,20 @@ my_experiment/
 
 - `config.yaml`: experiment identity only (name, creation time). No paths, parameters, or credentials.
 - `recording.yaml`: the per-recording manifest. Lists video parts, streams, arenas, and every run. Files are read in the order it declares, never filesystem order.
-- Storage is referenced by alias (`"default"`, `"lab_drive"`, ...), not by absolute path. A machine-local config maps each alias to a real path or cloud bucket, so experiments stay portable across machines.
+- Storage is referenced by alias (`"default"`, `"lab_drive"`, ...), not by absolute path. A machine-local config maps each alias to a real path (cloud buckets are designed, not built), so experiments stay portable across machines.
 - Credentials (e.g. a Hugging Face token) live outside the experiment.
 
 ## Processing pipeline
 
-Four stages, each reading the previous stage's output and writing its own: **ingest → detect → track → embed**.
+Each stage reads an earlier stage's output and writes its own: **ingest → detect → track → embed**, and alongside them, **keypoint detect → keypoint track** (keypoint detect places points on a detection run's animals; keypoint track gives those points to a tracking run's subjects and settles them over time).
 
 ### Ingest video and streams
 
 - Video is added to a recording one part at a time.
 - At import the tool builds a timestamp map (frame index → `t_ns`) from the container's presentation timestamps, falling back to frame rate. The map has one row per frame a player actually shows — frames an MP4 edit list trims are left out — and starts at 0 whatever time the file's own clock starts at. Each later part starts where the previous one ends.
-- A more accurate map (e.g. a hardware sync signal) can be uploaded; the tool keeps both and records which is active.
+- `recording.yaml` has a slot for a second, more accurate map (e.g. from a hardware sync signal) and records which one is active, but nothing writes one yet: the generated map is always active.
 - **Streams** are other signals recorded alongside the video (heart rate, accelerometer, key events). Each is converted to a common CSV and aligned to video time, so it shares the `t_ns` clock. Any stream and any frame then join on `t_ns`.
-- **Use every N frames** is how a run costs less: detection, tracking and embedding each take one, processing every Nth *source* frame. No copy is made and no frame is renumbered, so a run's rows say which frames it looked at.
+- **Use every N frames** is how a run costs less: detection, tracking, embedding and keypoint detect each take one, processing every Nth *source* frame. No copy is made and no frame is renumbered, so a run's rows say which frames it looked at.
 
 ### Arenas and ROIs
 
@@ -108,7 +112,7 @@ Four stages, each reading the previous stage's output and writing its own: **ing
 - Each part is read start to finish (always sequential; frames are never loaded all at once or seeked mid-run). Output is one array store per part.
 - Stores are detection-indexed: one row per detection, not per frame. Three animals in a frame is three rows; none is no rows. Each row holds the box, confidence, class name, and mask.
 - Masks are stored as run-length encoding (RLE), shrinking a mask from megabytes to a few KB.
-- Compute target (CPU, GPU, or cloud) is set per run, not globally (see *Compute and GPU support*).
+- Compute target (CPU or GPU) is set per run, not globally (see *Compute and GPU support*).
 
 ### Track
 
@@ -142,8 +146,8 @@ Each tracked detection becomes a feature vector, an **embedding** (a fixed-lengt
 
 ## Compute and GPU support
 
-- Each run chooses its own compute target: CPU, CUDA (Nvidia GPU), MPS (Apple Silicon), or cloud. Set per run, not globally, so different runs can use different hardware.
-- `device_indices` selects which GPUs to use; null means all available.
+- Each run chooses its own compute target: CPU, CUDA (Nvidia GPU) or MPS (Apple Silicon). Set per run, not globally, so different runs can use different hardware. `ComputeTarget` has a `cloud` backend, which nothing runs yet.
+- `device_indices` selects which GPUs to use; null means GPU 0 alone. Using every available GPU when none are named is not built, so name the indices to use more than one.
 - Detection parallelizes across GPUs by part: one process per video part, assigned round-robin across the selected GPUs, each reading its part independently with no shared state. More parts than GPUs simply queue.
 - Embedding parallelizes across GPUs by `(track, part)` unit, on the same round-robin pattern: each unit produces an independent per-track-per-part output store, so workers never contend on storage. Within a single GPU, the embedding loop batches frames through `model.embed_batch` to amortize kernel-launch overhead.
 - Each model, tracker, and embedder declares which backends it supports. A run is rejected up front if its compute target isn't one of them.
@@ -152,15 +156,16 @@ Each tracked detection becomes a feature vector, an **embedding** (a fixed-lengt
 ## Supporting functionality
 
 - **Executor**: runs a job as a process.
-  - A local executor runs each job as a subprocess. A cloud executor can replace it without changing callers, since jobs are plain data.
+  - A local executor runs each job as a subprocess. Jobs are plain data, so a cloud executor could replace it without changing callers; none is built.
   - Progress streams while the job runs.
-  - Resume is built in: output is written incrementally, so an interrupted run continues from where it stopped.
+  - Only some runs resume. Training continues from its last checkpoint and keypoint detect from the last frame it wrote. Detection, tracking and embedding do not resume: a failed processing run re-runs its incomplete recordings whole (`process retry`).
 - **Custom model training**: two phases.
   - Generate a labeled dataset by sampling and auto-labeling frames from chosen recordings.
   - Train a model on it with a pluggable trainer. The trained model registers with the experiment and is usable by any detection run.
 - **Grouping variables and analysis** (experiment level):
   - `metadata.csv`: one row per recording with the variables compared across groups (animal id, treatment, condition, ...).
-  - Analysis runs (location export today; pose clustering, behavior classification, ROI queries later) live at the experiment level since one analysis can span recordings. They read derived upstream data — location export reads a tracking run plus a recording's ROIs/POIs; cohort modules will read embeddings.
+  - Analysis runs live at the experiment level since one analysis can span recordings. Four modules exist: location export (a tracking run plus each recording's ROIs/POIs), behavior scan (`query`: finds a behavior from example clips in an embedding run), its evaluation against labels (`query_eval`), and behavior clustering (`temporal_clustering`: bouts from an embedding run's pose trajectories).
+  - Comparisons contrast a behavior result between groups of recordings defined by `metadata.csv`.
 
 ## Python API and CLI
 
@@ -174,4 +179,4 @@ Each tracked detection becomes a feature vector, an **embedding** (a fixed-lengt
 
 - The CLI mirrors this (`detection run`, `tracking run`, `embedding run`, ...). The GUI calls the same methods.
 - Every `run_*` call returns a handle to stream progress, block until done, or cancel.
-- A setting with no safe default takes a `confirm_fn` callback (GUI dialog, CLI prompt). With no callback, the call raises rather than guessing.
+- A setting with no safe default is resolved when the run is validated and the resolved value is written to the run record. When the choice is ambiguous the call raises and names the choices, rather than guessing.

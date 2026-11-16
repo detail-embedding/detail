@@ -80,8 +80,9 @@ Clone the repo and install the baseline extras.
 | `yolo` | YOLO training + trained/imported-model inference (CPU/MPS/CUDA) |
 | `torch` | DINOv3 embedding (gated) |
 | `gui` | desktop app |
-| `analysis` | UMAP / HDBSCAN / scikit-learn (pose and behavior clustering); SciPy is installed by default |
+| `analysis` | scikit-learn, for behavior clustering and its scores; SciPy is installed by default |
 | `sam3` | SAM3 backend ([below](#sam3-backend)) |
+| `keypoints_export` | the DeepLabCut H5, SLEAP and NWB keypoint exports (h5py, pandas, PyTables, pynwb, ndx-pose); the CSV exports need nothing extra |
 | `dev` | pytest + black (contributors) |
 
 DINOv3 embedding weights are gated. Set up [Hugging Face access](#hugging-face-access)
@@ -214,8 +215,11 @@ gated repos.
     detail model check dinov3_vit
     ```
 
-Both should print `reason=ok`. `no_token` / `no_access` / `bad_token` indicate
-which step to revisit; the message and action URL point to the exact fix.
+Both should print `reason=ok` once installed (`not_installed` until then).
+`no_token` / `no_access` / `bad_token` / `offline` indicate which step to revisit, and
+`missing_dependency` means a Python package the model needs is not installed (the
+`torch` extra, or the [SAM3 backend](#sam3-backend)); the message and action URL point
+to the exact fix.
 `detail model install <id>` downloads the weights ahead of time. The same
 checks are available from Python via `Experiment.check_model_access(<id>)`.
 

@@ -28,8 +28,8 @@ error rather than something that waits in a dropdown until somebody picks it:
 
 - every key exists on that module's config model;
 - every value is inside the bounds the model declares;
-- **no key is a `selection`** — a field that names an artifact (`embed_run_id`, `clusterer_id`,
-  `tracking_run_id`). That is the rule the whole idea rests on: a baseline holds settings only,
+- **no key is a `selection`** — a field that names an artifact (`embed_run_id`,
+  `source_recording_ids`, `tracking_run_id`). That is the rule the whole idea rests on: a baseline holds settings only,
   so it means the same thing in another experiment on another machine. Embedding a data
   reference is what makes presets rot elsewhere — ilastik's `.ilp`, a SLEAP config that cannot
   find its `models/` folder.

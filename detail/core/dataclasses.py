@@ -322,7 +322,7 @@ class FrameResult:
 @dataclass
 class ComputeTarget:
     backend: str  # "cpu" | "cuda" | "mps" | "cloud"
-    device_indices: list[int] | None  # cuda: [0], [0,1], ...; None = all available
+    device_indices: list[int] | None  # cuda: [0], [0,1], ...; None = GPU 0 alone (§5)
     cloud_provider: str | None  # cloud: "modal" | "aws" | ...
     cloud_instance: str | None  # cloud: "A100" | "g4dn.xlarge" | ...
 

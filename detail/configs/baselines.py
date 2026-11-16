@@ -20,7 +20,7 @@ Adding one is a YAML file beside this module::
     name: Mouse open field
     settings:
       detection: {conf_threshold: 0.25}
-      tracking:  {max_missed_frames: 30}
+      tracking:  {tracker_id: iou_single_tracker}
 
 Keyed by ``module_id``, so one baseline spans a pipeline and each launch form offers it only
 for the modules it actually names.

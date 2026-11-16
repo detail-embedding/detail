@@ -1,8 +1,7 @@
 <!--
 Hand-written headline for the generated Querying methods page. The method table and figure below
-it are built from code by scripts/gen_docs_querying_methods.py; this file and
-querying-methods-controls.md are the only prose. Excluded from the site as standalone pages
-(mkdocs.yml `exclude_docs`).
+it are built from code by scripts/gen_docs_querying_methods.py; this file is the only prose.
+Excluded from the site as a standalone page (mkdocs.yml `exclude_docs`).
 -->
 
 # Querying methods

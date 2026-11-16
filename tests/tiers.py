@@ -258,6 +258,9 @@ GUARD_FILES = frozenset(
         "tests/configs/test_cli_defaults_match_models.py",
         "tests/configs/test_unit_conventions.py",
         "tests/configs/test_describe.py",
+        # Walks every config model: a field naming a run, an example set or a recording list
+        # is declared a selection, or a shipped baseline can carry it.
+        "tests/configs/test_selection_scope.py",
         "tests/api/test_job_reattach.py",
         # Every surfaced analysis that selects an upstream run resolves it per recording by
         # settings, and no GUI picker outside its allow-list intersects ids (#547).

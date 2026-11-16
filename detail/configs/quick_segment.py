@@ -19,10 +19,11 @@ class QuickSegmentConfig(BaseModel):
     mode: Literal["sample", "consecutive"] = Field(
         "sample",
         description=(
-            "sample: spread the frames evenly across each clip. The default, because a "
-            "still animal or an empty opening makes the first N frames show nothing. "
-            "consecutive: read straight through from frame 0, which is what an overlay "
-            "video needs."
+            "sample: spread the frames evenly across each clip, and compare several "
+            "prompts side by side. The default, because a still animal or an empty "
+            "opening makes the first N frames show nothing. consecutive: read one clip "
+            "straight through from frame 0 with one prompt, which is what an overlay "
+            "video needs and the only mode one can be exported from."
         ),
         json_schema_extra={"label": "Frames"},
     )

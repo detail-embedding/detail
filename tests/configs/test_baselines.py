@@ -121,6 +121,39 @@ def test_a_baseline_for_an_unknown_module_is_refused():
         _check("X", "no_such_module", {"anything": 1})
 
 
+def _documented_examples() -> dict[str, dict]:
+    """The baseline YAML shown to whoever writes the first one: the module docstring's and the
+    README's beside the files."""
+    import textwrap
+    from importlib.resources import files
+
+    from detail.configs import baselines as module
+
+    docstring_block = module.__doc__.split("beside this module::", 1)[1]
+    docstring_block = docstring_block.split("\n\n", 2)[1]
+    readme = (files(BASELINES_PACKAGE) / BASELINES_DIR / "README.md").read_text(
+        encoding="utf-8-sig"
+    )
+    readme_block = readme.split("```yaml", 1)[1].split("```", 1)[0]
+    return {
+        "configs/baselines.py": yaml.safe_load(textwrap.dedent(docstring_block)),
+        "configs/baselines/README.md": yaml.safe_load(readme_block),
+    }
+
+
+def test_the_documented_examples_load():
+    """The example a person copies is the first baseline anyone writes. The docstring's named
+    `tracking: {max_missed_frames: 30}`, a tracker knob rather than a `TrackingConfig` field,
+    so the loader it documented refused it."""
+    examples = _documented_examples()
+    assert set(examples) == {"configs/baselines.py", "configs/baselines/README.md"}
+    for source, data in examples.items():
+        assert data["schema_version"] == 1, source
+        assert data["settings"], f"{source}: the example names no settings"
+        for module_id, values in data["settings"].items():
+            _check(f"{source} example", module_id, values)
+
+
 # --- and the directory itself, for the day a file lands ---------------------- #
 @pytest.mark.parametrize("entry", _shipped_files(), ids=lambda e: e.name)
 def test_a_shipped_baseline_names_only_settings(entry):
