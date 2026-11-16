@@ -15,6 +15,12 @@ climb"). Drawn after the selection and inside the block's corner, so it never co
 INTERPRET's own selection ring; a cluster drawn as several pieces (a chain opened as a peel)
 wears it on its widest piece, and one too narrow for the disc says it in its tooltip.
 
+**A cluster typed into Find clusters wears that id's colour** (``set_found``, from
+`gui/cluster_find.py`): a 3 px band just *outside* its block, edged in the theme's ink, so it
+reads on any fill and a block one pixel wide is still a band you can see. Outside the block, so
+it never meets AUDIT's inset ring or the selection ring on the block's edge; a chain cluster
+wears it on each piece it is drawn as, as the selection does.
+
 **Zooming**: the wheel scales the visible width around the pointer and a drag pans; a block's
 right-click menu re-roots the picture on it (**Zoom to this**), because a real fit has hundreds
 of leaves and a block one pixel wide is not a target. Double-click labels a block. Nothing moves when a
@@ -151,6 +157,8 @@ def format_time(ns: int) -> str:
 
 #: The label colour's strip along a block's top while the blocks are shaded by a filter.
 STRIP_PX = 3
+#: How wide a Find clusters band is, outside the block (``set_found``).
+FOUND_PX = 3
 
 
 def _frame(painter: QPainter, rect: QRectF, width: float, colour: QColor) -> None:
@@ -214,9 +222,14 @@ class NodeIcicle(QWidget):
         self._marks: dict[int, str] = {}
         #: ``{node: window number}``: clusters open in a window of their own.
         self._window_marks: dict[int, int] = {}
+        #: ``{node: colour}``: clusters listed in Find clusters, ringed in their colour.
+        self._found: dict[int, QColor] = {}
         self._visited: set[int] = set()
         self._blocks: list[tuple[QRectF, int]] = []
         self._mark_rects: dict[int, QRectF] = {}
+        #: ``{node: [drawn block, ...]}``: what each found cluster was ringed on at the last
+        #: paint (its own block, or the pieces a chain cluster is drawn as).
+        self._found_pieces: dict[int, list[int]] = {}
         self._remainders: list[QRectF] = []
         self._tiny: set[int] = set()
         #: Each laid-out node's whole slot: its block plus the gap after it.
@@ -311,6 +324,14 @@ class NodeIcicle(QWidget):
 
     def window_marks(self) -> dict[int, int]:
         return dict(self._window_marks)
+
+    def set_found(self, found: dict[int, QColor]) -> None:
+        """``found[node]``: a cluster listed in Find clusters, ringed in that colour."""
+        self._found = {int(k): QColor(v) for k, v in found.items()}
+        self.update()
+
+    def found(self) -> dict[int, QColor]:
+        return dict(self._found)
 
     def set_edit_reason(self, reason: str) -> None:
         """Why the run's labels cannot change (``""``: they can) — said on the right-click
@@ -692,6 +713,7 @@ class NodeIcicle(QWidget):
                         Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                         line,
                     )
+        self._paint_found(painter, QColor(theme.text))
         # The selection last, so no neighbour's fill or text is drawn over its ring.
         for rect, node in self._blocks:
             if node == self._selected or node in stand_ins:
@@ -734,6 +756,35 @@ class NodeIcicle(QWidget):
             painter.drawText(disc, Qt.AlignmentFlag.AlignCenter, text)
             painter.setBrush(Qt.BrushStyle.NoBrush)
             self._mark_rects[node] = disc
+
+    def _paint_found(self, painter: QPainter, edge: QColor) -> None:
+        """Each Find clusters id's band, outside the blocks it is drawn as (module docstring).
+
+        A cluster above the zoomed picture is the whole picture, so it rings the top block. One
+        in a branch zoomed away from has no block on screen and is skipped, rather than walking
+        its subtree for nothing on every paint.
+        """
+        self._found_pieces = {}
+        if not self._found or self._view is None:
+            return
+        drawn = {node: rect for rect, node in self._blocks}
+        bounds = QRectF(0, 0, self.width(), self.height())
+        above = set(self._view.ancestors(self._root))
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        for node, colour in self._found.items():
+            if node in above:
+                pieces = [self._root]
+            elif node == self._root or self._root in self._view.ancestors(node):
+                pieces = self._drawn_as(node, drawn)
+            else:
+                continue
+            pieces = [p for p in pieces if p in drawn]
+            self._found_pieces[node] = pieces
+            for piece in pieces:
+                band = _found_band(drawn[piece], bounds)
+                _frame(painter, band, 1, edge)
+                _frame(painter, band.adjusted(1, 1, -1, -1), FOUND_PX, colour)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
     def _drawn_as(self, node: int, drawn) -> list[int]:
         """The drawn blocks that make up ``node``: itself, or its topmost drawn descendants."""
@@ -848,6 +899,8 @@ class NodeIcicle(QWidget):
             )
         if int(node) in self._window_marks:
             text += f" · open in window {self._window_marks[int(node)]}"
+        if int(node) in self._found:
+            text += " · listed in Find clusters"
         return text
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 — Qt's name
@@ -1012,6 +1065,37 @@ class TreePane(QWidget):
         # Kept in place and greyed when there is nothing to scroll, rather than hidden: a bar
         # that appears and vanishes as you zoom resizes the tree under the pointer.
         bar.setEnabled(icicle.scroll_range() > 0)
+
+
+def _found_band(block: QRectF, bounds: QRectF) -> QRectF:
+    """The outer edge of a Find clusters band round ``block``: :data:`FOUND_PX` plus its 1 px
+    edge outside each side, or, on a side with no room outside it in ``bounds`` (a block filling
+    the width, as a cluster zoomed onto does), just inside the selection ring's 3 px instead. Off
+    the widget, the band was one line at the block's foot, and on the block's own edge the
+    selection ring painted over it. A block too thin to hold a band inside keeps it outside, cut
+    to the widget: a hairline at the edge still shows what fits.
+    """
+    out, ring = FOUND_PX + 1, 3
+    shown = block.intersected(bounds)
+    left = (
+        block.left() - out
+        if block.left() - out >= bounds.left()
+        else shown.left() + ring
+    )
+    top = block.top() - out if block.top() - out >= bounds.top() else shown.top() + ring
+    right = (
+        block.right() + out
+        if block.right() + out <= bounds.right()
+        else shown.right() - ring
+    )
+    bottom = (
+        block.bottom() + out
+        if block.bottom() + out <= bounds.bottom()
+        else shown.bottom() - ring
+    )
+    if right - left < 2 * out or bottom - top < 2 * out:
+        return block.adjusted(-out, -out, out, out).intersected(bounds)
+    return QRectF(QPointF(left, top), QPointF(right, bottom))
 
 
 def _snap(x: float, y: float, w: float, h: float) -> QRectF:
