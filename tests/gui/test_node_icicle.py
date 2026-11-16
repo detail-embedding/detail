@@ -16,6 +16,7 @@ fixture's fit happens to look like.
 import numpy as np
 import pytest
 from PyQt6.QtCore import QPointF
+from PyQt6.QtGui import QColor
 
 from detail.gui import node_icicle
 from detail.gui.node_icicle import NodeIcicle, TreePane, row_px
@@ -662,3 +663,90 @@ def test_a_mark_on_an_undrawn_node_lands_on_its_topmost_drawn_descendants():
     assert sorted(NodeIcicle._drawn_as(holder, 5, drawn)) == [2, 3]
     assert NodeIcicle._drawn_as(holder, 1, drawn) == []
     assert NodeIcicle._drawn_as(SimpleNamespace(_view=None), 6, drawn) == []
+
+
+# --- Find clusters: a band in each listed id's colour, outside its blocks -------------------
+
+_FOUND = QColor("#d81b60")
+
+
+def _band_pixel(widget, rect, side: str):
+    """The colour in the middle of ``rect``'s Find clusters band on ``side`` (left or bottom).
+
+    The leftmost block's left band is off the widget's edge, so a test reads the bottom.
+    """
+    image = widget.grab().toImage()
+    ratio = image.devicePixelRatio()
+    mid = node_icicle.FOUND_PX / 2
+    if side == "left":
+        x, y = rect.left() - mid, rect.center().y()
+    else:
+        x, y = rect.center().x(), rect.bottom() + mid
+    return image.pixelColor(int(x * ratio), int(y * ratio))
+
+
+def test_a_found_cluster_wears_its_colour_just_outside_its_block(icicle):
+    """Outside, so the selection's ring and AUDIT's inset ring on the block are untouched."""
+    icicle.set_found({4: _FOUND})
+    icicle.grab()
+    rect = next(r for r, n in icicle._blocks if n == 4)
+    assert _band_pixel(icicle, rect, "bottom").name() == _FOUND.name()
+    assert icicle._found_pieces == {4: [4]}
+    assert "one of the ids you are finding" in icicle._describe(4)
+    icicle.set_found({})
+    assert _band_pixel(icicle, rect, "bottom").name() != _FOUND.name()
+    assert icicle._found_pieces == {}
+
+
+def test_a_found_chain_cluster_wears_it_on_each_piece_it_is_drawn_as(icicle):
+    """Node 8 has no block (a peel): its band goes round 2, 3 and 6, as its selection would."""
+    icicle.set_found({8: _FOUND})
+    icicle.grab()
+    assert sorted(icicle._found_pieces[8]) == [2, 3, 6]
+
+
+def test_a_found_hairline_is_still_a_band_you_can_see(qapp):
+    widget = _narrow(qapp)
+    widget.set_found({0: _FOUND})
+    widget.grab()
+    assert 0 in widget._tiny and widget._found_pieces == {0: [0]}
+    rect = next(r for r, n in widget._blocks if n == 0)
+    assert _band_pixel(widget, rect, "bottom").name() == _FOUND.name()
+    widget.close()
+
+
+def test_a_found_cluster_zoomed_away_from_is_skipped_and_one_above_rings_the_picture(
+    icicle,
+):
+    icicle.zoom_to(6)  # leaves 4 and 5 under it
+    icicle.set_found({0: _FOUND, 9: QColor("#1e88e5")})
+    icicle.grab()
+    assert icicle._found_pieces == {
+        9: [6]
+    }, "0 is in a branch zoomed away from; 9 holds the whole picture"
+
+
+def test_a_found_cluster_zoomed_onto_keeps_its_band_on_screen(icicle):
+    """Zoomed onto, the block fills the width: the band comes inside the widget's edges rather
+    than being drawn off them, which left one line at the block's foot."""
+    icicle.zoom_to(4)
+    icicle.set_found({4: _FOUND})
+    image = icicle.grab().toImage()
+    ratio = image.devicePixelRatio()
+    rect = next(r for r, n in icicle._blocks if n == 4)
+    assert rect.left() <= 0, "the fixture must fill the width"
+    x = int((max(rect.left(), 0) + 3 + 1 + node_icicle.FOUND_PX / 2) * ratio)
+    assert image.pixelColor(x, int(rect.center().y() * ratio)).name() == _FOUND.name()
+
+
+def test_a_zoomed_onto_found_cluster_shows_its_band_inside_the_selection(icicle):
+    """Selected and zoomed onto, the selection ring holds the block's edge: the band sits just
+    inside it, not under it."""
+    icicle.zoom_to(4)
+    icicle.set_selected(4)
+    icicle.set_found({4: _FOUND})
+    image = icicle.grab().toImage()
+    ratio = image.devicePixelRatio()
+    rect = next(r for r, n in icicle._blocks if n == 4)
+    x = int((max(rect.left(), 0) + 3 + 1 + node_icicle.FOUND_PX / 2) * ratio)
+    assert image.pixelColor(x, int(rect.center().y() * ratio)).name() == _FOUND.name()
