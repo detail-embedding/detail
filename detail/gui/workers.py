@@ -42,6 +42,39 @@ def _with_eta(status: str, eta_s: float | None) -> str:
 #: not special, and the next one written would have inherited the bug.
 _IN_FLIGHT: set = set()
 
+#: Every started worker Qt has not finished with: what keeps a running thread's object alive.
+#:
+#: **Destroying a QThread whose state is Running is a Qt fatal abort** (``QThread: Destroyed
+#: while thread '' is still running``), not an exception, and "Running" is wider than "inside
+#: ``run()``": it starts when ``start()`` returns, before the thread has entered ``run()``, and
+#: it lasts after ``run()`` returns until Qt's own exit code marks the thread finishing. A
+#: worker held only by its page — or one that released its own root at the end of ``run()``, as
+#: the montage's picture worker did — is unreachable while Running in one of those two gaps
+#: whenever its page is already garbage, and a collection on the UI thread there ends the
+#: process. Qt's ``finished`` is emitted *after* the state has left Running (``~QThread`` waits
+#: for a finishing thread rather than aborting), so that signal, delivered on the UI thread, is
+#: the only safe place to let go: ``tests/gui/test_thread_outlives_its_running.py``.
+#:
+#: On the base class, so a worker written tomorrow has it: before this there were three
+#: per-class copies (``_IN_FLIGHT``'s two users, ``_LIVE_WORKERS``, the montage's ``_RUNNING``)
+#: and four workers with none.
+_UNFINISHED: set = set()
+
+
+def _release(worker: "GuiWorker") -> None:
+    """``worker``'s thread has finished (delivered on the UI thread): stop holding it.
+
+    A worker started again since — a picture worker woken from idle — is Running: its next
+    ``finished`` releases it. ``wait()`` joins a thread still in Qt's exit code, so the object
+    is never destroyed mid-exit; one whose C++ side is already gone (``deleteLater`` on the
+    same signal, ``busy.py``) has nothing left to protect.
+    """
+    if alive(worker):
+        if worker.isRunning():
+            return
+        worker.wait()
+    _UNFINISHED.discard(worker)
+
 
 class GuiWorker(QThread):
     """Base for every GUI thread: a result that arrives after its widget is gone is dropped.
@@ -62,6 +95,11 @@ class GuiWorker(QThread):
     the UI thread — and is dropped there if the receiver's C++ side has gone. ``receiver``
     has no default: a thread that reports to a widget and one that reports to nothing are
     different things, and the difference is invisible at the line where it is written.
+
+    **Self-rooting while Qt counts it as running** (:data:`_UNFINISHED`): held from
+    :meth:`start` until its ``finished`` lands on the UI thread, so no caller has to keep a
+    running thread alive and none can drop one. Construct it on the UI thread: that is where
+    the release is delivered. A subclass that overrides :meth:`start` calls ``super().start``.
     """
 
     #: ``(bound signal, args)`` — the hop that puts the liveness check on the UI thread.
@@ -73,6 +111,13 @@ class GuiWorker(QThread):
         super().__init__()
         self._receiver = receiver
         self._delivery.connect(self._deliver)
+        # A closure, not a bound method: it must still run when this object's C++ side has
+        # been deleted on the same signal, to drop the Python side from the set.
+        self.finished.connect(lambda: _release(self))
+
+    def start(self, *args, **kwargs) -> None:  # noqa: D102 — QThread's own docstring
+        _UNFINISHED.add(self)
+        super().start(*args, **kwargs)
 
     def emit_to_ui(self, signal, *args: object) -> None:
         """Emit ``signal`` on the UI thread — unless ``receiver`` is gone by the time it
@@ -265,19 +310,15 @@ def fit_progress_fraction(event) -> tuple[float, str]:
     return fraction, _with_eta(status, eta_s)
 
 
-# A FitProgressWorker is a parentless QThread whose only Python reference lives on the page
-# that started it. The shell's page swap ``deleteLater``s the outgoing page, so that
-# reference drops while the thread is still polling its run — and destroying a *running*
-# QThread is a Qt fatal abort, not an exception. Holding the worker here until it emits
-# ``finished`` decouples its lifetime from the page's. A late tick cannot reach the dead
-# page either: Qt disconnects a receiver automatically when it is destroyed.
-_LIVE_WORKERS: set = set()
-
-
 class FitProgressWorker(GuiWorker):
     """Consume a run handle's ``progress()`` off the UI thread, forwarding each event as a
     Qt signal (the run executes in its own worker process; this only marshals progress to
-    the UI). Outlives the page that started it — see ``_LIVE_WORKERS``."""
+    the UI).
+
+    Outlives the page that started it (:data:`_UNFINISHED`): its only other Python reference
+    lives on that page, and the shell's page swap ``deleteLater``s the page while the thread
+    is still polling its run. A late tick cannot reach the dead page either: Qt disconnects a
+    receiver automatically when it is destroyed."""
 
     tick = pyqtSignal(int, str)  # permille (0..1000), status text
     #: The raw event itself, for a surface that shows the run's *parts* rather than only the
@@ -291,11 +332,6 @@ class FitProgressWorker(GuiWorker):
     def __init__(self, handle, *, receiver: QObject | None) -> None:
         super().__init__(receiver=receiver)
         self._handle = handle
-
-    def start(self, *args, **kwargs) -> None:
-        _LIVE_WORKERS.add(self)
-        self.finished.connect(lambda: _LIVE_WORKERS.discard(self))
-        super().start(*args, **kwargs)
 
     def run(self) -> None:
         for event in self._handle.progress():
