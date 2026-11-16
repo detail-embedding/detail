@@ -114,8 +114,11 @@ class MetricRow:
     recall_std: float = 0.0
     best_f1_std: float = 0.0
     method: str = "dtw"
-    # Nulls/lifts are span-only (the per-frame classifiers compute no shifted-time /
-    # shuffled-rank null), so ``None`` → an empty cell, not a misleading 0.0 beside a real AP.
+    # Every method writes its null and lift: the span path shifts its spans in time, and the
+    # per-frame path circularly shifts each subject's scores (``analysis.query_eval``'s
+    # ``perframe_null``).
+    # ``None`` is a row with no overlap entry at its configured level, or one read from a CSV
+    # written before these columns existed; it is an empty cell, not a misleading 0.0.
     recall_null: float | None = None
     recall_lift: float | None = None
     ap_null: float | None = None

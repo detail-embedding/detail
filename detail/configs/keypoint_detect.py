@@ -26,7 +26,7 @@ class KeypointDetectConfig(BaseModel):
             "a whole-frame method uses its frames. Keypoints are stored per frame with no "
             "subject: keypoint track gives each pose to a tracked animal."
         ),
-        json_schema_extra={"label": "Detection run"},
+        json_schema_extra={"scope": "selection", "label": "Detection run"},
     )
     model_id: str = Field(
         ...,
@@ -52,7 +52,7 @@ class KeypointDetectConfig(BaseModel):
             "skeleton to place. Required by a method that needs examples; refused by one "
             "that does not."
         ),
-        json_schema_extra={"label": "Example set"},
+        json_schema_extra={"scope": "selection", "label": "Example set"},
     )
     min_pose_confidence: float | None = Field(
         None,

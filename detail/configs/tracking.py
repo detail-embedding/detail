@@ -18,7 +18,7 @@ class TrackingConfig(BaseModel):
         ...,
         description="Detection run to track: its per-frame detections are linked into tracks "
         "(e.g. det_01).",
-        json_schema_extra={"label": "Detection run"},
+        json_schema_extra={"scope": "selection", "label": "Detection run"},
     )
     tracker_id: str = Field(
         DEFAULT_TRACKER,
@@ -46,7 +46,7 @@ class TrackingConfig(BaseModel):
             "recording's arena. Stored under the kind `arena`, which is what the on-disk "
             "paths still call it."
         ),
-        json_schema_extra={"label": "Field of view (resolved)"},
+        json_schema_extra={"scope": "selection", "label": "Field of view (resolved)"},
     )
     every_n_frames: int | None = Field(
         None,

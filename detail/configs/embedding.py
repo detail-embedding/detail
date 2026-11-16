@@ -24,7 +24,7 @@ class EmbeddingConfig(BaseModel):
     tracking_run_id: str = Field(
         ...,
         description="Tracking run whose tracks to embed (e.g. track_01).",
-        json_schema_extra={"label": "Tracking run"},
+        json_schema_extra={"scope": "selection", "label": "Tracking run"},
     )
     all_tracks: bool = Field(
         False,
@@ -124,7 +124,7 @@ class EmbeddingConfig(BaseModel):
             "The keypoint track run (kt_NN) the heading is read from; it must come from "
             "this embedding's own tracking run."
         ),
-        json_schema_extra={"label": "Keypoint track run"},
+        json_schema_extra={"scope": "selection", "label": "Keypoint track run"},
     )
     heading: str | None = Field(
         None,
