@@ -1,8 +1,8 @@
-"""Generate the small sample video clips used by the Workflows tutorials.
+"""Generate the small sample video clips the docs screenshots are rendered from.
 
-The tutorials under ``docs/workflows/`` walk a reader through creating a experiment
-and adding recordings. They reference a handful of tiny clips committed under
-``docs/assets/sample-data/`` so the steps and the screenshots name real files.
+``scripts/gen_docs_screens.py more-ways`` builds a small experiment from a handful of tiny
+clips committed under ``docs/assets/sample-data/``, for the user guide's steps on a recording
+in several files and on importing a bundle.
 
 This script clips those fixtures from a full recording, so the committed videos
 stay small (a few seconds, downscaled) and are reproducible from a known source.
