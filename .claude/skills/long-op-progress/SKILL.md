@@ -21,9 +21,8 @@ rendering invariants. This is the procedure for building and testing one.
   Not being an executor job does not make an operation instantaneous.
 - **Every caller drives that callback.** A CLI command wires it to a bar (`_StageProgress` for the
   `(stage, fraction, detail)` shape, `_stream_progress` for `ProgressEvent`s); the GUI wires it to
-  its bar. Adding a long path — or a flag that turns a quick op into a long one, e.g.
-  `--every-n-frames` on `add-video` — without surfacing progress is the bug, and needs a test that
-  the callback is wired.
+  its bar. Adding a long path — or a flag that turns a quick op into a long one — without
+  surfacing progress is the bug, and needs a test that the callback is wired.
 - **GUI interactive loads** (a preview opening, a frame decode or seek, a one-shot export behind a
   button) are *indeterminate*, so they do not fit `ProgressEvent`. They run off the UI thread
   through `gui/busy.py` — `run_busy` or `run_progress` — never as a raw slow call in a widget
@@ -39,8 +38,9 @@ else, and the CLI calls it bare.
   (trackers, dataset export, labeling, every analysis module) — wrap `progress_cb` in
   `core/progress.py::ThrottledProgress` and call it **inside the frame loop**; force the final
   event. Do not hand-roll a `last_emit` or `% N` throttle, and do not emit once per part.
-- **Multiprocess coordinators** (detection, embedding) poll the worker progress files at
-  `PROGRESS_INTERVAL_S`. **Training** is the only per-epoch exception.
+- **Multiprocess coordinators** (detection, embedding) poll the worker progress files every
+  `_PROGRESS_POLL_INTERVAL_S`, a copy of `PROGRESS_INTERVAL_S` each module takes at import.
+  **Training** is the only per-epoch exception.
 
 **Weigh the loop, do not count it.** A fraction built from `(i + 1) / len(things)` claims the things cost the same. A tiny continuous span beside a huge one was reported as half the search, so the bar jumped most of the way in a moment and then sat still for most of the run; two exemplars of very different length were reported 50/50. Weigh each iteration by the work it will do — for a path matcher, span rows × usable exemplar rows — and let a step that does no work be worth zero.
 
@@ -48,7 +48,9 @@ else, and the CLI calls it bare.
 
 Run the stage on a single-part fixture with `PROGRESS_INTERVAL_S` patched to `0.0` and assert an
 intermediate `0 < frames_done < frames_total` event, not just a terminal one, **and a populated
-`eta_s`** on that mid-run event.
+`eta_s`** on that mid-run event. Patching `core.progress.PROGRESS_INTERVAL_S` reaches
+`ThrottledProgress`, which reads it at call time; it does not reach the detection or embedding
+coordinator's own `_PROGRESS_POLL_INTERVAL_S`.
 
 **Assert the *inner* pair, on a *single*-unit fixture.** A cadence test written as
 `0 < recordings_done < recordings_total` cannot pass with one unit, so it silently requires a

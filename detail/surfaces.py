@@ -5,7 +5,8 @@ tested, and switchable back on — while this table decides whether a user meets
 empty today.** The capabilities it hid (Benchmarks, which scored method variants against ground
 truth no user of the querying or clustering modules has; ``clip_query`` and ``clip_annotation``,
 superseded by Query; ``syllable_discovery`` and pose clustering, superseded by temporal
-clustering; and others) were removed from the tree instead (``docs/removed_capabilities.md``).
+clustering; and others) were removed from the tree instead. Their record,
+``docs/removed_capabilities.md``, is not published in this repository.
 
 **What kind of toggle this is.** A *permissioning* toggle keyed on build audience: long-lived,
 statically decided, never per-request. Three things follow, and they remove most of the design
@@ -138,8 +139,8 @@ class Hidden:
 
 #: Empty. Every capability this table hid was removed from the tree on 2026-11-10 (benchmarks,
 #: the behavior clusterers, behavior query, behavior discovery, the `dtw` query method, pose
-#: clustering and six earlier ones); `docs/removed_capabilities.md` says what each was and how to
-#: restore it. The mechanism stays, tested on probe entries, for the next thing a build should
+#: clustering and six earlier ones); `docs/removed_capabilities.md`, which says what each was and
+#: how to restore it, is not published in this repository. The mechanism stays, tested on probe entries, for the next thing a build should
 #: carry without offering.
 HIDDEN: dict[str, Hidden] = {}
 

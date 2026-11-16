@@ -15,10 +15,12 @@ the test runs. ``unit`` is in-process with no Qt and no real workload; ``gui`` n
 or pays for a heavy numeric backend (numba JIT, HDBSCAN, UMAP, torch).
 
 **Value** (``guard``) — orthogonal, and it decides *whether the tier can ever be
-skipped*. A guard is a source scan, a registry-parity sweep, a structural or anti-drift
-check: the tests that cover the bug classes in CLAUDE.md's *Recorded classes* table,
-which are invisible to behavioural tests because nothing is wrong at the line where the
-bug is written. Guards run on every invocation of the gate, at every stage. They are
+skipped*. A guard is a file in ``GUARD_FILES`` below, added by hand: a source scan, a
+registry-parity sweep, a structural or anti-drift check, invisible to behavioural tests
+because nothing is wrong at the line where the bug is written. Many of the classes in
+``docs/recorded_classes.md`` are protected by one, but that table's Guard column names
+the test that protects a class whatever its tier. Guards run on every invocation of the
+gate, at every stage. They are
 cheap by construction — a guard is never in the ``slow`` tier, and
 ``test_test_tiers.py`` enforces that.
 
@@ -178,7 +180,7 @@ FILE_TIER = {
 }
 
 # --------------------------------------------------------------------------- #
-# Value: the guards. CLAUDE.md's "Recorded classes" live here.
+# Value: the guards. Many of docs/recorded_classes.md's guards live here, not all.
 # --------------------------------------------------------------------------- #
 
 #: Every file whose tests are source scans, registry-parity sweeps, structural checks,

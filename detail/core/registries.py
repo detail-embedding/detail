@@ -67,7 +67,7 @@ POSE_CLUSTER_METHODS: dict[str, type[PoseClusterMethod]] = {}
 # only one of them leaves bouts unassigned, so a single rule-parameterized method would have to
 # declare a `granularity` and a `has_noise` that are false for some of its own settings.
 TEMPORAL_CLUSTER_METHODS: dict[str, type[TemporalClusterMethod]] = {}
-# One-off, experiment-free operations — the Tools framework (§9). Keyed by tool_id.
+# One-off, experiment-free operations — the Tools framework (§27). Keyed by tool_id.
 TOOLS: dict[str, type[Tool]] = {}
 # Readiness / data-integrity checks — the live checker framework (§1). Keyed by check_id.
 CHECKS: dict[str, type[Check]] = {}
@@ -272,7 +272,7 @@ def register_stream_importer(
 
 
 def register_tool(tool_id: str) -> Callable[[type[Tool]], type[Tool]]:
-    """Register a Tool under ``tool_id`` (Section 9)."""
+    """Register a Tool under ``tool_id`` (Section 27)."""
 
     def decorator(cls: type[Tool]) -> type[Tool]:
         TOOLS[tool_id] = cls

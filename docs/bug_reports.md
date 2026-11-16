@@ -1,5 +1,7 @@
 # DETAIL — Bug Reports From Another Machine
 
+**Agent-facing. Not a user page** — it is in `mkdocs.yml`'s `exclude_docs`.
+
 `docs/bug_reports.md` is the authoritative specification for **how a problem observed on one
 machine is written down so it can be fixed from another**. It stands alongside
 `DESIGN_PLAN.md` (schemas and pipeline behavior) and `docs/docs_design.md` (the documentation
@@ -14,7 +16,7 @@ before filing an issue from a machine the fixer cannot reach.
 3. Capture before you write
 4. Writing the report
 5. Ruling out, and the discriminator
-6. Worked example — #279 / #280
+6. Worked example — a Windows training deadlock
 7. Decision log
 
 ---
@@ -142,7 +144,8 @@ Ask them, and record the answers in the report as answers — not as assumptions
 ## 4. Writing the report
 
 Use `.github/ISSUE_TEMPLATE/bug_report.md`. Its headings are the required sections;
-`gh issue create --template bug_report.md` gets them from an agent's side.
+`gh issue create --template "Bug report"` gets them from an agent's side (`--template` takes the
+template's front-matter `name:`, not its file name).
 
 **Separate observation from inference, visibly.** Evidence goes in a section of measurements
 with units and timestamps. The hypothesis goes in its own section, and says in its own words
@@ -200,12 +203,13 @@ person who can run it is the one filing the report.
 
 ---
 
-## 6. Worked example — #279 / #280
+## 6. Worked example — a Windows training deadlock
 
-Issues #279 and #280 (Ultralytics training deadlock on Windows, September 2026). Both were
-filed by an agent on the reporting machine and both were above the normal standard. Keeping
-the example is worthwhile precisely because it was a *good* report — the gaps below are the
-ones that survive doing everything else right.
+Two issues about an Ultralytics training deadlock on Windows, September 2026. They were filed in
+the private repository where this project was developed. That history is not published, so the
+issues cannot be looked up from here. Both were filed by an agent on the reporting machine
+and both were above the normal standard. Keeping the example is worthwhile precisely because
+it was a *good* report — the gaps below are the ones that survive doing everything else right.
 
 **What it got right, and what to copy:**
 
@@ -251,6 +255,6 @@ Settled decisions (most recent first). Reverse or amend here; don't re-litigate 
 | --- | --- |
 | This doc is the full home for the reporting rules; `CLAUDE.md` keeps a pointer + checklist | one home so the rules can't diverge across two files (§1); mirrors `docs_design.md`'s arrangement |
 | Blank issues stay enabled — no `ISSUE_TEMPLATE/config.yml` | the template is a checklist for whoever diagnoses, not a gate; forcing it onto a two-line docs typo is friction that gets routed around (§4) |
-| The #279 worked example stays in full, in this doc rather than in `CLAUDE.md` | the gaps only teach with their evidence attached, and `CLAUDE.md` is loaded every session and is for operative rules, not case history (§6) |
-| Two CPU-time samples are required, not encouraged | one sample cannot distinguish "idle" from "between writes"; this is the single measurement that made #279 diagnosable at all (§3) |
+| The training-deadlock worked example stays in full, in this doc rather than in `CLAUDE.md` | the gaps only teach with their evidence attached, and `CLAUDE.md` is loaded every session and is for operative rules, not case history (§6) |
+| Two CPU-time samples are required, not encouraged | one sample cannot distinguish "idle" from "between writes"; this is the single measurement that made the training-deadlock report diagnosable at all (§3) |
 | Reports name a discriminating test rather than only a hypothesis | the degenerate-signature case is common and no amount of symptom detail resolves it; only the reporter can cheaply run the test (§5) |
