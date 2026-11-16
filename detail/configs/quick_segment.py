@@ -1,4 +1,4 @@
-"""Quick-segment tool config model (§9) — the single source for its scalar parameters
+"""Quick-segment tool config model (§27) — the single source for its scalar parameters
 (mode, frame count) and the typed shape of a quick-segment run. The non-scalar
 inputs (the video paths, the ``Prompt`` list, and the ``ComputeTarget``) stay their own
 types, assembled by each surface (GUI form / CLI flags) and passed alongside this config,

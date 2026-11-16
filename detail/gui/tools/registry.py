@@ -1,4 +1,4 @@
-"""GUI-side tool-UI registry (§9) — the Qt half of a ``Tool``, mirroring
+"""GUI-side tool-UI registry (§27) — the Qt half of a ``Tool``, mirroring
 ``gui/modules/registry.py``.
 
 Each ``Tool`` contributes a bespoke UI: a config form (its run page) and a result view

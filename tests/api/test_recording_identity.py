@@ -1,4 +1,4 @@
-"""A recording's id is the tool's; its name is the user's (§11).
+"""A recording's id is the tool's; its name is the user's (§3).
 
 The id used to be the video filename's stem, so the *file* was the identity: nowhere to
 put a better label, an arbitrary choice for a recording spanning several files, and no way

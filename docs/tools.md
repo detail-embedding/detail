@@ -48,14 +48,16 @@ The Configuration checklist's **See it segment a clip** step opens this tool.
 ### CLI
 
 ```
-detail tools quick-segment CLIP.mp4 [CLIP2.mp4 …] --prompt mouse [--prompt "mouse with tail"] [--frames 50] [--min-conf 0.25]
-detail tools quick-segment CLIP.mp4 --consecutive --prompt mouse [--whole-video] [--export out.mp4]
+detail tools quick-segment CLIP.mp4 [CLIP2.mp4 …] --prompt mouse [--prompt "mouse with tail"] [--frames 50] [--min-conf 0.25] --backend cuda
+detail tools quick-segment CLIP.mp4 --consecutive --prompt mouse [--whole-video] [--export out.mp4] --backend cuda
 ```
 
 Each `--prompt` is a **separate prompt**, compared side by side; put several classes in one
 prompt by comma-separating them (`--prompt "mouse,cricket"`). `--sample` (the default)
 spreads the frames across each clip; `--consecutive` reads from frame 0 and is what
-`--export` needs.
+`--export` needs. `--backend` defaults to `cpu`, which SAM 3 cannot run on, so pass `--backend
+cuda` with the default model. With one of your own models (`--model <id>`), `--prompt` is still
+required, but the model ignores its text and finds its own classes.
 
 ```
 detail tools list            # saved runs
@@ -89,6 +91,8 @@ until you export. Deleting a run removes its folder.
 ## Adding a tool
 
 Quick segment is the first tool; the framework is general. A new tool is one `Tool` in
-`detail/tools/` (a pydantic config + a `run`) plus a GUI `ToolUI`; it self-registers and
-appears in the Tools list, CLI, and sidebar with no shell change. A tool whose work can run
+`detail/tools/` (a pydantic config + a `run`) plus a GUI `ToolUI` in `detail/gui/tools/`, each
+named in its module list (`TOOL_MODULES`, `TOOL_UI_MODULES`); it then appears in the Tools list
+and sidebar with no shell change. Its CLI command is written by hand under `detail tools` in
+`detail/cli.py`. A tool whose work can run
 long takes the `stop_check` its `run` is handed and polls it, so the Stop button works.

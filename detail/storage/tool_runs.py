@@ -1,4 +1,4 @@
-"""Machine-global tool-run records: ``tools/<tool_id>/<run_id>/tool.yaml`` (§9).
+"""Machine-global tool-run records: ``tools/<tool_id>/<run_id>/tool.yaml`` (§27).
 
 A *tool run* is one execution of an experiment-free ``Tool`` (e.g. Quick segment).
 Unlike processing runs, tool runs live outside any experiment — under a machine-global

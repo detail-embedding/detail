@@ -15,6 +15,8 @@ experiment
 └── recording                 one experimental subject/recording (video + optional streams + metadata)
     ├── detection           find the target each frame (text-prompted model)  → det_01
     ├── tracking            link detections into a subject track over time     → track_01
+    ├── keypoint detect     place named body points on each detection          → kd_01
+    ├── keypoint track      give each pose to a tracked animal, over time      → kt_01
     ├── embedding           embed the tracked subject's masked image per frame → emb_01
     └── analysis            experiment-level: analyze a run across recordings  → an_01
 ```
@@ -72,11 +74,13 @@ a failed or interrupted run is marked `failed` or `partial` and can be re-run.
 
 An experiment-level run of one stage across a selection of recordings (`run_001`, `run_002`). It
 records the per-recording run it created in each recording, and is the unit a training dataset is
-built from. Create one with `process detection` or `process tracking`.
+built from. Create one with `process detection`, `process tracking`, `process embedding`,
+`process keypoint_detect` or `process keypoint_track`.
 
 ### Use every N frames
 
-How many frames a run steps by. Detection, tracking and embedding each take one, and 4 means
+How many frames a run steps by. Detection, tracking, embedding and keypoint detect each take
+one, and 4 means
 "use frames 0, 4, 8, …". The cost falls roughly in proportion, and each form shows the rate that
 lands at (`7.5 fps (source 30 fps)`).
 
@@ -95,7 +99,10 @@ detections and tracked together.
 In the GUI, pick the kind from a list labelled with coverage; recordings without a match are
 dropped after you confirm. On the CLI, name one example run with `--detection-ref
 <RECORDING:det_NN>` (or `--tracking-ref`). The run fails if any selected recording has no match,
-so name a run whose kind every selected recording shares.
+so name a run whose kind every selected recording shares. `analysis run` (`--tracking-ref`) and
+`analysis temporal-clustering` (`--embed-ref`) take the flag more than once, one example per
+kind, so recordings processed through different chains (two detection models, say) each use
+the run of the named kind they have.
 
 ### Snapshot { #snapshot }
 
@@ -103,7 +110,7 @@ A frozen copy of an analysis run's results, saved automatically whenever a numbe
 an export, a comparison, or pressing Finish.
 
 Some analyses stay open after the computing is done because you are still interpreting them
-(choosing how many clusters, naming them, setting a cutoff), so the run itself keeps changing. A
+(labelling clusters, setting a cutoff), so the run itself keeps changing. A
 snapshot never changes, so a figure you produced last month is still reachable exactly as it was
 after you reopen the run and re-cut it. Read them back from the run's page, or with `analysis
 snapshots`.
@@ -354,9 +361,11 @@ event streams on time. Distances and positions come in normalized and pixel unit
 millimetres (`_mm`) when the recording has a distance calibration. Run it big (`analysis run`,
 many recordings) or quick (`locations export`, one recording).
 
-### Query
+### Behavior scan (query) { #query }
 
-Name a behavior, give a few example clips, and search a whole cohort for it. Then set **one
+**Behavior scan** is the app's name for the `query` module, which is the name `analysis query`
+and the run records use. Name a behavior, give a few example clips, and search a whole cohort
+for it. Then set **one
 cutoff per behavior** and get instances with start and end times, not a frame-by-frame score.
 
 The search is computed once and never changes; the cutoff is yours, and re-projecting at a new
@@ -368,8 +377,9 @@ query-calibrate`.
 
 Scores how well the query retrieves a labeled behavior against the ground-truth streams.
 Held-out example clips seed the query; the rest of the labeled instances are the answer. Its
-purpose is to compare configurations: vary the embedding run (mask resolution, embed model,
-input-image constructor) or the query parameters and read the average precision side by side.
+purpose is to compare configurations: vary the embedding run (embed model and size,
+input-image constructor, input size) or the query parameters and read the average precision
+side by side.
 **Folds** cross-validate for a seed-independent number.
 
 The scoring **method** comes in two families:
@@ -391,30 +401,34 @@ whose report and **Explore clips** window play the matches. Full detail:
 ### Behavior clustering
 
 Discover a vocabulary of **behaviors** with no example to point at, pooled across a selection of
-recordings with no labels. It cuts each subject's trajectory into **bouts** at the
-moments the pose changes, compares every pair of bouts, and groups them. A cluster is a stretch
-of movement and an instance is one performance of it, with a real start and end.
-
-Two things to know:
-
-- **Max bouts** bounds how many bouts the comparison sees, because the comparison grows with the
-  square of the bout count. Every other bout is still matched to the nearest cluster afterwards,
-  so a cap changes what the vocabulary is *learned from*, never what gets labeled.
-- Its instances cover **less** than the observed time, because bouts do not tile a recording.
-  That gap is how much of the recording the vocabulary accounts for, not a fault.
+recordings with no labels. A cluster is a stretch of movement and an instance is one performance
+of it, with a real start and end. The clusters form a tree, from many small ones to a few large
+ones.
 
 Two **methods** do this differently, and which you want depends on your study's size.
 `codebook_viterbi` (the default) clusters a sample of *frames* (the same share of every
 recording) into a set number of codewords, labels every frame against them, and recovers the
 stretches with a decode; its expensive step grows with the square of the codeword count, which you
-choose, and otherwise in proportion to how much video you pool. `dtw_finch` instead cuts the
-trajectory into bouts and compares every pair, which is what lets a slow and a fast performance of
-the same behavior match, and is why its cost grows with the square of the bout count: fine for a
-short study, slow for a long one. Measured against each other they tie on vocabulary quality, and
-the bout path draws slightly better boundaries.
+choose, and otherwise in proportion to how much video you pool. `dtw_finch` instead cuts each
+subject's trajectory into **bouts** at the moments the pose changes and compares every pair,
+which is what lets a slow and a fast performance of the same behavior match, and is why its cost
+grows with the square of the bout count: fine for a short study, slow for a long one. Measured
+against each other they tie on vocabulary quality, and the bout path draws slightly better
+boundaries.
 
-The fit is computed once and stays put. How many clusters the vocabulary has, and what they are
-called, are decided afterwards and cost nothing to change.
+Two things to know:
+
+- Its instances cover **less** than the observed time: stretches shorter than the method's
+  minimum (a bout, or a decoded run) are dropped, and gaps in tracking are not behavior. That
+  gap is how much of the recording the vocabulary accounts for, not a fault.
+- For `dtw_finch`, **Max bouts** bounds how many bouts the comparison sees, because the
+  comparison grows with the square of the bout count. Every other bout is still matched to the
+  nearest cluster afterwards, so a cap changes what the vocabulary is *learned from*, never what
+  gets labeled.
+
+The fit is computed once and stays put. Which clusters get a name, and what it is, are decided
+afterwards by labelling nodes of the tree, at whatever level a behavior shows up, and cost
+nothing to change.
 
 Run it in the GUI (**Behavior clustering** analysis) or with `analysis temporal-clustering`, then
 `analysis temporal-interpret`.
@@ -423,7 +437,7 @@ Run it in the GUI (**Behavior clustering** analysis) or with `analysis temporal-
 ### Measure
 
 A number taken over a stretch of a behavior result: how many instances, how much total time, a
-rate per minute, a mean bout duration. Every measure is computed over a **window** (the whole
+rate (bouts per second of observed time), a mean bout duration. Every measure is computed over a **window** (the whole
 recording, a fixed span, a fraction of it) and reported against **observed time**, so a subject
 tracked for half a recording is not scored as if it were absent for the other half.
 
@@ -438,7 +452,7 @@ recordings you want, group them by a column of your recording information (treat
 timepoint), and read the [measures](measures.md) side by side. Saved to `comparisons/<cmp_NN>/`
 and exportable as tables, figures and a `stats.csv`.
 
-Two things to know:
+Three things to know:
 
 - **You say what one observation is** (`--aggregate-to`) whenever your cohort has repeats.
   Averaging each animal's recordings first, or treating every recording as its own point, give
@@ -465,7 +479,8 @@ Two things to know:
 
 **Screening clusters nobody has named.** A comparison over a clustering run can measure its
 **nodes** instead of its labels: every cluster in the tree, named or not, ranked by how its share of
-time differs across your column, with bouts per hour and mean bout length shown beside it. The
+time differs across your column, with its rate (bouts per second) and mean bout length shown
+beside it. The
 ranking is a list of *where to look*: a node is kept when its effect clears the floor in enough of
 your animals, nested slices of one behavior are collapsed to the best of them, and each kept node
 carries a one-line reason ("less under drug than vehicle, 2.1×; 8 of 10 animals in that
@@ -481,8 +496,10 @@ own folder, named for the experiment, module, run and time, so two never collide
 
 An export carries the data behind an artifact as well as the artifact: a `clips.csv` naming the
 bout each clip file holds, a `params.csv` of the run's settings, your notes on the run, and PNG
-plus SVG for anything with a picture. Only derived data is exportable: tracks, masks, embeddings and analysis results.
-Your video and your streams are not.
+plus SVG for anything with a picture. A run exports what it made: masks, tracks, embeddings,
+keypoints and analysis results. A recording exports its streams, its frame timestamps, its
+scene geometry, a clip of a frame range, and the video parts DETAIL holds a copy of; a video
+referenced in place is already yours, under its own folder, and is not copied back out.
 
 The experiment **bundle** is a separate format, and the only export that imports back. See
 [Getting your data out](cli.md#getting-your-data-out).
@@ -515,6 +532,8 @@ Plain files: YAML records plus per-stage outputs. Every run is immutable and lan
 │       ├── video/                     # imported video parts
 │       ├── detections/det_01/         # per-frame masks (zarr)
 │       ├── tracking/track_01/         # tracks + assignments
+│       ├── keypoint_detect/kd_01/     # raw poses per frame
+│       ├── keypoint_track/kt_01/      # poses given to tracked animals
 │       ├── embeddings/emb_01/         # per-track feature vectors
 │       ├── arenas/  rois/  points/    # arena / ROI / POI definitions
 │       └── streams/                   # aligned event streams (e.g. MED-PC)
@@ -533,6 +552,8 @@ Plain files: YAML records plus per-stage outputs. Every run is immutable and lan
 | Trained / imported YOLO | `model_NNN` / imported id | detection (closed-set) | **local** (no account) | CPU / MPS / CUDA |
 | DINOv3 ConvNeXt | `dinov3_convnext_base` (variants `convnext_tiny` / `_small` / `_base` / `_large`) | embedding | **gated** (HF token + access) | CPU / MPS / CUDA |
 | DINOv3 ViT | `dinov3_vit` (variants `vit_small` / `vit_base` / `vit_large`); **the default embedding model**, at `vit_large` and 224 px | embedding | **gated** (HF token + access) | CPU / MPS / CUDA |
+| DINOv3 patch matching | `dinov3_match`, a keypoint method that reads the `dinov3_vit` weights' patch features (default `vit_large`); learns from an example set, no training | keypoint | **gated** (install `dinov3_vit`) | CPU / MPS / CUDA |
+| Keypoint student / imported YOLO-pose | `model_NNN` / imported id | keypoint (closed-set) | **local** (no account) | CPU / MPS / CUDA |
 
 - **Install a model before you run it.** Weights download once, into a global cache shared by every experiment (`~/.cache/detail/models`, or `DETAIL_MODEL_DIR`). `detail model install <id>`, or **Install** on the GUI's **Model manager**, is the only step that downloads. A **run never fetches weights**: it fails immediately if they are missing rather than stalling mid-pipeline on a silent multi-GB download. Once installed, runs need no network.
 - **Each model size is its own download.** A model with size variants installs one size at a time: `detail model install <id> --variant <size>`, or the matching row under **Hugging Face** on the GUI's **Model manager**. A run gates on the exact size it was configured with, so installing the default does not make another size runnable.
@@ -550,11 +571,11 @@ Built today, reachable from the API, GUI and CLI:
 
 | | |
 |---|---|
-| Processing | Detection (SAM 3, trained and imported YOLO), tracking (`anchor_tracker`, `iou_single_tracker`), embedding (DINOv3) |
+| Processing | Detection (SAM 3, trained and imported YOLO), tracking (`anchor_tracker`, `iou_single_tracker`), keypoint detect (`dinov3_match`, a distilled or imported YOLO-pose model) and keypoint track, embedding (DINOv3) |
 | Scene geometry | Field of view, ROIs and POIs, distance calibration |
 | Streams | MED-PC operant events, CSV sensor traces and events, behavior labels |
-| Analysis | Location export, query, behavior-query evaluation, behavior clustering, measures, comparisons |
-| Detection models | Processing runs, datasets, trained models, the unified **distill** run, promotion to the machine-global catalog |
+| Analysis | Location export, behavior scan (query), behavior-query evaluation, behavior clustering, measures, comparisons |
+| Detection and keypoint models | Processing runs, datasets, trained models, the unified **distill** run (a detector, or a keypoint student), promotion to the machine-global catalog |
 | Getting data out | The `export` backbone and an **Export** button on every result screen; experiment bundles that import back |
 | Tools | One-off, experiment-free runs, starting with **Quick segment**. Runs live in a machine-global `tools/` folder (see the [Tools guide](tools.md)) |
 

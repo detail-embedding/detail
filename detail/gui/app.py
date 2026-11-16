@@ -1,16 +1,18 @@
 """GUI shell: a top mode banner + a tree rail (project / Quick tools) + a top context label.
 
 Navigation is two-level (docs/gui_design.md §3.1). The **banner** (``_ModeBanner``) is the
-global scope switch — a flat, exclusive row of modes: **Experiments**, **Configuration**, **Model
-manager**, **Quick tools**, **Docs**. Configuration / Model manager / Experiments render
-**full-width with no sidebar**; sub-navigation there is **drill-in** — the landing shows the
-mode's items and an ``Open →`` (or a row) swaps in a full-width sub-page (Configuration's
-GPU / CUDA + Hugging Face steps; a Model manager model's detail page).
+global scope switch — a flat, exclusive row of modes (``_MODES``): **Experiments**, **Active
+processes**, **Configuration**, **Model manager**, **Keypoints manager**, **Quick tools**,
+**Docs**. Every mode but Quick tools renders **full-width with no sidebar**; sub-navigation
+there is **drill-in** — the landing shows the mode's items and an ``Open →`` (or a row) swaps
+in a full-width sub-page (Configuration's GPU / CUDA, SAM 3 backend and Hugging Face steps; a
+Model manager model's detail page).
 
 The left **rail** (a ``QTreeWidget``) appears in two scopes, one at a time (``self._rail``):
-the **project view**, reached by opening an experiment from Experiments, listing that
-experiment's sections — Recording information / Recordings / Processing pipeline / Analysis /
-Comparisons; and **Quick tools**, listing each registered tool with its saved
+the **project view**, reached by opening an experiment from Experiments, listing an
+**Overview** node and then that experiment's sections (``gui/sections.py``) — Recording
+information / Recordings / Datasets / Models / Processing pipeline / Analysis / Comparisons;
+and **Quick tools**, listing each registered tool with its saved
 runs beneath. Both are folders that expand to their own items, and both follow one rule:
 clicking a folder toggles it (and shows its page), clicking a leaf opens its page. A
 structural change refreshes only the rail on screen (``_refresh_active_experiment`` /
@@ -708,7 +710,7 @@ class MainWindow(QMainWindow):
             QTreeWidgetItem.ChildIndicatorPolicy.DontShowIndicatorWhenChildless
         )
 
-    # -- the Quick tools rail (§9) ------------------------------------------- #
+    # -- the Quick tools rail (§27) ------------------------------------------- #
     def _tool_rail_items(self) -> list[QTreeWidgetItem]:
         """The rail nodes for Quick tools — one folder per registered tool, its saved runs
         beneath it oldest first (store order, like every project-rail section). One sweep of
@@ -1079,7 +1081,7 @@ class MainWindow(QMainWindow):
             node.setExpanded(True)
             self._navigate(node)
 
-    # -- tools (§9) ---------------------------------------------------------- #
+    # -- tools (§27) ---------------------------------------------------------- #
     def _tool_label(self, tool_id: str) -> str:
         for info in api_tools.list_tools():
             if info.tool_id == tool_id:

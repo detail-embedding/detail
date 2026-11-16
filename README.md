@@ -10,7 +10,7 @@ A species-agnostic tool for behavioral analysis. Powered by open-source segmenta
 - [Workflows](docs/workflows/create-a-experiment.md): step-by-step setup, from a new experiment to recordings, streams, and metadata
 - [Concepts](docs/concepts.md): tool design and data organization
 - [CLI guide](docs/cli.md): headless operation via CLI
-- [GUI guide](docs/gui.md): desktop app (Experiments, Configuration, Model manager, Quick tools)
+- [GUI guide](docs/gui.md): desktop app (Experiments, Active processes, Configuration, Model manager, Keypoints manager, Quick tools, Docs)
 - [Tools](docs/tools.md): one-off runs like Quick segment, no experiment needed
 
 ## Quick start
@@ -112,4 +112,4 @@ request. In short:
 - Install with `uv pip install -e ".[torch,gui,analysis,dev]"`, then run `pre-commit install`
   once. Commits then get formatted and checked.
 - Work on a feature branch and open a pull request. Don't commit to `main` directly.
-- Run `pytest -q -n auto` before opening a pull request.
+- Run `pytest -q -n auto --dist loadfile` before opening a pull request.

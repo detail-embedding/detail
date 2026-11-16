@@ -43,7 +43,7 @@ Every field, and each importer's required files, is in the
 
 === "GUI"
 
-    In the experiment, click **Import bundle…** (highlighted) and choose the bundle
+    In the experiment, open **Recordings** and click **Import bundle** (highlighted). Choose the bundle
     folder (the one holding `manifest.yaml`). The manifest is validated; confirm to
     create the recordings.
 

@@ -12,7 +12,8 @@ re-check every claim about our code and can never re-observe the box.
 **Collect ruthlessly, conclude tentatively.**
 
 `docs/bug_reports.md` is the full spec and has a worked example. `gh issue create --template
-bug_report.md` is the form.
+"Bug report"` is the form: `--template` takes the `name:` in the front matter of
+`.github/ISSUE_TEMPLATE/bug_report.md`, not the file name.
 
 ## 1. Capture, before you write a sentence
 

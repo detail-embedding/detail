@@ -30,8 +30,8 @@ can tell you that.
 
 ## The background, and why it contains the behavior
 
-The background is drawn from the searched recordings with your example clips removed and
-**nothing else** removed. That means it contains the behavior you are looking for, in whatever
+The background is drawn from the searched recordings with every clip you marked in the run
+removed (each behavior's examples and non-examples) and **nothing else** removed. That means it contains the behavior you are looking for, in whatever
 proportion it actually occurs, which lowers confidences on a behavior that fills a lot of the
 recording. That is deliberate. A background filtered to exclude anything that resembles the
 behavior would need to already know where the behavior is, which is the question you are asking;
