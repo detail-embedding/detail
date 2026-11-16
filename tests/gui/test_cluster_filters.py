@@ -1911,3 +1911,57 @@ def test_effect_shades_at_a_level_take_that_levels_floor_and_kept_set_and_say_th
     assert screen.kept_numbers(0.2)[5] == {"family_p": 0.2, "own_p": 0.03, "q": 0.6}
     assert screen.kept_texts() == {4: "more under drug, 12.4×"}
     assert cf.numbers_text(None, None, None) == ""
+
+
+def test_effect_shades_on_a_studentized_screen_sit_by_the_t():
+    """On a screen scored by the moderated t the blocks and the key share the t axis: a
+    block's position is its t over the axis's reach, the floor is in t, a row with no p
+    clears a level by its |t| against that level's floor, and the hover carries the t beside
+    the effect's words (§22, §24 *The statistic*). The same rows on a screen scored by the
+    effect sit by their effect, with no t in the words."""
+    import dataclasses
+    import math
+
+    from detail.gui.match_key import LOG_RATIO_EXTENT, T_EXTENT
+
+    choice = cf.ScreenChoice(
+        "cmp_04",
+        "drug vs vehicle · paired",
+        "1 kept of 2",
+        frozenset({0, 1}),
+        effects={
+            4: cf.NodeEffect(
+                math.log(12.4),
+                True,
+                True,
+                "more under drug, 12.4×",
+                statistic=8.84,
+                family_p=0.01,
+            ),
+            5: cf.NodeEffect(
+                math.log(1.3), False, False, "more under drug, 1.3×", statistic=0.6
+            ),
+            2: cf.NodeEffect(
+                -math.log(3.0), True, False, "less under drug, 3.0×", statistic=-4.5
+            ),
+        },
+        floor=4.1,
+        design="paired",
+        caption="Less ↔ more under drug",
+        statistic="moderated_t",
+        levels=(cf.ScreenLevel(0.2, 3.0, (4, 5), frozenset({0, 1, 2}), 3),),
+    )
+    assert choice.studentized
+    shades, texts = cf.effect_shades(choice, 6)
+    assert shades[4] == pytest.approx(8.84 / T_EXTENT)
+    assert shades[2] == pytest.approx(-4.5 / T_EXTENT)
+    assert shades[5] == 0.0
+    assert texts[4] == "more under drug, 12.4× · kept · t +8.8 · family-wise p 0.01"
+    assert texts[5] == "more under drug, 1.3× · inside the floor · t +0.6"
+    assert choice.clears(2, 0.2) and not choice.clears(5, 0.2), "|t| against the floor"
+
+    plain = dataclasses.replace(choice, statistic="effect")
+    assert not plain.studentized
+    shades, texts = cf.effect_shades(plain, 6)
+    assert shades[4] == pytest.approx(math.log(12.4) / LOG_RATIO_EXTENT)
+    assert "t +8.8" not in texts[4]

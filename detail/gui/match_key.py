@@ -76,13 +76,28 @@ EFFECT_TEXT = (
     "The tall bar is the selected cluster's effect; the ticks are the floor, and a cluster "
     "inside it is grey: not shown to differ."
 )
+#: The same, on a screen scored by the moderated t (§24 *The statistic*).
+STATISTIC_TEXT = (
+    "The tall bar is the selected cluster's t, its effect over its spread across animals; "
+    "the ticks are the floor, and a cluster inside it is grey: not shown to differ."
+)
 #: How far the log-ratio axis reaches either way: a fixed 20× (ln 20), so the same effect sits
 #: at the same place on every screen. Beyond it a mark sits at the end.
 LOG_RATIO_EXTENT = math.log(20.0)
+#: How far the moderated-t axis reaches either way, fixed for the same reason: a cluster eight
+#: animals agree on at 12× reads t ≈ 9 at a median spread of a third of a log unit, and a
+#: family-wise floor at eight animals sits near 4, so ±10 shows both with room; beyond it a
+#: mark sits at the end.
+T_EXTENT = 10.0
+#: The studentized statistic's name, as the dock spells it (`compare.STATISTIC_T`).
+_STATISTIC_T = "moderated_t"
 
 
-def effect_extent(design: str) -> float:
-    """How far the effect axis reaches from its middle: 1 for a trend's ρ, ln 20 otherwise."""
+def effect_extent(design: str, statistic: str = "effect") -> float:
+    """How far the axis reaches from its middle: 10 for the moderated t, 1 for a trend's ρ,
+    ln 20 otherwise."""
+    if statistic == _STATISTIC_T:
+        return T_EXTENT
     return 1.0 if design == "trend" else LOG_RATIO_EXTENT
 
 
@@ -109,14 +124,29 @@ def effect_position(
     return min(max(float(effect) / float(extent), -1.0), 1.0)
 
 
-def effect_axis_labels(design: str) -> tuple[str, str]:
-    """The axis ends: ``("ρ −1", "ρ +1")`` for a trend, ``("1×", "×20")`` for a
+def effect_axis_labels(design: str, statistic: str = "effect") -> tuple[str, str]:
+    """The axis ends: ``("t −10", "t +10")`` on a studentized screen (``("t 0", "t 10")``
+    for a profile's size), ``("ρ −1", "ρ +1")`` for a trend, ``("1×", "×20")`` for a
     profile's size, ``("÷20", "×20")`` for a log ratio."""
+    if statistic == _STATISTIC_T:
+        if one_sided(design):
+            return ("t 0", f"t {T_EXTENT:g}")
+        return (f"t −{T_EXTENT:g}", f"t +{T_EXTENT:g}")
     if design == "trend":
         return ("ρ −1", "ρ +1")
     if one_sided(design):
         return ("1×", "×20")
     return ("÷20", "×20")
+
+
+def statistic_value_text(statistic: float | None, design: str) -> str:
+    """``t +8.8``, or ``t 8.8`` for a profile's size — the moderated t as a person reads it;
+    ``""`` for none."""
+    if statistic is None or statistic != statistic:
+        return ""
+    if one_sided(design):
+        return f"t {abs(float(statistic)):.1f}"
+    return f"t {float(statistic):+.1f}"
 
 
 def effect_value_text(effect: float | None, design: str) -> str:
@@ -350,37 +380,47 @@ class MatchKey(QWidget):
         floor: float | None,
         selected_effect: float | None,
         selected_pair: tuple[str, str] | None = None,
+        statistic: str = "effect",
+        selected_statistic: float | None = None,
     ) -> None:
         """The effect mode: ``caption`` over the diverging axis for ``design``, the floor's
-        ticks at ±``floor`` (in the effect's own unit) and the selected cluster's effect.
+        ticks at ±``floor`` (in the axis's unit) and the selected cluster's mark.
 
         Args:
             caption: What the axis is, e.g. ``"Less ↔ more under drug"``.
             design: ``"trend"`` for a ρ axis, ``"profile"`` for a one-sided size axis, else a
                 log-ratio axis.
-            floor: The screen's floor in the effect's unit, or ``None`` when it has none.
+            floor: The screen's floor in the axis's unit (the t's on a studentized screen,
+                the effect's otherwise), or ``None`` when it has none.
             selected_effect: The selected cluster's effect, ``None`` for none or undefined.
             selected_pair: The two levels that effect is between, ``(a, b)`` as *b against
                 a*. On a one-sided axis the mark names them with the direction (*9.6× more
                 under SA than REI*), since the axis itself cannot say which pair or which
                 way; a two-sided axis's caption already says, so it is ignored there.
+            statistic: What the screen scores by (``compare.STATISTICS``). On the moderated
+                t the axis runs ``t −10`` to ``t +10``, the mark sits by
+                ``selected_statistic`` and reads *t +8.8 (12.4×)*: the t is the unit the
+                floor is in, the effect is what the cluster did (§22).
+            selected_statistic: The selected cluster's t on a studentized screen.
         """
-        extent = effect_extent(design)
+        extent = effect_extent(design, statistic)
         half = one_sided(design)
+        studentized = statistic == _STATISTIC_T
         self.ramp.active = True
         self.ramp.diverging = True
         self.ramp.half = half
         self._caption.setText(caption)
-        low, high = effect_axis_labels(design)
+        low, high = effect_axis_labels(design, statistic)
         self._low.setText(low)
         self._high.setText(high)
         self.setToolTip("")
-        self.ramp.setToolTip(EFFECT_TEXT)
+        self.ramp.setToolTip(STATISTIC_TEXT if studentized else EFFECT_TEXT)
         self._grey_labels()
+        on_axis = selected_statistic if studentized else selected_effect
         position = (
             None
-            if selected_effect is None or selected_effect != selected_effect
-            else effect_position(selected_effect, True, extent, one_sided=half)
+            if on_axis is None or on_axis != on_axis
+            else effect_position(on_axis, True, extent, one_sided=half)
         )
         text = None
         if position is not None:
@@ -388,6 +428,8 @@ class MatchKey(QWidget):
             if half and selected_pair is not None:
                 more = "more" if float(selected_effect) >= 0 else "less"
                 text = f"{text} {more} under {selected_pair[1]} than {selected_pair[0]}"
+            if studentized:
+                text = f"{statistic_value_text(on_axis, design)} ({text})"
         self.ramp.set_effect_marks(
             position, text, None if floor is None else float(floor) / extent
         )

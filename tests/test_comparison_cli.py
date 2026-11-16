@@ -281,7 +281,7 @@ def test_every_design_flag_reaches_the_config_and_the_design_is_printed(
         "--group-by", "drug", "--aggregate-to", "animal",
         "--level", "veh", "--level", "fent", "--measure", "n_instances",
         "--measure", "total_time", "--presence-s", "2", "--pseudo-count-s", "0.5",
-        "--min-units-fraction", "0.75", "--no-suppress-nesting",
+        "--min-units-fraction", "0.75", "--no-suppress-nesting", "--statistic", "effect",
     )  # fmt: skip
     assert result.exit_code == 0, result.output
     assert captured["source"] == "labels"
@@ -290,6 +290,8 @@ def test_every_design_flag_reaches_the_config_and_the_design_is_printed(
     assert captured["pseudo_count_s"] == 0.5
     assert captured["min_units_fraction"] == 0.75
     assert captured["suppress_nesting"] is False
+    assert captured["statistic"] == "effect"
+    assert "ranked on the effect" in result.output
     assert "design: paired" in result.output
     assert "fent against veh" in result.output
     assert "undefined below 3 present unit(s) of 4" in result.output

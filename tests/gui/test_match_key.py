@@ -320,3 +320,69 @@ def test_a_profile_mark_names_the_pair_that_drives_it(key):
         selected_pair=("veh", "fent"),
     )
     assert key.text().endswith("| selected 3.0× | floor")
+
+
+def test_a_studentized_screen_reads_t_on_a_fixed_axis(key):
+    """On a screen scored by the moderated t (§24 *The statistic*) the key's axis is t on a
+    fixed ±10, the floor's ticks are in t, the selected cluster sits by its t and its mark
+    reads the t with the effect after it; a profile's one-sided axis runs t 0 to t 10 and the
+    mark still names the pair. The effect-only functions are unchanged by the default.
+    """
+    from detail.gui.match_key import (
+        T_EXTENT,
+        effect_axis_labels,
+        effect_extent,
+        effect_position,
+        statistic_value_text,
+    )
+
+    assert effect_extent("paired", "moderated_t") == T_EXTENT == 10.0
+    assert effect_extent("trend", "moderated_t") == T_EXTENT
+    assert effect_extent("paired") == effect_extent("paired", "effect")
+    assert effect_axis_labels("paired", "moderated_t") == ("t −10", "t +10")
+    assert effect_axis_labels("trend", "moderated_t") == ("t −10", "t +10")
+    assert effect_axis_labels("profile", "moderated_t") == ("t 0", "t 10")
+    assert effect_axis_labels("paired") == effect_axis_labels("paired", "effect")
+    assert statistic_value_text(8.84, "paired") == "t +8.8"
+    assert statistic_value_text(-8.84, "paired") == "t -8.8"
+    assert statistic_value_text(-8.84, "profile") == "t 8.8"
+    assert statistic_value_text(None, "paired") == ""
+    assert effect_position(25.0, True, T_EXTENT) == 1.0, "clamped at the end"
+
+    key.set_effect(
+        "Less ↔ more under drug",
+        "paired",
+        floor=4.1,
+        selected_effect=math.log(12.4),
+        statistic="moderated_t",
+        selected_statistic=8.84,
+    )
+    assert key.is_effect()
+    assert (
+        key.text()
+        == "Less ↔ more under drug | t −10 … t +10 | selected t +8.8 (12.4×) | floor"
+    )
+    assert key.ramp._selected == pytest.approx(0.884), "by the t, not the effect"
+    assert key.ramp._floor == pytest.approx(0.41), "the floor in t over the t axis"
+    assert key.ramp.toolTip() == mk.STATISTIC_TEXT
+
+    key.set_effect(
+        "Differs across session",
+        "profile",
+        floor=4.1,
+        selected_effect=-math.log(9.6),
+        selected_pair=("REI", "SA"),
+        statistic="moderated_t",
+        selected_statistic=-6.2,
+    )
+    assert key.text() == (
+        "Differs across session | t 0 … t 10 | "
+        "selected t 6.2 (9.6× less under SA than REI) | floor"
+    )
+    assert key.ramp._selected == pytest.approx(0.62), "a size on the one-sided axis"
+
+    key.set_effect(
+        "Less ↔ more under drug", "paired", floor=math.log(7.14), selected_effect=0.5
+    )
+    assert key.text().startswith("Less ↔ more under drug | ÷20 … ×20 | selected 1.6×")
+    assert key.ramp.toolTip() == mk.EFFECT_TEXT

@@ -468,6 +468,7 @@ def _node_effects(ranking, record: dict) -> dict:
             family_p=getattr(item, "family_p", None),
             own_p=getattr(item, "own_p", None),
             q=getattr(item, "q", None),
+            statistic=getattr(item, "statistic", None),
         )
     return out
 
@@ -1161,6 +1162,9 @@ class NodeInterpretTab(QWidget):
                         kept=tuple(int(n) for n in kept),
                         column=str(record.get("design_column") or ""),
                         levels=_screen_levels(ranking, view),
+                        # What the floor is in the unit of (§24 *The statistic*): the key's
+                        # axis and the blocks follow it.
+                        statistic=ranking.statistic,
                     )
                 )
             return out
@@ -1682,6 +1686,10 @@ class NodeInterpretTab(QWidget):
                 floor=screen.floor if level is None else level.floor,
                 selected_effect=None if row is None or not clears else row.effect,
                 selected_pair=None if row is None or not clears else row.pair,
+                statistic=screen.statistic,
+                selected_statistic=(
+                    None if row is None or not clears else row.statistic
+                ),
             )
             return
 

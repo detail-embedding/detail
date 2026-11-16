@@ -1045,3 +1045,228 @@ def test_a_ranking_with_no_floor_has_no_p_and_clears_at_no_level():
     assert item.family_p is None and item.own_p is None and item.q is None
     assert ranking.floor_at(0.5) is None
     assert not ranking.clears_at(item, 0.5) and ranking.kept_at(0.5) == []
+
+
+# --------------------------------------------------------------------------- #
+# the statistic: the moderated t scores by agreement, the effect by size (§24)
+# --------------------------------------------------------------------------- #
+
+
+def _reference_t(values, s0: float) -> float:
+    """The moderated t written out: ``mean · √n / (sd + s0)``, the sample sd over the units
+    with an effect (0 for one unit)."""
+    import statistics
+
+    n = len(values)
+    mean = statistics.fmean(values)
+    sd = statistics.stdev(values) if n > 1 else 0.0
+    return mean * math.sqrt(n) / (sd + s0)
+
+
+def _agreement_cohort():
+    """``w`` has the larger mean |log ratio| (10×, 9×, ÷8 and 2× in four animals) and ``z``
+    the smaller (1.8×, 2.2×, 2× and 2.1×, every animal agreeing)."""
+    shares = {}
+    for i, (zr, wr) in enumerate(zip((1.8, 2.2, 2.0, 2.1), (10.0, 9.0, 1 / 8, 2.0))):
+        shares[(f"A{i}", "veh")] = {"z": 0.10, "w": 0.10}
+        shares[(f"A{i}", "fent")] = {"z": 0.10 * zr, "w": 0.10 * wr}
+    return shares
+
+
+def test_the_moderated_t_by_hand_over_three_animals_and_eight_flips():
+    """Three animals, two measures. ``x`` doubles, quadruples and doubles: per-animal log
+    ratios (ln 2, ln 4, ln 2); ``y`` quadruples twice and quarters once: (ln 4, ln 4, −ln 4).
+    ``s0`` is the median of the two sample spreads, each t is ``mean · √3 / (sd + s0)``, and
+    the null is the same t over every sign flip of each animal's own ratio with the family's
+    largest |t| per flip. ``x``'s own p counts the flips whose |t| reaches its own, which
+    only its mirror does: 2 of 8. The verdict at every level reads the t, never the effect.
+    """
+    import itertools
+    import statistics
+
+    ranking = _paired_ranking(
+        {
+            ("A", "veh"): {"x": 0.10, "y": 0.10},
+            ("A", "fent"): {"x": 0.20, "y": 0.40},
+            ("B", "veh"): {"x": 0.10, "y": 0.10},
+            ("B", "fent"): {"x": 0.40, "y": 0.40},
+            ("C", "veh"): {"x": 0.10, "y": 0.40},
+            ("C", "fent"): {"x": 0.20, "y": 0.10},
+        },
+        levels=["veh", "fent"],
+        statistic=c.STATISTIC_T,
+    )
+    assert ranking.statistic == c.STATISTIC_T and ranking.exact and ranking.draws == 8
+    per_unit = {
+        "x": (math.log(2), math.log(4), math.log(2)),
+        "y": (math.log(4), math.log(4), -math.log(4)),
+    }
+    s0 = statistics.median(statistics.stdev(v) for v in per_unit.values())
+    assert ranking.s0 == pytest.approx(s0)
+    x, y = ranking.contrasts
+    assert x.measure_key[1] == "x" and y.measure_key[1] == "y"
+    for item in (x, y):
+        values = per_unit[item.measure_key[1]]
+        assert item.effect == pytest.approx(statistics.fmean(values))
+        assert item.statistic == pytest.approx(_reference_t(values, s0))
+        assert item.score == pytest.approx(abs(item.statistic))
+    flips = list(itertools.product((1, -1), repeat=3))
+    null = {
+        k: [abs(_reference_t([s * d for s, d in zip(signs, v)], s0)) for signs in flips]
+        for k, v in per_unit.items()
+    }
+    family = sorted(max(null["x"][i], null["y"][i]) for i in range(8))
+    assert sorted(ranking.floor_distribution) == pytest.approx(family)
+    assert ranking.floor == pytest.approx(family[round(0.95 * 7)])
+    assert x.own_p == pytest.approx(2 / 8)
+    assert y.own_p == pytest.approx(
+        sum(t >= y.score * (1 - 1e-9) for t in null["y"]) / 8
+    )
+    for alpha in (*c.STRICTNESS_LEVELS, 0.6, 0.99):
+        for item in (x, y):
+            assert ranking.clears_at(item, alpha) == (
+                not c._reaches(ranking.floor_at(alpha), item.score)
+            ), (item.measure_key, alpha)
+
+
+def test_the_t_ranks_agreement_over_size_where_the_effect_ranks_size():
+    """The case the statistic exists for (§24 *The statistic*). On the effect ``w`` ranks
+    first: the sparse, disagreeing measure owns the order and the floor. On the moderated t
+    ``z`` ranks first with a smaller family-wise p, its effect unchanged beside it."""
+    shares = _agreement_cohort()
+    by_effect = _paired_ranking(
+        shares, levels=["veh", "fent"], statistic=c.STATISTIC_EFFECT
+    )
+    by_t = _paired_ranking(shares, levels=["veh", "fent"], statistic=c.STATISTIC_T)
+    assert [i.measure_key[1] for i in by_effect.contrasts] == ["w", "z"]
+    assert [i.measure_key[1] for i in by_t.contrasts] == ["z", "w"]
+    z_effect = next(i for i in by_effect.contrasts if i.measure_key[1] == "z")
+    z_t, w_t = by_t.contrasts
+    assert z_t.statistic > w_t.statistic > 0
+    assert z_t.effect == pytest.approx(z_effect.effect), "the effect is what it was"
+    assert z_t.family_p < z_effect.family_p
+    assert by_effect.s0 is None and by_t.s0 > 0
+    assert all(i.statistic is None for i in by_effect.contrasts)
+    assert by_effect.statistic == c.STATISTIC_EFFECT
+
+
+def test_a_profile_pair_is_the_one_its_units_agree_on_under_the_t():
+    """Three sessions. fent → nalox is the biggest mean change but the animals disagree on
+    it (two fall sharply, one rises); fent → saline is smaller and all three agree. On the
+    effect the measure's pair is fent → nalox; on the t it is fent → saline, the pair chosen by
+    the same statistic the floor is taken over."""
+    shares = {
+        ("A", "saline"): {"x": 0.10},
+        ("A", "fent"): {"x": 0.19},
+        ("A", "nalox"): {"x": 0.02},
+        ("B", "saline"): {"x": 0.10},
+        ("B", "fent"): {"x": 0.21},
+        ("B", "nalox"): {"x": 0.025},
+        ("C", "saline"): {"x": 0.10},
+        ("C", "fent"): {"x": 0.20},
+        ("C", "nalox"): {"x": 0.60},
+    }
+    (by_effect,) = _profile_ranking(shares, statistic=c.STATISTIC_EFFECT).contrasts
+    (by_t,) = _profile_ranking(shares, statistic=c.STATISTIC_T).contrasts
+    assert by_effect.pair == ("fent", "nalox")
+    assert by_t.pair == ("fent", "saline")
+    assert by_t.effect == pytest.approx(
+        (math.log(0.10 / 0.19) + math.log(0.10 / 0.21) + math.log(0.10 / 0.20)) / 3
+    )
+    assert by_t.statistic < 0 and by_t.consistency == 3
+
+
+def test_a_family_whose_units_all_agree_exactly_has_no_t_and_says_why():
+    """Every animal doubles exactly: no measure has a spread, so there is no ``s0`` and no
+    t; the ranking says so instead of dividing by nothing, and the effect is still there.
+    """
+    ranking = _paired_ranking(
+        {
+            ("A", "veh"): {"x": 0.10},
+            ("A", "fent"): {"x": 0.20},
+            ("B", "veh"): {"x": 0.10},
+            ("B", "fent"): {"x": 0.20},
+            ("C", "veh"): {"x": 0.30},
+            ("C", "fent"): {"x": 0.60},
+        },
+        levels=["veh", "fent"],
+        statistic=c.STATISTIC_T,
+    )
+    assert ranking.floor is None and ranking.s0 is None
+    assert "no spread to divide by" in ranking.no_floor_reason
+    (item,) = ranking.contrasts
+    assert item.statistic is None and item.family_p is None
+    assert item.effect == pytest.approx(math.log(2))
+
+
+def test_an_unknown_statistic_is_refused():
+    with pytest.raises(c.ComparisonError, match="statistic must be one of"):
+        _paired_ranking(_agreement_cohort(), levels=["veh", "fent"], statistic="z")
+
+
+def test_a_record_without_a_statistic_ranks_on_the_effect_and_with_one_on_the_t():
+    """A record written before the field existed carries no ``ranking_statistic`` and ranks
+    on the effect, as it did when it was written (§3 compatibility); one that names the t
+    ranks on it, with the same effects beside."""
+    from detail.analysis import comparison_report
+
+    meta, rows = _crossover(_baseline_spread_cohort(n=6))
+    obs = c.observations(rows, meta, group_by=["session"], aggregate_to=["animal"])
+    record = {
+        "design": c.PAIRED,
+        "design_column": "session",
+        "levels": ["veh", "fent"],
+        "aggregate_to": ["animal"],
+        "min_units": 3,
+        "presence_s": 1.0,
+        "pseudo_count_s": 1.0,
+        "ranking_measure": "time_fraction",
+        "seed": 0,
+        "draws": 100,
+    }
+    old = comparison_report.rank_record(obs, record)
+    new = comparison_report.rank_record(
+        obs, {**record, "ranking_statistic": c.STATISTIC_T}
+    )
+    assert old.statistic == c.STATISTIC_EFFECT and old.s0 is None
+    assert new.statistic == c.STATISTIC_T and new.s0 is not None
+    by_key = lambda r: {i.measure_key: i.effect for i in r.contrasts}  # noqa: E731
+    assert by_key(old) == pytest.approx(by_key(new))
+    assert all(i.statistic is not None for i in new.contrasts if i.effect is not None)
+
+
+def test_the_tables_the_csv_and_the_sentences_carry_the_t():
+    """Every surface that prints a ranking prints the t where it ranked (§24): the tables'
+    ``t`` column, ``ranking.csv``'s ``statistic``, the floor sentence in t, the statistic
+    sentence with its ``s0``, and the record's note; none of them on a ranking by the
+    effect, or for a between design."""
+    from detail.analysis import comparison_report as cr
+
+    shares = _agreement_cohort()
+    by_t = _paired_ranking(shares, levels=["veh", "fent"], statistic=c.STATISTIC_T)
+    by_effect = _paired_ranking(shares, levels=["veh", "fent"])
+    record = {
+        "design": c.PAIRED,
+        "design_column": "session",
+        "aggregate_to": ["animal"],
+        "ranking_statistic": c.STATISTIC_T,
+    }
+    headers, rows = cr.ranking_rows(by_t, record)
+    assert "t" in headers
+    z = by_t.contrasts[0]
+    assert rows[0][headers.index("t")] == f"{z.statistic:+.1f}"
+    csv = cr.ranking_csv_rows(by_t, record)
+    assert set(csv[0]) == set(cr.RANKING_COLUMNS)
+    assert csv[0]["statistic"] == pytest.approx(z.statistic)
+    assert csv[0]["clears"] == (abs(z.statistic) > by_t.floor)
+    assert "largest |moderated t|" in cr.floor_sentence(by_t)
+    assert f"s0 = {by_t.s0:.3g}" in cr.statistic_sentence(by_t)
+    assert cr.statistic_note(record).startswith("ranked on the moderated t")
+    assert cr.statistic_note({**record, "design": c.BETWEEN}) == ""
+    assert cr.statistic_note({"design": c.PAIRED}) == ""
+
+    headers, _ = cr.ranking_rows(by_effect, {**record, "ranking_statistic": "effect"})
+    assert "t" not in headers
+    assert cr.ranking_csv_rows(by_effect, record)[0]["statistic"] == ""
+    assert "fold change" in cr.floor_sentence(by_effect)
+    assert cr.statistic_sentence(by_effect).startswith("ranked on the effect")

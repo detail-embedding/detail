@@ -99,11 +99,17 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from detail.analysis.compare import FLOOR_ALPHA, STRICTNESS_LEVELS
+from detail.analysis.compare import FLOOR_ALPHA, STATISTIC_T, STRICTNESS_LEVELS
 from detail.api.cluster_filter import CLUSTERS, LOCATION, SESSION, VIDEO, Selection
 from detail.gui import plot_theme
 from detail.gui.density_map import RegionPicker
-from detail.gui.match_key import MatchKey, effect_extent, effect_position, one_sided
+from detail.gui.match_key import (
+    MatchKey,
+    effect_extent,
+    effect_position,
+    one_sided,
+    statistic_value_text,
+)
 from detail.gui.selectable import make_text_selectable
 from detail.gui.sizing import (
     ElidedLabel,
@@ -206,7 +212,11 @@ class NodeEffect:
     the two levels the effect is between (``(a, b)``, *b against a*) — what a profile's key
     names at the selected cluster's mark, since its one-sided axis cannot (§22). ``family_p``,
     ``own_p`` and ``q`` are the item's numbers (``compare.Effect``), for the hover and for a
-    label's origin; ``None`` for an undefined effect, or a row built without them."""
+    label's origin; ``None`` for an undefined effect, or a row built without them.
+    ``statistic`` is the item's moderated t on a screen that scores by it (§24 *The
+    statistic*): what the key's axis and the blocks read there, with the effect in the hover;
+    ``None`` on a screen scored by the effect. :attr:`score` is whichever the screen's floor
+    is compared with."""
 
     effect: float | None
     clears: bool
@@ -216,6 +226,14 @@ class NodeEffect:
     family_p: float | None = None
     own_p: float | None = None
     q: float | None = None
+    statistic: float | None = None
+
+    @property
+    def score(self) -> float | None:
+        """``|statistic|`` where there is one, else ``|effect|``: the size against the floor."""
+        if self.statistic is not None:
+            return abs(float(self.statistic))
+        return None if self.effect is None else abs(float(self.effect))
 
 
 @dataclass(frozen=True)
@@ -249,6 +267,11 @@ class ScreenChoice:
     ``levels`` is the screen read at each strictness the slider offers
     (:class:`ScreenLevel`); :meth:`level` finds one, and the screen's own fields stand in for
     its own floor when none were handed in.
+
+    ``statistic`` is what the screen scores by (``compare.STATISTICS``): on a studentized
+    screen the floor, every level's floor and the key's axis are in the moderated t's unit
+    and the blocks sit by each cluster's t (``NodeEffect.statistic``); on one scored by the
+    effect they are in the effect's.
     """
 
     key: str
@@ -262,6 +285,17 @@ class ScreenChoice:
     kept: tuple[int, ...] = ()
     column: str = ""
     levels: tuple[ScreenLevel, ...] = ()
+    statistic: str = "effect"
+
+    @property
+    def studentized(self) -> bool:
+        """Whether the screen's axis and floor are in the moderated t's unit."""
+        return self.statistic == STATISTIC_T
+
+    def axis_value(self, row: NodeEffect) -> float | None:
+        """What a row sits on the key's axis by: its t on a studentized screen, else its
+        effect."""
+        return row.statistic if self.studentized else row.effect
 
     def level(self, alpha: float | None) -> ScreenLevel | None:
         """The screen at the strictness ``alpha`` (``None``: its own floor), or ``None`` when
@@ -293,9 +327,9 @@ class ScreenChoice:
         if row.family_p is not None:
             return row.family_p <= float(alpha)
         level = self.level(alpha)
-        if level is None or level.floor is None:
+        if level is None or level.floor is None or row.score is None:
             return False
-        return abs(float(row.effect)) > level.floor
+        return row.score > level.floor
 
     def kept_texts(self, alpha: float | None = None) -> dict[int, str]:
         """``{kept cluster: its sentence}`` at the strictness ``alpha`` -- what an origin is
@@ -343,7 +377,7 @@ def effect_shades(
     :func:`match_key.effect_position`, which the key uses for its own mark. At the strictness
     ``alpha`` the floor and the kept set are that level's (:meth:`ScreenChoice.level`).
     """
-    extent = effect_extent(choice.design)
+    extent = effect_extent(choice.design, choice.statistic)
     half = one_sided(choice.design)
     at_floor = alpha is None or abs(alpha - FLOOR_ALPHA) < 1e-9
     level = None if at_floor else choice.level(alpha)
@@ -357,7 +391,11 @@ def effect_shades(
             positions[node] = float("nan")
             continue
         clears = choice.clears(node, alpha)
-        positions[node] = effect_position(row.effect, clears, extent, one_sided=half)
+        # On a studentized screen a block sits by its t, the unit the floor is in; the
+        # effect stays in the words (§22).
+        positions[node] = effect_position(
+            choice.axis_value(row), clears, extent, one_sided=half
+        )
         text = row.text
         # At the screen's own floor the row's verdict is the screen's; at another level the
         # kept set is that level's.
@@ -367,6 +405,8 @@ def effect_shades(
             text += f" · clears the floor{at}, nested under a kept cluster"
         elif row.effect is not None:
             text += f" · inside the floor{at}"
+        if choice.studentized and row.statistic is not None:
+            text += f" · {statistic_value_text(row.statistic, choice.design)}"
         numbers = numbers_text(row.family_p, row.own_p, row.q)
         if numbers and row.effect is not None:
             text += f" · {numbers}"

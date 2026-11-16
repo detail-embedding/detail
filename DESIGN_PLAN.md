@@ -8410,16 +8410,22 @@ specified for this (§21) and never built; the dock is the screen it was meant t
 **While a screen is the only filter on, the tree and the key read its statistic.** The blocks
 take the theme's diverging scale (`plot_theme.effect_colour`): less at one pole, more at the
 other, neutral grey inside the floor and for a cluster the screen has no row for, so only what
-cleared is coloured and its sign says which way. The axis is fixed, as the share ramp's is — ρ
-from −1 to +1 for a trend, ÷20 to ×20 for a log ratio (`match_key.effect_extent`) — with the
-floor's ticks either side of the middle and the selected cluster's effect as the tall bar
-("selected 12.4×"); `match_key.effect_position` is the one map from an effect to the axis, for
-the key and the blocks alike (`cluster_filters.effect_shades`). A profile screen's effect is a
+cleared is coloured and its sign says which way. The axis is fixed, as the share ramp's is, and
+it is in the unit the floor is in (§24 *The statistic*): t from −10 to +10 on a screen scored by
+the moderated t, the default (`match_key.T_EXTENT`; a block sits by its t and the selected
+cluster's mark reads *selected t +8.8 (12.4×)*, the t first because it is what the axis and the
+floor are, the effect after it because it is what the cluster did), ρ from −1 to +1 for a trend
+scored by the effect, ÷20 to ×20 for a log ratio (`match_key.effect_extent`) — with the floor's
+ticks either side of the middle and the selected cluster as the tall bar;
+`match_key.effect_position` is the one map from a value to the axis, for the key and the blocks
+alike (`cluster_filters.effect_shades`, `ScreenChoice.axis_value`), and a block's hover carries
+the t beside the effect's words. A profile screen's effect is a
 size whose sign belongs to each cluster's own pair, not to the measure (§24 *Designs*), so its
-axis is one-sided — 1× to ×20 on the scale's upper half, one floor tick, the caption *Differs
-across session* in place of a direction (`match_key.one_sided`; `effect_position` takes the
-magnitude) — the selected cluster's mark names its pair and direction (*selected 9.6× more under
-SA than REI*, `NodeEffect.pair`), and the hover names every block's. A block's hover carries the
+axis is one-sided — t 0 to t 10, or 1× to ×20 on the effect, on the scale's upper half, one floor
+tick, the caption *Differs across session* in place of a direction (`match_key.one_sided`;
+`effect_position` takes the magnitude) — the selected cluster's mark names its pair and
+direction (*selected t 6.2 (9.6× more under SA than REI)*, `NodeEffect.pair`), and the hover
+names every block's. A block's hover carries the
 screen's sentence for it, the same words the Comparisons page prints
 (`comparison_report.suggestion`), with *kept*, *nested under a kept cluster* or *inside the
 floor* after it. Tick any clip filter beside the screen and both return to the share ramp: two
@@ -8439,7 +8445,10 @@ saved screen's floor, `kept` and record do not move, and a label written at a lo
 so (below). The purpose is discovery on a cohort too small to clear a family-wise floor — to see
 which clusters would need more animals or another experiment — and every such cluster carries the
 numbers that say how far it is from clearing (*The node source*): its family-wise p, its own p and
-its q, in the hover, on the Comparisons page and in `ranking.csv`. The CLI reads a screen at a
+its q, in the hover, on the Comparisons page and in `ranking.csv`. Because a screen scores by the
+moderated t (§24 *The statistic*), loosening admits the clusters the animals most agree on, not
+the ones with the largest numbers; on a screen scored by the effect it admits by size, which is
+what the floor is in the unit of there. The CLI reads a screen at a
 level with `temporal-interpret --from-screen cmp_NN --at-p LEVEL`; the slider itself has no CLI
 form, since the columns are in the export.
 
@@ -8937,7 +8946,11 @@ Per `(group, label, measure, window)`: **n**, the central value (mean and median
 
 For a two-group contrast the comparison reports the **raw difference** and the **ratio** of the
 central values. Not a standardized difference: dividing by a pooled spread is a variance model, and
-a variance model is the inference this section deliberately does not do.
+a variance model is the inference this section deliberately does not do. What a within-unit
+ranking *scores* by is a different matter, settled below (*The statistic*): the effect a user
+reads stays the raw ratio; the order and the floor are taken over the effect studentized across
+the units, which is a ranking statistic calibrated by the same permutation, not a model of the
+variance.
 
 **Any ranking of many things by difference ships with its floor.** The discovery difference screen
 (§22) ranks tens of clusters by how much they differ between groups. With tens of clusters and a
@@ -9032,16 +9045,53 @@ the sign), `n_units`, `n_present`, and whether the sign survives leaving any one
 floor is the same 95th percentile of the largest |effect| over the family, in the same pass, and is
 withheld with `no_floor_reason` when nothing can move (one unit; no measure reaching `min_units`).
 
+### The statistic: scored by agreement, not by size
+
+The number a within-unit ranking scores each measure by, and the floor is taken over, is the
+measure's **moderated t** (`statistic: moderated_t`, the default): the mean per-unit effect
+over its spread across the units, ``t = mean / ((sd + s0) / √n)``, with `sd` the sample spread
+of the per-unit effects (`0` for a single unit), `n` the units with an effect and `s0` the median
+`sd` over the family's defined measures, fixed from the observed configuration and applied to
+every draw of the null (SAM's fudge factor, chosen the simple way). The effect itself — the mean
+log ratio, the mean ρ — is what every surface prints; the t decides the order and the verdict
+and sits beside it (`Effect.statistic`, `item.score` is whichever the ranking used,
+`Ranking.statistic` / `Ranking.s0`).
+
+**Why, from a measurement.** On the mean effect alone the family-wise floor belongs to the
+sparsest measures: a cluster a few animals barely touch swings ±4 log units under any sign, so
+under the flips it produces the family's largest mean more often than anything else, and the
+floor it sets is one no consistent cluster can reach. On an eight-rat cohort the floor sat at
+16.8× while the two families eight of eight rats agreed on at 12–15× sat under it, kept 0; the
+same screen studentized kept 4, those families. The t makes the null max a fair race: every
+measure's t is on one scale, so each has a similar chance of owning the family's largest, which is
+the balancing property of the max-t permutation (Westfall–Young). The consequence for §22's
+strictness is the one it was built for: loosening admits the clusters the animals most agree on,
+not the ones with the largest numbers.
+
+**What stays and what moves.** The null is the design's own, unchanged: under a sign flip the
+sum of squares is invariant, so each draw's spread follows from its mean and the observed
+configuration stays one of the enumerated draws (an exact own p is still never zero); a trend's
+or a profile's within-unit shuffle recomputes the spread per draw. A profile chooses each
+measure's pair by the t, with `s0` the median over every defined pair of every measure, so the
+floor pays for the choice by the statistic it is taken over. A family where no measure's units
+disagree has no `s0`: the ranking withholds the floor with its reason rather than divide by
+nothing. `statistic: effect` scores by the mean effect itself. A between design has no per-unit
+effects to studentize and ranks on the effect whatever was asked; the record's resolved
+`ranking_statistic` says what ran (Tenet 9), and a record written before the field existed
+carries neither and ranks on the effect, as it did when it was written (§3: a saved comparison is
+never re-read as a different comparison).
+
 **The floor read as numbers.** The null the floor is taken from already says, for every item,
 how far it is from clearing, and a between ranking keeps each measure's own draws beside the
 family's largest for the same purpose (`_magnitudes`). Every item carries three (`Effect` /
 `Contrast`, `ranking.csv`, the ranking tables' *p (family · own)* column, INTERPRET's hover):
-- **`family_p`** — the share of the null's draws whose *largest* effect reaches the item: the
+- **`family_p`** — the share of the null's draws whose *largest* score reaches the item: the
   floor read as a p. Defined as the smallest family-wise level at which the item clears
   `Ranking.floor_at` (the percentile rule rounds its position in the null, so a bare count sits one
-  draw off it at some levels), which makes `family_p ≤ α` and `magnitude > floor_at(α)` agree at
+  draw off it at some levels), which makes `family_p ≤ α` and `score > floor_at(α)` agree at
   every level and `Ranking.clears_at` one rule for the dock's slider and the hover's p; at
-  `FLOOR_ALPHA` (0.05) it is `clears_floor`. Exact over an enumerated null.
+  `FLOOR_ALPHA` (0.05) it is `clears_floor`. Exact over an enumerated null. The score is the
+  item's t or its magnitude, whichever the ranking is on (*The statistic*).
 - **`own_p`** — the share of the item's *own* null draws reaching it, ignoring the rest of the
   family: whether the units agree on it by itself. Exact over an enumerated null (the observed
   configuration is one of its draws, so it is never zero); over a sample the observed labelling
@@ -9101,9 +9151,12 @@ comparisons/<cmp_NN>/
                       id; the config as run (ComparisonConfig.as_record: source_run_id,
                       source_snapshot — resolved — source, group_by, aggregate_to, levels,
                       recordings, measures, windows, draws, seed, presence_s, pseudo_count_s,
-                      min_units_fraction, candidate_floor_s, suppress_nesting); the resolved
-                      design: design (between, paired, trend or profile), design_column,
-                      design_reason, n_units, min_units, ranking_measure; groups,
+                      min_units_fraction, candidate_floor_s, suppress_nesting, statistic); the
+                      resolved design: design (between, paired, trend or profile),
+                      design_column, design_reason, n_units, min_units, ranking_measure,
+                      ranking_statistic (what ranked: moderated_t or effect, the latter for
+                      a between design whatever was asked; absent on a record written before
+                      the statistic existed, which ranks on the effect); groups,
                       n_observations, and left_out, the recordings with no value for a
                       grouping column; provenance, status, created_at;
                       source: labels only — screened_labels, the labels (as measured, from
@@ -9117,10 +9170,11 @@ comparisons/<cmp_NN>/
   nodes.csv           source: nodes only — the node hierarchy the ranking is suppressed over
 
   written by `comparison export` (Comparison.export), into this folder or --out:
-  ranking.csv         every ranked item: effect, floor, clears, kept, family_p / own_p / q
-                      (the floor read as a p, the item's own p, the BH q over the family),
-                      consistency, n_units, pair_a / pair_b (the levels or groups the effect
-                      is between)
+  ranking.csv         every ranked item: effect, statistic (the moderated t where the ranking
+                      is on it; the floor is in its unit), floor, clears, kept, family_p /
+                      own_p / q (the floor read as a p, the item's own p, the BH q over the
+                      family), consistency, n_units, pair_a / pair_b (the levels or groups
+                      the effect is between)
   tables/             per measure: groups as rows, summary columns
   figures/            dot plots, time-resolved curves, the difference ranking with its floor
   summary.md          the quick-look
@@ -9182,8 +9236,8 @@ names — a name can mean the same thing in two runs in a way an id never can.
 - **CLI** — `comparison run` (`--source-run`, `--snapshot`, `--recording` (repeatable: the
   filter), `--group-by`, `--aggregate-to`, `--source labels|nodes`, `--level A --level B`,
   `--measure`, the window options, `--draws`, `--seed`, `--presence-s`, `--pseudo-count-s`,
-  `--min-units-fraction`, `--candidate-floor-s`, `--no-suppress-nesting`), printing the design it
-  resolved; `comparison export`, `comparison list`, `comparison delete`. `--aggregate-to` is **required when the cohort has
+  `--min-units-fraction`, `--candidate-floor-s`, `--no-suppress-nesting`, `--statistic
+  moderated_t|effect`), printing the design it resolved and what the ranking scores by; `comparison export`, `comparison list`, `comparison delete`. `--aggregate-to` is **required when the cohort has
   repeats**, per above, and the refusal names the column it found and how many recordings it
   covers.
 - **GUI** — the experiment's **Comparisons** section: list, launch dialog (source, the column,
@@ -9211,6 +9265,14 @@ names — a name can mean the same thing in two runs in a way an id never can.
   suppression in at least 19 of 20 seeds, and a planted node clears in every seed.
 - **`min_units` leaves an effect undefined, not large**; **suppression is a peak pick** (no kept
   node is an ancestor or descendant of another); **the exact floor does not move with its seed**.
+- **The moderated t, by hand and by what it is for** (`tests/analysis/test_compare_designs.py`):
+  over three animals and eight flips every t, `s0`, the null, the floor and the own p's equal a
+  reference written out in plain Python; a measure four animals agree on at 2× ranks below a
+  tenfold swing on the effect and above it on the t with a smaller family-wise p and the same
+  effect; a profile's pair is chosen by the t; a family with no spread gets no floor and its
+  reason; a record without `ranking_statistic` ranks on the effect and one naming the t on the
+  t; every table, `ranking.csv`, the floor sentence and the record's note carry the t where it
+  ranked and not where it did not.
 - **The node source is leaf-additive**: every row equals the figure computed directly over the
   node's members.
 - **Design resolution is one function**: the launch dialog's preview, the CLI's printed line and
