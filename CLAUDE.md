@@ -269,8 +269,9 @@ pytest -q -n auto --dist loadfile
 - **Run what the change touches while you work, and everything once, at the end.**
   `scripts/select_tests.py` prints nothing when the honest answer is "everything", so each line
   falls back to a full run. It is a convenience, not a gate (`tests/impact.py` is its table).
-- **The full local run is the gate.** Do not count on CI to stop a merge, and there is
-  deliberately no pre-push hook. Re-check `HEAD..origin/main` right before merging; if it is
+- **The full local run is the gate.** CI gates too: `main` takes only a squash-merged PR whose
+  required checks pass (`format`, `guard`, `unit`, `gui`, `slow`, `build`), but CI runs Linux and
+  CPU only, so it does not replace the local run. There is deliberately no pre-push hook. Re-check `HEAD..origin/main` right before merging; if it is
   non-empty, merge `main` in and run the gate again. Say in the PR which command you ran.
 - **Run `pre-commit install` once per clone**; `tests/test_pre_commit_config.py` fails without it.
 - Pytest is configured in `pyproject.toml`. Do not pass `--rootdir`, `pythonpath` or `addopts`.

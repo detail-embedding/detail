@@ -80,7 +80,7 @@ when you are triaging a wide failure.
 
 ### Right before merging: verify against the `main` you are merging into
 
-**The full local run is the gate.** Do not count on CI to stop a merge, and there is **deliberately no pre-push hook** — one runs the suite on every push, which gates the wrong event: a branch is pushed many times (on creation, per commit, after merging `main` in) and merged once. The suite belongs at merge, so these four steps are the gate:
+**The full local run is the gate.** CI gates too (`main` takes only a squash-merged PR whose required checks pass), but it runs Linux and CPU only, so it does not replace the local run. There is **deliberately no pre-push hook** — one runs the suite on every push, which gates the wrong event: a branch is pushed many times (on creation, per commit, after merging `main` in) and merged once. The suite belongs at merge, so these four steps are the gate:
 
 1. `git fetch origin main && git log --oneline HEAD..origin/main`
 2. **Non-empty? Merge `main` in, run the gate again, then check again.** Do not skip this because the
@@ -158,7 +158,7 @@ makes the subject the PR title plus `(#N)`, so the title *is* the one-line summa
 what the change does for them, not how it was built. GitHub's default merge commit makes the subject
 `Merge pull request #N from owner/branch` and puts the title on its third line, where the panel does
 not look, so users read the branch name instead.
-Pick the merge style knowing which line ships.
+`main` allows only squash merges, so the PR title is always the line that ships.
 
 ## 7. The gates, and when there are none
 
