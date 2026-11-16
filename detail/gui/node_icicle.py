@@ -15,6 +15,13 @@ climb"). Drawn after the selection and inside the block's corner, so it never co
 INTERPRET's own selection ring; a cluster drawn as several pieces (a chain opened as a peel)
 wears it on its widest piece, and one too narrow for the disc says it in its tooltip.
 
+**A cluster typed into Find clusters wears that id's colour** (``set_found``, from
+`gui/cluster_find.py`): a 3 px band just *outside* its block, edged in the theme's ink, so it
+reads on any fill and a block one pixel wide is still a band you can see. Outside the block, so
+it never meets AUDIT's inset ring or the selection ring on the block's edge; a chain cluster
+wears it on each piece it is drawn as, as the selection does. Never inside: a side at the
+widget's edge goes without, and the block zoomed onto wears none (``_paint_found``).
+
 **Zooming**: the wheel scales the visible width around the pointer and a drag pans; a block's
 right-click menu re-roots the picture on it (**Zoom to this**), because a real fit has hundreds
 of leaves and a block one pixel wide is not a target. Double-click labels a block. Nothing moves when a
@@ -141,6 +148,8 @@ def format_time(ns: int) -> str:
 
 #: The label colour's strip along a block's top while the blocks are shaded by a filter.
 STRIP_PX = 3
+#: How wide a Find clusters band is, outside the block (``set_found``).
+FOUND_PX = 3
 
 
 def _frame(painter: QPainter, rect: QRectF, width: float, colour: QColor) -> None:
@@ -204,9 +213,14 @@ class NodeIcicle(QWidget):
         self._marks: dict[int, str] = {}
         #: ``{node: window number}``: clusters open in a window of their own.
         self._window_marks: dict[int, int] = {}
+        #: ``{node: colour}``: clusters listed in Find clusters, ringed in their colour.
+        self._found: dict[int, QColor] = {}
         self._visited: set[int] = set()
         self._blocks: list[tuple[QRectF, int]] = []
         self._mark_rects: dict[int, QRectF] = {}
+        #: ``{node: [drawn block, ...]}``: what each found cluster was ringed on at the last
+        #: paint (its own block, or the pieces a chain cluster is drawn as).
+        self._found_pieces: dict[int, list[int]] = {}
         self._remainders: list[QRectF] = []
         self._tiny: set[int] = set()
         #: Each laid-out node's whole slot: its block plus the gap after it.
@@ -322,6 +336,14 @@ class NodeIcicle(QWidget):
     def window_marks(self) -> dict[int, int]:
         return dict(self._window_marks)
 
+    def set_found(self, found: dict[int, QColor]) -> None:
+        """``found[node]``: a cluster listed in Find clusters, ringed in that colour."""
+        self._found = {int(k): QColor(v) for k, v in found.items()}
+        self.update()
+
+    def found(self) -> dict[int, QColor]:
+        return dict(self._found)
+
     def set_edit_reason(self, reason: str) -> None:
         """Why the run's labels cannot change (``""``: they can) — said on the right-click
         menu's **Label…** and **Remove label**, greyed."""
@@ -349,6 +371,18 @@ class NodeIcicle(QWidget):
         self.zoomed.emit(self._root)
         self.extent_changed.emit()
         self.update()
+
+    def view_state(self) -> tuple[int, tuple[float, float], float]:
+        """What the picture shows: ``(zoom root, visible span, level scroll)`` — for
+        :meth:`restore_view`."""
+        return self._root, self.zoom.view, self._scroll_y
+
+    def restore_view(self, state: tuple[int, tuple[float, float], float]) -> None:
+        """Show again what :meth:`view_state` returned (Find clusters' **Clear**)."""
+        root, (left, right), scroll_y = state
+        self.zoom_to(root)
+        self.zoom.set_view(left, right)
+        self.set_scroll_y(scroll_y)
 
     def fit(self) -> None:
         """Back to the whole tree: the run's root, nothing zoomed."""
@@ -699,6 +733,7 @@ class NodeIcicle(QWidget):
                         Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                         line,
                     )
+        self._paint_found(painter, QColor(theme.text))
         # The selection last, so no neighbour's fill or text is drawn over its ring.
         for rect, node in self._blocks:
             if node == self._selected or node in stand_ins:
@@ -741,6 +776,36 @@ class NodeIcicle(QWidget):
             painter.drawText(disc, Qt.AlignmentFlag.AlignCenter, text)
             painter.setBrush(Qt.BrushStyle.NoBrush)
             self._mark_rects[node] = disc
+
+    def _paint_found(self, painter: QPainter, edge: QColor) -> None:
+        """Each Find clusters id's band, outside the blocks it is drawn as (module docstring).
+
+        **Never inside a block, and never on the zoom root.** A band with no room outside a
+        side was moved inside it, over the block's name (user screenshot, 2026-11-16: "rest"
+        read "est" under a zoomed-onto block's band, with a stray bar on the row below). A side
+        at the widget's edge now has no band, and the block the picture is zoomed onto — or
+        one above it, which is the whole picture — has none at all: the zoom says which it is,
+        and the selection ring is frame enough. One in a branch zoomed away from has no block
+        on screen and is skipped too.
+        """
+        self._found_pieces = {}
+        if not self._found or self._view is None:
+            return
+        drawn = {node: rect for rect, node in self._blocks}
+        out = FOUND_PX + 1
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        for node, colour in self._found.items():
+            if node != self._root and self._root in self._view.ancestors(node):
+                pieces = self._drawn_as(node, drawn)
+            else:
+                continue
+            pieces = [p for p in pieces if p in drawn and p != self._root]
+            self._found_pieces[node] = pieces
+            for piece in pieces:
+                band = drawn[piece].adjusted(-out, -out, out, out)
+                _frame(painter, band, 1, edge)
+                _frame(painter, band.adjusted(1, 1, -1, -1), FOUND_PX, colour)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
     def _drawn_as(self, node: int, drawn) -> list[int]:
         """The drawn blocks that make up ``node``: itself, or its topmost drawn descendants."""
@@ -859,6 +924,8 @@ class NodeIcicle(QWidget):
             )
         if int(node) in self._window_marks:
             text += f" · open in window {self._window_marks[int(node)]}"
+        if int(node) in self._found:
+            text += " · one of the ids you are finding"
         return text
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 — Qt's name

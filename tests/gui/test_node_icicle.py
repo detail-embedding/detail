@@ -16,6 +16,7 @@ fixture's fit happens to look like.
 import numpy as np
 import pytest
 from PyQt6.QtCore import QPointF
+from PyQt6.QtGui import QColor
 
 from detail.gui import node_icicle
 from detail.gui.node_icicle import NodeIcicle, TreePane, row_px
@@ -698,3 +699,98 @@ def test_a_mark_on_an_undrawn_node_lands_on_its_topmost_drawn_descendants():
     assert sorted(NodeIcicle._drawn_as(holder, 5, drawn)) == [2, 3]
     assert NodeIcicle._drawn_as(holder, 1, drawn) == []
     assert NodeIcicle._drawn_as(SimpleNamespace(_view=None), 6, drawn) == []
+
+
+# --- Find clusters: a band in each listed id's colour, outside its blocks -------------------
+
+_FOUND = QColor("#d81b60")
+
+
+def _band_pixel(widget, rect, side: str):
+    """The colour in the middle of ``rect``'s Find clusters band on ``side`` (left or bottom).
+
+    The leftmost block's left band is off the widget's edge, so a test reads the bottom.
+    """
+    image = widget.grab().toImage()
+    ratio = image.devicePixelRatio()
+    mid = node_icicle.FOUND_PX / 2
+    if side == "left":
+        x, y = rect.left() - mid, rect.center().y()
+    else:
+        x, y = rect.center().x(), rect.bottom() + mid
+    return image.pixelColor(int(x * ratio), int(y * ratio))
+
+
+def test_a_found_cluster_wears_its_colour_just_outside_its_block(icicle):
+    """Outside, so the selection's ring and AUDIT's inset ring on the block are untouched."""
+    icicle.set_found({4: _FOUND})
+    icicle.grab()
+    rect = next(r for r, n in icicle._blocks if n == 4)
+    assert _band_pixel(icicle, rect, "bottom").name() == _FOUND.name()
+    assert icicle._found_pieces == {4: [4]}
+    assert "one of the ids you are finding" in icicle._describe(4)
+    icicle.set_found({})
+    assert _band_pixel(icicle, rect, "bottom").name() != _FOUND.name()
+    assert icicle._found_pieces == {}
+
+
+def test_a_found_chain_cluster_wears_it_on_each_piece_it_is_drawn_as(icicle):
+    """Node 8 has no block (a peel): its band goes round 2, 3 and 6, as its selection would."""
+    icicle.set_found({8: _FOUND})
+    icicle.grab()
+    assert sorted(icicle._found_pieces[8]) == [2, 3, 6]
+
+
+def test_a_found_hairline_is_still_a_band_you_can_see(qapp):
+    widget = _narrow(qapp)
+    widget.set_found({0: _FOUND})
+    widget.grab()
+    assert 0 in widget._tiny and widget._found_pieces == {0: [0]}
+    rect = next(r for r, n in widget._blocks if n == 0)
+    assert _band_pixel(widget, rect, "bottom").name() == _FOUND.name()
+    widget.close()
+
+
+def test_a_found_cluster_zoomed_away_from_or_holding_the_picture_has_no_band(icicle):
+    """0 is in a branch zoomed away from; 9 is above the zoom root, so it is the whole picture,
+    and the zoom already says so."""
+    icicle.zoom_to(6)  # leaves 4 and 5 under it
+    icicle.set_found({0: _FOUND, 9: QColor("#1e88e5")})
+    icicle.grab()
+    assert icicle._found_pieces == {}
+
+
+def _inside_left(widget, rect):
+    """The colour just inside ``rect``'s left edge, where its name starts: past the selection
+    ring's 3 px and the band's own 1 px edge, the middle of where an inside band was drawn.
+    """
+    image = widget.grab().toImage()
+    ratio = image.devicePixelRatio()
+    x = max(rect.left(), 0) + 3 + 1 + node_icicle.FOUND_PX / 2
+    return image.pixelColor(int(x * ratio), int(rect.center().y() * ratio))
+
+
+@pytest.mark.parametrize("selected", [False, True])
+def test_a_found_cluster_zoomed_onto_has_no_band_over_its_name(icicle, selected):
+    """Zoomed onto, the block fills the width and has no room outside it. Its band used to come
+    inside, over the first letter of its name, with the bottom side still outside as a stray bar
+    on the row below (user screenshot, 2026-11-16). The zoom root wears none."""
+    icicle.zoom_to(4)
+    if selected:
+        icicle.set_selected(4)
+    icicle.set_found({4: _FOUND})
+    rect = next(r for r, n in icicle._blocks if n == 4)
+    assert rect.left() <= 0, "the fixture must fill the width"
+    assert _inside_left(icicle, rect).name() != _FOUND.name()
+    assert icicle._found_pieces == {}
+    assert _band_pixel(icicle, rect, "bottom").name() != _FOUND.name(), "no stray bar"
+
+
+def test_a_found_block_at_the_widgets_edge_keeps_its_band_outside(icicle):
+    """The leftmost block has no room on its left: that side goes without, rather than the band
+    coming inside over the name. Its other sides still show it."""
+    icicle.set_found({4: _FOUND})
+    rect = next(r for r, n in icicle._blocks if n == 4)
+    assert rect.left() <= node_icicle.FOUND_PX, "the fixture's block 4 must be leftmost"
+    assert _inside_left(icicle, rect).name() != _FOUND.name()
+    assert _band_pixel(icicle, rect, "bottom").name() == _FOUND.name()

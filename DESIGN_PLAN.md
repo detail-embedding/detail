@@ -7419,6 +7419,25 @@ the label field, **U** removes the node's own label and **1**–**9** apply the 
 labels. Nothing about the tree moves when a label
 lands, so labelling never costs you your place.
 
+**Find clusters** (`gui/cluster_find.py`; on screen "Find" and the page's `WorkspaceTerms.units`,
+"Find behaviors" on a temporal run), in the tree's zoom row between the label key and the zoom
+buttons (no row of its own). **One search at a time**: the user types one entry and presses
+Enter (`cluster_find.parse_entry`): a node id (`1321`, `#1321`), or else a label, matched to each
+node's own label whole and ignoring case (`_nodes_found_by`); a new search replaces the last.
+Its nodes' blocks wear a band in one colour just outside them (`NodeIcicle.set_found`), on each
+piece where one is a chain node; never inside a block (a side at the widget's edge goes
+without) and never on the zoom root, which is the whole picture. The colour is the first
+`plot_theme.identity` slot the labels do not fill blocks with (`set_reserved`). A chip beside the
+field shows it, with a count for a label on several nodes ("climb · 3"). The tree re-roots on the
+smallest cluster holding every found node (`cluster_find.common_cluster`): the node itself for
+one. An entry that names nothing is a chip saying so ("not in this run", "no behavior has this
+label"), with no colour, no band and no zoom. A label change re-reads the search
+(`FindClustersBar.refresh`, emitting `rings_changed`): the bands follow and the tree does not
+move. Clicking the chip selects its node (a label's largest); **Clear** ends the search and puts
+back the view the tree had before the first search zoomed it (`NodeIcicle.view_state` /
+`restore_view`). Nothing is filtered, labelled or written. A search lasts the page's life and is
+cleared by a re-fit, which makes every id name a different cluster (`tree_identity`).
+
 **Layout** (`gui/node_workspace.py`). A horizontal splitter: the filter dock
 (`gui/cluster_filters.FilterDock`) on the left, which folds by the splitter's grip
 (`gui/grip_splitter.GripSplitter`, as every side panel does) to a strip reading "Filters", or
