@@ -165,7 +165,7 @@ def test_only_a_restore_chooses_a_recordings_id():
         rel = path.relative_to(root).as_posix()
         if rel in ("detail/api/experiment.py", "detail/storage/recording.py"):
             continue
-        count = _explicit_id_callers(path.read_text(encoding="utf-8"))
+        count = _explicit_id_callers(path.read_text(encoding="utf-8-sig"))
         if count:
             found[rel] = count
     assert set(found) == set(_EXPLICIT_ID_CALLERS), found
