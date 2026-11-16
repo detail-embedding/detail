@@ -1582,7 +1582,7 @@ class HuggingFacePage(QWidget):
 
 
 class ToolsPage(QWidget):
-    """Tools landing (§9) — one-off runs that need no experiment, grouped by category.
+    """Tools landing (§27) — one-off runs that need no experiment, grouped by category.
     Each tool opens its own run page (``on_open``); a new tool appears here with no shell
     change (it self-registers)."""
 
@@ -1618,7 +1618,7 @@ class ToolsPage(QWidget):
 
 
 class ToolRunPage(QWidget):
-    """Launch one tool (§9): its config form + Run (off-thread, with a progress bar).
+    """Launch one tool (§27): its config form + Run (off-thread, with a progress bar).
 
     On completion the new run id is handed to ``on_launched`` (the shell adds it to the
     sidebar and opens its result). The interactive over-cap confirm lives here (a button
@@ -1742,7 +1742,7 @@ class ToolRunPage(QWidget):
 
 
 class ToolRunDetailPage(QWidget):
-    """One saved tool run (§9): its result view (playback + export) + Delete."""
+    """One saved tool run (§27): its result view (playback + export) + Delete."""
 
     def __init__(self, tool_id: str, run_id: str, on_deleted):
         super().__init__()

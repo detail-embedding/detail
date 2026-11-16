@@ -1,4 +1,4 @@
-"""Quick-segment tool UI (§9): a config form (video + prompt + model + cap) and a
+"""Quick-segment tool UI (§27): a config form (video + prompt + model + cap) and a
 result view that plays the overlay clip back and exports it to mp4.
 
 The config form is bespoke (like a ``ModuleUI``'s) because it needs non-scalar fields a
