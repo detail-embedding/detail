@@ -313,27 +313,6 @@ def test_documentation_page_opens_built_site(qapp, monkeypatch):
     assert opened["url"] == "http://x/y"
 
 
-def test_documentation_page_opens_the_user_guides_first(qapp, monkeypatch):
-    # The first button opens the user guides' overview, and that page exists in the docs.
-    from pathlib import Path
-
-    asked = {}
-    monkeypatch.setattr(gui_pages.docs_access, "needs_build", lambda: False)
-    monkeypatch.setattr(
-        gui_pages.docs_access,
-        "local_url",
-        lambda page="index", anchor=None: asked.setdefault("page", page) and "",
-    )
-    monkeypatch.setattr(gui_pages.QDesktopServices, "openUrl", lambda url: None)
-    page = gui_pages.DocumentationPage()
-    buttons = [b for b in page.findChildren(gui_pages.QPushButton) if b.text()]
-    assert buttons[0] is page._guides
-    page._guides.click()
-    assert asked["page"] == gui_pages.DocumentationPage.GUIDES_PAGE
-    docs = Path(__file__).resolve().parents[2] / "docs"
-    assert (docs / f"{gui_pages.DocumentationPage.GUIDES_PAGE}.md").is_file()
-
-
 def test_documentation_page_builds_off_thread_when_missing(qapp, monkeypatch):
     # First open (site absent/stale) builds off-thread, then opens the result.
     built = {}

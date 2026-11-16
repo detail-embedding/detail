@@ -38,7 +38,7 @@ Click **Experiments** in the row of buttons along the top, then **New experiment
     4. **Model manager**: every model on your computer: the downloaded ones, such as SAM 3 and DINOv3, and the ones you train.
     5. **Keypoints manager**: the skeletons, the sets of body points chapter 4 places on the animal.
     6. **Quick tools**: tools that need no experiment, such as trying SAM 3 on one video.
-    7. **Docs**: **User guides ↗** opens these guides in your browser, and **Open full docs ↗** the rest of DETAIL's documentation. Both work without the internet.
+    7. **Docs**: **Open full docs ↗** opens DETAIL's documentation, these guides included, in your browser. It works without the internet.
     8. **Version History**: which version of DETAIL you are running, what changed, and **Check for updates**.
     9. **Info**: a short explanation of the screen you are on.
     10. **New experiment**: makes a new experiment. This step.
