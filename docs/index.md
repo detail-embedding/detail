@@ -9,14 +9,14 @@ segmentation, tracking, and image-embedding models.
 
 ## Start here
 
-- **[Getting started](getting-started.md)**: install, set up model access, and launch the GUI or
-  CLI. Already installed? [Launch it again later](getting-started.md#launch-it-again-later).
-- **[Create an experiment](workflows/create-a-experiment.md)**: the first workflow, and the start
-  of a step-by-step path through recordings, streams, and metadata.
+- **[User guides](user-guides/index.md)**: step by step in the desktop app, from installing
+  DETAIL to analyzed behavior, with every screen explained. New here? Start with these.
+- **[Getting started](getting-started.md)**: the short install for someone at ease in a
+  terminal: model access, then launch the GUI or CLI. Already installed?
+  [Launch it again later](getting-started.md#launch-it-again-later).
 - **[Concepts](concepts.md)**: how the tool is organized (experiment → recording → detection →
   tracking → embedding → analysis) and the vocabulary.
-- **[GUI guide](gui.md)** · **[CLI guide](cli.md)**: drive the tool through the desktop app or
-  the terminal.
+- **Manual: [GUI](gui.md)** · **[CLI](cli.md)**: what every screen and every command does.
 - **[Tools](tools.md)**: one-off runs (Quick segment) that need no experiment.
 - **[Reference](reference/api.md)**: the Python API and CLI commands.
 - **[Known issues](known-issues.md)**: current limitations, and the workaround for each.

@@ -6,8 +6,8 @@ A species-agnostic tool for behavioral analysis. Powered by open-source segmenta
 
 **Documentation.** The docs site is the authoritative resource.
 
+- [User guides](docs/user-guides/index.md): step by step, from installing DETAIL to analyzed behavior, with every screen explained (start here)
 - [Getting started](docs/getting-started.md): install, GPU/CUDA, SAM3, and Hugging Face setup
-- [Workflows](docs/workflows/create-a-experiment.md): step-by-step setup, from a new experiment to recordings, streams, and metadata
 - [Concepts](docs/concepts.md): tool design and data organization
 - [CLI guide](docs/cli.md): headless operation via CLI
 - [GUI guide](docs/gui.md): desktop app (Experiments, Configuration, Model manager, Quick tools)

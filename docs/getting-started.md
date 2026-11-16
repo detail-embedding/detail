@@ -310,7 +310,8 @@ If you can't, reinstall torch for your driver's CUDA as in
 
 ## Next
 
-- **[Create an experiment](workflows/create-a-experiment.md)**: the first workflow, and
-  the start of the step-by-step path through recordings, streams, and metadata.
+- **[Create an experiment and add recordings](user-guides/single-animal/create-an-experiment.md)**:
+  chapter 1 of the [user guides](user-guides/index.md), the step-by-step path from videos to
+  analyzed behavior.
 - **[Concepts](concepts.md)**: the pipeline and vocabulary.
 - **[GUI guide](gui.md)** · **[CLI guide](cli.md)**: drive each surface.

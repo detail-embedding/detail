@@ -1789,10 +1789,13 @@ class ToolRunDetailPage(QWidget):
 class DocumentationPage(QWidget):
     """Documentation — opens the offline-built docs site in the browser.
 
-    The full site (concepts, workflows, CLI/API reference) is built into a per-user
+    The full site (user guides, manual, concepts, CLI/API reference) is built into a per-user
     cache on first open and served over ``file://`` — it works with no network. The
-    in-app workflows browser lands in a later task.
+    user guides come first: they are where someone new starts.
     """
+
+    #: The page each button opens, as a nav path without extension.
+    GUIDES_PAGE = "user-guides/index"
 
     def __init__(self):
         super().__init__()
@@ -1800,17 +1803,21 @@ class DocumentationPage(QWidget):
         layout.addWidget(_heading("Documentation"))
         layout.addWidget(
             _instructions(
-                "The full DETAIL documentation — concepts, workflows, and the CLI and "
-                "API reference. It opens in your browser and works offline. The first "
+                "Step-by-step user guides, from installing DETAIL to analyzed behavior, "
+                "and the full DETAIL documentation — the manual, concepts, and the CLI and "
+                "API reference. Both open in your browser and work offline. The first "
                 "open builds the site (a few seconds); later opens are instant."
             )
         )
+        self._guides = QPushButton("User guides ↗")
+        self._guides.clicked.connect(lambda: self._open_docs(self.GUIDES_PAGE))
         self._open = QPushButton("Open full docs ↗")
-        self._open.clicked.connect(self._open_docs)
-        row = QHBoxLayout()
-        row.addWidget(self._open)
-        row.addStretch()
-        layout.addLayout(row)
+        self._open.clicked.connect(lambda: self._open_docs("index"))
+        for button in (self._guides, self._open):
+            row = QHBoxLayout()
+            row.addWidget(button)
+            row.addStretch()
+            layout.addLayout(row)
         self._progress = QProgressBar()
         self._progress.setRange(0, 1000)
         self._progress.hide()
@@ -1821,18 +1828,18 @@ class DocumentationPage(QWidget):
         layout.addStretch()
         self._worker: StageProgressWorker | None = None
 
-    def _open_docs(self) -> None:
+    def _open_docs(self, page: str = "index") -> None:
         if not docs_access.needs_build():
-            QDesktopServices.openUrl(QUrl(docs_access.local_url()))
+            QDesktopServices.openUrl(QUrl(docs_access.local_url(page)))
             return
-        self._open.setEnabled(False)
+        self._set_buttons_enabled(False)
         self._progress.setValue(0)
         self._progress.show()
         self._status.setText("Building documentation…")
 
         def work(emit):
             docs_access.ensure_site_built(progress=emit)  # off-thread (has its own bar)
-            return docs_access.local_url()
+            return docs_access.local_url(page)
 
         self._worker = StageProgressWorker(work, receiver=self)
         self._worker.tick.connect(self._on_tick)
@@ -1844,16 +1851,20 @@ class DocumentationPage(QWidget):
         self._progress.setValue(permille)
         self._status.setText(status)
 
+    def _set_buttons_enabled(self, enabled: bool) -> None:
+        self._guides.setEnabled(enabled)
+        self._open.setEnabled(enabled)
+
     def _on_built(self, url: object) -> None:
         self._progress.hide()
         self._status.setText("")
-        self._open.setEnabled(True)
+        self._set_buttons_enabled(True)
         QDesktopServices.openUrl(QUrl(str(url)))
 
     def _on_failed(self, exc: object) -> None:
         self._progress.hide()
         self._status.setText("")
-        self._open.setEnabled(True)
+        self._set_buttons_enabled(True)
         QMessageBox.critical(
             self, "Documentation", f"Could not build the documentation:\n{exc}"
         )

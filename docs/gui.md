@@ -54,7 +54,7 @@ Model manager   every model on one page: global models, the open experiment's
 Keypoints manager  the skeleton library: draw, import, export skeletons
 Quick tools     one-off runs, no experiment (rail on the left):
                   Quick segment        run it, and browse its saved runs
-Docs            open the full docs in your browser (offline)
+Docs            open the user guides, or the full docs, in your browser (offline)
 
 Inside a project (rail on the left):
   Overview              the experiment itself: name, Export, Delete

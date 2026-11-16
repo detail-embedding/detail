@@ -185,39 +185,59 @@ the docs build toward — and the discipline for organizing content within them.
 top-level menu. Almost no well-run docs site exposes the four Diátaxis words as tabs — they use
 a workflow spine with the four types applied inside. We do the same.
 
-**Target navigation.** The full intended top level. Each destination is marked `now` (has
-content today) or `planned` (named here, created when its trigger fires):
+**The sections, and what goes in each.** This table is the live top level of `mkdocs.yml`, in
+order. It is the rule for where a page goes: a page belongs to the one section whose test it
+passes. `tests/test_docs_nav.py` reads this table and fails when the nav's top-level names are
+not exactly these, so a new or renamed section is defined here before it ships.
+
+| Section | What goes in it | The test for a page | What does not |
+| --- | --- | --- | --- |
+| Home | the landing page: what DETAIL is and where to start | is it the one page that routes a new reader? | content of its own |
+| Getting started | the shortest install and first launch, for someone at ease in a terminal | could a developer be running from this page alone, in minutes? | an explanation of every step (that is the install user guide) |
+| User guides | every task a user does in the app, as a titled step in a chapter; the chapters run in order from install to results | is it something a user *does*? then it is a step here, and only here | CLI commands; standalone task pages; the deep *why* |
+| Manual | what each screen and each command group is and does, laid out the way the tool is; all CLI usage | is it organised by screen or by command, not by goal? would a reader search it rather than read it through? | a step-by-step path to a goal |
+| Concepts | why it works this way: the pipeline, the vocabulary, the methods | is it readable away from the tool, with no steps? | steps and button names |
+| Modules | one generated page per module: its settings | is it generated from a config model? | hand-written prose beyond the intro file |
+| Evaluation | one generated page per eval module: how a result is scored | is it generated from the module's metrics? | another module's metrics |
+| Reference | the Python API, the CLI commands, the parameters, the manifest: generated and complete | is it generated, austere and complete? | narrative |
+| Known issues | current limitations, each with its workaround | is it a limitation a user can hit today? | a fixed issue |
+
+**One home per task.** These four rules keep a task from being written twice:
+
+1. **A task is a step in a user guide chapter, and only there.** There are no standalone task
+   pages. A page that would be titled with a goal ("Import recordings from YAML") is a step.
+2. **A task off the main path is an `Optional:` step** in the chapter where a user meets it
+   ("Optional: add streams", "Optional: many recordings at once"), and gets a row in the
+   **Find a task** table on `docs/user-guides/index.md`, which is how a reader reaches a step
+   without reading in order.
+3. **User guides are app-only.** CLI usage lives in Manual › CLI; an optional step links there
+   instead of repeating it.
+4. **User guides link out for depth**: the *why* to Concepts, every setting to Modules.
+
+The step-by-step **Workflows** section that came before the user guides was retired under rule 1:
+three of its five pages repeated chapters 1 and 2, and the other two became optional steps.
+
+**Planned destinations.** Named here, created when the trigger fires, and added to the table
+above in the same change:
 
 ```
-Home / Overview             landing page                                          now
-Getting started             Installation, first steps (guided demo is planned)    now
-Workflows       (tutorial)  step-by-step task guides: create a experiment, add recordings  now   [workflows/]
-Concepts        (explain)   mental model, pipeline, vocabulary                    now   [concepts.md]
-  └ Glossary    (reference) term → definition lookup                             now   [glossary.md]
-Guides          (how-to)    drive each surface: GUI guide, CLI guide              now   [gui.md, cli.md]
-Evaluation      (explain)   how retrieval is scored, one page per eval module     now   [behavior-query-eval.md]
-Reference       (reference) Python API + CLI commands (parameters: planned)        now
-Examples / Recipes          runnable, task-shaped snippets                        planned  ← first recipe
-Troubleshooting / FAQ       problem → answer lookup                               planned  ← first recurring issue
-Changelog / Release notes   what changed per version                             planned  ← first tagged release
-Migration & version policy  schema_version / layout migrations + support policy   planned  ← first breaking schema change
-Contributing                dev setup, format+test gate, PR workflow              planned  ← opening to outside contributors
-About                       license, citation, acknowledgements                  planned
+Troubleshooting / FAQ       problem → answer lookup                               ← first recurring issue
+Changelog / Release notes   what changed per version                             ← first tagged release
+Migration & version policy  schema_version / layout migrations + support policy   ← first breaking schema change
+Contributing                dev setup, format+test gate, PR workflow              ← opening to outside contributors
+About                       license, citation, acknowledgements
 ```
 
-**No empty buckets (Tenet 5).** The target above names the whole nav so we build toward a known
-shape; the live `mkdocs.yml` contains only `now` destinations. A `planned` destination is added
-the moment its trigger fires (the arrow above) — never as an empty placeholder.
+**No empty buckets (Tenet 5).** The live `mkdocs.yml` contains only sections that have content.
+A planned destination is added the moment its trigger fires — never as an empty placeholder.
 
-**Diátaxis mapping, and the one deliberate blend.** Concepts = explanation; Reference =
-reference; Examples = how-to (runnable). Getting started is a guided first path
-(tutorial-shaped) even before the full demo lands. **Guides blends tutorial and how-to on
-purpose** — the near-universal real-site convention (FastAPI/Typer's "Learn", MkDocs'
-"User Guide"): a surface guide both walks a new user through the GUI/CLI *and* serves as task
-lookup. The blend is allowed at the *section* level; each individual *page* under it still obeys
-Tenet 5 (one type per page). The **Glossary** is reference-type but sits under Concepts, where a
-user meets the vocabulary while learning; it is user-facing (term → definition), distinct from
-the internal writer word-list (§5).
+**Diátaxis mapping.** User guides = tutorial; Manual = reference a person wrote, organised by
+surface; Concepts = explanation; Modules, Evaluation and Reference = generated reference.
+Getting started is a short tutorial for one reader. A section holds one kind of page: the
+earlier "Guides" section blended a walkthrough with task lookup, and that blend is what let the
+same task be written in three places. The **Glossary** is reference-type but sits under
+Concepts, where a user meets the vocabulary while learning; it is user-facing (term →
+definition), distinct from the internal writer word-list (§5).
 
 **Reference structure.** One **Reference** section with sub-pages, not a separate site:
 
@@ -395,8 +415,8 @@ path, a queued video) to a neutral value (e.g. `/data/…`). Check this on any n
 (tolerant diff; goldens generated in CI / Linux for determinism — §9). On any change it flags the
 screen and emits a review-list keyed to the docs page(s) that embed it, so an agent (or human)
 checks whether the surrounding prose is now stale. The test mechanism is specified in §9.
-**Status:** the first documented screens (the Workflows tutorials, §4) landed the **renderer** —
-`scripts/gen_docs_screens.py` grabs each screen headless from sample-data fixtures and writes a
+**Status:** the first documented screens landed the **renderer** —
+`scripts/gen_docs_screens.py` grabs each screen headless and writes a
 **committed** PNG the docs embed — but chose the simpler committed-PNG path (Option 1) over the
 golden-compare trigger, which is deferred (§9, §10). A GUI change is caught by rerunning the
 generator, not yet by a failing test. For an undocumented screen, still prefer text.
@@ -404,6 +424,19 @@ generator, not yet by a failing test. For an undocumented screen, still prefer t
 **Stills.** Crop tight; strip irrelevant UI (a simplified shot changes less often). Annotate with
 numbered callouts keyed to the body text — never sentences baked into the image; annotation marks
 meet 3:1 contrast.
+
+**User guides (`docs/user-guides/`): every new screen numbered, every number described.** The
+step-by-step guides are for non-specialists and are read on phones and as PDFs, so each screen
+or dialog shown for the first time carries numbered markers on every control
+(`_number_screen` in `gen_docs_screens.py`, whose coverage check refuses a screen with an
+unnumbered visible control) and is followed by a collapsed `??? info "What everything on this
+screen does"` box with **one list item per marker**. A line describing two markers renders as
+one item and shifts every line after it: the generator records each image's marker count in
+`docs/assets/user-guides/callouts.json`, and `tests/test_user_guide_legends.py` fails when a
+legend's numbers are not 1 to N. The guides also name the exact terminal for every command
+(PowerShell, Terminal), open each page with a `guide-flow` flowchart of linked steps tagged with
+where each happens, and say when the demo's inputs (example marks, clips, cut-offs, labels) were
+the author's own rather than careful scoring.
 
 **Motion.** A GIF only for a brief silent loop; a captioned video with a transcript for a narrated
 procedure. Auto-playing motion over five seconds needs a pause control.
@@ -561,8 +594,7 @@ are planned as the mechanisms they depend on land:
   is the whole inventory, a page absent from it is checked at zero, and an entry left above the
   real count fails as an allowlist that excuses nothing.
 - **GUI render trigger** *(renderer live; golden-compare planned — §6)*: the renderer is
-  `scripts/gen_docs_screens.py` (committed PNGs from sample-data fixtures, landed with the Workflows
-  tutorials); the registry + tolerant golden-compare + review-list below are the remaining planned half.
+  `scripts/gen_docs_screens.py` (committed PNGs, today the user guides' screens); the registry + tolerant golden-compare + review-list below are the remaining planned half.
     - A **registry** maps each documented screen → its render recipe (built with fixed sample-data
       fixtures) and the docs page(s) that embed it.
     - CI re-renders each screen via `QWidget.grab()` and compares to its committed golden with a
@@ -606,8 +638,7 @@ migrated).
    with every registered module migrated. Remaining: the GUI Help link. Fixes the opaque-parameter pain.
 4. **Getting-started tutorial + sample dataset** — the guided first path (§4).
 5. **GUI image pipeline** *(renderer done; trigger planned)* — `scripts/gen_docs_screens.py` grabs
-   each screen to a committed PNG (landed with the Workflows tutorials, the first documented screens,
-   as Option 1); the tolerant golden-compare trigger + review-list remain (§6, §9).
+   each screen to a committed PNG (Option 1); the tolerant golden-compare trigger + review-list remain (§6, §9).
 6. **Planned destinations** — Examples, Troubleshooting/FAQ, Changelog, Migration & version policy,
    Contributing, About — each created when its trigger fires (§4).
 7. **Hosting** — decided when publishing (§8); **`mike` versioning** with the first release.
@@ -626,7 +657,9 @@ prose.
 
 | Decision | Rationale |
 | --- | --- |
-| Workflows section: step-by-step task tutorials (create a experiment, add recordings) with auto-rendered GUI screenshots + a committed sample dataset | operators need a guided path for common tasks; tutorial-type, distinct from the how-to Guides (§4) |
+| User guides: numbered markers on every control of each new screen, a one-line-per-marker legend, guarded by `test_user_guide_legends.py` | the reader is a non-specialist who needs every button explained; a combined legend line silently misnumbered 27 markers against 24 descriptions (§6) |
+| One home per task: a task is a step in a user guide chapter; the Workflows section is retired and "Guides" is renamed "Manual" (§4) | Workflows, Guides and the user guides each explained the same tasks; three of five Workflows pages repeated chapters 1 and 2 and one named a page the app no longer had. The section table in §4 is the rule, guarded by `test_docs_nav.py` |
+| *(replaced by the row above)* Workflows section: step-by-step task tutorials with auto-rendered GUI screenshots + a committed sample dataset | operators need a guided path for common tasks |
 | GUI screenshots are auto-rendered committed PNGs (Option 1: a `gen_docs_screens.py` generator you rerun) — not hand screenshots, and not the golden-compare pixel-diff (deferred) | a generator keeps images honest without hand-capture and keeps the docs build Qt-free; the golden-compare's cross-platform (Mac↔Linux) determinism cost isn't worth it yet — cheap to add later (§6, §9) |
 | Preview via local `mkdocs serve` only; production hosting deferred | repo is private on the free plan; no host is needed to build or preview (§8) |
 | Glossary (user-facing, term → definition) seeded now under Concepts | direct fix for opaque vocabulary; distinct from the internal writer word-list (§4) |

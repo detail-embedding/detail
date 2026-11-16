@@ -17,6 +17,21 @@ told to exclude, so an internal note ships to the user site and its first cross-
 `mkdocs build --strict`. `tests/test_docs_nav.py` fails naming the file, and its message points at
 `docs/docs_design.md` §1.
 
+**Then: which section, and is it a page at all?** `docs/docs_design.md` §4 has one table: each
+nav section, what goes in it, and the test a page must pass to belong there. Use the test, not
+the section's name.
+
+- **A task a user does in the app is not a new page.** It is a titled step in the user guide
+  chapter where a user meets it (`docs/user-guides/`), an `Optional:` step if it is off the main
+  path, plus a row in the **Find a task** table on `docs/user-guides/index.md`. Search the
+  chapters for the task first; if a step already covers it, extend that step.
+- **User guides are app-only.** A CLI route goes in `docs/cli.md` (Manual), and the step links
+  to it.
+- **A screen or a command group** is described in the Manual (`docs/gui.md`, `docs/cli.md`), laid
+  out the way the tool is, not as a path to a goal.
+- **A new top-level section** is a row in the §4 table first; `tests/test_docs_nav.py` fails on a
+  nav section the table does not define.
+
 ## 1. Write it, or generate it
 
 - **Hand-written user page** → `docs/<name>.md`, in the voice of §5: terse, command-first, plain.

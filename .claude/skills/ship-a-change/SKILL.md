@@ -125,7 +125,7 @@ the doc **in the same change**:
 | changed | update |
 |---|---|
 | a CLI command, option or default (`detail/cli.py`) | `docs/cli.md`, and the README quick-start if its example changed |
-| a GUI screen, flow or launch step (`detail/gui/`) | `docs/gui.md` |
+| a GUI screen, flow or launch step (`detail/gui/`) | `docs/gui.md`, and the user guide step that shows that screen (`docs/user-guides/`): its text, its legend and its screenshot (`scripts/gen_docs_screens.py`) |
 | the public API a user scripts against (`detail/api/`) | the guide that shows it |
 | install, extras or backend requirements (`pyproject.toml`) | README install |
 | a new stage / tracker / model / importer, or the pipeline mental model or on-disk layout | `docs/concepts.md` |
