@@ -18,6 +18,7 @@ import yaml
 from detail.analysis.body_axis import validate_definition
 from detail.core import atomic
 from detail.storage import experiment as experiment_store
+from detail.storage.user_yaml import read_user_yaml
 
 SCHEMA_VERSION = 1
 
@@ -148,7 +149,7 @@ def import_definition(
     path = Path(in_path)
     if not path.is_file():
         raise FileNotFoundError(f"no heading definition file at {path}")
-    data = yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
+    data = read_user_yaml(path) or {}
     if not isinstance(data, dict):
         raise ValueError(f"{path} is not a heading definition file")
     if data.get("schema_version") != SCHEMA_VERSION:

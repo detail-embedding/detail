@@ -20,6 +20,8 @@ from pathlib import Path
 
 from detail.core import utils as core_utils
 from detail.core.dataclasses import PolygonKeyframes
+from detail.core.errors import UserInputError
+from detail.importers import _csv_common
 from detail.storage import dirscan
 from detail.storage import id_allocator
 from detail.storage import locations
@@ -423,19 +425,17 @@ def _parse_active(row: dict) -> ActiveInterval:
     return (int(start), int(end))
 
 
-def _open_spatial_csv(path: Path | str):
-    """Open an exported spatial CSV and validate its header. Returns the open file and a
-    ``DictReader`` over it — the caller closes the file."""
+def _read_spatial_csv(path: Path | str) -> list[_csv_common.CsvRow]:
+    """The rows of an exported spatial CSV, its header checked (through the one opener for a
+    CSV a user hands in, so a file saved in another encoding says so)."""
     p = Path(path)
     if not p.is_file():
         raise FileNotFoundError(f"no such file: {path}")
-    f = open(p, newline="", encoding="utf-8-sig")
-    reader = csv.DictReader(f)
-    missing = set(_SPATIAL_CSV_REQUIRED) - set(reader.fieldnames or [])
+    fieldnames, rows = _csv_common.read_user_csv(p)
+    missing = set(_SPATIAL_CSV_REQUIRED) - set(fieldnames)
     if missing:
-        f.close()
-        raise ValueError(f"spatial CSV missing columns: {sorted(missing)}")
-    return f, reader
+        raise UserInputError(f"spatial CSV missing columns: {sorted(missing)}")
+    return rows
 
 
 def load_calibration_csv(path: Path | str) -> dict | None:
@@ -450,9 +450,11 @@ def load_calibration_csv(path: Path | str) -> dict | None:
         FileNotFoundError: if the file is absent.
         ValueError: on a malformed calibration row.
     """
-    f, reader = _open_spatial_csv(path)
-    with f:
-        rows = [r for r in reader if (r["kind"] or "").strip() == CALIBRATION_KIND]
+    rows = [
+        r
+        for r in _read_spatial_csv(path)
+        if (r["kind"] or "").strip() == CALIBRATION_KIND
+    ]
     if not rows:
         return None
     head = rows[0]
@@ -460,7 +462,12 @@ def load_calibration_csv(path: Path | str) -> dict | None:
         pixels_per_mm = float(head["pixels_per_mm"])
         ref = [int(float(head["ref_width"])), int(float(head["ref_height"]))]
     except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError(f"malformed calibration row in {path}: {exc}") from exc
+        raise UserInputError(f"malformed calibration row in {path}: {exc}") from exc
+    if ref[0] <= 0 or ref[1] <= 0:
+        raise UserInputError(
+            f"calibration in {path}: ref_width and ref_height must be positive (the video "
+            f"size the calibration was measured at), got {ref[0]}x{ref[1]}"
+        )
     points = [
         (float(r["x"]), float(r["y"]))
         for r in rows
@@ -495,27 +502,25 @@ def load_spatial_csv(path: Path | str) -> list[dict]:
     """
     groups: dict[tuple[str, str], dict] = {}
     order: list[tuple[str, str]] = []
-    f, reader = _open_spatial_csv(path)
-    with f:
-        for row in reader:
-            kind = (row["kind"] or "").strip()
-            if kind == CALIBRATION_KIND:
-                continue
-            if kind not in _KINDS:
-                raise ValueError(f"unknown spatial kind {kind!r} in CSV")
-            name = (row["name"] or "").strip()
-            if not name:
-                raise ValueError("spatial CSV row has an empty name")
-            key = (kind, name)
-            if key not in groups:
-                groups[key] = {"active": _parse_active(row), "frames": {}}
-                order.append(key)
-            frame_idx = int(row["frame_idx"])
-            vi = int(row["vertex_index"])
-            groups[key]["frames"].setdefault(frame_idx, {})[vi] = (
-                float(row["x"]),
-                float(row["y"]),
-            )
+    for row in _read_spatial_csv(path):
+        kind = (row["kind"] or "").strip()
+        if kind == CALIBRATION_KIND:
+            continue
+        if kind not in _KINDS:
+            raise ValueError(f"unknown spatial kind {kind!r} in CSV")
+        name = (row["name"] or "").strip()
+        if not name:
+            raise ValueError("spatial CSV row has an empty name")
+        key = (kind, name)
+        if key not in groups:
+            groups[key] = {"active": _parse_active(row), "frames": {}}
+            order.append(key)
+        frame_idx = _csv_common.int_cell(row, "frame_idx")
+        vi = _csv_common.int_cell(row, "vertex_index")
+        groups[key]["frames"].setdefault(frame_idx, {})[vi] = (
+            _csv_common.float_cell(row, "x"),
+            _csv_common.float_cell(row, "y"),
+        )
     defs: list[dict] = []
     for kind, name in order:
         g = groups[(kind, name)]

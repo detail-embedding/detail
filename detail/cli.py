@@ -54,6 +54,7 @@ from detail.core.dataclasses import (
     PromptTarget,
     TextCue,
 )
+from detail.core.errors import UserInputError
 from detail.core.protocols import ModelNotReadyError
 from detail.core.utils import best_supported_backend
 from detail.storage import metadata as metadata_store
@@ -718,6 +719,13 @@ _MIN_CONF_OPT = click.option(
 # --------------------------------------------------------------------------- #
 # main
 # --------------------------------------------------------------------------- #
+#: The errors the root group shows as ``Error: <message>`` (exit 1) whatever command raised
+#: them. A reader that meets an ordinary input mistake raises ``UserInputError`` with a
+#: message naming the thing and what to do; a later user-condition error joins this tuple
+#: by name. Never ``ValueError`` or ``Exception``: a bug must keep its traceback.
+USER_ERRORS: tuple[type[BaseException], ...] = (UserInputError,)
+
+
 class _ConsoleSafeGroup(click.Group):
     """The root group, with the output streams hardened before click writes anything.
 
@@ -730,6 +738,19 @@ class _ConsoleSafeGroup(click.Group):
     def main(self, *args: Any, **kwargs: Any) -> Any:
         console.configure_output_streams()
         return super().main(*args, **kwargs)
+
+    def invoke(self, ctx: click.Context) -> Any:
+        """Every subcommand runs inside this call, so an ordinary input mistake that no
+        command caught still reaches the user as one ``Error:`` line, not a traceback.
+
+        Only the named :data:`USER_ERRORS` are turned into a message. Anything else — a
+        ``KeyError``, a ``TypeError``, a plain ``ValueError`` — is a bug in the reader
+        that raised it and keeps its traceback.
+        """
+        try:
+            return super().invoke(ctx)
+        except USER_ERRORS as exc:
+            raise click.ClickException(str(exc)) from exc
 
 
 def _print_version(ctx: click.Context, _param: click.Parameter, value: bool) -> None:
@@ -784,9 +805,16 @@ def experiment_status(experiment_dir: Path) -> None:
     """Show experiment identity + recording list + per-recording run counts."""
     proj = _open_experiment(experiment_dir)
     click.echo(f"experiment: {proj.dir}")
-    recordings = list(proj.recordings)
-    click.echo(f"recordings: {len(recordings)}")
-    for sess in recordings:
+    recording_ids = proj.recording_ids
+    click.echo(f"recordings: {len(recording_ids)}")
+    for recording_id in recording_ids:
+        # One damaged recording.yaml (a hand edit, a sync conflict) costs its own line,
+        # never the rest of the listing (`dirscan.read_each` is the same trade).
+        try:
+            sess = proj.get_recording(recording_id)
+        except UserInputError as exc:
+            click.echo(f"  {recording_id}  (damaged: {exc})")
+            continue
         runs = (
             f"det={len(sess.detection_runs)}, "
             f"track={len(sess.tracking_runs)}, "
@@ -6720,6 +6748,16 @@ def analysis_query_eval(
     _open_experiment(
         experiment_dir
     )  # friendly error if the experiment is missing/invalid
+    if out_path.is_file():
+        # Rows are appended to --out after the whole evaluation; an unrelated CSV there
+        # would refuse them only then, so check it before spending the evaluation.
+        try:
+            query_eval_csv.read_metrics_csv(out_path)
+        except ValueError as e:
+            raise click.ClickException(
+                f"--out {out_path} is not a query-eval metrics CSV ({e}); rows are "
+                "appended to it, so name a new file or an earlier --out"
+            )
     config = {
         "source_recording_ids": list(search_recordings),
         "embed_run_id": embed_run_id,

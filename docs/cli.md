@@ -12,6 +12,10 @@ Read [concepts](concepts.md) first.
 The entry point is `detail` (installed with the package) or, equivalently,
 `python -m detail`.
 
+An ordinary input mistake, such as a YAML file with a missing bracket, a CSV that is not saved
+as UTF-8 or a file that is not the kind a command reads, stops the command with one
+`Error:` line that names the file (and the line or row) and says what to change.
+
 ## Contents
 
 - [Setup: credentials & models](#setup-credentials--models)
@@ -150,7 +154,9 @@ table, see the [Parameters reference](reference/parameters.md).
 ### `experiment`
 - `create <name> --dir <parent>`: create `<parent>/<name>/`. Use
   `--dir ~/Documents/DetailExperiments` to put it in the GUI's managed workspace.
-- `status --experiment <dir>`: identity + recording list + per-recording run counts.
+- `status --experiment <dir>`: identity + recording list + per-recording run counts. A
+  recording whose `recording.yaml` cannot be read (a hand edit, a sync conflict) is listed
+  as damaged, with the file and line, and the rest are still shown.
 - `import-metadata --experiment <dir> --csv <file> [--key <column>] [--dry-run]`: bulk-set
   recording grouping variables from a CSV (see [Recording information](#recording-information)).
 - `export-metadata --experiment <dir> --csv <file>`: write the current metadata to a
@@ -1307,7 +1313,9 @@ model** catalog (shared across every experiment on the machine):
 - `restore <archive.zip>`: bring a model exported with `export` back into the catalog. A
   keypoint model keeps its own skeleton; it is added to the skeleton library unless an entry
   with the same skeleton is there ("name (2)" when the name is taken by a different one), and
-  the command prints the entry it matched or added.
+  the command prints the entry it matched or added. A file that is not such an export, or one
+  whose `model.yaml` is empty, is refused and leaves nothing in the catalog; a bare `.pt`
+  checkpoint is added with `import` instead.
 - `remove <id>`: delete an imported model.
 
 ### `modules`

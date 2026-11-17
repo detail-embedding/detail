@@ -15,7 +15,12 @@ _RECOVERABLE = (ValueError, FileNotFoundError, FileExistsError, KeyError)
 
 
 def _fail(exc: BaseException) -> click.ClickException:
-    return click.ClickException(str(exc.args[0]) if exc.args else str(exc))
+    """A clean message: ``str(KeyError("x"))`` is ``"'x'"``, so take its argument. Any other
+    error's first argument is not its message (a ``UnicodeDecodeError``'s is the codec).
+    """
+    if isinstance(exc, KeyError) and exc.args:
+        return click.ClickException(str(exc.args[0]))
+    return click.ClickException(str(exc))
 
 
 def _summary(entry: dict) -> str:

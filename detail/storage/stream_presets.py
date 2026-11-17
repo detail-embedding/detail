@@ -42,6 +42,7 @@ from pathlib import Path
 import yaml
 
 from detail.core import atomic
+from detail.storage.user_yaml import read_user_yaml
 
 SCHEMA_VERSION = 1
 PRESETS_FILENAME = "stream_presets.yaml"
@@ -179,7 +180,7 @@ def import_preset(
     path = Path(in_path)
     if not path.is_file():
         raise FileNotFoundError(f"no stream preset file at {path}")
-    data = yaml.safe_load(path.read_text(encoding="utf-8-sig"))
+    data = read_user_yaml(path)
     if not isinstance(data, dict):
         raise ValueError(f"{path} is not a mapping")
     if data.get("schema_version") != SCHEMA_VERSION:
