@@ -462,9 +462,13 @@ Three things to know:
   refuses to guess and records the choice on every row. When no animal contributed more than one
   there is nothing to decide, and it runs with one observation per recording.
 - It stops at **description**: means, medians, spreads, and a permutation floor saying how big a
-  difference shuffling the group labels would produce anyway. The only p-values are the floor's
-  own: for each measure or cluster, the share of the shuffles that reach it, against the whole
-  family (the floor read as a number) and against its own shuffles alone, with a
+  difference shuffling the group labels would produce anyway. Within each animal a behavior is
+  ranked by how far your animals agree on it, not by how large its numbers are: the mean
+  per-animal effect over its spread across animals (a moderated t), so a 2x change every animal
+  shows outranks a tenfold swing that goes either way, and the floor stops belonging to the
+  sparsest clusters; the effect itself is still what every table prints. The only p-values are
+  the floor's own: for each measure or cluster, the share of the shuffles that reach it, against
+  the whole family (the floor read as a number) and against its own shuffles alone, with a
   false-discovery q over them, so a cohort too small to clear the floor can still say which
   clusters look consistent. No model sits behind them; `stats.csv` is the handoff to whatever
   you test with.
