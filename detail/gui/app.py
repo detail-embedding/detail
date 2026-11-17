@@ -1937,13 +1937,14 @@ class MainWindow(QMainWindow):
         """``"wait"`` (the default) | ``"quit"`` | ``"cancel"`` for ``count`` unwritten changes."""
         box = QMessageBox(self)
         box.setWindowTitle("Changes still being saved")
-        noun = "change is" if count == 1 else "changes are"
+        one = count == 1
         box.setText(
-            f"{count} {noun} still being written: labels, reviewed clips or keypoint marks."
+            f"{count} {'change is' if one else 'changes are'} still being saved."
         )
         box.setInformativeText(
-            "Quitting now loses them. Wait, and the window closes by itself once they are "
-            "saved."
+            "Labels, clip reviews and keypoint marks save in the background. Quitting now "
+            f"loses {'it' if one else 'them'}. Wait, and the window closes by itself once "
+            f"{'it is' if one else 'they are'} saved."
         )
         wait = box.addButton("Wait, then quit", QMessageBox.ButtonRole.AcceptRole)
         quit_now = box.addButton("Quit now", QMessageBox.ButtonRole.DestructiveRole)
