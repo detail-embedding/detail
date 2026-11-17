@@ -89,7 +89,8 @@ def test_a_spatial_csv_with_one_bad_point_writes_no_region(tmp_path):
 
     assert _tree(rec.dir) == before
     # The retry the leftover used to block: fix the point, and both arrive.
-    csv.write_text(csv.read_text(encoding="utf-8").replace("1.2,0.5", "0.9,0.5"))
+    fixed = csv.read_text(encoding="utf-8-sig").replace("1.2,0.5", "0.9,0.5")
+    csv.write_text(fixed, encoding="utf-8")
     assert rec.import_spatial_csv(csv) == (["zone", "lever"], [], [])
 
 
