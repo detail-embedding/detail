@@ -3418,3 +3418,33 @@ def test_a_screen_with_no_floor_is_listed_with_its_reason_and_cannot_be_ticked(
     _screens_read(qapp, interpret)
     assert bar.selection().is_empty
     assert interpret._icicle.labels_coloured(), "the tree keeps its labels' colours"
+
+
+def test_a_screen_with_nothing_to_contrast_is_listed_and_cannot_be_ticked(
+    qapp, fitted, monkeypatch
+):
+    """A screen over fewer than two groups has no ranking at all, and ticked it did nothing.
+    Listed with why, and not tickable, as a screen with no floor is (#39)."""
+    import detail.api.comparison as comparison_api
+
+    _experiment, _handle, workspace = _workspace(qapp, fitted)
+    interpret = workspace._interpret
+    _screens_read(qapp, interpret)
+
+    class _Nothing(_FakeScreen):
+        def ranking(self):
+            return None
+
+    monkeypatch.setattr(
+        comparison_api, "node_screens", lambda exp, run_id: [_Nothing("cmp_14", [], 0)]
+    )
+    interpret._read_screens()
+    _screens_read(qapp, interpret)
+    bar = interpret.filters()
+    item = bar.screens.list.item(0)
+    assert not (item.flags() & Qt.ItemFlag.ItemIsEnabled), "greyed: it cannot be ticked"
+    assert bar.screens.unavailable.text() == (
+        "Can't be ticked: drug vs vehicle · paired (nothing to contrast: fewer than two "
+        "groups)."
+    )
+    assert bar.screen("cmp_14").leaves is None

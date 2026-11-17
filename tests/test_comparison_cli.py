@@ -523,3 +523,27 @@ def test_run_says_which_recordings_were_left_out(tmp_path):
     assert result.exit_code == 0, result.output
     assert "design: trend" in result.output
     assert "left out" in result.output and "r0x" in result.output
+
+
+def test_a_screen_that_could_have_no_floor_is_refused_with_its_remedy(
+    tmp_path, monkeypatch
+):
+    """The one refusal `prepare_comparison` raises (#39) reaches the CLI as a message naming
+    the animal and what would run, before anything is measured; no traceback."""
+    import detail.api.comparison as api
+    from tests.analysis.test_node_measures import synthetic_view
+    from tests.api.test_comparison import ONE_ANIMAL
+
+    exp = _cohort(tmp_path, ONE_ANIMAL)
+    view = synthetic_view(recording_ids=tuple(ONE_ANIMAL))
+    monkeypatch.setattr(api, "_node_view", lambda experiment, run_id: view)
+    result = _run(
+        "comparison", "run", "--experiment", str(exp.dir), "--source-run", "an_01",
+        "--source", "nodes", "--group-by", "drug", "--aggregate-to", "animal",
+    )  # fmt: skip
+    assert result.exit_code != 0
+    assert "only one animal (A) has both fent and veh" in result.output
+    assert "refused before measuring" in result.output
+    assert "Add a second animal that has both fent and veh." in result.output
+    assert "Traceback" not in result.output
+    assert exp.comparisons == []

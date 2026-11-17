@@ -328,6 +328,9 @@ GUARD_FILES = frozenset(
         "tests/pipeline/test_label_leakage.py",
         "tests/analysis/test_no_unfiltered_behavior_streams.py",
         "tests/analysis/test_behavior_stream_origin.py",
+        # A screen that could have no floor is refused before measuring: the rule before
+        # and the ranking after must agree on every shape the rule claims to know.
+        "tests/analysis/test_no_floor_before_measuring.py",
         # --- documentation / help anti-drift -------------------------------------- #
         "tests/test_docs_nav.py",
         "tests/test_docs_cli_examples.py",

@@ -8429,7 +8429,8 @@ page and an export cannot disagree. One screen at a time: two statistics cannot 
 and cannot be ticked** (`ScreenChoice.leaves` `None`, as for one that cannot be read), with its
 reason in full under the list (`cluster_filters.unavailable_text`): nothing it ranked is shown to
 differ, and ticked it took the labels' colours off the tree, coloured nothing and greyed every
-clip (user, 2026-11-17). A
+clip (user, 2026-11-17); so is one with nothing to contrast (`rank_record` `None`). Such a screen
+is refused at launch when its shape is knowable (§24 *Known before measuring*). A
 tab beside INTERPRET was specified for this (§21) and never built; the dock is the screen it was
 meant to be.
 
@@ -9049,6 +9050,19 @@ is arithmetically the observed maximum and nothing can ever exceed it. That is w
 `no_floor_reason` rather than printed as a threshold nothing cleared, because a blank column and a
 column of "no" read as "nothing differed" when the truth is "this design cannot tell".
 
+**Known before measuring, refused before measuring.** Three of those shapes are counts of
+recordings and their metadata: a within-unit design where fewer than two units hold the levels
+its null moves, a between design where every group holds at most one unit, and fewer than two
+groups. `compare.no_floor_before_measuring` is the one rule (the same sentence the ranking
+carries afterwards; its counts are upper bounds on the ranking's, so it never refuses what
+measuring could have floored), asked in `prepare_comparison` before the measuring pass. A screen
+(`source: nodes`) exists to say which clusters clear the floor, so without one it has no output:
+it is refused with the reason and what would run (`api.comparison.screen_refusal`), in the launch
+dialog before Run, by `comparison run` and by the API alike. A comparison of labelled behaviors
+with no floor is still a description, reported as measured: the dialog warns in its preview and
+the run goes ahead. The reasons only measuring can know (no measure present in `min_units`
+units, no spread for the moderated t) keep the after-measuring backstop.
+
 ### Designs: the permutation respects the unit, one level down
 
 The between-unit fold change above is one design, and the difference screen's pre-build study
@@ -9120,7 +9134,9 @@ Three rules the within designs share, each from a measurement:
 Beside the effect, every within-design item reports `consistency` (units whose own effect shares
 the sign), `n_units`, `n_present`, and whether the sign survives leaving any one unit out. The
 floor is the same 95th percentile of the largest |effect| over the family, in the same pass, and is
-withheld with `no_floor_reason` when nothing can move (one unit; no measure reaching `min_units`).
+withheld with `no_floor_reason` when nothing can move (fewer than two units holding the levels
+the null moves, since a unit at one level of a paired contrast cannot be flipped; no measure
+reaching `min_units`).
 
 ### The statistic: scored by agreement, not by size
 

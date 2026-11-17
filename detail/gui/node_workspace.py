@@ -1171,8 +1171,15 @@ class NodeInterpretTab(QWidget):
                     )
                     continue
                 if ranking is None:
+                    # Fewer than two groups: nothing was contrasted, so ticking it could
+                    # shade nothing. Listed and not tickable, as a screen with no floor is.
                     out.append(
-                        ScreenChoice(comp.id, label, "nothing to rank", frozenset())
+                        ScreenChoice(
+                            comp.id,
+                            label,
+                            "nothing to contrast: fewer than two groups",
+                            None,
+                        )
                     )
                     continue
                 if ranking.floor is None:

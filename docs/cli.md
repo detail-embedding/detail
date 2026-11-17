@@ -1196,7 +1196,13 @@ column of `metadata.csv`, and report how the groups differ.
   bout length. Nested nodes that clear the floor are collapsed to the best of them
   (`--no-suppress-nesting` keeps every slice). The run needs a current node cache; a stale one is
   refused with what changed. It always takes those four measures and reads the cache as it is
-  now, so `--measure` naming fewer and `--snapshot` are refused. `export` then writes `ranking.csv` with every node's effect, its
+  now, so `--measure` naming fewer and `--snapshot` are refused. A screen whose recordings cannot
+  give a floor is refused before anything is measured, naming why and what would work: one animal
+  holding both sessions of a paired contrast, one animal in every group, or a single group (`only
+  one animal_id (3) has both habituation and fentanyl_25, so a within-animal_id null has nothing to
+  move and no floor can be computed: this screen is refused before measuring, since it could keep
+  nothing. Add a second animal_id that has both …`). `--source labels` over the same recordings
+  runs, and its summary says *No floor computed*. `export` then writes `ranking.csv` with every node's effect, its
   `statistic` (the moderated t the floor is in the unit of, blank on a ranking by the effect),
   floor and verdict, and draws the tables and figures for the kept nodes and the next ten below
   the floor rather than for thousands of nodes. Each row also carries `family_p` (the share of
