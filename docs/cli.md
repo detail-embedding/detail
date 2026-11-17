@@ -12,6 +12,14 @@ Read [concepts](concepts.md) first.
 The entry point is `detail` (installed with the package) or, equivalently,
 `python -m detail`.
 
+An ordinary input mistake, such as a YAML file with a missing bracket, a CSV that is not saved
+as UTF-8 or a file that is not the kind a command reads, stops the command with one
+`Error:` line that names the file (and the line or row) and says what to change. So does a
+mistyped id (a run, a comparison or a tracking run that does not exist), and a folder or disk
+that cannot take the write: one you do not have permission to write to, a read-only disk, a
+name too long for the disk, or a full disk. A command that writes one file you name (`--out`,
+`--csv`, `--export`) creates a missing folder in that path.
+
 ## Contents
 
 - [Setup: credentials & models](#setup-credentials--models)
@@ -150,7 +158,9 @@ table, see the [Parameters reference](reference/parameters.md).
 ### `experiment`
 - `create <name> --dir <parent>`: create `<parent>/<name>/`. Use
   `--dir ~/Documents/DetailExperiments` to put it in the GUI's managed workspace.
-- `status --experiment <dir>`: identity + recording list + per-recording run counts.
+- `status --experiment <dir>`: identity + recording list + per-recording run counts. A
+  recording whose `recording.yaml` cannot be read (a hand edit, a sync conflict) is listed
+  as damaged, with the file and line, and the rest are still shown.
 - `import-metadata --experiment <dir> --csv <file> [--key <column>] [--dry-run]`: bulk-set
   recording grouping variables from a CSV (see [Recording information](#recording-information)).
 - `export-metadata --experiment <dir> --csv <file>`: write the current metadata to a
@@ -204,8 +214,8 @@ table, see the [Parameters reference](reference/parameters.md).
 - `verify --experiment <dir> --recording <id>`: check every video part is present and (for
   referenced parts) unchanged since it was added: a moved/renamed file reports missing
   (relink it), a content change reports changed (remove and re-add). Exits non-zero if
-  anything is wrong. Runs are gated on the same check, so a bad referenced video fails the
-  run before it starts.
+  anything is wrong. A recording with no video yet says so and exits 0. Runs are gated on the
+  same check, so a bad referenced video fails the run before it starts.
 - `relink --experiment <dir> --recording <id> --part <N> --video <file>`: point a referenced
   part at a moved/renamed file. Accepted only if the file's content matches what was recorded
   (a mismatch is a changed video → remove and re-add). For a whole moved library, re-point the
@@ -261,8 +271,10 @@ table, see the [Parameters reference](reference/parameters.md).
   pick is GUI-only). `clear-calibration` removes it.
 - `status --experiment <dir> --recording <id>`: name and id, the source video files, video
   parts, resolution/fps, spatial definitions (arenas / ROIs / points), the distance
-  calibration, streams, and the recording's detection, tracking and embedding runs. Keypoint
-  runs are not listed; `process list` and `process status` show them:
+  calibration, streams, and the recording's detection, tracking and embedding runs. A
+  calibration on a recording with no video yet is shown at the resolution it was measured on
+  (`2 px/mm at 1280x720 (no video yet)`). Keypoint runs are not listed; `process list` and
+  `process status` show them:
 
   ```
   recording: recording_001  (id recording_001)
@@ -303,7 +315,8 @@ Narrow with `--show-class <name>` (repeatable; default all). Common flags: `--n`
 (frames to sample, default `8`), `--min-conf` (default `0.5`), optional `--variant`,
 `--seed`, and [compute flags](#compute--multi-gpu). Prints a
 per-column detection summary; `--save-as <name>` also writes overlay JPGs + a
-`test.json` under `detections/prompt_tests/<name>/`. Creates no run.
+`test.json` under `detections/prompt_tests/<name>/`, one JPG per frame and prompt, named by
+video part and frame (`part_000_frame_000042_prompt_0.jpg`). Creates no run.
 
 The model runs **wide open** and keeps every proposal it found, so `--min-conf` chooses
 what the summary counts and what the saved overlays draw, not what runs. Re-run with a
@@ -410,7 +423,8 @@ detail keypoints examples import shared/examples.yaml --experiment my_experiment
 The file is an `examples.yaml` as the tool writes it (`schema_version` first, the skeleton, then
 one entry per frame with its `image` path relative to the file and its `marks`), with the images
 beside it; `examples export` writes exactly that. A bare skeleton file imports too, as an empty
-set. Deleting a set a keypoint run lists is refused, so a run always finds its frames.
+set. The set keeps its link to a library skeleton only when a skeleton on this machine has the same
+points, edges and pairs; otherwise it is listed under *(no library skeleton)*. Deleting a set a keypoint run lists is refused, so a run always finds its frames.
 
 **Detect.** One run per selection of recordings:
 
@@ -553,7 +567,9 @@ detail skeleton delete sk_01
 ```
 
 `show` lists what uses a skeleton: the example sets, keypoint runs, datasets and trained models in
-your experiments that copied it. While anything does, `edit --skeleton` and `delete` are refused
+your experiments that copied it. A copy counts when it holds the same points, edges and pairs,
+whatever id it was given on the machine where it was made. Only the experiments in the workspace
+are searched, not one created with `experiment create --dir` somewhere else. While anything does, `edit --skeleton` and `delete` are refused
 with that list; `save-as-new` keeps the edit as a new skeleton instead. A rename is always allowed.
 
 ### `process`
@@ -940,8 +956,12 @@ selection, written to `analysis/<an_NN>/`.
 
   `--rename-label rearing='rearing up'` renames a label and every node carrying it, and
   `--merge-label scaling=climbing` moves every node of `scaling` to `climbing` and removes
-  `scaling`. Both take names and are repeatable. Every edit on the command line is checked
-  before any is written, and each reports its progress. The name `other` is refused: it is what
+  `scaling`. Both take names and are repeatable. A merge carries the clips removed from
+  `scaling` or moved into it (in AUDIT) to `climbing`, so they stay removed or moved. The
+  command's `--name-node`, `--rename-label` and `--merge-label` edits are one change, made in
+  the order given, so a merge can name the label a rename just made: if any of them fails
+  (a label that does not exist, say) nothing is written, and the error names the labels there
+  are. It reports its progress. The name `other` is refused: it is what
   the GUI's labels panel calls a label's own remainder.
 
   `--from-screen cmp_NN` records that the nodes you label with `--name-node` were found by that
@@ -1114,9 +1134,13 @@ selection, written to `analysis/<an_NN>/`.
 - `cancel <an_NN> --experiment <dir>`: stop an active run (kills its worker; a no-op
   once terminal).
 - `rebuild <an_NN> --experiment <dir>`: re-derive an open run's results from its own stored
-  output and its current settings. The repair for a run whose results are **out of date**,
-  a change that did not finish writing them, so the settings moved and the results did not
-  (`status` says so, and the GUI offers **Rebuild results**). The expensive pass is untouched:
+  output and its current settings. The repair for a run whose results are **out of date**:
+  a change that was saved but did not finish rebuilding them, so the settings moved and the
+  results did not (`status` says so, and the GUI offers **Rebuild results**). The command whose
+  rebuild failed says the change was saved, and names the recording it could not read. Until a
+  rebuild succeeds, every command that reads the results refuses with this command's name:
+  `measures`, `comparison run`, `export-query`, `export-temporal-clustering`, a finalize, a new
+  audit batch and a finished clip review. The expensive pass is untouched:
   this costs one pass over the outputs, not another fit or search. It is also the way to
   re-drive a run whose results write **failed**: the fit or search is still on disk, so the
   run does not have to be redone from the start.
@@ -1139,12 +1163,14 @@ full list, with what each one reports and what it needs, is the
   [--windows whole|absolute|normalized|sliding] [--every <seconds>] [--parts N]
   [--length <seconds>] [--step <seconds>]`: measure the run and write three files into
   `<dir>`, `measures.csv` (one row per recording, subject, label, window and measure, with the
-  observed time each rate was taken against), `frames.csv` (one row per frame: whether it was
+  observed time each rate was taken against; a label with labels nested inside it counts only
+  what they leave, so its row has `label_display` "<label> (other)" and `label_is_remainder`
+  `True`, while `label` keeps the plain name to join on), `frames.csv` (one row per frame: whether it was
   observed and what was active on it), and `measures.yaml` recording the windows and measures used.
 
   `--measure` defaults to every measure the source run can answer: one that needs something
-  the run does not have (`transitions` needs non-overlapping behaviors; `unnamed_time` needs
-  unnamed clusters) is skipped rather than reported as a column of zeros. `--windows` picks the
+  the run does not have (`transitions` needs non-overlapping behaviors; `unnamed_time` needs a
+  clustering run) is skipped rather than reported as a column of zeros. `--windows` picks the
   window model: `whole` measures the
   full recording, `absolute` tiles it into fixed windows of `--every` seconds, `normalized` splits
   it into `--parts` equal fractions (for recordings of differing length), and `sliding` walks a
@@ -1163,7 +1189,8 @@ column of `metadata.csv`, and report how the groups differ.
   [--presence-s <seconds>] [--pseudo-count-s <seconds>] [--min-units-fraction <share>] [--no-suppress-nesting]
   [--statistic moderated_t|effect]`: measure each unit, group them, and
   save the result to `comparisons/<cmp_NN>/`. Prints the `cmp_NN`, the design it resolved and
-  what the ranking scores by.
+  what the ranking scores by. A recording whose video is not on this machine (a slim import,
+  an unplugged drive) is measured all the same; the record notes the video as missing.
   `--group-by`, `--aggregate-to`, `--level`, `--measure` and `--recording` are all repeatable.
 
   **The design follows from the column.** A `--group-by` column that is constant within each
@@ -1239,8 +1266,8 @@ column of `metadata.csv`, and report how the groups differ.
   in `summary.md`.
 
   `--measure` defaults to every measure the source run can answer: one that needs something
-  the run does not have (`transitions` needs non-overlapping behaviors; `unnamed_time` needs
-  unnamed clusters) is skipped rather than reported as a column of zeros. `--windows` picks the
+  the run does not have (`transitions` needs non-overlapping behaviors; `unnamed_time` needs a
+  clustering run) is skipped rather than reported as a column of zeros. `--windows` picks the
   window model: `whole` measures the
   full recording, `absolute` tiles it into fixed windows of `--every` seconds, `normalized`
   splits it into `--parts` equal fractions (for recordings of differing length), and `sliding`
@@ -1253,7 +1280,9 @@ column of `metadata.csv`, and report how the groups differ.
   artifact, plus `ranking.csv` (every ranked measure or node with its effect, its `statistic`
   where the ranking is on the moderated t, floor and verdict, and its `family_p` / `own_p` /
   `q`) and, for a node screen, the `nodes.csv` hierarchy. Warns if the source data has changed since
-  the comparison was run. `--theme dark`
+  the comparison was run, or if a recording's video is not on this machine, so it cannot be
+  checked. `--format` is repeatable and takes any format matplotlib writes (`jpg`, `tiff`,
+  `eps`, …); an unknown one is refused before anything is drawn. `--theme dark`
   draws the figures on a dark background for slides; the manifest records which theme was used.
 - `list --experiment <dir>`: the experiment's comparisons, with the unit of analysis each used.
 - `delete <cmp_NN> --experiment <dir> [--yes]`: remove the comparison and its exports. Confirms
@@ -1299,7 +1328,9 @@ model** catalog (shared across every experiment on the machine):
 - `restore <archive.zip>`: bring a model exported with `export` back into the catalog. A
   keypoint model keeps its own skeleton; it is added to the skeleton library unless an entry
   with the same skeleton is there ("name (2)" when the name is taken by a different one), and
-  the command prints the entry it matched or added.
+  the command prints the entry it matched or added. A file that is not such an export, or one
+  whose `model.yaml` is empty, is refused and leaves nothing in the catalog; a bare `.pt`
+  checkpoint is added with `import` instead.
 - `remove <id>`: delete an imported model.
 
 ### `modules`
@@ -1380,7 +1411,8 @@ machine has that the model supports (cuda > mps > cpu), so SAM 3 runs on CUDA wi
 the run records the backend it used. A closed-set `--model` (one of your
 imported or distilled models) finds its own classes and ignores the prompt's text, but
 `--prompt` is still required. `--export out.mp4` renders the overlay clip and
-needs `--consecutive`, since sampled frames are not contiguous.
+needs `--consecutive`, since sampled frames are not contiguous; without it the command
+stops before the run starts. A missing folder in the `--export` path is created.
 
 A run keeps every proposal the model found, so `--min-conf` only chooses what gets
 counted in the printed summary and drawn into `--export`. The saved run is the same
@@ -1452,6 +1484,11 @@ skipped and the reason says so: that file is already yours, under the video root
 registered from, and copying it back out would export nothing DETAIL made. A recording whose
 parts are all referenced reports `video` as unavailable rather than writing a short export.
 
+Each exported video keeps its part's own number, the same number the `timestamps` target uses.
+If part 1 was referenced and parts 2 and 3 were copied, you get `<recording>_part002.mp4` and
+`<recording>_part003.mp4`, next to `<recording>_part002_timestamps.csv` and
+`<recording>_part003_timestamps.csv`.
+
 The same is true of the experiment `bundle`: it packs the experiment tree, and a referenced
 video is not in that tree.
 
@@ -1497,6 +1534,15 @@ button runs.
 
 The full field of view is the default: a steady camera, where the surroundings are half the
 answer. Crop to the subject when you want the pose at a constant scale for comparing bouts.
+
+A clip holds **every** frame of its span and plays at the rate those frames were recorded at, so
+it lasts as long as the behavior did, whatever stride detection or tracking ran at. On a frame
+the subject has no detection on, `raw` is the frame as recorded, `overlay` is that same plain
+frame, and `mask` is black. A cropped clip keeps the box from the subject's last detection
+before that frame; before the first detection in the span, it uses that first one. A span the
+subject is never detected across has no clip; its row stays in the CSV with the video column
+blank. `fps` in `clips.csv` and `clip.csv` is the rate the clip was written at, so its frame
+count divided by `fps` is `dur_s`, to within one frame.
 
 ### Keypoints, for pose tools
 
@@ -1605,7 +1651,9 @@ distill the units are its stages. Frames and fps are shown only for a stage that
 for an analysis they are blank, and the wall clock is the number to compare.
 
 The timings come from the run's own `activity.csv`, so a run that finished before DETAIL kept one
-reports blanks rather than guesses. **Nothing is sent anywhere**: it is a file, and sharing it is
+reports blanks rather than guesses. A recording's wall clock runs from its first logged moment to
+its last, and the run's ends when the run did. A run made before DETAIL logged those last moments
+shows each recording a few seconds short, so a short recording's fps there reads too high. **Nothing is sent anywhere**: it is a file, and sharing it is
 your decision.
 
 ### The columns
@@ -1613,7 +1661,8 @@ your decision.
 `clips.csv`, `instance_id`, `source_label` (the cluster's own id), `label` (the name a person
 gave it, blank if none), `label_path` (that name and every group it sits inside, outermost
 first), `recording_id`, `subject`, `start_frame`, `end_frame`, `t_ns`,
-`end_t_ns`, `dur_s`, and one `video_<render>` column per flavour. `start_frame` and `end_frame`
+`end_t_ns`, `dur_s`, `fps` (the rate the clip plays at; blank when it has none), and one
+`video_<render>` column per flavour. `start_frame` and `end_frame`
 count every frame of the recording from 0, across all its video parts, so a bout in the second
 video file carries frame numbers past the first file's last frame. The ethogram CSV's
 `start_frame,end_frame` count the same way, which is what lets `recording add-stream --importer
@@ -1625,7 +1674,9 @@ that bout produced no clip: the track was not detected across it, or it fell out
 `cy_norm`: where each bout happened, as a fraction of the frame. `label_path` is the whole chain
 of names the bout sits under, outermost first (`not moving/resting`) where `label` is the last
 element on its own. Total by `label` for the specific behavior, or by a prefix of `label_path` for
-the group it belongs to; each bout appears once either way, so neither double-counts. A flat
+the group it belongs to; each bout appears once either way, so neither double-counts. Measures and
+comparisons count the same way: a label with labels inside it counts only what they leave, and
+its row is shown as "<label> (other)". A flat
 vocabulary's path is just its label. `coverage.csv` gives `observed_ns` per
 `(recording_id, subject)`, which is the denominator for any rate you compute: video duration is
 not recording duration is not tracked time.

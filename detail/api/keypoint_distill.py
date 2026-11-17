@@ -211,24 +211,40 @@ def resolve_detect_tracking(
 
 def _resolve_detect_teacher(experiment: "Experiment", detect_runs, tracking) -> dict:
     """The detect-run teacher, checked: the runs (one skeleton across them), the tracking
-    run per recording their instances are assigned to, and the assignment's settings."""
+    run per recording their instances are assigned to, the assignment's settings, and the
+    library skeleton the runs' copy came from (``skeleton_ref``).
+
+    The ref is what keeps the skeleton listed as used once the detect runs are deleted: the
+    dataset and the student record it, as they do for the patch-method teacher. Taken from the
+    first run whose ref holds the runs' own skeleton; absent when none does (a bare skeleton).
+    """
     resolved = resolve_detect_runs(experiment, detect_runs)
     digest = None
+    refs = []
     for recording_id, run_id in resolved.items():
         recording_dir = experiment_store.recording_path(experiment.dir, recording_id)
-        this = KeypointDetectRun(recording_dir, run_id).skeleton.digest()
+        run = KeypointDetectRun(recording_dir, run_id)
+        this = run.skeleton.digest()
         if digest is not None and this != digest:
             raise ValueError(
                 f"keypoint detect run {run_id!r} of {recording_id!r} has a different "
                 "skeleton from the other teachers; a dataset teaches one skeleton"
             )
         digest = this
-    return {
+        refs.append(run.meta.get("skeleton_ref") or {})
+    skeleton_ref = next(
+        (dict(r) for r in refs if isinstance(r, dict) and r.get("digest") == digest),
+        None,
+    )
+    teacher = {
         "kind": "keypoint_detect",
         "detect_runs": resolved,
         "tracking_runs": resolve_detect_tracking(experiment, resolved, tracking),
         "match": _default_match(),
     }
+    if skeleton_ref is not None:
+        teacher["skeleton_ref"] = skeleton_ref
+    return teacher
 
 
 def _resolve_patch_teacher(
@@ -640,7 +656,7 @@ def keypoint_dataset(
                     "tracking_runs": dict(teacher["tracking_runs"]),
                 }
             ),
-            "skeleton_ref": teacher.get("skeleton_ref") if by_model else None,
+            "skeleton_ref": teacher.get("skeleton_ref"),
             "status": "running",
         },
     )
@@ -824,8 +840,8 @@ def register_student(experiment: "Experiment", run_id: str, record: dict) -> dic
             },
             tracking_runs=dict(teacher.get("tracking_runs") or {}),
         )
-        if teacher.get("skeleton_ref"):
-            model["skeleton_ref"] = dict(teacher["skeleton_ref"])
+    if teacher.get("skeleton_ref"):
+        model["skeleton_ref"] = dict(teacher["skeleton_ref"])
     if not model.get("skeleton"):
         dataset_id = (stages.get("label") or {}).get("dataset_id")
         if dataset_id:

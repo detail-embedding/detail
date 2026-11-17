@@ -525,6 +525,82 @@ def test_run_says_which_recordings_were_left_out(tmp_path):
     assert "left out" in result.output and "r0x" in result.output
 
 
+# --- a recording's video not on this machine (#33 finding 11) ------------------------------
+def _cohort_without_its_video(tmp_path):
+    """A cohort whose r1 lists a video part that is not on disk, as after a slim import."""
+    from tests.api.test_query import _add_video
+
+    exp = _cohort(tmp_path, UNBALANCED)
+    _add_video(exp.get_recording("r1").dir)
+    return exp
+
+
+_RUN = ("--source-run", "an_01", "--group-by", "drug", "--aggregate-to", "none")
+
+
+def test_a_comparison_runs_and_exports_without_the_video(tmp_path):
+    exp = _cohort_without_its_video(tmp_path)
+    ran = _run("comparison", "run", "--experiment", str(exp.dir), *_RUN)
+    assert ran.exit_code == 0, ran.output
+    record = exp.get_comparison("cmp_01").record()
+    assert record["provenance"]["recordings"]["r1"]["videos"] == {
+        "video/part_001.mp4": {"missing": True}
+    }
+    exported = _run(
+        "comparison", "export", "cmp_01", "--experiment", str(exp.dir),
+        "--format", "png",
+    )  # fmt: skip
+    assert exported.exit_code == 0, exported.output
+
+
+def test_drift_names_a_video_that_went_missing_after_the_run(tmp_path):
+    from tests.api.test_query import _add_video
+
+    exp = _cohort(tmp_path, UNBALANCED)
+    assert _run("comparison", "run", "--experiment", str(exp.dir), *_RUN).exit_code == 0
+    _add_video(exp.get_recording("r1").dir)  # listed now, and not on disk
+    record = exp.get_comparison("cmp_01").record()
+    record["provenance"]["recordings"]["r1"]["videos"] = {
+        "video/part_001.mp4": {"size": 1, "sha256_ends": "x"}
+    }
+    from detail.storage import comparisons as comparisons_store
+
+    comparisons_store.write_comparison_yaml(exp.get_comparison("cmp_01").dir, record)
+    assert exp.get_comparison("cmp_01").drift() == [
+        "video video/part_001.mp4 of recording r1 is not on this machine, so it cannot "
+        "be checked"
+    ]
+
+
+def test_a_failed_run_leaves_no_half_written_comparison(tmp_path, monkeypatch):
+    """Provenance reads the experiment; it runs before `cmp_NN` exists, so a failure there
+    leaves no folder with a `stats.csv` and no `comparison.yaml`."""
+    from detail.analysis import provenance
+
+    def _fails(*_a, **_k):
+        raise OSError("the experiment could not be read")
+
+    exp = _cohort(tmp_path, UNBALANCED)
+    monkeypatch.setattr(provenance, "capture", _fails)
+    result = _run("comparison", "run", "--experiment", str(exp.dir), *_RUN)
+    assert isinstance(result.exception, OSError)
+    assert not (exp.dir / "comparisons" / "cmp_01").exists()
+
+
+def test_export_refuses_an_unknown_format_before_drawing(tmp_path):
+    exp = _cohort(tmp_path, UNBALANCED)
+    assert _run("comparison", "run", "--experiment", str(exp.dir), *_RUN).exit_code == 0
+    out = tmp_path / "out"
+    result = _run(
+        "comparison", "export", "cmp_01", "--experiment", str(exp.dir),
+        "--format", "bmp", "--out", str(out),
+    )  # fmt: skip
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    assert "Error: cannot write figures as bmp; choose from " in result.output
+    assert "png" in result.output and not out.exists()
+
+
 def test_a_screen_that_could_have_no_floor_is_refused_with_its_remedy(
     tmp_path, monkeypatch
 ):

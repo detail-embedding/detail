@@ -210,10 +210,19 @@ GUARD_FILES = frozenset(
         "tests/storage/test_machine_config_reads.py",
         "tests/storage/test_measured_time.py",
         "tests/storage/test_id_ordering.py",
+        # Every id family through its real mint and delete, and a scan for an allocator that
+        # is not the shared never-reused one: a reused id is wrong only in an old record.
+        "tests/storage/test_id_reuse.py",
         "tests/storage/test_atomic_writes.py",
         # Scans for a listing that reads its records bare, and plants the crash shape (a
         # zero-filled record) under every listing a page reads.
         "tests/storage/test_crash_consistency.py",
+        # A file a user hands in is parsed through one reader per format, so a malformed
+        # one is a message naming the file and line, not the parser's traceback (#33).
+        "tests/storage/test_user_file_readers.py",
+        # The CLI root shows a UserInputError as one line and lets a bug's traceback
+        # through; one row per #33 finding with a CLI step.
+        "tests/test_cli_user_errors.py",
         "tests/pipeline/test_atomic_write_seam.py",
         # Counts the syscalls a listing makes rather than scanning for a pattern — same
         # job: the cost model is invisible to every behavioural test.
@@ -280,6 +289,8 @@ GUARD_FILES = frozenset(
         "tests/query_methods/test_registry.py",
         "tests/trackers/test_tracker_progress.py",
         "tests/trackers/test_tracker_resume.py",
+        # Over TRACKERS: n_gaps counts frames the run looked at, at any stride and part (#32).
+        "tests/trackers/test_tracker_gaps.py",
         "tests/test_registry_isolation.py",
         "tests/test_registry_prepopulation.py",
         "tests/test_surfaces.py",
@@ -293,6 +304,8 @@ GUARD_FILES = frozenset(
         "tests/gui/test_export_reach.py",
         "tests/gui/test_reachability.py",
         "tests/gui/test_editing.py",
+        # A run's label writes outlive the page that queued them; quitting asks (#24).
+        "tests/gui/test_run_writes.py",
         "tests/gui/test_form_help_coverage.py",
         "tests/gui/test_frame_source.py",
         "tests/gui/test_failed_run_surface.py",

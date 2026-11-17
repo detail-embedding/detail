@@ -27,6 +27,23 @@ def mask_centroid(mask: np.ndarray) -> tuple[float, float]:
     return (float(xs.mean()), float(ys.mean()))
 
 
+def mask_centre_norm(mask: np.ndarray) -> tuple[float, float]:
+    """Centre of mass ``(x, y)`` of a ``(H, W)`` bool mask as a fraction of its width and
+    height; ``(nan, nan)`` when empty. **The** position of a mask, for every caller.
+
+    ``+ 0.5`` because :func:`mask_centroid` averages cell *indices* and cell ``i`` covers
+    ``[i, i+1)``: its centre is ``i + 0.5``. Without it the position is half a cell up and
+    left, which stops it being resolution-independent (the same region of a 20-cell and a
+    200-cell mask comes back as 0.225 and 0.2475) and put the location export's mask centre
+    half a cell away from the kinematics one for the same frame (#32).
+    """
+    mx, my = mask_centroid(mask)
+    height, width = mask.shape[:2]
+    if not np.isfinite(mx) or height <= 0 or width <= 0:
+        return (float("nan"), float("nan"))
+    return ((mx + 0.5) / width, (my + 0.5) / height)
+
+
 #: One frame's subject geometry, all normalized to the frame (§14 ``kinematics/``).
 FrameGeometry = namedtuple(
     "FrameGeometry", ["cx_norm", "cy_norm", "mask_area_norm", "bbox_norm"]
@@ -72,14 +89,9 @@ def frame_geometry(mask: np.ndarray | None, bboxes, frame_hw) -> FrameGeometry:
         pixels = int(np.count_nonzero(mask))
         area = pixels / float(height * width)
         if pixels:
-            mx, my = mask_centroid(mask)
-            # +0.5 because `mask_centroid` averages pixel *indices* and pixel ``i`` covers
-            # ``[i, i+1)`` — its centre is ``i + 0.5``. Without it the normalized position is
-            # short by half a pixel, which is negligible on one recording and stops the value
-            # being resolution-independent: the same region of a 20px-wide frame and a
-            # 200px-wide one would come back as 0.225 and 0.2475, and the whole reason nothing
-            # here is in pixels is that two recordings have to be comparable.
-            cx, cy = (mx + 0.5) / width, (my + 0.5) / height
+            # The cell-centre rule (``+ 0.5``) lives in `mask_centre_norm`, so the location
+            # export cannot drift from it again.
+            cx, cy = mask_centre_norm(mask)
     if not np.isfinite(cx):
         cx, cy = float((union[0] + union[2]) / 2), float((union[1] + union[3]) / 2)
     return FrameGeometry(float(cx), float(cy), area, union)

@@ -3,6 +3,12 @@
 What is pinned is what a person asked for, read back out of the file: a GIF's width and frame
 rate (the dialog's two questions) and an mp4's rate and size. A size or rate that is accepted and
 then silently not used is the failure an "it wrote a file" test cannot see.
+
+**A rate the file format cannot store (#32).** A GIF keeps each frame's delay in whole
+hundredths of a second, and one delay rounded for every frame played 12 fps at 12.5 and 30 fps
+at 33.3 while the frames were sampled at the asked rate. It hid because the first frame's delay
+is right and nothing summed them. The rule: ``gif_delays_ms`` carries the rounding forward, so
+the delays read back from the file add up to the span sampled.
 """
 
 from __future__ import annotations
@@ -170,3 +176,34 @@ def test_footage_stays_within_the_quantization_tolerance(tmp_path):
     for drawn, read in zip(frames, _decoded(path)):
         error = np.abs(read - drawn.astype(int))
         assert error.mean() < 4.0 and np.percentile(error, 99.9) < 24, error.mean()
+
+
+def _stored_durations_ms(path) -> list[int]:
+    """Every frame's delay as the file stores it, read back frame by frame."""
+    out = []
+    with Image.open(path) as gif:
+        for index in range(gif.n_frames):
+            gif.seek(index)
+            out.append(int(gif.info["duration"]))
+    return out
+
+
+@pytest.mark.parametrize("fps", [10, 12, 15, 24, 30, 50])
+def test_a_gif_plays_for_the_span_it_sampled(tmp_path, fps):
+    """A GIF stores each delay in whole hundredths of a second, and one delay rounded for every
+    frame played 12 fps at 12.5 (80 ms), 15 at 14.3 and 30 at 33.3 — 4 to 11% off the real
+    time the dialog promises (#32, finding 4). The delays now carry the rounding forward, so
+    the file plays for the span its frames were sampled over, to within half a hundredth.
+
+    Asserted on the file read back: a sum of the delays the writer *meant* would pass against
+    a writer that stored something else."""
+    span_ns = 2_000_000_000
+    n = len(animation.sample_offsets_ns(span_ns, fps))
+    path = animation.write_animation(
+        tmp_path / "a.gif", iter(_frames(n, width=4 * n, height=8)), fps=fps, count=n
+    )
+    stored = _stored_durations_ms(path)
+    assert len(stored) == n, "frames were merged, so the per-frame check proves nothing"
+    assert sum(stored) == pytest.approx(1000.0 * n / fps, abs=5.0)
+    # Never a delay a player would clamp (browsers treat under 20 ms as 100 ms).
+    assert min(stored) >= 20

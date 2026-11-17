@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING
 
 from detail.analysis import cohort, compare, measures, node_measures, provenance
 from detail.configs.comparison import ComparisonConfig
+from detail.core.errors import UserInputError
 from detail.core.utils import utc_timestamp
 from detail.report.tables import write_tidy_csv
 from detail.storage import analysis_runs as analysis_store
@@ -65,6 +66,16 @@ class ComparisonStopped(RuntimeError):
 
 class ComparisonRunError(ValueError):
     """A comparison could not be run against the artifact or metadata it names."""
+
+
+class ScreenRefusedError(ComparisonRunError, UserInputError):
+    """A difference screen refused before measuring because it could have no floor (#39).
+
+    The cohort the user chose is the cause, an ordinary input mistake, so it is a
+    ``UserInputError`` and the CLI root shows it as one ``Error:`` line from any command
+    (``cli.USER_ERRORS``); it stays a ``ComparisonRunError`` for callers that catch the
+    comparison's own refusals.
+    """
 
 
 def screen_refusal(foreseen: compare.NoFloor) -> str:
@@ -450,7 +461,7 @@ def prepare_comparison(
             one_row_per_recording=True,
         )
         if foreseen is not None:
-            raise ComparisonRunError(screen_refusal(foreseen))
+            raise ScreenRefusedError(screen_refusal(foreseen))
         chosen = list(node_measures.MEASURES)
         # The node source's own floor (§24): the cache has none since every cluster has clips.
         candidate_floor = float(cfg.candidate_floor_s)
@@ -493,6 +504,7 @@ def prepare_comparison(
         )
         source_hash = snapshots_store.artifact_hash(run_dir)
         ranking_measure = None
+        remainders = sorted(measures.remainder_labels(artifact.manifest))
         screened = _screened_labels(
             experiment, cfg.source_run_id, snapshot_id, columns=cfg.group_by
         )
@@ -591,6 +603,9 @@ def prepare_comparison(
         # that scores them is scoring what its own contrast selected, and the record is the
         # one place that can say so -- the number itself looks like any other.
         record["screened_labels"] = screened
+        # A parent label's rows count only its leftover, and every surface names them
+        # "<label> (other)" from this one list (#24; `measures.remainder_labels`).
+        record["remainder_labels"] = remainders
     return Prepared(
         rows=rows,
         obs=obs,
@@ -627,13 +642,40 @@ def run_comparison(
             progress(stage, fraction, detail)
 
     report("writing", 0.0, "")
+    # Everything that reads the experiment comes before the id is claimed (claiming makes
+    # `cmp_NN`), so a failure here leaves no folder holding a `stats.csv` and no record.
+    # A comparison has no members; the recording lineage, label hashes and video fingerprints
+    # capture all the same (§18.5), which is what `drift` re-checks.
+    captured = provenance.capture(
+        experiment_dir,
+        recording_ids=sorted(set(prepared.covered)),
+        members=[],
+        # The hash of **what was measured** — the snapshot, not the run (or the node cache's
+        # digest, for the node source). `drift` compares it against where the run is *now*,
+        # and that asymmetry is the whole mechanism.
+        source={
+            "run_id": cfg.source_run_id,
+            "snapshot_id": prepared.snapshot_id,
+            "content_hash": prepared.source_hash,
+        },
+    )
     comparison_id = comparisons_store.next_comparison_id(experiment_dir)
     cdir = comparisons_store.comparison_dir(experiment_dir, comparison_id)
+    record = {
+        "id": comparison_id,
+        **prepared.record,
+        "provenance": captured,
+        "status": "complete",
+        "created_at": utc_timestamp(),
+    }
     cdir.mkdir(parents=True, exist_ok=True)
     write_tidy_csv(
         cdir / STATS_FILENAME,
         compare.stats_rows(
-            prepared.obs, aggregate_to=cfg.aggregate_to, group_by=cfg.group_by
+            prepared.obs,
+            aggregate_to=cfg.aggregate_to,
+            remainders=frozenset(prepared.record.get("remainder_labels") or ()),
+            group_by=cfg.group_by,
         ),
         compare.STATS_COLUMNS,
     )
@@ -641,27 +683,6 @@ def run_comparison(
         write_tidy_csv(
             cdir / NODES_FILENAME, prepared.hierarchy, node_measures.HIERARCHY_COLUMNS
         )
-    record = {
-        "id": comparison_id,
-        **prepared.record,
-        # A comparison has no members; the recording lineage, label hashes and video fingerprints
-        # capture all the same (§18.5), which is what `drift` re-checks.
-        "provenance": provenance.capture(
-            experiment_dir,
-            recording_ids=sorted(set(prepared.covered)),
-            members=[],
-            # The hash of **what was measured** — the snapshot, not the run (or the node cache's
-            # digest, for the node source). `drift` compares it against where the run is *now*,
-            # and that asymmetry is the whole mechanism.
-            source={
-                "run_id": cfg.source_run_id,
-                "snapshot_id": prepared.snapshot_id,
-                "content_hash": prepared.source_hash,
-            },
-        ),
-        "status": "complete",
-        "created_at": utc_timestamp(),
-    }
     comparisons_store.write_comparison_yaml(cdir, record)
     report("writing", 1.0, comparison_id)
     return Comparison(experiment, comparison_id)
@@ -722,6 +743,16 @@ class Comparison:
         return comparisons_store.comparison_dir(self._experiment.dir, self._id)
 
     def record(self) -> dict:
+        """The saved record.
+
+        Raises:
+            UserInputError: no comparison with this id (a mistyped ``cmp_NN``).
+        """
+        if not (self.dir / comparisons_store.COMPARISON_FILENAME).is_file():
+            raise UserInputError(
+                f"no comparison {self._id!r} in this experiment; "
+                "`detail comparison list` shows the saved ones"
+            )
         return comparisons_store.read_comparison_yaml(self.dir)
 
     def ranking(self):

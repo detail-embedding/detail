@@ -1,3 +1,14 @@
+"""Arena, ROI and POI storage (§10): keyframes, the ``recording.yaml`` manifest, and ids.
+
+A ROI or POI id is **stable** and **never reused**. The scene editor's Save used to hand
+``replace_defs`` names only, which renumbered every region by list position, and ``next_id``
+took the lowest free number; either way ``roi_001`` named ``nest`` in one location run and
+``food`` in the next, and runs joined on ``roi_id`` paired different regions. Now an entry that
+carries the id of a region that exists keeps it, and every new id comes from the recording's
+never-decreasing mark (``storage/id_allocator.py``; the class is written up in
+``tests/storage/test_id_reuse.py``).
+"""
+
 import pytest
 import yaml
 
@@ -172,10 +183,19 @@ def test_unknown_kind_rejected(recording_dir):
 
 def test_next_id_per_kind(recording_dir):
     assert spatial.next_id(recording_dir, "roi") == "roi_001"
-    assert spatial.next_id(recording_dir, "point") == "point_001"
     spatial.append_to_manifest(recording_dir, "roi", "roi_001", "zone", 4)
     assert spatial.next_id(recording_dir, "roi") == "roi_002"
     assert spatial.next_id(recording_dir, "point") == "point_001"  # independent counter
+
+
+def test_a_deleted_region_id_is_not_handed_to_the_next_region(recording_dir):
+    """The lowest free number gave a new region a deleted one's id, so a finished location
+    run's ``roi_001`` rows joined to a different region."""
+    first = spatial.next_id(recording_dir, "roi")
+    spatial.write_keyframes(recording_dir, "roi", first, [(0, _square())])
+    spatial.append_to_manifest(recording_dir, "roi", first, "nest", 4)
+    spatial.delete_def(recording_dir, "roi", first)
+    assert spatial.next_id(recording_dir, "roi") != first
 
 
 def test_append_roi_with_active_interval(recording_dir):
@@ -240,14 +260,72 @@ def test_replace_defs_replaces_all_and_reassigns_ids(recording_dir):
         "roi_001",
         "roi_002",
     ]
-    # replacing with a single def drops the rest and restarts ids at 001
+    # replacing with a single new def drops the rest; the new one takes an id never used
+    # before, not a dropped region's
     ids = spatial.replace_defs(
         recording_dir, "roi", [{"name": "c", "keyframes": [(0, _square())]}]
     )
-    assert ids == ["roi_001"]
+    assert ids == ["roi_003"]
     entries = spatial.list_defs(recording_dir, "roi")
     assert [e["name"] for e in entries] == ["c"]
-    assert not (recording_dir / "rois" / "roi_002").exists()  # old dir gone
+    assert not (recording_dir / "rois" / "roi_001").exists()  # old dirs gone
+    assert not (recording_dir / "rois" / "roi_002").exists()
+
+
+def test_replace_defs_keeps_a_surviving_regions_id(recording_dir):
+    """The scene editor's Save: delete ``nest``, keep ``food``. ``food`` stays ``roi_002``
+    and a region added in the same Save gets ``roi_003``, never the freed ``roi_001``.
+    """
+    spatial.replace_defs(
+        recording_dir,
+        "roi",
+        [
+            {"name": "nest", "keyframes": [(0, _square())]},
+            {"name": "food", "keyframes": [(0, _square(0.2))]},
+        ],
+    )
+    ids = spatial.replace_defs(
+        recording_dir,
+        "roi",
+        [
+            {"id": "roi_002", "name": "food", "keyframes": [(0, _square(0.2))]},
+            {"name": "water", "keyframes": [(0, _square(0.3))]},
+        ],
+    )
+    assert ids == ["roi_002", "roi_003"]
+    assert {e["id"]: e["name"] for e in spatial.list_defs(recording_dir, "roi")} == {
+        "roi_002": "food",
+        "roi_003": "water",
+    }
+
+
+def test_replace_defs_refuses_a_duplicated_id(recording_dir):
+    spatial.replace_defs(
+        recording_dir, "roi", [{"name": "a", "keyframes": [(0, _square())]}]
+    )
+    with pytest.raises(ValueError, match="roi id 'roi_001' is duplicated"):
+        spatial.replace_defs(
+            recording_dir,
+            "roi",
+            [
+                {"id": "roi_001", "name": "a", "keyframes": [(0, _square())]},
+                {"id": "roi_001", "name": "b", "keyframes": [(0, _square())]},
+            ],
+        )
+
+
+def test_replace_defs_gives_a_fresh_id_for_one_no_longer_defined(recording_dir):
+    """A stale editor naming an id deleted elsewhere does not resurrect it."""
+    first = spatial.replace_defs(
+        recording_dir, "roi", [{"name": "a", "keyframes": [(0, _square())]}]
+    )[0]
+    spatial.delete_def(recording_dir, "roi", first)
+    ids = spatial.replace_defs(
+        recording_dir,
+        "roi",
+        [{"id": first, "name": "a", "keyframes": [(0, _square())]}],
+    )
+    assert ids != [first]
 
 
 def test_replace_defs_validates_before_writing(recording_dir):

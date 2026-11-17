@@ -35,6 +35,7 @@ from detail.api.comparison import (
     run_comparison,
 )
 from detail.configs.comparison import ComparisonConfig
+from detail.core.errors import UserInputError
 from detail.configs.windows import WindowSpec
 from detail.api.experiment import Experiment
 from detail.storage import analysis_runs
@@ -1312,6 +1313,8 @@ def test_a_screen_that_could_have_no_floor_is_refused_before_measuring(
             exp, config, progress=lambda stage, fraction, detail: stages.append(stage)
         )
     message = str(excinfo.value)
+    # The cohort is the user's choice: one `Error:` line from the CLI root (#52).
+    assert isinstance(excinfo.value, UserInputError)
     assert message.startswith(reason), message
     assert "this screen is refused before measuring" in message
     assert remedy in message and "labelled behaviors instead" in message

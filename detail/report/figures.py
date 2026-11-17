@@ -22,6 +22,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from detail.core.errors import UserInputError
 from detail.report.style import (
     DEFAULT_STYLE,
     SAVE_PARAMS,
@@ -66,6 +67,23 @@ _NO_DATE_METADATA = {
     "png": {"Creation Time": None},
     "svg": {"Date": None},
 }
+
+
+def check_formats(formats: tuple[str, ...]) -> None:
+    """Refuse a figure format matplotlib cannot write, before anything is drawn.
+
+    Raises:
+        UserInputError: a format matplotlib has no writer for; the message lists them.
+    """
+    from matplotlib.backend_bases import FigureCanvasBase
+
+    supported = FigureCanvasBase.get_supported_filetypes()
+    unknown = [fmt for fmt in formats if fmt not in supported]
+    if unknown:
+        raise UserInputError(
+            f"cannot write figures as {', '.join(unknown)}; choose from "
+            f"{', '.join(sorted(supported))}"
+        )
 
 
 def save_figure(

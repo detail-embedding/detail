@@ -21,9 +21,11 @@ import numpy as np
 import yaml
 
 from detail.core import atomic
+from detail.core.errors import UserInputError
 from detail.storage import experiment
 from detail.storage import read_cache
 from detail.storage import video
+from detail.storage.user_yaml import read_user_yaml
 
 SCHEMA_VERSION = 1
 RECORDING_FILENAME = "recording.yaml"
@@ -143,16 +145,16 @@ def read_recording(recording_dir: Path | str) -> dict:
 
 def _parse_recording(path: Path) -> dict:
     """``recording.yaml`` at ``path``, read and validated: the parse the cache guards."""
-    recording = yaml.safe_load(atomic.read_text(path))
+    recording = read_user_yaml(path)
     if not isinstance(recording, dict):
-        raise ValueError(f"{path} is not a mapping")
+        raise UserInputError(f"{path} is not a mapping")
     if recording.get("schema_version") != SCHEMA_VERSION:
-        raise ValueError(
+        raise UserInputError(
             f"{path} schema_version is {recording.get('schema_version')!r}, "
             f"expected {SCHEMA_VERSION}"
         )
     if not recording.get("id"):
-        raise ValueError(f"{path} has no 'id'")
+        raise UserInputError(f"{path} has no 'id'")
     return recording
 
 
@@ -427,9 +429,9 @@ def video_files(recording: dict) -> list[dict]:
 
     There is exactly one frame space per recording: a stage that processes fewer frames
     does so with a ``every_n_frames`` over *these* files, so ``frame_idx`` always indexes
-    the source video (§4).
+    the source video (§4). Empty for a recording with no video yet.
     """
-    return recording["video"]["files"]
+    return recording.get("video", {}).get("files", [])
 
 
 def part_stem(part: dict) -> str:

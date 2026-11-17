@@ -72,6 +72,7 @@ import pytest
 import yaml
 
 from detail.api.experiment import Experiment
+from detail.core.errors import UserInputError
 from detail.storage import datasets as datasets_store
 from detail.storage import export as export_store
 from detail.storage import models as models_store
@@ -241,6 +242,20 @@ def test_import_detects_corruption(tmp_path):
     ws.mkdir()
     with pytest.raises(ValueError, match="integrity"):
         export_store.import_experiment(bad, ws)
+
+
+def test_an_archive_cut_short_after_its_manifest_is_named_not_a_traceback(tmp_path):
+    """The manifest reads, then the copy ends mid-payload: the import names the file and
+    says to copy it again, and leaves no staging folder (#33 finding 5)."""
+    archive = _experiment(tmp_path / "a").export(tmp_path / "s.tar.gz", gzip=True)
+    cut = tmp_path / "cut.tar.gz"
+    cut.write_bytes(archive.read_bytes()[:-200])
+    assert export_store.read_manifest(cut)["id"]
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    with pytest.raises(UserInputError, match="cut.tar.gz is not a DETAIL export"):
+        export_store.import_experiment(cut, ws)
+    assert list(ws.iterdir()) == []
 
 
 # --------------------------------------------------------------------------- #

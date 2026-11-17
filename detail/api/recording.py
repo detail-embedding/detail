@@ -29,6 +29,7 @@ from detail.core.dataclasses import (
     RenderPreviewResult,
     TextCue,
 )
+from detail.core.errors import UserInputError
 from detail.core.protocols import ModelNotReadyError
 from detail.core.registries import STREAM_CONSUMERS, STREAM_IMPORTERS, TRANSFORMS
 from detail.core.utils import active_polygon_at_frame, default_compute
@@ -44,6 +45,7 @@ from detail.pipeline import prompt_test as _prompt_test_pipeline
 from detail.pipeline import render_preview as _render_preview_pipeline
 from detail.storage import clocks as clock_store
 from detail.storage import experiment as experiment_store
+from detail.storage import id_allocator
 from detail.storage import integrity
 from detail.storage import read_cache
 from detail.storage import recording as recording_store
@@ -660,8 +662,8 @@ class Recording:
         return self._spatial_at_frame("roi", "rois", roi_id, frame_idx)
 
     def delete_roi(self, roi_id: str) -> None:
-        """Remove an ROI (keyframes + recording.yaml entry). Unconditional —
-        nothing consumes ROIs yet."""
+        """Remove an ROI (keyframes + recording.yaml entry). Unconditional: a finished
+        location run keeps its own rows, and the id is never given to another ROI."""
         spatial_store.delete_def(self.dir, "roi", roi_id)
 
     def define_point(
@@ -707,18 +709,21 @@ class Recording:
 
     def set_rois(self, defs: list[dict]) -> list[str]:
         """Replace **all** ROIs in one transaction — the multi-region manager's "Save all"
-        (Section 10). Each entry is ``{"name", "keyframes", "active"}`` (``active``
-        optional). Existing ROIs are removed and fresh ids assigned; returns the new ids.
+        (Section 10). Each entry is ``{"name", "keyframes", "active", "id"}`` (``active``
+        and ``id`` optional). An entry carrying the id of an ROI that exists keeps it; any
+        other gets an id never used in this recording before. Returns the ids, in order.
 
         Raises:
-            ValueError: If any def is invalid (empty/duplicate name, bad keyframes/active).
+            ValueError: If any def is invalid (empty/duplicate name or id, bad
+                keyframes/active).
         """
         return spatial_store.replace_defs(self.dir, "roi", defs)
 
     def set_points(self, defs: list[dict]) -> list[str]:
         """Replace **all** POIs in one transaction — the manager's "Save all" (Section 10).
-        Each entry is ``{"name", "keyframes", "active"}``; each keyframe carries one
-        vertex. Returns the new ids."""
+        Each entry is ``{"name", "keyframes", "active", "id"}``; each keyframe carries one
+        vertex. Ids are kept and minted as in :meth:`set_rois`. Returns the ids, in order.
+        """
         return spatial_store.replace_defs(self.dir, "point", defs)
 
     def export_spatial_csv(self, path: Path | str) -> None:
@@ -981,7 +986,8 @@ class Recording:
     @property
     def pixels_per_mm(self) -> float | None:
         """``pixels_per_mm`` at the recording's current video resolution (rescaled from the
-        calibration's own resolution), or ``None`` if uncalibrated.
+        calibration's own resolution), or ``None`` if uncalibrated. With no video yet, the
+        calibration's own value at its ``ref_resolution`` (:meth:`calibration_reference`).
 
         Raises:
             ValueError: the calibration cannot describe this video — see
@@ -990,8 +996,22 @@ class Recording:
         cal = self.distance_calibration
         if cal is None:
             return None
-        width, height = self.video_resolution
-        return spatial_store.pixels_per_mm_at(cal, width, height)
+        resolution = self.video_resolution
+        if resolution is None:
+            # No video yet (a calibration copied onto it is allowed): the stored value, at the
+            # calibration's own resolution — `calibration_reference` says which.
+            return float(cal["pixels_per_mm"])
+        return spatial_store.pixels_per_mm_at(cal, *resolution)
+
+    def calibration_reference(self) -> str:
+        """How to read :attr:`pixels_per_mm`: ``""`` when it is at this recording's video, or
+        ``" at WxH (no video yet)"`` when the recording has no video and the number is the
+        calibration's own, at the resolution it was measured on."""
+        cal = self.distance_calibration
+        if cal is None or self.video_resolution is not None:
+            return ""
+        ref_w, ref_h = (int(v) for v in cal["ref_resolution"])
+        return f" at {ref_w}x{ref_h} (no video yet)"
 
     def calibration_refusal(self) -> str | None:
         """Why this recording's distance calibration gives no scale for its video, or
@@ -1051,11 +1071,12 @@ class Recording:
     def _require_complete_tracking(self, tracking_run_id: str) -> dict:
         rec = {r["id"]: r for r in self.tracking_runs}.get(tracking_run_id)
         if rec is None:
-            raise ValueError(
-                f"tracking run {tracking_run_id!r} not found in recording {self.id!r}"
+            raise UserInputError(
+                f"tracking run {tracking_run_id!r} not found in recording {self.name!r}; "
+                f"its tracking runs are {[r['id'] for r in self.tracking_runs]}"
             )
         if rec.get("status") != "complete":
-            raise ValueError(
+            raise UserInputError(
                 f"tracking run {tracking_run_id!r} is {rec.get('status')!r}, not complete"
             )
         return rec
@@ -2590,13 +2611,11 @@ class Recording:
 
     # --- recording.yaml bookkeeping ------------------------------------------- #
     def _next_run_id(self, runs: list[dict], prefix: str) -> str:
-        nums = []
-        for run in runs:
-            try:
-                nums.append(int(str(run["id"]).rsplit("_", 1)[-1]))
-            except (ValueError, KeyError):
-                pass
-        return f"{prefix}_{max(nums, default=0) + 1:02d}"
+        """Claim the next ``<prefix>_NN`` run id in this recording, never reused: an analysis
+        record's ``tracking_run_ids`` and a tracking run's detection id name these, so a new
+        run must not take a deleted one's id (``storage/id_allocator.py``)."""
+        taken = [str(run.get("id")) for run in runs]
+        return id_allocator.claim(self.dir, prefix, digits=2, taken=taken)
 
     def _reserve_run(self, key: str, prefix: str, make_record) -> str:
         """Allocate the next run id and append its record atomically under the recording lock.
