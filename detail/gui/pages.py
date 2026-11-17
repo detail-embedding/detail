@@ -4980,7 +4980,11 @@ class RecordingDetailPage(QWidget):
         )
         if confirm != QMessageBox.StandardButton.Yes:
             return
-        self._experiment.delete_recording(self._recording.id)
+        try:
+            self._experiment.delete_recording(self._recording.id)
+        except ValueError as exc:  # a run is still using it — the message names the run
+            QMessageBox.warning(self, "Delete recording", str(exc))
+            return
         if self._on_deleted is not None:
             self._on_deleted()
 

@@ -187,8 +187,10 @@ def run_prompt_test_on_parts(
     prompt_labels = [f"prompt_{i}" for i in range(len(prompts))]
     results: list[PromptTestResult] = []
     decoded_frames = 0  # counted separately: on_result mode never fills ``results``
+    stopped = False
     for done, (part_index, requested_frame) in enumerate(samples):
         if stop_check is not None and stop_check():
+            stopped = True
             break
         tsmap = None if timestamps_for is None else timestamps_for(part_index)
         decoded = read_frame_at(
@@ -251,7 +253,10 @@ def run_prompt_test_on_parts(
         if progress is not None:
             progress(done + 1, len(samples))
 
-    if not decoded_frames:
+    # A stop is not a decode failure (§27): a loop the user ended before its first frame
+    # returns empty, and the caller records it stopped. Only a loop that ran out of samples
+    # with nothing decoded says the video is unreadable.
+    if not decoded_frames and not stopped:
         raise ValueError("no frames could be decoded from the sampled positions")
     return results, samples, prompt_labels
 
