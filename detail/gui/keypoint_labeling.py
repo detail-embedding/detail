@@ -241,9 +241,8 @@ class _MarkSaver:
             marks = self._latest.pop(index, None)
         if marks is None:
             return None
-        return self._experiment.set_example_marks(
-            self._set_id, index, marks
-        )  # off-thread
+        experiment, set_id = self._experiment, self._set_id
+        return experiment.set_example_marks(set_id, index, marks)  # off-thread
 
     def _done(self, _result) -> None:
         if not self.busy:
