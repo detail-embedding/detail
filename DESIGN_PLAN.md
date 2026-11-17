@@ -7567,8 +7567,9 @@ frames and no key. A tile's loop line is drawn **under** its picture on a grid-c
 never over the footage: on the footage's black foot the near-black fill vanished and the unplayed
 remainder read as a bar running backwards (review round 4). While a selection is on, **every block is
 shaded by its matching share** (`NodeView.match_shares`) on the fixed 0–100% ramp
-(`plot_theme.match_colour`, grey for none or NaN), and its label colour moves to a 3 px strip along
-its top (`NodeIcicle.set_shades`); the text ink follows the fill. The key marks the selected cluster's share
+(`plot_theme.match_colour`, the ramp's low end for none or NaN), and a block a label covers shows
+a 3 px ink strip along its top in place of its label's colour (`NodeIcicle.fill_of`); the text ink
+follows the fill. The key marks the selected cluster's share
 with a tall bar and a triangle, labelled *selected 2.3%* above the ramp, and the run's with a
 thinner line labelled *run 23%* below it. (A tick per cluster above the ramp was removed in review
 round 3: hundreds of them read as a barcode, and the tree's shading already places each cluster.) **The scale never stretches**: an even 43–55% spread is one mid
@@ -8428,10 +8429,23 @@ page and an export cannot disagree. One screen at a time: two statistics cannot 
 tab beside INTERPRET was specified for this (§21) and never built; the dock is the screen it was
 meant to be.
 
+**Colour on the tree means one thing at a time** (`NodeIcicle.labels_coloured`, `fill_of`). With
+no filter shading the tree and no screen ticked, a block is its label's colour: solid for its own
+label, pale under an ancestor's, neutral with none. Once a filter shades the tree, or a ticked
+screen colours it or frames what it kept, colour is the share's or the screen's: a block a label
+covers shows a 3 px ink strip along its top and its name, never the label's hue, and the swatch
+row above the tree draws its squares in the text's colour (`NodeInterpretTab._show_swatches`). A
+screen's frames with no field on leave the fill unshaded, and a labelled block is then the neutral
+stepped toward ink. The label's hue once rode the top of a shaded block — a blue strip on a yellow
+block, the palette's first two being blue and amber, the scale's two poles (user, 2026-11-16:
+*we're using color to communicate two different things*). Find clusters' bands and AUDIT's ring
+keep their colours; they are frames, never a fill, and are not yet reconciled with this rule.
+
 **The dock has two tabs, and the open one decides what the tree's colour means**
 (`cluster_filters.FilterDock.tabs`, `FilterBar.open_tab`, `NodeInterpretTab._shade_tree`).
-*Differences* holds the saved screens, the ticked screen's scale and its strictness. *Filters*
-holds the clips-that-match scale, the count line with Reset all, and every field. Each tab's
+*Filters*, first and the tab the dock opens on, holds the clips-that-match scale, the count line
+with Reset all, and every field. *Differences* holds the saved screens, the ticked screen's scale
+and its strictness. Each tab's
 label counts what it has on (*Differences · 1*, *Filters · 2*), so the tab that is not open still
 says it is narrowing the clips or colouring the tree. Reset all removes the Filters tab's fields
 and leaves a ticked screen, which is on the other tab. The two scales are two widgets

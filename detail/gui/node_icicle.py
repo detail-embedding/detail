@@ -156,6 +156,15 @@ FOUND_PX = 3
 KEPT_PX = 3
 
 
+def _toward(a: QColor, b: QColor, t: float) -> QColor:
+    """``a`` stepped ``t`` of the way to ``b``."""
+    return QColor(
+        round(a.red() + (b.red() - a.red()) * t),
+        round(a.green() + (b.green() - a.green()) * t),
+        round(a.blue() + (b.blue() - a.blue()) * t),
+    )
+
+
 def _frame(painter: QPainter, rect: QRectF, width: float, colour: QColor) -> None:
     """A ``width``-px band just inside ``rect``, as four fills: crisp at any width, where a
     pen's stroke straddles the edge and blurs half a pixel either side."""
@@ -311,17 +320,33 @@ class NodeIcicle(QWidget):
 
     def fill_of(self, node: int) -> tuple[QColor, QColor | None]:
         """``(fill, strip)`` for ``node``'s block: what the paint step draws. ``strip`` is the
-        label colour along the top while shading is on, else ``None``."""
+        mark along the top of a block a label covers while the tree is read for something
+        else, in ink, else ``None``.
+
+        **Colour means one thing at a time** (§22; :meth:`labels_coloured`). With nothing
+        shading the tree and no screen's frames on it, a block is its label's colour: solid
+        where the label is its own, pale where an ancestor's covers it, neutral where none
+        does. Once a filter shades the tree, or a ticked difference screen colours it or
+        frames what it kept, colour is the screen's or the share's and a label is an ink
+        strip and its name. The label's hue once rode the top of a shaded block: a blue strip
+        on a yellow block, two meanings of colour in one picture (user, 2026-11-16).
+        """
         theme = plot_theme.current()
         neutral = QColor(theme.neutral)
+        covered = node in self._fills
         colour, own = self._fills.get(node, (neutral, True))
-        label = QColor(colour)
-        if node in self._fills and not own:
-            label.setAlpha(95)
-        if self._shades is None:
+        if self.labels_coloured():
+            label = QColor(colour)
+            if covered and not own:
+                label.setAlpha(95)
             return label, None
+        strip = QColor(theme.text) if covered else None
+        if self._shades is None:
+            # A screen's frames with no field on: the fill is still not the label's hue.
+            if not covered:
+                return neutral, None
+            return _toward(neutral, QColor(theme.text), 0.35 if own else 0.15), strip
         share = self._shades.get(int(node), float("nan"))
-        strip = label if node in self._fills else None
         if self._diverging:
             value = float("nan") if share is None else float(share)
             if self._one_sided:
@@ -329,6 +354,13 @@ class NodeIcicle(QWidget):
             return plot_theme.effect_colour(value, theme), strip
         share = 0.0 if share is None or share != share else float(share)
         return plot_theme.match_colour(share, theme), strip
+
+    def labels_coloured(self) -> bool:
+        """Whether the blocks wear their labels' colours: nothing shades the tree and no
+        difference screen has framed what it kept. The row of label swatches above the tree
+        follows it (``NodeInterpretTab``), so a swatch is never the one coloured thing left
+        naming a hue the tree is using for something else."""
+        return self._shades is None and not self._kept
 
     def set_outlines(
         self, outlines: dict[int, QColor], marks: dict[int, str] | None = None
@@ -716,11 +748,13 @@ class NodeIcicle(QWidget):
             fill, strip = self.fill_of(node)
             painter.fillRect(rect, fill)
             if strip is not None:
+                band = min(STRIP_PX, rect.height())
+                painter.fillRect(QRectF(rect.x(), rect.y(), rect.width(), band), strip)
+                # A line of the surface under it, so an ink strip still reads on a fill
+                # that is nearly ink itself (most of a cluster's clips matching).
                 painter.fillRect(
-                    QRectF(
-                        rect.x(), rect.y(), rect.width(), min(STRIP_PX, rect.height())
-                    ),
-                    strip,
+                    QRectF(rect.x(), rect.y() + band, rect.width(), 1),
+                    QColor(theme.surface),
                 )
             if node in kept:
                 # Under the block's name, which starts inside the frame's width.
@@ -745,7 +779,7 @@ class NodeIcicle(QWidget):
             if min(rect.right(), self.width()) - max(rect.left(), 0) > TEXT_BLOCK_PX:
                 # Ink that reads on the block it sits on: a solid label colour (or a dark shade
                 # of the match ramp) is dark enough to swallow dark text, and a pale fill is not.
-                opaque = self._shades is not None or (node in self._fills and own)
+                opaque = not self.labels_coloured() or (node in self._fills and own)
                 solid = opaque and fill.lightness() < 150
                 ink = QColor("#ffffff") if solid else text
                 if self._shades is not None and not solid and text.lightness() > 128:

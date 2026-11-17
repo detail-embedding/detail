@@ -508,16 +508,24 @@ class LabelSwatches(QWidget):
         self._row.setSpacing(12)
         self._labels: list[QLabel] = []
 
-    def set_labels(self, rows: Sequence[tuple[str, QColor | str, float]]) -> None:
-        """``(name, colour, seconds)`` per label, in the order to show them."""
+    def set_labels(
+        self, rows: Sequence[tuple[str, QColor | str | None, float]]
+    ) -> None:
+        """``(name, colour, seconds)`` per label, in the order to show them. ``colour``
+        ``None`` draws the square in the text's own colour: above the cluster tree, where a
+        label has no colour (``NodeIcicle.fill_of``)."""
         for label in self._labels:
             label.setParent(None)
             label.deleteLater()
         self._labels = []
         for name, colour, seconds in rows:
-            hex_colour = QColor(colour).name()
+            square = (
+                "&#9632;"
+                if colour is None
+                else f'<span style="color:{QColor(colour).name()}">&#9632;</span>'
+            )
             label = QLabel(
-                f'<span style="color:{hex_colour}">&#9632;</span> '
+                f"{square} "
                 f"{html.escape(name)} "
                 f"<span>{html.escape(format_duration(seconds))}</span>"
             )

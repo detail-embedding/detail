@@ -662,8 +662,9 @@ def test_with_no_filter_the_key_is_greyed_over_the_runs_clip_count(bar, qapp):
     ]
     assert above == ["Clips that match", "0%", "100%", "2,781 clips"], above
     tabs = dock.tabs
-    assert [tabs.tabText(i) for i in range(tabs.count())] == ["Differences", "Filters"]
+    assert [tabs.tabText(i) for i in range(tabs.count())] == ["Filters", "Differences"]
     assert bar.open_tab() == cf.FILTERS_TAB, "the tab every run has something on"
+    assert tabs.currentIndex() == 0, "first, and the one the dock opens on"
 
 
 def test_the_fields_do_not_move_when_the_first_filter_goes_on(bar, qapp):
@@ -1515,13 +1516,13 @@ def test_ticking_a_screen_is_the_clusters_condition_and_its_reset_removes_it(bar
     assert selection.keys() == [cf.CLUSTERS]
     assert bar.differences_summary() == "drug vs vehicle · paired"
     tabs = bar.dock.tabs
-    assert tabs.tabText(0) == "Differences · 1", "the tab says a screen is on"
-    assert tabs.tabText(1) == "Filters", "and that no field is"
+    assert tabs.tabText(1) == "Differences · 1", "the tab says a screen is on"
+    assert tabs.tabText(0) == "Filters", "and that no field is"
     bar.remove(cf.CLUSTERS)
     assert bar.seen[-1].is_empty
     assert bar.screens.value() is None
     assert bar.differences_summary() == "none"
-    assert tabs.tabText(0) == "Differences"
+    assert tabs.tabText(1) == "Differences"
 
 
 def test_one_screen_at_a_time(bar):

@@ -1474,13 +1474,7 @@ class NodeInterpretTab(QWidget):
         rows = label_rows(view, self._names)
         self._label_field.set_labels(rows, self._colour_of_root)
         self._label_bar.set_quick_labels(self._quick_labels(rows))
-        self._key_row.swatches.set_labels(
-            [
-                (text, self._colour_of_root(root), time_ns / 1e9)
-                for text, depth, root, time_ns in rows
-                if depth == 0 and root
-            ]
-        )
+        self._show_swatches()
         if self._selected is not None:
             self._show_label_field(self._selected)
             self._show_header(self._selected)
@@ -1492,6 +1486,21 @@ class NodeInterpretTab(QWidget):
             range(len(root_slots(label_paths(view, self._names).values())))
         )
         self._find.refresh()
+
+    def _show_swatches(self) -> None:
+        """The labels in use above the tree, each in its colour while the tree wears the
+        labels' colours and with a plain square while the tree's colour means a screen or a
+        share (``NodeIcicle.labels_coloured``, §22)."""
+        if self._view is None:
+            return
+        coloured = self._icicle.labels_coloured()
+        self._key_row.swatches.set_labels(
+            [
+                (text, self._colour_of_root(root) if coloured else None, time_ns / 1e9)
+                for text, depth, root, time_ns in label_rows(self._view, self._names)
+                if depth == 0 and root
+            ]
+        )
 
     # --- selection -----------------------------------------------------------------------
 
@@ -1776,6 +1785,7 @@ class NodeInterpretTab(QWidget):
                     },
                     texts,
                 )
+        self._show_swatches()
         self._show_key()
 
     def _ticked_screen(self, selection) -> ScreenChoice | None:

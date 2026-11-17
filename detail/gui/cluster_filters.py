@@ -169,7 +169,9 @@ SCREENS_HINT_TEXT = (
 #: The dock's two tabs (§22): which one is open decides what the tree's colour means.
 DIFFERENCES_TAB = "differences"
 FILTERS_TAB = "filters"
-_TAB_ORDER = (DIFFERENCES_TAB, FILTERS_TAB)
+#: Filters first, and the tab the dock opens on: every run has fields to filter by, and a
+#: screen only once one has been saved (user, 2026-11-16).
+_TAB_ORDER = (FILTERS_TAB, DIFFERENCES_TAB)
 _TAB_TEXT = {DIFFERENCES_TAB: "Differences", FILTERS_TAB: "Filters"}
 _TAB_TIPS = {
     DIFFERENCES_TAB: (
@@ -1992,7 +1994,6 @@ class FilterDock(QWidget):
         self.differences_box = _holder()
         self.differences_box.layout().setContentsMargins(0, lines(0.4), lines(0.5), 0)
         self.differences_scroll.setWidget(self.differences_box)
-        self.pages.addWidget(self.differences_scroll)
         self.filters_page = QWidget()
         filters_page = QVBoxLayout(self.filters_page)
         filters_page.setContentsMargins(0, lines(0.4), 0, 0)
@@ -2044,7 +2045,10 @@ class FilterDock(QWidget):
         self._column.addStretch(1)
         self.scroll.setWidget(self.sections)
         filters_page.addWidget(self.scroll, 1)
-        self.pages.addWidget(self.filters_page)
+        for name in _TAB_ORDER:
+            self.pages.addWidget(
+                self.filters_page if name == FILTERS_TAB else self.differences_scroll
+            )
         body.addWidget(self.pages, 1)
         self.tabs.currentChanged.connect(self.pages.setCurrentIndex)
         self.tabs.setCurrentIndex(_TAB_ORDER.index(FILTERS_TAB))

@@ -423,27 +423,49 @@ def _pixel(widget, node, dy):
     )
 
 
-def test_a_shade_is_the_fixed_ramp_and_the_label_moves_to_a_top_strip(icicle, qapp):
+def test_colour_means_one_thing_at_a_time_labels_then_a_shade_or_a_screen(icicle, qapp):
+    """With nothing on, a block is its label's colour. Once a filter shades the tree, or a
+    difference screen frames what it kept, colour is theirs and a label is an ink strip and
+    its name: the label's hue once rode the top of a shaded block, a blue strip on a yellow
+    one, two meanings of colour in one picture (§22)."""
     from PyQt6.QtGui import QColor
 
     from detail.gui import plot_theme
 
+    theme = plot_theme.current()
+    ink, neutral = QColor(theme.text), QColor(theme.neutral)
     label = QColor("#c2913a")
     icicle.set_labels({4: (label, True)}, {4: "rearing"})
     qapp.processEvents()
-    assert _pixel(icicle, 4, 10).name() == label.name(), "unfiltered: the label colour"
+    assert icicle.labels_coloured()
+    assert _pixel(icicle, 4, 10).name() == label.name(), "nothing on: the label colour"
+    assert icicle.fill_of(4)[1] is None, "and no strip: the fill says it"
+
     shares = {node: 0.5 for node in range(11)}
     shares[5] = 0.0
     icicle.set_shades(shares)
     qapp.processEvents()
+    assert not icicle.labels_coloured()
     ramp = plot_theme.match_colour(0.5)
     assert _pixel(icicle, 4, 12).name() == ramp.name(), "filtered: the share's shade"
-    assert _pixel(icicle, 4, 1).name() == label.name(), "the label is a strip on top"
+    assert _pixel(icicle, 4, 1).name() == ink.name(), "the label is an ink strip on top"
+    assert _pixel(icicle, 4, 1).name() != label.name(), "never its hue over a shade"
     assert _pixel(icicle, 5, 12).name() == plot_theme.match_colour(0.0).name()
     assert node_icicle.STRIP_PX == 3
     icicle.set_shades(None)
     qapp.processEvents()
-    assert _pixel(icicle, 4, 12).name() == label.name()
+    assert _pixel(icicle, 4, 12).name() == label.name(), "off again: the label colour"
+
+    # A screen's frames with no field on: still not the label's hue under them.
+    icicle.set_kept({5: plot_theme.effect_colour(1.0, theme)})
+    qapp.processEvents()
+    assert not icicle.labels_coloured()
+    fill = icicle.fill_of(4)[0]
+    assert fill != label and fill.red() == fill.green() == fill.blue(), "no hue"
+    assert fill != neutral, "but still set apart from an unlabelled block"
+    assert icicle.fill_of(4)[1] == ink
+    icicle.set_kept({})
+    assert icicle.labels_coloured() and icicle.fill_of(4)[0] == label
 
 
 def test_the_scale_is_fixed_not_stretched_to_the_clusters_spread(icicle):
