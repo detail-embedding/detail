@@ -1037,6 +1037,14 @@ def _run_inline(
         worker.start()
         while worker.is_alive():
             worker.join(_PROGRESS_POLL_INTERVAL_S)
+            # The unit polls the flag, not the event; touch it as soon as a stop arrives, as
+            # the multi-GPU loop does, or a cancel waits out a whole track/part (#28).
+            if (
+                stop_event is not None
+                and stop_event.is_set()
+                and not stop_flag.exists()
+            ):
+                stop_flag.touch()
             snapshot = _embedding_worker.read_progress_json(
                 Path(unit["progress_json_path"])
             )
@@ -1541,6 +1549,7 @@ class EmbeddingModule(ProcessingModule):
     progress_event_class = EmbeddingProgressEvent
     # frames_total is the unique frames embedded
     progress_counts_frames = True
+    resumes = False  # embedding has no resume (module docstring)
 
     def runner(self, job, run_dir, progress_cb, stop_event) -> None:
         run(job, run_dir, progress_cb, stop_event)

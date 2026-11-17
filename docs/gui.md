@@ -86,12 +86,15 @@ facts are on the command line as [`detail version`](cli.md#version).
 
 ### Active processes {#active-processes}
 
-**Active processes** lists everything in flight across every experiment (what it is, which experiment it belongs to, and when it started), plus anything that failed while you were away, which is the other thing you came looking for. Double-click a row to open that run's own page, where its bars are. Nothing is started from here; runs are launched from an experiment, and exports from **Export…** on any screen.
+**Active processes** lists everything in flight across every experiment (what it is, which experiment it belongs to, and when it started), plus anything that failed or was cancelled, which is the other thing you came looking for. Double-click a row to open that run's own page, where its bars are. Quick tools runs are not listed here: they run inside the window that started them, so watch one on its own page under **Quick tools**. Nothing is started from here; runs are launched from an experiment, and exports from **Export…** on any screen.
 
 Three sections, because they answer different questions:
 
 - **Runs** is processing, analysis, distill, datasets and models. It lists what is going and
-  what failed; a finished run is on its experiment's own page.
+  what failed or was cancelled; a finished run is on its experiment's own page. A failed or
+  cancelled run stays listed until you delete it (or retry it to completion), however many times
+  you have looked at it. The caption counts cancelled runs separately from failed and finished
+  ones.
 - **Exports** says what each export wrote and the folder it wrote to, and keeps your recent
   finished ones. An export's files land outside the experiment, so this is the only place that
   remembers where they went.
@@ -353,6 +356,8 @@ Every recording-level input lives here (run outputs are read-only). The top show
     **Preview** puts the video at the top, scrubbable, with the stream's timeline under it: one lane per label for an event stream, one lane of sample ticks for a continuous one. A program with more lanes than the window has room for scrolls; make the window taller to see more of them at once.
 
 **Run history** (bottom): this recording's detection / tracking / embedding runs. Double-click a row for its results. Both GUI batch runs and per-recording CLI/API runs show up here.
+
+**Delete recording** asks first, then removes the recording and everything it owns. It is refused while a run is still using the recording: a run going on it, or a processing, analysis, distill, dataset or export run that includes it. The message names each run; cancel it or let it finish, then delete. A finished processing run that included the recording keeps its other recordings and no longer lists this one.
 
 ## Recording information
 
@@ -696,7 +701,7 @@ the rows. Frames and fps appear only for stages that count frames (detection, tr
 embedding and the keypoint stages); a distill or an analysis shows its wall clock alone. It is a local file (nothing is sent anywhere), and it reads the run's own activity log,
 so a run from before DETAIL kept one shows blanks rather than guesses.
 
-Under the bar, while a run is going, is a row per **recording**: a bar each, the one in flight showing its stage and its own ETA, finished ones greyed with how long they took, failures in red with the reason. Past eight recordings the finished and the queued fold into counts (*7 done*, *12 queued*), so a 21-recording run is four rows rather than twenty-one, and the one that failed is not buried among them; click a count to open it. The rows stay in the order the run does them. Once the run finishes they give way to the **Results** list below, which carries each recording's produced run id and status. **Click a row to see that recording's results** underneath it: the video, the scatter, or (for a recording that did not finish) why. **Double-click** opens the recording itself. A long run scrolls inside the list, so the results underneath stay on screen.
+Under the bar, while a run is going, is a row per **recording**: a bar each, the one in flight showing its stage and its own ETA, finished ones greyed with how long they took, failures in red with the reason, and a recording that was cancelled or stopped part-way (*cancelled*, *partial*) also in red, saying which. Past eight recordings the finished and the queued fold into counts (*7 done*, *12 queued*), so a 21-recording run is four rows rather than twenty-one, and the one that failed is not buried among them; click a count to open it. The rows stay in the order the run does them. Once the run finishes they give way to the **Results** list below, which carries each recording's produced run id and status. **Click a row to see that recording's results** underneath it: the video, the scatter, or (for a recording that did not finish) why. **Double-click** opens the recording itself. A long run scrolls inside the list, so the results underneath stay on screen.
 
 Every run also writes `activity.csv` beside itself: a timestamped line per update, with both ETAs. Nothing in the app shows it; it is what the **Performance report** export reads and what to attach to a bug report.
 

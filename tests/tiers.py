@@ -411,6 +411,8 @@ UNIT_EXEMPTIONS = {
     "tests/api/test_job_reattach.py": "same: a `python -c pass` stand-in process is the "
     "only way to test that a surviving run reattaches",
     "tests/api/test_run_lifecycle_parity.py": "same PID stand-in, one per run kind",
+    "tests/api/test_run_status_evidence.py": "the same `python -c pass` stand-in, for a "
+    "worker pid that is certainly dead — no workload",
     "tests/api/test_export_estimates.py": "cv2.VideoWriter writes one 30-frame 64x64 stub "
     "clip so the video estimate times real frames — 6.3 s for the 34-test file on the macOS "
     "box, the rest of which is no-video estimates",

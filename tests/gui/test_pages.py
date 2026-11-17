@@ -326,6 +326,48 @@ def test_recording_detail_deletes_recording(qapp, tmp_path, monkeypatch):
     assert {s.id for s in proj.recordings} == set()  # recording is gone
 
 
+def test_recording_detail_refuses_to_delete_a_recording_a_run_is_using(
+    qapp, tmp_path, monkeypatch
+):
+    """Issue #28, finding 6: the refusal reaches the user as a warning naming the run, and
+    the page stays — an uncaught ``ValueError`` in a Qt slot would abort the app."""
+    from PyQt6.QtWidgets import QMessageBox
+
+    from detail.gui.pages import RecordingDetailPage
+    from detail.storage import runs as runs_store
+
+    proj = Experiment.create("p", tmp_path)
+    recording = proj.create_recording("s1")
+    runs_store.write_run(
+        proj.dir,
+        "run_001",
+        {
+            "id": "run_001",
+            "module_id": "detection",
+            "recording_ids": ["s1"],
+            "config": {},
+            "per_recording": {"s1": {"run_id": "det_01", "status": "running"}},
+            "status": "running",
+            "created_at": "2026-01-01T00:00:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes
+    )
+    warnings = []
+    monkeypatch.setattr(
+        QMessageBox, "warning", lambda parent, title, text: warnings.append(text)
+    )
+    deleted = []
+    page = RecordingDetailPage(
+        recording, on_deleted=lambda: deleted.append(True), experiment=proj
+    )
+    page._delete_recording()
+    assert deleted == []
+    assert len(warnings) == 1 and "run_001" in warnings[0]
+    assert {s.id for s in proj.recordings} == {"s1"}
+
+
 def _ticked(dialog):
     """The definition names currently ticked in a picker."""
     from detail.gui.pages import _checked_movables
