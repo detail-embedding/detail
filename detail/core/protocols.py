@@ -567,10 +567,27 @@ class StreamImporter(ABC):
     clock: str = "stream_seconds"
     aux_inputs: list[AuxInput] = []
     config_model: type | None = None
+    #: Whether this importer's config can make it read a file nothing recognizes (a CSV whose
+    #: columns are mapped by hand). The Add-stream dialog falls back to it for an unclaimed
+    #: file. A config that only *picks within* a recognized file (MED-PC's session, BORIS's
+    #: observation and subject) does not qualify, so this is declared, not inferred from
+    #: ``config_model``.
+    maps_unrecognized_files: bool = False
 
     @abstractmethod
     def can_import(self, path: Path) -> bool:
         """True if this importer recognizes the primary data file's format."""
+
+    def resolve_clock(self, path: Path, config: dict | None = None) -> str:
+        """The clock importing ``path`` with ``config`` would produce, without importing it.
+
+        Defaults to the declared ``clock``. An importer whose clock depends on the file (a CSV
+        whose time column is a frame index reports ``video_frames`` from a ``stream_seconds``
+        importer) overrides it, so a surface gating alignment controls reads the clock the
+        import will actually record rather than the class attribute (Section 3). Cheap: a
+        header sniff at most.
+        """
+        return self.clock
 
     @abstractmethod
     def import_stream(

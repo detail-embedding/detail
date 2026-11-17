@@ -191,6 +191,8 @@ GUARD_FILES = frozenset(
     {
         # --- source scans over detail/ ------------------------------------------- #
         "tests/storage/test_path_serialization.py",
+        # Every write of a stream's alignment goes through a clock gate (#30).
+        "tests/storage/test_alignment_doors.py",
         # The clip window's strips are fed `Curve`s and spell no curve's name themselves.
         "tests/gui/test_clip_strips_scan.py",
         # One rule for a read-bound pool's thread count; `os.cpu_count()` nowhere else.

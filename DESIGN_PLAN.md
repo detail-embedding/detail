@@ -843,7 +843,7 @@ frame_idx,t_ns
 
 A run that thins with `every_n_frames` needs no second map: its rows carry the source frame's own index and `t_ns` (§4).
 
-Loading and `frame_idx → t_ns` lookup of these maps live in `storage/recording`. Canonical `t_ns` ↔ float-seconds conversions (`t_ns_to_seconds` / `seconds_to_t_ns`) live in `core/utils`.
+Loading and `frame_idx → t_ns` lookup of these maps live in `storage/recording`. Canonical `t_ns` ↔ float-seconds conversions (`t_ns_to_seconds` / `seconds_to_t_ns`) live in `core/utils`. `seconds_to_t_ns` is the **one checked conversion**: it refuses a value that is not finite or whose nanoseconds do not fit int64, naming where it came from (`what=`), and every importer and every typed offset goes through it (`check_t_ns` for a value already in ns).
 
 **The map is authoritative for frame *retrieval*, not just for counting.** `storage/video.py::read_frame_at` — the seek behind every preview (detection / tracking / input-image / prompt-test) — takes the part's map and seeks by `t_ns`, so the picture returned is the `frame_idx`-th in presentation order: the same indexing the sequential detection pass assigns, which is what makes an overlay keyed by `frame_idx` land on the right image. Without a map it falls to the packet-PTS index, and failing that to a bounded sequential decode (exact by construction, capped by `SEQUENTIAL_DECODE_FRAME_CAP`). What it must never do is seek by frame *number* via cv2's `CAP_PROP_POS_FRAMES`: that converts the ordinal to a time using the container's *advertised* fps, so on a variable-frame-rate or fps-skewed file it returns the wrong picture **and** reports the requested index back, desyncing overlays by an amount that grows with the frame number. Passing the map is also the fast path — it replaces a whole-file packet scan (≈11 s on a 1 GB part) with a CSV read (≈0.1 s). Because a map is part-local from 0 plus the part's recording offset, the seek converts with one constant per part (`video._map_shift_ns`: `map[0]` minus the stream's start time), and a frame is accepted only if its converted `t_ns` is in the map — so a later part or a late-starting file takes the fast path too, and a map that does not describe the file still falls back. The packet-PTS index skips `is_discard` packets in the same loop the import uses, so the two cannot disagree on an edit-listed file.
 
@@ -864,6 +864,20 @@ Each stream has its own clock. The `alignment` block in `recording.yaml` maps st
 - **Simple case** (most common, **built**): constant signed `offset_ns` — `video_t_ns = stream_t_ns + offset_ns` (positive if the stream began after the video, negative if before). Canonical data stays stream-local and is never rewritten; alignment is applied at read time (`storage/streams.apply_alignment`), so re-aligning is a one-number edit.
 - **Advanced case** (not yet built): user-provided correction table CSV mapping `stream_t_ns → video_t_ns` for non-linear drift or hardware sync data.
 
+**Every alignment door gates on the stored clock, in storage (#30).** `streams_store.check_offset_allowed`
+refuses a non-zero offset for a video-anchored clock; it is called by `Recording.add_stream` (the
+resolved clock) and by `streams_store.set_stream_offset` (the stored clock), the only two writers of
+a stream's `alignment` (`tests/storage/test_alignment_doors.py` scans for a third). The offset is
+read only through `streams_store.stream_offset_ns`, from `alignment.offset_ns`.
+
+**Exporting a stream (the `streams` target, amended pending owner confirmation).** The exported CSV
+keeps the canonical columns, `t_ns` in the stream's own clock, and adds `video_t_ns` right after it
+(`video_end_t_ns` after `end_t_ns` for an interval stream), each `apply_alignment` of its row, so the
+file joins tracks on video time without the canonical data being rewritten. A `behavior` stream's
+file also carries `origin`, since the `behavior_csv` importer reads it back. `streams.csv` lists
+`stream, shape, origin, role, clock, offset_ns, file`, with `origin` empty for a stream that is not
+labels and `offset_ns` the stored offset.
+
 **The offset is set at import, not only afterwards.** `Recording.add_stream` takes `offset_ns` and writes it into the manifest in the same write as the rest of the stream (`--offset` on `recording add-stream`, `offset_ns:` in the bundle manifest, the alignment row on the GUI's import form). It defaults to 0, which *asserts* the stream began with the video rather than merely leaving the field unfilled, so a stream that needs a different number is corrected once rather than discovered later. A non-zero offset on a **video-anchored** stream is refused rather than stored, checked against the clock the import *resolved* (a frame-kind CSV reports `video_frames` from a `stream_seconds` importer, so the declared clock would wrongly accept it); storing a number that read time then ignores is worse than refusing it. Afterwards the offset is editable via `Recording.set_stream_offset`, `recording set-stream-offset`, or the GUI **"Sync to video frame"** helper — scrub to the frame where a chosen stream anchor event occurs and the offset is set to `frame_t_ns(frame) − anchor_t_ns` (`Recording.frame_t_ns` maps a recording-global frame to its video `t_ns`). The correction-table upload (with a `generated`/`user` `active` toggle) remains the documented future extension.
 
 **Alignment correction CSV format:**
@@ -879,15 +893,39 @@ stream_t_ns,video_t_ns
 
 | `importer_id` | shape | `role` | `clock` | `config_model` |
 |---|---|---|---|---|
-| `medpc` | event | — | `stream_seconds` | — (the `.MPC` program is an `aux_input`, not config) |
+| `medpc` | event | — | `stream_seconds` | `MedpcSessionConfig` (which session of a several-session file; the `.MPC` program is an `aux_input`, not config) |
 | `behavior_csv` | interval | `behavior` | `video_frames` | — |
-| `boris` | interval | `behavior` | `video_seconds` | — |
+| `boris` | interval | `behavior` | `video_seconds` | `BorisSelectionConfig` (which observation and subject) |
 | `events_csv` | event | — | `stream_seconds` | — |
 | `timeseries_csv` | continuous | — | `stream_seconds` (`video_frames` when the time column is frames) | `CsvStreamConfig` |
 
 `timeseries_csv` is the worked example for everything below: a continuous CSV cannot be read
 without being told which column is time and which are channels, so it is the importer the config
 channel exists for.
+
+**A config can also pick within a file (#30, amended pending owner confirmation).** A MED-PC data
+file can hold every box of a day (one `Start Date:` block each) and a BORIS export several
+observations and subjects. A recording is one animal in one session, so such a file is **refused
+until its importer's config names one** (`configs/stream_select.py`: `MedpcSessionConfig`
+`{subject, box, session}`, `BorisSelectionConfig` `{observation, subject}`), and the refusal lists
+what the file holds. They are never merged and never cut to the last block. Every field defaults to
+`None`, so a one-session file imports exactly as before with no config. The chosen block is recorded
+in the stream `metadata` (`session` / `sessions_in_file`, `observation` / `observations_in_file`,
+`subjects`). Reached through the same config channel as the CSV mapping: `add_stream(config=)`,
+`add-stream --medpc-subject/--medpc-box/--medpc-session/--boris-observation/--boris-subject`, a
+bundle manifest's `config:`, and a picker band in the GUI's Add stream dialog. A selection is about
+one *file*, so a saved preset does not carry it (`ConfigBand.preset_config`, and `--save-preset`
+saves only the CSV mapping).
+
+**`maps_unrecognized_files`** (class attribute, default `False`) says an importer's config can
+make it read a file nothing recognizes; the Add stream dialog falls back to such an importer for an
+unclaimed file. It is declared rather than inferred from `config_model`, since the MED-PC and BORIS
+configs only pick within files those importers already recognize.
+
+**`resolve_clock(path, config)`** returns the clock an import of that file would record, without
+importing it (default: the declared `clock`; the CSV importers override it from the time column).
+Every surface gating an alignment control on a not-yet-imported file reads this, never the class
+attribute: a `frame` time column is `video_frames` from a `stream_seconds` importer.
 
 A `StreamImporter` declares an optional **`config_model`** — a pydantic model single-sourcing
 its parameters (type / bounds / default / help / label) for the GUI form, the CLI, and the
@@ -1000,6 +1038,10 @@ class StreamImporter(ABC):
     aux_inputs: list[AuxInput] = []   # extra files beyond the primary data file
     config_model: type | None = None  # its own pydantic parameters, or None when the
                                       # format is self-describing ("Importer configuration")
+    maps_unrecognized_files: bool = False  # its config can read a file nothing recognizes
+
+    def resolve_clock(self, path: Path, config: dict | None = None) -> str:
+        """The clock importing this file would record (default: ``clock``)."""
 
     def can_import(self, path: Path) -> bool:
         """Returns True if this importer recognizes the primary data file."""
@@ -1050,7 +1092,12 @@ lockstep — `E[i]` (event code) and `T[i]` (time in **seconds**, last value ==
 (`stream_type="events"`, `aux_inputs=[AuxInput("program", …, [".mpc"])]`) pairs
 E with T, drops sentinels, maps codes→labels, and emits `events` rows
 `(t_ns, code, label)` in stream-local time, with the code→label map kept in the
-manifest `metadata`.
+manifest `metadata`. **This is the one layout it supports, and it refuses others rather than
+guess (#30, pending owner confirmation):** no `E`/`T` arrays is refused by name, and a `T` past the
+session length `H` (the sign of `T` logged in ticks, which would import every time too large) is
+refused. A trailing run of `(code 0, time 0)` pairs (a program's unused, unsealed array space) is
+dropped and counted in `metadata.notes`; a code-0 event between real events is refused unless the
+event map names code 0. A file of several sessions is narrowed by `MedpcSessionConfig` (above).
 
 ### Behavior labels (ground truth)
 
@@ -1069,7 +1116,11 @@ is inclusive):
   START→STOP into an interval and emits a POINT as a zero-length interval, on the
   `video_seconds` clock (seconds → `t_ns`; the import layer fills the frame columns via the
   inverse map). `Subject`→`subject` (names kept in `metadata`, the per-row int stays null);
-  `behavior_types` follow from the markers (verified against a real export).
+  `behavior_types` follow from the markers (verified against a real export). An export holding
+  several `Observation id`s or subjects is refused until `BorisSelectionConfig` names one of each,
+  and START/STOP pairing happens within the chosen rows. A label scored both as START/STOP and as
+  POINT is refused naming the rows of each kind, since `behavior_types` holds one kind per label
+  (#30, pending owner confirmation).
 
 Overlapping intervals of different labels are first-class (co-occurring behaviors);
 same-label overlaps are left untouched on import.

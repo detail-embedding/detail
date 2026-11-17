@@ -15,6 +15,7 @@ import shutil
 from pathlib import Path
 
 from detail.core import atomic
+from detail.storage import clocks
 from detail.storage import recording as recording_store
 
 # Legacy ``type`` (events/sampled) → the ``shape`` axis (Section 3). Streams written
@@ -198,17 +199,52 @@ def delete_stream(recording_dir: Path | str, name: str) -> None:
     recording_store.write_recording(recording_dir, data)
 
 
+def stream_offset_ns(manifest: dict) -> int:
+    """A stream's stored alignment offset in ns, 0 when it has none (Section 3).
+
+    **The one reader of the offset.** It lives at ``alignment.offset_ns``; a reader of a
+    top-level ``offset_ns`` finds nothing and reports 0 for every stream, which is how the
+    ``streams`` export once listed every offset as 0.
+    """
+    return int((manifest.get("alignment") or {}).get("offset_ns", 0) or 0)
+
+
+def check_offset_allowed(name: str, clock: str | None, offset_ns: int) -> None:
+    """Refuse an alignment offset for a stream already on the video's clock (Section 3).
+
+    The one gate every alignment door calls (import, ``set_stream_offset``). A
+    ``video_frames``/``video_seconds`` stream is anchored at import; an offset stored on one
+    is ignored by scoring but drawn by the preview, so the two disagree with nothing to say
+    so. A legacy manifest with no ``clock`` is an external-clock stream.
+
+    Raises:
+        ValueError: If ``offset_ns`` is non-zero and ``clock`` is video-anchored.
+    """
+    clock = clock or "stream_seconds"
+    if offset_ns and not clocks.needs_alignment(clock):
+        raise ValueError(
+            f"stream {name!r} is on the {clock!r} clock, which is already the video's own, "
+            "so it has no alignment offset to set (it would be ignored when scoring but "
+            "drawn by the preview)"
+        )
+
+
 def set_stream_offset(recording_dir: Path | str, name: str, offset_ns: int) -> None:
     """Set a stream's constant alignment offset (signed ns; Section 3).
 
+    **The one writer of an existing stream's alignment.** It refuses a video-anchored stream
+    (``check_offset_allowed``), so every surface reaching it (API, CLI, GUI) is gated by the
+    stored clock rather than by each remembering to check.
+
     Raises:
-        ValueError: If no stream with this name exists.
+        ValueError: If no stream with this name exists, or it is on the video's clock.
     """
     data = recording_store.read_recording(recording_dir)
     streams = data.get("streams", [])
     match = next((s for s in streams if s.get("name") == name), None)
     if match is None:
         raise ValueError(f"unknown stream {name!r}")
+    check_offset_allowed(name, match.get("clock"), int(offset_ns))
     match.setdefault("alignment", {})["offset_ns"] = int(offset_ns)
     match["alignment"]["active"] = "offset"
     recording_store.write_recording(recording_dir, data)
@@ -223,9 +259,9 @@ def apply_alignment(stream_t_ns: int, manifest: dict) -> int:
     Raises:
         NotImplementedError: If the manifest selects the (unbuilt) correction table.
     """
-    alignment = manifest.get("alignment", {})
+    alignment = manifest.get("alignment") or {}
     if alignment.get("active") not in (None, "offset"):
         raise NotImplementedError(
             "stream correction-table alignment is not implemented yet (Section 3)"
         )
-    return int(stream_t_ns) + int(alignment.get("offset_ns", 0))
+    return int(stream_t_ns) + stream_offset_ns(manifest)

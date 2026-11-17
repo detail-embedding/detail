@@ -13,6 +13,8 @@ import csv
 from datetime import datetime, timezone
 from pathlib import Path
 
+from detail.core import utils
+
 # The recognized time-column names (case-insensitive) and the clock each implies.
 # ``seconds``/``t_ns`` are external-device time (aligned by a read-time offset);
 # ``frame`` is the video frame index (resolved against the recording's map).
@@ -194,3 +196,18 @@ def parse_float(value: str | None, column: str, row: int) -> float:
         raise ValueError(
             f"row {row}, column {column!r}: {value!r} is not a number"
         ) from None
+
+
+def cell_to_t_ns(value: str | None, time_key: str, column: str, row: int) -> int:
+    """A ``seconds`` or ``t_ns`` cell as int64 ``t_ns`` (Tenet 8), refused if it cannot be one.
+
+    Both kinds go through ``core.utils``' checked conversion, so a value past int64 (epoch
+    milliseconds in a ``seconds`` column) is refused here, naming the row, instead of stored.
+
+    Raises:
+        ValueError: If the cell is not a number, or is too large to be a time.
+    """
+    what = f"row {row}, column {column!r}"
+    if time_key == "t_ns":
+        return utils.check_t_ns(parse_int(value, column, row), what=what)
+    return utils.seconds_to_t_ns(parse_float(value, column, row), what=what)

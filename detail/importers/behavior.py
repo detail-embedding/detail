@@ -3,7 +3,9 @@
 Reads human-scored behavior intervals as ``start_frame,end_frame,label[,subject]``
 (frame-indexed, the ``video_frames`` clock) and emits the canonical ``behavior``-role
 interval stream. ``subject`` is optional — the per-track framework, written but unused
-for now. Frame → ``t_ns`` resolution happens in the import layer (Approach Y), so this
+for now. A ``recording_id`` column (DETAIL's own ``instances.csv`` has one) naming more than one
+recording is refused: a stream belongs to one recording, and another recording's frames are
+not this one's. Frame → ``t_ns`` resolution happens in the import layer (Approach Y), so this
 importer never touches the recording's timestamp map.
 """
 
@@ -65,6 +67,8 @@ class BehaviorCsvImporter(StreamImporter):
                 )
             has_subject = "subject" in fields
             has_origin = "origin" in fields
+            has_recording = "recording_id" in fields
+            recordings: list[str] = []
             origins: set[str] = set()
             rows: list[tuple] = []
             for i, raw in enumerate(reader, start=2):  # row 1 is the header
@@ -86,7 +90,20 @@ class BehaviorCsvImporter(StreamImporter):
                     cell = (raw[fields["origin"]] or "").strip()
                     if cell:
                         origins.add(cell)
+                if has_recording:
+                    cell = (raw[fields["recording_id"]] or "").strip()
+                    if cell not in recordings:
+                        recordings.append(cell)
                 rows.append((None, None, label, subject, start_frame, end_frame))
+        if len(recordings) > 1:
+            # A stream belongs to one recording; frames of another recording are not frames
+            # of this one, and importing them would put its bouts on this timeline.
+            raise ValueError(
+                f"behavior CSV holds rows for {len(recordings)} recordings "
+                f"({', '.join(recordings)}); a stream belongs to one recording. Import each "
+                "recording's rows separately (the ethogram export writes one file per "
+                "recording)"
+            )
         metadata = _behavior_metadata(rows)
         origin = _resolve_origin(origins)
         if origin is not None:

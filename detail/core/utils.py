@@ -6,6 +6,7 @@ reference (Tenet 8).
 """
 
 from datetime import datetime, timezone
+import math
 import os
 import re
 
@@ -329,9 +330,53 @@ def t_ns_to_seconds(t_ns: int) -> float:
     return t_ns / NS_PER_SECOND
 
 
-def seconds_to_t_ns(seconds: float) -> int:
-    """Convert float seconds to int64 nanoseconds (Tenet 8), rounding to nearest ns."""
-    return round(seconds * NS_PER_SECOND)
+#: The int64 range every ``t_ns`` must fit (Tenet 8): about ±292 years of nanoseconds.
+T_NS_MIN = -(2**63)
+T_NS_MAX = 2**63 - 1
+
+
+def seconds_to_t_ns(seconds: float, *, what: str = "time") -> int:
+    """Convert float seconds to int64 nanoseconds (Tenet 8), rounding to nearest ns.
+
+    **The one checked seconds → ``t_ns`` conversion.** Every importer and every offset a user
+    types goes through here, so a value that cannot be a time is refused where it enters,
+    naming where it came from (``what``: ``"row 7, column 'seconds'"``), rather than stored and
+    failing later. Unchecked, ``round(x * 1e9)`` happily returns a Python int far past int64:
+    epoch *milliseconds* in a seconds column (a common logger mistake) stored as
+    ``1788000000000000000000``, and the stream's preview then died with ``OverflowError``.
+
+    Raises:
+        ValueError: If ``seconds`` is not finite (``nan``/``inf``), or its nanoseconds do not
+            fit in int64.
+    """
+    value = float(seconds)
+    if math.isnan(value) or math.isinf(value):
+        raise ValueError(f"{what}: {seconds!r} is not a finite number of seconds")
+    t_ns = round(value * NS_PER_SECOND)
+    if not T_NS_MIN <= t_ns <= T_NS_MAX:
+        raise ValueError(
+            f"{what}: {seconds!r} seconds is too large to be a time — it is beyond the "
+            "int64 nanosecond range (about ±292 years). Does it hold milliseconds or an "
+            "epoch timestamp rather than seconds?"
+        )
+    return t_ns
+
+
+def check_t_ns(t_ns: int, *, what: str = "time") -> int:
+    """``t_ns`` itself, refused if it does not fit in int64 (Tenet 8).
+
+    For a value that arrives already in nanoseconds (a ``t_ns`` column), which has no
+    multiplication to overflow in but can still be too large to store.
+
+    Raises:
+        ValueError: If ``t_ns`` is outside the int64 range.
+    """
+    if not T_NS_MIN <= int(t_ns) <= T_NS_MAX:
+        raise ValueError(
+            f"{what}: {t_ns} ns is beyond the int64 range (about ±292 years), so it cannot "
+            "be a time"
+        )
+    return int(t_ns)
 
 
 def polygon_at_frame(pk: PolygonKeyframes, frame_idx: int) -> np.ndarray:
