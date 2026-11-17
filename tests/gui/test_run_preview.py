@@ -1,4 +1,13 @@
-"""Detection run-preview widgets: pixmap conversion + the overview strip."""
+"""Detection run-preview widgets: pixmap conversion + the overview strip.
+
+**A count over source frames when only every Nth was processed (#32).** The tracking summary
+measured coverage against frames the run looked at, but counted its gaps over every source
+frame, so at ``every_n_frames`` 4 each run of three frames never looked at read as a gap and a
+healthy run said "4 gaps · longest 3 frames". The rule: gaps are counted over the run's
+processed frames (``track_coverage(processed=preview.processed_mask())``), the same rule as
+``tracks.zarr``'s ``n_gaps`` (``tests/trackers/test_tracker_gaps.py``). The "frames with no
+subject" strip below still draws unprocessed frames as lost; it is recorded as a Gap.
+"""
 
 import numpy as np
 import pytest
@@ -114,6 +123,9 @@ def test_a_column_that_lost_nothing_is_empty(qapp):
 class _FakeRunPreview:
     part_frame_counts = [5]
     frames_processed = 5  # every_n_frames=1, so every source frame was looked at
+
+    def processed_mask(self):
+        return np.ones(sum(self.part_frame_counts), dtype=bool)
 
     def counts(self, part):
         # Frame 1 has a detection the tracker does not take; frame 3 has none at all.
@@ -351,6 +363,11 @@ def test_the_denominator_is_frames_the_run_looked_at_not_source_frames(qapp):
         part_frame_counts = [20]
         frames_processed = 5  # frames 0, 4, 8, 12, 16
 
+        def processed_mask(self):
+            m = np.zeros(20, dtype=bool)
+            m[::4] = True
+            return m
+
         def counts(self, part):
             c = np.zeros(20, dtype=int)
             c[::4] = 1  # a detection on every processed frame
@@ -371,6 +388,9 @@ def test_the_denominator_is_frames_the_run_looked_at_not_source_frames(qapp):
     assert "5/5 frames with tracked detections" in text, text
     assert "5/5 frames with detections" in text, text
     assert "/20" not in text, f"the source frame count leaked into the ratio: {text!r}"
+    # Nor into the gaps: every processed frame holds the subject, so there are none. Over
+    # source frames each run of three unprocessed frames read as a gap (#32).
+    assert "gap" not in text, f"frames never looked at were counted as gaps: {text!r}"
 
 
 def test_a_tracking_run_with_no_subject_says_so(qapp):

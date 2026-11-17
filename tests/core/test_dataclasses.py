@@ -411,7 +411,11 @@ def test_prompt_test_types_are_preview_not_executor_jobs():
     assert PromptTestJob not in typing.get_args(Job)
 
     result = PromptTestResult(
-        frame_idx=0, t_ns=0, frame_image=np.zeros((4, 4, 3), np.uint8), results={}
+        part_index=0,
+        frame_idx=0,
+        t_ns=0,
+        frame_image=np.zeros((4, 4, 3), np.uint8),
+        results={},
     )
     assert result.results == {}
 

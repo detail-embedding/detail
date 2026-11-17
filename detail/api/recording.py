@@ -227,7 +227,18 @@ class _RecordedRun(RunHandle):
             self._recording._set_run_status(self._runs_key, self.id, self._inner.status)
 
     def cancel(self) -> None:
-        self._inner.cancel()
+        """Stop the worker, then adopt the status it ended with, as ``wait()`` does.
+
+        A cancel is often the last thing a caller does — the CLI's Ctrl-C handler cancels and
+        aborts, so no ``wait()`` follows — and without the adoption here ``job.json`` said
+        ``cancelled`` while ``recording.yaml`` said ``pending`` for good, and the recording
+        refused every later run of the stage (issue #28, finding 5). The same adoption
+        ``Recording.cancel_run`` performs.
+        """
+        try:
+            self._inner.cancel()
+        finally:
+            self._adopt_status()
 
 
 class Recording:

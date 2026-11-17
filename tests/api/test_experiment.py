@@ -1783,7 +1783,13 @@ def test_run_processing_honors_external_cancel_sentinel(tmp_path, monkeypatch):
     assert run.status == "cancelled"
     rec = runs_store.read_run(proj.dir, "run_001")
     assert rec["status"] == "cancelled"
-    assert rec["per_recording"] == {}  # broke at the first loop-top check; nothing ran
+    # Broke at the first loop-top check; nothing ran — and the record says so for each
+    # recording, so `process retry` picks them up (#28, finding 1).
+    assert {sid: e["status"] for sid, e in rec["per_recording"].items()} == {
+        "recording_001": "cancelled",
+        "recording_002": "cancelled",
+    }
+    assert all(e["run_id"] is None for e in rec["per_recording"].values())
 
 
 def test_cancel_run_keeps_complete_status(tmp_path):
@@ -2361,6 +2367,7 @@ def test_a_failed_terminal_write_does_not_escape_to_the_coordinator(
     orchestrator._experiment = experiment
     orchestrator._module_id = "tracking"
     orchestrator._per_recording = {"recording_001": {"status": "complete"}}
+    orchestrator._recording_ids = ["recording_001"]
     orchestrator._cancelled = threading.Event()
     orchestrator._status = "running"
     monkeypatch.setattr(

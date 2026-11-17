@@ -36,6 +36,7 @@ chosen, opens this screen through :func:`open_labeling` (*New example set…*, *
 
 from __future__ import annotations
 
+import threading
 import cv2
 import numpy as np
 from PyQt6.QtCore import QEvent, Qt, QTimer
@@ -72,7 +73,6 @@ from detail.gui.sizing import (
     set_available,
 )
 from detail.gui.spin import IntSpin
-from detail.gui.workers import BackgroundCall
 from detail.storage import recording as recording_store
 
 #: The tracked box the method crops to — drawn thin, so it frames the animal without covering
@@ -189,48 +189,68 @@ def load_video(experiment, recording_id: str, tracking_run_id: str) -> dict:
 # Saving marks off the UI thread
 # --------------------------------------------------------------------------- #
 class _MarkSaver:
-    """Persist one frame's marks off the UI thread: one write in flight, the latest marks per
+    """Persist one frame's marks off the UI thread: one write at a time, the latest marks per
     frame win. A click lands on screen at once from the dialog's own copy of the set; this is
-    the part that reaches the disk (``Experiment.set_example_marks``, atomic)."""
+    the part that reaches the disk (``Experiment.set_example_marks``, atomic).
+
+    The writes run on the app's write queue for this set (``gui/run_writes.py``), not on the
+    dialog: a queue whose next write started from the previous one's ``done`` lost every queued
+    frame after the one in flight when the dialog closed, because that delivery is dropped once
+    its receiver is gone (#24). A queued frame's write reads the latest marks for it when it
+    runs, so clicks on a frame still waiting fold into its one write.
+    """
 
     def __init__(self, dialog: QWidget, experiment, set_id: str) -> None:
+        from pathlib import Path
+
+        from detail.gui import run_writes
+
         self._dialog = dialog
         self._experiment = experiment
         self._set_id = set_id
-        self._pending: dict[int, list[ExampleMark]] = {}
-        self._worker: BackgroundCall | None = None
+        root = getattr(experiment, "dir", None)
+        where = str(Path(root).resolve()) if root is not None else f"{id(experiment)}"
+        self._queue = run_writes.queue_for_key(f"example-set:{where}:{set_id}".lower())
+        #: Marks per frame index not yet taken by a write: read by the write when it runs.
+        self._latest: dict[int, list[ExampleMark]] = {}
+        #: The check-and-fold in :meth:`save` and the take in :meth:`_write` are one step each:
+        #: a take landing between the check and the fold would leave the fold unwritten.
+        self._lock = threading.Lock()
 
     @property
     def busy(self) -> bool:
-        return self._worker is not None or bool(self._pending)
+        return self._queue.busy()
 
     def save(self, index: int, marks: list[ExampleMark]) -> None:
-        self._pending[index] = [ExampleMark.from_dict(m.to_dict()) for m in marks]
-        self._flush()
-
-    def _flush(self) -> None:
-        if self._worker is not None or not self._pending:
-            return
-        index = next(iter(self._pending))
-        marks = self._pending.pop(index)
-        experiment, set_id = self._experiment, self._set_id
-        self._worker = BackgroundCall(
-            lambda: experiment.set_example_marks(set_id, index, marks),  # off-thread
-            receiver=self._dialog,
+        copy = [ExampleMark.from_dict(m.to_dict()) for m in marks]
+        with self._lock:
+            waiting = index in self._latest
+            self._latest[index] = copy
+        if waiting:
+            return  # the frame's queued write has not run yet, and will read these
+        self._queue.submit(
+            lambda: self._write(index),
+            owner=self._dialog,
+            done=self._done,
+            failed=self._failed,
+            title="Marks not saved",
         )
-        self._worker.done.connect(self._done)
-        self._worker.failed.connect(self._failed)
-        self._worker.start()
+
+    def _write(self, index: int):  # off-thread
+        with self._lock:
+            marks = self._latest.pop(index, None)
+        if marks is None:
+            return None
+        experiment, set_id = self._experiment, self._set_id
+        return experiment.set_example_marks(set_id, index, marks)  # off-thread
 
     def _done(self, _result) -> None:
-        self._worker = None
-        self._flush()
         if not self.busy:
             self._dialog._saves_settled()
 
     def _failed(self, exc: BaseException) -> None:
-        self._worker = None
-        self._pending.clear()
+        with self._lock:
+            self._latest.clear()
         self._dialog._save_failed(exc)
 
 
@@ -295,6 +315,10 @@ class KeypointLabelingDialog(Dialog):
         self._sources = dict(sources) if sources else None
         self._set: ExampleSet = experiment.example_set(set_id)
         self._saver = _MarkSaver(self, experiment, set_id)
+        # A frame removal in flight. A mark save and a removal both address a frame by its
+        # position in the set, and the removal shifts every later position, so the two never
+        # run together: Remove waits for the saver, and no mark is saved while removing.
+        self._removing = False
         self._names: dict[str, str] = {}
         self._offered: list[dict] = []
         self._current: str | None = None
@@ -740,7 +764,7 @@ class KeypointLabelingDialog(Dialog):
     def _drag_finished(self, u: float, v: float) -> None:
         index = self._on_screen()
         target, self._dragging = self._dragging, None
-        if target is None or index is None:
+        if target is None or index is None or self._refuse_while_removing():
             return
         frame = self._set.frames[index]
         frame.marks = [m for m in frame.marks if m.target != target] + [
@@ -753,6 +777,8 @@ class KeypointLabelingDialog(Dialog):
     def _place(self, mark: ExampleMark) -> None:
         """Put ``mark`` on the frame on screen, adding the frame to the set first when it is
         not in it yet."""
+        if self._refuse_while_removing():
+            return
         index = self._on_screen()
         if index is not None:
             self._save(index, mark)
@@ -798,7 +824,7 @@ class KeypointLabelingDialog(Dialog):
 
     def _clear_current(self) -> None:
         index = self._on_screen()
-        if self._current is None or index is None:
+        if self._current is None or index is None or self._refuse_while_removing():
             return
         frame = self._set.frames[index]
         kept = [m for m in frame.marks if m.target != self._current]
@@ -810,6 +836,17 @@ class KeypointLabelingDialog(Dialog):
 
     def _saves_settled(self) -> None:
         self._refresh_lists()
+
+    def _refuse_while_removing(self) -> bool:
+        """True, and says so, while a frame removal is in flight.
+
+        The keys (N, Backspace) reach the dialog while the busy overlay covers only the
+        view. A mark saved now would be written by a position the removal is about to
+        shift, so it is not saved; the removal's result reloads the set from disk.
+        """
+        if self._removing:
+            self._status.setText("Wait for the frame to be removed, then mark again.")
+        return self._removing
 
     def _save_failed(self, exc: BaseException) -> None:
         QMessageBox.warning(self, "Save marks", f"Could not save:\n{exc}")
@@ -953,6 +990,10 @@ class KeypointLabelingDialog(Dialog):
         QMessageBox.warning(self, "Add frames", f"Could not add frames:\n{exc}")
 
     def _remove(self) -> None:
+        # Never beside a mark save: both write the set by frame position (see `_removing`).
+        # The button is greyed for both; this holds for any other caller too.
+        if self._saver.busy or self._removing:
+            return
         index = self._frames.currentRow()
         if not 0 <= index < len(self._set.frames):
             return
@@ -967,17 +1008,23 @@ class KeypointLabelingDialog(Dialog):
             if answer != QMessageBox.StandardButton.Yes:
                 return
         experiment, set_id = self._experiment, self._set.id
+        self._removing = True
+        self._refresh_lists()  # greys Remove until the result is back
         run_busy(
             self._view,
             lambda: experiment.remove_example_frame(set_id, index),
             self._removed,
             label="Removing frame…",
-            on_error=lambda exc: QMessageBox.warning(
-                self, "Remove frame", f"Could not remove:\n{exc}"
-            ),
+            on_error=self._remove_failed,
         )
 
+    def _remove_failed(self, exc: BaseException) -> None:
+        self._removing = False
+        self._refresh_lists()
+        QMessageBox.warning(self, "Remove frame", f"Could not remove:\n{exc}")
+
     def _removed(self, example_set: ExampleSet) -> None:
+        self._removing = False
         self._set = example_set
         if self._stored is not None:
             self._stored = None
@@ -1062,8 +1109,12 @@ class KeypointLabelingDialog(Dialog):
             self._ready.setText(f"Not ready yet: {exc}")
         set_available(
             self._remove_frame,
-            bool(self._set.frames) and not self._saver.busy,
-            "Saving…" if self._saver.busy else "The set has no frames yet.",
+            bool(self._set.frames) and not self._saver.busy and not self._removing,
+            (
+                "Saving…"
+                if self._saver.busy
+                else ("Removing…" if self._removing else "The set has no frames yet.")
+            ),
         )
         self._sync_skeleton()
 

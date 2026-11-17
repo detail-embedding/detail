@@ -82,6 +82,8 @@ STATS_COLUMNS = [
     "measure",
     "label",
     "label_to",
+    "label_display",
+    "label_is_remainder",
     "window_id",
     "value",
     "n_underlying",
@@ -920,6 +922,25 @@ def _epsilon_by_measure(
     return {key: statistics.fmean(values) for key, values in per_key.items()}
 
 
+def _unit_groups(obs: Sequence[Observation]) -> dict[tuple, tuple]:
+    """Each unit's group in a between design, where a unit is in exactly one group.
+
+    The between null permutes groups among units, so a unit carrying two groups has no single
+    label to permute. The aggregation path cannot produce one today; this states the assumption
+    instead of letting the shuffle pick one of the two silently.
+    """
+    out: dict[tuple, tuple] = {}
+    for row in obs:
+        seen = out.setdefault(row.key, row.group)
+        if seen != row.group:
+            raise ComparisonError(
+                f"unit {row.key!r} is in two groups, {seen!r} and {row.group!r}; a between "
+                "comparison needs each unit in one group — group by a column that is constant "
+                "within the unit, or aggregate to a finer unit"
+            )
+    return out
+
+
 def rank_by_difference(
     obs: Sequence[Observation],
     groups: tuple,
@@ -944,11 +965,18 @@ def rank_by_difference(
     :class:`Ranking` for why the maximum is unfalsifiable — and is ``None``, with a reason, where
     the permutation could not have produced a different answer.
 
-    **The permutation shuffles whole observations, which is the point.** An observation is one unit
-    of the declared aggregation path — an animal, when the path aggregates to animal — so shuffling
-    here preserves exactly the structure the path exists to impose. Shuffling the underlying
-    *recordings* instead would break an animal into four independent draws, inflate the effective
-    sample size, and make the floor far easier to clear than the real ranking had to work for.
+    **The permutation shuffles the group labels among units, once per draw, which is the point.**
+    A unit is one key of the declared aggregation path — an animal, when the path aggregates to
+    animal — and the design randomised units, so the null does too (§24 *Designs*: "group shuffled
+    among units"). Each draw is one unit → group map applied to every measure's observations: a
+    unit's measures move together, which is what the family-wise maximum assumes, and every
+    measure keeps its real group sizes (less any unit missing that measure). Only units in
+    ``groups`` take part; an observation of any other group is not in the contrast and stays out
+    of the null. Shuffling the underlying *recordings* instead would break an animal into four
+    independent draws, and shuffling each (unit, measure) observation on its own would let a
+    measure be handed 0 to 8 "drug" animals in a 4-against-4 design and make a measure's own p
+    move when unrelated measures are added — the guard is
+    ``tests/analysis/test_compare_ranking.py``'s unit-shuffle tests.
 
     ``pseudo(measure_key, denominator_ns)`` is the pseudo-count in the measure's unit, added to
     both centres before the ratio — the node source's ε (§24 *Designs*). ``None`` keeps a label's
@@ -979,16 +1007,24 @@ def rank_by_difference(
     contrasts.sort(key=_rank_key, reverse=True)
 
     rng = random.Random(seed)
-    labels = [row.group for row in obs]
-    keys = [row.measure_key for row in obs]
-    values = [row.value for row in obs]
+    # One label per unit, shuffled among the units of the contrasted groups and applied to all of
+    # a unit's observations — never one label per (unit, measure) row.
+    unit_group = _unit_groups(obs)
+    units = sorted(u for u, g in unit_group.items() if g in groups)
+    unit_index = {u: i for i, u in enumerate(units)}
+    labels = [unit_group[u] for u in units]
+    in_null = [row for row in obs if row.key in unit_index]
+    row_unit = [unit_index[row.key] for row in in_null]
+    keys = [row.measure_key for row in in_null]
+    values = [row.value for row in in_null]
     distribution: list[float] = []
     # Each measure's own null beside the family's largest: what its own p is read from.
     own_null = np.full((len(contrasts), draws), np.nan)
     for d in range(draws):
         shuffled = labels[:]
         rng.shuffle(shuffled)
-        magnitudes = _magnitudes(keys, shuffled, values, groups, epsilon)
+        row_labels = [shuffled[u] for u in row_unit]
+        magnitudes = _magnitudes(keys, row_labels, values, groups, epsilon)
         distribution.append(_largest_magnitude(magnitudes))
         for n, item in enumerate(contrasts):
             own_null[n, d] = magnitudes.get(item.measure_key, np.nan)
@@ -1727,6 +1763,7 @@ def stats_rows(
     obs: Sequence[Observation],
     *,
     aggregate_to: Sequence[str],
+    remainders: Collection[str],
     group_by: Sequence[str] = (),
 ) -> list[dict]:
     """Long-form rows — one per observation, with its factors — the source of truth an export
@@ -1735,7 +1772,14 @@ def stats_rows(
     ``aggregate_to`` is stamped on **every** row. A table or a figure built from these is
     unreadable without it: "one point is one animal" and "one point is one session" are different
     claims about the same picture, and nothing else on the row distinguishes them.
+
+    ``remainders`` are the labels whose rows count only a parent's leftover
+    (``measures.remainder_labels``, stored on the record as ``remainder_labels``): ``label``
+    stays the plain name, the join key, and ``label_display`` / ``label_is_remainder`` say so.
+    Required, because a default of "none" is exactly the silent miss this column exists for.
     """
+    from detail.analysis.measures import display_label
+
     path = "|".join(aggregate_to)
     columns = measure_key_columns(group_by)
     out = []
@@ -1749,6 +1793,9 @@ def stats_rows(
                 "measure": keyed.get("measure", ""),
                 "label": keyed.get("label", ""),
                 "label_to": keyed.get("label_to", ""),
+                "label_display": display_label(keyed.get("label", ""), remainders),
+                "label_is_remainder": bool(keyed.get("label"))
+                and keyed.get("label") in remainders,
                 "window_id": keyed.get("window_id", ""),
                 "value": row.value,
                 "n_underlying": row.n_underlying,

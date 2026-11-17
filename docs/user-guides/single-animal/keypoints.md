@@ -230,7 +230,9 @@ The marking window opens on the first recording. To fill the set:
    as an ear hidden by the head, press ++n++ (**Not visible**) instead.
 5. When all 12 are done, press ++d++ to go to the next example frame, and do the same.
 
-Every click saves by itself. Points are coloured by side: blue for left, orange for right,
+Every click saves by itself, in the background. Closing the window while clicks are still
+being saved loses nothing: they finish behind it. Quitting DETAIL first asks you to wait for
+them. Points are coloured by side: blue for left, orange for right,
 green for the middle of the body. **Left and right are the animal's own**, not the
 picture's: from above, with the nose pointing up the screen, the animal's left ear is on the
 left of the picture.

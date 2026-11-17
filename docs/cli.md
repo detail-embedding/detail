@@ -303,7 +303,8 @@ Narrow with `--show-class <name>` (repeatable; default all). Common flags: `--n`
 (frames to sample, default `8`), `--min-conf` (default `0.5`), optional `--variant`,
 `--seed`, and [compute flags](#compute--multi-gpu). Prints a
 per-column detection summary; `--save-as <name>` also writes overlay JPGs + a
-`test.json` under `detections/prompt_tests/<name>/`. Creates no run.
+`test.json` under `detections/prompt_tests/<name>/`, one JPG per frame and prompt, named by
+video part and frame (`part_000_frame_000042_prompt_0.jpg`). Creates no run.
 
 The model runs **wide open** and keeps every proposal it found, so `--min-conf` chooses
 what the summary counts and what the saved overlays draw, not what runs. Re-run with a
@@ -617,8 +618,11 @@ for its background colour), then the run's own progress follows.
   re-checked; the command refuses if one no longer validates, naming each. A recording is re-run whole (there is no
   resume-from-mid-recording).
 - `process cancel <run_NNN> --experiment <dir>`: stop a running run's coordinator and its
-  in-flight recordings. Finished recordings keep their results; `process retry` picks up the
-  rest.
+  in-flight recordings. Finished recordings keep their results, and recordings the run had not
+  reached yet are listed as `cancelled`. The run reads `cancelled` unless every recording had
+  already finished; `process retry` picks up the rest.
+- Naming the same recording twice in one `process` command (by its name and by its id, say)
+  runs it once.
 
 `detection`, `tracking`, and `embedding` have `process` subcommands.
 
@@ -792,6 +796,12 @@ selection, written to `analysis/<an_NN>/`.
   removes it again. `--name` renames a behavior; its id never moves, so recorded judgments stay
   attached to what they were made about. `--finalize` is your statement that you are done, not
   a lock: a later edit is refused and told to `--reopen` first.
+
+  A search that did not reach every recording (you cancelled it, so it is `partial`, or one
+  behavior's search failed on a recording) can still be calibrated, and its behavior output
+  covers only the recordings that were searched: a recording a named behavior never looked at
+  is left out, not counted as a zero. `--finalize` and `export-query` refuse such a run and name
+  the recordings it is missing; re-run the search to cover them.
 - `audit --experiment <dir> --run <an_NN> [--behavior <id or label>] [--cutoff <confidence>]
   [--by-recording] [--by-cluster] [--goal-width <width>] [--own-only]`: read the precision an authored run's reliability audit supports, for a
   behavior scan or a clustering run. Reads only: the judging is a blind review of video clips and
@@ -837,7 +847,9 @@ selection, written to `analysis/<an_NN>/`.
 - `export-query --experiment <dir> --run <an_NN> --out <dir>`: write a calibrated query run's
   behaviors as one behavior-stream CSV per searched recording. Each row carries
   `origin: predicted`, so re-importing one can never be read back as ground truth. A recording
-  that matched nothing gets a header-only file: the zero is the finding.
+  that matched nothing gets a header-only file: the zero is the finding. A run whose search did
+  not reach every recording is refused, naming the ones it missed, so a header-only file never
+  stands for a recording nobody searched.
 
   The artifact is pinned as it is exported and the snapshot id is printed, so a figure
   built from these CSVs can cite something that survives a later re-cut of the run.
@@ -932,8 +944,12 @@ selection, written to `analysis/<an_NN>/`.
 
   `--rename-label rearing='rearing up'` renames a label and every node carrying it, and
   `--merge-label scaling=climbing` moves every node of `scaling` to `climbing` and removes
-  `scaling`. Both take names and are repeatable. Every edit on the command line is checked
-  before any is written, and each reports its progress. The name `other` is refused: it is what
+  `scaling`. Both take names and are repeatable. A merge carries the clips removed from
+  `scaling` or moved into it (in AUDIT) to `climbing`, so they stay removed or moved. The
+  command's `--name-node`, `--rename-label` and `--merge-label` edits are one change, made in
+  the order given, so a merge can name the label a rename just made: if any of them fails
+  (a label that does not exist, say) nothing is written, and the error names the labels there
+  are. It reports its progress. The name `other` is refused: it is what
   the GUI's labels panel calls a label's own remainder.
 
   `--from-screen cmp_NN` records that the nodes you label with `--name-node` were found by that
@@ -1106,9 +1122,13 @@ selection, written to `analysis/<an_NN>/`.
 - `cancel <an_NN> --experiment <dir>`: stop an active run (kills its worker; a no-op
   once terminal).
 - `rebuild <an_NN> --experiment <dir>`: re-derive an open run's results from its own stored
-  output and its current settings. The repair for a run whose results are **out of date**,
-  a change that did not finish writing them, so the settings moved and the results did not
-  (`status` says so, and the GUI offers **Rebuild results**). The expensive pass is untouched:
+  output and its current settings. The repair for a run whose results are **out of date**:
+  a change that was saved but did not finish rebuilding them, so the settings moved and the
+  results did not (`status` says so, and the GUI offers **Rebuild results**). The command whose
+  rebuild failed says the change was saved, and names the recording it could not read. Until a
+  rebuild succeeds, every command that reads the results refuses with this command's name:
+  `measures`, `comparison run`, `export-query`, `export-temporal-clustering`, a finalize, a new
+  audit batch and a finished clip review. The expensive pass is untouched:
   this costs one pass over the outputs, not another fit or search. It is also the way to
   re-drive a run whose results write **failed**: the fit or search is still on disk, so the
   run does not have to be redone from the start.
@@ -1131,12 +1151,14 @@ full list, with what each one reports and what it needs, is the
   [--windows whole|absolute|normalized|sliding] [--every <seconds>] [--parts N]
   [--length <seconds>] [--step <seconds>]`: measure the run and write three files into
   `<dir>`, `measures.csv` (one row per recording, subject, label, window and measure, with the
-  observed time each rate was taken against), `frames.csv` (one row per frame: whether it was
+  observed time each rate was taken against; a label with labels nested inside it counts only
+  what they leave, so its row has `label_display` "<label> (other)" and `label_is_remainder`
+  `True`, while `label` keeps the plain name to join on), `frames.csv` (one row per frame: whether it was
   observed and what was active on it), and `measures.yaml` recording the windows and measures used.
 
   `--measure` defaults to every measure the source run can answer: one that needs something
-  the run does not have (`transitions` needs non-overlapping behaviors; `unnamed_time` needs
-  unnamed clusters) is skipped rather than reported as a column of zeros. `--windows` picks the
+  the run does not have (`transitions` needs non-overlapping behaviors; `unnamed_time` needs a
+  clustering run) is skipped rather than reported as a column of zeros. `--windows` picks the
   window model: `whole` measures the
   full recording, `absolute` tiles it into fixed windows of `--every` seconds, `normalized` splits
   it into `--parts` equal fractions (for recordings of differing length), and `sliding` walks a
@@ -1225,8 +1247,8 @@ column of `metadata.csv`, and report how the groups differ.
   in `summary.md`.
 
   `--measure` defaults to every measure the source run can answer: one that needs something
-  the run does not have (`transitions` needs non-overlapping behaviors; `unnamed_time` needs
-  unnamed clusters) is skipped rather than reported as a column of zeros. `--windows` picks the
+  the run does not have (`transitions` needs non-overlapping behaviors; `unnamed_time` needs a
+  clustering run) is skipped rather than reported as a column of zeros. `--windows` picks the
   window model: `whole` measures the
   full recording, `absolute` tiles it into fixed windows of `--every` seconds, `normalized`
   splits it into `--parts` equal fractions (for recordings of differing length), and `sliding`
@@ -1438,6 +1460,11 @@ skipped and the reason says so: that file is already yours, under the video root
 registered from, and copying it back out would export nothing DETAIL made. A recording whose
 parts are all referenced reports `video` as unavailable rather than writing a short export.
 
+Each exported video keeps its part's own number, the same number the `timestamps` target uses.
+If part 1 was referenced and parts 2 and 3 were copied, you get `<recording>_part002.mp4` and
+`<recording>_part003.mp4`, next to `<recording>_part002_timestamps.csv` and
+`<recording>_part003_timestamps.csv`.
+
 The same is true of the experiment `bundle`: it packs the experiment tree, and a referenced
 video is not in that tree.
 
@@ -1484,6 +1511,15 @@ button runs.
 The full field of view is the default: a steady camera, where the surroundings are half the
 answer. Crop to the subject when you want the pose at a constant scale for comparing bouts.
 
+A clip holds **every** frame of its span and plays at the rate those frames were recorded at, so
+it lasts as long as the behavior did, whatever stride detection or tracking ran at. On a frame
+the subject has no detection on, `raw` is the frame as recorded, `overlay` is that same plain
+frame, and `mask` is black. A cropped clip keeps the box from the subject's last detection
+before that frame; before the first detection in the span, it uses that first one. A span the
+subject is never detected across has no clip; its row stays in the CSV with the video column
+blank. `fps` in `clips.csv` and `clip.csv` is the rate the clip was written at, so its frame
+count divided by `fps` is `dur_s`, to within one frame.
+
 ### Keypoints, for pose tools
 
 A keypoint track run (or a keypoint detect run, for the raw placements) exports in the shapes
@@ -1495,7 +1531,9 @@ frame (`instance`), which DeepLabCut and SLEAP read as untracked individuals. `-
 on a track run exports them the same way.
 
 - `keypoints` is DETAIL's own long table, one CSV per recording: a row per frame per track per
-  keypoint with `x_px, y_px, x_norm, y_norm, score, visible, changed`. `changed` is `0` as
+  keypoint with `x_px, y_px, x_norm, y_norm, score, visible, changed`. Its `frame_idx` restarts
+  at 0 in each video part, the one named in `part_id`; `t_ns` is counted from the start of the
+  recording. `changed` is `0` as
   detected, `1` where the track stage chose another candidate, `2` where a filter moved it.
 - `keypoints_dlc` is DeepLabCut's multi-animal analysis table, one per video part: a row per
   video frame, columns `scorer / individuals / bodyparts / coords` over `x, y, likelihood`. The
@@ -1589,7 +1627,9 @@ distill the units are its stages. Frames and fps are shown only for a stage that
 for an analysis they are blank, and the wall clock is the number to compare.
 
 The timings come from the run's own `activity.csv`, so a run that finished before DETAIL kept one
-reports blanks rather than guesses. **Nothing is sent anywhere**: it is a file, and sharing it is
+reports blanks rather than guesses. A recording's wall clock runs from its first logged moment to
+its last, and the run's ends when the run did. A run made before DETAIL logged those last moments
+shows each recording a few seconds short, so a short recording's fps there reads too high. **Nothing is sent anywhere**: it is a file, and sharing it is
 your decision.
 
 ### The columns
@@ -1597,7 +1637,12 @@ your decision.
 `clips.csv`, `instance_id`, `source_label` (the cluster's own id), `label` (the name a person
 gave it, blank if none), `label_path` (that name and every group it sits inside, outermost
 first), `recording_id`, `subject`, `start_frame`, `end_frame`, `t_ns`,
-`end_t_ns`, `dur_s`, and one `video_<render>` column per flavour. A blank video column means
+`end_t_ns`, `dur_s`, `fps` (the rate the clip plays at; blank when it has none), and one
+`video_<render>` column per flavour. `start_frame` and `end_frame`
+count every frame of the recording from 0, across all its video parts, so a bout in the second
+video file carries frame numbers past the first file's last frame. The ethogram CSV's
+`start_frame,end_frame` count the same way, which is what lets `recording add-stream --importer
+behavior_csv` read it back onto the right place. A blank video column means
 that bout produced no clip: the track was not detected across it, or it fell outside the video
 , and the row is kept because its times are still true.
 
@@ -1605,7 +1650,9 @@ that bout produced no clip: the track was not detected across it, or it fell out
 `cy_norm`: where each bout happened, as a fraction of the frame. `label_path` is the whole chain
 of names the bout sits under, outermost first (`not moving/resting`) where `label` is the last
 element on its own. Total by `label` for the specific behavior, or by a prefix of `label_path` for
-the group it belongs to; each bout appears once either way, so neither double-counts. A flat
+the group it belongs to; each bout appears once either way, so neither double-counts. Measures and
+comparisons count the same way: a label with labels inside it counts only what they leave, and
+its row is shown as "<label> (other)". A flat
 vocabulary's path is just its label. `coverage.csv` gives `observed_ns` per
 `(recording_id, subject)`, which is the denominator for any rate you compute: video duration is
 not recording duration is not tracked time.
@@ -1653,7 +1700,9 @@ sit on one. The mask data is the encoding DETAIL stored rather than a re-encodin
 
 `embeddings_index.csv`, `row`, `recording_id`, `track_id`, `part`, `frame_idx`, `t_ns`, one row
 per row of `embeddings.npy`. The matrix alone cannot be joined to anything, which is why the
-index is not optional.
+index is not optional. Here `frame_idx` restarts at 0 in each video part, the one named in
+`part`. To join it to a file numbered across the whole recording (`<recording>_tracks.csv`,
+frame labels), join on `t_ns`, which is the same clock in every file.
 
 ### Re-exporting
 
@@ -1754,8 +1803,10 @@ what the model or trainer supports. The GUI forms and the Python API default the
 ## Inspecting and troubleshooting runs
 
 - `detail recording status` (above) lists a recording's detection, tracking and embedding runs
-  and their status: `complete`, `failed`, `partial` (interrupted, resumable), or an active
-  state. `process status <run_NNN>` covers the rest, keypoint runs included.
+  and their status: `complete`, `failed`, `cancelled`, `partial` (interrupted, resumable), or
+  an active state. `process status <run_NNN>` covers the rest, keypoint runs included. Only a
+  stage that can pick up where it stopped (keypoint detect) is ever `partial`; cancelling
+  detection, tracking, embedding or keypoint track records `cancelled`, and you run it again.
 - A blocking command exits non-zero and points you at the details when a run
   doesn't complete. The `attach` commands are the exception: they watch a run and print
   its status, and Ctrl-C leaves the run going, so they exit 0 whatever the status says.
@@ -1794,6 +1845,11 @@ what the model or trainer supports. The GUI forms and the Python API default the
   rejoins one, and `process cancel` or `distill cancel` stops it. On an `attach` command it
   **detaches** too: you did not start that worker, and reattaching exists precisely so you can
   let go of it again.
+- **A run whose command was cut off still gets its real status.** If you close the terminal
+  while `detection run` (or another one-recording run) is going, or a script starts one and
+  never waits for it, the recording keeps saying `pending` only until the next `detail`
+  command on that experiment, or until the app opens it. Either one reads how the run really
+  ended and records that.
 - **Stopping a run you are not watching:** `<thing> cancel <id>` (`process`, `analysis`,
   `distill`, `export`), `train stop <model_NNN>` for a training run (it finishes the epoch in
   progress and keeps the best weights), the GUI's **Cancel** button, or

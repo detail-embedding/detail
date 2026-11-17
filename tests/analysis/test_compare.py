@@ -110,7 +110,7 @@ def test_the_path_is_stamped_on_every_row():
     obs = c.observations(
         UNBALANCED_ROWS, UNBALANCED_META, group_by=["drug"], aggregate_to=["animal"]
     )
-    rows = c.stats_rows(obs, aggregate_to=["animal"], group_by=["drug"])
+    rows = c.stats_rows(obs, aggregate_to=["animal"], remainders=(), group_by=["drug"])
     assert rows and all(r["aggregate_to"] == "animal" for r in rows)
 
 

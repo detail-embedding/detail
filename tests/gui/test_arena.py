@@ -13,6 +13,7 @@ import pytest
 
 pytest.importorskip("PyQt6")
 
+from tests.gui.conftest import drain_thread_pool  # noqa: E402
 from tests.gui.conftest import drain_until  # noqa: E402
 
 
@@ -641,8 +642,6 @@ def test_spatial_workspace_defers_frame_decode_off_thread(qapp, tmp_path, monkey
     # The first frame must decode off-thread: constructing the workspace must not call
     # get_frame on the UI thread (else opening it on a large video freezes to a blank
     # window). Stub get_frame to raise; construction must still succeed.
-    from PyQt6.QtCore import QThreadPool
-
     from detail.gui.arena import SceneGeometryDialog
 
     recording = _video_recording(tmp_path)
@@ -653,7 +652,7 @@ def test_spatial_workspace_defers_frame_decode_off_thread(qapp, tmp_path, monkey
     monkeypatch.setattr(recording, "get_frame", _raise)
     dialog = SceneGeometryDialog(recording)  # deferred → no raise here
     assert dialog._scrubber is not None
-    QThreadPool.globalInstance().waitForDone(2000)  # let the (raising) decode drain
+    drain_thread_pool(qapp)  # let the (raising) decode drain
 
 
 def test_spatial_workspace_decodes_frame_zero_off_thread(qapp, tmp_path):

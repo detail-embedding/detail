@@ -132,6 +132,66 @@ def artifact_stale(run_dir: Path | str) -> bool:
     return bool(read_analysis_yaml(run_dir).get(STALE_KEY))
 
 
+class ResultsOutOfDateError(ValueError):
+    """A reader asked for a run's results while they are known not to match its saved state.
+
+    A ``ValueError`` so every CLI command that already reports one prints the message rather than
+    a traceback. Raised only by :func:`refuse_if_stale`, at the entry of a reader (a pin, measures,
+    a new audit sample or clip-review census), never inside a loop that catches ``ValueError`` to
+    mean "fewer numbers".
+    """
+
+
+class RebuildFailedError(ValueError):
+    """An authored edit was saved but rebuilding the run's results from it failed.
+
+    Raised from the edit with the real failure as ``__cause__``. Its message leads with what a
+    user most needs and the bare cause never said: the change **is** on disk, and the results stay
+    out of date until ``detail analysis rebuild`` (the run page's *Rebuild results*) succeeds.
+    """
+
+    #: What a surface reports: the edit is on disk (INTERPRET's dialog title reads this).
+    change_saved = True
+
+    def __init__(self, run_id: str, cause: BaseException) -> None:
+        self.run_id = run_id
+        self.cause = cause
+        super().__init__(
+            f"the change was saved, but rebuilding the results of {run_id} failed: {cause}. "
+            f"The results are out of date until they are rebuilt: fix the cause, then run "
+            f"'detail analysis rebuild {run_id}' (or Rebuild results on the run's page)."
+        )
+
+    def __reduce__(self):
+        # Two constructor arguments, not the message: the default reduce would replay
+        # `args` (the message) into `__init__` and fail when the error crosses a process.
+        return (type(self), (self.run_id, self.cause))
+
+
+def refuse_if_stale(run_dir: Path | str) -> None:
+    """Raise rather than let a reader treat a known-stale artifact as current (#24).
+
+    The one check every consumer of a run's output calls. The stale mark used to be read only by
+    the next edit, ``analysis status`` and the run page, so after a failed rebuild a pin froze the
+    old instances under the new settings, and measures, exports, comparisons and finalize all
+    went ahead on them. A directory with no run record (a snapshot) is never stale.
+
+    Raises:
+        ResultsOutOfDateError: the last change was saved but its results were not rebuilt.
+    """
+    try:
+        stale = artifact_stale(run_dir)
+    except FileNotFoundError:
+        return
+    if stale:
+        run_id = Path(run_dir).name
+        raise ResultsOutOfDateError(
+            f"the results of {run_id} are out of date: the last change was saved but the "
+            f"results were not rebuilt. Rebuild them with 'detail analysis rebuild {run_id}' "
+            "(or Rebuild results on the run's page), then try again."
+        )
+
+
 def set_artifact_stale(run_dir: Path | str, stale: bool) -> None:
     """Record (or clear) the artifact-vs-state disagreement, in place."""
     record = read_analysis_yaml(run_dir)

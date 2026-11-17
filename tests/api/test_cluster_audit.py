@@ -423,6 +423,53 @@ def test_the_cli_reads_every_label_edit_before_writing_any(fitted_temporal):
     ), "the node was labelled before the bad pair was read"
 
 
+def test_a_failing_label_command_writes_nothing(fitted_temporal):
+    """**A promise of all-or-nothing that writes per item.** The command read every pair's
+    *syntax* up front, but resolved each label name only when its own edit ran, one write per
+    pair — so ``--rename-label groom=g2 --merge-label g2=NOPE`` (no NOPE) failed after the
+    rename had landed, and the corrected command then failed on ``groom``. The whole command is
+    now one edit (``LabelOperations.edit_labels``): one state write, or none.
+    """
+    from detail.storage import temporal_runs
+
+    experiment, run_id = fitted_temporal
+    run = experiment.authored_run(run_id)
+    left, right = run.node_view().children(run.node_view().root)
+    run.name_nodes({left: "groom", right: "walk"})
+    state_file = run._run_dir() / temporal_runs.TEMPORAL_FILENAME
+    before = state_file.read_bytes()
+    result = CliRunner().invoke(
+        main,
+        [
+            "analysis", "temporal-interpret", "--experiment", str(experiment.dir), "--run", run_id,
+            "--name-node", f"{left}=rear", "--rename-label", "walk=w2",
+            "--merge-label", "w2=NOPE",
+        ],
+    )  # fmt: skip
+    assert result.exit_code != 0, result.output
+    assert "no label called 'NOPE'" in result.output
+    assert state_file.read_bytes() == before, "part of the failed command was written"
+
+
+def test_a_label_command_reads_its_own_earlier_edits(fitted_temporal):
+    """Names resolve in order within the one edit: a rename's new name can be merged."""
+    experiment, run_id = fitted_temporal
+    run = experiment.authored_run(run_id)
+    left, right = run.node_view().children(run.node_view().root)
+    run.name_nodes({left: "groom", right: "walk"})
+    result = CliRunner().invoke(
+        main,
+        [
+            "analysis", "temporal-interpret", "--experiment", str(experiment.dir), "--run", run_id,
+            "--rename-label", "walk=w2", "--merge-label", "w2=groom",
+        ],
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    assert sorted(run.state().labels.values()) == ["groom"]
+    assert "renamed 'walk' to 'w2'" in result.output
+    assert "merged 'w2' into 'groom'" in result.output
+
+
 def test_the_cli_label_edits_report_progress(fitted_temporal, monkeypatch):
     from detail.api.authored_run import LabelOperations
 
@@ -430,13 +477,13 @@ def test_the_cli_label_edits_report_progress(fitted_temporal, monkeypatch):
     run = experiment.authored_run(run_id)
     left, _right = run.node_view().children(run.node_view().root)
     seen = []
-    real = LabelOperations.name_nodes
+    real = LabelOperations.edit_labels
 
-    def spy(self, names, *, progress=None):
+    def spy(self, names, *, progress=None, **kwargs):
         seen.append(progress)
-        return real(self, names, progress=progress)
+        return real(self, names, progress=progress, **kwargs)
 
-    monkeypatch.setattr(LabelOperations, "name_nodes", spy)
+    monkeypatch.setattr(LabelOperations, "edit_labels", spy)
     result = CliRunner().invoke(
         main,
         [

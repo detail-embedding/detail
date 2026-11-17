@@ -60,6 +60,10 @@ class ActiveRun:
 
     @property
     def is_failed(self) -> bool:
+        """Ended in failure — ``failed`` only. A **cancelled** run is not failed (the user
+        stopped it) and not active; a surface that needs a bucket for every status reads
+        `gui/active_processes.py::SUMMARY_BUCKET` rather than inferring one from these two.
+        """
         return self.status == "failed"
 
     @property
@@ -289,11 +293,16 @@ def _runs_of(experiment) -> list[ActiveRun]:
 def list_active(*, include_failed: bool = True) -> list[ActiveRun]:
     """Every run that is pending or running, newest first, across every experiment.
 
-    ``include_failed`` also returns runs that ended badly and have not been looked at. They are
-    not *active*, and they are the other thing someone opening this is looking for: a run that
-    stopped overnight is exactly as urgent as one still going, and finding it should not require
-    remembering which experiment it was in. `FAILED_STATUSES`, not the literal ``"failed"``:
-    a **cancelled** run is terminal and not failed, so asking for one string listed it nowhere.
+    ``include_failed`` also returns runs that ended badly — ``failed`` or ``cancelled`` — and
+    **keeps returning them until the run is deleted.** Nothing records that a row has been seen:
+    there is no seen or dismissed field on any run record, and this listing reads records and
+    writes none. So a failed or cancelled run stays listed, in every experiment, until someone
+    deletes or retries it; that is what `docs/gui.md` (*Active processes*) tells the user. They
+    are not *active*, and they are the other thing someone opening this is looking for: a run
+    that stopped overnight is exactly as urgent as one still going, and finding it should not
+    require remembering which experiment it was in. `FAILED_STATUSES`, not the literal
+    ``"failed"``: a **cancelled** run is terminal and not failed, so asking for one string
+    listed it nowhere.
 
     A family that declares `keep_finished` also contributes that many of its most recent
     *finished* runs. Exports and imports do, for two different reasons — see

@@ -1755,7 +1755,7 @@ ts, elapsed_s, unit, unit_index, unit_total, phase, done, total, eta_unit_s, eta
 
 `ts` is a **wall clock**, not an elapsed: "nothing since 14:02" is the question, and an elapsed cannot answer it without knowing when you are reading. `unit` is the recording a processing run is on, empty for a single-job run. `eta_unit_s` is that unit's own remaining and `eta_run_s` the whole run's — two denominators, never conflated, since recordings differ by hours and the run-wide rate says nothing about whether *this* one is stuck.
 
-Its cadence is its own: `ACTIVITY_INTERVAL_S = 5.0`, not `PROGRESS_INTERVAL_S` (0.5s, a bar frame), which would write 72,000 fsynced rows for a ten-hour run. A row is forced at every phase and unit boundary whatever the clock says, so the lines that mark a change are never the ones the throttle dropped. Writing is `best_effort` like the progress writers beside it — publishing is a statement *about* the work, and a raised write would reach a runner's isolation boundary and be recorded as the work itself failing. Three writers: the orchestrator's emit, the single-job worker, and the distill coordinator. It lives in `storage/` and not the GUI because the run outlives the window, because the GUI only ever sees a rendered string, and because a hung run is a bug report.
+Its cadence is its own: `ACTIVITY_INTERVAL_S = 5.0`, not `PROGRESS_INTERVAL_S` (0.5s, a bar frame), which would write 72,000 fsynced rows for a ten-hour run. A row is forced at every phase and unit boundary whatever the clock says, so the lines that mark a change are never the ones the throttle dropped. The throttle drops rather than holds back, so the log keeps the last sample it dropped and writes it before the next boundary's row: a unit is timed from its first sample to its **last**, not to whichever earlier row the clock kept (#32). Every writer calls `ActivityLog.finish` at its terminal status, which writes that held sample and then a row stamped at the run's end in the last unit and phase, so the run's span and its last unit end when the run did. `ts` carries milliseconds; at whole seconds a 4 s recording read anything from 3 to 5 s. Writing is `best_effort` like the progress writers beside it — publishing is a statement *about* the work, and a raised write would reach a runner's isolation boundary and be recorded as the work itself failing. Three writers: the orchestrator's emit, the single-job worker, and the distill coordinator. It lives in `storage/` and not the GUI because the run outlives the window, because the GUI only ever sees a rendered string, and because a hung run is a bug report.
 
 ### `machine.yaml` and `resources.yaml` — what a job ran on, and its peak memory
 
@@ -2214,7 +2214,8 @@ Results are returned directly — one entry per sampled frame, one `FrameResult`
 ```python
 @dataclass
 class PromptTestResult:
-    frame_idx: int
+    part_index: int                   # the video part the frame came from
+    frame_idx: int                    # local to that part
     t_ns: int
     frame_image: np.ndarray
     results: dict[str, FrameResult]   # prompt label ("prompt_0", …) → that prompt's detections
@@ -2233,9 +2234,11 @@ recordings/recording_001/detections/
         ├── test.json          # model_id, min_conf, n_sample_frames, compute; the sampled frames,
         │                      #   the prompts and their colours, and per-frame counts at min_conf
         └── frames/
-            ├── frame_000042_prompt_0.jpg
-            └── frame_000042_prompt_1.jpg
+            ├── part_000_frame_000042_prompt_0.jpg
+            └── part_000_frame_000042_prompt_1.jpg
 ```
+
+A result is identified by its `(part_index, frame_idx)`, never by its position: `sampled_frames` lists every position requested, while a sample that does not decode is skipped, so the results (and `test.json`'s `frame_results`, each of which names its part) can be shorter. The part is in the overlay name because `frame_idx` is local to its part.
 
 Sampled frames are exact. Each is decoded with `video.read_frame_at` and the part's timestamp map (§3 *Frame timestamp maps*), so the picture is the requested presentation index, and `PromptTestResult.frame_idx` reports the frame actually decoded.
 
@@ -3601,7 +3604,7 @@ tracks.zarr/
 ├── first_frame    (T,) int32
 ├── last_frame     (T,) int32
 ├── n_detections   (T,) int32       # frames where a detection was linked
-├── n_gaps         (T,) int32       # total missed frames within the track span
+├── n_gaps         (T,) int32       # processed frames missed within the track span (§4: at a stride, a frame never looked at is not missed)
 └── mean_conf      (T,) float32
 ```
 
@@ -4237,7 +4240,7 @@ recordings/recording_001/
             └── part_001.zarr/
 ```
 
-`M` = frames in this part where the track has a valid detection. `D` = `model.output_dim`. `det_row` is a back-reference to the source detection zarr row — allows re-rendering with a different pipeline or inspecting the original mask without re-running detection.
+`M` = frames in this part where the track has a valid detection. `D` = `model.output_dim`. **`frame_idx` is part-local**: it counts from 0 inside this part, as every per-part store does (§5 `FrameResult.frame_idx`), while `t_ns` is on the recording's clock. The readers (`run_preview.load_track_trajectory` / `load_track_timeline`) return it **recording-wide**, adding the part's start frame from `recording_store.part_start_frames` (keyed by part stem), so anything built from them (query and clustering instances, frame-span examples, the coverage band, Measurements) numbers frames across the whole recording. `det_row` is a back-reference to the source detection zarr row — allows re-rendering with a different pipeline or inspecting the original mask without re-running detection.
 
 **`det_row` is valid only within the part that wrote it, and names the frame's *representative* detection.** A detection is identified by `(track_id, part_index, det_row)` — the embedding zarr stores no part, so the part is whichever file the row is in, and a flat concatenated read resolves one part's index against another's. Where a frame carries several detections of the subject (anchor secondaries), they are OR-merged into one silhouette and `det_row` records the highest-confidence one only. Both facts make `det_row` a *traceability* handle, not a geometry source: reconstructing where the animal was from it mis-resolves across parts and returns the largest fragment's box rather than the animal's.
 
@@ -5707,7 +5710,9 @@ audited: false               # derived: whether an audit.csv sits beside the art
 
 That is Query's (`pipeline/query.py`), in the order it is written; `audited` is filled in by the
 writer, never taken from the producer. A temporal clustering run's (`pipeline/temporal_clustering.py`)
-adds `label_paths` — parallel to `names`, one path per label — writes no `score` (a cluster
+adds `label_paths` — parallel to `names`, one path per label — gives its `unlabelled` source
+label an entry with no name in both (`unlabelled: []`: the fact §23's `unnamed_labels` condition
+reads, so `unnamed_time` is measured on every clustering run), writes no `score` (a cluster
 assignment has no confidence), declares `overlap: exclusive`, and its `method` carries
 `method_id`, `params`, `granularity` and the method's own fit-summary counts.
 
@@ -7335,7 +7340,11 @@ rather than repairing:
 The edits are `name_nodes` (by name: an existing name adds to that label; a label's only node given
 a new name renames the label), `create_label`, `label_nodes`, `rename_label`, `merge_labels` and
 `delete_label`, all through one door (`LabelOperations._label_edit`) that folds an older state,
-applies the change, checks the rules and recomputes the resolution. The CLI has `--name-node`,
+applies the change, checks the rules and recomputes the resolution. `edit_labels` applies names,
+renames and merges as **one** edit, each name read against the labels as the edits before it left
+them: the CLI's `--name-node`, `--rename-label` and `--merge-label` run through it, so a command
+whose last pair names no label writes nothing (#24; one write per pair had left the earlier pairs
+written). The CLI has `--name-node`,
 `--rename-label` and `--merge-label`; INTERPRET's label box lists **Add to an existing label**
 (greyed, with the reason, where the parent rule forbids it) and its labels list has Rename… and
 Merge into….
@@ -7875,7 +7884,13 @@ cluster and in INTERPRET's montage (faded, tagged), so INTERPRET stays true to t
   and frame view reads `instances.csv`, so all follow.
 - **An edit applies only while it still means what it said**: while the clip's label is
   `from_label` or a label nested under it. A rename keeps it (the id is the same); relabelling the
-  cluster or deleting the label leaves the entry in the state with no effect.
+  cluster or deleting the label leaves the entry in the state with no effect (deleting the label a
+  clip was moved *to* reports the clip unlabelled, as every clip of that label is). **A merge
+  re-points the edits** at the label merged into (`storage/clip_edits.relabel`): the two labels are
+  one behavior, so a clip removed from the source stays removed and one moved into it is in the
+  target; an edit whose two ends become the same label is dropped. Undo puts them back:
+  `label_maps` carries the edits keyed by clip and `restore_labels(..., clip_edits=)` restores them
+  (#24).
 - **The cache readers follow too**, so the label bar and BROWSE's preview agree with the export:
   `NodeView.set_clip_edits` (called by `node_view()` whenever the state file changes) feeds
   `label_time` (a run's covered time moves to `unlabelled` or the target) and `labelled_runs`
@@ -7897,7 +7912,7 @@ no `schema_version` row; its header is its schema.
 | `node` | the labelled cluster it counted toward |
 | `label_path` | that cluster's label path then |
 | `drawn_at` | when the row was written (the name is kept from the draw that came first) |
-| `answer` | `yes` or `no`; empty only in a row an earlier version logged for a draw |
+| `answer` | `yes` or `no`; `withdrawn` for a clip put back after it was answered; empty only in a row an earlier version logged for a draw |
 
 **Why a census.** Review round 11 replaced the random draw of 25 with a review of every clip (the
 user's decision): a draw left most clips unseen, and a clip nobody watched cannot be removed. The
@@ -7924,6 +7939,12 @@ cluster, which writes its census.
   `membership_changed_at` — starts unreviewed rather than showing climb's census. A clip keeps one
   latest answer per path. A rename and a take-out change nothing (a rename carries the answers to
   the new path), and neither does an undo, which restores the label's change time.
+- **Putting a clip back withdraws its answers** (the owner's decision, #24): `put_back_clips`
+  appends a `withdrawn` row for each path the clip has a current answer under
+  (`storage/clip_review.withdraw`), which supersedes the answer without being one. The clip reads
+  as not yet reviewed (`remaining` counts it), so its cluster is no longer *all audited* on a "no"
+  written because the clip was out; the cluster's other clips keep their answers, and finishing
+  again answers it. A version older than this reads the row as an unanswered draw row.
 - **An earlier draw's rows stay readable**: a drawn-but-unanswered row judges nothing; a judged one
   counts as that clip's answer (under its `label_path`; a row with none, under any) until a census
   supersedes it, but no cluster reads as reviewed until
@@ -8716,9 +8737,21 @@ measure, and a measure added later applies to every artifact already on disk.
 The output is one row per `(recording, subject, label, label_to, window, measure)`:
 
 ```
-recording_id, subject, label, label_to, window_id, window_start_t_ns, window_end_t_ns,
-measure, value, denominator_ns, n
+recording_id, subject, label, label_to, label_display, label_is_remainder, window_id,
+window_start_t_ns, window_end_t_ns, measure, value, denominator_ns, n
 ```
+
+**A parent label's row counts only its remainder, and says so** (amended in #24, owner decision).
+Labels nest (§22) and a bout counts under its deepest label, so a label with another nested under
+it measures only the time its children did not take. The numbers stay as they are; the row is
+*named* for what it counts. `label` keeps the plain name, because it is the join key a comparison
+groups on (`compare.MEASURE_KEYS`) and a user joins to `instances.csv` on. `label_display` is what
+a person reads — `"<label> (other)"` on such a row, the label itself otherwise — and
+`label_is_remainder` marks the row, so a CSV reader can tell without parsing a name. "Is a parent"
+is decided once, from the manifest's `label_paths` (`measures.remainder_labels`); a producer with
+no hierarchy has none. A comparison stores the list as `remainder_labels` on its record and carries
+the same two columns in `stats.csv` and `ranking.csv`, and every surface that titles a measurement
+reads them.
 
 `denominator_ns` is not optional and not a convenience column — see *Denominators* below.
 
