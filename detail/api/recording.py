@@ -1577,6 +1577,23 @@ class Recording:
         _columns, rows = streams_store.read_canonical(self.dir, name, dtypes=dtypes)
         return rows
 
+    def stream_row_counts(self) -> dict[str, int | None]:
+        """``{stream name: data rows}`` for every stream, ``None`` where its file is missing.
+
+        For a table that shows a count per stream: it reads each canonical file to the end
+        (a long sensor trace is seconds), so a GUI calls it off the UI thread. A stream whose
+        file is gone is ``None`` rather than raising, so one missing file costs its own row and
+        not the others' counts.
+        """
+        counts: dict[str, int | None] = {}
+        for manifest in self.streams:
+            name = manifest.get("name")
+            try:
+                counts[name] = streams_store.count_canonical_rows(self.dir, name)
+            except FileNotFoundError:
+                counts[name] = None
+        return counts
+
     def stream_preview(self, name: str):
         """A read-only accessor for previewing a stream (Section 3): its events in
         stream-local and video-aligned time, grouped for a timeline raster.

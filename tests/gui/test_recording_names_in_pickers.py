@@ -87,3 +87,92 @@ def test_the_scan_would_catch_one():
     """Guard the guard — a scan that matches nothing passes vacuously forever."""
     sample = "            QListWidgetItem(recording.id, self._recordings)"
     assert any(snippet in sample for snippet in _BAD_SNIPPETS)
+
+
+# --------------------------------------------------------------------------- #
+# messages and path lines, not only pickers (#35)
+# --------------------------------------------------------------------------- #
+def _capture_question(monkeypatch, answer):
+    """Stand in for `QMessageBox.question` (a modal that would block the test), keeping the
+    text it was asked to show."""
+    from PyQt6.QtWidgets import QMessageBox
+
+    asked: list[str] = []
+
+    def question(_parent, _title, text, *args, **kwargs):
+        asked.append(text)
+        return answer
+
+    monkeypatch.setattr(QMessageBox, "question", question)
+    return asked
+
+
+def test_the_delete_confirmation_names_the_recording(
+    qapp, named_experiment, monkeypatch
+):
+    from PyQt6.QtWidgets import QMessageBox
+
+    from detail.gui.pages import RecordingDetailPage
+
+    asked = _capture_question(monkeypatch, QMessageBox.StandardButton.No)
+    recording = named_experiment.get_recording("recording_001")
+    page = RecordingDetailPage(recording, experiment=named_experiment)
+    page._delete_recording()
+    assert asked and "'Fish tank A'" in asked[0], asked
+    assert "recording_001" not in asked[0], asked
+    assert named_experiment.get_recording("recording_001")  # "No" deleted nothing
+
+
+def test_the_launch_skip_list_names_the_recordings(qapp, named_experiment, monkeypatch):
+    from PyQt6.QtWidgets import QMessageBox
+
+    from detail.gui.launch import _covered_subset
+
+    class _CoversOnlyTheFirst:
+        def covered_recording_ids(self):
+            return {"recording_001"}
+
+    asked = _capture_question(monkeypatch, QMessageBox.StandardButton.Yes)
+    names = named_experiment.recording_names()
+    kept = _covered_subset(
+        _CoversOnlyTheFirst(),
+        ["recording_001", "recording_002"],
+        None,
+        "Launch run",
+        names=names,
+    )
+    assert kept == ["recording_001"]  # still ids: that is what the launch takes
+    assert "will be skipped:\nFish tank B\n" in asked[0], asked
+    assert "recording_002" not in asked[0], asked
+
+
+def test_the_path_line_names_the_recording(qapp, named_experiment, monkeypatch):
+    """The shell's path line over a recording page, and over one of its runs. Driven through
+    the shell's own openers with a stand-in for the window around them: a whole `MainWindow`
+    holding a recording page aborts at teardown in this harness (on `main` too), which is a
+    separate matter from what is shown."""
+    import types
+
+    from detail.gui.app import MainWindow
+
+    shown: list[str] = []
+    shell = types.SimpleNamespace(
+        _experiment=named_experiment,
+        _show=lambda widget, context: (shown.append(context), widget.deleteLater()),
+        _set_page_export=lambda *a: None,
+        _open_run=lambda *a: None,
+        _on_recording_deleted=lambda *a: None,
+        _open_recording_run=lambda *a: None,
+    )
+    MainWindow._open_recording(shell, "recording_001")
+    # A run page needs a run on disk; what is checked here is the line above it.
+    from PyQt6.QtWidgets import QWidget
+
+    from detail.gui import pages
+
+    monkeypatch.setattr(pages, "RecordingRunDetailPage", lambda *a, **k: QWidget())
+    MainWindow._open_recording_run(shell, "recording_001", "detection", "det_001")
+    assert shown == [
+        f"{named_experiment.name}  ›  Fish tank A",
+        f"{named_experiment.name}  ›  Fish tank A  ›  det_001",
+    ]

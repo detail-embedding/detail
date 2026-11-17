@@ -568,3 +568,52 @@ def test_a_new_model_reaches_the_rail(qapp, tmp_path, monkeypatch):
     window._refresh_training()  # what every model/dataset/distill launch and delete calls
     assert _rail_children(window, "models") == ["model_001", "model_002"]
     window.deleteLater()
+
+
+def test_the_install_scan_landing_keeps_the_users_selection_and_sort(qapp, monkeypatch):
+    """The install scan returns a second or two after the page opens, and its landing rebuilt
+    the table: a row picked or a column sorted in that window was dropped, and Check access /
+    Install greyed out again under the user's hand (#35). The rebuild still moves installed
+    rows up (the documented order), and now keeps what the user chose."""
+    from PyQt6.QtCore import Qt
+
+    # Hold the scan back, so the user's clicks land before it, as on a real first open.
+    monkeypatch.setattr(pages.GlobalModelsPage, "_scan_installed", lambda self: None)
+    page = pages.GlobalModelsPage(builtin_only=True, embedded=True)
+    assert len(page._rows) >= 3, "the catalog needs a few rows to sort and pick from"
+
+    page._table.sortByColumn(0, Qt.SortOrder.DescendingOrder)
+    page._table.selectRow(len(page._rows) - 1)
+    picked = page._selected()
+    assert picked is not None
+    picked_key = (picked.id, picked.variant)
+    page._on_installed_scanned(
+        {(r.id, r.variant): (r.id, r.variant) != picked_key for r in page._rows}
+    )
+
+    after = page._selected()
+    assert after is not None and (after.id, after.variant) == picked_key
+    header = page._table.horizontalHeader()
+    assert header.sortIndicatorSection() == 0
+    assert header.sortIndicatorOrder() == Qt.SortOrder.DescendingOrder
+    model = page._table.model()
+    ids = [model.index(r, 0).data() for r in range(model.rowCount())]
+    assert ids == sorted(ids, reverse=True)
+    # ...and the actions follow the selection that survived: this one is not installed.
+    assert page._check_btn.isEnabled() and page._install_btn.isEnabled()
+
+
+def test_an_unsorted_table_takes_the_documented_order_when_the_scan_lands(
+    qapp, monkeypatch
+):
+    """The other half: with no column clicked, keeping "the user's sort" must not freeze the
+    pre-scan order. Installed rows still move up behind the suggested ones."""
+    monkeypatch.setattr(pages.GlobalModelsPage, "_scan_installed", lambda self: None)
+    page = pages.GlobalModelsPage(builtin_only=True, embedded=True)
+    installed = ("dinov3_vit", "vit_small")
+    page._on_installed_scanned(
+        {(r.id, r.variant): (r.id, r.variant) == installed for r in page._rows}
+    )
+    n = len(api_models.suggested_models())
+    assert (page._rows[n].id, page._rows[n].variant) == installed
+    assert page._table.horizontalHeader().sortIndicatorSection() == -1

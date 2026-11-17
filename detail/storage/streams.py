@@ -132,6 +132,24 @@ def read_canonical(
     return columns, rows
 
 
+def count_canonical_rows(recording_dir: Path | str, name: str) -> int:
+    """How many data rows a stream's canonical CSV holds, without parsing a cell.
+
+    Still a read of the whole file (a row can be quoted across lines, so a byte count of
+    newlines is not a row count), which is why the GUI asks for it off the UI thread.
+
+    Raises:
+        FileNotFoundError: If the canonical file is absent.
+    """
+    path = stream_dir(recording_dir, name) / CANONICAL_DIRNAME / CANONICAL_FILENAME
+    if not path.is_file():
+        raise FileNotFoundError(f"no canonical stream file at {path}")
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        reader = csv.reader(f)
+        next(reader, None)  # the header
+        return sum(1 for _row in reader)
+
+
 def stream_shape(manifest: dict) -> str:
     """The stream's ``shape`` (event/interval/continuous), Section 3.
 

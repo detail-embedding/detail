@@ -1787,3 +1787,44 @@ def test_masks_are_on_by_default_like_every_other_player(qapp, tmp_path):
     proj = _embed_video_experiment(tmp_path)
     dialog = ClipExampleDialog(proj, proj.recordings, "emb_01")
     assert dialog._masks.isChecked()
+
+
+def test_the_clip_tables_time_column_sorts_on_one_unit(qapp, tmp_path):
+    """A clip marked in the dialog carries `start_t_ns`; one from an older config (or a CLI
+    `--example` in frames) carries only `start_frame`. The Time column sorted each on its own
+    number, so every frame-only clip sorted first whatever its time (#35). The pre-load check
+    already resolves every clip to `t_ns` off the UI thread; the column sorts on that.
+
+    In this fixture an embedded frame's `t_ns` is the frame number times 1000, so the
+    frame-only clip at frame 4 is *later* than the marked clip at 2000 ns, and keyed on its
+    frame number (4) it would sort first."""
+    from PyQt6.QtCore import Qt as _Qt
+
+    from tests.gui.conftest import drain_until
+
+    proj = _embed_video_experiment(tmp_path)
+    marked = {
+        "recording_id": "recording_001",
+        "track_id": 0,
+        "start_t_ns": 2000,
+        "end_t_ns": 4000,
+    }
+    from_frames = {
+        "recording_id": "recording_001",
+        "track_id": 0,
+        "start_frame": 4,
+        "end_frame": 4,
+    }
+    dialog = ClipExampleDialog(
+        proj, proj.recordings, "emb_01", initial=[from_frames, marked]
+    )
+    drain_until(qapp, lambda: dialog._initial_call.isFinished())
+    for _ in range(5):  # the result is delivered on the UI thread after the thread ends
+        qapp.processEvents()
+
+    dialog._clip_table.sortByColumn(2, _Qt.SortOrder.AscendingOrder)
+    model = dialog._clip_model
+    shown = [model.item(r, 2).text() for r in range(model.rowCount())]
+    assert shown == ["0:00.000–0:00.000", "frames 4–4"], shown
+    # ...and the saved specs are untouched: the frame-only clip is still in frames.
+    assert dialog.examples[0] == from_frames

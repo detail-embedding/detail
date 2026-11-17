@@ -2335,6 +2335,106 @@ def _a_package_building_a_numeric_cell_by_hand():
     )
 
 
+#: Cells built with ``str(<name>)`` whose value is genuinely text, keyed ``file:Class.method``
+#: like :data:`_CONFIRMATIONS`, with the reason. A key that matches no site fails
+#: (``tests/gui/test_requirements.py``), so this cannot outlive the code it excuses.
+_TEXT_CELLS_FROM_STR: dict[str, str] = {
+    "pages.py:_cell": (
+        "the non-number branch of the shared builder: a number goes to `SortCell` on the next "
+        "line, so whatever reaches `str()` here is already text"
+    ),
+    "audit_tab.py:AuditTab._fill": (
+        "AUDIT's summary tables do not sort (no `enable_sorting`), and their cells are "
+        "sentences such as `0.82  (0.71–0.90, n=40)` or `not audited`, not numbers"
+    ),
+}
+
+
+def _numeric_text_cells(package) -> tuple[list[str], set[str]]:
+    """Every cell built as text from what is probably a number, and the exemptions that matched.
+
+    Pure over a directory, so the guard's own tests can hand it one-line packages
+    (``test_the_numeric_cell_rule_would_catch_*``). The spellings, each found shipped:
+
+    - an f-string with a numeric format spec (``f"{x:.3f}"``);
+    - ``str()`` around a counting call (``str(len(rows))``);
+    - ``str()`` around a bare name or attribute (``str(m.n_folds)``, and ``str(x)`` inside a
+      comprehension over numbers — the query-eval fold table);
+    - a conditional expression with ``str()`` in a branch (``"" if rank is None else
+      str(rank)``, the query-eval Rank column).
+
+    The last two cannot tell a number from an id held in a variable, so a ``str(<name>)`` cell
+    that really is text is declared in :data:`_TEXT_CELLS_FROM_STR` with its reason.
+    """
+    import ast
+    import re
+
+    # `ast.unparse` of a format spec returns the f-string literal (`"f'.3f'"`) — no colon,
+    # which is what made the first version of this rule match nothing and pass vacuously on
+    # the whole package. Its counterexample is what caught that.
+    numeric = re.compile(r"\.\d*[fged%]|,")
+
+    def is_str_call(node) -> bool:
+        return (
+            isinstance(node, ast.Call)
+            and getattr(node.func, "id", "") == "str"
+            and bool(node.args)
+        )
+
+    offenders: list[str] = []
+    excused: set[str] = set()
+    for source in sorted(package.rglob("*.py")):
+        if source.name in _SCAN_EXEMPT:
+            continue
+        rel = source.relative_to(package).as_posix()
+        text = source.read_text(encoding="utf-8-sig")
+        lines = text.split("\n")
+        tree = ast.parse(text)
+        owner = _owners(tree)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
+            if name not in {"QStandardItem", "QTableWidgetItem"} or not node.args:
+                continue
+            arg = node.args[0]
+            looks_numeric = may_be_text = False
+            if isinstance(arg, ast.JoinedStr):
+                looks_numeric = any(
+                    isinstance(v, ast.FormattedValue)
+                    and v.format_spec is not None
+                    and numeric.search(ast.unparse(v.format_spec))
+                    for v in arg.values
+                )
+            elif is_str_call(arg):
+                inner = arg.args[0]
+                if isinstance(inner, ast.Call) and getattr(inner.func, "id", "") in {
+                    "len",
+                    "int",
+                    "float",
+                    "round",
+                    "sum",
+                }:
+                    looks_numeric = True
+                elif isinstance(inner, (ast.Name, ast.Attribute, ast.Subscript)):
+                    looks_numeric = may_be_text = True
+            elif isinstance(arg, ast.IfExp) and (
+                is_str_call(arg.body) or is_str_call(arg.orelse)
+            ):
+                looks_numeric = may_be_text = True
+            if not looks_numeric:
+                continue
+            key = f"{rel}:{owner.get(node, '<module>')}"
+            if may_be_text and key in _TEXT_CELLS_FROM_STR:
+                excused.add(key)
+                continue
+            offenders.append(
+                f"{rel}:{node.lineno}  {lines[node.lineno - 1].strip()[:70]}"
+            )
+    return offenders, excused
+
+
 @requirement(
     kinds=("package",),
     counterexample=_a_package_building_a_numeric_cell_by_hand,
@@ -2353,56 +2453,68 @@ def a_numeric_cell_sorts_on_its_value(package) -> None:
     audit over builder *calls* found one site; this scan, over the cell constructor itself,
     found twenty-one.
 
-    Read from the parse tree, and only where the text is built from a number: an f-string with a
-    numeric format spec, or `str()` around a counting call. A cell whose text is genuinely a
-    string is not a numeric cell and is left alone.
+    **And the scan had its own gap** (#35): it read only an f-string with a numeric spec and
+    `str()` around a counting call, so `str(m.n_folds)`, `str(x)` in a comprehension and
+    `"" if rank is None else str(rank)` all passed it, and the query-eval Rank, Folds and
+    per-fold count columns sorted 1, 10, 11, 2. Those spellings are read now; a `str(<name>)`
+    cell that is really text is declared in :data:`_TEXT_CELLS_FROM_STR`.
     """
-    import ast
-    import re
+    offenders, _excused = _numeric_text_cells(package)
+    assert not offenders, (
+        "these cells are built from a number and will sort as text — use `tables.num_cell`, "
+        "which keeps the formatted string and orders on the value (or, for a `str(<name>)` "
+        "that is really text, declare it in `_TEXT_CELLS_FROM_STR` with the reason):\n  "
+        + "\n  ".join(offenders)
+    )
 
-    # `ast.unparse` of a format spec returns the f-string literal (`"f'.3f'"`) — no colon,
-    # which is what made the first version of this rule match nothing and pass vacuously on
-    # the whole package. Its counterexample is what caught that.
-    numeric = re.compile(r"\.\d*[fged%]|,")
+
+def _literal_done_steps(package) -> list[str]:
+    """``file:line`` of every checklist ``Step(...)`` whose ``done`` is a literal ``True`` or
+    ``False``. Pure over a directory, so its test can hand it a one-line package."""
+    import ast
+
     offenders = []
     for source in sorted(package.rglob("*.py")):
         if source.name in _SCAN_EXEMPT:
             continue
-        text = source.read_text(encoding="utf-8-sig")
-        lines = text.split("\n")
-        for node in ast.walk(ast.parse(text)):
+        tree = ast.parse(source.read_text(encoding="utf-8-sig"))
+        for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
             fn = node.func
             name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
-            if name not in {"QStandardItem", "QTableWidgetItem"} or not node.args:
+            if name != "Step":
                 continue
-            arg = node.args[0]
-            looks_numeric = False
-            if isinstance(arg, ast.JoinedStr):
-                looks_numeric = any(
-                    isinstance(v, ast.FormattedValue)
-                    and v.format_spec is not None
-                    and numeric.search(ast.unparse(v.format_spec))
-                    for v in arg.values
-                )
-            elif (
-                isinstance(arg, ast.Call)
-                and getattr(arg.func, "id", "") == "str"
-                and arg.args
-                and isinstance(arg.args[0], ast.Call)
-                and getattr(arg.args[0].func, "id", "")
-                in {"len", "int", "float", "round", "sum"}
-            ):
-                looks_numeric = True
-            if looks_numeric:
+            done = node.args[2] if len(node.args) > 2 else None
+            for keyword in node.keywords:
+                if keyword.arg == "done":
+                    done = keyword.value
+            if isinstance(done, ast.Constant) and isinstance(done.value, bool):
                 offenders.append(
-                    f"{source.name}:{node.lineno}  {lines[node.lineno - 1].strip()[:70]}"
+                    f"{source.relative_to(package).as_posix()}:{node.lineno}"
                 )
+    return offenders
+
+
+@requirement(
+    kinds=("package",),
+    counterexample=lambda: _a_package_that(
+        'Step("quick_segment", "See it segment a clip", False, guides=False)'
+    ),
+)
+def a_checklist_step_reads_its_state(package) -> None:
+    """A setup checklist step's tick is read from a signal, never written as a literal.
+
+    The Configuration checklist's last two rows, "See it segment a clip" and "Recommended:
+    distill a fast model", were built with ``done=False``, so neither could ever show ✓ while
+    `docs/gui.md` said the list "reads live state and marks each step ✓ when done" (#35). A
+    literal in the ``done`` slot is the whole defect: nothing is wrong at the line, and the
+    checklist renders. Read the state the step asks for (a `ReadinessSignals` field) instead.
+    """
+    offenders = _literal_done_steps(package)
     assert not offenders, (
-        "these cells are built from a number and will sort as text — use `tables.num_cell`, "
-        "which keeps the formatted string and orders on the value:\n  "
-        + "\n  ".join(offenders)
+        f"{offenders} build a checklist step whose tick is a literal, so it can never change: "
+        "derive `done` from a `ReadinessSignals` field"
     )
 
 

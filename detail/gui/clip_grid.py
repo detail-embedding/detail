@@ -479,6 +479,9 @@ class ConfidenceStrip(QWidget):
 
         self._experiment = experiment  # the popup a double-click opens needs it
         self._preview = ClipQueryPreview(experiment.dir)
+        #: ``{recording_id: name}`` for the captions (`set_names`); an id with no name shows
+        #: as itself, a recording deleted since the run.
+        self._names: dict[str, str] = {}
         self._columns = columns
         self._generation = 0
         self._signals = _CellSignals()
@@ -664,10 +667,19 @@ class ConfidenceStrip(QWidget):
         chrome = lines(2) + self._scroll.horizontalScrollBar().sizeHint().height()
         self._scroll.setFixedHeight(picture + chrome)
 
+    def set_names(self, names: dict[str, str]) -> None:
+        """The recordings' names, which the captions show (§11: the id is the tool's).
+
+        Read off the UI thread by the embedder and handed in before the clips are shown;
+        captioning by id is what this replaced, with the Browse tab beside it showing names.
+        """
+        self._names = dict(names)
+
     def _caption_for(self, clip) -> str:
         """Which animal, and how confident — pooling interleaves recordings, so say which."""
         score = "" if clip.score is None else f"{clip.score:.{self._digits}f}"
-        return f"{clip.recording_id}\n{score}".strip()
+        name = self._names.get(clip.recording_id, clip.recording_id)
+        return f"{name}\n{score}".strip()
 
     def _boundary_index(self) -> int:
         """Where the cutoff falls in the ordering — the first clip it **keeps**.
