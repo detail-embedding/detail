@@ -98,6 +98,7 @@ detail/
 │   │                     # storage.yaml — one parse per change on disk, a stat per lookup
 │   ├── roots.py          # the alias maps in storage.yaml; register_root is its only writer
 │   ├── dirscan.py        # one enumeration per listing, instead of a stat per field
+│   ├── id_allocator.py   # §3: every never-reused `<stem>_<n>` id (a high-water mark beside each family)
 │   ├── video_roots.py    # storage.yaml's `video_roots:` alias map (reference-in-place video)
 │   ├── zarr_store.py     # the retrying LocalStore every zarr group is opened through
 │   ├── zarr_io.py        # detection/tracking/embedding/kinematics zarr writers and readers

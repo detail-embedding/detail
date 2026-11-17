@@ -1037,7 +1037,11 @@ The page is a table: the four built-in presets (**Quadruped overhead view (12 po
 **Quadruped overhead view (8 points)**, **Quadruped side view (5 points)** and **Midline (3
 points)**) and then your own skeletons, **Name · Kind · Points · Used by**. **Used
 by** counts the example sets, keypoint runs, datasets and trained models in your experiments that
-copied it. **+ New skeleton** and **Import…** (read a skeleton file) sit above the table;
+copied it. A copy counts when it holds the same points, edges and pairs, whatever id it was given
+on the machine where it was made, so an experiment from another computer does not lock an
+unrelated skeleton that happens to share its id. Only experiments in the app's workspace are
+searched; one created with `experiment create --dir` somewhere else is not counted, and its own
+copies are unaffected by an edit here. **+ New skeleton** and **Import…** (read a skeleton file) sit above the table;
 **Edit…**, **Export…** and **Delete** act on the selected row, and double-clicking a row is
 **Edit…**.
 

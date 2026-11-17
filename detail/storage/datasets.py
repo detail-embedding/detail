@@ -16,6 +16,7 @@ import yaml
 from detail.core import atomic
 from detail.storage import dirscan
 from detail.storage import experiment as experiment_store
+from detail.storage import id_allocator
 
 SCHEMA_VERSION = 1
 DATASET_FILENAME = "dataset.yaml"
@@ -32,14 +33,11 @@ def discover_datasets(experiment_dir: Path | str) -> list[str]:
 
 
 def next_dataset_id(experiment_dir: Path | str) -> str:
-    """Experiment-monotonic ``dataset_NNN`` id, one past the highest existing."""
-    nums = []
-    for did in discover_datasets(experiment_dir):
-        try:
-            nums.append(int(did.rsplit("_", 1)[-1]))
-        except ValueError:
-            pass
-    return f"dataset_{max(nums, default=0) + 1:03d}"
+    """Claim the next ``dataset_NNN`` id (creating its directory); a deleted dataset's id is
+    never handed out again (``storage/id_allocator.py``)."""
+    return id_allocator.claim_dir(
+        experiment_store.datasets_dir(experiment_dir), "dataset", digits=3
+    )
 
 
 def write_dataset_yaml(dataset_dir: Path | str, record: dict) -> None:

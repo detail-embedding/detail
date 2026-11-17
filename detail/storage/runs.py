@@ -19,6 +19,7 @@ import yaml
 from detail.core import atomic
 from detail.core import progress
 from detail.storage import dirscan
+from detail.storage import id_allocator
 from detail.storage import read_cache
 
 SCHEMA_VERSION = 1
@@ -57,18 +58,14 @@ def runs_lock(experiment_dir: Path | str):
 
 
 def next_run_id(experiment_dir: Path | str) -> str:
-    """Experiment-monotonic ``run_NNN`` id, one past the highest existing.
+    """Claim the next ``run_NNN`` id (creating its directory); a deleted run's id is never
+    handed out again (``storage/id_allocator.py``).
 
-    Racy on its own — call it inside :func:`runs_lock`, holding the lock until the record is
-    written, or two concurrent launches get the same id.
+    The claim itself cannot race; call it inside :func:`runs_lock` anyway, holding the lock
+    until the record is written, so a reader never sees the claimed directory without a record
+    for longer than that.
     """
-    nums = []
-    for rid in discover_runs(experiment_dir):
-        try:
-            nums.append(int(rid.rsplit("_", 1)[-1]))
-        except ValueError:
-            pass
-    return f"run_{max(nums, default=0) + 1:03d}"
+    return id_allocator.claim_dir(runs_dir(experiment_dir), "run", digits=3)
 
 
 def write_run(experiment_dir: Path | str, run_id: str, record: dict) -> None:

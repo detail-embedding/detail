@@ -300,9 +300,10 @@ def test_set_rois_replaces_all_in_one_transaction(tmp_path):
         ]
     )
     assert [r["name"] for r in recording.rois] == ["a", "b"]
-    # a second "Save all" replaces the whole set
+    # a second "Save all" replaces the whole set; the new region takes an id never used
+    # before, not a dropped region's (DESIGN_PLAN §3 *Ids are never reused*)
     ids = recording.set_rois([{"name": "c", "keyframes": _full_frame()}])
-    assert ids == ["roi_001"]
+    assert ids == ["roi_003"]
     assert [r["name"] for r in recording.rois] == ["c"]
 
 

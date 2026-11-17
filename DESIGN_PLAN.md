@@ -1116,6 +1116,35 @@ every surface displays.
 
 Guard: `tests/api/test_recording_identity.py`.
 
+### Ids are never reused
+
+The recording rule holds for **every** id the tool mints as `<stem>_<n>`: models, datasets,
+processing, distill, analysis and export runs, comparisons, example sets, skeletons, tool runs, a
+recording's own runs (`det_NN`, `track_NN`, `emb_NN`, `kd_NN`, `kt_NN`) and its ROIs and POIs. A
+deleted thing's id is never handed to the next thing of its kind, because finished runs, distill
+records, comparisons, `roi_relations.csv` and export folders go on naming it.
+
+- **One allocator**, `storage/id_allocator.py`. Each family keeps a high-water mark in
+  `.ids.yaml` beside it (`models/.ids.yaml`, `tools/.ids.yaml`, a recording's own `.ids.yaml` for
+  its runs and regions), keyed by stem, rewritten atomically and only upward. A claim holds an
+  exclusive lock on the sibling `.ids.lock` and, for a family stored as directories, creates the
+  id's directory with `exist_ok=False`, so two processes never take one id.
+- **The next id** is the larger of the mark and one past the highest id on disk. An experiment
+  made before the mark existed therefore continues from its highest id: no stored id changes, and
+  an id reused before the mark existed cannot be detected.
+- **ROI and POI ids are stable**: a rename, a shape edit or the scene editor's Save keeps a
+  region's id (`replace_defs` takes each kept region's `id` back), and a new region gets a
+  never-used one.
+- **Not on the allocator, each for a reason**: recordings keep their own counter in `config.yaml`
+  (above); arenas take the lowest free number, because every record naming one is a tracking run
+  and an arena a tracking run names can be neither deleted nor redefined; snapshots are never
+  deleted; a clustering run's label ids (`L<n>`, §22) still take one past the highest *(open: a
+  high-water mark in the run's state)*.
+- **Ids are local.** A skeleton id (`sk_NN`) means something only on the machine that minted it,
+  so whatever compares a `skeleton_ref` across experiments or machines matches its `digest` (§26).
+
+Guard: `tests/storage/test_id_reuse.py`.
+
 ---
 
 ## 4. Frame cadence (`every_n_frames`)
@@ -9689,7 +9718,7 @@ each with a layout, shown as **read-only rows** of the skeleton library (below).
 view (12 points)*, *Quadruped overhead view (8 points)*, *Quadruped side view (5 points)*, *Midline
 (3 points)*. An outright rename, by the user's choice: the old ids no longer resolve. A set or run
 saved under one still holds its own copy and runs, and the example-set picker still places it by
-digest; only the library's *Used by* count, which matches the saved id, no longer counts it. A run counts its
+digest, and the library's *Used by* count matches it by digest too (§3 *Ids are never reused*). A run counts its
 skeleton by the **digest of the copy it holds**, never by a name or a library id — two
 experiments that used the same skeleton produce runs with matching identity.
 
@@ -9725,7 +9754,11 @@ breaks a set, a run or a model.
 **Dependents freeze a skeleton.** A library skeleton is **editable and deletable only while
 nothing uses it**. Its dependents are found by a **live search** of the experiments the app knows
 (`locations.list_experiment_dirs`) for example sets, keypoint detect and track runs, embedding runs
-aligned on them, and trained students whose `skeleton_ref.id` names it. The search runs off the UI
+aligned on them, and trained students whose `skeleton_ref` holds it — matched on the ref's
+**digest**, since a library id means something only on the machine that minted it: a ref naming
+this entry by id and digest counts for it alone (so a duplicate of a used skeleton stays
+editable); a ref whose id names a different skeleton here counts for every entry holding its
+digest; a ref with no digest is matched on its id. The search runs off the UI
 thread behind a busy overlay, when a skeleton is selected and again on Save or Delete. While it
 has dependents, **Save** is replaced by **Save as new** (the edit becomes a new skeleton,
 `derived_from` the old one) and **Delete** is greyed, listing what uses it. Once the last dependent
@@ -9769,9 +9802,12 @@ Example set:  [overhead rats ▾]  8 / 8 frames      (this experiment's sets on 
 - The picker is one widget (`gui/example_set_picker.py`), shown by: the **keypoint detect** form
   and **Test keypoints…** when the method is `dinov3_match`, and the **Distill keypoints…** dialog
   when its teacher is the patch method (§12). It is hidden for a model that does not need examples.
-- A set belongs to a skeleton by its `skeleton_ref.id`; a set with no ref (made before the library,
-  or from a bare `Skeleton` or file) matches the first library entry with the same digest, and one
-  matching none is listed under *(no library skeleton)*, so no set an experiment holds is hidden.
+- A set belongs to a skeleton by its `skeleton_ref.id` when that entry holds the set's skeleton
+  (same digest); otherwise (no ref, made before the library or from a bare `Skeleton` or file, or a
+  ref whose id names another skeleton here) it matches the first library entry with the same
+  digest, and one matching none is listed under *(no library skeleton)*, so no set an experiment
+  holds is hidden. An imported set keeps its `skeleton_ref` only when an entry here holds its
+  digest, and the ref then names that entry.
 - **API / CLI** are unchanged in substance: `create_example_set(name, skeleton)` takes a library
   id, a preset id, a `Skeleton` or a skeleton file; `keypoints examples …` stays the scripted
   route; `keypoints examples edit` renames, and `--skeleton` changes the skeleton until the
