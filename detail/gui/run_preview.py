@@ -502,8 +502,11 @@ class TrackingRunPreview(DetectionRunPreview):
         if not track_ids:
             return f"no subject was tracked on any frame · {detections}"
         lines = []
+        looked_at = self._preview.processed_mask()
         for track_id in track_ids:
-            stats = track_coverage(presence[track_id], fps)
+            # Gaps over the processed frames too: at a stride each frame never looked at read as
+            # a one-frame gap (#32).
+            stats = track_coverage(presence[track_id], fps, processed=looked_at)
             # Two ratios, because one number cannot separate the two ways a frame ends up
             # without a subject: the detector found nothing there, or it found something
             # and the tracker did not take it. The gap between these lines is the second,

@@ -280,6 +280,8 @@ GUARD_FILES = frozenset(
         "tests/query_methods/test_registry.py",
         "tests/trackers/test_tracker_progress.py",
         "tests/trackers/test_tracker_resume.py",
+        # Over TRACKERS: n_gaps counts frames the run looked at, at any stride and part (#32).
+        "tests/trackers/test_tracker_gaps.py",
         "tests/test_registry_isolation.py",
         "tests/test_registry_prepopulation.py",
         "tests/test_surfaces.py",

@@ -4,6 +4,10 @@ Every format is written from one `PointSource`, so the tests check each file's o
 against the same rows: the fake detect method places point 0 on a subject's box corner
 ``(x0, y0)`` and point 1 on ``(x1, y1)``, scored 0.5, over five 40x40 frames; track 0 is on
 every frame, track 1 on frames 1 and 3.
+
+**A missing value averaged in as zero (#32).** SLEAP's ``instance_scores`` set a missing point's
+NaN score to 0 before the mean, so a half-placed animal scored half. The rule: a mean over
+points is a mean over the points placed (``sleap_instance_scores``).
 """
 
 import csv
@@ -493,3 +497,26 @@ def test_loader_round_trip_with_movement(keypoint_runs, tmp_path):
     assert dlc.sizes["time"] == 5 and list(dlc.keypoints.values) == ["nose", "tail"]
     sleap = load_poses.from_sleap_file(result.dest / f"{STEM}_part_001.analysis.h5")
     assert sleap.sizes["time"] == 5 and list(sleap.keypoints.values) == ["nose", "tail"]
+
+
+def test_a_sleap_instance_score_averages_only_the_points_placed():
+    """A missing point is NaN, and it was set to 0 before the mean, so an animal with two of
+    four points placed at 0.9 scored 0.45 in ``instance_scores`` (#32, finding 7). SLEAP's own
+    mean instance score skips a missing node; so does this one. An instance with no point
+    placed stays NaN, not 0."""
+    from detail.api.keypoint_export import sleap_instance_scores
+
+    nan = np.nan
+    likelihood = np.array(
+        [
+            [[0.9, 0.9, nan, nan], [0.2, 0.4, 0.6, 0.8]],
+            [[nan, nan, nan, nan], [0.5, nan, nan, nan]],
+        ]
+    )  # (frames, tracks, keypoints)
+    got = sleap_instance_scores(likelihood)
+    assert got.shape == (2, 2)
+    assert got[0, 0] == pytest.approx(0.9)
+    assert got[0, 1] == pytest.approx(0.5)
+    assert np.isnan(got[1, 0])
+    assert got[1, 1] == pytest.approx(0.5)
+    assert sleap_instance_scores(np.zeros((0, 2, 4))).shape == (0, 2)

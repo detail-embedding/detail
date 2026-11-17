@@ -1726,7 +1726,7 @@ ts, elapsed_s, unit, unit_index, unit_total, phase, done, total, eta_unit_s, eta
 
 `ts` is a **wall clock**, not an elapsed: "nothing since 14:02" is the question, and an elapsed cannot answer it without knowing when you are reading. `unit` is the recording a processing run is on, empty for a single-job run. `eta_unit_s` is that unit's own remaining and `eta_run_s` the whole run's — two denominators, never conflated, since recordings differ by hours and the run-wide rate says nothing about whether *this* one is stuck.
 
-Its cadence is its own: `ACTIVITY_INTERVAL_S = 5.0`, not `PROGRESS_INTERVAL_S` (0.5s, a bar frame), which would write 72,000 fsynced rows for a ten-hour run. A row is forced at every phase and unit boundary whatever the clock says, so the lines that mark a change are never the ones the throttle dropped. Writing is `best_effort` like the progress writers beside it — publishing is a statement *about* the work, and a raised write would reach a runner's isolation boundary and be recorded as the work itself failing. Three writers: the orchestrator's emit, the single-job worker, and the distill coordinator. It lives in `storage/` and not the GUI because the run outlives the window, because the GUI only ever sees a rendered string, and because a hung run is a bug report.
+Its cadence is its own: `ACTIVITY_INTERVAL_S = 5.0`, not `PROGRESS_INTERVAL_S` (0.5s, a bar frame), which would write 72,000 fsynced rows for a ten-hour run. A row is forced at every phase and unit boundary whatever the clock says, so the lines that mark a change are never the ones the throttle dropped. The throttle drops rather than holds back, so the log keeps the last sample it dropped and writes it before the next boundary's row: a unit is timed from its first sample to its **last**, not to whichever earlier row the clock kept (#32). Every writer calls `ActivityLog.finish` at its terminal status, which writes that held sample and then a row stamped at the run's end in the last unit and phase, so the run's span and its last unit end when the run did. `ts` carries milliseconds; at whole seconds a 4 s recording read anything from 3 to 5 s. Writing is `best_effort` like the progress writers beside it — publishing is a statement *about* the work, and a raised write would reach a runner's isolation boundary and be recorded as the work itself failing. Three writers: the orchestrator's emit, the single-job worker, and the distill coordinator. It lives in `storage/` and not the GUI because the run outlives the window, because the GUI only ever sees a rendered string, and because a hung run is a bug report.
 
 ### `machine.yaml` and `resources.yaml` — what a job ran on, and its peak memory
 
@@ -3572,7 +3572,7 @@ tracks.zarr/
 ├── first_frame    (T,) int32
 ├── last_frame     (T,) int32
 ├── n_detections   (T,) int32       # frames where a detection was linked
-├── n_gaps         (T,) int32       # total missed frames within the track span
+├── n_gaps         (T,) int32       # processed frames missed within the track span (§4: at a stride, a frame never looked at is not missed)
 └── mean_conf      (T,) float32
 ```
 
