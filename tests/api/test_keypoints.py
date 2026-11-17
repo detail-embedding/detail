@@ -515,7 +515,9 @@ def test_an_imported_set_keeps_its_skeleton_link_only_on_a_digest_match(tmp_path
     b = Experiment.create("b", tmp_path / "b")
     made = a.create_example_set("rats", here["id"])
     body = yaml.safe_load(
-        (example_store.set_dir(a.dir, made.id) / "examples.yaml").read_text("utf-8")
+        (example_store.set_dir(a.dir, made.id) / "examples.yaml").read_text(
+            encoding="utf-8-sig"
+        )
     )
 
     def imported(ref):

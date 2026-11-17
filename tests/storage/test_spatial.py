@@ -1,3 +1,14 @@
+"""Arena, ROI and POI storage (§10): keyframes, the ``recording.yaml`` manifest, and ids.
+
+A ROI or POI id is **stable** and **never reused**. The scene editor's Save used to hand
+``replace_defs`` names only, which renumbered every region by list position, and ``next_id``
+took the lowest free number; either way ``roi_001`` named ``nest`` in one location run and
+``food`` in the next, and runs joined on ``roi_id`` paired different regions. Now an entry that
+carries the id of a region that exists keeps it, and every new id comes from the recording's
+never-decreasing mark (``storage/id_allocator.py``; the class is written up in
+``tests/storage/test_id_reuse.py``).
+"""
+
 import pytest
 import yaml
 

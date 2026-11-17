@@ -1755,7 +1755,7 @@ def test_cancel_model_kills_worker_and_marks_cancelled(tmp_path):
     assert models_store.read_model_yaml(mdir)["status"] == "cancelled"
 
 
-def test_run_processing_honors_external_cancel_sentinel(tmp_path):
+def test_run_processing_honors_external_cancel_sentinel(tmp_path, monkeypatch):
     """Experiment.cancel_run's on-disk sentinel stops a *live* orchestrator before it
     runs the next recording — the dir-based cancel can't touch the in-process thread,
     so without the sentinel the batch would continue and overwrite the status."""
@@ -1764,8 +1764,17 @@ def test_run_processing_honors_external_cancel_sentinel(tmp_path):
     proj = Experiment.create("proj", tmp_path)
     _video_recording(proj, "recording_001")
     _video_recording(proj, "recording_002")
-    # pre-set the sentinel for the id this batch gets (fresh experiment → run_001)
-    runs_store.request_cancel(proj.dir, "run_001")
+    # Set the sentinel the moment the batch claims its id, before anything runs. (A
+    # sentinel written ahead of the claim would make `run_001/` exist, and a claimed
+    # directory is never handed out, so the batch would take `run_002`.)
+    claim = runs_store.next_run_id
+
+    def claim_then_cancel(experiment_dir):
+        run_id = claim(experiment_dir)
+        runs_store.request_cancel(experiment_dir, run_id)
+        return run_id
+
+    monkeypatch.setattr(runs_store, "next_run_id", claim_then_cancel)
     run = proj.run_processing(
         "tracking", ["recording_001", "recording_002"], dict(TRACKING_CONFIG)
     )

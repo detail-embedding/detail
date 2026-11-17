@@ -230,7 +230,9 @@ def test_stems_sharing_a_home_count_separately(tmp_path):
 
 def test_an_unreadable_mark_falls_back_to_what_is_on_disk(tmp_path):
     (tmp_path / "run_004").mkdir()
-    (tmp_path / id_allocator.MARK_FILENAME).write_text("[not, a, mapping", "utf-8")
+    (tmp_path / id_allocator.MARK_FILENAME).write_text(
+        "[not, a, mapping", encoding="utf-8"
+    )
     assert id_allocator.claim_dir(tmp_path, "run", digits=3) == "run_005"
 
 
