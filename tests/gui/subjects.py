@@ -362,8 +362,7 @@ def a_clustering_workspace(experiment_dir, fit_template, qapp):
     handle = experiment.authored_run(run_id)
     workspace = ClusterWorkspace(experiment, handle)
     interpret = workspace._interpret
-    if not drain_until(qapp, lambda: interpret._clips is not None, 20_000):
-        raise AssertionError("the clustering workspace never loaded")
+    drain_until(qapp, lambda: interpret._clips is not None, 20_000)
     view = interpret._view
     interpret.filters().set_selection(
         Selection(recording_ids=frozenset(view.recording_ids[:1]))

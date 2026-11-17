@@ -33,6 +33,7 @@ from PyQt6.QtWidgets import QLabel, QMessageBox, QPushButton, QVBoxLayout, QWidg
 from detail.gui.cluster_strip import cluster_colors
 from detail.gui.cluster_workspace import TEMPORAL_TERMS, ClusterWorkspace
 from detail.gui.label_panel import label_rows
+from tests.gui.conftest import pump_for
 
 
 def _drain(qapp, predicate, timeout_ms: int = 10_000) -> bool:
@@ -484,7 +485,7 @@ def test_a_run_whose_job_failed_opens_nothing_and_writes_nothing(qapp, fitted):
 
     before = fingerprint()
     page = AnalysisRunDetailPage(experiment, run_id)
-    _drain(qapp, lambda: False, timeout_ms=1_500)
+    pump_for(qapp, 1_500)
     after = fingerprint()
     assert set(after) == set(before)
     assert {n for n in before if before[n] != after[n]} <= {"analysis.yaml"}
@@ -998,7 +999,7 @@ def test_a_run_still_working_is_not_opened_for_interpretation(qapp, fitted):
     )
     assert experiment.analysis_job_active(run_id)
     page = AnalysisRunDetailPage(experiment, run_id)
-    _drain(qapp, lambda: False, timeout_ms=500)
+    pump_for(qapp, 500)
     assert not page.findChildren(
         ClusterWorkspace
     ), "the workspace opened over a running job"
@@ -2366,7 +2367,7 @@ def test_leaving_and_returning_leaves_one_listener(qapp, fitted, monkeypatch, tm
 
     def listeners():
         one_round()
-        _drain(qapp, lambda: False, 100)
+        pump_for(qapp, 100)
         return (
             signals.receivers(queue.progress),
             signals.receivers(queue.recording_done),
@@ -2495,7 +2496,7 @@ def _shown_workspace(qapp, fitted, height: int):
     workspace.resize(1400, height)
     workspace.show()
     interpret = workspace._interpret
-    _drain(qapp, lambda: False, 0.3)
+    pump_for(qapp, 300)
     return workspace, interpret
 
 
@@ -2598,7 +2599,7 @@ def test_the_selected_cluster_is_a_lane_under_browses_ethogram(qapp, fitted):
         assert sum(len(m) for m in browse._ethogram._lane) == len(shown())
         workspace._tabs.setCurrentWidget(interpret)
         interpret.select(first)
-        _drain(qapp, lambda: False, 300)
+        pump_for(qapp, 300)
         assert shown() == expected(second), "read while BROWSE was hidden"
         workspace._tabs.setCurrentWidget(browse)
         assert _drain(qapp, lambda: shown() == expected(first))

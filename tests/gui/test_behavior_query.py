@@ -30,6 +30,7 @@ from detail.storage.zarr_io import (  # noqa: E402
 )
 from detail.trackers.anchor_tracker import AnchorTracker  # noqa: E402
 from tests import waits  # noqa: E402
+from tests.gui.conftest import drain_thread_pool  # noqa: E402
 
 _FRAMES = (0, 2, 4)  # frames with a detection (the 6-frame video)
 
@@ -38,10 +39,7 @@ _FRAMES = (0, 2, 4)  # frames with a detection (the 6-frame video)
 def _flush_decodes(qapp):
     """Let the scrubber's background decode finish before teardown deletes its signals."""
     yield
-    from PyQt6.QtCore import QThreadPool
-
-    QThreadPool.globalInstance().waitForDone(2000)
-    qapp.processEvents()
+    drain_thread_pool(qapp)
 
 
 def _tiny_video(path, n=6, w=32, h=24):
