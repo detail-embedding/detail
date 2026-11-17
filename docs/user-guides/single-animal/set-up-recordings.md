@@ -400,7 +400,8 @@ data)** and shows the file's own columns, for you to say what each one is:
        importer recognised the file.
     4. **Reuse a mapping**: fills the time column, what it holds and the ticked columns from
        a mapping you saved, for the next recording's file. It says so if the file is missing
-       a column the mapping names.
+       a column the mapping names; choose another file and the mapping is applied to that one
+       too, or choose another mapping.
     5. **Save as…**: saves this mapping under a name, for **Reuse a mapping**.
     6. **Time column**: the column that holds the time.
     7. **Time is**: what the time column counts.

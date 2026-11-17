@@ -1098,38 +1098,38 @@ class ComparisonLaunchDialog(Dialog):
         worker.tick.connect(self._on_tick)
         worker.done.connect(self._done)
         worker.failed.connect(self._failed)
+        self.hold_open_while(worker, self._stop)
         worker.start()
 
     def _on_tick(self, permille: int, status: str) -> None:
         self._progress.setValue(permille)
         self._status.setText(status)
 
-    def reject(self) -> None:
+    def _stop(self) -> None:
         """Cancel means *stop the run*, not "close and leave it going".
 
         `stop_check` was threaded all the way through `run_comparison`, and nothing ever called
         `request_stop`: closing the dialog left the worker measuring to the end and writing a
         comparison nobody had asked for. Polled, so it ends on the next unit boundary rather
-        than at once -- the dialog says so and waits.
+        than at once -- the dialog says so and waits (`Dialog.hold_open_while`).
         """
-        if self._worker is not None and self._worker.isRunning():
-            self._worker.request_stop()
-            self._cancel.setEnabled(False)
-            self._status.setText("Stopping — finishing the current recording…")
-            return
-        super().reject()
+        self._worker.request_stop()
+        self._cancel.setEnabled(False)
+        self._status.setText("Stopping — finishing the current recording…")
 
     def _done(self, comparison) -> None:
+        self.let_go()
         self.comparison = comparison
         self.accept()
 
     def _failed(self, exc) -> None:
         from detail.api.comparison import ComparisonStopped
 
+        self.let_go()
         self._worker = None
         if isinstance(exc, ComparisonStopped):
             # A cancellation the user asked for is not an error to report back at them.
-            super().reject()
+            self.reject()
             return
         self._reset_controls()
         QMessageBox.critical(self, "New comparison", str(exc))

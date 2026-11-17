@@ -549,15 +549,30 @@ def test_label_dataset_rejects_bad_sampling(tmp_path):
 
 
 def test_label_dataset_rejects_recording_without_video(tmp_path):
+    """A recording *named* is taken as named, so one with no video is refused — by the name
+    the user gave it, not the id the tool minted (#35)."""
     proj = _api_experiment(tmp_path, counts=(20,))
-    proj.create_recording("recording_002")  # no video imported
-    with pytest.raises(ValueError, match="no video"):
+    bare = proj.add_recording("m27 day3")  # no video imported
+    with pytest.raises(ValueError, match="no video") as raised:
         proj.label_dataset(
             "d",
             [LabelingClass(0, "m", "m")],
             n_frames=4,
-            source_recording_ids=["recording_002"],
+            source_recording_ids=[bare.id],
         )
+    assert "'m27 day3'" in str(raised.value)
+    assert bare.id not in str(raised.value)
+
+
+def test_label_dataset_with_none_named_samples_every_recording_with_video(tmp_path):
+    """#35 finding 5. "None given" meant every recording, so one metadata-only recording —
+    which Add recordings allows — refused the whole job, and the GUI's "none = all" could not
+    be used. Now it means every recording with video: the frame check below counts 20 + 60
+    from the two that have it, and the bare one is not reached."""
+    proj = _api_experiment(tmp_path, counts=(20, 60))
+    proj.add_recording("metadata only")
+    with pytest.raises(ValueError, match="exceeds the 80 frames"):
+        proj.label_dataset("d", [LabelingClass(0, "m", "m")], n_frames=100)
 
 
 def test_sample_size_is_exact(tmp_path, monkeypatch):

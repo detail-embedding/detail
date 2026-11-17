@@ -147,7 +147,10 @@ class _QueryEvalConfig(ConfigWidget):
 
         self._behaviors = QListWidget()
         self._behaviors.setMaximumHeight(120)
-        self._behaviors.itemChanged.connect(lambda _item: self._update_type_fields())
+        self._behaviors.itemChanged.connect(self._on_behavior_ticked)
+        #: The behaviors a loaded config names, held until the vocabulary they tick arrives
+        #: with the recordings (`apply_recordings`). ``None`` once the user ticks one by hand.
+        self._wanted_behaviors: set[str] | None = None
         form.addRow(
             field_label("query_eval", "behaviors", "Behaviors:"), self._behaviors
         )
@@ -263,10 +266,15 @@ class _QueryEvalConfig(ConfigWidget):
         # Same stream, new recordings: keep whatever the user had checked.
         self._refresh_behaviors()
 
+    def _on_behavior_ticked(self, _item) -> None:
+        self._wanted_behaviors = None  # the user's ticks decide from here on
+        self._update_type_fields()
+
     def _on_stream_selected(self, *_args) -> None:
         # A different stream is a different vocabulary, so the previous stream's checked
         # names carry no meaning — clearing first makes _set_behaviors check them all
         # (its first-populate rule), rather than leaving every box unchecked.
+        self._wanted_behaviors = None
         self._behaviors.clear()
         self._refresh_behaviors()
 
@@ -278,14 +286,20 @@ class _QueryEvalConfig(ConfigWidget):
 
     def _set_behaviors(self, names: list[str]) -> None:
         checked = set(self._checked_behaviors())
+        wanted = self._wanted_behaviors
         self._behaviors.blockSignals(True)  # repopulating is not a user edit
         self._behaviors.clear()
         for name in names:
             item = QListWidgetItem(name)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            # Check known-checked names; on the first populate (nothing checked yet),
-            # check all so a single-behavior experiment runs with no extra clicks.
-            on = name in checked or not checked
+            if wanted is not None:
+                # A loaded config's subset, which usually arrives before its vocabulary does:
+                # Start from rebuilds the form, and the recordings resolve after that.
+                on = name in wanted
+            else:
+                # Check known-checked names; on the first populate (nothing checked yet),
+                # check all so a single-behavior experiment runs with no extra clicks.
+                on = name in checked or not checked
             item.setCheckState(Qt.CheckState.Checked if on else Qt.CheckState.Unchecked)
             self._behaviors.addItem(item)
         self._behaviors.blockSignals(False)
@@ -421,18 +435,19 @@ class _QueryEvalConfig(ConfigWidget):
             )
         if config.get("max_results"):
             self._max_results.setValue(int(config["max_results"]))
-        # Check exactly the behaviors the run scored (its recordings are already re-checked,
-        # so on_recordings_changed populated the vocabulary before this runs).
-        scored = {
-            b["behavior"] for b in config.get("behaviors", []) if not b.get("skipped")
-        }
-        for i in range(self._behaviors.count()):
-            item = self._behaviors.item(i)
-            item.setCheckState(
-                Qt.CheckState.Checked
-                if item.text() in scored
-                else Qt.CheckState.Unchecked
+        # The behaviors are names, the shape `config()` emits (a run record's per-behavior
+        # dicts are turned into names where the record is read: `start_from.record_settings`).
+        # Held as well as applied: Start from rebuilds the form before any recording is
+        # ticked, so the vocabulary is usually still empty here and the subset is applied when
+        # it arrives. Empty means "nothing named" — no run scores zero behaviors — and leaves
+        # the form's own first-populate rule in charge.
+        names = config.get("behaviors") or []
+        if names:
+            self._wanted_behaviors = set(names)
+            self._set_behaviors(
+                [self._behaviors.item(i).text() for i in range(self._behaviors.count())]
             )
+            self._update_type_fields()
         self._update_method_fields()  # re-gate for the loaded matcher
 
 

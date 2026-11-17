@@ -182,6 +182,8 @@ def test_add_video_part_dialog_reference_mode(qapp, tmp_path, monkeypatch):
     dialog._path.setText(str(tmp_path / "clip.mp4"))
     dialog._reference._on.setChecked(True)
     dialog._start()
+    should_stop = captured.pop("should_stop")  # a close mid-import stops it (#35)
+    assert callable(should_stop) and should_stop() is False
     assert captured == {"storage": "reference"}  # no location picked — auto
 
 

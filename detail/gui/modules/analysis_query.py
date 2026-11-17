@@ -131,6 +131,8 @@ def _method_ids() -> list[str]:
 
 
 class _QueryConfig(ConfigWidget):
+    noted_by_form = frozenset({"method"})  # its own note, beside the row
+
     def __init__(self) -> None:
         super().__init__()
         self._behaviors: list[dict] = (

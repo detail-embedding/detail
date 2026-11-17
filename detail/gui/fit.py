@@ -47,7 +47,12 @@ from detail.gui.spin import IntSpin
 from detail.gui.preview import PromptTestDialog
 from detail.core.registries import MODELS, TRAINERS
 from detail.executor.runners import import_runner_modules
-from detail.gui.recording_items import fill_recording_list, selected_recording_ids
+from detail.gui.recording_items import (
+    fill_sampling_list,
+    sampling_label,
+    selected_recording_ids,
+)
+from detail.storage import read_cache
 
 # The trainer's knobs, a group inside Advanced Settings, rebuilt whenever the trainer
 # changes (see _rebuild_hyperparams).
@@ -111,10 +116,8 @@ class GenerateDatasetDialog(Dialog):
         # strings, so each says where it belongs instead of being routed from the model
         # the way a ``field_label`` row is.
         self._val_split = field_widget(LabelingConfig, "val_split")
-        self._val_split.setValue(0.15)
         form.addRow("Validation split:", self._val_split, advanced=True)
         self._min_area = field_widget(LabelingConfig, "min_contour_area")
-        self._min_area.setValue(100)
         form.addRow("Min contour area (px):", self._min_area, advanced=True)
         form.finish()
         layout.addStretch()
@@ -184,8 +187,9 @@ class GenerateLabelingDialog(Dialog):
         self._recordings.setSelectionMode(
             QAbstractItemView.SelectionMode.ExtendedSelection
         )
-        fill_recording_list(self._recordings, experiment.recordings)
-        form.addRow("Recordings (none = all):", self._recordings)
+        with read_cache.pinned():
+            with_video = fill_sampling_list(self._recordings, experiment.recordings)
+        form.addRow(QLabel(sampling_label(with_video)), self._recordings)
         # Model + size/variant, mirroring the detection form: only prompt-capable models can
         # label. A no-variant model (SAM3) shows "(default)" → data None (a non-None variant on a
         # no-variant model raises).
@@ -224,13 +228,10 @@ class GenerateLabelingDialog(Dialog):
             field_label("labeling", "sampling", samp["label"] + ":"), self._sampling
         )
         lt_label, self._logit = fields["logit_threshold"]
-        self._logit.setValue(0.5)
         form.addRow(
             field_label("labeling", "logit_threshold", lt_label + ":"), self._logit
         )
         vs_label, self._val_split = fields["val_split"]
-        self._val_split.setRange(0.0, 0.9)  # practical cap; the model bound is < 1.0
-        self._val_split.setValue(0.15)
         form.addRow(
             field_label("labeling", "val_split", vs_label + ":"), self._val_split
         )
@@ -240,7 +241,6 @@ class GenerateLabelingDialog(Dialog):
             self._background,
         )
         ma_label, self._min_area = fields["min_contour_area"]
-        self._min_area.setValue(100)
         form.addRow(
             field_label("labeling", "min_contour_area", ma_label + ":"), self._min_area
         )
@@ -584,7 +584,8 @@ class DistillDialog(Dialog):
         self._recordings.setSelectionMode(
             QAbstractItemView.SelectionMode.ExtendedSelection
         )
-        form.addRow("Recordings (none = all):", self._recordings)
+        self._recordings_label = QLabel(sampling_label(0))
+        form.addRow(self._recordings_label, self._recordings)
         self._sync_recordings()
 
         # --- Labeling stage (mirrors GenerateLabelingDialog) ---
@@ -613,14 +614,11 @@ class DistillDialog(Dialog):
             field_label("labeling", "sampling", "Frame sampling:"), self._sampling
         )
         _, self._logit = fields["logit_threshold"]
-        self._logit.setValue(0.5)
         form.addRow(
             field_label("labeling", "logit_threshold", "Confidence threshold:"),
             self._logit,
         )
         _, self._val_split = fields["val_split"]
-        self._val_split.setRange(0.0, 0.9)
-        self._val_split.setValue(0.15)
         form.addRow(
             field_label("labeling", "val_split", "Validation split:"), self._val_split
         )
@@ -630,7 +628,6 @@ class DistillDialog(Dialog):
             self._background,
         )
         _, self._min_area = fields["min_contour_area"]
-        self._min_area.setValue(100)
         form.addRow(
             field_label("labeling", "min_contour_area", "Min contour area (px):"),
             self._min_area,
@@ -738,8 +735,13 @@ class DistillDialog(Dialog):
     def _sync_recordings(self) -> None:
         self._recordings.clear()
         if self._experiment is None:
+            self._recordings_label.setText(sampling_label(0))
             return
-        fill_recording_list(self._recordings, self._experiment.recordings)
+        with read_cache.pinned():
+            with_video = fill_sampling_list(
+                self._recordings, self._experiment.recordings
+            )
+        self._recordings_label.setText(sampling_label(with_video))
 
     def _sync_trainer(self) -> None:
         trainer_id = self._trainer.currentData()

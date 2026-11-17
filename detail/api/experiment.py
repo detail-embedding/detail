@@ -2771,6 +2771,21 @@ class Experiment:
         return None
 
     # --- Distill runs (label → train, one durable run — §12) ------------------ #
+    def _sampling_recordings(self, source_recording_ids: list[str] | None) -> list[str]:
+        """The recordings a labeling sample draws from: the ones named, or every one with video.
+
+        "None given" means *all of them that have something to sample*. It meant every
+        recording, so one metadata-only recording — which Add recordings allows — refused the
+        whole job naming itself, and the GUI's "none = all" could not be used at all (#35).
+        Recordings that were *named* are taken as named, so a named one with no video is still
+        refused, by name, by the check that follows.
+        """
+        if source_recording_ids:
+            return list(source_recording_ids)
+        with read_cache.pinned():
+            recordings = self.recordings
+            return [r.id for r in recordings if r.video_parts]
+
     def distill(
         self,
         name: str,
@@ -2810,7 +2825,7 @@ class Experiment:
                 hyperparameters.
         """
         import_runner_modules(_PIPELINE_RUNNERS)
-        recording_ids = list(source_recording_ids or [s.id for s in self.recordings])
+        recording_ids = self._sampling_recordings(source_recording_ids)
         if not classes:
             raise ValueError("labeling needs at least one class (a name + text prompt)")
         prompts = [c.prompt for c in classes]
@@ -2866,14 +2881,17 @@ class Experiment:
             }
         )
         if not recording_ids:
-            raise ValueError("labeling needs at least one source recording")
+            raise ValueError("labeling needs at least one source recording with video")
         available = 0
         for sid in recording_ids:
             recording = self.get_recording(sid)  # raises if the recording is unknown
             data = recording_store.read_recording(recording.dir)
             files = data.get("video", {}).get("files", [])
             if not files:
-                raise ValueError(f"recording {sid!r} has no video to sample")
+                raise ValueError(
+                    f"recording {recording.name!r} has no video to sample; choose "
+                    "recordings that have video, or leave the choice empty to use all of them"
+                )
             available += sum(
                 len(recording_store.load_active_timestamps(recording.dir, data, i))
                 for i in range(len(files))
@@ -3291,7 +3309,7 @@ class Experiment:
                 or the chosen model not ready.
         """
         import_runner_modules(_PIPELINE_RUNNERS)
-        recording_ids = list(source_recording_ids or [s.id for s in self.recordings])
+        recording_ids = self._sampling_recordings(source_recording_ids)
         compute = compute or default_compute(api_models.supported_backends(model_id))
         if not classes:
             raise ValueError("labeling needs at least one class (a name + text prompt)")
@@ -3319,14 +3337,17 @@ class Experiment:
             }
         )
         if not recording_ids:
-            raise ValueError("labeling needs at least one source recording")
+            raise ValueError("labeling needs at least one source recording with video")
         available = 0
         for sid in recording_ids:
             recording = self.get_recording(sid)  # raises if the recording is unknown
             data = recording_store.read_recording(recording.dir)
             files = data.get("video", {}).get("files", [])
             if not files:
-                raise ValueError(f"recording {sid!r} has no video to sample")
+                raise ValueError(
+                    f"recording {recording.name!r} has no video to sample; choose "
+                    "recordings that have video, or leave the choice empty to use all of them"
+                )
             # Frame count from the PTS timestamp map (Tenet 8 / CLAUDE.md frame-count rule), not
             # cv2's CAP_PROP_FRAME_COUNT estimate — so the n_frames check matches what's sampleable.
             available += sum(

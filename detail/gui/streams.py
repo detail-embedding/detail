@@ -383,10 +383,13 @@ class AddStreamDialog(Dialog):
             self._offset_ns = 0
 
     def _suggest_name(self) -> None:
-        """Fill the name from the importer (or the band), keeping anything typed."""
+        """Fill the name from the chosen mapping, the band or the importer, keeping anything
+        typed. A chosen mapping's name comes first, as `_on_preset_chosen` sets it: the band
+        re-applies the mapping to each new file, so the name stays the mapping's too."""
         importer_id, cls = self._current_importer()
         from_band = self._band.suggested_name() if self._band is not None else ""
-        suggestion = from_band or getattr(cls, "role", None) or importer_id
+        preset = self._preset.currentData() if hasattr(self, "_preset") else None
+        suggestion = preset or from_band or getattr(cls, "role", None) or importer_id
         if self._name.text().strip() in ("", self._auto_name):
             self._name.setText(suggestion)
         self._auto_name = suggestion
@@ -684,8 +687,18 @@ class ImportBehaviorLabelsDialog(Dialog):
             label="Importing behavior labels…",
             on_error=self._on_failed,
         )
+        # Not cancellable (above), so closing waits: a dialog closed mid-import reported
+        # nothing imported while the import went on, and the page never refreshed for it.
+        self.hold_open_while(self._worker, self._still_importing)
+
+    def _still_importing(self) -> None:
+        self._status.setText(
+            "Still importing — it cannot be stopped between recordings. This closes when it "
+            "has finished."
+        )
 
     def _on_done(self, skipped) -> None:
+        self.let_go()
         self.skipped = skipped or []
         if self.skipped:
             detail = "\n".join(f"  {sid}: {err}" for sid, err in self.skipped[:20])
@@ -701,6 +714,7 @@ class ImportBehaviorLabelsDialog(Dialog):
         self.accept()
 
     def _on_failed(self, exc) -> None:
+        self.let_go()
         self._box.button(QDialogButtonBox.StandardButton.Ok).setEnabled(True)
         self._status.setText("")
         QMessageBox.critical(self, "Import behavior labels", str(exc))

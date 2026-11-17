@@ -317,7 +317,7 @@ Every recording-level input lives here (run outputs are read-only). The top show
 
 **DATA PIPELINE**
 
-- **Video**: the imported part(s) and their on-disk location. **Add video part** opens the same reference-in-place checkbox as Add recordings. For a **referenced** video the location is the resolved external path; if it moved or changed, a status line flags it and **Locate video** points the part at its new file (accepted only if the content matches: a changed video means remove and re-add). You can move or rename the file while its recording page is open: the app lets go of a video a couple of seconds after it last showed a frame from it. On an experiment made on another computer, locating one video is enough: every recording whose videos are in the same folder finds them too. (Importing an experiment already looks where the exporting computer kept the video, so this is only needed when that folder isn't reachable from this computer under the same path.) A changed/missing referenced video also flags the runs below as possibly stale. **Move up** / **Move down** reorder parts, locked once anything has run against them.
+- **Video**: the imported part(s) and their on-disk location. **Add video part** opens the same reference-in-place checkbox as Add recordings. While it copies, **Cancel** reads **Stop**: **Stop**, Esc or closing the window stops the copy and removes what was copied, and the window closes once it has. A referenced video is not copied, so there is nothing to stop: it is added, and the page shows it. For a **referenced** video the location is the resolved external path; if it moved or changed, a status line flags it and **Locate video** points the part at its new file (accepted only if the content matches: a changed video means remove and re-add). You can move or rename the file while its recording page is open: the app lets go of a video a couple of seconds after it last showed a frame from it. On an experiment made on another computer, locating one video is enough: every recording whose videos are in the same folder finds them too. (Importing an experiment already looks where the exporting computer kept the video, so this is only needed when that folder isn't reachable from this computer under the same path.) A changed/missing referenced video also flags the runs below as possibly stale. **Move up** / **Move down** reorder parts, locked once anything has run against them.
 - **Scene geometry**: one section for the four things you draw on a frame.
     - The **field of view**, a polygon that [bounds detection and tracking](concepts.md#field-of-view).
     - The **distance calibration**: two points a known distance apart, giving
@@ -348,7 +348,7 @@ Every recording-level input lives here (run outputs are read-only). The top show
 
     **Alignment is part of importing.** Type the offset in seconds, or click **Sync to video…** to scrub to the frame where the stream starts and let it work the number out, either way nothing is written until you press Import. A stream on the video's own clock (behavior labels, or a CSV whose time column is a frame index) is anchored already, and the row is greyed to say so. Change it later from the streams table: **Sync to video…**, or **Edit offset** to type a number.
 
-    **Reuse a mapping.** Once a CSV mapping works, **Save as…** names it and **Reuse a mapping** applies it to the next recording's own file, it pre-fills the time column, the kind and the ticked channels, and says so if that file is missing a column the setup names. The list holds only the mappings saved under the importer selected above it, each shown with that importer's name, so pick the importer first; a mapping saved for one importer is not offered under another. A mapping's name may use letters, numbers, `_` and `-`, no spaces, because it becomes the stream's name on every recording you apply it to. Managing the saved set (delete, or move one to another experiment) is CLI work: `detail experiment list/delete/export/import-stream-preset`. To do a whole experiment at once without the GUI, see [`apply-stream-preset`](cli.md#reusing-a-mapping-across-recordings).
+    **Reuse a mapping.** Once a CSV mapping works, **Save as…** names it and **Reuse a mapping** applies it to the next recording's own file, it pre-fills the time column, the kind and the ticked channels, and says so if that file is missing a column the setup names. The mapping stays chosen: pick a different file and it is applied to that file too. The list holds only the mappings saved under the importer selected above it, each shown with that importer's name, so pick the importer first; a mapping saved for one importer is not offered under another. A mapping's name may use letters, numbers, `_` and `-`, no spaces, because it becomes the stream's name on every recording you apply it to. Managing the saved set (delete, or move one to another experiment) is CLI work: `detail experiment list/delete/export/import-stream-preset`. To do a whole experiment at once without the GUI, see [`apply-stream-preset`](cli.md#reusing-a-mapping-across-recordings).
 
     **Preview** puts the video at the top, scrubbable, with the stream's timeline under it: one lane per label for an event stream, one lane of sample ticks for a continuous one. A program with more lanes than the window has room for scrolls; make the window taller to see more of them at once.
 
@@ -427,6 +427,11 @@ place in the selection, for example `Rat 12 (3/48)`. An embedding run reads each
 more beforehand for the settings the whole selection shares, such as its background colour
 (**Resolving shared settings**).
 
+While it checks, **Cancel** reads **Stop**. **Stop**, Esc or closing the window stops the check
+before the run starts, and the window closes once it has. If the run had already been started,
+it cannot be stopped from here: the window closes and the run's page opens, where **Cancel run**
+stops it.
+
 **Advanced Settings.** Every config form shows the parameters you are likely to change and
 keeps the rest behind one **▶ Advanced Settings** toggle at the bottom, under a divider and
 labelled with how many are inside. Click it and they all appear at once; a form with a lot of
@@ -463,6 +468,13 @@ nothing of the previous choice is left behind.
 Picking one fills the form. If what it changed is hidden under **▶ Advanced Settings**, that
 section opens itself and says how many changed: nothing that made a run different stays folded
 away.
+
+**When a setting cannot be restored**, a line under **Start from** says which and what the form
+has instead. A choice this computer does not offer, such as a model that is not registered
+here, stays on the form's default; a number outside what the form allows now is set to the
+nearest value it does allow. For example `Confidence threshold: that run used 1.7 (outside what
+this form allows); this form has 1.0.` A Query eval run brings back the behaviors it scored,
+ticked once you check recordings that carry them.
 
 **What it does not carry** is your recordings or the run's upstream artifact: the embedding
 run or the tracking run. Those are chosen for the run you are making, not copied

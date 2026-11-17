@@ -4371,6 +4371,7 @@ class AddVideoPartDialog(Dialog):
         )
         self._ok = self._box.button(QDialogButtonBox.StandardButton.Ok)
         self._ok.setText("Add part")
+        self._cancel = self._box.button(QDialogButtonBox.StandardButton.Cancel)
         self._box.accepted.connect(self._start)
         self._box.rejected.connect(self.reject)
         self.set_buttons(self._box)
@@ -4392,21 +4393,48 @@ class AddVideoPartDialog(Dialog):
             return
         params = self._reference.reference_params() or {}
         self._set_busy(True)
+        recording = self._recording
+        worker = StageProgressWorker(
+            lambda progress: recording.add_video_part(
+                path, progress=progress, should_stop=worker.stop_requested, **params
+            ),
+            receiver=self,
+        )
+        self._worker = worker
+        worker.tick.connect(self._on_tick)
+        worker.done.connect(self._on_done)
+        worker.failed.connect(self._on_failed)
+        # Cancel, Esc and the window's close stop the copy and wait for it, rather than closing
+        # on an import that goes on to add the part behind a page still showing the old list.
+        self.hold_open_while(worker, self._stop)
+        worker.start()
 
-        def work(progress):
-            self._recording.add_video_part(path, progress=progress, **params)
+    def _stop(self) -> None:
+        """Ask the copy to stop; it removes what it copied, and the dialog then closes.
 
-        self._worker = StageProgressWorker(work, receiver=self)
-        self._worker.tick.connect(self._on_tick)
-        self._worker.done.connect(lambda _r: self.accept())
-        self._worker.failed.connect(self._on_failed)
-        self._worker.start()
+        A referenced part copies nothing, so it has nothing to stop: it finishes, the dialog
+        accepts, and the page shows the part that was added.
+        """
+        self._worker.request_stop()
+        self._cancel.setEnabled(False)
+        self._status.setText("Stopping — removing what was copied…")
 
     def _on_tick(self, permille: int, status: str) -> None:
         self._progress.setValue(permille)
-        self._status.setText(status)
+        if not self._worker.stop_requested():
+            self._status.setText(status)
+
+    def _on_done(self, _result) -> None:
+        self.let_go()
+        self.accept()  # the part was added, so the page refreshes (`_add_part`)
 
     def _on_failed(self, exc) -> None:
+        from detail.storage.video import ImportStopped
+
+        self.let_go()
+        if isinstance(exc, ImportStopped):
+            self.reject()  # stopped: the partial copy is gone and no part was written
+            return
         self._set_busy(False)
         QMessageBox.critical(self, "Add video part", str(exc))
 
@@ -4414,6 +4442,8 @@ class AddVideoPartDialog(Dialog):
         self._ok.setEnabled(not busy)
         self._path.setEnabled(not busy)
         self._reference.setEnabled(not busy)
+        self._cancel.setEnabled(True)
+        self._cancel.setText("Stop" if busy else "Cancel")
         self._progress.setVisible(busy)
         self._status.setVisible(busy)
 

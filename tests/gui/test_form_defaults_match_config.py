@@ -20,6 +20,12 @@ added tomorrow is covered the day it lands.
 A field whose default is ``None`` ("the model's own default", "none picked yet") has nothing to
 compare a row against here and is skipped; the embedding size is checked by
 ``test_the_embedding_form_keeps_its_default_size_when_not_installed`` instead.
+
+**The same class for a spin box** (#35): a widget built from its model (``field_widget``,
+``build_fields``) and then given a hand-written ``setRange`` or a literal ``setValue`` is a second
+answer to the model's range or default. Two labeling dialogs capped ``val_split`` at 0.9 while
+the third went to the model's bound. A fail-closed scan of ``detail/gui`` refuses both, with a
+negative case; a cap the GUI wants is the field's ``ui_max``.
 """
 
 import pytest
@@ -168,3 +174,99 @@ def test_the_embedding_form_keeps_its_default_size_when_not_installed(
     assert "not installed" in widget._variant.currentText()
     error = widget.validation_error()
     assert error is not None and "not installed" in error
+
+
+# --- a model-built widget keeps the model's range and default -------------------- #
+#: Model-built widgets a surface deliberately re-seeds, keyed ``file:attribute``, and why.
+HAND_SET: dict[str, str] = {
+    "fit.py:_n_frames": (
+        "`LabelingConfig.n_frames` is required — the model has no default to seed — so the "
+        "dialog supplies its own starting count"
+    ),
+}
+
+
+def _target_name(node) -> str | None:
+    import ast
+
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    if isinstance(node, ast.Name):
+        return node.id
+    return None
+
+
+def _model_built(value) -> bool:
+    """``field_widget(...)``, or ``fields["x"]`` out of ``build_fields`` (unpacked)."""
+    import ast
+
+    if isinstance(value, ast.Call):
+        func = value.func
+        return getattr(func, "id", getattr(func, "attr", None)) == "field_widget"
+    return (
+        isinstance(value, ast.Subscript)
+        and isinstance(value.value, ast.Name)
+        and value.value.id == "fields"
+    )
+
+
+def hand_set_model_widgets(name: str, text: str) -> list[str]:
+    """``file:attribute`` for each model-built widget a function then gives a hand-written
+    range (``setRange``) or a literal value (``setValue(<constant>)``)."""
+    import ast
+
+    found = []
+    for fn in ast.walk(ast.parse(text)):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        built = set()
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Assign) and _model_built(node.value):
+                for target in node.targets:
+                    elts = target.elts if isinstance(target, ast.Tuple) else [target]
+                    built.add(_target_name(elts[-1]))
+        for node in ast.walk(fn):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and _target_name(node.func.value) in built
+            ):
+                continue
+            literal = bool(node.args) and isinstance(node.args[0], ast.Constant)
+            if node.func.attr == "setRange" or (
+                node.func.attr == "setValue" and literal
+            ):
+                found.append(f"{name}:{_target_name(node.func.value)}")
+    return found
+
+
+def test_no_model_built_widget_is_given_a_hand_written_range_or_default():
+    """#35 finding 6. ``fit.py`` capped ``val_split`` at 0.9 by hand in two dialogs while the
+    third used the model's bound, and a dozen widgets built from their model were then set to
+    a literal — the model's own default retyped (``detection``'s batch box to 1, where the
+    model's default is "the model's own"). Two answers to one question, which drift apart the
+    first time either moves. A cap the GUI wants goes on the field as ``ui_max``."""
+    from pathlib import Path
+
+    gui = Path(__file__).resolve().parents[2] / "detail" / "gui"
+    found = []
+    for source in sorted(gui.rglob("*.py")):
+        found += hand_set_model_widgets(source.name, source.read_text(encoding="utf-8"))
+    unexcused = sorted(set(found) - set(HAND_SET))
+    assert not unexcused, f"hand-set model-built widgets: {unexcused}"
+    stale = sorted(set(HAND_SET) - set(found))
+    assert not stale, f"HAND_SET excuses what no longer happens: {stale}"
+
+
+def test_the_hand_set_scan_would_catch_a_cap_and_a_retyped_default():
+    text = (
+        "def build(self):\n"
+        "    label, self._split = fields['val_split']\n"
+        "    self._split.setRange(0.0, 0.9)\n"
+        "    self._conf = field_widget(Config, 'conf')\n"
+        "    self._conf.setValue(0.5)\n"
+        "    self._other = QDoubleSpinBox()\n"
+        "    self._other.setValue(0.5)\n"
+        "    self._conf.setValue(seed)\n"
+    )
+    assert hand_set_model_widgets("x.py", text) == ["x.py:_split", "x.py:_conf"]

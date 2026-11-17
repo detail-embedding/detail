@@ -268,3 +268,48 @@ def test_home_import_names_the_recordings_whose_video_was_not_found(
         "Open one of them and use Locate video on its file. Every recording whose video "
         "is in the same folder will find it too."
     ]
+
+
+# --- a refused export ----------------------------------------------------------- #
+def test_a_refused_export_gives_every_tick_box_back_the_state_it_had(
+    qapp, processed_recording, monkeypatch
+):
+    """#35 finding 15. Going busy greyed every box, and coming back set each to "enabled if
+    it is enabled now" — which read the greying itself, so after a refused submit no box
+    could be ticked again although the error said the form was left usable. A target that
+    cannot run here stays greyed; every other box comes back."""
+    from PyQt6.QtWidgets import QMessageBox
+
+    from detail.api import exporters
+    from detail.api.exporters import ExportSubject
+    from detail.gui import export as gui_export
+    from tests import waits
+
+    built = processed_recording
+    subject = ExportSubject("run", built.experiment.dir, built.detection_run_id)
+    dialog = gui_export.ExportDialog(subject, exporters.targets_for(subject), None)
+    boxes = {
+        **dialog._include,
+        **{f"render:{k}": c for k, c in dialog._renders.items()},
+    }
+    before = {name: box.isEnabled() for name, box in boxes.items()}
+    assert any(before.values()), "the fixture offers nothing to tick"
+    assert not all(
+        before.values()
+    ), "the fixture greys nothing, so a greyed box is untested"
+
+    def refuse(*_args, **_kwargs):
+        raise ValueError("cannot create the destination")
+
+    monkeypatch.setattr(Experiment, "run_export", refuse)
+    shown = []
+    monkeypatch.setattr(QMessageBox, "critical", lambda *a, **k: shown.append(a[-1]))
+    dialog._out.setText(str(built.experiment.dir / "out"))
+    dialog._estimate = None
+    dialog._export()
+    waits.until(qapp, lambda: shown, "the refused export's message")
+
+    assert shown == ["cannot create the destination"]
+    assert {name: box.isEnabled() for name, box in boxes.items()} == before
+    dialog.deleteLater()
+    qapp.processEvents()

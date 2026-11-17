@@ -202,12 +202,23 @@ def test_labeling_prompt_test_seeds_from_classes(qapp, tmp_path, stub_yolo_model
     ]
 
 
+def _with_video(recording) -> None:
+    """Give ``recording`` a video part entry, as an import would have."""
+    from detail.storage import recording as recording_store
+
+    data = recording_store.read_recording(recording.dir)
+    data["video"] = {"files": [{"index": 0, "file": "video/part_001.mp4"}]}
+    recording_store.write_recording(recording.dir, data)
+
+
 def test_labeling_prompt_test_uses_selected_recordings(qapp, tmp_path):
     from detail.gui.fit import GenerateLabelingDialog
 
     experiment = Experiment.create("p", tmp_path)
-    experiment.create_recording("recording_001")
-    experiment.create_recording("recording_002")
+    # With video: the picker greys a recording without any (nothing to sample), and a greyed
+    # row cannot be selected.
+    _with_video(experiment.create_recording("recording_001"))
+    _with_video(experiment.create_recording("recording_002"))
     dialog = GenerateLabelingDialog(experiment)
     dialog._compute.backend.setCurrentText("cpu")
     dialog._class_rows[0][0].setText("mouse")
@@ -677,3 +688,50 @@ def test_distill_dialog_picks_experiment_from_workspace(qapp, tmp_path, monkeypa
     assert (
         dialog._recordings.count() == 1
     )  # the selected experiment's recordings populate
+
+
+def test_the_sampling_pickers_say_what_none_selected_uses(qapp, tmp_path):
+    """#35 finding 5, the GUI half. "Recordings (none = all)" was a promise the API broke on
+    the first recording without video. Both pickers grey such a recording, say why, and the
+    row label says how many recordings selecting nothing uses."""
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtWidgets import QLabel
+
+    from detail.gui.fit import DistillDialog, GenerateLabelingDialog
+
+    experiment = Experiment.create("p", tmp_path)
+    _with_video(experiment.add_recording("cage a"))
+    experiment.add_recording("notes only")
+
+    for dialog in (GenerateLabelingDialog(experiment), DistillDialog(experiment)):
+        rows = [dialog._recordings.item(i) for i in range(dialog._recordings.count())]
+        assert [r.text() for r in rows] == ["cage a", "notes only   (no video)"]
+        assert [bool(r.flags() & Qt.ItemFlag.ItemIsEnabled) for r in rows] == [
+            True,
+            False,
+        ]
+        texts = [w.text() for w in dialog.findChildren(QLabel)]
+        assert "Recordings (none = all 1 with video):" in texts
+
+
+def test_every_labeling_dialog_offers_one_validation_split_range(qapp, tmp_path):
+    """#35 finding 6: two dialogs capped `val_split` at 0.9 by hand while Generate dataset went
+    to the model's bound. The cap is the field's `ui_max` now, so all three agree, and each
+    opens on the model's default."""
+    from detail.configs.labeling import LabelingConfig
+    from detail.gui.fit import (
+        DistillDialog,
+        GenerateDatasetDialog,
+        GenerateLabelingDialog,
+    )
+
+    experiment = _experiment_with_run(tmp_path)
+    dialogs = [  # held: a dialog garbage-collected takes its spin box with it
+        GenerateDatasetDialog(experiment),
+        GenerateLabelingDialog(experiment),
+        DistillDialog(experiment),
+    ]
+    spins = [d._val_split for d in dialogs]
+    assert {(s.minimum(), s.maximum()) for s in spins} == {(0.0, 0.9)}
+    default = LabelingConfig.model_fields["val_split"].default
+    assert [s.value() for s in spins] == [pytest.approx(default)] * 3

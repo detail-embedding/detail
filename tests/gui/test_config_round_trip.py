@@ -515,3 +515,28 @@ def test_the_guard_would_catch_a_form_that_ignores_its_config(qapp):
     assert any(
         not _same(_at(after, p), changed[p]) for p in changed
     ), "a no-op load_config was not detected, so the assertions above cannot fail"
+
+
+def test_the_query_eval_form_round_trips_with_behaviors_present(qapp):
+    """#35 finding 3. Every other case here builds the form with no recordings, so its
+    `behaviors` is `[]` and the line that read them never ran: `config()` emits names while
+    `load_config` read each entry as a run record's dict (`b.get("skipped")`), and raised
+    `AttributeError` the first time a behavior was listed. One shape now, both ways."""
+    from PyQt6.QtCore import Qt
+
+    from detail.gui.modules.analysis_query_eval import _QueryEvalConfig
+
+    vocabulary = ([], {None: (["dig", "groom", "rear"], {})})
+    form = _QueryEvalConfig()
+    form.apply_recordings([], vocabulary)
+    form._behaviors.item(0).setCheckState(Qt.CheckState.Unchecked)  # dig
+    written = form.config()
+    assert written["behaviors"] == ["groom", "rear"], "the fixture must name a subset"
+
+    form.load_config(written)  # raised AttributeError
+    assert form.config()["behaviors"] == ["groom", "rear"]
+
+    fresh = _QueryEvalConfig()  # the Start from order: load first, vocabulary after
+    fresh.load_config(written)
+    fresh.apply_recordings([], vocabulary)
+    assert fresh.config()["behaviors"] == ["groom", "rear"]
