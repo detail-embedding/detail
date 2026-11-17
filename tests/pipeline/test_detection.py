@@ -1,4 +1,5 @@
 import contextlib
+import time
 
 import cv2
 import numpy as np
@@ -10,6 +11,7 @@ from detail.core.dataclasses import (
     Detection,
     DetectionJob,
     FrameResult,
+    JobStatus,
     Prompt,
     PromptTarget,
     TextCue,
@@ -1051,3 +1053,42 @@ def test_validate_asks_the_install_whether_it_runs_on_the_backend(
         ValueError, match="cannot run on cpu: torch was built without it"
     ):
         detection.DetectionModule().validate(recording_dir, data, config)
+
+
+def test_a_cancel_mid_part_reaches_the_inline_loop_and_records_cancelled(
+    tmp_path, monkeypatch
+):
+    """#28 finding 4. The inline (single-device) path touched ``stop.flag`` only between
+    parts, so on a one-part recording a cancel never reached the frame loop: the part ran to
+    its end and the worker recorded ``partial`` for a stage with no resume. This drives the
+    real worker (``run_job``) and the real runner, cancels while frame 2 of the only part is
+    being detected, and holds that frame until the flag appears."""
+    from detail.executor.worker import run_job
+
+    monkeypatch.setattr(detection, "_PROGRESS_POLL_INTERVAL_S", 0.02)
+    recording_dir, n_frames = _setup(tmp_path)
+    run_dir = recording_dir / "detections" / "det_01"
+    run_dir.mkdir(parents=True)
+    rundir.init_run_dir(run_dir, _job())
+    stop_flag = run_dir / "stop.flag"
+    calls = {"n": 0}
+
+    class _CancelledMidPart(_FakeDetector):
+        def predict(self, frame, prompt):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                rundir.request_cancel(run_dir)
+                deadline = time.monotonic() + 5.0
+                while not stop_flag.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+            return super().predict(frame, prompt)
+
+    register_model("fake_detector")(_CancelledMidPart)
+    try:
+        status = run_job(run_dir)
+    finally:
+        MODELS.pop("fake_detector", None)
+    assert stop_flag.exists(), "the cancel never reached the part being detected"
+    assert calls["n"] < n_frames, "the part ran to its end after the cancel"
+    assert status == JobStatus.CANCELLED
+    assert rundir.read_status(run_dir) == JobStatus.CANCELLED

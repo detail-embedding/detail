@@ -614,8 +614,11 @@ for its background colour), then the run's own progress follows.
   re-checked; the command refuses if one no longer validates, naming each. A recording is re-run whole (there is no
   resume-from-mid-recording).
 - `process cancel <run_NNN> --experiment <dir>`: stop a running run's coordinator and its
-  in-flight recordings. Finished recordings keep their results; `process retry` picks up the
-  rest.
+  in-flight recordings. Finished recordings keep their results, and recordings the run had not
+  reached yet are listed as `cancelled`. The run reads `cancelled` unless every recording had
+  already finished; `process retry` picks up the rest.
+- Naming the same recording twice in one `process` command (by its name and by its id, say)
+  runs it once.
 
 `detection`, `tracking`, and `embedding` have `process` subcommands.
 
@@ -789,6 +792,12 @@ selection, written to `analysis/<an_NN>/`.
   removes it again. `--name` renames a behavior; its id never moves, so recorded judgments stay
   attached to what they were made about. `--finalize` is your statement that you are done, not
   a lock: a later edit is refused and told to `--reopen` first.
+
+  A search that did not reach every recording (you cancelled it, so it is `partial`, or one
+  behavior's search failed on a recording) can still be calibrated, and its behavior output
+  covers only the recordings that were searched: a recording a named behavior never looked at
+  is left out, not counted as a zero. `--finalize` and `export-query` refuse such a run and name
+  the recordings it is missing; re-run the search to cover them.
 - `audit --experiment <dir> --run <an_NN> [--behavior <id or label>] [--cutoff <confidence>]
   [--by-recording] [--by-cluster] [--goal-width <width>] [--own-only]`: read the precision an authored run's reliability audit supports, for a
   behavior scan or a clustering run. Reads only: the judging is a blind review of video clips and
@@ -834,7 +843,9 @@ selection, written to `analysis/<an_NN>/`.
 - `export-query --experiment <dir> --run <an_NN> --out <dir>`: write a calibrated query run's
   behaviors as one behavior-stream CSV per searched recording. Each row carries
   `origin: predicted`, so re-importing one can never be read back as ground truth. A recording
-  that matched nothing gets a header-only file: the zero is the finding.
+  that matched nothing gets a header-only file: the zero is the finding. A run whose search did
+  not reach every recording is refused, naming the ones it missed, so a header-only file never
+  stands for a recording nobody searched.
 
   The artifact is pinned as it is exported and the snapshot id is printed, so a figure
   built from these CSVs can cite something that survives a later re-cut of the run.
@@ -1771,8 +1782,10 @@ what the model or trainer supports. The GUI forms and the Python API default the
 ## Inspecting and troubleshooting runs
 
 - `detail recording status` (above) lists a recording's detection, tracking and embedding runs
-  and their status: `complete`, `failed`, `partial` (interrupted, resumable), or an active
-  state. `process status <run_NNN>` covers the rest, keypoint runs included.
+  and their status: `complete`, `failed`, `cancelled`, `partial` (interrupted, resumable), or
+  an active state. `process status <run_NNN>` covers the rest, keypoint runs included. Only a
+  stage that can pick up where it stopped (keypoint detect) is ever `partial`; cancelling
+  detection, tracking, embedding or keypoint track records `cancelled`, and you run it again.
 - A blocking command exits non-zero and points you at the details when a run
   doesn't complete. The `attach` commands are the exception: they watch a run and print
   its status, and Ctrl-C leaves the run going, so they exit 0 whatever the status says.
@@ -1811,6 +1824,11 @@ what the model or trainer supports. The GUI forms and the Python API default the
   rejoins one, and `process cancel` or `distill cancel` stops it. On an `attach` command it
   **detaches** too: you did not start that worker, and reattaching exists precisely so you can
   let go of it again.
+- **A run whose command was cut off still gets its real status.** If you close the terminal
+  while `detection run` (or another one-recording run) is going, or a script starts one and
+  never waits for it, the recording keeps saying `pending` only until the next `detail`
+  command on that experiment, or until the app opens it. Either one reads how the run really
+  ended and records that.
 - **Stopping a run you are not watching:** `<thing> cancel <id>` (`process`, `analysis`,
   `distill`, `export`), `train stop <model_NNN>` for a training run (it finishes the epoch in
   progress and keeps the best weights), the GUI's **Cancel** button, or

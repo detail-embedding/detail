@@ -86,6 +86,10 @@ class TrackingModule(ProcessingModule):
     progress_event_class = TrackingProgressEvent
     # frames_total is the detected frames the tracker stepped through
     progress_counts_frames = True
+    # The trackers can pick up at a part boundary (`part_handoff.json`, §13), but nothing
+    # re-submits a tracking run under its own id — retry re-runs it whole under a fresh one —
+    # so no user can reach that resume, and `partial` would promise it (#28).
+    resumes = False
     identity_fields = ("tracker_id", "arena_ids", "hyperparams", "every_n_frames")
     identity_defaults = {"every_n_frames": 1}
     lineage_ref = ("detection", "detection_run_id")
