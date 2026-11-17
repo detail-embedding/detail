@@ -343,6 +343,7 @@ def test_the_measures_panel_prints_what_the_comparison_page_prints(qapp):
             "recording_id": "recording_001",
             "subject": 0,
             "label": "rear",
+            "label_display": "rear",
             "label_to": None,
             "measure": "time_fraction",
             "value": 0.125,
@@ -352,6 +353,7 @@ def test_the_measures_panel_prints_what_the_comparison_page_prints(qapp):
             "recording_id": "recording_001",
             "subject": 0,
             "label": "rear",
+            "label_display": "rear",
             "label_to": None,
             "measure": "total_time",
             "value": 2e7,
@@ -372,6 +374,38 @@ def test_the_measures_panel_prints_what_the_comparison_page_prints(qapp):
         "the measures panel renders a number differently from the comparison page — it has "
         "its own formatter again, rather than calling comparison_report.shown_value"
     )
+
+
+def test_the_measures_panel_names_a_parent_labels_row_as_its_remainder(qapp):
+    """A parent label's row counts only what its sub-labels left (#24), so the panel shows the
+    row's ``label_display`` ("moving (other)"), not the plain ``label`` the CSV joins on.
+    """
+    from detail.gui.pages import MeasuresPanel
+
+    rows = [
+        {
+            "recording_id": "recording_001",
+            "subject": 0,
+            "label": label,
+            "label_display": display,
+            "label_to": None,
+            "measure": "total_time",
+            "value": 2e7,
+            "n": 3,
+        }
+        for label, display in (("moving", "moving (other)"), ("fast", "fast"), ("", ""))
+    ]
+
+    class _Measures:
+        def table(self, progress=None):
+            return rows
+
+    class _Experiment:
+        def measures(self, run_id):
+            return _Measures()
+
+    shown = MeasuresPanel(_Experiment(), "an_00")._compute(lambda *a, **k: None)
+    assert [r[2] for r in shown] == ["moving (other)", "fast", "(unnamed)"]
 
 
 def test_analysis_run_detail_shows_measures_for_a_run_with_an_artifact(
@@ -1653,6 +1687,10 @@ def test_a_query_run_made_with_a_removed_method_opens_as_a_bare_record(qapp, tmp
 
     with pytest.raises(ValueError, match="dtw"):
         exp.query_run("an_01").set_cutoff("q01", 0.6)
+    # Refused before anything was written: a refusal found inside the reprojection left 0.6
+    # saved over results cut at 0.5, and the export below would then refuse them as stale (#24).
+    assert exp.query_run("an_01").state().behavior("q01").cutoff == 0.5
+    assert not exp.query_run("an_01").artifact_stale
     # The behavior output it already wrote is a file, not a search, and still exports.
     out = exp.query_run("an_01").export(tmp_path / "export")
     assert sorted(p.name for p in out.iterdir()) == ["s1.csv", "s2.csv"]

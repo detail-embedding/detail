@@ -242,6 +242,19 @@ def embedding_cadence(recording_dir: Path | str, data: dict, embed_run_id: str) 
     return math.lcm(tracking_cadence(data, meta["tracking_run_id"]), own)
 
 
+def _recording_label(recording_dir: Path | str) -> str:
+    """The recording's name for an error message, falling back to its folder's id.
+
+    "no embedded rows for track 0" named neither the recording nor how to find it, so a run over
+    sixty recordings left the user to guess which one had gone (#24).
+    """
+    try:
+        name = recording_store.read_recording(recording_dir).get("name")
+    except (FileNotFoundError, ValueError):
+        name = None
+    return repr(name or Path(recording_dir).name)
+
+
 def load_track_trajectory(
     recording_dir: Path | str, embed_run_id: str, track_id: int
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -269,7 +282,8 @@ def load_track_trajectory(
         times.append(np.asarray(reader.column("t_ns")[:]))
     if not embs:
         raise ValueError(
-            f"no embedded rows for track {track_id} in embedding run {embed_run_id!r}"
+            f"no embedded rows for track {track_id} of recording "
+            f"{_recording_label(recording_dir)} in embedding run {embed_run_id!r}"
         )
     return np.concatenate(embs), np.concatenate(frames), np.concatenate(times)
 
@@ -339,7 +353,8 @@ def load_track_timeline(
         times.append(np.asarray(reader.column("t_ns")[:]))
     if not frames:
         raise ValueError(
-            f"no embedded rows for track {track_id} in embedding run {embed_run_id!r}"
+            f"no embedded rows for track {track_id} of recording "
+            f"{_recording_label(recording_dir)} in embedding run {embed_run_id!r}"
         )
     return np.concatenate(frames), np.concatenate(times)
 

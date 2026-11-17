@@ -5678,7 +5678,9 @@ audited: false               # derived: whether an audit.csv sits beside the art
 
 That is Query's (`pipeline/query.py`), in the order it is written; `audited` is filled in by the
 writer, never taken from the producer. A temporal clustering run's (`pipeline/temporal_clustering.py`)
-adds `label_paths` — parallel to `names`, one path per label — writes no `score` (a cluster
+adds `label_paths` — parallel to `names`, one path per label — gives its `unlabelled` source
+label an entry with no name in both (`unlabelled: []`: the fact §23's `unnamed_labels` condition
+reads, so `unnamed_time` is measured on every clustering run), writes no `score` (a cluster
 assignment has no confidence), declares `overlap: exclusive`, and its `method` carries
 `method_id`, `params`, `granularity` and the method's own fit-summary counts.
 
@@ -7305,7 +7307,11 @@ rather than repairing:
 The edits are `name_nodes` (by name: an existing name adds to that label; a label's only node given
 a new name renames the label), `create_label`, `label_nodes`, `rename_label`, `merge_labels` and
 `delete_label`, all through one door (`LabelOperations._label_edit`) that folds an older state,
-applies the change, checks the rules and recomputes the resolution. The CLI has `--name-node`,
+applies the change, checks the rules and recomputes the resolution. `edit_labels` applies names,
+renames and merges as **one** edit, each name read against the labels as the edits before it left
+them: the CLI's `--name-node`, `--rename-label` and `--merge-label` run through it, so a command
+whose last pair names no label writes nothing (#24; one write per pair had left the earlier pairs
+written). The CLI has `--name-node`,
 `--rename-label` and `--merge-label`; INTERPRET's label box lists **Add to an existing label**
 (greyed, with the reason, where the parent rule forbids it) and its labels list has Rename… and
 Merge into….
@@ -7843,7 +7849,13 @@ cluster and in INTERPRET's montage (faded, tagged), so INTERPRET stays true to t
   and frame view reads `instances.csv`, so all follow.
 - **An edit applies only while it still means what it said**: while the clip's label is
   `from_label` or a label nested under it. A rename keeps it (the id is the same); relabelling the
-  cluster or deleting the label leaves the entry in the state with no effect.
+  cluster or deleting the label leaves the entry in the state with no effect (deleting the label a
+  clip was moved *to* reports the clip unlabelled, as every clip of that label is). **A merge
+  re-points the edits** at the label merged into (`storage/clip_edits.relabel`): the two labels are
+  one behavior, so a clip removed from the source stays removed and one moved into it is in the
+  target; an edit whose two ends become the same label is dropped. Undo puts them back:
+  `label_maps` carries the edits keyed by clip and `restore_labels(..., clip_edits=)` restores them
+  (#24).
 - **The cache readers follow too**, so the label bar and BROWSE's preview agree with the export:
   `NodeView.set_clip_edits` (called by `node_view()` whenever the state file changes) feeds
   `label_time` (a run's covered time moves to `unlabelled` or the target) and `labelled_runs`
@@ -7865,7 +7877,7 @@ no `schema_version` row; its header is its schema.
 | `node` | the labelled cluster it counted toward |
 | `label_path` | that cluster's label path then |
 | `drawn_at` | when the row was written (the name is kept from the draw that came first) |
-| `answer` | `yes` or `no`; empty only in a row an earlier version logged for a draw |
+| `answer` | `yes` or `no`; `withdrawn` for a clip put back after it was answered; empty only in a row an earlier version logged for a draw |
 
 **Why a census.** Review round 11 replaced the random draw of 25 with a review of every clip (the
 user's decision): a draw left most clips unseen, and a clip nobody watched cannot be removed. The
@@ -7892,6 +7904,12 @@ cluster, which writes its census.
   `membership_changed_at` — starts unreviewed rather than showing climb's census. A clip keeps one
   latest answer per path. A rename and a take-out change nothing (a rename carries the answers to
   the new path), and neither does an undo, which restores the label's change time.
+- **Putting a clip back withdraws its answers** (the owner's decision, #24): `put_back_clips`
+  appends a `withdrawn` row for each path the clip has a current answer under
+  (`storage/clip_review.withdraw`), which supersedes the answer without being one. The clip reads
+  as not yet reviewed (`remaining` counts it), so its cluster is no longer *all audited* on a "no"
+  written because the clip was out; the cluster's other clips keep their answers, and finishing
+  again answers it. A version older than this reads the row as an unanswered draw row.
 - **An earlier draw's rows stay readable**: a drawn-but-unanswered row judges nothing; a judged one
   counts as that clip's answer (under its `label_path`; a row with none, under any) until a census
   supersedes it, but no cluster reads as reviewed until
@@ -8620,9 +8638,20 @@ measure, and a measure added later applies to every artifact already on disk.
 The output is one row per `(recording, subject, label, label_to, window, measure)`:
 
 ```
-recording_id, subject, label, label_to, window_id, window_start_t_ns, window_end_t_ns,
-measure, value, denominator_ns, n
+recording_id, subject, label, label_to, label_display, label_is_remainder, window_id,
+window_start_t_ns, window_end_t_ns, measure, value, denominator_ns, n
 ```
+
+**A parent label's row counts only its remainder, and says so** (amended in #24, owner decision).
+Labels nest (§22) and a bout counts under its deepest label, so a label with another nested under
+it measures only the time its children did not take. The numbers stay as they are; the row is
+*named* for what it counts. `label` keeps the plain name, because it is the join key a comparison
+groups on (`compare.MEASURE_KEYS`) and a user joins to `instances.csv` on. `label_display` is what
+a person reads — `"<label> (other)"` on such a row, the label itself otherwise — and
+`label_is_remainder` marks the row, so a CSV reader can tell without parsing a name. "Is a parent"
+is decided once, from the manifest's `label_paths` (`measures.remainder_labels`); a producer with
+no hierarchy has none. A comparison stores the list as `remainder_labels` on its record and carries
+the same two columns in `stats.csv`, and every surface that titles a measurement reads them.
 
 `denominator_ns` is not optional and not a convenience column — see *Denominators* below.
 

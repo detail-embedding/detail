@@ -36,6 +36,7 @@ chosen, opens this screen through :func:`open_labeling` (*New example set…*, *
 
 from __future__ import annotations
 
+import threading
 import cv2
 import numpy as np
 from PyQt6.QtCore import QEvent, Qt, QTimer
@@ -72,7 +73,6 @@ from detail.gui.sizing import (
     set_available,
 )
 from detail.gui.spin import IntSpin
-from detail.gui.workers import BackgroundCall
 from detail.storage import recording as recording_store
 
 #: The tracked box the method crops to — drawn thin, so it frames the animal without covering
@@ -189,48 +189,69 @@ def load_video(experiment, recording_id: str, tracking_run_id: str) -> dict:
 # Saving marks off the UI thread
 # --------------------------------------------------------------------------- #
 class _MarkSaver:
-    """Persist one frame's marks off the UI thread: one write in flight, the latest marks per
+    """Persist one frame's marks off the UI thread: one write at a time, the latest marks per
     frame win. A click lands on screen at once from the dialog's own copy of the set; this is
-    the part that reaches the disk (``Experiment.set_example_marks``, atomic)."""
+    the part that reaches the disk (``Experiment.set_example_marks``, atomic).
+
+    The writes run on the app's write queue for this set (``gui/run_writes.py``), not on the
+    dialog: a queue whose next write started from the previous one's ``done`` lost every queued
+    frame after the one in flight when the dialog closed, because that delivery is dropped once
+    its receiver is gone (#24). A queued frame's write reads the latest marks for it when it
+    runs, so clicks on a frame still waiting fold into its one write.
+    """
 
     def __init__(self, dialog: QWidget, experiment, set_id: str) -> None:
+        from pathlib import Path
+
+        from detail.gui import run_writes
+
         self._dialog = dialog
         self._experiment = experiment
         self._set_id = set_id
-        self._pending: dict[int, list[ExampleMark]] = {}
-        self._worker: BackgroundCall | None = None
+        root = getattr(experiment, "dir", None)
+        where = str(Path(root).resolve()) if root is not None else f"{id(experiment)}"
+        self._queue = run_writes.queue_for_key(f"example-set:{where}:{set_id}".lower())
+        #: Marks per frame index not yet taken by a write: read by the write when it runs.
+        self._latest: dict[int, list[ExampleMark]] = {}
+        #: The check-and-fold in :meth:`save` and the take in :meth:`_write` are one step each:
+        #: a take landing between the check and the fold would leave the fold unwritten.
+        self._lock = threading.Lock()
 
     @property
     def busy(self) -> bool:
-        return self._worker is not None or bool(self._pending)
+        return self._queue.busy()
 
     def save(self, index: int, marks: list[ExampleMark]) -> None:
-        self._pending[index] = [ExampleMark.from_dict(m.to_dict()) for m in marks]
-        self._flush()
-
-    def _flush(self) -> None:
-        if self._worker is not None or not self._pending:
-            return
-        index = next(iter(self._pending))
-        marks = self._pending.pop(index)
-        experiment, set_id = self._experiment, self._set_id
-        self._worker = BackgroundCall(
-            lambda: experiment.set_example_marks(set_id, index, marks),  # off-thread
-            receiver=self._dialog,
+        copy = [ExampleMark.from_dict(m.to_dict()) for m in marks]
+        with self._lock:
+            waiting = index in self._latest
+            self._latest[index] = copy
+        if waiting:
+            return  # the frame's queued write has not run yet, and will read these
+        self._queue.submit(
+            lambda: self._write(index),
+            owner=self._dialog,
+            done=self._done,
+            failed=self._failed,
+            title="Marks not saved",
         )
-        self._worker.done.connect(self._done)
-        self._worker.failed.connect(self._failed)
-        self._worker.start()
+
+    def _write(self, index: int):  # off-thread
+        with self._lock:
+            marks = self._latest.pop(index, None)
+        if marks is None:
+            return None
+        return self._experiment.set_example_marks(
+            self._set_id, index, marks
+        )  # off-thread
 
     def _done(self, _result) -> None:
-        self._worker = None
-        self._flush()
         if not self.busy:
             self._dialog._saves_settled()
 
     def _failed(self, exc: BaseException) -> None:
-        self._worker = None
-        self._pending.clear()
+        with self._lock:
+            self._latest.clear()
         self._dialog._save_failed(exc)
 
 

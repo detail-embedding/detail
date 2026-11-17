@@ -929,8 +929,12 @@ selection, written to `analysis/<an_NN>/`.
 
   `--rename-label rearing='rearing up'` renames a label and every node carrying it, and
   `--merge-label scaling=climbing` moves every node of `scaling` to `climbing` and removes
-  `scaling`. Both take names and are repeatable. Every edit on the command line is checked
-  before any is written, and each reports its progress. The name `other` is refused: it is what
+  `scaling`. Both take names and are repeatable. A merge carries the clips removed from
+  `scaling` or moved into it (in AUDIT) to `climbing`, so they stay removed or moved. The
+  command's `--name-node`, `--rename-label` and `--merge-label` edits are one change, made in
+  the order given, so a merge can name the label a rename just made: if any of them fails
+  (a label that does not exist, say) nothing is written, and the error names the labels there
+  are. It reports its progress. The name `other` is refused: it is what
   the GUI's labels panel calls a label's own remainder.
 
   `--from-screen cmp_NN` records that the nodes you label with `--name-node` were found by that
@@ -1103,9 +1107,13 @@ selection, written to `analysis/<an_NN>/`.
 - `cancel <an_NN> --experiment <dir>`: stop an active run (kills its worker; a no-op
   once terminal).
 - `rebuild <an_NN> --experiment <dir>`: re-derive an open run's results from its own stored
-  output and its current settings. The repair for a run whose results are **out of date**,
-  a change that did not finish writing them, so the settings moved and the results did not
-  (`status` says so, and the GUI offers **Rebuild results**). The expensive pass is untouched:
+  output and its current settings. The repair for a run whose results are **out of date**:
+  a change that was saved but did not finish rebuilding them, so the settings moved and the
+  results did not (`status` says so, and the GUI offers **Rebuild results**). The command whose
+  rebuild failed says the change was saved, and names the recording it could not read. Until a
+  rebuild succeeds, every command that reads the results refuses with this command's name:
+  `measures`, `comparison run`, `export-query`, `export-temporal-clustering`, a finalize, a new
+  audit batch and a finished clip review. The expensive pass is untouched:
   this costs one pass over the outputs, not another fit or search. It is also the way to
   re-drive a run whose results write **failed**: the fit or search is still on disk, so the
   run does not have to be redone from the start.
@@ -1128,12 +1136,14 @@ full list, with what each one reports and what it needs, is the
   [--windows whole|absolute|normalized|sliding] [--every <seconds>] [--parts N]
   [--length <seconds>] [--step <seconds>]`: measure the run and write three files into
   `<dir>`, `measures.csv` (one row per recording, subject, label, window and measure, with the
-  observed time each rate was taken against), `frames.csv` (one row per frame: whether it was
+  observed time each rate was taken against; a label with labels nested inside it counts only
+  what they leave, so its row has `label_display` "<label> (other)" and `label_is_remainder`
+  `True`, while `label` keeps the plain name to join on), `frames.csv` (one row per frame: whether it was
   observed and what was active on it), and `measures.yaml` recording the windows and measures used.
 
   `--measure` defaults to every measure the source run can answer: one that needs something
-  the run does not have (`transitions` needs non-overlapping behaviors; `unnamed_time` needs
-  unnamed clusters) is skipped rather than reported as a column of zeros. `--windows` picks the
+  the run does not have (`transitions` needs non-overlapping behaviors; `unnamed_time` needs a
+  clustering run) is skipped rather than reported as a column of zeros. `--windows` picks the
   window model: `whole` measures the
   full recording, `absolute` tiles it into fixed windows of `--every` seconds, `normalized` splits
   it into `--parts` equal fractions (for recordings of differing length), and `sliding` walks a
@@ -1208,8 +1218,8 @@ column of `metadata.csv`, and report how the groups differ.
   in `summary.md`.
 
   `--measure` defaults to every measure the source run can answer: one that needs something
-  the run does not have (`transitions` needs non-overlapping behaviors; `unnamed_time` needs
-  unnamed clusters) is skipped rather than reported as a column of zeros. `--windows` picks the
+  the run does not have (`transitions` needs non-overlapping behaviors; `unnamed_time` needs a
+  clustering run) is skipped rather than reported as a column of zeros. `--windows` picks the
   window model: `whole` measures the
   full recording, `absolute` tiles it into fixed windows of `--every` seconds, `normalized`
   splits it into `--parts` equal fractions (for recordings of differing length), and `sliding`
@@ -1587,7 +1597,9 @@ that bout produced no clip: the track was not detected across it, or it fell out
 `cy_norm`: where each bout happened, as a fraction of the frame. `label_path` is the whole chain
 of names the bout sits under, outermost first (`not moving/resting`) where `label` is the last
 element on its own. Total by `label` for the specific behavior, or by a prefix of `label_path` for
-the group it belongs to; each bout appears once either way, so neither double-counts. A flat
+the group it belongs to; each bout appears once either way, so neither double-counts. Measures and
+comparisons count the same way: a label with labels inside it counts only what they leave, and
+its row is shown as "<label> (other)". A flat
 vocabulary's path is just its label. `coverage.csv` gives `observed_ns` per
 `(recording_id, subject)`, which is the denominator for any rate you compute: video duration is
 not recording duration is not tracked time.

@@ -432,6 +432,10 @@ class QueryRun(AuthoredRun):
                 f"cutoff must be a confidence in [0, 1], got {cutoff!r}. Confidence is "
                 "canonical across query methods (§20), so this axis is method-independent."
             )
+        # Before the edit writes anything: a run whose method this version no longer has cannot
+        # be reprojected, and finding that out inside the reprojection left the new cutoff saved
+        # over results cut at the old one (#24).
+        query_pipeline.resolve_method(self.state().method)
 
         def mutate(state: query_runs.QueryState) -> dict:
             behavior = state.behavior(behavior_id)

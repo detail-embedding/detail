@@ -461,6 +461,7 @@ def prepare_comparison(
         )
         source_hash = snapshots_store.artifact_hash(run_dir)
         ranking_measure = None
+        remainders = sorted(measures.remainder_labels(artifact.manifest))
         screened = _screened_labels(
             experiment, cfg.source_run_id, snapshot_id, columns=cfg.group_by
         )
@@ -552,6 +553,9 @@ def prepare_comparison(
         # that scores them is scoring what its own contrast selected, and the record is the
         # one place that can say so -- the number itself looks like any other.
         record["screened_labels"] = screened
+        # A parent label's rows count only its leftover, and every surface names them
+        # "<label> (other)" from this one list (#24; `measures.remainder_labels`).
+        record["remainder_labels"] = remainders
     return Prepared(
         rows=rows,
         obs=obs,
@@ -594,7 +598,10 @@ def run_comparison(
     write_tidy_csv(
         cdir / STATS_FILENAME,
         compare.stats_rows(
-            prepared.obs, aggregate_to=cfg.aggregate_to, group_by=cfg.group_by
+            prepared.obs,
+            aggregate_to=cfg.aggregate_to,
+            remainders=frozenset(prepared.record.get("remainder_labels") or ()),
+            group_by=cfg.group_by,
         ),
         compare.STATS_COLUMNS,
     )

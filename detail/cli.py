@@ -4860,8 +4860,8 @@ def analysis_status(run_id: str, experiment_dir: Path) -> None:
     click.echo(f"  status: {record.get('status')}")
     if record.get(analysis_store.STALE_KEY) is True:
         click.echo(
-            "  results: out of date — the last change did not finish writing them; "
-            f"rebuild with 'detail analysis rebuild {run_id}'"
+            "  results: out of date — the last change was saved but its results were not "
+            f"rebuilt; rebuild with 'detail analysis rebuild {run_id}'"
         )
     if record.get("error"):
         click.echo(f"  error: {record['error']}")
@@ -5522,6 +5522,13 @@ def _echo_query_state(run) -> None:
     except FileNotFoundError:
         click.echo("  (no behavior output yet — the search did not finish)")
         return
+    if run.artifact_stale:
+        # The cutoffs above are the saved ones; the counts below are from before the last
+        # change, whose rebuild failed. Printed side by side unmarked, they read as one state.
+        click.echo(
+            "  results: out of date — the last change was saved but not rebuilt; the counts "
+            f"below are from before it. Rebuild with 'detail analysis rebuild {run.id}'"
+        )
     click.echo(
         f"  behavior output: {output.bout_count} instance(s) over "
         f"{len(output.coverage)} searched unit(s), vocabulary "
@@ -5955,29 +5962,34 @@ def _interpret(
             _echo_tree(run)
             return
         # Every pair is read before anything is written: a malformed one found after `--name`
-        # had already landed left the run half edited.
+        # had already landed left the run half edited. And the names, renames and merges are one
+        # edit (`edit_labels`), so a label name that is wrong — found only against the labels
+        # the edits before it leave — writes nothing either.
         rename_pairs = _label_pairs(renames, "--rename-label", "OLD=NEW")
         merge_pairs = _label_pairs(merges, "--merge-label", "SOURCE=INTO")
         names = _pose_names(node_names) if node_names else None
         origins = _label_origins(proj, run, names, from_screen, at_p) if names else None
-        # Each edit re-projects the whole run's output, so each shows its progress.
-        if names:
+        if names or rename_pairs or merge_pairs:
             extra = {"origins": origins} if origins else {}
+            # The edit re-projects the whole run's output, so it shows its progress.
             _with_stage_progress(
-                lambda bar: run.name_nodes(names, progress=bar, **extra)
+                lambda bar: run.edit_labels(
+                    names,
+                    renames=rename_pairs,
+                    merges=merge_pairs,
+                    progress=bar,
+                    **extra,
+                )
             )
+        if names:
             at = f" at p <= {at_p:g}" if at_p is not None else ""
             click.echo(
                 f"labelled {len(node_names)} node(s)"
                 + (f", from screen {from_screen}{at}" if from_screen else "")
             )
         for old, new in rename_pairs:
-            label = _label_id(run, old)
-            _with_stage_progress(lambda bar: run.rename_label(label, new, progress=bar))
             click.echo(f"renamed {old!r} to {new!r}")
         for source, into in merge_pairs:
-            pair = (_label_id(run, source), _label_id(run, into))
-            _with_stage_progress(lambda bar: run.merge_labels(*pair, progress=bar))
             click.echo(f"merged {source!r} into {into!r}")
         if finalize:
             _with_stage_progress(lambda bar: run.finalize(progress=bar))
@@ -6036,21 +6048,6 @@ def _label_pairs(pairs, option: str, shape: str) -> list[tuple[str, str]]:
             raise click.UsageError(f"{option} takes {shape}, got {pair!r}")
         out.append((left.strip(), right.strip()))
     return out
-
-
-def _label_id(run, name: str) -> str:
-    """The id of the label called ``name`` in ``run`` (ignoring case), or a usage error naming
-    the labels there are."""
-    from detail.storage import run_labels
-
-    labels = run.state().labels
-    label = run_labels.find(labels, name)
-    if label is None:
-        known = ", ".join(sorted(labels.values())) or "none yet"
-        raise click.UsageError(
-            f"no label called {name!r} in this run (labels: {known})"
-        )
-    return label
 
 
 def _echo_tree(run) -> None:

@@ -1936,7 +1936,11 @@ class ComparisonDetailPage(QWidget):
         )
         for row, key in enumerate(keys):
             unit = comparison_report.measure_unit(key)
-            cells = [comparison_report.measure_title(key)]
+            cells = [
+                comparison_report.measure_title(
+                    key, comparison_report.remainders_of(self._record)
+                )
+            ]
             for group in groups:
                 cells.append(_cell(by_measure[key].get(group), unit))
             if ranking is not None:
