@@ -28,11 +28,12 @@ import pytest
 
 pytest.importorskip("PyQt6")
 
-from PyQt6.QtCore import QEvent, Qt, QThreadPool  # noqa: E402
+from PyQt6.QtCore import QEvent, Qt  # noqa: E402
 from PyQt6.QtGui import QKeyEvent  # noqa: E402
 from PyQt6.QtTest import QTest  # noqa: E402
 
 from detail.gui.scrubber import FrameScrubber, accelerated_step  # noqa: E402
+from tests.gui.conftest import drain_until  # noqa: E402
 
 
 def test_scrubbed_signal_fires_on_manual_not_programmatic(qapp):
@@ -56,10 +57,7 @@ def test_busy_changed_marks_decode_in_flight_then_caught_up(qapp):
     s.set_decoder(lambda frame: frame)  # trivial off-thread compute
     s.set_frame(5)  # dispatches a decode → busy True immediately (UI thread)
     assert states and states[0] is True
-    QThreadPool.globalInstance().waitForDone(2000)  # let the decode finish
-    for _ in range(5):
-        qapp.processEvents()  # deliver _on_decoded → busy False
-    assert states[-1] is False
+    drain_until(qapp, lambda: states[-1] is False)  # the decode delivered → busy False
 
 
 # --- accelerated_step (pure) ------------------------------------------------ #

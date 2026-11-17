@@ -59,6 +59,12 @@ def identity(index: int, theme: ChartTheme | None = None) -> QColor:
     return QColor((theme or current()).identity(index))
 
 
+def label_identity(index: int, theme: ChartTheme | None = None) -> QColor:
+    """The colour for a behavior label's slot ``index`` (see ``ChartTheme.label_identity``):
+    never one of the two the diverging scale keeps for less and more."""
+    return QColor((theme or current()).label_identity(index))
+
+
 def pen(color: str | QColor, *, width: float | None = None, dashed: bool = False):
     """A cosmetic pen — ``width`` in screen pixels whatever the view's zoom."""
     import pyqtgraph as pg
@@ -205,22 +211,47 @@ def effect_colour(value: float, theme: ChartTheme | None = None) -> QColor:
     )
 
 
+def size_colour(value: float, theme: ChartTheme | None = None) -> QColor:
+    """The shade for a cluster whose difference has a size and no direction, ``value`` in 0..1.
+
+    A profile (three or more named levels) scores a cluster by the pair of levels it differs
+    most between, so its sign belongs to that pair and not to the cluster. Its ramp is its
+    own: from the diverging scale's neutral middle to the theme's ink, no hue. It once reused
+    the scale's "more" half, so one colour meant *more* on a two-value screen and *differs
+    either way* on this one (user, 2026-11-16). Zero and NaN are ``neutral`` exactly, as for
+    :func:`effect_colour`.
+    """
+    theme = theme or current()
+    if value != value or value <= 0:
+        return QColor(theme.neutral)
+    t = min(float(value), 1.0)
+    a = QColor(theme.diverging[len(theme.diverging) // 2])
+    b = QColor(theme.text)
+    return QColor(
+        round(a.red() + (b.red() - a.red()) * t),
+        round(a.green() + (b.green() - a.green()) * t),
+        round(a.blue() + (b.blue() - a.blue()) * t),
+    )
+
+
 def match_colour(share: float, theme: ChartTheme | None = None) -> QColor:
     """The shade for a cluster of which ``share`` (0..1) of the clips match a selection.
 
     **Always the fixed 0–100% scale, never stretched to the clusters' own spread.** Stretched,
     an even spread (every cluster 43–55%) fills the whole ramp and reads as a strong pattern; on
     the fixed scale it is one even mid shade, which is what it is. The ramp is the theme's
-    ``sequential`` magnitude scale, so its low end sits near the surface in either theme; a
-    share of exactly zero is ``neutral`` — plain grey, "none of it", not "a little".
+    ``sequential`` magnitude scale, lightness with no hue, so its low end sits near the
+    surface in either theme and a share of zero (or nothing to count) is that low end: "none
+    of it". It was ``neutral`` while the ramp was blue; on a grey ramp ``neutral`` is a shade
+    part-way up it, and a cluster with no match would read as one with some.
 
     One function for the tree's blocks and the key under it (`gui/match_key.py`), so the key
     cannot disagree with the picture it explains.
     """
     theme = theme or current()
-    if share <= 0:
-        return QColor(theme.neutral)
     stops = theme.sequential
+    if share != share or share <= 0:
+        return QColor(stops[0])
     position = min(float(share), 1.0) * (len(stops) - 1)
     low = min(int(position), len(stops) - 2)
     t = position - low

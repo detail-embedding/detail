@@ -36,6 +36,17 @@ or more named ones (the largest difference between any two), and the permutation
 is the one that design allows — sign flips or within-unit shuffles, never a relabelling across
 units that would break the pairing the design exists to use. The user chooses the variables;
 :func:`resolve_design` says what they imply, in one sentence every surface prints.
+
+**A within-unit ranking scores by evidence, not by size** (§24 *The statistic*). The number a
+measure is ranked by, and the floor is taken over, is its **moderated t**: the mean per-unit
+effect over its spread, ``mean / ((sd + s0) / √n)``, with ``s0`` the family's median spread so a
+measure whose units happen to agree exactly cannot own the floor with a zero denominator. The
+effect itself (the mean log ratio, the mean ρ) stays what every surface prints; the t is what
+decides the order and the verdict. On the effect alone the family-wise floor belongs to the
+sparsest measures — a cluster a few animals barely touch swings ±4 log units under any sign — and
+a cluster eight of eight animals agree on at 12× sat under a 16.8× floor. ``statistic`` on
+:func:`rank_by_design` and on the record chooses; a record written before the field existed
+ranks on the effect, as it always did.
 """
 
 import dataclasses
@@ -96,6 +107,15 @@ FLOOR_ALPHA = 0.05
 #: never a run parameter — what the record kept is kept at :data:`FLOOR_ALPHA`.
 STRICTNESS_LEVELS = (0.01, 0.02, 0.05, 0.1, 0.2, 0.3, 0.5)
 
+#: What a within-unit ranking scores each measure by (§24 *The statistic*): the mean per-unit
+#: effect studentized — the moderated t, ``mean / ((sd + s0) / √n)``, ``s0`` the family's
+#: median spread — or the mean effect itself. The config's default is the t; a record written
+#: before the field existed carries neither and ranks on the effect. A between design has no
+#: per-unit effects to studentize and ranks on the effect whatever was asked.
+STATISTIC_T = "moderated_t"
+STATISTIC_EFFECT = "effect"
+STATISTICS = (STATISTIC_T, STATISTIC_EFFECT)
+
 #: How close, relative to the observed value, a null draw must come to count as reaching it.
 #: A null recomputes the observed configuration by other arithmetic (a matrix product where the
 #: effect is a ``nansum``, a fresh ``fmean`` where the contrast read a summary's mean), so the
@@ -104,6 +124,15 @@ STRICTNESS_LEVELS = (0.01, 0.02, 0.05, 0.1, 0.2, 0.3, 0.5)
 #: observed value cleared a floor that was itself. 100 machine epsilons, scipy's
 #: ``permutation_test`` convention; read only through :func:`_reaches`.
 _TIE_RTOL = 100 * float(np.finfo(float).eps)
+#: The share of a sum of squares below which ``Σx² − n·mean²`` is rounding and not a spread.
+#: The two terms are equal when every unit has the same effect, and their difference then
+#: comes out a few ulps of ``Σx²`` either side of zero rather than zero: a positive one read
+#: as a spread near 1e-8, became the family's ``s0``, and a family in which no measure's units
+#: disagree was given a floor and t's in the hundreds of millions where it should have had
+#: neither (187 of 500 such families). 1e-12 is a spread a millionth of the effects' size,
+#: far above the rounding (~1e-16 per term) and far below any spread a cohort can show; read
+#: only in :func:`_spread`.
+_SPREAD_RTOL = 1e-12
 
 
 class ComparisonError(ValueError):
@@ -432,18 +461,34 @@ class Contrast:
         most between (§24 *Designs*)."""
         return ("|".join(self.a.group), "|".join(self.b.group))
 
+    @property
+    def statistic(self) -> float | None:
+        """A between contrast has no per-unit effects to studentize: never a t."""
+        return None
+
+    @property
+    def score(self) -> float | None:
+        """What the item is ranked by and the floor is compared with: its magnitude."""
+        return self.magnitude
+
 
 @dataclass(frozen=True)
 class Effect:
     """One measure's within-unit effect under a paired or trend design (§24 *Designs*).
 
-    The thing ranked is the **mean of the per-unit effects** — a log ratio of the unit's level
-    means for a paired contrast, a Spearman ρ over the unit's levels for a trend, the largest of
-    the pairwise log ratios for a profile — never a ratio of group means, which would let one
+    ``effect`` is the **mean of the per-unit effects** — a log ratio of the unit's level means
+    for a paired contrast, a Spearman ρ over the unit's levels for a trend, the largest of the
+    pairwise log ratios for a profile — never a ratio of group means, which would let one
     animal's four sessions outvote another's one and would permit the across-unit relabelling
     the design forbids. What makes it readable rides with it: how many units had an effect, how
     many were *present*, how many share the sign, and whether the sign survives dropping any
     one unit.
+
+    ``statistic`` is that mean studentized — the moderated t, ``mean / ((sd + s0) / √n)`` over
+    the same per-unit effects (§24 *The statistic*) — when the ranking scores by evidence
+    (:data:`STATISTIC_T`), and ``None`` when it scores by the effect itself. :attr:`score` is
+    whichever the ranking used: what :meth:`Ranking.clears_floor` compares with the floor and
+    the order is by; the effect is what a surface prints beside it.
 
     ``effect`` is ``None`` where the item is undefined — fewer than ``min_units`` present units —
     which is "not shown to differ", not "shown not to", and ranks last rather than large.
@@ -474,10 +519,17 @@ class Effect:
     family_p: float | None = None
     own_p: float | None = None
     q: float | None = None
+    statistic: float | None = None
 
     @property
     def magnitude(self) -> float | None:
         return None if self.effect is None else abs(self.effect)
+
+    @property
+    def score(self) -> float | None:
+        """``|statistic|`` on a studentized ranking, else :attr:`magnitude`: the size the
+        floor is compared with."""
+        return self.magnitude if self.statistic is None else abs(self.statistic)
 
     @property
     def unbounded(self) -> bool:
@@ -492,10 +544,10 @@ class Effect:
 
 
 def _rank_key(item) -> float:
-    """Sort key: unbounded changes first, then by magnitude, then the incomputable."""
+    """Sort key: unbounded changes first, then by score, then the incomputable."""
     if item.unbounded:
         return float("inf")
-    return item.magnitude if item.magnitude is not None else -1.0
+    return item.score if item.score is not None else -1.0
 
 
 def contrast(a: GroupSummary, b: GroupSummary, *, epsilon: float = 0.0) -> Contrast:
@@ -553,6 +605,11 @@ class Ranking:
     ``ancestors`` the suppression used. At :data:`FLOOR_ALPHA` they are ``floor`` and ``kept``
     exactly; a screen read looser or stricter (§22) is a view over this ranking, and what the
     record says it kept does not move.
+
+    ``statistic`` names what the items are scored by and the floor is in the unit of
+    (:data:`STATISTICS`): the moderated t, with ``s0`` the family's median per-unit spread the t
+    was moderated by, or the effect itself (``s0`` ``None``). ``item.score`` is that number on
+    each item; the floor is compared with nothing else.
     """
 
     contrasts: list
@@ -575,6 +632,10 @@ class Ranking:
     #: The hierarchy the nesting suppression used (label → the labels above it), so the kept set
     #: at another strictness is picked the same way; ``None`` where none was applied.
     ancestors: Mapping[str, Collection[str]] | None = field(default=None, compare=False)
+    #: What the items are scored by (:data:`STATISTICS`), and the spread the t was moderated
+    #: by, ``None`` on a ranking by the effect.
+    statistic: str = STATISTIC_EFFECT
+    s0: float | None = None
 
     @property
     def profile(self) -> bool:
@@ -587,19 +648,19 @@ class Ranking:
         )
 
     def clears_floor(self, item) -> bool:
-        """Whether this measure's change exceeds the floor.
+        """Whether this measure's score — its t, or its magnitude — exceeds the floor.
 
         ``False`` also when there is no floor and when the fold change is unbounded — both are
         "not shown to clear", not "shown not to". A surface must read ``no_floor_reason`` rather
         than render this as a verdict.
         """
-        # `unbounded` is *implied* by `magnitude is None` -- one side zero and the other not
+        # `unbounded` is *implied* by `score is None` -- one side zero and the other not
         # takes the `lo <= 0 or hi <= 0` branch. It is named anyway because it is the case a
         # reader comes here about, and because the converse does not hold: a missing centre is
         # also `None` and is not unbounded. Do not read a test that mutates it away as coverage.
-        if self.floor is None or item.unbounded or item.magnitude is None:
+        if self.floor is None or item.unbounded or item.score is None:
             return False
-        return not _reaches(self.floor, item.magnitude)
+        return not _reaches(self.floor, item.score)
 
     def clearing(self) -> list:
         """The items that clear the floor, in rank order."""
@@ -628,9 +689,10 @@ class Ranking:
     def clears_at(self, item, alpha: float) -> bool:
         """Whether ``item`` clears the floor at the family-wise level ``alpha``: its
         ``family_p`` is at most ``alpha``. ``family_p`` is the smallest level at which the item
-        clears :meth:`floor_at`, so this agrees with ``magnitude`` clearing
-        ``floor_at(alpha)`` at every level, and with :meth:`clears_floor` at :data:`FLOOR_ALPHA`; a hover's p and a
-        slider's threshold cannot disagree. ``False`` with no floor, or no p."""
+        clears :meth:`floor_at`, so this agrees with the item's ``score`` (its t, or its
+        magnitude) clearing ``floor_at(alpha)`` at every level, and with :meth:`clears_floor`
+        at :data:`FLOOR_ALPHA`; a hover's p and a slider's threshold cannot disagree.
+        ``False`` with no floor, or no p."""
         if self.floor is None:
             return False
         p = getattr(item, "family_p", None)
@@ -834,7 +896,7 @@ def _with_p(
     """``items`` with their family-wise p (against ``ordered``, the null of the family's
     largest), their own p (``own[i]``, already a share) and the BH q over the own p's.
     """
-    family = [_family_p(ordered, item.magnitude) for item in items]
+    family = [_family_p(ordered, item.score) for item in items]
     q = _bh(list(own))
     return [
         dataclasses.replace(item, family_p=f, own_p=o, q=qq)
@@ -856,6 +918,25 @@ def _epsilon_by_measure(
             float(pseudo(row.measure_key, row.denominator_ns))
         )
     return {key: statistics.fmean(values) for key, values in per_key.items()}
+
+
+def _unit_groups(obs: Sequence[Observation]) -> dict[tuple, tuple]:
+    """Each unit's group in a between design, where a unit is in exactly one group.
+
+    The between null permutes groups among units, so a unit carrying two groups has no single
+    label to permute. The aggregation path cannot produce one today; this states the assumption
+    instead of letting the shuffle pick one of the two silently.
+    """
+    out: dict[tuple, tuple] = {}
+    for row in obs:
+        seen = out.setdefault(row.key, row.group)
+        if seen != row.group:
+            raise ComparisonError(
+                f"unit {row.key!r} is in two groups, {seen!r} and {row.group!r}; a between "
+                "comparison needs each unit in one group — group by a column that is constant "
+                "within the unit, or aggregate to a finer unit"
+            )
+    return out
 
 
 def rank_by_difference(
@@ -882,11 +963,18 @@ def rank_by_difference(
     :class:`Ranking` for why the maximum is unfalsifiable — and is ``None``, with a reason, where
     the permutation could not have produced a different answer.
 
-    **The permutation shuffles whole observations, which is the point.** An observation is one unit
-    of the declared aggregation path — an animal, when the path aggregates to animal — so shuffling
-    here preserves exactly the structure the path exists to impose. Shuffling the underlying
-    *recordings* instead would break an animal into four independent draws, inflate the effective
-    sample size, and make the floor far easier to clear than the real ranking had to work for.
+    **The permutation shuffles the group labels among units, once per draw, which is the point.**
+    A unit is one key of the declared aggregation path — an animal, when the path aggregates to
+    animal — and the design randomised units, so the null does too (§24 *Designs*: "group shuffled
+    among units"). Each draw is one unit → group map applied to every measure's observations: a
+    unit's measures move together, which is what the family-wise maximum assumes, and every
+    measure keeps its real group sizes (less any unit missing that measure). Only units in
+    ``groups`` take part; an observation of any other group is not in the contrast and stays out
+    of the null. Shuffling the underlying *recordings* instead would break an animal into four
+    independent draws, and shuffling each (unit, measure) observation on its own would let a
+    measure be handed 0 to 8 "drug" animals in a 4-against-4 design and make a measure's own p
+    move when unrelated measures are added — the guard is
+    ``tests/analysis/test_compare_ranking.py``'s unit-shuffle tests.
 
     ``pseudo(measure_key, denominator_ns)`` is the pseudo-count in the measure's unit, added to
     both centres before the ratio — the node source's ε (§24 *Designs*). ``None`` keeps a label's
@@ -917,16 +1005,24 @@ def rank_by_difference(
     contrasts.sort(key=_rank_key, reverse=True)
 
     rng = random.Random(seed)
-    labels = [row.group for row in obs]
-    keys = [row.measure_key for row in obs]
-    values = [row.value for row in obs]
+    # One label per unit, shuffled among the units of the contrasted groups and applied to all of
+    # a unit's observations — never one label per (unit, measure) row.
+    unit_group = _unit_groups(obs)
+    units = sorted(u for u, g in unit_group.items() if g in groups)
+    unit_index = {u: i for i, u in enumerate(units)}
+    labels = [unit_group[u] for u in units]
+    in_null = [row for row in obs if row.key in unit_index]
+    row_unit = [unit_index[row.key] for row in in_null]
+    keys = [row.measure_key for row in in_null]
+    values = [row.value for row in in_null]
     distribution: list[float] = []
     # Each measure's own null beside the family's largest: what its own p is read from.
     own_null = np.full((len(contrasts), draws), np.nan)
     for d in range(draws):
         shuffled = labels[:]
         rng.shuffle(shuffled)
-        magnitudes = _magnitudes(keys, shuffled, values, groups, epsilon)
+        row_labels = [shuffled[u] for u in row_unit]
+        magnitudes = _magnitudes(keys, row_labels, values, groups, epsilon)
         distribution.append(_largest_magnitude(magnitudes))
         for n, item in enumerate(contrasts):
             own_null[n, d] = magnitudes.get(item.measure_key, np.nan)
@@ -1216,6 +1312,7 @@ def rank_by_design(
     presence_ns: float = 0.0,
     pseudo: Callable[[tuple, float | None], float] | None = None,
     ranking_measure: str | None = None,
+    statistic: str = STATISTIC_EFFECT,
 ) -> Ranking:
     """Rank every measure by its within-unit effect, with the floor the design's own null gives.
 
@@ -1228,19 +1325,35 @@ def rank_by_design(
     The null **respects the design**: a paired contrast flips each unit's sign (every configuration
     when the cohort has ``EXACT_FLIPS_MAX_UNITS`` units or fewer, so the floor is deterministic),
     and a trend or a profile shuffles each unit's levels within that unit. The family-wise floor
-    is the 95th percentile of the largest |effect| over the ranked family, as for
+    is the 95th percentile of the largest |score| over the ranked family, as for
     :func:`rank_by_difference`.
 
+    ``statistic`` is what each measure is scored by (:data:`STATISTICS`, §24 *The statistic*).
+    :data:`STATISTIC_T` studentizes the mean per-unit effect: ``t = mean / ((sd + s0) / √n)``
+    over the units with an effect, ``sd`` their sample spread (``0`` for a single unit) and
+    ``s0`` the median ``sd`` over the family's defined measures, fixed from the observed
+    configuration and applied to every draw of the null. Under the sign flips the sum of squares
+    is invariant, so each draw's spread follows from its mean, and the observed configuration
+    stays one of the enumerated draws. :data:`STATISTIC_EFFECT` scores by the mean itself, the
+    rule every record written before the field existed is read by. The floor, every p and the
+    order are in the score's unit; the effect is printed beside it either way.
+
     A **profile** (three or more named levels) gives every pair of levels the paired contrast and
-    ranks each measure by the largest ``|mean log ratio|`` among the pairs defined for it, with
-    the pair on the item. A pair is defined where ``min_units`` units are present at either of
-    its levels, as a paired contrast is; a measure with no defined pair is undefined. The null
-    takes the same largest pair under each within-unit shuffle, so the floor already pays for
-    choosing the pair and no second correction is applied. Its null is sampled: ``(k!)^n``
-    configurations cannot be enumerated at any realistic size.
+    ranks each measure by the largest score among the pairs defined for it, with the pair on the
+    item. A pair is defined where ``min_units`` units are present at either of its levels, as a
+    paired contrast is; a measure with no defined pair is undefined. The null takes the same
+    largest pair under each within-unit shuffle, so the floor already pays for choosing the pair
+    and no second correction is applied. Its null is sampled: ``(k!)^n`` configurations cannot be
+    enumerated at any realistic size. Under the t the ``s0`` is the median spread over every
+    defined pair of every measure, since the pair is chosen by the t it moderates.
     """
     if design.kind == BETWEEN:
         raise ComparisonError("a between design is ranked by rank_by_difference")
+    if statistic not in STATISTICS:
+        raise ComparisonError(
+            f"statistic must be one of {', '.join(STATISTICS)}, got {statistic!r}"
+        )
+    studentized = statistic == STATISTIC_T
     rng = np.random.default_rng(seed)
     units = sorted({o.key for o in obs})
     unit_index = {u: i for i, u in enumerate(units)}
@@ -1314,6 +1427,9 @@ def rank_by_design(
         S, exact = _sign_patterns(U, draws, rng)
         null_sum = np.nan_to_num(D) @ S
         null_count = np.broadcast_to(n_units[:, None], null_sum.shape)
+        # A sign flip leaves the sum of squares where it was, so each draw's spread follows
+        # from its mean (`_spread`), and the observed configuration is still one of the draws.
+        null_sq = np.broadcast_to(np.nansum(D**2, axis=1)[:, None], null_sum.shape)
         present_a = (valid & present_level[:, :, 0]).sum(axis=1)
         present_b = (valid & present_level[:, :, 1]).sum(axis=1)
         per_unit = D
@@ -1339,9 +1455,17 @@ def rank_by_design(
             mean_p = np.where(
                 enough_p, np.nansum(D, axis=1) / np.maximum(n_units_p, 1), np.nan
             )
-        # The measure's pair: the largest |mean| among its defined pairs. An undefined pair is
-        # below every defined one, and a measure with none is undefined, never large.
-        size = np.where(np.isnan(mean_p), -1.0, np.abs(mean_p))
+        if studentized:
+            # One s0 over every defined pair of every measure: the pair is chosen by the t
+            # it moderates, so it cannot be read from the chosen pairs alone.
+            sd_p = _spread(np.nansum(D**2, axis=1), mean_p, n_units_p)
+            s0 = _s0(sd_p[enough_p])
+            score_p = _studentize(mean_p, sd_p, n_units_p, s0)
+        else:
+            s0, score_p = None, mean_p
+        # The measure's pair: the largest |score| among its defined pairs. An undefined pair
+        # is below every defined one, and a measure with none is undefined, never large.
+        size = np.where(np.isnan(score_p), -1.0, np.abs(score_p))
         rows = np.arange(N)
         if N and len(I_):
             best = size.argmax(axis=1)
@@ -1357,6 +1481,7 @@ def rank_by_design(
                 defined, n_present_p[rows, best], n_present_p.max(axis=1)
             )
             enough = enough_p[rows, best]
+            score = score_p[rows, best]
             present_a = (valid & present_level[rows, :, I_[best]]).sum(axis=1)
             present_b = (valid & present_level[rows, :, J_[best]]).sum(axis=1)
         else:
@@ -1364,6 +1489,7 @@ def rank_by_design(
             valid = np.zeros((N, U), dtype=bool)
             n_units = n_present = np.zeros(N, dtype=int)
             enough = np.zeros(N, dtype=bool)
+            score = np.full(N, np.nan)
             present_a = present_b = np.zeros(N, dtype=int)
         pair_of = [
             (level_values[I_[b]], level_values[J_[b]]) if d else None
@@ -1372,8 +1498,7 @@ def rank_by_design(
         # The null: each unit's levels shuffled within it (the levels it has data for), and
         # the same largest pair taken each time, so the floor pays for choosing the pair.
         have = ~np.isnan(X).all(axis=0) if N else np.zeros((U, L), dtype=bool)
-        null_sum = np.zeros((N, draws))
-        null_count = np.ones((N, draws))
+        null_score = np.zeros((N, draws))
         for d in range(draws):
             perm = np.tile(np.arange(L), (U, 1))
             for u in range(U):
@@ -1383,17 +1508,22 @@ def rank_by_design(
             LXp = np.take_along_axis(LX, np.broadcast_to(perm[None], (N, U, L)), axis=2)
             Dp = LXp[:, :, J_] - LXp[:, :, I_]
             count = (~np.isnan(Dp)).sum(axis=1)
+            moved = enough_p & (count > 0)
             with np.errstate(invalid="ignore", divide="ignore"):
-                mp = np.where(
-                    enough_p & (count > 0),
-                    np.nansum(Dp, axis=1) / np.maximum(count, 1),
-                    0.0,
-                )
-            if mp.size:
-                null_sum[:, d] = np.abs(mp).max(axis=1)
+                mp = np.where(moved, np.nansum(Dp, axis=1) / np.maximum(count, 1), 0.0)
+            if studentized and s0 is not None:
+                sd_d = _spread(np.nansum(Dp**2, axis=1), mp, count)
+                sp = np.where(moved, _studentize(mp, sd_d, count, s0), 0.0)
+            elif studentized:
+                sp = np.zeros_like(mp)
+            else:
+                sp = mp
+            if sp.size:
+                null_score[:, d] = np.abs(sp).max(axis=1)
     else:
         rho = np.full((N, U), np.nan)
         null_sum = np.zeros((N, draws))
+        null_sq = np.zeros((N, draws))
         null_count = np.zeros((N, draws))
         levels_f = np.array([float(v) for v in level_values])
         for u in range(U):
@@ -1412,6 +1542,7 @@ def rank_by_design(
             )
             rnull[~valid_u] = 0.0
             null_sum += rnull
+            null_sq += rnull**2
             null_count += valid_u[:, None]
         valid = ~np.isnan(rho)
         n_units = valid.sum(axis=1)
@@ -1423,17 +1554,29 @@ def rank_by_design(
         effect = np.where(
             enough, np.nansum(per_unit, axis=1) / np.maximum(n_units, 1), np.nan
         )
-        null_effect = np.where(
-            enough[:, None] & (null_count > 0),
-            null_sum / np.maximum(null_count, 1),
-            0.0,
-        )
+    if design.kind != PROFILE:
+        moved = enough[:, None] & (null_count > 0)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            null_effect = np.where(moved, null_sum / np.maximum(null_count, 1), 0.0)
+        if studentized:
+            sd = _spread(np.nansum(per_unit**2, axis=1), effect, n_units)
+            s0 = _s0(sd[enough])
+            score = _studentize(effect, sd, n_units, s0)
+            if s0 is None:
+                null_score = np.zeros_like(null_effect)
+            else:
+                null_sd = _spread(null_sq, null_effect, null_count)
+                null_score = np.where(
+                    moved, _studentize(null_effect, null_sd, null_count, s0), 0.0
+                )
+        else:
+            s0, score, null_score = None, effect, null_effect
     sign = np.sign(effect)
     consistency = (valid & (np.sign(per_unit) == sign[:, None]) & (per_unit != 0)).sum(
         axis=1
     )
     loo_stable = _loo(per_unit, effect) if N else np.zeros(0, dtype=bool)
-    null_max = np.abs(null_effect).max(axis=0) if N else np.zeros(null_effect.shape[1])
+    null_max = np.abs(null_score).max(axis=0) if N else np.zeros(null_score.shape[1])
     ordered = sorted(float(v) for v in null_max)
 
     if U < 2:
@@ -1448,6 +1591,11 @@ def rank_by_design(
         )
     elif not N:
         reason = "there are no observations to rank"
+    elif studentized and s0 is None:
+        reason = (
+            f"no measure's {_unit_word(design.unit)}s disagree with each other, so the "
+            f"moderated t has no spread to divide by"
+        )
     else:
         reason = None
     floor = None if reason else _percentile_floor(ordered)
@@ -1463,6 +1611,7 @@ def rank_by_design(
             a = summaries.get(((pair[0],), key))
             b = summaries.get(((pair[1],), key))
         value = float(effect[n])
+        t = float(score[n]) if studentized else float("nan")
         items.append(
             Effect(
                 measure_key=key,
@@ -1476,17 +1625,18 @@ def rank_by_design(
                 present_a=None if present_a is None else int(present_a[n]),
                 present_b=None if present_b is None else int(present_b[n]),
                 pair=pair,
+                statistic=None if math.isnan(t) else t,
             )
         )
     if not reason:
         # Each item's own null is the same draws read for that item alone; exact where the
         # flips were enumerated, since the observed configuration is then one of them.
-        magnitude = np.abs(effect)
+        size = np.abs(score)
         own = [
             (
                 None
-                if math.isnan(magnitude[n])
-                else _share_reaching(np.abs(null_effect[n]), float(magnitude[n]), exact)
+                if math.isnan(size[n])
+                else _share_reaching(np.abs(null_score[n]), float(size[n]), exact)
             )
             for n in range(N)
         ]
@@ -1506,7 +1656,50 @@ def rank_by_design(
         min_units=int(min_units),
         exact=exact,
         level_values=tuple(level_values),
+        statistic=statistic,
+        s0=s0,
     )
+
+
+def _spread(ss: np.ndarray, mean: np.ndarray, n: np.ndarray) -> np.ndarray:
+    """The sample spread of per-unit effects from their sum of squares, mean and count:
+    ``sqrt((Σx² − n·mean²) / (n − 1))``, ``0`` for fewer than two units (one unit has no
+    spread to report, and its t is its effect over ``s0``). The sum of squares does not move
+    under a sign flip, so a null draw's spread follows from its mean alone.
+
+    **Exactly ``0`` when the units agree.** The difference of the two terms is then rounding,
+    a few ulps of ``Σx²`` and as often positive as negative, so one within
+    :data:`_SPREAD_RTOL` of the sum of squares is no spread: :func:`_s0` asks ``> 0``, and a
+    rounding residue answered yes.
+    """
+    n = np.asarray(n, dtype=float)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        residual = ss - n * mean**2
+        residual = np.where(residual <= ss * _SPREAD_RTOL, 0.0, residual)
+        var = residual / np.maximum(n - 1.0, 1.0)
+    return np.where(n >= 2, np.sqrt(np.maximum(var, 0.0)), 0.0)
+
+
+def _s0(spreads: np.ndarray) -> float | None:
+    """The moderation constant: the median of the family's positive spreads, fixed from the
+    observed configuration (SAM's fudge factor, chosen the simple way). ``None`` when no
+    measure's units disagree at all — then there is nothing to divide by, and the ranking
+    says so instead of inventing a number."""
+    positive = spreads[np.isfinite(spreads) & (spreads > 0)]
+    return float(np.median(positive)) if positive.size else None
+
+
+def _studentize(
+    mean: np.ndarray, sd: np.ndarray, n: np.ndarray, s0: float | None
+) -> np.ndarray:
+    """The moderated t, ``mean / ((sd + s0) / √n)``; ``NaN`` wherever the mean is undefined,
+    no unit had an effect, or there is no ``s0``."""
+    if s0 is None:
+        return np.full(np.shape(mean), np.nan)
+    n = np.asarray(n, dtype=float)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        t = mean * np.sqrt(n) / (sd + s0)
+    return np.where(n > 0, t, np.nan)
 
 
 def _finite_or_none(value: float) -> float | None:
