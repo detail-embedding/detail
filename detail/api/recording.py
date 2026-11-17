@@ -45,6 +45,7 @@ from detail.pipeline import prompt_test as _prompt_test_pipeline
 from detail.pipeline import render_preview as _render_preview_pipeline
 from detail.storage import clocks as clock_store
 from detail.storage import experiment as experiment_store
+from detail.storage import id_allocator
 from detail.storage import integrity
 from detail.storage import read_cache
 from detail.storage import recording as recording_store
@@ -227,7 +228,18 @@ class _RecordedRun(RunHandle):
             self._recording._set_run_status(self._runs_key, self.id, self._inner.status)
 
     def cancel(self) -> None:
-        self._inner.cancel()
+        """Stop the worker, then adopt the status it ended with, as ``wait()`` does.
+
+        A cancel is often the last thing a caller does — the CLI's Ctrl-C handler cancels and
+        aborts, so no ``wait()`` follows — and without the adoption here ``job.json`` said
+        ``cancelled`` while ``recording.yaml`` said ``pending`` for good, and the recording
+        refused every later run of the stage (issue #28, finding 5). The same adoption
+        ``Recording.cancel_run`` performs.
+        """
+        try:
+            self._inner.cancel()
+        finally:
+            self._adopt_status()
 
 
 class Recording:
@@ -650,8 +662,8 @@ class Recording:
         return self._spatial_at_frame("roi", "rois", roi_id, frame_idx)
 
     def delete_roi(self, roi_id: str) -> None:
-        """Remove an ROI (keyframes + recording.yaml entry). Unconditional —
-        nothing consumes ROIs yet."""
+        """Remove an ROI (keyframes + recording.yaml entry). Unconditional: a finished
+        location run keeps its own rows, and the id is never given to another ROI."""
         spatial_store.delete_def(self.dir, "roi", roi_id)
 
     def define_point(
@@ -697,18 +709,21 @@ class Recording:
 
     def set_rois(self, defs: list[dict]) -> list[str]:
         """Replace **all** ROIs in one transaction — the multi-region manager's "Save all"
-        (Section 10). Each entry is ``{"name", "keyframes", "active"}`` (``active``
-        optional). Existing ROIs are removed and fresh ids assigned; returns the new ids.
+        (Section 10). Each entry is ``{"name", "keyframes", "active", "id"}`` (``active``
+        and ``id`` optional). An entry carrying the id of an ROI that exists keeps it; any
+        other gets an id never used in this recording before. Returns the ids, in order.
 
         Raises:
-            ValueError: If any def is invalid (empty/duplicate name, bad keyframes/active).
+            ValueError: If any def is invalid (empty/duplicate name or id, bad
+                keyframes/active).
         """
         return spatial_store.replace_defs(self.dir, "roi", defs)
 
     def set_points(self, defs: list[dict]) -> list[str]:
         """Replace **all** POIs in one transaction — the manager's "Save all" (Section 10).
-        Each entry is ``{"name", "keyframes", "active"}``; each keyframe carries one
-        vertex. Returns the new ids."""
+        Each entry is ``{"name", "keyframes", "active", "id"}``; each keyframe carries one
+        vertex. Ids are kept and minted as in :meth:`set_rois`. Returns the ids, in order.
+        """
         return spatial_store.replace_defs(self.dir, "point", defs)
 
     def export_spatial_csv(self, path: Path | str) -> None:
@@ -2596,13 +2611,11 @@ class Recording:
 
     # --- recording.yaml bookkeeping ------------------------------------------- #
     def _next_run_id(self, runs: list[dict], prefix: str) -> str:
-        nums = []
-        for run in runs:
-            try:
-                nums.append(int(str(run["id"]).rsplit("_", 1)[-1]))
-            except (ValueError, KeyError):
-                pass
-        return f"{prefix}_{max(nums, default=0) + 1:02d}"
+        """Claim the next ``<prefix>_NN`` run id in this recording, never reused: an analysis
+        record's ``tracking_run_ids`` and a tracking run's detection id name these, so a new
+        run must not take a deleted one's id (``storage/id_allocator.py``)."""
+        taken = [str(run.get("id")) for run in runs]
+        return id_allocator.claim(self.dir, prefix, digits=2, taken=taken)
 
     def _reserve_run(self, key: str, prefix: str, make_record) -> str:
         """Allocate the next run id and append its record atomically under the recording lock.

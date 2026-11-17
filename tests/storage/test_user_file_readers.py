@@ -62,6 +62,7 @@ YAML_ALLOWED: dict[str, tuple[int, str]] = {
     "storage/distill_runs.py": (1, f"distill.yaml, {_RECORD}"),
     "storage/example_sets.py": (3, f"an experiment's example sets, {_RECORD}"),
     "storage/export_runs.py": (1, f"export.yaml, {_RECORD}"),
+    "storage/id_allocator.py": (1, f"the id high-water marks, {_RECORD}"),
     "storage/heading_definitions.py": (1, f"the experiment's own store, {_RECORD}"),
     "storage/keypoint_runs.py": (2, f"run records, {_RECORD}"),
     "storage/locations.py": (1, "the machine's storage.yaml, which DETAIL writes"),
@@ -82,7 +83,7 @@ CSV_ALLOWED: dict[str, tuple[int, str]] = {
     "gui/comparison.py": (1, f"a comparison's tables, {_RECORD}"),
     "importers/behavior.py": (2, f"a behavior CSV (finding 34), {_LATER}"),
     "importers/boris.py": (2, f"a BORIS export (finding 34), {_LATER}"),
-    "storage/append_log.py": (1, f"an append-only log, {_RECORD}"),
+    "storage/append_log.py": (2, f"an append-only log, {_RECORD}"),
     "storage/behavior_output.py": (3, f"run tables, {_RECORD}"),
     "storage/location_export.py": (1, f"a location export, {_RECORD}"),
     "storage/metadata.py": (3, f"metadata CSVs (finding 32), {_LATER}"),
@@ -133,7 +134,13 @@ def _drift(
         rel = py.relative_to(_PACKAGE).as_posix()
         if rel == seam:
             continue
-        n = _parser_calls(py.read_text(encoding="utf-8-sig"), names, module)
+        try:
+            source = py.read_text(encoding="utf-8-sig")
+        except FileNotFoundError:
+            # Another test's negative case plants a module in `detail/` for a moment
+            # (`tests/test_docs_generated_pages.py`); one gone again holds no call.
+            continue
+        n = _parser_calls(source, names, module)
         if n:
             found[rel] = n
     problems = []

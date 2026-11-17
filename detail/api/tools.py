@@ -75,7 +75,7 @@ def run_tool(
         raise ValueError(f"unknown tool {tool_id!r}; available: {sorted(TOOLS)}")
     tool = tool_cls()
 
-    run_id = tool_runs.next_run_id()
+    run_id = tool_runs.next_run_id(tool_id)
     out_dir = tool_runs.tool_run_dir(tool_id, run_id)
     out_dir.mkdir(parents=True, exist_ok=True)
     # Plural inputs with a singular alias: a run may span several clips and compare

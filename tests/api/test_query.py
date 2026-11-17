@@ -739,7 +739,9 @@ def test_export_before_the_search_completes_says_so(tmp_path):
             search_recording_ids=["s1"],
         ),
     )
-    with pytest.raises(FileNotFoundError):
+    # A `partial` run is refused before anything looks for the artifact, naming what the
+    # search never reached (`tests/api/test_query_partial.py` has the class).
+    with pytest.raises(ValueError, match=r"partial.*q01 on s1.*re-run the search"):
         Experiment(proj.dir).query_run("an_09").export(tmp_path / "export")
 
 

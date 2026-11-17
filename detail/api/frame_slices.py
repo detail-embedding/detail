@@ -18,12 +18,15 @@ exists to avoid repeating. `from_kinematics` carries the mask centroid and area 
 embedding's cadence, which is the cadence the clustering saw. A run from before the sidecar
 existed has none: the loader says so with `None`, and `Recording.backfill_kinematics` writes it.
 
-**Two clocks, deliberately not reconciled here.** `from_tracking` offsets each later part's
-`t_ns` by the elapsed time of the parts before it, so a multi-part recording is one timeline;
-the sidecar carries each part's own clock as the embedding rows do, which is what a clustering
-run's `start_t_ns`/`end_t_ns` were taken from, so `between` agrees with those spans by
-construction. A multi-part recording therefore reads different `t_ns` from the two loaders past
-its first part. That disagreement predates this module and is recorded rather than settled.
+**One clock, one frame space.** Both loaders give ``t_ns`` from the recording's own clock and
+``frame_idx`` counted across the whole recording. A part's timestamp map already holds
+recording-wide time (`Recording.add_video_part` writes ``local_t_ns + offset_ns``), and the
+sidecar and the embeddings copy their ``t_ns`` from it, so neither loader adds a time offset;
+each adds only its part's start frame (`recording_store.part_start_frames`) to the part-local
+``frame_idx`` every per-part store keeps. So `between` agrees with a clustering run's
+``start_t_ns``/``end_t_ns`` whichever loader fed it, on every part. (`from_tracking` used to add
+the earlier parts' elapsed time on top of a map that already held it, which pushed every later
+part late by the length of the parts before it: issue #23.)
 """
 
 from pathlib import Path
@@ -61,11 +64,10 @@ def from_tracking(
     width, height = _resolution(data)
     preview = TrackingPreview(recording_dir, tracking_run_id)
 
+    starts = recording_store.part_start_frames(recording_dir, data) or {}
     frames: list[np.ndarray] = []
     boxes: list[np.ndarray] = []
     times: list[np.ndarray] = []
-    offset = 0
-    elapsed_ns = 0
     for part in preview._parts:
         reader, assignment = part["reader"], part["assignment"]
         stamps = np.asarray(part["timestamps"], dtype=np.int64)
@@ -77,15 +79,11 @@ def from_tracking(
                 # timeline: a step between the last row of one part and the first of the next
                 # is otherwise a jump backwards, and reads as an enormous speed.
                 local = np.asarray(part["frame_idx"])[rows]
-                frames.append(local + offset)
+                frames.append(local + starts.get(part["stem"], 0))
                 boxes.append(np.asarray(reader.column("bbox")[:])[rows])
-                # The part's own PTS map — the authoritative frame -> t_ns (Tenet 8), offset so
-                # later parts continue the timeline rather than restarting it.
-                times.append(stamps[np.clip(local, 0, len(stamps) - 1)] + elapsed_ns)
-        offset += part["n_frames"]
-        elapsed_ns += (
-            int(stamps[-1]) + int(np.median(np.diff(stamps))) if len(stamps) > 1 else 0
-        )
+                # The part's own PTS map — the authoritative frame -> t_ns (Tenet 8). It
+                # already holds recording-wide time, so nothing is added to it.
+                times.append(stamps[np.clip(local, 0, len(stamps) - 1)])
 
     if not frames:
         return FrameSlice(
@@ -124,7 +122,7 @@ def from_kinematics(
     One row per *embedded* frame (the run's ``every_n_frames`` is the slice's ``stride``), with
     ``frame_idx`` made global across parts the way `from_tracking` does, using each part's frame
     count from its timestamp map — never from the sidecar's own highest row. ``t_ns`` is the
-    sidecar's column (see the module docstring on the two clocks). ``embeddings`` is left
+    sidecar's column, already recording-wide (see the module docstring). ``embeddings`` is left
     ``None``: a caller that wants them has `from_tracking`.
 
     Raises:
@@ -146,7 +144,7 @@ def from_kinematics(
             "kinematics sidecar's normalized geometry cannot be given in pixels"
         )
     width, height = _resolution(data)
-    offsets = _part_offsets(recording_dir, data)
+    offsets = recording_store.part_start_frames(recording_dir, data) or {}
 
     frames, times, cx, cy, areas, boxes = [], [], [], [], [], []
     for stem, columns in parts:
@@ -177,22 +175,6 @@ def from_kinematics(
         bbox=np.concatenate(boxes)[order]
         * np.array([width, height, width, height], dtype=np.float64),
     )
-
-
-def _part_offsets(recording_dir: Path, data: dict) -> dict[str, int]:
-    """``{part stem: the global frame its first frame is}``, from each part's timestamp map —
-    the authoritative frame count (Tenet 8), as `from_tracking` and `_build_parts` count.
-    """
-    offsets: dict[str, int] = {}
-    total = 0
-    for part_index, file in enumerate(recording_store.video_files(data)):
-        offsets[recording_store.part_stem(file)] = total
-        total += len(
-            recording_store.load_active_timestamps(
-                recording_dir, data, part_index
-            ).values
-        )
-    return offsets
 
 
 def between(slice_: FrameSlice, start_t_ns: int, end_t_ns: int) -> FrameSlice:

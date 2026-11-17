@@ -21,6 +21,11 @@ Two modes:
   frame with no limit; that can run for hours, so it asks first and you can **Stop** it.
   A stopped run keeps what it finished.
 
+**Stop** records the run as `stopped` in either mode, even before its first frame, and keeps
+whatever it finished. A tool run happens inside the app or the `detail tools` command that
+started it, so it is not listed under **Active processes**: its page under **Quick tools** is
+where you watch it.
+
 ### GUI
 
 Quick tools → Quick segment. **Add…** one or more videos, pick the mode and frame count,

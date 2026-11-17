@@ -48,12 +48,23 @@ def _checks_run_in_process(monkeypatch):
     monkeypatch.setattr(api_checks, "run_checks", _canned)
 
 
-def drain_until(qapp, predicate, timeout_ms: int = 10_000) -> bool:
-    """Spin the event loop until ``predicate`` holds; report whether it did.
+def drain_until(
+    qapp, predicate, timeout_ms: int = 10_000, *, raise_on_timeout: bool = True
+) -> bool:
+    """Spin the event loop until ``predicate`` holds; fail, naming it, if it never does.
 
     Bounded by wall clock, not by a spin count: ``processEvents`` returns immediately when
     nothing is queued, so N bare pumps can burn through in microseconds while the worker is
     still running — green on an idle box, flaky inside a loaded suite.
+
+    **It raises rather than answers**, because an answer can be dropped. This used to return
+    False on a timeout, and 12 of its callers called it as a statement: on a loaded machine the
+    wait ran out, the test carried on against a state it never reached, and it failed later on a
+    disabled button or an empty table, naming none of this. The class is written up in
+    ``tests/gui/test_waits_are_checked.py``, which also scans for the forms that can still drop
+    an answer. Pass ``raise_on_timeout=False`` only to ask *whether* something
+    happens — ``assert not drain_until(..., raise_on_timeout=False)`` — and use the answer. To
+    let the loop run for a fixed time, call ``pump_for``.
 
     Here rather than private to one module because a *result* that arrives on a thread is not
     a rare shape any more: five files had grown their own copy, and the sixth would have been
@@ -74,7 +85,44 @@ def drain_until(qapp, predicate, timeout_ms: int = 10_000) -> bool:
             return True
         QTest.qWait(10)
         waited += 10
-    return bool(predicate())
+    if predicate():
+        return True
+    if raise_on_timeout:
+        raise AssertionError(
+            f"waited {timeout_ms / 1000:g}s and this never held: {_describe(predicate)}"
+        )
+    return False
+
+
+def _describe(predicate) -> str:
+    """The predicate's source where it has one (a lambda's line), else its name."""
+    import inspect
+
+    try:
+        source = inspect.getsource(predicate)
+    except (OSError, TypeError):
+        return getattr(predicate, "__qualname__", repr(predicate))
+    return " ".join(source.split())
+
+
+def pump_for(qapp, ms: int) -> None:
+    """Run the event loop for ``ms``, delivering deferred deletes — waiting on nothing.
+
+    For "let whatever is queued land" and "nothing more arrives in this window", which used
+    to be spelled ``drain_until(qapp, lambda: False, ms)``: a wait for something that never
+    happens, whose timeout was the point.
+    """
+    from PyQt6.QtCore import QEvent
+    from PyQt6.QtTest import QTest
+
+    waited = 0
+    while waited < ms:
+        qapp.processEvents()
+        qapp.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        QTest.qWait(10)
+        waited += 10
+    qapp.processEvents()
+    qapp.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
 def export_source(clips=None):
@@ -512,6 +560,48 @@ def stub_yolo_model(monkeypatch):
 
     monkeypatch.setitem(MODELS, "fake_yolo", _FakeYOLO)
     return "fake_yolo"
+
+
+def release_held_input(qapp) -> None:
+    """Put Qt's global keyboard-modifier and mouse-button state back to nothing held.
+
+    Exposed so the guard can call it directly; ``_no_input_held_from_an_earlier_test`` is what
+    makes every GUI test start from it.
+    """
+    from PyQt6.QtCore import QEvent, Qt
+    from PyQt6.QtTest import QTest
+    from PyQt6.QtWidgets import QWidget
+
+    # A release with no modifiers is the one simulated event that clears both halves (a key
+    # release clears modifiers only, a move neither). The target is never shown and nothing
+    # listens to it, so the event itself lands nowhere.
+    target = QWidget()
+    QTest.mouseRelease(target, Qt.MouseButton.LeftButton)
+    target.deleteLater()
+    qapp.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
+@pytest.fixture(autouse=True)
+def _no_input_held_from_an_earlier_test(qapp):
+    """Every GUI test starts with no modifier key and no mouse button held.
+
+    **The class: Qt's global input state outlives the test that set it.** A key event carrying
+    a modifier (``QTest.keyClick(w, key, ShiftModifier)``, or a ``Key_Shift`` press sent with
+    ``sendEvent``) and a ``QTest`` mouse press leave ``QGuiApplication.keyboardModifiers()`` /
+    ``mouseButtons()`` reading them until the next input event. A call that has no event of its
+    own reads that state: ``QTableView.selectRow`` under the default extended selection takes a
+    held Shift to mean *extend from the anchor*, and selects nothing.
+
+    Measured over the GUI tier, 18 tests in 8 files end with something held, every one of them
+    on purpose (holding Shift is what ``test_live_montage`` and ``test_label_clean`` test). The
+    test that paid was whichever file ``--dist loadfile`` ran next on that worker: when it was
+    ``test_keypoints_manager.py``, five of its twelve tests failed on disabled Edit/Export
+    buttons and "Select a skeleton first." All five passed alone, and the failures were put down
+    to machine load. They fail on demand with Shift held before each test, and pass with this
+    fixture. Guard: ``tests/gui/test_input_state.py``.
+    """
+    release_held_input(qapp)
+    yield
 
 
 @pytest.fixture(autouse=True)

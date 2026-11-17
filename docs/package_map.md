@@ -102,6 +102,7 @@ detail/
 │   ├── dirscan.py        # one enumeration per listing, instead of a stat per field
 │   ├── user_yaml.py      # THE reader for YAML a user hands in or edits: a mistake is a
 │   │                     # UserInputError naming the file and line (#33)
+│   ├── id_allocator.py   # §3: every never-reused `<stem>_<n>` id (a high-water mark beside each family)
 │   ├── video_roots.py    # storage.yaml's `video_roots:` alias map (reference-in-place video)
 │   ├── zarr_store.py     # the retrying LocalStore every zarr group is opened through
 │   ├── zarr_io.py        # detection/tracking/embedding/kinematics zarr writers and readers

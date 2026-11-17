@@ -15,6 +15,7 @@ import yaml
 
 from detail.core import atomic
 from detail.storage import dirscan
+from detail.storage import id_allocator
 from detail.storage import locations
 
 SCHEMA_VERSION = 1
@@ -45,15 +46,25 @@ def _run_dirs(tool_id: str | None = None) -> list[Path]:
     return runs
 
 
-def next_run_id() -> str:
-    """A ``run_NNN`` id unique across the whole tools workspace (past the highest)."""
-    nums = []
-    for rdir in _run_dirs():
-        try:
-            nums.append(int(rdir.name.rsplit("_", 1)[-1]))
-        except ValueError:
-            pass
-    return f"run_{max(nums, default=0) + 1:03d}"
+def next_run_id(tool_id: str) -> str:
+    """Claim a ``run_NNN`` id unique across the whole tools workspace, creating
+    ``tools/<tool_id>/<run_id>/``.
+
+    Never handed out twice: not after the newest run is deleted (its export folder,
+    ``<clip>_quick-segment_<run id>``, would receive the next run's export), and not to two runs
+    started at once (``storage/id_allocator.py``). The mark lives at the workspace root because
+    ids are unique across every tool's folder.
+    """
+    root = tools_root()
+    others = [
+        run.name
+        for tdir in dirscan.child_dirs(root)
+        if tdir.name != tool_id
+        for run in dirscan.child_dirs(tdir)
+    ]
+    return id_allocator.claim_dir(
+        tool_dir(tool_id), "run", digits=3, home=root, taken=others
+    )
 
 
 def write_tool_run(tool_id: str, run_id: str, record: dict) -> None:

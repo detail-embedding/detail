@@ -164,6 +164,53 @@ def iter_instance_frames(
 # --------------------------------------------------------------------------- #
 # Runner
 # --------------------------------------------------------------------------- #
+def snapshot_examples(experiment_dir: Path, examples: ExampleSet) -> dict:
+    """A run's own copy of an example set (Tenet 9): ``id``, ``name``, ``digest``, the frame
+    ``images`` and every frame's ``marks``. The images are write-once and named by their
+    content (``example_sets.add_frame_image``), so the names pin the pictures."""
+    hashes = example_sets.image_hashes(experiment_dir, examples)
+    return {
+        "id": examples.id,
+        "name": examples.name,
+        "digest": examples.digest(hashes),
+        "frames": [f.image for f in examples.frames],
+        "marks": [f.to_dict() for f in examples.frames],
+    }
+
+
+def examples_from_snapshot(
+    example_set: dict, skeleton: dict, skeleton_ref: dict | None = None
+) -> ExampleSet:
+    """The :class:`ExampleSet` a run's snapshot describes, on the skeleton the run recorded."""
+    return ExampleSet(
+        id=example_set["id"],
+        name=example_set.get("name", example_set["id"]),
+        purpose="example",
+        created_at="",
+        skeleton=Skeleton.from_dict(skeleton),
+        frames=[ExampleFrame.from_dict(f) for f in example_set["marks"]],
+        skeleton_ref=None if skeleton_ref is None else dict(skeleton_ref),
+    )
+
+
+def _launch_snapshot(config: dict) -> ExampleSet | None:
+    """The example set this run's launch already copied into ``config``, or None.
+
+    A processing run snapshots the set once, in ``resolve_shared_config``, and stores it in
+    the run record's config; the coordinator then validates each recording **from that
+    record** when its turn comes. Reading the live set again there would let an edit made
+    mid-batch reach the later recordings, so one ``run_NNN`` would hold several settings.
+    """
+    snapshot = config.get("example_set")
+    if not isinstance(snapshot, dict) or config.get("skeleton") is None:
+        return None
+    if snapshot.get("id") != config.get("example_set_id"):
+        return None
+    return examples_from_snapshot(
+        snapshot, config["skeleton"], config.get("skeleton_ref")
+    )
+
+
 def build_method(
     experiment_dir: Path,
     model_id: str,
@@ -180,20 +227,9 @@ def build_method(
     detect stage and the distill label stage, so both build the method the same way."""
     kwargs: dict = {name: settings.get(name) for name in METHOD_SETTINGS}
     if example_set is not None:
-        frames = [ExampleFrame.from_dict(f) for f in example_set["marks"]]
-        examples = ExampleSet(
-            id=example_set["id"],
-            name=example_set.get("name", example_set["id"]),
-            purpose="example",
-            created_at="",
-            skeleton=Skeleton.from_dict(skeleton),
-            frames=frames,
-        )
+        examples = examples_from_snapshot(example_set, skeleton)
         kwargs["examples"] = examples
-        kwargs["example_images"] = [
-            example_sets.load_image(experiment_dir, examples.id, f.image)
-            for f in frames
-        ]
+        kwargs["example_images"] = example_sets.load_images(experiment_dir, examples)
     return resolve_keypoint_model(
         model_id,
         model_variant,
@@ -248,10 +284,12 @@ def resolve_method(experiment_dir: Path, config: dict, compute) -> dict:
                 f"method {model_id!r} learns from an example set; choose one "
                 "(example_set_id)"
             )
-        try:
-            examples = example_sets.read_set(experiment_dir, example_set_id)
-        except FileNotFoundError as exc:
-            raise ValueError(str(exc)) from None
+        examples = _launch_snapshot(config)
+        if examples is None:
+            try:
+                examples = example_sets.read_set(experiment_dir, example_set_id)
+            except FileNotFoundError as exc:
+                raise ValueError(str(exc)) from None
         examples.check_runnable()  # purpose, skeleton, every point marked visible
         build["examples"] = examples
         build["example_images"] = example_sets.load_images(experiment_dir, examples)
@@ -284,16 +322,8 @@ def resolve_method(experiment_dir: Path, config: dict, compute) -> dict:
     config["skeleton"] = skeleton.to_dict()
     config["skeleton_digest"] = skeleton.digest()
     if examples is not None:
-        hashes = example_sets.image_hashes(experiment_dir, examples)
-        digest = examples.digest(hashes)
-        config["example_set"] = {
-            "id": examples.id,
-            "name": examples.name,
-            "digest": digest,
-            "frames": [f.image for f in examples.frames],
-            "marks": [f.to_dict() for f in examples.frames],
-        }
-        config["example_set_digest"] = digest
+        config["example_set"] = snapshot_examples(experiment_dir, examples)
+        config["example_set_digest"] = config["example_set"]["digest"]
         config["skeleton_ref"] = (
             None if examples.skeleton_ref is None else dict(examples.skeleton_ref)
         )
@@ -629,6 +659,7 @@ class KeypointDetectModule(ProcessingModule):
     progress_event_class = KeypointProgressEvent
     # frames_total is the frames the model ran on (detected ones, for a per-detection model)
     progress_counts_frames = True
+    resumes = True  # resumes per part after the last frame written (§26)
     config_model = KeypointDetectConfig
     identity_fields = (
         "model_id",
@@ -656,6 +687,38 @@ class KeypointDetectModule(ProcessingModule):
 
     def output_path(self, run_id: str) -> str:
         return f"keypoint_detect/{run_id}/"
+
+    def resolve_shared_config(
+        self,
+        experiment_dir,
+        recording_ids: list[str],
+        config: dict,
+        on_recording=None,
+    ) -> dict:
+        """Copy the example set into ``config`` **once, at launch** (Tenet 9).
+
+        Every recording of the batch is validated again by the coordinator when its turn
+        comes, from the config the run record stores. Without this copy each turn read the
+        live set, so a frame marked while the batch ran reached the later recordings: one run
+        held two ``example_set_digest`` values and every "each recording's own match" lookup
+        downstream found nothing past the first recording. The copy is the existing snapshot
+        keys (``example_set``, ``skeleton``, ``skeleton_ref``), which :func:`resolve_method`
+        then uses instead of the live set. A set that is missing or not runnable is left for
+        ``validate`` to refuse, with its own message.
+        """
+        set_id = config.get("example_set_id")
+        if not set_id:
+            return config
+        try:
+            examples = example_sets.read_set(experiment_dir, set_id)
+        except FileNotFoundError:
+            return config
+        config["example_set"] = snapshot_examples(Path(experiment_dir), examples)
+        config["skeleton"] = examples.skeleton.to_dict()
+        config["skeleton_ref"] = (
+            None if examples.skeleton_ref is None else dict(examples.skeleton_ref)
+        )
+        return config
 
     def validate(self, recording_dir, recording_data: dict, config: dict) -> dict:
         """Every pre-run check of §26 "Validation checks", resolving each defaulted input

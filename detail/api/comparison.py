@@ -462,6 +462,7 @@ def prepare_comparison(
         )
         source_hash = snapshots_store.artifact_hash(run_dir)
         ranking_measure = None
+        remainders = sorted(measures.remainder_labels(artifact.manifest))
         screened = _screened_labels(
             experiment, cfg.source_run_id, snapshot_id, columns=cfg.group_by
         )
@@ -561,6 +562,9 @@ def prepare_comparison(
         # that scores them is scoring what its own contrast selected, and the record is the
         # one place that can say so -- the number itself looks like any other.
         record["screened_labels"] = screened
+        # A parent label's rows count only its leftover, and every surface names them
+        # "<label> (other)" from this one list (#24; `measures.remainder_labels`).
+        record["remainder_labels"] = remainders
     return Prepared(
         rows=rows,
         obs=obs,
@@ -597,28 +601,29 @@ def run_comparison(
             progress(stage, fraction, detail)
 
     report("writing", 0.0, "")
+    # Everything that reads the experiment comes before the id is claimed (claiming makes
+    # `cmp_NN`), so a failure here leaves no folder holding a `stats.csv` and no record.
+    # A comparison has no members; the recording lineage, label hashes and video fingerprints
+    # capture all the same (§18.5), which is what `drift` re-checks.
+    captured = provenance.capture(
+        experiment_dir,
+        recording_ids=sorted(set(prepared.covered)),
+        members=[],
+        # The hash of **what was measured** — the snapshot, not the run (or the node cache's
+        # digest, for the node source). `drift` compares it against where the run is *now*,
+        # and that asymmetry is the whole mechanism.
+        source={
+            "run_id": cfg.source_run_id,
+            "snapshot_id": prepared.snapshot_id,
+            "content_hash": prepared.source_hash,
+        },
+    )
     comparison_id = comparisons_store.next_comparison_id(experiment_dir)
     cdir = comparisons_store.comparison_dir(experiment_dir, comparison_id)
-    # Everything that reads the experiment comes before the folder exists, so a failure
-    # here leaves no `cmp_NN` holding a `stats.csv` and no `comparison.yaml`.
     record = {
         "id": comparison_id,
         **prepared.record,
-        # A comparison has no members; the recording lineage, label hashes and video fingerprints
-        # capture all the same (§18.5), which is what `drift` re-checks.
-        "provenance": provenance.capture(
-            experiment_dir,
-            recording_ids=sorted(set(prepared.covered)),
-            members=[],
-            # The hash of **what was measured** — the snapshot, not the run (or the node cache's
-            # digest, for the node source). `drift` compares it against where the run is *now*,
-            # and that asymmetry is the whole mechanism.
-            source={
-                "run_id": cfg.source_run_id,
-                "snapshot_id": prepared.snapshot_id,
-                "content_hash": prepared.source_hash,
-            },
-        ),
+        "provenance": captured,
         "status": "complete",
         "created_at": utc_timestamp(),
     }
@@ -626,7 +631,10 @@ def run_comparison(
     write_tidy_csv(
         cdir / STATS_FILENAME,
         compare.stats_rows(
-            prepared.obs, aggregate_to=cfg.aggregate_to, group_by=cfg.group_by
+            prepared.obs,
+            aggregate_to=cfg.aggregate_to,
+            remainders=frozenset(prepared.record.get("remainder_labels") or ()),
+            group_by=cfg.group_by,
         ),
         compare.STATS_COLUMNS,
     )

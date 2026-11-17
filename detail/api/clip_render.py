@@ -157,7 +157,9 @@ def plan_job(
     """Resolve a bout's **global** frame range to ``(part_index, job)`` in local part frames.
 
     The job carries its own fps — the bout's true rate (frames spanned / its duration), so a clip
-    plays back at the speed the behavior happened, not at a nominal 30.
+    plays back at the speed the behavior happened, not at a nominal 30. That holds because
+    ``render_part`` writes every frame of the span: a clip that skipped frames at this rate
+    played fast (#32).
     """
     lo_part, lo = _global_to_part(part_frame_counts, int(start_frame))
     hi_part, hi = _global_to_part(part_frame_counts, int(end_frame))
@@ -192,6 +194,19 @@ def render_part(
     ``jobs`` are ``plan_job`` dicts in **local** part frames; each gets its ``n_written`` filled in
     (0 means nothing was decodable — no video, or the track has no detection across the bout — and
     the caller drops the empty file). They are sorted here, so the caller need not.
+
+    **Every frame of a bout is written**, detected or not, because the clip's rate is the
+    bout's own (``plan_job``): skipping the undetected frames at that rate played a stride-5
+    run's clips 4.4 times too fast (#32). On a frame the track has no detection on:
+
+    - ``raw`` at full frame needs nothing from the track and is the frame as recorded;
+    - ``overlay`` is the plain frame (no mask to draw), and ``mask`` an empty, black one;
+    - a crop (``crop=True``) holds the box of the bout's last detection before it, and before
+      the bout's first detection uses that first one — so a clip depends only on its own
+      span, whichever bouts are rendered beside it.
+
+    A bout the track is **never** detected across writes nothing: there is no box to cut
+    around and nobody to show, and the caller keeps the row with an empty clip.
 
     **Two orthogonal axes**, which used to be one flag. ``renders`` says what is *drawn*;
     ``crop`` says how the frame is *framed*. Conflating them is why "export the mask on its own"
@@ -247,6 +262,16 @@ def render_part(
         }
     ordered = sorted(jobs, key=lambda j: (j["lo"], j["hi"]))
     rows = track_rows(part, track_id)
+    detected = np.array(sorted(rows), dtype=np.int64)
+    for job in ordered:
+        # The bout's first detection — what a crop starts on, and None for a bout the track is
+        # absent from, which writes nothing. ``held`` is the last detection passed so far.
+        at = int(np.searchsorted(detected, job["lo"]))
+        first = int(detected[at]) if at < len(detected) else None
+        job["first_detected"] = (
+            first if first is not None and first <= job["hi"] else None
+        )
+        job["held"] = None
     cap = cv2.VideoCapture(str(part["video"]))
     if not cap.isOpened():
         return
@@ -270,29 +295,42 @@ def render_part(
             if not ok:
                 break
             row = rows.get(frame_idx)
-            if row is not None:
-                if not crop and sample is None:
-                    out_size = fit_within(bgr.shape[1], bgr.shape[0], max_longest=size)
-                    sample = _sample_index(bgr.shape[:2], out_size)
-                # One decode, every requested flavour. This is the saving: re-decoding the
-                # source once per flavour is what a separate call per flavour would cost, and
-                # decode is the bill this whole module exists to pay once.
-                payloads = {
-                    render: np.ascontiguousarray(
-                        _payload(render, bgr, row, size, out_size, sample, crop)
-                    )
-                    for render in wanted
-                }
-                for job in active:
-                    for render, payload in payloads.items():
-                        writer = job["writers"].get(render)
-                        if writer is None:
-                            writer, _ = video_store.open_video_writer(
-                                job["paths"][render], job["fps"], *out_size
-                            )
-                            job["writers"][render] = writer
-                        writer.write(payload)
-                    job["n_written"] += 1
+            if not crop and sample is None:
+                out_size = fit_within(bgr.shape[1], bgr.shape[0], max_longest=size)
+                sample = _sample_index(bgr.shape[:2], out_size)
+            # One decode, every requested flavour, shared by every bout that frames this frame
+            # the same way. This is the saving: re-decoding the source once per flavour is what
+            # a separate call per flavour would cost, and decode is the bill this whole module
+            # exists to pay once.
+            drawn: dict[tuple, dict[str, np.ndarray]] = {}
+            for job in active:
+                if job["first_detected"] is None:
+                    continue  # never detected across this bout: nothing to show
+                if row is not None:
+                    job["held"] = frame_idx
+                box_frame = (
+                    job["first_detected"] if job["held"] is None else job["held"]
+                )
+                # The box only frames a crop; a full frame is the same for every bout.
+                key = (box_frame if crop else None, row is not None)
+                payloads = drawn.get(key)
+                if payloads is None:
+                    drawing = (rows[box_frame][0], row[1] if row is not None else "")
+                    payloads = drawn[key] = {
+                        render: np.ascontiguousarray(
+                            _payload(render, bgr, drawing, size, out_size, sample, crop)
+                        )
+                        for render in wanted
+                    }
+                for render, payload in payloads.items():
+                    writer = job["writers"].get(render)
+                    if writer is None:
+                        writer, _ = video_store.open_video_writer(
+                            job["paths"][render], job["fps"], *out_size
+                        )
+                        job["writers"][render] = writer
+                    writer.write(payload)
+                job["n_written"] += 1
             frame_idx += 1
             for job in [j for j in active if j["hi"] < frame_idx]:
                 active.remove(job)
@@ -427,6 +465,17 @@ def _close(job: dict) -> None:
         if writer is not None:
             writer.release()
             job["writers"][render] = None
+
+
+def written_fps(job: dict | None) -> float | str:
+    """The rate ``job``'s clip was written at, for its CSV row; blank when it wrote nothing.
+
+    The rate the file plays at, so a reader can check a clip against its ``dur_s``: frames
+    over this rate is the bout's duration, to within a frame (#32).
+    """
+    if not job or not job.get("n_written"):
+        return ""
+    return round(float(job["fps"]), 3)
 
 
 def finish(job: dict) -> dict[str, str]:

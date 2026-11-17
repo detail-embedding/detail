@@ -117,11 +117,16 @@ def _compute_target(backend: str, devices: tuple[int, ...] | None) -> ComputeTar
 
 def _open_experiment(experiment_dir: Path) -> Experiment:
     try:
-        return Experiment.open(experiment_dir)
+        experiment = Experiment.open(experiment_dir)
     except (FileNotFoundError, ValueError) as e:
         raise click.ClickException(
             f"could not open experiment at {experiment_dir}: {e}"
         )
+    # A one-recording run interrupted by Ctrl-C, a closed terminal or a script that never
+    # waited leaves `recording.yaml` behind its `job.json`; every command adopts the real
+    # status first, as the GUI does on open (issue #28, finding 5).
+    experiment.reconcile_recording_runs()
+    return experiment
 
 
 def _stream_config(
@@ -3535,7 +3540,8 @@ def process_retry(run_id: str, experiment_dir: Path) -> None:
 def process_cancel(run_id: str, experiment_dir: Path) -> None:
     """Cancel a running processing run — stops its coordinator and in-flight recordings.
 
-    Recordings already finished keep their results; `process retry` picks up the rest.
+    Recordings already finished keep their results, and recordings not yet reached are
+    listed as cancelled; `process retry` picks up the rest.
     """
     proj = _open_experiment(experiment_dir)
     _processing_record(proj, run_id, experiment_dir)
@@ -4447,7 +4453,7 @@ def distill_delete(run_id: str, experiment_dir: Path, yes: bool) -> None:
         )
     try:
         proj.delete_distill(run_id)
-    except FileNotFoundError as e:
+    except (FileNotFoundError, ValueError) as e:
         raise click.ClickException(str(e))
     click.echo(f"deleted distill run: {run_id}")
 
@@ -4936,8 +4942,8 @@ def analysis_status(run_id: str, experiment_dir: Path) -> None:
     click.echo(f"  status: {record.get('status')}")
     if record.get(analysis_store.STALE_KEY) is True:
         click.echo(
-            "  results: out of date — the last change did not finish writing them; "
-            f"rebuild with 'detail analysis rebuild {run_id}'"
+            "  results: out of date — the last change was saved but its results were not "
+            f"rebuilt; rebuild with 'detail analysis rebuild {run_id}'"
         )
     if record.get("error"):
         click.echo(f"  error: {record['error']}")
@@ -5501,7 +5507,8 @@ def analysis_query(
 )  # fmt: skip
 @click.option(
     "--finalize", is_flag=True, default=False,
-    help="Mark the run complete — your statement that you are done calibrating.",
+    help="Mark the run complete — your statement that you are done calibrating. Refused, "
+    "naming the recordings, while the search has not reached every one.",
 )  # fmt: skip
 @click.option(
     "--reopen", is_flag=True, default=False,
@@ -5579,7 +5586,10 @@ def analysis_query_calibrate(
         bar.close()
 
     if finalize:
-        _with_stage_progress(lambda bar: run.finalize(progress=bar))
+        try:
+            _with_stage_progress(lambda bar: run.finalize(progress=bar))
+        except ValueError as e:  # a search that did not reach every recording
+            raise click.ClickException(str(e))
         click.echo(f"finalized {run_id}")
 
     _echo_query_state(run)
@@ -5598,6 +5608,13 @@ def _echo_query_state(run) -> None:
     except FileNotFoundError:
         click.echo("  (no behavior output yet — the search did not finish)")
         return
+    if run.artifact_stale:
+        # The cutoffs above are the saved ones; the counts below are from before the last
+        # change, whose rebuild failed. Printed side by side unmarked, they read as one state.
+        click.echo(
+            "  results: out of date — the last change was saved but not rebuilt; the counts "
+            f"below are from before it. Rebuild with 'detail analysis rebuild {run.id}'"
+        )
     click.echo(
         f"  behavior output: {output.bout_count} instance(s) over "
         f"{len(output.coverage)} searched unit(s), vocabulary "
@@ -5817,7 +5834,8 @@ def analysis_export_query(experiment_dir: Path, run_id: str, out_dir: Path) -> N
     """Export a query run's calibrated behaviors as per-recording behavior-stream CSVs.
 
     Each row carries ``origin: predicted``, so re-importing one as a behavior stream can never
-    be read back as ground truth.
+    be read back as ground truth. A run whose search did not reach every recording is refused,
+    naming the ones it missed.
     """
     proj = _open_experiment(experiment_dir)
     try:
@@ -6031,29 +6049,34 @@ def _interpret(
             _echo_tree(run)
             return
         # Every pair is read before anything is written: a malformed one found after `--name`
-        # had already landed left the run half edited.
+        # had already landed left the run half edited. And the names, renames and merges are one
+        # edit (`edit_labels`), so a label name that is wrong — found only against the labels
+        # the edits before it leave — writes nothing either.
         rename_pairs = _label_pairs(renames, "--rename-label", "OLD=NEW")
         merge_pairs = _label_pairs(merges, "--merge-label", "SOURCE=INTO")
         names = _pose_names(node_names) if node_names else None
         origins = _label_origins(proj, run, names, from_screen, at_p) if names else None
-        # Each edit re-projects the whole run's output, so each shows its progress.
-        if names:
+        if names or rename_pairs or merge_pairs:
             extra = {"origins": origins} if origins else {}
+            # The edit re-projects the whole run's output, so it shows its progress.
             _with_stage_progress(
-                lambda bar: run.name_nodes(names, progress=bar, **extra)
+                lambda bar: run.edit_labels(
+                    names,
+                    renames=rename_pairs,
+                    merges=merge_pairs,
+                    progress=bar,
+                    **extra,
+                )
             )
+        if names:
             at = f" at p <= {at_p:g}" if at_p is not None else ""
             click.echo(
                 f"labelled {len(node_names)} node(s)"
                 + (f", from screen {from_screen}{at}" if from_screen else "")
             )
         for old, new in rename_pairs:
-            label = _label_id(run, old)
-            _with_stage_progress(lambda bar: run.rename_label(label, new, progress=bar))
             click.echo(f"renamed {old!r} to {new!r}")
         for source, into in merge_pairs:
-            pair = (_label_id(run, source), _label_id(run, into))
-            _with_stage_progress(lambda bar: run.merge_labels(*pair, progress=bar))
             click.echo(f"merged {source!r} into {into!r}")
         if finalize:
             _with_stage_progress(lambda bar: run.finalize(progress=bar))
@@ -6112,21 +6135,6 @@ def _label_pairs(pairs, option: str, shape: str) -> list[tuple[str, str]]:
             raise click.UsageError(f"{option} takes {shape}, got {pair!r}")
         out.append((left.strip(), right.strip()))
     return out
-
-
-def _label_id(run, name: str) -> str:
-    """The id of the label called ``name`` in ``run`` (ignoring case), or a usage error naming
-    the labels there are."""
-    from detail.storage import run_labels
-
-    labels = run.state().labels
-    label = run_labels.find(labels, name)
-    if label is None:
-        known = ", ".join(sorted(labels.values())) or "none yet"
-        raise click.UsageError(
-            f"no label called {name!r} in this run (labels: {known})"
-        )
-    return label
 
 
 def _echo_tree(run) -> None:

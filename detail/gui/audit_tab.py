@@ -83,6 +83,11 @@ BATCH = audit.DEFAULT_BUDGET
 #: one does; `unclear` is greyed with its count rather than hidden when empty, because the
 #: count is the point — an unclear is dropped from the estimate, so each one settled is a row
 #: the estimate gets back.
+#: What the batch scope says for a clip nobody has answered yet. Not ``None``: ``None`` is the
+#: stored answer "unclear", and one value for both turned every unanswered clip into an
+#: "unclear" the moment a scope switch merged the pairs back (#24).
+NOT_ANSWERED = object()
+
 SCOPES = (
     ("batch", "this batch"),
     ("judged", "judged"),
@@ -1311,7 +1316,11 @@ class AuditTab(QWidget):
         """`(instance, said)` for one scope — what the list shows and what `← / →` walk."""
         scope = scope or self._scope()
         if scope == "batch":
-            return [(row, self._decisions.get(row.instance_id)) for row in self._batch]
+            # `None` is an answer here ("unclear"), so an unanswered clip says `NOT_ANSWERED`.
+            return [
+                (row, self._decisions.get(row.instance_id, NOT_ANSWERED))
+                for row in self._batch
+            ]
         if scope == "unclear":
             return [pair for pair in self._judged if pair[1] is None]
         return list(self._judged)
@@ -1371,9 +1380,10 @@ class AuditTab(QWidget):
         """A scope change is a change of walk, so the queue follows it."""
         if self._syncing:
             return
-        rows = self._scope_rows()
-        self._queue = [row for row, _said in rows]
-        self._decisions.update({row.instance_id: said for row, said in rows})
+        # The queue only: a scope switch records nothing. Merging the pairs back into
+        # `_decisions` turned every unanswered clip in the batch into an "unclear" on screen
+        # that never reached `audit.csv` (#24); the judged rows are merged where they are read.
+        self._queue = [row for row, _said in self._scope_rows()]
         self._index = 0
         self._fill_list()
         self._show_current()

@@ -6,8 +6,17 @@ different discipline from everything else in ``storage/``: **appended** with ``f
 whole-file rewrite can cost every decision in the file, while a crash during an append costs
 at most the row being written, and even that row is tolerated on read.
 
-Two things a naive append-only CSV gets wrong, both learned the hard way and both handled
+Three things a naive append-only CSV gets wrong, all learned the hard way and all handled
 here:
+
+- **A torn row is the file's tail until something is appended after it.** A crash mid-row
+  leaves no newline, so the next ``open(path, "a")`` glues the next row onto the half row, and
+  a reader that stops at the first bad row then hides every later decision — for good, once a
+  ``migrate`` rewrites the file from that read. So an append first cuts the torn tail back to
+  the end of the last complete row (:func:`complete_length`), and a read skips a bad row in the
+  middle (a file torn before this rule existed) instead of stopping, and ignores an
+  unterminated last row however many fields it parses to: a row cut inside an open quote
+  parses as a whole row.
 
 - **The header is written once, at creation**, so a log started under an older column set
   keeps its narrow header forever while later appends carry the full width. ``csv.DictReader``
@@ -23,8 +32,9 @@ for. A module that hand-rolls this is the bug (§21).
 """
 
 import csv
+import io
 import os
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 from detail.core import atomic
@@ -67,6 +77,7 @@ class AppendLog:
         if not rows:
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        drop_torn_tail(self.path)
         is_new = not self.path.exists() or self.path.stat().st_size == 0
         if not is_new:
             self.migrate()
@@ -81,27 +92,30 @@ class AppendLog:
     def read(self) -> tuple[list[str], list[dict]]:
         """``(header, rows)``, each row resolved against the columns it was written under.
 
-        Parsing stops at the first row matching neither the current width nor the file's own
-        header width. Only the final row can be torn — the file is append-only — so stopping
-        there discards exactly the incomplete write and nothing else. A missing file reads as
-        empty, which is what a run with no decisions yet is.
+        A row matching neither the current width nor the file's own header width is skipped,
+        and reading **goes on**: such a row is a torn write that something was later appended
+        after (only a file torn before :meth:`append_many` cut torn tails can hold one), and
+        stopping there would hide every decision written after it. An unterminated last row is
+        the write a crash interrupted, so it is ignored even when its fields happen to parse to
+        a full row. A missing file reads as empty, which is what a run with no decisions yet is.
         """
         if not self.path.is_file():
             return [], []
-        with open(self.path, newline="", encoding="utf-8-sig") as f:
-            reader = csv.reader(f)
-            try:
-                header = next(reader)
-            except StopIteration:
-                return [], []
-            rows = []
-            for raw in reader:
-                if not raw:
-                    continue
-                columns = self._row_columns(len(raw), header)
-                if columns is None:
-                    break
-                rows.append(dict(zip(columns, raw)))
+        data = self.path.read_bytes()
+        data = data[: complete_length(data)]
+        reader = csv.reader(io.StringIO(data.decode("utf-8-sig"), newline=""))
+        try:
+            header = next(reader)
+        except StopIteration:
+            return [], []
+        rows = []
+        for raw in reader:
+            if not raw:
+                continue
+            columns = self._row_columns(len(raw), header)
+            if columns is None:
+                continue
+            rows.append(dict(zip(columns, raw)))
         return header, rows
 
     def rows(self) -> list[dict]:
@@ -143,3 +157,79 @@ class AppendLog:
         if n_fields == len(header):
             return list(header)
         return None
+
+
+def complete_length(data: bytes) -> int:
+    """How many leading bytes of the CSV ``data`` are whole, newline-terminated rows.
+
+    Every row the writer finishes ends in a newline, so data ending in one is all whole. Else
+    the tail from the start of the last record is a torn write. Where that record starts is
+    found by parsing, not by the last newline: a quoted field may hold newlines of its own, so a
+    row cut inside one has newlines in its torn part.
+    """
+    if not data or data.endswith(b"\n"):
+        return len(data)
+    ends = [0]
+
+    def lines() -> Iterator[str]:
+        pos = 0
+        for line in data.splitlines(keepends=True):
+            pos += len(line)
+            ends.append(pos)
+            yield line.decode("utf-8", errors="replace")
+
+    reader = csv.reader(lines())
+    record_ends = [0]
+    try:
+        for _ in reader:
+            record_ends.append(ends[-1])
+    except csv.Error:
+        pass
+    # The last record parsed is the unterminated one: everything before it is whole.
+    whole = [end for end in record_ends if end < len(data)]
+    return whole[-1]
+
+
+def drop_torn_tail(path: Path) -> None:
+    """Cut ``path`` back to its last complete row, so the next append starts a fresh line.
+
+    A truncate, not a rewrite: the bytes before the torn row are never touched, so this keeps
+    the append-only guarantee. The torn row was already lost — it was never readable.
+    """
+    if not path.is_file():
+        return
+    with open(path, "rb") as f:
+        f.seek(0, os.SEEK_END)
+        size = f.tell()
+        if size == 0:
+            return
+        f.seek(-1, os.SEEK_END)
+        if f.read(1) == b"\n":
+            return
+        f.seek(0)
+        data = f.read()
+    keep = complete_length(data)
+    with open(path, "r+b") as f:
+        f.truncate(keep)
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def append_line(path: Path | str, line: str) -> None:
+    """Append one newline-terminated ``line`` to a line-per-record text file (JSONL).
+
+    The same torn-tail rule as :class:`AppendLog`: a line a crash cut short is dropped first,
+    so the new line is never glued onto it.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_file() and path.stat().st_size:
+        with open(path, "rb") as f:
+            data = f.read()
+        if not data.endswith(b"\n"):
+            with open(path, "r+b") as f:
+                f.truncate(data.rfind(b"\n") + 1)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(line.rstrip("\n") + "\n")
+        f.flush()
+        os.fsync(f.fileno())

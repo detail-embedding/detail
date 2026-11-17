@@ -82,6 +82,8 @@ STATS_COLUMNS = [
     "measure",
     "label",
     "label_to",
+    "label_display",
+    "label_is_remainder",
     "window_id",
     "value",
     "n_underlying",
@@ -1761,6 +1763,7 @@ def stats_rows(
     obs: Sequence[Observation],
     *,
     aggregate_to: Sequence[str],
+    remainders: Collection[str],
     group_by: Sequence[str] = (),
 ) -> list[dict]:
     """Long-form rows — one per observation, with its factors — the source of truth an export
@@ -1769,7 +1772,14 @@ def stats_rows(
     ``aggregate_to`` is stamped on **every** row. A table or a figure built from these is
     unreadable without it: "one point is one animal" and "one point is one session" are different
     claims about the same picture, and nothing else on the row distinguishes them.
+
+    ``remainders`` are the labels whose rows count only a parent's leftover
+    (``measures.remainder_labels``, stored on the record as ``remainder_labels``): ``label``
+    stays the plain name, the join key, and ``label_display`` / ``label_is_remainder`` say so.
+    Required, because a default of "none" is exactly the silent miss this column exists for.
     """
+    from detail.analysis.measures import display_label
+
     path = "|".join(aggregate_to)
     columns = measure_key_columns(group_by)
     out = []
@@ -1783,6 +1793,9 @@ def stats_rows(
                 "measure": keyed.get("measure", ""),
                 "label": keyed.get("label", ""),
                 "label_to": keyed.get("label_to", ""),
+                "label_display": display_label(keyed.get("label", ""), remainders),
+                "label_is_remainder": bool(keyed.get("label"))
+                and keyed.get("label") in remainders,
                 "window_id": keyed.get("window_id", ""),
                 "value": row.value,
                 "n_underlying": row.n_underlying,

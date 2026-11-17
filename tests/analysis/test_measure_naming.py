@@ -81,14 +81,14 @@ def test_the_stem_stays_an_id_and_the_title_becomes_english():
     key = ("n_instances", "rearing", "", "whole")
 
     assert comparison_report._measure_stem(key) == "n_instances__rearing__whole"
-    assert comparison_report.measure_title(key) == "Bouts  ·  rearing"
+    assert comparison_report.measure_title(key, ()) == "Bouts  ·  rearing"
 
 
 def test_the_title_keeps_the_parts_that_are_already_human():
     """Only the measure id maps to a label. The behavior name is the user's own word, a
     transition's destination is another, and a window is a window."""
     title = comparison_report.measure_title(
-        ("transitions", "rearing", "grooming", "abs_02")
+        ("transitions", "rearing", "grooming", "abs_02"), ()
     )
 
     assert title.startswith("Transitions")
@@ -98,15 +98,28 @@ def test_the_title_keeps_the_parts_that_are_already_human():
 def test_the_whole_window_is_not_worth_saying():
     """Every measure has a window; saying "whole" on all of them is noise."""
     assert "whole" not in comparison_report.measure_title(
-        ("rate", "rearing", "", "whole")
+        ("rate", "rearing", "", "whole"), ()
     )
 
 
 def test_an_unknown_measure_falls_back_to_its_id_rather_than_vanishing():
     """A `stats.csv` written by a future version must still render."""
     assert comparison_report.measure_title(
-        ("not_a_measure", "x", "", "whole")
+        ("not_a_measure", "x", "", "whole"), ()
     ).startswith("not_a_measure")
+
+
+def test_a_remainder_label_reads_as_the_parents_other():
+    """A parent label's row counts only what its children did not take (#24): its title says
+    so, and a label that is not a parent keeps its plain name."""
+    remainders = {"moving"}
+
+    assert comparison_report.measure_title(
+        ("total_time", "moving", "", "whole"), remainders
+    ) == ("Total time  ·  moving (other)")
+    assert comparison_report.measure_title(
+        ("total_time", "fast", "", "whole"), remainders
+    ) == ("Total time  ·  fast")
 
 
 def test_stats_csv_still_carries_ids(tmp_path):
@@ -138,8 +151,10 @@ def test_stats_csv_still_carries_ids(tmp_path):
 QUERY_MANIFEST = {"overlap": "allowed", "names": {"b1": ["rearing"], "b2": ["spin"]}}
 CLUSTER_MANIFEST = {
     "overlap": "exclusive",
-    # A clustering producer writes an empty list for a cluster nobody named.
-    "names": {"0": ["rearing"], "1": [], "2": ["grooming"]},
+    # A clustering producer writes an empty list for its `unlabelled` source label. The real
+    # producer's manifest is checked below (`test_a_real_clustering_run_*`): this hand-written
+    # one was once true of no run on disk.
+    "names": {"L1": ["rearing"], "L2": ["grooming"], "unlabelled": []},
 }
 
 
@@ -258,3 +273,137 @@ def test_naming_an_inapplicable_measure_explicitly_still_writes_nothing(tmp_path
         written = {row["measure"] for row in csv.DictReader(handle)}
 
     assert written == {"n_instances"}
+
+
+# --------------------------------------------------------------------------- #
+# a real clustering run: unnamed time is measured, a parent's row says what it counts
+# --------------------------------------------------------------------------- #
+def _measured(experiment, run_id) -> list[dict]:
+    return experiment.measures(run_id).table()
+
+
+def test_a_real_clustering_run_with_unnamed_clusters_measures_unnamed_time(
+    fitted_codebook,
+):
+    """**The class: a consumer predicate written against an older shape of the producer's
+    output.** ``unnamed_labels`` read "some ``names`` entry is an empty list", the fixture above
+    (``CLUSTER_MANIFEST``) wrote one, and the real producer never did: its ``names`` is keyed by
+    label id and holds named labels only, with unlabelled members under the ``unlabelled``
+    source label and no entry at all. So no clustering run ever measured ``unnamed_time``, while
+    ``docs/cli.md`` and ``docs/gui.md`` promised it. This runs the real producer instead.
+    """
+    experiment, run_id = fitted_codebook
+    run = experiment.temporal_clustering_run(run_id)
+    view = run.node_view()
+    left, _right = view.children(view.root)
+    run.name_nodes({left: "rear"})
+
+    rows = _measured(experiment, run_id)
+
+    unnamed = [row for row in rows if row["measure"] == "unnamed_time"]
+    assert (
+        unnamed
+    ), f"no unnamed_time row; measured {sorted({r['measure'] for r in rows})}"
+    assert all(row["value"] > 0 for row in unnamed)
+
+
+def test_a_clustering_run_with_nothing_labelled_still_measures_unnamed_time(
+    fitted_codebook,
+):
+    """The edge: an empty vocabulary made the table header-only, so the one number that says
+    "all of this run is still unnamed" was missing exactly when it is the whole answer.
+    """
+    experiment, run_id = fitted_codebook
+
+    rows = _measured(experiment, run_id)
+
+    assert {row["measure"] for row in rows} == {"unnamed_time"}
+    assert all(row["value"] > 0 for row in rows)
+
+
+def test_a_parent_labels_row_is_named_as_its_remainder(fitted_codebook, tmp_path):
+    """**Owner decision (#24): a parent label keeps counting only its leftover, and the row says
+    so.** Label the root "moving" and a child "fast": every frame is moving, but the row under
+    "moving" counts only what "fast" did not take. The ``label`` column keeps the plain name,
+    because it is the join key for a comparison (``compare.MEASURE_KEYS``) and for a user joining
+    to ``instances.csv``; ``label_display`` carries "moving (other)" and ``label_is_remainder``
+    marks the row, so a CSV reader can tell. No number changes."""
+    from detail.analysis import measures as measures_lib
+
+    experiment, run_id = fitted_codebook
+    run = experiment.temporal_clustering_run(run_id)
+    view = run.node_view()
+    child, _other = view.children(view.root)
+    run.name_nodes({view.root: "moving", child: "fast"})
+
+    rows = _measured(experiment, run_id)
+    by_label = {}
+    for row in rows:
+        if row["measure"] == "total_time":
+            by_label[row["label"]] = row
+
+    assert set(by_label) == {"moving", "fast"}
+    assert by_label["moving"]["label_display"] == "moving (other)"
+    assert by_label["moving"]["label_is_remainder"] is True
+    assert by_label["fast"]["label_display"] == "fast"
+    assert by_label["fast"]["label_is_remainder"] is False
+
+    out = experiment.measures(run_id).export(tmp_path / "m")
+    with open(out / "measures.csv", newline="", encoding="utf-8-sig") as handle:
+        written = list(csv.DictReader(handle))
+    assert {"label_display", "label_is_remainder"} <= set(written[0])
+    moving = [r for r in written if r["label"] == "moving"]
+    assert moving and {r["label_display"] for r in moving} == {"moving (other)"}
+    assert set(measures_lib.COLUMNS) >= {"label", "label_display", "label_is_remainder"}
+
+
+def test_a_comparison_names_a_parent_labels_rows_as_its_remainder(fitted_codebook):
+    """Through the run path: the record says which labels are remainders, ``stats.csv`` carries
+    the display name and the flag beside the plain ``label`` it groups on, and the per-measure
+    titles a person reads say "(other)". No number changes, so ``label`` is still the key.
+    One recording, so the contrast is early against late (``window_id``)."""
+    from detail.analysis import comparison_report
+
+    experiment, run_id = fitted_codebook
+    run = experiment.temporal_clustering_run(run_id)
+    view = run.node_view()
+    child, _other = view.children(view.root)
+    run.name_nodes({view.root: "moving", child: "fast"})
+    # The fit fixture writes no video; a comparison's provenance fingerprints it.
+    video = experiment.dir / "recordings/recording_001/video/part_001.mp4"
+    video.write_bytes(b"not a real video")
+
+    experiment.run_comparison(
+        {
+            "source_run_id": run_id,
+            "group_by": ["window_id"],
+            "aggregate_to": [],
+            "windows": {"kind": "normalized", "parts": 2},
+            "measures": ["total_time"],
+        }
+    )
+    comparison = experiment.comparisons[-1]
+    record = comparison.record()
+    with open(comparison.dir / "stats.csv", newline="", encoding="utf-8-sig") as f:
+        stats = list(csv.DictReader(f))
+
+    assert record["remainder_labels"] == ["moving"]
+    moving = [r for r in stats if r["label"] == "moving"]
+    fast = [r for r in stats if r["label"] == "fast"]
+    assert moving and fast
+    assert {(r["label_display"], r["label_is_remainder"]) for r in moving} == {
+        ("moving (other)", "True")
+    }
+    assert {(r["label_display"], r["label_is_remainder"]) for r in fast} == {
+        ("fast", "False")
+    }
+    assert comparison_report.measure_title(
+        ("total_time", "moving", "", "whole"), comparison_report.remainders_of(record)
+    ).endswith("moving (other)")
+    ranked = comparison_report.ranking_csv_rows(comparison.ranking(), record)
+    assert {
+        (r["label_display"], r["label_is_remainder"])
+        for r in ranked
+        if r["label"] == "moving"
+    } == {("moving (other)", True)}, "ranking.csv names the remainder row too"
+    assert set(ranked[0]) == set(comparison_report.RANKING_COLUMNS)

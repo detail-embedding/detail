@@ -8,7 +8,16 @@ documented failed on every machine it could run on, and the docs told users to p
 ``best_supported_backend`` over the chosen model's own backends, as the GUI's compute row
 does, and the manifest records the backend chosen
 (``test_cli_quick_segment_with_no_backend_runs_on_one_the_model_supports``).
+
+**Another: two lists paired by position when one producer can skip (#26).** The sampler returns
+every position it asked for; the prompt-test engine returns a result only for a frame that
+decoded. ``_save_sampled`` zipped the two, so one undecodable frame in clip A filed every later
+result one slot early: clip B's frame 7 stored as clip A's, listed twice, and drawn on clip A's
+picture with clip B's masks. Each ``PromptTestResult`` now carries its ``part_index`` and is
+filed by it (``test_a_sample_that_does_not_decode_leaves_every_other_result_under_its_own_clip``).
 """
+
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -873,3 +882,72 @@ def test_cli_min_conf_filters_the_report_without_changing_the_run(
         run_dir = tool_runs.tool_run_dir("quick_segment", record["id"])
         columns = quick_segment.load_detections(run_dir / "detections.zarr")
         assert len(columns["frame_idx"]) == 8
+
+
+def test_a_sample_that_does_not_decode_leaves_every_other_result_under_its_own_clip(
+    tmp_path, stub_model, isolated_tools, monkeypatch
+):
+    """One sampled frame in clip A fails to decode (cv2's frame count over-reports, or a
+    damaged region). Every other result must still be stored under the clip and frame it
+    came from (#26). Before the fix the results list (decoded only) was paired by position
+    with the samples list (every request), so clip B's frame 7 was filed as clip A's frame
+    7 — listed twice, drawn on clip A's picture with clip B's masks."""
+    import json
+
+    from detail.pipeline import prompt_test
+
+    clip_a, clip_b = tmp_path / "a.mp4", tmp_path / "b.mp4"
+    _write_video(clip_a, n_frames=30)
+    _write_video(clip_b, n_frames=30)
+    # "even" sampling of 4 over 60 frames: A7, A22, B7, B22.
+    real_read = prompt_test.read_frame_at
+
+    def _a22_fails(path, frame_idx, *a, **k):
+        if Path(path) == clip_a and frame_idx == 22:
+            return None
+        return real_read(path, frame_idx, *a, **k)
+
+    monkeypatch.setattr(prompt_test, "read_frame_at", _a22_fails)
+    record = api_tools.run_tool(
+        "quick_segment",
+        _config(clip_a, n_frames=4, mode="sample", videos=[clip_a, clip_b]),
+    )
+    assert record["status"] == "complete"
+    run_dir = tool_runs.tool_run_dir("quick_segment", record["id"])
+    meta = json.loads((run_dir / "test.json").read_text(encoding="utf-8-sig"))
+    assert meta["sampled_frames"] == [
+        {"part_index": 0, "frame_idx": 7},
+        {"part_index": 1, "frame_idx": 7},
+        {"part_index": 1, "frame_idx": 22},
+    ]
+    assert len(meta["frame_results"]) == len(meta["sampled_frames"])
+
+    def _frames(part):
+        store = run_dir / "prompt_0" / f"part_{part:03d}.zarr"
+        root = zarr.open_group(str(store), mode="r")
+        return sorted(set(root["frame_idx"][:].tolist()))
+
+    stored = {part: _frames(part) for part in (0, 1)}
+    assert stored == {0: [7], 1: [7, 22]}
+
+
+@pytest.mark.parametrize("mode", ["sample", "consecutive"])
+def test_a_stop_before_the_first_frame_is_recorded_stopped_in_every_mode(
+    tmp_path, stub_model, isolated_tools, mode
+):
+    # Stopping is not failing (§27), and that has to hold at the edge where nothing was
+    # done yet. The sampled engine raised "no frames could be decoded" whenever its loop
+    # ended with zero frames, including when it ended because the user pressed Stop, so a
+    # fine video read as a failed run with a decode error (#28 finding 12). The consecutive
+    # mode already got this right; both modes are parametrized so the two cannot drift.
+    video = tmp_path / "clip.mp4"
+    _write_video(video, n_frames=20)
+    record = api_tools.run_tool(
+        "quick_segment",
+        _config(video, n_frames=6, mode=mode),
+        stop_check=lambda: True,
+    )
+    assert record["status"] == "stopped"
+    assert record["result"]["stopped"] is True
+    assert record["result"]["n_processed"] == 0
+    assert "error" not in record
