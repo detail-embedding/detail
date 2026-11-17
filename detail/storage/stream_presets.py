@@ -156,7 +156,9 @@ def export_preset(experiment_dir: Path | str, name: str, out_path: Path | str) -
         ValueError: No preset named ``name`` exists.
     """
     preset = get_preset(experiment_dir, name)
-    Path(out_path).write_text(
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(
         yaml.dump({"schema_version": SCHEMA_VERSION, **preset}, sort_keys=False),
         encoding="utf-8",
     )

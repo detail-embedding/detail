@@ -125,7 +125,9 @@ def export_definition(
         ValueError: No definition named ``name`` exists.
     """
     definition = get_definition(experiment_dir, name)
-    Path(out_path).write_text(
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(
         yaml.dump({"schema_version": SCHEMA_VERSION, **definition}, sort_keys=False),
         encoding="utf-8",
     )

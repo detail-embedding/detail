@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING
 
 from detail.analysis import cohort, compare, measures, node_measures, provenance
 from detail.configs.comparison import ComparisonConfig
+from detail.core.errors import UserInputError
 from detail.core.utils import utc_timestamp
 from detail.report.tables import write_tidy_csv
 from detail.storage import analysis_runs as analysis_store
@@ -598,18 +599,8 @@ def run_comparison(
     report("writing", 0.0, "")
     comparison_id = comparisons_store.next_comparison_id(experiment_dir)
     cdir = comparisons_store.comparison_dir(experiment_dir, comparison_id)
-    cdir.mkdir(parents=True, exist_ok=True)
-    write_tidy_csv(
-        cdir / STATS_FILENAME,
-        compare.stats_rows(
-            prepared.obs, aggregate_to=cfg.aggregate_to, group_by=cfg.group_by
-        ),
-        compare.STATS_COLUMNS,
-    )
-    if prepared.hierarchy is not None:
-        write_tidy_csv(
-            cdir / NODES_FILENAME, prepared.hierarchy, node_measures.HIERARCHY_COLUMNS
-        )
+    # Everything that reads the experiment comes before the folder exists, so a failure
+    # here leaves no `cmp_NN` holding a `stats.csv` and no `comparison.yaml`.
     record = {
         "id": comparison_id,
         **prepared.record,
@@ -631,6 +622,18 @@ def run_comparison(
         "status": "complete",
         "created_at": utc_timestamp(),
     }
+    cdir.mkdir(parents=True, exist_ok=True)
+    write_tidy_csv(
+        cdir / STATS_FILENAME,
+        compare.stats_rows(
+            prepared.obs, aggregate_to=cfg.aggregate_to, group_by=cfg.group_by
+        ),
+        compare.STATS_COLUMNS,
+    )
+    if prepared.hierarchy is not None:
+        write_tidy_csv(
+            cdir / NODES_FILENAME, prepared.hierarchy, node_measures.HIERARCHY_COLUMNS
+        )
     comparisons_store.write_comparison_yaml(cdir, record)
     report("writing", 1.0, comparison_id)
     return Comparison(experiment, comparison_id)
@@ -691,6 +694,16 @@ class Comparison:
         return comparisons_store.comparison_dir(self._experiment.dir, self._id)
 
     def record(self) -> dict:
+        """The saved record.
+
+        Raises:
+            UserInputError: no comparison with this id (a mistyped ``cmp_NN``).
+        """
+        if not (self.dir / comparisons_store.COMPARISON_FILENAME).is_file():
+            raise UserInputError(
+                f"no comparison {self._id!r} in this experiment; "
+                "`detail comparison list` shows the saved ones"
+            )
         return comparisons_store.read_comparison_yaml(self.dir)
 
     def ranking(self):

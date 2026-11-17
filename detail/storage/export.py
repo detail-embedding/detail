@@ -523,6 +523,7 @@ def export_experiment(
     blob = yaml.dump(manifest, sort_keys=False).encode("utf-8")
     packing = _Meter(bar, pack_cost, len(included))
     bar.phase(STAGE_PACKING, packing.detail())
+    dest.parent.mkdir(parents=True, exist_ok=True)  # every check above has passed
     try:
         # `copybufsize` is the read size inside `tarfile`'s copy loop, and so how often a large
         # file reports: its default is 16 KiB, a callback every 16 KiB of a 17 GB payload.

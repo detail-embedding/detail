@@ -625,6 +625,21 @@ def test_recording_detail_calibration_summary_reads_its_value(qapp, tmp_path):
     assert "4.8 px/mm" in labels and "200 mm reference" in labels
 
 
+def test_recording_detail_shows_a_calibration_with_no_video_yet(qapp, tmp_path):
+    """A calibration copied onto a recording with no video is allowed on purpose; the page
+    raised a ``TypeError`` building its summary (#33). It shows the calibration's own
+    value, at the resolution it was measured on."""
+    from detail.gui.pages import RecordingDetailPage
+    from detail.storage import spatial as spatial_store
+
+    proj = Experiment.create("p", tmp_path)
+    recording = proj.create_recording("s1")
+    spatial_store.write_calibration_scalar(recording.dir, 2.0, (100, 50))
+
+    page = RecordingDetailPage(recording, experiment=proj)
+    assert "2 px/mm at 100x50 (no video yet)" in _scene_label_texts(page)
+
+
 def test_recording_detail_says_a_calibration_no_longer_fits_its_video(qapp, tmp_path):
     """A video replaced by one of another shape leaves a calibration that gives no scale.
 

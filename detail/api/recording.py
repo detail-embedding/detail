@@ -29,6 +29,7 @@ from detail.core.dataclasses import (
     RenderPreviewResult,
     TextCue,
 )
+from detail.core.errors import UserInputError
 from detail.core.protocols import ModelNotReadyError
 from detail.core.registries import STREAM_CONSUMERS, STREAM_IMPORTERS, TRANSFORMS
 from detail.core.utils import active_polygon_at_frame, default_compute
@@ -970,7 +971,8 @@ class Recording:
     @property
     def pixels_per_mm(self) -> float | None:
         """``pixels_per_mm`` at the recording's current video resolution (rescaled from the
-        calibration's own resolution), or ``None`` if uncalibrated.
+        calibration's own resolution), or ``None`` if uncalibrated. With no video yet, the
+        calibration's own value at its ``ref_resolution`` (:meth:`calibration_reference`).
 
         Raises:
             ValueError: the calibration cannot describe this video — see
@@ -979,8 +981,22 @@ class Recording:
         cal = self.distance_calibration
         if cal is None:
             return None
-        width, height = self.video_resolution
-        return spatial_store.pixels_per_mm_at(cal, width, height)
+        resolution = self.video_resolution
+        if resolution is None:
+            # No video yet (a calibration copied onto it is allowed): the stored value, at the
+            # calibration's own resolution — `calibration_reference` says which.
+            return float(cal["pixels_per_mm"])
+        return spatial_store.pixels_per_mm_at(cal, *resolution)
+
+    def calibration_reference(self) -> str:
+        """How to read :attr:`pixels_per_mm`: ``""`` when it is at this recording's video, or
+        ``" at WxH (no video yet)"`` when the recording has no video and the number is the
+        calibration's own, at the resolution it was measured on."""
+        cal = self.distance_calibration
+        if cal is None or self.video_resolution is not None:
+            return ""
+        ref_w, ref_h = (int(v) for v in cal["ref_resolution"])
+        return f" at {ref_w}x{ref_h} (no video yet)"
 
     def calibration_refusal(self) -> str | None:
         """Why this recording's distance calibration gives no scale for its video, or
@@ -1040,11 +1056,12 @@ class Recording:
     def _require_complete_tracking(self, tracking_run_id: str) -> dict:
         rec = {r["id"]: r for r in self.tracking_runs}.get(tracking_run_id)
         if rec is None:
-            raise ValueError(
-                f"tracking run {tracking_run_id!r} not found in recording {self.id!r}"
+            raise UserInputError(
+                f"tracking run {tracking_run_id!r} not found in recording {self.name!r}; "
+                f"its tracking runs are {[r['id'] for r in self.tracking_runs]}"
             )
         if rec.get("status") != "complete":
-            raise ValueError(
+            raise UserInputError(
                 f"tracking run {tracking_run_id!r} is {rec.get('status')!r}, not complete"
             )
         return rec

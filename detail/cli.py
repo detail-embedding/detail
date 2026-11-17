@@ -15,6 +15,7 @@ polygon editor — use the GUI) and render-preview (interactive — use the GUI)
 """
 
 import csv
+import errno
 import subprocess
 import sys
 import threading
@@ -61,6 +62,7 @@ from detail.storage import metadata as metadata_store
 from detail.storage import snapshots as snapshots_store
 from detail.storage import streams as streams_store
 from detail.storage import tool_runs
+from detail.storage.export import ExperimentChangedError
 from detail.transforms.constructors import DEFAULT_CONSTRUCTOR
 from detail.transforms.constructors import surfaced_constructors
 
@@ -718,7 +720,38 @@ _MIN_CONF_OPT = click.option(
 #: them. A reader that meets an ordinary input mistake raises ``UserInputError`` with a
 #: message naming the thing and what to do; a later user-condition error joins this tuple
 #: by name. Never ``ValueError`` or ``Exception``: a bug must keep its traceback.
-USER_ERRORS: tuple[type[BaseException], ...] = (UserInputError,)
+#: ``ExperimentChangedError``: something wrote to the experiment while it was exported.
+USER_ERRORS: tuple[type[BaseException], ...] = (UserInputError, ExperimentChangedError)
+
+#: The ``OSError`` numbers the root group shows as one line: the folder or disk the user
+#: chose cannot take the write. Any other ``OSError`` (a missing file DETAIL expected to
+#: find, a broken pipe) keeps its traceback, so the code that should have checked is found.
+USER_OS_ERRNOS: dict[int, str] = {
+    errno.EACCES: "permission denied for {file}. Check that you can write to that folder, "
+    "or choose another one",
+    errno.EPERM: "permission denied for {file}. Check that you can write to that folder, "
+    "or choose another one",
+    errno.EROFS: "cannot write {file}: the disk is read-only. Copy the experiment to a "
+    "disk you can write to, or choose another folder",
+    errno.ENAMETOOLONG: "a file or folder name is too long for this disk: {file}. Use a "
+    "shorter name",
+    errno.ENOSPC: "no space left on the disk while writing {file}. Free some space, then "
+    "try again",
+}
+
+
+def user_os_error_message(exc: OSError) -> str | None:
+    """The one-line message for an ``OSError`` in :data:`USER_OS_ERRNOS`, else ``None``."""
+    template = USER_OS_ERRNOS.get(exc.errno)
+    if template is None:
+        return None
+    target = exc.filename
+    if target is None:
+        target = "a file"
+    elif str(target).endswith(".tmp"):
+        # An atomic write's temporary sibling is not a name the user knows: its folder is.
+        target = Path(target).parent
+    return template.format(file=target)
 
 
 class _ConsoleSafeGroup(click.Group):
@@ -738,14 +771,20 @@ class _ConsoleSafeGroup(click.Group):
         """Every subcommand runs inside this call, so an ordinary input mistake that no
         command caught still reaches the user as one ``Error:`` line, not a traceback.
 
-        Only the named :data:`USER_ERRORS` are turned into a message. Anything else — a
-        ``KeyError``, a ``TypeError``, a plain ``ValueError`` — is a bug in the reader
-        that raised it and keeps its traceback.
+        Only the named :data:`USER_ERRORS`, and an ``OSError`` whose number is in
+        :data:`USER_OS_ERRNOS`, are turned into a message. Anything else — a ``KeyError``,
+        a ``TypeError``, a plain ``ValueError``, a ``FileNotFoundError`` — is a bug in the
+        code that raised it and keeps its traceback.
         """
         try:
             return super().invoke(ctx)
         except USER_ERRORS as exc:
             raise click.ClickException(str(exc)) from exc
+        except OSError as exc:
+            message = user_os_error_message(exc)
+            if message is None:
+                raise
+            raise click.ClickException(message) from exc
 
 
 def _print_version(ctx: click.Context, _param: click.Parameter, value: bool) -> None:
@@ -1292,8 +1331,14 @@ def recording_verify(experiment_dir: Path, recording_id: str) -> None:
     added; a moved/renamed file reports missing (relink it), a content change reports changed
     (remove and re-add). Exits non-zero if anything is wrong.
     """
+    from detail.storage import recording as recording_store
+
     proj = _open_experiment(experiment_dir)
-    issues = _recording(proj, recording_id).verify_videos()
+    rec = _recording(proj, recording_id)
+    if not recording_store.video_files(recording_store.read_recording(rec.dir)):
+        click.echo(f"{recording_id}: no video yet, so there is nothing to check")
+        return
+    issues = rec.verify_videos()
     if not issues:
         click.echo(f"{recording_id}: all video parts present and unchanged")
         return
@@ -2023,7 +2068,10 @@ def recording_status(experiment_dir: Path, recording_id: str) -> None:
         if refusal is not None:
             click.echo(f"  calibration: unusable — {refusal}")
         else:
-            click.echo(f"  calibration: {sess.pixels_per_mm:.4g} px/mm")
+            click.echo(
+                f"  calibration: {sess.pixels_per_mm:.4g} px/mm"
+                f"{sess.calibration_reference()}"
+            )
     for s in sess.streams:
         offset_ns = (s.get("alignment") or {}).get("offset_ns", 0)
         click.echo(
@@ -7469,6 +7517,8 @@ _THEME_HELP = (
     multiple=True,
     default=("pdf", "svg", "png"),
     show_default=True,
+    help="A figure format to write; repeat for several. Any format matplotlib writes "
+    "(jpg, tiff, eps, …); an unknown one is refused before anything is drawn.",
 )
 @click.option(
     "--theme",
@@ -7645,6 +7695,12 @@ def tools_quick_segment(
     if not sample and len(prompts) > 1:
         raise click.ClickException(
             "--consecutive runs a single prompt; use --sample to compare prompts"
+        )
+    if sample and export_path is not None:
+        # Checked before the run, which takes minutes: only a consecutive run has a clip.
+        raise click.ClickException(
+            "--export needs --consecutive: --sample frames are spread across the clip, so "
+            "there is no clip to render"
         )
     parsed = [
         Prompt(

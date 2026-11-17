@@ -1254,8 +1254,10 @@ def export_comparison(
     Counting figures rather than weighing them is right *here*, unlike a loop over spans of very
     different sizes: every figure is one render of a handful of points.
     """
+    from detail.report import figures as figlib
     from detail.storage import comparisons as comparisons_store
 
+    figlib.check_formats(tuple(formats))
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     source = comparisons_store.comparison_dir(experiment_dir, record["id"])

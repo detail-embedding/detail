@@ -429,9 +429,9 @@ def video_files(recording: dict) -> list[dict]:
 
     There is exactly one frame space per recording: a stage that processes fewer frames
     does so with a ``every_n_frames`` over *these* files, so ``frame_idx`` always indexes
-    the source video (§4).
+    the source video (§4). Empty for a recording with no video yet.
     """
-    return recording["video"]["files"]
+    return recording.get("video", {}).get("files", [])
 
 
 def part_stem(part: dict) -> str:
