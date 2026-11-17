@@ -500,11 +500,13 @@ def cluster_colors(n: int) -> list[tuple[float, float, float, float]]:
 
     Canonical (light) steps: the same colour tints a cluster's thumbnails, which are video.
     """
-    fixed = len(LIGHT.categorical) + len(LIGHT.extended)
+    # The label colours: BROWSE's lanes are behavior labels, so they keep off the two the
+    # diverging scale has for less and more (`ChartTheme.label_identity`).
+    fixed = len(LIGHT.label_identities())
     out = []
     for i in range(max(n, 1)):
         if i < fixed:
-            r, g, b = rgb(LIGHT.identity(i))
+            r, g, b = rgb(LIGHT.label_identity(i))
         else:
             r, g, b = colorsys.hsv_to_rgb(i / max(n, 1), 0.85, 0.95)
             r, g, b = int(r * 255), int(g * 255), int(b * 255)

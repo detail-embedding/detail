@@ -139,6 +139,17 @@ class ComparisonConfig(BaseModel):
         "once rather than as every slice of itself. Ignored for a flat source.",
         json_schema_extra={"advanced": True, "label": "Suppress nested nodes"},
     )
+    statistic: Literal["moderated_t", "effect"] = Field(
+        "moderated_t",
+        description="What a within-unit ranking scores each behavior by, and the floor is "
+        "taken over. The moderated t is the mean per-unit effect over its spread across units "
+        "(plus the family's median spread, so exact agreement cannot own the floor): a "
+        "behavior ranks by how far the units agree, not by how large its numbers are, and the "
+        "floor stops belonging to the sparsest behaviors. The effect ranks by the mean per-unit "
+        "effect itself, as comparisons run before this choice existed did. The effect is shown "
+        "either way. A between design has no per-unit effects and ranks on the effect.",
+        json_schema_extra={"advanced": True, "label": "Rank on"},
+    )
 
     @model_validator(mode="after")
     def _check_disjoint(self) -> "ComparisonConfig":
@@ -196,4 +207,5 @@ class ComparisonConfig(BaseModel):
             "min_units_fraction": self.min_units_fraction,
             "candidate_floor_s": self.candidate_floor_s,
             "suppress_nesting": self.suppress_nesting,
+            "statistic": self.statistic,
         }

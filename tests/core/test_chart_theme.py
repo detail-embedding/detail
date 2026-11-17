@@ -131,6 +131,34 @@ def test_the_ramps_read_as_ramps(theme) -> None:
     assert oklch(theme.diverging[middle])[1] < 0.02, "the midpoint must be grey"
 
 
+#: How far apart the diverging scale's two poles must stay under red-green colour-vision
+#: deficiency, and how much of that must be lightness. The blue ↔ vermillion pair this replaced
+#: measured ΔE 18–21 with the poles at one lightness (ΔL 0.02 dark, 0.07 light): which way a
+#: cluster went was hue alone, the part a colour-blind reader loses (user, 2026-11-16).
+_POLE_CVD_FLOOR = 30.0
+_POLE_MIN_DELTA_L = 0.12
+_OLD_DIVERGING_POLES = {"light": ("#025a8d", "#ab4501"), "dark": ("#7fc5fe", "#ff9a6b")}
+
+
+def _pole_failures(low: str, high: str) -> list[str]:
+    failures = [
+        f"{vision}: ΔE {delta_e(low, high, vision):.1f}"
+        for vision in ("protan", "deutan")
+        if delta_e(low, high, vision) < _POLE_CVD_FLOOR
+    ]
+    if abs(oklch(low)[0] - oklch(high)[0]) < _POLE_MIN_DELTA_L:
+        failures.append("the poles sit at one lightness")
+    return failures
+
+
+@BOTH
+def test_the_diverging_poles_differ_by_more_than_hue(theme) -> None:
+    """Less and more stay apart for a red-green colour-blind reader, in lightness as well."""
+    assert _pole_failures(theme.diverging[0], theme.diverging[-1]) == []
+    # The pair it replaced fails both halves, so the check can fail.
+    assert len(_pole_failures(*_OLD_DIVERGING_POLES[theme.name])) == 3
+
+
 @BOTH
 def test_zero_on_the_sequential_scale_sits_near_the_surface(theme) -> None:
     """Low magnitude reads as "nothing": the low end is the ramp stop closest to the surface."""
@@ -148,8 +176,38 @@ def test_assign_identities_is_by_sorted_label_not_first_seen() -> None:
     first = chart_theme.assign_identities(["rearing", "grooming"])
     second = chart_theme.assign_identities(["grooming", "rearing", "grooming"])
     assert (
-        first == second == {"grooming": LIGHT.identity(0), "rearing": LIGHT.identity(1)}
+        first
+        == second
+        == {"grooming": LIGHT.label_identity(0), "rearing": LIGHT.label_identity(1)}
     )
+
+
+def test_a_label_is_never_the_colour_of_less_or_more() -> None:
+    """Blue and yellow are the diverging scale's two poles and mean less and more. A label in
+    either reads as a direction on a cluster that has none (user, 2026-11-16), so the slots
+    near a pole in either theme are reserved, written out in ``LABEL_RESERVED_SLOTS`` and
+    recomputed here: a palette edit that moves a colour next to a pole fails this."""
+    near = set()
+    for theme in (LIGHT, DARK):
+        poles = (theme.diverging[0], theme.diverging[-1])
+        for slot, colour in enumerate(theme.categorical + theme.extended):
+            if (
+                min(delta_e(colour, pole) for pole in poles)
+                < chart_theme.LABEL_POLE_FLOOR
+            ):
+                near.add(slot)
+    assert near == set(chart_theme.LABEL_RESERVED_SLOTS)
+    for theme in (LIGHT, DARK):
+        labels = theme.label_identities()
+        assert len(labels) == 12
+        assert theme.hue("blue") not in labels and theme.hue("orange") not in labels
+        assert theme.label_identity(0) == theme.hue("green")
+        assert theme.label_identity(len(labels)) == labels[0], "wraps past the end"
+        for colour in labels:
+            for pole in (theme.diverging[0], theme.diverging[-1]):
+                assert delta_e(colour, pole) >= chart_theme.LABEL_POLE_FLOOR, colour
+    # The palette's own first slot is the "less" pole's neighbour: the check can fail.
+    assert delta_e(DARK.identity(0), DARK.diverging[0]) < chart_theme.LABEL_POLE_FLOOR
 
 
 def test_a_hue_is_found_by_its_name_not_its_slot() -> None:
