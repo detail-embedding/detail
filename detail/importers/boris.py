@@ -22,6 +22,7 @@ from pathlib import Path
 from detail.core.dataclasses import StreamImportResult
 from detail.core.protocols import StreamImporter
 from detail.core.registries import register_stream_importer
+from detail.importers import _csv_common
 from detail.storage import clocks
 
 _COLUMNS = ["t_ns", "end_t_ns", "label", "subject", "start_frame", "end_frame"]
@@ -68,6 +69,7 @@ class BorisImporter(StreamImporter):
         delimiter = _sniff_delimiter(data_path)
         with open(data_path, newline="", encoding="utf-8-sig") as f:
             reader = csv.DictReader(f, delimiter=delimiter)
+            _csv_common.reject_duplicate_columns(reader.fieldnames or [], fold=True)
             fields = {n.strip().lower(): n for n in (reader.fieldnames or [])}
             for required in (_BEHAVIOR, _TYPE, _TIME):
                 if required not in fields:
@@ -91,6 +93,7 @@ class BorisImporter(StreamImporter):
                 )
                 time_s = _float(raw[fields[_TIME]], "Time", i)
                 events.append((time_s, subject, label, marker, i))
+        _csv_common.require_data_rows(events)  # a header-only export scored nothing
 
         rows, subjects, labels, types = _pair_events(events)
         metadata = {

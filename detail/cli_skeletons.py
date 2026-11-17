@@ -11,6 +11,8 @@ from pathlib import Path
 
 import click
 
+from detail.cli_paths import UserPath
+
 _RECOVERABLE = (ValueError, FileNotFoundError, FileExistsError, KeyError)
 
 
@@ -97,7 +99,7 @@ def skeleton_create(name: str, source: str) -> None:
     "--skeleton",
     "skeleton_file",
     default=None,
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    type=UserPath(exists=True, dir_okay=False, path_type=Path),
     help="Replace its points, edges, pairs and layout with this YAML file's; refused while "
     "anything uses it (use save-as-new).",
 )
@@ -123,7 +125,7 @@ def skeleton_edit(
     "--skeleton",
     "skeleton_file",
     required=True,
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    type=UserPath(exists=True, dir_okay=False, path_type=Path),
     help="The edited skeleton (YAML).",
 )
 def skeleton_save_as_new(skeleton_id: str, name: str, skeleton_file: Path) -> None:
@@ -153,7 +155,7 @@ def skeleton_duplicate(skeleton_id: str, name: str | None) -> None:
 
 @skeleton.command("export")
 @click.argument("skeleton_id", type=str)
-@click.argument("out_path", type=click.Path(dir_okay=False, path_type=Path))
+@click.argument("out_path", type=UserPath(dir_okay=False, path_type=Path))
 def skeleton_export(skeleton_id: str, out_path: Path) -> None:
     """Write a skeleton to a YAML file another machine can import."""
     from detail.api import skeletons as library
@@ -166,7 +168,7 @@ def skeleton_export(skeleton_id: str, out_path: Path) -> None:
 
 
 @skeleton.command("import")
-@click.argument("path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("path", type=UserPath(exists=True, dir_okay=False, path_type=Path))
 @click.option("--name", default=None, type=str, help="Its name (default: the file's).")
 def skeleton_import(path: Path, name: str | None) -> None:
     """Add a skeleton file to the library."""

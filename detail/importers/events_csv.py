@@ -49,6 +49,8 @@ class EventsCsvImporter(StreamImporter):
         config: dict | None = None,
     ) -> StreamImportResult:
         fieldnames, raw_rows = _csv_common.read_rows(Path(data_path))
+        # Folded: every column here is matched case-insensitively (`find_column`).
+        _csv_common.reject_duplicate_columns(fieldnames, fold=True)
         _csv_common.require_data_rows(raw_rows)
         time_source, time_key = _csv_common.resolve_time_column(fieldnames)
         label_source = _csv_common.find_column(fieldnames, _csv_common.LABEL_COLUMN)

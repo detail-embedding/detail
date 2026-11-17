@@ -26,10 +26,16 @@ from pathlib import Path
 import yaml
 
 from detail.core import atomic
+from detail.core.errors import UserInputError
 from detail.core.skeleton import PRESETS, Skeleton
 from detail.storage import locations
 from detail.storage import skeleton_library as library
 from detail.storage.user_yaml import read_user_yaml
+from detail.storage.user_yaml import refuse_unknown_keys
+
+#: The keys of a skeleton mapping, and what a bare skeleton file may carry beside them.
+_SKELETON_KEYS = ("names", "edges", "pairs", "layout")
+_BARE_FILE_KEYS = ("schema_version", "name", *_SKELETON_KEYS)
 
 #: Where a dependent's record sits under an experiment, and what to call it. Each record that
 #: copies a skeleton carries ``skeleton_ref``; the search reads only that field.
@@ -112,7 +118,7 @@ def resolve_skeleton(source) -> Skeleton:
         body = data.get("skeleton", data) if isinstance(data, dict) else None
         if not isinstance(body, dict) or "names" not in body:
             raise ValueError(f"{path} holds no skeleton (no 'names')")
-        return Skeleton.from_dict(body)
+        return skeleton_from_file_body(body, path, bare=body is data)
     try:
         return skeleton(text)["skeleton"]
     except FileNotFoundError:
@@ -120,6 +126,24 @@ def resolve_skeleton(source) -> Skeleton:
             f"no skeleton preset, library skeleton or file {text!r}; presets are "
             f"{list(PRESETS)}, the library has {library.discover() or 'none'}"
         ) from None
+
+
+def skeleton_from_file_body(body: dict, source: Path | str, *, bare: bool) -> Skeleton:
+    """The skeleton a hand-written or exported file holds, its keys checked first.
+
+    ``bare`` is a file that is the skeleton mapping itself (it may also carry its ``name``
+    and ``schema_version``); otherwise ``body`` is the mapping under ``skeleton:``. A key
+    neither takes (``edgse:``) is refused rather than read as "no edges" (#31).
+
+    Raises:
+        ValueError: An unknown key, or a part of the wrong shape (``Skeleton.from_dict``).
+    """
+    allowed = _BARE_FILE_KEYS if bare else _SKELETON_KEYS
+    refuse_unknown_keys(body, allowed, source, "a skeleton")
+    try:
+        return Skeleton.from_dict(body)
+    except ValueError as exc:
+        raise UserInputError(f"{source}: {exc}") from None
 
 
 def skeleton_source_name(source) -> str | None:

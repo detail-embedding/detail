@@ -325,6 +325,7 @@ detail/
 │   │                     # behavior artifact as numbers (§23), comparisons (§24)
 │   └── _runner_modules.py# shared PIPELINE_RUNNERS list (Experiment + Recording use it)
 ├── cli.py                # click-based CLI; entry point `detail` (or `python -m detail`)
+├── cli_paths.py          # UserPath: the one path type for every CLI path option (expands `~`)
 ├── cli_keypoints.py      # §26: the `keypoints` command group, registered on cli.py's root
 │                         # group — its own module so the keypoint work never edits one region of cli.py
 ├── cli_skeletons.py      # §26: the machine-wide `skeleton` command group (the library)

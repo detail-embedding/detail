@@ -43,8 +43,11 @@ import yaml
 
 from detail.core import atomic
 from detail.storage.user_yaml import read_user_yaml
+from detail.storage.user_yaml import refuse_unknown_keys
 
 SCHEMA_VERSION = 1
+#: What a standalone preset file (``export_preset``) holds.
+_FILE_KEYS = ("schema_version", "name", "importer", "config", "offset_ns")
 PRESETS_FILENAME = "stream_presets.yaml"
 
 #: The charset a preset name may use. Not a directory name (unlike a stream's), but it is a
@@ -188,6 +191,7 @@ def import_preset(
             f"{path} schema_version is {data.get('schema_version')!r}, "
             f"expected {SCHEMA_VERSION}"
         )
+    refuse_unknown_keys(data, _FILE_KEYS, path, "a stream preset file")
     resolved = name or data.get("name")
     if not resolved:
         raise ValueError(f"{path} has no 'name' and none was given")

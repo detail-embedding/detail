@@ -220,6 +220,12 @@ GUARD_FILES = frozenset(
         # A file a user hands in is parsed through one reader per format, so a malformed
         # one is a message naming the file and line, not the parser's traceback (#33).
         "tests/storage/test_user_file_readers.py",
+        # A hand-written file is read as written or refused naming the key or row: unknown
+        # keys, one word for a list, a repeated key or CSV column, a header-only labels
+        # file, off-frame marks, two fields of view, a model zip without weights (#31).
+        "tests/test_user_file_shapes.py",
+        # Every CLI path option is `cli_paths.UserPath`, so a quoted `~` is the home folder.
+        "tests/test_cli_paths.py",
         # The CLI root shows a UserInputError as one line and lets a bug's traceback
         # through; one row per #33 finding with a CLI step.
         "tests/test_cli_user_errors.py",

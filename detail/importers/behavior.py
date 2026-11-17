@@ -13,6 +13,7 @@ from pathlib import Path
 from detail.core.dataclasses import StreamImportResult
 from detail.core.protocols import StreamImporter
 from detail.core.registries import register_stream_importer
+from detail.importers import _csv_common
 from detail.storage import streams as streams_store
 
 _COLUMNS = ["t_ns", "end_t_ns", "label", "subject", "start_frame", "end_frame"]
@@ -56,6 +57,7 @@ class BehaviorCsvImporter(StreamImporter):
     ) -> StreamImportResult:
         with open(data_path, newline="", encoding="utf-8-sig") as f:
             reader = csv.DictReader(f)
+            _csv_common.reject_duplicate_columns(reader.fieldnames or [], fold=True)
             fields = {name.strip().lower(): name for name in (reader.fieldnames or [])}
             missing = [c for c in _REQUIRED if c not in fields]
             if missing:
@@ -87,6 +89,9 @@ class BehaviorCsvImporter(StreamImporter):
                     if cell:
                         origins.add(cell)
                 rows.append((None, None, label, subject, start_frame, end_frame))
+        # A header-only file covers no behavior, yet as a stream it marked the recording
+        # annotated (#31).
+        _csv_common.require_data_rows(rows)
         metadata = _behavior_metadata(rows)
         origin = _resolve_origin(origins)
         if origin is not None:

@@ -147,7 +147,8 @@ same stage is `…_02`). Downstream commands name the upstream run by id
 ## Command reference
 
 Options below are the common ones; run `detail <group> <command> --help` for
-the complete, current list. Every stage command takes `--experiment` and
+the complete, current list. A path you pass may start with `~` (your home folder), quoted or
+not. Every stage command takes `--experiment` and
 `--recording`. For every run parameter's bounds, default, and description in one
 table, see the [Parameters reference](reference/parameters.md).
 
@@ -232,6 +233,14 @@ table, see the [Parameters reference](reference/parameters.md).
   collision does not refuse the rest). To change one, delete it here first: it is never
   overwritten, and no name is silently suffixed.
 
+  A CSV you edited by hand is read as strictly as the tool writes it, and each mistake is
+  refused naming the row: an active window with only one of `active_start` / `active_end`
+  filled (both blank means the whole video), a definition whose rows disagree on its window,
+  a name with a space at the start or end, the same `(kind, name, frame_idx, vertex_index)`
+  on two rows, vertex indexes that skip one (`0, 1, 5`), and a column named twice. A name is
+  stored without spaces at either end, however it is typed, so a setup you export reads back
+  under the same names.
+
   ```
   $ detail recording import-spatial --experiment exp --recording r2 --from-recording r1
   imported 1/2 region(s)/point(s)
@@ -244,7 +253,8 @@ table, see the [Parameters reference](reference/parameters.md).
   field of view keeps it and the command fails saying so. (A second one is not a richer
   setup: the batch tracking picker intersects arena ids across recordings.) Delete it on
   this recording first, along with any tracking runs holding it, replacing it would
-  misdescribe the region those runs actually filtered on.
+  misdescribe the region those runs actually filtered on. A CSV or recording holding more
+  than one field of view is refused too, naming them: keep the one you want and import again.
 - `import-calibration --experiment <dir> --recording <id> (--from-recording <id> | --csv <file>)`:
   carry a distance calibration onto the recording. Refused whole like the field of view:
   there is one pixel scale, so a recording that already has one keeps it (`clear-calibration`
@@ -356,7 +366,8 @@ through a saved **heading definition** (`--heading NAME`): the skeleton points w
 the front and the points whose mean is the back, so one missing point moves the mean a little
 instead of losing the heading. Save one with `experiment save-heading NAME --front nose,left_ear
 --back tail_base`; `list-headings`, `export-heading`, `import-heading` and `delete-heading`
-manage them. A frame with no heading of its own takes one interpolated across a gap no longer
+manage them (an imported file holds `name`, `front` and `back`, each a list of points or one
+point's name; any other key is refused). A frame with no heading of its own takes one interpolated across a gap no longer
 than `--max-gap-s` (default 0.5 s); in a longer gap, or before the first and after the last
 heading, the frame is **not embedded** and is counted, so an aligned run never mixes turned
 and unturned pictures. `--mirror-hold-s` (default 1 s) keeps a side view from flickering
@@ -416,8 +427,10 @@ detail keypoints examples import shared/examples.yaml --experiment my_experiment
 
 The file is an `examples.yaml` as the tool writes it (`schema_version` first, the skeleton, then
 one entry per frame with its `image` path relative to the file and its `marks`), with the images
-beside it; `examples export` writes exactly that. A bare skeleton file imports too, as an empty
-set. The set keeps its link to a library skeleton only when a skeleton on this machine has the same
+beside it; `examples export` writes exactly that. Its marks are checked as the labeling screen
+checks a click: a point the skeleton names, at most once a frame, and a visible point at `x`, `y`
+between 0 and 1 (a fraction of the frame's width and height, not pixels). A bare skeleton file
+imports too, as an empty set. The set keeps its link to a library skeleton only when a skeleton on this machine has the same
 points, edges and pairs; otherwise it is listed under *(no library skeleton)*. Deleting a set a keypoint run lists is refused, so a run always finds its frames.
 
 **Detect.** One run per selection of recordings:
@@ -565,6 +578,11 @@ your experiments that copied it. A copy counts when it holds the same points, ed
 whatever id it was given on the machine where it was made. Only the experiments in the workspace
 are searched, not one created with `experiment create --dir` somewhere else. While anything does, `edit --skeleton` and `delete` are refused
 with that list; `save-as-new` keeps the edit as a new skeleton instead. A rename is always allowed.
+
+A skeleton file is `names` (a list, even of one point), and optionally `edges` and `pairs`, each a
+list of two-name lists (`[[nose, neck]]`); an exported file holds that under `skeleton:` beside its
+`name`. A list written as one word (`names: nose`), an edge that is not two names, a key it does not
+take (`edgse:`) or a key written twice is refused, naming it.
 
 ### `process`
 Experiment-level processing runs span a **recording selection** and record a `run_NNN`,
@@ -1313,8 +1331,9 @@ model** catalog (shared across every experiment on the machine):
 - `restore <archive.zip>`: bring a model exported with `export` back into the catalog. A
   keypoint model keeps its own skeleton; it is added to the skeleton library unless an entry
   with the same skeleton is there ("name (2)" when the name is taken by a different one), and
-  the command prints the entry it matched or added. A file that is not such an export, or one
-  whose `model.yaml` is empty, is refused and leaves nothing in the catalog; a bare `.pt`
+  the command prints the entry it matched or added. A file that is not such an export, one
+  whose `model.yaml` is empty or names another id than its folder, or one without the weights
+  its `model.yaml` names, is refused and leaves nothing in the catalog; a bare `.pt`
   checkpoint is added with `import` instead.
 - `remove <id>`: delete an imported model.
 
@@ -2012,7 +2031,9 @@ The importer validates strictly and names the problem: no recognized time column
 one time column, a column name repeated in the header, an empty or header-only file, a
 `timeseries_csv` with no value columns or a non-numeric cell (or a `label` column, which means
 you want `events_csv`), and an `events_csv` with no `label`, an empty label, or a non-integer
-`code` / `frame`.
+`code` / `frame`. The behavior label importers (`behavior_csv`, `boris`) refuse a repeated
+column and a header-only file too. `events_csv`, `behavior_csv` and `boris` match column
+names in any case, so `Label` and `label` count as the same column there.
 
 **A CSV that isn't shaped that way.** When the time column is called something else, or you
 only want some of the columns, say so instead of editing the file. `--time-column` names the
@@ -2178,7 +2199,9 @@ detail recording import-labels --experiment $PROJ --manifest labels.yaml
 ```
 
 The whole manifest is validated first (every recording must exist, every file must
-resolve); then each file is imported against its own recording's timestamps. A file
+resolve, a mapping takes only `file` and `covered_behaviors`, and a recording listed twice
+is refused rather than keeping the second); then each file is imported against its own
+recording's timestamps. A file
 that fails to parse is reported and skipped; the batch continues. Every file in one
 `import-labels` run uses the same `--importer` (`behavior_csv` or `boris`).
 
@@ -2201,8 +2224,10 @@ everything except a recording `id` is optional. Every field, and each importer's
 required files, is in the [Manifest reference](reference/manifest.md).
 
 The whole manifest is validated before anything is imported: an `id` already in
-the experiment, a duplicate id, an unknown importer, a missing file, or video parts
-that disagree on fps/resolution all abort the import (nothing is created).
+the experiment, a duplicate id, a key the manifest does not take (a misspelled `vidoe:`, or
+`name:`: a recording's name starts as its `id`), `recording_id` under `metadata`, an unknown
+importer, a missing file, or video parts that disagree on fps/resolution all abort the
+import (nothing is created). A blank `metadata` value (`sex:`) is stored blank.
 `--dry-run` runs the same validation and reports without importing.
 
 ### Recording information

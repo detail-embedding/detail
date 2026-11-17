@@ -43,9 +43,20 @@ def validate_definition(definition: dict, names: tuple[str, ...] | None = None) 
     for side in ("front", "back"):
         value = definition.get(side)
         if isinstance(value, str):
-            value = [value]
+            value = [value]  # one point, written without brackets
+        if value is not None and not isinstance(value, (list, tuple)):
+            raise ValueError(
+                f"a heading definition's '{side}' must be a list of point names, not "
+                f"{value!r}"
+            )
         if not value:
             raise ValueError(f"a heading definition needs at least one '{side}' point")
+        for point in value:
+            if isinstance(point, bool) or not isinstance(point, (str, int)):
+                raise ValueError(
+                    f"a heading definition's '{side}' must be a list of point names; "
+                    f"{point!r} is not one"
+                )
         points = [str(v) for v in value]
         if len(set(points)) != len(points):
             raise ValueError(f"'{side}' lists a point twice: {points}")

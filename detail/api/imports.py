@@ -27,6 +27,7 @@ from pathlib import Path
 from detail.api import recording as recording_api
 from detail.core.progress import ThrottledProgress, remaining_seconds
 from detail.core.utils import transcode_parallelism
+from detail.storage import manifest as manifest_store
 from detail.storage import recording as recording_store
 from detail.storage import video as video_store
 
@@ -79,31 +80,36 @@ class RecordingImportSpec:
 
 def build_specs(bundle_dir: Path | str, manifest: dict) -> list[RecordingImportSpec]:
     """Turn a loaded (and validated) bundle manifest into executable specs,
-    resolving ``video``/``raw``/``aux`` paths against the bundle folder (§3)."""
+    resolving ``video``/``raw``/``aux`` paths against the bundle folder (§3).
+
+    Read through the manifest's own model, so a value is what validation saw: a blank
+    metadata value is ``""``, never the text ``"None"`` a second ``str()`` made of it.
+
+    Raises:
+        pydantic.ValidationError: ``manifest`` does not pass ``validate_manifest``'s schema.
+    """
     bundle = Path(bundle_dir)
     specs: list[RecordingImportSpec] = []
-    for recording in manifest.get("recordings", []):
+    for recording in manifest_store.Manifest.model_validate(manifest).recordings:
         streams = [
             StreamImportSpec(
-                name=st["name"],
-                importer=st["importer"],
-                raw=bundle / st["raw"],
-                aux={k: bundle / v for k, v in (st.get("aux") or {}).items()},
-                config=dict(st.get("config") or {}),
-                offset_ns=int(st.get("offset_ns", 0)),
+                name=st.name,
+                importer=st.importer,
+                raw=bundle / st.raw,
+                aux={k: bundle / v for k, v in st.aux.items()},
+                config=dict(st.config),
+                offset_ns=st.offset_ns,
             )
-            for st in (recording.get("streams") or [])
+            for st in recording.streams
         ]
         specs.append(
             RecordingImportSpec(
                 # A bundle declares its ids and its own files reference them, so this is a
-                # restore: keep them rather than minting new ones.
-                id=recording["id"],
-                name=recording.get("name") or recording["id"],
-                metadata={
-                    k: str(v) for k, v in (recording.get("metadata") or {}).items()
-                },
-                video_parts=[bundle / p for p in (recording.get("video") or [])],
+                # restore: keep them rather than minting new ones. Its name starts as the
+                # id; a manifest has no `name` key (refused as unknown, #31).
+                id=recording.id,
+                metadata=dict(recording.metadata),
+                video_parts=[bundle / p for p in recording.video],
                 streams=streams,
             )
         )
