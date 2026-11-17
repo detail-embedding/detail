@@ -701,7 +701,10 @@ def write_nwb(
         starting_frame=[0],
         dimension=[w, h],
         rate=source.fps(part_id),
-        starting_time=0.0,
+        # The part's first frame on the recording's clock, which is the clock the poses'
+        # timestamps use: a later part's map is recording-wide (`add_video_part`), so 0.0
+        # put its video one part-length ahead of its poses (issue #23).
+        starting_time=float(source.timestamps(part_id)[0]) / 1e9,
         num_samples=source.frame_count(part_id),
         unit="n.a.",
     )

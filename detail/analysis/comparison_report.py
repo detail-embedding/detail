@@ -42,9 +42,12 @@ RANKING_COLUMNS = [
     "measure",
     "label",
     "label_to",
+    "label_display",
+    "label_is_remainder",
     "window_id",
     "effect",
     "magnitude",
+    "statistic",
     "floor",
     "clears",
     "kept",
@@ -282,6 +285,9 @@ def rank_record(obs, record: dict, ancestors=None):
             presence_ns=float(record.get("presence_s", 0.0)) * 1e9,
             pseudo=pseudo_count(float(record.get("pseudo_count_s", 0.0))),
             ranking_measure=ranking_measure,
+            # The resolved statistic (§24 *The statistic*); a record written before the
+            # field existed ranks on the effect, as it did when it was written.
+            statistic=record.get("ranking_statistic") or compare.STATISTIC_EFFECT,
         )
     if ancestors is not None and record.get("suppress_nesting", True):
         ranking = compare.suppress_nesting(ranking, ancestors)
@@ -414,6 +420,16 @@ def _floor_cell(ranking, item) -> str:
     return "yes" if ranking.clears_floor(item) else "no"
 
 
+def _t_cell(item) -> str:
+    """The moderated t as a cell: ``+8.8``, ``—`` for none."""
+    t = getattr(item, "statistic", None)
+    return "—" if t is None else f"{t:+.1f}"
+
+
+def _studentized(ranking) -> bool:
+    return ranking.statistic == compare.STATISTIC_T
+
+
 def p_text(p: float | None) -> str:
     """A p or q as a person reads it: ``<0.001``, ``0.0039``, ``0.053``, ``0.5``; ``""`` for
     none. Two significant figures: enough to tell ``0.053`` from the slider's ``0.05``, and
@@ -458,6 +474,7 @@ def ranking_rows(
         # cannot carry a group's name (§24 *Designs*).
         within = ranking.design != compare.BETWEEN
         headers = ["measure", "between", "a", "b", "change (a \u2192 b)"]
+        headers += ["t"] if _studentized(ranking) else []
         headers += ["in that direction", "present"] if within else []
         headers += ["clears floor", P_HEADER] if with_floor else []
         headers += ["kept"] if ranking.kept is not None else []
@@ -478,6 +495,7 @@ def ranking_rows(
                 f"{b_text}{suffix}" if b_text else "\u2014",
                 _change_text(item),
             ]
+            cells += [_t_cell(item)] if _studentized(ranking) else []
             if within:
                 cells += [
                     f"{item.consistency} of {item.n_units}",
@@ -489,7 +507,9 @@ def ranking_rows(
             rows.append(cells)
         return headers, rows
     if ranking.design == compare.TREND:
-        headers = ["measure", "mean ρ", "in that direction", "present"]
+        headers = ["measure", "mean ρ"]
+        headers += ["t"] if _studentized(ranking) else []
+        headers += ["in that direction", "present"]
         headers += ["clears floor", P_HEADER] if with_floor else []
         headers += ["kept"] if ranking.kept is not None else []
         headers += ["suggestion"]
@@ -498,6 +518,9 @@ def ranking_rows(
             cells = [
                 measure_title(item.measure_key, remainders_of(record)),
                 "—" if item.effect is None else f"{item.effect:+.2f}",
+            ]
+            cells += [_t_cell(item)] if _studentized(ranking) else []
+            cells += [
                 f"{item.consistency} of {item.n_units}",
                 str(item.n_present),
             ]
@@ -508,6 +531,7 @@ def ranking_rows(
         return headers, rows
     names = group_headers(ranking)
     headers = ["measure", *names, f"change ({names[0]} \u2192 {names[1]})"]
+    headers += ["t"] if _studentized(ranking) else []
     if ranking.design == compare.PAIRED:
         headers += ["in that direction", "present"]
     headers += ["clears floor", P_HEADER] if with_floor else []
@@ -525,6 +549,7 @@ def ranking_rows(
             f"{b_text}{suffix}" if b_text else "—",
             _change_text(item),
         ]
+        cells += [_t_cell(item)] if _studentized(ranking) else []
         if ranking.design == compare.PAIRED:
             cells += [
                 f"{item.consistency} of {item.n_units}",
@@ -545,6 +570,11 @@ def ranking_csv_rows(ranking, record: dict) -> list[dict]:
     """Every ranked item with its verdict — ``ranking.csv``, complete where the tables and
     figures over a large family are the shown set."""
     kept = set(ranking.kept) if ranking.kept is not None else None
+    # A parent label's row counts only its leftover (#24): `label` stays the join key, and
+    # the two columns say so, as stats.csv's do.
+    from detail.analysis.measures import display_label
+
+    remainders = remainders_of(record)
     out = []
     for rank, item in enumerate(ranking.contrasts, start=1):
         keyed = dict(
@@ -558,9 +588,15 @@ def ranking_csv_rows(ranking, record: dict) -> list[dict]:
                 "measure": keyed.get("measure", ""),
                 "label": keyed.get("label", ""),
                 "label_to": keyed.get("label_to", ""),
+                "label_display": display_label(keyed.get("label", ""), remainders),
+                "label_is_remainder": bool(keyed.get("label"))
+                and keyed.get("label") in remainders,
                 "window_id": keyed.get("window_id", ""),
                 "effect": "" if effect is None else effect,
                 "magnitude": "" if item.magnitude is None else item.magnitude,
+                # The moderated t where the ranking scores by it (§24 *The statistic*): the
+                # floor is in its unit, and `clears` is `|statistic|` against `floor`.
+                "statistic": _number_or_blank(item.statistic),
                 "floor": "" if ranking.floor is None else ranking.floor,
                 "clears": ranking.clears_floor(item),
                 "kept": (
@@ -912,7 +948,7 @@ def _ranking_figure(
         return []
     # Unbounded changes have no bar to draw — a fold change from zero is off every axis — so they
     # are listed in `summary.md` and left out of the chart rather than given an invented height.
-    drawn = [c for c in ranking.contrasts if c.magnitude is not None]
+    drawn = [c for c in ranking.contrasts if c.score is not None]
     if not drawn:
         return []
     # A family of a thousand nodes is not a bar chart: the drawn set is what the screen shows.
@@ -922,33 +958,17 @@ def _ranking_figure(
         import matplotlib.pyplot as plt
 
         fig, ax = plt.subplots()
+        # The bars are the score the floor is in the unit of: the moderated t on a
+        # studentized ranking, the |effect| otherwise (\u00a724 *The statistic*).
         figlib.ranked_bars_with_floor(
             ax,
             [measure_title(c.measure_key, remainders) for c in drawn],
-            [c.magnitude for c in drawn],
+            [c.score for c in drawn],
             ranking.floor,
             style=style,
-            xlabel=(
-                "|mean Spearman \u03c1| within unit"
-                if ranking.design == compare.TREND
-                else (
-                    "|fold change| within unit (log scale)"
-                    if ranking.design == compare.PAIRED
-                    else (
-                        "|fold change| of the most different pair of levels, "
-                        "within unit (log scale)"
-                        if ranking.design == compare.PROFILE
-                        else (
-                            "|fold change| of the most different pair of groups "
-                            "(log scale)"
-                            if ranking.profile
-                            else "|fold change| between groups (log scale)"
-                        )
-                    )
-                )
-            ),
+            xlabel=_ranking_xlabel(ranking),
         )
-        if ranking.design != compare.TREND:
+        if ranking.design != compare.TREND and not _studentized(ranking):
             _label_fold_change(ax, drawn)
         _caption(ax, note, style)
         return figlib.save_figure(fig, out_dir / "difference_ranking", formats)
@@ -956,6 +976,21 @@ def _ranking_figure(
 
 #: Bars the ranking figure draws at most — the top of the ranking, which is what it is for.
 _MAX_DRAWN_BARS = 40
+
+
+def _ranking_xlabel(ranking) -> str:
+    """The ranking figure's axis: what the bars are, in the unit the floor is in."""
+    if _studentized(ranking):
+        return "|moderated t| within unit (mean ÷ ((sd + s0) / √n))"
+    if ranking.design == compare.TREND:
+        return "|mean Spearman ρ| within unit"
+    if ranking.design == compare.PAIRED:
+        return "|fold change| within unit (log scale)"
+    if ranking.design == compare.PROFILE:
+        return "|fold change| of the most different pair of levels, within unit (log scale)"
+    if ranking.profile:
+        return "|fold change| of the most different pair of groups (log scale)"
+    return "|fold change| between groups (log scale)"
 
 
 def _label_fold_change(ax, drawn) -> None:
@@ -1014,6 +1049,39 @@ def _change_text(item) -> str:
 _SUMMARY_ROWS = 20
 
 
+def statistic_sentence(ranking) -> str:
+    """What the ranking scores by, in one line every surface prints beside the floor (\u00a724
+    *The statistic*): the moderated t with its ``s0``, or the effect. Empty for a between
+    design, which has only the effect to rank on."""
+    if ranking.design == compare.BETWEEN:
+        return ""
+    unit = "|".join(ranking.unit) or "unit"
+    if ranking.statistic == compare.STATISTIC_T:
+        s0 = "" if ranking.s0 is None else f", s0 = {ranking.s0:.3g}"
+        return (
+            f"ranked on the moderated t: each measure's mean per-{unit} effect over its "
+            f"spread across {unit}s plus the family's median spread (t = mean \u00f7 "
+            f"((sd + s0) / \u221an){s0})"
+        )
+    return f"ranked on the effect: each measure's mean per-{unit} effect"
+
+
+def statistic_note(record: Mapping) -> str:
+    """The record's resolved statistic as a short line (``ranked on the moderated t`` /
+    ``ranked on the effect``) for the surfaces that print the record before ranking it: the
+    detail page's header and ``comparison run``. Empty for a between design, and for a
+    record written before the field existed, which ranks on the effect as it always did.
+    """
+    if record.get("design") in (None, compare.BETWEEN):
+        return ""
+    statistic = record.get("ranking_statistic")
+    if statistic == compare.STATISTIC_T:
+        return "ranked on the moderated t: the mean per-unit effect over its spread"
+    if statistic == compare.STATISTIC_EFFECT:
+        return "ranked on the effect: the mean per-unit effect"
+    return ""
+
+
 def floor_sentence(ranking) -> str:
     """How the floor was made, in one line every surface can print."""
     how = (
@@ -1021,6 +1089,21 @@ def floor_sentence(ranking) -> str:
         if ranking.exact
         else f"{ranking.draws} shuffled draws"
     )
+    if ranking.statistic == compare.STATISTIC_T:
+        within = (
+            ", each unit's levels shuffled within it"
+            if ranking.design != compare.PAIRED
+            else ""
+        )
+        pairs = (
+            " and the largest difference between any two levels taken each time"
+            if ranking.design == compare.PROFILE
+            else ""
+        )
+        return (
+            f"Floor (95th percentile of the largest |moderated t| over {how}{within}"
+            f"{pairs}): **{ranking.floor:.3g}**."
+        )
     if ranking.design == compare.TREND:
         return (
             f"Floor (95th percentile of the largest |mean \u03c1| over {how}, each unit's "
@@ -1063,7 +1146,14 @@ def _summary_ranking_lines(record: dict, ranking) -> list[str]:
             "",
         ]
     else:
-        lines += [floor_sentence(ranking), ""]
+        lines += [floor_sentence(ranking)]
+        if statistic_sentence(ranking):
+            lines += [
+                statistic_sentence(ranking)[0].upper()
+                + statistic_sentence(ranking)[1:]
+                + "."
+            ]
+        lines += [""]
     if ranking.design != compare.BETWEEN:
         lines += [
             f"An effect is undefined below {ranking.min_units} present "

@@ -80,6 +80,33 @@ class QueryRun(AuthoredRun):
             ),
         )
 
+    def _refuse_if_incomplete(self, op: str) -> None:
+        """A search that did not reach every unit refuses to be finalized or exported, naming them.
+
+        Two ways a unit goes unsearched: the search was cancelled before it (``partial``) or one
+        behavior's search raised on it (``open``, with the behavior in ``behaviors_failed``).
+        Either way the unit has no shard, and an export would write it as a header-only CSV —
+        "searched, found nothing" — which is the one thing it is not.
+        """
+        record = analysis_store.read_analysis_yaml(self._run_dir())
+        status = record.get("status", "open")
+        failed = record.get("behaviors_failed") or {}
+        if status not in self._INCOMPLETE_STATUSES and not failed:
+            return
+        missing = query_pipeline.missing_units(self._run_dir())
+        detail = "; ".join(
+            f"{behavior_id} on {', '.join(recordings)}"
+            for behavior_id, recordings in sorted(missing.items())
+        )
+        reasons = "; ".join(f"{b}: {why}" for b, why in sorted(failed.items()))
+        raise ValueError(
+            f"{self.kind} {self.id} did not search every recording it was asked to "
+            f"(status {status!r}), so it will not {op}. Missing: "
+            f"{detail or 'units whose search failed'}"
+            f"{f' ({reasons})' if reasons else ''}. Calibrating what was searched still works; "
+            "re-run the search to cover the rest."
+        )
+
     def _read_state(self) -> query_runs.QueryState:
         return query_runs.read_query_state(self._run_dir())
 
@@ -491,6 +518,8 @@ class QueryRun(AuthoredRun):
 
         Raises:
             FileNotFoundError: If the run carries no artifact yet.
+            ValueError: If the search did not reach every unit (cancelled, or a behavior's
+                search failed on one) — the message names them; re-run the search.
 
         The artifact is **pinned first** and the CSVs are written from the pinned copy (§21), so
         an exported file always corresponds to a snapshot still on disk: reopening the run and

@@ -517,7 +517,7 @@ def test_the_navigation_filters_and_audit_list_open_by_pull_and_click(qapp, fitt
     filters and the clustering Audit's list."""
     from detail.gui.app import MainWindow
     from detail.gui.cluster_workspace import ClusterWorkspace
-    from tests.gui.conftest import drain_busy_calls, drain_until
+    from tests.gui.conftest import drain_busy_calls, drain_until, pump_for
 
     experiment, run_id = fitted
     window = MainWindow()
@@ -535,11 +535,11 @@ def test_the_navigation_filters_and_audit_list_open_by_pull_and_click(qapp, fitt
         drain_busy_calls(qapp)
         _reopens_by_pull_and_by_click(qapp, window._split, 0, "Navigation")
         page._show_view("Interpret")
-        drain_until(qapp, lambda: False, 200)
+        pump_for(qapp, 200)
         filters = workspace._interpret._split
         _reopens_by_pull_and_by_click(qapp, filters, 0, filters.pane_name(0))
         page._show_view("Audit")
-        drain_until(qapp, lambda: False, 200)
+        pump_for(qapp, 200)
         _reopens_by_pull_and_by_click(qapp, workspace._audit._split, 0, "Labels")
     finally:
         window.close()

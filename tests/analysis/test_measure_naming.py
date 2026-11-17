@@ -400,3 +400,10 @@ def test_a_comparison_names_a_parent_labels_rows_as_its_remainder(fitted_codeboo
     assert comparison_report.measure_title(
         ("total_time", "moving", "", "whole"), comparison_report.remainders_of(record)
     ).endswith("moving (other)")
+    ranked = comparison_report.ranking_csv_rows(comparison.ranking(), record)
+    assert {
+        (r["label_display"], r["label_is_remainder"])
+        for r in ranked
+        if r["label"] == "moving"
+    } == {("moving (other)", True)}, "ranking.csv names the remainder row too"
+    assert set(ranked[0]) == set(comparison_report.RANKING_COLUMNS)

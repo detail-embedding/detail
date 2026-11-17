@@ -415,14 +415,19 @@ class ComparisonLaunchDialog(Dialog):
         self._draws = field_widget(ComparisonConfig, "draws")
         self._seed = field_widget(ComparisonConfig, "seed")
         self._ranking_fields = {
-            name: field_widget(ComparisonConfig, name)
-            for name in (
-                "presence_s",
-                "pseudo_count_s",
-                "min_units_fraction",
-                "candidate_floor_s",
-                "suppress_nesting",
-            )
+            # A `Literal` field is a combo (§24 *The statistic*); the rest are numbers and
+            # a bool, which `field_widget` renders.
+            "statistic": choice_combo(ComparisonConfig, "statistic"),
+            **{
+                name: field_widget(ComparisonConfig, name)
+                for name in (
+                    "presence_s",
+                    "pseudo_count_s",
+                    "min_units_fraction",
+                    "candidate_floor_s",
+                    "suppress_nesting",
+                )
+            },
         }
         for name, widget in (
             ("draws", self._draws),
@@ -1679,6 +1684,8 @@ class ComparisonDetailPage(QWidget):
             lines.append(
                 f"design: {record['design']} — {record.get('design_reason', '')}"
             )
+        # What the ranking scores by (§24 *The statistic*), from the record's resolved field.
+        lines.append(comparison_report.statistic_note(record))
         if comparison_report.left_out_sentence(record):
             lines.append(
                 "left out: "
@@ -1787,9 +1794,10 @@ class ComparisonDetailPage(QWidget):
 
         out.append(_heading("Largest changes"))
         if ranking.floor is not None:
-            floor_note = QLabel(
-                comparison_report.floor_sentence(ranking).replace("**", "")
-            )
+            floor_text = comparison_report.floor_sentence(ranking).replace("**", "")
+            if comparison_report.statistic_sentence(ranking):
+                floor_text += " " + comparison_report.statistic_sentence(ranking) + "."
+            floor_note = QLabel(floor_text)
             floor_note.setWordWrap(True)
             out.append(floor_note)
         kept = ranking.kept_items()

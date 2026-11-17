@@ -28,6 +28,8 @@ not as Query's.
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 from PyQt6.QtCore import (
     QObject,
@@ -406,6 +408,15 @@ _CUT_IDLE = "Cut here"
 
 # Thumbnail sizes the user picks between. Small enough that a wide pane shows a dozen at once,
 # large enough that the largest is worth looking at before opening the player.
+#: Scores closer than this, relatively, are one score. The search computes in float32, and
+#: how its sums round depends on how BLAS splits them across threads, so one match found in two
+#: recordings can come back a unit in the last place apart (0.85658836 and 0.85658842 on a
+#: 32-thread machine, equal on a 4-thread one). Counting those as two made every caption take
+#: the full five decimals trying to separate them. Ten times float32's resolution, and far
+#: below the 1e-5 a five-decimal caption can show.
+SAME_SCORE_REL_TOL = 1e-6
+
+
 def score_digits(scores) -> int:
     """Decimals enough to tell these scores apart, capped so a caption stays a caption.
 
@@ -413,8 +424,12 @@ def score_digits(scores) -> int:
     side of one agree to two places, so a kept clip and a cut one both printed `0.66` and a
     list of them looked like it was not updating.
     """
-    values = [v for v in scores if v is not None]
-    distinct = len(set(values))
+    values = sorted(v for v in scores if v is not None)
+    distinct = sum(
+        1
+        for i, v in enumerate(values)
+        if i == 0 or not math.isclose(v, values[i - 1], rel_tol=SAME_SCORE_REL_TOL)
+    )
     digits = 2
     while digits < 5 and len({f"{v:.{digits}f}" for v in values}) < distinct:
         digits += 1

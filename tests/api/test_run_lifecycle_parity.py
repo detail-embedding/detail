@@ -232,7 +232,12 @@ def test_the_gui_reconciles_every_record_kind_on_open():
     source = (Path(detail.__file__).parent / "gui" / "app.py").read_text(
         encoding="utf-8-sig"
     )
-    for call in ("reconcile_imports()", "reconcile_runs()", "reconcile_job_runs()"):
+    for call in (
+        "reconcile_imports()",
+        "reconcile_runs()",
+        "reconcile_job_runs()",
+        "reconcile_recording_runs()",
+    ):
         assert call in source, f"experiment open must call {call}"
 
 
@@ -353,3 +358,108 @@ def test_no_analysis_module_reports_a_non_failed_status_after_a_failed_job(
         f"{module_id} reports {ref.status!r} for a run whose job failed — a surface reading "
         "this offers a dead run's results"
     )
+
+
+# --------------------------------------------------------------------------- #
+# a processing run's status is rolled up over its plan (issue #28, finding 1)
+# --------------------------------------------------------------------------- #
+#
+# **The class: a roll-up over the entries present instead of over the plan.** A processing
+# run's `per_recording` gains an entry only when the coordinator launches that recording, so a
+# run cancelled after its first recording holds one entry, and `all(s == "complete")` over it
+# is true. `cancel_run` rolled up that way (and also killed the coordinator, removing the only
+# other writer), so the run read `complete` and a dataset could be built from one of three
+# recordings. `_finalize` guarded it with a length check and `_reconcile_run` by filling the
+# missing entries — three copies, one of them wrong. The rule: one function,
+# `roll_up_run_status`, over `recording_ids`; the scan below keeps it the only one.
+def _three_recording_run(tmp_path, module_id):
+    from detail.storage import runs as runs_store
+
+    proj = Experiment.create("p", tmp_path)
+    ids = [proj.create_recording(f"rec{i}").id for i in range(3)]
+    runs_store.write_run(
+        proj.dir,
+        "run_001",
+        {
+            "id": "run_001",
+            "module_id": module_id,
+            "recording_ids": ids,
+            "config": {},
+            "per_recording": {ids[0]: {"run_id": "x_01", "status": "complete"}},
+            "status": "running",
+            "created_at": "2026-01-01T00:00:00Z",
+        },
+    )
+    return proj, ids
+
+
+@pytest.mark.parametrize("module_id", sorted(PROCESSING_MODULES))
+def test_a_cancel_between_recordings_is_cancelled_and_lists_the_unrun(
+    tmp_path, module_id
+):
+    from detail.storage import runs as runs_store
+
+    proj, ids = _three_recording_run(tmp_path, module_id)
+    proj.cancel_run("run_001")
+
+    record = runs_store.read_run(proj.dir, "run_001")
+    assert record["status"] == "cancelled"
+    assert record["per_recording"][ids[0]]["status"] == "complete"
+    for sid in ids[1:]:
+        assert record["per_recording"][sid]["status"] == "cancelled"
+        assert record["per_recording"][sid]["run_id"] is None
+
+
+@pytest.mark.parametrize("module_id", sorted(PROCESSING_MODULES))
+def test_a_dead_coordinator_with_unlaunched_recordings_reconciles_failed(
+    tmp_path, module_id
+):
+    from detail.storage import runs as runs_store
+
+    proj, ids = _three_recording_run(tmp_path, module_id)
+    runs_store.set_coordinator_pid(proj.dir, "run_001", _dead_pid())
+    proj._reconcile_run(runs_store.read_run(proj.dir, "run_001"))
+
+    record = runs_store.read_run(proj.dir, "run_001")
+    assert record["status"] == "failed"
+    assert [record["per_recording"][s]["status"] for s in ids] == [
+        "complete",
+        "failed",
+        "failed",
+    ]
+
+
+def _complete_rollups(source: str) -> list[int]:
+    """Lines holding an ``all(<x> == "complete" | COMPLETE …)`` roll-up."""
+    import ast
+
+    found = []
+    for node in ast.walk(ast.parse(source)):
+        if not (isinstance(node, ast.Call) and getattr(node.func, "id", None) == "all"):
+            continue
+        text = ast.unparse(node)
+        if "== 'complete'" in text or "COMPLETE" in text:
+            found.append(node.lineno)
+    return found
+
+
+def test_the_run_status_roll_up_lives_in_one_function():
+    import ast
+    import pathlib
+
+    import detail.api.experiment as experiment_module
+
+    source = pathlib.Path(experiment_module.__file__).read_text(encoding="utf-8-sig")
+    tree = ast.parse(source)
+    owners = set()
+    for line in _complete_rollups(source):
+        for fn in ast.walk(tree):
+            if isinstance(fn, ast.FunctionDef) and fn.lineno <= line <= fn.end_lineno:
+                owners.add(fn.name)
+    assert owners == {"roll_up_run_status"}, owners
+
+
+def test_the_roll_up_scan_would_catch_a_second_copy():
+    assert _complete_rollups('ok = all(s == "complete" for s in statuses)\n') == [1]
+    assert _complete_rollups("ok = all(s == JobStatus.COMPLETE.value for s in xs)\n")
+    assert _complete_rollups("ok = all(s == 'failed' for s in xs)\n") == []

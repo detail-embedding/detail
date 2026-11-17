@@ -2141,3 +2141,43 @@ def test_a_pinned_renderer_spec_never_gains_the_default_constructor(tmp_path):
     stored = _with_model_defaults(module, config)
     assert stored["constructor"] is None
     assert stored["model_id"] == "dinov3_vit"
+
+
+def test_a_stop_mid_unit_reaches_the_inline_loop(tmp_path, monkeypatch):
+    """#28's sibling of detection's finding 4. The inline (single-device) path checked the stop
+    event only between units and never touched ``stop.flag``, which is what a running unit
+    polls, so a cancel waited out the whole (track, part) unit. The stop is set while batch 2
+    of the only unit is being embedded and that batch is held until the flag appears."""
+    import threading
+
+    monkeypatch.setattr(embedding, "_PROGRESS_POLL_INTERVAL_S", 0.02)
+    recording_dir = _setup(tmp_path, object_ids=[0] * 8)
+    run_dir = recording_dir / "embeddings" / "emb_01"
+    run_dir.mkdir(parents=True)
+    stop_flag = run_dir / "stop.flag"
+    stop_event = threading.Event()
+    calls = {"n": 0}
+
+    class _StoppedMidUnit(_FakeEmbedder):
+        def embed_batch(self, images):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                stop_event.set()
+                deadline = time.monotonic() + 5.0
+                while not stop_flag.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+            return super().embed_batch(images)
+
+    register_embedding_model("fake_embedder")(_StoppedMidUnit)
+    try:
+        with pytest.raises(RuntimeError):  # a stopped unit is failed (no resume)
+            embedding.run(
+                _job(batch_size=1),
+                run_dir,
+                progress_cb=lambda e: None,
+                stop_event=stop_event,
+            )
+    finally:
+        EMBEDDING_MODELS.pop("fake_embedder", None)
+    assert stop_flag.exists(), "the stop never reached the unit being embedded"
+    assert calls["n"] < 8, "the unit ran to its end after the stop"

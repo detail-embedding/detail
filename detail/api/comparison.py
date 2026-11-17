@@ -539,6 +539,14 @@ def prepare_comparison(
         "n_units": n_units,
         "min_units": min_units,
         "ranking_measure": ranking_measure,
+        # What the ranking scores by, resolved (§24 *The statistic*): a between design has no
+        # per-unit effects to studentize, so it ranks on the effect whatever was asked, and
+        # the record says so rather than carrying a choice that did not apply.
+        "ranking_statistic": (
+            compare.STATISTIC_EFFECT
+            if design.kind == compare.BETWEEN
+            else cfg.statistic
+        ),
         # Ordered as tuples and joined afterwards, never joined and then sorted: `|` sorts
         # after every letter, so the two disagree whenever one group's first component is a
         # prefix of another's, and every reader of this list would be off by a permutation

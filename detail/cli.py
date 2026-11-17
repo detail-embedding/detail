@@ -114,11 +114,16 @@ def _compute_target(backend: str, devices: tuple[int, ...] | None) -> ComputeTar
 
 def _open_experiment(experiment_dir: Path) -> Experiment:
     try:
-        return Experiment.open(experiment_dir)
+        experiment = Experiment.open(experiment_dir)
     except (FileNotFoundError, ValueError) as e:
         raise click.ClickException(
             f"could not open experiment at {experiment_dir}: {e}"
         )
+    # A one-recording run interrupted by Ctrl-C, a closed terminal or a script that never
+    # waited leaves `recording.yaml` behind its `job.json`; every command adopts the real
+    # status first, as the GUI does on open (issue #28, finding 5).
+    experiment.reconcile_recording_runs()
+    return experiment
 
 
 def _stream_config(
@@ -3459,7 +3464,8 @@ def process_retry(run_id: str, experiment_dir: Path) -> None:
 def process_cancel(run_id: str, experiment_dir: Path) -> None:
     """Cancel a running processing run — stops its coordinator and in-flight recordings.
 
-    Recordings already finished keep their results; `process retry` picks up the rest.
+    Recordings already finished keep their results, and recordings not yet reached are
+    listed as cancelled; `process retry` picks up the rest.
     """
     proj = _open_experiment(experiment_dir)
     _processing_record(proj, run_id, experiment_dir)
@@ -4371,7 +4377,7 @@ def distill_delete(run_id: str, experiment_dir: Path, yes: bool) -> None:
         )
     try:
         proj.delete_distill(run_id)
-    except FileNotFoundError as e:
+    except (FileNotFoundError, ValueError) as e:
         raise click.ClickException(str(e))
     click.echo(f"deleted distill run: {run_id}")
 
@@ -5425,7 +5431,8 @@ def analysis_query(
 )  # fmt: skip
 @click.option(
     "--finalize", is_flag=True, default=False,
-    help="Mark the run complete — your statement that you are done calibrating.",
+    help="Mark the run complete — your statement that you are done calibrating. Refused, "
+    "naming the recordings, while the search has not reached every one.",
 )  # fmt: skip
 @click.option(
     "--reopen", is_flag=True, default=False,
@@ -5503,7 +5510,10 @@ def analysis_query_calibrate(
         bar.close()
 
     if finalize:
-        _with_stage_progress(lambda bar: run.finalize(progress=bar))
+        try:
+            _with_stage_progress(lambda bar: run.finalize(progress=bar))
+        except ValueError as e:  # a search that did not reach every recording
+            raise click.ClickException(str(e))
         click.echo(f"finalized {run_id}")
 
     _echo_query_state(run)
@@ -5748,7 +5758,8 @@ def analysis_export_query(experiment_dir: Path, run_id: str, out_dir: Path) -> N
     """Export a query run's calibrated behaviors as per-recording behavior-stream CSVs.
 
     Each row carries ``origin: predicted``, so re-importing one as a behavior stream can never
-    be read back as ground truth.
+    be read back as ground truth. A run whose search did not reach every recording is refused,
+    naming the ones it missed.
     """
     proj = _open_experiment(experiment_dir)
     try:
@@ -7274,6 +7285,13 @@ def comparison() -> None:
     show_default=True,
     help=_comparison_help("suppress_nesting"),
 )
+@click.option(
+    "--statistic",
+    type=click.Choice(["moderated_t", "effect"]),
+    default=_comparison_default("statistic"),
+    show_default=True,
+    help=_comparison_help("statistic"),
+)
 def comparison_run(
     experiment_dir,
     source_run_id,
@@ -7296,6 +7314,7 @@ def comparison_run(
     min_units_fraction,
     candidate_floor_s,
     suppress_nesting,
+    statistic,
 ) -> None:
     """Run a comparison and save it.
 
@@ -7342,6 +7361,7 @@ def comparison_run(
                 "min_units_fraction": min_units_fraction,
                 "candidate_floor_s": candidate_floor_s,
                 "suppress_nesting": suppress_nesting,
+                "statistic": statistic,
             },
             progress=bar,
         )
@@ -7357,6 +7377,8 @@ def comparison_run(
     click.echo(f"  design: {record.get('design')} — {record.get('design_reason', '')}")
     from detail.analysis import comparison_report
 
+    if comparison_report.statistic_note(record):
+        click.echo(f"  {comparison_report.statistic_note(record)}")
     if comparison_report.left_out_sentence(record):
         click.echo(
             f"  left out: "

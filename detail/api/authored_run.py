@@ -1251,6 +1251,7 @@ class AuthoredRun(AnalysisRun):
         ``progress(stage, fraction, detail)``.
         """
         self._refuse_if_read_only("finalize")
+        self._refuse_if_incomplete("be finalized")
         self.pin(reason="finish", progress=progress)
         analysis_store.set_analysis_status(self._run_dir(), "complete")
         self._log({"op": "finalize"})
@@ -1281,6 +1282,7 @@ class AuthoredRun(AnalysisRun):
         reports through ``progress``.
         """
         self._refuse_if_read_only("pin")
+        self._refuse_if_incomplete(f"be pinned for {reason}")
         self.bring_frame_views_current(progress=progress)
         return snapshots_store.pin(
             self._run_dir(),
@@ -2140,6 +2142,26 @@ class AuthoredRun(AnalysisRun):
         self._refuse_if_read_only(op)
         self._refuse_if_finalized(op)
         self._log({"op": op, **entry})
+
+    #: Record statuses that say the compute did not finish. §19: such a run has no behavior
+    #: output, because its coverage cannot honestly state what was analyzed.
+    _INCOMPLETE_STATUSES = ("partial", "failed")
+
+    def _refuse_if_incomplete(self, op: str) -> None:
+        """A run whose compute did not finish refuses to leave as a result (finalize, a pin).
+
+        ``finalize`` used to set ``complete`` on any run, so an interrupted ``partial`` run became
+        ``complete`` on the user's say-so, and every number that leaves a run goes through
+        ``pin``. Editing stays allowed: what the compute did reach is real, and calibrating it is
+        how a user decides whether to re-run. A subclass that can name the missing work extends
+        this (``QueryRun``).
+        """
+        status = self.status
+        if status in self._INCOMPLETE_STATUSES:
+            raise ValueError(
+                f"{self.kind} {self.id} is {status!r}: its compute did not finish, so it will "
+                f"not {op}. Re-run it to get a result that covers everything it was asked to."
+            )
 
     def _refuse_if_finalized(self, op: str) -> None:
         """A finalized run refuses an edit and names the way back.

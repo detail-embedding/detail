@@ -255,30 +255,72 @@ def _recording_label(recording_dir: Path | str) -> str:
     return repr(name or Path(recording_dir).name)
 
 
+def _embedded_parts(
+    recording_dir: Path, embed_run_id: str, track_id: int
+) -> list[tuple[PartZarrReader, int]]:
+    """A track's non-empty embedding parts as ``(reader, start frame)``, in recording order.
+
+    The one walk both loaders share, so row ``k`` is the same row in each (`unit_timeline`
+    relies on it). Each part zarr counts ``frame_idx`` from 0 inside its own part (§5, §14);
+    the start frame from `recording_store.part_start_frames`, looked up **by part stem** (an
+    empty part is skipped, so a position would be wrong), is what places it on the recording.
+
+    A recording with no video manifest (a synthetic direct-call test) has one frame space only
+    if it has one part: a single non-empty part is read as it is stored, and more than one is
+    refused, since nothing says where the second starts.
+
+    Raises
+    ValueError: a part the recording does not list, or several parts and no manifest
+    """
+    run_dir = recording_dir / "embeddings" / embed_run_id / f"track_{track_id}"
+    readers = [
+        (part.stem, reader)
+        for part in sorted(run_dir.glob("part_*.zarr"))
+        if (reader := PartZarrReader(part)).n_rows
+    ]
+    starts = recording_store.part_start_frames(recording_dir)
+    if starts is None:
+        if len(readers) > 1:
+            raise ValueError(
+                f"{recording_dir.name}: embedding run {embed_run_id!r} track {track_id} has "
+                f"{len(readers)} parts but recording.yaml lists no video parts, so their "
+                "frames cannot be placed on the recording"
+            )
+        return [(reader, 0) for _stem, reader in readers]
+    placed = []
+    for stem, reader in readers:
+        if stem not in starts:
+            raise ValueError(
+                f"{recording_dir.name}: embedding run {embed_run_id!r} has rows for part "
+                f"{stem!r}, which recording.yaml does not list"
+            )
+        placed.append((reader, starts[stem]))
+    return sorted(placed, key=lambda item: item[1])
+
+
 def load_track_trajectory(
     recording_dir: Path | str, embed_run_id: str, track_id: int
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Concatenate a track's per-part embedding stores into one ``(M, D)`` trajectory.
 
-    Detail stores ``(M, D)`` per track already (no rotation axis), so this is just the
-    ordered concatenation of ``embeddings/<run>/track_<tid>/part_*.zarr``.
+    Detail stores ``(M, D)`` per track already (no rotation axis), so this is the
+    concatenation of ``embeddings/<run>/track_<tid>/part_*.zarr`` in recording order.
 
     Returns
-    (emb (M, D) float32, frame_idx (M,) int32, t_ns (M,) int64) in frame order
+    (emb (M, D) float32, frame_idx (M,) int64, t_ns (M,) int64), ``frame_idx`` counted
+    across the whole recording (the stored part-local value plus its part's start frame,
+    `_embedded_parts`), so it is strictly increasing and ``frame_idx`` and ``t_ns`` agree
+    through the recording's timestamp map.
 
     Raises
-    ValueError: the track has no embedded rows in this run
+    ValueError: the track has no embedded rows in this run, or a part cannot be placed
     """
-    run_dir = Path(recording_dir) / "embeddings" / embed_run_id / f"track_{track_id}"
     embs: list[np.ndarray] = []
     frames: list[np.ndarray] = []
     times: list[np.ndarray] = []
-    for part in sorted(run_dir.glob("part_*.zarr")):
-        reader = PartZarrReader(part)
-        if reader.n_rows == 0:
-            continue
+    for reader, start in _embedded_parts(Path(recording_dir), embed_run_id, track_id):
         embs.append(np.asarray(reader.column("embedding")[:], dtype=np.float32))
-        frames.append(np.asarray(reader.column("frame_idx")[:]))
+        frames.append(np.asarray(reader.column("frame_idx")[:], dtype=np.int64) + start)
         times.append(np.asarray(reader.column("t_ns")[:]))
     if not embs:
         raise ValueError(
@@ -337,19 +379,16 @@ def load_track_timeline(
     trajectory to ask *when* a track exists.
 
     Returns
-    (frame_idx (M,) int32, t_ns (M,) int64) in frame order
+    (frame_idx (M,) int64, t_ns (M,) int64), the same rows in the same order as
+    :func:`load_track_trajectory`, ``frame_idx`` counted across the whole recording
 
     Raises
-    ValueError: the track has no embedded rows in this run
+    ValueError: the track has no embedded rows in this run, or a part cannot be placed
     """
-    run_dir = Path(recording_dir) / "embeddings" / embed_run_id / f"track_{track_id}"
     frames: list[np.ndarray] = []
     times: list[np.ndarray] = []
-    for part in sorted(run_dir.glob("part_*.zarr")):
-        reader = PartZarrReader(part)
-        if reader.n_rows == 0:
-            continue
-        frames.append(np.asarray(reader.column("frame_idx")[:]))
+    for reader, start in _embedded_parts(Path(recording_dir), embed_run_id, track_id):
+        frames.append(np.asarray(reader.column("frame_idx")[:], dtype=np.int64) + start)
         times.append(np.asarray(reader.column("t_ns")[:]))
     if not frames:
         raise ValueError(

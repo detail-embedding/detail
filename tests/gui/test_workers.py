@@ -855,4 +855,4 @@ def test_the_pool_drain_gives_up_rather_than_hanging(qapp):
 
     assert elapsed < 5, f"the drain blocked for {elapsed:.1f}s instead of giving up"
     release.set()
-    QThreadPool.globalInstance().waitForDone(5_000)
+    drain_thread_pool(qapp)

@@ -533,7 +533,9 @@ class LabelCheckTab(QWidget):
                     ),  # off-thread
                     "old": old,
                     "colour": QColor(
-                        theme.identity(roots.index(path.split(bo.PATH_SEPARATOR)[0]))
+                        theme.label_identity(
+                            roots.index(path.split(bo.PATH_SEPARATOR)[0])
+                        )
                     ).name(),
                 }
             )
