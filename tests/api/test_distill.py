@@ -1,4 +1,12 @@
-"""Tests for the durable distill run — label → train (§12)."""
+"""Tests for the durable distill run — label → train (§12).
+
+**A default selection that includes what the operation refuses** (#35). "No recordings named"
+meant every recording, so one metadata-only recording — which Add recordings allows — refused
+the whole labeling or distill job, and named itself by id. It means every recording *with
+video* now, resolved once in ``Experiment._sampling_recordings`` so the CLI and GUI agree; a
+recording that is *named* and has no video is still refused, by its name. The GUI pickers grey
+such a recording and say how many selecting nothing uses.
+"""
 
 import json
 import types

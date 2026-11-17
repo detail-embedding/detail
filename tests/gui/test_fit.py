@@ -1,4 +1,16 @@
-"""Fit/train dialogs + the trained-model (closed-set) detection toggle (§12)."""
+"""Fit/train dialogs + the trained-model (closed-set) detection toggle (§12).
+
+**A default selection that includes what the operation refuses** (#35). "No recordings named"
+meant every recording, so one metadata-only recording — which Add recordings allows — refused
+the whole labeling or distill job, and named itself by id. It means every recording *with
+video* now, resolved once in ``Experiment._sampling_recordings`` so the CLI and GUI agree; a
+recording that is *named* and has no video is still refused, by its name. The GUI pickers grey
+such a recording and say how many selecting nothing uses.
+
+**And one range for one field**: two labeling dialogs capped ``val_split`` at 0.9 by hand while
+Generate dataset went to the model's bound; the cap is the field's ``ui_max`` now
+(``test_every_labeling_dialog_offers_one_validation_split_range``).
+"""
 
 import pytest
 

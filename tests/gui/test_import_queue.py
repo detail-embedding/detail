@@ -1,4 +1,13 @@
-"""App-level import queue: shells up front, source overlay, worker, cancel."""
+"""App-level import queue: shells up front, source overlay, worker, cancel.
+
+**An armed state set without asking whether it applies** (#35). ``cancel()`` set the queue's stop
+event whether or not anything was running. **Cancel imports** is enabled from the table's last
+read, and the quit path decides from run records rather than from the queue, so both reach it
+with nothing running; nothing cleared the event while idle, and the next ``submit`` handed it to
+a new worker, which marked that batch ``cancelled`` at once — a video never copied, and no
+message. A stop left set when a batch ended also stranded what was submitted after it as
+"queued". The stop now applies only to a running batch and is cleared when that batch ends.
+"""
 
 import threading
 

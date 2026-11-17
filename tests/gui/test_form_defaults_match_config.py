@@ -251,7 +251,9 @@ def test_no_model_built_widget_is_given_a_hand_written_range_or_default():
     gui = Path(__file__).resolve().parents[2] / "detail" / "gui"
     found = []
     for source in sorted(gui.rglob("*.py")):
-        found += hand_set_model_widgets(source.name, source.read_text(encoding="utf-8"))
+        found += hand_set_model_widgets(
+            source.name, source.read_text(encoding="utf-8-sig")
+        )
     unexcused = sorted(set(found) - set(HAND_SET))
     assert not unexcused, f"hand-set model-built widgets: {unexcused}"
     stale = sorted(set(HAND_SET) - set(found))

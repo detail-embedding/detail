@@ -1,4 +1,11 @@
-"""GUI stream dialogs: add + preview construct and render (Section 3)."""
+"""GUI stream dialogs: add + preview construct and render (Section 3).
+
+**A chosen mapping dropped by the next file** (#35). The CSV band re-applied a saved mapping only
+when it had been chosen *before* any file, so picking another file — the very advice the
+missing-column message gave — unticked every column while **Reuse a mapping** still named the
+mapping, and choosing it again did nothing because the selection had not changed. The band keeps
+the mapping until another is chosen and applies it to each file; the stream keeps its name.
+"""
 
 import pytest
 
