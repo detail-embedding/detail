@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 from PyQt6.QtWidgets import QFileDialog, QMessageBox
 
+from detail.api.animation import GIF
 from detail.gui import animation_export as ax
 
 _APPENDED_SUFFIX = re.compile(r"\.with_name\(\s*f[\"']\{[^}]*\.name\}\.")
@@ -72,11 +73,11 @@ def test_no_question_when_the_name_is_free_or_the_dialog_already_asked(
 ):
     seen, _answer = asked
     _typed(monkeypatch, tmp_path / "climb")
-    assert ax.ask_save_path(None, "t", "x.gif", ax.GIF) == tmp_path / "climb.gif"
+    assert ax.ask_save_path(None, "t", "x.gif", GIF) == tmp_path / "climb.gif"
     (tmp_path / "climb.gif").write_bytes(b"x")
     # The name the dialog returned is the one it asked about.
     _typed(monkeypatch, tmp_path / "climb.gif")
-    assert ax.ask_save_path(None, "t", "x.gif", ax.GIF) == tmp_path / "climb.gif"
+    assert ax.ask_save_path(None, "t", "x.gif", GIF) == tmp_path / "climb.gif"
     assert seen == []
 
 

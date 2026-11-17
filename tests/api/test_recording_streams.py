@@ -96,8 +96,8 @@ def test_a_data_and_program_file_with_one_name_are_both_kept(
         "data": "streams/medpc/raw/same.txt",
         "program": "streams/medpc/raw/program_same.txt",
     }
-    assert (raw / "same.txt").read_text(encoding="utf-8") == DATA_TXT
-    assert (raw / "program_same.txt").read_text(encoding="utf-8") == PROGRAM_MPC
+    assert (raw / "same.txt").read_text(encoding="utf-8-sig") == DATA_TXT
+    assert (raw / "program_same.txt").read_text(encoding="utf-8-sig") == PROGRAM_MPC
 
 
 def test_a_stream_name_that_differs_only_by_case_is_refused(

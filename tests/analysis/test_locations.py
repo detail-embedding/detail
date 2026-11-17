@@ -308,7 +308,7 @@ def test_a_second_export_into_one_folder_keeps_the_first(tmp_path):
     (first / "tracks.csv").write_text("the first export", encoding="utf-8")
     second = recording.export_locations("track_01", tmp_path / "loc")
     assert first != second and first.parent == second.parent == tmp_path / "loc"
-    assert (first / "tracks.csv").read_text(encoding="utf-8") == "the first export"
+    assert (first / "tracks.csv").read_text(encoding="utf-8-sig") == "the first export"
     assert (second / "tracks.csv").is_file()
     assert "recording_001" in first.name and "track_01" in first.name
 

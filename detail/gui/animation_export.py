@@ -26,7 +26,6 @@ from PyQt6.QtWidgets import (
 )
 
 from detail.api.animation import (
-    GIF,
     GIF_DEFAULT_FPS,
     GIF_DEFAULT_WIDTH,
     GIF_FPS_RANGE,
@@ -99,16 +98,15 @@ def ask_gif_settings(parent: QWidget, frames_note: str) -> tuple[int, float] | N
     return dialog.values()
 
 
-_PATTERNS = {MP4: "MP4 video (*.mp4)", GIF: "GIF animation (*.gif)"}
-
-
 def ask_save_path(
     parent: QWidget, title: str, suggested: str, kind: str, pattern: str = ""
 ) -> Path | None:
     """Where to write a file of ``kind`` (``mp4``, ``gif``, ``csv``, ``png``…), from the
-    system save dialog; ``None`` when cancelled. ``pattern`` is the dialog's filter, read
-    from :data:`_PATTERNS` for a video or a GIF."""
-    pattern = pattern or _PATTERNS[kind]
+    system save dialog; ``None`` when cancelled. ``pattern`` is the dialog's filter; a
+    video's or a GIF's is filled in."""
+    pattern = pattern or (
+        "MP4 video (*.mp4)" if kind == MP4 else "GIF animation (*.gif)"
+    )
     path, _filter = QFileDialog.getSaveFileName(parent, title, suggested, pattern)
     if not path:
         return None
