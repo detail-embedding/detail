@@ -612,6 +612,12 @@ class NodeInterpretTab(QWidget):
         self._tree_key = None
 
         layout = QVBoxLayout(self)
+        # No side margin of its own: the run page's view host already keeps the margin from
+        # the window, and the row of view tabs (Interpret, Audit, …) sits at that margin. A
+        # second one here put the dock's tabs a few pixels right of the tabs above them
+        # (user screenshot, 2026-11-17).
+        margins = layout.contentsMargins()
+        layout.setContentsMargins(0, margins.top(), 0, margins.bottom())
 
         # §22: clips built from another fit are said to be, with the way to fix them. The one
         # row above the workspace that comes and goes: shown only while the clips are stale.
