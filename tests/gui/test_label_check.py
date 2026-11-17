@@ -1011,3 +1011,41 @@ def test_a_reload_in_a_hidden_tab_takes_no_focus(qapp, labelled):
     finally:
         widget.pane.montage._worker.stop()
         tabs.deleteLater()
+
+
+def test_marks_queued_when_the_page_is_left_still_reach_the_run(
+    qapp, labelled, monkeypatch
+):
+    """Leaving AUDIT with writes queued must not lose them (issue #24, finding 1).
+
+    The queue used to live on the page: each next write started from the previous write's
+    ``done``, and that delivery is dropped once the page is gone — so every mark after the
+    first in flight was lost without a word when the shell tore the page down. The queue now
+    belongs to the run (``gui/run_writes.py``) and finishes after the page has gone.
+    """
+    from PyQt6.QtCore import QEvent
+
+    experiment, handle, _nodes = labelled
+    gate = threading.Event()
+    real = type(handle).take_out_clips
+
+    def slow(self, *args, **kwargs):
+        gate.wait(20)
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(handle), "take_out_clips", slow)
+    widget = _tab(qapp, experiment, handle)
+    try:
+        for index in range(3):
+            _tap(qapp, widget, index)
+        assert len(_marks(widget)) == 3
+        assert widget.writes_pending()
+        widget.pane.montage._worker.stop()
+        widget.close()
+        widget.deleteLater()
+        qapp.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+    finally:
+        gate.set()
+    assert _drain(
+        qapp, lambda: len(handle.taken_out("climb")) == 3, 20_000
+    ), f"only {len(handle.taken_out('climb'))} of 3 marks reached the run"

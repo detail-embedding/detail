@@ -295,6 +295,8 @@ GUARD_FILES = frozenset(
         "tests/gui/test_export_reach.py",
         "tests/gui/test_reachability.py",
         "tests/gui/test_editing.py",
+        # A run's label writes outlive the page that queued them; quitting asks (#24).
+        "tests/gui/test_run_writes.py",
         "tests/gui/test_form_help_coverage.py",
         "tests/gui/test_frame_source.py",
         "tests/gui/test_failed_run_surface.py",

@@ -52,7 +52,8 @@ right, top to bottom:
 thread; after that, selecting a cluster and filtering are arithmetic over arrays in memory
 (``api/node_view.py``, ``api/cluster_filter.py``), and the montage paints from this machine's
 video previews (``api/clip_tiles.py``) on its own worker. A label shows at once and is written in
-the background, one at a time and in order (``_label`` / ``_write_next``).
+the background, one at a time and in order, by the run's write queue (``_submit``,
+``gui/run_writes.py``), which outlives the page: leaving it mid-queue loses nothing.
 
 **When previews are missing** the montage area alone is blocked, with a progress bar, the time
 left and Cancel, waiting only on this run's recordings (``gui/preview_jobs.py`` builds them, and
@@ -86,7 +87,7 @@ from PyQt6.QtWidgets import (
 
 from detail.api import cluster_filter
 from detail.core.progress import remaining_seconds
-from detail.gui import node_cache_jobs, plot_theme, preview_jobs
+from detail.gui import node_cache_jobs, plot_theme, preview_jobs, run_writes
 from detail.gui.audit_table import audited_colour
 from detail.gui.busy import run_busy, run_progress
 from detail.gui.cluster_filters import (
@@ -525,6 +526,19 @@ def _effect_caption(ranking, record: dict) -> str:
     return "Less ↔ more"
 
 
+def write_failure_title(exc: BaseException) -> str:
+    """The title of a failed label write's dialog: whether the label is on disk.
+
+    A reprojection that dies after the state is written leaves the label **saved** and the
+    results out of date; titling that "Label not saved" sent people to label again (#24).
+    """
+    # Read off the error rather than by importing its class: the storage module is a slow seam
+    # this page may not touch on the UI thread, and the attribute is the claim that matters.
+    if getattr(exc, "change_saved", False):
+        return "Label saved, results not rebuilt"
+    return "Label not saved"
+
+
 class NodeInterpretTab(QWidget):
     """The INTERPRET tab for a pose or temporal clustering run."""
 
@@ -545,9 +559,9 @@ class NodeInterpretTab(QWidget):
         self._state = None
         self._names: dict[str, str] = {}
         self._selected: int | None = None
-        #: Label edits waiting to be written, in order — each a call on the run.
-        self._pending: list = []
-        self._writer: BackgroundCall | None = None
+        #: The run's write queue: shared with every page on this run and kept by the app, so a
+        #: write queued here lands after the page is gone (``run_writes``).
+        self._writes = run_writes.queue_for(run)
         self._can_edit = False
         #: **Finish** was clicked: nothing labels until the run is finished (or it failed), and
         #: the finalize waits for the writes still queued (``_finalize_when_saved``).
@@ -847,6 +861,10 @@ class NodeInterpretTab(QWidget):
         self._job = None
         self._apply_editability()
         self.reload()
+        # Writes queued on a page since left are still landing: read the run again once they
+        # have, or this page shows it without them.
+        if self._writes.busy():
+            self._writes.when_idle(self.reload, owner=self)
 
     # --- loading -------------------------------------------------------------------------
 
@@ -2531,9 +2549,9 @@ class NodeInterpretTab(QWidget):
             self._refresh_labels()
 
         def put(after: bool) -> None:
-            labels, nodes, stamps, origins_side = restore_side(written[0], after)
-            if labels or nodes or origins_side:
-                run.restore_labels(labels, nodes, stamps, origins_side)
+            labels, nodes, stamps, origins_side, edits = restore_side(written[0], after)
+            if labels or nodes or origins_side or edits:
+                run.restore_labels(labels, nodes, stamps, origins_side, edits)
 
         def work():
             before = run.label_maps()
@@ -2550,8 +2568,7 @@ class NodeInterpretTab(QWidget):
         self._history.record(change)
         self._label_bar.confirm(change.text)
         change.show(True)
-        self._pending.append(first_write)
-        self._write_next()
+        self._submit(*first_write)
         self._sync_undo()
 
     def undo(self) -> None:
@@ -2567,8 +2584,7 @@ class NodeInterpretTab(QWidget):
     def _step(self, change, *, after: bool) -> None:
         self._label_bar.confirm(f"{'Redid' if after else 'Undid'}: {change.text}")
         change.show(after)
-        self._pending.append((lambda: change.write(after), None))
-        self._write_next()
+        self._submit(lambda: change.write(after), None)
         self._sync_undo()
 
     def _sync_undo(self) -> None:
@@ -2581,44 +2597,40 @@ class NodeInterpretTab(QWidget):
         for window in self._windows.windows():
             show_undo(window.bar.undo, self._history, reason)
 
-    def _write_next(self) -> None:
-        if self._writer is not None or not self._pending:
-            # Nothing left to start: leave "Output up to date." standing (blanking it here, as
-            # this did, wiped it the instant the last write's `done` had set it).
-            if self._pending:
-                self._label_bar.set_saving("Saving…")
-            return
-        write, landed = self._pending.pop(0)
+    def writes_pending(self) -> bool:
+        """Whether a label change made on this run — here or on a page since left — is not
+        yet on disk."""
+        return self._writes.busy()
+
+    def _submit(self, write, landed) -> None:
+        """Queue ``write`` on the run's write queue (``run_writes``), which runs writes one at a
+        time, in order, and **outlives this page**: a queue held here lost every write after the
+        one in flight when the page was left (#24). ``landed(result)`` runs if the page is still
+        here when it does."""
         self._label_bar.set_saving("Updating the output…")
-        writer = BackgroundCall(write, receiver=self)
-        self._writer = writer
 
         def done(result) -> None:
-            self._writer = None
             if landed is not None:
                 landed(result)
-            if not self._pending:
+            if not self._writes.busy():
+                # Leave "Output up to date." standing until the next write starts.
                 self._label_bar.set_saving("Output up to date.")
                 self.changed.emit()
-            self._write_next()
             self._finalize_when_saved()
 
         def failed(exc) -> None:
-            self._writer = None
-            self._pending.clear()
             # What the history recorded may no longer be what the run holds.
             self._history.clear()
             self._label_bar.set_saving("")
             # A finish waiting on this write does not go ahead over a label that was lost.
             self._finishing = False
             self._apply_editability()
-            QMessageBox.critical(self, "Label not saved", str(exc))
+            QMessageBox.critical(self, write_failure_title(exc), str(exc))
             self.reload()
 
-        writer.done.connect(done)
-        writer.failed.connect(failed)
-        writer.finished.connect(writer.deleteLater)
-        writer.start()
+        self._writes.submit(
+            write, owner=self, done=done, failed=failed, title="Label not saved"
+        )
 
     # --- rebuilding, and the lifecycle -----------------------------------------------------
 
@@ -2738,8 +2750,9 @@ class NodeInterpretTab(QWidget):
     def _finalize_when_saved(self) -> None:
         if not self._finishing or self._finalizing:
             return
-        if self._writer is not None or self._pending:
+        if self.writes_pending():
             self._label_bar.set_saving("Saving the labels, then finishing the run…")
+            self._writes.when_idle(self._finalize_when_saved, owner=self)
             return
         self._finalizing = True
         run = self._run

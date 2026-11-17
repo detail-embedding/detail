@@ -32,6 +32,7 @@ MUTATING = (
     "merge_labels",
     "delete_label",
     "restore_labels",
+    "edit_labels",
 )
 
 
