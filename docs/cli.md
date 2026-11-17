@@ -1492,7 +1492,9 @@ frame (`instance`), which DeepLabCut and SLEAP read as untracked individuals. `-
 on a track run exports them the same way.
 
 - `keypoints` is DETAIL's own long table, one CSV per recording: a row per frame per track per
-  keypoint with `x_px, y_px, x_norm, y_norm, score, visible, changed`. `changed` is `0` as
+  keypoint with `x_px, y_px, x_norm, y_norm, score, visible, changed`. Its `frame_idx` restarts
+  at 0 in each video part, the one named in `part_id`; `t_ns` is counted from the start of the
+  recording. `changed` is `0` as
   detected, `1` where the track stage chose another candidate, `2` where a filter moved it.
 - `keypoints_dlc` is DeepLabCut's multi-animal analysis table, one per video part: a row per
   video frame, columns `scorer / individuals / bodyparts / coords` over `x, y, likelihood`. The
@@ -1594,7 +1596,11 @@ your decision.
 `clips.csv`, `instance_id`, `source_label` (the cluster's own id), `label` (the name a person
 gave it, blank if none), `label_path` (that name and every group it sits inside, outermost
 first), `recording_id`, `subject`, `start_frame`, `end_frame`, `t_ns`,
-`end_t_ns`, `dur_s`, and one `video_<render>` column per flavour. A blank video column means
+`end_t_ns`, `dur_s`, and one `video_<render>` column per flavour. `start_frame` and `end_frame`
+count every frame of the recording from 0, across all its video parts, so a bout in the second
+video file carries frame numbers past the first file's last frame. The ethogram CSV's
+`start_frame,end_frame` count the same way, which is what lets `recording add-stream --importer
+behavior_csv` read it back onto the right place. A blank video column means
 that bout produced no clip: the track was not detected across it, or it fell outside the video
 , and the row is kept because its times are still true.
 
@@ -1650,7 +1656,9 @@ sit on one. The mask data is the encoding DETAIL stored rather than a re-encodin
 
 `embeddings_index.csv`, `row`, `recording_id`, `track_id`, `part`, `frame_idx`, `t_ns`, one row
 per row of `embeddings.npy`. The matrix alone cannot be joined to anything, which is why the
-index is not optional.
+index is not optional. Here `frame_idx` restarts at 0 in each video part, the one named in
+`part`. To join it to a file numbered across the whole recording (`<recording>_tracks.csv`,
+frame labels), join on `t_ns`, which is the same clock in every file.
 
 ### Re-exporting
 

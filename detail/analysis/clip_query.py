@@ -182,11 +182,24 @@ def frame_span_to_t_ns(
     """Map a global-frame span to the ``t_ns`` span of the embedded rows it covers — the
     frame-input convenience (CLI) that normalizes to the ``t_ns`` reference (Tenet 8).
 
+    ``frame_idx`` must be counted across the whole recording, as the timeline loaders return
+    it: a binary search over part-local numbers, which restart in each video part, silently
+    lands in whichever part the search happens to reach (issue #23), so an array that is not
+    strictly increasing is refused rather than searched.
+
     Raises
-    ValueError: no embedded rows fall in ``[start_frame, end_frame]``
+    ValueError: no embedded rows fall in ``[start_frame, end_frame]``, or ``frame_idx`` is
+    not strictly increasing
     """
     if end_frame < start_frame:
         raise ValueError(f"end_frame {end_frame} is before start_frame {start_frame}")
+    frame_idx = np.asarray(frame_idx)
+    if len(frame_idx) > 1 and not bool(np.all(np.diff(frame_idx) > 0)):
+        raise ValueError(
+            "frame_idx is not strictly increasing, so it is not one recording's frame "
+            "numbers (part-local frames restart in each video part); load the timeline "
+            "with run_preview.load_track_timeline"
+        )
     lo = int(np.searchsorted(frame_idx, start_frame, side="left"))
     hi = int(np.searchsorted(frame_idx, end_frame, side="right")) - 1
     if hi < lo:
@@ -216,6 +229,9 @@ def run_frame_ranges(
     frame_idx: np.ndarray, t_ns: np.ndarray, max_gap_ns: int | None = None
 ) -> list[tuple[int, int]]:
     """Each continuous run as an inclusive ``(first_frame, last_frame)`` global-frame range.
+
+    ``frame_idx`` is the recording-wide numbering the timeline loaders return, so a track
+    continuous over two video parts is one run, not one per part.
 
     ``segment_runs`` in the frame numbers a clip picker scrubs over, so a surface can draw
     the same continuity the example rule enforces.
