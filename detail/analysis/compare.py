@@ -124,6 +124,15 @@ STATISTICS = (STATISTIC_T, STATISTIC_EFFECT)
 #: observed value cleared a floor that was itself. 100 machine epsilons, scipy's
 #: ``permutation_test`` convention; read only through :func:`_reaches`.
 _TIE_RTOL = 100 * float(np.finfo(float).eps)
+#: The share of a sum of squares below which ``Σx² − n·mean²`` is rounding and not a spread.
+#: The two terms are equal when every unit has the same effect, and their difference then
+#: comes out a few ulps of ``Σx²`` either side of zero rather than zero: a positive one read
+#: as a spread near 1e-8, became the family's ``s0``, and a family in which no measure's units
+#: disagree was given a floor and t's in the hundreds of millions where it should have had
+#: neither (187 of 500 such families). 1e-12 is a spread a millionth of the effects' size,
+#: far above the rounding (~1e-16 per term) and far below any spread a cohort can show; read
+#: only in :func:`_spread`.
+_SPREAD_RTOL = 1e-12
 
 
 class ComparisonError(ValueError):
@@ -1622,10 +1631,18 @@ def _spread(ss: np.ndarray, mean: np.ndarray, n: np.ndarray) -> np.ndarray:
     """The sample spread of per-unit effects from their sum of squares, mean and count:
     ``sqrt((Σx² − n·mean²) / (n − 1))``, ``0`` for fewer than two units (one unit has no
     spread to report, and its t is its effect over ``s0``). The sum of squares does not move
-    under a sign flip, so a null draw's spread follows from its mean alone."""
+    under a sign flip, so a null draw's spread follows from its mean alone.
+
+    **Exactly ``0`` when the units agree.** The difference of the two terms is then rounding,
+    a few ulps of ``Σx²`` and as often positive as negative, so one within
+    :data:`_SPREAD_RTOL` of the sum of squares is no spread: :func:`_s0` asks ``> 0``, and a
+    rounding residue answered yes.
+    """
     n = np.asarray(n, dtype=float)
     with np.errstate(invalid="ignore", divide="ignore"):
-        var = (ss - n * mean**2) / np.maximum(n - 1.0, 1.0)
+        residual = ss - n * mean**2
+        residual = np.where(residual <= ss * _SPREAD_RTOL, 0.0, residual)
+        var = residual / np.maximum(n - 1.0, 1.0)
     return np.where(n >= 2, np.sqrt(np.maximum(var, 0.0)), 0.0)
 
 

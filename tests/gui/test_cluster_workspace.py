@@ -3348,3 +3348,67 @@ def test_a_screen_read_looser_than_its_floor_shows_the_lead_and_the_label_record
     assert bar.selection().alpha is None
     assert bar.selection().leaves == view.leaves_under_nodes([node])
     assert interpret._icicle.shades()[lead] == 0.0
+
+
+def test_a_screen_with_no_floor_is_listed_with_its_reason_and_cannot_be_ticked(
+    qapp, fitted, monkeypatch
+):
+    """A screen over one animal has no floor, so nothing it ranked is shown to differ.
+    Ticked, it took the labels' colours off the tree, coloured nothing, and greyed every
+    clip (user screenshot, 2026-11-17). It is listed greyed, with why in full under the
+    list, and it cannot be ticked — as a screen that cannot be read is."""
+    import detail.api.comparison as comparison_api
+    from detail.analysis import compare
+    from detail.api.cluster_filter import Selection
+
+    _experiment, _handle, workspace = _workspace(qapp, fitted)
+    interpret = workspace._interpret
+    view = interpret._view
+    _screens_read(qapp, interpret)
+    node = _kept_candidate(view)
+    reason = "one ID: a within-unit null cannot move with a single unit"
+
+    class _NoFloor(_FakeScreen):
+        def ranking(self):
+            item = compare.Effect(
+                measure_key=("time_fraction", f"node:{node}", "", "whole"),
+                effect=math.log(12.4),
+                n_units=1,
+                n_present=1,
+                consistency=1,
+                loo_sign_stable=False,
+            )
+            return compare.Ranking(
+                contrasts=[item],
+                floor=None,
+                draws=0,
+                seed=0,
+                no_floor_reason=reason,
+                design=compare.PAIRED,
+                levels=("vehicle", "drug"),
+                unit=("ID",),
+                n_units=1,
+                min_units=1,
+                exact=True,
+                kept=(),
+            )
+
+    monkeypatch.setattr(
+        comparison_api, "node_screens", lambda exp, run_id: [_NoFloor("cmp_13", [], 0)]
+    )
+    interpret._read_screens()
+    _screens_read(qapp, interpret)
+    bar = interpret.filters()
+    item = bar.screens.list.item(0)
+    assert not (item.flags() & Qt.ItemFlag.ItemIsEnabled), "greyed: it cannot be ticked"
+    assert bar.screens.unavailable.text() == (
+        f"Can't be ticked: drug vs vehicle · paired (no floor: {reason})."
+    )
+    assert bar.screen("cmp_13").leaves is None
+    # A selection naming it (kept from before the screen lost its floor, say) is dropped
+    # when the list is read: nothing is applied out of sight.
+    bar.set_selection(Selection(leaves=frozenset({0}), leaves_source="cmp_13"))
+    interpret._read_screens()
+    _screens_read(qapp, interpret)
+    assert bar.selection().is_empty
+    assert interpret._icicle.labels_coloured(), "the tree keeps its labels' colours"

@@ -1199,6 +1199,57 @@ def test_a_family_whose_units_all_agree_exactly_has_no_t_and_says_why():
     assert item.effect == pytest.approx(math.log(2))
 
 
+def test_units_that_agree_have_exactly_no_spread_whatever_the_effect_is():
+    """**The class:** a quantity that is zero by arithmetic, computed as the difference of two
+    equal floating-point sums and then asked whether it is positive. ``Σx² − n·mean²`` for
+    units with one effect is a few ulps of ``Σx²`` either side of zero, so about one family in
+    three with no disagreement at all was given a spread near 1e-8, an ``s0`` from it, a floor,
+    and moderated t's in the hundreds of millions. It hid because the test above uses effects
+    (``log 2`` three times) whose residue happens to be exactly zero. Swept here over the
+    effects and cohort sizes a screen has; ``_SPREAD_RTOL`` is the rule."""
+    rng = np.random.default_rng(0)
+    residue = 0
+    for n in range(2, 13):
+        for value in rng.uniform(0.01, 4.0, 400):
+            x = np.full(n, value)
+            ss, mean = np.array([np.nansum(x**2)]), np.array([np.nansum(x) / n])
+            residue += int((ss - n * mean**2)[0] > 0)
+            spread = c._spread(ss, mean, np.array([float(n)]))
+            assert spread[0] == 0.0, (n, value)
+            assert c._s0(spread) is None
+    assert residue > 400, "the sweep must contain the cases that left a residue"
+    # A real spread, however small beside the effects, is still one.
+    x = np.array([2.0, 2.0, 2.0, 2.00001])
+    real = c._spread(np.array([np.sum(x**2)]), np.array([x.mean()]), np.array([4.0]))
+    assert real[0] == pytest.approx(np.std(x, ddof=1), rel=1e-3) and real[0] > 0
+
+
+def test_a_family_that_agrees_on_an_awkward_effect_still_has_no_floor():
+    """The same through the ranking: every animal at one ratio whose log leaves a residue
+    (the first such in the sweep above), where the floor used to come back a number."""
+    rng = np.random.default_rng(0)
+    for value in rng.uniform(1.2, 9.0, 400):
+        x = np.full(3, math.log(value))
+        if np.nansum(x**2) - 3 * (np.nansum(x) / 3) ** 2 > 0:
+            break
+    else:
+        raise AssertionError("no effect in the sweep leaves a residue")
+    ranking = _paired_ranking(
+        {
+            (animal, level): {"x": 0.05 * (value if level == "fent" else 1.0)}
+            for animal in "ABC"
+            for level in ("veh", "fent")
+        },
+        levels=["veh", "fent"],
+        statistic=c.STATISTIC_T,
+    )
+    assert ranking.s0 is None and ranking.floor is None
+    assert "no spread to divide by" in ranking.no_floor_reason
+    (item,) = ranking.contrasts
+    assert item.statistic is None
+    assert item.effect == pytest.approx(math.log(value))
+
+
 def test_an_unknown_statistic_is_refused():
     with pytest.raises(c.ComparisonError, match="statistic must be one of"):
         _paired_ranking(_agreement_cohort(), levels=["veh", "fent"], statistic="z")

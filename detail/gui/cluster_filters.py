@@ -10,7 +10,9 @@ is selected:
 
   **Differences** (:class:`ScreenList`, ``bar.screens``): the run's saved difference screens
   (§22, §24 ``source: nodes``), one tickable at a time, each with what it kept ("drug vs
-  vehicle · paired   1 kept of 4"); under the list the ticked screen's own scale
+  vehicle · paired   1 kept of 4"); a screen that could not be read, or that has no floor
+  and so shows nothing to differ, is listed greyed and cannot be ticked, with its reason in
+  full under the list (``screens.unavailable``); under that the ticked screen's own scale
   (``screens.key``, a `gui/match_key.MatchKey` in its effect mode, *less … no difference …
   more*) and **Strictness**, a slider over the family-wise levels a screen can be read at
   (``compare.STRICTNESS_LEVELS``, the screen's own 5% floor among them), with the kept set at
@@ -1729,6 +1731,15 @@ class ScreenList(QWidget):
         self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.list.setTextElideMode(Qt.TextElideMode.ElideRight)
         layout.addWidget(self.list)
+        #: Why each screen that cannot be ticked cannot, in full and wrapped: its row is
+        #: cut with "…", and the reason is the one line that explains a greyed row.
+        self.unavailable = QLabel("")
+        self.unavailable.setWordWrap(True)
+        self.unavailable.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.unavailable.setVisible(False)
+        layout.addWidget(self.unavailable)
         #: The ticked screen's scale: what the tree's colours mean while this tab is open.
         #: Here, beside the screen that sets it, and shown only while a screen with effects
         #: is ticked (:meth:`set_scale_shown`); it was at the top of the Filters column, far
@@ -1820,6 +1831,9 @@ class ScreenList(QWidget):
             self.list.addItem(item)
             self._choices[choice.key] = choice
         self.list.setVisible(bool(entries))
+        reasons = unavailable_text(entries)
+        self.unavailable.setText(reasons)
+        self.unavailable.setVisible(bool(reasons))
         if loading:
             self.note.setText(SCREENS_LOADING_TEXT)
         elif entries:
@@ -1924,6 +1938,16 @@ def _holder() -> QWidget:
     box = QVBoxLayout(holder)
     box.setContentsMargins(0, 0, 0, 0)
     return holder
+
+
+def unavailable_text(entries: Sequence[ScreenChoice]) -> str:
+    """One line per screen that cannot be ticked (``leaves`` ``None``: it could not be read,
+    or it has no floor and so shows nothing to differ), naming it and saying why."""
+    return "\n".join(
+        f"Can't be ticked: {choice.label} ({choice.note})."
+        for choice in entries
+        if choice.leaves is None
+    )
 
 
 def tab_text(tab: str, active: int) -> str:

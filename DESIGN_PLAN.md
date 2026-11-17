@@ -8425,7 +8425,11 @@ clips like the others — **the clusters it kept, as the leaves under them**
 session filters; the montage greys the clips of clusters that do not differ; and "n of N clips
 match" reads as clips of clusters that differ. The page reads each screen's ranking back through
 the one record → ranking mapping (`comparison_report.rank_record`), so the dock, the Comparisons
-page and an export cannot disagree. One screen at a time: two statistics cannot shade one tree. A
+page and an export cannot disagree. One screen at a time: two statistics cannot shade one tree. **A screen with no floor is listed
+and cannot be ticked** (`ScreenChoice.leaves` `None`, as for one that cannot be read), with its
+reason in full under the list (`cluster_filters.unavailable_text`): nothing it ranked is shown to
+differ, and ticked it took the labels' colours off the tree, coloured nothing and greyed every
+clip (user, 2026-11-17). A
 tab beside INTERPRET was specified for this (§21) and never built; the dock is the screen it was
 meant to be.
 

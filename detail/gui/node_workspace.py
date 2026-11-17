@@ -1175,12 +1175,23 @@ class NodeInterpretTab(QWidget):
                         ScreenChoice(comp.id, label, "nothing to rank", frozenset())
                     )
                     continue
+                if ranking.floor is None:
+                    # No floor, so nothing it ranked is shown to differ: ticked, it took the
+                    # labels' colours off the tree and put nothing in their place, and
+                    # greyed every clip (user screenshot, 2026-11-17). Listed, with its
+                    # reason, and not tickable — as a screen that cannot be read is.
+                    out.append(
+                        ScreenChoice(
+                            comp.id,
+                            label,
+                            f"no floor: {ranking.no_floor_reason}",
+                            None,
+                        )
+                    )
+                    continue
                 kept = comparison_api.kept_nodes_of(ranking)
                 leaves = view.leaves_under_nodes(kept)
-                if ranking.floor is None:
-                    note = f"no floor: {ranking.no_floor_reason}"
-                else:
-                    note = f"{len(kept)} kept of {len(ranking.clearing())} clearing"
+                note = f"{len(kept)} kept of {len(ranking.clearing())} clearing"
                 out.append(
                     ScreenChoice(
                         comp.id,

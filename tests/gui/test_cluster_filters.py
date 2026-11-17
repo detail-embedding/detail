@@ -1505,6 +1505,15 @@ def test_the_differences_line_lists_the_runs_screens_and_greys_one_it_cannot_rea
     assert bar.screens.note.text() == cf.SCREENS_HINT_TEXT
     assert bar.dock.differences_box.isAncestorOf(lst), "on the Differences tab"
     assert not bar.dock.filters_page.isAncestorOf(lst)
+    # The row is cut with "…", so why it cannot be ticked is said in full under the list.
+    assert bar.screens.unavailable.text() == (
+        "Can't be ticked: dose · trend (cannot be read: no stats.csv)."
+    )
+    assert not bar.screens.unavailable.isHidden() and bar.screens.unavailable.wordWrap()
+    bar.set_screens([SCREENS[0]])
+    assert (
+        bar.screens.unavailable.isHidden()
+    ), "every screen can be ticked: nothing to say"
 
 
 def test_ticking_a_screen_is_the_clusters_condition_and_its_reset_removes_it(bar):
