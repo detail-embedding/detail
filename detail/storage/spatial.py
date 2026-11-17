@@ -514,12 +514,14 @@ def _unique_name(recording_dir: Path | str, kind: str, name: str) -> str:
 def import_spatial(recording_dir: Path | str, defs: list[dict]) -> int:
     """Append parsed defs (from ``load_spatial_csv`` or ``read_defs``) onto a recording
     as NEW ids — never clobbering existing definitions. A name that collides with an
-    existing one gets a `` (2)`` suffix. Validates the whole set before writing any
-    (all-or-nothing). Returns the number appended."""
+    existing one gets a `` (2)`` suffix. Validates the whole set, of every kind in it,
+    before writing any (all-or-nothing, Tenet 10). Returns the number appended."""
     prepared: list[tuple[str, str, Keyframes, ActiveInterval, int]] = []
     for d in defs:
         kind = d["kind"]
         k = _kind(kind)
+        if not d.get("name"):
+            raise ValueError(f"{k.id_prefix} name must be non-empty")
         active = d.get("active")
         if active is not None and not k.has_active:
             raise ValueError(f"{kind!r} does not support an active interval")

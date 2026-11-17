@@ -224,7 +224,8 @@ table, see the [Parameters reference](reference/parameters.md).
   from an exported CSV. A name the recording already has is **refused by name** and
   reported; the ones that do not collide still arrive (regions and points are sets, so one
   collision does not refuse the rest). To change one, delete it here first: it is never
-  overwritten, and no name is silently suffixed.
+  overwritten, and no name is silently suffixed. A file with an invalid row (a point outside
+  the frame) imports nothing, so you can fix the file and run the command again.
 
   ```
   $ detail recording import-spatial --experiment exp --recording r2 --from-recording r1
@@ -410,7 +411,7 @@ detail keypoints examples import shared/examples.yaml --experiment my_experiment
 The file is an `examples.yaml` as the tool writes it (`schema_version` first, the skeleton, then
 one entry per frame with its `image` path relative to the file and its `marks`), with the images
 beside it; `examples export` writes exactly that. A bare skeleton file imports too, as an empty
-set. Deleting a set a keypoint run lists is refused, so a run always finds its frames.
+set. If an image will not open, the import stops and no set is added. Deleting a set a keypoint run lists is refused, so a run always finds its frames.
 
 **Detect.** One run per selection of recordings:
 
@@ -1272,7 +1273,8 @@ model** catalog (shared across every experiment on the machine):
   The check cannot catch a pair named the wrong way round (left and right swapped). The
   skeleton is added to the library unless an entry with the same skeleton is there, and the
   command prints the entry. Use the model as `keypoints detect --model <id>`. `--skeleton` is
-  refused for a detection checkpoint.
+  refused for a detection checkpoint. An import that fails or is stopped part-way adds
+  nothing to the catalog, so the same name can be imported again.
 - `show <id>`: print one of your models' metadata + provenance (the detail page, as text),
   with its role, and for a keypoint model its skeleton: the library entry, points and pairs.
 - `set-meta <id> [--made-by] [--description] [--notes] [--preview <image>]`: edit a
@@ -1283,7 +1285,8 @@ model** catalog (shared across every experiment on the machine):
   keypoint model keeps its own skeleton; it is added to the skeleton library unless an entry
   with the same skeleton is there ("name (2)" when the name is taken by a different one), and
   the command prints the entry it matched or added.
-- `remove <id>`: delete an imported model.
+- `remove <id>`: delete an imported model. It also deletes a folder that an import stopped
+  part-way by an earlier version left in the catalog, which kept its name from being used.
 
 ### `modules`
 List the registered processing modules and their dependency chain.
@@ -1898,7 +1901,9 @@ detail recording add-stream --experiment $PROJ --recording recording_001 \
 
 `--importer medpc` parses Med Associates `.txt` + `.MPC` into canonical events.
 Align the stream to video time with `--offset` at import or `recording set-stream-offset`
-afterwards (see [Aligning a stream](#aligning-a-stream)). Previewing it against the video,
+afterwards (see [Aligning a stream](#aligning-a-stream)). An import that is refused adds
+nothing to the recording, so you can fix the file and run the command again under the same
+name. Previewing it against the video,
 and finding the offset by scrubbing, are done in the [GUI](gui.md#recording-detail).
 
 ### Importing your own CSV streams
@@ -2005,6 +2010,10 @@ detail recording add-stream --experiment $PROJ --recording recording_001 \
 detail experiment list-stream-presets --experiment $PROJ
 #   dlc_pose  importer=timeseries_csv  time=t_sec (seconds)  channels: nose_x, nose_y
 ```
+
+The preset is saved only after the import works. A preset name that is already taken is
+refused before anything is imported; choose another name, or delete the old preset first with
+`experiment delete-stream-preset`.
 
 Then the rest of the experiment, from a table of one row per recording:
 

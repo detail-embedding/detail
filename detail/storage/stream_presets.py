@@ -102,6 +102,30 @@ def _write(experiment_dir: Path | str, presets: list[dict]) -> None:
     atomic.replace(tmp, path)
 
 
+def check_new_name(experiment_dir: Path | str, name: str) -> None:
+    """Refuse ``name`` the way :func:`save_preset` without ``overwrite`` would, before any
+    work that the save is to follow.
+
+    ``recording add-stream --save-preset`` saves after the import, never before (a preset is
+    worth keeping once its mapping has read a file). Checked only then, a taken name failed
+    the command after the stream was already added, and a re-run said the stream existed
+    (#29).
+
+    Raises:
+        ValueError: An invalid name, or a preset by that name exists.
+    """
+    validate_preset_name(name)
+    _refuse_taken(list_presets(experiment_dir), name)
+
+
+def _refuse_taken(presets: list[dict], name: str) -> None:
+    if any(p.get("name") == name for p in presets):
+        raise ValueError(
+            f"a stream preset named {name!r} already exists; choose another name, or "
+            f"delete it first (`detail experiment delete-stream-preset {name}`)"
+        )
+
+
 def save_preset(
     experiment_dir: Path | str,
     name: str,
@@ -127,10 +151,8 @@ def save_preset(
     validate_preset_name(name)
     with _lock(experiment_dir):
         presets = list_presets(experiment_dir)
-        if any(p.get("name") == name for p in presets) and not overwrite:
-            raise ValueError(
-                f"a stream preset named {name!r} already exists; pass overwrite to replace it"
-            )
+        if not overwrite:
+            _refuse_taken(presets, name)
         entry = {"name": name, "importer": importer, "config": dict(config or {})}
         if offset_ns is not None:
             entry["offset_ns"] = int(offset_ns)

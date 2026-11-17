@@ -21,6 +21,7 @@ is refused — the catalog copy could not be built.
 
 import shutil
 
+from detail.core import atomic
 from detail.core.skeleton import Skeleton
 from detail.core.utils import utc_timestamp
 from detail.models import imported as imported_store
@@ -79,53 +80,59 @@ def register_distilled_model(
             f"a global model {gid!r} already exists; remove it or pass a different name"
         )
 
-    (gdir / "weights").mkdir(parents=True)
-    shutil.copy2(best, gdir / imported_store.WEIGHTS_RELPATH)  # self-contained copy
-    # Carry the auto-captured overlay preview (§12) if the trained model has one, so the
-    # promoted model shows the same thumbnail the experiment model does.
-    preview_rel = _copy_preview(src_dir, record.get("preview"), gdir)
-    promoted = {
-        "id": gid,
-        "name": name or record.get("name") or gid,
-        "source": "distilled",
-        "model_family": record.get("model_family", "yolo"),
-        "task": record.get("task", "segment"),
-        "classes": record.get("classes", []),
-        "weights": {"best": imported_store.WEIGHTS_RELPATH},
-        "status": "complete",
-        "created_at": utc_timestamp(),
-        "made_by": record.get("made_by", ""),
-        "description": record.get("description", ""),
-        "notes": record.get("notes", ""),
-        "preview": preview_rel,
-        "provenance": {
-            # A list so one model can name several source experiments later; the
-            # distill flow trains from one experiment today, so it writes one entry.
-            "source_experiments": [
-                {"name": source_experiment_name, "id": source_experiment_id}
-            ],
-            "source_dataset_id": record.get("dataset_id"),
-            "base_model": record.get("base_model"),
-            "trainer_id": record.get("trainer_id"),
-            "distilled_at": utc_timestamp(),
-            "metrics": record.get("metrics", {}),
-            # What trained it travels with it, or a promoted model forgets.
-            "hyperparams": record.get("hyperparams", {}),
-            "trained_with": record.get("trained_with", {}),
-        },
-    }
-    if pose:
-        if record.get("teacher"):
-            promoted["provenance"]["teacher"] = record["teacher"]
-        library_name = (record.get("skeleton_ref") or {}).get("name") or (
-            f"{promoted['name']} skeleton"
-        )
-        promoted.update(
-            imported_store.pose_record_fields(
-                skeleton, library_name, gdir / imported_store.WEIGHTS_RELPATH
+    # Built aside and moved into the catalog whole, as an import is
+    # (`imported.import_model`): a copy cut short in place left a folder with no model.yaml
+    # that blocked the name (#29).
+    with atomic.staged_dir(gdir) as stage:
+        (stage / "weights").mkdir()
+        shutil.copy2(
+            best, stage / imported_store.WEIGHTS_RELPATH
+        )  # self-contained copy
+        # Carry the auto-captured overlay preview (§12) if the trained model has one, so the
+        # promoted model shows the same thumbnail the experiment model does.
+        preview_rel = _copy_preview(src_dir, record.get("preview"), stage)
+        promoted = {
+            "id": gid,
+            "name": name or record.get("name") or gid,
+            "source": "distilled",
+            "model_family": record.get("model_family", "yolo"),
+            "task": record.get("task", "segment"),
+            "classes": record.get("classes", []),
+            "weights": {"best": imported_store.WEIGHTS_RELPATH},
+            "status": "complete",
+            "created_at": utc_timestamp(),
+            "made_by": record.get("made_by", ""),
+            "description": record.get("description", ""),
+            "notes": record.get("notes", ""),
+            "preview": preview_rel,
+            "provenance": {
+                # A list so one model can name several source experiments later; the
+                # distill flow trains from one experiment today, so it writes one entry.
+                "source_experiments": [
+                    {"name": source_experiment_name, "id": source_experiment_id}
+                ],
+                "source_dataset_id": record.get("dataset_id"),
+                "base_model": record.get("base_model"),
+                "trainer_id": record.get("trainer_id"),
+                "distilled_at": utc_timestamp(),
+                "metrics": record.get("metrics", {}),
+                # What trained it travels with it, or a promoted model forgets.
+                "hyperparams": record.get("hyperparams", {}),
+                "trained_with": record.get("trained_with", {}),
+            },
+        }
+        if pose:
+            if record.get("teacher"):
+                promoted["provenance"]["teacher"] = record["teacher"]
+            library_name = (record.get("skeleton_ref") or {}).get("name") or (
+                f"{promoted['name']} skeleton"
             )
-        )
-    models_store.write_model_yaml(gdir, promoted)
+            promoted.update(
+                imported_store.pose_record_fields(
+                    skeleton, library_name, stage / imported_store.WEIGHTS_RELPATH
+                )
+            )
+        models_store.write_model_yaml(stage, promoted)
     return gid
 
 

@@ -1402,7 +1402,8 @@ def recording_relink(
     default=None,
     type=str,
     help="Save this import's importer + mapping under this name, for reuse on the "
-    "experiment's other recordings. Saved only if the import succeeds.",
+    "experiment's other recordings. Saved only if the import succeeds; a name already "
+    "taken is refused before anything is imported.",
 )
 def recording_add_stream(
     experiment_dir: Path,
@@ -1437,6 +1438,10 @@ def recording_add_stream(
     config = _stream_config(time_column, time_kind, channels)
     try:
         sess = _recording(proj, recording_id)
+        if save_preset is not None:
+            # The preset is saved after the import, but its name is checked before: a
+            # taken name failed the command with the stream already added (#29).
+            proj.check_new_stream_preset_name(save_preset)
         if preset is not None:
             sess.add_stream_from_preset(
                 name,
@@ -1458,12 +1463,17 @@ def recording_add_stream(
                 config=config,
                 offset_ns=round(offset_s * 1e9),
             )
-        # Saved after the import, never before: a preset is worth keeping once the mapping
-        # has been shown to read the file, and a saved-but-broken one is worse than none.
-        if save_preset is not None:
-            proj.save_stream_preset(save_preset, importer, config)
     except (FileNotFoundError, ValueError) as e:
         raise click.ClickException(str(e))
+    # Saved after the import, never before: a preset is worth keeping once the mapping
+    # has been shown to read the file, and a saved-but-broken one is worse than none.
+    if save_preset is not None:
+        try:
+            proj.save_stream_preset(save_preset, importer, config)
+        except ValueError as e:
+            raise click.ClickException(
+                f"added stream {name!r} to {recording_id}, but the preset was not saved: {e}"
+            )
     events = sess.stream_events(name)
     entry = next((s for s in sess.streams if s.get("name") == name), {})
     marker = (
@@ -4682,7 +4692,8 @@ def model_list() -> None:
 @model.command("remove")
 @click.argument("model_id")
 def model_remove(model_id: str) -> None:
-    """Remove a machine-global imported model."""
+    """Remove a machine-global imported model, or a folder an import stopped part-way by an
+    earlier version left in the catalog."""
     proj = _experiment_or_temp(None)
     try:
         proj.remove_imported_model(model_id)
