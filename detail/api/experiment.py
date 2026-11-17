@@ -54,6 +54,7 @@ from detail.core.dataclasses import (
     processing_progress_to_dict,
     reconciled_status,
 )
+from detail.core.errors import UserInputError
 from detail.core.progress import remaining_seconds
 from detail.core.registries import TRAINERS
 from detail.models import distilled as distilled_store
@@ -4778,6 +4779,7 @@ class Experiment:
         """
         from detail.api.query import QueryRun
 
+        self._require_analysis_run(run_id, "query")
         return QueryRun(None, self, run_id)
 
     def temporal_clustering_run(self, run_id: str):
@@ -4789,7 +4791,21 @@ class Experiment:
         """
         from detail.api.temporal_clustering import TemporalClusteringRun
 
+        self._require_analysis_run(run_id, "temporal-clustering")
         return TemporalClusteringRun(None, self, run_id)
+
+    def _require_analysis_run(self, run_id: str, kind: str) -> None:
+        """Refuse a run id that names no analysis run, before a handle is built on it.
+
+        Raises:
+            UserInputError: no ``analysis/<run_id>/analysis.yaml`` in this experiment.
+        """
+        adir = analysis_store.analysis_dir(self._dir, run_id)
+        if not (adir / analysis_store.ANALYSIS_FILENAME).is_file():
+            raise UserInputError(
+                f"no {kind} run {run_id!r} in this experiment; `detail analysis list` "
+                "shows its runs"
+            )
 
     def cancel_analysis(self, run_id: str) -> None:
         """Stop an active analysis run (kill its worker), then record its real

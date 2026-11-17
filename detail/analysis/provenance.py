@@ -20,6 +20,7 @@ from detail.core import buildinfo
 from detail.storage import experiment as experiment_store
 from detail.storage import recording as recording_store
 from detail.storage import streams as streams_store
+from detail.storage import video_roots
 from detail.storage.integrity import (
     file_fingerprint,
     sha256_file,
@@ -129,6 +130,23 @@ def embedding_lineage(recording_record: dict, embed_run_id: str) -> dict:
     }
 
 
+#: The fingerprint of a video part that is not on this machine: a slim archive carries no
+#: video, and a referenced video's drive may be unplugged. Recorded rather than raised, so a
+#: comparison still runs, and ``drift`` says the video could not be checked.
+MISSING_VIDEO = {"missing": True}
+
+
+def video_fingerprint(recording_dir: Path | str, part: dict) -> dict:
+    """``file_fingerprint`` of one video part, or :data:`MISSING_VIDEO` when it is not here."""
+    try:
+        path = recording_store.resolve_part_video_path(recording_dir, part)
+    except video_roots.MissingVideoRootError:
+        return dict(MISSING_VIDEO)
+    if not path.is_file():
+        return dict(MISSING_VIDEO)
+    return file_fingerprint(path)
+
+
 def capture(
     experiment_dir: Path | str,
     *,
@@ -154,8 +172,8 @@ def capture(
         recordings[sid] = {
             "labels_hash": labels_hash(sdir),
             "videos": {
-                (f.get("file") or recording_store.part_stem(f)): file_fingerprint(
-                    recording_store.resolve_part_video_path(sdir, f)
+                (f.get("file") or recording_store.part_stem(f)): video_fingerprint(
+                    sdir, f
                 )
                 for f in record.get("video", {}).get("files", [])
             },
@@ -212,6 +230,19 @@ def drift(recorded: dict, current: dict) -> list[str]:
         if rec.get("labels_hash") != cur.get("labels_hash"):
             changes.append(f"labels changed for recording {sid}")
         for video, fingerprint in rec.get("videos", {}).items():
-            if cur.get("videos", {}).get(video) != fingerprint:
+            now = cur.get("videos", {}).get(video)
+            if now == fingerprint:
+                continue
+            if now == MISSING_VIDEO:
+                changes.append(
+                    f"video {video} of recording {sid} is not on this machine, so it "
+                    "cannot be checked"
+                )
+            elif fingerprint == MISSING_VIDEO:
+                changes.append(
+                    f"video {video} of recording {sid} was not on the machine this ran on, "
+                    "so it cannot be compared"
+                )
+            else:
                 changes.append(f"video {video} changed for recording {sid}")
     return changes

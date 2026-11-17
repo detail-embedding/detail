@@ -21,10 +21,12 @@ from detail.api.authored_run import (
     SnapshotViewMixin,
 )
 from detail.api.experiment import Experiment
+from detail.core.errors import UserInputError
 from detail.pipeline import query as query_pipeline
 from detail.storage import analysis_runs as analysis_store
 from detail.storage import behavior_output
 from detail.storage import query_runs
+from detail.storage import recording as recording_store
 from detail.storage import snapshots as snapshots_store
 
 
@@ -343,12 +345,12 @@ class QueryRun(AuthoredRun):
                 behavior.id
             ).items():
                 if (recording_id, subject) not in self._timelines:
+                    recording_dir = experiment_store.recording_path(
+                        self._experiment.dir, recording_id
+                    )
+                    self._require_searched_data(recording_dir, recording_id, state)
                     _emb, frame_idx, t_ns = load_track_trajectory(
-                        experiment_store.recording_path(
-                            self._experiment.dir, recording_id
-                        ),
-                        state.embed_run_id,
-                        subject,
+                        recording_dir, state.embed_run_id, subject
                     )
                     self._timelines[(recording_id, subject)] = (t_ns, frame_idx)
                 t_ns, frame_idx = self._timelines[(recording_id, subject)]
@@ -365,6 +367,34 @@ class QueryRun(AuthoredRun):
             self._pools[behavior.id] = mine
             pool.extend(mine)
         return pool
+
+    def _require_searched_data(
+        self, recording_dir: Path, recording_id: str, state
+    ) -> None:
+        """Refuse, naming it, a recording the search read whose data has since been deleted.
+
+        The candidates are re-read from the recording's embedding, so a recording deleted
+        after the search (or its embedding run) leaves nothing to read them from.
+
+        Raises:
+            UserInputError: the recording, or its embedding run, is no longer on disk.
+        """
+        what = None
+        if not recording_dir.is_dir():
+            what = f"recording {recording_id!r} it searched was deleted"
+        elif not (recording_dir / "embeddings" / state.embed_run_id).is_dir():
+            name = recording_store.read_recording(recording_dir).get(
+                "name", recording_id
+            )
+            what = (
+                f"embedding run {state.embed_run_id!r} of recording {name!r}, which it "
+                "searched, was deleted"
+            )
+        if what is not None:
+            raise UserInputError(
+                f"query run {self.id!r} cannot read its candidates: the {what}. Run the "
+                "query again over the recordings that are left"
+            )
 
     def _audit_examples(self, rows) -> set[str]:
         """The candidates the user's own example or non-example clips overlap (§19).

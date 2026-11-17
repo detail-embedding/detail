@@ -36,6 +36,15 @@ def test_video_integrity_check_fails_on_missing(tmp_path):
     assert "missing_file" in result.detail
 
 
+def test_video_integrity_check_of_a_recording_with_no_video_yet(tmp_path):
+    """A recording made before its video was added has no ``video`` block (#33)."""
+    target = RecordingTarget("exp", "recording_003", str(tmp_path), {"name": "m1"})
+    result = VideoIntegrityCheck().run(target)
+    assert result.status == CheckStatus.SKIPPED
+    assert result.detail == "no video yet"
+    assert result.target_id == "recording_003"
+
+
 def test_video_integrity_check_no_target_is_skipped():
     # A machine-context call (run() with no target) is a no-op, not a crash.
     assert VideoIntegrityCheck().run().status == CheckStatus.SKIPPED
