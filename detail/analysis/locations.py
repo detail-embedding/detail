@@ -235,7 +235,9 @@ def compute_location_tables(
     roi_rows: list[tuple] = []
     point_rows: list[tuple] = []
 
-    parts = sorted(detection_dir.glob("part_*.zarr"))
+    # Play order, with each part's play index: after a part move the sorted folder listing is
+    # not the order the parts play in, and the offsets are indexed by play position.
+    parts = recording_store.parts_in_play_order(recording_dir, detection_dir)
     assign_dir = tracking_dir / "assignments"
     # The denominator must match what rows_done accrues: only assigned rows
     # (object_id >= 0) become groups, so counting every detection row would leave
@@ -247,11 +249,11 @@ def compute_location_tables(
                 np.asarray(PartZarrReader(assign_dir / p.name).column("object_id")) >= 0
             ).sum()
         )
-        for p in parts
+        for _play_index, p in parts
     )
     rows_done = 0
 
-    for part_index, det_part in enumerate(parts):
+    for part_index, det_part in parts:
         det = PartZarrReader(det_part).read()
         assign = PartZarrReader(tracking_dir / "assignments" / det_part.name).read()
         object_id = np.asarray(assign["object_id"])
