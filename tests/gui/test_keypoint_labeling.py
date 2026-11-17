@@ -1,13 +1,21 @@
 """The labeling screen (§26): a player with the example set beside it.
 
 Driven over the fixture experiment with a real 6-frame video and a real tracking run, so the
-decode, the tracked boxes and every save go through the paths a user's clicks take."""
+decode, the tracked boxes and every save go through the paths a user's clicks take.
+
+**A class guarded here: an index held across an asynchronous change to its list (#26).** A mark
+save and a frame removal both address a frame by its position in the set, each off the UI
+thread. Pressing N while a removal was in flight (the keys reach the dialog; the busy overlay
+covers only the view) saved the mark to a position the removal had just shifted, onto the next
+frame. The dialog serialises the two: Remove waits for the saver, and no mark is saved while a
+removal runs. Its two orders are the last two tests in this file."""
 
 import pytest
 
 pytest.importorskip("PyQt6")
 
 from PyQt6.QtCore import Qt  # noqa: E402
+from PyQt6.QtTest import QTest  # noqa: E402
 from PyQt6.QtWidgets import QMessageBox  # noqa: E402
 
 from detail.core.skeleton import Skeleton  # noqa: E402
@@ -345,6 +353,88 @@ def test_the_view_turns_a_press_on_a_grabbable_thing_into_a_drag_not_a_click(qap
     mouse(QEvent.Type.MouseButtonPress, 150, 50)  # not grabbable: an ordinary click
     mouse(QEvent.Type.MouseButtonRelease, 150, 50)
     assert events == ["clicked"]
+
+
+# --- a removal and a mark save never race (#26) ------------------------------- #
+def _two_frame_set(proj):
+    created = proj.create_example_set("rats", SK)
+    for frame in (2, 4):
+        proj.add_example_frame(
+            created.id, "recording_001", "track_01", "part_001", frame, 0
+        )
+    return created
+
+
+def test_a_mark_made_while_a_frame_is_being_removed_does_not_land_on_another_frame(
+    qapp, proj, monkeypatch
+):
+    """Remove the frame on screen, and before the removal has come back press N (mark the
+    current point hidden): the keys reach the dialog while the busy overlay covers only
+    the view. Both writes address the frame by its *position* in the set, so on main the
+    mark saved to position 0 after the removal had moved frame 4 into it. The mark must
+    never land on a frame it was not made on, and the removal must stick."""
+    import threading
+
+    created = _two_frame_set(proj)
+    removed = threading.Event()
+    real_remove, real_marks = proj.remove_example_frame, proj.set_example_marks
+
+    def remove_then_signal(*a, **k):
+        try:
+            return real_remove(*a, **k)
+        finally:
+            removed.set()
+
+    def marks_after_the_removal(*a, **k):
+        removed.wait(5)  # the worst order: the mark write lands second
+        return real_marks(*a, **k)
+
+    monkeypatch.setattr(proj, "remove_example_frame", remove_then_signal)
+    monkeypatch.setattr(proj, "set_example_marks", marks_after_the_removal)
+    dialog = _open(qapp, proj, created.id)
+    _seek(qapp, dialog, 2)
+    assert dialog._on_screen() == 0
+
+    dialog._frames.setCurrentRow(0)
+    dialog._remove_frame.click()
+    QTest.keyClick(dialog, Qt.Key.Key_N)  # before the removal's result is delivered
+    removed.wait(5)
+    _settled(qapp, dialog)
+
+    stored = proj.example_set(created.id)
+    assert [f.frame_idx for f in stored.frames] == [4], "the removal did not stick"
+    assert stored.frames[0].marks == [], "frame 2's mark landed on frame 4"
+
+
+def test_remove_waits_for_a_mark_that_is_still_saving(qapp, proj, monkeypatch):
+    """The other order: a mark is saving when Remove is pressed. Remove is refused until
+    the save settles, so the save cannot write by a position the removal has shifted."""
+    import threading
+
+    created = _two_frame_set(proj)
+    release = threading.Event()
+    real_marks = proj.set_example_marks
+
+    def slow_marks(*a, **k):
+        release.wait(5)
+        return real_marks(*a, **k)
+
+    monkeypatch.setattr(proj, "set_example_marks", slow_marks)
+    dialog = _open(qapp, proj, created.id)
+    _seek(qapp, dialog, 4)
+    assert dialog._on_screen() == 1
+    dialog.image_view().clicked_at.emit(0.25, 0.5)  # nose on frame 4, saving
+    assert dialog.saving()
+
+    dialog._frames.setCurrentRow(0)
+    dialog._remove()  # straight at the handler, not only through the greyed button
+    release.set()
+    _settled(qapp, dialog)
+
+    stored = proj.example_set(created.id)
+    assert [f.frame_idx for f in stored.frames] == [2, 4], "removed mid-save"
+    assert stored.frames[1].mark_for("nose") is not None
+    assert stored.frames[0].marks == []
 
 
 def test_marks_saving_when_the_dialog_closes_still_reach_the_disk(

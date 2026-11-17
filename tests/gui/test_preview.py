@@ -45,6 +45,7 @@ def _compact_frames(confidences_per_frame):
         out.append(
             _CompactFrame(
                 PromptTestResult(
+                    part_index=0,
                     frame_idx=i,
                     t_ns=i,
                     frame_image=np.zeros((16, 16, 3), np.uint8),

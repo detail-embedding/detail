@@ -315,6 +315,10 @@ class KeypointLabelingDialog(Dialog):
         self._sources = dict(sources) if sources else None
         self._set: ExampleSet = experiment.example_set(set_id)
         self._saver = _MarkSaver(self, experiment, set_id)
+        # A frame removal in flight. A mark save and a removal both address a frame by its
+        # position in the set, and the removal shifts every later position, so the two never
+        # run together: Remove waits for the saver, and no mark is saved while removing.
+        self._removing = False
         self._names: dict[str, str] = {}
         self._offered: list[dict] = []
         self._current: str | None = None
@@ -760,7 +764,7 @@ class KeypointLabelingDialog(Dialog):
     def _drag_finished(self, u: float, v: float) -> None:
         index = self._on_screen()
         target, self._dragging = self._dragging, None
-        if target is None or index is None:
+        if target is None or index is None or self._refuse_while_removing():
             return
         frame = self._set.frames[index]
         frame.marks = [m for m in frame.marks if m.target != target] + [
@@ -773,6 +777,8 @@ class KeypointLabelingDialog(Dialog):
     def _place(self, mark: ExampleMark) -> None:
         """Put ``mark`` on the frame on screen, adding the frame to the set first when it is
         not in it yet."""
+        if self._refuse_while_removing():
+            return
         index = self._on_screen()
         if index is not None:
             self._save(index, mark)
@@ -818,7 +824,7 @@ class KeypointLabelingDialog(Dialog):
 
     def _clear_current(self) -> None:
         index = self._on_screen()
-        if self._current is None or index is None:
+        if self._current is None or index is None or self._refuse_while_removing():
             return
         frame = self._set.frames[index]
         kept = [m for m in frame.marks if m.target != self._current]
@@ -830,6 +836,17 @@ class KeypointLabelingDialog(Dialog):
 
     def _saves_settled(self) -> None:
         self._refresh_lists()
+
+    def _refuse_while_removing(self) -> bool:
+        """True, and says so, while a frame removal is in flight.
+
+        The keys (N, Backspace) reach the dialog while the busy overlay covers only the
+        view. A mark saved now would be written by a position the removal is about to
+        shift, so it is not saved; the removal's result reloads the set from disk.
+        """
+        if self._removing:
+            self._status.setText("Wait for the frame to be removed, then mark again.")
+        return self._removing
 
     def _save_failed(self, exc: BaseException) -> None:
         QMessageBox.warning(self, "Save marks", f"Could not save:\n{exc}")
@@ -973,6 +990,10 @@ class KeypointLabelingDialog(Dialog):
         QMessageBox.warning(self, "Add frames", f"Could not add frames:\n{exc}")
 
     def _remove(self) -> None:
+        # Never beside a mark save: both write the set by frame position (see `_removing`).
+        # The button is greyed for both; this holds for any other caller too.
+        if self._saver.busy or self._removing:
+            return
         index = self._frames.currentRow()
         if not 0 <= index < len(self._set.frames):
             return
@@ -987,17 +1008,23 @@ class KeypointLabelingDialog(Dialog):
             if answer != QMessageBox.StandardButton.Yes:
                 return
         experiment, set_id = self._experiment, self._set.id
+        self._removing = True
+        self._refresh_lists()  # greys Remove until the result is back
         run_busy(
             self._view,
             lambda: experiment.remove_example_frame(set_id, index),
             self._removed,
             label="Removing frame…",
-            on_error=lambda exc: QMessageBox.warning(
-                self, "Remove frame", f"Could not remove:\n{exc}"
-            ),
+            on_error=self._remove_failed,
         )
 
+    def _remove_failed(self, exc: BaseException) -> None:
+        self._removing = False
+        self._refresh_lists()
+        QMessageBox.warning(self, "Remove frame", f"Could not remove:\n{exc}")
+
     def _removed(self, example_set: ExampleSet) -> None:
+        self._removing = False
         self._set = example_set
         if self._stored is not None:
             self._stored = None
@@ -1082,8 +1109,12 @@ class KeypointLabelingDialog(Dialog):
             self._ready.setText(f"Not ready yet: {exc}")
         set_available(
             self._remove_frame,
-            bool(self._set.frames) and not self._saver.busy,
-            "Saving…" if self._saver.busy else "The set has no frames yet.",
+            bool(self._set.frames) and not self._saver.busy and not self._removing,
+            (
+                "Saving…"
+                if self._saver.busy
+                else ("Removing…" if self._removing else "The set has no frames yet.")
+            ),
         )
         self._sync_skeleton()
 

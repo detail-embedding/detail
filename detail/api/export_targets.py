@@ -342,10 +342,14 @@ def _run_video(subject, dest, scope, progress, **options):
 
     recording_dir = _recording_dir(subject)
     sources = []
-    for index, part in enumerate(_copied_parts(subject)):
+    for part in _copied_parts(subject):
         source = recording_store.resolve_part_video_path(recording_dir, part)
         if source.is_file():
-            out = Path(dest) / f"{subject.id}_part{index + 1:03d}{source.suffix}"
+            # The part's own number, not its place among the copied parts: a skipped
+            # referenced part must not renumber the rest away from their timestamps files.
+            out = (
+                Path(dest) / f"{subject.id}_part{part['index'] + 1:03d}{source.suffix}"
+            )
             sources.append((source, out))
     total = sum(source.stat().st_size for source, _ in sources) or 1
     emit = ThrottledProgress(
