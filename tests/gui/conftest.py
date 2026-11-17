@@ -562,6 +562,48 @@ def stub_yolo_model(monkeypatch):
     return "fake_yolo"
 
 
+def release_held_input(qapp) -> None:
+    """Put Qt's global keyboard-modifier and mouse-button state back to nothing held.
+
+    Exposed so the guard can call it directly; ``_no_input_held_from_an_earlier_test`` is what
+    makes every GUI test start from it.
+    """
+    from PyQt6.QtCore import QEvent, Qt
+    from PyQt6.QtTest import QTest
+    from PyQt6.QtWidgets import QWidget
+
+    # A release with no modifiers is the one simulated event that clears both halves (a key
+    # release clears modifiers only, a move neither). The target is never shown and nothing
+    # listens to it, so the event itself lands nowhere.
+    target = QWidget()
+    QTest.mouseRelease(target, Qt.MouseButton.LeftButton)
+    target.deleteLater()
+    qapp.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
+@pytest.fixture(autouse=True)
+def _no_input_held_from_an_earlier_test(qapp):
+    """Every GUI test starts with no modifier key and no mouse button held.
+
+    **The class: Qt's global input state outlives the test that set it.** A key event carrying
+    a modifier (``QTest.keyClick(w, key, ShiftModifier)``, or a ``Key_Shift`` press sent with
+    ``sendEvent``) and a ``QTest`` mouse press leave ``QGuiApplication.keyboardModifiers()`` /
+    ``mouseButtons()`` reading them until the next input event. A call that has no event of its
+    own reads that state: ``QTableView.selectRow`` under the default extended selection takes a
+    held Shift to mean *extend from the anchor*, and selects nothing.
+
+    Measured over the GUI tier, 18 tests in 8 files end with something held, every one of them
+    on purpose (holding Shift is what ``test_live_montage`` and ``test_label_clean`` test). The
+    test that paid was whichever file ``--dist loadfile`` ran next on that worker: when it was
+    ``test_keypoints_manager.py``, five of its twelve tests failed on disabled Edit/Export
+    buttons and "Select a skeleton first." All five passed alone, and the failures were put down
+    to machine load. They fail on demand with Shift held before each test, and pass with this
+    fixture. Guard: ``tests/gui/test_input_state.py``.
+    """
+    release_held_input(qapp)
+    yield
+
+
 @pytest.fixture(autouse=True)
 def _forget_view_preferences():
     """Start every GUI test from the documented defaults, not from what the last one left.

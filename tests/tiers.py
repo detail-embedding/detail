@@ -319,6 +319,8 @@ GUARD_FILES = frozenset(
         "tests/gui/test_worker_lifetime.py",
         # A bounded wait raises naming what never happened, or its answer is used.
         "tests/gui/test_waits_are_checked.py",
+        # No test inherits a modifier key or mouse button held by an earlier one.
+        "tests/gui/test_input_state.py",
         # --- label leakage and the ground-truth boundary -------------------------- #
         "tests/pipeline/test_label_leakage.py",
         "tests/analysis/test_no_unfiltered_behavior_streams.py",
