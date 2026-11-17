@@ -29,6 +29,7 @@ from detail.core import atomic
 from detail.core.skeleton import PRESETS, Skeleton
 from detail.storage import locations
 from detail.storage import skeleton_library as library
+from detail.storage.user_yaml import read_user_yaml
 
 #: Where a dependent's record sits under an experiment, and what to call it. Each record that
 #: copies a skeleton carries ``skeleton_ref``; the search reads only that field.
@@ -107,7 +108,7 @@ def resolve_skeleton(source) -> Skeleton:
     text = str(source)
     path = Path(text)
     if path.suffix.lower() in (".yaml", ".yml") and path.is_file():
-        data = yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
+        data = read_user_yaml(path) or {}
         body = data.get("skeleton", data) if isinstance(data, dict) else None
         if not isinstance(body, dict) or "names" not in body:
             raise ValueError(f"{path} holds no skeleton (no 'names')")
@@ -130,7 +131,7 @@ def skeleton_source_name(source) -> str | None:
     text = str(source)
     path = Path(text)
     if path.suffix.lower() in (".yaml", ".yml") and path.is_file():
-        data = yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
+        data = read_user_yaml(path) or {}
         stated = data.get("name") if isinstance(data, dict) else None
         return str(stated) if stated else path.stem
     try:
@@ -298,6 +299,6 @@ def import_skeleton(in_path: Path | str, *, name: str | None = None) -> dict:
     path = Path(in_path)
     if not path.is_file():
         raise FileNotFoundError(f"no skeleton file at {path}")
-    data = yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
+    data = read_user_yaml(path) or {}
     stated = data.get("name") if isinstance(data, dict) else None
     return create_skeleton(name or stated or path.stem, path)

@@ -14,8 +14,10 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 import yaml
 
 from detail.core import atomic
+from detail.core.errors import UserInputError
 from detail.storage import dirscan
 from detail.storage import read_cache
+from detail.storage.user_yaml import read_user_yaml
 
 SCHEMA_VERSION = 1
 CONFIG_FILENAME = "config.yaml"
@@ -56,16 +58,16 @@ def _refuse_legacy_layout(exp_dir: Path) -> None:
 
 def _parse_config(exp_dir: Path, path: Path) -> dict:
     _refuse_legacy_layout(exp_dir)
-    config = yaml.safe_load(atomic.read_text(path))
+    config = read_user_yaml(path)
     if not isinstance(config, dict):
-        raise ValueError(f"{path} is not a mapping")
+        raise UserInputError(f"{path} is not a mapping")
     if config.get("schema_version") != SCHEMA_VERSION:
-        raise ValueError(
+        raise UserInputError(
             f"{path} schema_version is {config.get('schema_version')!r}, "
             f"expected {SCHEMA_VERSION}"
         )
     if not config.get("name"):
-        raise ValueError(f"{path} has no 'name'")
+        raise UserInputError(f"{path} has no 'name'")
     return config
 
 

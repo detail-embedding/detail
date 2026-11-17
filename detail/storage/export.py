@@ -27,6 +27,7 @@ import os
 import re
 import shutil
 import tarfile
+import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -35,10 +36,12 @@ from pathlib import Path
 import yaml
 
 from detail.core import atomic
+from detail.core.errors import UserInputError
 from detail.core.progress import ThrottledProgress
 from detail.storage import experiment as experiment_store
 from detail.storage import integrity
 from detail.storage import video_roots
+from detail.storage.user_yaml import parse_user_yaml
 
 SCHEMA_VERSION = 1
 MANIFEST_NAME = "export.yaml"
@@ -571,21 +574,55 @@ def _relative_inside(path: Path, root: Path) -> str | None:
         return None
 
 
+def _not_an_export(archive: Path | str, why: str | BaseException) -> UserInputError:
+    """The one message for a file an import cannot read as a DETAIL export: a text file, an
+    empty file, a ``.zip``, an archive cut short by an interrupted copy."""
+    if isinstance(why, BaseException):
+        text = str(why)
+        if text.startswith("file could not be opened successfully"):
+            # `tarfile.open(mode="r:*")` lists every compression it tried, one per line.
+            empty = Path(archive).is_file() and Path(archive).stat().st_size == 0
+            why = "the file is empty" if empty else "not a tar archive"
+        else:
+            why = text or type(why).__name__
+    return UserInputError(
+        f"{Path(archive).name} is not a DETAIL export, or it is incomplete ({why}); "
+        "copy it again, or export the experiment again"
+    )
+
+
 def read_manifest(archive: Path | str) -> dict:
-    """Read ``export.yaml`` from a bundle. Raises ``ValueError`` if it isn't a
-    DETAIL export or the manifest is malformed.
+    """Read ``export.yaml`` from a bundle.
 
     Reads members only until it finds the manifest, which an export writes first. `getmember`
     loads every member header before answering, which on a gzipped bundle is a full
     decompression pass — paid before an import had reported anything at all.
+
+    Raises:
+        UserInputError: The file is not a DETAIL export (not a tar, empty, cut short, or
+            without a manifest), or its manifest is malformed: not a mapping, an ``id``
+            that is not a string, a ``schema_version`` that is not an integer.
     """
-    with tarfile.open(archive, "r:*") as tar:
-        member = next((m for m in tar if m.name == MANIFEST_NAME), None)
-        if member is None:
-            raise ValueError(f"not a DETAIL export (no {MANIFEST_NAME})")
-        data = yaml.safe_load(tar.extractfile(member).read())
+    try:
+        with tarfile.open(archive, "r:*") as tar:
+            member = next((m for m in tar if m.name == MANIFEST_NAME), None)
+            if member is None:
+                raise _not_an_export(archive, f"no {MANIFEST_NAME}")
+            raw = tar.extractfile(member).read()
+    except (tarfile.TarError, EOFError, zlib.error) as exc:
+        raise _not_an_export(archive, exc) from exc
+    data = parse_user_yaml(raw, f"{Path(archive).name}: {MANIFEST_NAME}")
     if not isinstance(data, dict) or "id" not in data:
-        raise ValueError("malformed export manifest")
+        raise _not_an_export(archive, "malformed export manifest")
+    if not isinstance(data["id"], str):
+        raise _not_an_export(
+            archive, f"its manifest's id is {data['id']!r}, not a name"
+        )
+    version = data.get("schema_version", SCHEMA_VERSION)
+    if not isinstance(version, int) or isinstance(version, bool):
+        raise _not_an_export(
+            archive, f"its manifest's schema_version is {version!r}, not a number"
+        )
     return data
 
 
@@ -843,15 +880,20 @@ def import_experiment(
         extracting = _Meter(bar, extract_cost, n_files)
         bar.phase(STAGE_EXTRACTING, extracting.detail())
         with open(archive, "rb") as raw:
-            with tarfile.open(
-                fileobj=_PositionReader(raw, extracting.read), mode="r:*"
-            ) as tar:
-                # Member by member rather than `extractall`, so each finished file is counted;
-                # `extract` applies the same 3.12 "data" sandbox (no abs/traversal) per member.
-                for member in tar:
-                    tar.extract(member, staging, filter="data")
-                    if member.isfile() and member.name.startswith(f"{_ROOT}/"):
-                        extracting.done()
+            try:
+                with tarfile.open(
+                    fileobj=_PositionReader(raw, extracting.read), mode="r:*"
+                ) as tar:
+                    # Member by member rather than `extractall`, so each finished file is
+                    # counted; `extract` applies the same 3.12 "data" sandbox (no
+                    # abs/traversal) per member.
+                    for member in tar:
+                        tar.extract(member, staging, filter="data")
+                        if member.isfile() and member.name.startswith(f"{_ROOT}/"):
+                            extracting.done()
+            except (tarfile.ReadError, EOFError, zlib.error) as exc:
+                # The manifest came first and read, so the rest was cut short in a copy.
+                raise _not_an_export(archive, exc) from exc
         staged = staging / _ROOT
         if not (staged / experiment_store.CONFIG_FILENAME).is_file():
             raise ValueError("export is missing experiment/config.yaml")

@@ -214,6 +214,12 @@ GUARD_FILES = frozenset(
         # Scans for a listing that reads its records bare, and plants the crash shape (a
         # zero-filled record) under every listing a page reads.
         "tests/storage/test_crash_consistency.py",
+        # A file a user hands in is parsed through one reader per format, so a malformed
+        # one is a message naming the file and line, not the parser's traceback (#33).
+        "tests/storage/test_user_file_readers.py",
+        # The CLI root shows a UserInputError as one line and lets a bug's traceback
+        # through; one row per #33 finding with a CLI step.
+        "tests/test_cli_user_errors.py",
         "tests/pipeline/test_atomic_write_seam.py",
         # Counts the syscalls a listing makes rather than scanning for a pattern — same
         # job: the cost model is invisible to every behavioural test.

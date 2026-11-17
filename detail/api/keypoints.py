@@ -19,6 +19,7 @@ from detail.core.examples import ExampleFrame, ExampleMark, ExampleSet
 from detail.core.skeleton import Skeleton
 from detail.pipeline import subject_frames
 from detail.storage import example_sets as example_store
+from detail.storage.user_yaml import read_user_yaml
 
 if TYPE_CHECKING:
     from detail.api.experiment import Experiment
@@ -303,7 +304,7 @@ def import_example_set(experiment: "Experiment", yaml_path: Path | str) -> Examp
     path = Path(yaml_path)
     if not path.is_file():
         raise FileNotFoundError(f"no example set file at {path}")
-    data = yaml.safe_load(path.read_text(encoding="utf-8-sig"))
+    data = read_user_yaml(path)
     if not isinstance(data, dict):
         raise ValueError(f"{path} is not a mapping")
     if "schema_version" not in data and "names" in data:
