@@ -48,12 +48,23 @@ def _checks_run_in_process(monkeypatch):
     monkeypatch.setattr(api_checks, "run_checks", _canned)
 
 
-def drain_until(qapp, predicate, timeout_ms: int = 10_000) -> bool:
-    """Spin the event loop until ``predicate`` holds; report whether it did.
+def drain_until(
+    qapp, predicate, timeout_ms: int = 10_000, *, raise_on_timeout: bool = True
+) -> bool:
+    """Spin the event loop until ``predicate`` holds; fail, naming it, if it never does.
 
     Bounded by wall clock, not by a spin count: ``processEvents`` returns immediately when
     nothing is queued, so N bare pumps can burn through in microseconds while the worker is
     still running — green on an idle box, flaky inside a loaded suite.
+
+    **It raises rather than answers**, because an answer can be dropped. This used to return
+    False on a timeout, and 12 of its callers called it as a statement: on a loaded machine the
+    wait ran out, the test carried on against a state it never reached, and it failed later on a
+    disabled button or an empty table, naming none of this. The class is written up in
+    ``tests/gui/test_waits_are_checked.py``, which also scans for the forms that can still drop
+    an answer. Pass ``raise_on_timeout=False`` only to ask *whether* something
+    happens — ``assert not drain_until(..., raise_on_timeout=False)`` — and use the answer. To
+    let the loop run for a fixed time, call ``pump_for``.
 
     Here rather than private to one module because a *result* that arrives on a thread is not
     a rare shape any more: five files had grown their own copy, and the sixth would have been
@@ -74,7 +85,44 @@ def drain_until(qapp, predicate, timeout_ms: int = 10_000) -> bool:
             return True
         QTest.qWait(10)
         waited += 10
-    return bool(predicate())
+    if predicate():
+        return True
+    if raise_on_timeout:
+        raise AssertionError(
+            f"waited {timeout_ms / 1000:g}s and this never held: {_describe(predicate)}"
+        )
+    return False
+
+
+def _describe(predicate) -> str:
+    """The predicate's source where it has one (a lambda's line), else its name."""
+    import inspect
+
+    try:
+        source = inspect.getsource(predicate)
+    except (OSError, TypeError):
+        return getattr(predicate, "__qualname__", repr(predicate))
+    return " ".join(source.split())
+
+
+def pump_for(qapp, ms: int) -> None:
+    """Run the event loop for ``ms``, delivering deferred deletes — waiting on nothing.
+
+    For "let whatever is queued land" and "nothing more arrives in this window", which used
+    to be spelled ``drain_until(qapp, lambda: False, ms)``: a wait for something that never
+    happens, whose timeout was the point.
+    """
+    from PyQt6.QtCore import QEvent
+    from PyQt6.QtTest import QTest
+
+    waited = 0
+    while waited < ms:
+        qapp.processEvents()
+        qapp.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        QTest.qWait(10)
+        waited += 10
+    qapp.processEvents()
+    qapp.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
 def export_source(clips=None):

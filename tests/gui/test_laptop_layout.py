@@ -95,9 +95,9 @@ def test_the_overflow_predicate_would_catch_a_child_past_its_parent(qapp):
 
 
 def _pump(qapp, ms: int) -> None:
-    from tests.gui.conftest import drain_until
+    from tests.gui.conftest import pump_for
 
-    drain_until(qapp, lambda: False, ms)
+    pump_for(qapp, ms)
 
 
 @pytest.fixture

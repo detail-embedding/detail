@@ -317,6 +317,8 @@ GUARD_FILES = frozenset(
         "tests/gui/test_strip_reuse.py",
         "tests/gui/test_audit_playback.py",
         "tests/gui/test_worker_lifetime.py",
+        # A bounded wait raises naming what never happened, or its answer is used.
+        "tests/gui/test_waits_are_checked.py",
         # --- label leakage and the ground-truth boundary -------------------------- #
         "tests/pipeline/test_label_leakage.py",
         "tests/analysis/test_no_unfiltered_behavior_streams.py",
