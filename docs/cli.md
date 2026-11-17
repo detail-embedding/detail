@@ -410,7 +410,8 @@ detail keypoints examples import shared/examples.yaml --experiment my_experiment
 The file is an `examples.yaml` as the tool writes it (`schema_version` first, the skeleton, then
 one entry per frame with its `image` path relative to the file and its `marks`), with the images
 beside it; `examples export` writes exactly that. A bare skeleton file imports too, as an empty
-set. Deleting a set a keypoint run lists is refused, so a run always finds its frames.
+set. The set keeps its link to a library skeleton only when a skeleton on this machine has the same
+points, edges and pairs; otherwise it is listed under *(no library skeleton)*. Deleting a set a keypoint run lists is refused, so a run always finds its frames.
 
 **Detect.** One run per selection of recordings:
 
@@ -553,7 +554,9 @@ detail skeleton delete sk_01
 ```
 
 `show` lists what uses a skeleton: the example sets, keypoint runs, datasets and trained models in
-your experiments that copied it. While anything does, `edit --skeleton` and `delete` are refused
+your experiments that copied it. A copy counts when it holds the same points, edges and pairs,
+whatever id it was given on the machine where it was made. Only the experiments in the workspace
+are searched, not one created with `experiment create --dir` somewhere else. While anything does, `edit --skeleton` and `delete` are refused
 with that list; `save-as-new` keeps the edit as a new skeleton instead. A rename is always allowed.
 
 ### `process`

@@ -30,6 +30,7 @@ import yaml
 from detail.core import atomic
 from detail.storage import dirscan
 from detail.storage import experiment as experiment_store
+from detail.storage import id_allocator
 from detail.storage import read_cache
 
 SCHEMA_VERSION = 1
@@ -46,46 +47,11 @@ def discover_exports(experiment_dir: Path | str) -> list[str]:
     return dirscan.discover_ids(root, EXPORT_FILENAME)
 
 
-def _highest_claimed(experiment_dir: Path | str) -> int:
-    """The highest ``export_NN`` number **claimed**, whether or not it has a record yet.
-
-    Deliberately not ``discover_exports``, which counts only directories holding a record — the
-    right definition for listing, the wrong one for allocating: a directory reserved a moment ago
-    has no record yet, and skipping it hands the same id out again.
-    """
-    root = experiment_store.exports_dir(experiment_dir)
-    nums = []
-    for path in dirscan.child_dirs(root):
-        try:
-            nums.append(int(path.name.rsplit("_", 1)[-1]))
-        except ValueError:
-            pass
-    return max(nums, default=0)
-
-
-def reserve_export_id(experiment_dir: Path | str, attempts: int = 50) -> str:
-    """Claim the next ``export_NN`` id by creating its directory — safe under concurrency.
-
-    Scanning for max+1 is a *read*: two exports launched at once both see the same highest id
-    and the second overwrites the first's record — a wrong answer rather than an error. Creating
-    the directory with ``exist_ok=False`` makes the claim atomic, so a loser rescans and takes
-    the next one. The same idiom as :func:`analysis_runs.reserve_analysis_id`.
-
-    Raises:
-        RuntimeError: If ``attempts`` consecutive claims are all lost.
-    """
-    root = Path(experiment_dir)
-    experiment_store.exports_dir(root).mkdir(parents=True, exist_ok=True)
-    for _ in range(attempts):
-        run_id = f"export_{_highest_claimed(root) + 1:03d}"
-        try:
-            export_dir(root, run_id).mkdir(parents=True, exist_ok=False)
-        except FileExistsError:
-            continue
-        return run_id
-    raise RuntimeError(
-        f"could not reserve an export id under {root} after {attempts} attempts — "
-        "too many exports are starting at once"
+def reserve_export_id(experiment_dir: Path | str) -> str:
+    """Claim the next ``export_NNN`` id by creating its directory — safe under concurrency, and
+    a deleted export's id is never handed out again (``storage/id_allocator.py``)."""
+    return id_allocator.claim_dir(
+        experiment_store.exports_dir(experiment_dir), "export", digits=3
     )
 
 

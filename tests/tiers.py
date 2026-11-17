@@ -210,6 +210,9 @@ GUARD_FILES = frozenset(
         "tests/storage/test_machine_config_reads.py",
         "tests/storage/test_measured_time.py",
         "tests/storage/test_id_ordering.py",
+        # Every id family through its real mint and delete, and a scan for an allocator that
+        # is not the shared never-reused one: a reused id is wrong only in an old record.
+        "tests/storage/test_id_reuse.py",
         "tests/storage/test_atomic_writes.py",
         # Scans for a listing that reads its records bare, and plants the crash shape (a
         # zero-filled record) under every listing a page reads.

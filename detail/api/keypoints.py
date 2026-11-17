@@ -340,8 +340,30 @@ def import_example_set(experiment: "Experiment", yaml_path: Path | str) -> Examp
     created.frames = source.frames
     created.sources = source.sources
     created.extra = source.extra
+    created.skeleton_ref = _local_skeleton_ref(source)
     example_store.write_set(experiment.dir, created)
     return created
+
+
+def _local_skeleton_ref(source: ExampleSet) -> dict | None:
+    """The ``skeleton_ref`` an imported set keeps: the library entry **here** holding its
+    skeleton, or ``None``.
+
+    A library id means something only on the machine that minted it, so the file's ref is
+    kept only when its digest is the set's own skeleton and an entry here holds that digest;
+    the ref then names that entry (the file's id when it is one of them). Otherwise the set
+    is listed by its digest, or under *(no library skeleton)*, like any set without a ref.
+    """
+    from detail.api import skeletons as library
+
+    ref = source.skeleton_ref or {}
+    digest = source.skeleton.digest()
+    if ref.get("digest") != digest:
+        return None
+    holders = [e["id"] for e in library.skeletons() if e["skeleton"].digest() == digest]
+    if not holders:
+        return None
+    return library.ref(ref["id"] if ref.get("id") in holders else holders[0])
 
 
 def _read_rgb(path: Path) -> np.ndarray:

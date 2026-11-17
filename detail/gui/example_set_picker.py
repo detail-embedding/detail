@@ -41,14 +41,19 @@ UNLINKED = "(no library skeleton)"
 
 
 def skeleton_of(es: ExampleSet, entries: list[dict]) -> str | None:
-    """The library id ``es`` belongs to: its ``skeleton_ref``, else the first entry holding
-    the same skeleton (by digest), else None."""
+    """The library id ``es`` belongs to: its ``skeleton_ref`` when that entry holds the set's
+    skeleton, else the first entry holding it (by digest), else None.
+
+    The digest is checked before the ref's id is trusted: a library id means something only
+    on the machine that minted it, so a set from elsewhere (or one whose entry was deleted and
+    its id reused) can name an entry holding a different skeleton.
+    """
     ref = (es.skeleton_ref or {}).get("id")
-    ids = {e["id"] for e in entries}
-    if ref in ids:
-        return ref
     digest = es.skeleton.digest()
-    return next((e["id"] for e in entries if e["skeleton"].digest() == digest), None)
+    holders = [e["id"] for e in entries if e["skeleton"].digest() == digest]
+    if ref in holders:
+        return ref
+    return holders[0] if holders else None
 
 
 def skeleton_label(entry: dict) -> str:

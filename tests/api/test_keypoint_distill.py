@@ -168,6 +168,25 @@ def test_the_teacher_assigns_to_the_one_tracking_run_on_its_detection_run(taught
         keypoint_distill.resolve_teacher(proj, ["recording_002"])
 
 
+def test_a_detect_teacher_carries_the_runs_skeleton_ref(taught):
+    """The detect-run teacher records the library skeleton its runs' copy came from, so the
+    dataset and the student keep that skeleton listed as used after the runs are deleted.
+    A ref whose digest is not the runs' skeleton is not taken."""
+    from detail.storage.keypoint_runs import read_detect_yaml, write_detect_yaml
+
+    it, recording = taught
+    run_dir = recording.dir / "keypoint_detect" / "kd_01"
+    meta = read_detect_yaml(run_dir)
+    digest = Skeleton.from_dict(meta["skeleton"]).digest()
+    ref = {"id": "sk_04", "name": "rats", "digest": digest}
+    write_detect_yaml(run_dir, {**meta, "skeleton_ref": ref})
+    teacher, _ = keypoint_distill.resolve_teacher(it.experiment, ["recording_002"])
+    assert teacher["skeleton_ref"] == ref
+    write_detect_yaml(run_dir, {**meta, "skeleton_ref": {**ref, "digest": "other"}})
+    teacher, _ = keypoint_distill.resolve_teacher(it.experiment, ["recording_002"])
+    assert "skeleton_ref" not in teacher
+
+
 def test_a_method_without_a_default_cutoff_needs_one(taught):
     it, _recording = taught
     # the fake teacher's ScoreSpec sets no default cut-off
@@ -417,8 +436,28 @@ def test_register_student_promotes_the_trained_model(tmp_path):
         "tracking_runs": {"recording_002": "track_01"},
     }
     assert Skeleton.from_dict(on_disk["skeleton"]) == SK
+    assert "skeleton_ref" not in on_disk  # the teacher carried none
     # idempotent: registering again changes nothing
     assert keypoint_distill.register_student(proj, "distill_001", record) == on_disk
+
+
+def test_register_student_records_a_detect_teachers_skeleton_ref(tmp_path):
+    """A student taught by detect runs names its library skeleton, as one taught by the patch
+    method does; before, only the patch-method teacher carried it."""
+    proj = Experiment.create("p", tmp_path)
+    _student(proj)
+    ref = {"id": "sk_04", "name": "rats", "digest": SK.digest()}
+    record = _keypoint_record(
+        proj,
+        stages={
+            "label": {"status": "complete", "dataset_id": None},
+            "train": {"status": "complete", "model_id": "model_001"},
+            "register": {"status": "running"},
+        },
+    )
+    record["config"]["teacher"]["skeleton_ref"] = ref
+    model = keypoint_distill.register_student(proj, "distill_001", record)
+    assert model["skeleton_ref"] == ref
 
 
 def test_register_student_refuses_a_model_without_weights(tmp_path):

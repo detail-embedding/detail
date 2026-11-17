@@ -732,6 +732,37 @@ def test_workspace_rename_keeps_the_selection_on_the_same_region(qapp, tmp_path)
     assert [r["name"] for r in recording.rois] == ["feeder"]
 
 
+def test_save_keeps_the_id_of_every_region_the_user_kept(qapp, tmp_path):
+    """Delete ``nest`` in the editor and Save: ``food`` stays ``roi_002`` and a region added
+    in the same Save takes an id never used before. The editor used to hand ``replace_defs``
+    names only, which renumbered every region by list position, so ``roi_001`` named
+    ``nest`` in one location run and ``food`` in the next."""
+    from detail.gui.arena import SceneGeometryDialog
+
+    recording = _video_recording(tmp_path)
+    triangle = [(0, [(0.0, 0.0), (0.5, 0.0), (0.5, 0.5)])]
+    recording.set_rois(
+        [
+            {"name": "nest", "keyframes": triangle},
+            {"name": "food", "keyframes": triangle},
+        ]
+    )
+    before = {e["name"]: e["id"] for e in recording.rois}
+    dialog = SceneGeometryDialog(recording)
+    nest = next(i for i, r in enumerate(dialog._regions) if r["name"] == "nest")
+    dialog._list.setCurrentRow(_row_for(dialog, nest))
+    dialog._delete_region()
+    dialog._add_region("roi")
+    dialog._canvas._points = [(0.1, 0.1), (0.9, 0.1), (0.5, 0.9)]
+    dialog._name.setText("water")
+    dialog._on_rename()
+    dialog._save_all()
+
+    after = {e["name"]: e["id"] for e in recording.rois}
+    assert after["food"] == before["food"]
+    assert after["water"] not in before.values()
+
+
 # --- the workspace: keyframes ------------------------------------------------ #
 def test_workspace_keyframes_scrub_ghost_set_and_save(qapp, tmp_path):
     from detail.gui.arena import SceneGeometryDialog
