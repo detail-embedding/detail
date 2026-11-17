@@ -561,7 +561,9 @@ def test_the_record_rebuilds_the_same_ranking_from_the_stored_rows():
     shares = _baseline_spread_cohort(n=6)
     meta, rows = _crossover(shares)
     obs = c.observations(rows, meta, group_by=["session"], aggregate_to=["animal"])
-    stored = c.stats_rows(obs, aggregate_to=["animal"], group_by=["session"])
+    stored = c.stats_rows(
+        obs, aggregate_to=["animal"], remainders=(), group_by=["session"]
+    )
     assert all(row["denominator_ns"] == HOUR for row in stored)
     rebuilt = comparison_report._observations(
         [{k: ("" if v is None else str(v)) for k, v in row.items()} for row in stored]

@@ -19,11 +19,11 @@ from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QInputDialog, QMessageBox
 
 from detail.gui.cluster_workspace import ClusterWorkspace
+from tests.gui.conftest import drain_until
+from tests.gui.conftest import pump_for
 
 
 def _drain(qapp, predicate, timeout_ms: int = 10_000) -> bool:
-    from tests.gui.conftest import drain_until
-
     return drain_until(qapp, predicate, timeout_ms)
 
 
@@ -70,7 +70,7 @@ def _quiet(qapp, interpret, timeout_ms: int = 20_000) -> bool:
     """Every queued label write has landed."""
     return _drain(
         qapp,
-        lambda: interpret._writer is None and not interpret._pending,
+        lambda: not interpret.writes_pending(),
         timeout_ms,
     )
 
@@ -285,7 +285,7 @@ def test_finish_while_labels_are_saving_waits_for_them_and_locks_every_label_sur
 
     monkeypatch.setattr(run, "label_maps", slow)
     interpret._label(b, "rear")
-    assert interpret._writer is not None, "the write is still in flight"
+    assert interpret.writes_pending(), "the write is still in flight"
     interpret._finish.click()
     reason = interpret._edit_reason()
     assert reason.startswith("The run is being finished")
@@ -665,7 +665,9 @@ def test_a_reload_reads_each_windows_clips_once_and_keeps_its_place(
     # the read itself, not one pump after the page's view (that raced on a 2-core Linux
     # runner). Then give a second read half a second to show up, and require none.
     assert _drain(qapp, lambda: loads), "the reload never re-read the window's clips"
-    assert not _drain(qapp, lambda: len(loads) > 1, timeout_ms=500), loads
+    assert not drain_until(
+        qapp, lambda: len(loads) > 1, 500, raise_on_timeout=False
+    ), loads
     assert window.montage.grid.verticalScrollBar().value() == scroll
 
 
@@ -942,17 +944,15 @@ def test_a_label_in_one_window_leaves_the_other_montages_pictures_alone(qapp, fi
     """Reported 2026-11-09: labelling in one window re-rendered the clips of every other. A
     label changes no tile, so neither the other window's montage nor INTERPRET's own may be
     handed new tiles, a new source, a cleared cache or a single frame request."""
-    from tests.gui.conftest import drain_until
-
     _e, handle, workspace, interpret = _interpret(qapp, fitted)
     a, b = _two_clusters(interpret._view)
     first, second = _window(qapp, interpret, a), _window(qapp, interpret, b)
     workspace.resize(1440, 847)
     workspace.show()
-    drain_until(qapp, lambda: False, 1000)
+    pump_for(qapp, 1000)
     other, page = _watched(second.montage), _watched(interpret.montage())
     _labelled(qapp, interpret, handle, first, a, "rear")
-    drain_until(qapp, lambda: False, 1500)
+    pump_for(qapp, 1500)
     assert handle.node_names().get(str(a)) == "rear"
     for name, seen, montage in (
         ("the other window", other, second.montage),
@@ -1064,7 +1064,7 @@ def test_the_windows_top_is_interprets_label_bar_row_for_row(qapp, fitted):
     workspace.show()
     interpret.select(a)
     window = _window(qapp, interpret, a)
-    _drain(qapp, lambda: False, 500)
+    pump_for(qapp, 500)
     page_bar, bar = interpret.label_bar(), window.bar
     assert type(bar) is LabelBar and type(page_bar) is LabelBar
     page_rows = bar_rows(page_bar, skip=(interpret._open_window, page_bar.lines))
@@ -1089,12 +1089,12 @@ def test_the_windows_top_is_interprets_label_bar_row_for_row(qapp, fitted):
     # It can fail: a control added to one bar, or a row put over the window's grid.
     extra = QPushButton("Extra")
     bar.add_action_widget(extra)
-    _drain(qapp, lambda: False, 100)
+    pump_for(qapp, 100)
     assert bar_rows(bar, skip=(bar.lines,)) != page_rows
     extra.hide()
     row = QLabel("a row over the grid")
     window.body().insertWidget(1, row)
-    _drain(qapp, lambda: False, 300)
+    pump_for(qapp, 300)
     assert widgets_between(bar, window.montage.grid), "the planted row is caught"
 
 

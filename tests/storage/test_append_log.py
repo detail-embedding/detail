@@ -3,6 +3,16 @@
 Extracted from annotation_runs, whose own tests still cover it through ``labels.csv``. What
 is tested here is the primitive's contract on its own terms, because ``audit.csv`` is now a
 second consumer and the failure modes are data loss rather than a wrong answer.
+
+**The class: an append-only file that trusts its last byte.** A crash mid-row leaves the file
+without a final newline. The next ``open(path, "a")`` then glues a new row onto the half row,
+and a reader that *stopped* at the first row of the wrong width hid every decision written
+after it — a clip review that read "0 of 8 reviewed" however often Finish was pressed, and a
+``migrate`` that then rewrote the file from that read and dropped the rest for good. The
+docstrings promised a crash costs "at most the row being written". The old test here wrote its
+torn row *with* a newline and never appended after it, which is why it passed. The rule: an
+append cuts a torn tail back first, and a read skips a bad row instead of stopping
+(``test_a_torn_row_costs_only_itself*``).
 """
 
 import csv
@@ -171,3 +181,78 @@ def test_a_zero_byte_log_still_gets_its_header(tmp_path):
     header, rows = log.read()
     assert header == COLUMNS
     assert [row["id"] for row in rows] == ["a", "b"]  # neither decision was eaten
+
+
+def _tear(log: AppendLog, text: str) -> None:
+    """What a crash mid-append leaves: part of a row and no newline."""
+    with open(log.path, "a", newline="", encoding="utf-8") as f:
+        f.write(text)
+
+
+def test_a_torn_row_costs_only_itself(tmp_path):
+    log = _log(tmp_path)
+    log.append(["a", 1, "first"])
+    _tear(log, "b,2")
+    log.append(["c", 3, "third"])
+    log.append_many([["d", 4, "fourth"], ["e", 5, "fifth"]])
+    assert [r["id"] for r in log.rows()] == ["a", "c", "d", "e"]
+
+
+def test_a_torn_row_inside_an_open_quote_costs_only_itself(tmp_path):
+    """A row cut inside a quoted field: the csv reader would otherwise read the next rows as
+    part of that field, and at end of file it parses the torn row as a whole one."""
+    log = _log(tmp_path)
+    log.append(["a", 1, "line one\nline two"])
+    _tear(log, 'b,2,"half a note\nstill in it')
+    assert [r["id"] for r in log.rows()] == ["a"]  # the unterminated row is not read
+    log.append(["c", 3, "third"])
+    rows = log.rows()
+    assert [r["id"] for r in rows] == ["a", "c"]
+    assert rows[0]["note"] == "line one\nline two"
+
+
+def test_a_torn_header_is_rewritten_as_a_new_file(tmp_path):
+    log = _log(tmp_path)
+    _tear(log, "id,va")
+    log.append(["a", 1, "first"])
+    assert log.path.read_text(encoding="utf-8-sig").splitlines()[0] == "id,value,note"
+    assert [r["id"] for r in log.rows()] == ["a"]
+
+
+def test_rows_after_a_torn_row_survive_a_migration(tmp_path):
+    """``migrate`` rewrites the file from ``read``: a read that stopped at the torn row made the
+    migration drop every later decision for good."""
+    path = tmp_path / "log.csv"
+    narrow = AppendLog(path, ["id", "value"])
+    narrow.append(["a", 1])
+    _tear(narrow, "b,")
+    narrow.append(["c", 3])
+    AppendLog(path, COLUMNS).append(["d", 4, "fourth"])
+    rows = AppendLog(path, COLUMNS).rows()
+    assert [r["id"] for r in rows] == ["a", "c", "d"]
+    assert path.read_text(encoding="utf-8-sig").splitlines()[0] == "id,value,note"
+
+
+def test_a_row_glued_onto_a_torn_one_does_not_hide_the_rest(tmp_path):
+    """A file torn before appends cut torn tails holds a glued row mid-file: skip it, read on."""
+    log = _log(tmp_path)
+    log.append(["a", 1, "first"])
+    with open(log.path, "a", newline="", encoding="utf-8") as f:
+        f.write("b,2c,3,third\r\n")  # what the old append left: four fields
+    log.append(["d", 4, "fourth"])
+    assert [r["id"] for r in log.rows()] == ["a", "d"]
+
+
+def test_a_torn_jsonl_line_is_not_glued_onto_the_next(tmp_path):
+    """``history.jsonl`` (query and clustering runs) appends through ``append_line``."""
+    import json
+
+    from detail.storage.append_log import append_line
+
+    path = tmp_path / "history.jsonl"
+    append_line(path, json.dumps({"op": "a"}))
+    with open(path, "a", encoding="utf-8") as f:
+        f.write('{"op": "b"')  # killed mid-line
+    append_line(path, json.dumps({"op": "c"}))
+    lines = path.read_text(encoding="utf-8-sig").splitlines()
+    assert [json.loads(line)["op"] for line in lines] == ["a", "c"]

@@ -4,10 +4,15 @@ Every format is written from one `PointSource`, so the tests check each file's o
 against the same rows: the fake detect method places point 0 on a subject's box corner
 ``(x0, y0)`` and point 1 on ``(x1, y1)``, scored 0.5, over five 40x40 frames; track 0 is on
 every frame, track 1 on frames 1 and 3.
+
+**A missing value averaged in as zero (#32).** SLEAP's ``instance_scores`` set a missing point's
+NaN score to 0 before the mean, so a half-placed animal scored half. The rule: a mean over
+points is a mean over the points placed (``sleap_instance_scores``).
 """
 
 import csv
 import importlib.util
+import types
 
 import cv2
 import numpy as np
@@ -18,9 +23,12 @@ from detail.api.exporters import ExportSubject
 from detail.api.keypoint_export import (
     INSTANCE_LONG_COLUMNS,
     LONG_COLUMNS,
+    PartRows,
     PointSource,
+    write_nwb,
 )
 from detail.core.registries import KEYPOINT_MODELS
+from detail.core.skeleton import Skeleton
 from detail.storage import recording as recording_store
 from detail.storage import runs as runs_store
 from detail.storage.zarr_io import TracksSummaryWriter
@@ -357,6 +365,74 @@ def test_nwb_file_round_trips_through_pynwb(keypoint_runs, tmp_path):
         assert "Skeletons" in behavior.data_interfaces
 
 
+class _LaterPart:
+    """The second part of a two-part recording, as `write_nwb` reads a `PointSource`: its map
+    starts where part 1's ends (``add_video_part`` writes recording-wide time), and the poses'
+    ``t_ns`` are on that clock."""
+
+    kind, method, assigned, scorer = "track", "fake", True, "DETAIL_fake_run_011"
+    score_meaning = "the method's point score"
+    recording_id = recording_name = "recording_002"
+    frame_wh = (40, 40)
+    skeleton = Skeleton(names=("nose", "tail"), edges=(("nose", "tail"),))
+    run = types.SimpleNamespace(
+        run_id="run_011", meta={"created_at": "2026-01-01T00:00:00Z"}
+    )
+    part_1_frames = 5
+    stamps = (np.arange(4, dtype=np.int64) + part_1_frames) * 33_333_333
+
+    def fps(self, part_id):
+        return 30.0
+
+    def frame_count(self, part_id):
+        return len(self.stamps)
+
+    def timestamps(self, part_id):
+        return self.stamps
+
+    def series_name(self, series_id):
+        return f"track_{series_id}"
+
+    def to_px(self, points):
+        return points * 40.0
+
+    def rows_in(self, part_id):
+        n = len(self.stamps)
+        return {
+            0: PartRows(
+                frame_idx=np.arange(n),
+                t_ns=self.stamps,
+                points=np.full((n, 2, 2), 0.5),
+                scores=np.full((n, 2), 0.9),
+                visible=np.ones((n, 2), bool),
+                changed=np.zeros((n, 2), np.int8),
+            )
+        }
+
+
+def test_a_later_parts_nwb_video_starts_where_its_poses_do(tmp_path):
+    """Issue #23: the video series started at 0 s while the poses beside it use the
+    recording's clock, so part 2's video ran one part-length ahead of its poses."""
+    pytest.importorskip("pynwb")
+    pytest.importorskip("ndx_pose")
+    from pynwb import NWBHDF5IO
+
+    source = _LaterPart()
+    path = write_nwb(
+        source,
+        "part_002",
+        tmp_path / "p2.nwb",
+        video_name="part_002.mp4",
+        experiment_name="p",
+    )
+    with NWBHDF5IO(str(path), "r") as io:
+        nwb = io.read()
+        video = nwb.acquisition["video_part_002"]
+        nose = nwb.processing["behavior"]["track_0"].pose_estimation_series["nose"]
+        assert video.starting_time == pytest.approx(source.stamps[0] / 1e9)
+        assert video.starting_time == pytest.approx(nose.timestamps[0])
+
+
 def _frames(path):
     cap = cv2.VideoCapture(str(path))
     out = []
@@ -421,3 +497,26 @@ def test_loader_round_trip_with_movement(keypoint_runs, tmp_path):
     assert dlc.sizes["time"] == 5 and list(dlc.keypoints.values) == ["nose", "tail"]
     sleap = load_poses.from_sleap_file(result.dest / f"{STEM}_part_001.analysis.h5")
     assert sleap.sizes["time"] == 5 and list(sleap.keypoints.values) == ["nose", "tail"]
+
+
+def test_a_sleap_instance_score_averages_only_the_points_placed():
+    """A missing point is NaN, and it was set to 0 before the mean, so an animal with two of
+    four points placed at 0.9 scored 0.45 in ``instance_scores`` (#32, finding 7). SLEAP's own
+    mean instance score skips a missing node; so does this one. An instance with no point
+    placed stays NaN, not 0."""
+    from detail.api.keypoint_export import sleap_instance_scores
+
+    nan = np.nan
+    likelihood = np.array(
+        [
+            [[0.9, 0.9, nan, nan], [0.2, 0.4, 0.6, 0.8]],
+            [[nan, nan, nan, nan], [0.5, nan, nan, nan]],
+        ]
+    )  # (frames, tracks, keypoints)
+    got = sleap_instance_scores(likelihood)
+    assert got.shape == (2, 2)
+    assert got[0, 0] == pytest.approx(0.9)
+    assert got[0, 1] == pytest.approx(0.5)
+    assert np.isnan(got[1, 0])
+    assert got[1, 1] == pytest.approx(0.5)
+    assert sleap_instance_scores(np.zeros((0, 2, 4))).shape == (0, 2)

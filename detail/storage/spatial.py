@@ -22,6 +22,8 @@ from detail.core import utils as core_utils
 from detail.core.dataclasses import PolygonKeyframes
 from detail.core.errors import UserInputError
 from detail.importers import _csv_common
+from detail.storage import dirscan
+from detail.storage import id_allocator
 from detail.storage import locations
 from detail.storage import recording as recording_store
 
@@ -195,13 +197,21 @@ def list_defs(recording_dir: Path | str, kind: str) -> list[dict]:
 
 
 def next_id(recording_dir: Path | str, kind: str) -> str:
-    """Pick the next free ``<prefix>_NNN`` id (3-digit zero-padded, 1-based)."""
+    """Claim the next ``<prefix>_NNN`` id (3-digit zero-padded, 1-based) for a ROI or POI.
+
+    Never handed out again once claimed, even after that region is deleted: a finished
+    location run's ``roi_relations.csv`` names regions by this id, so a new region taking a
+    deleted one's id would join to the old run's rows as if it were the same region. The mark
+    is the recording's own (``storage/id_allocator.py``). Arenas keep the lowest free number
+    (:func:`next_arena_id` says why).
+    """
+    if kind == "arena":
+        return next_arena_id(recording_dir)
     k = _kind(kind)
-    taken = {entry.get("id") for entry in list_defs(recording_dir, kind)}
-    i = 1
-    while f"{k.id_prefix}_{i:03d}" in taken:
-        i += 1
-    return f"{k.id_prefix}_{i:03d}"
+    taken = [entry.get("id") for entry in list_defs(recording_dir, kind)]
+    kind_dir = Path(recording_dir) / k.dirname
+    taken += [p.name for p in dirscan.child_dirs(kind_dir)]
+    return id_allocator.claim(recording_dir, k.id_prefix, digits=3, taken=taken)
 
 
 def append_to_manifest(
@@ -264,16 +274,34 @@ def delete_def(recording_dir: Path | str, kind: str, def_id: str) -> None:
 def replace_defs(recording_dir: Path | str, kind: str, defs: list[dict]) -> list[str]:
     """Replace ALL definitions of ``kind`` in one operation — the bulk counterpart to the
     per-def define path, used by the ROI/POI manager's "Save all". Each entry is
-    ``{"name": str, "keyframes": Keyframes, "active": ActiveInterval}`` (``active``
-    optional). Validates the whole set first (Tenet 10), then removes existing definitions
-    of this kind and writes the new set with fresh sequential ids; returns the new ids.
+    ``{"name": str, "keyframes": Keyframes, "active": ActiveInterval, "id": str}``
+    (``active`` and ``id`` optional). Validates the whole set first (Tenet 10), then removes
+    existing definitions of this kind and writes the new set; returns the ids, in order.
+
+    **An entry carrying the ``id`` of a definition that exists keeps that id**, so a region
+    the user did not delete is the same ``roi_NNN`` before and after a Save, and a location
+    run joined on ``roi_id`` across the edit pairs like with like. An entry without one (a new
+    region), or with an id no longer defined, gets a fresh id that was never used before
+    (:func:`next_id`).
 
     Safe for ROIs/POIs (no run-lock); not for arenas, which guard against id churn.
+
+    Raises:
+        ValueError: An empty or duplicated name or id, or invalid keyframes / active.
     """
     k = _kind(kind)
-    prepared: list[tuple[str, Keyframes, ActiveInterval, int]] = []
+    prepared: list[tuple[str | None, str, Keyframes, ActiveInterval, int]] = []
     seen: set[str] = set()
+    seen_ids: set[str] = set()
+    existing_ids = {entry["id"] for entry in list_defs(recording_dir, kind)}
     for d in defs:
+        kept = d.get("id")
+        if kept is not None:
+            if kept in seen_ids:
+                raise ValueError(f"{k.id_prefix} id {kept!r} is duplicated")
+            seen_ids.add(kept)
+            if kept not in existing_ids:
+                kept = None
         name = d.get("name") or ""
         if not name:
             raise ValueError(f"{k.id_prefix} name must be non-empty")
@@ -285,15 +313,15 @@ def replace_defs(recording_dir: Path | str, kind: str, defs: list[dict]) -> list
             raise ValueError(f"{kind!r} does not support an active interval")
         _validate_active(active)
         n_vertices = _validate_keyframes(d["keyframes"], k.min_vertices, k.max_vertices)
-        prepared.append((name, d["keyframes"], active, n_vertices))
+        prepared.append((kept, name, d["keyframes"], active, n_vertices))
+    # New ids are claimed while the old definitions still exist, so even a recording with no
+    # mark yet (made before it existed) cannot hand a new region a kept region's id.
+    new_ids = [kept or next_id(recording_dir, kind) for kept, *_ in prepared]
     for entry in list_defs(recording_dir, kind):
         delete_def(recording_dir, kind, entry["id"])
-    new_ids: list[str] = []
-    for i, (name, keyframes, active, n_vertices) in enumerate(prepared, start=1):
-        def_id = f"{k.id_prefix}_{i:03d}"
+    for def_id, (_kept, name, keyframes, active, n_vertices) in zip(new_ids, prepared):
         write_keyframes(recording_dir, kind, def_id, keyframes)
         append_to_manifest(recording_dir, kind, def_id, name, n_vertices, active)
-        new_ids.append(def_id)
     return new_ids
 
 
@@ -852,5 +880,17 @@ def list_arenas(recording_dir: Path | str) -> list[dict]:
 
 
 def next_arena_id(recording_dir: Path | str) -> str:
-    """Pick the next free ``arena_NNN`` id (3-digit zero-padded, 1-based)."""
-    return next_id(recording_dir, "arena")
+    """Pick the lowest free ``arena_NNN`` id (3-digit zero-padded, 1-based).
+
+    Deliberately not the never-reused allocator the other kinds use: every record naming an
+    arena is a tracking run, and while one exists the arena can be neither deleted nor
+    redefined (``Recording.delete_arena`` / ``clear_arenas`` refuse), so a freed arena id is
+    named by nothing. The scene editor redefines the whole set on Save and relies on this
+    handing the same ids back.
+    """
+    k = _kind("arena")
+    taken = {entry.get("id") for entry in list_defs(recording_dir, "arena")}
+    i = 1
+    while f"{k.id_prefix}_{i:03d}" in taken:
+        i += 1
+    return f"{k.id_prefix}_{i:03d}"

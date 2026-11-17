@@ -64,10 +64,13 @@ CONDITIONS: dict[str, tuple[str, "Callable[[dict], bool]"]] = {
     ),
     "unnamed_labels": (
         "every behavior in this run is named, so there is no unnamed time to measure",
-        # A clustering producer writes an empty list for a cluster nobody named; a query
-        # producer names every behavior by construction, so no entry is ever empty. Keyed on
-        # the fact rather than on `producer.module_id`, which would need editing here for
-        # every producer added later.
+        # A clustering producer writes an empty list for its `unlabelled` source label
+        # (`pipeline/temporal_clustering._manifest`); a query producer names every behavior
+        # by construction, so no entry is ever empty. Keyed on the fact rather than on
+        # `producer.module_id`, which would need editing here for every producer added later.
+        # The real producer's output is what guards this, not a hand-written manifest: the
+        # predicate was once true of a fixture and of no run on disk
+        # (`tests/analysis/test_measure_naming.py`).
         lambda manifest: any(
             not names for names in (manifest.get("names") or {}).values()
         ),
@@ -104,6 +107,8 @@ COLUMNS = [
     "subject",
     "label",
     "label_to",
+    "label_display",
+    "label_is_remainder",
     "window_id",
     "window_start_t_ns",
     "window_end_t_ns",
@@ -114,6 +119,43 @@ COLUMNS = [
 ]
 
 _NS_PER_S = 1_000_000_000
+
+#: What a parent label's row is called: it counts only the time none of its children took.
+REMAINDER_SUFFIX = " (other)"
+
+
+def remainder_labels(manifest: dict) -> frozenset[str]:
+    """The labels whose rows count only a **remainder**: every label with another label nested
+    under it (its ``label_paths`` path a proper prefix of another label's).
+
+    Labels nest (§22) and an instance carries its *deepest* label, so a parent's row counts only
+    what none of its children took. **Owner decision (#24): the numbers stay, the row says so** —
+    ``label`` keeps the plain name, because it is the join key a comparison groups on
+    (``compare.MEASURE_KEYS``) and a user joins to ``instances.csv`` on; ``label_display`` reads
+    "<label> (other)" and ``label_is_remainder`` marks the row. Decided here, once, from the
+    manifest, so the measures table and a comparison's ``stats.csv`` cannot disagree. A producer
+    with no hierarchy (a query run) writes no ``label_paths`` and has no remainders.
+    """
+    from detail.storage import behavior_output
+
+    names = behavior_output._names_map(manifest)
+    paths = behavior_output._names_map(manifest, key="label_paths")
+    path_of: dict[str, str] = {}
+    for source, labels in names.items():
+        here = paths.get(source) or []
+        for i, label in enumerate(labels):
+            path_of[label] = (here[i] if i < len(here) else "") or label
+    every = set(path_of.values())
+    return frozenset(
+        label
+        for label, path in path_of.items()
+        if any(other.startswith(path + "/") for other in every)
+    )
+
+
+def display_label(label: str, remainders) -> str:
+    """``label`` as a person reads it: a parent's remainder row is "<label> (other)"."""
+    return f"{label}{REMAINDER_SUFFIX}" if label and label in remainders else label
 
 
 class MeasureError(ValueError):
@@ -523,12 +565,25 @@ def _denominator_ns(view, coverage, window: Window) -> int | None:
     )
 
 
-def _row(recording_id, subject, label, label_to, window, measure_id, value, denom, n):
+def _row(
+    recording_id,
+    subject,
+    label,
+    label_to,
+    window,
+    measure_id,
+    value,
+    denom,
+    n,
+    remainders,
+):
     return {
         "recording_id": recording_id,
         "subject": "" if subject is None else subject,
         "label": label,
         "label_to": label_to,
+        "label_display": display_label(label, remainders),
+        "label_is_remainder": bool(label) and label in remainders,
         "window_id": window.window_id,
         "window_start_t_ns": window.start_t_ns,
         "window_end_t_ns": window.end_t_ns,
@@ -585,6 +640,7 @@ def measure_unit(
     period = _period_ns(view, coverage)
     types = manifest.get("behavior_types") or {}
     vocabulary = sorted(manifest.get("vocabulary") or [])
+    remainders = remainder_labels(manifest)
 
     rows: list[dict] = []
     for window in windows:
@@ -626,6 +682,7 @@ def measure_unit(
                             None,
                             denom,
                             sel.n,
+                            remainders,
                         )
                     )
                     continue
@@ -643,6 +700,7 @@ def measure_unit(
                                 count,
                                 denom,
                                 sel.n,
+                                remainders,
                             )
                         )
                     continue
@@ -657,6 +715,7 @@ def measure_unit(
                         value,
                         denom,
                         sel.n,
+                        remainders,
                     )
                 )
     return rows

@@ -20,6 +20,12 @@ produces *plausible output* rather than an error:
   judge the clip ended up at the bottom edge of the screen. Nothing fails — every widget is
   present, correct and reachable by scrolling. The class is `f9350f0a`'s, found here at its third
   site (`docs/recorded_classes.md`), and the measurements are in the section that guards it.
+- **Two states under one value.** ``None`` is the stored answer "unclear", and
+  ``_decisions.get(id)`` is also ``None`` for a clip nobody answered; a scope switch merged the
+  batch scope's pairs back into ``_decisions`` and every unanswered clip read "unclear" on screen
+  while ``audit.csv`` held only the answers pressed (#24). The batch scope now says
+  ``NOT_ANSWERED``, and a scope switch records nothing:
+  ``test_switching_scopes_never_records_an_answer``.
 - **An id where a name belongs (§11).** The clip rows, the line under the video and the
   by-recording table each printed `recording_id`. An id is a plausible thing to print, which is
   why none of this raised.
@@ -1594,3 +1600,44 @@ def test_the_tab_shows_the_figure_the_api_reports(qapp, tmp_path):
     )
     shown = [b for b in run.audit_precision_by_score_bin(label="q01") if b["n"]]
     assert [b["bin"] for b in data["bins"]] == [b["bin"] for b in shown]
+
+
+def test_switching_scopes_never_records_an_answer(qapp, tmp_path):
+    """A scope switch is a change of walk, never a judgment (issue #24, finding 4).
+
+    `None` is the stored value for "unclear", and `_decisions.get(id)` is also `None` for a
+    clip nobody has answered — so merging the batch scope's `(clip, said)` pairs back into
+    `_decisions` turned every unanswered clip into an "unclear" on screen: the bar jumped from
+    2/25 to 25/25, the list said "unclear" for clips nobody judged and the next press counted
+    as a revision. Only the two pressed clips ever reached `audit.csv`, so screen and disk
+    disagreed. The batch scope now marks an unanswered clip `NOT_ANSWERED`, which is not an
+    answer, and the scope switch merges nothing.
+    """
+    _exp, run, tab = _tab(qapp, tmp_path)
+    tab._start_batch()
+    size = len(tab._batch)
+    assert size > 2, "the batch is too small to leave anything unanswered"
+    third = tab._batch[2].instance_id
+    tab._decide(True)
+    tab._decide(False)
+    assert tab._bar.value() == 2
+
+    tab._scopes["judged"].setChecked(True)
+    tab._scopes["batch"].setChecked(True)
+
+    assert tab._bar.value() == 2, "switching scopes answered the unanswered clips"
+    assert third not in tab._decisions
+    said = {
+        tab._list_model.item(r, 0)
+        .data(Qt.ItemDataRole.UserRole): tab._list_model.item(r, 1)
+        .text()
+        for r in range(tab._list_model.rowCount())
+    }
+    assert said[third] == "—", "an unanswered clip is listed as answered"
+    batch = {row.instance_id for row in tab._batch}
+    answered = [
+        r
+        for r in audit.read_audit(run._run_dir())
+        if r.decided and r.instance_id in batch
+    ]
+    assert len(answered) == 2

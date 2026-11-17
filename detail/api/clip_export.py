@@ -125,7 +125,7 @@ def export_clip(
             [
                 recording_id, int(track_id), lo, hi,
                 int(start_t_ns), int(end_t_ns),
-                round(duration_s, 3), round(job["fps"], 3),
+                round(duration_s, 3), clip_render.written_fps(job),
             ]  # fmt: skip
             + [names.get(render, "") for render in wanted]
         )

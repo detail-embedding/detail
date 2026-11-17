@@ -13,6 +13,7 @@ import pytest
 
 pytest.importorskip("PyQt6")
 
+from tests.gui.conftest import drain_thread_pool  # noqa: E402
 from tests.gui.conftest import drain_until  # noqa: E402
 
 
@@ -641,8 +642,6 @@ def test_spatial_workspace_defers_frame_decode_off_thread(qapp, tmp_path, monkey
     # The first frame must decode off-thread: constructing the workspace must not call
     # get_frame on the UI thread (else opening it on a large video freezes to a blank
     # window). Stub get_frame to raise; construction must still succeed.
-    from PyQt6.QtCore import QThreadPool
-
     from detail.gui.arena import SceneGeometryDialog
 
     recording = _video_recording(tmp_path)
@@ -653,7 +652,7 @@ def test_spatial_workspace_defers_frame_decode_off_thread(qapp, tmp_path, monkey
     monkeypatch.setattr(recording, "get_frame", _raise)
     dialog = SceneGeometryDialog(recording)  # deferred → no raise here
     assert dialog._scrubber is not None
-    QThreadPool.globalInstance().waitForDone(2000)  # let the (raising) decode drain
+    drain_thread_pool(qapp)  # let the (raising) decode drain
 
 
 def test_spatial_workspace_decodes_frame_zero_off_thread(qapp, tmp_path):
@@ -730,6 +729,37 @@ def test_workspace_rename_keeps_the_selection_on_the_same_region(qapp, tmp_path)
     assert dialog._list.currentRow() == _row_for(dialog, 0)
     dialog._save_all()
     assert [r["name"] for r in recording.rois] == ["feeder"]
+
+
+def test_save_keeps_the_id_of_every_region_the_user_kept(qapp, tmp_path):
+    """Delete ``nest`` in the editor and Save: ``food`` stays ``roi_002`` and a region added
+    in the same Save takes an id never used before. The editor used to hand ``replace_defs``
+    names only, which renumbered every region by list position, so ``roi_001`` named
+    ``nest`` in one location run and ``food`` in the next."""
+    from detail.gui.arena import SceneGeometryDialog
+
+    recording = _video_recording(tmp_path)
+    triangle = [(0, [(0.0, 0.0), (0.5, 0.0), (0.5, 0.5)])]
+    recording.set_rois(
+        [
+            {"name": "nest", "keyframes": triangle},
+            {"name": "food", "keyframes": triangle},
+        ]
+    )
+    before = {e["name"]: e["id"] for e in recording.rois}
+    dialog = SceneGeometryDialog(recording)
+    nest = next(i for i, r in enumerate(dialog._regions) if r["name"] == "nest")
+    dialog._list.setCurrentRow(_row_for(dialog, nest))
+    dialog._delete_region()
+    dialog._add_region("roi")
+    dialog._canvas._points = [(0.1, 0.1), (0.9, 0.1), (0.5, 0.9)]
+    dialog._name.setText("water")
+    dialog._on_rename()
+    dialog._save_all()
+
+    after = {e["name"]: e["id"] for e in recording.rois}
+    assert after["food"] == before["food"]
+    assert after["water"] not in before.values()
 
 
 # --- the workspace: keyframes ------------------------------------------------ #

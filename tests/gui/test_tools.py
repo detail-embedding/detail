@@ -463,7 +463,7 @@ def test_the_grid_headers_follow_the_slider_not_the_run(qapp, varied_sampled_run
     sources = record.get("source_videos") or [record["source_video"]]
     matrix = _SampledMatrix(run_dir, engine.read_sampled(run_dir), sources, 0.0)
 
-    matrix._gather_worker.wait(10_000)
+    waits.finished(matrix._gather_worker, "the matrix's gather", 10_000)
     for _ in range(50):
         qapp.processEvents()
         if matrix._gathered is not None:
@@ -498,7 +498,7 @@ def test_a_grid_cell_opens_its_frame_at_the_current_threshold(qapp, varied_sampl
     sources = record.get("source_videos") or [record["source_video"]]
     matrix = _SampledMatrix(run_dir, engine.read_sampled(run_dir), sources, 0.0)
 
-    matrix._gather_worker.wait(10_000)
+    waits.finished(matrix._gather_worker, "the matrix's gather", 10_000)
     for _ in range(50):
         qapp.processEvents()
         if matrix._gathered is not None:
@@ -784,7 +784,7 @@ def test_the_sampled_grid_packs_its_rows_at_the_top(qapp, varied_sampled_run):
     run_dir = tool_runs.tool_run_dir("quick_segment", record["id"])
     sources = record.get("source_videos") or [record["source_video"]]
     matrix = _SampledMatrix(run_dir, engine.read_sampled(run_dir), sources, 0.0)
-    matrix._gather_worker.wait(10_000)
+    waits.finished(matrix._gather_worker, "the matrix's gather", 10_000)
     for _ in range(50):
         qapp.processEvents()
         if matrix._gathered is not None:
