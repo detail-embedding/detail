@@ -676,7 +676,7 @@ def test_fit_progress_worker_outlives_the_page_that_started_it(qapp):
     drops while the thread is still polling — and destroying a *running* QThread is a Qt
     fatal abort, not an exception. It has to hold its own reference until it finishes.
     """
-    from detail.gui.workers import _LIVE_WORKERS, FitProgressWorker
+    from detail.gui.workers import _UNFINISHED, FitProgressWorker
 
     class _Handle:
         status = "complete"
@@ -687,11 +687,11 @@ def test_fit_progress_worker_outlives_the_page_that_started_it(qapp):
 
     worker = FitProgressWorker(_Handle(), receiver=None)
     worker.start()
-    assert worker in _LIVE_WORKERS  # referenced independently of any page
+    assert worker in _UNFINISHED  # referenced independently of any page
 
     worker.wait()
     qapp.processEvents()  # let the finished signal land
-    assert worker not in _LIVE_WORKERS  # ...and released once it is safe
+    assert worker not in _UNFINISHED  # ...and released once it is safe
 
 
 def test_fit_progress_fraction_never_renders_a_position_past_the_total():

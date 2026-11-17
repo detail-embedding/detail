@@ -398,11 +398,6 @@ def _to_image(picture: np.ndarray) -> QImage:
     ).copy()
 
 
-#: Picture workers with a live thread, so neither they nor their closures can be collected while
-#: a delivery is still queued — `workers.BackgroundCall`'s self-rooting, for a long-lived worker.
-_RUNNING: set = set()
-
-
 class _PictureWorker(GuiWorker):
     """Serves tile requests, newest per tile, until it has been idle for :data:`_IDLE_S`.
 
@@ -535,29 +530,29 @@ class _PictureWorker(GuiWorker):
         # The thread, if it ran, has already decided to go idle (it cleared `_live` under the
         # lock): let it finish so that `start` starts it again rather than doing nothing.
         self.wait()
-        _RUNNING.add(self)
         self.start()
 
     def run(self) -> None:
-        try:
-            while True:
-                with self._lock:
-                    if not self._pending and not self._retired and not self._stopped:
-                        self._lock.wait(_IDLE_S)
-                    retired, self._retired = self._retired, []
-                    request = None
-                    if self._pending and not self._stopped:
-                        index = self._take()
-                        request = self._pending.pop(index)[2]
-                    if request is None and not retired:
-                        self._live = False
-                        return
-                for source in retired:
-                    _close(source)
-                if request is not None:
-                    self._serve(index, request)
-        finally:
-            _RUNNING.discard(self)
+        # Nothing here keeps the worker alive or lets it go: `GuiWorker` holds a started
+        # thread until Qt has finished with it. Letting go at the end of `run()` — as this did,
+        # in a `finally` — is before Qt stops counting the thread as running, and a montage
+        # destroyed a moment earlier left the worker to a collection in that gap.
+        while True:
+            with self._lock:
+                if not self._pending and not self._retired and not self._stopped:
+                    self._lock.wait(_IDLE_S)
+                retired, self._retired = self._retired, []
+                request = None
+                if self._pending and not self._stopped:
+                    index = self._take()
+                    request = self._pending.pop(index)[2]
+                if request is None and not retired:
+                    self._live = False
+                    return
+            for source in retired:
+                _close(source)
+            if request is not None:
+                self._serve(index, request)
 
     def _serve(self, index: int, request: tuple) -> None:
         source, generation, offset_ns, tile_px, matching, look = request
