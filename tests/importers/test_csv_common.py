@@ -44,7 +44,9 @@ def test_a_file_in_another_encoding_says_to_save_as_utf8(tmp_path):
 
 def test_a_csv_the_parser_refuses_is_named(tmp_path):
     path = tmp_path / "a.csv"
-    path.write_text('a\n"' + "x" * (csv.field_size_limit() + 1) + '"\n', "utf-8")
+    path.write_text(
+        'a\n"' + "x" * (csv.field_size_limit() + 1) + '"\n', encoding="utf-8"
+    )
     with pytest.raises(UserInputError, match="is not a CSV text file"):
         _csv_common.read_user_csv(path)
 

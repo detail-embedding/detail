@@ -196,7 +196,9 @@ def test_finding_2_a_binary_file_is_not_a_text_file(tmp_path):
 
 def test_finding_3_a_damaged_recording_yaml(experiment_dir, recording_dir):
     path = recording_dir / "recording.yaml"
-    path.write_text("schema_version: 1\nid: recording_001\nname: [m1\n", "utf-8")
+    path.write_text(
+        "schema_version: 1\nid: recording_001\nname: [m1\n", encoding="utf-8"
+    )
     status = _invoke("experiment", "status", "--experiment", experiment_dir)
     assert status.exit_code == 0, status.output
     assert "recordings: 1" in status.output
@@ -210,7 +212,9 @@ def test_finding_3_a_damaged_recording_yaml(experiment_dir, recording_dir):
 
 def test_finding_3_a_damaged_config_yaml(experiment_dir):
     config = experiment_dir / "config.yaml"
-    config.write_text(config.read_text("utf-8") + "notes: [x\n", "utf-8")
+    config.write_text(
+        config.read_text(encoding="utf-8-sig") + "notes: [x\n", encoding="utf-8"
+    )
     result = _invoke("experiment", "status", "--experiment", experiment_dir)
     _clean_error(result, "config.yaml is not valid YAML (line")
 
@@ -237,7 +241,9 @@ def test_finding_3_a_damaged_config_yaml(experiment_dir):
 def test_finding_4_import_labels_manifest(
     text, words, experiment_dir, recording_dir, tmp_path
 ):
-    (tmp_path / "l.csv").write_text("start_frame,end_frame,label\n0,1,groom\n", "utf-8")
+    (tmp_path / "l.csv").write_text(
+        "start_frame,end_frame,label\n0,1,groom\n", encoding="utf-8"
+    )
     manifest = tmp_path / "labels.yaml"
     manifest.write_text(text, encoding="utf-8")
     result = _invoke(
@@ -262,7 +268,7 @@ def _tar_with_manifest(path, manifest: dict) -> None:
 @pytest.mark.parametrize(
     "make, why",
     [
-        (lambda p: p.write_text("hello\n", "utf-8"), "not a tar archive"),
+        (lambda p: p.write_text("hello\n", encoding="utf-8"), "not a tar archive"),
         (lambda p: p.write_bytes(b""), "the file is empty"),
         (lambda p: zipfile.ZipFile(p, "w").close(), "not a tar archive"),
         (
@@ -414,4 +420,4 @@ def test_finding_9_query_eval_checks_out_before_evaluating(
         out,
     )
     _clean_error(result, f"--out {out} is not a query-eval metrics CSV")
-    assert out.read_text("utf-8") == "a,b\n1,2\n"
+    assert out.read_text(encoding="utf-8-sig") == "a,b\n1,2\n"
