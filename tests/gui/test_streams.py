@@ -1,4 +1,12 @@
-"""GUI stream dialogs: add + preview construct and render (Section 3)."""
+"""GUI stream dialogs: add + preview construct and render (Section 3).
+
+One recorded class is guarded here (with `test_ui_thread_blocking.py`): **a slow read allowed
+onto the UI thread because its input is "typically small".** The recording page's streams
+table counted each stream's rows by reading the whole file inline on every build, 3 s for one
+400,000-row trace, and a stream whose file was gone raised and stopped the page building (#35).
+The Rows column now starts as "…", is filled by a background count, and a missing file reads
+**missing** in its own row.
+"""
 
 import pytest
 

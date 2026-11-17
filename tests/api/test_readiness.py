@@ -219,11 +219,18 @@ def test_gpu_and_hf_token_map_to_their_checks(monkeypatch):
 # --- the checklist's last two steps read real state (#35) ---------------------------------
 
 
-def test_a_completed_quick_segment_run_ticks_see_it_segment_a_clip():
+def test_a_completed_quick_segment_run_ticks_see_it_segment_a_clip(
+    tmp_path, monkeypatch
+):
     """Through the real tool-run store: the step is done once a run has *completed*. A run
     that failed or was stopped before it showed anything has not shown a clip segmented.
+
+    Its own workspace: the tools tree is machine-global, so another test on this worker may
+    already have left a completed run in the shared one.
     """
-    from detail.storage import tool_runs
+    from detail.storage import locations, tool_runs
+
+    monkeypatch.setattr(locations, "experiments_root", lambda: tmp_path)
 
     assert signals_from([]).quick_segment_run is False
     tool_runs.write_tool_run(

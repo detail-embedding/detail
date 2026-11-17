@@ -1,4 +1,11 @@
-"""Shared setup-step model (readiness_guide) — one source of truth for the guidance."""
+"""Shared setup-step model (readiness_guide) — one source of truth for the guidance.
+
+One recorded class is guarded here (with `requirements.a_checklist_step_reads_its_state`):
+**a checklist step whose tick is a literal.** "See it segment a clip" and "Recommended: distill a
+fast model" were built with `done=False`, so neither could ever show ✓ while the docs said the
+checklist marks each step when done (#35). Each now reads a `ReadinessSignals` field, and
+without an NVIDIA GPU the Quick segment step says what it needs.
+"""
 
 import itertools
 

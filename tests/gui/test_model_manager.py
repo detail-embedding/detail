@@ -1,4 +1,13 @@
-"""Model manager page + machine-global model detail + import dialog (§12)."""
+"""Model manager page + machine-global model detail + import dialog (§12).
+
+One recorded class is guarded here: **a table rebuilt when a background result lands drops
+what the user did to the old one.** The Hugging Face table is built at once with "checking…"
+statuses and rebuilt when the off-thread install scan returns, a second or two later; that
+rebuild replaced the view, so a row picked or a column sorted in the meantime was lost and
+Check access / Install greyed out under the user's hand (#35). The rebuild now keeps the picked
+model (by id and variant, not by row, because the rows re-band) and the user's sort, while an
+unsorted table still takes the documented order (suggested, installed, the rest).
+"""
 
 import zipfile
 from pathlib import Path
