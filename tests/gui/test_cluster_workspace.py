@@ -1447,7 +1447,12 @@ def test_find_shares_the_zoom_row_and_costs_the_tree_no_height(qapp, fitted):
     ), "not in the zoom row"
     qapp.processEvents()
     row = find.parentWidget()
-    assert row.height() == interpret._zoom_in.height(), "the idle row grew"
+    # The row's own controls set its height, so it is measured against the tallest of them,
+    # not one: a button is as tall as its text, and where the UI font has no "−" (U+2212) Qt
+    # draws it in a fallback font with a deeper descent. Noto Sans falls back to Noto Sans
+    # Bengali, which makes "−" 26px beside a 25px "+" with no Find in the row at all.
+    buttons = (interpret._zoom_out, interpret._zoom_in, interpret._fit)
+    assert row.height() == max(b.height() for b in buttons), "the idle row grew"
     tree_top = interpret._tree.mapTo(workspace, interpret._tree.rect().topLeft()).y()
     view = interpret._view
     find.search(view.children(view.root)[0])
