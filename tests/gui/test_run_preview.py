@@ -1,4 +1,13 @@
-"""Detection run-preview widgets: pixmap conversion + the overview strip."""
+"""Detection run-preview widgets: pixmap conversion + the overview strip.
+
+**A count over source frames when only every Nth was processed (#32).** The tracking summary
+measured coverage against frames the run looked at, but counted its gaps over every source
+frame, so at ``every_n_frames`` 4 each run of three frames never looked at read as a gap and a
+healthy run said "4 gaps · longest 3 frames". The rule: gaps are counted over the run's
+processed frames (``track_coverage(processed=preview.processed_mask())``), the same rule as
+``tracks.zarr``'s ``n_gaps`` (``tests/trackers/test_tracker_gaps.py``). The "frames with no
+subject" strip below still draws unprocessed frames as lost; it is recorded as a Gap.
+"""
 
 import numpy as np
 import pytest

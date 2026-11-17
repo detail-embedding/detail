@@ -396,7 +396,7 @@ def test_every_writer_ends_its_log():
 
     root = Path("detail")
     sources = {
-        p.as_posix(): p.read_text(encoding="utf-8")
+        p.as_posix(): p.read_text(encoding="utf-8-sig")
         for p in root.rglob("*.py")
         if p.as_posix() != "detail/storage/activity.py"
     }
