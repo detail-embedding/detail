@@ -1222,3 +1222,24 @@ def test_a_valued_recording_outside_the_contrast_is_not_left_out(tmp_path):
     exp = _cohort(tmp_path, THREE_SESSIONS)
     record = run_comparison(exp, {**_PAIRED, "levels": ["veh", "nalox"]}).record()
     assert record["left_out"] == []
+
+
+def test_the_record_resolves_the_statistic_it_ranked_on(tmp_path):
+    """Tenet 9: the config's choice is written and, beside it, what actually ranked. A paired
+    design ranks on the moderated t by default and on the effect when asked; a between design
+    has no per-unit effects and ranks on the effect whatever was asked, and the record says
+    so rather than carrying a choice that did not apply. The ranking read back agrees.
+    """
+    exp = _cohort(tmp_path, CROSSOVER)
+    paired = run_comparison(exp, _PAIRED)
+    record = paired.record()
+    assert record["statistic"] == "moderated_t"
+    assert record["ranking_statistic"] == "moderated_t"
+    assert paired.ranking().statistic == "moderated_t"
+    plain = run_comparison(exp, {**_PAIRED, "statistic": "effect"})
+    assert plain.record()["ranking_statistic"] == "effect"
+    assert plain.ranking().statistic == "effect"
+    between = run_comparison(exp, {**_PAIRED, "aggregate_to": []})
+    assert between.record()["statistic"] == "moderated_t"
+    assert between.record()["ranking_statistic"] == "effect"
+    assert between.ranking().statistic == "effect"

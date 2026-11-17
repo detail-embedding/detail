@@ -152,8 +152,13 @@ def test_the_ramp_does_not_grow_with_the_window(key, qapp):
 
 
 @pytest.mark.parametrize("theme", [LIGHT, DARK], ids=["light", "dark"])
-def test_match_colour_is_the_fixed_sequential_ramp_with_grey_for_none(qapp, theme):
-    assert plot_theme.match_colour(0.0, theme) == QColor(theme.neutral)
+def test_match_colour_is_the_fixed_sequential_ramp_with_its_low_end_for_none(
+    qapp, theme
+):
+    """None of it, and nothing to count, are the ramp's low end. They were ``neutral`` while
+    the ramp was blue; on a ramp of greys ``neutral`` is a shade part-way up it."""
+    assert plot_theme.match_colour(0.0, theme) == QColor(theme.sequential[0])
+    assert plot_theme.match_colour(float("nan"), theme) == QColor(theme.sequential[0])
     assert plot_theme.match_colour(1.0, theme) == QColor(theme.sequential[-1])
     assert plot_theme.match_colour(0.5, theme) == QColor(theme.sequential[4])
     assert _close(plot_theme.match_colour(1e-9, theme), QColor(theme.sequential[0]))
@@ -229,12 +234,15 @@ def test_the_key_switches_to_the_effect_and_back(key):
         selected_effect=math.log(12.4),
     )
     assert key.is_effect()
-    assert key.text() == "Less ↔ more under drug | ÷20 … ×20 | selected 12.4× | floor"
+    assert (
+        key.text()
+        == "Less ↔ more under drug | less … more | selected 12.4× | no difference"
+    )
     assert key.ramp.x_for(0.0) == pytest.approx(key.ramp.width() / 2, abs=1)
     assert key.ramp.x_for(1.0) > key.ramp.x_for(0.5) > key.ramp.x_for(-0.5)
 
     key.set_effect("Less ↔ more with dose", "trend", floor=0.54, selected_effect=None)
-    assert key.text() == "Less ↔ more with dose | ρ −1 … ρ +1 | floor"
+    assert key.text() == "Less ↔ more with dose | less … more | no difference"
 
     key.set_filter(True, selected_share=0.3, run_share=0.1)
     assert not key.is_effect()
@@ -271,7 +279,9 @@ def test_a_profile_axis_is_one_sided_by_size(key):
         selected_effect=-math.log(12.4),
     )
     assert key.is_effect()
-    assert key.text() == "Differs across session | 1× … ×20 | selected 12.4× | floor"
+    assert (
+        key.text() == "Differs across session | same … differs | selected 12.4× | floor"
+    )
     ramp = key.ramp
     assert ramp.x_for(0.0) == pytest.approx(ramp.x_for(-1.0)), "no negative half"
     assert ramp.x_for(0.0) < ramp.x_for(0.5) < ramp.x_for(1.0)
@@ -280,7 +290,10 @@ def test_a_profile_axis_is_one_sided_by_size(key):
     theme = plot_theme.current()
     middle = theme.diverging[len(theme.diverging) // 2]
     assert _close(image.pixelColor(int(ramp.x_for(0.0)) + 2, y), QColor(middle))
-    assert _close(
+    # Its own ramp, neutral to ink with no hue: the "more" pole's colour is never borrowed
+    # for a difference that has no side.
+    assert _close(image.pixelColor(int(ramp.x_for(1.0)) - 2, y), QColor(theme.text))
+    assert not _close(
         image.pixelColor(int(ramp.x_for(1.0)) - 2, y), QColor(theme.diverging[-1])
     )
 
@@ -300,7 +313,7 @@ def test_a_profile_mark_names_the_pair_that_drives_it(key):
         selected_pair=("REI", "SA"),
     )
     assert key.text() == (
-        "Differs across SessionType | 1× … ×20 | selected 9.6× more under SA than REI | floor"
+        "Differs across SessionType | same … differs | selected 9.6× more under SA than REI | floor"
     )
     key.set_effect(
         "Differs across SessionType",
@@ -310,7 +323,7 @@ def test_a_profile_mark_names_the_pair_that_drives_it(key):
         selected_pair=("REI", "SA"),
     )
     assert key.text() == (
-        "Differs across SessionType | 1× … ×20 | selected 2.5× less under SA than REI"
+        "Differs across SessionType | same … differs | selected 2.5× less under SA than REI"
     )
     key.set_effect(
         "Less ↔ more under fent (against veh)",
@@ -319,4 +332,72 @@ def test_a_profile_mark_names_the_pair_that_drives_it(key):
         selected_effect=math.log(3.0),
         selected_pair=("veh", "fent"),
     )
-    assert key.text().endswith("| selected 3.0× | floor")
+    assert key.text().endswith("| selected 3.0× | no difference")
+
+
+def test_a_studentized_screen_reads_t_on_a_fixed_axis(key):
+    """On a screen scored by the moderated t (§24 *The statistic*) the key's axis is t on a
+    fixed ±10, the floor's ticks are in t, the selected cluster sits by its t and its mark
+    reads the t with the effect after it; a profile's one-sided axis runs t 0 to t 10 and the
+    mark still names the pair. The effect-only functions are unchanged by the default.
+    """
+    from detail.gui.match_key import (
+        T_EXTENT,
+        effect_axis_labels,
+        effect_extent,
+        effect_position,
+        statistic_value_text,
+    )
+
+    assert effect_extent("paired", "moderated_t") == T_EXTENT == 10.0
+    assert effect_extent("trend", "moderated_t") == T_EXTENT
+    assert effect_extent("paired") == effect_extent("paired", "effect")
+    assert effect_axis_labels("paired", "moderated_t") == ("t −10", "t +10")
+    assert effect_axis_labels("trend", "moderated_t") == ("t −10", "t +10")
+    assert effect_axis_labels("profile", "moderated_t") == ("t 0", "t 10")
+    assert effect_axis_labels("paired") == effect_axis_labels("paired", "effect")
+    assert statistic_value_text(8.84, "paired") == "t +8.8"
+    assert statistic_value_text(-8.84, "paired") == "t -8.8"
+    assert statistic_value_text(-8.84, "profile") == "t 8.8"
+    assert statistic_value_text(None, "paired") == ""
+    assert effect_position(25.0, True, T_EXTENT) == 1.0, "clamped at the end"
+
+    key.set_effect(
+        "Less ↔ more under drug",
+        "paired",
+        floor=4.1,
+        selected_effect=math.log(12.4),
+        statistic="moderated_t",
+        selected_statistic=8.84,
+    )
+    assert key.is_effect()
+    assert (
+        key.text()
+        == "Less ↔ more under drug | less … more | selected t +8.8 (12.4×) | no difference"
+    )
+    assert key.ramp._selected == pytest.approx(0.884), "by the t, not the effect"
+    assert key.ramp._floor == pytest.approx(0.41), "the floor in t over the t axis"
+    assert key.ramp.toolTip() == (
+        f"{mk.STATISTIC_TEXT} The scale runs from t −10 to t +10."
+    ), "the units are in the tooltip, not at the ends"
+
+    key.set_effect(
+        "Differs across session",
+        "profile",
+        floor=4.1,
+        selected_effect=-math.log(9.6),
+        selected_pair=("REI", "SA"),
+        statistic="moderated_t",
+        selected_statistic=-6.2,
+    )
+    assert key.text() == (
+        "Differs across session | same … differs | "
+        "selected t 6.2 (9.6× less under SA than REI) | floor"
+    )
+    assert key.ramp._selected == pytest.approx(0.62), "a size on the one-sided axis"
+
+    key.set_effect(
+        "Less ↔ more under drug", "paired", floor=math.log(7.14), selected_effect=0.5
+    )
+    assert key.text().startswith("Less ↔ more under drug | less … more | selected 1.6×")
+    assert key.ramp.toolTip() == f"{mk.EFFECT_TEXT} The scale runs from ÷20 to ×20."
