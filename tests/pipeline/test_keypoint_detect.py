@@ -7,6 +7,20 @@ The stage runs on a **detection run** and writes one row per pose instance, no s
 fakes cover the two kinds of method: ``_FakeKeypointModel`` is per-detection (one instance per
 detection it is handed, reads masks), ``_FakePoseModel`` is whole-frame (any number of poses per
 frame, each with a confidence ``min_pose_confidence`` applies to).
+
+**The class guarded at the end of this file: a batch resolves from state the user can edit at
+each recording's turn, not at launch** (Tenet 9, "never resolve from mutable or order-dependent
+state"; #28 finding 3). A processing run validates every recording up front and then throws the
+resolved config away; the run record keeps the raw request, and the coordinator validates each
+recording again when its turn comes. ``validate`` read the live example set there, so a frame
+marked in **Mark frames…** while the batch ran reached the later recordings: one ``run_NNN`` held
+two ``example_set_digest`` values, and every "each recording's own match" lookup downstream
+(``--detect-ref``, keypoint track, embedding, distill) found nothing past the first recording.
+Nothing was wrong at any line — each recording's run was internally consistent. The rule: a value
+that must agree across a batch and comes from mutable experiment state is copied once in
+``resolve_shared_config`` into the stored config, and ``validate`` uses that copy when present.
+``test_a_batch_learns_from_the_example_set_as_it_was_at_launch`` drives the launch's own seams
+with the set edited between turns.
 """
 
 import threading
@@ -908,3 +922,96 @@ def test_a_decode_error_reaches_the_caller_after_the_batches_before_it(split_kp)
     rows = KeypointDetectRun(recording.dir, "kd_01").rows("part_001")
     _assert_det_rows(rows, {0, 1})
     assert _stage_threads() == []
+
+
+# --------------------------------------------------------------------------- #
+# A batch learns from the example set as it was at launch (Tenet 9)
+# --------------------------------------------------------------------------- #
+class _Learner(_FakeKeypointModel):
+    """A per-detection fake that learns from an example set, like the patch matcher."""
+
+    model_id = "fake_learner"
+    needs_examples = True
+
+    def __init__(
+        self, variant=None, *, examples=None, example_images=None, crop_px=None
+    ):
+        super().__init__(variant, crop_px=crop_px)
+        self.examples = examples
+
+
+def _mark_frame(experiment_dir, set_id, recording_id, value: int) -> None:
+    """Copy one more marked frame into the set on disk, as **Mark frames…** does."""
+    from detail.core.examples import ExampleFrame, ExampleMark
+    from detail.storage import example_sets
+
+    image = example_sets.add_frame_image(
+        experiment_dir, set_id, np.full((8, 8, 3), value, np.uint8)
+    )
+    examples = example_sets.read_set(experiment_dir, set_id)
+    examples.frames.append(
+        ExampleFrame(
+            image=image,
+            recording_id=recording_id,
+            tracking_run_id="track_01",
+            track_id=0,
+            part_id="part_001",
+            frame_idx=value % 5,
+            t_ns=(value % 5) * 1000,
+            bbox=BOX_A,
+            marks=[
+                ExampleMark("nose", x=0.2, y=0.2),
+                ExampleMark("tail", x=0.4, y=0.4),
+            ],
+        )
+    )
+    example_sets.write_set(experiment_dir, examples)
+
+
+def test_a_batch_learns_from_the_example_set_as_it_was_at_launch(tracked, monkeypatch):
+    """Finding 3 of #28: the coordinator re-validates each recording when its turn comes, from
+    the config stored in the run record. A set edited mid-batch must not reach the later
+    recordings: every recording of one ``run_NNN`` records the launch's ``example_set_digest``
+    and builds its method from the launch's frames, or "each recording's own match" lookups
+    downstream find nothing on the later ones.
+
+    Drives the launch path's own seams, in order — ``resolve_shared_config``, the run record's
+    JSON round trip, then a per-recording ``validate`` for each turn — with the set edited on
+    disk between the two turns. No executor run.
+    """
+    from detail.api.experiment import _jsonable, _typed_config
+    from detail.storage import example_sets
+
+    it, first = tracked
+    exp_dir = it.experiment.dir
+    second = it.add_recording("recording_003")
+    _complete_detection_run(second)
+    _write_video(second)
+    monkeypatch.setitem(KEYPOINT_MODELS, "fake_learner", _Learner)
+    set_id = example_sets.create_set(exp_dir, "dots", SKELETON).id
+    _mark_frame(exp_dir, set_id, first.id, 10)
+
+    module = keypoint_detect.KeypointDetectModule()
+    launch = module.resolve_shared_config(
+        exp_dir,
+        [first.id, second.id],
+        _config(model_id="fake_learner", example_set_id=set_id),
+    )
+    stored = _jsonable(launch)  # what the run record keeps for the coordinator
+
+    turns = []
+    for recording in (first, second):
+        config = _validate(recording, _typed_config(stored))
+        turns.append(config)
+        _mark_frame(exp_dir, set_id, first.id, 20 + len(turns))  # edited mid-batch
+
+    digests = {c["example_set_digest"] for c in turns}
+    assert len(digests) == 1, digests
+    assert [len(c["example_set"]["marks"]) for c in turns] == [1, 1]
+    jobs = [module.build_job(r.id, "kd_01", c) for r, c in zip((first, second), turns)]
+    assert [len(j.example_set["marks"]) for j in jobs] == [1, 1]
+    # The live set did move: three frames now, and a fresh launch would learn from them all.
+    assert len(example_sets.read_set(exp_dir, set_id).frames) == 3
+    fresh = _validate(second, _config(model_id="fake_learner", example_set_id=set_id))
+    assert len(fresh["example_set"]["marks"]) == 3
+    assert fresh["example_set_digest"] not in digests

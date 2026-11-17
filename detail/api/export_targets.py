@@ -853,7 +853,8 @@ register(
         subject_kind="analysis_run",
         artifact=(
             "one mp4 per bout, named <cluster>_<recording>_<start>-<end> so a name-sorted "
-            "folder plays each cluster back to back"
+            "folder plays each cluster back to back; every frame of the bout, at the rate it "
+            "was recorded at, so a clip plays back at the speed the behavior happened"
         ),
         data_files=("clips.csv",),
         scopes=("cluster", "selection", "recordings"),

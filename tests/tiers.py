@@ -270,6 +270,9 @@ GUARD_FILES = frozenset(
         "tests/api/test_wrapper_signatures.py",
         "tests/api/test_export_registry.py",
         "tests/pipeline/test_producer_parity.py",
+        # Over every consumer of a per-part store's frame_idx: a frame and a time written together
+        # agree through the recording's map on part 2 as on part 1 (#23).
+        "tests/pipeline/test_part_frames.py",
         # Data-driven over the temporal registry: a per-timeline statistic measured over
         # many recordings' timelines pooled reads the jitter between them, not a frame
         # period, and a gap rule over pooled rows never cuts at a seam.
@@ -277,6 +280,8 @@ GUARD_FILES = frozenset(
         "tests/query_methods/test_registry.py",
         "tests/trackers/test_tracker_progress.py",
         "tests/trackers/test_tracker_resume.py",
+        # Over TRACKERS: n_gaps counts frames the run looked at, at any stride and part (#32).
+        "tests/trackers/test_tracker_gaps.py",
         "tests/test_registry_isolation.py",
         "tests/test_registry_prepopulation.py",
         "tests/test_surfaces.py",
@@ -317,6 +322,10 @@ GUARD_FILES = frozenset(
         "tests/gui/test_strip_reuse.py",
         "tests/gui/test_audit_playback.py",
         "tests/gui/test_worker_lifetime.py",
+        # A bounded wait raises naming what never happened, or its answer is used.
+        "tests/gui/test_waits_are_checked.py",
+        # No test inherits a modifier key or mouse button held by an earlier one.
+        "tests/gui/test_input_state.py",
         # --- label leakage and the ground-truth boundary -------------------------- #
         "tests/pipeline/test_label_leakage.py",
         "tests/analysis/test_no_unfiltered_behavior_streams.py",
@@ -401,6 +410,8 @@ UNIT_EXEMPTIONS = {
     "tests/api/test_job_reattach.py": "same: a `python -c pass` stand-in process is the "
     "only way to test that a surviving run reattaches",
     "tests/api/test_run_lifecycle_parity.py": "same PID stand-in, one per run kind",
+    "tests/api/test_run_status_evidence.py": "the same `python -c pass` stand-in, for a "
+    "worker pid that is certainly dead — no workload",
     "tests/api/test_export_estimates.py": "cv2.VideoWriter writes one 30-frame 64x64 stub "
     "clip so the video estimate times real frames — 6.3 s for the 34-test file on the macOS "
     "box, the rest of which is no-video estimates",

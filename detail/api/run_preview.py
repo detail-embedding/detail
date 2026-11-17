@@ -242,30 +242,72 @@ def embedding_cadence(recording_dir: Path | str, data: dict, embed_run_id: str) 
     return math.lcm(tracking_cadence(data, meta["tracking_run_id"]), own)
 
 
+def _embedded_parts(
+    recording_dir: Path, embed_run_id: str, track_id: int
+) -> list[tuple[PartZarrReader, int]]:
+    """A track's non-empty embedding parts as ``(reader, start frame)``, in recording order.
+
+    The one walk both loaders share, so row ``k`` is the same row in each (`unit_timeline`
+    relies on it). Each part zarr counts ``frame_idx`` from 0 inside its own part (§5, §14);
+    the start frame from `recording_store.part_start_frames`, looked up **by part stem** (an
+    empty part is skipped, so a position would be wrong), is what places it on the recording.
+
+    A recording with no video manifest (a synthetic direct-call test) has one frame space only
+    if it has one part: a single non-empty part is read as it is stored, and more than one is
+    refused, since nothing says where the second starts.
+
+    Raises
+    ValueError: a part the recording does not list, or several parts and no manifest
+    """
+    run_dir = recording_dir / "embeddings" / embed_run_id / f"track_{track_id}"
+    readers = [
+        (part.stem, reader)
+        for part in sorted(run_dir.glob("part_*.zarr"))
+        if (reader := PartZarrReader(part)).n_rows
+    ]
+    starts = recording_store.part_start_frames(recording_dir)
+    if starts is None:
+        if len(readers) > 1:
+            raise ValueError(
+                f"{recording_dir.name}: embedding run {embed_run_id!r} track {track_id} has "
+                f"{len(readers)} parts but recording.yaml lists no video parts, so their "
+                "frames cannot be placed on the recording"
+            )
+        return [(reader, 0) for _stem, reader in readers]
+    placed = []
+    for stem, reader in readers:
+        if stem not in starts:
+            raise ValueError(
+                f"{recording_dir.name}: embedding run {embed_run_id!r} has rows for part "
+                f"{stem!r}, which recording.yaml does not list"
+            )
+        placed.append((reader, starts[stem]))
+    return sorted(placed, key=lambda item: item[1])
+
+
 def load_track_trajectory(
     recording_dir: Path | str, embed_run_id: str, track_id: int
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Concatenate a track's per-part embedding stores into one ``(M, D)`` trajectory.
 
-    Detail stores ``(M, D)`` per track already (no rotation axis), so this is just the
-    ordered concatenation of ``embeddings/<run>/track_<tid>/part_*.zarr``.
+    Detail stores ``(M, D)`` per track already (no rotation axis), so this is the
+    concatenation of ``embeddings/<run>/track_<tid>/part_*.zarr`` in recording order.
 
     Returns
-    (emb (M, D) float32, frame_idx (M,) int32, t_ns (M,) int64) in frame order
+    (emb (M, D) float32, frame_idx (M,) int64, t_ns (M,) int64), ``frame_idx`` counted
+    across the whole recording (the stored part-local value plus its part's start frame,
+    `_embedded_parts`), so it is strictly increasing and ``frame_idx`` and ``t_ns`` agree
+    through the recording's timestamp map.
 
     Raises
-    ValueError: the track has no embedded rows in this run
+    ValueError: the track has no embedded rows in this run, or a part cannot be placed
     """
-    run_dir = Path(recording_dir) / "embeddings" / embed_run_id / f"track_{track_id}"
     embs: list[np.ndarray] = []
     frames: list[np.ndarray] = []
     times: list[np.ndarray] = []
-    for part in sorted(run_dir.glob("part_*.zarr")):
-        reader = PartZarrReader(part)
-        if reader.n_rows == 0:
-            continue
+    for reader, start in _embedded_parts(Path(recording_dir), embed_run_id, track_id):
         embs.append(np.asarray(reader.column("embedding")[:], dtype=np.float32))
-        frames.append(np.asarray(reader.column("frame_idx")[:]))
+        frames.append(np.asarray(reader.column("frame_idx")[:], dtype=np.int64) + start)
         times.append(np.asarray(reader.column("t_ns")[:]))
     if not embs:
         raise ValueError(
@@ -323,19 +365,16 @@ def load_track_timeline(
     trajectory to ask *when* a track exists.
 
     Returns
-    (frame_idx (M,) int32, t_ns (M,) int64) in frame order
+    (frame_idx (M,) int64, t_ns (M,) int64), the same rows in the same order as
+    :func:`load_track_trajectory`, ``frame_idx`` counted across the whole recording
 
     Raises
-    ValueError: the track has no embedded rows in this run
+    ValueError: the track has no embedded rows in this run, or a part cannot be placed
     """
-    run_dir = Path(recording_dir) / "embeddings" / embed_run_id / f"track_{track_id}"
     frames: list[np.ndarray] = []
     times: list[np.ndarray] = []
-    for part in sorted(run_dir.glob("part_*.zarr")):
-        reader = PartZarrReader(part)
-        if reader.n_rows == 0:
-            continue
-        frames.append(np.asarray(reader.column("frame_idx")[:]))
+    for reader, start in _embedded_parts(Path(recording_dir), embed_run_id, track_id):
+        frames.append(np.asarray(reader.column("frame_idx")[:], dtype=np.int64) + start)
         times.append(np.asarray(reader.column("t_ns")[:]))
     if not frames:
         raise ValueError(
@@ -568,6 +607,19 @@ class DetectionPreview:
             len(range(0, part["n_frames"], max(1, int(part["every_n_frames"] or 1))))
             for part in self._parts
         )
+
+    def processed_mask(self) -> np.ndarray:
+        """A bool per **source** frame over the global timeline: the frames this run looked at.
+
+        Each part's own ``0, N, 2N, ...`` (§4), the frames :attr:`frames_processed` counts. What
+        a coverage figure is measured over, so a frame never looked at is not read as missed.
+        """
+        out = []
+        for part in self._parts:
+            mask = np.zeros(int(part["n_frames"]), dtype=bool)
+            mask[:: max(1, int(part["every_n_frames"] or 1))] = True
+            out.append(mask)
+        return np.concatenate(out) if out else np.zeros(0, dtype=bool)
 
     def part_index_for_stem(self, stem: str) -> int | None:
         """The part index for a video-file stem (e.g. ``part_001``), or None."""
@@ -892,22 +944,38 @@ class TrackingPreview(DetectionPreview):
         return sorted(presence), presence
 
 
-def track_coverage(present: np.ndarray, fps: float | None = None) -> dict:
+def track_coverage(
+    present: np.ndarray,
+    fps: float | None = None,
+    processed: np.ndarray | None = None,
+) -> dict:
     """How much of the timeline this track actually holds, and the shape of what it misses.
 
-    ``n_gaps`` in ``tracks.zarr`` is ``(last - first + 1) - n_present``: a count of missing
-    *frames*. A thousand one-frame losses and one thousand-frame loss are the same number
-    there and are completely different problems — the first is a per-frame gate rejecting
-    the subject, the second is the animal leaving or the tracker losing it. So this reports
-    the **runs**: how many, and the longest.
+    ``n_gaps`` in ``tracks.zarr`` is a count of missed *frames*. A thousand one-frame losses
+    and one thousand-frame loss are the same number there and are completely different
+    problems — the first is a per-frame gate rejecting the subject, the second is the animal
+    leaving or the tracker losing it. So this reports the **runs**: how many, and the longest.
 
     Gaps are counted **inside the track's own span** (first present frame to last). Frames
     before it appears and after it leaves are not gaps in it; counting them would make a
     track that covers the back half of a recording look catastrophically broken.
+
+    ``processed`` marks the frames the run looked at (`DetectionPreview.processed_mask`).
+    Only those count: at ``every_n_frames`` 4 the three frames in four never looked at are
+    not gaps, and counting them read a healthy strided run as "N gaps · longest 1 frames"
+    (#32). ``frames_total`` and ``longest_gap`` are then in processed frames, like the
+    coverage line beside them, and ``longest_gap_s`` is the time from the gap's first missed
+    frame to the frame the track was seen again. ``None`` treats every frame as processed.
     """
     present = np.asarray(present, dtype=bool)
-    total = int(present.size)
-    covered = int(present.sum())
+    positions = (
+        np.arange(present.size)
+        if processed is None
+        else np.flatnonzero(np.asarray(processed, dtype=bool)[: present.size])
+    )
+    looked = present[positions]
+    total = int(looked.size)
+    covered = int(looked.sum())
     out = {
         "frames_total": total,
         "frames_covered": covered,
@@ -920,20 +988,25 @@ def track_coverage(present: np.ndarray, fps: float | None = None) -> dict:
     }
     if not covered:
         return out
-    where = np.flatnonzero(present)
+    where = np.flatnonzero(looked)
     first, last = int(where[0]), int(where[-1])
-    out["first_frame"], out["last_frame"] = first, last
-    missing = ~present[first : last + 1]
+    out["first_frame"], out["last_frame"] = int(positions[first]), int(positions[last])
+    missing = ~looked[first : last + 1]
     if missing.any():
-        edges = np.flatnonzero(
-            np.concatenate(([False], missing, [False]))[1:]
-            != np.concatenate(([False], missing, [False]))[:-1]
-        )
-        lengths = edges[1::2] - edges[::2]
+        padded = np.concatenate(([False], missing, [False]))
+        edges = np.flatnonzero(padded[1:] != padded[:-1])
+        starts, ends = edges[::2], edges[1::2]
+        lengths = ends - starts
         out["n_gaps"] = int(lengths.size)
-        out["longest_gap"] = int(lengths.max())
+        longest = int(np.argmax(lengths))
+        out["longest_gap"] = int(lengths[longest])
         if fps:
-            out["longest_gap_s"] = float(out["longest_gap"] / fps)
+            # Source frames from the run's first miss to the frame it was seen again: the
+            # time it was gone, at any stride (each run ends before the span's last frame).
+            source = (
+                positions[first + ends[longest]] - positions[first + starts[longest]]
+            )
+            out["longest_gap_s"] = float(source / fps)
     return out
 
 

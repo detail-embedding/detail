@@ -504,22 +504,48 @@ def session_span_ns(recording_dir: Path | str) -> tuple[int, int] | None:
     return int(first[0]), int(last[-1])
 
 
-def part_frame_offsets(recording_dir: Path | str) -> list[int] | None:
-    """Cumulative recording-global frame offset at the start of each video part.
+def part_start_frames(
+    recording_dir: Path | str, recording: dict | None = None
+) -> dict[str, int] | None:
+    """``{part stem: the recording frame its local frame 0 is}`` — the one part-offset
+    mechanism.
 
-    Both tracking (§13) and the per-recording location export number cross-part frames
-    with this. Every stage's rows index the source video (a ``every_n_frames`` thins which
-    frames are processed, it does not renumber them), so there is one set of offsets.
-    ``None`` if the recording has no video manifest (synthetic direct-call tests)."""
-    try:
-        data = read_recording(recording_dir)
-    except FileNotFoundError:
-        return None
-    files = (data.get("video") or {}).get("files")
+    Every per-part store (detections, assignments, embeddings, kinematics, keypoints) counts
+    ``frame_idx`` from 0 inside its own part (§5 ``FrameResult.frame_idx``), while a frame a
+    user scrubs to, an importer reads or a clip cutter seeks is counted across the recording.
+    Add ``part_start_frames(...)[stem]`` to a part-local frame to get the recording one.
+
+    **Keyed by part stem, never by position**: a reader that skips an empty part and counts
+    the rest positionally places every later part one part too early. The counts come from
+    each part's timestamp map, the authoritative frame count (Tenet 8); a stage's
+    ``every_n_frames`` thins the rows it writes but never renumbers them, so there is one set
+    of offsets for every stage. ``None`` if the recording has no video manifest (synthetic
+    direct-call tests); a caller decides what that means for it.
+    """
+    if recording is None:
+        try:
+            recording = read_recording(recording_dir)
+        except FileNotFoundError:
+            return None
+    files = (recording.get("video") or {}).get("files")
     if not files:
         return None
-    offsets = [0]
-    for part_index in range(len(files) - 1):
-        ts = load_active_timestamps(recording_dir, data, part_index)
-        offsets.append(offsets[-1] + len(ts))
+    offsets: dict[str, int] = {}
+    total = 0
+    for part_index, file in enumerate(files):
+        offsets[part_stem(file)] = total
+        if part_index < len(files) - 1:  # the last part's length offsets nothing
+            total += len(
+                load_active_timestamps_cached(
+                    recording_dir, recording, part_index
+                ).values
+            )
     return offsets
+
+
+def part_frame_offsets(recording_dir: Path | str) -> list[int] | None:
+    """`part_start_frames` in part order — for a caller that walks every part positionally
+    (tracking §13, the per-recording location export), so position and stem agree.
+    ``None`` if the recording has no video manifest."""
+    offsets = part_start_frames(recording_dir)
+    return None if offsets is None else list(offsets.values())

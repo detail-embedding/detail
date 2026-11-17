@@ -229,6 +229,38 @@ def _typed_config(config: dict) -> dict:
     return restored
 
 
+def roll_up_run_status(
+    recording_ids: list[str],
+    per_recording: dict,
+    *,
+    cancelled: bool,
+    unlaunched: tuple[str, str],
+) -> str:
+    """A processing run's status, rolled up over its **plan**, not over the entries present.
+
+    The one place a run's recordings become a run status (issue #28, finding 1). Every
+    recording in ``recording_ids`` the coordinator never launched has no ``per_recording``
+    entry; it is written in here as ``unlaunched`` — ``(status, error)`` — so the record lists
+    it and ``process retry`` picks it up. Before this, three copies rolled up over the entries
+    *present*, and ``cancel_run``'s copy read a run cancelled after its first recording as
+    ``complete``: a dataset could then be built from one of three recordings.
+
+    Mutates ``per_recording``. Returns ``running`` while any recording is still active,
+    ``cancelled`` on a cancel unless every recording really completed, ``complete`` when every
+    planned recording completed, and ``failed`` otherwise.
+    """
+    status, error = unlaunched
+    for sid in recording_ids:
+        if sid not in per_recording:
+            per_recording[sid] = {"run_id": None, "status": status, "error": error}
+    statuses = [per_recording[sid].get("status") for sid in recording_ids]
+    if any(s in ACTIVE_STATUSES for s in statuses):
+        return JobStatus.RUNNING.value
+    if statuses and all(s == JobStatus.COMPLETE.value for s in statuses):
+        return JobStatus.COMPLETE.value
+    return JobStatus.CANCELLED.value if cancelled else JobStatus.FAILED.value
+
+
 def _run_status(run) -> str:
     """A job handle's status, or ``failed`` if its envelope cannot be read at all.
 
@@ -376,6 +408,8 @@ class RunOrchestrator:
                     self._orchestrate_parallel(k)
         finally:
             self._finalize(n)
+            # The log's end is the run's end, not the last row its throttle kept (#32).
+            self._activity.finish(elapsed_s=self._elapsed())
 
     def _run_batch(self, module, n: int) -> None:
         """Run a batch module once over the whole subset, mapping its
@@ -612,13 +646,21 @@ class RunOrchestrator:
         the index, on the next experiment open or run attach. That is the same backstop which
         already has to survive a SIGKILL, and a lost write is strictly less damage than one.
         """
-        statuses = [v["status"] for v in self._per_recording.values()]
-        if self._cancelled.is_set():
-            self._status = "cancelled"
-        elif len(statuses) == n and all(s == "complete" for s in statuses):
-            self._status = "complete"
-        else:
-            self._status = "failed"
+        cancelled = self._cancelled.is_set()
+        self._status = roll_up_run_status(
+            self._recording_ids,
+            self._per_recording,
+            cancelled=cancelled,
+            unlaunched=(
+                (JobStatus.CANCELLED.value, "not run: the run was cancelled first")
+                if cancelled
+                else (JobStatus.FAILED.value, "not run: the coordinator stopped first")
+            ),
+        )
+        if cancelled:
+            # A cancel is the user's decision even when it landed after the last recording
+            # finished; the record says so, as it always has.
+            self._status = JobStatus.CANCELLED.value
         self._record_best_effort()
 
     def _write_record(self) -> None:
@@ -2405,6 +2447,78 @@ class Experiment:
         for record in runs_store.list_runs(self._dir):
             self._reconcile_run(record)
 
+    def reconcile_recording_runs(self) -> int:
+        """Adopt each per-recording run's real status into its ``recording.yaml`` (§15).
+
+        ``_RecordedRun.wait()`` is what copies a job's terminal status into the recording, and
+        a one-recording run has no coordinator to call it: a Ctrl-C, a closed terminal, or a
+        script that never waits left the entry ``pending`` forever, the recording refused a
+        second run, and tracking refused it as "not complete" (issue #28, finding 5). This is
+        the backstop, run wherever an experiment is opened — the GUI and every CLI command.
+
+        Driven from ``PROCESSING_MODULES`` (every per-recording module's ``runs_key``), so a
+        new module is covered the day it registers. Cost: one ``recording.yaml`` read per
+        recording, and one ``job.json`` read only per entry still marked active — never per
+        run. An entry whose job is still active is left alone while its worker lives; one with
+        no run dir yet is a launch in progress and is left alone too. Returns how many entries
+        changed.
+        """
+        import_runner_modules(_PIPELINE_RUNNERS)
+        return sum(
+            self._reconcile_one_recording(recording_id)
+            for recording_id in experiment_store.discover_recordings(self._dir)
+        )
+
+    def _reconcile_one_recording(self, recording_id: str) -> int:
+        """:meth:`reconcile_recording_runs` for one recording; how many entries changed."""
+        modules = {}
+        for module in PROCESSING_MODULES.values():
+            if not getattr(module, "batch", False):
+                modules.setdefault(module.runs_key, module)
+        rdir = experiment_store.recording_path(self._dir, recording_id)
+        try:
+            data = recording_store.read_recording(rdir)
+        except (
+            Exception
+        ):  # noqa: BLE001 — one unreadable recording must not stop the rest
+            return 0
+        changed = 0
+        for runs_key, module in modules.items():
+            for entry in data.get(runs_key) or []:
+                if entry.get("status") not in ACTIVE_STATUSES:
+                    continue
+                status = self._recording_run_evidence(rdir, module, entry.get("id"))
+                if status is None:
+                    continue
+                with contextlib.suppress(FileNotFoundError, ValueError, KeyError):
+                    self.get_recording(recording_id)._set_run_status(
+                        runs_key, entry["id"], status
+                    )
+                    changed += 1
+        return changed
+
+    @staticmethod
+    def _recording_run_evidence(rdir: Path, module, run_id: str | None) -> str | None:
+        """The status a per-recording run's ``job.json`` says it ended with, or ``None``
+        when there is nothing to adopt yet (no run dir, or a worker still working)."""
+        if not run_id:
+            return None
+        out_dir = rdir / module.output_path(run_id).rstrip("/")
+        if not (out_dir / rundir.JOB_FILENAME).is_file():
+            return None
+        try:
+            status = rundir.read_status(out_dir).value
+        except (FileNotFoundError, KeyError, ValueError):
+            return None
+        if status not in ACTIVE_STATUSES:
+            return status
+        if worker_alive(out_dir):
+            return None
+        reason = "worker exited without completing (reconciled on open)"
+        with contextlib.suppress(Exception):
+            rundir.set_status(out_dir, JobStatus.FAILED, error=reason)
+        return JobStatus.FAILED.value
+
     def _reconcile_run(self, record: dict) -> bool:
         """Reconcile one run record against on-disk evidence; returns True if changed.
         The **coordinator pid** is the liveness authority: alive → leave running; gone
@@ -2426,7 +2540,14 @@ class Experiment:
         changed = False
         for sid, entry in per_recording.items():
             stage_run_id = entry.get("run_id")
-            if stage_run_id is None or entry.get("status") not in ACTIVE_STATUSES:
+            if entry.get("status") not in ACTIVE_STATUSES:
+                continue
+            if stage_run_id is None:
+                # Never launched — `retry_run` seeds its pending recordings this way, so a
+                # retry whose coordinator died first left the run `running` for good.
+                entry["status"] = JobStatus.FAILED.value
+                entry["error"] = "interrupted: coordinator gone before launch"
+                changed = True
                 continue
             sess_run_dir = experiment_store.recording_path(
                 self._dir, sid
@@ -2446,22 +2567,18 @@ class Experiment:
                 self.get_recording(sid)._set_run_status(
                     module.runs_key, stage_run_id, status
                 )
-        for sid in record.get("recording_ids") or []:
-            if sid not in per_recording:  # coordinator died before launching it
-                per_recording[sid] = {
-                    "run_id": None,
-                    "status": JobStatus.FAILED.value,
-                    "error": "interrupted: coordinator gone before launch",
-                }
-                changed = True
+        before = len(per_recording)
+        new_status = roll_up_run_status(
+            record.get("recording_ids") or [],
+            per_recording,  # a recording the coordinator never launched → failed
+            cancelled=False,
+            unlaunched=(
+                JobStatus.FAILED.value,
+                "interrupted: coordinator gone before launch",
+            ),
+        )
+        changed = changed or len(per_recording) != before
         record["per_recording"] = per_recording
-        statuses = [e.get("status") for e in per_recording.values()]
-        if any(s in ACTIVE_STATUSES for s in statuses):
-            new_status = "running"
-        elif statuses and all(s == JobStatus.COMPLETE.value for s in statuses):
-            new_status = "complete"
-        else:
-            new_status = "failed"
         if new_status != record.get("status"):
             record["status"] = new_status
             changed = True
@@ -2479,26 +2596,111 @@ class Experiment:
         blocked. Nothing outside a recording is computed from a whole recording
         today; a future cross-recording analysis would register as a dependent.
 
+        **Refused while a run is using the recording** (issue #28, finding 6): a processing
+        run that lists it, a run of its own still going, or an analysis, distill, dataset or
+        export run reading it. Deleting under a live worker orphaned it — the worker re-created
+        the folder within seconds — and wiped the run record the coordinator was still writing,
+        so the other recordings never ran. Every family is reconciled first, so a run that is
+        only *recorded* as running (its process long gone) does not block the delete.
+
+        The recording leaves both of a run record's fields, ``per_recording`` **and**
+        ``recording_ids`` (finding 10): a deleted id left in the plan made ``process retry``
+        fail reading its ``recording.yaml`` and ``process list`` count it.
+
         Raises:
             FileNotFoundError: If no such recording exists.
+            ValueError: If a run is still using the recording — it names each one.
         """
         sdir = experiment_store.recording_path(self._dir, recording_id)
         if not sdir.is_dir():
             raise FileNotFoundError(f"recording {recording_id!r} not found")
+        blockers = self._active_runs_reading(recording_id)
+        if blockers:
+            raise ValueError(
+                f"cannot delete recording {recording_id!r} while a run is using it — "
+                "cancel it or let it finish first:\n" + "\n".join(blockers)
+            )
         shutil.rmtree(sdir)
         metadata_store.remove_row(
             self._dir, recording_id
         )  # prune its grouping vars (§11)
         for record in runs_store.list_runs(self._dir):
             per = record.get("per_recording", {})
-            if recording_id not in per:
+            planned = list(record.get("recording_ids") or [])
+            if recording_id not in per and recording_id not in planned:
                 continue
-            del per[recording_id]
-            if per:
+            per.pop(recording_id, None)
+            record["recording_ids"] = [sid for sid in planned if sid != recording_id]
+            if per or record["recording_ids"]:
                 record["per_recording"] = per
                 runs_store.write_run(self._dir, record["id"], record)
             else:
                 runs_store.delete_run(self._dir, record["id"])
+
+    def _active_runs_reading(self, recording_id: str) -> list[str]:
+        """One line per run still using ``recording_id`` — empty when it may be deleted.
+
+        Reconciles first (processing runs, single-job runs, distill runs and this recording's
+        own runs), so only a run whose process is really alive can block.
+        """
+        import_runner_modules(_PIPELINE_RUNNERS)
+        self.reconcile_runs()
+        self.reconcile_job_runs()
+        self._reconcile_one_recording(recording_id)
+        lines = []
+        processing = {r["id"]: r for r in runs_store.list_runs(self._dir)}
+        for run_id, record in processing.items():
+            if record.get("status") in ACTIVE_STATUSES and (
+                recording_id in (record.get("recording_ids") or [])
+                or recording_id in (record.get("per_recording") or {})
+            ):
+                lines.append(f"  processing run {run_id!r} ({record.get('module_id')})")
+        data = recording_store.read_recording(
+            experiment_store.recording_path(self._dir, recording_id)
+        )
+        for module in PROCESSING_MODULES.values():
+            if getattr(module, "batch", False):
+                continue
+            for entry in data.get(module.runs_key) or []:
+                if entry.get("status") in ACTIVE_STATUSES:
+                    line = f"  {module.module_id} run {entry.get('id')!r} on this recording"
+                    if line not in lines:
+                        lines.append(line)
+        analysis = {}
+        for ref in self.analysis_runs:
+            analysis[ref.id] = ref
+            if ref.status in ACTIVE_STATUSES and recording_id in ref.recording_ids:
+                lines.append(f"  analysis run {ref.id!r} ({ref.module_id})")
+        for record in self.distill_runs:  # reconciled by the property
+            sources = (record.get("config") or {}).get("source_recording_ids") or []
+            if record.get("status") in ACTIVE_STATUSES and recording_id in sources:
+                lines.append(f"  distill run {record.get('id')!r}")
+
+        def reads(kind: str, subject_id: str) -> bool:
+            if kind == "recording":
+                return subject_id == recording_id
+            if kind == "run" and subject_id in processing:
+                return recording_id in (
+                    processing[subject_id].get("recording_ids") or []
+                )
+            if kind == "analysis_run" and subject_id in analysis:
+                return recording_id in analysis[subject_id].recording_ids
+            return False
+
+        for ref in self.export_runs:
+            if ref.status in ACTIVE_STATUSES and reads(
+                ref.subject_kind, ref.subject_id
+            ):
+                lines.append(f"  export run {ref.id!r}")
+        for ref in self.datasets:
+            if ref.status not in ACTIVE_STATUSES:
+                continue
+            ddir = datasets_store.dataset_dir(self._dir, ref.id)
+            with contextlib.suppress(Exception):
+                source = datasets_store.read_dataset_yaml(ddir).get("source") or {}
+                if reads("run", source.get("run_id", "")):
+                    lines.append(f"  dataset run {ref.id!r}")
+        return lines
 
     def delete(self) -> None:
         """Delete the whole experiment directory — every recording, run, model, and
@@ -2545,7 +2747,11 @@ class Experiment:
                 f"unknown module_id {module_id!r}; "
                 f"available: {sorted(PROCESSING_MODULES)}"
             )
-        recording_ids = list(recording_ids)
+        # The same recording named twice (a name and its id, say) would run twice: the second
+        # run's id replaces the first in `per_recording`, leaving an output no run indexes and
+        # a batch marked failed though both runs completed (issue #28, finding 7). Here, not in
+        # a surface, so the CLI, the GUI and a script all get it. Order is kept.
+        recording_ids = list(dict.fromkeys(recording_ids))
         if not recording_ids:
             raise ValueError("recording_ids must be non-empty")
         if module.batch:
@@ -2810,7 +3016,10 @@ class Experiment:
                 hyperparameters.
         """
         import_runner_modules(_PIPELINE_RUNNERS)
-        recording_ids = list(source_recording_ids or [s.id for s in self.recordings])
+        # Order-keeping de-duplication, as `run_processing` does (issue #28, finding 7).
+        recording_ids = list(
+            dict.fromkeys(source_recording_ids or [s.id for s in self.recordings])
+        )
         if not classes:
             raise ValueError("labeling needs at least one class (a name + text prompt)")
         prompts = [c.prompt for c in classes]
@@ -3014,10 +3223,21 @@ class Experiment:
         dataset, trained model, and any promoted global model are independent artifacts
         with their own lifecycles and are left intact — delete them explicitly.
 
+        Refused while the run is active (reconciled first, so a dead coordinator does not
+        block): deleting the record under a live coordinator is the processing-run case of
+        issue #28, finding 6 — the coordinator re-writes a record nothing lists any more.
+
         Raises:
             FileNotFoundError: If the run record does not exist.
+            ValueError: If the run is still active.
         """
-        distill_store.read_run(self._dir, run_id)  # FileNotFoundError if absent
+        record = self.distill_run_record(
+            run_id
+        )  # reconciled; FileNotFoundError if absent
+        if record.get("status") in ACTIVE_STATUSES:
+            raise ValueError(
+                f"distill run {run_id!r} is still active — cancel it first"
+            )
         distill_store.delete_run(self._dir, run_id)
 
     def attach_distill_run(self, run_id: str) -> "AttachedDistillRun":
@@ -3291,7 +3511,10 @@ class Experiment:
                 or the chosen model not ready.
         """
         import_runner_modules(_PIPELINE_RUNNERS)
-        recording_ids = list(source_recording_ids or [s.id for s in self.recordings])
+        # Order-keeping de-duplication, as `run_processing` does (issue #28, finding 7).
+        recording_ids = list(
+            dict.fromkeys(source_recording_ids or [s.id for s in self.recordings])
+        )
         compute = compute or default_compute(api_models.supported_backends(model_id))
         if not classes:
             raise ValueError("labeling needs at least one class (a name + text prompt)")
@@ -3860,10 +4083,12 @@ class Experiment:
     def cancel_run(self, run_id: str) -> None:
         """Stop an active processing run: signal a live orchestrator (the on-disk
         cancel sentinel — works even after the app restarted), cancel each in-flight
-        per-recording worker, and record each recording's real on-disk status. The run
-        record becomes ``cancelled`` unless every recording actually completed (then
-        ``complete`` — e.g. a worker that finished after the GUI was closed, so its
-        results aren't hidden). No-op once terminal.
+        per-recording worker, and record each recording's real on-disk status. A recording
+        the coordinator never launched is listed as ``cancelled`` (not run), so ``process
+        retry`` picks it up. The run record becomes ``cancelled`` unless every *planned*
+        recording actually completed (then ``complete`` — e.g. a worker that finished after
+        the GUI was closed, so its results aren't hidden); see :func:`roll_up_run_status`.
+        No-op once terminal.
 
         Raises:
             FileNotFoundError: If no such run record exists.
@@ -3892,12 +4117,18 @@ class Experiment:
                 )
             else:
                 info["status"] = "cancelled"
-        statuses = [info.get("status") for info in per_recording.values()]
-        record["status"] = (
-            "complete"
-            if statuses and all(s == "complete" for s in statuses)
-            else "cancelled"
+        # Over the plan: a recording the coordinator never launched is listed as not run
+        # (cancelled), so the run reads cancelled and `process retry` picks it up.
+        record["status"] = roll_up_run_status(
+            record.get("recording_ids") or [],
+            per_recording,
+            cancelled=True,
+            unlaunched=(
+                JobStatus.CANCELLED.value,
+                "not run: the run was cancelled first",
+            ),
         )
+        record["per_recording"] = per_recording
         runs_store.write_run(self._dir, run_id, record)
 
     def cancel_model(self, model_id: str) -> None:

@@ -23,6 +23,14 @@ the strip under Export…, where an export's equivalent news already went, by na
 failures, and the section keeps recent finished imports. The notice tests below assert the whole
 sentence, and the shell test drives the queue's real handlers with a recording named apart from its
 id, so printing the id cannot pass.
+
+**The third class (issue #28, finding 8).** *A count built from the remainder of the buckets it
+did name.* The caption counted ``running`` and ``failed`` and called everything else *finished*,
+so a cancelled run — listed precisely because it did not finish — read as "1 finished". Each
+status is now given a bucket in `active_processes.SUMMARY_BUCKET`, and the guard below is
+data-driven over `JobStatus`, so a new status fails here until it is counted on purpose. What
+stays listed is a documented decision rather than a seen-state: a failed or cancelled run stays
+until it is deleted (`api/active.py::list_active`, `docs/gui.md` *Active processes*).
 """
 
 from pathlib import Path
@@ -481,4 +489,60 @@ def test_listing_imports_costs_one_read_per_recording(tmp_path, monkeypatch):
         f"{slope:.1f} round trips per recording. The quit guard reads this on the UI thread, "
         f"so a slope that tracks the field count rather than the recording count is a freeze "
         f"on a network workspace — check that the read is still inside `read_cache.pinned()`."
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Every status is counted as what it is (issue #28, finding 8)
+# --------------------------------------------------------------------------- #
+from detail.core.dataclasses import JobStatus  # noqa: E402
+
+_EXPECTED_BUCKET = {
+    JobStatus.PENDING: "running",
+    JobStatus.RUNNING: "running",
+    JobStatus.COMPLETE: "finished",
+    JobStatus.FAILED: "failed",
+    JobStatus.CANCELLED: "cancelled",
+    JobStatus.PARTIAL: "partial",
+}
+
+
+def test_every_job_status_has_a_deliberate_summary_bucket():
+    from detail.gui.active_processes import SUMMARY_BUCKET
+
+    assert set(SUMMARY_BUCKET) == {s.value for s in JobStatus}
+    assert set(_EXPECTED_BUCKET) == set(JobStatus)
+
+
+@pytest.mark.parametrize("status", list(JobStatus), ids=lambda s: s.value)
+def test_the_caption_counts_each_status_in_its_own_bucket(status):
+    from detail.gui.active_processes import _summary
+
+    bucket = _EXPECTED_BUCKET[status]
+    expected = "1 running" if bucket == "running" else f"0 running · 1 {bucket}"
+    assert _summary([_row("run", "run_001", status=status.value)]) == expected
+
+
+def test_a_cancelled_run_is_not_counted_as_finished_on_the_page(qapp):
+    """The report: cancel a run in one experiment, let one finish elsewhere, and the caption
+    said "1 finished" for the run that was stopped."""
+    page = ActiveProcessesPage(on_open=lambda _r: None)
+    page._show(
+        [
+            _row("run", "run_001", status="cancelled"),
+            _row("run", "run_002", status="failed"),
+            _row("run", "run_003", status="running"),
+        ]
+    )
+    assert (
+        page._runs._caption.text()
+        == "1 running · 1 failed · 1 cancelled — double-click a row to open it"
+    )
+
+
+def test_a_status_outside_the_table_is_named_not_called_finished():
+    from detail.gui.active_processes import _summary
+
+    assert (
+        _summary([_row("run", "run_001", status="stalled")]) == "0 running · 1 stalled"
     )

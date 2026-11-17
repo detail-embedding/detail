@@ -255,3 +255,40 @@ def test_a_live_worker_is_recognised_whatever_its_run_dir_is_called(tmp_path, na
     finally:
         proc.kill()
         proc.wait()
+
+
+# --------------------------------------------------------------------------- #
+# a coordinator this process spawned and never reaped (issue #28, finding 9)
+# --------------------------------------------------------------------------- #
+def test_an_exited_coordinator_this_process_spawned_reads_dead(tmp_path):
+    """**The class: a liveness probe that answers "exists" for a process that has exited.**
+
+    A coordinator is a child of the process that launched it (`spawn_coordinator`). Once it
+    dies — an OOM kill, a native crash — it stays a *zombie* until its parent waits on it, and
+    ``os.kill(pid, 0)`` succeeds on a zombie. So the launcher's own reattach poll
+    (`AttachedRun.progress`) never counted a dead strike, never reconciled, and `wait()` sat in
+    its sleep forever while the worker's ``job.json`` already said ``complete``. Any other
+    process (a GUI reopen, ``process attach``) saw it dead at once, which is how it hid.
+
+    The rule: for a pid this process spawned, the ``Popen`` handle is the authority —
+    ``poll()`` reaps the zombie and says it exited. The fixture is the real path: spawned
+    through `spawn_coordinator` (so through `new_process_group_kwargs`), exiting at once, and
+    **not** reaped by the test. Against a plain ``os.kill(pid, 0)`` probe this fails.
+    """
+    pid = local.spawn_coordinator(tmp_path, (), entrypoint="this")
+    deadline = time.monotonic() + 10
+    # Wait for the child to exit without reaping it: /proc shows a zombie as state Z.
+    stat = pathlib.Path(f"/proc/{pid}/stat")
+    while time.monotonic() < deadline:
+        if (
+            os.name == "nt"
+            or not stat.exists()
+            or stat.read_text(encoding="utf-8-sig").split()[2] == "Z"
+        ):
+            break
+        time.sleep(0.05)
+    try:
+        assert local.pid_alive(pid) is False
+        assert local.coordinator_alive(tmp_path, pid) is False
+    finally:
+        local.reap_coordinator(pid)

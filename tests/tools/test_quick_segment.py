@@ -929,3 +929,25 @@ def test_a_sample_that_does_not_decode_leaves_every_other_result_under_its_own_c
 
     stored = {part: _frames(part) for part in (0, 1)}
     assert stored == {0: [7], 1: [7, 22]}
+
+
+@pytest.mark.parametrize("mode", ["sample", "consecutive"])
+def test_a_stop_before_the_first_frame_is_recorded_stopped_in_every_mode(
+    tmp_path, stub_model, isolated_tools, mode
+):
+    # Stopping is not failing (§27), and that has to hold at the edge where nothing was
+    # done yet. The sampled engine raised "no frames could be decoded" whenever its loop
+    # ended with zero frames, including when it ended because the user pressed Stop, so a
+    # fine video read as a failed run with a decode error (#28 finding 12). The consecutive
+    # mode already got this right; both modes are parametrized so the two cannot drift.
+    video = tmp_path / "clip.mp4"
+    _write_video(video, n_frames=20)
+    record = api_tools.run_tool(
+        "quick_segment",
+        _config(video, n_frames=6, mode=mode),
+        stop_check=lambda: True,
+    )
+    assert record["status"] == "stopped"
+    assert record["result"]["stopped"] is True
+    assert record["result"]["n_processed"] == 0
+    assert "error" not in record

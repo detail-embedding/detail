@@ -13,6 +13,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 from detail.core.dataclasses import (
+    JobStatus,
     register_job_type,
     register_progress_event_type,
 )
@@ -25,6 +26,11 @@ RUNNER_MODULES_ENV = "DETAIL_RUNNER_MODULES"
 class RunnerSpec:
     run: Callable  # (job, run_dir, progress_cb, stop_event) -> None
     run_dir_for: Callable  # (experiment_root, job) -> Path
+    # What a cancelled run of this runner is recorded as. ``None`` keeps the worker's general
+    # mapping: ``partial`` when the runner returned after the cancel, ``failed`` when it raised.
+    # A processing module that cannot resume sets ``cancelled``, used however the runner ended,
+    # because ``partial`` promises a resume it does not have (#28; see ``ProcessingModule.resumes``).
+    cancel_status: JobStatus | None = None
 
 
 JOB_RUNNERS: dict[str, RunnerSpec] = {}
@@ -78,6 +84,11 @@ class ProcessingModule(ABC):
     # ``phases``' reason: a default is indistinguishable from a module that forgot to say.
     # ``tests/executor/test_progress_counts_frames.py`` is the guard.
     progress_counts_frames: bool
+    # Whether a cancelled run of this module can be resumed. ``partial`` means "interrupted,
+    # resumable", so only a module that answers yes records a cancel as ``partial``; any other
+    # records it ``cancelled`` (``RunnerSpec.cancel_status``). Required, for the reason above:
+    # a default would be a module that forgot to say. ``tests/executor/test_cancel_status.py``.
+    resumes: bool
     progress_event_class: type | None = None
     # The pydantic config model (§6.5) — feeds the docs parameter reference; None
     # until the module is migrated off a dict config.
@@ -284,8 +295,17 @@ def register_processing_module(cls: type) -> type:
     instance = cls()
     _check_id_free(instance.module_id)
     PROCESSING_MODULES[instance.module_id] = instance
+    # A module that has not said it resumes is treated as one that cannot: recording a cancel
+    # `cancelled` loses nothing, where `partial` would promise a resume (the guard requires
+    # every module to say).
     JOB_RUNNERS[instance.module_id] = RunnerSpec(
-        run=instance.runner, run_dir_for=instance.run_dir_for
+        run=instance.runner,
+        run_dir_for=instance.run_dir_for,
+        cancel_status=(
+            JobStatus.PARTIAL
+            if getattr(instance, "resumes", False)
+            else JobStatus.CANCELLED
+        ),
     )
     register_job_type(instance.module_id, instance.job_class)
     if instance.progress_event_class is not None:
