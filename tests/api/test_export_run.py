@@ -176,7 +176,7 @@ def test_a_renamed_folder_is_reflected_in_the_record(
     """**The class.** *A name minted before the work runs, never reconciled with what ran (#475).*
 
     `run_export` mints the destination folder name at submit time and writes it into the record
-    immediately. `write_export`'s `_unique_dir` can rename that folder if it already exists on
+    immediately. `write_export`'s `new_dir` can rename that folder if it already exists on
     disk — two exports of the same subject minted within the same wall-clock second collide in
     practice — and returns the real path as `ExportResult.dest`. The worker used to drop that on
     the floor: the record kept the pre-collision name forever, so `exporters.destination_of`

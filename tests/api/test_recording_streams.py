@@ -75,6 +75,47 @@ def test_add_stream_end_to_end(experiment_dir, recording_dir, tmp_path):
     assert "/_src/" not in blob and str(tmp_path) not in blob
 
 
+def test_a_data_and_program_file_with_one_name_are_both_kept(
+    experiment_dir, recording_dir, tmp_path
+):
+    """Both copied to ``raw/same.txt`` left one: the verbatim copy of the data was gone while
+    the manifest listed it twice (#29). The second is prefixed with its role."""
+    for folder, text in (("a", DATA_TXT), ("b", PROGRAM_MPC)):
+        (tmp_path / folder).mkdir()
+        (tmp_path / folder / "same.txt").write_text(text, encoding="utf-8")
+    sess = _recording(experiment_dir)
+    sess.add_stream(
+        "medpc",
+        raw_path=tmp_path / "a" / "same.txt",
+        importer="medpc",
+        aux_paths={"program": tmp_path / "b" / "same.txt"},
+    )
+    raw = recording_dir / "streams" / "medpc" / "raw"
+    entries = {e["role"]: e["file"] for e in sess.streams[0]["raw"]}
+    assert entries == {
+        "data": "streams/medpc/raw/same.txt",
+        "program": "streams/medpc/raw/program_same.txt",
+    }
+    assert (raw / "same.txt").read_text(encoding="utf-8") == DATA_TXT
+    assert (raw / "program_same.txt").read_text(encoding="utf-8") == PROGRAM_MPC
+
+
+def test_a_stream_name_that_differs_only_by_case_is_refused(
+    experiment_dir, recording_dir, tmp_path
+):
+    """``EMG`` and ``emg`` are one folder on macOS and Windows: the second import would write
+    into the first stream's files."""
+    data, program = _src_files(tmp_path)
+    sess = _recording(experiment_dir)
+    sess.add_stream(
+        "EMG", raw_path=data, importer="medpc", aux_paths={"program": program}
+    )
+    with pytest.raises(ValueError, match="only by case"):
+        sess.add_stream(
+            "emg", raw_path=data, importer="medpc", aux_paths={"program": program}
+        )
+
+
 def test_add_stream_duplicate_name_rejected(experiment_dir, recording_dir, tmp_path):
     data, program = _src_files(tmp_path)
     sess = _recording(experiment_dir)

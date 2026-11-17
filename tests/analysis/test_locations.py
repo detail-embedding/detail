@@ -300,6 +300,19 @@ def test_export_writes_csvs_and_manifest(tmp_path):
     assert manifest["detection_run_id"] == "det_01"
 
 
+def test_a_second_export_into_one_folder_keeps_the_first(tmp_path):
+    """The four names are fixed, so writing them straight into ``--out`` replaced one
+    recording's files with the next one's (#29). Each export makes its own folder."""
+    recording = _one_track(tmp_path)
+    first = recording.export_locations("track_01", tmp_path / "loc")
+    (first / "tracks.csv").write_text("the first export", encoding="utf-8")
+    second = recording.export_locations("track_01", tmp_path / "loc")
+    assert first != second and first.parent == second.parent == tmp_path / "loc"
+    assert (first / "tracks.csv").read_text(encoding="utf-8") == "the first export"
+    assert (second / "tracks.csv").is_file()
+    assert "recording_001" in first.name and "track_01" in first.name
+
+
 def test_export_rejects_incomplete_tracking(tmp_path):
     recording = _one_track(tmp_path)
     data = recording_store.read_recording(recording.dir)

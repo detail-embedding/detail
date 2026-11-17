@@ -435,7 +435,7 @@ A recording is one logical recording: one or more video files representing conti
 
 ### Directory structure
 
-Each category (video, each stream) gets its own folder. Each stream folder holds the original imported files (`raw/`) and the canonical converted data (`canonical/`). Video parts have a `timestamps/generated/` folder holding each part's frame timestamp map. Each stage's runs write under their own folder (Tenet 5), named in the stage's section.
+Each category (video, each stream) gets its own folder. Each stream folder holds the original imported files (`raw/`) and the canonical converted data (`canonical/`). A raw file keeps its own name unless an earlier file of the same stream already has it, when it is prefixed with its role (`program_same.txt`); the manifest's `raw` list is what says which file is which. A stream name that differs from an existing one only by case is refused, since it is the same folder on macOS and Windows. Video parts have a `timestamps/generated/` folder holding each part's frame timestamp map. Each stage's runs write under their own folder (Tenet 5), named in the stage's section.
 
 ```
 recordings/

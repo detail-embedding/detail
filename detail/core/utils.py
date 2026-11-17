@@ -5,8 +5,10 @@ Device resolution (Section 12), track-id resolution (Section 13), and canonical
 reference (Tenet 8).
 """
 
+from collections.abc import Sequence
 from datetime import datetime, timezone
 import os
+from pathlib import Path
 import re
 
 import numpy as np
@@ -53,6 +55,62 @@ def safe_stem(name: str) -> str:
         return safe
     digest = hashlib.sha256(str(name).encode("utf-8")).hexdigest()[:6]
     return f"{safe}-{digest}"
+
+
+def unique_stems(
+    names: Sequence[str], keys: Sequence[str], *, clean: bool = True
+) -> list[str]:
+    """One file stem per name, **unique inside one output folder**, ignoring case.
+
+    A name that cleans to a stem nothing else in this output shares keeps that plain stem, so
+    the usual export reads as it always did. Names that clean to one stem — ``Mouse 1 (pre)``
+    and ``Mouse 1 [pre]``, ``a/b`` and ``a_b``, or ``Mouse`` and ``mouse``, which are one file
+    on macOS and Windows — *each* carry ``_<key>`` instead, so neither looks like the original
+    and the other the copy. ``keys`` (a recording id, a subject) say which is which; a
+    numbered suffix backs them up if a keyed stem still lands on another one.
+
+    ``clean=False`` takes ``names`` as stems already made path-safe by the caller.
+    """
+    stems = [safe_path_part(n) if clean else str(n) for n in names]
+    counts: dict[str, int] = {}
+    for stem in stems:
+        counts[stem.casefold()] = counts.get(stem.casefold(), 0) + 1
+    wanted = [
+        stem if counts[stem.casefold()] == 1 else f"{stem}_{safe_path_part(key)}"
+        for stem, key in zip(stems, keys, strict=True)
+    ]
+    # A plain stem is claimed first, so a name that never collided keeps its name even when a
+    # keyed stem lands on it.
+    taken = {stem.casefold() for stem, plain in zip(wanted, stems) if stem == plain}
+    out = []
+    for stem, plain in zip(wanted, stems):
+        if stem == plain:
+            out.append(stem)
+            continue
+        candidate, n = stem, 2
+        while candidate.casefold() in taken:
+            candidate, n = f"{stem}_{n}", n + 1
+        taken.add(candidate.casefold())
+        out.append(candidate)
+    return out
+
+
+def new_dir(parent: Path | str, name: str) -> Path:
+    """Create and return ``parent/name``, or ``parent/name_2``… — never a folder that exists.
+
+    The folder is claimed by ``mkdir`` itself rather than checked and then made, so two exports
+    started in the same second cannot both decide the same name is free.
+    """
+    parent = Path(parent)
+    parent.mkdir(parents=True, exist_ok=True)
+    candidate, index = parent / name, 2
+    while True:
+        try:
+            candidate.mkdir()
+        except FileExistsError:
+            candidate, index = parent / f"{name}_{index}", index + 1
+            continue
+        return candidate
 
 
 def utc_timestamp() -> str:

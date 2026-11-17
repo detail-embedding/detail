@@ -90,6 +90,25 @@ def test_a_cancelled_export_leaves_no_file(tmp_path):
     assert not (tmp_path / "a.mp4").exists()
 
 
+@pytest.mark.parametrize("name", ["a.mp4", "a.gif"])
+def test_a_cancel_leaves_the_file_it_would_have_replaced(tmp_path, name):
+    """The user agreed to replace ``a.gif`` with a finished one, not to lose it (#29): the new
+    one is written beside it and moved over it only once complete."""
+    path = animation.write_animation(tmp_path / name, iter(_frames()), fps=10, count=6)
+    before = path.read_bytes()
+
+    def progress(stage, fraction, detail):
+        if fraction > 0.4:
+            raise OperationCancelled(stage)
+
+    with pytest.raises(OperationCancelled):
+        animation.write_animation(
+            path, iter(_frames(width=160)), fps=10, count=6, progress=progress
+        )
+    assert path.read_bytes() == before
+    assert sorted(p.name for p in tmp_path.iterdir()) == [name], "no partial left"
+
+
 def test_an_unknown_suffix_is_refused(tmp_path):
     with pytest.raises(ValueError, match=".mp4 or .gif"):
         animation.write_animation(tmp_path / "a.avi", iter(_frames()), fps=10, count=6)

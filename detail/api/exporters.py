@@ -576,7 +576,7 @@ def _readable(path: Path) -> str:
         return str(path)
 
 
-def folder_name(subject: ExportSubject, when=None) -> str:
+def folder_name(subject: ExportSubject, when=None, *, what: str = "export") -> str:
     """``cohort_temporal_clustering_an_01_export_2026-09-10_1432`` — the folder one export creates.
 
     Every export makes its **own** folder rather than writing loose files into one you chose.
@@ -590,7 +590,8 @@ def folder_name(subject: ExportSubject, when=None) -> str:
       into somebody's Desktop.
 
     The name carries what you would need to find it again: the experiment, what produced it, the
-    run, and when.
+    run, and when. ``what`` replaces the word ``export`` for an export that is not one of the
+    registry's targets (``measures``, ``locations``), so its folder says which it is.
     """
     from datetime import datetime
 
@@ -603,24 +604,23 @@ def folder_name(subject: ExportSubject, when=None) -> str:
         parts.append(module)
     if subject.id:
         parts.append(subject.id)
-    parts += ["export", when.strftime("%Y-%m-%d_%H%M%S")]
+    parts += [what, when.strftime("%Y-%m-%d_%H%M%S")]
     return safe_path_part("_".join(p for p in parts if p), allow_dot=False)
 
 
-def _unique_dir(parent: Path, name: str) -> Path:
-    """``parent/name``, or ``parent/name_2`` if that exists — never an existing folder.
+def new_export_folder(
+    subject: ExportSubject, parent: Path | str, *, what: str = "export"
+) -> Path:
+    """A new folder under ``parent``, named by :func:`folder_name`, for an export that writes
+    its own files rather than going through :func:`write_export`.
 
-    Seconds are not enough on their own: two CSV exports of the same run can land inside one,
-    and an export that silently wrote into the previous export's folder would mix two results
-    and leave one manifest describing both. The whole reason a folder is minted per export is
-    that nothing it writes can land on top of something else.
+    Those exports wrote fixed names (``<recording_id>.csv``, ``tracks.csv``) straight into the
+    folder they were given, so a second export there replaced the first with nothing said
+    (#29). Minting the folder is what "every export makes a new folder" means for them too.
     """
-    candidate = parent / name
-    index = 2
-    while candidate.exists():
-        candidate = parent / f"{name}_{index}"
-        index += 1
-    return candidate
+    from detail.core.utils import new_dir
+
+    return new_dir(parent, folder_name(subject, what=what))
 
 
 def experiment_name(subject: ExportSubject) -> str:
@@ -712,10 +712,9 @@ def write_export(
         reason = unavailable_reason(target, subject)
         if reason is not None:
             raise ExportError(f"cannot export {target.label.lower()}: {reason}")
-    parent = Path(parent)
-    parent.mkdir(parents=True, exist_ok=True)
-    dest = _unique_dir(parent, folder or folder_name(subject))
-    dest.mkdir()
+    from detail.core.utils import new_dir
+
+    dest = new_dir(parent, folder or folder_name(subject))
 
     scope = scope or ExportScope()
     written: list[Path] = []
@@ -747,6 +746,19 @@ def write_export(
         except Exception as exc:  # noqa: BLE001 — per-target isolation boundary
             outcomes.append(
                 TargetOutcome(target.id, "failed", error=f"{type(exc).__name__}: {exc}")
+            )
+            continue
+        twice = _named_twice(dest, produced)
+        if twice:
+            outcomes.append(
+                TargetOutcome(
+                    target.id,
+                    "failed",
+                    error=(
+                        f"two of its outputs were written to the same file ({twice}), so "
+                        "one replaced the other; this is a bug in the export, please report it"
+                    ),
+                )
             )
             continue
         written += produced
@@ -782,6 +794,23 @@ def write_export(
     return ExportResult(
         dest, tuple(t.id for t in wanted), relative, empty_reason, tuple(outcomes)
     )
+
+
+def _named_twice(dest: Path, produced: Sequence[Path]) -> str:
+    """The first file a target lists twice (ignoring case, as macOS and Windows do), or ``""``.
+
+    A target whose names collide wrote one output over another and lists the survivor twice.
+    Without this check that reads as ``complete``, with one recording's files gone; the names
+    are made unique per target (``core.utils.unique_stems``), and this is what makes a target
+    added later that forgets to do so fail where someone will see it (#29).
+    """
+    seen: set[str] = set()
+    for path in produced:
+        key = _relative(dest, Path(path)).casefold()
+        if key in seen:
+            return _relative(dest, Path(path))
+        seen.add(key)
+    return ""
 
 
 def _slice_progress(progress, index: int, total: int):

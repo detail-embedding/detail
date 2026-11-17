@@ -21,10 +21,12 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QLabel,
+    QMessageBox,
     QWidget,
 )
 
 from detail.api.animation import (
+    GIF,
     GIF_DEFAULT_FPS,
     GIF_DEFAULT_WIDTH,
     GIF_FPS_RANGE,
@@ -97,19 +99,59 @@ def ask_gif_settings(parent: QWidget, frames_note: str) -> tuple[int, float] | N
     return dialog.values()
 
 
+_PATTERNS = {MP4: "MP4 video (*.mp4)", GIF: "GIF animation (*.gif)"}
+
+
 def ask_save_path(
-    parent: QWidget, title: str, suggested: str, kind: str
+    parent: QWidget, title: str, suggested: str, kind: str, pattern: str = ""
 ) -> Path | None:
-    """Where to write an ``mp4`` / ``gif``, from the system save dialog; ``None`` when
-    cancelled. The suffix is added when the name typed has none."""
-    pattern = "MP4 video (*.mp4)" if kind == MP4 else "GIF animation (*.gif)"
+    """Where to write a file of ``kind`` (``mp4``, ``gif``, ``csv``, ``png``…), from the
+    system save dialog; ``None`` when cancelled. ``pattern`` is the dialog's filter, read
+    from :data:`_PATTERNS` for a video or a GIF."""
+    pattern = pattern or _PATTERNS[kind]
     path, _filter = QFileDialog.getSaveFileName(parent, title, suggested, pattern)
     if not path:
         return None
-    path = Path(path)
-    if path.suffix.lower() != f".{kind}":
-        path = path.with_name(f"{path.name}.{kind}")
+    return with_suffix_confirmed(parent, title, Path(path), kind)
+
+
+def with_suffix_confirmed(
+    parent: QWidget, title: str, path: Path, kind: str
+) -> Path | None:
+    """``path`` with ``.kind`` added when the name typed has none — and, when the name that
+    makes exists, the replace question the dialog never got to ask; ``None`` on No.
+
+    The save dialog asks before replacing the name it returns, and on a platform whose dialog
+    does not add the suffix itself (Qt's own, on Linux) that is ``climb``, not ``climb.mp4``:
+    adding it afterwards wrote over ``climb.mp4`` with nothing asked (#29).
+    """
+    if path.suffix.lower() == f".{kind}":
+        return path
+    path = path.with_name(f"{path.name}.{kind}")
+    if path.exists() and not confirm_replace(parent, title, [path.name]):
+        return None
     return path
+
+
+def confirm_replace(parent: QWidget, title: str, names: list[str]) -> bool:
+    """Ask before an export writes over files already there; True to go ahead.
+
+    Says how many and names the first few, because "replace 40 files?" with no names gives
+    nothing to check the answer against.
+    """
+    shown = ", ".join(names[:3]) + (
+        f" and {len(names) - 3:,} more" if len(names) > 3 else ""
+    )
+    what = "A file" if len(names) == 1 else f"{len(names):,} files"
+    return (
+        QMessageBox.question(
+            parent,
+            title,
+            f"{what} with this name already exist{'s' if len(names) == 1 else ''} "
+            f"there ({shown}). Replace {'it' if len(names) == 1 else 'them'}?",
+        )
+        == QMessageBox.StandardButton.Yes
+    )
 
 
 def safe_name(text: str) -> str:

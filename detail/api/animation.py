@@ -34,6 +34,8 @@ from pathlib import Path
 
 import numpy as np
 
+from detail.core import atomic
+
 #: What the GIF dialog opens with: the user's answer of 2026-10-22 ("ask each time", 640 / 12).
 GIF_DEFAULT_WIDTH = 640
 GIF_DEFAULT_FPS = 12.0
@@ -116,8 +118,11 @@ def write_animation(
     """Write ``frames`` (RGB ``uint8``, all one size) to ``path`` as its suffix says.
 
     ``count`` is how many ``frames`` will yield, for the bar. ``max_width`` scales every frame
-    down to that width first. A partly written file is removed when writing fails or is
-    cancelled, so a stopped export never leaves something that looks finished.
+    down to that width first. The frames go to a hidden ``.partial`` sibling that is moved over
+    ``path`` only once it is complete: a failed or cancelled export leaves nothing that looks
+    finished, and leaves a file already at ``path`` exactly as it was. Writing in place and
+    deleting ``path`` on a cancel deleted the earlier good copy the user had agreed to replace
+    only with a finished one (#29).
 
     Raises:
         ValueError: an unknown suffix, a non-positive ``fps``, or no frames at all.
@@ -137,18 +142,26 @@ def write_animation(
             )
 
     report(0)
+    partial = partial_path(path)
     try:
         if kind == GIF:
-            written = _write_gif(path, frames, fps, max_width, report)
+            written = _write_gif(partial, frames, fps, max_width, report)
         else:
-            written = _write_mp4(path, frames, fps, max_width, report)
+            written = _write_mp4(partial, frames, fps, max_width, report)
     except BaseException:
-        path.unlink(missing_ok=True)
+        partial.unlink(missing_ok=True)
         raise
     if not written:
-        path.unlink(missing_ok=True)
+        partial.unlink(missing_ok=True)
         raise ValueError("nothing to write: the sequence had no frames")
+    atomic.replace(partial, path)
     return path
+
+
+def partial_path(path: Path) -> Path:
+    """Where ``path`` is written until it is finished: hidden, same folder, same suffix (the
+    suffix is what picks the encoder)."""
+    return path.with_name(f".{path.stem}.partial{path.suffix}")
 
 
 def _write_mp4(path, frames, fps, max_width, report) -> int:

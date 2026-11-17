@@ -41,7 +41,7 @@ from detail.core.dataclasses import Detection, ToolResult
 from detail.core.progress import ThrottledProgress
 from detail.core.protocols import ModelNotReadyError, Tool
 from detail.core.registries import register_tool
-from detail.core.utils import decode_mask, resolve_device
+from detail.core.utils import decode_mask, new_dir, resolve_device
 from detail.core.visualize import (
     assign_colors,
     bgr_to_rgb,
@@ -664,15 +664,15 @@ def export_run(
 
     One folder is the shareable unit whichever mode produced the run: a sampled run
     renders its overlay stills plus ``test.json`` into it, a consecutive run renders its
-    overlay clip into it. The caller picks where; the name comes from the run so two
-    exports never collide or get mixed together.
+    overlay clip into it. The caller picks where; the name comes from the run, and a
+    second export of the same run (another threshold, say) gets ``_2`` after it rather
+    than landing in the first one's folder, so two exports never collide (#29).
 
     ``min_conf`` is the display threshold the pictures are drawn at. An exported image is
     the one form of this run that can't be re-thresholded, so the caller passes the
     threshold it was showing rather than letting the export pick its own.
     """
-    out = Path(parent_dir) / export_basename(manifest)
-    out.mkdir(parents=True, exist_ok=True)
+    out = new_dir(parent_dir, export_basename(manifest))
     if (Path(run_dir) / PROMPT_TEST_FILENAME).is_file():
         export_frames(run_dir, manifest, out, progress, min_conf)
     else:

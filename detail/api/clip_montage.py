@@ -890,9 +890,14 @@ class ClusterMontage:
         fps: float = GIF_DEFAULT_FPS,
         progress: Progress = None,
         on_written: Callable[[Path], None] | None = None,
+        replace: bool = False,
     ) -> list[Path]:
         """Write each clip as a GIF of its own into ``out_dir``: ``<stem>.gif``, one pass of
         that clip at ``fps``, its tile ``max_width`` wide with its label under it.
+
+        GIFs already in ``out_dir`` under these names are refused unless ``replace`` — a
+        folder is chosen, the names in it are not, so writing over them is never assumed
+        (#29). :func:`existing_gifs` is the check, for a surface that asks first.
 
         ``stems`` are the file names (see :func:`clip_file_stem`), one per clip. The montage's
         threads write a clip each, side by side; one thread draws all of a clip from its own
@@ -904,9 +909,19 @@ class ClusterMontage:
 
         Raises:
             ValueError: ``stems`` and the clips differ in number, or two stems are the same.
+            FileExistsError: a GIF of one of these names is already there, and not ``replace``.
         """
-        if len(stems) != len(self.clips) or len(set(stems)) != len(stems):
+        if len(stems) != len(self.clips) or len({s.casefold() for s in stems}) != len(
+            stems
+        ):
             raise ValueError("one distinct file name per clip is needed")
+        there = existing_gifs(out_dir, stems)
+        if there and not replace:
+            raise FileExistsError(
+                f"{len(there):,} of these GIFs already exist in {out_dir} "
+                f"({', '.join(there[:3])}{', …' if len(there) > 3 else ''}); choose another "
+                "folder, or remove them first"
+            )
         out = Path(out_dir)
         out.mkdir(parents=True, exist_ok=True)
         self.prepare(progress)
@@ -1011,6 +1026,12 @@ class ClusterMontage:
         path.parent.mkdir(parents=True, exist_ok=True)
         write_clip_csv(path, rows, extra=extra)
         return path
+
+
+def existing_gifs(out_dir: Path | str, stems: Sequence[str]) -> list[str]:
+    """Which ``<stem>.gif`` of ``stems`` are already in ``out_dir``, by name."""
+    out = Path(out_dir)
+    return [f"{stem}.gif" for stem in stems if (out / f"{stem}.gif").exists()]
 
 
 #: The clip list's own columns, after the clip-query ones: the clip's typicality rank (the
