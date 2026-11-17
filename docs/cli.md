@@ -1492,6 +1492,15 @@ button runs.
 The full field of view is the default: a steady camera, where the surroundings are half the
 answer. Crop to the subject when you want the pose at a constant scale for comparing bouts.
 
+A clip holds **every** frame of its span and plays at the rate those frames were recorded at, so
+it lasts as long as the behavior did, whatever stride detection or tracking ran at. On a frame
+the subject has no detection on, `raw` is the frame as recorded, `overlay` is that same plain
+frame, and `mask` is black. A cropped clip keeps the box from the subject's last detection
+before that frame; before the first detection in the span, it uses that first one. A span the
+subject is never detected across has no clip; its row stays in the CSV with the video column
+blank. `fps` in `clips.csv` and `clip.csv` is the rate the clip was written at, so its frame
+count divided by `fps` is `dur_s`, to within one frame.
+
 ### Keypoints, for pose tools
 
 A keypoint track run (or a keypoint detect run, for the raw placements) exports in the shapes
@@ -1599,7 +1608,9 @@ distill the units are its stages. Frames and fps are shown only for a stage that
 for an analysis they are blank, and the wall clock is the number to compare.
 
 The timings come from the run's own `activity.csv`, so a run that finished before DETAIL kept one
-reports blanks rather than guesses. **Nothing is sent anywhere**: it is a file, and sharing it is
+reports blanks rather than guesses. A recording's wall clock runs from its first logged moment to
+its last, and the run's ends when the run did. A run made before DETAIL logged those last moments
+shows each recording a few seconds short, so a short recording's fps there reads too high. **Nothing is sent anywhere**: it is a file, and sharing it is
 your decision.
 
 ### The columns
@@ -1607,7 +1618,8 @@ your decision.
 `clips.csv`, `instance_id`, `source_label` (the cluster's own id), `label` (the name a person
 gave it, blank if none), `label_path` (that name and every group it sits inside, outermost
 first), `recording_id`, `subject`, `start_frame`, `end_frame`, `t_ns`,
-`end_t_ns`, `dur_s`, and one `video_<render>` column per flavour. `start_frame` and `end_frame`
+`end_t_ns`, `dur_s`, `fps` (the rate the clip plays at; blank when it has none), and one
+`video_<render>` column per flavour. `start_frame` and `end_frame`
 count every frame of the recording from 0, across all its video parts, so a bout in the second
 video file carries frame numbers past the first file's last frame. The ethogram CSV's
 `start_frame,end_frame` count the same way, which is what lets `recording add-stream --importer

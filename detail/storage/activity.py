@@ -77,7 +77,9 @@ def activity_path(run_dir: Path | str) -> Path:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    # Milliseconds: a unit is timed from its rows' clocks, and at whole seconds a 4 s
+    # recording read anything from 3 to 5 s (#32).
+    return datetime.now(timezone.utc).astimezone().isoformat(timespec="milliseconds")
 
 
 class ActivityLog:
@@ -93,25 +95,80 @@ class ActivityLog:
     def __init__(self, run_dir: Path | str, *, interval_s: float | None = None) -> None:
         self._log = AppendLog(activity_path(run_dir), list(COLUMNS))
         self._lock = threading.Lock()
+        #: Serialises `sample` / `finish`, which read and replace the held row below.
+        self._sample_lock = threading.Lock()
         self._throttle = core_progress.ThrottledProgress(
-            self._write,
+            self._forward,
             interval_s=ACTIVITY_INTERVAL_S if interval_s is None else interval_s,
         )
-        #: The last (unit, phase) written. A change in either forces a row past the throttle — a
+        #: The last (unit, phase) offered. A change in either forces a row past the throttle — a
         #: boundary is the one sample whose *timing* is the information, so dropping it to a
         #: cadence would lose the thing the log is for.
         self._last_mark: tuple[str, str] | None = None
+        #: The last sample offered and **not** written: the throttle drops, it does not hold
+        #: back, so without this the old unit's last sample was gone by the time the boundary
+        #: was seen, and the unit was timed to whichever earlier row the clock happened to keep
+        #: (#32). Written before the next boundary's row, and by `finish`.
+        self._held: dict | None = None
+        #: The last sample offered at all, written or not; `finish` stamps the run's end from it.
+        self._last_row: dict | None = None
 
     def sample(self, row: dict, *, force: bool = False) -> None:
-        """Offer one progress sample. Written if it is due, if a boundary moved, or if forced."""
+        """Offer one progress sample. Written if it is due, if a boundary moved, or if forced.
+
+        At a boundary the previous sample is written first, if the throttle dropped it, so the
+        old unit or phase ends at its own last sample rather than at an earlier row.
+        """
         mark = (str(row.get("unit") or ""), str(row.get("phase") or ""))
-        # Read before the assignment. Written the other way round, `self._last_mark is None` is
-        # tested against the value just stored and is dead — the first row still lands, because
-        # `ThrottledProgress` forces its own first call, which is exactly what would have made
-        # the dead branch look like it worked.
-        boundary = self._last_mark is not None and mark != self._last_mark
-        self._last_mark = mark
-        self._throttle(row, force=force or boundary)
+        with self._sample_lock:
+            # Read before the assignment. Written the other way round, `self._last_mark is None`
+            # is tested against the value just stored and is dead — the first row still lands,
+            # because `ThrottledProgress` forces its own first call, which is exactly what would
+            # have made the dead branch look like it worked.
+            boundary = self._last_mark is not None and mark != self._last_mark
+            self._last_mark = mark
+            if boundary and self._held is not None:
+                self._throttle(self._held, force=True)
+            self._held, self._last_row = row, row
+            self._throttle(row, force=force or boundary)
+
+    def finish(self, *, elapsed_s: float | None = None) -> None:
+        """The run's end: the held last sample, then a row stamped now in the last unit and phase.
+
+        Every writer calls this at its terminal status. Nothing did, so the log ended at the
+        last row the throttle kept — seconds before the run did — and the report's last unit and
+        the run's wall clock came out short (#32). The end row repeats the last sample's unit,
+        phase and counts, so it extends that unit to the real end rather than adding a unit of
+        its own; its ETAs are blank, since nothing remains to estimate. A log that was never
+        sampled writes nothing.
+
+        ``elapsed_s`` is the writer's own clock, the one its rows were stamped with. A writer
+        without one passes nothing, and the end is the last sample's ``elapsed_s`` plus the
+        wall time since it.
+        """
+        with self._sample_lock:
+            if self._held is not None:
+                self._throttle(self._held, force=True)
+            if self._last_row is None:
+                return
+            now = _now_iso()
+            if elapsed_s is None:
+                elapsed_s = _elapsed_since(self._last_row, now)
+            end = {
+                **self._last_row,
+                "ts": now,
+                "elapsed_s": round(float(elapsed_s), 1),
+                "eta_unit_s": "",
+                "eta_run_s": "",
+            }
+            self._held = None
+            self._throttle(end, force=True)
+
+    def _forward(self, row: dict) -> None:
+        """What the throttle passes on: written, and no longer held."""
+        if row is self._held:
+            self._held = None
+        self._write(row)
 
     @core_progress.best_effort("run activity")
     def _write(self, row: dict) -> None:
@@ -121,6 +178,18 @@ class ActivityLog:
     def rows(self) -> list[dict]:
         """Every row written so far. Missing file reads as empty, a torn tail is dropped."""
         return self._log.rows()
+
+
+def _elapsed_since(row: dict, now_iso: str) -> float:
+    """``row``'s ``elapsed_s`` carried forward to ``now_iso`` by the wall clock."""
+    try:
+        base = float(row.get("elapsed_s") or 0.0)
+    except (TypeError, ValueError):
+        base = 0.0
+    then, now = _parse_ts(row.get("ts", "")), _parse_ts(now_iso)
+    if then is None or now is None:
+        return base
+    return base + max((now - then).total_seconds(), 0.0)
 
 
 def read(run_dir: Path | str) -> list[dict]:

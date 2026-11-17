@@ -608,6 +608,19 @@ class DetectionPreview:
             for part in self._parts
         )
 
+    def processed_mask(self) -> np.ndarray:
+        """A bool per **source** frame over the global timeline: the frames this run looked at.
+
+        Each part's own ``0, N, 2N, ...`` (§4), the frames :attr:`frames_processed` counts. What
+        a coverage figure is measured over, so a frame never looked at is not read as missed.
+        """
+        out = []
+        for part in self._parts:
+            mask = np.zeros(int(part["n_frames"]), dtype=bool)
+            mask[:: max(1, int(part["every_n_frames"] or 1))] = True
+            out.append(mask)
+        return np.concatenate(out) if out else np.zeros(0, dtype=bool)
+
     def part_index_for_stem(self, stem: str) -> int | None:
         """The part index for a video-file stem (e.g. ``part_001``), or None."""
         for index, part in enumerate(self._parts):
@@ -931,22 +944,38 @@ class TrackingPreview(DetectionPreview):
         return sorted(presence), presence
 
 
-def track_coverage(present: np.ndarray, fps: float | None = None) -> dict:
+def track_coverage(
+    present: np.ndarray,
+    fps: float | None = None,
+    processed: np.ndarray | None = None,
+) -> dict:
     """How much of the timeline this track actually holds, and the shape of what it misses.
 
-    ``n_gaps`` in ``tracks.zarr`` is ``(last - first + 1) - n_present``: a count of missing
-    *frames*. A thousand one-frame losses and one thousand-frame loss are the same number
-    there and are completely different problems — the first is a per-frame gate rejecting
-    the subject, the second is the animal leaving or the tracker losing it. So this reports
-    the **runs**: how many, and the longest.
+    ``n_gaps`` in ``tracks.zarr`` is a count of missed *frames*. A thousand one-frame losses
+    and one thousand-frame loss are the same number there and are completely different
+    problems — the first is a per-frame gate rejecting the subject, the second is the animal
+    leaving or the tracker losing it. So this reports the **runs**: how many, and the longest.
 
     Gaps are counted **inside the track's own span** (first present frame to last). Frames
     before it appears and after it leaves are not gaps in it; counting them would make a
     track that covers the back half of a recording look catastrophically broken.
+
+    ``processed`` marks the frames the run looked at (`DetectionPreview.processed_mask`).
+    Only those count: at ``every_n_frames`` 4 the three frames in four never looked at are
+    not gaps, and counting them read a healthy strided run as "N gaps · longest 1 frames"
+    (#32). ``frames_total`` and ``longest_gap`` are then in processed frames, like the
+    coverage line beside them, and ``longest_gap_s`` is the time from the gap's first missed
+    frame to the frame the track was seen again. ``None`` treats every frame as processed.
     """
     present = np.asarray(present, dtype=bool)
-    total = int(present.size)
-    covered = int(present.sum())
+    positions = (
+        np.arange(present.size)
+        if processed is None
+        else np.flatnonzero(np.asarray(processed, dtype=bool)[: present.size])
+    )
+    looked = present[positions]
+    total = int(looked.size)
+    covered = int(looked.sum())
     out = {
         "frames_total": total,
         "frames_covered": covered,
@@ -959,20 +988,25 @@ def track_coverage(present: np.ndarray, fps: float | None = None) -> dict:
     }
     if not covered:
         return out
-    where = np.flatnonzero(present)
+    where = np.flatnonzero(looked)
     first, last = int(where[0]), int(where[-1])
-    out["first_frame"], out["last_frame"] = first, last
-    missing = ~present[first : last + 1]
+    out["first_frame"], out["last_frame"] = int(positions[first]), int(positions[last])
+    missing = ~looked[first : last + 1]
     if missing.any():
-        edges = np.flatnonzero(
-            np.concatenate(([False], missing, [False]))[1:]
-            != np.concatenate(([False], missing, [False]))[:-1]
-        )
-        lengths = edges[1::2] - edges[::2]
+        padded = np.concatenate(([False], missing, [False]))
+        edges = np.flatnonzero(padded[1:] != padded[:-1])
+        starts, ends = edges[::2], edges[1::2]
+        lengths = ends - starts
         out["n_gaps"] = int(lengths.size)
-        out["longest_gap"] = int(lengths.max())
+        longest = int(np.argmax(lengths))
+        out["longest_gap"] = int(lengths[longest])
         if fps:
-            out["longest_gap_s"] = float(out["longest_gap"] / fps)
+            # Source frames from the run's first miss to the frame it was seen again: the
+            # time it was gone, at any stride (each run ends before the span's last frame).
+            source = (
+                positions[first + ends[longest]] - positions[first + starts[longest]]
+            )
+            out["longest_gap_s"] = float(source / fps)
     return out
 
 

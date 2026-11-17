@@ -243,8 +243,10 @@ record carries no frame size, where it decodes the footage to size the pane and 
 top. **Export video…** writes the pane as an mp4, every frame at full size. **Export GIF…** first
 asks for the GIF's width (640 px unless you change it) and frame rate (12 fps), then where to
 save it; the GIF keeps real time at any rate, so a lower rate skips frames rather than playing
-slower. Both cover the frames on the window's bar: the clip itself, or the clip with its context
-when **Context** is on, and the GIF dialog says which. A bar shows the export's progress, with
+slower. A GIF times its frames in hundredths of a second, so at a rate that does not divide 100
+(12 fps, say) the frames take turns at 80 and 90 ms, and the whole GIF lasts as long as
+the stretch it shows, to within a hundredth of a second. Both cover the frames on the window's
+bar: the clip itself, or the clip with its context when **Context** is on, and the GIF dialog says which. A bar shows the export's progress, with
 **Cancel**; the window then says where the file went.
 
 When the video cannot decode at the speed you picked, the rate it reaches is shown beside the
