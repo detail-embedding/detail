@@ -480,6 +480,22 @@ def test_clear_all_empties_and_is_hidden_when_empty(bar):
     assert bar.clear_button.isHidden()
 
 
+def test_reset_all_leaves_the_ticked_screen_which_is_on_the_other_tab(bar):
+    """Reset all is on the Filters tab and removes that tab's filters. The screen is ticked
+    on the Differences tab: a button that unticked it from here would change what is out of
+    sight, and a screen alone gives Reset all nothing to do."""
+    bar.set_screens(SCREENS)
+    ticked = Selection(leaves=frozenset({0, 1}), leaves_source="cmp_02")
+    bar.set_selection(ticked)
+    assert bar.clear_button.isHidden(), "a screen alone is not a filter of this tab"
+    bar.set_selection(
+        Selection(leaves=frozenset({0, 1}), leaves_source="cmp_02", session=(0.0, 0.3))
+    )
+    assert bar.clear_button.isVisible()
+    bar.clear_button.click()
+    assert bar.selection() == ticked
+
+
 def test_undoing_a_filter_sits_in_the_dock_under_the_key(bar):
     """User, review round 4: "putting the filter clearing options not in the filter
     column/section is weird and unintuitive". The count and Reset all are in the dock, between
@@ -644,7 +660,10 @@ def test_with_no_filter_the_key_is_greyed_over_the_runs_clip_count(bar, qapp):
         and label.text()
         and not dock.scroll.isAncestorOf(label)
     ]
-    assert above == ["Filters", "Clips that match", "0%", "100%", "2,781 clips"], above
+    assert above == ["Clips that match", "0%", "100%", "2,781 clips"], above
+    tabs = dock.tabs
+    assert [tabs.tabText(i) for i in range(tabs.count())] == ["Differences", "Filters"]
+    assert bar.open_tab() == cf.FILTERS_TAB, "the tab every run has something on"
 
 
 def test_the_fields_do_not_move_when_the_first_filter_goes_on(bar, qapp):
@@ -929,13 +948,11 @@ def test_a_folded_location_line_is_spaced_like_every_field_line(qapp):
     widget.dock.show()
     widget.location_row.set_open(False)
     widget.session_row.set_open(False)
-    widget.screens_row.set_open(False)
     qapp.processEvents()
     dock = widget.dock
     rows = [
         widget.location_row,
         widget.session_row,
-        widget.screens_row,
         *widget.field_rows(),
     ]
     assert len(rows) >= 3 and all(not r.is_open() for r in rows)
@@ -1483,8 +1500,10 @@ def test_the_differences_line_lists_the_runs_screens_and_greys_one_it_cannot_rea
     assert "1 kept of 4" in lst.item(0).text()
     assert not (lst.item(1).flags() & Qt.ItemFlag.ItemIsEnabled)
     assert "cannot be read" in lst.item(1).toolTip()
-    assert bar.field_row("Differences").summary_text() == "none"
+    assert bar.differences_summary() == "none"
     assert bar.screens.note.text() == cf.SCREENS_HINT_TEXT
+    assert bar.dock.differences_box.isAncestorOf(lst), "on the Differences tab"
+    assert not bar.dock.filters_page.isAncestorOf(lst)
 
 
 def test_ticking_a_screen_is_the_clusters_condition_and_its_reset_removes_it(bar):
@@ -1494,13 +1513,15 @@ def test_ticking_a_screen_is_the_clusters_condition_and_its_reset_removes_it(bar
     assert selection.leaves == frozenset({0, 1})
     assert selection.leaves_source == "cmp_02"
     assert selection.keys() == [cf.CLUSTERS]
-    row = bar.field_row("Differences")
-    assert row.summary_text() == "drug vs vehicle · paired"
-    assert row.reset_button.isVisible()
-    row.reset_button.click()
+    assert bar.differences_summary() == "drug vs vehicle · paired"
+    tabs = bar.dock.tabs
+    assert tabs.tabText(0) == "Differences · 1", "the tab says a screen is on"
+    assert tabs.tabText(1) == "Filters", "and that no field is"
+    bar.remove(cf.CLUSTERS)
     assert bar.seen[-1].is_empty
     assert bar.screens.value() is None
-    assert row.summary_text() == "none"
+    assert bar.differences_summary() == "none"
+    assert tabs.tabText(0) == "Differences"
 
 
 def test_one_screen_at_a_time(bar):
@@ -1525,7 +1546,7 @@ def test_a_screen_no_longer_offered_takes_its_condition_with_it(bar):
     _tick_screen(bar, "cmp_02")
     bar.set_screens([SCREENS[1]])
     assert bar.selection().leaves is None
-    assert bar.field_row("Differences").summary_text() == "none"
+    assert bar.differences_summary() == "none"
 
 
 def test_a_ticked_screen_survives_the_list_being_read_again(bar):
@@ -1537,7 +1558,7 @@ def test_a_ticked_screen_survives_the_list_being_read_again(bar):
     bar.set_screens([], loading=True)
     assert bar.selection().leaves == frozenset({0, 1})
     assert bar.selection().leaves_source == "cmp_02"
-    assert bar.field_row("Differences").summary_text() == "drug vs vehicle · paired"
+    assert bar.differences_summary() == "drug vs vehicle · paired"
     bar.set_screens(SCREENS)
     assert bar.selection().leaves_source == "cmp_02"
     assert bar.screens.value() == "cmp_02"
@@ -1558,7 +1579,7 @@ def test_a_selection_naming_a_screen_shows_in_the_line(bar):
     bar.set_screens(SCREENS)
     bar.set_selection(Selection(leaves=frozenset({0, 1}), leaves_source="cmp_02"))
     assert bar.screens.value() == "cmp_02"
-    assert bar.field_row("Differences").summary_text() == "drug vs vehicle · paired"
+    assert bar.differences_summary() == "drug vs vehicle · paired"
     assert cf.panel_name(bar.selection()) == "Filters · 1 active"
 
 
@@ -1798,9 +1819,7 @@ def test_the_strictness_slider_reads_the_ticked_screen_at_another_level(bar):
     assert lst.strictness_label.text() == (
         "p ≤ 0.2 (looser than its floor) · 2 kept of 3 clearing"
     )
-    assert bar.field_row("Differences").summary_text() == (
-        "drug vs vehicle · paired · p ≤ 0.2"
-    )
+    assert bar.differences_summary() == ("drug vs vehicle · paired · p ≤ 0.2")
 
     lst.strictness.setValue(cf.STRICTNESS_LEVELS.index(0.01))
     assert bar.selection().alpha == 0.01 and bar.selection().leaves == frozenset()
@@ -1832,7 +1851,7 @@ def test_the_strictness_slider_reads_the_ticked_screen_at_another_level(bar):
     assert bar.selection().leaves == frozenset({0, 1, 2, 9}), "that level's new leaves"
     assert lst.strictness.value() == cf.STRICTNESS_LEVELS.index(0.2)
 
-    bar.field_row("Differences").reset_button.click()
+    bar.remove(cf.CLUSTERS)
     assert bar.selection().is_empty and bar.selection().alpha is None
     assert lst.strictness_box.isHidden()
 

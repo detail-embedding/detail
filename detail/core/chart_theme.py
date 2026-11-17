@@ -152,8 +152,14 @@ class ChartTheme:
     categorical: tuple[str, ...]
     extended: tuple[str, ...]
     #: Magnitude, low → high. The low end sits near the surface, so zero reads as "nothing".
+    #: No hue, lightness alone: it was a blue ramp, and the tree it shades also carries the
+    #: diverging scale's blue ("less") as a frame on the clusters a difference screen kept —
+    #: a blue frame on a blue fill did not read, and blue meant two things (2026-11-16).
     sequential: tuple[str, ...]
-    #: Signed difference, negative pole → neutral middle → positive pole (blue ↔ vermillion).
+    #: Signed difference, negative pole → neutral middle → positive pole (blue ↔ yellow).
+    #: The poles differ in lightness as well as hue: blue against yellow is the contrast a
+    #: red-green colour-blind reader keeps, and the earlier blue ↔ vermillion pair sat at one
+    #: lightness, so only its hue said which way (``tests/core/test_chart_theme.py``).
     diverging: tuple[str, ...]
 
     def identity(self, index: int) -> str:
@@ -199,26 +205,26 @@ LIGHT = ChartTheme(
     categorical=_OKABE_ITO_LIGHT,
     extended=_EXTENDED_LIGHT,
     sequential=(
-        "#eef6fd",
-        "#c8e0f3",
-        "#a2c8e9",
-        "#7eb1de",
-        "#5999d4",
-        "#3881c6",
-        "#2c69a8",
-        "#20528c",
-        "#133d70",
+        "#dedede",
+        "#c4c4c4",
+        "#ababab",
+        "#929292",
+        "#7a7a7a",
+        "#636363",
+        "#4d4d4d",
+        "#383838",
+        "#242424",
     ),
     diverging=(
-        "#025a8d",
-        "#3b7fb3",
-        "#7aa5c8",
-        "#b4cadd",
+        "#0b4c92",
+        "#4a74ab",
+        "#809dc3",
+        "#b7c6da",
         "#f0f0f0",
-        "#e5c5b6",
-        "#d8997d",
-        "#c76d42",
-        "#ab4501",
+        "#e9d9c0",
+        "#e2c18f",
+        "#daa95a",
+        "#ce9113",
     ),
 )
 
@@ -237,26 +243,26 @@ DARK = ChartTheme(
     categorical=_OKABE_ITO_DARK,
     extended=_EXTENDED_DARK,
     sequential=(
-        "#263140",
-        "#31465f",
-        "#3a5c80",
-        "#4173a3",
-        "#468cc6",
-        "#4fa5e5",
-        "#76bef2",
-        "#9cd7ff",
-        "#d1edfe",
+        "#333333",
+        "#484848",
+        "#5d5d5d",
+        "#747474",
+        "#8c8c8c",
+        "#a4a4a4",
+        "#bebebe",
+        "#d7d7d7",
+        "#f2f2f2",
     ),
     diverging=(
-        "#7fc5fe",
-        "#5da1d6",
-        "#537c9e",
-        "#465969",
+        "#62a2ff",
+        "#5686cd",
+        "#4d6b98",
+        "#435167",
         "#383838",
-        "#6a4e42",
-        "#9e6449",
-        "#d57a4f",
-        "#ff9a6b",
+        "#655c41",
+        "#968244",
+        "#c9a940",
+        "#ffd337",
     ),
 )
 

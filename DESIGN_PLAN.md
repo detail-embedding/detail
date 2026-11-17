@@ -7037,12 +7037,13 @@ them in a tab widget whose bar is hidden (`gui/result_views.MultiViewWorkspace`)
 - **MEASURES** — §23's whole-recording measures of this artifact, a tab of its own on live runs
   (`pages.MeasuresPanel`); the run page shows the panel directly only for a producer whose result
   holds none.
-- **Differences are not a tab.** The difference screen (§22, *The difference screen*) is a line
-  of INTERPRET's filter dock: a saved §24 node comparison, ticked, shades the tree by the clusters
-  it kept and greys the clips of the rest, one click from the montage. The durable record is the
-  comparison itself, in the experiment's Comparisons section. A DIFFERENCES tab was specified here
-  and never built; the dock is the screen it was meant to be, and it already has the properties
-  the tab needed (never hides, shades on a fixed scale, next to the clips).
+- **Differences are not a tab of the run page.** The difference screen (§22, *The difference
+  screen*) is one of the two tabs of INTERPRET's filter dock: a saved §24 node comparison, ticked,
+  colours the tree by its statistic while that tab is open and greys the clips of the rest, one
+  click from the montage. The durable record is the comparison itself, in the experiment's
+  Comparisons section. A DIFFERENCES tab beside INTERPRET was specified here and never built; the
+  dock is the screen it was meant to be, and it already has the properties the tab needed (never
+  hides, shades on a fixed scale, next to the clips).
 
 **Three of the four tabs are generic, and not by resemblance.** They read only the artifact and
 `metadata.csv`, which is the same fact that makes measures (§23) and comparison (§24) generic. The
@@ -7507,10 +7508,11 @@ make one `cluster_filter.Selection`, and every change emits at once, a drag at m
 while it moves and once on release (`gui/throttle.py`): **Location** (`gui/density_map.RegionPicker`
 over the run's position density: a box drawn live while dragging, kept with four corner handles to
 resize, dragged from inside to move, a new one dragged from outside, a click toggling one cell;
-greyed with the reason on a run with no positions), **Differences** (the run's saved node
-comparisons, §24, one tickable at a time, with what each kept, and *New screen…*; ticking one
-is the leaves under its kept clusters, `cluster_filter.CLUSTERS`, so the tree shades a kept cluster
-100% and its parent by the time under it — *The difference screen*), **Time in session**
+greyed with the reason on a run with no positions), **Differences** (the dock's other tab, not
+a line of this one: the run's saved node comparisons, §24, one tickable at a time, with what each
+kept, its scale, its strictness and *New screen…*; ticking one is the leaves under its kept
+clusters, `cluster_filter.CLUSTERS`, for the clips, and the tree's colour while that tab is open —
+*The difference screen*), **Time in session**
 (`cluster_filters.SessionRange`: the `RangeHistogram` with `bars=False`, a plain two-handle slider
 over each recording's whole video in `SESSION_STEPS` = 100 steps, ticks *start · middle · end*, a
 line *12%–40% of each recording · 840 clips* or *Whole session*; its line folds like Location's,
@@ -8414,41 +8416,72 @@ study records kept outside the public tree.
 **It lives in two places, deliberately.** The durable one is the saved §24 node comparison
 (`source: nodes`), with its provenance, record, `ranking.csv` and figures — a result, in the
 experiment's Comparisons section, and what a label written from the screen cites. The live
-one is INTERPRET's **Differences** line in the filter dock (*INTERPRET: the interpretation tab*):
+one is INTERPRET's **Differences** tab in the filter dock (*INTERPRET: the interpretation tab*):
 the run's saved screens, one tickable at a time, and *New screen…*, which opens the comparison
-launch dialog seeded to this run and the cluster source. Ticking a screen is a filter like the
-others — **the clusters it kept, as the leaves under them** (`cluster_filter.Selection.leaves`,
-key `CLUSTERS`) — so with nothing else changed a kept cluster shades 100%, its parent by the time
-under kept children, a sibling branch grey; it ANDs with the recording, location and session
-filters; the montage greys the clips of clusters that do not differ; and "n of N clips match"
-reads as clips of clusters that differ. The page reads each screen's ranking back through the one
-record → ranking mapping (`comparison_report.rank_record`), so the dock, the Comparisons page and
-an export cannot disagree. One screen at a time: two statistics cannot shade one tree. A tab was
-specified for this (§21) and never built; the dock is the screen it was meant to be.
+launch dialog seeded to this run and the cluster source. Ticking a screen is a condition on the
+clips like the others — **the clusters it kept, as the leaves under them**
+(`cluster_filter.Selection.leaves`, key `CLUSTERS`) — so it ANDs with the recording, location and
+session filters; the montage greys the clips of clusters that do not differ; and "n of N clips
+match" reads as clips of clusters that differ. The page reads each screen's ranking back through
+the one record → ranking mapping (`comparison_report.rank_record`), so the dock, the Comparisons
+page and an export cannot disagree. One screen at a time: two statistics cannot shade one tree. A
+tab beside INTERPRET was specified for this (§21) and never built; the dock is the screen it was
+meant to be.
 
-**While a screen is the only filter on, the tree and the key read its statistic.** The blocks
-take the theme's diverging scale (`plot_theme.effect_colour`): less at one pole, more at the
-other, neutral grey inside the floor and for a cluster the screen has no row for, so only what
-cleared is coloured and its sign says which way. The axis is fixed, as the share ramp's is, and
-it is in the unit the floor is in (§24 *The statistic*): t from −10 to +10 on a screen scored by
-the moderated t, the default (`match_key.T_EXTENT`; a block sits by its t and the selected
-cluster's mark reads *selected t +8.8 (12.4×)*, the t first because it is what the axis and the
-floor are, the effect after it because it is what the cluster did), ρ from −1 to +1 for a trend
-scored by the effect, ÷20 to ×20 for a log ratio (`match_key.effect_extent`) — with the floor's
-ticks either side of the middle and the selected cluster as the tall bar;
-`match_key.effect_position` is the one map from a value to the axis, for the key and the blocks
+**The dock has two tabs, and the open one decides what the tree's colour means**
+(`cluster_filters.FilterDock.tabs`, `FilterBar.open_tab`, `NodeInterpretTab._shade_tree`).
+*Differences* holds the saved screens, the ticked screen's scale and its strictness. *Filters*
+holds the clips-that-match scale, the count line with Reset all, and every field. Each tab's
+label counts what it has on (*Differences · 1*, *Filters · 2*), so the tab that is not open still
+says it is narrowing the clips or colouring the tree. Reset all removes the Filters tab's fields
+and leaves a ticked screen, which is on the other tab. The two scales are two widgets
+(`ScreenList.key`, `FilterDock.key`), so neither changes its units. This replaced one scale at
+the top of one column that read the screen's statistic *while the screen was the only filter on*
+and a share otherwise: ticking a field beside a screen swapped the tree's colours and the scale's
+units with nothing said, and the scale sat far from the screen that set it (user, 2026-11-16).
+
+**While the Differences tab is open, the tree reads the ticked screen's statistic** — whatever
+else is filtered, and nothing is shaded with no screen ticked. The blocks take the theme's
+diverging scale (`plot_theme.effect_colour`): less at the blue pole, more at the yellow, neutral
+grey inside the floor and for a cluster the screen has no row for, so only what cleared is
+coloured and its sign says which way. The poles differ in lightness as well as hue — blue against
+yellow is the contrast a red-green colour-blind reader keeps, where the earlier blue ↔ vermillion
+pair sat at one lightness (`tests/core/test_chart_theme.py`). The axis is fixed, as the share
+ramp's is, and it is in the unit the floor is in (§24 *The statistic*): t from −10 to +10 on a
+screen scored by the moderated t, the default (`match_key.T_EXTENT`; a block sits by its t and
+the selected cluster's mark reads *selected t +8.8 (12.4×)*, the t first because it is what the
+axis and the floor are, the effect after it because it is what the cluster did), ρ from −1 to +1
+for a trend scored by the effect, ÷20 to ×20 for a log ratio (`match_key.effect_extent`). **The
+scale's ends say *less* and *more*, and *no difference* sits under the middle between the floor's
+ticks** (`match_key.effect_end_words`, `NO_DIFFERENCE_TEXT`): the units (*t −10*, *÷20*) are in
+the bar's tooltip (`match_key.scale_text`) and on the selected cluster's mark, because a reader
+could not say at a glance what they meant. The selected cluster is the tall bar;
+`match_key.effect_position` is the one map from a value to the axis, for the scale and the blocks
 alike (`cluster_filters.effect_shades`, `ScreenChoice.axis_value`), and a block's hover carries
-the t beside the effect's words. A profile screen's effect is a
-size whose sign belongs to each cluster's own pair, not to the measure (§24 *Designs*), so its
-axis is one-sided — t 0 to t 10, or 1× to ×20 on the effect, on the scale's upper half, one floor
-tick, the caption *Differs across session* in place of a direction (`match_key.one_sided`;
-`effect_position` takes the magnitude) — the selected cluster's mark names its pair and
-direction (*selected t 6.2 (9.6× more under SA than REI)*, `NodeEffect.pair`), and the hover
-names every block's. A block's hover carries the
-screen's sentence for it, the same words the Comparisons page prints
-(`comparison_report.suggestion`), with *kept*, *nested under a kept cluster* or *inside the
-floor* after it. Tick any clip filter beside the screen and both return to the share ramp: two
-scales on one tree are unreadable, and the screen then acts as a filter like the rest.
+the t beside the effect's words. A profile screen's effect is a size whose sign belongs to each
+cluster's own pair, not to the measure (§24 *Designs*), so its axis is one-sided, with one floor
+tick, the ends *same* and *differs* and the caption *Differs across session* in place of a
+direction (`match_key.one_sided`; `effect_position` takes the magnitude) — **and its ramp is its
+own, the neutral middle to ink with no hue** (`plot_theme.size_colour`), never the scale's "more"
+half, so the yellow never means *more* on one screen and *differs either way* on another. The
+selected cluster's mark names its pair and direction (*selected t 6.2 (9.6× more under SA than
+REI)*, `NodeEffect.pair`), and the hover names every block's. A block's hover carries the screen's
+sentence for it, the same words the Comparisons page prints (`comparison_report.suggestion`), with
+*kept*, *nested under a kept cluster* or *inside the floor* after it.
+
+**While the Filters tab is open, the tree reads the fields, and frames what the screen kept.**
+Each block is shaded by the share of its clips that match the Filters tab's own fields
+(`Selection.without(CLUSTERS)`): the screen does not narrow that share to its kept clusters, and
+with no field on nothing is shaded. The share ramp is lightness with no hue (`ChartTheme.
+sequential`, `plot_theme.match_colour`, none of it at the low end): it was blue, which is now the
+"less" pole. The clusters the ticked screen kept, at the strictness in force, are **framed on
+their own block's edge in the colour of their side** — the blue pole or the yellow, the ink of a
+profile's ramp — with a dark line either side so the frame reads on a pale fill and a dark one,
+and the screen's sentence in the hover (`cluster_filters.kept_marks`, `NodeIcicle.set_kept`). The
+frame is the pole's own colour whatever the size, because it says *kept, and which way*; the size
+is the Differences tab's to show. A frame only for the screen, not the reverse: a screen keeps a
+handful of clusters, and a filter touches most of them, so a frame for "passes the filter" on the
+Differences tab would mark most of the tree.
 
 **Strictness: a screen read looser or stricter than its floor, as a view.** Under the ticked
 screen the dock shows **Strictness**, a slider over the family-wise levels

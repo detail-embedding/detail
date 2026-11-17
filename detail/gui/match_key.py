@@ -1,9 +1,9 @@
-"""The match key at the top of the filter dock, and the label swatches above the tree.
+"""The two scales of the filter dock, and the label swatches above the tree.
 
 :class:`MatchKey` — ``Clips that match`` over ``0% [ramp] 100%``: the ramp on a fixed 0–100%
 axis, the selected cluster's share as a tall bar with a triangle over it and ``selected 2.3%``
 above, and the whole run's share as a thinner line with ``run 23%`` under it. It sits at the top
-of the filter dock, beside what sets it, always: greyed with no marks while nothing is filtered,
+of the dock's Filters tab, beside what sets it, always: greyed with no marks while nothing is filtered,
 in the same space, so the fields under it never move (review round 8). It once shared the row
 above the tree, where it crowded the label swatches.
 :class:`TreeKeyRow` — the label swatches, with the time under each label.
@@ -18,8 +18,12 @@ It once also drew a tick per cluster above the ramp. Hundreds of clusters made t
 nobody could read, and the tree's own shading already says where each cluster sits, so review
 round 3 took it out.
 
-**The effect mode.** While a difference screen is the only filter on (§22, *The difference
-screen*), the key reads the screen's statistic instead of a share: the theme's diverging scale,
+**The effect mode.** A second ``MatchKey``, on the dock's Differences tab under the screen
+list (``cluster_filters.ScreenList.key``), reads the ticked screen's statistic (§22, *The
+difference screen*). It was one widget for both, switching to the effect *while a screen was
+the only filter on*; its units changed with nothing said and it sat far from the screen that
+set it (user, 2026-11-16). Its ends say *less* and *more* with *no difference* under the
+middle; the units are in its tooltip. In this mode the key reads a statistic instead of a share: the theme's diverging scale,
 less at the left and more at the right, on a **fixed** axis too — ρ from −1 to +1 for a trend,
 ÷20 to ×20 for a log ratio — with the floor marked at both ends of the neutral middle and the
 selected cluster's effect as the tall bar. Inside the floor is neutral grey on the tree and on the
@@ -139,6 +143,27 @@ def effect_axis_labels(design: str, statistic: str = "effect") -> tuple[str, str
     return ("÷20", "×20")
 
 
+def effect_end_words(design: str) -> tuple[str, str]:
+    """What the two ends of the scale are called beside the bar: ``("less", "more")``, or
+    ``("same", "differs")`` for a profile's size. Words, not units: a reader could not say
+    what ``t −10`` or ``÷20`` meant at a glance (user, 2026-11-16), and the caption over the
+    bar already names the column. The units are in the bar's tooltip (:func:`scale_text`)
+    and on the selected cluster's mark."""
+    return ("same", "differs") if one_sided(design) else ("less", "more")
+
+
+def scale_text(design: str, statistic: str = "effect") -> str:
+    """The scale's units as a sentence for the tooltip: ``The scale runs from t −10 to
+    t +10.``"""
+    low, high = effect_axis_labels(design, statistic)
+    return f"The scale runs from {low} to {high}."
+
+
+#: What the neutral middle of a two-sided scale is called, under the bar between the floor's
+#: ticks.
+NO_DIFFERENCE_TEXT = "no difference"
+
+
 def statistic_value_text(statistic: float | None, design: str) -> str:
     """``t +8.8``, or ``t 8.8`` for a profile's size — the moderated t as a person reads it;
     ``""`` for none."""
@@ -236,7 +261,7 @@ class _Ramp(QWidget):
         if self._run is not None:
             out.append(f"run {share_text(self._run)}")
         if self.diverging and self._floor is not None:
-            out.append("floor")
+            out.append("floor" if self.half else NO_DIFFERENCE_TEXT)
         return out
 
     def label_rect(self, text: str, share: float, top: float) -> QRectF:
@@ -255,9 +280,10 @@ class _Ramp(QWidget):
         bar = QRectF(_INSET, _BAR_TOP, self.width() - 2 * _INSET, _BAR_H)
         gradient = QLinearGradient(bar.left(), 0, bar.right(), 0)
         if self.diverging and self.half:
-            # The upper half of the diverging scale, neutral to the "more" pole: the same
-            # colours `plot_theme.effect_colour` gives a block at 0..+1.
-            stops = theme.diverging[len(theme.diverging) // 2 :]
+            # A size with no direction: the neutral middle to ink, no hue — the same colours
+            # `plot_theme.size_colour` gives a block at 0..1, and neither pole's, so the
+            # "more" colour never also means "differs either way".
+            stops = (theme.diverging[len(theme.diverging) // 2], theme.text)
         elif self.diverging:
             stops = theme.diverging
         else:
@@ -276,8 +302,13 @@ class _Ramp(QWidget):
             for side in sides:
                 x = self.x_for(side)
                 painter.drawLine(QPointF(x, _BAR_TOP - 2), QPointF(x, _RUN_TOP))
-            text = "floor"
-            painter.drawText(self.label_rect(text, self._floor, _RUN_TOP), centre, text)
+            # Between the ticks of a two-sided scale is "no difference", which is what the
+            # grey there means; a one-sided scale has its "same" end label, so its one tick
+            # is named.
+            text, at = (
+                ("floor", self._floor) if self.half else (NO_DIFFERENCE_TEXT, 0.0)
+            )
+            painter.drawText(self.label_rect(text, at, _RUN_TOP), centre, text)
         if self._run is not None:
             x = self.x_for(self._run)
             painter.setPen(QPen(muted, 1.5))
@@ -398,7 +429,8 @@ class MatchKey(QWidget):
                 under SA than REI*), since the axis itself cannot say which pair or which
                 way; a two-sided axis's caption already says, so it is ignored there.
             statistic: What the screen scores by (``compare.STATISTICS``). On the moderated
-                t the axis runs ``t −10`` to ``t +10``, the mark sits by
+                t the axis runs ``t −10`` to ``t +10`` (said in the bar's tooltip; the ends
+                read *less* and *more*), the mark sits by
                 ``selected_statistic`` and reads *t +8.8 (12.4×)*: the t is the unit the
                 floor is in, the effect is what the cluster did (§22).
             selected_statistic: The selected cluster's t on a studentized screen.
@@ -410,11 +442,14 @@ class MatchKey(QWidget):
         self.ramp.diverging = True
         self.ramp.half = half
         self._caption.setText(caption)
-        low, high = effect_axis_labels(design, statistic)
+        low, high = effect_end_words(design)
         self._low.setText(low)
         self._high.setText(high)
         self.setToolTip("")
-        self.ramp.setToolTip(STATISTIC_TEXT if studentized else EFFECT_TEXT)
+        self.ramp.setToolTip(
+            f"{STATISTIC_TEXT if studentized else EFFECT_TEXT} "
+            f"{scale_text(design, statistic)}"
+        )
         self._grey_labels()
         on_axis = selected_statistic if studentized else selected_effect
         position = (

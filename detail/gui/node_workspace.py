@@ -1,8 +1,11 @@
 """INTERPRET for a clustering run: pick a cluster, watch every clip of it, label it (§22).
 
 The page a user lands on to label what a fit found. On the left, **the filter dock**
-(``cluster_filters.FilterDock``: the match key and the count line at its top, then Location,
-Time in session, Video, a line per metadata column), which folds to a strip; on the right, top to bottom:
+(``cluster_filters.FilterDock``: two tabs — *Filters*, with the match key and the count line
+at its top, then Location, Time in session, Video and a line per metadata column; and
+*Differences*, with the saved screens, the ticked screen's scale and its strictness), which
+folds to a strip. The open tab decides what the tree's colour means (``_shade_tree``). On the
+right, top to bottom:
 
 - **The tree** (``NodeIcicle``), under the labels in use with their time
   (``match_key.TreeKeyRow``) and the zoom buttons. It opens at the height that shows **every
@@ -10,9 +13,11 @@ Time in session, Video, a line per metadata column), which folds to a strip; on 
   scrolling (``_fit_tree``). A drag on its handle is kept and wins from then on. Either way it
   gives height back, down to ``TREE_MIN_PX``, before the montage drops below its two rows, and
   the montage's own floor is one row — so the column always fits the window. A filter never
-  hides a cluster: every block is shaded by the share of its clips that match, on a fixed
-  0–100% scale (the ramp is the key at the top of the dock), and its label colour moves to a
-  strip along its top. "n of N clips match" and Reset all are in the dock, under the match key.
+  hides a cluster: with the Filters tab open every block is shaded by the share of its
+  clips that match, on a fixed 0–100% scale (the ramp is the key at the top of that tab), the
+  clusters a ticked screen kept are framed in the colour of their side, and a block's label
+  colour moves to a strip along its top; with the Differences tab open the blocks take the
+  ticked screen's statistic instead. "n of N clips match" and Reset all are in the dock, under the match key.
 - **The label bar** (``label_panel.LabelBar``, review round 9, option A), between the tree and
   the clips, in three lines (laptop layout and user decision A, 2026-11-09). Line one: the open
   cluster's name and its label as a coloured chip, and at the right end the montage's toolbar
@@ -55,6 +60,7 @@ moves them to the front of its queue); the tree, the labels and the filters stay
 """
 
 import dataclasses
+import math
 import time
 
 import numpy as np
@@ -91,8 +97,10 @@ from detail.gui.cluster_filters import (
     NodeEffect,
     ScreenChoice,
     ScreenLevel,
+    DIFFERENCES_TAB,
     effect_shades,
     breakdown,
+    kept_marks,
     numbers_text,
     panel_name,
 )
@@ -115,6 +123,7 @@ from detail.gui.live_montage import (
     context_span,
 )
 from detail.gui.match_key import TreeKeyRow
+from detail.gui.match_key import one_sided
 from detail.gui.node_audit import NodeAuditBlock
 from detail.gui.node_icicle import TreePane, format_time, row_px
 from detail.gui.sizing import ResizeHandle, lines, set_available
@@ -563,7 +572,8 @@ class NodeInterpretTab(QWidget):
         self._groups: dict[str, dict[str, str]] = {}
         self._selection = cluster_filter.Selection()
         self._shares: np.ndarray | None = None
-        #: The screen whose effect the tree and the key read, while it is the only filter on.
+        #: The ticked screen, when its effects are known: what the tree is coloured by
+        #: while the Differences tab is open, and whose kept clusters it frames on Filters.
         self._effect_screen: ScreenChoice | None = None
         #: The selected cluster's clips, in the montage's order, and each condition's pass.
         self._clips = None
@@ -673,6 +683,7 @@ class NodeInterpretTab(QWidget):
         self._filters = FilterBar(self)
         self._filters.selection_changed.connect(self._on_selection)
         self._filters.screen_requested.connect(self._run_screen)
+        self._filters.tab_changed.connect(lambda _tab: self._shade_tree())
         #: The saved difference screens being read off the UI thread, and the id of a screen
         #: just run from the dock, to tick when its leaves land.
         self._screens_reader: BackgroundCall | None = None
@@ -1198,6 +1209,8 @@ class NodeInterpretTab(QWidget):
             choice = next((e for e in entries if e.key == wanted), None)
             if choice is not None and choice.leaves is not None:
                 self._tick_screen = None
+                # A screen just saved from **New screen…** is ticked and shown on its tab.
+                self._filters.set_open_tab(DIFFERENCES_TAB)
                 self._filters.set_selection(
                     dataclasses.replace(
                         self._filters.selection(),
@@ -1667,29 +1680,25 @@ class NodeInterpretTab(QWidget):
         if selection.is_empty:
             self._shares = None
             self._effect_screen = None
-            self._icicle.set_shades(None)
             self._filters.set_match_count(None, len(self._root_clips))
         else:
+            # The Filters tab's shade is the share of clips that match its own fields: the
+            # ticked screen is the other tab's, and frames its kept clusters there instead
+            # of narrowing the share to them (§22).
+            fields = selection.without(cluster_filter.CLUSTERS)
             try:
-                self._shares = view.match_shares(
-                    selection, self._metadata, self._column_types, self._spans
+                self._shares = (
+                    None
+                    if fields.is_empty
+                    else view.match_shares(
+                        fields, self._metadata, self._column_types, self._spans
+                    )
                 )
             except ValueError as exc:
                 QMessageBox.information(self, "Filter not applied", str(exc))
                 self._filters.set_selection(cluster_filter.Selection())
                 return
-            self._effect_screen = self._screen_alone(selection)
-            if self._effect_screen is not None:
-                # A screen alone: the tree reads its statistic, grey inside the floor (§22),
-                # at the strictness the dock is set to.
-                positions, texts = effect_shades(
-                    self._effect_screen, len(self._shares), alpha=selection.alpha
-                )
-                self._icicle.set_shades(positions, diverging=True, texts=texts)
-            else:
-                self._icicle.set_shades(
-                    {node: float(share) for node, share in enumerate(self._shares)}
-                )
+            self._effect_screen = self._ticked_screen(selection)
             matched = cluster_filter.clip_matches(
                 selection,
                 self._root_clips,
@@ -1709,13 +1718,69 @@ class NodeInterpretTab(QWidget):
                 ).sum()
             )
         )
-        self._show_key()
+        self._shade_tree()
         if reselect:
             self._apply_matching()
 
-    def _screen_alone(self, selection) -> ScreenChoice | None:
-        """The ticked screen, when it is the only filter on and its effects are known."""
-        if selection.keys() != [cluster_filter.CLUSTERS]:
+    def _shade_tree(self) -> None:
+        """Colour the tree by what the open tab is about (§22), and fill both scales.
+
+        **Differences** open: each block by the ticked screen's statistic, grey inside the
+        floor, at the strictness the dock is set to; nothing shaded with no screen ticked.
+        **Filters** open: each block by the share of its clips that match the fields, and
+        the clusters the ticked screen kept framed in the colour of their effect. The tree
+        never blends the two, and never changes what its colour means without a tab having
+        been clicked: with one scale for both, ticking a field beside a screen swapped the
+        blue and orange for a share with nothing said (user, 2026-11-16).
+        """
+        view = self._view
+        if view is None:
+            return
+        screen = self._effect_screen
+        alpha = self._selection.alpha if self._selection is not None else None
+        n_nodes = int(view.tree.n_nodes)
+        if self._filters.open_tab() == DIFFERENCES_TAB:
+            self._icicle.set_kept({})
+            if screen is None:
+                self._icicle.set_shades(None)
+            else:
+                positions, texts = effect_shades(screen, n_nodes, alpha=alpha)
+                self._icicle.set_shades(
+                    positions,
+                    diverging=True,
+                    one_sided=one_sided(screen.design),
+                    texts=texts,
+                )
+        else:
+            self._icicle.set_shades(
+                None
+                if self._shares is None
+                else {node: float(share) for node, share in enumerate(self._shares)}
+            )
+            if screen is None:
+                self._icicle.set_kept({})
+            else:
+                marks, texts = kept_marks(screen, n_nodes, alpha=alpha)
+                colour = (
+                    plot_theme.size_colour
+                    if one_sided(screen.design)
+                    else plot_theme.effect_colour
+                )
+                # The pole's own colour, whatever the size: a frame says kept and which
+                # way, and a weak effect's shade of it was too dull to find on a grey fill.
+                self._icicle.set_kept(
+                    {
+                        node: colour(math.copysign(1.0, value))
+                        for node, value in marks.items()
+                        if value
+                    },
+                    texts,
+                )
+        self._show_key()
+
+    def _ticked_screen(self, selection) -> ScreenChoice | None:
+        """The ticked screen, when its effects are known."""
+        if selection.leaves is None:
             return None
         choice = self._filters.screen(selection.leaves_source)
         if choice is None or not choice.effects:
@@ -1723,12 +1788,14 @@ class NodeInterpretTab(QWidget):
         return choice
 
     def _show_key(self) -> None:
+        """Fill the two scales: the ticked screen's on the Differences tab, the clips that
+        match on the Filters tab. Each is its own widget, so neither changes its units.
+        """
         key = self._filters.dock.key
-        if self._shares is None or self._view is None:
-            key.set_filter(False)
-            return
+        screens = self._filters.screens
         screen = self._effect_screen
-        if screen is not None:
+        screens.set_scale_shown(screen is not None and self._view is not None)
+        if screen is not None and self._view is not None:
             alpha = self._selection.alpha if self._selection is not None else None
             level = screen.level(alpha)
             selected = (
@@ -1738,7 +1805,7 @@ class NodeInterpretTab(QWidget):
             )
             row = screen.effects.get(selected) if selected is not None else None
             clears = selected is not None and screen.clears(selected, alpha)
-            key.set_effect(
+            screens.key.set_effect(
                 screen.caption,
                 screen.design,
                 floor=screen.floor if level is None else level.floor,
@@ -1749,6 +1816,8 @@ class NodeInterpretTab(QWidget):
                     None if row is None or not clears else row.statistic
                 ),
             )
+        if self._shares is None or self._view is None:
+            key.set_filter(False)
             return
 
         def share(node: int | None) -> float | None:

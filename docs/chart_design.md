@@ -38,8 +38,8 @@ exported ethogram. In a dark window every plot was a lit panel with grey tick la
 | `reference` | chance, a null floor, a threshold | dashed, labelled in muted text outside the plot area |
 | `handle` | a control drawn on a plot — the cutoff you drag | one colour on every plot that carries one |
 | `text` / `text_secondary` / `text_muted` | titles / ticks and legends / annotations | text never wears a series colour |
-| `sequential` | magnitude | one hue; the low end sits near the surface so zero reads as nothing |
-| `diverging` | signed difference | blue ↔ grey ↔ vermillion, centred on zero |
+| `sequential` | magnitude | no hue, lightness alone; the low end sits near the surface so zero reads as nothing |
+| `diverging` | signed difference | blue ↔ grey ↔ yellow, centred on zero; the poles differ in lightness too |
 
 Status (ready / warning / error) is not a chart colour and stays in `gui/status_color.py`.
 

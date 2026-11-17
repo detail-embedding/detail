@@ -150,6 +150,10 @@ def format_time(ns: int) -> str:
 STRIP_PX = 3
 #: How wide a Find clusters band is, outside the block (``set_found``).
 FOUND_PX = 3
+#: How wide the frame on a cluster a difference screen kept is, inside the block's edge
+#: (``set_kept``). A Find clusters band is outside the block and the AUDIT ring is inset from
+#: its edge, so the three do not sit on one another.
+KEPT_PX = 3
 
 
 def _frame(painter: QPainter, rect: QRectF, width: float, colour: QColor) -> None:
@@ -207,6 +211,11 @@ class NodeIcicle(QWidget):
         #: node has nothing to count.
         self._shades: dict[int, float] | None = None
         self._diverging = False
+        self._one_sided = False
+        #: The clusters a ticked difference screen kept, each with the colour of its effect
+        #: and the screen's sentence for the hover (``set_kept``).
+        self._kept: dict[int, QColor] = {}
+        self._kept_texts: dict[int, str] = {}
         self._shade_texts: dict[int, str] = {}
         self._names: dict[int, str] = {}
         self._outlines: dict[int, QColor] = {}
@@ -272,6 +281,7 @@ class NodeIcicle(QWidget):
         shares: dict[int, float] | None,
         *,
         diverging: bool = False,
+        one_sided: bool = False,
         texts: dict[int, str] | None = None,
     ) -> None:
         """Shade every block by ``shares[node]`` (0..1) on the fixed 0–100% ramp, or ``None`` to
@@ -280,11 +290,15 @@ class NodeIcicle(QWidget):
         ``diverging`` reads the values as effects on the −1..+1 axis instead
         (``plot_theme.effect_colour``: zero and NaN neutral), and ``texts[node]`` is then the
         hover's line for a block in place of its share — the screen's sentence for a cluster.
+        ``one_sided`` reads them as sizes on 0..1 with no direction (a profile screen,
+        ``plot_theme.size_colour``): a ramp with no hue, so neither pole's colour is borrowed
+        for a difference that has no side.
         """
         self._shades = (
             None if shares is None else {int(k): v for k, v in shares.items()}
         )
         self._diverging = bool(diverging) and shares is not None
+        self._one_sided = bool(one_sided) and self._diverging
         self._shade_texts = (
             {}
             if texts is None or shares is None
@@ -310,6 +324,8 @@ class NodeIcicle(QWidget):
         strip = label if node in self._fills else None
         if self._diverging:
             value = float("nan") if share is None else float(share)
+            if self._one_sided:
+                return plot_theme.size_colour(value, theme), strip
             return plot_theme.effect_colour(value, theme), strip
         share = 0.0 if share is None or share != share else float(share)
         return plot_theme.match_colour(share, theme), strip
@@ -335,6 +351,22 @@ class NodeIcicle(QWidget):
 
     def window_marks(self) -> dict[int, int]:
         return dict(self._window_marks)
+
+    def set_kept(
+        self, kept: dict[int, QColor], texts: dict[int, str] | None = None
+    ) -> None:
+        """``kept[node]``: a cluster the ticked difference screen kept, framed in that colour
+        (the colour of its effect) on the block's own edge, with ``texts[node]`` added to its
+        hover. For the Filters tab, where the fill is the share of clips that match: the
+        frame says which clusters the screen picked without taking the fill (§22). A block
+        too narrow to hold a frame is the frame's colour, which is the same statement.
+        """
+        self._kept = {int(k): QColor(v) for k, v in kept.items()}
+        self._kept_texts = {int(k): str(v) for k, v in (texts or {}).items()}
+        self.update()
+
+    def kept(self) -> dict[int, QColor]:
+        return dict(self._kept)
 
     def set_found(self, found: dict[int, QColor]) -> None:
         """``found[node]``: a cluster listed in Find clusters, ringed in that colour."""
@@ -670,9 +702,12 @@ class NodeIcicle(QWidget):
         gap = QColor(GAP_COLOUR)
         for _rect, node in self._blocks:
             painter.fillRect(self._slots[node], gap)
+        kept = self._kept_pieces()
         for rect, node in self._blocks:
             if node in self._tiny:
                 painter.fillRect(rect, self.fill_of(node)[0])
+                if node in kept:
+                    self._paint_kept(painter, rect, kept[node])
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         for rect, node in self._blocks:
             if node in self._tiny:
@@ -687,6 +722,9 @@ class NodeIcicle(QWidget):
                     ),
                     strip,
                 )
+            if node in kept:
+                # Under the block's name, which starts inside the frame's width.
+                self._paint_kept(painter, rect, kept[node])
             ring = self._outlines.get(node)
             if ring is not None and rect.width() > 8 and rect.height() > 8:
                 self._paint_ring(painter, rect, ring, node)
@@ -710,6 +748,10 @@ class NodeIcicle(QWidget):
                 opaque = self._shades is not None or (node in self._fills and own)
                 solid = opaque and fill.lightness() < 150
                 ink = QColor("#ffffff") if solid else text
+                if self._shades is not None and not solid and text.lightness() > 128:
+                    # A pale shade in the dark theme, where the theme's ink is pale too:
+                    # "65.5%" on a block most of whose clips match was not there to read.
+                    ink, solid = QColor(GAP_COLOUR), True
                 painter.setPen(ink)
                 painter.setFont(self.font())
                 name = self._names.get(node) or (
@@ -776,6 +818,31 @@ class NodeIcicle(QWidget):
             painter.drawText(disc, Qt.AlignmentFlag.AlignCenter, text)
             painter.setBrush(Qt.BrushStyle.NoBrush)
             self._mark_rects[node] = disc
+
+    def _kept_pieces(self) -> dict[int, QColor]:
+        """``{drawn block: colour}`` for the clusters a screen kept: a kept cluster with no
+        block of its own (a chain node, or one zoomed past) frames the blocks it is drawn
+        as."""
+        if not self._kept or self._view is None:
+            return {}
+        drawn = {node: rect for rect, node in self._blocks}
+        return {
+            piece: colour
+            for node, colour in self._kept.items()
+            for piece in self._drawn_as(node, drawn)
+            if piece in drawn
+        }
+
+    @staticmethod
+    def _paint_kept(painter: QPainter, rect: QRectF, colour: QColor) -> None:
+        """A kept cluster's frame on its block's edge: a dark line either side of the
+        colour, so it reads on a pale fill and on a dark one (a yellow frame on a near-white
+        block did not)."""
+        aliased = painter.testRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        _frame(painter, rect, KEPT_PX + 2, QColor(GAP_COLOUR))
+        _frame(painter, rect.adjusted(1, 1, -1, -1), KEPT_PX, colour)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, aliased)
 
     def _paint_found(self, painter: QPainter, edge: QColor) -> None:
         """Each Find clusters id's band, outside the blocks it is drawn as (module docstring).
@@ -922,6 +989,8 @@ class NodeIcicle(QWidget):
                 if match != match
                 else f" · {100 * match:.0f}% of its clips match"
             )
+        if int(node) in self._kept_texts and not self._diverging:
+            text += " · " + self._kept_texts[int(node)]
         if int(node) in self._window_marks:
             text += f" · open in window {self._window_marks[int(node)]}"
         if int(node) in self._found:

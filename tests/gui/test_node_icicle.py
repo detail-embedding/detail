@@ -794,3 +794,73 @@ def test_a_found_block_at_the_widgets_edge_keeps_its_band_outside(icicle):
     assert rect.left() <= node_icicle.FOUND_PX, "the fixture's block 4 must be leftmost"
     assert _inside_left(icicle, rect).name() != _FOUND.name()
     assert _band_pixel(icicle, rect, "bottom").name() == _FOUND.name()
+
+
+def test_a_one_sided_shade_has_a_ramp_of_its_own_with_no_hue(qapp):
+    """A profile's difference is a size with no side. Its blocks take ``size_colour`` —
+    the neutral middle to ink — and never the diverging scale's "more" half, which made one
+    colour mean *more* on a two-value screen and *differs either way* on this one."""
+    from PyQt6.QtGui import QColor
+
+    from detail.gui import plot_theme
+    from detail.gui.node_icicle import NodeIcicle
+    from tests.analysis.test_node_measures import synthetic_view
+
+    widget = NodeIcicle()
+    widget.set_view(synthetic_view())
+    theme = plot_theme.current()
+    widget.set_shades({4: 0.8, 0: 0.0}, diverging=True, one_sided=True)
+    fill = widget.fill_of(4)[0]
+    assert fill == plot_theme.size_colour(0.8, theme)
+    assert fill != plot_theme.effect_colour(0.8, theme), "not the more pole's colour"
+    assert fill.red() == pytest.approx(fill.blue(), abs=6), "no hue"
+    assert widget.fill_of(0)[0] == QColor(theme.neutral)
+    widget.set_shades({4: 0.8}, diverging=True)
+    assert widget.fill_of(4)[0] == plot_theme.effect_colour(
+        0.8, theme
+    ), "two-sided again"
+
+
+def test_a_kept_cluster_is_framed_on_its_own_block_over_the_share_fill(qapp):
+    """The Filters tab's picture: the fill is the share of clips that match, and a cluster a
+    difference screen kept wears a frame in the colour of its side on its own block's edge,
+    with the screen's words in its hover. Painted, so the pixels are read: a frame that is
+    stored and never drawn would pass any check on ``kept()``."""
+    from detail.gui import plot_theme
+    from detail.gui.node_icicle import KEPT_PX, NodeIcicle
+    from tests.analysis.test_node_measures import synthetic_view
+
+    widget = NodeIcicle()
+    widget.set_view(synthetic_view())
+    widget.resize(600, 200)
+    widget.show()
+    qapp.processEvents()
+    theme = plot_theme.current()
+    more = plot_theme.effect_colour(1.0, theme)
+    widget.set_shades({node: 0.5 for node in range(7)})
+    widget.set_kept({4: more}, {4: "drug vs vehicle: more under drug, 12.4× · kept"})
+    image = widget.grab().toImage()
+    blocks = {node: rect for rect, node in widget._blocks}
+    rect = blocks[4]
+    assert rect.width() > 20 and rect.height() > 12, "the fixture's block holds a frame"
+
+    def frame_pixel(picture, block):
+        return picture.pixelColor(
+            int(block.left()) + 1 + KEPT_PX // 2, int(block.center().y())
+        )
+
+    assert frame_pixel(image, rect) == more, "the frame, in the colour of its side"
+    inside = image.pixelColor(int(rect.center().x()), int(rect.bottom()) - KEPT_PX - 4)
+    assert inside == plot_theme.match_colour(0.5, theme), "the fill is still the share"
+    other = next(n for n in blocks if n != 4 and blocks[n].width() > 20)
+    assert frame_pixel(image, blocks[other]) != more, "not kept: no frame"
+    assert widget._describe(4).endswith(
+        "drug vs vehicle: more under drug, 12.4× · kept"
+    )
+    assert "drug vs vehicle" not in widget._describe(other)
+
+    widget.set_kept({})
+    assert (
+        frame_pixel(widget.grab().toImage(), rect) != more
+    ), "unticked: the frame goes"
+    widget.close()

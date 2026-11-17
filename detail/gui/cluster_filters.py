@@ -4,7 +4,27 @@ One selection, set from the dock. A selection never *hides* anything — the pag
 each cluster's matching share and draws non-matching clips grey — so this module only says *what*
 is selected:
 
-- **The dock** (:class:`FilterDock`, ``bar.dock``), top to bottom:
+- **The dock** (:class:`FilterDock`, ``bar.dock``) has **two tabs** (``dock.tabs``), and the
+  open one decides what the tree's colour means (§22; ``FilterBar.open_tab``,
+  ``tab_changed``). Each tab's label counts what it has on (:func:`tab_text`).
+
+  **Differences** (:class:`ScreenList`, ``bar.screens``): the run's saved difference screens
+  (§22, §24 ``source: nodes``), one tickable at a time, each with what it kept ("drug vs
+  vehicle · paired   1 kept of 4"); under the list the ticked screen's own scale
+  (``screens.key``, a `gui/match_key.MatchKey` in its effect mode, *less … no difference …
+  more*) and **Strictness**, a slider over the family-wise levels a screen can be read at
+  (``compare.STRICTNESS_LEVELS``, the screen's own 5% floor among them), with the kept set at
+  each level handed in by the page (:class:`ScreenLevel`); then **New screen…**, which the
+  page answers with the comparison launch dialog seeded to this run. Ticking a screen is the
+  :data:`CLUSTERS` condition on the clips: the leaves under the clusters it kept, handed in by
+  the page (:class:`ScreenChoice`). While this tab is open the page colours the tree by the
+  screen's statistic; on the Filters tab it frames the kept clusters instead
+  (:func:`kept_marks`). Looser shows more clusters, each with its p on hover; it is a view,
+  and what the saved screen kept does not move (``Selection.alpha``). The scale and the
+  screens were once a line of the one filters column with the scale at that column's top,
+  where it changed its units when a screen was the only filter on (user, 2026-11-16).
+
+  **Filters**, top to bottom:
 
   - **The key and the count line, always** (``dock.top_box``), fixed above the sections so they
     stay in view while the sections scroll, and the same height with or without a filter, so
@@ -13,7 +33,7 @@ is selected:
     run's clip count ("2,781 clips"); with one, the key carries its marks and the line says
     "n of N clips match" (which the page computes and hands back,
     :meth:`FilterBar.set_match_count`; how fields combine is its tooltip) with Reset all at its
-    right. No pills: each field in use already says its filter on its own line.
+    right, which removes this tab's filters and leaves a ticked screen. No pills: each field in use already says its filter on its own line.
   - **Location** — the run's position density as a region picker (`gui/density_map.py`): draw a
     box, move it, resize it from its corners, or click squares (the map's tooltip says so).
     It is a line that folds like a field's (laptop layout, 2026-11-09, decision 2 C): "▸ Location"
@@ -26,17 +46,6 @@ is selected:
     over each recording's whole video (:class:`SessionRange`: the :class:`RangeHistogram` with
     ``bars=False``), "start · middle · end" under it and a line with the range and the clips it
     holds. Open or folded is remembered (:data:`SESSION_OPEN_KEY`), as Location's is.
-  - **Differences** — a line folding like Location's: the run's saved difference screens
-    (§22, §24 ``source: nodes``), one tickable at a time, each with what it kept ("drug vs
-    vehicle · paired   1 kept of 4"), and **New screen…**, which the page answers with the
-    comparison launch dialog seeded to this run. Ticking one is the :data:`CLUSTERS` condition:
-    the leaves under the clusters it kept, handed in by the page (:class:`ScreenChoice`), so the
-    tree shades a kept cluster 100%, its parent by the time under kept children, the rest grey.
-    Under the list, while a screen is ticked, **Strictness**: a slider over the family-wise
-    levels a screen can be read at (``compare.STRICTNESS_LEVELS``, the screen's own 5% floor
-    among them), with the kept set at each level handed in by the page (:class:`ScreenLevel`).
-    Looser shows more clusters, each with its p on hover; it is a view, and what the saved
-    screen kept does not move (``Selection.alpha``).
   - **One line per field** (:class:`FieldRow`) — Video, then each metadata column: "▸ name",
     and at the right its value count or the filter set on it ("drug_A only", "2 of 3"),
     then, while it has a filter, a small Reset that removes it. The line is not a button: a
@@ -94,6 +103,8 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSlider,
+    QStackedWidget,
+    QTabBar,
     QToolTip,
     QVBoxLayout,
     QWidget,
@@ -152,9 +163,24 @@ CONDITION_KEYS = (VIDEO, LOCATION, SESSION, CLUSTERS)
 NO_SCREENS_TEXT = "No difference screen saved for this run yet."
 SCREENS_LOADING_TEXT = "Reading the saved screens…"
 SCREENS_HINT_TEXT = (
-    "One at a time: the tree shades by the clusters the ticked screen kept, a kept cluster "
-    "100%, its parent by the time under kept children."
+    "One at a time. While this tab is open the tree is coloured by the ticked screen; on "
+    "the Filters tab the clusters it kept are outlined instead."
 )
+#: The dock's two tabs (§22): which one is open decides what the tree's colour means.
+DIFFERENCES_TAB = "differences"
+FILTERS_TAB = "filters"
+_TAB_ORDER = (DIFFERENCES_TAB, FILTERS_TAB)
+_TAB_TEXT = {DIFFERENCES_TAB: "Differences", FILTERS_TAB: "Filters"}
+_TAB_TIPS = {
+    DIFFERENCES_TAB: (
+        "Which clusters differ between conditions. While this tab is open the tree is "
+        "coloured by the ticked screen."
+    ),
+    FILTERS_TAB: (
+        "Which clips count: where, when, which recordings. While this tab is open the tree "
+        "is shaded by the share of each cluster's clips that match."
+    ),
+}
 RUN_SCREEN_TEXT = "New screen…"
 #: The Strictness slider under the screens: its caption and what its tooltip says.
 STRICTNESS_TEXT = "Strictness"
@@ -1695,7 +1721,19 @@ class ScreenList(QWidget):
         self.list = QListWidget()
         self.list.setObjectName("screen_list")
         self.list.itemChanged.connect(self._on_item)
+        # A long line (a screen with no floor says why) is cut with "…" and said whole in
+        # its tooltip: a sideways scrollbar under one row read as a second slider (user
+        # screenshot, 2026-11-16).
+        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.list.setTextElideMode(Qt.TextElideMode.ElideRight)
         layout.addWidget(self.list)
+        #: The ticked screen's scale: what the tree's colours mean while this tab is open.
+        #: Here, beside the screen that sets it, and shown only while a screen with effects
+        #: is ticked (:meth:`set_scale_shown`); it was at the top of the Filters column, far
+        #: from this list and in the place of the clips-that-match scale.
+        self.key = MatchKey()
+        self.key.setVisible(False)
+        layout.addWidget(self.key)
         self.strictness_box = QWidget()
         box = QVBoxLayout(self.strictness_box)
         box.setContentsMargins(0, 4, 0, 0)
@@ -1794,6 +1832,10 @@ class ScreenList(QWidget):
         else:
             self._sync_strictness()
 
+    def set_scale_shown(self, shown: bool) -> None:
+        """Show the scale under the list (the page fills it with ``key.set_effect``)."""
+        self.key.setVisible(bool(shown))
+
     def value(self) -> str | None:
         """The ticked screen's key, or ``None``."""
         for i in range(self.list.count()):
@@ -1882,6 +1924,30 @@ def _holder() -> QWidget:
     return holder
 
 
+def tab_text(tab: str, active: int) -> str:
+    """A tab's label: its name, and how many conditions it has on (``Filters · 2``), so the
+    tab that is not open still says it is narrowing the clips or colouring the tree."""
+    return f"{_TAB_TEXT[tab]} · {active}" if active else _TAB_TEXT[tab]
+
+
+def kept_marks(
+    choice: ScreenChoice, n_nodes: int, alpha: float | None = None
+) -> tuple[dict[int, float], dict[int, str]]:
+    """``(positions, texts)`` for the clusters ``choice`` kept at the strictness ``alpha``:
+    each one's position on the scale (:func:`effect_shades`; its sign is which pole's
+    colour the frame takes) and the hover line naming the screen. What the tree frames on
+    the Filters tab, where the fill is the clips that match."""
+    positions, texts = effect_shades(choice, n_nodes, alpha)
+    level = choice.level(alpha)
+    kept = level.kept if level is not None else choice.kept
+    marks = {
+        int(node): positions[int(node)]
+        for node in kept
+        if positions.get(int(node), float("nan")) == positions.get(int(node))
+    }
+    return marks, {node: f"{choice.label}: {texts[node]}" for node in marks}
+
+
 def panel_name(selection: Selection) -> str:
     """What the dock's strip reads while it is shut: "Filters", or "Filters · 2 active"."""
     active = len(selection.keys())
@@ -1902,9 +1968,34 @@ class FilterDock(QWidget):
         self.body = QWidget()
         body = QVBoxLayout(self.body)
         body.setContentsMargins(0, 0, 0, 0)
-        title = QLabel("Filters")
-        title.setFont(emphasis_font(title, steps=0))
-        body.addWidget(title)
+        #: The two tabs, in place of the column's "Filters" heading: Differences (the
+        #: saved screens, their scale and strictness) and Filters (the clips-that-match
+        #: scale, the count, and every field). The open tab decides what the tree's colour
+        #: means, so the two scales are never one widget changing its units (§22).
+        self.tabs = QTabBar()
+        self.tabs.setObjectName("filter_tabs")
+        self.tabs.setExpanding(True)
+        self.tabs.setDrawBase(False)
+        self.tabs.setElideMode(Qt.TextElideMode.ElideRight)
+        for name in _TAB_ORDER:
+            index = self.tabs.addTab(_TAB_TEXT[name])
+            self.tabs.setTabToolTip(index, _TAB_TIPS[name])
+        body.addWidget(self.tabs)
+        self.pages = QStackedWidget()
+        #: The Differences tab: the screen list (added by the bar), scrolling when short.
+        self.differences_scroll = QScrollArea()
+        self.differences_scroll.setWidgetResizable(True)
+        self.differences_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.differences_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.differences_box = _holder()
+        self.differences_box.layout().setContentsMargins(0, lines(0.4), lines(0.5), 0)
+        self.differences_scroll.setWidget(self.differences_box)
+        self.pages.addWidget(self.differences_scroll)
+        self.filters_page = QWidget()
+        filters_page = QVBoxLayout(self.filters_page)
+        filters_page.setContentsMargins(0, lines(0.4), 0, 0)
         #: The key and the count line, above the sections and outside their scroll (the key
         #: reads what the sections set, so it stays in view while they are scrolled). Always
         #: shown and always the same height — greyed with the run's clip count while nothing is
@@ -1919,7 +2010,7 @@ class FilterDock(QWidget):
         self.count_row = QHBoxLayout()
         self.count_row.setContentsMargins(0, 0, 0, 0)
         top_box.addLayout(self.count_row)
-        body.addWidget(self.top_box)
+        filters_page.addWidget(self.top_box)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -1952,7 +2043,12 @@ class FilterDock(QWidget):
         self._column.addWidget(self.fields_box)
         self._column.addStretch(1)
         self.scroll.setWidget(self.sections)
-        body.addWidget(self.scroll, 1)
+        filters_page.addWidget(self.scroll, 1)
+        self.pages.addWidget(self.filters_page)
+        body.addWidget(self.pages, 1)
+        self.tabs.currentChanged.connect(self.pages.setCurrentIndex)
+        self.tabs.setCurrentIndex(_TAB_ORDER.index(FILTERS_TAB))
+        self.pages.setCurrentIndex(_TAB_ORDER.index(FILTERS_TAB))
         outer.addWidget(self.body, 1)
 
         self.body.setMinimumWidth(DOCK_MIN_PX)
@@ -1969,8 +2065,11 @@ class FilterBar(QObject):
     """
 
     selection_changed = pyqtSignal(object)
-    #: **Run a new screen…** on the Differences line: the page opens the launch dialog.
+    #: **New screen…** on the Differences tab: the page opens the launch dialog.
     screen_requested = pyqtSignal()
+    #: The open tab changed (:data:`DIFFERENCES_TAB` or :data:`FILTERS_TAB`): the page
+    #: recolours the tree, whose colour means what the open tab is about.
+    tab_changed = pyqtSignal(str)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -2049,18 +2148,17 @@ class FilterBar(QObject):
         self.session_row.head.toggled.connect(self._remember_session_open)
         self.session_row.set_open(QSettings().value(SESSION_OPEN_KEY, False, type=bool))
         location.addWidget(self.session_row)
-        #: Differences: the run's saved difference screens, folding like Location's line.
+        #: Differences: the run's saved difference screens, on their own tab.
         self.screens = ScreenList()
         self.screens.changed.connect(self._on_screen)
         self.screens.alpha_changed.connect(self._on_alpha)
         self.screens.run_requested.connect(self.screen_requested)
-        self.screens_row = FieldRow("Differences", self.screens)
-        self.screens_row.head.setToolTip(
-            "Which clusters differ: show or hide this run's saved difference screens"
+        differences = self.dock.differences_box.layout()
+        differences.addWidget(self.screens)
+        differences.addStretch(1)
+        self.dock.tabs.currentChanged.connect(
+            lambda index: self.tab_changed.emit(_TAB_ORDER[index])
         )
-        self.screens_row.reset_button.setToolTip("Untick the screen")
-        self.screens_row.reset_button.clicked.connect(lambda: self.remove(CLUSTERS))
-        location.addWidget(self.screens_row)
         self.dock.scroll.viewport().installEventFilter(self)
 
         self.set_columns([])
@@ -2140,8 +2238,6 @@ class FilterBar(QObject):
             return self.location_row
         if name == "Time in session":
             return self.session_row
-        if name == "Differences":
-            return self.screens_row
         if name == "Video" and self._video_row is not None:
             return self._video_row
         return self._rows[("meta", name)]
@@ -2291,6 +2387,20 @@ class FilterBar(QObject):
         self._matching, self._total = matching, total
         self._refresh()
 
+    # -- the tabs ----------------------------------------------------------- #
+    def open_tab(self) -> str:
+        """:data:`DIFFERENCES_TAB` or :data:`FILTERS_TAB`: the tab the dock shows."""
+        return _TAB_ORDER[self.dock.tabs.currentIndex()]
+
+    def differences_summary(self) -> str:
+        """What is ticked on the Differences tab: ``none``, or the screen's label with its
+        strictness when read away from its own floor (:func:`screen_summary`)."""
+        return screen_summary(self._selection, self._screens or {})
+
+    def set_open_tab(self, name: str) -> None:
+        """Open tab ``name``; emits ``tab_changed`` when that is a change."""
+        self.dock.tabs.setCurrentIndex(_TAB_ORDER.index(name))
+
     # -- the selection ------------------------------------------------------ #
     def selection(self) -> Selection:
         return self._selection
@@ -2306,8 +2416,10 @@ class FilterBar(QObject):
         self.selection_changed.emit(selection)
 
     def clear(self) -> None:
-        """What Reset all does."""
-        self.set_selection(Selection())
+        """What Reset all does: remove every filter of the Filters tab. A ticked screen
+        stays ticked — it is on the other tab, and a button here that unticked it would
+        change what is out of sight."""
+        self.set_selection(self._selection.only(CLUSTERS))
 
     def remove(self, key: tuple) -> None:
         """What a field's Reset does: drop condition ``key`` and nothing else."""
@@ -2419,14 +2531,21 @@ class FilterBar(QObject):
         self.session.set_value(self._selection.session)
         self.screens.set_value(self._selection.leaves_source)
         self.screens.set_alpha(self._selection.alpha)
-        if self._selection.leaves is not None:
-            self.screens_row.set_open(True)
 
     def _refresh(self) -> None:
         if not hasattr(self, "_total"):
             return
         selection = self._selection
-        self.clear_button.setVisible(not selection.is_empty)
+        filters = [key for key in selection.keys() if key != CLUSTERS]
+        self.clear_button.setVisible(bool(filters))
+        tabs = self.dock.tabs
+        tabs.setTabText(
+            _TAB_ORDER.index(DIFFERENCES_TAB),
+            tab_text(DIFFERENCES_TAB, int(selection.leaves is not None)),
+        )
+        tabs.setTabText(
+            _TAB_ORDER.index(FILTERS_TAB), tab_text(FILTERS_TAB, len(filters))
+        )
         filtering = not selection.is_empty and self._matching is not None
         if self._total is None:
             line = ""
@@ -2445,5 +2564,12 @@ class FilterBar(QObject):
         self.location_row.set_filtered(bool(selection.cells))
         self.session_row.summary.setText(session_summary(selection.session))
         self.session_row.set_filtered(selection.session is not None)
-        self.screens_row.summary.setText(screen_summary(selection, self._screens or {}))
-        self.screens_row.set_filtered(selection.leaves is not None)
+        tabs.setTabToolTip(
+            _TAB_ORDER.index(DIFFERENCES_TAB),
+            _TAB_TIPS[DIFFERENCES_TAB]
+            + (
+                f" Ticked: {self.differences_summary()}."
+                if selection.leaves is not None
+                else ""
+            ),
+        )

@@ -131,6 +131,34 @@ def test_the_ramps_read_as_ramps(theme) -> None:
     assert oklch(theme.diverging[middle])[1] < 0.02, "the midpoint must be grey"
 
 
+#: How far apart the diverging scale's two poles must stay under red-green colour-vision
+#: deficiency, and how much of that must be lightness. The blue ↔ vermillion pair this replaced
+#: measured ΔE 18–21 with the poles at one lightness (ΔL 0.02 dark, 0.07 light): which way a
+#: cluster went was hue alone, the part a colour-blind reader loses (user, 2026-11-16).
+_POLE_CVD_FLOOR = 30.0
+_POLE_MIN_DELTA_L = 0.12
+_OLD_DIVERGING_POLES = {"light": ("#025a8d", "#ab4501"), "dark": ("#7fc5fe", "#ff9a6b")}
+
+
+def _pole_failures(low: str, high: str) -> list[str]:
+    failures = [
+        f"{vision}: ΔE {delta_e(low, high, vision):.1f}"
+        for vision in ("protan", "deutan")
+        if delta_e(low, high, vision) < _POLE_CVD_FLOOR
+    ]
+    if abs(oklch(low)[0] - oklch(high)[0]) < _POLE_MIN_DELTA_L:
+        failures.append("the poles sit at one lightness")
+    return failures
+
+
+@BOTH
+def test_the_diverging_poles_differ_by_more_than_hue(theme) -> None:
+    """Less and more stay apart for a red-green colour-blind reader, in lightness as well."""
+    assert _pole_failures(theme.diverging[0], theme.diverging[-1]) == []
+    # The pair it replaced fails both halves, so the check can fail.
+    assert len(_pole_failures(*_OLD_DIVERGING_POLES[theme.name])) == 3
+
+
 @BOTH
 def test_zero_on_the_sequential_scale_sits_near_the_surface(theme) -> None:
     """Low magnitude reads as "nothing": the low end is the ramp stop closest to the surface."""
