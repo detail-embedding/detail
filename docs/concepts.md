@@ -216,7 +216,9 @@ default, or a spread over time), and you click each point or say it is not visib
 skeleton, make a new set on it; a set's skeleton can change until its first mark, and is
 fixed after that. A run will
 record the set's digest and a copy of the marks it learned from, so a set can be edited afterwards
-without altering a run that used it.
+without altering a run that used it. A run over several recordings copies the set once, when it
+starts: marking more frames while it runs changes the next run, not the recordings this one has
+yet to reach. Retrying that run's unfinished recordings uses the same copy.
 
 **A distilled student** is the keypoint counterpart of [distilling a detector](#detection-models).
 The teacher is the patch method itself, run on the sampled frames from an example set and a

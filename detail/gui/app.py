@@ -1257,6 +1257,7 @@ class MainWindow(QMainWindow):
         experiment.reconcile_imports()  # crashed/closed imports → failed (no resume, §3)
         experiment.reconcile_runs()  # orphaned runs → real on-disk status (§15)
         experiment.reconcile_job_runs()  # same backstop for every single-job run kind
+        experiment.reconcile_recording_runs()  # one-recording runs nobody waited on
         # A fresh queue has nothing in flight. Whatever the old one last drew is not this
         # queue's to finish, and if the old one is gone its `idle` will never come to clear it.
         self._import_bar.hide()

@@ -320,6 +320,13 @@ def project_artifact(
     Coverage is written for every searched unit regardless, including units that returned
     nothing at the chosen cutoff. That is what makes a genuine zero readable as one.
 
+    **A unit is searched only where its shard is on disk.** The run's plan lists every unit it
+    was asked to search, and a cancelled or partly failed search did not reach all of them. A
+    unit missing a shard for any behavior the artifact names is left out of coverage (and so
+    states no instances): ``coverage.csv`` is per unit, not per behavior (§19), so a unit one
+    named behavior never looked at cannot be a real zero for any of them. With nothing
+    calibrated the vocabulary is empty, and every behavior must have searched the unit.
+
     With no behavior calibrated the artifact is still written, with real coverage and an empty
     vocabulary — the honest statement that these units were analyzed and nothing is named yet.
     §21 requires it: an ``open`` run *has* an artifact, because the statistics are what the
@@ -356,23 +363,28 @@ def project_artifact(
         )
         if len(t_ns) == 0:
             continue
-        analyzed[(recording_id, state.track_id)] = t_ns
+        unit = (recording_id, state.track_id)
+        if not all(
+            _searched(run_dir, method, behavior.id, unit, cached)
+            for behavior in (calibrated or state.behaviors)
+        ):
+            # A behavior the artifact names never searched this unit (its search was cancelled
+            # before it, or raised on it): it is missing, not a zero, so it is not covered.
+            continue
+        analyzed[unit] = t_ns
         coverage.append(coverage_for(recording_id, state.track_id, t_ns, gap_ns))
         for behavior in calibrated:
-            unit = (recording_id, state.track_id)
             result = cached.get(behavior.id, {}).get(unit)
             if result is None:
-                path = query_runs.shard_path(
-                    run_dir,
-                    behavior.id,
-                    recording_id,
-                    state.track_id,
-                    method.shard_suffix,
+                result = method.load(
+                    query_runs.shard_path(
+                        run_dir,
+                        behavior.id,
+                        recording_id,
+                        state.track_id,
+                        method.shard_suffix,
+                    )
                 )
-                if not path.is_file():
-                    # this unit's search failed or was interrupted; its coverage stands
-                    continue
-                result = method.load(path)
             instances.extend(
                 instances_from(
                     method.instances_at(result, behavior.cutoff, state.method_params),
@@ -403,6 +415,37 @@ def project_artifact(
     )
     report("writing", 1.0, "done")
     return run_dir
+
+
+def _searched(run_dir, method, behavior_id: str, unit: tuple, cached: dict) -> bool:
+    """Whether ``behavior_id``'s search reached ``unit``: its result is in hand or on disk."""
+    if unit in cached.get(behavior_id, {}):
+        return True
+    recording_id, subject = unit
+    return query_runs.shard_path(
+        run_dir, behavior_id, recording_id, subject, method.shard_suffix
+    ).is_file()
+
+
+def missing_units(run_dir) -> dict[str, list[str]]:
+    """``{behavior_id: [recording_id, ...]}`` for every planned unit the search never reached.
+
+    Read from the shards, the evidence, rather than from the record; empty for a search that
+    reached every unit. Only the units are read from here: whether a run fell short at all is
+    its record's statement (``status``, ``behaviors_failed``), which is what
+    ``QueryRun._refuse_if_incomplete`` asks first.
+    """
+    run_dir = Path(run_dir)
+    state = query_runs.read_query_state(run_dir)
+    method = resolve_method(state.method)
+    missing: dict[str, list[str]] = {}
+    for behavior in state.behaviors:
+        for recording_id in state.search_recording_ids:
+            if not _searched(
+                run_dir, method, behavior.id, (recording_id, state.track_id), {}
+            ):
+                missing.setdefault(behavior.id, []).append(recording_id)
+    return missing
 
 
 def project_frames(experiment_root, run_dir, *, progress=None) -> int:
