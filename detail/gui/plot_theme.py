@@ -59,6 +59,12 @@ def identity(index: int, theme: ChartTheme | None = None) -> QColor:
     return QColor((theme or current()).identity(index))
 
 
+def label_identity(index: int, theme: ChartTheme | None = None) -> QColor:
+    """The colour for a behavior label's slot ``index`` (see ``ChartTheme.label_identity``):
+    never one of the two the diverging scale keeps for less and more."""
+    return QColor((theme or current()).label_identity(index))
+
+
 def pen(color: str | QColor, *, width: float | None = None, dashed: bool = False):
     """A cosmetic pen — ``width`` in screen pixels whatever the view's zoom."""
     import pyqtgraph as pg

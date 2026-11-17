@@ -8438,8 +8438,15 @@ row above the tree draws its squares in the text's colour (`NodeInterpretTab._sh
 screen's frames with no field on leave the fill unshaded, and a labelled block is then the neutral
 stepped toward ink. The label's hue once rode the top of a shaded block — a blue strip on a yellow
 block, the palette's first two being blue and amber, the scale's two poles (user, 2026-11-16:
-*we're using color to communicate two different things*). Find clusters' bands and AUDIT's ring
-keep their colours; they are frames, never a fill, and are not yet reconciled with this rule.
+*we're using color to communicate two different things*). **And blue and yellow are the screen's
+alone**: a label's colour comes from `ChartTheme.label_identity`, the identity colours less the
+twelve slots within ΔE 15 of either pole in either theme (`LABEL_RESERVED_SLOTS`; blue, amber, sky
+and vermillion of the six), on every surface that colours a behavior by its label — this tree and
+its label bar, BROWSE's list and lanes, the label check, Find clusters' bands, and the exported
+behavior figures (`chart_theme.assign_identities`) — so a label is one colour everywhere and never
+a pole's. Twelve label colours remain before they repeat. Labels made before this take the new
+colours, on screen and in figures exported from now on. AUDIT's ring keeps its colour; it is a
+frame, never a fill, and is not yet reconciled with this rule.
 
 **The dock has two tabs, and the open one decides what the tree's colour means**
 (`cluster_filters.FilterDock.tabs`, `FilterBar.open_tab`, `NodeInterpretTab._shade_tree`).

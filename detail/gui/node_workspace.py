@@ -1444,7 +1444,7 @@ class NodeInterpretTab(QWidget):
         return root_slots(label_paths(self._view, self._names).values()).get(root, 0)
 
     def _colour_of_root(self, root: str) -> QColor:
-        return plot_theme.identity(self._slot_of_root(root))
+        return plot_theme.label_identity(self._slot_of_root(root))
 
     def _colour_of(self, node: int) -> QColor:
         owner = self._owner(node)

@@ -39,7 +39,7 @@ exported ethogram. In a dark window every plot was a lit panel with grey tick la
 | `handle` | a control drawn on a plot — the cutoff you drag | one colour on every plot that carries one |
 | `text` / `text_secondary` / `text_muted` | titles / ticks and legends / annotations | text never wears a series colour |
 | `sequential` | magnitude | no hue, lightness alone; the low end sits near the surface so zero reads as nothing |
-| `diverging` | signed difference | blue ↔ grey ↔ yellow, centred on zero; the poles differ in lightness too |
+| `diverging` | signed difference | blue ↔ grey ↔ yellow, centred on zero; the poles differ in lightness too, and no behavior label takes a colour near either (`ChartTheme.label_identity`) |
 
 Status (ready / warning / error) is not a chart colour and stays in `gui/status_color.py`.
 

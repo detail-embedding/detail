@@ -176,8 +176,38 @@ def test_assign_identities_is_by_sorted_label_not_first_seen() -> None:
     first = chart_theme.assign_identities(["rearing", "grooming"])
     second = chart_theme.assign_identities(["grooming", "rearing", "grooming"])
     assert (
-        first == second == {"grooming": LIGHT.identity(0), "rearing": LIGHT.identity(1)}
+        first
+        == second
+        == {"grooming": LIGHT.label_identity(0), "rearing": LIGHT.label_identity(1)}
     )
+
+
+def test_a_label_is_never_the_colour_of_less_or_more() -> None:
+    """Blue and yellow are the diverging scale's two poles and mean less and more. A label in
+    either reads as a direction on a cluster that has none (user, 2026-11-16), so the slots
+    near a pole in either theme are reserved, written out in ``LABEL_RESERVED_SLOTS`` and
+    recomputed here: a palette edit that moves a colour next to a pole fails this."""
+    near = set()
+    for theme in (LIGHT, DARK):
+        poles = (theme.diverging[0], theme.diverging[-1])
+        for slot, colour in enumerate(theme.categorical + theme.extended):
+            if (
+                min(delta_e(colour, pole) for pole in poles)
+                < chart_theme.LABEL_POLE_FLOOR
+            ):
+                near.add(slot)
+    assert near == set(chart_theme.LABEL_RESERVED_SLOTS)
+    for theme in (LIGHT, DARK):
+        labels = theme.label_identities()
+        assert len(labels) == 12
+        assert theme.hue("blue") not in labels and theme.hue("orange") not in labels
+        assert theme.label_identity(0) == theme.hue("green")
+        assert theme.label_identity(len(labels)) == labels[0], "wraps past the end"
+        for colour in labels:
+            for pole in (theme.diverging[0], theme.diverging[-1]):
+                assert delta_e(colour, pole) >= chart_theme.LABEL_POLE_FLOOR, colour
+    # The palette's own first slot is the "less" pole's neighbour: the check can fail.
+    assert delta_e(DARK.identity(0), DARK.diverging[0]) < chart_theme.LABEL_POLE_FLOOR
 
 
 def test_a_hue_is_found_by_its_name_not_its_slot() -> None:

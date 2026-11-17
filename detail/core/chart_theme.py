@@ -114,6 +114,19 @@ _EXTENDED_DARK: tuple[str, ...] = (
 )
 
 
+#: The identity slots a behavior label never takes: those within :data:`LABEL_POLE_FLOOR`
+#: (ΔE, normal vision) of either pole of the diverging scale in either theme. The same set in
+#: both themes, because a label's slot is its colour in each. Blue, amber, sky and vermillion
+#: of the six, and eight of the extension; twelve remain. Written out, and recomputed from the
+#: palettes by ``tests/core/test_chart_theme.py``, so a palette edit that moves a colour next
+#: to a pole fails there instead of quietly colouring a label "less".
+LABEL_RESERVED_SLOTS: frozenset[int] = frozenset(
+    {0, 1, 3, 4, 9, 10, 13, 16, 18, 21, 22, 23}
+)
+#: How far (ΔE, OKLab ×100, normal vision) a label's colour must stay from both poles.
+LABEL_POLE_FLOOR = 15.0
+
+
 @dataclass(frozen=True)
 class ChartTheme:
     """Every colour a chart uses, for one surface.
@@ -171,6 +184,26 @@ class ChartTheme:
         """
         colors = self.categorical + self.extended
         return colors[index % len(colors)]
+
+    def label_identity(self, index: int) -> str:
+        """The colour for a behavior label's slot ``index``: the identity colours less the
+        slots reserved for the diverging scale (:data:`LABEL_RESERVED_SLOTS`), in order.
+
+        **Blue and yellow mean less and more, and nothing else.** A label coloured like
+        either pole reads as a direction on a cluster that has none, and the palette's first
+        two slots are blue and amber (user, 2026-11-16). Every surface that colours a
+        behavior by its label asks here — the cluster tree and its label bar, BROWSE's list
+        and lanes, the label check, Find clusters' bands, and the exported behavior figures
+        (:func:`assign_identities`) — so a label is one colour everywhere and never a
+        pole's. Wraps past the end, the documented limit :meth:`identity` has.
+        """
+        colors = self.label_identities()
+        return colors[index % len(colors)]
+
+    def label_identities(self) -> tuple[str, ...]:
+        """Every colour a label can take, in slot order."""
+        colors = self.categorical + self.extended
+        return tuple(c for i, c in enumerate(colors) if i not in LABEL_RESERVED_SLOTS)
 
     def identities(self, n: int) -> list[str]:
         """The first ``n`` identity colours, in order."""
@@ -289,14 +322,17 @@ def rgb(color: str) -> tuple[int, int, int]:
 
 
 def assign_identities(labels, chart_theme: ChartTheme = LIGHT) -> dict[str, str]:
-    """A stable colour per label: sorted, then the identity colours in order.
+    """A stable colour per label: sorted, then the label colours in order
+    (:meth:`ChartTheme.label_identity`: the identity colours less the two the diverging scale
+    keeps for less and more).
 
     Sorted rather than first-seen, so "rearing" is the same colour in recording A's figure and
     recording B's, on screen and on paper — the one assignment every surface that colours a
     behavior by name goes through.
     """
     return {
-        label: chart_theme.identity(i) for i, label in enumerate(sorted(set(labels)))
+        label: chart_theme.label_identity(i)
+        for i, label in enumerate(sorted(set(labels)))
     }
 
 

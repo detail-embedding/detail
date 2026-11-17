@@ -656,7 +656,7 @@ class LabelBrowseTab(QWidget):
                 item.setData(
                     0,
                     Qt.ItemDataRole.DecorationRole,
-                    plot_theme.identity(self._slots.get(root, 0)),
+                    plot_theme.label_identity(self._slots.get(root, 0)),
                 )
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                 if depth == 0:
@@ -1071,7 +1071,7 @@ class LabelBrowseTab(QWidget):
             seconds = bo.instance_ns(row, self._periods) / 1e9
             label = SortCell(_display(path), path)
             label.setData(
-                plot_theme.identity(
+                plot_theme.label_identity(
                     self._slots.get(path.split(bo.PATH_SEPARATOR)[0], 0)
                 ),
                 Qt.ItemDataRole.DecorationRole,
