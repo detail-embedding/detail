@@ -134,7 +134,13 @@ def _drift(
         rel = py.relative_to(_PACKAGE).as_posix()
         if rel == seam:
             continue
-        n = _parser_calls(py.read_text(encoding="utf-8-sig"), names, module)
+        try:
+            source = py.read_text(encoding="utf-8-sig")
+        except FileNotFoundError:
+            # Another test's negative case plants a module in `detail/` for a moment
+            # (`tests/test_docs_generated_pages.py`); one gone again holds no call.
+            continue
+        n = _parser_calls(source, names, module)
         if n:
             found[rel] = n
     problems = []
