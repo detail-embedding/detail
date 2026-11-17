@@ -1486,15 +1486,14 @@ def test_a_request_posted_as_the_worker_goes_idle_is_still_served(qapp, monkeypa
 
     at_exit = threading.Event()
 
-    class SlowExit(set):
-        def discard(self, item) -> None:
+    class SlowExit(lm._PictureWorker):
+        def run(self) -> None:
+            super().run()
             at_exit.set()
             time.sleep(0.3)
-            super().discard(item)
 
-    monkeypatch.setattr(lm, "_RUNNING", SlowExit())
     monkeypatch.setattr(lm, "_IDLE_S", 0.05)
-    worker = lm._PictureWorker(receiver=None)
+    worker = SlowExit(receiver=None)
     served: list[int] = []
     worker.delivered.connect(lambda _g, index, _o, _image: served.append(index))
     source = FakeSource()
