@@ -1770,10 +1770,11 @@ what the model or trainer supports. The GUI forms and the Python API default the
 ## Inspecting and troubleshooting runs
 
 - `detail recording status` (above) lists a recording's detection, tracking and embedding runs
-  and their status: `complete`, `failed`, `cancelled`, `partial` (interrupted, resumable), or
-  an active state. `process status <run_NNN>` covers the rest, keypoint runs included. Only a
-  stage that can pick up where it stopped (keypoint detect) is ever `partial`; cancelling
-  detection, tracking, embedding or keypoint track records `cancelled`, and you run it again.
+  and their status: `complete`, `failed`, `cancelled`, or an active state.
+  `process status <run_NNN>` covers the rest, keypoint runs included. No stage picks up where
+  it stopped: cancelling detection, tracking, embedding, keypoint detect or keypoint track
+  records `cancelled`, and you run it again (`process retry` re-runs it whole). A keypoint
+  detect run cancelled by an older version may read `partial`; it does not resume either.
 - A blocking command exits non-zero and points you at the details when a run
   doesn't complete. The `attach` commands are the exception: they watch a run and print
   its status, and Ctrl-C leaves the run going, so they exit 0 whatever the status says.

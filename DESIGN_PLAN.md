@@ -2344,7 +2344,7 @@ def append_rows(arr, buf: np.ndarray) -> None:
 - **dtypes:** numeric → `"int32"` / `"int64"` / `"float32"`; both vlen columns → `dtype="str"` (StringDType). There is no `object`/`object_codec` route in v3 — `dtype=object` raises, and `dtype="bytes"` silently stores object pointers (corrupt). Always use `"str"` for vlen.
 - **Grow / reopen:** `append_rows` (resize + tail-assign); `arr.shape[0]` is the row count on disk.
 
-**Detection-indexed writers — whole frames on disk.** The detection zarr has multiple rows per frame. Detection does not resume: a failed or stopped detection run is re-run, each incomplete recording whole under a fresh run id (Section 7). The writer (`storage/zarr_io.py::PartZarrWriter`) still keeps two rules, so whatever reaches disk ends on a whole frame — which is what the keypoint detect store, which has the same layout and skips frames already written, relies on (§26):
+**Detection-indexed writers — whole frames on disk.** The detection zarr has multiple rows per frame. Detection does not resume: a failed or stopped detection run is re-run, each incomplete recording whole under a fresh run id (Section 7). The writer (`storage/zarr_io.py::PartZarrWriter`) still keeps two rules, so whatever reaches disk ends on a whole frame — as does the keypoint detect store, which has the same layout and does not resume either (§26):
 
 - **Flush on frame boundaries.** A flush is emitted only when the buffer is full *and* a new frame begins, so every flush ends on a complete frame — a frame's rows are never split across a crash-survivable boundary.
 - **Truncate to common length on reopen.** A crash can leave columns at different lengths (some resized/assigned, some not). On reopen, every column is truncated to the minimum length across columns, which lands exactly on the last completed flush. This is the standard recovery step for all per-part writers. Reopen also verifies each column's trailing shape against the expected schema (e.g. the `(D,)` embedding dimension); a mismatch is a hard error, so reopening a store with the wrong schema fails loudly instead of corrupting data.
@@ -10500,11 +10500,12 @@ skeleton; `candidates` present iff `n_candidates > 1`.
 
 ### Resume
 
-Neither stage resumes mid-run. A failed or stopped keypoint run is **re-run**: a retry
-(`Experiment.retry_run`) gives each incomplete recording a fresh run id, so nothing appends into a
-half-written store (§7). `keypoint_detect`'s runner keeps a skip path — handed a run directory that
-already holds rows, it cuts every column to their common length (a flush, so a frame boundary)
-and reads forward past the last frame written (Tenet 11) — but no surface hands it one.
+Neither stage resumes (Tenet 12), the same as detection. A failed or cancelled keypoint run is
+**re-run**: a retry (`Experiment.retry_run`) gives each incomplete recording a fresh run id, so
+nothing appends into a half-written store (§7). Both modules declare `resumes = False`, so a cancel
+is recorded `cancelled`, never `partial` (`tests/executor/test_cancel_status.py`). A stop-and-keep
+still lands `complete` with the frames placed so far and their `coverage`. `keypoint_detect`'s
+runner always starts on an empty run directory: it has no skip past frames already written.
 `keypoint_track` re-runs whole, in seconds.
 
 
