@@ -620,6 +620,13 @@ def test_a_snapshot_renders_its_own_labels(qapp, fitted):
 #: Controls that stay live on a snapshot, keyed by ``(class, label)``, with the reason.
 _LIVE_ON_A_SNAPSHOT = {
     ("QPushButton", "Back to live run"): "the way out",
+    # Find clusters rings and zooms the tree and writes nothing, so it is looking. Keyed on the
+    # object names (`gui/cluster_find.py`): the field is otherwise ("QLineEdit", ""), which is
+    # the label field's entry in the walk's own failure check.
+    ("QLineEdit", "find_clusters_field"): "finding a cluster is looking at it",
+    ("QPushButton", "find_clusters_find"): "finding a cluster is looking at it",
+    ("QPushButton", "find_clusters_chip"): "opening a found cluster is selecting it",
+    ("QPushButton", "find_clusters_clear"): "clearing the list is looking",
     # Zooming a frame changes what is on screen, never what the snapshot *is* — the same
     # reason the scrubber's transport controls are here. It appears only once a view has been
     # zoomed, so a frozen page that nobody has zoomed does not show it at all.
@@ -1341,6 +1348,128 @@ def test_zooming_onto_a_block_is_on_its_menu(qapp, fitted):
     node = interpret._view.children(interpret._view.root)[0]
     texts = [a.text() for a in interpret._icicle.context_menu(node).actions()]
     assert "Label…" in texts and "Zoom to this" in texts and "Remove label" in texts
+
+
+def test_cluster_ids_typed_into_find_are_ringed_and_the_tree_zooms_to_hold_them(
+    qapp, fitted
+):
+    """An id ringed, the tree zoomed right onto it, a new search replacing it, the chip
+    selecting its cluster, and Clear taking it off."""
+    _experiment, _handle, workspace = _workspace(qapp, fitted)
+    interpret = workspace._interpret
+    view = interpret._view
+    left, right = view.children(view.root)
+    b = view.children(left)[0] if view.children(left) else left
+    c = view.children(right)[0] if view.children(right) else right
+    find = interpret._find
+    find.field.setText(f"#{b}")
+    find.submit()
+    assert list(interpret._icicle.found()) == [b]
+    assert interpret._icicle.zoom_root == b, "one cluster zooms right onto it"
+    find.field.setText(f"{c}")
+    find.submit()
+    assert list(interpret._icicle.found()) == [c], "a new search replaces the last"
+    assert interpret._icicle.zoom_root == c
+    find.field.setText("999999")
+    find.submit()
+    assert interpret._icicle.found() == {}, "an id the run lacks rings nothing"
+    find.field.setText(f"{b}")
+    find.submit()
+    find.chip().name.click()
+    assert interpret._selected == b
+    find.clear.click()
+    assert interpret._icicle.found() == {}
+    assert (
+        interpret._icicle.zoom_root == view.root
+    ), "Clear shows the view before finding"
+
+
+def test_clear_goes_back_to_the_view_before_finding(qapp, fitted):
+    """The user's own zoom, not the whole tree: Clear puts back the zoom root, the visible span
+    and the level scroll that were on screen when finding began, however the zoom moved and
+    however many searches came between (user, 2026-11-16)."""
+    _experiment, _handle, workspace = _workspace(qapp, fitted)
+    interpret = workspace._interpret
+    icicle = interpret._icicle
+    view = interpret._view
+    left, right = view.children(view.root)
+    icicle.zoom_to(left)
+    icicle.zoom.set_view(0.25, 0.75)
+    before = icicle.view_state()
+    find = interpret._find
+    find.search(right)
+    assert icicle.zoom_root == right
+    icicle.zoom_by(0.5)  # the user zooms about while finding
+    find.search(left)  # and searches again: the view to go back to is still the first
+    find.clear.click()
+    assert icicle.view_state() == before
+
+
+def test_find_by_label_rings_every_cluster_with_it_and_a_new_label_follows(
+    qapp, fitted
+):
+    """Typing a label finds the clusters the user gave it, whole-name and ignoring case, and
+    zooms to hold them. Labelling one more cluster while it is listed rings that one too and
+    leaves the zoom alone: a label landing never moves the tree."""
+    experiment, handle, workspace = _workspace(qapp, fitted)
+    interpret = workspace._interpret
+    icicle = interpret._icicle
+    view = interpret._view
+    left, right = view.children(view.root)
+    a = view.children(left)[0] if view.children(left) else left
+    _label(qapp, interpret, a, "climb", handle)
+    find = interpret._find
+    find.field.setText("CLIMB")
+    find.submit()
+    assert list(icicle.found()) == [a]
+    assert icicle.zoom_root == a
+    assert (
+        icicle.found()[a].name() != interpret._colour_of(a).name()
+    ), "the band is the block's own fill colour, so it does not show"
+    _label(qapp, interpret, right, "climb", handle)
+    assert set(icicle.found()) == {a, right}, "the new label is ringed too"
+    assert icicle.zoom_root == a, "and the tree did not move"
+    assert find.chip().name.text() == "CLIMB · 2"
+
+
+def test_find_shares_the_zoom_row_and_costs_the_tree_no_height(qapp, fitted):
+    """Find sits in the zoom row's spare width, not a row of its own above the tree (user,
+    2026-11-16): the row it would have added was 31px of a 171px tree pane at 1440x847. Idle,
+    the row is exactly as tall as the zoom buttons; listing ids does not move the tree.
+    """
+    _experiment, _handle, workspace = _workspace(qapp, fitted)
+    workspace.resize(1440, 847)
+    workspace.show()
+    interpret = workspace._interpret
+    find = interpret._find
+    assert (
+        find.parentWidget() is interpret._zoom_in.parentWidget()
+    ), "not in the zoom row"
+    qapp.processEvents()
+    row = find.parentWidget()
+    assert row.height() == interpret._zoom_in.height(), "the idle row grew"
+    tree_top = interpret._tree.mapTo(workspace, interpret._tree.rect().topLeft()).y()
+    view = interpret._view
+    find.search(view.children(view.root)[0])
+    qapp.processEvents()
+    assert (
+        interpret._tree.mapTo(workspace, interpret._tree.rect().topLeft()).y()
+        == tree_top
+    )
+    workspace.close()
+
+
+def test_a_refit_clears_find_because_every_id_names_another_cluster(qapp, fitted):
+    _experiment, _handle, workspace = _workspace(qapp, fitted)
+    interpret = workspace._interpret
+    view = interpret._view
+    node = view.children(view.root)[0]
+    interpret._find.search(node)
+    assert interpret._icicle.zoom_root == node
+    interpret._tree_key = ("a different fit",)
+    interpret._reloaded_tree(view)
+    assert interpret._find.entry() is None and interpret._icicle.found() == {}
+    assert interpret._icicle.zoom_root == view.root
 
 
 # --- AUDIT: a check of one label -------------------------------------------------------------

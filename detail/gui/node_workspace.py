@@ -96,6 +96,7 @@ from detail.gui.cluster_filters import (
     numbers_text,
     panel_name,
 )
+from detail.gui.cluster_find import FindClustersBar, common_cluster
 from detail.gui.grip_splitter import GripSplitter
 from detail.gui.label_panel import (
     LabelBar,
@@ -687,16 +688,26 @@ class NodeInterpretTab(QWidget):
         tree_pane = QWidget()
         tree_box = QVBoxLayout(tree_pane)
         tree_box.setContentsMargins(0, 0, 0, 0)
-        # Row 2: the label swatches, then the zoom buttons. How to use the tree is the row's
-        # tooltip.
+        # Row 1: the label swatches, Find clusters, then the zoom buttons. How to use the tree
+        # is the row's tooltip. Find sits in the row's spare width rather than a row of its
+        # own (user, 2026-11-16: ~580px of it went unused at 1440 wide), and wraps onto a
+        # second line only while more ids are listed than fit.
         key_row = QWidget()
         key_line = QHBoxLayout(key_row)
         key_line.setContentsMargins(0, 0, 0, 0)
         self._key_row = TreeKeyRow()
-        key_line.addWidget(self._key_row, 1)
-        # The key is capped at its ramp's width, so without this the row's spare width went to
-        # the buttons: ~420px each on a laptop (`requirements.a_button_in_a_row_keeps_its_own_width`).
-        key_line.addStretch(1)
+        key_line.addWidget(self._key_row)
+        # Ids typed here are ringed in the tree, and it zooms to the smallest cluster holding
+        # them all (`gui/cluster_find.py`). It takes the row's spare width, so the buttons keep
+        # their own (`requirements.a_button_in_a_row_keeps_its_own_width`).
+        #: The tree's view before Find first zoomed it (`NodeIcicle.view_state`): what an
+        #: emptied list goes back to. ``None`` while nothing is being found.
+        self._before_find = None
+        self._find = FindClustersBar(unit=terms.unit, units=terms.units)
+        self._find.found_changed.connect(self._show_found)
+        self._find.rings_changed.connect(self._icicle_rings)
+        self._find.picked.connect(self.select)
+        key_line.addWidget(self._find, 1)
         self._zoom_in = QPushButton("+")
         self._zoom_in.setToolTip("Zoom in (or scroll the wheel over the tree)")
         self._zoom_in.clicked.connect(lambda: self._icicle.zoom_toward_selection(0.5))
@@ -1013,6 +1024,7 @@ class NodeInterpretTab(QWidget):
         self._root_clips = loaded["root_clips"]
         self._groups = self._dimension_groups(view)
         self._icicle.set_view(view)
+        self._find.set_lookup(self._nodes_found_by)
         self._schedule_tree_fit()
         self._fill_filters(view)
         self._read_screens()
@@ -1047,6 +1059,11 @@ class NodeInterpretTab(QWidget):
             return
         self._history.clear()
         self._sync_undo()
+        if self._find.entry() is not None:
+            # The view kept before finding names a node of the old fit: drop it, not restore it.
+            self._before_find = None
+            self._find.clear_all()
+            self._icicle.fit()
         closed = self._windows.close_all()
         if closed:
             self._written.setText(
@@ -1342,6 +1359,41 @@ class NodeInterpretTab(QWidget):
         if height != holder.height():
             holder.setFixedHeight(height)
 
+    def _nodes_found_by(self, entry) -> list[int]:
+        """The clusters a Find entry names, largest first: an id the tree has, or every
+        cluster whose own label is ``entry`` (ignoring case)."""
+        view = self._view
+        if view is None:
+            return []
+        times = view.node_times()
+        if isinstance(entry, int):
+            return [entry] if 0 <= entry < len(times) else []
+        key = entry.casefold()
+        nodes = [
+            int(k) for k, name in self._names.items() if (name or "").casefold() == key
+        ]
+        return sorted(nodes, key=lambda node: -float(times[node]))
+
+    def _icicle_rings(self, found: dict) -> None:
+        self._icicle.set_found(found)
+
+    def _show_found(self, found: dict) -> None:
+        """Find clusters changed: ring its ids, and zoom to the smallest cluster holding all of
+        them. The view before the first zoom is kept, and an emptied list (**Clear**, or the
+        last id's ×) takes the rings off and shows that view again (user, 2026-11-16).
+        """
+        self._icicle.set_found(found)
+        if self._view is None:
+            return
+        if not found:
+            if self._before_find is not None:
+                self._icicle.restore_view(self._before_find)
+                self._before_find = None
+            return
+        if self._before_find is None:
+            self._before_find = self._icicle.view_state()
+        self._icicle.zoom_to(common_cluster(self._view, list(found)))
+
     def _sync_zoom_buttons(self) -> None:
         zoomed = self._icicle.is_zoomed()
         set_available(self._zoom_out, zoomed, "The whole tree is shown already")
@@ -1421,6 +1473,12 @@ class NodeInterpretTab(QWidget):
             self._show_header(self._selected)
             self._emit_lane(self._selected)
         self._windows.refresh()
+        # A label found by name may now be on more clusters, or fewer: re-ring, do not zoom.
+        # Bands keep off the labels' colours, which fill the blocks they ring.
+        self._find.set_reserved(
+            range(len(root_slots(label_paths(view, self._names).values())))
+        )
+        self._find.refresh()
 
     # --- selection -----------------------------------------------------------------------
 
