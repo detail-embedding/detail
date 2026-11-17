@@ -1839,7 +1839,23 @@ detail experiment import study.segproj.tar
 #   imported: /Users/you/Documents/DetailExperiments/study
 ```
 
-Include the heavy bits when you need them: `--include-video`, `--include-datasets`, `--gzip`. `--gzip` rarely pays: DETAIL's data files are compressed already, so it barely shrinks the archive and makes the export much slower. On import, `--replace` overwrites a same-id experiment and `--name <new>` lands a separate copy.
+Include the heavy bits when you need them: `--include-video`, `--include-datasets`, `--gzip`. `--gzip` rarely pays: DETAIL's data files are compressed already, so it barely shrinks the archive and makes the export much slower. An earlier archive saved inside the experiment folder is never packed into a later one. A folder that is a symlink is not followed, and the export names each one it left out:
+
+```
+exported: study.segproj.tar
+left out raw_videos: it is a symlinked folder, which is not followed
+```
+
+On import, `--replace` replaces a same-id experiment and `--name <new>` lands a separate copy. Replacing deletes the whole existing experiment, so anything the archive does not carry is gone afterwards: the video files and datasets a slim archive leaves out, the export records no archive carries, and any earlier archive saved in the experiment folder. `--replace` prints that list before it replaces anything (it does not ask; stop it with Ctrl-C):
+
+```
+replacing experiment 'study' deletes what the bundle does not bring back:
+  - 3 video file(s), 4.2 GB: the bundle carries no video
+  - 1 export record(s), export_01: no bundle carries them (the exported files themselves are not touched)
+imported: /Users/you/Documents/DetailExperiments/study
+```
+
+Without `--replace`, an import onto an existing experiment stops and shows the same list under "--replace would also delete". To keep the video, import with `--name <new>` instead, or export with `--include-video`.
 
 Both commands show a progress bar on stderr, relabelled as the work moves through
 its phases: export goes `scanning` → `checking` → `hashing` → `packing`, import
@@ -1864,12 +1880,21 @@ day is found from any one this machine knows, even when the two machines spell
 the server differently. A folder
 is used only when a video in it matches the recorded fingerprint, and a root
 name this machine already uses for another folder is left alone: the imported
-recordings get a root of their own. Whatever is still not found is listed:
+recordings get a root of their own. A file at the recorded path that is a
+different video (its fingerprint does not match) counts as not found, so a
+root name this machine uses for another folder never hands a recording someone
+else's video. Whatever is still not found is listed:
 
 ```
 imported: /Users/you/Documents/DetailExperiments/study
-video not found on this machine for 2 recording(s): s1, s2. Relink one file (`detail recording relink`) and every recording whose video is in the same folder finds it too.
+video not found on this machine for 2 recording(s): s1, s2. (A file at the same path that is a different video counts as not found.) Relink one file (`detail recording relink`) and every recording whose video is in the same folder finds it too.
 ```
+
+The same check applies to every frame preview, frame read and clip export of a
+referenced recording, not only at import: a referenced video whose file was
+replaced, or whose [video root](#video-root) was re-pointed at a folder with a
+different file of the same name, shows as not on this machine instead of
+showing the other file's frames.
 
 ### Importing event streams (MED-PC)
 

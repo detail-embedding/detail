@@ -934,7 +934,12 @@ def experiment_export(
     """Pack a experiment into one portable archive (§15) — slim by default (outputs +
     metadata + models; no source video / datasets). scp it to another machine.
 
+    An earlier archive saved inside the experiment is never packed. A folder that is a
+    symlink is not followed; each one left out is named.
+
     Shows a bar on stderr through scanning, checking, hashing and packing."""
+    from detail.storage import export as export_store
+
     proj = _open_experiment(experiment_dir)
     try:
         out = _with_stage_progress(
@@ -949,23 +954,60 @@ def experiment_export(
     except (FileNotFoundError, ValueError) as e:
         raise click.ClickException(str(e))
     click.echo(f"exported: {out}")
+    contents = export_store.read_manifest(out).get("contents") or {}
+    for folder in contents.get("symlinked_folders_left_out") or []:
+        click.echo(
+            f"left out {folder}: it is a symlinked folder, which is not followed"
+        )
 
 
 @experiment.command("import")
 @click.argument("archive", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option(
-    "--replace", is_flag=True, help="Replace an existing experiment with the same id."
+    "--replace",
+    is_flag=True,
+    help="Replace an existing experiment with the same id. Deletes what the bundle does not "
+    "bring back (a slim bundle's video and datasets, export records); the list is printed "
+    "first.",
 )
 @click.option("--name", default=None, type=str, help="Import under a different id.")
 def experiment_import(archive: Path, replace: bool, name: str | None) -> None:
     """Import a experiment bundle into the managed workspace (§15).
 
+    With --replace, first prints what the replace deletes and the bundle does not bring back:
+    video files (count and size), datasets and export records.
+
     Shows a bar on stderr through reading, extracting, verifying and placing."""
+    from detail.api.experiment import replace_warning
+    from detail.storage.export import ExperimentExistsError
+
+    def _losses(losses) -> list[str]:
+        return [f"  - {line}" for line in replace_warning(losses)]
+
+    if replace:
+        try:
+            losses = Experiment.replace_losses(archive, name=name)
+        except ValueError as e:
+            raise click.ClickException(str(e))
+        if losses is not None and not losses.empty:
+            click.echo(
+                f"replacing experiment {losses.experiment_id!r} deletes what the bundle "
+                "does not bring back:"
+            )
+            for line in _losses(losses):
+                click.echo(line)
     try:
         proj = _with_stage_progress(
             lambda bar: Experiment.import_archive(
                 archive, replace=replace, name=name, progress=bar
             )
+        )
+    except ExperimentExistsError as e:
+        lines = _losses(e.losses)
+        raise click.ClickException(
+            f"experiment {e.losses.experiment_id!r} already exists. Pass --replace to "
+            "replace it, or --name to import a separate copy."
+            + ("\n--replace would also delete:\n" + "\n".join(lines) if lines else "")
         )
     except (ValueError, FileExistsError) as e:
         raise click.ClickException(str(e))
@@ -977,8 +1019,9 @@ def experiment_import(archive: Path, replace: bool, name: str | None) -> None:
         more = f" and {len(missing) - 5} more" if len(missing) > 5 else ""
         click.echo(
             f"video not found on this machine for {len(missing)} recording(s): "
-            f"{shown}{more}. Relink one file (`detail recording relink`) and every "
-            "recording whose video is in the same folder finds it too."
+            f"{shown}{more}. (A file at the same path that is a different video counts as "
+            "not found.) Relink one file (`detail recording relink`) and every recording "
+            "whose video is in the same folder finds it too."
         )
 
 

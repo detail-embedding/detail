@@ -456,11 +456,8 @@ class Recording:
             raise ValueError(
                 f"part {part_index} is a copied part, not referenced — nothing to relink"
             )
-        recorded = part.get("fingerprint") or {}
         current = integrity.file_fingerprint(new)
-        if current["size"] != recorded.get("size") or current[
-            "sha256_ends"
-        ] != recorded.get("sha256_ends"):
+        if not integrity.same_content(current, part.get("fingerprint")):
             raise ValueError(
                 f"{new} has different content than the recorded video — it is a changed or "
                 "different video, not a move; remove and re-add the recording to use it"
