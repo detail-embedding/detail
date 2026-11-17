@@ -7277,6 +7277,13 @@ def comparison() -> None:
     show_default=True,
     help=_comparison_help("suppress_nesting"),
 )
+@click.option(
+    "--statistic",
+    type=click.Choice(["moderated_t", "effect"]),
+    default=_comparison_default("statistic"),
+    show_default=True,
+    help=_comparison_help("statistic"),
+)
 def comparison_run(
     experiment_dir,
     source_run_id,
@@ -7299,6 +7306,7 @@ def comparison_run(
     min_units_fraction,
     candidate_floor_s,
     suppress_nesting,
+    statistic,
 ) -> None:
     """Run a comparison and save it.
 
@@ -7345,6 +7353,7 @@ def comparison_run(
                 "min_units_fraction": min_units_fraction,
                 "candidate_floor_s": candidate_floor_s,
                 "suppress_nesting": suppress_nesting,
+                "statistic": statistic,
             },
             progress=bar,
         )
@@ -7360,6 +7369,8 @@ def comparison_run(
     click.echo(f"  design: {record.get('design')} — {record.get('design_reason', '')}")
     from detail.analysis import comparison_report
 
+    if comparison_report.statistic_note(record):
+        click.echo(f"  {comparison_report.statistic_note(record)}")
     if comparison_report.left_out_sentence(record):
         click.echo(
             f"  left out: "

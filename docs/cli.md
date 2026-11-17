@@ -1152,8 +1152,10 @@ column of `metadata.csv`, and report how the groups differ.
 - `run --experiment <dir> --source-run <an_NN> [--snapshot <snap_NN>] [--source labels|nodes] --group-by <column> --aggregate-to <column|none>
   [--level <value> --level <value>] [--measure <name> …] [--recording <id> …] [--windows whole|absolute|normalized|sliding]
   [--every <seconds>] [--parts N] [--length <seconds>] [--step <seconds>] [--draws N] [--seed N]
-  [--presence-s <seconds>] [--pseudo-count-s <seconds>] [--min-units-fraction <share>] [--no-suppress-nesting]`: measure each unit, group them, and
-  save the result to `comparisons/<cmp_NN>/`. Prints the `cmp_NN` and the design it resolved.
+  [--presence-s <seconds>] [--pseudo-count-s <seconds>] [--min-units-fraction <share>] [--no-suppress-nesting]
+  [--statistic moderated_t|effect]`: measure each unit, group them, and
+  save the result to `comparisons/<cmp_NN>/`. Prints the `cmp_NN`, the design it resolved and
+  what the ranking scores by.
   `--group-by`, `--aggregate-to`, `--level`, `--measure` and `--recording` are all repeatable.
 
   **The design follows from the column.** A `--group-by` column that is constant within each
@@ -1169,16 +1171,28 @@ column of `metadata.csv`, and report how the groups differ.
   to be defined, and add `--pseudo-count-s` of time to both sides of a ratio so a behavior absent
   at one level has a finite one.
 
+  **A within-unit ranking scores by agreement, not by size.** By default (`--statistic
+  moderated_t`) each measure is ranked, and the floor taken, on its moderated t: the mean
+  per-unit effect divided by its spread across the units (plus the family's median spread, so
+  exact agreement cannot own the floor). A behavior eight of eight animals agree on at 2x
+  outranks one that swings tenfold either way in different animals, and the floor stops belonging
+  to the sparsest behaviors. The effect itself (the fold change, the mean rho) is still what
+  every table prints; the t sits beside it, in the tables' `t` column and `ranking.csv`'s
+  `statistic`. `--statistic effect` ranks on the mean effect itself, as comparisons run before
+  this option existed did; those records read back as they were run. A between design has no
+  per-unit effects and ranks on the effect whatever is asked; the printed line says which ran.
+
   **`--source nodes` screens a clustering run's unlabelled clusters.** Every node of its tree with
   at least `--candidate-floor-s` seconds of member time (30 by default) becomes a row
   (`node:<id>`), measured from the node cache over the whole recording: share of time (what the ranking is on), rate, total time and mean
   bout length. Nested nodes that clear the floor are collapsed to the best of them
   (`--no-suppress-nesting` keeps every slice). The run needs a current node cache; a stale one is
   refused with what changed. It always takes those four measures and reads the cache as it is
-  now, so `--measure` naming fewer and `--snapshot` are refused. `export` then writes `ranking.csv` with every node's effect, floor
-  and verdict, and draws the tables and figures for the kept nodes and the next ten below the
-  floor rather than for thousands of nodes. Each row also carries `family_p` (the share of
-  shuffled cohorts whose largest effect reaches it: the floor read as a p, at most 0.05 for a node
+  now, so `--measure` naming fewer and `--snapshot` are refused. `export` then writes `ranking.csv` with every node's effect, its
+  `statistic` (the moderated t the floor is in the unit of, blank on a ranking by the effect),
+  floor and verdict, and draws the tables and figures for the kept nodes and the next ten below
+  the floor rather than for thousands of nodes. Each row also carries `family_p` (the share of
+  shuffled cohorts whose largest t reaches it: the floor read as a p, at most 0.05 for a node
   that clears), `own_p` (the same share against the node's own shuffles alone, so a cluster
   consistent in its animals but hidden by the size of the family still says so) and `q` (the
   Benjamini–Hochberg false-discovery rate over the family's own p's). Threshold `family_p`
@@ -1222,8 +1236,9 @@ column of `metadata.csv`, and report how the groups differ.
   tree, `stats.csv` (long form, one row per observation), `tables/` (per measure: groups as rows
   with n / coverage / mean / median / sd), `figures/` (every observation as a point, plus the
   difference ranking with its chance floor), `summary.md`, and `manifest.json` with a SHA-256 per
-  artifact, plus `ranking.csv` (every ranked measure or node with its effect, floor and verdict,
-  and its `family_p` / `own_p` / `q`) and, for a node screen, the `nodes.csv` hierarchy. Warns if the source data has changed since
+  artifact, plus `ranking.csv` (every ranked measure or node with its effect, its `statistic`
+  where the ranking is on the moderated t, floor and verdict, and its `family_p` / `own_p` /
+  `q`) and, for a node screen, the `nodes.csv` hierarchy. Warns if the source data has changed since
   the comparison was run. `--theme dark`
   draws the figures on a dark background for slides; the manifest records which theme was used.
 - `list --experiment <dir>`: the experiment's comparisons, with the unit of analysis each used.
