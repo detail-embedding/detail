@@ -10,6 +10,8 @@ motif, reusing `tests/api/test_query.py`'s helper. Frame decode is not: this fix
 video, which is what makes the decode-failure guard natural rather than contrived.
 """
 
+import math
+
 import numpy as np
 import pytest
 from PyQt6.QtWidgets import QLabel
@@ -688,13 +690,17 @@ def test_a_clip_names_its_recording_and_a_distinguishing_score(qapp, tmp_path):
     # Distinct *scores* must render distinctly. Two clips can genuinely tie — this fixture has
     # two at 1.0000 — and no number of decimals separates those; the failure being guarded is
     # neighbours that differ being printed the same, which is what made the row look static.
+    # A tie is a tie at float32's resolution, not bit for bit: the planted motif scores the
+    # same in both recordings, but how BLAS splits the sums across threads can leave the two a
+    # unit in the last place apart. 1e-6 is ten of those units and a tenth of what five
+    # decimals can show, so neighbours that differ in the caption's digits still fail here.
     rendered = {}
     for cell in tab._grid._cells.values():
         score = cell._clip.score
         if score is None:
             continue
         shown = cell._caption.text().splitlines()[-1]
-        assert rendered.setdefault(shown, score) == score, (
+        assert math.isclose(rendered.setdefault(shown, score), score, rel_tol=1e-6), (
             f"{shown!r} is printed for two different scores — "
             f"{rendered[shown]} and {score}"
         )
@@ -888,11 +894,25 @@ def test_score_digits_stops_at_two_when_two_is_enough():
     assert score_digits([0.10, 0.42, 0.87]) == 2
 
 
+def test_score_digits_counts_a_float32_tie_as_one_score():
+    """One match found in two recordings scores the same, but float32 sums split across BLAS
+    threads can return the two a unit in the last place apart. Counted as two scores, they
+    could never be separated, so every caption went to the five-decimal cap on a machine with
+    many threads and stayed at two on one with few."""
+    tie = [0.8565883636474609, 0.8565884232521057]  # measured, OPENBLAS_NUM_THREADS=32
+    assert score_digits([0.10, 0.42, *tie]) == 2
+    # ...while scores that differ in the caption's digits still count as different.
+    assert score_digits([0.10, 0.42, 0.85658, 0.85659]) == 5
+
+
 def test_score_digits_gives_up_at_the_cap_rather_than_growing_without_bound():
     """Values agreeing past five places cannot be separated, and the cap is what stops a
     caption becoming a serial number. This is why the browse test asserts distinctness *at
-    the cap* rather than unconditionally."""
-    values = [0.6625200, 0.6625201]
+    the cap* rather than unconditionally.
+
+    Three millionths apart: two scores a ten-millionth apart are within float32's rounding of
+    each other, which ``score_digits`` counts as one score (the test above)."""
+    values = [0.662520, 0.662523]
     assert score_digits(values) == 5
     assert len({f"{v:.5f}" for v in values}) == 1  # still collides, by design
 
