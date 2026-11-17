@@ -95,10 +95,10 @@ def test_an_id_is_ringed_in_the_first_colour_and_its_chip_says_it(bar):
     _enter(bar, "#7")
     assert bar.entry() == 7
     assert {n: c.name() for n, c in bar.found().items()} == {
-        7: plot_theme.identity(0).name()
+        7: plot_theme.label_identity(0).name()
     }
     assert bar.chip().name.text() == "#7"
-    assert bar.chip().colour.name() == plot_theme.identity(0).name()
+    assert bar.chip().colour.name() == plot_theme.label_identity(0).name()
     assert seen[-1] == bar.found()
     assert bar.field.text() == "", "the field empties once searched"
 
@@ -130,10 +130,10 @@ def test_a_band_never_takes_a_labels_colour(bar):
     search's colour moves it."""
     bar.set_reserved({0, 1})
     _enter(bar, "4")
-    assert bar.found()[4].name() == plot_theme.identity(2).name()
+    assert bar.found()[4].name() == plot_theme.label_identity(2).name()
     bar.set_reserved({0, 1, 2})
     bar.refresh()
-    assert bar.found()[4].name() == plot_theme.identity(3).name()
+    assert bar.found()[4].name() == plot_theme.label_identity(3).name()
     assert bar.chip().colour.name() == bar.found()[4].name()
 
 

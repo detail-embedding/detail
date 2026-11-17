@@ -2929,9 +2929,10 @@ def _kept_candidate(view) -> int:
 def test_a_saved_screens_kept_clusters_shade_the_tree_through_the_filters(
     qapp, fitted, monkeypatch
 ):
-    """Ticking a screen in the Differences line is the clusters condition: a kept cluster
-    shades 100%, its parent by the time under it, the rest grey, through the same
-    ``match_shares`` and ``clip_matches`` every other filter goes through."""
+    """Ticking a screen on the Differences tab is the clusters condition for the clips.
+    On the Filters tab the tree is shaded by the fields alone and the clusters the screen
+    kept are framed: the screen does not narrow the share, and the fill is never its
+    colour there (§22)."""
     import detail.api.comparison as comparison_api
     from detail.api.cluster_filter import CLUSTERS, Selection
 
@@ -2957,8 +2958,12 @@ def test_a_saved_screens_kept_clusters_shade_the_tree_through_the_filters(
     selection = bar.selection()
     assert selection.keys() == [CLUSTERS] and selection.leaves_source == "cmp_07"
     assert selection.leaves == view.leaves_under_nodes([node])
-    # Alone, the screen shades by its effect (the next test); beside a clip filter the
-    # share ramp returns, with the screen's leaves still ANDed in.
+    from detail.gui import cluster_filters as cf
+
+    assert bar.open_tab() == cf.FILTERS_TAB
+    assert interpret._icicle.shades() is None, "no field is on: nothing to shade by"
+    assert set(interpret._icicle.kept()) == {node}, "the kept cluster is framed"
+    assert "drug vs vehicle · paired" in interpret._icicle._describe(node)
     bar.set_selection(
         Selection(
             leaves=selection.leaves,
@@ -2968,18 +2973,26 @@ def test_a_saved_screens_kept_clusters_shade_the_tree_through_the_filters(
     )
     selection = bar.selection()
     shaded = interpret._icicle.shades()
-    assert shaded[node] == pytest.approx(1.0)
-    expected = view.match_shares(selection)
+    assert not interpret._icicle._diverging
+    expected = view.match_shares(selection.without(CLUSTERS))
     for each, share in shaded.items():
         assert share == pytest.approx(expected[each], nan_ok=True)
-    assert 0.0 < shaded[view.root] < 1.0
+    assert shaded[view.root] == pytest.approx(
+        1.0
+    ), "every recording: every clip matches"
+    assert set(interpret._icicle.kept()) == {node}
     assert bar.count_label.text().endswith("clips match")
+    matched = int(bar.count_label.text().split(" of ")[0].replace(",", ""))
+    assert matched < len(
+        interpret._root_clips
+    ), "the count is the clips: both tabs ANDed"
     from detail.gui.cluster_filters import panel_name
 
     assert panel_name(selection) == "Filters · 2 active"
 
-    bar.field_row("Differences").reset_button.click()
+    bar.remove(("clusters",))
     assert bar.selection().leaves is None
+    assert interpret._icicle.kept() == {}, "no screen: no frame"
     bar.field_row("Video").reset_button.click()
     assert interpret._icicle.shades() is None
 
@@ -3020,9 +3033,7 @@ def test_run_a_new_screen_opens_the_launch_dialog_seeded_and_ticks_what_it_saved
     assert interpret._icicle._diverging, "ticked alone, the screen shades by its effect"
 
 
-def test_a_screen_alone_shades_the_tree_by_its_effect_and_a_clip_filter_brings_the_share_back(
-    qapp, fitted, monkeypatch
-):
+def test_the_open_tab_decides_what_the_trees_colour_means(qapp, fitted, monkeypatch):
     """The effect mode (§22): while the ticked screen is the only filter on, the tree reads the
     screen's statistic on the diverging scale and the key its axis and floor; tick a clip filter
     too and both return to the share ramp, because two scales on one tree are unreadable.
@@ -3075,19 +3086,28 @@ def test_a_screen_alone_shades_the_tree_by_its_effect_and_a_clip_filter_brings_t
     interpret._read_screens()
     _screens_read(qapp, interpret)
     bar = interpret.filters()
+    from detail.gui import cluster_filters as cf
+
     bar.screens.list.item(0).setCheckState(Qt.CheckState.Checked)
     interpret.select(node)
+    assert (
+        not interpret._icicle._diverging
+    ), "the Filters tab is open: not the effect yet"
+    bar.set_open_tab(cf.DIFFERENCES_TAB)
 
     assert interpret._icicle._diverging
+    assert interpret._icicle.kept() == {}, "the fill says it here; no frame as well"
     shaded = interpret._icicle.shades()
     assert shaded[node] == pytest.approx(math.log(12.4) / LOG_RATIO_EXTENT)
     assert shaded[view.root] != shaded[view.root], "the root has no row: NaN, grey"
-    key = bar.dock.key
-    assert key.is_effect()
+    key = bar.screens.key
+    assert key.is_effect() and not key.isHidden()
+    assert bar.dock.differences_box.isAncestorOf(key), "beside the screen that sets it"
     assert key.text().startswith(
-        "Less ↔ more under drug (against vehicle) | ÷20 … ×20 |"
+        "Less ↔ more under drug (against vehicle) | less … more |"
     )
-    assert "selected 12.4×" in key.text() and "floor" in key.text()
+    assert "selected 12.4×" in key.text() and "no difference" in key.text()
+    assert not bar.dock.key.is_effect(), "the clips-that-match scale keeps its units"
     assert "12.4×" in interpret._icicle._describe(node)
     assert "kept" in interpret._icicle._describe(node)
     theme = plot_theme.current()
@@ -3095,7 +3115,8 @@ def test_a_screen_alone_shades_the_tree_by_its_effect_and_a_clip_filter_brings_t
         shaded[node], theme
     )
 
-    # A clip filter beside the screen: back to the share ramp, the screen still ANDed in.
+    # A clip filter beside the screen changes nothing here: the tree was swapped to a share
+    # with nothing said when one scale served both (user, 2026-11-16).
     bar.set_selection(
         Selection(
             leaves=bar.selection().leaves,
@@ -3103,10 +3124,25 @@ def test_a_screen_alone_shades_the_tree_by_its_effect_and_a_clip_filter_brings_t
             recording_ids=frozenset(view.recording_ids),
         )
     )
+    assert interpret._icicle._diverging and key.is_effect()
+    assert interpret._icicle.shades()[node] == pytest.approx(shaded[node])
+
+    # The Filters tab: the share of clips that match the fields, the kept cluster framed in
+    # the colour of its side.
+    bar.set_open_tab(cf.FILTERS_TAB)
     assert not interpret._icicle._diverging
-    assert not key.is_effect()
     assert interpret._icicle.shades()[node] == pytest.approx(1.0)
-    assert key.text().startswith("Clips that match | 0% … 100% |")
+    assert interpret._icicle.kept() == {
+        node: plot_theme.effect_colour(1.0, theme)
+    }, "the more pole's own colour, whatever the size"
+    assert bar.dock.key.text().startswith("Clips that match | 0% … 100% |")
+    assert key.is_effect(), "the screen's scale is still its own, on its own tab"
+
+    # Unticked: no scale on the Differences tab, nothing shaded there, no frame.
+    bar.remove(("clusters",))
+    assert key.isHidden() and interpret._icicle.kept() == {}
+    bar.set_open_tab(cf.DIFFERENCES_TAB)
+    assert interpret._icicle.shades() is None
 
 
 # --- a label written while a screen is ticked remembers the screen (§22, Phase 3) ---------
@@ -3170,7 +3206,7 @@ def test_a_label_written_while_a_screen_is_ticked_records_the_screen(
         assert inside["relation"] == "under" and inside["kept"] == str(node)
         assert f"inside kept cluster #{node} ·" in bar.origin.text()
 
-    interpret.filters().field_row("Differences").reset_button.click()
+    interpret.filters().remove(("clusters",))
     other = next(
         n for n in range(view.tree.n_nodes - 1) if n != node and n not in children
     )
@@ -3274,6 +3310,9 @@ def test_a_screen_read_looser_than_its_floor_shows_the_lead_and_the_label_record
         _FakeScreen("cmp_12", [node], clearing=2, leads=[lead]),
     )
     bar = interpret.filters()
+    from detail.gui import cluster_filters as cf
+
+    bar.set_open_tab(cf.DIFFERENCES_TAB)
     assert bar.selection().leaves == view.leaves_under_nodes([node])
     assert bar.screens.strictness_label.text().endswith("1 kept of 2 clearing")
     assert interpret._icicle._diverging
@@ -3289,8 +3328,15 @@ def test_a_screen_read_looser_than_its_floor_shows_the_lead_and_the_label_record
     assert "kept at p ≤ 0.2" in interpret._icicle._describe(lead)
     assert "family-wise p 0.2, own p 0.03, q 0.6" in interpret._icicle._describe(lead)
     interpret.select(lead)
-    key = bar.dock.key
-    assert key.is_effect() and "selected 2.5×" in key.text() and "floor" in key.text()
+    key = bar.screens.key
+    assert key.is_effect() and "selected 2.5×" in key.text()
+    assert "no difference" in key.text()
+    bar.set_open_tab(cf.FILTERS_TAB)
+    assert set(interpret._icicle.kept()) == {
+        node,
+        lead,
+    }, "that level's kept set is framed"
+    bar.set_open_tab(cf.DIFFERENCES_TAB)
 
     _label(qapp, interpret, lead, "lead", handle)
     origin = handle.state().label_origins[str(lead)]
@@ -3307,3 +3353,67 @@ def test_a_screen_read_looser_than_its_floor_shows_the_lead_and_the_label_record
     assert bar.selection().alpha is None
     assert bar.selection().leaves == view.leaves_under_nodes([node])
     assert interpret._icicle.shades()[lead] == 0.0
+
+
+def test_a_screen_with_no_floor_is_listed_with_its_reason_and_cannot_be_ticked(
+    qapp, fitted, monkeypatch
+):
+    """A screen over one animal has no floor, so nothing it ranked is shown to differ.
+    Ticked, it took the labels' colours off the tree, coloured nothing, and greyed every
+    clip (user screenshot, 2026-11-17). It is listed greyed, with why in full under the
+    list, and it cannot be ticked — as a screen that cannot be read is."""
+    import detail.api.comparison as comparison_api
+    from detail.analysis import compare
+    from detail.api.cluster_filter import Selection
+
+    _experiment, _handle, workspace = _workspace(qapp, fitted)
+    interpret = workspace._interpret
+    view = interpret._view
+    _screens_read(qapp, interpret)
+    node = _kept_candidate(view)
+    reason = "one ID: a within-unit null cannot move with a single unit"
+
+    class _NoFloor(_FakeScreen):
+        def ranking(self):
+            item = compare.Effect(
+                measure_key=("time_fraction", f"node:{node}", "", "whole"),
+                effect=math.log(12.4),
+                n_units=1,
+                n_present=1,
+                consistency=1,
+                loo_sign_stable=False,
+            )
+            return compare.Ranking(
+                contrasts=[item],
+                floor=None,
+                draws=0,
+                seed=0,
+                no_floor_reason=reason,
+                design=compare.PAIRED,
+                levels=("vehicle", "drug"),
+                unit=("ID",),
+                n_units=1,
+                min_units=1,
+                exact=True,
+                kept=(),
+            )
+
+    monkeypatch.setattr(
+        comparison_api, "node_screens", lambda exp, run_id: [_NoFloor("cmp_13", [], 0)]
+    )
+    interpret._read_screens()
+    _screens_read(qapp, interpret)
+    bar = interpret.filters()
+    item = bar.screens.list.item(0)
+    assert not (item.flags() & Qt.ItemFlag.ItemIsEnabled), "greyed: it cannot be ticked"
+    assert bar.screens.unavailable.text() == (
+        f"Can't be ticked: drug vs vehicle · paired (no floor: {reason})."
+    )
+    assert bar.screen("cmp_13").leaves is None
+    # A selection naming it (kept from before the screen lost its floor, say) is dropped
+    # when the list is read: nothing is applied out of sight.
+    bar.set_selection(Selection(leaves=frozenset({0}), leaves_source="cmp_13"))
+    interpret._read_screens()
+    _screens_read(qapp, interpret)
+    assert bar.selection().is_empty
+    assert interpret._icicle.labels_coloured(), "the tree keeps its labels' colours"
