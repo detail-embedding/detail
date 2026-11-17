@@ -17,7 +17,7 @@ it and puts back the view from before the first search (the page keeps that view
 
 **A chip, in the ring's colour.** The chip is how the ring is read back: the colour square beside
 "#1321" or "climb". A label on several clusters says how many ("climb · 3"). The colour is the
-first ``plot_theme.identity`` slot **not a label's** (``set_reserved``): the tree fills a labelled
+first ``plot_theme.label_identity`` slot **not a label's** (``set_reserved``): the tree fills a labelled
 block in its label's colour, from the same order, so a band in that colour round it vanished
 into its fill — and a label search always lands on labelled blocks.
 
@@ -237,7 +237,7 @@ class FindClustersBar(QWidget):
         self._rebuild(self.found_changed)
 
     def set_reserved(self, slots) -> None:
-        """The ``plot_theme.identity`` slots labels are using; takes effect at the next
+        """The ``plot_theme.label_identity`` slots labels are using; takes effect at the next
         rebuild (the page calls ``refresh`` next)."""
         self._reserved = frozenset(int(s) for s in slots)
 
@@ -273,7 +273,7 @@ class FindClustersBar(QWidget):
 
     def found(self) -> dict[int, QColor]:
         """``{node: colour}`` for every cluster the search names, largest first."""
-        colour = plot_theme.identity(self._slot())
+        colour = plot_theme.label_identity(self._slot())
         return {node: colour for node in self._nodes}
 
     def chip(self) -> FindChip | None:
@@ -298,7 +298,7 @@ class FindClustersBar(QWidget):
             self._chip.deleteLater()
             self._chip = None
         if self._entry is not None:
-            colour = plot_theme.identity(self._slot()) if self._nodes else None
+            colour = plot_theme.label_identity(self._slot()) if self._nodes else None
             self._chip = FindChip(
                 self._entry, self._nodes, colour, unit=self._unit, parent=self
             )
