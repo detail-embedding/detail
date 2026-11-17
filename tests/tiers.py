@@ -270,6 +270,9 @@ GUARD_FILES = frozenset(
         "tests/api/test_wrapper_signatures.py",
         "tests/api/test_export_registry.py",
         "tests/pipeline/test_producer_parity.py",
+        # Over every consumer of a per-part store's frame_idx: a frame and a time written together
+        # agree through the recording's map on part 2 as on part 1 (#23).
+        "tests/pipeline/test_part_frames.py",
         # Data-driven over the temporal registry: a per-timeline statistic measured over
         # many recordings' timelines pooled reads the jitter between them, not a frame
         # period, and a gap rule over pooled rows never cuts at a seam.
