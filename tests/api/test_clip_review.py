@@ -245,7 +245,7 @@ def test_a_restore_without_change_times_is_an_edit_like_any_other(fitted_codeboo
     run, climb, rear = _labelled(experiment, run_id)
     run.finish_review(climb)
     time.sleep(1.1)
-    labels, nodes, _stamps, _origins = run.label_maps()
+    labels, nodes, _stamps, _origins, _edits = run.label_maps()
     run.name_nodes({rear: "climb"})
     run.restore_labels(labels, {str(rear): nodes[str(rear)]})
     assert run.review_precision("climb") is None
@@ -356,3 +356,31 @@ def test_estimate_weights_are_the_audit_s_own():
     estimate = behavior_audit.stratified_estimate(groups)
     assert estimate["precision"] == pytest.approx(0.25)
     assert np.isfinite(estimate["interval"][0])
+
+
+def test_putting_clips_back_withdraws_their_answers_and_only_theirs(fitted_codebook):
+    """The owner's rule (#24, finding 10): the census said "no" of a clip *because* it was taken
+    out, so putting the clip back withdraws that answer. The cluster then reads those clips as
+    not yet reviewed — 6 yes and 2 remaining, never "all reviewed" on answers that no longer
+    describe the clips — while every other clip keeps its answer."""
+    experiment, run_id = fitted_codebook
+    run, climb, _rear = _labelled(experiment, run_id)
+    clips = run.node_view().clips(climb).rows()
+    run.take_out_clips(clips[:2], "climb")
+    run.finish_review(climb)
+
+    run.put_back_clips(clips[:2])
+
+    [row] = [r for r in run.review_by_cluster() if r["node"] == climb]
+    estimate = row["estimate"]
+    assert estimate["remaining"] == 2
+    assert not audit_figures.complete(estimate)
+    assert estimate["n"] == len(clips) - 2
+    assert estimate["n_confirmed"] == len(clips) - 2, "the others keep their yes"
+    figure = run.review_precision("climb")
+    assert figure["remaining"] == 2 and figure["precision"] == pytest.approx(1.0)
+
+    run.finish_review(climb)  # reviewed again: all yes now
+    [row] = [r for r in run.review_by_cluster() if r["node"] == climb]
+    assert row["estimate"]["remaining"] == 0
+    assert row["estimate"]["precision"] == pytest.approx(1.0)

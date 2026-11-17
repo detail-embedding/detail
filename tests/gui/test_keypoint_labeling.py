@@ -435,3 +435,51 @@ def test_remove_waits_for_a_mark_that_is_still_saving(qapp, proj, monkeypatch):
     assert [f.frame_idx for f in stored.frames] == [2, 4], "removed mid-save"
     assert stored.frames[1].mark_for("nose") is not None
     assert stored.frames[0].marks == []
+
+
+def test_marks_saving_when_the_dialog_closes_still_reach_the_disk(
+    qapp, proj, monkeypatch
+):
+    """Closing the labeling screen with saves queued must not lose them (#24, finding 1's
+    sibling). The saver's queue lived on the dialog: each next save started from the previous
+    one's ``done``, which is dropped once the dialog is gone, so every frame's marks after the
+    one in flight were lost. The saves now go through the app's write queue
+    (``gui/run_writes.py``), which outlives the dialog."""
+    import threading
+
+    from PyQt6.QtCore import QEvent
+
+    created = proj.create_example_set("rats", SK)
+    dialog = _open(qapp, proj, created.id)
+    for frame in TRACKED:  # the frames join the set first, each with its nose marked
+        _seek(qapp, dialog, frame)
+        dialog.image_view().clicked_at.emit(0.25, 0.5)
+        _settled(qapp, dialog)
+
+    gate = threading.Event()
+    real = type(proj).set_example_marks
+
+    def slow(self, *args, **kwargs):
+        gate.wait(20)
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(proj), "set_example_marks", slow)
+
+    def tails() -> int:
+        frames = proj.example_set(created.id).frames
+        return sum(f.mark_for("tail_base") is not None for f in frames)
+
+    try:
+        for frame in TRACKED:  # tail_base is the current point on each frame now
+            _seek(qapp, dialog, frame)
+            dialog.image_view().clicked_at.emit(0.75, 0.5)
+            qapp.processEvents()
+        assert dialog.saving()
+        dialog.close()
+        dialog.deleteLater()
+        qapp.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+    finally:
+        gate.set()
+    assert drain_until(
+        qapp, lambda: tails() == len(TRACKED), 20_000
+    ), f"only {tails()} of {len(TRACKED)} frames' marks reached the disk"

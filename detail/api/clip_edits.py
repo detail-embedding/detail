@@ -15,7 +15,14 @@ follow.
 
 **An edit applies only while it still means what it said.** It names the label the clip was taken
 out of; when the clip's label is no longer that label or one nested under it (its cluster was
-relabelled, or the label deleted), the edit is left in the state and has no effect.
+relabelled, or the label deleted), the edit is left in the state and has no effect. Deleting the
+label a clip was moved *to* reports that clip unlabelled, as every clip of the deleted label is;
+the edit stays, so an undo of the delete (which brings the label id back) brings the move back.
+
+**A merge is the exception: it re-points the edits.** Merging says the two labels are one
+behavior, so an edit naming the merged label now names the label it went into
+(``LabelOperations.merge_labels``, ``storage/clip_edits.py::relabel``), and its undo puts them
+back (``restore_labels``' ``clip_edits``).
 """
 
 from typing import Self
@@ -24,6 +31,7 @@ import numpy as np
 
 from detail.core.protocols import KEEP_GROUP
 from detail.storage import clip_edits as clip_edits_store
+from detail.storage import clip_review as review_store
 from detail.storage.clip_edits import ClipRef
 from detail.storage.clip_edits import clip_ref
 
@@ -173,6 +181,9 @@ class ClipEditOperations:
         """Undo :meth:`take_out_clips` for ``clips``: each reports its clustering's label again.
 
         A clip with no edit is ignored; when none of ``clips`` has one nothing is written.
+        The clip review's answers about each clip put back are withdrawn
+        (``storage/clip_review.withdraw``), so its cluster reads those clips as not yet reviewed
+        and the rest of the cluster keeps its answers.
 
         Raises:
             ValueError: a finalized run.
@@ -187,9 +198,13 @@ class ClipEditOperations:
             return self
 
         def mutate(state) -> dict:
+            put = {clip_ref(e).key for e in clip_edits_store.latest(state.clip_edits)}
             state.clip_edits, removed = clip_edits_store.put_back(
                 state.clip_edits, refs
             )
+            # The clip review's answers about these clips go with the edit (#24): a "no" written
+            # because a clip was out no longer describes it once it is back.
+            review_store.withdraw(self._run_dir(), put & keys)
             return {"clips": removed}
 
         self._edit("put clips back", mutate, progress=progress)

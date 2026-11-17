@@ -1186,6 +1186,17 @@ class TemporalClusterMethod(ABC):
             kind="none", min_members=1, join=bool(self.instances_are_runs)
         )
 
+    def row_block_starts(self, fit: object, params: dict) -> np.ndarray | None:
+        """``(rows,)`` bool, the rows that start a continuity block under ``params``, or ``None``.
+
+        A continuity block is a stretch the method observed without a break; the method never
+        lets an instance cross one (a tracking gap: nobody saw the animal in between). The module
+        joins two same-label runs only inside one block (``authored_run.fuse_runs``), so a method
+        that cuts runs at gaps says where here, or the join undoes its cut. ``None``: the method
+        declares no breaks, and runs join within one recording and subject.
+        """
+        return None
+
     @abstractmethod
     def node_separations(self, fit: object) -> np.ndarray:
         """``(n_nodes,)``: how different each internal node's two children are; ``NaN`` on leaves.

@@ -143,3 +143,45 @@ def put_back(edits, clips) -> tuple[list[dict], int]:
     current = latest(edits)
     kept = [e for e in current if clip_ref(e).key not in keys]
     return kept, len(current) - len(kept)
+
+
+def _key_text(edit) -> str:
+    recording_id, subject, t_ns, end_t_ns = clip_ref(edit).key
+    return f"{recording_id}|{subject}|{t_ns}|{end_t_ns}"
+
+
+def by_key(edits) -> dict[str, dict]:
+    """``{clip key: edit}`` for the latest edit of each clip — a map an undo can diff and put
+    back entry by entry (``AuthoredRun.label_maps``). The key is text so it survives JSON.
+    """
+    return {_key_text(edit): dict(edit) for edit in latest(edits)}
+
+
+def relabel(edits, source: str, into: str) -> tuple[list[dict], int]:
+    """``(edits with label id source read as into, how many edits that changed)``: what a merge
+    of ``source`` into ``into`` does to them. An edit left moving a clip from ``into`` to
+    ``into`` says nothing any more, and is dropped."""
+    out, changed = [], 0
+    for edit in latest(edits):
+        new = dict(edit)
+        if new["from_label"] == source:
+            new["from_label"] = into
+        if new["to_label"] == source:
+            new["to_label"] = into
+        if new != edit:
+            changed += 1
+        if new["to_label"] is not None and new["to_label"] == new["from_label"]:
+            continue
+        out.append(new)
+    return out, changed
+
+
+def restore(edits, wanted: dict[str, dict | None]) -> list[dict]:
+    """``edits`` with each clip in ``wanted`` (keyed as :func:`by_key`) set to its edit there, or
+    its edit removed for ``None``; every other clip's edit as it is."""
+    current = by_key(edits)
+    for key, edit in wanted.items():
+        current.pop(key, None)
+        if edit is not None:
+            current[key] = dict(edit)
+    return normalize(list(current.values()))

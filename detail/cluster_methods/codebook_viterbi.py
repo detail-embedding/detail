@@ -506,6 +506,18 @@ class CodebookViterbiMethod(TemporalClusterMethod):
         floor, as ``rank_members`` uses, in frames. The continuity blocks are ``instances_for``'s
         under ``params``, so an explicit ``max_gap_s`` cuts clips exactly where it cuts instances.
         """
+        return ClipScoring(
+            kind="distance",
+            min_members=max(1, int(round(fit.min_run_s * _rows_per_second(fit)))),
+            join=True,
+            member_distance=np.asarray(fit.fine_distance, dtype=np.float64),
+            member_block_start=self.row_block_starts(fit, params),
+        )
+
+    def row_block_starts(self, fit: _Fit, params: dict) -> np.ndarray:
+        """The first row of every continuity block ``instances_for`` cuts runs on, under
+        ``params``: the same blocks, so a fused instance and a clip stop where a run does.
+        """
         model = TemporalCodebookConfig.model_validate(params)
         max_gap_ns = (
             None if model.max_gap_s is None else int(round(model.max_gap_s * SEC_TO_NS))
@@ -514,13 +526,7 @@ class CodebookViterbiMethod(TemporalClusterMethod):
         for lo, hi in _unit_blocks(fit, max_gap_ns):
             if hi > lo:
                 starts[lo] = True
-        return ClipScoring(
-            kind="distance",
-            min_members=max(1, int(round(fit.min_run_s * _rows_per_second(fit)))),
-            join=True,
-            member_distance=np.asarray(fit.fine_distance, dtype=np.float64),
-            member_block_start=starts,
-        )
+        return starts
 
     def node_separations(self, fit: _Fit) -> np.ndarray:
         """Centroid distance over spread for every node, from the codebook sample."""

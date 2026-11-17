@@ -70,6 +70,7 @@ from detail.gui import export as gui_export
 from detail.gui import pages as gui_pages
 from detail.gui import preview_jobs
 from detail.gui import readiness_guide
+from detail.gui import run_writes
 from detail.gui import sections as gui_sections
 from detail.gui import notes as gui_notes
 from detail.gui import selectable
@@ -1896,6 +1897,9 @@ class MainWindow(QMainWindow):
         if not self._may_leave():
             event.ignore()
             return
+        if not self._label_writes_landed():
+            event.ignore()
+            return
         # Saved before the run prompt, not after: "Cancel & quit" and "quit anyway" both end
         # here, and a layout that only persisted on the quietest of the three exits is one a
         # user would find had reverted at random.
@@ -1913,6 +1917,47 @@ class MainWindow(QMainWindow):
             self._cancel_all_active(active)
         self._stop_previews()
         event.accept()
+
+    def _label_writes_landed(self) -> bool:
+        """Ask before quitting over label writes still queued. ``False`` means don't quit yet.
+
+        A label typed in INTERPRET, or a clip taken out in AUDIT, is written in the background
+        by the run's write queue (``run_writes``), which outlives the page — so leaving a page
+        loses nothing, and quitting is the one exit that can. *Wait, then quit* closes the
+        window by itself once the last write lands.
+        """
+        count = run_writes.pending()
+        if not count:
+            return True
+        choice = self._confirm_unwritten(count)
+        if choice == "wait":
+            run_writes.when_all_idle(self.close)
+        return choice == "quit"
+
+    def _confirm_unwritten(self, count: int) -> str:
+        """``"wait"`` (the default) | ``"quit"`` | ``"cancel"`` for ``count`` unwritten changes."""
+        box = QMessageBox(self)
+        box.setWindowTitle("Changes still being saved")
+        one = count == 1
+        box.setText(
+            f"{count} {'change is' if one else 'changes are'} still being saved."
+        )
+        box.setInformativeText(
+            "Labels, clip reviews and keypoint marks save in the background. Quitting now "
+            f"loses {'it' if one else 'them'}. Wait, and the window closes by itself once "
+            f"{'it is' if one else 'they are'} saved."
+        )
+        wait = box.addButton("Wait, then quit", QMessageBox.ButtonRole.AcceptRole)
+        quit_now = box.addButton("Quit now", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(wait)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is wait:
+            return "wait"
+        if clicked is quit_now:
+            return "quit"
+        return "cancel"
 
     def _stop_previews(self) -> None:
         """End the preview build in hand on quit; a half-built part is discarded and is

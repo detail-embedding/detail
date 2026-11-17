@@ -39,6 +39,24 @@ def test_load_track_trajectory_missing_track_raises(experiment_dir, make_embeddi
         run_preview.load_track_trajectory(s, "emb_01", 5)
 
 
+@pytest.mark.parametrize("load", ["load_track_trajectory", "load_track_timeline"])
+def test_a_missing_track_names_its_recording(experiment_dir, make_embedding_run, load):
+    """A failed rebuild over a cohort said only "track 0", leaving the user to guess which
+    recording had gone (#24). The name, not the folder id, since that is what the user knows.
+    """
+    from detail.storage import recording as recording_store
+
+    s = recording_store.create_recording(
+        experiment_dir, "recording_001", name="mouse A"
+    )
+    make_embedding_run(s, *_traj(np.random.default_rng(1), 10))
+    with pytest.raises(ValueError) as info:
+        getattr(run_preview, load)(s, "emb_01", 5)
+    assert str(info.value) == (
+        "no embedded rows for track 5 of recording 'mouse A' in embedding run 'emb_01'"
+    )
+
+
 def test_validate_comparability_ok(experiment_dir, make_embedding_run):
     s1, s2 = _recording(experiment_dir, "s1"), _recording(experiment_dir, "s2")
     make_embedding_run(s1, *_traj(np.random.default_rng(2), 20))

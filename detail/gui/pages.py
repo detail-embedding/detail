@@ -7448,7 +7448,8 @@ class MeasuresPanel(QWidget):
             (
                 row["recording_id"],
                 str(row["subject"]),
-                row["label"] or "(unnamed)",
+                # A parent label's row counts only its remainder, and says so (#24).
+                row["label_display"] or "(unnamed)",
                 MEASURES[row["measure"]].label,
                 *comparison_report.shown_value(
                     row["value"], MEASURES[row["measure"]].unit
