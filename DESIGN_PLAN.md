@@ -2185,7 +2185,8 @@ Results are returned directly — one entry per sampled frame, one `FrameResult`
 ```python
 @dataclass
 class PromptTestResult:
-    frame_idx: int
+    part_index: int                   # the video part the frame came from
+    frame_idx: int                    # local to that part
     t_ns: int
     frame_image: np.ndarray
     results: dict[str, FrameResult]   # prompt label ("prompt_0", …) → that prompt's detections
@@ -2204,9 +2205,11 @@ recordings/recording_001/detections/
         ├── test.json          # model_id, min_conf, n_sample_frames, compute; the sampled frames,
         │                      #   the prompts and their colours, and per-frame counts at min_conf
         └── frames/
-            ├── frame_000042_prompt_0.jpg
-            └── frame_000042_prompt_1.jpg
+            ├── part_000_frame_000042_prompt_0.jpg
+            └── part_000_frame_000042_prompt_1.jpg
 ```
+
+A result is identified by its `(part_index, frame_idx)`, never by its position: `sampled_frames` lists every position requested, while a sample that does not decode is skipped, so the results (and `test.json`'s `frame_results`, each of which names its part) can be shorter. The part is in the overlay name because `frame_idx` is local to its part.
 
 Sampled frames are exact. Each is decoded with `video.read_frame_at` and the part's timestamp map (§3 *Frame timestamp maps*), so the picture is the requested presentation index, and `PromptTestResult.frame_idx` reports the frame actually decoded.
 

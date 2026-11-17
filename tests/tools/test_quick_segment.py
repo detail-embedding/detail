@@ -10,6 +10,8 @@ does, and the manifest records the backend chosen
 (``test_cli_quick_segment_with_no_backend_runs_on_one_the_model_supports``).
 """
 
+from pathlib import Path
+
 import cv2
 import numpy as np
 import pytest
@@ -873,3 +875,50 @@ def test_cli_min_conf_filters_the_report_without_changing_the_run(
         run_dir = tool_runs.tool_run_dir("quick_segment", record["id"])
         columns = quick_segment.load_detections(run_dir / "detections.zarr")
         assert len(columns["frame_idx"]) == 8
+
+
+def test_a_sample_that_does_not_decode_leaves_every_other_result_under_its_own_clip(
+    tmp_path, stub_model, isolated_tools, monkeypatch
+):
+    """One sampled frame in clip A fails to decode (cv2's frame count over-reports, or a
+    damaged region). Every other result must still be stored under the clip and frame it
+    came from (#26). Before the fix the results list (decoded only) was paired by position
+    with the samples list (every request), so clip B's frame 7 was filed as clip A's frame
+    7 — listed twice, drawn on clip A's picture with clip B's masks."""
+    import json
+
+    from detail.pipeline import prompt_test
+
+    clip_a, clip_b = tmp_path / "a.mp4", tmp_path / "b.mp4"
+    _write_video(clip_a, n_frames=30)
+    _write_video(clip_b, n_frames=30)
+    # "even" sampling of 4 over 60 frames: A7, A22, B7, B22.
+    real_read = prompt_test.read_frame_at
+
+    def _a22_fails(path, frame_idx, *a, **k):
+        if Path(path) == clip_a and frame_idx == 22:
+            return None
+        return real_read(path, frame_idx, *a, **k)
+
+    monkeypatch.setattr(prompt_test, "read_frame_at", _a22_fails)
+    record = api_tools.run_tool(
+        "quick_segment",
+        _config(clip_a, n_frames=4, mode="sample", videos=[clip_a, clip_b]),
+    )
+    assert record["status"] == "complete"
+    run_dir = tool_runs.tool_run_dir("quick_segment", record["id"])
+    meta = json.loads((run_dir / "test.json").read_text(encoding="utf-8-sig"))
+    assert meta["sampled_frames"] == [
+        {"part_index": 0, "frame_idx": 7},
+        {"part_index": 1, "frame_idx": 7},
+        {"part_index": 1, "frame_idx": 22},
+    ]
+    assert len(meta["frame_results"]) == len(meta["sampled_frames"])
+
+    def _frames(part):
+        store = run_dir / "prompt_0" / f"part_{part:03d}.zarr"
+        root = zarr.open_group(str(store), mode="r")
+        return sorted(set(root["frame_idx"][:].tolist()))
+
+    stored = {part: _frames(part) for part in (0, 1)}
+    assert stored == {0: [7], 1: [7, 22]}

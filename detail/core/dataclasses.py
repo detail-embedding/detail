@@ -1158,6 +1158,10 @@ class PromptTestJob:
 
 @dataclass
 class PromptTestResult:
+    # The part (video file) the frame came from. ``frame_idx`` is local to that part, so a
+    # result is identified by the pair; never by its position among the results, which
+    # skip any sample that failed to decode.
+    part_index: int
     frame_idx: int
     t_ns: int
     frame_image: np.ndarray  # the sampled frame (H, W, 3)

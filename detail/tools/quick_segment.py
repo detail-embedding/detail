@@ -272,7 +272,7 @@ class QuickSegment(Tool):
                 ("reading timestamps", (i + 1) / len(videos), f"{i + 1}/{len(videos)}")
             )
 
-        results, samples, labels = run_prompt_test_on_parts(
+        results, _samples, labels = run_prompt_test_on_parts(
             videos,
             prompts,
             model,
@@ -292,7 +292,6 @@ class QuickSegment(Tool):
             prompts,
             labels,
             colors,
-            samples,
             results,
             {
                 "model_id": config.get("model_id"),
@@ -433,7 +432,6 @@ def _save_sampled(
     prompts: list,
     labels: list[str],
     colors: dict,
-    samples: list[tuple[int, int]],
     results: list,
     meta: dict,
 ) -> None:
@@ -452,10 +450,13 @@ def _save_sampled(
         path.parent.mkdir(parents=True, exist_ok=True)
         np.save(path, ts)
 
+    # Each result is filed under the part it names. The sampler's request list is not
+    # parallel to `results` (a sample that does not decode is skipped), so pairing the
+    # two by position put every result after a skipped sample under the wrong clip.
     by_part: dict[tuple[str, int], list] = {}
-    for result, (part_index, _requested) in zip(results, samples):
+    for result in results:
         for label in labels:
-            by_part.setdefault((label, part_index), []).append(result)
+            by_part.setdefault((label, result.part_index), []).append(result)
     for (label, part_index), part_results in by_part.items():
         store = out_dir / label / f"part_{part_index:03d}.zarr"
         store.parent.mkdir(parents=True, exist_ok=True)
@@ -477,8 +478,8 @@ def _save_sampled(
             {
                 **meta,
                 "sampled_frames": [
-                    {"part_index": p, "frame_idx": r.frame_idx}
-                    for r, (p, _f) in zip(results, samples)
+                    {"part_index": r.part_index, "frame_idx": r.frame_idx}
+                    for r in results
                 ],
                 "prompts": [
                     {"label": label, "prompt": prompt.to_dict()}

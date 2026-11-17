@@ -29,6 +29,17 @@ order", and a fresh `QHeaderView` reports section **0** for that, not "none". A 
 descending, as text — a run table's newest-first order, a query's ranked order, all replaced
 before a user ever touches anything. `enable_sorting` clears the indicator to "no section" first;
 `test_a_freshly_built_table_keeps_its_own_order` pins that.
+
+**How the source scan missed two live sites (#26).** The scan matched a `.row()` only *inside*
+a subscript, `self._ids[index.row()]`. The Recording page's Streams table held the position in a
+name first (`idx = table.currentIndex().row()`, then `self._stream_names[idx]`), so after a sort
+*Delete stream* deleted a different stream; its Video parts table did the same with `row`, then
+`order[row]`, so *Move up / down* reordered parts nobody picked. Both passed the scan for as long
+as it existed. `_row_positions_held` now follows a name holding a row position (and arithmetic on
+it) to any subscript, or to any call that is not the view's own positional API
+(`_POSITIONAL_APIS`); `test_the_row_position_scan_would_catch_the_two_step_shape` is both live
+spellings. A table whose row order *is* the data (the parts table edits order) is the other
+answer: it leaves sorting off, is named in `SORT_EXEMPT`, and still stamps its rows.
 """
 
 import ast
@@ -80,6 +91,13 @@ SORT_EXEMPT = {
         "the one being annotated is its selected row, and its Examples column is a progress "
         "bar placed per index (setIndexWidget), which a header-click reorder would leave on "
         "the wrong row. The clip list beside it sorts. Resizable, not sortable."
+    ),
+    "video_parts": (
+        "the Recording page's Video parts table: its row order is the recording's part order, "
+        "which Move up / Move down edit. A header-click sort would show an order the recording "
+        "does not have, and the move handler once read the sorted row's position as the part "
+        "(#26). Rows still carry their part index (`ids=`), so re-enabling sorting cannot "
+        "bring that back. Resizable, not sortable."
     ),
     "add_recordings_staging": (
         "rows are recordings-to-be-created in the order the user is entering them, not records "
@@ -349,13 +367,67 @@ def test_a_sorted_metadata_table_opens_the_recording_you_clicked(qapp, tmp_path)
 # --------------------------------------------------------------------------- #
 # the source scan: no handler recovers a record from a row's position
 # --------------------------------------------------------------------------- #
-#: Subscripts indexed by a widget row that are *not* identity lookups. Claims, not
-#: exemptions — ``test_every_row_position_exemption_is_still_there`` fails on a stale one.
-ROW_POSITION_ALLOWED: dict[str, str] = {}
+#: Functions (``path::function``) where a widget row's position is used *as* a position on
+#: purpose. Claims, not exemptions: ``test_every_row_position_exemption_is_still_there`` fails
+#: on a stale one, and an entry covers only the function it names.
+ROW_POSITION_ALLOWED: dict[str, str] = {
+    "detail/gui/keypoint_labeling.py::_remove": (
+        "the frame list is a QListWidget that does not sort, so its row is the frame's place "
+        "in the set by construction, and the API removes a frame by that place. What made it "
+        "unsafe was an asynchronous change to the list (a mark save writing by position while "
+        "the removal shifted every later frame): the two are serialised by the dialog's "
+        "`_removing` flag and the saver's `busy`, guarded in tests/gui/test_keypoint_labeling.py "
+        "(`test_a_mark_made_while_a_frame_is_being_removed_does_not_land_on_another_frame`)."
+    ),
+}
+
+_ROW_CALLS = ("row", "currentRow")
+
+#: Calls that take a row *as a position* in the view it came from: handing a position back to
+#: the widget that produced it is correct whatever the sort. Anything else receiving one is
+#: being told "this is the record", which is the bug.
+_POSITIONAL_APIS = {
+    "item",
+    "index",
+    "selectRow",
+    "setCurrentRow",
+    "takeItem",
+    "removeRow",
+    "cellWidget",
+    "setItem",
+    "showRow",
+    "hideRow",
+    "setRowHidden",
+    "isRowHidden",
+    "rowHeight",
+    "setRowHeight",
+    "verticalHeaderItem",
+    "indexWidget",
+    "setIndexWidget",
+    "setCellWidget",
+    "itemWidget",
+}
 
 
-def _row_position_reads(source: str) -> list[int]:
-    """Line numbers of every ``<anything>[... .row() ...]`` subscript in ``source``.
+def _is_row_call(node) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in _ROW_CALLS
+        and not node.args
+    )
+
+
+def _functions(tree):
+    """``(name, node)`` for every function in ``tree``, plus ``"<module>"`` for the rest."""
+    yield "<module>", tree
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            yield node.name, node
+
+
+def _row_position_reads(source: str) -> list[tuple[str, int]]:
+    """``(function, line)`` of every ``<anything>[... .row() ...]`` subscript in ``source``.
 
     The shape behind the recorded class: a handler recovering a record from a list it holds
     in *build* order, keyed by the clicked row's *screen* position. The two agree only while
@@ -364,31 +436,114 @@ def _row_position_reads(source: str) -> list[int]:
     real record. ``tables.row_id`` is the fix; this is the scan that keeps it applied.
     """
     tree = ast.parse(source)
-    out = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Subscript):
+    owner = {}
+    for name, fn in _functions(tree):
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Subscript):
+                owner[id(node)] = (name, node)  # the innermost function wins
+    out = set()
+    for name, node in owner.values():
+        if any(_is_row_call(inner) for inner in ast.walk(node.slice)):
+            out.add((name, node.lineno))
+    return sorted(out, key=lambda hit: hit[1])
+
+
+def _is_position(node, held: set[str]) -> bool:
+    """Whether ``node`` *is* a row position: ``x.row()``, a name already holding one, or
+    arithmetic on either (``row + delta``, ``int(row)``). A call that merely *takes* a row
+    (``model.item(row, 0).data(...)``, ``self._row_at(row)``) returns something else."""
+    if _is_row_call(node):
+        return True
+    if isinstance(node, ast.Name):
+        return node.id in held
+    if isinstance(node, ast.BinOp):
+        return _is_position(node.left, held) or _is_position(node.right, held)
+    if isinstance(node, ast.UnaryOp):
+        return _is_position(node.operand, held)
+    if isinstance(node, ast.IfExp):
+        return _is_position(node.body, held) or _is_position(node.orelse, held)
+    if isinstance(node, ast.Call) and getattr(node.func, "id", "") in (
+        "int",
+        "max",
+        "min",
+    ):
+        return any(_is_position(arg, held) for arg in node.args)
+    return False
+
+
+def _row_positions_held(source: str) -> list[tuple[str, int]]:
+    """``(function, line)`` where a name holding a row position is used as an identity.
+
+    The two-step spelling of the same class, and the one ``_row_position_reads`` never saw:
+    ``idx = table.currentIndex().row()`` and then ``names[idx]``, or ``row = ...`` and then
+    ``order[row]`` / ``reorder(row)``. Both live instances of #26 were this shape. A use is a
+    subscript containing the name, or the name passed to a call that is not one of the view's
+    own positional APIs (``_POSITIONAL_APIS``).
+    """
+    tree = ast.parse(source)
+    out = set()
+    for name, fn in _functions(tree):
+        if name == "<module>":
             continue
-        for inner in ast.walk(node.slice):
-            if (
-                isinstance(inner, ast.Call)
-                and isinstance(inner.func, ast.Attribute)
-                and inner.func.attr in ("row", "currentRow")
-            ):
-                out.append(node.lineno)
-                break
-    return sorted(out)
+        held: set[str] = set()
+        # Assignments in source order, so `b = a + 1` after `a = x.row()` is held too.
+        assigns = sorted(
+            (
+                n
+                for n in ast.walk(fn)
+                if isinstance(n, (ast.Assign, ast.AnnAssign, ast.NamedExpr))
+            ),
+            key=lambda n: (n.lineno, n.col_offset),
+        )
+        for node in assigns:
+            if node.value is None or not _is_position(node.value, held):
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            held.update(t.id for t in targets if isinstance(t, ast.Name))
+        if not held:
+            continue
+
+        def mentions(expr) -> bool:
+            return any(isinstance(x, ast.Name) and x.id in held for x in ast.walk(expr))
+
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Subscript) and mentions(node.slice):
+                out.add((name, node.lineno))
+            elif isinstance(node, ast.Call):
+                callee = (
+                    node.func.attr
+                    if isinstance(node.func, ast.Attribute)
+                    else getattr(node.func, "id", "")
+                )
+                if callee in _POSITIONAL_APIS or callee in ("int", "max", "min"):
+                    continue
+                if any(
+                    mentions(arg)
+                    for arg in [*node.args, *(k.value for k in node.keywords)]
+                ):
+                    out.add((name, node.lineno))
+    return sorted(out, key=lambda hit: hit[1])
+
+
+def _row_position_offenders(source: str) -> list[tuple[str, int]]:
+    return sorted(
+        set(_row_position_reads(source)) | set(_row_positions_held(source)),
+        key=lambda hit: hit[1],
+    )
 
 
 def test_no_gui_handler_reads_identity_from_a_row_position():
     offenders = []
     for path in sorted((REPO / "detail" / "gui").rglob("*.py")):
         rel = path.relative_to(REPO).as_posix()
-        if rel in ROW_POSITION_ALLOWED:
-            continue
         source = path.read_text(encoding="utf-8-sig")
         lines = source.splitlines()
-        for lineno in _row_position_reads(source):
-            offenders.append(f"{rel}:{lineno}: {lines[lineno - 1].strip()}")
+        for function, lineno in _row_position_offenders(source):
+            if f"{rel}::{function}" in ROW_POSITION_ALLOWED:
+                continue
+            offenders.append(
+                f"{rel}:{lineno} ({function}): {lines[lineno - 1].strip()}"
+            )
     assert not offenders, (
         "a row's position is not a record's identity once a table can be sorted — every "
         "table in this package can. Stamp identity with tables.stamp_row_id (or _table's "
@@ -398,20 +553,59 @@ def test_no_gui_handler_reads_identity_from_a_row_position():
 
 def test_the_row_position_scan_would_catch_one():
     # Guard the guard, in the two spellings the package actually used.
-    assert _row_position_reads("self._on_open(self._recordings[index.row()])") == [1]
-    assert _row_position_reads("x = self._ids[self._table.currentRow()]") == [1]
+    assert _row_position_offenders("self._on_open(self._recordings[index.row()])") == [
+        ("<module>", 1)
+    ]
+    assert _row_position_offenders("x = self._ids[self._table.currentRow()]") == [
+        ("<module>", 1)
+    ]
     # And does not fire on the fix, or on a bare position used as a position.
-    assert _row_position_reads("name = row_id(index)") == []
-    assert _row_position_reads("self._table.item(index.row(), 0)") == []
+    assert _row_position_offenders("name = row_id(index)") == []
+    assert _row_position_offenders("self._table.item(index.row(), 0)") == []
+
+
+def test_the_row_position_scan_would_catch_the_two_step_shape():
+    """The shape both live #26 sites had, which the subscript-only scan passed over."""
+    streams = (
+        "def _selected(self):\n"
+        "    idx = self._streams_table.currentIndex().row()\n"
+        "    if 0 <= idx < len(self._stream_names):\n"
+        "        return self._stream_names[idx]\n"
+    )
+    assert _row_position_offenders(streams) == [("_selected", 4)]
+    parts = (
+        "def _move(self, delta):\n"
+        "    row = self._parts_table.currentIndex().row()\n"
+        "    order = list(range(3))\n"
+        "    order[row], order[row + delta] = order[row + delta], order[row]\n"
+        "    self._recording.reorder(row)\n"
+        "    self._parts_table.selectRow(row + delta)\n"
+    )
+    assert _row_position_offenders(parts) == [("_move", 4), ("_move", 5)]
+    # Taint follows arithmetic through a second name.
+    shifted = "def f(t, xs):\n    r = t.currentRow()\n    j = r + 1\n    return xs[j]\n"
+    assert _row_position_offenders(shifted) == [("f", 4)]
+    # Not: a value *looked up* by row in the view's own model, or the row handed back to
+    # the view as a position.
+    looked_up = (
+        "def f(self, current):\n"
+        "    index = self._model.item(current.row(), 0).data(ROLE)\n"
+        "    row = self._row_at(current.row())\n"
+        "    self._table.selectRow(current.row())\n"
+        "    return self._rows[int(index)], row\n"
+    )
+    assert _row_position_offenders(looked_up) == []
 
 
 def test_every_row_position_exemption_is_still_there():
-    for rel, reason in ROW_POSITION_ALLOWED.items():
+    for key, reason in ROW_POSITION_ALLOWED.items():
+        rel, function = key.split("::")
         path = REPO / rel
         assert path.is_file(), f"{rel} is gone; drop its entry ({reason})"
-        assert _row_position_reads(
-            path.read_text(encoding="utf-8-sig")
-        ), f"{rel} no longer reads a record by row position; drop its entry"
+        hits = _row_position_offenders(path.read_text(encoding="utf-8-sig"))
+        assert any(
+            name == function for name, _ in hits
+        ), f"{key} no longer reads a record by row position; drop its entry"
 
 
 # --------------------------------------------------------------------------- #

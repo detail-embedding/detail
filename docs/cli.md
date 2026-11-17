@@ -303,7 +303,8 @@ Narrow with `--show-class <name>` (repeatable; default all). Common flags: `--n`
 (frames to sample, default `8`), `--min-conf` (default `0.5`), optional `--variant`,
 `--seed`, and [compute flags](#compute--multi-gpu). Prints a
 per-column detection summary; `--save-as <name>` also writes overlay JPGs + a
-`test.json` under `detections/prompt_tests/<name>/`. Creates no run.
+`test.json` under `detections/prompt_tests/<name>/`, one JPG per frame and prompt, named by
+video part and frame (`part_000_frame_000042_prompt_0.jpg`). Creates no run.
 
 The model runs **wide open** and keeps every proposal it found, so `--min-conf` chooses
 what the summary counts and what the saved overlays draw, not what runs. Re-run with a
@@ -1419,6 +1420,11 @@ would leave you unable to tell that from "DETAIL cannot export streams".
 skipped and the reason says so: that file is already yours, under the video root it was
 registered from, and copying it back out would export nothing DETAIL made. A recording whose
 parts are all referenced reports `video` as unavailable rather than writing a short export.
+
+Each exported video keeps its part's own number, the same number the `timestamps` target uses.
+If part 1 was referenced and parts 2 and 3 were copied, you get `<recording>_part002.mp4` and
+`<recording>_part003.mp4`, next to `<recording>_part002_timestamps.csv` and
+`<recording>_part003_timestamps.csv`.
 
 The same is true of the experiment `bundle`: it packs the experiment tree, and a referenced
 video is not in that tree.
