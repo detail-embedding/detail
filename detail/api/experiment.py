@@ -376,6 +376,8 @@ class RunOrchestrator:
                     self._orchestrate_parallel(k)
         finally:
             self._finalize(n)
+            # The log's end is the run's end, not the last row its throttle kept (#32).
+            self._activity.finish(elapsed_s=self._elapsed())
 
     def _run_batch(self, module, n: int) -> None:
         """Run a batch module once over the whole subset, mapping its
