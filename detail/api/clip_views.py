@@ -44,6 +44,7 @@ from detail.api.animation import (
 )
 from detail.core import visualize
 from detail.core.dataclasses import Detection
+from detail.core.errors import UserInputError
 from detail.core.lru import CountLRU
 from detail.core.skeleton import Skeleton
 from detail.core.visualize import MASK_TINT, draw_keypoints, draw_mask
@@ -933,8 +934,20 @@ def pane_frames(
     integer-nanosecond sample meant for a frame can fall a nanosecond short of that frame's
     own integer time, and without the slack a GIF at half the footage rate showed the frame
     *before* every other one it meant to.
+
+    A ``last`` past the video's end is clamped to its last frame, as the montage export
+    clamps the same span (``ClusterMontage.prepare``).
+
+    Raises:
+        UserInputError: ``first`` is past the video's end, so the span holds no frame.
     """
-    first, last = int(first), int(max(last, first))
+    n_frames = len(t_ns)
+    if int(first) >= n_frames:
+        raise UserInputError(
+            f"frame {int(first)} is past the end of the video ({n_frames} frames); "
+            f"the last frame is {n_frames - 1}"
+        )
+    first, last = int(first), int(min(max(last, first), n_frames - 1))
     if fps is None:
         return list(range(first, last + 1))
     span = np.asarray(t_ns[first : last + 1], dtype=np.int64)

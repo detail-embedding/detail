@@ -5251,7 +5251,10 @@ class RecordingDetailPage(QWidget):
             refusal = self._recording.calibration_refusal()
             if refusal is not None:
                 return f"unusable: {refusal}"
-            text = f"{self._recording.pixels_per_mm:.4g} px/mm"
+            text = (
+                f"{self._recording.pixels_per_mm:.4g} px/mm"
+                f"{self._recording.calibration_reference()}"
+            )
             if entry.get("distance_mm"):
                 text += f"  ·  {entry['distance_mm']:.0f} mm reference"
             return text

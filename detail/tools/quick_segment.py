@@ -756,6 +756,7 @@ def export_mp4(
     timestamps = load_timestamps(run_dir, result)
 
     out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     emit = ThrottledProgress(None if progress is None else (lambda ev: progress(*ev)))
     writer, _codec = video_store.open_video_writer(out_path, fps, width, height)
     try:

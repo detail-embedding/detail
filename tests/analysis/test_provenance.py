@@ -112,3 +112,39 @@ def test_drift_reports_code_and_video_change():
     changes = provenance.drift(recorded, current)
     assert any("code changed" in c for c in changes)
     assert any("video v.mp4 changed" in c for c in changes)
+
+
+def test_a_video_not_on_this_machine_is_recorded_and_drift_says_so(tmp_path):
+    """A slim archive carries no video, and a referenced video's drive can be unplugged.
+    Capture records the part as missing instead of raising (#33), so the comparison runs,
+    and drift names the video it could not check."""
+    sdir = _build_recording(tmp_path)
+    recorded = provenance.capture(tmp_path, recording_ids=["s1"], members=[])
+    (sdir / "video" / "part_001.mp4").unlink()
+    current = provenance.capture(tmp_path, recording_ids=["s1"], members=[])
+    assert current["recordings"]["s1"]["videos"] == {
+        "video/part_001.mp4": provenance.MISSING_VIDEO
+    }
+    assert provenance.drift(recorded, current) == [
+        "video video/part_001.mp4 of recording s1 is not on this machine, so it cannot "
+        "be checked"
+    ]
+    assert provenance.drift(current, recorded) == [
+        "video video/part_001.mp4 of recording s1 was not on the machine this ran on, so "
+        "it cannot be compared"
+    ]
+    assert provenance.drift(current, current) == []
+
+
+def test_a_video_under_an_unregistered_root_is_recorded_as_missing(tmp_path):
+    record = _recording_record()
+    record["video"]["files"] = [
+        {"index": 0, "id": "part_001", "source": {"root": "nas", "rel": "a.mp4"}}
+    ]
+    sdir = experiment_store.recording_path(tmp_path, "s1")
+    sdir.mkdir(parents=True)
+    (sdir / "recording.yaml").write_text(yaml.dump(record), encoding="utf-8")
+    captured = provenance.capture(tmp_path, recording_ids=["s1"], members=[])
+    assert captured["recordings"]["s1"]["videos"] == {
+        "part_001": provenance.MISSING_VIDEO
+    }

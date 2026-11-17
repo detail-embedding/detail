@@ -407,6 +407,12 @@ def export_spatial(
     rows: list[tuple] = []
     for kind in kinds:
         for entry in list_defs(recording_dir, kind):
+            path = keyframes_path(recording_dir, kind, entry["id"])
+            if not path.is_file():
+                raise UserInputError(
+                    f"{kind} {entry['name']!r} is listed in recording.yaml but its keyframes "
+                    f"file is missing ({path}). Draw it again, or delete it, then export"
+                )
             pk = read_keyframes(recording_dir, kind, entry["id"], entry["n_vertices"])
             active = entry.get("active")
             a_start = active["start"] if active else ""
@@ -419,7 +425,9 @@ def export_spatial(
                     )
     if include_calibration:
         rows += _calibration_rows(recording_dir)
-    with open(Path(out_path), "w", newline="", encoding="utf-8") as f:
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(_SPATIAL_CSV_COLUMNS)
         writer.writerows(rows)
@@ -918,7 +926,7 @@ def pixels_per_mm_at(calibration: dict, width: int, height: int) -> float:
     """
     refusal = calibration_aspect_refusal(calibration, width, height)
     if refusal is not None:
-        raise ValueError(refusal)
+        raise UserInputError(refusal)
     return calibration["pixels_per_mm"] * (width / calibration["ref_resolution"][0])
 
 

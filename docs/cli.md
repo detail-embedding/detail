@@ -14,7 +14,11 @@ The entry point is `detail` (installed with the package) or, equivalently,
 
 An ordinary input mistake, such as a YAML file with a missing bracket, a CSV that is not saved
 as UTF-8 or a file that is not the kind a command reads, stops the command with one
-`Error:` line that names the file (and the line or row) and says what to change.
+`Error:` line that names the file (and the line or row) and says what to change. So does a
+mistyped id (a run, a comparison or a tracking run that does not exist), and a folder or disk
+that cannot take the write: one you do not have permission to write to, a read-only disk, a
+name too long for the disk, or a full disk. A command that writes one file you name (`--out`,
+`--csv`, `--export`) creates a missing folder in that path.
 
 ## Contents
 
@@ -211,8 +215,8 @@ table, see the [Parameters reference](reference/parameters.md).
 - `verify --experiment <dir> --recording <id>`: check every video part is present and (for
   referenced parts) unchanged since it was added: a moved/renamed file reports missing
   (relink it), a content change reports changed (remove and re-add). Exits non-zero if
-  anything is wrong. Runs are gated on the same check, so a bad referenced video fails the
-  run before it starts.
+  anything is wrong. A recording with no video yet says so and exits 0. Runs are gated on the
+  same check, so a bad referenced video fails the run before it starts.
 - `relink --experiment <dir> --recording <id> --part <N> --video <file>`: point a referenced
   part at a moved/renamed file. Accepted only if the file's content matches what was recorded
   (a mismatch is a changed video → remove and re-add). For a whole moved library, re-point the
@@ -277,8 +281,10 @@ table, see the [Parameters reference](reference/parameters.md).
   pick is GUI-only). `clear-calibration` removes it.
 - `status --experiment <dir> --recording <id>`: name and id, the source video files, video
   parts, resolution/fps, spatial definitions (arenas / ROIs / points), the distance
-  calibration, streams, and the recording's detection, tracking and embedding runs. Keypoint
-  runs are not listed; `process list` and `process status` show them:
+  calibration, streams, and the recording's detection, tracking and embedding runs. A
+  calibration on a recording with no video yet is shown at the resolution it was measured on
+  (`2 px/mm at 1280x720 (no video yet)`). Keypoint runs are not listed; `process list` and
+  `process status` show them:
 
   ```
   recording: recording_001  (id recording_001)
@@ -1201,7 +1207,8 @@ column of `metadata.csv`, and report how the groups differ.
   [--presence-s <seconds>] [--pseudo-count-s <seconds>] [--min-units-fraction <share>] [--no-suppress-nesting]
   [--statistic moderated_t|effect]`: measure each unit, group them, and
   save the result to `comparisons/<cmp_NN>/`. Prints the `cmp_NN`, the design it resolved and
-  what the ranking scores by.
+  what the ranking scores by. A recording whose video is not on this machine (a slim import,
+  an unplugged drive) is measured all the same; the record notes the video as missing.
   `--group-by`, `--aggregate-to`, `--level`, `--measure` and `--recording` are all repeatable.
 
   **The design follows from the column.** A `--group-by` column that is constant within each
@@ -1285,7 +1292,9 @@ column of `metadata.csv`, and report how the groups differ.
   artifact, plus `ranking.csv` (every ranked measure or node with its effect, its `statistic`
   where the ranking is on the moderated t, floor and verdict, and its `family_p` / `own_p` /
   `q`) and, for a node screen, the `nodes.csv` hierarchy. Warns if the source data has changed since
-  the comparison was run. `--theme dark`
+  the comparison was run, or if a recording's video is not on this machine, so it cannot be
+  checked. `--format` is repeatable and takes any format matplotlib writes (`jpg`, `tiff`,
+  `eps`, …); an unknown one is refused before anything is drawn. `--theme dark`
   draws the figures on a dark background for slides; the manifest records which theme was used.
 - `list --experiment <dir>`: the experiment's comparisons, with the unit of analysis each used.
 - `delete <cmp_NN> --experiment <dir> [--yes]`: remove the comparison and its exports. Confirms
@@ -1415,7 +1424,8 @@ machine has that the model supports (cuda > mps > cpu), so SAM 3 runs on CUDA wi
 the run records the backend it used. A closed-set `--model` (one of your
 imported or distilled models) finds its own classes and ignores the prompt's text, but
 `--prompt` is still required. `--export out.mp4` renders the overlay clip and
-needs `--consecutive`, since sampled frames are not contiguous.
+needs `--consecutive`, since sampled frames are not contiguous; without it the command
+stops before the run starts. A missing folder in the `--export` path is created.
 
 A run keeps every proposal the model found, so `--min-conf` only chooses what gets
 counted in the printed summary and drawn into `--export`. The saved run is the same
