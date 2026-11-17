@@ -1,7 +1,14 @@
 """The labeling screen (§26): a player with the example set beside it.
 
 Driven over the fixture experiment with a real 6-frame video and a real tracking run, so the
-decode, the tracked boxes and every save go through the paths a user's clicks take."""
+decode, the tracked boxes and every save go through the paths a user's clicks take.
+
+**A class guarded here: an index held across an asynchronous change to its list (#26).** A mark
+save and a frame removal both address a frame by its position in the set, each off the UI
+thread. Pressing N while a removal was in flight (the keys reach the dialog; the busy overlay
+covers only the view) saved the mark to a position the removal had just shifted, onto the next
+frame. The dialog serialises the two: Remove waits for the saver, and no mark is saved while a
+removal runs. Its two orders are the last two tests in this file."""
 
 import pytest
 

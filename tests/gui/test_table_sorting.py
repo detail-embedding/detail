@@ -39,7 +39,10 @@ as it existed. `_row_positions_held` now follows a name holding a row position (
 it) to any subscript, or to any call that is not the view's own positional API
 (`_POSITIONAL_APIS`); `test_the_row_position_scan_would_catch_the_two_step_shape` is both live
 spellings. A table whose row order *is* the data (the parts table edits order) is the other
-answer: it leaves sorting off, is named in `SORT_EXEMPT`, and still stamps its rows.
+answer: it leaves sorting off, is named in `SORT_EXEMPT`, and still stamps its rows. The
+behavioural halves: `tests/gui/test_streams.py::test_a_sorted_streams_table_acts_on_the_stream_
+the_row_shows` and `tests/gui/test_pages.py::test_move_acts_on_the_part_the_row_shows_even_when_
+reordered`.
 """
 
 import ast

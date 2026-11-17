@@ -8,6 +8,13 @@ documented failed on every machine it could run on, and the docs told users to p
 ``best_supported_backend`` over the chosen model's own backends, as the GUI's compute row
 does, and the manifest records the backend chosen
 (``test_cli_quick_segment_with_no_backend_runs_on_one_the_model_supports``).
+
+**Another: two lists paired by position when one producer can skip (#26).** The sampler returns
+every position it asked for; the prompt-test engine returns a result only for a frame that
+decoded. ``_save_sampled`` zipped the two, so one undecodable frame in clip A filed every later
+result one slot early: clip B's frame 7 stored as clip A's, listed twice, and drawn on clip A's
+picture with clip B's masks. Each ``PromptTestResult`` now carries its ``part_index`` and is
+filed by it (``test_a_sample_that_does_not_decode_leaves_every_other_result_under_its_own_clip``).
 """
 
 from pathlib import Path

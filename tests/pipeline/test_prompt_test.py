@@ -2,6 +2,14 @@
 
 Uses a mocked DetectionModel so no GPU / network is involved. Verifies sampling,
 per-prompt result shape, save layout, and reproducibility under a seed.
+
+**A class guarded here: a result identified by its position or by half its key (#26).** A
+sample that does not decode is skipped, so the results are shorter than the samples and cannot
+be paired with them by position; and ``frame_idx`` is local to its video part, so two parts'
+frame 7 are different pictures. The overlay JPGs were named by ``frame_idx`` alone and the
+second part's overwrote the first's. Each result carries ``part_index``, ``test.json``'s
+``frame_results`` name it, and the overlays are named by both
+(``test_two_parts_frame_with_the_same_number_keep_their_own_overlays``).
 """
 
 import contextlib
