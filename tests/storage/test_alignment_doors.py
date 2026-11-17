@@ -59,7 +59,7 @@ def _offenders() -> list[str]:
     out = []
     for path in sorted(_ROOT.rglob("*.py")):
         rel = path.relative_to(_ROOT).as_posix()
-        source = path.read_text(encoding="utf-8")
+        source = path.read_text(encoding="utf-8-sig")
         for number, func in alignment_writes(source):
             if (rel, func) not in ALLOWED:
                 out.append(f"{rel}:{number} (in {func}) writes a stream's alignment")
@@ -78,7 +78,7 @@ def test_every_alignment_write_goes_through_a_clock_gate():
 def test_every_allowed_writer_still_exists_and_calls_the_gate():
     """An entry that excuses nothing is a hole waiting for a new writer to land in it."""
     for rel, func in ALLOWED:
-        source = (_ROOT / rel).read_text(encoding="utf-8")
+        source = (_ROOT / rel).read_text(encoding="utf-8-sig")
         writers = {f for _n, f in alignment_writes(source)}
         assert func in writers, f"{rel}::{func} no longer writes alignment; drop it"
         body = source[source.index(f"def {func}(") :]

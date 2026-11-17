@@ -398,6 +398,9 @@ _HEAVY_IMPORTS = {
 #: is about time and an unmeasured "it is fine" is how the promise erodes. Checked against
 #: the live scan, so an entry that stops being tripped fails.
 UNIT_EXEMPTIONS = {
+    "tests/api/test_export_reingest_origin.py": "cv2.VideoWriter writes one 30-frame 16x16 "
+    "stub clip per streams-export test, only so a behavior stream has frames to resolve "
+    "against; milliseconds, and the guard belongs with the unit tier it runs in",
     "tests/api/test_analysis.py": "Popen(['python', '-c', 'pass']) only, to fabricate a "
     "live PID for the reattach check — no workload, ~50 ms",
     "tests/api/test_job_reattach.py": "same: a `python -c pass` stand-in process is the "

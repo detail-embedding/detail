@@ -1,4 +1,17 @@
-"""MED-PC importer parsing + canonical conversion (Section 3)."""
+"""MED-PC importer parsing + canonical conversion (Section 3).
+
+**The class (#30): a file holding several sessions is flattened into one recording's stream.**
+MED-PC can save every box of a day into one data file, one ``Start Date:`` block each. The parser
+kept a dict per array letter and overwrote it on every block, so the last box won: a recording got
+another animal's events and that animal's ``Subject:`` in its metadata, with nothing said. The
+same file layout also hid two smaller wrongs: unsealed array space printed as ``0.000`` became
+``event_0`` rows at ``t = 0``, and a program logging ``T`` in ticks imported every time 100x late.
+
+**The rule.** A several-session file is refused until ``MedpcSessionConfig`` picks one (never
+merged, never cut to the last block), and the refusal lists every session; a trailing
+``(code 0, time 0)`` run is dropped and counted; a ``T`` past ``H`` is refused. The BORIS twin of
+this class (observations and subjects) is ``tests/importers/test_boris.py``.
+"""
 
 import pytest
 

@@ -2,6 +2,14 @@
 
 Fixtures mirror the real "Export events" table: one row per START/STOP/POINT marker with a
 ``Time`` in seconds; state behaviors span a START→STOP pair, points are single POINT rows.
+
+**The class (#30): an export holding several observations or animals is flattened onto one
+track.** The importer never read ``Observation id`` and wrote every row with ``subject`` null, so
+two sessions landed on one recording and two animals' bouts became one label track that query
+evaluation scored against both. A label scored as both bouts and points was marked all-point.
+The rule: several observations or subjects are refused until ``BorisSelectionConfig`` picks one
+of each, and a label of two kinds is refused naming its rows. The MED-PC twin is
+``tests/importers/test_medpc.py``.
 """
 
 import pytest
