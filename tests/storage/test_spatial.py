@@ -612,3 +612,51 @@ def test_calibration_rejects_bad_input(recording_dir):
         )
     with pytest.raises(ValueError, match="pixels_per_mm must be"):
         spatial.write_calibration_scalar(recording_dir, -1.0, (1920, 1080))
+
+
+# --- the write's refusals, asked without writing (#35 finding 13) ------------- #
+# The scene editor commits several kinds in one Save. It asks these before its first write,
+# so a refusal cannot land after the field of view was already stored; they are the same
+# functions the writes call, so the check cannot drift from the write.
+@pytest.mark.parametrize("kind", ["arena", "roi", "point"])
+def test_validate_defs_refuses_a_name_used_twice_in_user_words(kind):
+    shape = [(0, [(0.5, 0.5)])] if kind == "point" else [(0, _square())]
+    defs = [{"name": "a", "keyframes": shape}, {"name": "a", "keyframes": shape}]
+    plural = {"arena": "fields of view", "roi": "regions", "point": "points"}[kind]
+    with pytest.raises(ValueError, match=f"two {plural}.* are named 'a'"):
+        spatial.validate_defs(kind, defs)
+
+
+def test_replace_defs_refuses_through_the_same_check_and_writes_nothing(recording_dir):
+    spatial.replace_defs(
+        recording_dir, "roi", [{"name": "nest", "keyframes": [(0, _square())]}]
+    )
+    twice = [{"name": "a", "keyframes": [(0, _square())]}] * 2
+    with pytest.raises(ValueError, match="are named 'a'"):
+        spatial.replace_defs(recording_dir, "roi", twice)
+    assert [e["name"] for e in spatial.list_defs(recording_dir, "roi")] == ["nest"]
+
+
+def test_calibration_from_points_is_what_the_write_stores(recording_dir):
+    points = [(0.25, 0.5), (0.75, 0.5)]
+    block = spatial.calibration_from_points(points, 200.0, (1920, 1080))
+    assert (
+        spatial.write_calibration_from_points(
+            recording_dir, points, 200.0, (1920, 1080)
+        )
+        == block
+    )
+    assert spatial.read_calibration(recording_dir)["pixels_per_mm"] == pytest.approx(
+        4.8
+    )
+    with pytest.raises(ValueError, match="distinct"):
+        spatial.calibration_from_points([(0.5, 0.5)] * 2, 200.0, (1920, 1080))
+
+
+def test_spatial_csv_kinds_names_what_the_file_holds(recording_dir, tmp_path):
+    spatial.replace_defs(
+        recording_dir, "roi", [{"name": "nest", "keyframes": [(0, _square())]}]
+    )
+    csv = tmp_path / "one.csv"
+    spatial.export_spatial(recording_dir, csv)
+    assert spatial.spatial_csv_kinds(csv) == {"roi"}

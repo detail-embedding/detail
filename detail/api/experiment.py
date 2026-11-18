@@ -1958,14 +1958,16 @@ class Experiment:
         cat = spatial_categories.category(category_key)
         src = self.resolve_recording(source)
         if not cat.has_data(src):
-            raise ValueError(f"recording {src.id!r} has no {cat.label.lower()} to copy")
+            raise ValueError(
+                f"recording {src.name!r} has no {cat.label.lower()} to copy"
+            )
         dests = self._propagate_targets(src, targets)
         stage = f"copying {cat.label.lower()}"
         total = len(dests)
         copied: list[str] = []
         skipped: list[tuple[str, str]] = []
         flattened: list[str] = []
-        refused: list[tuple[str, str]] = []
+        refused: list[tuple[str, str, str]] = []
         for index, dest in enumerate(dests):
             detail = f"{dest.name} ({index + 1}/{total})"
             if progress is not None:
@@ -1975,17 +1977,25 @@ class Experiment:
                 skipped.append((dest.id, reason))
             else:
                 try:
-                    added, flattened, refused = cat.give(src, dest, names)
+                    added, dest_flattened, dest_refused = cat.give(src, dest, names)
                 except (ValueError, FileNotFoundError, KeyError, OSError) as exc:
                     skipped.append((dest.id, str(exc)))
                 else:
+                    # Accumulated per target and tagged with it. Assigning them here kept
+                    # only the last target's notes, so a refusal on any other recording was
+                    # reported as "see the notes below" with no notes (#35 finding 12).
+                    flattened += [n for n in dest_flattened if n not in flattened]
+                    refused += [(dest.id, name, why) for name, why in dest_refused]
                     # Only a target that actually received something counts as copied. A
                     # set-shaped kind can have every one of its names refused, which is
                     # not a failure and not a copy.
                     (copied if added else skipped).append(
                         dest.id
                         if added
-                        else (dest.id, "nothing new to add — see the notes below")
+                        else (
+                            dest.id,
+                            "nothing new to add — everything offered was refused",
+                        )
                     )
             if progress is not None:
                 progress(stage, (index + 1) / total, detail)

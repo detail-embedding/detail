@@ -5,7 +5,8 @@ first write, then ran a check (or a long copy) that could still fail, and on the
 what it had written:
 
 - a spatial CSV wrote its regions, then refused a point outside ``[0, 1]``; the retry, after
-  fixing the file, refused the regions as "already exists";
+  fixing the file, refused the regions as "already exists" (and the scene editor's whole-file
+  import, `import_scene_csv`, wrote its field of view first in the same way);
 - ``add_stream`` copied the files into ``streams/<name>/raw/`` and wrote the canonical CSV
   before its last checks, so a refused import kept a folder with no manifest entry, and a retry
   with another file left the first in ``raw/`` for good;
@@ -92,6 +93,34 @@ def test_a_spatial_csv_with_one_bad_point_writes_no_region(tmp_path):
     fixed = csv.read_text(encoding="utf-8-sig").replace("1.2,0.5", "0.9,0.5")
     csv.write_text(fixed, encoding="utf-8")
     assert rec.import_spatial_csv(csv) == (["zone", "lever"], [], [])
+
+
+def test_a_whole_setup_csv_with_one_bad_point_writes_no_field_of_view(tmp_path):
+    """The scene editor's Import from a CSV (`import_scene_csv`) brings every kind the file
+    holds. Written kind by kind, the field of view landed before the bad point was refused.
+    """
+    exp = Experiment.create("proj", tmp_path)
+    rec = exp.create_recording("r1")
+    csv = tmp_path / "setup.csv"
+    csv.write_text(
+        "kind,name,active_start,active_end,frame_idx,vertex_index,x,y\n"
+        "arena,cage,,,0,0,0.05,0.05\narena,cage,,,0,1,0.95,0.05\n"
+        "arena,cage,,,0,2,0.95,0.95\n"
+        "roi,zone,,,0,0,0.1,0.1\nroi,zone,,,0,1,0.5,0.1\nroi,zone,,,0,2,0.5,0.5\n"
+        "point,lever,,,0,0,1.2,0.5\n",
+        encoding="utf-8",
+    )
+    before = _tree(rec.dir)
+
+    with pytest.raises(
+        ValueError, match=r"vertex \(1\.2, 0\.5\) at frame 0 is outside"
+    ):
+        rec.import_scene_csv(csv)
+
+    assert _tree(rec.dir) == before
+    fixed = csv.read_text(encoding="utf-8-sig").replace("1.2,0.5", "0.9,0.5")
+    csv.write_text(fixed, encoding="utf-8")
+    assert rec.import_scene_csv(csv) == (["cage", "zone", "lever"], [], [])
 
 
 # --- add_stream ------------------------------------------------------------------------ #

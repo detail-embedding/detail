@@ -2311,8 +2311,41 @@ def test_propagate_rois_leaves_a_windowed_region_behind(tmp_path):
     )
 
     assert res.exit_code == 0, res.output
-    assert "not copied: timed zone" in res.output
+    assert "not copied to r2: timed zone:" in res.output
     assert [r["name"] for r in exp.get_recording("r2").rois] == ["nest"]
+
+
+def test_propagate_reports_every_target_by_name(tmp_path):
+    """Every target's notes, each naming its recording by name (#35 finding 12): only the
+    last target's used to be printed, so "first" was "skipped: nothing new to add" with no
+    line saying why. The refusing targets are first and middle, so a last-only report
+    fails."""
+    from detail.api.experiment import Experiment
+
+    exp = Experiment.create("p1", tmp_path)
+    recs = {
+        name: exp.add_recording(name) for name in ("src", "first", "middle", "last")
+    }
+    recs["src"].define_roi("nest", _square_kf())
+    recs["first"].define_roi("nest", _square_kf())
+    recs["middle"].define_roi("nest", _square_kf())
+
+    res = _runner().invoke(
+        main,
+        # fmt: off
+        [
+            "experiment", "propagate-rois",
+            "--experiment", str(exp.dir), "--source", "src",
+        ],
+        # fmt: on
+    )
+
+    assert res.exit_code == 0, res.output
+    assert "copied to 1/3 recording(s)" in res.output
+    for target in ("first", "middle"):
+        assert f"not copied to {target}: nest: already exists on {target}" in res.output
+        assert f"skipped {target}: nothing new to add" in res.output
+    assert "recording_" not in res.output, "a recording shown by id, not name"
 
 
 def test_propagate_points_via_cli(tmp_path):

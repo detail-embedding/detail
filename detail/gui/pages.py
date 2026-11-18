@@ -1762,7 +1762,17 @@ class ToolRunDetailPage(QWidget):
             return
         layout.addWidget(_heading(f"{manifest.get('label', tool_id)}  ·  {run_id}"))
         status = manifest.get("status")
-        if status == "complete":
+        # A stopped run keeps what it finished, and `run_tool` promises it is still
+        # openable, so it opens like a complete one; its summary line says "(stopped
+        # early)". Only `complete` used to get the result view, so a stopped run showed a
+        # bare "Status: stopped" with no playback and no export (#35 finding 16). One
+        # stopped before its first frame has nothing to play or export, and says so.
+        n_processed = (manifest.get("result") or {}).get("n_processed")
+        if status == "stopped" and not n_processed:
+            layout.addWidget(
+                QLabel("Stopped before its first frame — there is nothing to show.")
+            )
+        elif status in api_tools.OPENABLE_STATUSES:
             layout.addWidget(TOOL_GUIS[tool_id].result_widget(manifest))
         elif status == "failed":
             error = QLabel(f"Run failed: {manifest.get('error', 'unknown error')}")
@@ -4360,30 +4370,8 @@ class _ImportSpatialDialog(Dialog):
         return added, flattened, refused
 
     def _import_csv(self) -> tuple[list[str], list[str], list[tuple[str, str]]]:
-        path = self._path.text()
-        added, flattened, refused = [], [], []
-        for kind_id, call in (
-            ("arena", lambda: self._recording.import_field_of_view_csv(path)),
-            ("roi", lambda: self._recording.import_spatial_csv(path, kinds=("roi",))),
-            (
-                "point",
-                lambda: self._recording.import_spatial_csv(path, kinds=("point",)),
-            ),
-        ):
-            try:
-                a, f, r = call()
-            except (FileNotFoundError, ValueError) as exc:
-                refused.append((kind_id, str(exc)))
-                continue
-            added += a
-            flattened += f
-            refused += r
-        try:
-            self._recording.import_calibration_csv(path)
-            added.append("distance calibration")
-        except (FileNotFoundError, ValueError) as exc:
-            refused.append(("distance calibration", str(exc)))
-        return added, flattened, refused
+        """Bring whatever the CSV carries; a kind it does not hold is not reported."""
+        return self._recording.import_scene_csv(self._path.text())
 
     # -- what can actually be brought ------------------------------------------ #
 
@@ -4842,17 +4830,16 @@ class CopyToRecordingsDialog(Dialog):
         self,
         plan: tuple[dict[str, list[str]], list[str]],
         progress: Callable[[str, float, str], None] | None,
-    ) -> list[tuple[str, str, str]]:
-        """Copy every planned category onto every planned target, off the UI thread.
+    ) -> str:
+        """Copy every planned category onto every planned target; return the report.
 
-        Categories run in a fixed order, each getting an even slice of ``progress``.
-        Returns ``(category, subject, note)`` triples for everything the user should be
-        told — a recording that kept what it had, and a definition that could not travel.
+        Categories run in a fixed order, each getting an even slice of ``progress``. The
+        report is :func:`copy_report`'s, with each recording named by its name.
         """
         by_kind, target_ids = plan
         keys = list(by_kind)
         total = len(keys)
-        notes: list[tuple[str, str, str]] = []
+        results = []
         for index, key in enumerate(keys):
             cat = CATEGORIES_BY_KEY[key]
 
@@ -4867,9 +4854,43 @@ class CopyToRecordingsDialog(Dialog):
                 names=by_kind[key],
                 progress=sub_progress,
             )
-            notes.extend((cat.label, ref, err) for ref, err in result.skipped)
-            notes.extend((cat.label, name, reason) for name, reason in result.refused)
-        return notes
+            results.append((cat.label, result))
+        with read_cache.pinned():
+            names = {r.id: r.name for r in self._others}
+        return copy_report(results, names)
+
+
+def copy_report(results: list[tuple[str, object]], names: dict[str, str]) -> str:
+    """What one Copy to other recordings did, as the message a person reads.
+
+    ``results`` is ``(category label, PropagationResult)`` per category copied; ``names``
+    maps recording id to name. Every target's notes are listed, each naming the recording
+    it is about: the report once carried only the last target's, so a recording that kept
+    its own "nest" was reported as "nothing new to add — see the notes below" with no
+    notes below (#35 finding 12). Camera motion dropped on the way is listed too — it was
+    computed and never shown.
+    """
+    copied = any(result.copied for _label, result in results)
+    lines = ["Copied." if copied else "Nothing was copied."]
+    for label, result in results:
+        if result.flattened:
+            lines.append(
+                f"{label} — camera motion not copied (taken at frame 0): "
+                f"{', '.join(result.flattened)}"
+            )
+    notes = [
+        f"{label} — {names.get(rid, rid)}: {reason}"
+        for label, result in results
+        for rid, reason in result.skipped
+    ] + [
+        f"{label} — {names.get(rid, rid)}: {name}: {reason}"
+        for label, result in results
+        for rid, name, reason in result.refused
+    ]
+    if notes:
+        lines.append(f"{len(notes)} thing(s) were left as they were:")
+        lines += notes
+    return "\n".join(lines)
 
 
 # Detail views (content area, reached by drilling in)

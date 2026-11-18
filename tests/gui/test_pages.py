@@ -1,4 +1,13 @@
-"""Run tables navigate: recording run-history → experiment run, run → recording."""
+"""Run tables navigate: recording run-history → experiment run, run → recording.
+
+Also the scene editor's Copy to other recordings and Import from… dialogs, and one class in
+their reports: **a report of a carry-over lists what happened, nothing else** (#35 findings
+12 and 14). Copy reported only the last target's refusals (the API kept the last one's), so a
+recording that kept its own region read "see the notes below" over no notes; Import from a CSV
+tried all four kinds and listed each kind the file did not hold as "Not added", so a one-region
+file read like a partial failure. Each report line names its recording by name, and a CSV
+import asks the file what it holds (`Recording.import_scene_csv`).
+"""
 
 import pytest
 
@@ -1081,9 +1090,9 @@ def test_copy_dialog_run_copies_checked_categories_to_checked_targets(qapp, tmp_
 
     dialog = CopyToRecordingsDialog(r1, proj)
     seen = []
-    notes = dialog.run(dialog.plan(), lambda stage, f, detail: seen.append(stage))
+    report = dialog.run(dialog.plan(), lambda stage, f, detail: seen.append(stage))
 
-    assert notes == []
+    assert report == "Copied."
     for rid in ("s2", "s3"):
         rec = proj.get_recording(rid)
         assert [a["name"] for a in rec.arenas] == ["rig"]
@@ -1113,8 +1122,118 @@ def test_run_touches_no_widget_so_a_worker_can_call_it(qapp, tmp_path):
     dialog._targets.clear()
     dialog._movables = []
 
-    assert dialog.run(plan, None) == []
+    assert dialog.run(plan, None) == "Copied."
     assert [a["name"] for a in proj.get_recording("s2").arenas] == ["rig"]
+
+
+def test_the_copy_report_names_every_target_that_kept_something(qapp, tmp_path):
+    """Every target's notes, each by recording name (#35 finding 12).
+
+    Only the last target's refusals reached the report, so a recording that kept its own
+    "nest" read "nothing new to add — see the notes below" with no notes below. Two of the
+    three targets refuse, and neither is last in the list.
+    """
+    from detail.gui.pages import CopyToRecordingsDialog
+
+    proj = Experiment.create("p", tmp_path)
+    src = proj.add_recording("box one")
+    src.define_roi("nest", _square_kf())
+    src.define_roi("feeder", _square_kf())
+    src.define_arena("panning rig", _square_kf() + [(900, _square_kf()[0][1])])
+    proj.add_recording("box two").define_roi("nest", _square_kf())
+    proj.add_recording("box three").define_roi("feeder", _square_kf())
+    proj.add_recording("box four")
+
+    dialog = CopyToRecordingsDialog(src, proj)
+    report = dialog.run(dialog.plan(), None)
+
+    lines = report.splitlines()
+    assert lines[0] == "Copied."
+    assert (
+        "Field of view — camera motion not copied (taken at frame 0): panning rig"
+        in lines
+    )
+    refusals = [line for line in lines if "already exists" in line]
+    assert len(refusals) == 2, report
+    assert any(
+        line.startswith("Regions of interest — box two: nest:") for line in refusals
+    )
+    assert any(
+        line.startswith("Regions of interest — box three: feeder:") for line in refusals
+    )
+    assert "recording_" not in report, "a recording shown by id, not name"
+
+
+def test_the_copy_report_says_when_nothing_was_copied():
+    from detail.api.spatial_categories import PropagationResult
+    from detail.gui.pages import copy_report
+
+    refused = PropagationResult(
+        copied=[],
+        skipped=[
+            ("recording_002", "nothing new to add — everything offered was refused")
+        ],
+        flattened=[],
+        refused=[("recording_002", "nest", "already exists on cage b")],
+    )
+    report = copy_report(
+        [("Regions of interest", refused)], {"recording_002": "cage b"}
+    )
+    assert report.splitlines() == [
+        "Nothing was copied.",
+        "2 thing(s) were left as they were:",
+        "Regions of interest — cage b: nothing new to add — everything offered was "
+        "refused",
+        "Regions of interest — cage b: nest: already exists on cage b",
+    ]
+
+
+def test_importing_a_csv_reports_only_what_it_carries(qapp, tmp_path):
+    """A file holding one region is one region added and nothing refused (#35 finding 14).
+
+    The import tried all four kinds and turned each "this file carries no …" into a
+    "Not added" line, so a correct import read like a partial failure.
+    """
+    from detail.gui.arena import _arrival_report
+    from detail.gui.pages import _ImportSpatialDialog
+
+    proj = Experiment.create("p", tmp_path)
+    src = proj.add_recording("template")
+    src.define_roi("nest", _square_kf())
+    csv = tmp_path / "one_region.csv"
+    src.export_spatial_csv(csv)
+    dst = Experiment.create("q", tmp_path / "other").add_recording("cage a")
+
+    dialog = _ImportSpatialDialog(dst, None)
+    dialog._path.setText(str(csv))
+    assert _arrival_report(*dialog.do_import()) == "Added 1: nest"
+    assert [r["name"] for r in dst.rois] == ["nest"]
+
+
+def test_importing_a_csv_refuses_a_kind_in_user_words(qapp, tmp_path):
+    """A kind the file does carry and this recording cannot take is one refusal, named as
+    a person names it and saying which recording by name."""
+    from detail.gui.arena import _arrival_report
+    from detail.gui.pages import _ImportSpatialDialog
+
+    proj = Experiment.create("p", tmp_path)
+    src = proj.add_recording("template")
+    src.define_arena("rig", _square_kf())
+    src.define_roi("nest", _square_kf())
+    csv = tmp_path / "setup.csv"
+    src.export_spatial_csv(csv)
+    dst = proj.add_recording("cage a")
+    dst.define_arena("its own", _square_kf())
+
+    dialog = _ImportSpatialDialog(dst, None)
+    dialog._from_csv.setChecked(True)
+    dialog._path.setText(str(csv))
+    lines = _arrival_report(*dialog.do_import()).splitlines()
+    assert lines[0] == "Added 1: nest"
+    assert lines[1:] == [
+        "Not added — field of view: recording 'cage a' already has a field of view — "
+        "delete the existing one first"
+    ]
 
 
 def test_run_detail_recording_row_opens_recording(qapp, tmp_path):

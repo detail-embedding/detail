@@ -1991,10 +1991,11 @@ def _propagate_cli(
         click.echo(
             f"  camera motion dropped (copied at frame 0): {', '.join(result.flattened)}"
         )
-    for name, reason in result.refused:
-        click.echo(f"  not copied: {name} {reason}", err=True)
-    for ref, error in result.skipped:
-        click.echo(f"  skipped {ref}: {error}", err=True)
+    names = proj.recording_names()
+    for rid, name, reason in result.refused:
+        click.echo(f"  not copied to {names.get(rid, rid)}: {name}: {reason}", err=True)
+    for rid, error in result.skipped:
+        click.echo(f"  skipped {names.get(rid, rid)}: {error}", err=True)
 
 
 @experiment.command("propagate-fov")

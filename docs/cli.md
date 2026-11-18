@@ -199,6 +199,10 @@ table, see the [Parameters reference](reference/parameters.md).
     window describes one recording's timeline; keeping it can leave a region that applies
     to no frame, and dropping it would silently widen your claim to the whole video.
 
+  Each definition a recording refuses gets its own line, naming the recording:
+  `not copied to <recording>: <definition>: <reason>`. A recording that took nothing is
+  also listed as `skipped <recording>: <reason>`.
+
   The GUI's **Copy to other recordings…** button (beside any of the four setup sections
   on a recording's page) does all four from one dialog, showing which recordings will keep
   what they have before you commit.
