@@ -585,6 +585,25 @@ def test_export_run_makes_one_named_folder_per_mode(
     assert mp4s[0].stat().st_size > 0
 
 
+def test_exporting_one_run_twice_makes_two_folders(
+    tmp_path, stub_model, isolated_tools
+):
+    """``docs/tools.md``: "Two exports never land on top of each other." The folder is named
+    by the run, so a second export of the same run — at another threshold — reused it and
+    replaced the first one's pictures (#29). It gets ``_2`` instead."""
+    video = tmp_path / "openfield_01.mp4"
+    _write_video(video, n_frames=16)
+    record = api_tools.run_tool(
+        "quick_segment", _config(video, n_frames=3, mode="sample")
+    )
+    run_dir = tool_runs.tool_run_dir("quick_segment", record["id"])
+    first = quick_segment.export_run(run_dir, record, tmp_path / "share")
+    (first / "note.txt").write_text("the first export", encoding="utf-8")
+    second = quick_segment.export_run(run_dir, record, tmp_path / "share", min_conf=0.9)
+    assert second == first.with_name(f"{first.name}_2")
+    assert (first / "note.txt").is_file() and not (second / "note.txt").exists()
+
+
 def test_export_frames_refuses_a_consecutive_run(tmp_path, stub_model, isolated_tools):
     video = tmp_path / "clip.mp4"
     _write_video(video, n_frames=8)

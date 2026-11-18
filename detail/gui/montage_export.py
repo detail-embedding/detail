@@ -598,16 +598,17 @@ class MontageExport(QObject):
             folder = QFileDialog.getExistingDirectory(
                 owner, "Export the clips as GIFs into…"
             )
-            if folder:
+            if folder and self._may_write_files(job, folder):
                 self.write_files(job, folder, max_width=answer[0], fps=answer[1])
         elif kind == "list":
-            chosen, _filter = QFileDialog.getSaveFileName(
+            chosen = ax.ask_save_path(
                 owner,
                 "Export the clips as a CSV list",
                 self._file("clips", "csv"),
+                "csv",
                 "CSV list (*.csv)",
             )
-            if chosen:
+            if chosen is not None:
                 self.write_list(job, chosen)
 
     def _file(self, what: str, kind: str) -> str:
@@ -644,6 +645,27 @@ class MontageExport(QObject):
             label=f"Exporting {len(job.clips):,} clips…",
         )
 
+    @staticmethod
+    def _gif_stems(job: ExportJob) -> list[str]:
+        from detail.api import clip_montage as montage_api
+
+        return [
+            f"{n:02d}_{montage_api.clip_file_stem(c)}"
+            for n, c in enumerate(job.plain, 1)
+        ]
+
+    def _may_write_files(self, job: ExportJob, folder) -> bool:
+        """True when none of ``job``'s GIF names is in ``folder`` yet, or the user agreed to
+        replace the ones that are. A folder picker never asks about the files inside it, so
+        a second export into one folder wrote over the first's GIFs unasked (#29)."""
+        from detail.api import clip_montage as montage_api
+        from detail.gui import animation_export as ax
+
+        there = montage_api.existing_gifs(folder, self._gif_stems(job))
+        return not there or ax.confirm_replace(
+            self._montage, "Export the clips as GIFs", there
+        )
+
     def write_files(self, job: ExportJob, folder, *, max_width: int, fps: float):
         """A GIF per clip of ``job`` into ``folder``, numbered in order, off the UI thread
         behind a bar with Cancel."""
@@ -651,10 +673,7 @@ class MontageExport(QObject):
         from detail.gui.busy import run_progress
 
         experiment_dir = self._source.experiment_dir()
-        stems = [
-            f"{n:02d}_{montage_api.clip_file_stem(c)}"
-            for n, c in enumerate(job.plain, 1)
-        ]
+        stems = self._gif_stems(job)
 
         def work(progress):
             montage = montage_api.ClusterMontage(experiment_dir, job.clips)
@@ -667,6 +686,8 @@ class MontageExport(QObject):
                     max_width=max_width,
                     fps=fps,
                     progress=progress,
+                    # Asked before this started (`_may_write_files`).
+                    replace=True,
                 )
             finally:
                 montage.close()
@@ -687,9 +708,7 @@ class MontageExport(QObject):
         from detail.api import clip_montage as montage_api
         from detail.gui import animation_export
 
-        path = Path(path)
-        if path.suffix.lower() != ".csv":
-            path = path.with_name(f"{path.name}.csv")
+        path = Path(path)  # `.csv` already, from `ask_save_path`
         experiment_dir, origin = self._source.experiment_dir(), self._source.origin()
 
         def work(progress):

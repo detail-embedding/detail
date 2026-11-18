@@ -258,6 +258,11 @@ def test_two_subjects_in_one_recording_are_rendered_separately(tmp_path, video):
     dest, _written = _export(tmp_path, video, rows)
     table = _rows(dest / "clips.csv")
     assert sorted(r["subject"] for r in table) == ["0", "1"]
+    # Subject 1 has no detection on the span, so its clip is empty and dropped — and dropped by
+    # its own name: one shared name deleted subject 0's clip too, leaving only clips.csv (#29).
+    by_subject = {r["subject"]: r["video_overlay"] for r in table}
+    assert by_subject["1"] == ""
+    assert by_subject["0"] and (dest / by_subject["0"]).is_file()
 
 
 def test_the_progress_callback_moves_within_a_single_recording(tmp_path, video):
