@@ -550,3 +550,29 @@ def test_an_export_finishing_late_ends_only_its_own_pick_session(
     drain_busy_calls(qapp)
     assert exports.written.text().startswith("Wrote ")
     assert exports.is_picking() and exports.picks() == [1]
+
+
+def test_one_file_per_clip_asks_before_replacing_gifs_already_in_the_folder(
+    qapp, workspace, monkeypatch, tmp_path
+):
+    """A folder picker never asks about the files inside it, so a second export into one
+    folder replaced the first one's GIFs unasked (#29). Counted and named before it starts.
+    """
+    from PyQt6.QtWidgets import QMessageBox
+
+    asked: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        staticmethod(
+            lambda _p, _t, text, *a, **k: asked.append(text)
+            or QMessageBox.StandardButton.No
+        ),
+    )
+    exports = workspace._interpret.montage().exports
+    job = exports.job()
+    assert exports._may_write_files(job, tmp_path) and asked == []
+    first = f"{exports._gif_stems(job)[0]}.gif"
+    (tmp_path / first).write_bytes(b"the first export")
+    assert not exports._may_write_files(job, tmp_path)
+    assert len(asked) == 1 and first in asked[0]

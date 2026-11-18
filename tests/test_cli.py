@@ -2533,10 +2533,117 @@ def test_experiment_import_names_the_recordings_whose_video_was_not_found(
 
     assert res.exit_code == 0, res.output
     assert (
-        "video not found on this machine for 1 recording(s): s1. Relink one file "
+        "video not found on this machine for 1 recording(s): s1. (A file at the same "
+        "path that is a different video counts as not found.) Relink one file "
         "(`detail recording relink`) and every recording whose video is in the same "
         "folder finds it too."
     ) in res.output
+
+
+def _study_with_copied_video(tmp_path, monkeypatch):
+    """``study`` in the workspace with one recording whose video was copied in, and an export
+    record: the experiment the "moving experiments between machines" loop brings home.
+    """
+    from detail.storage import experiment as experiment_store
+    from detail.storage import locations
+
+    (tmp_path / "cfg").mkdir()
+    monkeypatch.setattr(locations, "STORAGE_PATH", tmp_path / "cfg" / "storage.yaml")
+    monkeypatch.setattr(locations, "DEFAULT_ROOT", tmp_path / "ws")
+    r = _runner()
+    r.invoke(main, ["experiment", "create", "study", "--dir", str(tmp_path / "ws")])
+    pdir = tmp_path / "ws" / "study"
+    r.invoke(main, ["recording", "create", "--experiment", str(pdir), "--name", "m1"])
+    video = tmp_path / "trial.mp4"
+    _write_video(video)
+    res = r.invoke(
+        main,
+        ["recording", "add-video", "--experiment", str(pdir), "--recording", "m1",
+         "--video", str(video), "--no-preview"],
+    )  # fmt: skip
+    assert res.exit_code == 0, res.output
+    (record := experiment_store.exports_dir(pdir) / "export_01").mkdir(parents=True)
+    (record / "export.yaml").write_text("id: export_01\n", encoding="utf-8")
+    (copied,) = (pdir / "recordings").rglob("*.mp4")
+    return r, pdir, copied
+
+
+def test_experiment_import_replace_prints_what_it_deletes_first(tmp_path, monkeypatch):
+    """`--replace` with a slim bundle deleted the experiment's copied video and export records
+    and printed only ``imported:`` (#29). It still deletes them (the owner's decision), and
+    says so first, in the words the GUI's prompt uses (`api.experiment.replace_warning`).
+    """
+    from detail.api.exporters import format_size
+
+    r, pdir, copied = _study_with_copied_video(tmp_path, monkeypatch)
+    size = format_size(copied.stat().st_size)
+    archive = tmp_path / "study.tar"
+    r.invoke(
+        main, ["experiment", "export", "--experiment", str(pdir), "--out", str(archive)]
+    )
+
+    refused = r.invoke(main, ["experiment", "import", str(archive)])
+    assert refused.exit_code != 0
+    assert "--replace would also delete:\n" in refused.output
+    assert f"  - 1 video file(s), {size}: the bundle carries no video" in refused.output
+
+    res = r.invoke(main, ["experiment", "import", str(archive), "--replace"])
+
+    assert res.exit_code == 0, res.output
+    assert res.stdout.startswith(
+        "replacing experiment 'study' deletes what the bundle does not bring back:\n"
+        f"  - 1 video file(s), {size}: the bundle carries no video\n"
+        "  - 1 export record(s), export_01: no bundle carries them (the exported files "
+        "themselves are not touched)\n"
+        "imported: "
+    ), res.stdout
+    assert not copied.exists()
+
+
+def test_experiment_import_replace_with_nothing_lost_prints_no_list(
+    tmp_path, monkeypatch
+):
+    """A full bundle brings the video back, and with no export record nothing is lost: no
+    list, so the list means something when it appears."""
+    r, pdir, copied = _study_with_copied_video(tmp_path, monkeypatch)
+    import shutil
+
+    shutil.rmtree(pdir / "exports")
+    archive = tmp_path / "study.tar"
+    r.invoke(
+        main,
+        ["experiment", "export", "--experiment", str(pdir), "--out", str(archive),
+         "--include-video"],
+    )  # fmt: skip
+
+    res = r.invoke(main, ["experiment", "import", str(archive), "--replace"])
+
+    assert res.exit_code == 0, res.output
+    assert res.stdout.startswith("imported: "), res.stdout
+    assert copied.is_file()
+
+
+def test_experiment_export_names_a_symlinked_folder_it_left_out(tmp_path):
+    import os
+
+    r = _runner()
+    r.invoke(main, ["experiment", "create", "study", "--dir", str(tmp_path / "src")])
+    pdir = tmp_path / "src" / "study"
+    (tmp_path / "elsewhere").mkdir()
+    try:
+        os.symlink(tmp_path / "elsewhere", pdir / "linked", target_is_directory=True)
+    except OSError:
+        pytest.skip("this machine cannot make a symlink")
+    archive = tmp_path / "study.tar"
+
+    res = r.invoke(
+        main, ["experiment", "export", "--experiment", str(pdir), "--out", str(archive)]
+    )
+
+    assert res.exit_code == 0, res.output
+    assert "left out linked: it is a symlinked folder, which is not followed\n" in (
+        res.output
+    )
 
 
 def test_experiment_export_and_import_drive_a_bar_through_every_phase(
@@ -5281,3 +5388,98 @@ def test_every_launch_names_the_recording_it_is_validating(
     assert called, result.output  # reached the API, not refused by click first
     assert "stop here" in result.output
     assert "Validating" in result.output and "Rat 7 (1/1)" in result.output
+
+
+_TWO_BOX_MEDPC = """\
+Start Date: 02/16/26
+Subject: RAT1
+Box: 1
+H:      10.000
+E:
+     0:        2.000      100.000        0.000
+T:
+     0:        1.000       10.000        0.000
+
+Start Date: 02/16/26
+Subject: RAT2
+Box: 2
+H:       5.000
+E:
+     0:        2.000      100.000
+T:
+     0:        0.500        5.000
+"""
+_MEDPC_PROGRAM = "\\  Event stamps ( array E )\n\\   2 = Lever\n\\   100 = End\n\\\n"
+
+
+def _add_medpc(tmp_path, *extra):
+    from detail.api.experiment import Experiment
+
+    exp = Experiment.create("p1", tmp_path)
+    exp.create_recording("r1")
+    data = tmp_path / "day.txt"
+    data.write_text(_TWO_BOX_MEDPC, encoding="utf-8")
+    program = tmp_path / "task.MPC"
+    program.write_text(_MEDPC_PROGRAM, encoding="utf-8")
+    res = _runner().invoke(
+        main,
+        [
+            "recording", "add-stream", "--experiment", str(exp.dir), "--recording", "r1",
+            "--name", "medpc", "--importer", "medpc", "--data", str(data),
+            "--program", str(program), *extra,
+        ],
+    )  # fmt: skip
+    return exp, res
+
+
+def test_add_stream_refuses_a_several_session_medpc_file_naming_them(tmp_path):
+    exp, res = _add_medpc(tmp_path)
+    assert res.exit_code != 0
+    assert (
+        "holds 2 sessions (1: Subject RAT1, box 1, 02/16/26; 2: Subject RAT2"
+        in res.output
+    )
+    assert exp.get_recording("r1").streams == []
+
+
+def test_add_stream_medpc_box_picks_one_session_and_reports_dropped_slots(tmp_path):
+    exp, res = _add_medpc(tmp_path, "--medpc-box", "1")
+    assert res.exit_code == 0, res.output
+    assert "2 rows" in res.output
+    assert (
+        "note: dropped 1 unused (code 0, time 0) slot(s) after the last event"
+        in res.output
+    )
+    assert exp.get_recording("r1").streams[0]["metadata"]["subject"] == "RAT1"
+
+
+def test_a_selector_flag_for_another_importer_is_refused_not_ignored(tmp_path):
+    exp, res = _add_medpc(tmp_path, "--boris-subject", "mA")
+    assert res.exit_code != 0
+    assert "--boris-subject only apply to the importer they are named for" in res.output
+
+
+def test_set_stream_offset_refuses_behavior_labels(tmp_path):
+    from detail.api.experiment import Experiment
+
+    exp = Experiment.create("p1", tmp_path)
+    recording = exp.create_recording("r1")
+    vid = tmp_path / "clip.mp4"
+    writer = cv2.VideoWriter(str(vid), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (16, 16))
+    for _ in range(10):
+        writer.write(np.zeros((16, 16, 3), np.uint8))
+    writer.release()
+    recording.add_video_part(vid)
+    labels = tmp_path / "labels.csv"
+    labels.write_text("start_frame,end_frame,label\n1,3,groom\n", encoding="utf-8")
+    recording.add_stream("behavior", raw_path=labels, importer="behavior_csv")
+    res = _runner().invoke(
+        main,
+        [
+            "recording", "set-stream-offset", "--experiment", str(exp.dir),
+            "--recording", "r1", "--name", "behavior", "--offset", "5",
+        ],
+    )  # fmt: skip
+    assert res.exit_code != 0
+    assert "already the video's own" in res.output
+    assert exp.get_recording("r1").streams[0]["alignment"]["offset_ns"] == 0

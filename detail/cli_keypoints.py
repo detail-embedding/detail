@@ -16,6 +16,8 @@ from pathlib import Path
 import click
 
 from detail.api.keypoint_distill import DEFAULT_POSE_BASE
+from detail.cli_numbers import FINITE_FLOAT
+from detail.cli_numbers import finite_float_range
 from detail.configs.keypoint_dataset import KeypointDatasetConfig
 from detail.configs.keypoint_detect import KeypointDetectConfig
 from detail.configs.keypoint_track import METHOD_CONFIGS, KeypointTrackConfig
@@ -398,7 +400,7 @@ _KD = KeypointDetectConfig.model_fields
 @click.option(
     "--min-pose-confidence",
     "min_pose_confidence",
-    type=click.FloatRange(0.0, 1.0),
+    type=finite_float_range(0.0, 1.0),
     default=None,
     help=_KD["min_pose_confidence"].description,
 )
@@ -591,7 +593,7 @@ def _method_params(method_id: str, pairs: tuple[str, ...]) -> dict:
 @click.option(
     "--match-min-inside",
     "match_min_inside",
-    type=click.FloatRange(0.0, 1.0, min_open=True),
+    type=finite_float_range(0.0, 1.0, min_open=True),
     default=_KT["match_min_inside"].default,
     show_default=True,
     help=_KT["match_min_inside"].description,
@@ -599,7 +601,7 @@ def _method_params(method_id: str, pairs: tuple[str, ...]) -> dict:
 @click.option(
     "--match-mask-grow",
     "match_mask_grow",
-    type=click.FloatRange(min=0.0),
+    type=finite_float_range(min=0.0),
     default=_KT["match_mask_grow"].default,
     show_default=True,
     help=_KT["match_mask_grow"].description,
@@ -799,7 +801,7 @@ _DRAW_OPTIONS = (
         "exclude_audit_s",
         default=_KDS["exclude_audit_s"].default,
         show_default=True,
-        type=float,
+        type=FINITE_FLOAT,
         help=_KDS["exclude_audit_s"].description,
     ),
     click.option(
@@ -827,14 +829,14 @@ _DATASET_OPTIONS = (
         "val_split",
         default=_KDS["val_split"].default,
         show_default=True,
-        type=float,
+        type=FINITE_FLOAT,
         help=_KDS["val_split"].description,
     ),
     click.option(
         "--score-cutoff",
         "score_cutoff",
         default=None,
-        type=float,
+        type=FINITE_FLOAT,
         help=_KDS["score_cutoff"].description,
     ),
     *_DRAW_OPTIONS,
@@ -957,7 +959,7 @@ def _teacher_args(
     "--cutoff",
     "cutoff",
     default=None,
-    type=float,
+    type=FINITE_FLOAT,
     help="Report at this score cut-off (default: the method's own, or none).",
 )
 def keypoints_test(
@@ -1280,7 +1282,7 @@ def dataset_keypoints(
 @click.option(
     "--cutoff",
     "cutoff",
-    type=float,
+    type=FINITE_FLOAT,
     default=None,
     help="The display cut-off: a point scoring under it is written not visible (its "
     "coordinates kept). Default: the detect method's own cut-off.",

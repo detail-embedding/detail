@@ -18,7 +18,14 @@ as UTF-8 or a file that is not the kind a command reads, stops the command with 
 mistyped id (a run, a comparison or a tracking run that does not exist), and a folder or disk
 that cannot take the write: one you do not have permission to write to, a read-only disk, a
 name too long for the disk, or a full disk. A command that writes one file you name (`--out`,
-`--csv`, `--export`) creates a missing folder in that path.
+`--csv`, `--export`) creates a missing folder in that path. A number option refuses `nan` and
+`inf`.
+
+A CSV you hand in (metadata, spatial setup, a stream, a clip list) must be saved as
+**CSV UTF-8** and **comma-separated**: in Excel, Save As → CSV UTF-8 (Comma delimited). A
+file saved with semicolons (the default in some European versions of Excel) or tabs is
+refused with a message saying so. A row whose cells are all empty is skipped, and so is an
+empty column at the end with no header.
 
 ## Contents
 
@@ -83,8 +90,9 @@ model needs is not installed), `missing_weights` (a trained or imported model's 
 is gone), or one of `no_token` / `no_access` / `bad_token` / `offline`. Each
 tells you which setup step to revisit, with a message and an action URL. Add
 `--variant <name>` to check one size; without it you get the model's default.
-`model check`/`install` aren't experiment state, so `--experiment` is optional (a
-throwaway experiment is used if omitted).
+Models are machine-global, so the `model` commands and `hf-token` need no experiment
+and write nothing outside the model cache and your credentials. `model check` and
+`model install` still accept `--experiment` so older scripts keep working, and ignore it.
 
 Older versions cached weights under `~/.cache/huggingface/hub`. If you have a copy
 there, move it into the global cache or just re-install:
@@ -146,7 +154,8 @@ same stage is `…_02`). Downstream commands name the upstream run by id
 
 > **Real subjects, real prompts.** Detection only writes rows where it finds the
 > target. With zero detections the detection run still completes, but tracking fails
-> with `zero tracks produced`. Use a matching prompt and lower `--conf` if needed.
+> with `zero tracks produced: the detection run found no detections`. Use a matching
+> prompt and lower `--conf` if needed.
 
 ## Command reference
 
@@ -235,7 +244,8 @@ table, see the [Parameters reference](reference/parameters.md).
   part of that file.
 - `import-spatial --experiment <dir> --recording <id> (--from-recording <id> | --csv <file>)`:
   take ROIs + POIs onto the recording from another recording in the same experiment or
-  from an exported CSV. A name the recording already has is **refused by name** and
+  from an exported CSV. Coordinates in the CSV are fractions of the frame (0 to 1), not
+  pixels. A name the recording already has is **refused by name** and
   reported; the ones that do not collide still arrive (regions and points are sets, so one
   collision does not refuse the rest). To change one, delete it here first: it is never
   overwritten, and no name is silently suffixed.
@@ -719,8 +729,10 @@ this experiment at once; `train promote` it for cross-experiment reuse.
 
 ### `locations export`
 `--experiment`, `--recording`, `--tracking track_NN`, `--out <dir>`: a per-recording export
-straight to `--out`, writing `tracks.csv` / `roi_relations.csv` / `point_relations.csv` + a
-`locations.yaml` manifest (per-track position relative to the recording's ROIs/POIs,
+into a new folder inside `--out` (named for the experiment, the recording, the tracking run and
+the time, and printed), writing `tracks.csv` / `roi_relations.csv` / `point_relations.csv` + a
+`locations.yaml` manifest. Exporting another recording into the same `--out` makes another
+folder, so one never replaces the other (per-track position relative to the recording's ROIs/POIs,
 keyed by `t_ns`). No run record. For a recorded, batchable version, see `analysis
 run` below.
 
@@ -861,7 +873,8 @@ selection, written to `analysis/<an_NN>/`.
   The earlier one-by-one audit follows under its own heading, read as before and never merged
   into the clip review.
 - `export-query --experiment <dir> --run <an_NN> --out <dir>`: write a calibrated query run's
-  behaviors as one behavior-stream CSV per searched recording. Each row carries
+  behaviors as one behavior-stream CSV per searched recording, into a new folder inside `--out`
+  that the command prints, so exporting again at another cutoff keeps the first export. Each row carries
   `origin: predicted`, so re-importing one can never be read back as ground truth. A recording
   that matched nothing gets a header-only file: the zero is the finding. A run whose search did
   not reach every recording is refused, naming the ones it missed, so a header-only file never
@@ -985,7 +998,8 @@ selection, written to `analysis/<an_NN>/`.
   size floor, and a run saved with one ignores it.
 
 - `export-temporal-clustering --experiment <dir> --run <an_NN> --out <dir>`: write one
-  behavior-stream CSV per fitted recording. Each row carries `origin: predicted`, so re-importing
+  behavior-stream CSV per fitted recording, into a new folder inside `--out` that the command
+  prints. Each row carries `origin: predicted`, so re-importing
   one can never read back as ground truth.
 
   The artifact is pinned as it is exported and the snapshot id is printed, so a figure
@@ -1001,7 +1015,8 @@ selection, written to `analysis/<an_NN>/`.
   temporal-clustering run. It writes the same files a clip grid's **Export ▾** writes in the app. `--out` writes the montage itself: the node's
   clips side by side, each cropped to its animal and labelled `#rank · recording · start`, all
   starting together and each looping from its start the moment it ends. `--per-clip-gifs`
-  writes one GIF per clip into a folder, named `rank_recording_m-ss.t.gif`; `--csv` writes the
+  writes one GIF per clip into a folder, named `rank_recording_m-ss.t.gif`, and refuses before
+  writing anything when that folder already holds a GIF of one of those names; `--csv` writes the
   clips as a list: a clip-query CSV (`analysis query --from-csv` reads it as example clips) with
   the clip's typicality rank, its recording's name, the subject, the times in seconds, the node
   and the run after the standard columns. Give at least one of the three. The defaults: 25 clips,
@@ -1165,8 +1180,8 @@ full list, with what each one reports and what it needs, is the
   it uses at a window edge. `--measure` below takes the id in the first column, not the name.
 - `export --experiment <dir> --run <an_NN> --out <dir> [--measure <name> …]
   [--windows whole|absolute|normalized|sliding] [--every <seconds>] [--parts N]
-  [--length <seconds>] [--step <seconds>]`: measure the run and write three files into
-  `<dir>`, `measures.csv` (one row per recording, subject, label, window and measure, with the
+  [--length <seconds>] [--step <seconds>]`: measure the run and write three files into a new
+  folder inside `<dir>` (printed; a second export never replaces the first), `measures.csv` (one row per recording, subject, label, window and measure, with the
   observed time each rate was taken against; a label with labels nested inside it counts only
   what they leave, so its row has `label_display` "<label> (other)" and `label_is_remainder`
   `True`, while `label` keeps the plain name to join on), `frames.csv` (one row per frame: whether it was
@@ -1457,7 +1472,7 @@ somebody else's machine.
 | experiment (no id flag) | `bundle` | one `.tar` of the whole experiment, importable back |
 | | `metadata` | `metadata.csv`: one row per recording, one column per grouping variable |
 | `--recording <id>` | `geometry` | field of view, distance calibration, every ROI and POI (the **scene geometry**) |
-| | `streams` | one CSV per stream in DETAIL's aligned form, plus `streams.csv` |
+| | `streams` | one CSV per stream: its own time `t_ns` with video time `video_t_ns` beside it (`video_end_t_ns` too for intervals; a behavior stream also carries `origin`), plus `streams.csv` naming each stream's clock and stored alignment offset |
 | | `timestamps` | `frame_idx,t_ns` for every frame of every video part |
 | | `video` | the video parts DETAIL imported a copy of |
 | | `clip` | one mp4 of the frame range `--frames START:END` names, plus `clip.csv` (see [Clips, in three flavours](#clips-in-three-flavours)) |
@@ -1471,8 +1486,8 @@ somebody else's machine.
 | | `keypoints_video` | the footage with the points drawn on, one mp4 per video part, plus `keypoints.csv` |
 | `--run <run_NNN>`, any processing run | `performance` | `performance.md` (the machine it ran on and how long each part took), plus `timings.csv`, `phases.csv` and `machine.yaml` (see [How long a run took](#how-long-a-run-took-and-on-what)) |
 | `--analysis-run <an_NN>` | `clips` | one mp4 per bout + `clips.csv` |
-| | `instances` | `instances.csv`, `coverage.csv`, and the time-per-behavior and bout-duration figures |
-| | `ethogram` | the ethogram as a picture, plus one `start_frame,end_frame,label` CSV per recording |
+| | `instances` | `instances.csv` (with an `origin` column), `coverage.csv`, and the time-per-behavior and bout-duration figures |
+| | `ethogram` | the ethogram as a picture, plus one `start_frame,end_frame,label,subject,origin` CSV per recording, which re-imports as predicted labels |
 | | `frame_labels` | one CSV per recording and subject, one row per video frame (see [Per-frame behavior labels](#per-frame-behavior-labels)) |
 | | `performance` | the same performance report, for the analysis run |
 | `--distill-run <distill_NNN>` | `performance` | the same performance report, one unit per stage |
@@ -1579,7 +1594,9 @@ Things every format shares. A missing point is empty or NaN, never zero. `likeli
 across methods. DeepLabCut and SLEAP files carry no time, so `timestamps.csv` (`frame_idx` to
 `t_ns` per part) goes with them. Every export ships `params.csv` and `coverage.csv` (frames
 placed per track and part, and each point's count at the cut-off). Files are named by the
-recording's name, not its id.
+recording's name, not its id. When two names would make the same file name (`Mouse 1 (pre)`
+and `Mouse 1 [pre]`, or `Mouse` and `mouse`), each of those gets its recording id after the
+name, so every recording keeps its own files.
 
 `keypoints export` adds the options the generic `export run` does not have: `--cutoff` sets the
 display cut-off (default: the detect method's own), under which a point is written not visible
@@ -1735,7 +1752,11 @@ frame labels), join on `t_ns`, which is the same clock in every file.
 ### Re-exporting
 
 Every export makes a new folder, so re-exporting never overwrites the last one and never touches
-anything else in the directory you pointed at.
+anything else in the directory you pointed at. The same holds for `analysis export-query`,
+`analysis export-temporal-clustering`, `measures export` and `locations export`. Inside one
+export no two files share a name: names built from your text (a recording's, a cluster's) that
+would come out the same carry the recording id or the subject, and a clip export writes one
+file per bout even when two subjects did the same thing at the same time.
 
 ## Tracking
 
@@ -1941,7 +1962,23 @@ detail experiment import study.segproj.tar
 #   imported: /Users/you/Documents/DetailExperiments/study
 ```
 
-Include the heavy bits when you need them: `--include-video`, `--include-datasets`, `--gzip`. `--gzip` rarely pays: DETAIL's data files are compressed already, so it barely shrinks the archive and makes the export much slower. On import, `--replace` overwrites a same-id experiment and `--name <new>` lands a separate copy.
+Include the heavy bits when you need them: `--include-video`, `--include-datasets`, `--gzip`. `--gzip` rarely pays: DETAIL's data files are compressed already, so it barely shrinks the archive and makes the export much slower. An earlier archive saved inside the experiment folder is never packed into a later one. A folder that is a symlink is not followed, and the export names each one it left out:
+
+```
+exported: study.segproj.tar
+left out raw_videos: it is a symlinked folder, which is not followed
+```
+
+On import, `--replace` replaces a same-id experiment and `--name <new>` lands a separate copy. Replacing deletes the whole existing experiment, so anything the archive does not carry is gone afterwards: the video files and datasets a slim archive leaves out, the export records no archive carries, and any earlier archive saved in the experiment folder. `--replace` prints that list before it replaces anything (it does not ask; stop it with Ctrl-C):
+
+```
+replacing experiment 'study' deletes what the bundle does not bring back:
+  - 3 video file(s), 4.2 GB: the bundle carries no video
+  - 1 export record(s), export_01: no bundle carries them (the exported files themselves are not touched)
+imported: /Users/you/Documents/DetailExperiments/study
+```
+
+Without `--replace`, an import onto an existing experiment stops and shows the same list under "--replace would also delete". To keep the video, import with `--name <new>` instead, or export with `--include-video`.
 
 Both commands show a progress bar on stderr, relabelled as the work moves through
 its phases: export goes `scanning` → `checking` → `hashing` → `packing`, import
@@ -1949,7 +1986,12 @@ goes `reading` → `extracting` → `verifying` → `placing`. A slim export rea
 file twice (once for the checksum, once to pack it), so a large experiment takes
 minutes even without its video. If a file changes between those two reads (a run
 still writing to the experiment), the export stops and names the file; let the
-run finish and export again. The archive is written as `<out>.partial` and
+run finish and export again. Before packing, the export also checks that no DETAIL
+file holds an absolute path (a home folder such as `/home/…` or `/Users/…`, or a
+drive such as `D:\`), since that path would not exist on the other machine; if one
+does, it stops and names the file, the line and the path. Text you wrote is not
+checked: your metadata table, a description, a note, or a recorded error message can
+mention any folder. The archive is written as `<out>.partial` and
 renamed when it is complete, so a stopped export never leaves a file that looks
 finished. A video-excluded import is
 fully analysis-ready (embeddings, tracking re-tuning, metadata); the
@@ -1966,12 +2008,21 @@ day is found from any one this machine knows, even when the two machines spell
 the server differently. A folder
 is used only when a video in it matches the recorded fingerprint, and a root
 name this machine already uses for another folder is left alone: the imported
-recordings get a root of their own. Whatever is still not found is listed:
+recordings get a root of their own. A file at the recorded path that is a
+different video (its fingerprint does not match) counts as not found, so a
+root name this machine uses for another folder never hands a recording someone
+else's video. Whatever is still not found is listed:
 
 ```
 imported: /Users/you/Documents/DetailExperiments/study
-video not found on this machine for 2 recording(s): s1, s2. Relink one file (`detail recording relink`) and every recording whose video is in the same folder finds it too.
+video not found on this machine for 2 recording(s): s1, s2. (A file at the same path that is a different video counts as not found.) Relink one file (`detail recording relink`) and every recording whose video is in the same folder finds it too.
 ```
+
+The same check applies to every frame preview, frame read and clip export of a
+referenced recording, not only at import: a referenced video whose file was
+replaced, or whose [video root](#video-root) was re-pointed at a folder with a
+different file of the same name, shows as not on this machine instead of
+showing the other file's frames.
 
 ### Importing event streams (MED-PC)
 
@@ -1983,7 +2034,24 @@ detail recording add-stream --experiment $PROJ --recording recording_001 \
 #   added stream 'medpc' (medpc) to recording_001: 1234 rows
 ```
 
-`--importer medpc` parses Med Associates `.txt` + `.MPC` into canonical events.
+`--importer medpc` parses Med Associates `.txt` + `.MPC` into canonical events. It reads one
+program layout: event codes in array `E`, their times **in seconds** in array `T`, and an
+`Event stamps ( array E )` block in the program that names each code. A program that logs into
+other arrays is refused by name, and one that logs `T` in ticks is refused when a time is past
+the session length `H`. Unused `(code 0, time 0)` slots after the last event are dropped and
+counted (`note:` in the output); a code-0 event between real events is refused unless the
+program names code 0.
+
+MED-PC can save every box of a day into one data file. A recording is one session, so a file
+holding several is refused, listing them, until you pick one with `--medpc-subject`,
+`--medpc-box` or `--medpc-session N` (its position in the file, from 1). Sessions are never
+merged. In a bundle manifest the same choice is `config: {subject: PX22}` on the stream.
+
+```bash
+detail recording add-stream --experiment $PROJ --recording recording_001 \
+    --name medpc --importer medpc --data day.txt --program program.MPC --medpc-box 4
+```
+
 Align the stream to video time with `--offset` at import or `recording set-stream-offset`
 afterwards (see [Aligning a stream](#aligning-a-stream)). Previewing it against the video,
 and finding the offset by scrubbing, are done in the [GUI](gui.md#recording-detail).
@@ -2032,7 +2100,8 @@ The importer validates strictly and names the problem: no recognized time column
 one time column, a column name repeated in the header, an empty or header-only file, a
 `timeseries_csv` with no value columns or a non-numeric cell (or a `label` column, which means
 you want `events_csv`), and an `events_csv` with no `label`, an empty label, or a non-integer
-`code` / `frame`.
+`code` / `frame`. A time too large to be one (epoch milliseconds in a `seconds` column, say) is
+refused naming its row, as it is by every importer and by `--offset`, rather than stored.
 
 **A CSV that isn't shaped that way.** When the time column is called something else, or you
 only want some of the columns, say so instead of editing the file. `--time-column` names the
@@ -2072,7 +2141,8 @@ detail recording set-stream-offset --experiment $PROJ --recording recording_001 
 
 `video_t_ns = stream_t_ns + offset`. The canonical data is never rewritten, so this is a
 one-number edit you can redo at any time. A `frame`-clocked stream and behavior labels are
-anchored to the video already, and passing an offset for one is refused rather than stored.
+anchored to the video already, and an offset for one is refused rather than stored, both at
+import and by `set-stream-offset`.
 
 The GUI's **Sync to video** finds the same number by scrubbing to the frame where the stream
 starts; these flags are how you set it across a whole experiment without opening anything.
@@ -2158,15 +2228,25 @@ detail recording add-stream --experiment $PROJ --recording recording_001 \
     --name behavior --importer boris --data observations.tsv
 ```
 
+A BORIS export can hold several observations (`Observation id`) and several subjects. A
+recording is one animal in one session, so an export holding more than one of either is refused,
+listing them, until you pick with `--boris-observation` and `--boris-subject` (an empty value
+picks rows with no subject). They are never merged onto one track. In a bundle manifest the
+same choice is `config: {observation: day1, subject: mA}`.
+
 Each behavior is recorded as **point** or **state** (BORIS's *Behavior type* column, else
-inferred from durations) so the evaluation scores it correctly, and the annotation's **covered
+inferred from durations) so the evaluation scores it correctly. A BORIS behavior scored both as
+START/STOP bouts and as POINT events is refused, naming the rows of each kind, since one
+behavior cannot be both; and the annotation's **covered
 behaviors** (the scored vocabulary) default to the labels present. Add
 `--covered-behaviors "groom,rear"` to declare behaviors you *scored but never observed*; the
 evaluation treats them as covered (a real absence, not "unscored") rather than skipping the recording.
 
 **Ground truth vs predictions.** A stream also records where its labels came from. Anything you
-import is ground truth unless you say otherwise; a file the tool exported (`analysis export-temporal-clustering`)
-carries an `origin` column and imports as `predicted` on its own. Override either way with
+import is ground truth unless you say otherwise; a label file the tool exported (`analysis export-temporal-clustering`,
+`export-query`, the `ethogram`, `instances` and `streams` export targets) carries an `origin`
+column and imports with that origin on its own. A file holding rows for several recordings (a
+`recording_id` column, as in `instances.csv`) is refused: a stream belongs to one recording. Override either way with
 `--origin ground_truth|predicted`.
 
 ```bash

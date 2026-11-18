@@ -117,6 +117,7 @@ def test_export_import_slim_roundtrip(tmp_path):
         "referenced_video": [],
         "datasets_included": False,
         "models_included": True,
+        "symlinked_folders_left_out": [],
     }
     ws = tmp_path / "ws"
     ws.mkdir()
@@ -536,6 +537,64 @@ def test_an_archive_written_inside_the_experiment_is_not_packed_into_itself(tmp_
     export_store.import_experiment(inside, ws)  # the digest matches what was packed
 
 
+def test_an_earlier_archive_saved_in_the_experiment_is_not_packed_into_later_ones(
+    tmp_path,
+):
+    """**A fourth class** (#29): *an export that packs what it left behind before.* Only the
+    archive being written was dropped, so ``--out study/first.tar`` and then any later export
+    carried the first archive, and each export after that carried all the ones before it.
+
+    An archive is recognised by name and confirmed by its manifest, so a ``.tar`` of the user's
+    own that is not a DETAIL export still travels; a ``.partial`` one is an export never
+    finished.
+    """
+    proj = _solo(tmp_path / "a", size=1024)
+    proj.export(proj.dir / "first.tar")
+    proj.export(proj.dir / "first.tar.gz", gzip=True)
+    (proj.dir / "stopped.tar.partial").write_bytes(b"half an archive")
+    (proj.dir / "mine.tar").write_bytes(b"the user's own, not an export")
+
+    second = proj.export(tmp_path / "second.tar")
+
+    with tarfile.open(second) as tar:
+        packed = {
+            name.removeprefix(f"{export_store._ROOT}/")
+            for name in tar.getnames()
+            if "/" in name and "/" not in name.removeprefix(f"{export_store._ROOT}/")
+        }
+    assert packed == {
+        "config.yaml",
+        "mine.tar",
+    }, "an earlier archive was packed, or the user's own .tar was not"
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    export_store.import_experiment(second, ws)  # the digest matches what was packed
+
+
+def test_a_symlinked_folder_left_out_is_named_in_the_manifest(tmp_path):
+    """A symlinked folder is not followed, and a symlinked file is: true before, but said
+    nowhere, so the recipient found the folder missing. The manifest names each one, for the
+    CLI to print (`tests/test_cli.py`)."""
+    import os
+
+    proj = _solo(tmp_path / "a", size=1024)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "notes.txt").write_text("x", encoding="utf-8")
+    try:
+        os.symlink(elsewhere, proj.dir / "linked", target_is_directory=True)
+    except OSError:
+        pytest.skip("this machine cannot make a symlink")
+
+    archive = proj.export(tmp_path / "s.tar")
+
+    assert export_store.read_manifest(archive)["contents"][
+        "symlinked_folders_left_out"
+    ] == ["linked"]
+    with tarfile.open(archive) as tar:
+        assert not any("linked" in name for name in tar.getnames())
+
+
 def test_reading_the_manifest_stops_at_the_manifest(tmp_path, monkeypatch):
     """`getmember` loads every header first: a whole decompression pass on a gzipped bundle,
     before an import has reported anything. The manifest is the first member; read it there.
@@ -793,6 +852,75 @@ def test_a_folder_without_the_same_video_is_not_taken(tmp_path, monkeypatch, wha
     ]
 
 
+def test_a_different_video_under_a_root_name_this_machine_uses_is_not_found(
+    tmp_path, monkeypatch
+):
+    """**The third class, from the other side** (#29): *a name that means something only on the
+    machine that minted it* was trusted on this machine when this machine also used the name.
+
+    Machine B already has its own ``lab`` root, holding a different ``day1/clip.mp4``, and
+    cannot reach A's server. The import rightly does not take B's folder (its file fails the
+    fingerprint), but the recording kept resolving to it: ``referenced_video_missing`` and
+    ``video_available`` asked only whether a file was there, so nothing was listed, and every
+    preview, frame read and clip export showed B's animal against A's timestamps. The run gate
+    always refused it; the readers did not. Now the resolver checks the recorded fingerprint, so
+    the recording is listed as not found and a frame read refuses rather than reading it.
+    """
+    import shutil
+
+    from detail.storage import video_roots
+
+    archive, server, ws = _exported_from_a_server(tmp_path, monkeypatch)
+    shutil.rmtree(server)  # A's folders are not reachable from B
+    here = tmp_path / "local" / "lab"
+    _video(here / "day1" / "clip.mp4", n=9, w=24, h=24)
+    video_roots.register_video_root("lab", here)
+
+    dest = export_store.import_experiment(archive, ws)
+
+    imported = Experiment(dest)
+    assert video_roots.video_root("lab") == here.resolve(), "B's root was re-pointed"
+    assert imported.referenced_video_missing() == [
+        "recording_001",
+        "recording_002",
+    ], "a different video at the same path counted as found"
+    recording = imported.get_recording("recording_001")
+    assert recording.video_available is False
+    with pytest.raises(
+        video_roots.VideoNotRecordedError, match="not the video recorded"
+    ):
+        recording.get_frame(0, 0)
+    issues = recording.verify_videos()
+    assert [i.kind for i in issues] == [
+        "changed_fingerprint"
+    ], "the run gate's own report changed"
+
+
+def test_a_referenced_file_replaced_at_the_same_path_is_checked_again(tmp_path):
+    """The resolver's fingerprint is cached per state of the file, so a reader resolving on
+    every frame pays a ``stat``. A file replaced at the same path is a new state: a cache keyed
+    on the path alone would keep vouching for the video that was there before."""
+    from detail.storage import recording as recording_store
+    from detail.storage import video_roots
+
+    folder = tmp_path / "videos"
+    video = _video(folder / "clip.mp4", n=4)
+    proj = Experiment.create("study", tmp_path / "a")
+    proj.create_recording("recording_001")
+    recording = proj.get_recording("recording_001")
+    recording.add_video_part(video, storage="reference")
+    part = recording_store.read_recording(recording.dir)["video"]["files"][0]
+    assert (
+        recording_store.resolve_part_video_path(recording.dir, part) == video.resolve()
+    )
+
+    _video(video, n=9, w=24, h=24)
+
+    with pytest.raises(video_roots.VideoNotRecordedError):
+        recording_store.resolve_part_video_path(recording.dir, part)
+    assert recording.video_available is False
+
+
 @pytest.mark.parametrize(
     "stage", [export_store.STAGE_FINDING_VIDEO, export_store.STAGE_PLACING]
 )
@@ -954,3 +1082,92 @@ def test_a_share_that_does_not_answer_is_asked_once(tmp_path, monkeypatch):
     export_store.import_experiment(archive, ws)
 
     assert len(asked) == 1, asked
+
+
+# --------------------------------------------------------------------------- #
+# Replace says what it deletes and the bundle does not bring back (#29)
+# --------------------------------------------------------------------------- #
+def _with_an_export_record(proj):
+    from detail.storage import experiment as experiment_store
+
+    record = experiment_store.exports_dir(proj.dir) / "export_01"
+    record.mkdir(parents=True)
+    (record / "export.yaml").write_text("id: export_01\n", encoding="utf-8")
+
+
+def test_replace_lists_what_a_slim_bundle_does_not_bring_back(tmp_path):
+    """**A fifth class** (#29): *an import that replaces more than it brings.* Replace swaps the
+    whole folder, so the copied video and datasets a slim bundle leaves out, and the export
+    records no bundle carries, were deleted without a word: the loop ``docs/cli.md`` describes
+    for moving an experiment back and forth lost the video on the way home.
+
+    The owner's decision: delete as today, but say what first. One function decides the list
+    (`export_store.replace_losses`), it rides on the refusal so the GUI asks without walking the
+    experiment on its UI thread, and one function words it (`api.experiment.replace_warning`);
+    the CLI and the GUI prompt each render those lines (`tests/test_cli.py`,
+    `tests/gui/test_export.py`).
+    """
+    from detail.api.experiment import replace_warning
+
+    proj = _experiment(tmp_path / "a")
+    _with_an_export_record(proj)
+    (video,) = (proj.dir / "recordings").rglob("*.mp4")
+    archive = proj.export(tmp_path / "study.tar")  # slim: no video, no datasets
+
+    with pytest.raises(export_store.ExperimentExistsError) as refused:
+        export_store.import_experiment(archive, proj.dir.parent)
+
+    assert isinstance(
+        refused.value, FileExistsError
+    ), "callers catching it stop catching"
+    assert refused.value.losses == export_store.ReplaceLosses(
+        experiment_id="study",
+        video_files=1,
+        video_bytes=video.stat().st_size,
+        datasets=("dataset_001",),
+        export_records=("export_01",),
+    )
+    assert replace_warning(refused.value.losses) == [
+        f"1 video file(s), {video.stat().st_size} B: the bundle carries no video",
+        "1 dataset(s), dataset_001: the bundle carries no datasets",
+        "1 export record(s), export_01: no bundle carries them (the exported files "
+        "themselves are not touched)",
+    ]
+
+    export_store.import_experiment(archive, proj.dir.parent, replace=True)
+
+    assert not video.exists(), "Replace no longer deletes what it said it would"
+    assert not (proj.dir / "datasets" / "dataset_001").exists()
+
+
+def test_a_bundle_that_carries_video_and_datasets_lists_neither(tmp_path):
+    """The negative case: the list is read from what the bundle packed, so a full bundle,
+    which brings the video and datasets back, lists only what no bundle carries."""
+    proj = _experiment(tmp_path / "a")
+    _with_an_export_record(proj)
+    archive = proj.export(
+        tmp_path / "full.tar", include_video=True, include_datasets=True
+    )
+
+    with pytest.raises(export_store.ExperimentExistsError) as refused:
+        export_store.import_experiment(archive, proj.dir.parent)
+
+    assert refused.value.losses == export_store.ReplaceLosses(
+        experiment_id="study", export_records=("export_01",)
+    )
+
+
+def test_an_earlier_archive_in_the_experiment_is_listed_as_lost(tmp_path):
+    """No export packs an earlier archive, so a replace deletes one saved inside the
+    experiment for good."""
+    proj = _solo(tmp_path / "a", size=16)
+    proj.export(proj.dir / "first.tar")
+    archive = proj.export(tmp_path / "second.tar")
+
+    with pytest.raises(export_store.ExperimentExistsError) as refused:
+        export_store.import_experiment(archive, proj.dir.parent)
+
+    assert refused.value.losses == export_store.ReplaceLosses(
+        experiment_id="solo", archives=("first.tar",)
+    )
+    assert refused.value.losses.empty is False

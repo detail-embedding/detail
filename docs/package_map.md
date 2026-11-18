@@ -81,6 +81,7 @@ detail/
 │   ├── query_soft_knn.py, temporal_codebook.py, temporal_dtw_finch.py  # a registry method's own
 │   │                     # parameters (the method's half of the config)
 │   ├── stream_csv.py     # the CSV stream importer's config (§3)
+│   ├── stream_select.py  # MED-PC session / BORIS observation+subject selectors (§3)
 │   ├── windows.py        # §23 the window model: where a measure is evaluated
 │   ├── display.py        # view parameters: what a finished result shows, not what a run computes
 │   ├── describe.py       # renders the generated parameter reference from the models (§7)
@@ -327,6 +328,8 @@ detail/
 ├── cli.py                # click-based CLI; entry point `detail` (or `python -m detail`)
 ├── cli_keypoints.py      # §26: the `keypoints` command group, registered on cli.py's root
 │                         # group — its own module so the keypoint work never edits one region of cli.py
+├── cli_numbers.py        # the finite float option types every float option in cli*.py uses
+│                         # (click's own accept nan and inf)
 ├── cli_skeletons.py      # §26: the machine-wide `skeleton` command group (the library)
 ├── __main__.py           # `python -m detail` dispatcher
 └── gui/                  # PyQt6 GUI (docs/gui_design.md): app.py is the shell (mode banner,
@@ -472,7 +475,7 @@ detail/
     ├── audit_table.py    # audited_colour: the one colour INTERPRET rings a reviewed cluster in
     ├── label_browse.py   # clustering BROWSE: filters, ethogram, the labelled-instance list
     ├── importers/        # per-importer config bands (§3), keyed by importer_id
-    │                     # (registry.py: ImporterUI + ConfigBand; csv_columns.py)
+    │                     # (registry.py: ImporterUI + ConfigBand; csv_columns.py; selection.py)
     ├── modules/          # per-module config + result UIs, keyed by module_id: detection.py,
     │                     # tracking.py, embedding.py, keypoint_detect.py and keypoint_track.py
     │                     # (§26), analysis_location.py, analysis_query.py, analysis_query_eval.py,

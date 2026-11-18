@@ -288,13 +288,18 @@ eval checks a behavior scan against it ([chapter 7](behavior-scan.md#if-you-have
       shown in *A CSV with its own column names*, below.
     - **MED-PC (Med Associates)**: an operant box's data file (`.txt`). The dialog then asks
       for **MED-PC program (.MPC)** too: the program the box ran, which names each event code.
+      If the file holds several boxes, a **Session** list asks which one this recording is.
+      The importer reads programs that log event codes in `E` and their times in seconds in
+      `T`.
     - **Behavior labels (interval CSV)**: behavior you scored by hand, one row per bout:
       `start_frame`, `end_frame` and `label`.
     - **Behavior labels (BORIS tabular events export)**: the same, from BORIS's **Export
-      events** table.
+      events** table. If the export holds several observations or animals, **Observation**
+      and **Subject** lists ask which one this recording is.
 
     Behavior labels are counted in video frames or video seconds, so they are on the video's
-    time already: **Alignment** and **Sync to video…** are greyed out for them. To bring in
+    time already: **Alignment** and **Sync to video…** are greyed out for them, and for an
+    Events or Time-series CSV whose time column is a frame index. To bring in
     behavior labels for many recordings at once, use **Import behavior labels** on the
     **Recordings** page (chapter 1).
 

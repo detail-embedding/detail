@@ -88,7 +88,7 @@ class Measures:
         spec = windows or WindowSpec()
         return measures_lib.measure_run(
             self._current_run_dir(progress),
-            windows_for=lambda cov: spec.windows_for(cov.start_t_ns, cov.end_t_ns),
+            windows_for=spec.windows_for_coverage,
             measures=measures,
         )
 
@@ -100,16 +100,25 @@ class Measures:
         measures: list[str] | None = None,
         progress: Callable[[str, float, str], None] | None = None,
     ) -> Path:
-        """Write ``measures.csv``, ``frames.csv`` and ``measures.yaml`` into ``out_dir``.
+        """Write ``measures.csv``, ``frames.csv`` and ``measures.yaml`` into a new folder under
+        ``out_dir``; return that folder. Each export gets its own, so a second one — another
+        window rule, another run — never replaces the first (#29).
 
         The frame table is the reason this is an export rather than a single file: the frame view
         is zarr, so a per-frame classification is not otherwise readable outside this tool. The
         instance table is deliberately **not** copied -- the artifact already writes one beside
         the run, and a second copy is two files that can disagree.
         """
+        from detail.api import exporters
+
         run_dir = self._current_run_dir(progress)
-        out = Path(out_dir)
-        out.mkdir(parents=True, exist_ok=True)
+        out = exporters.new_export_folder(
+            exporters.ExportSubject(
+                "analysis_run", Path(self._experiment.dir), self.id
+            ),
+            out_dir,
+            what="measures",
+        )
         spec = windows or WindowSpec()
 
         def report(stage: str, fraction: float, detail: str = "") -> None:
@@ -119,7 +128,7 @@ class Measures:
         report("measuring", 0.0, self.id)
         rows = measures_lib.measure_run(
             run_dir,
-            windows_for=lambda cov: spec.windows_for(cov.start_t_ns, cov.end_t_ns),
+            windows_for=spec.windows_for_coverage,
             measures=measures,
         )
         measures_lib.write_measures(out / MEASURES_FILENAME, rows)

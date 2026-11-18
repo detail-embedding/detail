@@ -1,6 +1,6 @@
 """Experiment directory: config.yaml read/write and path resolution (Sections 1-2).
 
-A experiment is a portable directory — `config.yaml` (identity only) plus the
+An experiment is a portable directory — `config.yaml` (identity only) plus the
 `recordings/ analysis/ models/ datasets/` tree. It contains no absolute paths, no
 machine-specific config, and no credentials (Tenet 6, Tenet 14). Recordings are
 discovered by scanning `recordings/`, never listed in config.
@@ -31,13 +31,13 @@ def create_experiment(
 
     Raises:
         ValueError: If ``name`` is empty.
-        FileExistsError: If a experiment already exists at the target path.
+        FileExistsError: If an experiment already exists at the target path.
     """
     if not name:
         raise ValueError("experiment name must be non-empty")
     experiment_dir = Path(parent_dir) / name
     if (experiment_dir / CONFIG_FILENAME).exists():
-        raise FileExistsError(f"a experiment already exists at {experiment_dir}")
+        raise FileExistsError(f"an experiment already exists at {experiment_dir}")
     experiment_dir.mkdir(parents=True, exist_ok=True)
     for sub in SUBDIRS:
         (experiment_dir / sub).mkdir(exist_ok=True)
@@ -72,7 +72,7 @@ def _parse_config(exp_dir: Path, path: Path) -> dict:
 
 
 def read_config(experiment_dir: Path | str) -> dict:
-    """Read and validate a experiment's ``config.yaml``.
+    """Read and validate an experiment's ``config.yaml``.
 
     Memoized against the file's mtime + size (``storage.read_cache``). ``Experiment.name``
     and ``.description`` are separate properties over this one file, so a surface that shows
@@ -233,7 +233,7 @@ def _is_absolute_any_os(relative: Path | str) -> bool:
 
 
 def experiment_path(experiment_dir: Path | str, relative: Path | str) -> Path:
-    """Resolve a experiment-relative path to an absolute one.
+    """Resolve an experiment-relative path to an absolute one.
 
     Raises:
         ValueError: If ``relative`` is absolute — experiment files store paths
