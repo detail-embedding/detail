@@ -183,6 +183,25 @@ def test_a_bad_take_out_is_refused_before_anything_is_written(fitted_temporal):
     assert run.taken_out() == []
 
 
+def test_a_clip_that_is_not_in_the_label_is_refused(fitted_temporal):
+    """A clip of another label, a made-up span and a recording the run never saw were each
+    stored and listed by `taken_out()`, changing nothing (#31, finding 47)."""
+    experiment, run_id = fitted_temporal
+    run, climb, rear = _labelled(experiment, run_id)
+    of_rear = run.node_view().clips(rear).rows()[0]
+    real = run.node_view().clips(climb).rows()[0]
+    made_up = ClipRef(real["recording_id"], 0, 1, 2)
+    elsewhere = ClipRef("not_a_recording", 0, real["start_t_ns"], real["end_t_ns"])
+    for stray in (of_rear, made_up, elsewhere):
+        with pytest.raises(ValueError, match="is not in 'climb'"):
+            run.take_out_clips([real, stray], "climb")
+    assert run.taken_out() == []
+
+    run.take_out_clips(of_rear, "rear", "climb")
+    run.take_out_clips(of_rear, "climb")  # moved in, so it is in climb now
+    assert [clip_ref(e) for e in run.taken_out()] == [clip_ref(of_rear)]
+
+
 def test_the_snapshot_carries_the_edits_it_was_pinned_with(fitted_temporal):
     experiment, run_id = fitted_temporal
     run, climb, _rear = _labelled(experiment, run_id)

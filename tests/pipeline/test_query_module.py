@@ -737,6 +737,38 @@ def test_the_cli_routes_non_examples_to_the_behavior_that_names_them(tmp_path):
     assert behavior["negatives"] != behavior["examples"]
 
 
+def test_a_non_example_for_a_behavior_with_no_examples_is_refused(tmp_path):
+    """`--non-example raer=…` (a typo for `rear`) and a bare one beside named examples were
+    dropped, and the run went ahead with 0 negatives (#31, finding 45)."""
+    from click.testing import CliRunner
+
+    from detail.api.experiment import Experiment as _Experiment
+    from detail.cli import main
+
+    proj, _ = _experiment(tmp_path, ["recording_001"])
+    import unittest.mock
+
+    with unittest.mock.patch.object(_Experiment, "run_analysis") as run_analysis:
+        result = CliRunner().invoke(
+            main,
+            [
+                "analysis", "query",
+                "--experiment", str(proj.dir),
+                "--search", "recording_001",
+                "--embed-run", "emb_01",
+                "--example", "rear=recording_001:0:100f-119f",
+                "--non-example", "raer=recording_001:0:300f-319f",
+                "--non-example", "recording_001:0:400f-419f",
+            ],
+        )  # fmt: skip
+    assert result.exit_code == 1, result.output
+    assert result.output == (
+        "Error: --non-example names 'raer', (no name), which has no --example; "
+        "non-examples attach to a behavior that has examples: 'rear'\n"
+    )
+    run_analysis.assert_not_called()
+
+
 # --------------------------------------------------------------------------- #
 # min match length: seconds in the config, rows only where the cadence is known
 # --------------------------------------------------------------------------- #

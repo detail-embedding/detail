@@ -29,6 +29,7 @@ from typing import Self
 
 import numpy as np
 
+from detail.core.errors import UserInputError
 from detail.core.protocols import KEEP_GROUP
 from detail.storage import clip_edits as clip_edits_store
 from detail.storage import clip_review as review_store
@@ -113,7 +114,8 @@ class ClipEditOperations:
     """``take_out_clips`` / ``put_back_clips`` / ``taken_out`` for a temporal clustering run.
 
     The host supplies ``_edit``, ``_read_state``, ``state``, ``_refuse_if_read_only`` and
-    ``_refuse_if_finalized`` (``AuthoredRun``).
+    ``_refuse_if_finalized`` (``AuthoredRun``), and ``_review_clusters``
+    (``ClipReviewOperations``), which lists a label's clips.
     """
 
     def _resolve_label(self, state, label: str, what: str) -> str:
@@ -134,6 +136,36 @@ class ClipEditOperations:
             )
         return found
 
+    def _refuse_clips_not_in(self, state, refs, label: str) -> None:
+        """Refuse a clip that is not in ``label``: a leaf run of a cluster at or under it, or
+        a clip an edit in force moved into it.
+
+        Without this a clip from another label, a made-up span or a recording the run never
+        saw was stored and listed by ``taken_out()`` while changing nothing (#31).
+
+        Raises:
+            UserInputError: naming the first clip that is not in the label.
+        """
+        path = _path_of(state, label)
+        held = {
+            clip.key
+            for cluster in self._review_clusters(path)
+            for clip in cluster["clips"]
+        }
+        for edit in clip_edits_store.latest(getattr(state, "clip_edits", None) or []):
+            moved_to = edit.get("to_label")
+            if moved_to in state.labels and _under(_path_of(state, moved_to), path):
+                held.add(clip_ref(edit).key)
+        stray = [ref for ref in refs if ref.key not in held]
+        if stray:
+            first = stray[0]
+            more = f" (and {len(stray) - 1} more)" if len(stray) > 1 else ""
+            raise UserInputError(
+                f"the clip {first.recording_id} subject {first.subject} "
+                f"{first.t_ns}-{first.end_t_ns} ns is not in {state.labels[label]!r}{more}; "
+                "only a clip of that label's clusters can be taken out of it"
+            )
+
     def take_out_clips(
         self, clips, from_label: str, to_label: str | None = None, *, progress=None
     ) -> Self:
@@ -148,6 +180,7 @@ class ClipEditOperations:
         Raises:
             ValueError: no clips, an unknown label, ``to_label`` equal to ``from_label``, or a
                 finalized run.
+            UserInputError: a clip that is not in ``from_label`` (a ``ValueError``).
             ReadOnlyRunError: a snapshot view.
         """
         from detail.core.utils import utc_timestamp
@@ -168,6 +201,7 @@ class ClipEditOperations:
                 raise ValueError(
                     f"to_label is {state.labels[source]!r}, the label the clips are removed from"
                 )
+            self._refuse_clips_not_in(state, refs, source)
             state.clip_edits = clip_edits_store.taken_out(
                 state.clip_edits, refs, source, target, utc_timestamp()
             )

@@ -1381,6 +1381,13 @@ class Recording:
                 f"stream name {name!r} differs from the existing stream {same[0]!r} only by "
                 "case, which is one folder on macOS and Windows; choose another name"
             )
+        if covered_behaviors is not None and instance.role != "behavior":
+            # By the importer's role, before anything is copied: an events CSV has a `label`
+            # column too, and the vocabulary was stored on it where nothing reads it.
+            raise UserInputError(
+                f"covered_behaviors only applies to a behavior stream; importer "
+                f"{importer!r} makes a {instance.role or 'data'} stream"
+            )
 
         sdir = streams_store.stream_dir(self.dir, name)
         if sdir.exists():

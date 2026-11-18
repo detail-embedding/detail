@@ -4566,7 +4566,9 @@ class Experiment:
         files are going before the run starts.
 
         Raises:
-            ExportError: if a target is unknown, or cannot run for this subject.
+            ExportError: if a target is unknown, cannot run for this subject, or the request is
+                one ``exporters.check_request`` refuses (a target twice, a scope a target does
+                not take, a cluster or frame range the subject does not have).
             ValueError: if ``options["theme"]`` is not a chart theme (``light`` / ``dark``).
         """
         from detail.api import exporters
@@ -4583,6 +4585,7 @@ class Experiment:
                     f"cannot export {target.label.lower()}: {reason}"
                 )
         self._check_export_recordings(subject, scope)
+        exporters.check_request(subject, targets, scope)
         if options.get("theme") is not None:
             from detail.core.chart_theme import theme as chart_theme
 
@@ -4678,8 +4681,8 @@ class Experiment:
         row counts from disk.
 
         Raises:
-            ExportError: if a target is unknown, or ``scope`` names a recording the export does
-                not span.
+            ExportError: if a target is unknown, ``scope`` names a recording the export does
+                not span, or the request is one ``exporters.check_request`` refuses.
         """
         from detail.api import exporters
 
@@ -4687,6 +4690,7 @@ class Experiment:
         targets = [exporters.target(subject_kind, t) for t in target_ids]
         scope = scope or exporters.ExportScope()
         self._check_export_recordings(subject, scope)
+        exporters.check_request(subject, targets, scope)
         return exporters.estimate(
             subject, targets, scope=scope, parent=parent, **options
         )

@@ -215,7 +215,7 @@ def _read_stream_sources(
             if line_no == 1 and metadata_store.is_video_key_header(cells[0]):
                 by_video = True
                 continue
-            if line_no == 1 and cells[0].lower() in ("recording", "recording_id"):
+            if line_no == 1 and metadata_store.is_recording_key_header(cells[0]):
                 continue  # an optional header, so the file reads as a table
             if len(cells) < 2 or not cells[1]:
                 raise ValueError(
@@ -1598,17 +1598,18 @@ def recording_relink(
     "--offset",
     "offset_s",
     type=FINITE_FLOAT,
-    default=0.0,
-    show_default=True,
+    default=None,
     help="Alignment offset in seconds, set at import: positive if the stream began after "
-    "the video. Only for an external-clock stream; edit later with set-stream-offset.",
+    "the video. Only for an external-clock stream; edit later with set-stream-offset. "
+    "Default 0, or with --preset the preset's own offset.",
 )
 @click.option(
     "--preset",
     default=None,
     type=str,
     help="Use a saved preset's importer + config instead of --importer and the mapping "
-    "flags. See `experiment list-stream-presets`.",
+    "flags (--time-column, --time-is, --channel), which are refused beside it. See "
+    "`experiment list-stream-presets`.",
 )
 @click.option(
     "--save-preset",
@@ -1636,7 +1637,7 @@ def recording_add_stream(
     medpc_session: int | None,
     boris_observation: str | None,
     boris_subject: str | None,
-    offset_s: float,
+    offset_s: float | None,
     preset: str | None,
     save_preset: str | None,
 ) -> None:
@@ -1652,6 +1653,24 @@ def recording_add_stream(
     # preset form unrunnable: click refused it before the body could branch.
     if (importer is None) == (preset is None):
         raise click.ClickException("pass exactly one of --importer or --preset")
+    if preset is not None:
+        # The preset carries the mapping, and the branch below never reads these: refused
+        # rather than dropped, so a `--channel` meant to narrow the import is not ignored.
+        mapping = [
+            flag
+            for flag, given in (
+                ("--time-column", time_column is not None),
+                ("--time-is", time_kind != "auto"),
+                ("--channel", bool(channels)),
+                ("--covered-behaviors", covered_behaviors is not None),
+            )
+            if given
+        ]
+        if mapping:
+            raise UserInputError(
+                f"{', '.join(mapping)} cannot be used with --preset, which carries its own "
+                "mapping; drop them, or pass --importer with the flags instead"
+            )
     proj = _open_experiment(experiment_dir)
     aux = {"program": program_path} if program_path is not None else None
     covered = (
@@ -1668,7 +1687,8 @@ def recording_add_stream(
         boris_observation=boris_observation,
         boris_subject=boris_subject,
     )
-    offset_ns = _option_t_ns(offset_s, "--offset")
+    # `None` with --preset means "the preset's own offset"; without one it is 0.
+    offset_ns = None if offset_s is None else _option_t_ns(offset_s, "--offset")
     try:
         sess = _recording(proj, recording_id)
         if save_preset is not None:
@@ -1684,7 +1704,9 @@ def recording_add_stream(
                 aux_paths=aux,
                 origin=origin,
             )
-            importer = proj.get_stream_preset(preset)["importer"]
+            saved = proj.get_stream_preset(preset)
+            importer = saved["importer"]
+            config = saved.get("config") or None
         else:
             sess.add_stream(
                 name,
@@ -1694,7 +1716,7 @@ def recording_add_stream(
                 covered_behaviors=covered,
                 origin=origin,
                 config=selection if selection is not None else config,
-                offset_ns=offset_ns,
+                offset_ns=0 if offset_ns is None else offset_ns,
             )
     except (FileNotFoundError, ValueError) as e:
         raise click.ClickException(str(e))
@@ -1954,6 +1976,10 @@ def experiment_apply_stream_preset(
     click.echo(f"imported {counts['done']}, skipped {len(skipped)}")
     for ref, error in skipped:
         click.echo(f"  skipped {ref}: {error}", err=True)
+    if skipped and not counts["done"]:
+        raise click.ClickException(
+            "nothing was imported: every recording was skipped (reasons above)"
+        )
 
 
 _ONLY_OPT = click.option(
@@ -2211,6 +2237,10 @@ def recording_import_labels(
     )
     for sid, error in skipped:
         click.echo(f"  skipped {sid}: {error}", err=True)
+    if skipped and not counts["done"]:
+        raise click.ClickException(
+            "nothing was imported: every recording was skipped (reasons above)"
+        )
 
 
 @recording.command("status")
@@ -4871,6 +4901,10 @@ def model_set_meta(
     """Edit one of your models' metadata (made-by / description / notes / preview)."""
     from detail.api import models as api_models
 
+    if made_by is None and description is None and notes is None and preview is None:
+        raise UserInputError(
+            "nothing to change; pass --made-by, --description, --notes or --preview"
+        )
     try:
         api_models.update_model_metadata(
             model_id, made_by=made_by, description=description, notes=notes
@@ -5612,12 +5646,25 @@ def analysis_query(
     if not any(groups.values()):
         raise click.ClickException("provide at least one --example or --from-csv")
     # Non-examples group by behavior the same way examples do, so `--non-example
-    # rearing=rec:1.0-2.0` lands on the behavior it names. A group with only non-examples is
-    # a behavior with nothing to search *for*; validate() reports it with the rest.
+    # rearing=rec:1.0-2.0` lands on the behavior it names. One naming no behavior with
+    # examples would be a behavior with nothing to search *for*: the config cannot carry it,
+    # so it is refused here rather than dropped.
     negatives: dict = {}
     for spec in non_examples:
         name, clip = _parse_example(spec, track_id)
         negatives.setdefault(name, []).append(clip)
+    orphans = [name for name in negatives if not groups.get(name)]
+    if orphans:
+        shown = ", ".join("(no name)" if n is None else repr(n) for n in orphans)
+        known = ", ".join(
+            "(no name)" if n is None else repr(n)
+            for n, clips in groups.items()
+            if clips
+        )
+        raise UserInputError(
+            f"--non-example names {shown}, which has no --example; non-examples attach "
+            f"to a behavior that has examples: {known}"
+        )
     split_gap_ns = _split_gap_ns(trajectory_split_gap_s)
     groups = _screen_example_clips(
         proj.dir, embed_run_id, groups, split_gap_ns, strict, method_id=method
@@ -6984,6 +7031,7 @@ def analysis_query_eval(
     ground-truth intervals. One row per --behavior is appended to --out so a shell
     sweep over configs / embedding runs builds a comparison table."""
     from detail.pipeline.query_eval import (
+        QueryEvalModule,
         _overlap_rows,
         evaluate_query,
         null_at as query_eval_null_at,
@@ -7027,6 +7075,13 @@ def analysis_query_eval(
         "iou_threshold": iou_threshold,
         "point_window_s": point_window_s,
     }
+    # The module's own checks, which a launched run gets and this direct call skipped: an
+    # unknown --stream, --embed-run, --track or --behavior fails naming what there is, rather
+    # than scoring nothing (`docs/cli.md`).
+    try:
+        config = QueryEvalModule().validate(experiment_dir, config)
+    except (ValueError, KeyError, FileNotFoundError) as e:
+        raise click.ClickException(str(e))
     bar = _StageProgress()
     try:
         results = evaluate_query(experiment_dir, config, progress=bar)
@@ -7084,9 +7139,12 @@ def analysis_query_eval(
                     Path(pr_out_dir) / f"{embed_run_id}_{r.behavior}_fold_{j:02d}.csv",
                     fm.pr_points,
                 )
-    if rows:
-        query_eval_csv.append_metrics(out_path, rows)
-        click.echo(f"metrics: {out_path}")
+    if not rows:
+        raise click.ClickException(
+            "every behavior was skipped, so nothing was scored and --out was not written"
+        )
+    query_eval_csv.append_metrics(out_path, rows)
+    click.echo(f"metrics: {out_path}")
     if folds_out is not None:
         query_eval_csv.write_folds_csv(folds_out, fold_rows)
         click.echo(f"folds: {folds_out}")

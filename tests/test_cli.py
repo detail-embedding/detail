@@ -385,6 +385,19 @@ def test_recording_import_labels(tmp_path):
         "recording_000: done" in result.output
     )  # per-recording progress callback wired
 
+    # Every file unreadable: it printed "imported 0/1" and exited 0 (#31, finding 48).
+    (tmp_path / "s1.csv").write_text("start_frame,end_frame\n1,3\n", encoding="utf-8")
+    again = r.invoke(
+        main,
+        [
+            "recording", "import-labels", "--experiment", pdir,
+            "--manifest", str(manifest), "--name", "second",
+        ],
+    )  # fmt: skip
+    assert again.exit_code == 1, again.output
+    assert "imported 0/1 recording(s); skipped 1" in again.output
+    assert "every recording was skipped" in again.output
+
 
 def test_recording_add_video_drives_progress_bar(tmp_path, monkeypatch):
     # add-video is synchronous; the CLI must pass a progress callback so a long
@@ -486,6 +499,11 @@ def test_cli_query_eval_drives_progress_bar(tmp_path, monkeypatch):
         return []
 
     monkeypatch.setattr("detail.pipeline.query_eval.evaluate_query", fake_eval)
+    # The empty experiment has nothing the module's checks would accept; this is about the bar.
+    monkeypatch.setattr(
+        "detail.pipeline.query_eval.QueryEvalModule.validate",
+        lambda self, experiment_dir, config: config,
+    )
     result = r.invoke(
         main,
         [
@@ -496,8 +514,11 @@ def test_cli_query_eval_drives_progress_bar(tmp_path, monkeypatch):
             "--out", str(tmp_path / "m.csv"),
         ],
     )  # fmt: skip
-    assert result.exit_code == 0, result.output
     assert callable(seen["progress"])
+    # Nothing scored is not a success: the fake evaluator returned no behavior (#31, 44).
+    assert result.exit_code == 1, result.output
+    assert "every behavior was skipped" in result.output
+    assert not (tmp_path / "m.csv").exists()
 
 
 def test_recording_status_shows_video(tmp_path):
@@ -2051,6 +2072,110 @@ def test_apply_stream_preset_reports_a_skipped_recording(tmp_path):
     assert "imported 1, skipped 1" in res.output
     assert exp.get_recording("r1").streams
     assert not exp.get_recording("r2").streams
+
+
+def _preset_experiment(tmp_path, recordings=("r1", "r2")):
+    """An experiment with a saved `p` preset (2 s offset) and one CSV per recording."""
+    from detail.api.experiment import Experiment
+
+    exp = Experiment.create("p1", tmp_path)
+    for rid in recordings:
+        exp.create_recording(rid)
+        (tmp_path / f"{rid}.csv").write_text(
+            "t_sec,nose_x,extra\n0,1,9\n0.1,2,9\n", encoding="utf-8"
+        )
+    exp.save_stream_preset(
+        "p",
+        "timeseries_csv",
+        {
+            "time_column": "t_sec",
+            "time_kind": "seconds",
+            "channels": [{"column": "nose_x", "name": "nose_x"}],
+        },
+        offset_ns=2_000_000_000,
+    )
+    return exp
+
+
+def test_add_stream_refuses_mapping_flags_beside_a_preset(tmp_path):
+    """`--preset` read its own mapping and dropped `--channel`, `--time-column` and
+    `--covered-behaviors` without a word (#31, finding 48)."""
+    exp = _preset_experiment(tmp_path)
+    base = [
+        "recording", "add-stream", "--experiment", str(exp.dir), "--recording", "r1",
+        "--name", "pose", "--data", str(tmp_path / "r1.csv"), "--preset", "p",
+    ]  # fmt: skip
+    res = _runner().invoke(main, base + ["--channel", "extra", "--time-is", "frame"])
+    assert res.exit_code == 1, res.output
+    assert res.output == (
+        "Error: --time-is, --channel cannot be used with --preset, which carries its own "
+        "mapping; drop them, or pass --importer with the flags instead\n"
+    )
+    assert not exp.get_recording("r1").streams
+
+    # Without --offset the preset's own offset applies; the option's 0 used to override it.
+    ok = _runner().invoke(main, base)
+    assert ok.exit_code == 0, ok.output
+    assert exp.get_recording("r1").streams[0]["alignment"]["offset_ns"] == 2_000_000_000
+
+
+def test_add_stream_with_a_preset_saves_the_presets_mapping(tmp_path):
+    """`--save-preset` beside `--preset` saved the copy with no mapping at all."""
+    exp = _preset_experiment(tmp_path)
+    res = _runner().invoke(
+        main,
+        [
+            "recording", "add-stream", "--experiment", str(exp.dir), "--recording", "r1",
+            "--name", "pose", "--data", str(tmp_path / "r1.csv"), "--preset", "p",
+            "--save-preset", "copy",
+        ],
+    )  # fmt: skip
+    assert res.exit_code == 0, res.output
+    assert (
+        exp.get_stream_preset("copy")["config"] == exp.get_stream_preset("p")["config"]
+    )
+
+
+def test_covered_behaviors_on_a_stream_that_is_not_behavior_is_refused(tmp_path):
+    """An events CSV has a `label` column, so the vocabulary was stored on it, unread."""
+    from detail.api.experiment import Experiment
+
+    exp = Experiment.create("p1", tmp_path)
+    exp.create_recording("r1")
+    events = tmp_path / "events.csv"
+    events.write_text("seconds,label\n1.0,lever\n", encoding="utf-8")
+    res = _runner().invoke(
+        main,
+        [
+            "recording", "add-stream", "--experiment", str(exp.dir), "--recording", "r1",
+            "--name", "ev", "--importer", "events_csv", "--data", str(events),
+            "--covered-behaviors", "lever,poke",
+        ],
+    )  # fmt: skip
+    assert res.exit_code == 1, res.output
+    assert "covered_behaviors only applies to a behavior stream" in res.output
+    assert not exp.get_recording("r1").streams
+    assert not (exp.get_recording("r1").dir / "streams" / "ev").exists()
+
+
+def test_apply_stream_preset_fails_when_every_recording_is_skipped(tmp_path):
+    """It printed "imported 0, skipped 2" and exited 0."""
+    exp = _preset_experiment(tmp_path)
+    (tmp_path / "sources.csv").write_text(
+        "Recording ID,file\nr1,missing1.csv\nr2,missing2.csv\n", encoding="utf-8"
+    )
+    res = _runner().invoke(
+        main,
+        [
+            "experiment", "apply-stream-preset", "--experiment", str(exp.dir),
+            "--preset", "p", "--name", "pose", "--sources", str(tmp_path / "sources.csv"),
+        ],
+    )  # fmt: skip
+    assert res.exit_code == 1, res.output
+    assert "imported 0, skipped 2" in res.output
+    assert "every recording was skipped" in res.output
+    # The `Recording ID` header is a header, not a recording called "Recording ID".
+    assert "Recording ID" not in res.output.replace("Error:", "")
 
 
 def test_apply_stream_preset_keys_on_a_video_column(tmp_path):
@@ -3765,6 +3890,17 @@ def test_cli_model_set_meta_edits(tmp_path, monkeypatch):
     res = r.invoke(main, ["model", "set-meta", "m", "--description", "new desc"])
     assert res.exit_code == 0, res.output
     assert "new desc" in r.invoke(main, ["model", "show", "m"]).output
+
+
+def test_cli_model_set_meta_with_nothing_to_change_is_refused(tmp_path, monkeypatch):
+    """It printed "updated: m" having changed nothing (#31, finding 49)."""
+    r = _runner()
+    _import_stub_model(r, tmp_path, monkeypatch)
+    res = r.invoke(main, ["model", "set-meta", "m"])
+    assert res.exit_code == 1, res.output
+    assert res.output == (
+        "Error: nothing to change; pass --made-by, --description, --notes or --preview\n"
+    )
 
 
 def test_cli_model_export_restore_round_trip(tmp_path, monkeypatch):
