@@ -32,6 +32,9 @@ from detail import surfaces
 from detail.api import clip_montage as _clip_montage
 from detail.api.experiment import Experiment
 from detail.api import tools as api_tools
+from detail.cli_numbers import FINITE_FLOAT
+from detail.cli_numbers import finite_float_range
+from detail.cli_numbers import parse_finite
 from detail.configs.detection import DetectionConfig
 from detail.configs.display import ConfidenceView
 from detail.configs.embedding import EmbeddingConfig
@@ -98,9 +101,10 @@ def _int_range(doc: dict) -> click.IntRange:
     return click.IntRange(min=doc.get("minimum"), max=doc.get("maximum"))
 
 
-def _float_range(doc: dict) -> click.FloatRange:
-    """``_int_range``'s float twin — bounds from the config model, never hand-written."""
-    return click.FloatRange(min=doc.get("minimum"), max=doc.get("maximum"))
+def _float_range(doc: dict) -> click.ParamType:
+    """``_int_range``'s float twin — bounds from the config model, never hand-written, and
+    never ``nan`` or ``inf`` (``cli_numbers``)."""
+    return finite_float_range(min=doc.get("minimum"), max=doc.get("maximum"))
 
 
 # --------------------------------------------------------------------------- #
@@ -198,6 +202,18 @@ def _read_stream_sources(
     return by_video, rows
 
 
+def _error_text(exc: BaseException) -> str:
+    """An exception's message for an ``Error:`` line.
+
+    ``str(KeyError(msg))`` is ``repr(msg)``: quoted, and in double quotes when the message
+    itself holds a single quote, which stripping ``'`` left on the line. A ``KeyError`` with a
+    message is read from its argument instead.
+    """
+    if isinstance(exc, KeyError) and exc.args:
+        return str(exc.args[0])
+    return str(exc)
+
+
 def _recording(proj: Experiment, ref: str):
     """A recording by **name or id** — what a user types is the name (§11).
 
@@ -208,7 +224,7 @@ def _recording(proj: Experiment, ref: str):
     try:
         return proj.resolve_recording(ref)
     except (KeyError, FileNotFoundError, ValueError) as e:
-        raise click.ClickException(str(e).strip("'"))
+        raise click.ClickException(_error_text(e))
 
 
 def _progress_postfix(data: dict) -> str:
@@ -355,11 +371,24 @@ def _stream_progress(run, label: str) -> None:
             bar.close()
 
 
+def _run_failure_reason(run) -> str:
+    """Why a run ended without completing, as its record states it, for an ``Error:`` line.
+
+    The reason is what the user needs; pointing them at ``job.json`` made them open a file to
+    read one sentence. Only a run that recorded no reason (stopped, or killed before it could
+    write one) falls back to where its log is.
+    """
+    error = run.error
+    if error:
+        return f": {str(error).strip()}"
+    return "; check job.json in the run directory for details."
+
+
 def _check_status(run, label: str) -> None:
     if run.status != "complete":
         raise click.ClickException(
-            f"{label} run {run.id!r} did not complete (status={run.status!r}); "
-            f"check job.json in the run directory for details."
+            f"{label} run {run.id!r} did not complete (status={run.status!r})"
+            + _run_failure_reason(run)
         )
     click.echo(f"{label}: {run.id} (status={run.status})")
 
@@ -367,7 +396,7 @@ def _check_status(run, label: str) -> None:
 def _stream_processing_progress(run, label: str) -> None:
     """Drive a tqdm bar from an :class:`AttachedRun`'s ``progress()`` iterator.
 
-    A experiment-level run fans out over recordings: each ``ProcessingProgress`` carries
+    An experiment-level run fans out over recordings: each ``ProcessingProgress`` carries
     the active recording's inner per-stage ``ProgressEvent`` (``frames_*`` + phase
     ``message``). The bar shows the current recording's frame progress and the
     ``recording i/N`` position rides in the postfix; the bar resets at each recording
@@ -606,7 +635,7 @@ def _resolve_recording_refs(proj, refs) -> list[str]:
         try:
             resolved.append(proj.resolve_recording(ref).id)
         except KeyError as exc:
-            raise click.ClickException(str(exc).strip("'"))
+            raise click.ClickException(_error_text(exc))
     return resolved
 
 
@@ -1003,7 +1032,7 @@ def experiment_export(
     include_datasets: bool,
     gzip: bool,
 ) -> None:
-    """Pack a experiment into one portable archive (§15) — slim by default (outputs +
+    """Pack an experiment into one portable archive (§15) — slim by default (outputs +
     metadata + models; no source video / datasets). scp it to another machine.
 
     Shows a bar on stderr through scanning, checking, hashing and packing."""
@@ -1030,7 +1059,7 @@ def experiment_export(
 )
 @click.option("--name", default=None, type=str, help="Import under a different id.")
 def experiment_import(archive: Path, replace: bool, name: str | None) -> None:
-    """Import a experiment bundle into the managed workspace (§15).
+    """Import an experiment bundle into the managed workspace (§15).
 
     Shows a bar on stderr through reading, extracting, verifying and placing."""
     try:
@@ -1461,7 +1490,7 @@ def recording_relink(
 @click.option(
     "--offset",
     "offset_s",
-    type=float,
+    type=FINITE_FLOAT,
     default=0.0,
     show_default=True,
     help="Alignment offset in seconds, set at import: positive if the stream began after "
@@ -1919,7 +1948,7 @@ def experiment_propagate_points(
     "--offset",
     "offset_s",
     required=True,
-    type=float,
+    type=FINITE_FLOAT,
     help="Alignment offset in seconds: positive if the stream began after the video.",
 )
 def recording_set_stream_offset(
@@ -2287,7 +2316,7 @@ def recording_import_calibration(
     "--pixels-per-mm",
     "pixels_per_mm",
     required=True,
-    type=float,
+    type=FINITE_FLOAT,
     help="Distance calibration as a pixels-per-mm scalar (the two-point pick is GUI-only).",
 )
 def recording_set_calibration(
@@ -2324,7 +2353,7 @@ def _detection_opts(f):
     """Detection config options shared by the recording ``detection run`` and the
     experiment-level ``process detection`` commands (applied bottom-up to preserve
     the original ``--help`` order). ``--model`` takes any model id — a built-in,
-    a experiment-trained, or an imported one; the source is resolved automatically.
+    an experiment-trained, or an imported one; the source is resolved automatically.
     A pretrained (open-set) model needs ``--class`` + ``--prompt``; a local model
     is closed-set and takes neither."""
     for opt in (
@@ -2341,7 +2370,7 @@ def _detection_opts(f):
             "conf_threshold",
             default=0.5,
             show_default=True,
-            type=float,
+            type=FINITE_FLOAT,
             help=_DET["conf_threshold"].description,
         ),
         click.option(
@@ -2715,7 +2744,7 @@ def _tracking_opts(f):
         ),
         click.option(
             "--secondary-conf",
-            type=float,
+            type=FINITE_FLOAT,
             help="anchor_tracker: min confidence for overlapping secondary detections.",
         ),
         click.option(
@@ -2725,7 +2754,7 @@ def _tracking_opts(f):
         ),
         click.option(
             "--conf-threshold",
-            type=float,
+            type=FINITE_FLOAT,
             help="Confidence filter applied by the tracker.",
         ),
         click.option(
@@ -2733,7 +2762,7 @@ def _tracking_opts(f):
         ),
         click.option(
             "--iou-threshold",
-            type=float,
+            type=FINITE_FLOAT,
             help="Box-overlap threshold. What it gates depends on the tracker: how much "
             "a fragment must overlap the subject to be merged into it.",
         ),
@@ -3174,7 +3203,7 @@ def process_detection(
     backend: str,
     devices: tuple[int, ...],
 ) -> None:
-    """Run detection across the selected recordings; writes a experiment run (run_NNN)."""
+    """Run detection across the selected recordings; writes an experiment run (run_NNN)."""
     proj = _open_experiment(experiment_dir)
     config = _detection_config(
         model_id,
@@ -3225,7 +3254,7 @@ def process_tracking(
     every_n_frames: int | None,
     detection_ref: str | None,
 ) -> None:
-    """Run tracking across the selected recordings; writes a experiment run (run_NNN).
+    """Run tracking across the selected recordings; writes an experiment run (run_NNN).
 
     Point at the detections with either ``--detection det_NN`` (that id must be
     complete in every selected recording) or ``--detection-ref RECORDING:det_NN`` (derive
@@ -3402,7 +3431,7 @@ def process_embedding(
     backend: str,
     devices: tuple[int, ...],
 ) -> None:
-    """Embed across the selected recordings; writes a experiment run (run_NNN).
+    """Embed across the selected recordings; writes an experiment run (run_NNN).
 
     Point at the tracks with either ``--tracking track_NN`` (that id must be complete
     in every selected recording) or ``--tracking-ref RECORDING:track_NN`` (derive the
@@ -3588,7 +3617,7 @@ def dataset() -> None:
 @click.option(
     "--val-split",
     "val_split",
-    type=float,
+    type=FINITE_FLOAT,
     default=0.15,
     show_default=True,
     help="Fraction of frames held out for validation.",
@@ -3679,7 +3708,7 @@ def dataset_create(
     "logit_threshold",
     default=0.5,
     show_default=True,
-    type=float,
+    type=FINITE_FLOAT,
     help=_LAB["logit_threshold"].description,
 )
 @click.option(
@@ -3695,7 +3724,7 @@ def dataset_create(
     "val_split",
     default=0.15,
     show_default=True,
-    type=float,
+    type=FINITE_FLOAT,
     help=_LAB["val_split"].description,
 )
 @click.option(
@@ -3703,7 +3732,7 @@ def dataset_create(
     "background_share",
     default=_LAB["background_share"].default,
     show_default=True,
-    type=click.FloatRange(0.0, 0.5),
+    type=finite_float_range(0.0, 0.5),
     help=_LAB["background_share"].description,
 )
 @_BACKEND_OPT
@@ -4173,7 +4202,7 @@ def distill() -> None:
     "logit_threshold",
     default=0.5,
     show_default=True,
-    type=float,
+    type=FINITE_FLOAT,
     help=_LAB["logit_threshold"].description,
 )
 @click.option(
@@ -4189,7 +4218,7 @@ def distill() -> None:
     "val_split",
     default=0.15,
     show_default=True,
-    type=float,
+    type=FINITE_FLOAT,
     help=_LAB["val_split"].description,
 )
 @click.option(
@@ -4197,7 +4226,7 @@ def distill() -> None:
     "background_share",
     default=_LAB["background_share"].default,
     show_default=True,
-    type=click.FloatRange(0.0, 0.5),
+    type=finite_float_range(0.0, 0.5),
     help=_LAB["background_share"].description,
 )
 @click.option(
@@ -4478,15 +4507,17 @@ def model() -> None:
     "--experiment",
     "experiment_dir",
     type=click.Path(file_okay=False, path_type=Path),
-    help="Experiment to check against (any experiment works; only the model is checked).",
+    help="Accepted for older scripts and ignored: models are machine-global, so no "
+    "experiment is needed.",
 )
 def model_check(
     model_id: str, variant: str | None, experiment_dir: Path | None
 ) -> None:
     """Print readiness reason + action URL for a model."""
-    proj = _experiment_or_temp(experiment_dir)
+    from detail.api import models as api_models
+
     try:
-        r = proj.check_model_access(model_id, variant)
+        r = api_models.model_readiness(model_id, variant)
     except ValueError as e:
         raise click.ClickException(str(e))
     label = f"{model_id}/{variant}" if variant else model_id
@@ -4509,7 +4540,8 @@ def model_check(
     "--experiment",
     "experiment_dir",
     type=click.Path(file_okay=False, path_type=Path),
-    help="Experiment to install against (any experiment works; weights cache is global).",
+    help="Accepted for older scripts and ignored: the weights cache is machine-global, so "
+    "no experiment is needed.",
 )
 def model_install(
     model_id: str, variant: str | None, experiment_dir: Path | None
@@ -4519,7 +4551,8 @@ def model_install(
     A run gates on the exact variant it is configured with, so install the size you
     plan to run — `--variant convnext_tiny` is not covered by installing the default.
     """
-    proj = _experiment_or_temp(experiment_dir)
+    from detail.api import models as api_models
+
     last_file: dict[str, str | None] = {"name": None}
 
     def on_progress(p: InstallProgress) -> None:
@@ -4534,7 +4567,7 @@ def model_install(
             )
 
     try:
-        proj.install_model(model_id, progress_cb=on_progress, variant=variant)
+        api_models.install_model(model_id, on_progress, variant=variant)
     except (ValueError, ModelNotReadyError) as e:
         raise click.ClickException(str(e))
     label = f"{model_id}/{variant}" if variant else model_id
@@ -4584,9 +4617,10 @@ def model_import(
     """Import a checkpoint into the machine-global catalog (usable in any experiment).
     A detection checkpoint becomes a detector, its classes read from the checkpoint; a pose
     checkpoint becomes a keypoint model and needs --skeleton."""
-    proj = _experiment_or_temp(None)
+    from detail.api import models as api_models
+
     try:
-        model_id = proj.import_model(
+        model_id = api_models.import_model(
             weights,
             family=family,
             skeleton=skeleton,
@@ -4765,25 +4799,13 @@ def model_list() -> None:
 @click.argument("model_id")
 def model_remove(model_id: str) -> None:
     """Remove a machine-global imported model."""
-    proj = _experiment_or_temp(None)
+    from detail.api import models as api_models
+
     try:
-        proj.remove_imported_model(model_id)
+        api_models.remove_imported_model(model_id)
     except FileNotFoundError as e:
         raise click.ClickException(str(e))
     click.echo(f"removed imported model: {model_id}")
-
-
-def _experiment_or_temp(experiment_dir: Path | None) -> Experiment:
-    """Model readiness / install isn't experiment-state — but our Experiment class
-    is the only API surface. If the caller didn't pass --experiment, spin up a
-    throwaway one in a temp dir.
-    """
-    import tempfile
-
-    if experiment_dir is not None:
-        return _open_experiment(experiment_dir)
-    parent = Path(tempfile.mkdtemp(prefix="detail_cli_"))
-    return Experiment.create("experiment", parent)
 
 
 # --------------------------------------------------------------------------- #
@@ -5267,7 +5289,13 @@ def _parse_example(value: str, default_track: int) -> tuple[str | None, dict]:
     parts = value.split(":")
     if len(parts) == 3:
         recording_id, track_text, span = parts
-        track_id = int(track_text)
+        try:
+            track_id = int(track_text)
+        except ValueError:
+            raise click.ClickException(
+                f"bad track {track_text!r} in --example {value!r}; a track is a whole "
+                "number, e.g. 'recording:0:12.4-13.1'"
+            ) from None
     elif len(parts) == 2:
         recording_id, span = parts
         track_id = default_track
@@ -5295,8 +5323,8 @@ def _parse_example(value: str, default_track: int) -> tuple[str | None, dict]:
         return query_name, {
             "recording_id": recording_id,
             "track_id": track_id,
-            "start_t_ns": round(float(start_text) * 1e9),
-            "end_t_ns": round(float(end_text) * 1e9),
+            "start_t_ns": round(parse_finite(start_text) * 1e9),
+            "end_t_ns": round(parse_finite(end_text) * 1e9),
         }
     except ValueError:
         raise click.ClickException(
@@ -5474,8 +5502,8 @@ def analysis_query(
     # `complete` while the GUI correctly shows it open.
     if run.status not in ("complete", "partial"):
         raise click.ClickException(
-            f"query {run.id!r} did not finish searching (status={run.status!r}); "
-            "check job.json in the run directory for details."
+            f"query {run.id!r} did not finish searching (status={run.status!r})"
+            + _run_failure_reason(run)
         )
     record_status = proj.query_run(run.id).status
     click.echo(
@@ -5573,7 +5601,7 @@ def analysis_query_calibrate(
                 raise click.ClickException(
                     f"--cutoff wants BEHAVIOR=CONFIDENCE, got {spec!r}"
                 )
-            value = None if raw.strip().lower() in ("none", "") else float(raw)
+            value = None if raw.strip().lower() in ("none", "") else parse_finite(raw)
             run.set_cutoff(behavior_id.strip(), value, progress=bar)
             click.echo(
                 f"{behavior_id.strip()} cutoff cleared — it is absent from the artifact again"
@@ -5633,7 +5661,7 @@ def _echo_query_state(run) -> None:
     ),
 )  # fmt: skip
 @click.option(
-    "--cutoff", type=float, default=None,
+    "--cutoff", type=FINITE_FLOAT, default=None,
     help="Report at this confidence cutoff instead of the run's own.",
 )  # fmt: skip
 @click.option(
@@ -5646,7 +5674,7 @@ def _echo_query_state(run) -> None:
     "interval.",
 )  # fmt: skip
 @click.option(
-    "--goal-width", type=float, default=None,
+    "--goal-width", type=FINITE_FLOAT, default=None,
     help="Say whether each 95% confidence interval is this narrow yet (the GUI's default is "
     "0.20, i.e. ±0.10), and roughly where another round of 25 would put it — a sample-size "
     "goal, not a judgment of the label. Nothing is said about width without it.",
@@ -5958,7 +5986,7 @@ def _interpret_options(kind: str):
             click.option(
                 "--at-p",
                 "at_p",
-                type=float,
+                type=FINITE_FLOAT,
                 default=None,
                 metavar="LEVEL",
                 help="With --from-screen: the strictness the screen was read at, a family-wise "
@@ -6217,11 +6245,11 @@ def _echo_tree(run) -> None:
     "default (binseg, which measured better than novelty) is used.",
 )  # fmt: skip
 @click.option(
-    "--min-bout", "min_len_s", type=float, default=None,
+    "--min-bout", "min_len_s", type=FINITE_FLOAT, default=None,
     help="Drop bouts shorter than this many seconds. Left unset, the method default is used.",
 )  # fmt: skip
 @click.option(
-    "--band", "band_s", type=float, default=None,
+    "--band", "band_s", type=FINITE_FLOAT, default=None,
     help="DTW warp tolerance in seconds (0 = rigid). Left unset, the method default is used.",
 )  # fmt: skip
 @click.option(
@@ -6232,7 +6260,7 @@ def _echo_tree(run) -> None:
 )  # fmt: skip
 @click.option("--fit-rows", type=int, default=None, hidden=True)
 @click.option(
-    "--fit-share", type=float, default=None,
+    "--fit-share", type=FINITE_FLOAT, default=None,
     help="codebook_viterbi: " + _CODEBOOK["fit_share"].description
     + " Left unset, the method default is used.",
 )  # fmt: skip
@@ -6242,7 +6270,7 @@ def _echo_tree(run) -> None:
     + " Left unset, the method default is used.",
 )  # fmt: skip
 @click.option(
-    "--min-run", "min_run_s", type=float, default=None,
+    "--min-run", "min_run_s", type=FINITE_FLOAT, default=None,
     help="codebook_viterbi: runs shorter than this many seconds are dropped (not merged "
     "into a neighbour) rather than becoming instances. Left unset, the method default is "
     "used.",
@@ -6477,7 +6505,7 @@ def analysis_export_temporal_clustering(
 @click.option(
     "--context",
     "context_s",
-    type=click.FloatRange(0.0, 60.0),
+    type=finite_float_range(0.0, 60.0),
     default=0.0,
     show_default=True,
     help="Seconds of footage either side of each clip: each tile plays the clip and its "
@@ -6514,7 +6542,7 @@ def analysis_export_temporal_clustering(
 )
 @click.option(
     "--fps",
-    type=click.FloatRange(1.0, 60.0),
+    type=finite_float_range(1.0, 60.0),
     default=None,
     help="Frames a second of --out or each --per-clip-gifs GIF. Default: 12 for a GIF, the "
     "montage's own clock for an mp4.",
@@ -6686,7 +6714,7 @@ def analysis_cluster_montage(
     help=_QE["n_keyframes"].description,
 )  # fmt: skip
 @click.option(
-    "--band", type=float, default=_QE["band_s"].default, show_default=True,
+    "--band", type=FINITE_FLOAT, default=_QE["band_s"].default, show_default=True,
     help=_QE["band_s"].description,
 )  # fmt: skip
 @click.option(
@@ -6707,7 +6735,7 @@ def analysis_cluster_montage(
     "--split-gap",
     "--max-gap",
     "trajectory_split_gap_s",
-    type=float,
+    type=FINITE_FLOAT,
     default=None,
     help=_QE["trajectory_split_gap_s"].description,
 )
@@ -6738,11 +6766,11 @@ def analysis_cluster_montage(
     show_default=True, help=_QE["seed"].description,
 )  # fmt: skip
 @click.option(
-    "--iou", "iou_threshold", type=float, default=_QE["iou_threshold"].default,
+    "--iou", "iou_threshold", type=FINITE_FLOAT, default=_QE["iou_threshold"].default,
     show_default=True, help=_QE["iou_threshold"].description,
 )  # fmt: skip
 @click.option(
-    "--point-window", "point_window_s", type=float, default=_QE["point_window_s"].default,
+    "--point-window", "point_window_s", type=FINITE_FLOAT, default=_QE["point_window_s"].default,
     show_default=True, help=_QE["point_window_s"].description,
 )  # fmt: skip
 @click.option(
@@ -7036,9 +7064,10 @@ def version(n_history: int, check: bool) -> None:
 @click.argument("token")
 def hf_token(token: str) -> None:
     """Validate + store a Hugging Face token in ~/.config/detail/credentials.yaml."""
-    proj = _experiment_or_temp(None)
+    from detail.storage import credentials
+
     try:
-        account = proj.set_hf_token(token)
+        account = credentials.set_hf_token(token)
     except Exception as e:  # huggingface_hub raises various subtypes
         raise click.ClickException(f"token validation failed: {e}")
     click.echo(f"signed in as: {account}")
@@ -7339,28 +7368,28 @@ def comparison() -> None:
 )
 @click.option(
     "--presence-s",
-    type=float,
+    type=FINITE_FLOAT,
     default=_comparison_default("presence_s"),
     show_default=True,
     help=_comparison_help("presence_s"),
 )
 @click.option(
     "--pseudo-count-s",
-    type=float,
+    type=FINITE_FLOAT,
     default=_comparison_default("pseudo_count_s"),
     show_default=True,
     help=_comparison_help("pseudo_count_s"),
 )
 @click.option(
     "--min-units-fraction",
-    type=float,
+    type=FINITE_FLOAT,
     default=_comparison_default("min_units_fraction"),
     show_default=True,
     help=_comparison_help("min_units_fraction"),
 )
 @click.option(
     "--candidate-floor-s",
-    type=float,
+    type=FINITE_FLOAT,
     default=_comparison_default("candidate_floor_s"),
     show_default=True,
     help=_comparison_help("candidate_floor_s"),
@@ -7844,16 +7873,20 @@ _DISTILL_RUN_OPT = click.option(
 
 
 def _resolve_subject(
-    experiment_dir, subject_kind, recording, run, analysis_run, distill_run=None
+    proj, subject_kind, recording, run, analysis_run, distill_run=None
 ):
     """Build the ``ExportSubject`` from the id flags, refusing an ambiguous combination.
 
     Explicit rather than inferred from a bare id (OQ-EXP-B): inference reads better right up
     until a recording and a run share a name, and then it silently exports the wrong thing.
     Passing the id under its own flag *is* the subject kind, so the common case still costs
-    one word.
+    one word. A recording is given by name or id, like every ``--recording``; an id that names
+    nothing is refused here rather than listed as a subject every target is unavailable for.
     """
     from detail.api.exporters import ExportSubject
+    from detail.api.exporters import check_subject
+
+    experiment_dir = proj.dir
 
     given = {
         "recording": recording,
@@ -7875,7 +7908,11 @@ def _resolve_subject(
             raise click.ClickException(
                 f"--subject {subject_kind} contradicts {_SUBJECT_FLAGS[kind]}"
             )
-        return ExportSubject(kind, experiment_dir, value)
+        if kind == "recording":
+            value = _recording(proj, value).id
+        subject = ExportSubject(kind, experiment_dir, value)
+        check_subject(subject)
+        return subject
     if subject_kind and subject_kind != "experiment":
         raise click.ClickException(
             f"--subject {subject_kind} needs an id: pass "
@@ -7914,9 +7951,9 @@ def export_list(
     """Show what this subject can produce, and what ships beside each artifact."""
     from detail.api import exporters
 
-    _open_experiment(experiment_dir)
+    proj = _open_experiment(experiment_dir)
     subject = _resolve_subject(
-        experiment_dir, subject_kind, recording, run, analysis_run, distill_run
+        proj, subject_kind, recording, run, analysis_run, distill_run
     )
     targets = exporters.targets_for(subject)
     if not targets:
@@ -8082,13 +8119,13 @@ def export_run(
 
     proj = _open_experiment(experiment_dir)
     subject = _resolve_subject(
-        experiment_dir, subject_kind, recording, run, analysis_run, distill_run
+        proj, subject_kind, recording, run, analysis_run, distill_run
     )
     try:
         # Ids, whichever of id or name was typed: the scope names recordings by id.
         recording_ids = tuple(proj.resolve_recording(ref).id for ref in for_recordings)
     except (KeyError, ValueError, FileNotFoundError) as e:
-        raise click.ClickException(str(e).strip("'"))
+        raise click.ClickException(_error_text(e))
     scope = exporters.ExportScope(
         cluster=cluster,
         instance_ids=tuple(instance_ids),

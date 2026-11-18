@@ -635,7 +635,7 @@ class LaunchRunDialog(Dialog):
 
 
 class LaunchAnalysisDialog(Dialog):
-    """Launch a experiment-level analysis run (§16): pick a module, select eligible
+    """Launch an experiment-level analysis run (§16): pick a module, select eligible
     recordings (its ``requires`` must be satisfied), fill the module's config form,
     and launch via ``Experiment.run_analysis``. Holds the returned ``AnalysisRun`` in
     ``run_handle`` for the shell to show live progress. Mirrors ``LaunchRunDialog``

@@ -283,6 +283,44 @@ def unavailable_reason(target: ExportTarget, subject: ExportSubject) -> str | No
     return export_targets.unavailable_reason(target, subject)
 
 
+#: ``{subject kind: (what it is called, the command that lists them)}`` for a subject held in a
+#: store by id. A recording is checked by its directory.
+_SUBJECT_LISTINGS = {
+    "recording": ("recording", "detail experiment status"),
+    "run": ("processing run", "detail process list"),
+    "analysis_run": ("analysis run", "detail analysis list"),
+    "distill": ("distill run", "detail distill list"),
+}
+
+
+def check_subject(subject: ExportSubject) -> None:
+    """Refuse a subject whose id names nothing in its experiment.
+
+    Without this a mistyped id listed every target as unavailable for a reason that was not the
+    reason ("this recording has no video parts yet", "this run's record cannot be read"), and the
+    user went looking for a problem with a recording that does not exist (#33).
+
+    Raises:
+        UserInputError: No recording or run with that id.
+    """
+    from detail.api import export_targets
+    from detail.core.errors import UserInputError
+
+    if subject.kind not in _SUBJECT_LISTINGS:
+        return
+    if subject.kind == "recording":
+        where = export_targets._recording_dir(subject) / "recording.yaml"
+        exists = where.is_file()
+    else:
+        found = export_targets._run_dir_for(subject)
+        exists = found is not None and found.is_dir()
+    if not exists:
+        noun, listing = _SUBJECT_LISTINGS[subject.kind]
+        raise UserInputError(
+            f"no {noun} {subject.id!r} in this experiment; `{listing}` shows them"
+        )
+
+
 def available_targets(subject: ExportSubject) -> list[ExportTarget]:
     """Just the ones that can run — what decides whether the control appears at all."""
     return [t for t in targets_for(subject) if unavailable_reason(t, subject) is None]

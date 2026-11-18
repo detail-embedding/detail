@@ -3,6 +3,7 @@
 import numpy as np
 import pytest
 
+from detail.core.errors import UserInputError
 from detail.storage import clocks
 
 FRAME_T_NS = np.array([0, 100, 200, 300, 400], dtype=np.int64)
@@ -20,10 +21,15 @@ def test_frame_to_t_ns():
 
 
 def test_frame_to_t_ns_out_of_range():
-    with pytest.raises(ValueError, match="past the video"):
-        clocks.frame_to_t_ns(5, FRAME_T_NS)
-    with pytest.raises(ValueError):
-        clocks.frame_to_t_ns(-1, FRAME_T_NS)
+    """Named for any stream, and for a negative frame too: it said "behavior label references
+    frame -1, past the video's 5 frames" for a sensor CSV (#33)."""
+    for frame in (5, -1):
+        with pytest.raises(UserInputError) as err:
+            clocks.frame_to_t_ns(frame, FRAME_T_NS)
+        assert str(err.value).startswith(
+            f"frame {frame} is outside the video, whose frames are numbered 0 to 4 (5 frames)"
+        )
+        assert "behavior" not in str(err.value)
 
 
 def test_t_ns_to_frame():

@@ -38,6 +38,7 @@ from detail.api._runner_modules import PIPELINE_RUNNERS
 from detail.configs.display import KEEP_ALL_PROPOSALS
 from detail.configs.quick_segment import QuickSegmentConfig
 from detail.core.dataclasses import Detection, ToolResult
+from detail.core.errors import UserInputError
 from detail.core.progress import ThrottledProgress
 from detail.core.protocols import ModelNotReadyError, Tool
 from detail.core.registries import register_tool
@@ -711,6 +712,7 @@ def export_frames(
         )
     index = read_sampled(run_dir)
     sources = manifest.get("source_videos") or [manifest["source_video"]]
+    _require_sources(sources)
     out_dir.mkdir(parents=True, exist_ok=True)
     emit = ThrottledProgress(None if progress is None else (lambda ev: progress(*ev)))
     total = len(index["sampled_frames"])
@@ -726,6 +728,24 @@ def export_frames(
     written += 1
     emit(("exporting", 1.0, f"frame {total}/{total}"), force=True)
     return written
+
+
+def _require_sources(sources: list[str]) -> None:
+    """Refuse an export whose source clip is gone, before anything is written.
+
+    Checked before the writer or the folder is made: a moved clip used to leave an empty
+    ``.mp4`` (or folder) behind, with a message about video-excluded experiment exports,
+    which a Quick segment run is not.
+
+    Raises:
+        UserInputError: A source clip is not at the path the run recorded.
+    """
+    for source in sources:
+        if not Path(source).is_file():
+            raise UserInputError(
+                f"the clip this run was made from is no longer at {source} (moved or "
+                "deleted); put it back there to export this run"
+            )
 
 
 def export_mp4(
@@ -748,6 +768,7 @@ def export_mp4(
             "consecutive mode, or export the overlay frames instead."
         )
     source = manifest["source_video"]
+    _require_sources([source])
     width, height = (int(x) for x in result["resolution"])
     fps = float(result["fps"]) or 30.0
     n = int(result["n_processed"])

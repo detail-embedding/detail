@@ -18,7 +18,14 @@ as UTF-8 or a file that is not the kind a command reads, stops the command with 
 mistyped id (a run, a comparison or a tracking run that does not exist), and a folder or disk
 that cannot take the write: one you do not have permission to write to, a read-only disk, a
 name too long for the disk, or a full disk. A command that writes one file you name (`--out`,
-`--csv`, `--export`) creates a missing folder in that path.
+`--csv`, `--export`) creates a missing folder in that path. A number option refuses `nan` and
+`inf`.
+
+A CSV you hand in (metadata, spatial setup, a stream, a clip list) must be saved as
+**CSV UTF-8** and **comma-separated**: in Excel, Save As → CSV UTF-8 (Comma delimited). A
+file saved with semicolons (the default in some European versions of Excel) or tabs is
+refused with a message saying so. A row whose cells are all empty is skipped, and so is an
+empty column at the end with no header.
 
 ## Contents
 
@@ -83,8 +90,9 @@ model needs is not installed), `missing_weights` (a trained or imported model's 
 is gone), or one of `no_token` / `no_access` / `bad_token` / `offline`. Each
 tells you which setup step to revisit, with a message and an action URL. Add
 `--variant <name>` to check one size; without it you get the model's default.
-`model check`/`install` aren't experiment state, so `--experiment` is optional (a
-throwaway experiment is used if omitted).
+Models are machine-global, so the `model` commands and `hf-token` need no experiment
+and write nothing outside the model cache and your credentials. `model check` and
+`model install` still accept `--experiment` so older scripts keep working, and ignore it.
 
 Older versions cached weights under `~/.cache/huggingface/hub`. If you have a copy
 there, move it into the global cache or just re-install:
@@ -146,7 +154,8 @@ same stage is `…_02`). Downstream commands name the upstream run by id
 
 > **Real subjects, real prompts.** Detection only writes rows where it finds the
 > target. With zero detections the detection run still completes, but tracking fails
-> with `zero tracks produced`. Use a matching prompt and lower `--conf` if needed.
+> with `zero tracks produced: the detection run found no detections`. Use a matching
+> prompt and lower `--conf` if needed.
 
 ## Command reference
 
@@ -231,7 +240,8 @@ table, see the [Parameters reference](reference/parameters.md).
   part of that file.
 - `import-spatial --experiment <dir> --recording <id> (--from-recording <id> | --csv <file>)`:
   take ROIs + POIs onto the recording from another recording in the same experiment or
-  from an exported CSV. A name the recording already has is **refused by name** and
+  from an exported CSV. Coordinates in the CSV are fractions of the frame (0 to 1), not
+  pixels. A name the recording already has is **refused by name** and
   reported; the ones that do not collide still arrive (regions and points are sets, so one
   collision does not refuse the rest). To change one, delete it here first: it is never
   overwritten, and no name is silently suffixed.
@@ -1945,7 +1955,12 @@ goes `reading` → `extracting` → `verifying` → `placing`. A slim export rea
 file twice (once for the checksum, once to pack it), so a large experiment takes
 minutes even without its video. If a file changes between those two reads (a run
 still writing to the experiment), the export stops and names the file; let the
-run finish and export again. The archive is written as `<out>.partial` and
+run finish and export again. Before packing, the export also checks that no DETAIL
+file holds an absolute path (a home folder such as `/home/…` or `/Users/…`, or a
+drive such as `D:\`), since that path would not exist on the other machine; if one
+does, it stops and names the file, the line and the path. Text you wrote is not
+checked: your metadata table, a description, a note, or a recorded error message can
+mention any folder. The archive is written as `<out>.partial` and
 renamed when it is complete, so a stopped export never leaves a file that looks
 finished. A video-excluded import is
 fully analysis-ready (embeddings, tracking re-tuning, metadata); the

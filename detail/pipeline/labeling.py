@@ -48,7 +48,7 @@ _BATCH_SIZE = 4
 
 
 def run_dir_for(experiment_root, job: LabelingJob) -> Path:
-    """``datasets/<dataset_id>/`` — a experiment-level run dir (shared with the run-export source)."""
+    """``datasets/<dataset_id>/`` — an experiment-level run dir (shared with the run-export source)."""
     return experiment_store.datasets_dir(experiment_root) / job.dataset_id
 
 
