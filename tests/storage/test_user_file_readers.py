@@ -252,7 +252,7 @@ def test_every_cli_float_option_refuses_nan_and_inf():
     for py in sorted(_PACKAGE.glob("cli*.py")):
         if py.name == _NUMBER_SEAM:
             continue
-        for hit in float_option_violations(py.read_text(encoding="utf-8")):
+        for hit in float_option_violations(py.read_text(encoding="utf-8-sig")):
             problems.append(f"{py.name} {hit}; use the types in detail/{_NUMBER_SEAM}")
     assert problems == []
 

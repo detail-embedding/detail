@@ -835,14 +835,14 @@ def test_finding_28_a_path_detail_reads_is_named_with_its_line(
     _invoke("recording", "create", "--experiment", experiment_dir, "--name", "m1")
     config = experiment_dir / "config.yaml"
     config.write_text(
-        config.read_text(encoding="utf-8") + "leak: D:\\videos\\m1.mp4\n",
+        config.read_text(encoding="utf-8-sig") + "leak: D:\\videos\\m1.mp4\n",
         encoding="utf-8",
     )
     archive = tmp_path.parent / f"{tmp_path.name}_a.tar"
     result = _invoke(
         "experiment", "export", "--experiment", experiment_dir, "--out", archive
     )
-    lines = len(config.read_text(encoding="utf-8").splitlines())
+    lines = len(config.read_text(encoding="utf-8-sig").splitlines())
     _clean_error(result, f"config.yaml line {lines}: D:\\videos\\m1.mp4")
 
 
@@ -1049,7 +1049,7 @@ def test_finding_35_an_example_frame_without_a_field(tmp_path):
     _invoke("keypoints", "examples", "create", "rats", "--skeleton", "midline_3", *exp)
     out = tmp_path / "shared"
     _invoke("keypoints", "examples", "export", "ex_01", "--out", out, *exp)
-    data = yaml.safe_load((out / "examples.yaml").read_text(encoding="utf-8"))
+    data = yaml.safe_load((out / "examples.yaml").read_text(encoding="utf-8-sig"))
     (out / "img.png").write_bytes(b"x")
     frame = {
         "image": "img.png", "tracking_run_id": "track_01", "track_id": 0,
