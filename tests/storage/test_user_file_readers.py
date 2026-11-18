@@ -79,6 +79,7 @@ YAML_ALLOWED: dict[str, tuple[int, str]] = {
 #: ``{path under detail/: (calls, why)}`` for ``csv.reader`` / ``csv.DictReader``.
 CSV_ALLOWED: dict[str, tuple[int, str]] = {
     "analysis/comparison_report.py": (2, f"a comparison's tables, {_RECORD}"),
+    "api/export_targets.py": (1, f"a stream's canonical CSV, {_RECORD}"),
     "cli.py": (1, f"the stream-preset batch table, {_LATER}"),
     "gui/comparison.py": (1, f"a comparison's tables, {_RECORD}"),
     "importers/behavior.py": (2, f"a behavior CSV (finding 34), {_LATER}"),

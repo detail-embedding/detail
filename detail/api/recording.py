@@ -1317,12 +1317,7 @@ class Recording:
         # on the frame kind reports `video_frames` from a `stream_seconds` importer, so the
         # declared clock would wrongly accept an offset that read time then ignores.
         resolved_clock = result.clock or instance.clock
-        if offset_ns and not clock_store.needs_alignment(resolved_clock):
-            raise ValueError(
-                f"stream {name!r} is on the {resolved_clock!r} clock, which is already the "
-                "video's own, so an alignment offset would be ignored on read; import it "
-                "with offset_ns=0"
-            )
+        streams_store.check_offset_allowed(name, resolved_clock, int(offset_ns))
         manifest = {
             "name": name,
             "type": result.type,
@@ -1635,7 +1630,9 @@ class Recording:
         data is never rewritten.
 
         Raises:
-            ValueError: If no stream with this name exists.
+            ValueError: If no stream with this name exists, or it is on the video's own
+                clock (``video_frames`` / ``video_seconds``, e.g. behavior labels), which
+                has no offset to set.
         """
         streams_store.set_stream_offset(self.dir, name, offset_ns)
 
