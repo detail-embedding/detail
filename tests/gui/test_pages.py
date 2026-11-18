@@ -215,37 +215,126 @@ def test_part_location_shows_absolute_paths(qapp, tmp_path, monkeypatch):
     assert "not registered" in _part_location(tmp_path, ref_ghost)
 
 
-def test_relink_video_dialog_do_relink(qapp, tmp_path):
+def test_relink_video_dialog_lists_a_referenced_part(qapp, tmp_path):
+    from detail.api.recording import LocatablePart
     from detail.gui.pages import RelinkVideoDialog
-    from detail.storage import recording as recording_store
 
     recording = Experiment.create("p", tmp_path).create_recording("r1")
-    data = recording_store.read_recording(recording.dir)
-    data["video"] = {
-        "storage": "reference",
-        "files": [
-            {
-                "index": 0,
-                "id": "part_001",
-                "source": {"root": "nas", "rel": "m.mp4"},
-                "fingerprint": {"size": 1, "sha256_ends": "x"},
-            }
-        ],
-    }
-    recording_store.write_recording(recording.dir, data)
-    captured = {}
+    dialog = RelinkVideoDialog(recording, [LocatablePart(0, "part_001", copied=False)])
 
-    def relink(idx, path):
-        captured.update(idx=idx, path=path)
-        return "nas"
-
-    recording.relink_video_part = relink
-
-    dialog = RelinkVideoDialog(recording)
-    assert dialog._part.count() == 1  # the one reference part
+    assert dialog._part.count() == 1
+    assert dialog._part.itemText(0) == "part_001 (referenced)"
+    assert dialog._path.text() == ""  # nothing to offer: the user names the moved file
+    assert not dialog._form.isRowVisible(dialog._copied_from_row)
+    assert dialog._ok.text() == "Relink"
     dialog._path.setText(str(tmp_path / "moved.mp4"))
-    assert dialog.do_relink() == "nas"  # the registered root reaches the page's notice
-    assert captured == {"idx": 0, "path": str(tmp_path / "moved.mp4")}
+    assert dialog.chosen() == (0, str(tmp_path / "moved.mp4"))
+
+
+def _copied_recording_without_its_video(tmp_path, monkeypatch):
+    """A recording whose video was copied in and is no longer here: the state a slim import
+    leaves (`tests/api/test_recording.py` builds it through a real export and import).
+    """
+    import cv2
+    import numpy as np
+
+    from detail.storage import locations
+
+    monkeypatch.setattr(locations, "CONFIG_DIR", tmp_path / "cfg")
+    monkeypatch.setattr(locations, "STORAGE_PATH", tmp_path / "cfg" / "storage.yaml")
+    proj = Experiment.create("p", tmp_path)
+    recording = proj.create_recording("s1")
+    src = tmp_path / "raw" / "m.mp4"
+    src.parent.mkdir()
+    vw = cv2.VideoWriter(str(src), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (32, 24))
+    assert vw.isOpened()
+    for i in range(5):
+        vw.write(np.full((24, 32, 3), (i * 17) % 256, dtype=np.uint8))
+    vw.release()
+    recording.add_video_part(src)  # copied
+    (recording.dir / "video" / "part_001.mp4").unlink()
+    return proj, recording, src
+
+
+def test_locate_dialog_offers_where_a_copied_part_came_from(
+    qapp, tmp_path, monkeypatch
+):
+    """A copied part whose video is not here is listed, and the file it was copied from is
+    offered first when it is on this computer (#29): the dialog used to list referenced parts
+    only and say "This recording has no referenced parts"."""
+    from detail.gui.pages import RelinkVideoDialog
+
+    _proj, recording, src = _copied_recording_without_its_video(tmp_path, monkeypatch)
+
+    dialog = RelinkVideoDialog(recording, recording.parts_to_locate())
+
+    assert dialog._part.count() == 1
+    assert dialog._part.itemText(0) == "part_001 (copied, not on this computer)"
+    assert dialog._path.text() == str(src)
+    assert dialog._copied_from.text() == str(src)
+    assert dialog._form.isRowVisible(dialog._copied_from_row)
+    assert dialog._ok.text() == "Copy in"
+    assert dialog.chosen() == (0, str(src))
+
+
+def test_locate_dialog_names_a_copied_parts_file_it_cannot_find(
+    qapp, tmp_path, monkeypatch
+):
+    from detail.gui.pages import RelinkVideoDialog
+
+    _proj, recording, src = _copied_recording_without_its_video(tmp_path, monkeypatch)
+    src.rename(tmp_path / "elsewhere.mp4")
+
+    dialog = RelinkVideoDialog(recording, recording.parts_to_locate())
+
+    assert dialog._path.text() == ""  # nothing at the recorded path to offer
+    assert dialog._copied_from.text() == (
+        "m.mp4, which is not on this computer at the path it was copied from. "
+        "Choose it where it is now."
+    )
+
+
+def test_locate_puts_a_copied_video_back_from_the_recording_page(
+    qapp, tmp_path, monkeypatch
+):
+    """The whole GUI path: the page's scan enables Locate for a copied part with no file, the
+    dialog's choice runs behind the bar with its progress reported, and the video is back.
+    """
+    from detail.core.progress import OperationCancelled
+    from detail.gui import busy
+    from detail.gui import pages
+
+    proj, recording, src = _copied_recording_without_its_video(tmp_path, monkeypatch)
+    page = pages.RecordingDetailPage(recording, experiment=proj)
+    page._on_video(recording.verify_videos(), recording.parts_to_locate())
+
+    assert not page._locate_btn.isHidden()
+    assert page._locate_btn.isEnabled()
+    assert page._video_status_lbl.text() == (
+        "This recording's video is not on this computer (the experiment was imported "
+        "without it). Locate video copies it back in from the original file."
+    )
+
+    emitted = []
+
+    def run_inline(target, work, on_done, *, on_error=None, on_cancel=None, **_kw):
+        try:
+            result = work(lambda *event: emitted.append(event))
+        except OperationCancelled:
+            on_cancel()
+            return
+        on_done(result)
+
+    monkeypatch.setattr(busy, "run_progress", run_inline)
+    monkeypatch.setattr(
+        pages.RelinkVideoDialog, "exec", lambda self: pages.QDialog.DialogCode.Accepted
+    )
+
+    page._locate_video()
+
+    assert recording.video_available
+    assert {stage for stage, *_ in emitted} == {"Reading timestamps", "Copying"}
+    assert recording.verify_videos() == []
 
 
 def test_create_dialog_submits_specs_non_blocking(qapp, tmp_path):
@@ -471,7 +560,7 @@ def test_locate_button_enables_only_when_a_referenced_video_is_missing(
     assert not page._locate_btn.isHidden()  # shown for a reference recording
 
     # Present video → nothing to locate → the button is greyed (the off-thread scan render).
-    page._on_video(recording.verify_videos())
+    page._on_video(recording.verify_videos(), recording.parts_to_locate())
     assert not page._locate_btn.isEnabled()
 
     # The user moves the external file with the page still open. Asked of the OS rather than
@@ -482,7 +571,7 @@ def test_locate_button_enables_only_when_a_referenced_video_is_missing(
         "the file that Locate exists to find"
     )
     src.unlink()
-    page._on_video(recording.verify_videos())
+    page._on_video(recording.verify_videos(), recording.parts_to_locate())
     assert page._locate_btn.isEnabled()
 
 

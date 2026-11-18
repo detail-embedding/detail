@@ -209,7 +209,8 @@ def test_home_import_replace_prompt_lists_what_it_deletes(qapp, tmp_path, monkey
         "An experiment named 'study' already exists.\n\n"
         "Replacing it deletes these, and the bundle does not bring them back:\n"
         f"\u2022 1 video file(s), {format_size(video.stat().st_size)}: the bundle carries "
-        "no video\n"
+        "no video (it can be put back from the original files with Locate video, or "
+        "`detail recording relink`)\n"
         "\u2022 1 export record(s), export_01: no bundle carries them (the exported files "
         "themselves are not touched)\n\n"
         "Replace it with the imported one?"
@@ -309,3 +310,59 @@ def test_home_import_names_the_recordings_whose_video_was_not_found(
         "Open one of them and use Locate video on its file. Every recording whose video "
         "is in the same folder will find it too."
     ]
+
+
+# --- the Export dialog: Source video ticked with no video to pack ---------------- #
+def _bundle_dialog(qapp, proj, monkeypatch):
+    """The Export dialog on the experiment's bundle, Source video ticked, its note asked for
+    now and waited on (the answer comes off the UI thread)."""
+    from detail.api import exporters
+    from detail.api.exporters import ExportSubject
+    from detail.gui import export as gui_export
+    from tests import waits
+
+    answered = []
+    real = gui_export.ExportDialog._on_video_note
+    monkeypatch.setattr(
+        gui_export.ExportDialog,
+        "_on_video_note",
+        lambda self, g, note: (answered.append(note), real(self, g, note)),
+    )
+    subject = ExportSubject("experiment", proj.dir)
+    dialog = gui_export.ExportDialog(
+        subject, exporters.targets_for(subject), None, only=("bundle",)
+    )
+    dialog._bundle_video.setChecked(True)
+    dialog._estimate_timer.stop()
+    dialog._start_estimate()
+    waits.until(qapp, lambda: answered, "the bundle's video note")
+    return dialog, answered
+
+
+def test_export_dialog_says_when_source_video_would_pack_none(
+    qapp, tmp_path, monkeypatch
+):
+    """`experiment export --include-video` prints why it packed no video (#29); the dialog
+    says it, in the same words, while Source video is ticked."""
+    proj = _experiment(tmp_path)
+    (copied,) = (proj.dir / "recordings").rglob("*.mp4")
+    copied.unlink()  # what an experiment imported without its video holds
+
+    dialog, answered = _bundle_dialog(qapp, proj, monkeypatch)
+
+    assert not dialog._bundle_video_note.isHidden()
+    assert dialog._bundle_video_note.text() == (
+        "No video will be packed: 1 recording(s) have no video on this machine (put it "
+        "back with Locate video, or `detail recording relink`)."
+    )
+
+
+def test_export_dialog_says_nothing_when_source_video_has_video_to_pack(
+    qapp, tmp_path, monkeypatch
+):
+    proj = _experiment(tmp_path)
+
+    dialog, answered = _bundle_dialog(qapp, proj, monkeypatch)
+
+    assert answered == [None]
+    assert dialog._bundle_video_note.isHidden()

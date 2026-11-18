@@ -216,11 +216,27 @@ table, see the [Parameters reference](reference/parameters.md).
   (relink it), a content change reports changed (remove and re-add). Exits non-zero if
   anything is wrong. A recording with no video yet says so and exits 0. Runs are gated on the
   same check, so a bad referenced video fails the run before it starts.
-- `relink --experiment <dir> --recording <id> --part <N> --video <file>`: point a referenced
-  part at a moved/renamed file. Accepted only if the file's content matches what was recorded
-  (a mismatch is a changed video → remove and re-add). For a whole moved library, re-point the
-  [video root](#video-root) instead. On an experiment made on another computer, relinking one
-  file registers its video root here, so every recording under that root finds its video too.
+- `relink --experiment <dir> --recording <id> --part <N> [--video <file>]`: point a part at
+  its video file.
+    - A **referenced** part: point it at its moved or renamed file. Accepted only if the file's
+      content matches what was recorded (a mismatch is a changed video → remove and re-add). For
+      a whole moved library, re-point the [video root](#video-root) instead. On an experiment
+      made on another computer, relinking one file registers its video root here, so every
+      recording under that root finds its video too.
+    - A **copied** part whose video is not on this computer (an experiment
+      [imported without its video](#moving-experiments-between-machines)): the file is copied
+      back in. It is accepted only if its frame times match the recorded part's exactly (the
+      same number of frames, each at the same time) and its resolution matches; the error says
+      what differs. A part copied in by this version also has to have the same content. Without
+      `--video` it uses the file the part was copied from, when that is still on this computer.
+      It shows a bar while it checks and copies. A copied part whose video is here is refused:
+      there is nothing to put back.
+
+    ```
+    detail recording relink --experiment study_copy --recording m1 --part 0
+    #   using the file it was copied from: /Users/you/raw/m1.mp4
+    #   put back m1 part 0: copied in from /Users/you/raw/m1.mp4
+    ```
 - `add-stream …`: import an aligned time-series
   (see [Streams](#importing-event-streams-med-pc)).
 - `import --experiment <dir> --bundle <folder> [--dry-run]`: bulk-import many
@@ -1948,12 +1964,26 @@ On import, `--replace` replaces a same-id experiment and `--name <new>` lands a 
 
 ```
 replacing experiment 'study' deletes what the bundle does not bring back:
-  - 3 video file(s), 4.2 GB: the bundle carries no video
+  - 3 video file(s), 4.2 GB: the bundle carries no video (it can be put back from the original files with Locate video, or `detail recording relink`)
   - 1 export record(s), export_01: no bundle carries them (the exported files themselves are not touched)
 imported: /Users/you/Documents/DetailExperiments/study
 ```
 
 Without `--replace`, an import onto an existing experiment stops and shows the same list under "--replace would also delete". To keep the video, import with `--name <new>` instead, or export with `--include-video`.
+
+**Putting the video back.** An experiment imported without its video keeps every recording's
+timestamps, so its copied video can be put back from the original files: `detail recording relink
+--recording <name> --part <N>` copies a file back in when its frame times match the recorded
+part's exactly (see [`recording relink`](#recording)). Until then `--include-video` has nothing
+of those recordings to pack, and the export says so rather than printing only `exported:`:
+
+```
+exported: study.segproj.tar
+no video was packed: 2 recording(s) have no video on this machine (put it back with Locate video, or `detail recording relink`)
+```
+
+Recordings whose video is used in place are named the same way: that video never travels in an
+archive.
 
 Both commands show a progress bar on stderr, relabelled as the work moves through
 its phases: export goes `scanning` → `checking` → `hashing` → `packing`, import
@@ -1966,7 +1996,8 @@ renamed when it is complete, so a stopped export never leaves a file that looks
 finished. A video-excluded import is
 fully analysis-ready (embeddings, tracking re-tuning, metadata); the
 frame-preview surfaces show "source video not in this export", and the clip
-picker refuses to mark example clips until the video is on this machine.
+picker refuses to mark example clips until the video is on this machine
+(put it back with `recording relink`, above).
 
 Video that was referenced in place never travels in the archive, but the
 archive records which folder each [video root](#video-root) was on the

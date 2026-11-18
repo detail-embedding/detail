@@ -41,7 +41,9 @@ Click **Recordings** in the list on the left, then double-click a recording's ro
     6. **Add video part**: adds another video file to this recording, for a session saved as
        several files. The parts play in order, as one video.
     7. **Locate video**: for a video referenced in place that has moved, points the
-       recording at its new location. It is greyed out while the video is where it was.
+       recording at its new location. For a copied video that is not on this computer, as
+       after importing an experiment without its video, copies the original file back in.
+       It is greyed out while the video is where it should be.
     8. **Move up**: moves the selected video part earlier. It locks once anything has run
        on the recording.
     9. **Move down**: moves the selected video part later. It locks the same way.

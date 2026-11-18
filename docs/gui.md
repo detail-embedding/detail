@@ -322,7 +322,7 @@ Every recording-level input lives here (run outputs are read-only). The top show
 
 **DATA PIPELINE**
 
-- **Video**: the imported part(s) and their on-disk location. **Add video part** opens the same reference-in-place checkbox as Add recordings. For a **referenced** video the location is the resolved external path; if it moved or changed, a status line flags it and **Locate video** points the part at its new file (accepted only if the content matches: a changed video means remove and re-add). You can move or rename the file while its recording page is open: the app lets go of a video a couple of seconds after it last showed a frame from it. On an experiment made on another computer, locating one video is enough: every recording whose videos are in the same folder finds them too. (Importing an experiment already looks where the exporting computer kept the video, so this is only needed when that folder isn't reachable from this computer under the same path.) A changed/missing referenced video also flags the runs below as possibly stale. **Move up** / **Move down** move the selected part one place, and are locked once anything has run against them. The parts table lists the parts in play order and does not sort when you click a column header, so the order you see is always the recording's order.
+- **Video**: the imported part(s) and their on-disk location. **Add video part** opens the same reference-in-place checkbox as Add recordings. For a **referenced** video the location is the resolved external path; if it moved or changed, a status line flags it and **Locate video** points the part at its new file (accepted only if the content matches: a changed video means remove and re-add). For a **copied** video that is not on this computer (an experiment imported without its video), the status line says so and **Locate video** copies the original file back in. It offers the file the video was copied from when that is still on this computer, and accepts a file only if its frame times match the recorded part's exactly (the same number of frames, each at the same time) and its resolution matches; a video copied in by this version also has to have the same content. A bar with **Cancel** shows while it checks and copies, and a cancelled copy leaves nothing behind. You can move or rename the file while its recording page is open: the app lets go of a video a couple of seconds after it last showed a frame from it. On an experiment made on another computer, locating one video is enough: every recording whose videos are in the same folder finds them too. (Importing an experiment already looks where the exporting computer kept the video, so this is only needed when that folder isn't reachable from this computer under the same path.) A changed/missing referenced video also flags the runs below as possibly stale. **Move up** / **Move down** move the selected part one place, and are locked once anything has run against them. The parts table lists the parts in play order and does not sort when you click a column header, so the order you see is always the recording's order.
 - **Scene geometry**: one section for the four things you draw on a frame.
     - The **field of view**, a polygon that [bounds detection and tracking](concepts.md#field-of-view).
     - The **distance calibration**: two points a known distance apart, giving
@@ -1163,7 +1163,13 @@ The same catalogue is on the command line as `detail export`, see the
   and **Cancel**. Importing onto an experiment of the same name asks whether to replace it, and
   first lists what replacing deletes that the archive does not bring back (a slim archive's
   video files, with their count and size, and datasets; export records; earlier archives in the
-  folder). Choose **No** and import a copy under another name if you want to keep them.
+  folder). Choose **No** and import a copy under another name if you want to keep them. Video
+  deleted this way can be put back from the original files with **Locate video** on each
+  recording's page.
+- **Source video that would pack nothing says so.** With **Source video** ticked, the Export
+  dialog says "No video will be packed" and why when no recording has video to pack here: their
+  copied video is not on this computer (put it back with **Locate video**), or their video is
+  used in place, which never travels in an archive.
 - **Gzip is rarely worth ticking.** DETAIL's data files are compressed already, so it barely shrinks the bundle and makes the export much slower.
 - **Video used in place is found again.** When a recording's video was used where it was (not
   copied), the archive notes which folder it was in on the computer that exported it. Importing

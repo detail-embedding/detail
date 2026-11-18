@@ -1063,6 +1063,16 @@ def experiment_export(
         click.echo(
             f"left out {folder}: it is a symlinked folder, which is not followed"
         )
+    _echo_no_video_packed(experiment_dir, contents)
+
+
+def _echo_no_video_packed(experiment_dir: Path, contents: dict) -> None:
+    """Say so when a bundle asked for video packed none (#29): it used to print only
+    ``exported:``, and the manifest's ``video_requested: true`` was the only trace."""
+    from detail.api.experiment import no_video_packed_reasons
+
+    if contents.get("video_requested") and not contents.get("video_included"):
+        click.echo(f"no video was packed: {no_video_packed_reasons(experiment_dir)}")
 
 
 @experiment.command("import")
@@ -1440,27 +1450,55 @@ def recording_verify(experiment_dir: Path, recording_id: str) -> None:
 @click.option(
     "--video",
     "video_path",
-    required=True,
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    help="New location of the moved video (content must match).",
+    help="The video file. For a copied part, defaults to the file it was copied from "
+    "when that is on this machine.",
 )
 def recording_relink(
-    experiment_dir: Path, recording_id: str, part_index: int, video_path: Path
+    experiment_dir: Path, recording_id: str, part_index: int, video_path: Path | None
 ) -> None:
-    """Point a referenced video part at a moved/renamed file (verified by fingerprint).
+    """Point a video part at its file: a moved referenced video, or a copied one to put back.
 
-    For a whole moved library, re-point the root instead (`detail video-root set`). If the
-    part's video root is not registered on this machine, relinking one file registers it,
-    which relinks every recording under that root.
+    A referenced part is pointed at its moved or renamed file, accepted only if its content
+    matches what was recorded. For a whole moved library, re-point the root instead (`detail
+    video-root set`). If the part's video root is not registered on this machine, relinking
+    one file registers it, which relinks every recording under that root.
+
+    A copied part whose video is not here (an experiment imported without its video) gets the
+    file copied back in, accepted only if its frame times and resolution match the recorded
+    part's exactly. Without --video it uses the file the part was copied from, when that is
+    on this machine. Shows a bar while it checks and copies.
     """
     proj = _open_experiment(experiment_dir)
+    rec = _recording(proj, recording_id)
+    part = next((p for p in rec.parts_to_locate() if p.index == part_index), None)
+    copied = part is not None and part.copied
+    if video_path is None:
+        if part is not None and part.copied_from is not None:
+            video_path = part.copied_from
+            click.echo(f"using the file it was copied from: {video_path}")
+        else:
+            raise click.ClickException(
+                "--video is required: "
+                + (
+                    "the file this part was copied from is not on this machine"
+                    if copied
+                    else "name the video file to point this part at"
+                )
+            )
+    bar = _StageProgress()
     try:
-        registered = _recording(proj, recording_id).relink_video_part(
-            part_index, video_path
-        )
+        registered = rec.relink_video_part(part_index, video_path, progress=bar)
     except (FileNotFoundError, IndexError, ValueError) as e:
         raise click.ClickException(str(e))
-    click.echo(f"relinked {recording_id} part {part_index} -> {video_path}")
+    finally:
+        bar.close()
+    if copied:
+        click.echo(
+            f"put back {recording_id} part {part_index}: copied in from {video_path}"
+        )
+    else:
+        click.echo(f"relinked {recording_id} part {part_index} -> {video_path}")
     if registered is not None:
         from detail.storage import video_roots
 

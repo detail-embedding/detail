@@ -486,6 +486,48 @@ def referenced_video_recordings(experiment_dir: Path | str) -> list[str]:
     return [d.name for d, _data, _parts in _referenced_recordings(Path(experiment_dir))]
 
 
+def copied_video_missing_recordings(experiment_dir: Path | str) -> list[str]:
+    """Recordings with a **copied** part whose file is not in the experiment.
+
+    An experiment imported from a bundle without its video keeps each copied part's entry and
+    timestamps but not the file, so a later export with ``include_video`` has nothing of theirs
+    to pack until the video is put back (`Recording.relink_video_part`). Named so a surface can
+    say why an export that asked for video packed none (#29).
+    """
+    from detail.storage import recording as recording_store
+
+    recordings_dir = Path(experiment_dir) / "recordings"
+    if not recordings_dir.is_dir():
+        return []
+    out = []
+    for directory in sorted(p for p in recordings_dir.iterdir() if p.is_dir()):
+        try:
+            data = recording_store.read_recording(directory)
+        except (FileNotFoundError, ValueError):
+            continue
+        files = (data.get("video") or {}).get("files", [])
+        if any(
+            part.get("source") is None
+            and part.get("file")
+            and not (directory / part["file"]).is_file()
+            for part in files
+        ):
+            out.append(directory.name)
+    return out
+
+
+def packs_video(experiment_dir: Path | str) -> bool:
+    """Whether a bundle with ``include_video`` would pack any video: the export's own walk and
+    rule (`_included_files`, the manifest's ``video_included``), asked before exporting.
+    """
+    return any(
+        Path(rel).suffix.lower() in _VIDEO_SUFFIXES
+        for rel in _included_files(
+            Path(experiment_dir), include_video=True, include_datasets=False
+        )
+    )
+
+
 def _video_root_locations(experiment_dir: Path) -> dict[str, str]:
     """Where this machine keeps each video root the experiment's recordings name.
 

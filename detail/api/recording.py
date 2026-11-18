@@ -8,7 +8,9 @@ record the run in ``recording.yaml``.
 
 import contextlib
 import shutil
+import uuid
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -17,6 +19,7 @@ from pydantic import ValidationError as PydanticValidationError
 
 
 from detail.api._runner_modules import PIPELINE_RUNNERS as _PIPELINE_RUNNERS
+from detail.core import atomic
 from detail.core.dataclasses import (
     ComputeTarget,
     JobStatus,
@@ -160,6 +163,42 @@ def _relink_root(path: Path, source: dict) -> tuple[str, str, str | None]:
     root_dir = video_roots.video_root(chosen).resolve()
     new_alias = chosen if chosen not in registered else None
     return chosen, resolved.relative_to(root_dir).as_posix(), new_alias
+
+
+@dataclass(frozen=True)
+class LocatablePart:
+    """A video part Locate video can act on (`Recording.parts_to_locate`).
+
+    ``index`` is the part's position, what `Recording.relink_video_part` takes. A copied part
+    is listed only while its file is missing, and ``copied_from`` is the file it was copied
+    from when that is on this machine: Locate offers it first. ``origin_name`` is that file's
+    name whether or not it is here, so a surface can say which file to look for.
+    """
+
+    index: int
+    stem: str
+    copied: bool
+    copied_from: Path | None = None
+    origin_name: str = ""
+
+
+def _copied_from(origin: dict | None) -> Path | None:
+    """A copied part's ``origin`` as a file on this machine, or ``None``.
+
+    ``None`` when the part predates origins, its root is not registered here (an experiment
+    from another computer), or nothing is at that path any more. Offered, never trusted: the
+    put-back checks the file like any other.
+    """
+    if not origin:
+        return None
+    try:
+        path = video_roots.resolve_video_ref(origin)
+    except video_roots.MissingVideoRootError:
+        return None
+    try:
+        return path if path.is_file() else None
+    except OSError:  # a share this machine cannot reach offers nothing
+        return None
 
 
 class _RecordedRun(RunHandle):
@@ -423,6 +462,10 @@ class Recording:
                 "root": origin_root,
                 "rel": src.resolve().relative_to(origin_dir.resolve()).as_posix(),
             }
+            # The copy's own fingerprint, in the shape a referenced part records: what
+            # putting the video back after a slim import checks a candidate file against
+            # (`relink_video_part`). Taken from the copy, which is the file the tool holds.
+            entry["fingerprint"] = integrity.file_fingerprint(dest)
         video["files"].append(entry)
         video["total_duration_s"] += duration_s
         data["video"] = video
@@ -437,25 +480,46 @@ class Recording:
         data = recording_store.read_recording(self.dir)
         return video_integrity.validate_source_videos(self.dir, data)
 
-    def relink_video_part(self, part_index: int, new_path: Path | str) -> str | None:
-        """Point a referenced video part at a moved/renamed file, verified by fingerprint.
+    def relink_video_part(
+        self,
+        part_index: int,
+        new_path: Path | str,
+        progress: Callable[[str, float, str], None] | None = None,
+    ) -> str | None:
+        """Point a part at its video file again: Locate video, and ``recording relink``.
 
-        Only a reference part can be relinked (a copied part's file is managed by the tool). The
-        new file's content fingerprint must match what was recorded — a mismatch means the
+        **A referenced part** is pointed at a moved or renamed file, verified by fingerprint:
+        the new file's content fingerprint must match what was recorded. A mismatch means the
         content *changed*, not just moved, and is refused (remove and re-add the recording
         instead). The new path need not be under a registered video root: one is registered
         for it, the way an import does. When the part's own root is not registered on this
         machine (an experiment made elsewhere) and the file sits where that root would put it,
         the root itself is registered, so every other recording referencing it resolves too.
 
+        **A copied part whose file is missing** (an experiment imported from a bundle without
+        its video, or replaced by one) has the file **copied back in** to its
+        ``video/part_NNN.mp4``; the part stays a copied part. The file is accepted only if
+        its frame times match the part's recorded timestamp map exactly (count and every
+        ``t_ns``, both re-based to start at 0) and its resolution matches the recording's,
+        and, for a part that recorded a fingerprint, only if that matches too. The copy goes
+        to a sibling temporary file moved into place when complete, so a cancel (``progress``
+        raising) leaves no half file. A copied part whose file is present is refused: there
+        is nothing to put back.
+
+        ``progress(stage, fraction, detail)`` reports a put-back's two long steps,
+        :data:`STAGE_TIMESTAMPS` then :data:`STAGE_COPYING`. A referenced relink reads two
+        MiB and reports nothing.
+
         Returns:
             The video-root alias this call registered on this machine, or ``None`` if it
-            used one that was already registered.
+            used one that was already registered (always ``None`` for a copied part).
 
         Raises:
             FileNotFoundError: ``new_path`` is not a file.
             IndexError: ``part_index`` is out of range.
-            ValueError: the part is copied (not referenced) or the content differs.
+            ValueError: the content differs from a referenced part's.
+            UserInputError: a copied part's video is already here, or the file is not that
+                part's video (it names what differs).
         """
         new = Path(new_path)
         if not new.is_file():
@@ -466,9 +530,8 @@ class Recording:
             raise IndexError(f"part_index {part_index} out of range [0, {len(files)})")
         part = files[part_index]
         if part.get("source") is None:
-            raise ValueError(
-                f"part {part_index} is a copied part, not referenced — nothing to relink"
-            )
+            self._put_back_copied_part(part_index, data, new, progress)
+            return None
         current = integrity.file_fingerprint(new)
         if not integrity.same_content(current, part.get("fingerprint")):
             raise ValueError(
@@ -480,6 +543,105 @@ class Recording:
         part["fingerprint"] = current  # a moved/renamed file may have a fresh mtime
         recording_store.write_recording(self.dir, data)
         return registered
+
+    def _put_back_copied_part(
+        self,
+        part_index: int,
+        data: dict,
+        new: Path,
+        progress: Callable[[str, float, str], None] | None,
+    ) -> None:
+        """Copy ``new`` in as copied part ``part_index``'s missing file (`relink_video_part`)."""
+        part = data["video"]["files"][part_index]
+        stem = recording_store.part_stem(part)
+        dest = self.dir / part["file"]
+        if dest.is_file():
+            raise UserInputError(
+                f"part {part_index} ({stem}) is a copied part and its video is already "
+                f"here ({dest}): there is nothing to put back"
+            )
+        wrong = f"{new} is not the video of part {part_index} ({stem})"
+        recorded = part.get("fingerprint")
+        if recorded and not integrity.same_content(
+            integrity.file_fingerprint(new), recorded
+        ):
+            raise UserInputError(
+                f"{wrong}: its content differs from the file that was copied in"
+            )
+        try:
+            probe = video_store.probe_video(new)
+        except (OSError, ValueError) as exc:
+            raise UserInputError(f"{wrong}: it cannot be read as a video ({exc})")
+        on_timestamps = (
+            (lambda f: progress(STAGE_TIMESTAMPS, f, ""))
+            if progress is not None
+            else None
+        )
+        candidate = video_store.generate_timestamps(
+            new, probe["fps"], progress=on_timestamps
+        )
+        stored = recording_store.TimestampMap.from_csv(
+            self.dir / part["timestamps"]["generated"]
+        )
+        differs = video_integrity.part_video_mismatch(
+            stored.values,
+            candidate,
+            recorded_resolution=data["video"].get("resolution"),
+            resolution=probe["resolution"],
+        )
+        if differs is not None:
+            raise UserInputError(f"{wrong}: {differs}")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        staging = dest.with_name(f"{dest.name}.{uuid.uuid4().hex}.tmp")
+        on_bytes = (
+            (
+                lambda d, t: progress(
+                    STAGE_COPYING, d / t if t else 1.0, _size_label(d, t)
+                )
+            )
+            if progress is not None
+            else None
+        )
+        try:
+            video_store.copy_with_progress(new, staging, progress=on_bytes)
+            atomic.replace(staging, dest)
+        except BaseException:
+            # A cancel raises out of the progress callback mid-copy; nothing half-copied stays.
+            staging.unlink(missing_ok=True)
+            raise
+        # Re-read: the copy can take minutes, and the recording may have been edited meanwhile.
+        fresh = recording_store.read_recording(self.dir)
+        for entry in fresh["video"]["files"]:
+            if entry.get("id") == part.get("id") and entry.get("file") == part["file"]:
+                entry["fingerprint"] = integrity.file_fingerprint(dest)
+        recording_store.write_recording(self.dir, fresh)
+
+    def parts_to_locate(self) -> list["LocatablePart"]:
+        """The parts Locate video can act on: every referenced part, and each copied part
+        whose file is not here, with the file it was copied from when that is on this machine.
+
+        Reads the recording's parts, a ``stat`` per copied part, and resolves each missing
+        copied part's ``origin``, which can be a network share: call it off the UI thread.
+        """
+        data = recording_store.read_recording(self.dir)
+        out = []
+        for position, part in enumerate(recording_store.video_files(data)):
+            stem = recording_store.part_stem(part)
+            if part.get("source") is not None:
+                out.append(LocatablePart(position, stem, copied=False))
+                continue
+            if (self.dir / part["file"]).is_file():
+                continue
+            out.append(
+                LocatablePart(
+                    position,
+                    stem,
+                    copied=True,
+                    copied_from=_copied_from(part.get("origin")),
+                    origin_name=Path((part.get("origin") or {}).get("rel", "")).name,
+                )
+            )
+        return out
 
     def define_arena(
         self,
