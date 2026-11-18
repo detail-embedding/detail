@@ -1,7 +1,7 @@
 """Credential resolution and storage (Section 1, Tenet 14).
 
 The Hugging Face token (and future provider secrets) live in the machine-local
-credentials file or environment — never in a experiment file. ``huggingface_hub``
+credentials file or environment — never in an experiment file. ``huggingface_hub``
 is imported lazily so importing this module pulls in no backend; the login
 fallback degrades to ``None`` when it is absent.
 

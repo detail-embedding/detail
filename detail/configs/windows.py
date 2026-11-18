@@ -10,6 +10,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from detail.core.errors import UserInputError
+
 _NS_PER_S = 1_000_000_000
 
 
@@ -56,21 +58,61 @@ class WindowSpec(BaseModel):
         json_schema_extra={"label": "Step", "unit": "s", "ui_max": 86_400.0},
     )
 
-    def windows_for(self, start_t_ns: int, end_t_ns: int):
-        """This spec resolved against one recording's span — seconds converted here."""
+    def windows_for(
+        self, start_t_ns: int, end_t_ns: int, *, frame_ns: int | None = None
+    ):
+        """This spec resolved against one recording's span — seconds converted here.
+
+        ``frame_ns`` is the recording's frame period, when known: a tile, window or step shorter
+        than one frame holds no frame of its own, so it is refused in seconds, naming the frame
+        rate, rather than as the nanosecond count it truncated to.
+
+        Raises:
+            UserInputError: A duration shorter than one frame (or than a nanosecond).
+        """
         from detail.analysis import windows as windows_mod
 
         if self.kind == "whole":
             return windows_mod.whole(start_t_ns, end_t_ns)
         if self.kind == "absolute":
             return windows_mod.absolute(
-                start_t_ns, end_t_ns, every_ns=int(self.every_s * _NS_PER_S)
+                start_t_ns, end_t_ns, every_ns=self._duration_ns("every_s", frame_ns)
             )
         if self.kind == "normalized":
             return windows_mod.normalized(start_t_ns, end_t_ns, parts=self.parts)
         return windows_mod.sliding(
             start_t_ns,
             end_t_ns,
-            length_ns=int(self.length_s * _NS_PER_S),
-            step_ns=int(self.step_s * _NS_PER_S),
+            length_ns=self._duration_ns("length_s", frame_ns),
+            step_ns=self._duration_ns("step_s", frame_ns),
+        )
+
+    def windows_for_coverage(self, coverage):
+        """:meth:`windows_for` over one coverage row, its frame period taken from the row."""
+        frame_ns = (
+            coverage.observed_ns // coverage.n_observed
+            if coverage.n_observed > 0
+            else None
+        )
+        return self.windows_for(
+            coverage.start_t_ns, coverage.end_t_ns, frame_ns=frame_ns or None
+        )
+
+    def _duration_ns(self, field: str, frame_ns: int | None) -> int:
+        """``field`` (seconds) in ns, refused when it is shorter than one frame."""
+        seconds = getattr(self, field)
+        ns = int(seconds * _NS_PER_S)
+        floor = frame_ns if frame_ns else 1
+        if ns >= floor:
+            return ns
+        label = type(self).model_fields[field].json_schema_extra["label"]
+        flag = "--" + field.removesuffix("_s")
+        if frame_ns:
+            frame_s = frame_ns / _NS_PER_S
+            raise UserInputError(
+                f"{label} ({flag}) {seconds:g} s is shorter than one frame of this recording "
+                f"({frame_s:.3f} s at {1 / frame_s:.0f} fps); use at least {frame_s:.3f} s"
+            )
+        raise UserInputError(
+            f"{label} ({flag}) {seconds:g} s is shorter than a nanosecond; use a longer one"
         )

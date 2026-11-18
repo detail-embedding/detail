@@ -2764,7 +2764,7 @@ class Experiment:
 
     def delete(self) -> None:
         """Delete the whole experiment directory — every recording, run, model, and
-        dataset it owns. Nothing outside a experiment depends on it, so this is
+        dataset it owns. Nothing outside an experiment depends on it, so this is
         never blocked (the cohesive delete strategy, gui_design §1.1). The
         ``Experiment`` instance is dead afterwards.
 
@@ -4696,7 +4696,7 @@ class Experiment:
         return analysis_store.analysis_dir(self._dir, run_id)
 
     def run_analysis(self, module_id: str, config: dict) -> AnalysisRun:
-        """Launch a experiment-scoped analysis run (§16): one module over a selection
+        """Launch an experiment-scoped analysis run (§16): one module over a selection
         of recordings, producing artifacts in ``analysis/<run_id>/``. A single
         executor job (not a per-recording fan-out). Returns a run handle.
 
