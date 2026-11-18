@@ -148,6 +148,45 @@ class _RecordingSteps:
             self._progress(self._stage, 1.0, f"{self._total}/{self._total}")
 
 
+def _named(ids: Sequence[str], limit: int = 5) -> str:
+    shown = ", ".join(ids[:limit])
+    return shown + (f" and {len(ids) - limit} more" if len(ids) > limit else "")
+
+
+def replace_warning(losses: "export_store.ReplaceLosses") -> list[str]:
+    """One line per kind of thing a replace deletes for good, empty when it deletes nothing the
+    bundle does not bring back (`export_store.replace_losses`).
+
+    The one wording: the GUI's Replace prompt and ``experiment import --replace`` each render
+    these lines, so the two cannot describe the same replace differently.
+    """
+    from detail.api.exporters import format_size
+
+    lines = []
+    if losses.video_files:
+        lines.append(
+            f"{losses.video_files} video file(s), {format_size(losses.video_bytes)}: "
+            "the bundle carries no video"
+        )
+    if losses.datasets:
+        lines.append(
+            f"{len(losses.datasets)} dataset(s), {_named(losses.datasets)}: "
+            "the bundle carries no datasets"
+        )
+    if losses.export_records:
+        lines.append(
+            f"{len(losses.export_records)} export record(s), "
+            f"{_named(losses.export_records)}: no bundle carries them "
+            "(the exported files themselves are not touched)"
+        )
+    if losses.archives:
+        lines.append(
+            f"{len(losses.archives)} earlier archive(s) saved in the experiment folder, "
+            f"{_named(losses.archives)}"
+        )
+    return lines
+
+
 def _with_model_defaults(module, config: dict) -> dict:
     """``config`` plus the module model's default for every setting the caller omitted.
 
@@ -1569,6 +1608,26 @@ class Experiment:
             progress=progress,
         )
         return cls(dest)
+
+    @staticmethod
+    def replace_losses(
+        archive: Path | str, *, name: str | None = None
+    ) -> "export_store.ReplaceLosses | None":
+        """What importing ``archive`` with ``replace=True`` would delete and not bring back, or
+        ``None`` when there is no experiment to replace.
+
+        The same answer an import without ``replace`` carries on its refusal
+        (`export_store.ExperimentExistsError.losses`); `replace_warning` words it. Walks the
+        existing experiment, so a surface calls it off the UI thread.
+
+        Raises:
+            ValueError: ``archive`` is not a DETAIL export, or ``name`` is not a bare name.
+        """
+        manifest = export_store.read_manifest(archive)
+        dest = export_store.import_target(locations.experiments_root(), manifest, name)
+        if not dest.exists():
+            return None
+        return export_store.replace_losses(manifest, dest)
 
     def export(
         self,

@@ -476,7 +476,9 @@ def part_stem(part: dict) -> str:
     return Path(part["file"]).stem
 
 
-def resolve_part_video_path(recording_dir: Path | str, part: dict) -> Path:
+def resolve_part_video_path(
+    recording_dir: Path | str, part: dict, *, verify: bool = True
+) -> Path:
     """The absolute path to a part's video file.
 
     A **copied** part stores a recording-relative ``file`` (joined onto the recording dir); a
@@ -484,12 +486,37 @@ def resolve_part_video_path(recording_dir: Path | str, part: dict) -> Path:
     machine-local video-root registry. Every video reader (the run workers, previews, the
     presence gate) goes through here so reference mode is transparent to them. Does not check the
     file exists — that is the caller's presence check.
+
+    **A referenced file that is there is checked against its recorded fingerprint**, and
+    `video_roots.VideoNotRecordedError` raised when it differs. A root alias resolves by name,
+    and a name this machine already uses for another folder can hold a different video at the
+    same relative path, which every reader used to open: previews, frame reads and clip exports
+    showed another animal against this recording's timestamps. The run gate
+    (`video_integrity.validate_source_videos`) always checked; the readers trusted presence.
+    The fingerprint is cached per state of the file (`integrity.cached_fingerprint`), so a
+    reader resolving on every frame pays a ``stat``. ``verify=False`` is for a caller that only
+    shows the path, or that makes the comparison itself.
     """
     source = part.get("source")
     if source is not None:
+        from detail.storage import integrity
         from detail.storage import video_roots
 
-        return video_roots.resolve_video_ref(source)
+        path = video_roots.resolve_video_ref(source)
+        recorded = part.get("fingerprint")
+        if verify and recorded:
+            try:
+                current = integrity.cached_fingerprint(path)
+            except FileNotFoundError:
+                return path
+            if not integrity.same_content(current, recorded):
+                raise video_roots.VideoNotRecordedError(
+                    f"{path} is not the video recorded for part {part_stem(part)!r}: its "
+                    "content differs. If the video moved, point the part at it with "
+                    "`detail recording relink` (Locate video in the app); if it was edited, "
+                    "remove and re-add the recording."
+                )
+        return path
     return Path(recording_dir) / part["file"]
 
 
