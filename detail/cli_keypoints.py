@@ -18,6 +18,7 @@ import click
 from detail.api.keypoint_distill import DEFAULT_POSE_BASE
 from detail.cli_numbers import FINITE_FLOAT
 from detail.cli_numbers import finite_float_range
+from detail.cli_paths import UserPath
 from detail.configs.keypoint_dataset import KeypointDatasetConfig
 from detail.configs.keypoint_detect import KeypointDetectConfig
 from detail.configs.keypoint_track import METHOD_CONFIGS, KeypointTrackConfig
@@ -27,7 +28,7 @@ _EXPERIMENT_OPT = click.option(
     "--experiment",
     "experiment_dir",
     required=True,
-    type=click.Path(file_okay=False, path_type=Path),
+    type=UserPath(file_okay=False, path_type=Path),
     help="Experiment directory.",
 )
 _RECOVERABLE = (ValueError, FileNotFoundError, KeyError, IndexError)
@@ -267,7 +268,7 @@ def examples_show(experiment_dir: Path, set_id: str) -> None:
 
 @examples.command("import")
 @_EXPERIMENT_OPT
-@click.argument("path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("path", type=UserPath(exists=True, dir_okay=False, path_type=Path))
 def examples_import(experiment_dir: Path, path: Path) -> None:
     """Import a prepared set (an examples.yaml with its frame images beside it) or a bare
     skeleton file (names, edges, pairs), which becomes an empty set."""
@@ -325,7 +326,7 @@ def examples_duplicate(experiment_dir: Path, set_id: str, name: str | None) -> N
     "--out",
     "out_dir",
     required=True,
-    type=click.Path(file_okay=False, path_type=Path),
+    type=UserPath(file_okay=False, path_type=Path),
     help="An empty folder to write examples.yaml and its frame images into.",
 )
 def examples_export(experiment_dir: Path, set_id: str, out_dir: Path) -> None:
@@ -1267,7 +1268,7 @@ def dataset_keypoints(
     "--out",
     "out_dir",
     required=True,
-    type=click.Path(file_okay=False, path_type=Path),
+    type=UserPath(file_okay=False, path_type=Path),
     help="Where to put the export folder. The folder itself is named for you.",
 )
 @click.option(

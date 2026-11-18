@@ -10,16 +10,22 @@ that already have video:
 
 Paths resolve relative to the manifest's folder (or absolute). Validation is upfront
 and exhaustive (Tenet 10): every recording must exist and every file must resolve before
-anything is imported. Distinct from the bundle manifest (``storage/manifest.py``),
-which *creates* recordings; this one *adds to* existing ones.
+anything is imported. A key it does not take (``covered:`` for ``covered_behaviors:``) is
+refused, and so is a recording listed twice (the shared YAML reader refuses a repeated key):
+ignored, either one imported something other than what the file says (#31). Distinct from
+the bundle manifest (``storage/manifest.py``), which *creates* recordings; this one *adds to*
+existing ones.
 """
 
 from pathlib import Path
 
 from detail.core.errors import UserInputError
 from detail.storage.user_yaml import read_user_yaml
+from detail.storage.user_yaml import refuse_unknown_keys
 
 SCHEMA_VERSION = 1
+_KEYS = ("schema_version", "labels")
+_ENTRY_KEYS = ("file", "covered_behaviors")
 
 
 def load_labels_manifest(path: Path | str) -> dict:
@@ -27,7 +33,8 @@ def load_labels_manifest(path: Path | str) -> dict:
 
     Raises:
         FileNotFoundError: If the file is absent.
-        ValueError: If it is not a ``schema_version: 1`` mapping with a ``labels`` map.
+        ValueError: If it is not a ``schema_version: 1`` mapping with a ``labels`` map, or
+            has a key it does not take.
     """
     path = Path(path)
     if not path.is_file():
@@ -42,6 +49,7 @@ def load_labels_manifest(path: Path | str) -> dict:
             f"labels manifest schema_version must be {SCHEMA_VERSION}, got "
             f"{data.get('schema_version')!r}"
         )
+    refuse_unknown_keys(data, _KEYS, path, "a labels manifest")
     return data
 
 
@@ -53,7 +61,8 @@ def resolve_labels_manifest(
     Each ``labels`` value is either a filename, or a mapping ``{file,
     covered_behaviors}`` that also declares the recording's scored-behavior vocabulary
     (§3). Every problem is collected and reported together (Tenet 10): a recording id
-    not in the experiment, a value missing its ``file``, or a file that does not resolve.
+    not in the experiment, a value missing its ``file``, a mapping with a key it does not
+    take, or a file that does not resolve.
 
     Raises:
         ValueError: If any recording is unknown, malformed, or any file is missing.
@@ -64,6 +73,12 @@ def resolve_labels_manifest(
     errors: list[str] = []
     for sid, entry in manifest["labels"].items():
         if isinstance(entry, dict):
+            unknown = [k for k in entry if k not in _ENTRY_KEYS]
+            if unknown:
+                errors.append(
+                    f"labels[{sid!r}]: unknown key(s) {', '.join(map(repr, unknown))}; "
+                    f"a mapping takes {', '.join(_ENTRY_KEYS)}"
+                )
             file_str = entry.get("file")
             covered = entry.get("covered_behaviors")
         else:

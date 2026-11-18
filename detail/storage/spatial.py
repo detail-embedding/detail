@@ -217,6 +217,18 @@ def next_id(recording_dir: Path | str, kind: str) -> str:
     return id_allocator.claim(recording_dir, k.id_prefix, digits=3, taken=taken)
 
 
+def stored_name(name: str) -> str:
+    """A definition's name as it is stored: without spaces at either end.
+
+    The one rule both directions share. The GUI always stripped, the API stored what it
+    was given, and the CSV import stripped, so a region named ``" padded "`` through the API
+    exported with its spaces and came back as a different name (#31). The CSV reader refuses
+    such a name instead of stripping it, because there a padded name is a typing mistake
+    that can collide with another row's.
+    """
+    return str(name).strip()
+
+
 def append_to_manifest(
     recording_dir: Path | str,
     kind: str,
@@ -236,6 +248,7 @@ def append_to_manifest(
             (arenas), or the active interval is malformed.
     """
     k = _kind(kind)
+    name = stored_name(name)
     if not name:
         raise ValueError(f"{k.id_prefix} name must be non-empty")
     if active is not None and not k.has_active:
@@ -297,7 +310,7 @@ def validate_defs(kind: str, defs: list[dict]) -> list[int]:
             if kept in seen_ids:
                 raise ValueError(f"{k.id_prefix} id {kept!r} is duplicated")
             seen_ids.add(kept)
-        name = d.get("name") or ""
+        name = stored_name(d.get("name") or "")
         if not name:
             raise ValueError(f"{k.id_prefix} name must be non-empty")
         if name in seen:
@@ -340,7 +353,9 @@ def replace_defs(recording_dir: Path | str, kind: str, defs: list[dict]) -> list
         kept = d.get("id")
         if kept not in existing_ids:
             kept = None
-        prepared.append((kept, d["name"], d["keyframes"], d.get("active"), n_vertices))
+        prepared.append(
+            (kept, stored_name(d["name"]), d["keyframes"], d.get("active"), n_vertices)
+        )
     # New ids are claimed while the old definitions still exist, so even a recording with no
     # mark yet (made before it existed) cannot hand a new region a kept region's id.
     new_ids = [kept or next_id(recording_dir, kind) for kept, *_ in prepared]
@@ -452,12 +467,29 @@ def export_spatial(
 _SPATIAL_CSV_REQUIRED = _SPATIAL_CSV_COLUMNS[:8]
 
 
-def _parse_active(row: dict) -> ActiveInterval:
+def _parse_active(row: _csv_common.CsvRow) -> ActiveInterval:
+    """The row's active window, ``None`` for "the whole video" (both bounds blank).
+
+    One bound alone is refused: read as "no window", ``active_start=5`` with a blank end
+    widened the region to the whole video, the worse of the two mistakes
+    (:func:`prepare_for_arrival` says why) (#31).
+
+    Raises:
+        UserInputError: One bound blank, or a bound that is not an integer.
+    """
     start = (row.get("active_start") or "").strip()
     end = (row.get("active_end") or "").strip()
-    if start == "" or end == "":
+    if start == "" and end == "":
         return None
-    return (int(start), int(end))
+    if start == "" or end == "":
+        raise UserInputError(
+            f"{row.source} row {row.line}: active_start and active_end are both set or "
+            "both blank (blank means the whole video); this row sets only one"
+        )
+    return (
+        _csv_common.int_cell(row, "active_start"),
+        _csv_common.int_cell(row, "active_end"),
+    )
 
 
 def _read_spatial_csv(path: Path | str) -> list[_csv_common.CsvRow]:
@@ -467,6 +499,7 @@ def _read_spatial_csv(path: Path | str) -> list[_csv_common.CsvRow]:
     if not p.is_file():
         raise FileNotFoundError(f"no such file: {path}")
     fieldnames, rows = _csv_common.read_user_csv(p)
+    _csv_common.reject_duplicate_columns(fieldnames)
     missing = set(_SPATIAL_CSV_REQUIRED) - set(fieldnames)
     if missing:
         raise UserInputError(f"spatial CSV missing columns: {sorted(missing)}")
@@ -547,9 +580,16 @@ def load_spatial_csv(path: Path | str) -> list[dict]:
     Calibration rows are skipped — they carry no polygon; read them with
     ``load_calibration_csv``.
 
+    A hand-edited file is read as strictly as it was written (#31): a name with a space at
+    either end (``nest `` beside ``nest`` merged the two into one polygon), a definition
+    whose rows disagree on the active window or set only one bound, a ``(kind, name,
+    frame_idx, vertex_index)`` given twice (the later row won), and vertex indexes that
+    skip one (``0, 1, 5`` made a triangle) are each refused, naming the row.
+
     Raises:
         FileNotFoundError: if the file is absent.
-        ValueError: on structural problems (missing columns, unknown kind, empty name).
+        ValueError: on structural problems (missing or repeated columns, unknown kind,
+            empty name), or any of the refusals above.
     """
     groups: dict[tuple[str, str], dict] = {}
     order: list[tuple[str, str]] = []
@@ -562,18 +602,37 @@ def load_spatial_csv(path: Path | str) -> list[dict]:
                 f"{row.source} row {row.line}: unknown spatial kind {kind!r}; the kind "
                 f"column holds one of {sorted([*_KINDS, CALIBRATION_KIND])}"
             )
-        name = (row["name"] or "").strip()
+        raw_name = row["name"] or ""
+        name = raw_name.strip()
         if not name:
             raise UserInputError(f"{row.source} row {row.line}: the name is empty")
+        if name != raw_name:
+            raise UserInputError(
+                f"{row.source} row {row.line}: name {raw_name!r} has a space at its start "
+                "or end; remove it (a region's name never does)"
+            )
         key = (kind, name)
+        active = _parse_active(row)
         if key not in groups:
-            groups[key] = {"active": _parse_active(row), "frames": {}}
+            groups[key] = {"active": active, "frames": {}, "line": row.line}
             order.append(key)
+        elif groups[key]["active"] != active:
+            raise UserInputError(
+                f"{row.source} row {row.line}: {kind} {name!r} has active window "
+                f"{active} here and {groups[key]['active']} on row {groups[key]['line']}; "
+                "a definition has one window, the same on every row"
+            )
         frame_idx = _csv_common.int_cell(row, "frame_idx")
         vi = _csv_common.int_cell(row, "vertex_index")
-        groups[key]["frames"].setdefault(frame_idx, {})[vi] = (
-            _csv_common.float_cell(row, "x"),
-            _csv_common.float_cell(row, "y"),
+        frame = groups[key]["frames"].setdefault(frame_idx, {})
+        if vi in frame:
+            raise UserInputError(
+                f"{row.source} row {row.line}: {kind} {name!r} frame {frame_idx} vertex "
+                f"{vi} is given twice (first on row {frame[vi][1]}); keep one"
+            )
+        frame[vi] = (
+            (_csv_common.float_cell(row, "x"), _csv_common.float_cell(row, "y")),
+            row.line,
         )
     defs: list[dict] = []
     for kind, name in order:
@@ -581,7 +640,13 @@ def load_spatial_csv(path: Path | str) -> list[dict]:
         keyframes: Keyframes = []
         for frame_idx in sorted(g["frames"]):
             by_index = g["frames"][frame_idx]
-            keyframes.append((frame_idx, [by_index[i] for i in sorted(by_index)]))
+            indexes = sorted(by_index)
+            if indexes != list(range(len(indexes))):
+                raise UserInputError(
+                    f"{path}: {kind} {name!r} frame {frame_idx} has vertex indexes "
+                    f"{indexes}; they count up from 0 with none skipped"
+                )
+            keyframes.append((frame_idx, [by_index[i][0] for i in indexes]))
         defs.append(
             {"kind": kind, "name": name, "keyframes": keyframes, "active": g["active"]}
         )
@@ -622,7 +687,7 @@ def import_spatial(recording_dir: Path | str, defs: list[dict]) -> int:
             recording_dir,
             kind,
             def_id,
-            _unique_name(recording_dir, kind, name),
+            _unique_name(recording_dir, kind, stored_name(name)),
             n_vertices,
             active,
         )
@@ -655,11 +720,25 @@ def prepare_for_arrival(
       than missing — and unlike the geometry there is no way to *see* it happened, because
       the editor draws one frame at a time.
 
+    **A field of view travels alone**: ``defs`` holding more than one is refused, naming them.
+
     Pure, and takes parsed defs rather than a directory, so a setup **pulled** from a CSV
     obeys the same rules as one **pushed** from a recording. They were three policies
     before this: import appended and suffixed a collision, the field-of-view import
     replaced, and only the push flattened or refused anything.
+
+    Raises:
+        ValueError: ``defs`` holds more than one field of view.
     """
+    arenas = [d["name"] for d in defs if d["kind"] == "arena"]
+    if len(arenas) > 1:
+        # A recording has one field of view; two break the batch tracking picker, which
+        # intersects arena ids across recordings. Taking every one made two (#31).
+        raise ValueError(
+            f"the source holds {len(arenas)} fields of view "
+            f"({', '.join(map(repr, arenas))}); a recording has one, so keep the one you "
+            "want and import again"
+        )
     out: list[dict] = []
     flattened: list[str] = []
     refused: list[tuple[str, str]] = []

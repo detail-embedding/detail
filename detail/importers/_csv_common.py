@@ -239,7 +239,7 @@ def find_column(fieldnames: list[str], name: str) -> str | None:
     return None
 
 
-def reject_duplicate_columns(fieldnames: list[str]) -> None:
+def reject_duplicate_columns(fieldnames: list[str], *, fold: bool = False) -> None:
     """Raise if the header names any column twice.
 
     ``csv.DictReader`` maps a row into a dict keyed by header name, so two columns sharing a
@@ -249,17 +249,21 @@ def reject_duplicate_columns(fieldnames: list[str]) -> None:
     spreadsheet export, and every DeepLabCut CSV, whose top row repeats the scorer name once
     per body part), so this is a refusal rather than a best guess.
 
+    ``fold`` compares names as an importer that matches headers case-insensitively and
+    ignoring outer spaces reads them (``Label`` and ``label `` are one column to it).
+
     Raises:
-        ValueError: If any header name appears more than once.
+        UserInputError: If any header name appears more than once.
     """
     seen: set[str] = set()
     repeated: list[str] = []
     for field in fieldnames:
-        if field in seen and field not in repeated:
+        key = field.strip().lower() if fold else field
+        if key in seen and field not in repeated:
             repeated.append(field)
-        seen.add(field)
+        seen.add(key)
     if repeated:
-        raise ValueError(
+        raise UserInputError(
             f"CSV header names {repeated} more than once; column names must be unique "
             "(a multi-row header, e.g. a DeepLabCut export, needs its header flattened "
             "to one row first)"
@@ -318,14 +322,14 @@ def _checked_epoch(epoch: float, text: str, column: str, row: int) -> float:
     return epoch
 
 
-def require_data_rows(rows: list[dict[str, str]]) -> None:
+def require_data_rows(rows: list) -> None:
     """Raise if there are no data rows (a header-only file is not a stream).
 
     Raises:
-        ValueError: If ``rows`` is empty.
+        UserInputError: If ``rows`` is empty.
     """
     if not rows:
-        raise ValueError("CSV has a header but no data rows")
+        raise UserInputError("CSV has a header but no data rows")
 
 
 def parse_int(value: str | None, column: str, row: int) -> int:

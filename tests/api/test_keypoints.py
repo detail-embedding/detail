@@ -393,7 +393,7 @@ def test_import_refuses_a_missing_image_stale_marks_and_the_wrong_schema(tmp_pat
     cv2.imwrite(str(tmp_path / "frames" / "missing.png"), np.zeros((8, 8, 3), np.uint8))
     body["frames"][0]["marks"] = [{"target": "ear", "x": 0.1, "y": 0.1}]
     path.write_text(yaml.dump(body), encoding="utf-8")
-    with pytest.raises(ValueError, match="marks for \\['ear'\\]"):
+    with pytest.raises(ValueError, match="no keypoint 'ear' in .*set.yaml frame 0"):
         proj.import_example_set(path)
 
     body["schema_version"] = 2

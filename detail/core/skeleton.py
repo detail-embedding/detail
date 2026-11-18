@@ -150,13 +150,25 @@ class Skeleton:
 
     @classmethod
     def from_dict(cls, d: dict) -> "Skeleton":
+        """A skeleton from its mapping (``to_dict``'s shape, or a hand-written file's).
+
+        Each part is checked for shape before it is read: ``names: nose`` is one word, not
+        the points ``n, o, s, e``, and ``pairs: [ab]`` is not the pair ``(a, b)`` (#31).
+
+        Raises:
+            ValueError: ``names`` is not a list of names, or ``edges`` / ``pairs`` /
+                ``layout`` is not a list of two-item lists.
+        """
         layout = d.get("layout")
         return cls(
-            names=tuple(str(n) for n in d["names"]),
-            edges=tuple(tuple(e) for e in d.get("edges") or ()),
-            pairs=tuple(tuple(p) for p in d.get("pairs") or ()),
+            names=tuple(_names(d.get("names"))),
+            edges=tuple(_twos(d.get("edges"), "edges", "two point names")),
+            pairs=tuple(_twos(d.get("pairs"), "pairs", "two point names")),
             layout=(
-                tuple((float(x), float(y)) for x, y in layout)
+                tuple(
+                    (float(x), float(y))
+                    for x, y in _twos(layout, "layout", "an x and a y", numbers=True)
+                )
                 if layout is not None
                 else None
             ),
@@ -167,6 +179,45 @@ class Skeleton:
         return Skeleton(
             names=self.names, edges=self.edges, pairs=self.pairs, layout=layout
         )
+
+
+def _names(value) -> list[str]:
+    """``names`` as a list of point names; a lone word or a mapping is refused."""
+    if not isinstance(value, (list, tuple)):
+        found = "nothing" if value is None else repr(value)
+        raise ValueError(
+            f"a skeleton's 'names' must be a list of point names (e.g. [nose, tail]), "
+            f"not {found}"
+        )
+    for item in value:
+        if isinstance(item, bool) or not isinstance(item, (str, int)):
+            raise ValueError(
+                f"a skeleton's 'names' must be a list of point names; {item!r} is not one"
+            )
+    return [str(n) for n in value]
+
+
+def _twos(value, what: str, items: str, *, numbers: bool = False) -> list[tuple]:
+    """``value`` as a list of two-item tuples (an edge, a pair, a layout position)."""
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(
+            f"a skeleton's {what!r} must be a list of [{items}] lists, not {value!r}"
+        )
+    kinds = (int, float) if numbers else (str, int)
+    out = []
+    for item in value:
+        if (
+            not isinstance(item, (list, tuple))
+            or len(item) != 2
+            or any(isinstance(v, bool) or not isinstance(v, kinds) for v in item)
+        ):
+            raise ValueError(
+                f"a skeleton's {what!r} must be a list of [{items}] lists; {item!r} is not one"
+            )
+        out.append(tuple(item) if numbers else tuple(str(v) for v in item))
+    return out
 
 
 def flip_index(skeleton: Skeleton) -> list[int]:

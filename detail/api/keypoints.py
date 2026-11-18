@@ -9,6 +9,7 @@ Each PR fills its own block below and touches no other.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -228,6 +229,47 @@ def _frame_at(current: ExampleSet, frame_index: int) -> ExampleFrame:
     return current.frames[int(frame_index)]
 
 
+def check_frame_marks(marks: list[ExampleMark], skeleton: Skeleton, where: str) -> None:
+    """The checks every mark on one frame passes, however it arrives: clicked on the
+    labeling screen (:func:`set_example_marks`) or read from a file
+    (:func:`import_example_set`).
+
+    A target is one of the skeleton's points and appears at most once; a visible point has a
+    finite ``x``, ``y`` in ``[0, 1]`` (normalized full-frame). The import once ran only
+    ``mark.validate()``, so pixels (``x: 412``), an off-frame mark or ``x: .nan`` went in
+    though its docstring promised these checks (#31).
+
+    Raises:
+        ValueError: Naming ``where``, the mark and what is wrong with it.
+    """
+    names = set(skeleton.names)
+    seen: set[str] = set()
+    for mark in marks:
+        if mark.target not in names:
+            raise ValueError(
+                f"no keypoint {mark.target!r} in {where}; it has {list(skeleton.names)}"
+            )
+        if mark.target in seen:
+            raise ValueError(
+                f"{where}: keypoint {mark.target!r} is marked twice on one frame"
+            )
+        seen.add(mark.target)
+        mark.validate()
+        if mark.kind == "point" and mark.visible:
+            x, y = float(mark.x), float(mark.y)
+            if not (math.isfinite(x) and math.isfinite(y)):
+                raise ValueError(
+                    f"{where}: mark on {mark.target!r} at ({mark.x}, {mark.y}) is not a "
+                    "position"
+                )
+            if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
+                raise ValueError(
+                    f"{where}: mark on {mark.target!r} at ({mark.x}, {mark.y}) is off the "
+                    "frame; positions are normalized to [0, 1] (a fraction of the width "
+                    "and height, not pixels)"
+                )
+
+
 def set_example_marks(
     experiment: "Experiment", set_id: str, frame_index: int, marks
 ) -> ExampleSet:
@@ -246,24 +288,7 @@ def set_example_marks(
     parsed = [
         m if isinstance(m, ExampleMark) else ExampleMark.from_dict(m) for m in marks
     ]
-    names = set(current.skeleton.names)
-    seen: set[str] = set()
-    for mark in parsed:
-        if mark.target not in names:
-            raise ValueError(
-                f"no keypoint {mark.target!r} in example set {set_id!r}; it has "
-                f"{list(current.skeleton.names)}"
-            )
-        if mark.target in seen:
-            raise ValueError(f"keypoint {mark.target!r} is marked twice on one frame")
-        seen.add(mark.target)
-        mark.validate()
-        if mark.kind == "point" and mark.visible:
-            if not (0.0 <= float(mark.x) <= 1.0 and 0.0 <= float(mark.y) <= 1.0):
-                raise ValueError(
-                    f"mark on {mark.target!r} at ({mark.x}, {mark.y}) is off the frame; "
-                    "positions are normalized to [0, 1]"
-                )
+    check_frame_marks(parsed, current.skeleton, f"example set {set_id!r}")
     frame.marks = parsed
     example_store.write_set(experiment.dir, current)
     return current
@@ -295,12 +320,13 @@ def import_example_set(experiment: "Experiment", yaml_path: Path | str) -> Examp
     paths say) into this experiment under a fresh id, copying the images in by content.
 
     The scripted route to a set (§26 "Example sets"): a labmate's export, or a YAML a script
-    wrote. Marks are checked against the skeleton as ``set_example_marks`` checks them.
+    wrote. Marks are checked by :func:`check_frame_marks`, as ``set_example_marks`` checks
+    them.
 
     Raises:
         FileNotFoundError: The YAML, or an image it names, is missing.
-        ValueError: A malformed file, the wrong ``schema_version``, or marks the skeleton
-            does not name.
+        ValueError: A malformed file, the wrong ``schema_version``, or a mark
+            :func:`check_frame_marks` refuses.
     """
     path = Path(yaml_path)
     if not path.is_file():
@@ -310,7 +336,13 @@ def import_example_set(experiment: "Experiment", yaml_path: Path | str) -> Examp
         raise ValueError(f"{path} is not a mapping")
     if "schema_version" not in data and "names" in data:
         # A bare skeleton file (names / edges / pairs / layout): an empty set holding it.
-        return create_example_set(experiment, path.stem, Skeleton.from_dict(data))
+        from detail.api import skeletons as library
+
+        return create_example_set(
+            experiment,
+            path.stem,
+            library.skeleton_from_file_body(data, path, bare=True),
+        )
     if data.get("schema_version") != example_store.SCHEMA_VERSION:
         raise ValueError(
             f"{path} schema_version is {data.get('schema_version')!r}, expected "
@@ -320,19 +352,12 @@ def import_example_set(experiment: "Experiment", yaml_path: Path | str) -> Examp
     data.setdefault("name", path.stem)
     source = _parse_example_set(data, path)
     source.skeleton.validate()
-    names = set(source.skeleton.names)
     for i, frame in enumerate(source.frames):
         if not (path.parent / frame.image).is_file():
             raise FileNotFoundError(
                 f"{path} frame {i} names image {frame.image!r}, which is not beside it"
             )
-        stale = sorted({m.target for m in frame.marks} - names)
-        if stale:
-            raise ValueError(
-                f"{path} frame {i} has marks for {stale}, which the skeleton does not name"
-            )
-        for mark in frame.marks:
-            mark.validate()
+        check_frame_marks(frame.marks, source.skeleton, f"{path} frame {i}")
     created = example_store.create_set(
         experiment.dir, source.name, source.skeleton, purpose=source.purpose
     )

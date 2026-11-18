@@ -19,8 +19,11 @@ from detail.analysis.body_axis import validate_definition
 from detail.core import atomic
 from detail.storage import experiment as experiment_store
 from detail.storage.user_yaml import read_user_yaml
+from detail.storage.user_yaml import refuse_unknown_keys
 
 SCHEMA_VERSION = 1
+#: What a standalone definition file (``export_definition``) holds.
+_FILE_KEYS = ("schema_version", "name", "front", "back")
 
 _ALLOWED = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
 
@@ -159,14 +162,17 @@ def import_definition(
             f"{path} has schema_version {data.get('schema_version')!r}; expected "
             f"{SCHEMA_VERSION}"
         )
+    refuse_unknown_keys(data, _FILE_KEYS, path, "a heading definition file")
     final = name or data.get("name")
     if not final:
         raise ValueError(f"{path} names no definition; pass a name")
+    # Passed as written: `validate_definition` reads a lone name as one point, where
+    # `list("nose")` made the points n, o, s, e (#31).
     save_definition(
         experiment_dir,
         str(final),
-        list(data.get("front") or []),
-        list(data.get("back") or []),
+        data.get("front"),
+        data.get("back"),
         overwrite=overwrite,
     )
     return str(final)
