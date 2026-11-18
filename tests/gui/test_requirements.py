@@ -604,3 +604,87 @@ def test_the_split_rule_would_catch_a_split_remembered_by_somebody_else(tmp_path
 )
 def test_the_split_rule_passes_a_split_that_remembers_itself(tmp_path, body):
     assert reqs._unremembered_splits(_one_file(tmp_path, body)) == []
+
+
+# --- `a_numeric_cell_sorts_on_its_value`: the spellings it missed (#35) -------------------
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # the query-eval Rank column
+        'def build(rank):\n    return QStandardItem("" if rank is None else str(rank))\n',
+        # the per-fold counts: `str(x)` inside a comprehension over numbers
+        "def build(f):\n"
+        "    return [QStandardItem(str(x)) for x in (f.fold, f.n_gt)]\n",
+        # the Folds column: `str()` around an attribute
+        "def build(m):\n    return QStandardItem(str(m.n_folds))\n",
+        # the spellings it always read, still read
+        'def build(r):\n    return QStandardItem(f"{r.score:.3f}")\n',
+        "def build(rows):\n    return QStandardItem(str(len(rows)))\n",
+    ],
+)
+def test_the_numeric_cell_rule_would_catch_a_number_built_as_text(tmp_path, body):
+    offenders, _excused = reqs._numeric_text_cells(_one_file(tmp_path, body))
+    assert [o.split()[0] for o in offenders] == ["page.py:2"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "def build(name):\n    return QStandardItem(name)\n",
+        "def build(r):\n    return num_cell(r.rank)\n",
+        'def build(r):\n    return QStandardItem(f"{r.name} ({r.id})")\n',
+    ],
+)
+def test_the_numeric_cell_rule_passes_a_text_cell(tmp_path, body):
+    assert reqs._numeric_text_cells(_one_file(tmp_path, body)) == ([], set())
+
+
+def test_every_text_cell_exemption_still_excuses_a_site():
+    """A `_TEXT_CELLS_FROM_STR` key that matches no `str(<name>)` cell is an excuse for code
+    that is gone; the rule reads only the live ones, so a stale key would sit there unseen.
+    """
+    _offenders, excused = reqs._numeric_text_cells(
+        pathlib.Path(gui_pages.__file__).parent
+    )
+    assert excused == set(reqs._TEXT_CELLS_FROM_STR)
+
+
+def test_the_text_cell_exemption_is_keyed_by_method_not_by_file(tmp_path):
+    """An exemption names one builder. The same spelling in another function of an exempted
+    file is still a numeric cell."""
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "pages.py").write_text(
+        "def _cell(value):\n    return QStandardItem(str(value))\n\n\n"
+        "def other(m):\n    return QStandardItem(str(m.n_folds))\n",
+        encoding="utf-8",
+    )
+    offenders, excused = reqs._numeric_text_cells(package)
+    assert excused == {"pages.py:_cell"}
+    assert [o.split()[0] for o in offenders] == ["pages.py:6"]
+
+
+# --- `a_checklist_step_reads_its_state` -----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        'Step("quick_segment", "See it segment a clip", False, guides=False)',
+        'Step("distill_model", "Distill", done=True, guides=False)',
+    ],
+)
+def test_the_checklist_rule_would_catch_a_literal_tick(tmp_path, call):
+    package = _one_file(tmp_path, f"def build(s):\n    return {call}\n")
+    assert reqs._literal_done_steps(package) == ["page.py:2"]
+
+
+def test_the_checklist_rule_passes_a_tick_read_from_a_signal(tmp_path):
+    package = _one_file(
+        tmp_path,
+        'def build(s):\n    return Step("quick_segment", "x", s.quick_segment_run, '
+        "guides=False)\n",
+    )
+    assert reqs._literal_done_steps(package) == []

@@ -333,6 +333,7 @@ GUARD_FILES = frozenset(
         "tests/gui/test_scroll.py",
         "tests/gui/test_dialog_close_scan.py",
         "tests/gui/test_menu_once_scan.py",
+        "tests/gui/test_dialog_owns_its_work.py",
         "tests/gui/test_table_height.py",
         "tests/gui/test_pane_floors.py",
         "tests/gui/test_collapse.py",

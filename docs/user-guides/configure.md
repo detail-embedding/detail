@@ -225,8 +225,8 @@ The other rows are set up later, once you have an experiment:
 
 | Row | Where |
 |-----|-------|
-| See it segment a clip | Optional: **Quick tools** tries SAM 3 on one video, without an experiment. |
-| Recommended: distill a fast model | [Detect and track](single-animal/detect-and-track.md) |
+| See it segment a clip | Optional: **Quick tools** tries SAM 3 on one video, without an experiment. Without an NVIDIA GPU it runs a detection model you have installed instead. Ticked once a run finishes. |
+| Recommended: distill a fast model | [Detect and track](single-animal/detect-and-track.md). Ticked once you have a distilled model. |
 | New here? | **Set up your first experiment ↗** opens DETAIL's documentation. These guides are part of it. |
 
 Under the checklist, **Preview cache** shows where DETAIL keeps the small copies of your videos

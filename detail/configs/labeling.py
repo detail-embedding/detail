@@ -54,7 +54,13 @@ class LabelingConfig(BaseModel):
         ge=0.0,
         lt=1.0,
         description="Fraction of labeled frames held out for validation (stratified per recording).",
-        json_schema_extra={"advanced": True, "label": "Validation split"},
+        # The GUI's box stops at 0.9, a practical cap: past it there is hardly a training set.
+        # Declared here so all three labeling dialogs agree; the validator keeps `lt=1.0`.
+        json_schema_extra={
+            "advanced": True,
+            "label": "Validation split",
+            "ui_max": 0.9,
+        },
     )
     background_share: float = Field(
         0.1,
