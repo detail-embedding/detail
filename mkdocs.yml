@@ -146,6 +146,8 @@ nav:
       - Temporal cluster method - codebook: modules/codebook_viterbi.md
       - Trainer - YOLO: modules/ultralytics_yolo.md
       - Stream importer - CSV: modules/timeseries_csv.md
+      - Stream importer - MED-PC: modules/medpc.md
+      - Stream importer - BORIS: modules/boris.md
   - Evaluation:
       - Behavior query: behavior-query-eval.md
   - Reference:

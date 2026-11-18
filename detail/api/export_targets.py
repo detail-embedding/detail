@@ -259,9 +259,16 @@ def _canonical_streams(subject: ExportSubject) -> list[dict]:
 
 
 def _run_streams(subject, dest, scope, progress, **options):
-    """Each stream's canonical CSV, named for the stream, plus what each one is."""
-    import shutil
+    """Each stream's canonical CSV with its video time beside it, plus what each one is.
 
+    **Aligned means a column, not a rewrite.** The canonical ``t_ns`` is the stream's own clock
+    and stays as it is (Section 3: canonical data is never rewritten), and ``video_t_ns`` is
+    added beside it through ``streams_store.apply_alignment`` — the read DETAIL itself does —
+    so a row joins tracks by ``video_t_ns`` and the offset that got it there is in
+    ``streams.csv``. An interval stream gets ``video_end_t_ns`` beside ``end_t_ns`` too.
+    Copying the canonical file alone wrote stream-local times under a target that says
+    "aligned", and a join by ``t_ns`` was off by the whole offset.
+    """
     from detail.storage import streams as streams_store
 
     manifests = _canonical_streams(subject)
@@ -275,15 +282,22 @@ def _run_streams(subject, dest, scope, progress, **options):
             / streams_store.CANONICAL_FILENAME
         )
         out = Path(dest) / f"{subject.id}_{safe_name(name)}.csv"
-        shutil.copyfile(source, out)
+        _write_aligned_stream(source, out, manifest)
         written.append(out)
         rows.append(
             [
                 name,
                 streams_store.stream_shape(manifest),
-                streams_store.stream_origin(manifest),
-                manifest.get("role", ""),
-                int(manifest.get("offset_ns", 0) or 0),
+                # Origin is a fact about labels; a sensor trace or an event log has none, and
+                # reporting the reader's ground-truth fallback for it claimed one.
+                (
+                    streams_store.stream_origin(manifest)
+                    if manifest.get("role") == "behavior"
+                    else ""
+                ),
+                manifest.get("role") or "",
+                manifest.get("clock") or "",
+                streams_store.stream_offset_ns(manifest),
                 out.name,
             ]
         )
@@ -292,10 +306,57 @@ def _run_streams(subject, dest, scope, progress, **options):
     index_path = Path(dest) / "streams.csv"
     _write_csv(
         index_path,
-        ["stream", "shape", "origin", "role", "offset_ns", "file"],
+        ["stream", "shape", "origin", "role", "clock", "offset_ns", "file"],
         rows,
     )
     return [*written, index_path]
+
+
+#: Each stream-local time column and the video-time column written beside it.
+_ALIGNED_COLUMNS = (("t_ns", "video_t_ns"), ("end_t_ns", "video_end_t_ns"))
+
+
+def _write_aligned_stream(source: Path, out: Path, manifest: dict) -> None:
+    """Copy a canonical stream CSV, adding each time column's video time right after it.
+
+    Cells are copied as text, never re-parsed, so a channel value keeps the exact digits the
+    canonical file has; only the time columns are read as ints to align them.
+    """
+    import csv
+
+    from detail.storage import streams as streams_store
+
+    with open(source, newline="", encoding="utf-8-sig") as f:
+        reader = csv.reader(f)
+        header = next(reader, [])
+        body = list(reader)
+    added = [(header.index(src), dst) for src, dst in _ALIGNED_COLUMNS if src in header]
+    out_header = list(header)
+    for position, dst in sorted(added, reverse=True):
+        out_header.insert(position + 1, dst)
+    # A behavior stream's file is one the `behavior_csv` importer reads back, so it says where
+    # its labels came from: a predicted stream re-imported without it became ground truth.
+    origin = (
+        [streams_store.stream_origin(manifest)]
+        if manifest.get("role") == "behavior"
+        else []
+    )
+    if origin:
+        out_header.append("origin")
+    with open(out, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(out_header)
+        for row in body:
+            cells = list(row)
+            for position, _dst in sorted(added, reverse=True):
+                raw = row[position] if position < len(row) else ""
+                aligned = (
+                    str(streams_store.apply_alignment(int(raw), manifest))
+                    if raw
+                    else ""
+                )
+                cells.insert(position + 1, aligned)
+            writer.writerow(cells + origin)
 
 
 def _run_timestamps(subject, dest, scope, progress, **options):
@@ -342,10 +403,14 @@ def _run_video(subject, dest, scope, progress, **options):
 
     recording_dir = _recording_dir(subject)
     sources = []
-    for index, part in enumerate(_copied_parts(subject)):
+    for part in _copied_parts(subject):
         source = recording_store.resolve_part_video_path(recording_dir, part)
         if source.is_file():
-            out = Path(dest) / f"{subject.id}_part{index + 1:03d}{source.suffix}"
+            # The part's own number, not its place among the copied parts: a skipped
+            # referenced part must not renumber the rest away from their timestamps files.
+            out = (
+                Path(dest) / f"{subject.id}_part{part['index'] + 1:03d}{source.suffix}"
+            )
             sources.append((source, out))
     total = sum(source.stat().st_size for source, _ in sources) or 1
     emit = ThrottledProgress(
@@ -376,7 +441,10 @@ register(
         id="streams",
         label="Streams",
         subject_kind="recording",
-        artifact="one CSV per stream, in DETAIL's aligned form",
+        artifact=(
+            "one CSV per stream: its own time (t_ns) with video time (video_t_ns) beside it, "
+            "and streams.csv giving each stream's clock and alignment offset"
+        ),
         data_files=("streams.csv",),
         run=_run_streams,
         estimate=est.streams,
@@ -503,7 +571,7 @@ def _narrow(rows: list, scope: ExportScope) -> list:
 
 _INSTANCE_COLUMNS = [
     "instance_id", "recording_id", "subject", "source_label", "label", "label_path",
-    "t_ns", "end_t_ns", "start_frame", "end_frame", "score",
+    "t_ns", "end_t_ns", "start_frame", "end_frame", "score", "origin",
 ]  # fmt: skip
 
 #: Where each bout happened, appended to the identity columns when the artifact has positions.
@@ -516,7 +584,12 @@ _POSITION_COLUMNS = ["cx_norm", "cy_norm"]
 _EXAMPLE_COLUMNS = [behavior_output.EXAMPLE_COLUMN]
 
 
-def _instance_row(row, features: dict | None, example_ids: set | None = None) -> list:
+def _instance_row(
+    row,
+    features: dict | None,
+    example_ids: set | None = None,
+    origin: str = "predicted",
+) -> list:
     """One `instances.csv` row; the position pair only when the artifact carries positions.
 
     ``features`` is `BehaviorOutput.features`, and its three states are three different rows.
@@ -533,6 +606,7 @@ def _instance_row(row, features: dict | None, example_ids: set | None = None) ->
         row.source_label, row.label, row.label_path,
         row.t_ns, row.end_t_ns, row.start_frame, row.end_frame,
         "" if row.score is None else row.score,
+        origin,
     ]  # fmt: skip
     if features is not None:
         cx, cy = features.get(row.instance_id) or (None, None)
@@ -565,7 +639,12 @@ def _run_instances(subject, dest, scope, progress, **options):
         + (_POSITION_COLUMNS if features is not None else [])
         + (_EXAMPLE_COLUMNS if examples is not None else [])
     )
-    _write_csv(out, columns, [_instance_row(r, features, examples) for r in rows])
+    # `origin` because the `behavior_csv` importer accepts this file (it has start_frame,
+    # end_frame and label): without it a method's output re-imported as ground truth.
+    origin = artifact.manifest.get("origin") or "predicted"
+    _write_csv(
+        out, columns, [_instance_row(r, features, examples, origin) for r in rows]
+    )
 
     coverage_path = Path(dest) / "coverage.csv"
     _write_csv(
@@ -614,26 +693,31 @@ def _run_instances(subject, dest, scope, progress, **options):
 
 
 def _run_ethogram(subject, dest, scope, progress, **options):
-    """One `start_frame,end_frame,label` CSV per recording — the schema our own importer reads.
+    """One label CSV per recording — the schema our own ``behavior_csv`` importer reads.
 
     So a result can be re-ingested as a behavior stream, in another tool or back into DETAIL.
-    Rows with no human name carry their producer's own id (`source_label`), because an unnamed
-    cluster is still a thing that happened; dropping it would silently shorten the ethogram.
+    Written by ``behavior_output.write_stream_csv``, the one writer of this file shape, so it
+    carries ``subject`` (several animals' bouts stay apart) and ``origin`` (a re-import is
+    ``predicted`` on its own, never ground truth). Rows with no human name carry their
+    producer's own id (`source_label`), because an unnamed cluster is still a thing that
+    happened; dropping it would silently shorten the ethogram.
     """
     artifact = behavior_output.read_behavior_output(_analysis_dir(subject))
     rows = _narrow(list(artifact.instances), scope)
-    by_recording: dict[str, list[list]] = {}
-    for row in rows:
-        by_recording.setdefault(row.recording_id, []).append(
-            [row.start_frame, row.end_frame, row.label or row.source_label]
-        )
+    recording_ids = sorted({row.recording_id for row in rows})
+    ordered = sorted(
+        rows,
+        key=lambda r: (r.start_frame, r.end_frame, r.label or r.source_label),
+    )
     written = []
-    for index, (recording_id, spans) in enumerate(sorted(by_recording.items())):
+    for index, recording_id in enumerate(recording_ids):
         out = Path(dest) / f"{recording_id}_ethogram.csv"
-        _write_csv(out, ["start_frame", "end_frame", "label"], sorted(spans))
+        behavior_output.write_stream_csv(
+            out, artifact, recording_id, instances=ordered, keep_unnamed=True
+        )
         written.append(out)
         if progress is not None:
-            progress("writing", 0.8 * (index + 1) / len(by_recording), out.name)
+            progress("writing", 0.8 * (index + 1) / len(recording_ids), out.name)
 
     # The picture as well as the rows. "The export ethogram doesn't actually export with plot,
     # just the data" — and an ethogram is a picture before it is a table.
@@ -679,8 +763,9 @@ register(
         label="Ethogram",
         subject_kind="analysis_run",
         artifact=(
-            "the ethogram as a picture (PNG + SVG), plus one start_frame,end_frame,label "
-            "CSV per recording"
+            "the ethogram as a picture (PNG + SVG), plus one "
+            "start_frame,end_frame,label,subject,origin CSV per recording, which re-imports "
+            "as predicted labels"
         ),
         artifact_is_data=True,
         figure_files=("ethogram.png", "ethogram.svg"),
@@ -849,7 +934,8 @@ register(
         subject_kind="analysis_run",
         artifact=(
             "one mp4 per bout, named <cluster>_<recording>_<start>-<end> so a name-sorted "
-            "folder plays each cluster back to back"
+            "folder plays each cluster back to back; every frame of the bout, at the rate it "
+            "was recorded at, so a clip plays back at the speed the behavior happened"
         ),
         data_files=("clips.csv",),
         scopes=("cluster", "selection", "recordings"),

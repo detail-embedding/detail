@@ -5355,3 +5355,98 @@ def test_every_launch_names_the_recording_it_is_validating(
     assert called, result.output  # reached the API, not refused by click first
     assert "stop here" in result.output
     assert "Validating" in result.output and "Rat 7 (1/1)" in result.output
+
+
+_TWO_BOX_MEDPC = """\
+Start Date: 02/16/26
+Subject: RAT1
+Box: 1
+H:      10.000
+E:
+     0:        2.000      100.000        0.000
+T:
+     0:        1.000       10.000        0.000
+
+Start Date: 02/16/26
+Subject: RAT2
+Box: 2
+H:       5.000
+E:
+     0:        2.000      100.000
+T:
+     0:        0.500        5.000
+"""
+_MEDPC_PROGRAM = "\\  Event stamps ( array E )\n\\   2 = Lever\n\\   100 = End\n\\\n"
+
+
+def _add_medpc(tmp_path, *extra):
+    from detail.api.experiment import Experiment
+
+    exp = Experiment.create("p1", tmp_path)
+    exp.create_recording("r1")
+    data = tmp_path / "day.txt"
+    data.write_text(_TWO_BOX_MEDPC, encoding="utf-8")
+    program = tmp_path / "task.MPC"
+    program.write_text(_MEDPC_PROGRAM, encoding="utf-8")
+    res = _runner().invoke(
+        main,
+        [
+            "recording", "add-stream", "--experiment", str(exp.dir), "--recording", "r1",
+            "--name", "medpc", "--importer", "medpc", "--data", str(data),
+            "--program", str(program), *extra,
+        ],
+    )  # fmt: skip
+    return exp, res
+
+
+def test_add_stream_refuses_a_several_session_medpc_file_naming_them(tmp_path):
+    exp, res = _add_medpc(tmp_path)
+    assert res.exit_code != 0
+    assert (
+        "holds 2 sessions (1: Subject RAT1, box 1, 02/16/26; 2: Subject RAT2"
+        in res.output
+    )
+    assert exp.get_recording("r1").streams == []
+
+
+def test_add_stream_medpc_box_picks_one_session_and_reports_dropped_slots(tmp_path):
+    exp, res = _add_medpc(tmp_path, "--medpc-box", "1")
+    assert res.exit_code == 0, res.output
+    assert "2 rows" in res.output
+    assert (
+        "note: dropped 1 unused (code 0, time 0) slot(s) after the last event"
+        in res.output
+    )
+    assert exp.get_recording("r1").streams[0]["metadata"]["subject"] == "RAT1"
+
+
+def test_a_selector_flag_for_another_importer_is_refused_not_ignored(tmp_path):
+    exp, res = _add_medpc(tmp_path, "--boris-subject", "mA")
+    assert res.exit_code != 0
+    assert "--boris-subject only apply to the importer they are named for" in res.output
+
+
+def test_set_stream_offset_refuses_behavior_labels(tmp_path):
+    from detail.api.experiment import Experiment
+
+    exp = Experiment.create("p1", tmp_path)
+    recording = exp.create_recording("r1")
+    vid = tmp_path / "clip.mp4"
+    writer = cv2.VideoWriter(str(vid), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (16, 16))
+    for _ in range(10):
+        writer.write(np.zeros((16, 16, 3), np.uint8))
+    writer.release()
+    recording.add_video_part(vid)
+    labels = tmp_path / "labels.csv"
+    labels.write_text("start_frame,end_frame,label\n1,3,groom\n", encoding="utf-8")
+    recording.add_stream("behavior", raw_path=labels, importer="behavior_csv")
+    res = _runner().invoke(
+        main,
+        [
+            "recording", "set-stream-offset", "--experiment", str(exp.dir),
+            "--recording", "r1", "--name", "behavior", "--offset", "5",
+        ],
+    )  # fmt: skip
+    assert res.exit_code != 0
+    assert "already the video's own" in res.output
+    assert exp.get_recording("r1").streams[0]["alignment"]["offset_ns"] == 0

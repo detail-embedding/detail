@@ -229,3 +229,51 @@ def test_the_label_bar_and_browse_preview_agree_with_the_export(fitted_codebook)
     assert not any(
         s[0] <= clip["end_t_ns"] and clip["start_t_ns"] <= s[1] for s in export
     )
+
+
+def _side(change, index):
+    return tuple({key: pair[index] for key, pair in part.items()} for part in change)
+
+
+def _unlabelled(run) -> list[tuple[int, int]]:
+    return sorted((r.t_ns, r.end_t_ns) for r in run.artifact().instances if not r.label)
+
+
+def test_a_merge_carries_the_clip_edits_and_its_undo_puts_them_back(fitted_temporal):
+    """**A label id removed while a clip edit still points at it.** A merge deletes the source
+    label's id; an edit naming it as ``from_label`` then stopped applying (the clip taken out
+    counted again) and one naming it as ``to_label`` sent the clip to "unlabelled". A merge says
+    the two labels are one behavior, so the edits now name the target; an edit whose two ends
+    become the same label is a move within one label, and goes. ⌘Z of the merge
+    (``restore_labels`` with the *before* side of ``label_change``) puts the edits back too.
+    """
+    from detail.api import authored_run as authored
+
+    experiment, run_id = fitted_temporal
+    run, climb, rear = _labelled(experiment, run_id)
+    taken = run.node_view().clips(rear).rows()[0]  # taken out of rear
+    moved = run.node_view().clips(climb).rows()[0]  # moved from climb into rear
+    run.take_out_clips(taken, "rear")
+    run.take_out_clips(moved, "climb", "rear")
+    span_taken = (taken["start_t_ns"], taken["end_t_ns"])
+    span_moved = (moved["start_t_ns"], moved["end_t_ns"])
+    before = run.label_maps()
+    edits_before = run.taken_out()
+
+    from detail.storage import run_labels
+
+    labels = run.state().labels
+    run.merge_labels(run_labels.find(labels, "rear"), run_labels.find(labels, "climb"))
+
+    assert span_taken in _unlabelled(run), "the clip taken out of rear came back"
+    assert span_moved in _spans(run, "climb"), "the clip moved into rear lost its label"
+    [edit] = run.taken_out()
+    assert clip_ref(edit) == clip_ref(taken)
+    assert (edit["from_name"], edit["to_name"]) == ("climb", None)
+
+    change = authored.label_change(before, run.label_maps())
+    run.restore_labels(*_side(change, 0))  # ⌘Z
+    assert run.label_maps() == before
+    assert run.taken_out() == edits_before
+    assert span_taken in _unlabelled(run)
+    assert span_moved in _spans(run, "rear")

@@ -33,6 +33,7 @@ from PyQt6.QtWidgets import QLabel, QMessageBox, QPushButton, QVBoxLayout, QWidg
 from detail.gui.cluster_strip import cluster_colors
 from detail.gui.cluster_workspace import TEMPORAL_TERMS, ClusterWorkspace
 from detail.gui.label_panel import label_rows
+from tests.gui.conftest import pump_for
 
 
 def _drain(qapp, predicate, timeout_ms: int = 10_000) -> bool:
@@ -111,7 +112,7 @@ def _label(qapp, interpret, node: int, name: str, handle) -> None:
     assert _drain(
         qapp, lambda: handle.state().node_names.get(str(node)) == name
     ), f"{name!r} never reached the run"
-    assert _drain(qapp, lambda: interpret._writer is None)
+    assert _drain(qapp, lambda: not interpret.writes_pending())
 
 
 def _select(qapp, interpret, node: int) -> None:
@@ -251,7 +252,7 @@ def test_a_label_shows_at_once_and_reaches_the_run(qapp, fitted):
     # Read the output only once the background write has finished, as BROWSE does (it reloads
     # on `changed`). Polling it mid-write opens `instances.csv` while it is being replaced,
     # which Windows refuses with a sharing violation.
-    assert _drain(qapp, lambda: interpret._writer is None and not interpret._pending)
+    assert _drain(qapp, lambda: not interpret.writes_pending())
     assert any(
         i.label == "moving" for i in handle.instances()
     ), "the output never caught up"
@@ -484,7 +485,7 @@ def test_a_run_whose_job_failed_opens_nothing_and_writes_nothing(qapp, fitted):
 
     before = fingerprint()
     page = AnalysisRunDetailPage(experiment, run_id)
-    _drain(qapp, lambda: False, timeout_ms=1_500)
+    pump_for(qapp, 1_500)
     after = fingerprint()
     assert set(after) == set(before)
     assert {n for n in before if before[n] != after[n]} <= {"analysis.yaml"}
@@ -998,7 +999,7 @@ def test_a_run_still_working_is_not_opened_for_interpretation(qapp, fitted):
     )
     assert experiment.analysis_job_active(run_id)
     page = AnalysisRunDetailPage(experiment, run_id)
-    _drain(qapp, lambda: False, timeout_ms=500)
+    pump_for(qapp, 500)
     assert not page.findChildren(
         ClusterWorkspace
     ), "the workspace opened over a running job"
@@ -1026,7 +1027,7 @@ def test_a_fresh_page_shows_no_empty_workspace_while_it_loads(qapp, fitted):
 
 
 def _settle(qapp, interpret):
-    assert _drain(qapp, lambda: not interpret._pending and interpret._writer is None)
+    assert _drain(qapp, lambda: not interpret.writes_pending())
 
 
 def test_typing_an_existing_name_says_it_adds_to_that_label(qapp, fitted):
@@ -1131,10 +1132,10 @@ def test_a_recent_label_entry_labels_the_open_cluster_through_the_queue(qapp, fi
     quick.action(0).trigger()  # what key 1 does
     # Shown at once, written behind it by the page's one write queue.
     assert interpret._names[str(b)] == "climb"
-    assert interpret._writer is not None or interpret._pending
+    assert interpret.writes_pending()
     assert interpret.label_bar().status.text().startswith(f"Labelled #{b} “climb”")
     assert _drain(qapp, lambda: handle.state().node_names.get(str(b)) == "climb")
-    assert _drain(qapp, lambda: interpret._writer is None and not interpret._pending)
+    assert _drain(qapp, lambda: not interpret.writes_pending())
     assert "Output up to date." in interpret.label_bar().status.text()
 
 
@@ -1172,7 +1173,7 @@ def test_key_one_labels_with_the_first_recent_label_but_not_while_typing(qapp, f
         QTest.keyClick(interpret.focusWidget(), Qt.Key.Key_1)
         assert interpret._names.get(str(b)) == "climb"
         assert _drain(qapp, lambda: handle.state().node_names.get(str(b)) == "climb")
-        assert _drain(qapp, lambda: interpret._writer is None)
+        assert _drain(qapp, lambda: not interpret.writes_pending())
     finally:
         workspace.hide()
 
@@ -1213,9 +1214,7 @@ def test_a_labelling_key_with_a_modifier_labels_nothing(qapp, fitted, modifier):
             interpret._icicle, Qt.Key.Key_1, Qt.KeyboardModifier.KeypadModifier
         )
         assert interpret._names.get(str(b)) == "climb", "the keypad's 1 labels"
-        assert _drain(
-            qapp, lambda: interpret._writer is None and not interpret._pending
-        )
+        assert _drain(qapp, lambda: not interpret.writes_pending())
     finally:
         workspace.hide()
 
@@ -1257,7 +1256,7 @@ def test_a_label_written_on_interpret_leaves_the_keyboard_on_interpret(qapp, fit
         QTest.keyClick(focus, Qt.Key.Key_1)
         assert interpret._names.get(str(b)) == "climb", "1 labels the open cluster"
         assert _drain(qapp, lambda: handle.state().node_names.get(str(b)) == "climb")
-        assert _drain(qapp, lambda: interpret._writer is None)
+        assert _drain(qapp, lambda: not interpret.writes_pending())
     finally:
         workspace.hide()
 
@@ -1314,14 +1313,14 @@ def test_rename_and_merge_from_the_labels_panel_reach_the_run(
     )
     interpret._rename_label("climb")
     assert _drain(qapp, lambda: "climbing" in handle.state().labels.values())
-    assert _drain(qapp, lambda: interpret._writer is None)
+    assert _drain(qapp, lambda: not interpret.writes_pending())
 
     monkeypatch.setattr(
         QInputDialog, "getItem", staticmethod(lambda *a, **k: ("climbing", True))
     )
     interpret._merge_label("scale")
     assert _drain(qapp, lambda: list(handle.state().labels.values()) == ["climbing"])
-    assert _drain(qapp, lambda: interpret._writer is None)
+    assert _drain(qapp, lambda: not interpret.writes_pending())
     assert handle.state().node_names == {str(a): "climbing", str(b): "climbing"}
 
 
@@ -2366,7 +2365,7 @@ def test_leaving_and_returning_leaves_one_listener(qapp, fitted, monkeypatch, tm
 
     def listeners():
         one_round()
-        _drain(qapp, lambda: False, 100)
+        pump_for(qapp, 100)
         return (
             signals.receivers(queue.progress),
             signals.receivers(queue.recording_done),
@@ -2495,7 +2494,7 @@ def _shown_workspace(qapp, fitted, height: int):
     workspace.resize(1400, height)
     workspace.show()
     interpret = workspace._interpret
-    _drain(qapp, lambda: False, 0.3)
+    pump_for(qapp, 300)
     return workspace, interpret
 
 
@@ -2598,7 +2597,7 @@ def test_the_selected_cluster_is_a_lane_under_browses_ethogram(qapp, fitted):
         assert sum(len(m) for m in browse._ethogram._lane) == len(shown())
         workspace._tabs.setCurrentWidget(interpret)
         interpret.select(first)
-        _drain(qapp, lambda: False, 300)
+        pump_for(qapp, 300)
         assert shown() == expected(second), "read while BROWSE was hidden"
         workspace._tabs.setCurrentWidget(browse)
         assert _drain(qapp, lambda: shown() == expected(first))
@@ -2714,7 +2713,7 @@ def test_right_click_put_back_reaches_the_run(qapp, fitted_temporal, monkeypatch
     action.trigger()
     assert not montage.clips()[index].faded, "the fade lifts at once"
     assert _drain(qapp, lambda: len(handle.taken_out("climb")) == 2)
-    assert _drain(qapp, lambda: interpret._writer is None)
+    assert _drain(qapp, lambda: not interpret.writes_pending())
 
 
 def _two_with_clips(view) -> tuple[int, int]:
@@ -2929,9 +2928,10 @@ def _kept_candidate(view) -> int:
 def test_a_saved_screens_kept_clusters_shade_the_tree_through_the_filters(
     qapp, fitted, monkeypatch
 ):
-    """Ticking a screen in the Differences line is the clusters condition: a kept cluster
-    shades 100%, its parent by the time under it, the rest grey, through the same
-    ``match_shares`` and ``clip_matches`` every other filter goes through."""
+    """Ticking a screen on the Differences tab is the clusters condition for the clips.
+    On the Filters tab the tree is shaded by the fields alone and the clusters the screen
+    kept are framed: the screen does not narrow the share, and the fill is never its
+    colour there (§22)."""
     import detail.api.comparison as comparison_api
     from detail.api.cluster_filter import CLUSTERS, Selection
 
@@ -2957,8 +2957,12 @@ def test_a_saved_screens_kept_clusters_shade_the_tree_through_the_filters(
     selection = bar.selection()
     assert selection.keys() == [CLUSTERS] and selection.leaves_source == "cmp_07"
     assert selection.leaves == view.leaves_under_nodes([node])
-    # Alone, the screen shades by its effect (the next test); beside a clip filter the
-    # share ramp returns, with the screen's leaves still ANDed in.
+    from detail.gui import cluster_filters as cf
+
+    assert bar.open_tab() == cf.FILTERS_TAB
+    assert interpret._icicle.shades() is None, "no field is on: nothing to shade by"
+    assert set(interpret._icicle.kept()) == {node}, "the kept cluster is framed"
+    assert "drug vs vehicle · paired" in interpret._icicle._describe(node)
     bar.set_selection(
         Selection(
             leaves=selection.leaves,
@@ -2968,18 +2972,26 @@ def test_a_saved_screens_kept_clusters_shade_the_tree_through_the_filters(
     )
     selection = bar.selection()
     shaded = interpret._icicle.shades()
-    assert shaded[node] == pytest.approx(1.0)
-    expected = view.match_shares(selection)
+    assert not interpret._icicle._diverging
+    expected = view.match_shares(selection.without(CLUSTERS))
     for each, share in shaded.items():
         assert share == pytest.approx(expected[each], nan_ok=True)
-    assert 0.0 < shaded[view.root] < 1.0
+    assert shaded[view.root] == pytest.approx(
+        1.0
+    ), "every recording: every clip matches"
+    assert set(interpret._icicle.kept()) == {node}
     assert bar.count_label.text().endswith("clips match")
+    matched = int(bar.count_label.text().split(" of ")[0].replace(",", ""))
+    assert matched < len(
+        interpret._root_clips
+    ), "the count is the clips: both tabs ANDed"
     from detail.gui.cluster_filters import panel_name
 
     assert panel_name(selection) == "Filters · 2 active"
 
-    bar.field_row("Differences").reset_button.click()
+    bar.remove(("clusters",))
     assert bar.selection().leaves is None
+    assert interpret._icicle.kept() == {}, "no screen: no frame"
     bar.field_row("Video").reset_button.click()
     assert interpret._icicle.shades() is None
 
@@ -3020,9 +3032,7 @@ def test_run_a_new_screen_opens_the_launch_dialog_seeded_and_ticks_what_it_saved
     assert interpret._icicle._diverging, "ticked alone, the screen shades by its effect"
 
 
-def test_a_screen_alone_shades_the_tree_by_its_effect_and_a_clip_filter_brings_the_share_back(
-    qapp, fitted, monkeypatch
-):
+def test_the_open_tab_decides_what_the_trees_colour_means(qapp, fitted, monkeypatch):
     """The effect mode (§22): while the ticked screen is the only filter on, the tree reads the
     screen's statistic on the diverging scale and the key its axis and floor; tick a clip filter
     too and both return to the share ramp, because two scales on one tree are unreadable.
@@ -3075,19 +3085,28 @@ def test_a_screen_alone_shades_the_tree_by_its_effect_and_a_clip_filter_brings_t
     interpret._read_screens()
     _screens_read(qapp, interpret)
     bar = interpret.filters()
+    from detail.gui import cluster_filters as cf
+
     bar.screens.list.item(0).setCheckState(Qt.CheckState.Checked)
     interpret.select(node)
+    assert (
+        not interpret._icicle._diverging
+    ), "the Filters tab is open: not the effect yet"
+    bar.set_open_tab(cf.DIFFERENCES_TAB)
 
     assert interpret._icicle._diverging
+    assert interpret._icicle.kept() == {}, "the fill says it here; no frame as well"
     shaded = interpret._icicle.shades()
     assert shaded[node] == pytest.approx(math.log(12.4) / LOG_RATIO_EXTENT)
     assert shaded[view.root] != shaded[view.root], "the root has no row: NaN, grey"
-    key = bar.dock.key
-    assert key.is_effect()
+    key = bar.screens.key
+    assert key.is_effect() and not key.isHidden()
+    assert bar.dock.differences_box.isAncestorOf(key), "beside the screen that sets it"
     assert key.text().startswith(
-        "Less ↔ more under drug (against vehicle) | ÷20 … ×20 |"
+        "Less ↔ more under drug (against vehicle) | less … more |"
     )
-    assert "selected 12.4×" in key.text() and "floor" in key.text()
+    assert "selected 12.4×" in key.text() and "no difference" in key.text()
+    assert not bar.dock.key.is_effect(), "the clips-that-match scale keeps its units"
     assert "12.4×" in interpret._icicle._describe(node)
     assert "kept" in interpret._icicle._describe(node)
     theme = plot_theme.current()
@@ -3095,7 +3114,8 @@ def test_a_screen_alone_shades_the_tree_by_its_effect_and_a_clip_filter_brings_t
         shaded[node], theme
     )
 
-    # A clip filter beside the screen: back to the share ramp, the screen still ANDed in.
+    # A clip filter beside the screen changes nothing here: the tree was swapped to a share
+    # with nothing said when one scale served both (user, 2026-11-16).
     bar.set_selection(
         Selection(
             leaves=bar.selection().leaves,
@@ -3103,10 +3123,25 @@ def test_a_screen_alone_shades_the_tree_by_its_effect_and_a_clip_filter_brings_t
             recording_ids=frozenset(view.recording_ids),
         )
     )
+    assert interpret._icicle._diverging and key.is_effect()
+    assert interpret._icicle.shades()[node] == pytest.approx(shaded[node])
+
+    # The Filters tab: the share of clips that match the fields, the kept cluster framed in
+    # the colour of its side.
+    bar.set_open_tab(cf.FILTERS_TAB)
     assert not interpret._icicle._diverging
-    assert not key.is_effect()
     assert interpret._icicle.shades()[node] == pytest.approx(1.0)
-    assert key.text().startswith("Clips that match | 0% … 100% |")
+    assert interpret._icicle.kept() == {
+        node: plot_theme.effect_colour(1.0, theme)
+    }, "the more pole's own colour, whatever the size"
+    assert bar.dock.key.text().startswith("Clips that match | 0% … 100% |")
+    assert key.is_effect(), "the screen's scale is still its own, on its own tab"
+
+    # Unticked: no scale on the Differences tab, nothing shaded there, no frame.
+    bar.remove(("clusters",))
+    assert key.isHidden() and interpret._icicle.kept() == {}
+    bar.set_open_tab(cf.DIFFERENCES_TAB)
+    assert interpret._icicle.shades() is None
 
 
 # --- a label written while a screen is ticked remembers the screen (§22, Phase 3) ---------
@@ -3170,7 +3205,7 @@ def test_a_label_written_while_a_screen_is_ticked_records_the_screen(
         assert inside["relation"] == "under" and inside["kept"] == str(node)
         assert f"inside kept cluster #{node} ·" in bar.origin.text()
 
-    interpret.filters().field_row("Differences").reset_button.click()
+    interpret.filters().remove(("clusters",))
     other = next(
         n for n in range(view.tree.n_nodes - 1) if n != node and n not in children
     )
@@ -3190,7 +3225,7 @@ def test_undo_and_redo_carry_the_origin_with_the_label(qapp, fitted, monkeypatch
     _label(qapp, interpret, node, "climb", handle)
     interpret.undo()
     assert _drain(qapp, lambda: not handle.state().node_labels)
-    assert _drain(qapp, lambda: interpret._writer is None)
+    assert _drain(qapp, lambda: not interpret.writes_pending())
     assert handle.state().label_origins == {}
     assert str(node) not in interpret._origins
     interpret.redo()
@@ -3199,7 +3234,7 @@ def test_undo_and_redo_carry_the_origin_with_the_label(qapp, fitted, monkeypatch
         lambda: handle.state().label_origins.get(str(node), {}).get("comparison")
         == "cmp_07",
     )
-    assert _drain(qapp, lambda: interpret._writer is None)
+    assert _drain(qapp, lambda: not interpret.writes_pending())
     assert interpret._origins[str(node)]["comparison"] == "cmp_07"
     assert interpret.label_bar().origin.text().startswith("From screen cmp_07")
 
@@ -3274,6 +3309,9 @@ def test_a_screen_read_looser_than_its_floor_shows_the_lead_and_the_label_record
         _FakeScreen("cmp_12", [node], clearing=2, leads=[lead]),
     )
     bar = interpret.filters()
+    from detail.gui import cluster_filters as cf
+
+    bar.set_open_tab(cf.DIFFERENCES_TAB)
     assert bar.selection().leaves == view.leaves_under_nodes([node])
     assert bar.screens.strictness_label.text().endswith("1 kept of 2 clearing")
     assert interpret._icicle._diverging
@@ -3289,8 +3327,15 @@ def test_a_screen_read_looser_than_its_floor_shows_the_lead_and_the_label_record
     assert "kept at p ≤ 0.2" in interpret._icicle._describe(lead)
     assert "family-wise p 0.2, own p 0.03, q 0.6" in interpret._icicle._describe(lead)
     interpret.select(lead)
-    key = bar.dock.key
-    assert key.is_effect() and "selected 2.5×" in key.text() and "floor" in key.text()
+    key = bar.screens.key
+    assert key.is_effect() and "selected 2.5×" in key.text()
+    assert "no difference" in key.text()
+    bar.set_open_tab(cf.FILTERS_TAB)
+    assert set(interpret._icicle.kept()) == {
+        node,
+        lead,
+    }, "that level's kept set is framed"
+    bar.set_open_tab(cf.DIFFERENCES_TAB)
 
     _label(qapp, interpret, lead, "lead", handle)
     origin = handle.state().label_origins[str(lead)]
@@ -3307,3 +3352,144 @@ def test_a_screen_read_looser_than_its_floor_shows_the_lead_and_the_label_record
     assert bar.selection().alpha is None
     assert bar.selection().leaves == view.leaves_under_nodes([node])
     assert interpret._icicle.shades()[lead] == 0.0
+
+
+def test_labels_queued_when_the_page_is_left_still_reach_the_run(
+    qapp, fitted, monkeypatch
+):
+    """Three labels typed quickly, then the page left: all three reach the run (issue #24,
+    finding 1).
+
+    INTERPRET shows a label at once and writes it in the background, one write at a time, each
+    reprojecting the run. The queue used to live on the page and each next write started from
+    the previous one's ``done`` — a delivery ``GuiWorker`` drops once its receiver is gone — so
+    leaving the page (the shell ``deleteLater``\\ s it) lost every write after the one in flight.
+    Measured on main with a slowed write: three names on screen, one on disk. The queue now
+    belongs to the run (``gui/run_writes.py``) and outlives the page.
+    """
+    import threading
+
+    gate = threading.Event()
+    _experiment, handle, workspace = _workspace(qapp, fitted)
+    interpret = workspace._interpret
+    view = interpret._view
+    top = view.children(view.root)
+    nodes = [*top[:2], view.children(top[0])[0]]
+    real = type(handle).name_nodes
+
+    def slow(self, *args, **kwargs):
+        gate.wait(20)
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(handle), "name_nodes", slow)
+    names = {int(node): f"behavior{i}" for i, node in enumerate(nodes)}
+    try:
+        for node, name in names.items():
+            interpret.select(node)
+            interpret._label_field.edit.setText(name)
+            interpret._label_field.submit()
+        assert interpret.writes_pending()
+        workspace.deleteLater()
+        qapp.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+    finally:
+        gate.set()
+
+    def on_disk() -> dict:
+        state = handle.state().node_names
+        return {node: state.get(str(node)) for node in names}
+
+    assert _drain(qapp, lambda: on_disk() == names, 30_000), f"on disk: {on_disk()}"
+
+
+def test_a_screen_with_no_floor_is_listed_with_its_reason_and_cannot_be_ticked(
+    qapp, fitted, monkeypatch
+):
+    """A screen over one animal has no floor, so nothing it ranked is shown to differ.
+    Ticked, it took the labels' colours off the tree, coloured nothing, and greyed every
+    clip (user screenshot, 2026-11-17). It is listed greyed, with why in full under the
+    list, and it cannot be ticked — as a screen that cannot be read is."""
+    import detail.api.comparison as comparison_api
+    from detail.analysis import compare
+    from detail.api.cluster_filter import Selection
+
+    _experiment, _handle, workspace = _workspace(qapp, fitted)
+    interpret = workspace._interpret
+    view = interpret._view
+    _screens_read(qapp, interpret)
+    node = _kept_candidate(view)
+    reason = "one ID: a within-unit null cannot move with a single unit"
+
+    class _NoFloor(_FakeScreen):
+        def ranking(self):
+            item = compare.Effect(
+                measure_key=("time_fraction", f"node:{node}", "", "whole"),
+                effect=math.log(12.4),
+                n_units=1,
+                n_present=1,
+                consistency=1,
+                loo_sign_stable=False,
+            )
+            return compare.Ranking(
+                contrasts=[item],
+                floor=None,
+                draws=0,
+                seed=0,
+                no_floor_reason=reason,
+                design=compare.PAIRED,
+                levels=("vehicle", "drug"),
+                unit=("ID",),
+                n_units=1,
+                min_units=1,
+                exact=True,
+                kept=(),
+            )
+
+    monkeypatch.setattr(
+        comparison_api, "node_screens", lambda exp, run_id: [_NoFloor("cmp_13", [], 0)]
+    )
+    interpret._read_screens()
+    _screens_read(qapp, interpret)
+    bar = interpret.filters()
+    item = bar.screens.list.item(0)
+    assert not (item.flags() & Qt.ItemFlag.ItemIsEnabled), "greyed: it cannot be ticked"
+    assert bar.screens.unavailable.text() == (
+        f"Can't be ticked: drug vs vehicle · paired (no floor: {reason})."
+    )
+    assert bar.screen("cmp_13").leaves is None
+    # A selection naming it (kept from before the screen lost its floor, say) is dropped
+    # when the list is read: nothing is applied out of sight.
+    bar.set_selection(Selection(leaves=frozenset({0}), leaves_source="cmp_13"))
+    interpret._read_screens()
+    _screens_read(qapp, interpret)
+    assert bar.selection().is_empty
+    assert interpret._icicle.labels_coloured(), "the tree keeps its labels' colours"
+
+
+def test_a_screen_with_nothing_to_contrast_is_listed_and_cannot_be_ticked(
+    qapp, fitted, monkeypatch
+):
+    """A screen over fewer than two groups has no ranking at all, and ticked it did nothing.
+    Listed with why, and not tickable, as a screen with no floor is (#39)."""
+    import detail.api.comparison as comparison_api
+
+    _experiment, _handle, workspace = _workspace(qapp, fitted)
+    interpret = workspace._interpret
+    _screens_read(qapp, interpret)
+
+    class _Nothing(_FakeScreen):
+        def ranking(self):
+            return None
+
+    monkeypatch.setattr(
+        comparison_api, "node_screens", lambda exp, run_id: [_Nothing("cmp_14", [], 0)]
+    )
+    interpret._read_screens()
+    _screens_read(qapp, interpret)
+    bar = interpret.filters()
+    item = bar.screens.list.item(0)
+    assert not (item.flags() & Qt.ItemFlag.ItemIsEnabled), "greyed: it cannot be ticked"
+    assert bar.screens.unavailable.text() == (
+        "Can't be ticked: drug vs vehicle · paired (nothing to contrast: fewer than two "
+        "groups)."
+    )
+    assert bar.screen("cmp_14").leaves is None

@@ -227,21 +227,43 @@ class ActiveProcessesPage(QWidget):
         self._runs.set_runs(others, _summary(others))
 
 
+#: Every run status -> the caption bucket it is counted in, in the order the caption names
+#: them. One table, data-driven over `JobStatus` by `tests/gui/test_active_processes.py`, so a
+#: new status fails there until it is given a bucket rather than landing in whichever one the
+#: arithmetic leaves over.
+#:
+#: That is how ``cancelled`` was counted: the caption took ``running`` and ``failed`` and called
+#: the remainder *finished*, so a run the user stopped read as "1 finished" beside a listing that
+#: keeps it precisely because it did not finish. ``cancelled`` and ``partial`` are their own
+#: buckets — neither is a failure, and neither is done.
+SUMMARY_BUCKET = {
+    "pending": "running",
+    "running": "running",
+    "failed": "failed",
+    "cancelled": "cancelled",
+    "partial": "partial",
+    "complete": "finished",
+}
+_BUCKET_ORDER = ("running", "failed", "cancelled", "partial", "finished")
+
+
 def _summary(runs) -> str:
     """``N running`` plus whatever else is on screen, and nothing that is not.
 
     It used to read `not is_failed` as "running", which was true while the listing held only
     active and failed rows and became a wrong number the moment finished exports joined them —
-    ten complete exports reported as ten running. The three states are counted from what they
-    are, and a bucket with nothing in it is not mentioned: a standing "0 failed" is noise on
-    every screen where nothing has gone wrong, which is most of them.
+    ten complete exports reported as ten running. Then it counted *finished* as whatever was
+    neither running nor failed, which called a cancelled run finished. Each row is now counted
+    by its own status through `SUMMARY_BUCKET`; a status the table does not know is named as
+    itself rather than folded into a bucket that says something it did not do. A bucket with
+    nothing in it is not mentioned — a standing "0 failed" is noise on every screen where
+    nothing has gone wrong — except ``running``, which is the screen's headline.
     """
-    running = sum(1 for r in runs if r.is_active)
-    failed = sum(1 for r in runs if r.is_failed)
-    done = len(runs) - running - failed
-    parts = [f"{running} running"]
-    if failed:
-        parts.append(f"{failed} failed")
-    if done:
-        parts.append(f"{done} finished")
-    return " · ".join(parts)
+    counts: dict[str, int] = {"running": 0}
+    for run in runs:
+        bucket = SUMMARY_BUCKET.get(run.status, run.status or "unknown")
+        counts[bucket] = counts.get(bucket, 0) + 1
+    order = list(_BUCKET_ORDER) + sorted(set(counts) - set(_BUCKET_ORDER))
+    return " · ".join(
+        f"{counts[b]} {b}" for b in order if counts.get(b) or b == "running"
+    )

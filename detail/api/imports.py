@@ -252,7 +252,9 @@ def import_data(
                 config=stream.config or None,
                 offset_ns=stream.offset_ns,
             )
-    except video_store.ImportStopped:
+    except (video_store.ImportStopped, KeyboardInterrupt):
+        # A Ctrl-C is the user stopping the import, like Cancel. `except Exception` never saw
+        # it, so the recording read `importing` until a GUI next opened the experiment.
         recording_store.set_import_status(recording.dir, "cancelled")
         raise
     except Exception:
@@ -319,6 +321,39 @@ def import_pending(
     recording has deferred work; otherwise it runs sequentially (which also keeps the
     strict cancel-before-each-spec semantics)."""
     deferred = [s for s in specs if s.has_deferred_work]  # empty ones already ready
+    try:
+        return _import_pending(
+            experiment,
+            deferred,
+            part_kwargs,
+            on_progress,
+            on_item_started,
+            on_item_done,
+            should_cancel,
+        )
+    except KeyboardInterrupt:
+        # Ctrl-C in the CLI: nothing after this line runs in this process, and only the GUI
+        # reconciles imports on open — so the recordings not reached would read `queued`
+        # (and the one mid-file `importing`) until someone opened the GUI (issue #28,
+        # finding 14). Mark them the way a Cancel does, on the way out.
+        for spec in deferred:
+            with contextlib.suppress(Exception):
+                rdir = experiment.get_recording(spec.id).dir
+                status = recording_store.read_recording(rdir).get("import_status")
+                if status in ("queued", "importing"):
+                    recording_store.set_import_status(rdir, "cancelled")
+        raise
+
+
+def _import_pending(
+    experiment,
+    deferred,
+    part_kwargs,
+    on_progress,
+    on_item_started,
+    on_item_done,
+    should_cancel,
+) -> tuple[list[tuple[str, str]], bool]:
     k = min(transcode_parallelism(), len(deferred))
     if k <= 1:
         return _import_pending_serial(

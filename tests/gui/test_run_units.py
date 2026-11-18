@@ -13,6 +13,14 @@ event (one recording failed) is one line among thousands of identical ones.
 
 The guard is over the **derivation**, not the drawing: which rows exist, in what order, in what
 state, is the part that can be silently wrong while the widget renders perfectly.
+
+**The second class (issue #28, finding 13).** *A consumer that maps only some of a status
+enum, and lets the rest fall through to a default that means something.* `processing_units`
+tested ``complete`` and ``failed``; a ``cancelled`` recording then drew as *running* with an
+ETA when the live event named it, and a ``partial`` one as *queued*, so a stopped recording read
+as work still to come. Distill mapped ``cancelled`` and missed ``partial`` the same way. Both now
+read one table, `run_units.STATUS_STATE`, and the guard below is data-driven over `JobStatus`, so
+a status added to the enum fails here until it is given a row state on purpose.
 """
 
 from __future__ import annotations
@@ -1351,3 +1359,80 @@ def test_a_done_message_leaves_every_phase_done():
     units = analysis_units(_Event("done"), PHASES)
 
     assert [u.state for u in units] == [DONE] * len(PHASES)
+
+
+# --- every status draws as what it is (issue #28, finding 13) ----------------- #
+from detail.core.dataclasses import JobStatus  # noqa: E402
+
+#: What each status must draw as **when the live event names that very recording** — the
+#: case that hid the bug, because the fall-through then said *running*. Only ``running`` (and
+#: ``pending``, which the coordinator writes the moment it launches) may follow the live event.
+_EXPECTED_STATE = {
+    JobStatus.PENDING: RUNNING,
+    JobStatus.RUNNING: RUNNING,
+    JobStatus.COMPLETE: DONE,
+    JobStatus.FAILED: FAILED,
+    JobStatus.CANCELLED: FAILED,
+    JobStatus.PARTIAL: FAILED,
+}
+
+
+def test_every_job_status_has_a_deliberate_row_state():
+    """A new `JobStatus` member fails here until it is mapped, in the table the builders read."""
+    from detail.gui.run_units import STATUS_STATE
+
+    assert set(STATUS_STATE) == {s.value for s in JobStatus}
+    assert set(_EXPECTED_STATE) == set(JobStatus)
+
+
+@pytest.mark.parametrize("status", list(JobStatus), ids=lambda s: s.value)
+def test_a_recording_row_draws_its_status_even_while_the_live_event_names_it(status):
+    progress = _Progress("r1", _Inner(50, 100, eta_s=15))
+    (unit,) = processing_units(
+        _record(["r1"], {"r1": {"status": status.value}}), progress
+    )
+
+    assert unit.state == _EXPECTED_STATE[status]
+    if status in (JobStatus.CANCELLED, JobStatus.PARTIAL):
+        assert unit.status == status.value  # the word, not "running · ~15s left"
+
+
+@pytest.mark.parametrize("status", list(JobStatus), ids=lambda s: s.value)
+def test_a_recording_row_away_from_the_live_event_is_never_running_unless_pending(
+    status,
+):
+    """Off the live event, an active status is *queued*; an ended one draws as ended."""
+    (unit,) = processing_units(_record(["r1"], {"r1": {"status": status.value}}))
+
+    expected = _EXPECTED_STATE[status]
+    assert unit.state == (QUEUED if expected == RUNNING else expected)
+
+
+def test_a_cancelled_or_partial_row_keeps_its_reason_after_the_status():
+    cancelled, partial = processing_units(
+        _record(
+            ["r1", "r2"],
+            {
+                "r1": {"status": "cancelled"},
+                "r2": {"status": "partial", "error": "ValueError: stopped at part 2"},
+            },
+        )
+    )
+    assert cancelled.status == "cancelled"
+    assert partial.status == "partial · stopped at part 2"
+
+
+@pytest.mark.parametrize(
+    "status",
+    [s for s in JobStatus if s is not JobStatus.RUNNING],
+    ids=lambda s: s.value,
+)
+def test_a_distill_stage_draws_its_status_through_the_same_table(status):
+    """The distill twin reads the same table: ``partial`` used to fall through to *queued*.
+    (``running`` is the one stage status whose row depends on a live event, covered above.)
+    """
+    from detail.gui.run_units import distill_units
+
+    units = distill_units(_distill_record(train_status=status.value, status="running"))
+    expected = _EXPECTED_STATE[status]
+    assert units[1].state == (QUEUED if expected == RUNNING else expected)

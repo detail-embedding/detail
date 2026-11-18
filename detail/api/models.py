@@ -10,6 +10,7 @@ in no torch / ultralytics / sam3.
 
 import inspect
 import shutil
+import tempfile
 import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -18,6 +19,7 @@ from pathlib import Path
 from detail.api import skeletons as skeletons_api
 from detail.api._runner_modules import PIPELINE_RUNNERS
 from detail.core.dataclasses import InstallProgress, ModelReadiness, TextCue
+from detail.core.errors import UserInputError
 from detail.core.protocols import PatchFeatures
 from detail.core.registries import EMBEDDING_MODELS, MODEL_REGISTRIES, MODELS
 from detail.core.skeleton import Skeleton
@@ -25,6 +27,8 @@ from detail.executor.runners import import_runner_modules
 from detail.models import imported as imported_store
 from detail.storage import models as models_store
 from detail.storage import skeleton_library
+from detail.storage.user_yaml import parse_user_yaml
+from detail.storage.user_yaml import require_mapping
 
 
 @dataclass
@@ -568,7 +572,14 @@ def import_model_archive(zip_path: Path | str) -> str:
     zip_path = Path(zip_path)
     if not zip_path.is_file():
         raise FileNotFoundError(f"archive not found: {zip_path}")
-    with zipfile.ZipFile(zip_path) as zf:
+    try:
+        zf = zipfile.ZipFile(zip_path)
+    except zipfile.BadZipFile:
+        raise UserInputError(
+            f"{zip_path.name} is not a model export (a .zip made by `detail model "
+            "export`); to add a .pt checkpoint use `detail model import`"
+        ) from None
+    with zf:
         names = [n for n in zf.namelist() if n.strip("/")]
         for member in names:
             if member.startswith("/") or ".." in Path(member).parts:
@@ -584,21 +595,35 @@ def import_model_archive(zip_path: Path | str) -> str:
             )
         catalog = imported_store.catalog_dir()
         catalog.mkdir(parents=True, exist_ok=True)
-        zf.extractall(catalog)
-    dest = imported_store.model_dir(model_id)
-    if not (dest / models_store.MODEL_FILENAME).is_file():
-        shutil.rmtree(dest, ignore_errors=True)
-        raise ValueError("archive has no model.yaml")
-    record = models_store.read_model_yaml(dest)
-    if imported_store.is_pose_record(record):
+        # Built aside and moved into place only once it checks out, so a refused archive
+        # leaves nothing in the catalog.
+        staging = Path(tempfile.mkdtemp(prefix=".restore-", dir=catalog))
         try:
-            skeleton = _restored_skeleton(record)
-        except ValueError:
-            shutil.rmtree(dest, ignore_errors=True)
-            raise
+            zf.extractall(staging)
+            record = _restored_record(staging / model_id, zip_path)
+            skeleton = (
+                _restored_skeleton(record)
+                if imported_store.is_pose_record(record)
+                else None
+            )
+            dest = imported_store.model_dir(model_id)
+            (staging / model_id).rename(dest)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+    if skeleton is not None:
         record["skeleton_ref"] = _library_entry_for(record, skeleton)
         models_store.write_model_yaml(dest, record)
     return model_id
+
+
+def _restored_record(model_dir: Path, zip_path: Path) -> dict:
+    """The ``model.yaml`` of a model being restored, checked to be a record at all."""
+    path = model_dir / models_store.MODEL_FILENAME
+    if not path.is_file():
+        raise ValueError("archive has no model.yaml")
+    source = f"{zip_path.name}: {model_dir.name}/{models_store.MODEL_FILENAME}"
+    text = path.read_bytes()
+    return require_mapping(parse_user_yaml(text, source), source, "a model record")
 
 
 def _restored_skeleton(record: dict) -> Skeleton:

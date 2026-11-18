@@ -460,3 +460,33 @@ def test_the_path_line_names_the_open_view_and_links_back_to_the_run(
         assert line.text() == base
     finally:
         window.close()
+
+
+def test_the_interpret_docks_tabs_start_where_the_view_tabs_above_them_do(
+    qapp, fitted_temporal
+):
+    """The filter dock's Filters / Differences tabs sit directly under the page's row of view
+    tabs (Interpret, Audit, …), and their left edges are one line. INTERPRET's own layout
+    margin put the dock's a few pixels to the right (user screenshot, 2026-11-17). Measured
+    through the real page, shown and laid out: both rows only exist together here."""
+    from PyQt6.QtCore import QPoint
+
+    experiment, run_id = fitted_temporal
+    page = AnalysisRunDetailPage(experiment, run_id)
+    page.resize(1300, 800)
+    page.show()
+    page._cards["Interpret"].click()
+    qapp.processEvents()
+    assert page.open_view() == "Interpret" and page._view_tabs is not None
+    views = page._view_tabs
+    dock_tabs = page._result._interpret.filters().dock.tabs
+    from tests.gui.conftest import drain_until
+
+    assert drain_until(qapp, dock_tabs.isVisible), "the page loads its view on a thread"
+    assert views.isVisible()
+
+    def first_tab_left(bar) -> int:
+        return bar.mapTo(page, QPoint(bar.tabRect(0).left(), 0)).x()
+
+    assert first_tab_left(dock_tabs) == first_tab_left(views)
+    page.close()

@@ -216,7 +216,9 @@ default, or a spread over time), and you click each point or say it is not visib
 skeleton, make a new set on it; a set's skeleton can change until its first mark, and is
 fixed after that. A run will
 record the set's digest and a copy of the marks it learned from, so a set can be edited afterwards
-without altering a run that used it.
+without altering a run that used it. A run over several recordings copies the set once, when it
+starts: marking more frames while it runs changes the next run, not the recordings this one has
+yet to reach. Retrying that run's unfinished recordings uses the same copy.
 
 **A distilled student** is the keypoint counterpart of [distilling a detector](#detection-models).
 The teacher is the patch method itself, run on the sampled frames from an example set and a
@@ -302,7 +304,12 @@ method produced it, re-ingested). A predicted stream is never read as ground tru
 make a recording eligible for an evaluation, and naming it for scoring is refused, because a
 method scored against its own output produces a good-looking number that measures nothing.
 Anything you import is ground truth unless the file says otherwise or you pass `--origin
-predicted`.
+predicted`. Every label file DETAIL exports carries an `origin` column, so re-importing a
+method's output brings it back as `predicted` on its own.
+
+A label file is one animal in one session. A BORIS export holding several observations or
+subjects, or a MED-PC file holding several boxes, is refused until you pick one; they are never
+merged onto one recording.
 
 ## Detection models
 
@@ -460,9 +467,13 @@ Three things to know:
   refuses to guess and records the choice on every row. When no animal contributed more than one
   there is nothing to decide, and it runs with one observation per recording.
 - It stops at **description**: means, medians, spreads, and a permutation floor saying how big a
-  difference shuffling the group labels would produce anyway. The only p-values are the floor's
-  own: for each measure or cluster, the share of the shuffles that reach it, against the whole
-  family (the floor read as a number) and against its own shuffles alone, with a
+  difference shuffling the group labels would produce anyway. Within each animal a behavior is
+  ranked by how far your animals agree on it, not by how large its numbers are: the mean
+  per-animal effect over its spread across animals (a moderated t), so a 2x change every animal
+  shows outranks a tenfold swing that goes either way, and the floor stops belonging to the
+  sparsest clusters; the effect itself is still what every table prints. The only p-values are
+  the floor's own: for each measure or cluster, the share of the shuffles that reach it, against
+  the whole family (the floor read as a number) and against its own shuffles alone, with a
   false-discovery q over them, so a cohort too small to clear the floor can still say which
   clusters look consistent. No model sits behind them; `stats.csv` is the handoff to whatever
   you test with.

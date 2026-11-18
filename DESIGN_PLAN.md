@@ -843,7 +843,7 @@ frame_idx,t_ns
 
 A run that thins with `every_n_frames` needs no second map: its rows carry the source frame's own index and `t_ns` (§4).
 
-Loading and `frame_idx → t_ns` lookup of these maps live in `storage/recording`. Canonical `t_ns` ↔ float-seconds conversions (`t_ns_to_seconds` / `seconds_to_t_ns`) live in `core/utils`.
+Loading and `frame_idx → t_ns` lookup of these maps live in `storage/recording`. Canonical `t_ns` ↔ float-seconds conversions (`t_ns_to_seconds` / `seconds_to_t_ns`) live in `core/utils`. `seconds_to_t_ns` is the **one checked conversion**: it refuses a value that is not finite or whose nanoseconds do not fit int64, naming where it came from (`what=`), and every importer and every typed offset goes through it (`check_t_ns` for a value already in ns).
 
 **The map is authoritative for frame *retrieval*, not just for counting.** `storage/video.py::read_frame_at` — the seek behind every preview (detection / tracking / input-image / prompt-test) — takes the part's map and seeks by `t_ns`, so the picture returned is the `frame_idx`-th in presentation order: the same indexing the sequential detection pass assigns, which is what makes an overlay keyed by `frame_idx` land on the right image. Without a map it falls to the packet-PTS index, and failing that to a bounded sequential decode (exact by construction, capped by `SEQUENTIAL_DECODE_FRAME_CAP`). What it must never do is seek by frame *number* via cv2's `CAP_PROP_POS_FRAMES`: that converts the ordinal to a time using the container's *advertised* fps, so on a variable-frame-rate or fps-skewed file it returns the wrong picture **and** reports the requested index back, desyncing overlays by an amount that grows with the frame number. Passing the map is also the fast path — it replaces a whole-file packet scan (≈11 s on a 1 GB part) with a CSV read (≈0.1 s). Because a map is part-local from 0 plus the part's recording offset, the seek converts with one constant per part (`video._map_shift_ns`: `map[0]` minus the stream's start time), and a frame is accepted only if its converted `t_ns` is in the map — so a later part or a late-starting file takes the fast path too, and a map that does not describe the file still falls back. The packet-PTS index skips `is_discard` packets in the same loop the import uses, so the two cannot disagree on an edit-listed file.
 
@@ -864,6 +864,20 @@ Each stream has its own clock. The `alignment` block in `recording.yaml` maps st
 - **Simple case** (most common, **built**): constant signed `offset_ns` — `video_t_ns = stream_t_ns + offset_ns` (positive if the stream began after the video, negative if before). Canonical data stays stream-local and is never rewritten; alignment is applied at read time (`storage/streams.apply_alignment`), so re-aligning is a one-number edit.
 - **Advanced case** (not yet built): user-provided correction table CSV mapping `stream_t_ns → video_t_ns` for non-linear drift or hardware sync data.
 
+**Every alignment door gates on the stored clock, in storage (#30).** `streams_store.check_offset_allowed`
+refuses a non-zero offset for a video-anchored clock; it is called by `Recording.add_stream` (the
+resolved clock) and by `streams_store.set_stream_offset` (the stored clock), the only two writers of
+a stream's `alignment` (`tests/storage/test_alignment_doors.py` scans for a third). The offset is
+read only through `streams_store.stream_offset_ns`, from `alignment.offset_ns`.
+
+**Exporting a stream (the `streams` target, amended pending owner confirmation).** The exported CSV
+keeps the canonical columns, `t_ns` in the stream's own clock, and adds `video_t_ns` right after it
+(`video_end_t_ns` after `end_t_ns` for an interval stream), each `apply_alignment` of its row, so the
+file joins tracks on video time without the canonical data being rewritten. A `behavior` stream's
+file also carries `origin`, since the `behavior_csv` importer reads it back. `streams.csv` lists
+`stream, shape, origin, role, clock, offset_ns, file`, with `origin` empty for a stream that is not
+labels and `offset_ns` the stored offset.
+
 **The offset is set at import, not only afterwards.** `Recording.add_stream` takes `offset_ns` and writes it into the manifest in the same write as the rest of the stream (`--offset` on `recording add-stream`, `offset_ns:` in the bundle manifest, the alignment row on the GUI's import form). It defaults to 0, which *asserts* the stream began with the video rather than merely leaving the field unfilled, so a stream that needs a different number is corrected once rather than discovered later. A non-zero offset on a **video-anchored** stream is refused rather than stored, checked against the clock the import *resolved* (a frame-kind CSV reports `video_frames` from a `stream_seconds` importer, so the declared clock would wrongly accept it); storing a number that read time then ignores is worse than refusing it. Afterwards the offset is editable via `Recording.set_stream_offset`, `recording set-stream-offset`, or the GUI **"Sync to video frame"** helper — scrub to the frame where a chosen stream anchor event occurs and the offset is set to `frame_t_ns(frame) − anchor_t_ns` (`Recording.frame_t_ns` maps a recording-global frame to its video `t_ns`). The correction-table upload (with a `generated`/`user` `active` toggle) remains the documented future extension.
 
 **Alignment correction CSV format:**
@@ -879,15 +893,39 @@ stream_t_ns,video_t_ns
 
 | `importer_id` | shape | `role` | `clock` | `config_model` |
 |---|---|---|---|---|
-| `medpc` | event | — | `stream_seconds` | — (the `.MPC` program is an `aux_input`, not config) |
+| `medpc` | event | — | `stream_seconds` | `MedpcSessionConfig` (which session of a several-session file; the `.MPC` program is an `aux_input`, not config) |
 | `behavior_csv` | interval | `behavior` | `video_frames` | — |
-| `boris` | interval | `behavior` | `video_seconds` | — |
+| `boris` | interval | `behavior` | `video_seconds` | `BorisSelectionConfig` (which observation and subject) |
 | `events_csv` | event | — | `stream_seconds` | — |
 | `timeseries_csv` | continuous | — | `stream_seconds` (`video_frames` when the time column is frames) | `CsvStreamConfig` |
 
 `timeseries_csv` is the worked example for everything below: a continuous CSV cannot be read
 without being told which column is time and which are channels, so it is the importer the config
 channel exists for.
+
+**A config can also pick within a file (#30, amended pending owner confirmation).** A MED-PC data
+file can hold every box of a day (one `Start Date:` block each) and a BORIS export several
+observations and subjects. A recording is one animal in one session, so such a file is **refused
+until its importer's config names one** (`configs/stream_select.py`: `MedpcSessionConfig`
+`{subject, box, session}`, `BorisSelectionConfig` `{observation, subject}`), and the refusal lists
+what the file holds. They are never merged and never cut to the last block. Every field defaults to
+`None`, so a one-session file imports exactly as before with no config. The chosen block is recorded
+in the stream `metadata` (`session` / `sessions_in_file`, `observation` / `observations_in_file`,
+`subjects`). Reached through the same config channel as the CSV mapping: `add_stream(config=)`,
+`add-stream --medpc-subject/--medpc-box/--medpc-session/--boris-observation/--boris-subject`, a
+bundle manifest's `config:`, and a picker band in the GUI's Add stream dialog. A selection is about
+one *file*, so a saved preset does not carry it (`ConfigBand.preset_config`, and `--save-preset`
+saves only the CSV mapping).
+
+**`maps_unrecognized_files`** (class attribute, default `False`) says an importer's config can
+make it read a file nothing recognizes; the Add stream dialog falls back to such an importer for an
+unclaimed file. It is declared rather than inferred from `config_model`, since the MED-PC and BORIS
+configs only pick within files those importers already recognize.
+
+**`resolve_clock(path, config)`** returns the clock an import of that file would record, without
+importing it (default: the declared `clock`; the CSV importers override it from the time column).
+Every surface gating an alignment control on a not-yet-imported file reads this, never the class
+attribute: a `frame` time column is `video_frames` from a `stream_seconds` importer.
 
 A `StreamImporter` declares an optional **`config_model`** — a pydantic model single-sourcing
 its parameters (type / bounds / default / help / label) for the GUI form, the CLI, and the
@@ -1000,6 +1038,10 @@ class StreamImporter(ABC):
     aux_inputs: list[AuxInput] = []   # extra files beyond the primary data file
     config_model: type | None = None  # its own pydantic parameters, or None when the
                                       # format is self-describing ("Importer configuration")
+    maps_unrecognized_files: bool = False  # its config can read a file nothing recognizes
+
+    def resolve_clock(self, path: Path, config: dict | None = None) -> str:
+        """The clock importing this file would record (default: ``clock``)."""
 
     def can_import(self, path: Path) -> bool:
         """Returns True if this importer recognizes the primary data file."""
@@ -1050,7 +1092,12 @@ lockstep — `E[i]` (event code) and `T[i]` (time in **seconds**, last value ==
 (`stream_type="events"`, `aux_inputs=[AuxInput("program", …, [".mpc"])]`) pairs
 E with T, drops sentinels, maps codes→labels, and emits `events` rows
 `(t_ns, code, label)` in stream-local time, with the code→label map kept in the
-manifest `metadata`.
+manifest `metadata`. **This is the one layout it supports, and it refuses others rather than
+guess (#30, pending owner confirmation):** no `E`/`T` arrays is refused by name, and a `T` past the
+session length `H` (the sign of `T` logged in ticks, which would import every time too large) is
+refused. A trailing run of `(code 0, time 0)` pairs (a program's unused, unsealed array space) is
+dropped and counted in `metadata.notes`; a code-0 event between real events is refused unless the
+event map names code 0. A file of several sessions is narrowed by `MedpcSessionConfig` (above).
 
 ### Behavior labels (ground truth)
 
@@ -1069,7 +1116,11 @@ is inclusive):
   START→STOP into an interval and emits a POINT as a zero-length interval, on the
   `video_seconds` clock (seconds → `t_ns`; the import layer fills the frame columns via the
   inverse map). `Subject`→`subject` (names kept in `metadata`, the per-row int stays null);
-  `behavior_types` follow from the markers (verified against a real export).
+  `behavior_types` follow from the markers (verified against a real export). An export holding
+  several `Observation id`s or subjects is refused until `BorisSelectionConfig` names one of each,
+  and START/STOP pairing happens within the chosen rows. A label scored both as START/STOP and as
+  POINT is refused naming the rows of each kind, since `behavior_types` holds one kind per label
+  (#30, pending owner confirmation).
 
 Overlapping intervals of different labels are first-class (co-occurring behaviors);
 same-label overlaps are left untouched on import.
@@ -1115,6 +1166,35 @@ every surface displays.
   name; anything else raises `KeyError` rather than guessing. Display a name wherever one will do.
 
 Guard: `tests/api/test_recording_identity.py`.
+
+### Ids are never reused
+
+The recording rule holds for **every** id the tool mints as `<stem>_<n>`: models, datasets,
+processing, distill, analysis and export runs, comparisons, example sets, skeletons, tool runs, a
+recording's own runs (`det_NN`, `track_NN`, `emb_NN`, `kd_NN`, `kt_NN`) and its ROIs and POIs. A
+deleted thing's id is never handed to the next thing of its kind, because finished runs, distill
+records, comparisons, `roi_relations.csv` and export folders go on naming it.
+
+- **One allocator**, `storage/id_allocator.py`. Each family keeps a high-water mark in
+  `.ids.yaml` beside it (`models/.ids.yaml`, `tools/.ids.yaml`, a recording's own `.ids.yaml` for
+  its runs and regions), keyed by stem, rewritten atomically and only upward. A claim holds an
+  exclusive lock on the sibling `.ids.lock` and, for a family stored as directories, creates the
+  id's directory with `exist_ok=False`, so two processes never take one id.
+- **The next id** is the larger of the mark and one past the highest id on disk. An experiment
+  made before the mark existed therefore continues from its highest id: no stored id changes, and
+  an id reused before the mark existed cannot be detected.
+- **ROI and POI ids are stable**: a rename, a shape edit or the scene editor's Save keeps a
+  region's id (`replace_defs` takes each kept region's `id` back), and a new region gets a
+  never-used one.
+- **Not on the allocator, each for a reason**: recordings keep their own counter in `config.yaml`
+  (above); arenas take the lowest free number, because every record naming one is a tracking run
+  and an arena a tracking run names can be neither deleted nor redefined; snapshots are never
+  deleted; a clustering run's label ids (`L<n>`, §22) still take one past the highest *(open: a
+  high-water mark in the run's state)*.
+- **Ids are local.** A skeleton id (`sk_NN`) means something only on the machine that minted it,
+  so whatever compares a `skeleton_ref` across experiments or machines matches its `digest` (§26).
+
+Guard: `tests/storage/test_id_reuse.py`.
 
 ---
 
@@ -1726,7 +1806,7 @@ ts, elapsed_s, unit, unit_index, unit_total, phase, done, total, eta_unit_s, eta
 
 `ts` is a **wall clock**, not an elapsed: "nothing since 14:02" is the question, and an elapsed cannot answer it without knowing when you are reading. `unit` is the recording a processing run is on, empty for a single-job run. `eta_unit_s` is that unit's own remaining and `eta_run_s` the whole run's — two denominators, never conflated, since recordings differ by hours and the run-wide rate says nothing about whether *this* one is stuck.
 
-Its cadence is its own: `ACTIVITY_INTERVAL_S = 5.0`, not `PROGRESS_INTERVAL_S` (0.5s, a bar frame), which would write 72,000 fsynced rows for a ten-hour run. A row is forced at every phase and unit boundary whatever the clock says, so the lines that mark a change are never the ones the throttle dropped. Writing is `best_effort` like the progress writers beside it — publishing is a statement *about* the work, and a raised write would reach a runner's isolation boundary and be recorded as the work itself failing. Three writers: the orchestrator's emit, the single-job worker, and the distill coordinator. It lives in `storage/` and not the GUI because the run outlives the window, because the GUI only ever sees a rendered string, and because a hung run is a bug report.
+Its cadence is its own: `ACTIVITY_INTERVAL_S = 5.0`, not `PROGRESS_INTERVAL_S` (0.5s, a bar frame), which would write 72,000 fsynced rows for a ten-hour run. A row is forced at every phase and unit boundary whatever the clock says, so the lines that mark a change are never the ones the throttle dropped. The throttle drops rather than holds back, so the log keeps the last sample it dropped and writes it before the next boundary's row: a unit is timed from its first sample to its **last**, not to whichever earlier row the clock kept (#32). Every writer calls `ActivityLog.finish` at its terminal status, which writes that held sample and then a row stamped at the run's end in the last unit and phase, so the run's span and its last unit end when the run did. `ts` carries milliseconds; at whole seconds a 4 s recording read anything from 3 to 5 s. Writing is `best_effort` like the progress writers beside it — publishing is a statement *about* the work, and a raised write would reach a runner's isolation boundary and be recorded as the work itself failing. Three writers: the orchestrator's emit, the single-job worker, and the distill coordinator. It lives in `storage/` and not the GUI because the run outlives the window, because the GUI only ever sees a rendered string, and because a hung run is a bug report.
 
 ### `machine.yaml` and `resources.yaml` — what a job ran on, and its peak memory
 
@@ -2185,7 +2265,8 @@ Results are returned directly — one entry per sampled frame, one `FrameResult`
 ```python
 @dataclass
 class PromptTestResult:
-    frame_idx: int
+    part_index: int                   # the video part the frame came from
+    frame_idx: int                    # local to that part
     t_ns: int
     frame_image: np.ndarray
     results: dict[str, FrameResult]   # prompt label ("prompt_0", …) → that prompt's detections
@@ -2204,9 +2285,11 @@ recordings/recording_001/detections/
         ├── test.json          # model_id, min_conf, n_sample_frames, compute; the sampled frames,
         │                      #   the prompts and their colours, and per-frame counts at min_conf
         └── frames/
-            ├── frame_000042_prompt_0.jpg
-            └── frame_000042_prompt_1.jpg
+            ├── part_000_frame_000042_prompt_0.jpg
+            └── part_000_frame_000042_prompt_1.jpg
 ```
+
+A result is identified by its `(part_index, frame_idx)`, never by its position: `sampled_frames` lists every position requested, while a sample that does not decode is skipped, so the results (and `test.json`'s `frame_results`, each of which names its part) can be shorter. The part is in the overlay name because `frame_idx` is local to its part.
 
 Sampled frames are exact. Each is decoded with `video.read_frame_at` and the part's timestamp map (§3 *Frame timestamp maps*), so the picture is the requested presentation index, and `PromptTestResult.frame_idx` reports the frame actually decoded.
 
@@ -3572,7 +3655,7 @@ tracks.zarr/
 ├── first_frame    (T,) int32
 ├── last_frame     (T,) int32
 ├── n_detections   (T,) int32       # frames where a detection was linked
-├── n_gaps         (T,) int32       # total missed frames within the track span
+├── n_gaps         (T,) int32       # processed frames missed within the track span (§4: at a stride, a frame never looked at is not missed)
 └── mean_conf      (T,) float32
 ```
 
@@ -4208,7 +4291,7 @@ recordings/recording_001/
             └── part_001.zarr/
 ```
 
-`M` = frames in this part where the track has a valid detection. `D` = `model.output_dim`. `det_row` is a back-reference to the source detection zarr row — allows re-rendering with a different pipeline or inspecting the original mask without re-running detection.
+`M` = frames in this part where the track has a valid detection. `D` = `model.output_dim`. **`frame_idx` is part-local**: it counts from 0 inside this part, as every per-part store does (§5 `FrameResult.frame_idx`), while `t_ns` is on the recording's clock. The readers (`run_preview.load_track_trajectory` / `load_track_timeline`) return it **recording-wide**, adding the part's start frame from `recording_store.part_start_frames` (keyed by part stem), so anything built from them (query and clustering instances, frame-span examples, the coverage band, Measurements) numbers frames across the whole recording. `det_row` is a back-reference to the source detection zarr row — allows re-rendering with a different pipeline or inspecting the original mask without re-running detection.
 
 **`det_row` is valid only within the part that wrote it, and names the frame's *representative* detection.** A detection is identified by `(track_id, part_index, det_row)` — the embedding zarr stores no part, so the part is whichever file the row is in, and a flat concatenated read resolves one part's index against another's. Where a frame carries several detections of the subject (anchor secondaries), they are OR-merged into one silhouette and `det_row` records the highest-confidence one only. Both facts make `det_row` a *traceability* handle, not a geometry source: reconstructing where the animal was from it mis-resolves across parts and returns the largest fragment's box rather than the animal's.
 
@@ -5678,7 +5761,9 @@ audited: false               # derived: whether an audit.csv sits beside the art
 
 That is Query's (`pipeline/query.py`), in the order it is written; `audited` is filled in by the
 writer, never taken from the producer. A temporal clustering run's (`pipeline/temporal_clustering.py`)
-adds `label_paths` — parallel to `names`, one path per label — writes no `score` (a cluster
+adds `label_paths` — parallel to `names`, one path per label — gives its `unlabelled` source
+label an entry with no name in both (`unlabelled: []`: the fact §23's `unnamed_labels` condition
+reads, so `unnamed_time` is measured on every clustering run), writes no `score` (a cluster
 assignment has no confidence), declares `overlap: exclusive`, and its `method` carries
 `method_id`, `params`, `granularity` and the method's own fit-summary counts.
 
@@ -7037,12 +7122,13 @@ them in a tab widget whose bar is hidden (`gui/result_views.MultiViewWorkspace`)
 - **MEASURES** — §23's whole-recording measures of this artifact, a tab of its own on live runs
   (`pages.MeasuresPanel`); the run page shows the panel directly only for a producer whose result
   holds none.
-- **Differences are not a tab.** The difference screen (§22, *The difference screen*) is a line
-  of INTERPRET's filter dock: a saved §24 node comparison, ticked, shades the tree by the clusters
-  it kept and greys the clips of the rest, one click from the montage. The durable record is the
-  comparison itself, in the experiment's Comparisons section. A DIFFERENCES tab was specified here
-  and never built; the dock is the screen it was meant to be, and it already has the properties
-  the tab needed (never hides, shades on a fixed scale, next to the clips).
+- **Differences are not a tab of the run page.** The difference screen (§22, *The difference
+  screen*) is one of the two tabs of INTERPRET's filter dock: a saved §24 node comparison, ticked,
+  colours the tree by its statistic while that tab is open and greys the clips of the rest, one
+  click from the montage. The durable record is the comparison itself, in the experiment's
+  Comparisons section. A DIFFERENCES tab beside INTERPRET was specified here and never built; the
+  dock is the screen it was meant to be, and it already has the properties the tab needed (never
+  hides, shades on a fixed scale, next to the clips).
 
 **Three of the four tabs are generic, and not by resemblance.** They read only the artifact and
 `metadata.csv`, which is the same fact that makes measures (§23) and comparison (§24) generic. The
@@ -7305,7 +7391,11 @@ rather than repairing:
 The edits are `name_nodes` (by name: an existing name adds to that label; a label's only node given
 a new name renames the label), `create_label`, `label_nodes`, `rename_label`, `merge_labels` and
 `delete_label`, all through one door (`LabelOperations._label_edit`) that folds an older state,
-applies the change, checks the rules and recomputes the resolution. The CLI has `--name-node`,
+applies the change, checks the rules and recomputes the resolution. `edit_labels` applies names,
+renames and merges as **one** edit, each name read against the labels as the edits before it left
+them: the CLI's `--name-node`, `--rename-label` and `--merge-label` run through it, so a command
+whose last pair names no label writes nothing (#24; one write per pair had left the earlier pairs
+written). The CLI has `--name-node`,
 `--rename-label` and `--merge-label`; INTERPRET's label box lists **Add to an existing label**
 (greyed, with the reason, where the parent rule forbids it) and its labels list has Rename… and
 Merge into….
@@ -7507,10 +7597,11 @@ make one `cluster_filter.Selection`, and every change emits at once, a drag at m
 while it moves and once on release (`gui/throttle.py`): **Location** (`gui/density_map.RegionPicker`
 over the run's position density: a box drawn live while dragging, kept with four corner handles to
 resize, dragged from inside to move, a new one dragged from outside, a click toggling one cell;
-greyed with the reason on a run with no positions), **Differences** (the run's saved node
-comparisons, §24, one tickable at a time, with what each kept, and *New screen…*; ticking one
-is the leaves under its kept clusters, `cluster_filter.CLUSTERS`, so the tree shades a kept cluster
-100% and its parent by the time under it — *The difference screen*), **Time in session**
+greyed with the reason on a run with no positions), **Differences** (the dock's other tab, not
+a line of this one: the run's saved node comparisons, §24, one tickable at a time, with what each
+kept, its scale, its strictness and *New screen…*; ticking one is the leaves under its kept
+clusters, `cluster_filter.CLUSTERS`, for the clips, and the tree's colour while that tab is open —
+*The difference screen*), **Time in session**
 (`cluster_filters.SessionRange`: the `RangeHistogram` with `bars=False`, a plain two-handle slider
 over each recording's whole video in `SESSION_STEPS` = 100 steps, ticks *start · middle · end*, a
 line *12%–40% of each recording · 840 clips* or *Whole session*; its line folds like Location's,
@@ -7565,8 +7656,9 @@ frames and no key. A tile's loop line is drawn **under** its picture on a grid-c
 never over the footage: on the footage's black foot the near-black fill vanished and the unplayed
 remainder read as a bar running backwards (review round 4). While a selection is on, **every block is
 shaded by its matching share** (`NodeView.match_shares`) on the fixed 0–100% ramp
-(`plot_theme.match_colour`, grey for none or NaN), and its label colour moves to a 3 px strip along
-its top (`NodeIcicle.set_shades`); the text ink follows the fill. The key marks the selected cluster's share
+(`plot_theme.match_colour`, the ramp's low end for none or NaN), and a block a label covers shows
+a 3 px ink strip along its top in place of its label's colour (`NodeIcicle.fill_of`); the text ink
+follows the fill. The key marks the selected cluster's share
 with a tall bar and a triangle, labelled *selected 2.3%* above the ramp, and the run's with a
 thinner line labelled *run 23%* below it. (A tick per cluster above the ramp was removed in review
 round 3: hundreds of them read as a barcode, and the tree's shading already places each cluster.) **The scale never stretches**: an even 43–55% spread is one mid
@@ -7843,7 +7935,13 @@ cluster and in INTERPRET's montage (faded, tagged), so INTERPRET stays true to t
   and frame view reads `instances.csv`, so all follow.
 - **An edit applies only while it still means what it said**: while the clip's label is
   `from_label` or a label nested under it. A rename keeps it (the id is the same); relabelling the
-  cluster or deleting the label leaves the entry in the state with no effect.
+  cluster or deleting the label leaves the entry in the state with no effect (deleting the label a
+  clip was moved *to* reports the clip unlabelled, as every clip of that label is). **A merge
+  re-points the edits** at the label merged into (`storage/clip_edits.relabel`): the two labels are
+  one behavior, so a clip removed from the source stays removed and one moved into it is in the
+  target; an edit whose two ends become the same label is dropped. Undo puts them back:
+  `label_maps` carries the edits keyed by clip and `restore_labels(..., clip_edits=)` restores them
+  (#24).
 - **The cache readers follow too**, so the label bar and BROWSE's preview agree with the export:
   `NodeView.set_clip_edits` (called by `node_view()` whenever the state file changes) feeds
   `label_time` (a run's covered time moves to `unlabelled` or the target) and `labelled_runs`
@@ -7865,7 +7963,7 @@ no `schema_version` row; its header is its schema.
 | `node` | the labelled cluster it counted toward |
 | `label_path` | that cluster's label path then |
 | `drawn_at` | when the row was written (the name is kept from the draw that came first) |
-| `answer` | `yes` or `no`; empty only in a row an earlier version logged for a draw |
+| `answer` | `yes` or `no`; `withdrawn` for a clip put back after it was answered; empty only in a row an earlier version logged for a draw |
 
 **Why a census.** Review round 11 replaced the random draw of 25 with a review of every clip (the
 user's decision): a draw left most clips unseen, and a clip nobody watched cannot be removed. The
@@ -7892,6 +7990,12 @@ cluster, which writes its census.
   `membership_changed_at` — starts unreviewed rather than showing climb's census. A clip keeps one
   latest answer per path. A rename and a take-out change nothing (a rename carries the answers to
   the new path), and neither does an undo, which restores the label's change time.
+- **Putting a clip back withdraws its answers** (the owner's decision, #24): `put_back_clips`
+  appends a `withdrawn` row for each path the clip has a current answer under
+  (`storage/clip_review.withdraw`), which supersedes the answer without being one. The clip reads
+  as not yet reviewed (`remaining` counts it), so its cluster is no longer *all audited* on a "no"
+  written because the clip was out; the cluster's other clips keep their answers, and finishing
+  again answers it. A version older than this reads the row as an unanswered draw row.
 - **An earlier draw's rows stay readable**: a drawn-but-unanswered row judges nothing; a judged one
   counts as that clip's answer (under its `label_path`; a row with none, under any) until a census
   supersedes it, but no cluster reads as reviewed until
@@ -8414,35 +8518,97 @@ study records kept outside the public tree.
 **It lives in two places, deliberately.** The durable one is the saved §24 node comparison
 (`source: nodes`), with its provenance, record, `ranking.csv` and figures — a result, in the
 experiment's Comparisons section, and what a label written from the screen cites. The live
-one is INTERPRET's **Differences** line in the filter dock (*INTERPRET: the interpretation tab*):
+one is INTERPRET's **Differences** tab in the filter dock (*INTERPRET: the interpretation tab*):
 the run's saved screens, one tickable at a time, and *New screen…*, which opens the comparison
-launch dialog seeded to this run and the cluster source. Ticking a screen is a filter like the
-others — **the clusters it kept, as the leaves under them** (`cluster_filter.Selection.leaves`,
-key `CLUSTERS`) — so with nothing else changed a kept cluster shades 100%, its parent by the time
-under kept children, a sibling branch grey; it ANDs with the recording, location and session
-filters; the montage greys the clips of clusters that do not differ; and "n of N clips match"
-reads as clips of clusters that differ. The page reads each screen's ranking back through the one
-record → ranking mapping (`comparison_report.rank_record`), so the dock, the Comparisons page and
-an export cannot disagree. One screen at a time: two statistics cannot shade one tree. A tab was
-specified for this (§21) and never built; the dock is the screen it was meant to be.
+launch dialog seeded to this run and the cluster source. Ticking a screen is a condition on the
+clips like the others — **the clusters it kept, as the leaves under them**
+(`cluster_filter.Selection.leaves`, key `CLUSTERS`) — so it ANDs with the recording, location and
+session filters; the montage greys the clips of clusters that do not differ; and "n of N clips
+match" reads as clips of clusters that differ. The page reads each screen's ranking back through
+the one record → ranking mapping (`comparison_report.rank_record`), so the dock, the Comparisons
+page and an export cannot disagree. One screen at a time: two statistics cannot shade one tree. **A screen with no floor is listed
+and cannot be ticked** (`ScreenChoice.leaves` `None`, as for one that cannot be read), with its
+reason in full under the list (`cluster_filters.unavailable_text`): nothing it ranked is shown to
+differ, and ticked it took the labels' colours off the tree, coloured nothing and greyed every
+clip (user, 2026-11-17); so is one with nothing to contrast (`rank_record` `None`). Such a screen
+is refused at launch when its shape is knowable (§24 *Known before measuring*). A
+tab beside INTERPRET was specified for this (§21) and never built; the dock is the screen it was
+meant to be.
 
-**While a screen is the only filter on, the tree and the key read its statistic.** The blocks
-take the theme's diverging scale (`plot_theme.effect_colour`): less at one pole, more at the
-other, neutral grey inside the floor and for a cluster the screen has no row for, so only what
-cleared is coloured and its sign says which way. The axis is fixed, as the share ramp's is — ρ
-from −1 to +1 for a trend, ÷20 to ×20 for a log ratio (`match_key.effect_extent`) — with the
-floor's ticks either side of the middle and the selected cluster's effect as the tall bar
-("selected 12.4×"); `match_key.effect_position` is the one map from an effect to the axis, for
-the key and the blocks alike (`cluster_filters.effect_shades`). A profile screen's effect is a
-size whose sign belongs to each cluster's own pair, not to the measure (§24 *Designs*), so its
-axis is one-sided — 1× to ×20 on the scale's upper half, one floor tick, the caption *Differs
-across session* in place of a direction (`match_key.one_sided`; `effect_position` takes the
-magnitude) — the selected cluster's mark names its pair and direction (*selected 9.6× more under
-SA than REI*, `NodeEffect.pair`), and the hover names every block's. A block's hover carries the
-screen's sentence for it, the same words the Comparisons page prints
-(`comparison_report.suggestion`), with *kept*, *nested under a kept cluster* or *inside the
-floor* after it. Tick any clip filter beside the screen and both return to the share ramp: two
-scales on one tree are unreadable, and the screen then acts as a filter like the rest.
+**Colour on the tree means one thing at a time** (`NodeIcicle.labels_coloured`, `fill_of`). With
+no filter shading the tree and no screen ticked, a block is its label's colour: solid for its own
+label, pale under an ancestor's, neutral with none. Once a filter shades the tree, or a ticked
+screen colours it or frames what it kept, colour is the share's or the screen's: a block a label
+covers shows a 3 px ink strip along its top and its name, never the label's hue, and the swatch
+row above the tree draws its squares in the text's colour (`NodeInterpretTab._show_swatches`). A
+screen's frames with no field on leave the fill unshaded, and a labelled block is then the neutral
+stepped toward ink. The label's hue once rode the top of a shaded block — a blue strip on a yellow
+block, the palette's first two being blue and amber, the scale's two poles (user, 2026-11-16:
+*we're using color to communicate two different things*). **And blue and yellow are the screen's
+alone**: a label's colour comes from `ChartTheme.label_identity`, the identity colours less the
+twelve slots within ΔE 15 of either pole in either theme (`LABEL_RESERVED_SLOTS`; blue, amber, sky
+and vermillion of the six), on every surface that colours a behavior by its label — this tree and
+its label bar, BROWSE's list and lanes, the label check, Find clusters' bands, and the exported
+behavior figures (`chart_theme.assign_identities`) — so a label is one colour everywhere and never
+a pole's. Twelve label colours remain before they repeat. Labels made before this take the new
+colours, on screen and in figures exported from now on. AUDIT's ring keeps its colour; it is a
+frame, never a fill, and is not yet reconciled with this rule.
+
+**The dock has two tabs, and the open one decides what the tree's colour means**
+(`cluster_filters.FilterDock.tabs`, `FilterBar.open_tab`, `NodeInterpretTab._shade_tree`).
+*Filters*, first and the tab the dock opens on, holds the clips-that-match scale, the count line
+with Reset all, and every field. *Differences* holds the saved screens, the ticked screen's scale
+and its strictness. Each tab's
+label counts what it has on (*Differences · 1*, *Filters · 2*), so the tab that is not open still
+says it is narrowing the clips or colouring the tree. Reset all removes the Filters tab's fields
+and leaves a ticked screen, which is on the other tab. The two scales are two widgets
+(`ScreenList.key`, `FilterDock.key`), so neither changes its units. This replaced one scale at
+the top of one column that read the screen's statistic *while the screen was the only filter on*
+and a share otherwise: ticking a field beside a screen swapped the tree's colours and the scale's
+units with nothing said, and the scale sat far from the screen that set it (user, 2026-11-16).
+
+**While the Differences tab is open, the tree reads the ticked screen's statistic** — whatever
+else is filtered, and nothing is shaded with no screen ticked. The blocks take the theme's
+diverging scale (`plot_theme.effect_colour`): less at the blue pole, more at the yellow, neutral
+grey inside the floor and for a cluster the screen has no row for, so only what cleared is
+coloured and its sign says which way. The poles differ in lightness as well as hue — blue against
+yellow is the contrast a red-green colour-blind reader keeps, where the earlier blue ↔ vermillion
+pair sat at one lightness (`tests/core/test_chart_theme.py`). The axis is fixed, as the share
+ramp's is, and it is in the unit the floor is in (§24 *The statistic*): t from −10 to +10 on a
+screen scored by the moderated t, the default (`match_key.T_EXTENT`; a block sits by its t and
+the selected cluster's mark reads *selected t +8.8 (12.4×)*, the t first because it is what the
+axis and the floor are, the effect after it because it is what the cluster did), ρ from −1 to +1
+for a trend scored by the effect, ÷20 to ×20 for a log ratio (`match_key.effect_extent`). **The
+scale's ends say *less* and *more*, and *no difference* sits under the middle between the floor's
+ticks** (`match_key.effect_end_words`, `NO_DIFFERENCE_TEXT`): the units (*t −10*, *÷20*) are in
+the bar's tooltip (`match_key.scale_text`) and on the selected cluster's mark, because a reader
+could not say at a glance what they meant. The selected cluster is the tall bar;
+`match_key.effect_position` is the one map from a value to the axis, for the scale and the blocks
+alike (`cluster_filters.effect_shades`, `ScreenChoice.axis_value`), and a block's hover carries
+the t beside the effect's words. A profile screen's effect is a size whose sign belongs to each
+cluster's own pair, not to the measure (§24 *Designs*), so its axis is one-sided, with one floor
+tick, the ends *same* and *differs* and the caption *Differs across session* in place of a
+direction (`match_key.one_sided`; `effect_position` takes the magnitude) — **and its ramp is its
+own, the neutral middle to ink with no hue** (`plot_theme.size_colour`), never the scale's "more"
+half, so the yellow never means *more* on one screen and *differs either way* on another. The
+selected cluster's mark names its pair and direction (*selected t 6.2 (9.6× more under SA than
+REI)*, `NodeEffect.pair`), and the hover names every block's. A block's hover carries the screen's
+sentence for it, the same words the Comparisons page prints (`comparison_report.suggestion`), with
+*kept*, *nested under a kept cluster* or *inside the floor* after it.
+
+**While the Filters tab is open, the tree reads the fields, and frames what the screen kept.**
+Each block is shaded by the share of its clips that match the Filters tab's own fields
+(`Selection.without(CLUSTERS)`): the screen does not narrow that share to its kept clusters, and
+with no field on nothing is shaded. The share ramp is lightness with no hue (`ChartTheme.
+sequential`, `plot_theme.match_colour`, none of it at the low end): it was blue, which is now the
+"less" pole. The clusters the ticked screen kept, at the strictness in force, are **framed on
+their own block's edge in the colour of their side** — the blue pole or the yellow, the ink of a
+profile's ramp — with a dark line either side so the frame reads on a pale fill and a dark one,
+and the screen's sentence in the hover (`cluster_filters.kept_marks`, `NodeIcicle.set_kept`). The
+frame is the pole's own colour whatever the size, because it says *kept, and which way*; the size
+is the Differences tab's to show. A frame only for the screen, not the reverse: a screen keeps a
+handful of clusters, and a filter touches most of them, so a frame for "passes the filter" on the
+Differences tab would mark most of the tree.
 
 **Strictness: a screen read looser or stricter than its floor, as a view.** Under the ticked
 screen the dock shows **Strictness**, a slider over the family-wise levels
@@ -8458,7 +8624,10 @@ saved screen's floor, `kept` and record do not move, and a label written at a lo
 so (below). The purpose is discovery on a cohort too small to clear a family-wise floor — to see
 which clusters would need more animals or another experiment — and every such cluster carries the
 numbers that say how far it is from clearing (*The node source*): its family-wise p, its own p and
-its q, in the hover, on the Comparisons page and in `ranking.csv`. The CLI reads a screen at a
+its q, in the hover, on the Comparisons page and in `ranking.csv`. Because a screen scores by the
+moderated t (§24 *The statistic*), loosening admits the clusters the animals most agree on, not
+the ones with the largest numbers; on a screen scored by the effect it admits by size, which is
+what the floor is in the unit of there. The CLI reads a screen at a
 level with `temporal-interpret --from-screen cmp_NN --at-p LEVEL`; the slider itself has no CLI
 form, since the columns are in the export.
 
@@ -8620,9 +8789,21 @@ measure, and a measure added later applies to every artifact already on disk.
 The output is one row per `(recording, subject, label, label_to, window, measure)`:
 
 ```
-recording_id, subject, label, label_to, window_id, window_start_t_ns, window_end_t_ns,
-measure, value, denominator_ns, n
+recording_id, subject, label, label_to, label_display, label_is_remainder, window_id,
+window_start_t_ns, window_end_t_ns, measure, value, denominator_ns, n
 ```
+
+**A parent label's row counts only its remainder, and says so** (amended in #24, owner decision).
+Labels nest (§22) and a bout counts under its deepest label, so a label with another nested under
+it measures only the time its children did not take. The numbers stay as they are; the row is
+*named* for what it counts. `label` keeps the plain name, because it is the join key a comparison
+groups on (`compare.MEASURE_KEYS`) and a user joins to `instances.csv` on. `label_display` is what
+a person reads — `"<label> (other)"` on such a row, the label itself otherwise — and
+`label_is_remainder` marks the row, so a CSV reader can tell without parsing a name. "Is a parent"
+is decided once, from the manifest's `label_paths` (`measures.remainder_labels`); a producer with
+no hierarchy has none. A comparison stores the list as `remainder_labels` on its record and carries
+the same two columns in `stats.csv` and `ranking.csv`, and every surface that titles a measurement
+reads them.
 
 `denominator_ns` is not optional and not a convenience column — see *Denominators* below.
 
@@ -8956,7 +9137,11 @@ Per `(group, label, measure, window)`: **n**, the central value (mean and median
 
 For a two-group contrast the comparison reports the **raw difference** and the **ratio** of the
 central values. Not a standardized difference: dividing by a pooled spread is a variance model, and
-a variance model is the inference this section deliberately does not do.
+a variance model is the inference this section deliberately does not do. What a within-unit
+ranking *scores* by is a different matter, settled below (*The statistic*): the effect a user
+reads stays the raw ratio; the order and the floor are taken over the effect studentized across
+the units, which is a ranking statistic calibrated by the same permutation, not a model of the
+variance.
 
 **Any ranking of many things by difference ships with its floor.** The discovery difference screen
 (§22) ranks tens of clusters by how much they differ between groups. With tens of clusters and a
@@ -8977,6 +9162,19 @@ observation per group every relabelling leaves every fold change unchanged, so t
 is arithmetically the observed maximum and nothing can ever exceed it. That is withheld with
 `no_floor_reason` rather than printed as a threshold nothing cleared, because a blank column and a
 column of "no" read as "nothing differed" when the truth is "this design cannot tell".
+
+**Known before measuring, refused before measuring.** Three of those shapes are counts of
+recordings and their metadata: a within-unit design where fewer than two units hold the levels
+its null moves, a between design where every group holds at most one unit, and fewer than two
+groups. `compare.no_floor_before_measuring` is the one rule (the same sentence the ranking
+carries afterwards; its counts are upper bounds on the ranking's, so it never refuses what
+measuring could have floored), asked in `prepare_comparison` before the measuring pass. A screen
+(`source: nodes`) exists to say which clusters clear the floor, so without one it has no output:
+it is refused with the reason and what would run (`api.comparison.screen_refusal`), in the launch
+dialog before Run, by `comparison run` and by the API alike. A comparison of labelled behaviors
+with no floor is still a description, reported as measured: the dialog warns in its preview and
+the run goes ahead. The reasons only measuring can know (no measure present in `min_units`
+units, no spread for the moderated t) keep the after-measuring backstop.
 
 ### Designs: the permutation respects the unit, one level down
 
@@ -9049,18 +9247,57 @@ Three rules the within designs share, each from a measurement:
 Beside the effect, every within-design item reports `consistency` (units whose own effect shares
 the sign), `n_units`, `n_present`, and whether the sign survives leaving any one unit out. The
 floor is the same 95th percentile of the largest |effect| over the family, in the same pass, and is
-withheld with `no_floor_reason` when nothing can move (one unit; no measure reaching `min_units`).
+withheld with `no_floor_reason` when nothing can move (fewer than two units holding the levels
+the null moves, since a unit at one level of a paired contrast cannot be flipped; no measure
+reaching `min_units`).
+
+### The statistic: scored by agreement, not by size
+
+The number a within-unit ranking scores each measure by, and the floor is taken over, is the
+measure's **moderated t** (`statistic: moderated_t`, the default): the mean per-unit effect
+over its spread across the units, ``t = mean / ((sd + s0) / √n)``, with `sd` the sample spread
+of the per-unit effects (`0` for a single unit), `n` the units with an effect and `s0` the median
+`sd` over the family's defined measures, fixed from the observed configuration and applied to
+every draw of the null (SAM's fudge factor, chosen the simple way). The effect itself — the mean
+log ratio, the mean ρ — is what every surface prints; the t decides the order and the verdict
+and sits beside it (`Effect.statistic`, `item.score` is whichever the ranking used,
+`Ranking.statistic` / `Ranking.s0`).
+
+**Why, from a measurement.** On the mean effect alone the family-wise floor belongs to the
+sparsest measures: a cluster a few animals barely touch swings ±4 log units under any sign, so
+under the flips it produces the family's largest mean more often than anything else, and the
+floor it sets is one no consistent cluster can reach. On an eight-rat cohort the floor sat at
+16.8× while the two families eight of eight rats agreed on at 12–15× sat under it, kept 0; the
+same screen studentized kept 4, those families. The t makes the null max a fair race: every
+measure's t is on one scale, so each has a similar chance of owning the family's largest, which is
+the balancing property of the max-t permutation (Westfall–Young). The consequence for §22's
+strictness is the one it was built for: loosening admits the clusters the animals most agree on,
+not the ones with the largest numbers.
+
+**What stays and what moves.** The null is the design's own, unchanged: under a sign flip the
+sum of squares is invariant, so each draw's spread follows from its mean and the observed
+configuration stays one of the enumerated draws (an exact own p is still never zero); a trend's
+or a profile's within-unit shuffle recomputes the spread per draw. A profile chooses each
+measure's pair by the t, with `s0` the median over every defined pair of every measure, so the
+floor pays for the choice by the statistic it is taken over. A family where no measure's units
+disagree has no `s0`: the ranking withholds the floor with its reason rather than divide by
+nothing. `statistic: effect` scores by the mean effect itself. A between design has no per-unit
+effects to studentize and ranks on the effect whatever was asked; the record's resolved
+`ranking_statistic` says what ran (Tenet 9), and a record written before the field existed
+carries neither and ranks on the effect, as it did when it was written (§3: a saved comparison is
+never re-read as a different comparison).
 
 **The floor read as numbers.** The null the floor is taken from already says, for every item,
 how far it is from clearing, and a between ranking keeps each measure's own draws beside the
 family's largest for the same purpose (`_magnitudes`). Every item carries three (`Effect` /
 `Contrast`, `ranking.csv`, the ranking tables' *p (family · own)* column, INTERPRET's hover):
-- **`family_p`** — the share of the null's draws whose *largest* effect reaches the item: the
+- **`family_p`** — the share of the null's draws whose *largest* score reaches the item: the
   floor read as a p. Defined as the smallest family-wise level at which the item clears
   `Ranking.floor_at` (the percentile rule rounds its position in the null, so a bare count sits one
-  draw off it at some levels), which makes `family_p ≤ α` and `magnitude > floor_at(α)` agree at
+  draw off it at some levels), which makes `family_p ≤ α` and `score > floor_at(α)` agree at
   every level and `Ranking.clears_at` one rule for the dock's slider and the hover's p; at
-  `FLOOR_ALPHA` (0.05) it is `clears_floor`. Exact over an enumerated null.
+  `FLOOR_ALPHA` (0.05) it is `clears_floor`. Exact over an enumerated null. The score is the
+  item's t or its magnitude, whichever the ranking is on (*The statistic*).
 - **`own_p`** — the share of the item's *own* null draws reaching it, ignoring the rest of the
   family: whether the units agree on it by itself. Exact over an enumerated null (the observed
   configuration is one of its draws, so it is never zero); over a sample the observed labelling
@@ -9120,9 +9357,12 @@ comparisons/<cmp_NN>/
                       id; the config as run (ComparisonConfig.as_record: source_run_id,
                       source_snapshot — resolved — source, group_by, aggregate_to, levels,
                       recordings, measures, windows, draws, seed, presence_s, pseudo_count_s,
-                      min_units_fraction, candidate_floor_s, suppress_nesting); the resolved
-                      design: design (between, paired, trend or profile), design_column,
-                      design_reason, n_units, min_units, ranking_measure; groups,
+                      min_units_fraction, candidate_floor_s, suppress_nesting, statistic); the
+                      resolved design: design (between, paired, trend or profile),
+                      design_column, design_reason, n_units, min_units, ranking_measure,
+                      ranking_statistic (what ranked: moderated_t or effect, the latter for
+                      a between design whatever was asked; absent on a record written before
+                      the statistic existed, which ranks on the effect); groups,
                       n_observations, and left_out, the recordings with no value for a
                       grouping column; provenance, status, created_at;
                       source: labels only — screened_labels, the labels (as measured, from
@@ -9136,10 +9376,11 @@ comparisons/<cmp_NN>/
   nodes.csv           source: nodes only — the node hierarchy the ranking is suppressed over
 
   written by `comparison export` (Comparison.export), into this folder or --out:
-  ranking.csv         every ranked item: effect, floor, clears, kept, family_p / own_p / q
-                      (the floor read as a p, the item's own p, the BH q over the family),
-                      consistency, n_units, pair_a / pair_b (the levels or groups the effect
-                      is between)
+  ranking.csv         every ranked item: effect, statistic (the moderated t where the ranking
+                      is on it; the floor is in its unit), floor, clears, kept, family_p /
+                      own_p / q (the floor read as a p, the item's own p, the BH q over the
+                      family), consistency, n_units, pair_a / pair_b (the levels or groups
+                      the effect is between)
   tables/             per measure: groups as rows, summary columns
   figures/            dot plots, time-resolved curves, the difference ranking with its floor
   summary.md          the quick-look
@@ -9201,8 +9442,8 @@ names — a name can mean the same thing in two runs in a way an id never can.
 - **CLI** — `comparison run` (`--source-run`, `--snapshot`, `--recording` (repeatable: the
   filter), `--group-by`, `--aggregate-to`, `--source labels|nodes`, `--level A --level B`,
   `--measure`, the window options, `--draws`, `--seed`, `--presence-s`, `--pseudo-count-s`,
-  `--min-units-fraction`, `--candidate-floor-s`, `--no-suppress-nesting`), printing the design it
-  resolved; `comparison export`, `comparison list`, `comparison delete`. `--aggregate-to` is **required when the cohort has
+  `--min-units-fraction`, `--candidate-floor-s`, `--no-suppress-nesting`, `--statistic
+  moderated_t|effect`), printing the design it resolved and what the ranking scores by; `comparison export`, `comparison list`, `comparison delete`. `--aggregate-to` is **required when the cohort has
   repeats**, per above, and the refusal names the column it found and how many recordings it
   covers.
 - **GUI** — the experiment's **Comparisons** section: list, launch dialog (source, the column,
@@ -9230,6 +9471,14 @@ names — a name can mean the same thing in two runs in a way an id never can.
   suppression in at least 19 of 20 seeds, and a planted node clears in every seed.
 - **`min_units` leaves an effect undefined, not large**; **suppression is a peak pick** (no kept
   node is an ancestor or descendant of another); **the exact floor does not move with its seed**.
+- **The moderated t, by hand and by what it is for** (`tests/analysis/test_compare_designs.py`):
+  over three animals and eight flips every t, `s0`, the null, the floor and the own p's equal a
+  reference written out in plain Python; a measure four animals agree on at 2× ranks below a
+  tenfold swing on the effect and above it on the t with a smaller family-wise p and the same
+  effect; a profile's pair is chosen by the t; a family with no spread gets no floor and its
+  reason; a record without `ranking_statistic` ranks on the effect and one naming the t on the
+  t; every table, `ranking.csv`, the floor sentence and the record's note carry the t where it
+  ranked and not where it did not.
 - **The node source is leaf-additive**: every row equals the figure computed directly over the
   node's members.
 - **Design resolution is one function**: the launch dialog's preview, the CLI's printed line and
@@ -9536,7 +9785,7 @@ each with a layout, shown as **read-only rows** of the skeleton library (below).
 view (12 points)*, *Quadruped overhead view (8 points)*, *Quadruped side view (5 points)*, *Midline
 (3 points)*. An outright rename, by the user's choice: the old ids no longer resolve. A set or run
 saved under one still holds its own copy and runs, and the example-set picker still places it by
-digest; only the library's *Used by* count, which matches the saved id, no longer counts it. A run counts its
+digest, and the library's *Used by* count matches it by digest too (§3 *Ids are never reused*). A run counts its
 skeleton by the **digest of the copy it holds**, never by a name or a library id — two
 experiments that used the same skeleton produce runs with matching identity.
 
@@ -9572,7 +9821,11 @@ breaks a set, a run or a model.
 **Dependents freeze a skeleton.** A library skeleton is **editable and deletable only while
 nothing uses it**. Its dependents are found by a **live search** of the experiments the app knows
 (`locations.list_experiment_dirs`) for example sets, keypoint detect and track runs, embedding runs
-aligned on them, and trained students whose `skeleton_ref.id` names it. The search runs off the UI
+aligned on them, and trained students whose `skeleton_ref` holds it — matched on the ref's
+**digest**, since a library id means something only on the machine that minted it: a ref naming
+this entry by id and digest counts for it alone (so a duplicate of a used skeleton stays
+editable); a ref whose id names a different skeleton here counts for every entry holding its
+digest; a ref with no digest is matched on its id. The search runs off the UI
 thread behind a busy overlay, when a skeleton is selected and again on Save or Delete. While it
 has dependents, **Save** is replaced by **Save as new** (the edit becomes a new skeleton,
 `derived_from` the old one) and **Delete** is greyed, listing what uses it. Once the last dependent
@@ -9616,9 +9869,12 @@ Example set:  [overhead rats ▾]  8 / 8 frames      (this experiment's sets on 
 - The picker is one widget (`gui/example_set_picker.py`), shown by: the **keypoint detect** form
   and **Test keypoints…** when the method is `dinov3_match`, and the **Distill keypoints…** dialog
   when its teacher is the patch method (§12). It is hidden for a model that does not need examples.
-- A set belongs to a skeleton by its `skeleton_ref.id`; a set with no ref (made before the library,
-  or from a bare `Skeleton` or file) matches the first library entry with the same digest, and one
-  matching none is listed under *(no library skeleton)*, so no set an experiment holds is hidden.
+- A set belongs to a skeleton by its `skeleton_ref.id` when that entry holds the set's skeleton
+  (same digest); otherwise (no ref, made before the library or from a bare `Skeleton` or file, or a
+  ref whose id names another skeleton here) it matches the first library entry with the same
+  digest, and one matching none is listed under *(no library skeleton)*, so no set an experiment
+  holds is hidden. An imported set keeps its `skeleton_ref` only when an entry here holds its
+  digest, and the ref then names that entry.
 - **API / CLI** are unchanged in substance: `create_example_set(name, skeleton)` takes a library
   id, a preset id, a `Skeleton` or a skeleton file; `keypoints examples …` stays the scripted
   route; `keypoints examples edit` renames, and `--skeleton` changes the skeleton until the

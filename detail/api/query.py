@@ -21,10 +21,12 @@ from detail.api.authored_run import (
     SnapshotViewMixin,
 )
 from detail.api.experiment import Experiment
+from detail.core.errors import UserInputError
 from detail.pipeline import query as query_pipeline
 from detail.storage import analysis_runs as analysis_store
 from detail.storage import behavior_output
 from detail.storage import query_runs
+from detail.storage import recording as recording_store
 from detail.storage import snapshots as snapshots_store
 
 
@@ -78,6 +80,33 @@ class QueryRun(AuthoredRun):
             headline=(
                 f"{len(behaviors)} behaviors · {len(calibrated)} calibrated · {vocabulary}"
             ),
+        )
+
+    def _refuse_if_incomplete(self, op: str) -> None:
+        """A search that did not reach every unit refuses to be finalized or exported, naming them.
+
+        Two ways a unit goes unsearched: the search was cancelled before it (``partial``) or one
+        behavior's search raised on it (``open``, with the behavior in ``behaviors_failed``).
+        Either way the unit has no shard, and an export would write it as a header-only CSV —
+        "searched, found nothing" — which is the one thing it is not.
+        """
+        record = analysis_store.read_analysis_yaml(self._run_dir())
+        status = record.get("status", "open")
+        failed = record.get("behaviors_failed") or {}
+        if status not in self._INCOMPLETE_STATUSES and not failed:
+            return
+        missing = query_pipeline.missing_units(self._run_dir())
+        detail = "; ".join(
+            f"{behavior_id} on {', '.join(recordings)}"
+            for behavior_id, recordings in sorted(missing.items())
+        )
+        reasons = "; ".join(f"{b}: {why}" for b, why in sorted(failed.items()))
+        raise ValueError(
+            f"{self.kind} {self.id} did not search every recording it was asked to "
+            f"(status {status!r}), so it will not {op}. Missing: "
+            f"{detail or 'units whose search failed'}"
+            f"{f' ({reasons})' if reasons else ''}. Calibrating what was searched still works; "
+            "re-run the search to cover the rest."
         )
 
     def _read_state(self) -> query_runs.QueryState:
@@ -316,12 +345,12 @@ class QueryRun(AuthoredRun):
                 behavior.id
             ).items():
                 if (recording_id, subject) not in self._timelines:
+                    recording_dir = experiment_store.recording_path(
+                        self._experiment.dir, recording_id
+                    )
+                    self._require_searched_data(recording_dir, recording_id, state)
                     _emb, frame_idx, t_ns = load_track_trajectory(
-                        experiment_store.recording_path(
-                            self._experiment.dir, recording_id
-                        ),
-                        state.embed_run_id,
-                        subject,
+                        recording_dir, state.embed_run_id, subject
                     )
                     self._timelines[(recording_id, subject)] = (t_ns, frame_idx)
                 t_ns, frame_idx = self._timelines[(recording_id, subject)]
@@ -338,6 +367,34 @@ class QueryRun(AuthoredRun):
             self._pools[behavior.id] = mine
             pool.extend(mine)
         return pool
+
+    def _require_searched_data(
+        self, recording_dir: Path, recording_id: str, state
+    ) -> None:
+        """Refuse, naming it, a recording the search read whose data has since been deleted.
+
+        The candidates are re-read from the recording's embedding, so a recording deleted
+        after the search (or its embedding run) leaves nothing to read them from.
+
+        Raises:
+            UserInputError: the recording, or its embedding run, is no longer on disk.
+        """
+        what = None
+        if not recording_dir.is_dir():
+            what = f"recording {recording_id!r} it searched was deleted"
+        elif not (recording_dir / "embeddings" / state.embed_run_id).is_dir():
+            name = recording_store.read_recording(recording_dir).get(
+                "name", recording_id
+            )
+            what = (
+                f"embedding run {state.embed_run_id!r} of recording {name!r}, which it "
+                "searched, was deleted"
+            )
+        if what is not None:
+            raise UserInputError(
+                f"query run {self.id!r} cannot read its candidates: the {what}. Run the "
+                "query again over the recordings that are left"
+            )
 
     def _audit_examples(self, rows) -> set[str]:
         """The candidates the user's own example or non-example clips overlap (§19).
@@ -432,6 +489,10 @@ class QueryRun(AuthoredRun):
                 f"cutoff must be a confidence in [0, 1], got {cutoff!r}. Confidence is "
                 "canonical across query methods (§20), so this axis is method-independent."
             )
+        # Before the edit writes anything: a run whose method this version no longer has cannot
+        # be reprojected, and finding that out inside the reprojection left the new cutoff saved
+        # over results cut at the old one (#24).
+        query_pipeline.resolve_method(self.state().method)
 
         def mutate(state: query_runs.QueryState) -> dict:
             behavior = state.behavior(behavior_id)
@@ -487,6 +548,8 @@ class QueryRun(AuthoredRun):
 
         Raises:
             FileNotFoundError: If the run carries no artifact yet.
+            ValueError: If the search did not reach every unit (cancelled, or a behavior's
+                search failed on one) — the message names them; re-run the search.
 
         The artifact is **pinned first** and the CSVs are written from the pinned copy (§21), so
         an exported file always corresponds to a snapshot still on disk: reopening the run and

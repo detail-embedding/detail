@@ -109,3 +109,39 @@ def test_header_only_raises(tmp_path):
     p = _write(tmp_path, "seconds,label\n")
     with pytest.raises(ValueError, match="no data rows"):
         EventsCsvImporter().import_stream(p, tmp_path, {})
+
+
+# -- times beyond int64; the clock the file resolves to (#30 findings 8, 10) ---------------- #
+def test_epoch_milliseconds_in_a_seconds_column_are_refused_with_the_row(tmp_path):
+    """Stored, it was t_ns 1788000000000000000000 and the preview died on OverflowError."""
+    p = _write(tmp_path, "seconds,label\n1.0,cue\n1788000000000,cue\n")
+    with pytest.raises(ValueError) as err:
+        EventsCsvImporter().import_stream(p, tmp_path, {})
+    assert str(err.value).startswith(
+        "row 3, column 'seconds': 1788000000000.0 seconds is too large to be a time"
+    )
+
+
+def test_a_t_ns_beyond_int64_is_refused(tmp_path):
+    p = _write(tmp_path, "t_ns,label\n9223372036854775808,cue\n")
+    with pytest.raises(
+        ValueError, match=r"row 2, column 't_ns': .* beyond the int64 range"
+    ):
+        EventsCsvImporter().import_stream(p, tmp_path, {})
+
+
+@pytest.mark.parametrize(
+    "header,clock",
+    [
+        ("frame,label", "video_frames"),
+        ("seconds,label", "stream_seconds"),
+        ("t_ns,label", "stream_seconds"),
+    ],
+)
+def test_resolve_clock_follows_the_time_column(tmp_path, header, clock):
+    p = _write(tmp_path, f"{header}\n1,cue\n")
+    importer = EventsCsvImporter()
+    assert importer.resolve_clock(p) == clock
+    assert (
+        importer.import_stream(p, tmp_path, {}).clock == clock
+    )  # and agrees with import

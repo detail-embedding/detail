@@ -16,7 +16,8 @@ which *creates* recordings; this one *adds to* existing ones.
 
 from pathlib import Path
 
-import yaml
+from detail.core.errors import UserInputError
+from detail.storage.user_yaml import read_user_yaml
 
 SCHEMA_VERSION = 1
 
@@ -31,12 +32,13 @@ def load_labels_manifest(path: Path | str) -> dict:
     path = Path(path)
     if not path.is_file():
         raise FileNotFoundError(f"labels manifest not found: {path}")
-    with open(path, encoding="utf-8-sig") as f:
-        data = yaml.safe_load(f)
+    data = read_user_yaml(path)
     if not isinstance(data, dict) or not isinstance(data.get("labels"), dict):
-        raise ValueError("labels manifest must be a mapping with a 'labels' mapping")
+        raise UserInputError(
+            f"{path}: labels manifest must be a mapping with a 'labels' mapping"
+        )
     if data.get("schema_version") != SCHEMA_VERSION:
-        raise ValueError(
+        raise UserInputError(
             f"labels manifest schema_version must be {SCHEMA_VERSION}, got "
             f"{data.get('schema_version')!r}"
         )
@@ -71,10 +73,24 @@ def resolve_labels_manifest(
         if not file_str:
             errors.append(f"labels[{sid!r}] needs a file (a filename or {{file: ...}})")
             continue
+        if not isinstance(file_str, str):
+            errors.append(
+                f"labels[{sid!r}]: the file must be one filename, not "
+                f"a {type(file_str).__name__} ({file_str!r})"
+            )
+            continue
+        if covered is not None and not (
+            isinstance(covered, list) and all(isinstance(b, str) for b in covered)
+        ):
+            errors.append(
+                f"labels[{sid!r}]: covered_behaviors must be a list of behavior names "
+                f"(e.g. [groom, rear]), not {covered!r}"
+            )
+            continue
         resolved = manifest_dir / file_str
         if not resolved.is_file():
             errors.append(f"label file for {sid!r} not found: {resolved}")
         mapping.append((sid, resolved, covered))
     if errors:
-        raise ValueError("labels manifest is invalid:\n  " + "\n  ".join(errors))
+        raise UserInputError("labels manifest is invalid:\n  " + "\n  ".join(errors))
     return mapping

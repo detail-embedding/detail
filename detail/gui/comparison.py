@@ -415,14 +415,19 @@ class ComparisonLaunchDialog(Dialog):
         self._draws = field_widget(ComparisonConfig, "draws")
         self._seed = field_widget(ComparisonConfig, "seed")
         self._ranking_fields = {
-            name: field_widget(ComparisonConfig, name)
-            for name in (
-                "presence_s",
-                "pseudo_count_s",
-                "min_units_fraction",
-                "candidate_floor_s",
-                "suppress_nesting",
-            )
+            # A `Literal` field is a combo (§24 *The statistic*); the rest are numbers and
+            # a bool, which `field_widget` renders.
+            "statistic": choice_combo(ComparisonConfig, "statistic"),
+            **{
+                name: field_widget(ComparisonConfig, name)
+                for name in (
+                    "presence_s",
+                    "pseudo_count_s",
+                    "min_units_fraction",
+                    "candidate_floor_s",
+                    "suppress_nesting",
+                )
+            },
         }
         for name, widget in (
             ("draws", self._draws),
@@ -765,6 +770,11 @@ class ComparisonLaunchDialog(Dialog):
         refusal = self._design_refusal()
         if refusal:
             return refusal
+        foreseen = self._foreseen_no_floor()
+        if foreseen is not None and self.measure_source() == "nodes":
+            from detail.api.comparison import screen_refusal
+
+            return screen_refusal(foreseen)
         return None
 
     def levels(self) -> list[str] | None:
@@ -834,6 +844,32 @@ class ComparisonLaunchDialog(Dialog):
         except compare.ComparisonError as e:
             return str(e)
         return None
+
+    def _foreseen_no_floor(self):
+        """Why this comparison could have no floor, knowable before it runs (§24), or ``None``.
+
+        The one rule the run applies (``compare.no_floor_before_measuring``), asked here so a
+        screen that would be refused is refused before Run rather than by the run (#39), and a
+        labelled comparison that will say *No floor computed* says so in the preview.
+        """
+        group_by = _checked(self._group_by)
+        recordings = self._selected_recordings()
+        if not group_by or cohort.deferred_columns(
+            self._metadata, recordings, group_by
+        ):
+            return None
+        nodes = self.measure_source() == "nodes"
+        try:
+            return compare.no_floor_before_measuring(
+                self._metadata,
+                recordings,
+                group_by=group_by,
+                aggregate_to=self.aggregate_to(),
+                levels=self.levels(),
+                one_row_per_recording=nodes or self._windows.currentText() == "whole",
+            )
+        except compare.ComparisonError:
+            return None  # `_design_refusal` carries that message
 
     def _design_text(self, recordings: list[str], group_by: list[str]) -> str:
         """What will run, in the sentence the record will carry (§24 *Designs*)."""
@@ -965,6 +1001,13 @@ class ComparisonLaunchDialog(Dialog):
         if thin:
             lines.append(
                 f"    ⚠ {', '.join(thin)} hold one recording each, so they have no spread."
+            )
+        foreseen = self._foreseen_no_floor()
+        if foreseen is not None and self.measure_source() != "nodes":
+            # A labelled comparison runs without a floor and is reported as measured; a
+            # screen is refused instead (`validation_error`), so this line is not doubled.
+            lines.append(
+                f"    ⚠ No floor will be computed: {foreseen.reason}. {foreseen.remedy}"
             )
         if outside:
             # The same sentence the record will carry (§24), before the run rather than after.
@@ -1679,6 +1722,8 @@ class ComparisonDetailPage(QWidget):
             lines.append(
                 f"design: {record['design']} — {record.get('design_reason', '')}"
             )
+        # What the ranking scores by (§24 *The statistic*), from the record's resolved field.
+        lines.append(comparison_report.statistic_note(record))
         if comparison_report.left_out_sentence(record):
             lines.append(
                 "left out: "
@@ -1787,9 +1832,10 @@ class ComparisonDetailPage(QWidget):
 
         out.append(_heading("Largest changes"))
         if ranking.floor is not None:
-            floor_note = QLabel(
-                comparison_report.floor_sentence(ranking).replace("**", "")
-            )
+            floor_text = comparison_report.floor_sentence(ranking).replace("**", "")
+            if comparison_report.statistic_sentence(ranking):
+                floor_text += " " + comparison_report.statistic_sentence(ranking) + "."
+            floor_note = QLabel(floor_text)
             floor_note.setWordWrap(True)
             out.append(floor_note)
         kept = ranking.kept_items()
@@ -1936,7 +1982,11 @@ class ComparisonDetailPage(QWidget):
         )
         for row, key in enumerate(keys):
             unit = comparison_report.measure_unit(key)
-            cells = [comparison_report.measure_title(key)]
+            cells = [
+                comparison_report.measure_title(
+                    key, comparison_report.remainders_of(self._record)
+                )
+            ]
             for group in groups:
                 cells.append(_cell(by_measure[key].get(group), unit))
             if ranking is not None:

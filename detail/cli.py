@@ -15,6 +15,7 @@ polygon editor — use the GUI) and render-preview (interactive — use the GUI)
 """
 
 import csv
+import errno
 import subprocess
 import sys
 import threading
@@ -31,6 +32,7 @@ from detail import surfaces
 from detail.api import clip_montage as _clip_montage
 from detail.api.experiment import Experiment
 from detail.api import tools as api_tools
+from detail.configs.stream_select import BorisSelectionConfig, MedpcSessionConfig
 from detail.configs.detection import DetectionConfig
 from detail.configs.display import ConfidenceView
 from detail.configs.embedding import EmbeddingConfig
@@ -54,12 +56,14 @@ from detail.core.dataclasses import (
     PromptTarget,
     TextCue,
 )
+from detail.core.errors import UserInputError
 from detail.core.protocols import ModelNotReadyError
-from detail.core.utils import best_supported_backend
+from detail.core.utils import best_supported_backend, seconds_to_t_ns
 from detail.storage import metadata as metadata_store
 from detail.storage import snapshots as snapshots_store
 from detail.storage import streams as streams_store
 from detail.storage import tool_runs
+from detail.storage.export import ExperimentChangedError
 from detail.transforms.constructors import DEFAULT_CONSTRUCTOR
 from detail.transforms.constructors import surfaced_constructors
 
@@ -81,6 +85,8 @@ _TEMPORAL = TemporalClusteringConfig.model_fields
 _CODEBOOK = TemporalCodebookConfig.model_fields
 _TRK = TrackingConfig.model_fields
 _TRAIN = UltralyticsYOLOConfig.model_fields
+_MEDPC = MedpcSessionConfig.model_fields
+_BORIS = BorisSelectionConfig.model_fields
 _DET_DOC = {p["name"]: p for p in describe_config(DetectionConfig)}
 _EMB_DOC = {p["name"]: p for p in describe_config(EmbeddingConfig)}
 _QE_DOC = {p["name"]: p for p in describe_config(QueryEvalConfig)}
@@ -114,11 +120,16 @@ def _compute_target(backend: str, devices: tuple[int, ...] | None) -> ComputeTar
 
 def _open_experiment(experiment_dir: Path) -> Experiment:
     try:
-        return Experiment.open(experiment_dir)
+        experiment = Experiment.open(experiment_dir)
     except (FileNotFoundError, ValueError) as e:
         raise click.ClickException(
             f"could not open experiment at {experiment_dir}: {e}"
         )
+    # A one-recording run interrupted by Ctrl-C, a closed terminal or a script that never
+    # waited leaves `recording.yaml` behind its `job.json`; every command adopts the real
+    # status first, as the GUI does on open (issue #28, finding 5).
+    experiment.reconcile_recording_runs()
+    return experiment
 
 
 def _stream_config(
@@ -141,6 +152,34 @@ def _stream_config(
             )
         parsed.append({"column": column, "name": renamed or column})
     return {"time_column": time_column, "time_kind": time_kind, "channels": parsed}
+
+
+def _selection_config(importer: str | None, **flags) -> dict | None:
+    """The MED-PC / BORIS selector flags as that importer's ``config``, or ``None``.
+
+    ``flags`` are ``medpc_<field>`` / ``boris_<field>`` keyword values; only the ones given
+    count. A flag for the other importer is refused rather than ignored, since an ignored
+    "--boris-subject mA" on a MED-PC file would import exactly what the user meant to narrow.
+    """
+    given = {k: v for k, v in flags.items() if v is not None}
+    if not given:
+        return None
+    prefixes = {k.split("_", 1)[0] for k in given}
+    if len(prefixes) > 1 or importer not in prefixes:
+        names = ", ".join("--" + k.replace("_", "-") for k in sorted(given))
+        raise click.ClickException(
+            f"{names} only apply to the importer they are named for, and this import uses "
+            f"{importer!r}"
+        )
+    return {k.split("_", 1)[1]: v for k, v in given.items()}
+
+
+def _offset_ns(seconds: float, what: str) -> int:
+    """A typed offset in seconds as int64 ``t_ns``, through the one checked conversion."""
+    try:
+        return seconds_to_t_ns(seconds, what=what)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from None
 
 
 def _read_stream_sources(
@@ -179,11 +218,12 @@ def _read_stream_sources(
             offset_ns: int | None = None
             if len(cells) > 2 and cells[2]:
                 try:
-                    offset_ns = round(float(cells[2]) * 1e9)
+                    seconds = float(cells[2])
                 except ValueError:
                     raise ValueError(
                         f"{path}:{line_no}: offset {cells[2]!r} is not a number of seconds"
                     ) from None
+                offset_ns = seconds_to_t_ns(seconds, what=f"{path}:{line_no}: offset")
             rows.append((cells[0], (path.parent / cells[1]).resolve(), offset_ns))
     if not rows:
         raise ValueError(f"{path} lists no recordings")
@@ -713,6 +753,44 @@ _MIN_CONF_OPT = click.option(
 # --------------------------------------------------------------------------- #
 # main
 # --------------------------------------------------------------------------- #
+#: The errors the root group shows as ``Error: <message>`` (exit 1) whatever command raised
+#: them. A reader that meets an ordinary input mistake raises ``UserInputError`` with a
+#: message naming the thing and what to do; a later user-condition error joins this tuple
+#: by name. Never ``ValueError`` or ``Exception``: a bug must keep its traceback.
+#: ``ExperimentChangedError``: something wrote to the experiment while it was exported.
+USER_ERRORS: tuple[type[BaseException], ...] = (UserInputError, ExperimentChangedError)
+
+#: The ``OSError`` numbers the root group shows as one line: the folder or disk the user
+#: chose cannot take the write. Any other ``OSError`` (a missing file DETAIL expected to
+#: find, a broken pipe) keeps its traceback, so the code that should have checked is found.
+USER_OS_ERRNOS: dict[int, str] = {
+    errno.EACCES: "permission denied for {file}. Check that you can write to that folder, "
+    "or choose another one",
+    errno.EPERM: "permission denied for {file}. Check that you can write to that folder, "
+    "or choose another one",
+    errno.EROFS: "cannot write {file}: the disk is read-only. Copy the experiment to a "
+    "disk you can write to, or choose another folder",
+    errno.ENAMETOOLONG: "a file or folder name is too long for this disk: {file}. Use a "
+    "shorter name",
+    errno.ENOSPC: "no space left on the disk while writing {file}. Free some space, then "
+    "try again",
+}
+
+
+def user_os_error_message(exc: OSError) -> str | None:
+    """The one-line message for an ``OSError`` in :data:`USER_OS_ERRNOS`, else ``None``."""
+    template = USER_OS_ERRNOS.get(exc.errno)
+    if template is None:
+        return None
+    target = exc.filename
+    if target is None:
+        target = "a file"
+    elif str(target).endswith(".tmp"):
+        # An atomic write's temporary sibling is not a name the user knows: its folder is.
+        target = Path(target).parent
+    return template.format(file=target)
+
+
 class _ConsoleSafeGroup(click.Group):
     """The root group, with the output streams hardened before click writes anything.
 
@@ -725,6 +803,25 @@ class _ConsoleSafeGroup(click.Group):
     def main(self, *args: Any, **kwargs: Any) -> Any:
         console.configure_output_streams()
         return super().main(*args, **kwargs)
+
+    def invoke(self, ctx: click.Context) -> Any:
+        """Every subcommand runs inside this call, so an ordinary input mistake that no
+        command caught still reaches the user as one ``Error:`` line, not a traceback.
+
+        Only the named :data:`USER_ERRORS`, and an ``OSError`` whose number is in
+        :data:`USER_OS_ERRNOS`, are turned into a message. Anything else — a ``KeyError``,
+        a ``TypeError``, a plain ``ValueError``, a ``FileNotFoundError`` — is a bug in the
+        code that raised it and keeps its traceback.
+        """
+        try:
+            return super().invoke(ctx)
+        except USER_ERRORS as exc:
+            raise click.ClickException(str(exc)) from exc
+        except OSError as exc:
+            message = user_os_error_message(exc)
+            if message is None:
+                raise
+            raise click.ClickException(message) from exc
 
 
 def _print_version(ctx: click.Context, _param: click.Parameter, value: bool) -> None:
@@ -779,9 +876,16 @@ def experiment_status(experiment_dir: Path) -> None:
     """Show experiment identity + recording list + per-recording run counts."""
     proj = _open_experiment(experiment_dir)
     click.echo(f"experiment: {proj.dir}")
-    recordings = list(proj.recordings)
-    click.echo(f"recordings: {len(recordings)}")
-    for sess in recordings:
+    recording_ids = proj.recording_ids
+    click.echo(f"recordings: {len(recording_ids)}")
+    for recording_id in recording_ids:
+        # One damaged recording.yaml (a hand edit, a sync conflict) costs its own line,
+        # never the rest of the listing (`dirscan.read_each` is the same trade).
+        try:
+            sess = proj.get_recording(recording_id)
+        except UserInputError as exc:
+            click.echo(f"  {recording_id}  (damaged: {exc})")
+            continue
         runs = (
             f"det={len(sess.detection_runs)}, "
             f"track={len(sess.tracking_runs)}, "
@@ -1307,8 +1411,14 @@ def recording_verify(experiment_dir: Path, recording_id: str) -> None:
     added; a moved/renamed file reports missing (relink it), a content change reports changed
     (remove and re-add). Exits non-zero if anything is wrong.
     """
+    from detail.storage import recording as recording_store
+
     proj = _open_experiment(experiment_dir)
-    issues = _recording(proj, recording_id).verify_videos()
+    rec = _recording(proj, recording_id)
+    if not recording_store.video_files(recording_store.read_recording(rec.dir)):
+        click.echo(f"{recording_id}: no video yet, so there is nothing to check")
+        return
+    issues = rec.verify_videos()
     if not issues:
         click.echo(f"{recording_id}: all video parts present and unchanged")
         return
@@ -1424,6 +1534,36 @@ def recording_relink(
     "carrying the channels named here.",
 )
 @click.option(
+    "--medpc-subject",
+    "medpc_subject",
+    type=str,
+    help="MED-PC, a file holding several sessions: " + _MEDPC["subject"].description,
+)
+@click.option(
+    "--medpc-box",
+    "medpc_box",
+    type=str,
+    help="MED-PC, a file holding several sessions: " + _MEDPC["box"].description,
+)
+@click.option(
+    "--medpc-session",
+    "medpc_session",
+    type=click.IntRange(min=1),
+    help="MED-PC, a file holding several sessions: " + _MEDPC["session"].description,
+)
+@click.option(
+    "--boris-observation",
+    "boris_observation",
+    type=str,
+    help="BORIS: " + _BORIS["observation"].description,
+)
+@click.option(
+    "--boris-subject",
+    "boris_subject",
+    type=str,
+    help="BORIS: " + _BORIS["subject"].description,
+)
+@click.option(
     "--offset",
     "offset_s",
     type=float,
@@ -1459,11 +1599,21 @@ def recording_add_stream(
     time_column: str | None,
     time_kind: str,
     channels: tuple[str, ...],
+    medpc_subject: str | None,
+    medpc_box: str | None,
+    medpc_session: int | None,
+    boris_observation: str | None,
+    boris_subject: str | None,
     offset_s: float,
     preset: str | None,
     save_preset: str | None,
 ) -> None:
-    """Import a time-series stream into a recording (Section 3)."""
+    """Import a time-series stream into a recording (Section 3).
+
+    A MED-PC file holding several sessions, or a BORIS export holding several observations or
+    subjects, is refused until the --medpc-* / --boris-* flags pick one; the refusal lists
+    what the file holds. They are never merged.
+    """
     # A preset carries the importer, and the branch below reads it back off the preset —
     # so `--importer` is not merely redundant there, it is ignored. It was `required=True`
     # while `--preset`'s own help said "instead of --importer", which made the documented
@@ -1478,6 +1628,15 @@ def recording_add_stream(
         else None
     )
     config = _stream_config(time_column, time_kind, channels)
+    selection = _selection_config(
+        importer if preset is None else None,
+        medpc_subject=medpc_subject,
+        medpc_box=medpc_box,
+        medpc_session=medpc_session,
+        boris_observation=boris_observation,
+        boris_subject=boris_subject,
+    )
+    offset_ns = _offset_ns(offset_s, "--offset")
     try:
         sess = _recording(proj, recording_id)
         if preset is not None:
@@ -1485,7 +1644,7 @@ def recording_add_stream(
                 name,
                 data_path,
                 preset,
-                offset_ns=round(offset_s * 1e9),
+                offset_ns=offset_ns,
                 aux_paths=aux,
                 origin=origin,
             )
@@ -1498,11 +1657,13 @@ def recording_add_stream(
                 aux_paths=aux,
                 covered_behaviors=covered,
                 origin=origin,
-                config=config,
-                offset_ns=round(offset_s * 1e9),
+                config=selection if selection is not None else config,
+                offset_ns=offset_ns,
             )
         # Saved after the import, never before: a preset is worth keeping once the mapping
         # has been shown to read the file, and a saved-but-broken one is worse than none.
+        # Only the mapping: which session or subject this file held is about this file, and
+        # the same choice on the next recording's file would pick another animal's data.
         if save_preset is not None:
             proj.save_stream_preset(save_preset, importer, config)
     except (FileNotFoundError, ValueError) as e:
@@ -1517,6 +1678,8 @@ def recording_add_stream(
     click.echo(
         f"added stream {name!r} ({importer}) to {recording_id}: {len(events)} rows{marker}"
     )
+    for note in (entry.get("metadata") or {}).get("notes") or []:
+        click.echo(f"  note: {note}")
 
 
 @experiment.command("list-stream-presets")
@@ -1895,11 +2058,14 @@ def recording_set_stream_offset(
     `video_t_ns = stream_t_ns + offset`. The canonical data is never rewritten, so this is a
     one-number edit that can be redone at any time. The GUI's *Sync to video* finds the same
     number by scrubbing; this is how a script sets it across many recordings at once.
+
+    Refused for a stream already on the video's clock (behavior labels, a frame-indexed CSV):
+    it has no offset, and one stored would move the preview but not the scoring.
     """
     proj = _open_experiment(experiment_dir)
     try:
         sess = _recording(proj, recording_id)
-        sess.set_stream_offset(name, round(offset_s * 1e9))
+        sess.set_stream_offset(name, _offset_ns(offset_s, "--offset"))
     except (FileNotFoundError, ValueError) as e:
         raise click.ClickException(str(e))
     click.echo(f"{recording_id}: stream {name!r} offset set to {offset_s:.3f}s")
@@ -2038,7 +2204,10 @@ def recording_status(experiment_dir: Path, recording_id: str) -> None:
         if refusal is not None:
             click.echo(f"  calibration: unusable — {refusal}")
         else:
-            click.echo(f"  calibration: {sess.pixels_per_mm:.4g} px/mm")
+            click.echo(
+                f"  calibration: {sess.pixels_per_mm:.4g} px/mm"
+                f"{sess.calibration_reference()}"
+            )
     for s in sess.streams:
         offset_ns = (s.get("alignment") or {}).get("offset_ns", 0)
         click.echo(
@@ -3502,7 +3671,8 @@ def process_retry(run_id: str, experiment_dir: Path) -> None:
 def process_cancel(run_id: str, experiment_dir: Path) -> None:
     """Cancel a running processing run — stops its coordinator and in-flight recordings.
 
-    Recordings already finished keep their results; `process retry` picks up the rest.
+    Recordings already finished keep their results, and recordings not yet reached are
+    listed as cancelled; `process retry` picks up the rest.
     """
     proj = _open_experiment(experiment_dir)
     _processing_record(proj, run_id, experiment_dir)
@@ -4414,7 +4584,7 @@ def distill_delete(run_id: str, experiment_dir: Path, yes: bool) -> None:
         )
     try:
         proj.delete_distill(run_id)
-    except FileNotFoundError as e:
+    except (FileNotFoundError, ValueError) as e:
         raise click.ClickException(str(e))
     click.echo(f"deleted distill run: {run_id}")
 
@@ -4903,8 +5073,8 @@ def analysis_status(run_id: str, experiment_dir: Path) -> None:
     click.echo(f"  status: {record.get('status')}")
     if record.get(analysis_store.STALE_KEY) is True:
         click.echo(
-            "  results: out of date — the last change did not finish writing them; "
-            f"rebuild with 'detail analysis rebuild {run_id}'"
+            "  results: out of date — the last change was saved but its results were not "
+            f"rebuilt; rebuild with 'detail analysis rebuild {run_id}'"
         )
     if record.get("error"):
         click.echo(f"  error: {record['error']}")
@@ -5468,7 +5638,8 @@ def analysis_query(
 )  # fmt: skip
 @click.option(
     "--finalize", is_flag=True, default=False,
-    help="Mark the run complete — your statement that you are done calibrating.",
+    help="Mark the run complete — your statement that you are done calibrating. Refused, "
+    "naming the recordings, while the search has not reached every one.",
 )  # fmt: skip
 @click.option(
     "--reopen", is_flag=True, default=False,
@@ -5546,7 +5717,10 @@ def analysis_query_calibrate(
         bar.close()
 
     if finalize:
-        _with_stage_progress(lambda bar: run.finalize(progress=bar))
+        try:
+            _with_stage_progress(lambda bar: run.finalize(progress=bar))
+        except ValueError as e:  # a search that did not reach every recording
+            raise click.ClickException(str(e))
         click.echo(f"finalized {run_id}")
 
     _echo_query_state(run)
@@ -5565,6 +5739,13 @@ def _echo_query_state(run) -> None:
     except FileNotFoundError:
         click.echo("  (no behavior output yet — the search did not finish)")
         return
+    if run.artifact_stale:
+        # The cutoffs above are the saved ones; the counts below are from before the last
+        # change, whose rebuild failed. Printed side by side unmarked, they read as one state.
+        click.echo(
+            "  results: out of date — the last change was saved but not rebuilt; the counts "
+            f"below are from before it. Rebuild with 'detail analysis rebuild {run.id}'"
+        )
     click.echo(
         f"  behavior output: {output.bout_count} instance(s) over "
         f"{len(output.coverage)} searched unit(s), vocabulary "
@@ -5784,7 +5965,8 @@ def analysis_export_query(experiment_dir: Path, run_id: str, out_dir: Path) -> N
     """Export a query run's calibrated behaviors as per-recording behavior-stream CSVs.
 
     Each row carries ``origin: predicted``, so re-importing one as a behavior stream can never
-    be read back as ground truth.
+    be read back as ground truth. A run whose search did not reach every recording is refused,
+    naming the ones it missed.
     """
     proj = _open_experiment(experiment_dir)
     try:
@@ -5998,29 +6180,34 @@ def _interpret(
             _echo_tree(run)
             return
         # Every pair is read before anything is written: a malformed one found after `--name`
-        # had already landed left the run half edited.
+        # had already landed left the run half edited. And the names, renames and merges are one
+        # edit (`edit_labels`), so a label name that is wrong — found only against the labels
+        # the edits before it leave — writes nothing either.
         rename_pairs = _label_pairs(renames, "--rename-label", "OLD=NEW")
         merge_pairs = _label_pairs(merges, "--merge-label", "SOURCE=INTO")
         names = _pose_names(node_names) if node_names else None
         origins = _label_origins(proj, run, names, from_screen, at_p) if names else None
-        # Each edit re-projects the whole run's output, so each shows its progress.
-        if names:
+        if names or rename_pairs or merge_pairs:
             extra = {"origins": origins} if origins else {}
+            # The edit re-projects the whole run's output, so it shows its progress.
             _with_stage_progress(
-                lambda bar: run.name_nodes(names, progress=bar, **extra)
+                lambda bar: run.edit_labels(
+                    names,
+                    renames=rename_pairs,
+                    merges=merge_pairs,
+                    progress=bar,
+                    **extra,
+                )
             )
+        if names:
             at = f" at p <= {at_p:g}" if at_p is not None else ""
             click.echo(
                 f"labelled {len(node_names)} node(s)"
                 + (f", from screen {from_screen}{at}" if from_screen else "")
             )
         for old, new in rename_pairs:
-            label = _label_id(run, old)
-            _with_stage_progress(lambda bar: run.rename_label(label, new, progress=bar))
             click.echo(f"renamed {old!r} to {new!r}")
         for source, into in merge_pairs:
-            pair = (_label_id(run, source), _label_id(run, into))
-            _with_stage_progress(lambda bar: run.merge_labels(*pair, progress=bar))
             click.echo(f"merged {source!r} into {into!r}")
         if finalize:
             _with_stage_progress(lambda bar: run.finalize(progress=bar))
@@ -6079,21 +6266,6 @@ def _label_pairs(pairs, option: str, shape: str) -> list[tuple[str, str]]:
             raise click.UsageError(f"{option} takes {shape}, got {pair!r}")
         out.append((left.strip(), right.strip()))
     return out
-
-
-def _label_id(run, name: str) -> str:
-    """The id of the label called ``name`` in ``run`` (ignoring case), or a usage error naming
-    the labels there are."""
-    from detail.storage import run_labels
-
-    labels = run.state().labels
-    label = run_labels.find(labels, name)
-    if label is None:
-        known = ", ".join(sorted(labels.values())) or "none yet"
-        raise click.UsageError(
-            f"no label called {name!r} in this run (labels: {known})"
-        )
-    return label
 
 
 def _echo_tree(run) -> None:
@@ -6755,6 +6927,16 @@ def analysis_query_eval(
     _open_experiment(
         experiment_dir
     )  # friendly error if the experiment is missing/invalid
+    if out_path.is_file():
+        # Rows are appended to --out after the whole evaluation; an unrelated CSV there
+        # would refuse them only then, so check it before spending the evaluation.
+        try:
+            query_eval_csv.read_metrics_csv(out_path)
+        except ValueError as e:
+            raise click.ClickException(
+                f"--out {out_path} is not a query-eval metrics CSV ({e}); rows are "
+                "appended to it, so name a new file or an earlier --out"
+            )
     config = {
         "source_recording_ids": list(search_recordings),
         "embed_run_id": embed_run_id,
@@ -7320,6 +7502,13 @@ def comparison() -> None:
     show_default=True,
     help=_comparison_help("suppress_nesting"),
 )
+@click.option(
+    "--statistic",
+    type=click.Choice(["moderated_t", "effect"]),
+    default=_comparison_default("statistic"),
+    show_default=True,
+    help=_comparison_help("statistic"),
+)
 def comparison_run(
     experiment_dir,
     source_run_id,
@@ -7342,6 +7531,7 @@ def comparison_run(
     min_units_fraction,
     candidate_floor_s,
     suppress_nesting,
+    statistic,
 ) -> None:
     """Run a comparison and save it.
 
@@ -7388,6 +7578,7 @@ def comparison_run(
                 "min_units_fraction": min_units_fraction,
                 "candidate_floor_s": candidate_floor_s,
                 "suppress_nesting": suppress_nesting,
+                "statistic": statistic,
             },
             progress=bar,
         )
@@ -7403,6 +7594,8 @@ def comparison_run(
     click.echo(f"  design: {record.get('design')} — {record.get('design_reason', '')}")
     from detail.analysis import comparison_report
 
+    if comparison_report.statistic_note(record):
+        click.echo(f"  {comparison_report.statistic_note(record)}")
     if comparison_report.left_out_sentence(record):
         click.echo(
             f"  left out: "
@@ -7463,6 +7656,8 @@ _THEME_HELP = (
     multiple=True,
     default=("pdf", "svg", "png"),
     show_default=True,
+    help="A figure format to write; repeat for several. Any format matplotlib writes "
+    "(jpg, tiff, eps, …); an unknown one is refused before anything is drawn.",
 )
 @click.option(
     "--theme",
@@ -7639,6 +7834,12 @@ def tools_quick_segment(
     if not sample and len(prompts) > 1:
         raise click.ClickException(
             "--consecutive runs a single prompt; use --sample to compare prompts"
+        )
+    if sample and export_path is not None:
+        # Checked before the run, which takes minutes: only a consecutive run has a clip.
+        raise click.ClickException(
+            "--export needs --consecutive: --sample frames are spread across the clip, so "
+            "there is no clip to render"
         )
     parsed = [
         Prompt(

@@ -9,7 +9,9 @@ that importer's ``config`` dict.
 Registered by ``importer_id`` and paired with the core ``STREAM_IMPORTERS`` entry, mirroring
 ``gui/tools/registry.py`` and ``gui/modules/registry.py``. The dialog stays generic: it hosts
 whatever band the picked importer contributes and shows nothing where an importer contributes
-none, so an importer with no parameters (MED-PC, BORIS) needs no file here at all.
+none, so an importer with no parameters (the interval and events CSVs) needs no file here at
+all. MED-PC and BORIS contribute a picker (``selection.py``): their files can hold several
+sessions, observations or subjects, and which ones is read from the file.
 
 The band lives here, never on the core ``StreamImporter`` protocol — that would pull Qt into
 ``core/`` (Tenet 3).
@@ -21,7 +23,10 @@ from abc import ABC, abstractmethod
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import QWidget
 
-IMPORTER_UI_MODULES: tuple[str, ...] = ("detail.gui.importers.csv_columns",)
+IMPORTER_UI_MODULES: tuple[str, ...] = (
+    "detail.gui.importers.csv_columns",
+    "detail.gui.importers.selection",
+)
 
 
 class ConfigBand(QWidget):
@@ -39,6 +44,15 @@ class ConfigBand(QWidget):
 
     def config(self) -> dict | None:
         return None
+
+    def preset_config(self) -> dict | None:
+        """The part of :meth:`config` a saved preset keeps — all of it, by default.
+
+        A band whose config is a choice about *this file* (which session, which subject)
+        returns ``None``: the same choice on the next recording's file would pick another
+        animal's data, which is the opposite of what a preset is for.
+        """
+        return self.config()
 
     def set_config(self, config: dict) -> None:
         """Pre-fill from a saved preset, against whatever file is currently loaded.
