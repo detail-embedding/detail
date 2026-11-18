@@ -1018,6 +1018,152 @@ def a_reload_supersedes_its_last_call(package) -> None:
     )
 
 
+#: The GUI's thread classes and the two helpers that start one. A call to any of them starts work
+#: whose result is delivered back to a widget.
+_WORKER_STARTS = frozenset(
+    {
+        "BackgroundCall",
+        "StageProgressWorker",
+        "FitProgressWorker",
+        "RunProgressWorker",
+        "InstallModelWorker",
+        "run_busy",
+        "run_progress",
+    }
+)
+
+#: Work whose result accepts a dialog without ``hold_open_while``, and why that is safe. Keyed by
+#: ``file:Class.method`` like :data:`_CONFIRMATIONS`. Empty: every site found holds its dialog.
+_CLOSES_ON_ITS_OWN: dict[str, str] = {}
+
+
+def _accepts(node) -> bool:
+    """Whether ``node``'s body calls ``.accept()`` on something — closing a dialog as done."""
+    import ast
+
+    return any(
+        isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "accept"
+        for n in ast.walk(node)
+    )
+
+
+def _callback_accepts(callback, scope, methods: dict) -> bool:
+    """Whether a result callback — a lambda, a nested def, or ``self.method`` — accepts a dialog."""
+    import ast
+
+    if isinstance(callback, ast.Lambda):
+        return _accepts(callback)
+    if isinstance(callback, ast.Name):
+        return any(
+            isinstance(n, ast.FunctionDef) and n.name == callback.id and _accepts(n)
+            for n in ast.walk(scope)
+        )
+    if (
+        isinstance(callback, ast.Attribute)
+        and isinstance(callback.value, ast.Name)
+        and callback.value.id == "self"
+    ):
+        if callback.attr == "accept":
+            return True
+        method = methods.get(callback.attr)
+        return method is not None and _accepts(method)
+    return False
+
+
+def _unheld(scope, methods: dict) -> bool:
+    """Whether ``scope`` starts work whose result accepts a dialog, and does not hold it open."""
+    import ast
+
+    starts = held = False
+    callbacks = []
+    for node in ast.walk(scope):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+        if name in _WORKER_STARTS:
+            starts = True
+            if name in ("run_busy", "run_progress"):
+                callbacks += node.args[2:3]
+                callbacks += [k.value for k in node.keywords if k.arg == "on_error"]
+                held |= name == "run_progress" and any(
+                    k.arg == "on_cancel" for k in node.keywords
+                )
+        elif (
+            name == "connect"
+            and isinstance(func.value, ast.Attribute)
+            and func.value.attr in ("done", "failed")
+        ):
+            callbacks += node.args[:1]
+        elif name == "hold_open_while":
+            held = True
+    return (
+        starts
+        and not held
+        and any(_callback_accepts(cb, scope, methods) for cb in callbacks)
+    )
+
+
+def _dialogs_closing_on_running_work(package) -> list[str]:
+    """``file:Class.method`` (or ``file:function``) of each start of work that accepts a dialog
+    when it finishes, where the dialog is not held open while it runs."""
+    import ast
+
+    found = []
+    for source in sorted(package.rglob("*.py")):
+        if source.name in _SCAN_EXEMPT:
+            continue
+        tree = ast.parse(source.read_text(encoding="utf-8-sig"))
+        rel = source.relative_to(package).as_posix()
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef) and _unheld(node, {}):
+                found.append(f"{rel}:{node.name}")
+            elif isinstance(node, ast.ClassDef):
+                methods = {
+                    m.name: m for m in node.body if isinstance(m, ast.FunctionDef)
+                }
+                for method in methods.values():
+                    if _unheld(method, methods):
+                        found.append(f"{rel}:{node.name}.{method.name}")
+    return [key for key in found if key not in _CLOSES_ON_ITS_OWN]
+
+
+@requirement(
+    kinds=("package",),
+    counterexample=lambda: _a_package_that(
+        "pass",
+        extra=(
+            "class AddPartDialog(Dialog):\n"
+            "    def _start(self):\n"
+            "        worker = StageProgressWorker(self._copy, receiver=self)\n"
+            "        worker.done.connect(lambda _r: self.accept())\n"
+            "        worker.start()\n\n\n"
+        ),
+    ),
+)
+def a_dialog_that_runs_work_owns_its_close(package) -> None:
+    """A dialog whose answer comes from background work stays open until that work has answered.
+
+    Esc, the window's close button and a Cancel wired to ``reject`` close a dialog as cancelled,
+    and the work it started goes on regardless. The launch dialogs closed during validation and
+    the run started anyway, with the page told nothing had; Add video part closed on Cancel and
+    added the part behind a page still listing the old ones; the export dialog, the behavior-label
+    import and the skeleton save had the same shape (#35). Work whose result *accepts* the dialog
+    is the shape: the dialog's answer depends on it, so closing first answers wrongly. Pass the
+    worker to ``Dialog.hold_open_while`` — a close request then stops the work or says why it
+    cannot — or start it with ``run_progress(..., on_cancel=...)``, which cancels it with the
+    window; or list the site in :data:`_CLOSES_ON_ITS_OWN` with the reason it is safe.
+    """
+    found = _dialogs_closing_on_running_work(package)
+    assert not found, (
+        f"{found} accept a dialog when background work finishes, and nothing stops Esc or the "
+        "window's close from closing it first as cancelled: hold it with "
+        "`hold_open_while(worker, on_close_request)`"
+    )
+
+
 #: Palette writes that pass a literal colour, and why that one is not a status colour. Keyed by
 #: ``file:Class.method`` like :data:`_CONFIRMATIONS`, for the same reason.
 _LITERAL_PALETTE_COLOURS: dict[str, str] = {}

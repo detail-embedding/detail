@@ -1,4 +1,11 @@
-"""GUI stream dialogs: add + preview construct and render (Section 3)."""
+"""GUI stream dialogs: add + preview construct and render (Section 3).
+
+**A chosen mapping dropped by the next file** (#35). The CSV band re-applied a saved mapping only
+when it had been chosen *before* any file, so picking another file — the very advice the
+missing-column message gave — unticked every column while **Reuse a mapping** still named the
+mapping, and choosing it again did nothing because the selection had not changed. The band keeps
+the mapping until another is chosen and applies it to each file; the stream keeps its name.
+"""
 
 import pytest
 
@@ -1076,3 +1083,41 @@ def test_a_sorted_streams_table_acts_on_the_stream_the_row_shows(
     assert "'apple'" in asked[0]
     remaining = [s["name"] for s in recording.streams]
     assert remaining == ["zebra", "mango"]
+
+
+def test_a_chosen_mapping_applies_to_the_next_file_picked(qapp, tmp_path):
+    """#35 finding 9. Only a mapping chosen *before* any file was re-applied, so picking
+    another file — the advice the missing-column message gives — unticked every column while
+    **Reuse a mapping** still named the mapping, and choosing it again did nothing because the
+    selection had not changed. The mapping showing is the mapping applied, file after file.
+    """
+    from detail.gui.streams import AddStreamDialog
+
+    proj = Experiment.create("p", tmp_path)
+    recording = proj.create_recording("s1")
+    proj.save_stream_preset(
+        "dlc",
+        "timeseries_csv",
+        {
+            "time_column": "t_sec",
+            "time_kind": "seconds",
+            "channels": [{"column": "elbow", "name": "elbow"}],
+        },
+    )
+    dialog = AddStreamDialog(recording)
+    dialog._data.set_path(str(_pose_csv(tmp_path)))  # has no `elbow`
+    dialog._preset.setCurrentIndex(dialog._preset.findData("dlc"))
+    problem = dialog._band.problem()
+    assert problem == (
+        "this CSV has no elbow, which the chosen mapping names — pick a file that has it, "
+        "or choose another mapping."
+    ), "the advice must be something the user can do (there is no row to untick)"
+
+    other = tmp_path / "pose_002.csv"
+    other.write_text("t_sec,elbow,nose_x\n0,1,2\n0.1,3,4\n", encoding="utf-8")
+    dialog._data.set_path(str(other))
+
+    assert dialog._preset.currentData() == "dlc"
+    assert dialog._band.config()["channels"] == [{"column": "elbow", "name": "elbow"}]
+    assert dialog._band.problem() is None
+    assert dialog._name.text() == "dlc", "the stream keeps the mapping's name"

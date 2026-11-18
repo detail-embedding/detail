@@ -24,11 +24,17 @@ The payload rides in `itemData`; the label is display only. That is the `apply_a
 is a sentence, not an id.
 """
 
+import math
+
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import QComboBox, QWidget
 
 from detail.configs.baselines import baselines_for
-from detail.configs.describe import iter_config_models, summarize_settings
+from detail.configs.describe import (
+    describe_config,
+    iter_config_models,
+    summarize_settings,
+)
 
 #: What the first item says, and what a form opens on.
 DEFAULTS_LABEL = "Defaults"
@@ -128,9 +134,47 @@ class StartFromRow(QWidget):
         self.picked.emit(dict(settings or {}))
 
 
+def behavior_names(value) -> list[str] | None:
+    """A ``behaviors`` value as the names a form ticks, or None when it is not a behavior list.
+
+    A form's ``config()`` emits names. A query-eval run *record* stores what it scored as one
+    dict per behavior (``behavior``, ``skipped``, counts), at the record's top level rather than
+    in ``params``. Turned into names here, where a record is read, so ``load_config`` takes one
+    shape — the one ``config()`` returns — and the two stay inverses (#35). A behavior the run
+    skipped was not scored, so it is not ticked.
+    """
+    if not isinstance(value, list):
+        return None
+    names = []
+    for entry in value:
+        if isinstance(entry, str):
+            names.append(entry)
+        elif isinstance(entry, dict) and "behavior" in entry:
+            if not entry.get("skipped"):
+                names.append(entry["behavior"])
+        else:
+            return None
+    return names
+
+
+def record_settings(record: dict) -> dict:
+    """The settings a previous run was launched with, as its form's ``config()`` shapes them.
+
+    ``params`` (an analysis run) or ``config`` (a processing run), plus the behaviors a run
+    scored when the record lists them beside ``params`` rather than in it: Start from on a
+    query-eval run that scored ``rear`` of ``groom, rear, dig`` used to tick all three.
+    """
+    settings = dict(record.get("params") or record.get("config") or {})
+    if settings and "behaviors" not in settings:
+        scored = behavior_names(record.get("behaviors"))
+        if scored:
+            settings["behaviors"] = scored
+    return settings
+
+
 def _run_item(module_id: str, record: dict) -> tuple[str, dict | None]:
     """``(label, settings)`` for one previous run, or ``(label, None)`` when it recorded none."""
-    settings = record.get("params") or record.get("config") or {}
+    settings = record_settings(record)
     head = record.get("id", "?")
     recordings = record.get("recording_ids") or []
     bits = [head]
@@ -174,3 +218,79 @@ def processing_runs_for(experiment, module_id: str) -> list[dict]:
         key=lambda r: r.get("id", ""),
         reverse=True,
     )
+
+
+# -- what a pick could not restore -------------------------------------------- #
+#: The scalars a note compares. A list or a model object (a prompt, a compute target, a
+#: behavior list) has no single value to name, and a form restores those by its own rules.
+_SCALARS = (str, int, float, bool)
+
+
+def _same(asked, got) -> bool:
+    if isinstance(asked, bool) or isinstance(got, bool):
+        return asked == got
+    if isinstance(asked, (int, float)) and isinstance(got, (int, float)):
+        return math.isclose(float(asked), float(got), rel_tol=1e-6, abs_tol=1e-9)
+    return asked == got
+
+
+def _shown(value) -> str:
+    return repr(value) if isinstance(value, str) else str(value)
+
+
+def unrestored_settings(
+    module_id: str, asked: dict, got: dict, *, noted_by_form=frozenset()
+) -> list[str]:
+    """One line per setting a pick asked for that the form did not take, as it reads now.
+
+    **Compared, not reported by each setter.** A form restores a run through a dozen combos and
+    spin boxes, hand-written and generated, and each can refuse in its own way: a choice this
+    build does not offer leaves a combo where it was, a number outside the field's range is
+    clamped by the spin box. Asking every setter to report was the per-form copy that reached
+    two forms (tracking's tracker, the scan's method) and left the rest silent — an embedding
+    run whose model is not registered here opened on another model under a picker row naming
+    the first (#35). So the pick is compared with what the form now reads back, over the
+    module's own config model: every *setting* it declares, at the top level and one level into
+    a nested settings dict. ``config()`` and ``load_config()`` are inverses over settings
+    (`tests/gui/test_config_round_trip.py`), so any difference here is a value the form could
+    not take.
+
+    Numbers are named as well as choices: a clamp to the nearest legal value is still a run
+    configured differently from the one picked, and the user is told rather than left to find
+    it (a decision recorded in the PR for #35).
+
+    A value the pick leaves ``None`` asks for the form's own default and is never a difference.
+    ``noted_by_form`` names fields the form already explains in place (tracking's tracker).
+    """
+    model = dict(iter_config_models()).get(module_id)
+    if model is None:
+        return []
+    lines = []
+    for field in describe_config(model):
+        name = field["name"]
+        if field["scope"] != "setting" or name in noted_by_form:
+            continue
+        if name not in asked or name not in got:
+            continue
+        lines += _differences(field["label"], asked[name], got[name])
+    return lines
+
+
+def _differences(label: str, asked, got) -> list[str]:
+    if isinstance(asked, dict) and isinstance(got, dict):
+        out = []
+        for key, value in asked.items():
+            if key in got:
+                out += _differences(f"{label} › {key}", value, got[key])
+        return out
+    if asked is None or not isinstance(asked, _SCALARS) or _same(asked, got):
+        return []
+    if isinstance(asked, str):
+        why = "not offered here"  # a choice, or a model this build does not have
+    elif isinstance(asked, (int, float)) and not isinstance(asked, bool):
+        why = "outside what this form allows"
+    else:
+        why = "not taken by this form"
+    return [
+        f"{label}: that run used {_shown(asked)} ({why}); this form has {_shown(got)}."
+    ]

@@ -37,8 +37,11 @@ from detail.gui.modules import registry
 from detail.gui.start_from import (
     StartFromRow,
     analysis_runs_for,
+    behavior_names,
     processing_runs_for,
+    unrestored_settings,
 )
+from detail.gui.status_color import WARN, set_label_color
 from detail.gui.modules.registry import (
     ANALYSIS_GUI_MODULES,
     GUI_MODULES,
@@ -110,24 +113,48 @@ def _apply_to_config(dialog, selected: list, resolved) -> None:
     dialog._config.apply_recordings(selected, resolved)
 
 
+#: What a close request during a launch says, once it has asked the launch to stop.
+STOPPING_LAUNCH = (
+    "Stopping — if the run has already been started, it opens instead of this window."
+)
+
+
 def _set_form_busy(dialog, busy: bool) -> None:
     """Freeze a launch dialog's form while it validates + spawns off the UI thread,
     showing a status line so a multi-second validation reads as work, not a hang.
-    Shared by both launch dialogs (identical field set)."""
+    Shared by both launch dialogs (identical field set).
+
+    Cancel stays live and reads **Stop**: disabling it left Esc as the only way out, and Esc
+    closed the dialog as cancelled while the worker went on to start the run (#35).
+    """
     for widget in (
         dialog._ok_button,
-        dialog._cancel_button,
         dialog._module_combo,
         dialog._recordings,
         dialog._select_all,
         dialog._clear,
     ):
         widget.setEnabled(not busy)
+    dialog._cancel_button.setEnabled(True)
+    dialog._cancel_button.setText("Stop" if busy else "Cancel")
     if dialog._config is not None:
         dialog._config.setEnabled(not busy)
     dialog._status.setText(
         f"Validating {len(dialog._pending_recordings)} recording(s)…" if busy else ""
     )
+
+
+def _stop_launch(dialog, call: StageProgressWorker) -> None:
+    """A close request while the launch runs: stop it at its next progress report.
+
+    Every report ``run_processing`` makes comes before it reserves a run, so a stop that lands
+    on one leaves no run behind; a launch that reports nothing more (``run_analysis`` reports
+    nothing) starts its run, and the dialog then accepts and the run's own page opens. Either
+    way the dialog closes on what actually happened, never on what was asked for.
+    """
+    call.request_cancel()
+    dialog._cancel_button.setEnabled(False)
+    dialog._status.setText(STOPPING_LAUNCH)
 
 
 def _launch_in_background(dialog, work, error_title: str) -> None:
@@ -138,16 +165,31 @@ def _launch_in_background(dialog, work, error_title: str) -> None:
     store the returned handle on ``dialog.run_handle`` and ``accept()``; on failure
     surface it and re-enable. Keeps the QThread referenced on the dialog so it isn't
     garbage-collected mid-run."""
+    from detail.core.progress import OperationCancelled
+
     _set_form_busy(dialog, True)
     call = StageProgressWorker(work, receiver=dialog)
-    call.tick.connect(lambda _permille, status: dialog._status.setText(status))
+
+    def _tick(_permille: int, status: str) -> None:
+        if (
+            not call.cancel_requested()
+        ):  # a report queued before the stop says nothing now
+            dialog._status.setText(status)
+
+    call.tick.connect(_tick)
     dialog._launch_call = call  # keep alive until it finishes
+    dialog.hold_open_while(call, lambda: _stop_launch(dialog, call))
 
     def _done(handle) -> None:
+        dialog.let_go()
         dialog.run_handle = handle
         dialog.accept()
 
     def _failed(exc) -> None:
+        dialog.let_go()
+        if isinstance(exc, OperationCancelled):
+            dialog.reject()  # stopped before any run was reserved: nothing started
+            return
         _set_form_busy(dialog, False)
         message = (
             str(exc)
@@ -197,6 +239,37 @@ def _mark_config_baseline(config: ConfigWidget | None) -> None:
         return
     for section in config.findChildren(AdvancedSection):
         section.snapshot()
+
+
+def _start_from_note() -> QLabel:
+    """The line under **Start from** that names what a pick could not restore; hidden until then."""
+    note = QLabel("")
+    note.setWordWrap(True)
+    set_label_color(note, WARN)
+    note.hide()
+    return note
+
+
+def _show_unrestored(dialog, module_id: str, picked: dict) -> None:
+    """Name every setting of ``picked`` the freshly loaded form did not take (#35 finding 4).
+
+    One note for every module, from the dialog, rather than one per form: a per-form note had
+    reached two of the nine module forms.
+    """
+    lines = (
+        unrestored_settings(
+            module_id,
+            picked,
+            dialog._config.config(),
+            noted_by_form=dialog._config.noted_by_form,
+        )
+        if picked
+        else []
+    )
+    dialog._start_from_note.setText(
+        "Not as in that run:\n" + "\n".join(lines) if lines else ""
+    )
+    dialog._start_from_note.setVisible(bool(lines))
 
 
 def _discard_config(holder: QVBoxLayout, config: ConfigWidget | None) -> None:
@@ -363,7 +436,12 @@ def seed_config(seed: dict) -> dict:
     """
     params = seed.get("params") or {}
     promoted = {k: v for k, v in seed.items() if k not in _RECORD_KEYS}
-    return {**promoted, **params}
+    flat = {**promoted, **params}
+    # A query-eval record lists what it scored as one dict per behavior; the form takes names.
+    names = behavior_names(flat.get("behaviors"))
+    if names is not None:
+        flat["behaviors"] = names
+    return flat
 
 
 class LaunchRunDialog(Dialog):
@@ -390,6 +468,8 @@ class LaunchRunDialog(Dialog):
         self._start_from.picked.connect(self._apply_start_from)
         form.addRow("Start from:", self._start_from)
         layout.addLayout(form)
+        self._start_from_note = _start_from_note()
+        layout.addWidget(self._start_from_note)
 
         layout.addWidget(QLabel("Recordings (check the ones to run over):"))
         self._recordings = QListWidget()
@@ -463,7 +543,9 @@ class LaunchRunDialog(Dialog):
         # seed is built from the record's recordings alone and has no `params`, which is the
         # difference to test on.
         if seed.get("params"):
-            self._config.load_config(seed_config(seed))
+            settings = seed_config(seed)
+            self._config.load_config(settings)
+            _show_unrestored(self, self._module_id(), settings)
 
     def _module_id(self) -> str:
         return self._module_combo.currentData()
@@ -499,6 +581,7 @@ class LaunchRunDialog(Dialog):
         self._recordings.blockSignals(False)
         fit_list_height(self._recordings)
         self._rebuild_config()
+        self._start_from_note.hide()  # it was about the last module's pick
         self._start_from.set_module(
             self._experiment,
             module_id,
@@ -534,9 +617,9 @@ class LaunchRunDialog(Dialog):
         brought in reads as changed and the advanced section holding it opens itself.
         """
         self._rebuild_config()
-        if not config:
-            return  # Defaults: the fresh form already is it
-        self._config.load_config(config)
+        if config:
+            self._config.load_config(config)
+        _show_unrestored(self, self._module_id(), config)
         # A pick that lands inside Advanced settings must not be buried by it. `showEvent`
         # applies the same rule when a form is seeded before the dialog is shown; this is the
         # other moment it can become true.
@@ -666,6 +749,8 @@ class LaunchAnalysisDialog(Dialog):
         self._start_from.picked.connect(self._apply_start_from)
         form.addRow("Start from:", self._start_from)
         layout.addLayout(form)
+        self._start_from_note = _start_from_note()
+        layout.addWidget(self._start_from_note)
 
         layout.addWidget(QLabel("Recordings (check the ones to run over):"))
         self._recordings = QListWidget()
@@ -759,6 +844,7 @@ class LaunchAnalysisDialog(Dialog):
         # porthole beside a scrollbar that reads as the Behaviors table's.
         fit_list_height(self._recordings)
         self._rebuild_config()
+        self._start_from_note.hide()  # it was about the last module's pick
         self._start_from.set_module(
             self._experiment, module_id, analysis_runs_for(self._experiment, module_id)
         )
@@ -785,9 +871,9 @@ class LaunchAnalysisDialog(Dialog):
         picking a baseline after one must not leave the run's other values behind it.
         """
         self._rebuild_config()
-        if not config:
-            return  # Defaults: the fresh form already is it
-        self._config.load_config(config)
+        if config:
+            self._config.load_config(config)
+        _show_unrestored(self, self._module_id(), config)
         for section in self._config.findChildren(AdvancedSection):
             section.reveal_if_changed()
 

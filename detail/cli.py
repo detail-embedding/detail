@@ -3806,7 +3806,10 @@ def dataset_create(
     "recording_ids",
     multiple=True,
     type=str,
-    help="Source recording id (repeatable; default: every recording in the experiment).",
+    help=(
+        "Source recording id (repeatable; default: every recording in the experiment "
+        "that has video)."
+    ),
 )
 @click.option(
     "--class",
@@ -4316,7 +4319,10 @@ def distill() -> None:
     "recording_ids",
     multiple=True,
     type=str,
-    help="Source recording id (repeatable; default: every recording in the experiment).",
+    help=(
+        "Source recording id (repeatable; default: every recording in the experiment "
+        "that has video)."
+    ),
 )
 @click.option(
     "--class",

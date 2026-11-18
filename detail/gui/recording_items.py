@@ -48,3 +48,29 @@ def selected_recording_ids(listwidget: QListWidget) -> list[str]:
     still selects rather than silently returning nothing.
     """
     return [item.data(_ID_ROLE) or item.text() for item in listwidget.selectedItems()]
+
+
+def fill_sampling_list(listwidget: QListWidget, recordings) -> int:
+    """Fill a picker for a frame sample, and return how many of ``recordings`` have video.
+
+    An empty selection there means *every recording with video* (``Experiment.label_dataset``),
+    so a recording without one is greyed and says why: it has nothing to sample, and selecting
+    it is refused by name. Call inside ``read_cache.pinned()`` — each row reads its recording's
+    name and its video parts.
+    """
+    recordings = list(recordings)
+    fill_recording_list(listwidget, recordings)
+    with_video = 0
+    for row, recording in enumerate(recordings):
+        if recording.video_parts:
+            with_video += 1
+            continue
+        item = listwidget.item(row)
+        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+        item.setText(f"{recording.name}   (no video)")
+    return with_video
+
+
+def sampling_label(with_video: int) -> str:
+    """The row label for :func:`fill_sampling_list`'s picker: what selecting nothing uses."""
+    return f"Recordings (none = all {with_video} with video):"

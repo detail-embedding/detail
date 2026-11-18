@@ -201,7 +201,6 @@ class _EmbeddingConfig(ConfigWidget):
         )
         batch_meta = field_meta(EmbeddingConfig, "batch_size")
         self._batch = field_widget(EmbeddingConfig, "batch_size")
-        self._batch.setValue(32)
         form.addRow(
             field_label("embedding", "batch_size", batch_meta["label"] + ":"),
             self._batch,
