@@ -713,7 +713,7 @@ def _unsynced_edits(source: str, cls: str = "SceneGeometryDialog") -> list[str]:
 def test_every_handler_that_writes_a_definition_tells_save():
     import detail.gui.arena as arena
 
-    source = Path(arena.__file__).read_text(encoding="utf-8")
+    source = Path(arena.__file__).read_text(encoding="utf-8-sig")
     assert _unsynced_edits(source) == []
     for helper in _HELPERS:  # an exemption that excuses nothing is stale
         assert f"def {helper}(" in source, f"{helper} is exempt but no longer exists"
