@@ -390,7 +390,7 @@ def _pick(dialog, run_id: str) -> None:
 
 def _vocabulary(form, names) -> None:
     """The recordings' behaviors arriving, as `apply_recordings` delivers them."""
-    form.apply_recordings([], ([], {None: (list(names), {})}))
+    form.apply_recordings([], ([], {None: (list(names), {})}, []))  # none ambiguous
 
 
 def _ticked(form) -> list[str]:

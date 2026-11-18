@@ -526,7 +526,11 @@ def test_the_query_eval_form_round_trips_with_behaviors_present(qapp):
 
     from detail.gui.modules.analysis_query_eval import _QueryEvalConfig
 
-    vocabulary = ([], {None: (["dig", "groom", "rear"], {})})
+    vocabulary = (
+        [],
+        {None: (["dig", "groom", "rear"], {})},
+        [],
+    )  # no ambiguous streams
     form = _QueryEvalConfig()
     form.apply_recordings([], vocabulary)
     form._behaviors.item(0).setCheckState(Qt.CheckState.Unchecked)  # dig
