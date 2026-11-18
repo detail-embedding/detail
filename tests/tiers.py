@@ -191,6 +191,8 @@ GUARD_FILES = frozenset(
     {
         # --- source scans over detail/ ------------------------------------------- #
         "tests/storage/test_path_serialization.py",
+        # Every write of a stream's alignment goes through a clock gate (#30).
+        "tests/storage/test_alignment_doors.py",
         # The clip window's strips are fed `Curve`s and spell no curve's name themselves.
         "tests/gui/test_clip_strips_scan.py",
         # One rule for a read-bound pool's thread count; `os.cpu_count()` nowhere else.
@@ -419,6 +421,9 @@ _HEAVY_IMPORTS = {
 #: is about time and an unmeasured "it is fine" is how the promise erodes. Checked against
 #: the live scan, so an entry that stops being tripped fails.
 UNIT_EXEMPTIONS = {
+    "tests/api/test_export_reingest_origin.py": "cv2.VideoWriter writes one 30-frame 16x16 "
+    "stub clip per streams-export test, only so a behavior stream has frames to resolve "
+    "against; milliseconds, and the guard belongs with the unit tier it runs in",
     "tests/api/test_analysis.py": "Popen(['python', '-c', 'pass']) only, to fabricate a "
     "live PID for the reattach check — no workload, ~50 ms",
     "tests/api/test_job_reattach.py": "same: a `python -c pass` stand-in process is the "

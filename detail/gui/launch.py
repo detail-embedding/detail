@@ -67,8 +67,12 @@ def _resolve_recordings_in_background(dialog, selected: list, gen: int) -> None:
             _apply_to_config(dialog, selected, resolved)
         _finish()
 
-    def _failed(_exc) -> None:
-        _finish()  # a resolution failure leaves the form as-is (no crash)
+    def _failed(exc) -> None:
+        # The form is left as-is (no crash), but not silently: an empty form with no reason
+        # is what a user cannot act on.
+        if gen == dialog._resolve_gen and dialog._config is config:
+            dialog._status.setText(f"Could not read the selected recordings: {exc}")
+        _finish()
 
     call.done.connect(_done)
     call.failed.connect(_failed)

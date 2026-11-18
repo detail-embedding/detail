@@ -90,6 +90,10 @@ NO_SCALAR_FIELDS = {
     "TrackingConfig": "a tracker id plus that tracker's own hyperparameter dict",
     "CsvStreamConfig": "a column name, a choice, and a list of channels — every value is "
     "read off the CSV being imported, so there is no number or toggle to seed",
+    "MedpcSessionConfig": "an optional subject, box and session number that pick one block "
+    "of the file being imported; every one defaults to unset and is read off that file",
+    "BorisSelectionConfig": "an optional observation id and subject that pick rows of the "
+    "export being imported; both default to unset and are read off that file",
 }
 
 
