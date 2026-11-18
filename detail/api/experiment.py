@@ -2139,6 +2139,15 @@ class Experiment:
             self._dir, name, importer, config, offset_ns=offset_ns, overwrite=overwrite
         )
 
+    def check_new_stream_preset_name(self, name: str) -> None:
+        """Refuse a name :meth:`save_stream_preset` would refuse without ``overwrite``, so a
+        caller that saves after other work can refuse before doing it.
+
+        Raises:
+            ValueError: An invalid name, or a preset by that name exists.
+        """
+        stream_presets.check_new_name(self._dir, name)
+
     def delete_stream_preset(self, name: str) -> None:
         """Raises: ValueError if no preset named ``name`` exists."""
         stream_presets.delete_preset(self._dir, name)
