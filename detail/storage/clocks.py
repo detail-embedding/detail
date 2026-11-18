@@ -20,6 +20,9 @@ from __future__ import annotations
 
 import numpy as np
 
+from detail.core import utils
+from detail.core.errors import UserInputError
+
 _NS_PER_SECOND = 1_000_000_000
 
 # Clocks already expressed in the video's own time reference. A stream on one of
@@ -41,9 +44,13 @@ def needs_alignment(clock: str) -> bool:
     return clock not in VIDEO_ANCHORED_CLOCKS
 
 
-def seconds_to_t_ns(seconds: float) -> int:
-    """Video-relative seconds → int64 ``t_ns`` (Tenet 8). No recording context needed."""
-    return round(float(seconds) * _NS_PER_SECOND)
+def seconds_to_t_ns(seconds: float, *, what: str = "time") -> int:
+    """Video-relative seconds → int64 ``t_ns`` (Tenet 8). No recording context needed.
+
+    Delegates to the one checked conversion, ``core.utils.seconds_to_t_ns``, so a time beyond
+    int64 is refused here too rather than stored.
+    """
+    return utils.seconds_to_t_ns(seconds, what=what)
 
 
 def frame_to_t_ns(frame_idx: int, frame_t_ns: np.ndarray) -> int:
@@ -54,8 +61,10 @@ def frame_to_t_ns(frame_idx: int, frame_t_ns: np.ndarray) -> int:
     """
     n = len(frame_t_ns)
     if not 0 <= frame_idx < n:
-        raise ValueError(
-            f"behavior label references frame {frame_idx}, past the video's {n} frames"
+        raise UserInputError(
+            f"frame {frame_idx} is outside the video, whose frames are numbered 0 to {n - 1} "
+            f"({n} frames). Was the file written for another video, or does it count frames "
+            "from 1?"
         )
     return int(frame_t_ns[frame_idx])
 
@@ -86,9 +95,10 @@ def t_ns_to_frame(t_ns: int, frame_t_ns: np.ndarray) -> int:
     first, last = int(frame_t_ns[0]), int(frame_t_ns[-1])
     tol = _nominal_period_ns(frame_t_ns)
     if t_ns < first - tol or t_ns > last + tol:
-        raise ValueError(
-            f"behavior label at t_ns {t_ns} is outside the video "
-            f"[{first}, {last}] (beyond one frame of tolerance)"
+        raise UserInputError(
+            f"a row at {t_ns / _NS_PER_SECOND:.3f} s is outside the video, which runs from "
+            f"{first / _NS_PER_SECOND:.3f} s to {last / _NS_PER_SECOND:.3f} s (beyond one "
+            "frame of tolerance). Was the file written for another video?"
         )
     if t_ns <= first:
         return 0
@@ -118,8 +128,9 @@ def resolve_native_columns(
     if not frame_columns and not time_columns:
         return rows
     if len(frame_t_ns) == 0:
-        raise ValueError(
-            "cannot import behavior labels: recording has no video to anchor frames to"
+        raise UserInputError(
+            "cannot import this file: its times are video frames, and the recording has "
+            "no video to anchor frames to yet. Add the video first"
         )
     idx = {c: i for i, c in enumerate(columns)}
     out: list[tuple] = []

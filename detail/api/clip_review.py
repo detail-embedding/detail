@@ -29,6 +29,7 @@ and refused on a snapshot or a finalized run, as every audit write is.
 
 import numpy as np
 
+from detail.storage import analysis_runs as analysis_store
 from detail.storage import clip_edits as clip_edits_store
 from detail.storage import clip_review as review_store
 
@@ -151,8 +152,12 @@ class ClipReviewOperations:
         Raises:
             FileNotFoundError: no node cache.
             ValueError: ``node`` is not a labelled cluster; a finalized run.
+            ResultsOutOfDateError: the results are out of date after a failed rebuild.
             ReadOnlyRunError: a snapshot view.
         """
+        # A census of the old membership, written while the results are known to be out of date,
+        # would record answers for clips the rebuild moves (#24).
+        analysis_store.refuse_if_stale(self._run_dir())
         (cluster,) = self._one_cluster(self._review_clusters(), node)
         out = self._not_its_label(cluster)
         # Logged once the node is known to be a cluster to finish, so a refused call leaves no

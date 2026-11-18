@@ -14,6 +14,7 @@ every tracker (Section 7): the tracker supplies only its own opaque ``state``.
 import json
 import os
 import shutil
+from collections.abc import Sequence
 from pathlib import Path
 
 import cv2
@@ -69,6 +70,37 @@ def frame_walk(groups: dict[int, list[int]], every_n_frames: int = 1) -> range:
     return range(min(groups), max(groups) + 1, max(1, every_n_frames))
 
 
+def processed_frames_between(
+    first: int,
+    last: int,
+    every_n_frames: int,
+    part_frame_offsets: Sequence[int] | None,
+) -> int:
+    """How many frames a run at ``every_n_frames`` processed in the global span
+    ``[first, last]``, both ends included.
+
+    A part's processed frames are its own ``0, N, 2N, ...`` (§4), so each part restarts the
+    grid at its offset: every Nth *global* frame is wrong as soon as a part's length is not a
+    multiple of N. ``part_frame_offsets`` is each part's first global frame, as
+    ``pipeline/tracking.py`` passes it; ``None`` (a direct caller without offsets) reads the
+    span as one part. This is what a track's ``n_gaps`` is measured against (#32): a frame the
+    run never looked at was not missed.
+    """
+    step = max(1, int(every_n_frames))
+    first, last = int(first), int(last)
+    if last < first:
+        return 0
+    offsets = [int(o) for o in part_frame_offsets] if part_frame_offsets else [0]
+    total = 0
+    for index, start in enumerate(offsets):
+        end = offsets[index + 1] - 1 if index + 1 < len(offsets) else last
+        lo, hi = max(first, start) - start, min(last, end) - start
+        if lo > hi:
+            continue
+        total += max(hi // step - (-(-lo // step)) + 1, 0)
+    return total
+
+
 def filter_by_arena(rows, bbox, arena_polygon, global_frame: int) -> list[int]:
     """Keep rows whose normalized bbox center lies inside-or-on the polygon at
     this frame (the arena is interpolated per frame, Section 10)."""
@@ -88,6 +120,26 @@ def is_contiguous(mask: np.ndarray) -> bool:
     exactly one foreground component yields 2 labels."""
     n_labels, _ = cv2.connectedComponents(mask.astype(np.uint8))
     return n_labels == 2
+
+
+def zero_tracks_error(n_detections: int, params: dict) -> ValueError:
+    """The error for a tracking run that produced no track, naming the real cause.
+
+    With no detections at all, the tracker's settings are not the cause, and saying they "may be
+    too strict" sent the user to tune the wrong stage: the detection run is where to look. Every
+    tracker raises this one message (#33).
+    """
+    if n_detections == 0:
+        return ValueError(
+            "zero tracks produced: the detection run found no detections on this recording, "
+            "so there was nothing to track. Run detection again with a lower --conf or a "
+            "different prompt, then track"
+        )
+    return ValueError(
+        f"zero tracks produced from {n_detections} detection(s); the tracker's settings may "
+        f"be too strict (conf_threshold={params['conf_threshold']}, "
+        f"require_contiguous={params['require_contiguous']})"
+    )
 
 
 def validate_hyperparams(schema: dict, hyperparams: dict) -> dict:

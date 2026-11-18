@@ -228,11 +228,13 @@ def append_history(run_dir: Path | str, entry: dict) -> None:
     reconcile toward §21. Nothing reads it to decide anything: it exists so a result can be
     traced back to the state of the run when it was produced.
     """
-    path = Path(run_dir) / query_runs.HISTORY_FILENAME
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps({"at": utc_timestamp(), **entry}) + "\n")
-        f.flush()
+    from detail.storage.append_log import append_line
+
+    # Through `append_line`, so a line a crash cut short is not glued onto the next one.
+    append_line(
+        Path(run_dir) / query_runs.HISTORY_FILENAME,
+        json.dumps({"at": utc_timestamp(), **entry}),
+    )
 
 
 def _plan_chunks(

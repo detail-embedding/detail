@@ -68,6 +68,53 @@ def _load_experiments():
     return sys.modules[_EXPERIMENTS_MODULE]
 
 
+_SOURCE_TREE_MODULE = "detail_test_source_tree"
+
+
+def _load_source_tree():
+    """Load ``tests/source_tree.py`` by path, for the same reason ``tiers.py`` is.
+
+    ``tests/test_source_tree_writes.py`` loads it under the same key, so its negative cases
+    read the records of the hook this process installed.
+    """
+    if _SOURCE_TREE_MODULE not in sys.modules:
+        path = Path(__file__).parent / "source_tree.py"
+        spec = importlib.util.spec_from_file_location(_SOURCE_TREE_MODULE, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[_SOURCE_TREE_MODULE] = module
+        spec.loader.exec_module(module)
+    return sys.modules[_SOURCE_TREE_MODULE]
+
+
+def pytest_configure(config):
+    """Refuse any write into the repository tree from here on, in this process.
+
+    Before collection, so a module that writes at import is caught too. The class and the rule
+    are in ``tests/test_source_tree_writes.py``.
+    """
+    _load_source_tree().install(config.rootpath)
+
+
+@pytest.fixture(autouse=True)
+def _no_source_tree_writes():
+    """Fail a test whose write into the repository tree was refused, even if it caught the error.
+
+    Autouse and function-scoped, so it is set up first and torn down last: a write from another
+    fixture's teardown is still this test's. A write recorded *before* the test began came from
+    collection or from a thread that outlived an earlier test; it is reported here rather than
+    dropped.
+    """
+    source_tree = _load_source_tree()
+    earlier = source_tree.take()
+    yield
+    refused = source_tree.take()
+    assert not (earlier or refused), (
+        "writes into the repository tree were refused — a test writes under tmp_path "
+        f"(tests/test_source_tree_writes.py): during this test {refused}; before it began "
+        f"{earlier}"
+    )
+
+
 def pytest_collection_modifyitems(config, items):
     """Attach each test's cost tier and, where it is one, the `guard` marker.
 

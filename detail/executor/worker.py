@@ -102,6 +102,9 @@ def run_job(run_dir) -> JobStatus:
     finally:
         stop_event.set()
         run_facts.record(run_dir, peaks)
+        # Whatever the outcome, the log ends when the job did, not at the last row its
+        # throttle kept (#32).
+        log.finish(elapsed_s=time.monotonic() - start)
 
     # A stop-and-keep alone is a finish the user chose, so it lands COMPLETE; only a cancel is
     # an interruption. (A cancel wins if both were asked.) An interruption is `partial`

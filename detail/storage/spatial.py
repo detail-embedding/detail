@@ -20,6 +20,10 @@ from pathlib import Path
 
 from detail.core import utils as core_utils
 from detail.core.dataclasses import PolygonKeyframes
+from detail.core.errors import UserInputError
+from detail.importers import _csv_common
+from detail.storage import dirscan
+from detail.storage import id_allocator
 from detail.storage import locations
 from detail.storage import recording as recording_store
 
@@ -99,7 +103,9 @@ def _validate_keyframes(
         for x, y in vertices:
             if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
                 raise ValueError(
-                    f"vertex ({x}, {y}) at frame {frame_idx} is outside [0, 1]"
+                    f"vertex ({x}, {y}) at frame {frame_idx} is outside [0, 1]: coordinates "
+                    "are fractions of the frame (0 to 1), so divide pixel coordinates by the "
+                    "frame's width and height"
                 )
     return n_vertices
 
@@ -193,13 +199,21 @@ def list_defs(recording_dir: Path | str, kind: str) -> list[dict]:
 
 
 def next_id(recording_dir: Path | str, kind: str) -> str:
-    """Pick the next free ``<prefix>_NNN`` id (3-digit zero-padded, 1-based)."""
+    """Claim the next ``<prefix>_NNN`` id (3-digit zero-padded, 1-based) for a ROI or POI.
+
+    Never handed out again once claimed, even after that region is deleted: a finished
+    location run's ``roi_relations.csv`` names regions by this id, so a new region taking a
+    deleted one's id would join to the old run's rows as if it were the same region. The mark
+    is the recording's own (``storage/id_allocator.py``). Arenas keep the lowest free number
+    (:func:`next_arena_id` says why).
+    """
+    if kind == "arena":
+        return next_arena_id(recording_dir)
     k = _kind(kind)
-    taken = {entry.get("id") for entry in list_defs(recording_dir, kind)}
-    i = 1
-    while f"{k.id_prefix}_{i:03d}" in taken:
-        i += 1
-    return f"{k.id_prefix}_{i:03d}"
+    taken = [entry.get("id") for entry in list_defs(recording_dir, kind)]
+    kind_dir = Path(recording_dir) / k.dirname
+    taken += [p.name for p in dirscan.child_dirs(kind_dir)]
+    return id_allocator.claim(recording_dir, k.id_prefix, digits=3, taken=taken)
 
 
 def append_to_manifest(
@@ -262,16 +276,34 @@ def delete_def(recording_dir: Path | str, kind: str, def_id: str) -> None:
 def replace_defs(recording_dir: Path | str, kind: str, defs: list[dict]) -> list[str]:
     """Replace ALL definitions of ``kind`` in one operation — the bulk counterpart to the
     per-def define path, used by the ROI/POI manager's "Save all". Each entry is
-    ``{"name": str, "keyframes": Keyframes, "active": ActiveInterval}`` (``active``
-    optional). Validates the whole set first (Tenet 10), then removes existing definitions
-    of this kind and writes the new set with fresh sequential ids; returns the new ids.
+    ``{"name": str, "keyframes": Keyframes, "active": ActiveInterval, "id": str}``
+    (``active`` and ``id`` optional). Validates the whole set first (Tenet 10), then removes
+    existing definitions of this kind and writes the new set; returns the ids, in order.
+
+    **An entry carrying the ``id`` of a definition that exists keeps that id**, so a region
+    the user did not delete is the same ``roi_NNN`` before and after a Save, and a location
+    run joined on ``roi_id`` across the edit pairs like with like. An entry without one (a new
+    region), or with an id no longer defined, gets a fresh id that was never used before
+    (:func:`next_id`).
 
     Safe for ROIs/POIs (no run-lock); not for arenas, which guard against id churn.
+
+    Raises:
+        ValueError: An empty or duplicated name or id, or invalid keyframes / active.
     """
     k = _kind(kind)
-    prepared: list[tuple[str, Keyframes, ActiveInterval, int]] = []
+    prepared: list[tuple[str | None, str, Keyframes, ActiveInterval, int]] = []
     seen: set[str] = set()
+    seen_ids: set[str] = set()
+    existing_ids = {entry["id"] for entry in list_defs(recording_dir, kind)}
     for d in defs:
+        kept = d.get("id")
+        if kept is not None:
+            if kept in seen_ids:
+                raise ValueError(f"{k.id_prefix} id {kept!r} is duplicated")
+            seen_ids.add(kept)
+            if kept not in existing_ids:
+                kept = None
         name = d.get("name") or ""
         if not name:
             raise ValueError(f"{k.id_prefix} name must be non-empty")
@@ -283,15 +315,15 @@ def replace_defs(recording_dir: Path | str, kind: str, defs: list[dict]) -> list
             raise ValueError(f"{kind!r} does not support an active interval")
         _validate_active(active)
         n_vertices = _validate_keyframes(d["keyframes"], k.min_vertices, k.max_vertices)
-        prepared.append((name, d["keyframes"], active, n_vertices))
+        prepared.append((kept, name, d["keyframes"], active, n_vertices))
+    # New ids are claimed while the old definitions still exist, so even a recording with no
+    # mark yet (made before it existed) cannot hand a new region a kept region's id.
+    new_ids = [kept or next_id(recording_dir, kind) for kept, *_ in prepared]
     for entry in list_defs(recording_dir, kind):
         delete_def(recording_dir, kind, entry["id"])
-    new_ids: list[str] = []
-    for i, (name, keyframes, active, n_vertices) in enumerate(prepared, start=1):
-        def_id = f"{k.id_prefix}_{i:03d}"
+    for def_id, (_kept, name, keyframes, active, n_vertices) in zip(new_ids, prepared):
         write_keyframes(recording_dir, kind, def_id, keyframes)
         append_to_manifest(recording_dir, kind, def_id, name, n_vertices, active)
-        new_ids.append(def_id)
     return new_ids
 
 
@@ -364,6 +396,12 @@ def export_spatial(
     rows: list[tuple] = []
     for kind in kinds:
         for entry in list_defs(recording_dir, kind):
+            path = keyframes_path(recording_dir, kind, entry["id"])
+            if not path.is_file():
+                raise UserInputError(
+                    f"{kind} {entry['name']!r} is listed in recording.yaml but its keyframes "
+                    f"file is missing ({path}). Draw it again, or delete it, then export"
+                )
             pk = read_keyframes(recording_dir, kind, entry["id"], entry["n_vertices"])
             active = entry.get("active")
             a_start = active["start"] if active else ""
@@ -376,7 +414,9 @@ def export_spatial(
                     )
     if include_calibration:
         rows += _calibration_rows(recording_dir)
-    with open(Path(out_path), "w", newline="", encoding="utf-8") as f:
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(_SPATIAL_CSV_COLUMNS)
         writer.writerows(rows)
@@ -395,19 +435,17 @@ def _parse_active(row: dict) -> ActiveInterval:
     return (int(start), int(end))
 
 
-def _open_spatial_csv(path: Path | str):
-    """Open an exported spatial CSV and validate its header. Returns the open file and a
-    ``DictReader`` over it — the caller closes the file."""
+def _read_spatial_csv(path: Path | str) -> list[_csv_common.CsvRow]:
+    """The rows of an exported spatial CSV, its header checked (through the one opener for a
+    CSV a user hands in, so a file saved in another encoding says so)."""
     p = Path(path)
     if not p.is_file():
         raise FileNotFoundError(f"no such file: {path}")
-    f = open(p, newline="", encoding="utf-8-sig")
-    reader = csv.DictReader(f)
-    missing = set(_SPATIAL_CSV_REQUIRED) - set(reader.fieldnames or [])
+    fieldnames, rows = _csv_common.read_user_csv(p)
+    missing = set(_SPATIAL_CSV_REQUIRED) - set(fieldnames)
     if missing:
-        f.close()
-        raise ValueError(f"spatial CSV missing columns: {sorted(missing)}")
-    return f, reader
+        raise UserInputError(f"spatial CSV missing columns: {sorted(missing)}")
+    return rows
 
 
 def load_calibration_csv(path: Path | str) -> dict | None:
@@ -422,9 +460,11 @@ def load_calibration_csv(path: Path | str) -> dict | None:
         FileNotFoundError: if the file is absent.
         ValueError: on a malformed calibration row.
     """
-    f, reader = _open_spatial_csv(path)
-    with f:
-        rows = [r for r in reader if (r["kind"] or "").strip() == CALIBRATION_KIND]
+    rows = [
+        r
+        for r in _read_spatial_csv(path)
+        if (r["kind"] or "").strip() == CALIBRATION_KIND
+    ]
     if not rows:
         return None
     head = rows[0]
@@ -432,7 +472,12 @@ def load_calibration_csv(path: Path | str) -> dict | None:
         pixels_per_mm = float(head["pixels_per_mm"])
         ref = [int(float(head["ref_width"])), int(float(head["ref_height"]))]
     except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError(f"malformed calibration row in {path}: {exc}") from exc
+        raise UserInputError(f"malformed calibration row in {path}: {exc}") from exc
+    if ref[0] <= 0 or ref[1] <= 0:
+        raise UserInputError(
+            f"calibration in {path}: ref_width and ref_height must be positive (the video "
+            f"size the calibration was measured at), got {ref[0]}x{ref[1]}"
+        )
     points = [
         (float(r["x"]), float(r["y"]))
         for r in rows
@@ -467,27 +512,28 @@ def load_spatial_csv(path: Path | str) -> list[dict]:
     """
     groups: dict[tuple[str, str], dict] = {}
     order: list[tuple[str, str]] = []
-    f, reader = _open_spatial_csv(path)
-    with f:
-        for row in reader:
-            kind = (row["kind"] or "").strip()
-            if kind == CALIBRATION_KIND:
-                continue
-            if kind not in _KINDS:
-                raise ValueError(f"unknown spatial kind {kind!r} in CSV")
-            name = (row["name"] or "").strip()
-            if not name:
-                raise ValueError("spatial CSV row has an empty name")
-            key = (kind, name)
-            if key not in groups:
-                groups[key] = {"active": _parse_active(row), "frames": {}}
-                order.append(key)
-            frame_idx = int(row["frame_idx"])
-            vi = int(row["vertex_index"])
-            groups[key]["frames"].setdefault(frame_idx, {})[vi] = (
-                float(row["x"]),
-                float(row["y"]),
+    for row in _read_spatial_csv(path):
+        kind = (row["kind"] or "").strip()
+        if kind == CALIBRATION_KIND:
+            continue
+        if kind not in _KINDS:
+            raise UserInputError(
+                f"{row.source} row {row.line}: unknown spatial kind {kind!r}; the kind "
+                f"column holds one of {sorted([*_KINDS, CALIBRATION_KIND])}"
             )
+        name = (row["name"] or "").strip()
+        if not name:
+            raise UserInputError(f"{row.source} row {row.line}: the name is empty")
+        key = (kind, name)
+        if key not in groups:
+            groups[key] = {"active": _parse_active(row), "frames": {}}
+            order.append(key)
+        frame_idx = _csv_common.int_cell(row, "frame_idx")
+        vi = _csv_common.int_cell(row, "vertex_index")
+        groups[key]["frames"].setdefault(frame_idx, {})[vi] = (
+            _csv_common.float_cell(row, "x"),
+            _csv_common.float_cell(row, "y"),
+        )
     defs: list[dict] = []
     for kind, name in order:
         g = groups[(kind, name)]
@@ -808,7 +854,7 @@ def pixels_per_mm_at(calibration: dict, width: int, height: int) -> float:
     """
     refusal = calibration_aspect_refusal(calibration, width, height)
     if refusal is not None:
-        raise ValueError(refusal)
+        raise UserInputError(refusal)
     return calibration["pixels_per_mm"] * (width / calibration["ref_resolution"][0])
 
 
@@ -847,5 +893,17 @@ def list_arenas(recording_dir: Path | str) -> list[dict]:
 
 
 def next_arena_id(recording_dir: Path | str) -> str:
-    """Pick the next free ``arena_NNN`` id (3-digit zero-padded, 1-based)."""
-    return next_id(recording_dir, "arena")
+    """Pick the lowest free ``arena_NNN`` id (3-digit zero-padded, 1-based).
+
+    Deliberately not the never-reused allocator the other kinds use: every record naming an
+    arena is a tracking run, and while one exists the arena can be neither deleted nor
+    redefined (``Recording.delete_arena`` / ``clear_arenas`` refuse), so a freed arena id is
+    named by nothing. The scene editor redefines the whole set on Save and relies on this
+    handing the same ids back.
+    """
+    k = _kind("arena")
+    taken = {entry.get("id") for entry in list_defs(recording_dir, "arena")}
+    i = 1
+    while f"{k.id_prefix}_{i:03d}" in taken:
+        i += 1
+    return f"{k.id_prefix}_{i:03d}"

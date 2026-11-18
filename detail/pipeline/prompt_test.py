@@ -175,7 +175,10 @@ def run_prompt_test_on_parts(
     write it to a store) should take this path instead of the list.
 
     Returns ``(results, samples, prompt_labels)`` — the extras are what
-    ``save_prompt_test_results`` needs to write the viewer's artifacts.
+    ``save_prompt_test_results`` needs to write the viewer's artifacts. ``samples`` is
+    every position *requested*; ``results`` holds only the frames that decoded, so the two
+    are not parallel. Each result names its own ``(part_index, frame_idx)``: read that,
+    never pair the lists by position.
     """
     part_frame_counts = [_frame_count(p) for p in paths]
     samples = _sample_frames(
@@ -240,6 +243,7 @@ def run_prompt_test_on_parts(
                 per_prompt[label] = det
 
         result = PromptTestResult(
+            part_index=part_index,
             frame_idx=actual_frame,
             t_ns=t_ns,
             frame_image=frame_rgb,
@@ -354,6 +358,8 @@ def save_prompt_test_results(
     frames_dir = out / _FRAMES_DIRNAME
     frames_dir.mkdir(parents=True, exist_ok=True)
 
+    # `sampled_frames` is every position requested; `frame_results` only those that
+    # decoded, each naming its own part. The two are not parallel lists.
     test_json = {
         **meta,
         "sampled_frames": [
@@ -366,6 +372,7 @@ def save_prompt_test_results(
         "prompt_colors": {label: list(colors[label]) for label in prompt_labels},
         "frame_results": [
             {
+                "part_index": result.part_index,
                 "frame_idx": result.frame_idx,
                 "counts": {
                     label: sum(
@@ -389,8 +396,12 @@ def save_prompt_test_results(
                 colors[label],
                 min_conf=min_conf,
             )
-            # cv2.imwrite expects BGR; convert back.
+            # cv2.imwrite expects BGR; convert back. The part is in the name because
+            # `frame_idx` is local to its part: two parts' frame 7 are different pictures.
             cv2.imwrite(
-                str(frames_dir / f"frame_{result.frame_idx:06d}_{label}.jpg"),
+                str(
+                    frames_dir
+                    / f"part_{result.part_index:03d}_frame_{result.frame_idx:06d}_{label}.jpg"
+                ),
                 rgb_to_bgr(overlay),
             )

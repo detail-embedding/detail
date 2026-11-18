@@ -376,7 +376,7 @@ def test_ethogram_writes_one_file_per_recording(two_clusters, tmp_path):
     files = [f for f in result.files if f.endswith("_ethogram.csv")]
     assert sorted(files) == ["r1_ethogram.csv", "r2_ethogram.csv"]
     rows = _rows(result.dest / "r1_ethogram.csv")
-    assert list(rows[0]) == ["start_frame", "end_frame", "label"]
+    assert list(rows[0]) == ["start_frame", "end_frame", "label", "subject", "origin"]
     assert all(r["label"] for r in rows), "every span carries a label"
 
 
@@ -811,8 +811,9 @@ def test_the_tracks_export_is_the_file_the_analysis_run_writes(
     result = _export_run(
         processed_recording, processed_recording.tracking_run_id, "tracks", tmp_path
     )
-    elsewhere = tmp_path / "via_the_analysis_door"
-    processed_recording.recording.export_locations("track_01", elsewhere)
+    elsewhere = processed_recording.recording.export_locations(
+        "track_01", tmp_path / "via_the_analysis_door"
+    )
 
     assert (result.dest / "recording_001_tracks.csv").read_bytes() == (
         elsewhere / location_export.TRACKS_FILE

@@ -1,7 +1,7 @@
 """Experiment export / import — portable single-archive bundles (Sections 1-2, 15).
 
-A experiment is already self-contained with relative paths (Tenet 6), so copying it
-"just works". Export packages a experiment's tree — optionally **slim** (no source
+An experiment is already self-contained with relative paths (Tenet 6), so copying it
+"just works". Export packages an experiment's tree — optionally **slim** (no source
 video, no datasets) — into one ``tar`` with a top-level ``export.yaml`` manifest (+
 a payload sha256), and import validates that manifest and places the experiment into
 the managed workspace. No path rewriting; this adds selectivity, an integrity
@@ -27,6 +27,7 @@ import os
 import re
 import shutil
 import tarfile
+import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -35,17 +36,27 @@ from pathlib import Path
 import yaml
 
 from detail.core import atomic
+from detail.core.errors import UserInputError
 from detail.core.progress import ThrottledProgress
 from detail.storage import experiment as experiment_store
 from detail.storage import integrity
 from detail.storage import video_roots
+from detail.storage.user_yaml import parse_user_yaml
 
 SCHEMA_VERSION = 1
 MANIFEST_NAME = "export.yaml"
 _ROOT = "experiment"  # the experiment tree lives under this prefix inside the archive
 _VIDEO_SUFFIXES = {".mp4", ".avi", ".mov", ".mkv"}
 _TEXT_SUFFIXES = {".yaml", ".yml", ".csv"}  # scanned for absolute paths (Tenet 6)
-_ABS_MARKERS = ("/Users/", "/home/", "C:\\")
+#: Where an absolute path starts: a home folder on macOS or Linux, or any Windows drive. Not
+#: inside a word, so a URL's ``/home/`` or a time's ``12:30`` is not one.
+_ABS_PATH = re.compile(r"(?<![\w.])/(?:Users|home)/|(?<![A-Za-z0-9])[A-Za-z]:[\\/]")
+#: YAML keys whose values are text a person wrote, or a recorded error message: prose that
+#: may quote a path, never a path DETAIL resolves.
+_FREE_TEXT_KEYS = frozenset({"description", "notes", "error"})
+#: The experiment's own metadata table: the user's columns, which DETAIL stores and shows but
+#: never resolves as paths (a ``raw_file`` column naming where the video came from is data).
+_USER_TABLES = frozenset({"metadata.csv"})
 _CHUNK = 1 << 20
 
 #: The phases an export reports, in order.
@@ -73,6 +84,44 @@ _PARTIAL_SUFFIX = ".partial"
 
 class ExperimentChangedError(RuntimeError):
     """A file changed between the digest pass and the pack pass of an export."""
+
+
+@dataclass(frozen=True)
+class ReplaceLosses:
+    """What replacing an existing experiment with a bundle deletes and the bundle does not bring
+    back (`replace_losses`).
+
+    Replace swaps the whole folder, so anything the bundle never carried is gone after it: the
+    video and datasets a slim bundle leaves out, the export records no bundle carries, and an
+    earlier archive saved inside the experiment, which no export packs.
+    """
+
+    #: The experiment that would be replaced.
+    experiment_id: str
+    video_files: int = 0
+    video_bytes: int = 0
+    datasets: tuple[str, ...] = ()
+    export_records: tuple[str, ...] = ()
+    archives: tuple[str, ...] = ()
+
+    @property
+    def empty(self) -> bool:
+        return not (
+            self.video_files or self.datasets or self.export_records or self.archives
+        )
+
+
+class ExperimentExistsError(FileExistsError):
+    """An import whose target experiment already exists, and ``replace`` was not passed.
+
+    Carries ``losses`` (`ReplaceLosses`), so a surface that offers to replace can say what the
+    replace would delete without walking the experiment again, and without doing it on its UI
+    thread: the import that raised this already ran off it.
+    """
+
+    def __init__(self, message: str, losses: ReplaceLosses) -> None:
+        super().__init__(message)
+        self.losses = losses
 
 
 @dataclass(frozen=True)
@@ -218,12 +267,47 @@ class _PositionReader:
         return self._handle.tell()
 
 
+#: What an export archive is called: `experiment export --out` takes any name, and these are the
+#: ones the CLI, the catalogue's bundle and the docs use. ``.partial`` is one still being written.
+_ARCHIVE_SUFFIXES = (".tar", ".tar.gz", ".tgz")
+
+
+def _is_export_archive(path: Path) -> bool:
+    """Whether ``path`` is a DETAIL export archive, finished or still being written.
+
+    By name first, so the walk opens nothing else; a finished one is then confirmed by its
+    manifest, so a ``.tar`` of the user's own that happens to sit in the experiment still
+    travels.
+    """
+    name = path.name.lower()
+    if name.endswith(_PARTIAL_SUFFIX):
+        return name[: -len(_PARTIAL_SUFFIX)].endswith(_ARCHIVE_SUFFIXES)
+    if not name.endswith(_ARCHIVE_SUFFIXES):
+        return False
+    try:
+        read_manifest(path)
+    except (OSError, ValueError, tarfile.TarError, yaml.YAMLError):
+        return False
+    return True
+
+
+@dataclass
+class _LeftOut:
+    """What a walk of the experiment did not pack and a user may not expect to be missing."""
+
+    #: Folders that are symlinks: not descended into, so nothing under them travels.
+    symlinked_folders: list[str]
+    #: Earlier export archives saved inside the experiment.
+    archives: list[tuple[str, int]]
+
+
 def _included_sizes(
     experiment_dir: Path,
     *,
     include_video: bool,
     include_datasets: bool,
     on_found: Callable[[int], None] | None = None,
+    left_out: _LeftOut | None = None,
 ) -> list[tuple[str, int]]:
     """``(relative posix path, size)`` of every file to pack, applying the slim filters.
 
@@ -239,11 +323,16 @@ def _included_sizes(
     ``exports/`` is never packed. It holds export **run records** — where this machine wrote
     copies, as root names that mean nothing on another one — and while an export runs, its own
     record is in there being rewritten by every progress report (see the module docstring).
+
+    **An earlier export archive is never packed** (`_is_export_archive`). One saved inside the
+    experiment was packed into every later export, so each bundle carried all the ones before
+    it. A symlinked folder is still not descended into, but it is no longer left out without a
+    word: ``left_out`` collects both, for the export to record in its manifest.
     """
     root = Path(experiment_dir)
-    left_out = {experiment_store.exports_dir(root)}
+    skipped_dirs = {experiment_store.exports_dir(root)}
     if not include_datasets:
-        left_out.add(root / "datasets")
+        skipped_dirs.add(root / "datasets")
     out: list[tuple[str, int]] = []
     pending = [root]
     while pending:
@@ -252,15 +341,26 @@ def _included_sizes(
             for entry in entries:
                 path = Path(entry.path)
                 if entry.is_dir(follow_symlinks=False):
-                    if path in left_out:
+                    if path in skipped_dirs:
                         continue
                     pending.append(path)
+                    continue
+                if entry.is_symlink() and entry.is_dir():
+                    if left_out is not None:
+                        left_out.symlinked_folders.append(
+                            path.relative_to(root).as_posix()
+                        )
                     continue
                 if not entry.is_file():
                     continue
                 if not include_video and path.suffix.lower() in _VIDEO_SUFFIXES:
                     continue
-                out.append((path.relative_to(root).as_posix(), entry.stat().st_size))
+                rel = path.relative_to(root).as_posix()
+                if _is_export_archive(path):
+                    if left_out is not None:
+                        left_out.archives.append((rel, entry.stat().st_size))
+                    continue
+                out.append((rel, entry.stat().st_size))
                 if on_found is not None:
                     on_found(len(out))
     return sorted(out)
@@ -304,7 +404,77 @@ def _is_foreign_owned(parts: tuple[str, ...]) -> bool:
 def _is_scanned(rel: str) -> bool:
     """Whether the portability scan reads ``rel`` — one answer for the scan and for its weight."""
     path = Path(rel)
-    return path.suffix.lower() in _TEXT_SUFFIXES and not _is_foreign_owned(path.parts)
+    return (
+        path.suffix.lower() in _TEXT_SUFFIXES
+        and not _is_foreign_owned(path.parts)
+        and rel not in _USER_TABLES
+    )
+
+
+def _path_strings(node, *, free_text: bool = False):
+    """Every string in a parsed YAML that holds an absolute path, outside free-text keys."""
+    if free_text:
+        return
+    if isinstance(node, dict):
+        for key, value in node.items():
+            yield from _path_strings(key)
+            yield from _path_strings(value, free_text=str(key) in _FREE_TEXT_KEYS)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _path_strings(item)
+    elif isinstance(node, str) and _ABS_PATH.search(node):
+        yield node
+
+
+def _line_offenses(
+    rel: str, lines: list[str], only: list[str] | None = None
+) -> list[str]:
+    """``rel line N: <path>`` for each line holding an absolute path.
+
+    ``only`` limits the lines to those holding one of these paths (the strings a YAML parse
+    found outside free-text keys); a path the parse found on no single line is still named.
+    """
+    found = []
+    wanted = None if only is None else {_path_token(text) for text in only}
+    for number, line in enumerate(lines, start=1):
+        match = _ABS_PATH.search(line)
+        if match is None:
+            continue
+        token = _path_token(line[match.start() :])
+        if wanted is not None and not any(w in line for w in wanted):
+            continue
+        found.append(f"{rel} line {number}: {token}")
+        if wanted is not None:
+            wanted = {w for w in wanted if w not in line}
+    found += [f"{rel}: {w}" for w in sorted(wanted or ())]
+    return found
+
+
+def _path_token(text: str) -> str:
+    """The absolute path in ``text``, up to the first space or quote, cut to a readable size."""
+    match = _ABS_PATH.search(text)
+    token = re.match(r"[^\s'\",]+", text[match.start() :] if match else text)
+    token = token.group(0) if token else text.strip()
+    return token if len(token) <= 80 else token[:77] + "..."
+
+
+def file_portability_offenses(rel: str, text: str) -> list[str]:
+    """Where one experiment file holds an absolute path DETAIL would resolve (Tenet 6).
+
+    A YAML is scanned value by value, past :data:`_FREE_TEXT_KEYS` (a description, a note, a
+    recorded error may quote a folder and is never resolved), so a path in prose does not make
+    an experiment unexportable. A CSV DETAIL writes, or a YAML that does not parse, is scanned
+    line by line, as before. Each offense names the file, the line and the path.
+    """
+    lines = text.splitlines()
+    if Path(rel).suffix.lower() in (".yaml", ".yml"):
+        try:
+            data = parse_user_yaml(text, rel)
+        except UserInputError:
+            return _line_offenses(rel, lines)
+        strings = list(_path_strings(data))
+        return _line_offenses(rel, lines, only=strings) if strings else []
+    return _line_offenses(rel, lines)
 
 
 def portability_offenses(
@@ -313,8 +483,9 @@ def portability_offenses(
     *,
     on_file: Callable[[str], None] | None = None,
 ) -> list[str]:
-    """DETAIL text files that contain an absolute path (Tenet 6 violation), scoped
-    past files DETAIL only stores and never parses (see :func:`_is_foreign_owned`).
+    """Where DETAIL files hold an absolute path (Tenet 6 violation), as ``file line N: path``,
+    scoped past files DETAIL only stores and never parses (see :func:`_is_foreign_owned`) and
+    the user's own metadata table, and past free text (:func:`file_portability_offenses`).
 
     ``on_file(rel)`` is called after each file the scan reads."""
     experiment_dir = Path(experiment_dir)
@@ -323,8 +494,7 @@ def portability_offenses(
         if not _is_scanned(rel):
             continue
         text = (experiment_dir / rel).read_text(errors="replace", encoding="utf-8-sig")
-        if any(marker in text for marker in _ABS_MARKERS):
-            offenders.append(rel)
+        offenders += file_portability_offenses(rel, text)
         if on_file is not None:
             on_file(rel)
     return offenders
@@ -438,7 +608,9 @@ def export_experiment(
     ``referenced_video`` names the recordings whose video could not travel, so the recipient
     knows which root to register rather than concluding the bundle is broken, and
     ``video_roots`` says where this machine keeps each of their roots, so an import can look
-    there first (`import_experiment`).
+    there first (`import_experiment`). ``symlinked_folders_left_out`` names each folder that is
+    a symlink, which is not followed, so a surface can say what did not travel rather than leave
+    the recipient to find it missing.
 
     The archive is written as ``<dest>.partial`` and renamed when complete, so a failed,
     cancelled or killed export leaves nothing that looks like a finished one.
@@ -450,16 +622,18 @@ def export_experiment(
     """
     experiment_dir = Path(experiment_dir)
     if not (experiment_dir / experiment_store.CONFIG_FILENAME).is_file():
-        raise FileNotFoundError(f"not a experiment (no config.yaml): {experiment_dir}")
+        raise FileNotFoundError(f"not an experiment (no config.yaml): {experiment_dir}")
     dest = Path(dest)
     bar = _Bar(progress)
     bar.phase(STAGE_SCANNING, "reading the experiment")
+    left_out = _LeftOut([], [])
     sizes = dict(
         _included_sizes(
             experiment_dir,
             include_video=include_video,
             include_datasets=include_datasets,
             on_found=lambda n: bar.note(f"{n:,} files found"),
+            left_out=left_out,
         )
     )
     # An archive written inside the tree it packs must not pack itself. `tar.add` used to skip
@@ -483,9 +657,12 @@ def export_experiment(
         on_file=lambda rel: (checking.read(sizes[rel]), checking.done()),
     )
     if offenders:
-        raise ValueError(
-            "absolute paths in experiment files (Tenet 6) — not portable: "
-            + ", ".join(offenders[:5])
+        more = f" (and {len(offenders) - 5} more)" if len(offenders) > 5 else ""
+        raise UserInputError(
+            "absolute paths in experiment files, which would not exist on another machine "
+            f"(Tenet 6): {'; '.join(offenders[:5])}{more}. A path DETAIL reads must be "
+            "relative to the experiment: edit the file, or move the video under a video "
+            "root (`detail video-root set`)"
         )
     config = experiment_store.read_config(experiment_dir)
     packed_video = any(Path(rel).suffix.lower() in _VIDEO_SUFFIXES for rel in included)
@@ -512,6 +689,7 @@ def export_experiment(
             "referenced_video": referenced,
             "datasets_included": packed_datasets,
             "models_included": True,
+            "symlinked_folders_left_out": sorted(left_out.symlinked_folders),
         },
         "video_roots": _video_root_locations(experiment_dir),
         "n_files": len(included),
@@ -520,6 +698,7 @@ def export_experiment(
     blob = yaml.dump(manifest, sort_keys=False).encode("utf-8")
     packing = _Meter(bar, pack_cost, len(included))
     bar.phase(STAGE_PACKING, packing.detail())
+    dest.parent.mkdir(parents=True, exist_ok=True)  # every check above has passed
     try:
         # `copybufsize` is the read size inside `tarfile`'s copy loop, and so how often a large
         # file reports: its default is 16 KiB, a callback every 16 KiB of a 17 GB payload.
@@ -539,7 +718,15 @@ def export_experiment(
     except BaseException:
         partial.unlink(missing_ok=True)
         raise
-    bar.finish(STAGE_PACKING, dest.name)
+    bar.finish(
+        STAGE_PACKING,
+        dest.name
+        + (
+            f" · left out symlinked folder(s): {', '.join(sorted(left_out.symlinked_folders))}"
+            if left_out.symlinked_folders
+            else ""
+        ),
+    )
     return dest
 
 
@@ -571,21 +758,55 @@ def _relative_inside(path: Path, root: Path) -> str | None:
         return None
 
 
+def _not_an_export(archive: Path | str, why: str | BaseException) -> UserInputError:
+    """The one message for a file an import cannot read as a DETAIL export: a text file, an
+    empty file, a ``.zip``, an archive cut short by an interrupted copy."""
+    if isinstance(why, BaseException):
+        text = str(why)
+        if text.startswith("file could not be opened successfully"):
+            # `tarfile.open(mode="r:*")` lists every compression it tried, one per line.
+            empty = Path(archive).is_file() and Path(archive).stat().st_size == 0
+            why = "the file is empty" if empty else "not a tar archive"
+        else:
+            why = text or type(why).__name__
+    return UserInputError(
+        f"{Path(archive).name} is not a DETAIL export, or it is incomplete ({why}); "
+        "copy it again, or export the experiment again"
+    )
+
+
 def read_manifest(archive: Path | str) -> dict:
-    """Read ``export.yaml`` from a bundle. Raises ``ValueError`` if it isn't a
-    DETAIL export or the manifest is malformed.
+    """Read ``export.yaml`` from a bundle.
 
     Reads members only until it finds the manifest, which an export writes first. `getmember`
     loads every member header before answering, which on a gzipped bundle is a full
     decompression pass — paid before an import had reported anything at all.
+
+    Raises:
+        UserInputError: The file is not a DETAIL export (not a tar, empty, cut short, or
+            without a manifest), or its manifest is malformed: not a mapping, an ``id``
+            that is not a string, a ``schema_version`` that is not an integer.
     """
-    with tarfile.open(archive, "r:*") as tar:
-        member = next((m for m in tar if m.name == MANIFEST_NAME), None)
-        if member is None:
-            raise ValueError(f"not a DETAIL export (no {MANIFEST_NAME})")
-        data = yaml.safe_load(tar.extractfile(member).read())
+    try:
+        with tarfile.open(archive, "r:*") as tar:
+            member = next((m for m in tar if m.name == MANIFEST_NAME), None)
+            if member is None:
+                raise _not_an_export(archive, f"no {MANIFEST_NAME}")
+            raw = tar.extractfile(member).read()
+    except (tarfile.TarError, EOFError, zlib.error) as exc:
+        raise _not_an_export(archive, exc) from exc
+    data = parse_user_yaml(raw, f"{Path(archive).name}: {MANIFEST_NAME}")
     if not isinstance(data, dict) or "id" not in data:
-        raise ValueError("malformed export manifest")
+        raise _not_an_export(archive, "malformed export manifest")
+    if not isinstance(data["id"], str):
+        raise _not_an_export(
+            archive, f"its manifest's id is {data['id']!r}, not a name"
+        )
+    version = data.get("schema_version", SCHEMA_VERSION)
+    if not isinstance(version, int) or isinstance(version, bool):
+        raise _not_an_export(
+            archive, f"its manifest's schema_version is {version!r}, not a number"
+        )
     return data
 
 
@@ -628,11 +849,7 @@ def _holds_video(
             return False
     except OSError:  # a folder this machine may not read is not one it can use
         return False
-    recorded = part.get("fingerprint") or {}
-    return (current["size"], current["sha256_ends"]) == (
-        recorded.get("size"),
-        recorded.get("sha256_ends"),
-    )
+    return integrity.same_content(current, part.get("fingerprint"))
 
 
 #: How many of a root's videos are looked for in a folder that is only a guess (`_beside`). The
@@ -771,6 +988,78 @@ def _connect_found_video(staged: Path, found: list[_FoundRoot]) -> None:
             recording_store.write_recording(directory, data)
 
 
+def _subdirectories(directory: Path) -> tuple[str, ...]:
+    if not directory.is_dir():
+        return ()
+    return tuple(sorted(p.name for p in directory.iterdir() if p.is_dir()))
+
+
+def replace_losses(manifest: dict, existing: Path | str) -> ReplaceLosses:
+    """What replacing ``existing`` with the bundle ``manifest`` describes deletes for good.
+
+    The one place this is decided, so the GUI's prompt and ``experiment import --replace`` say
+    the same thing. It reads the manifest's ``contents`` flags, which record what was packed,
+    and walks ``existing`` with the export's own filters (`_included_sizes`), so a file counted
+    here is exactly one a bundle without it would not carry:
+
+    - **video files**, when the bundle packed none: every file with a video suffix, as the slim
+      filter drops them, so a clip saved inside a run counts as well as a recording's video;
+    - **datasets**, when the bundle packed none;
+    - **export records** (``exports/``), which no bundle carries;
+    - **earlier archives** saved inside the experiment, which no export packs.
+
+    Delete as today, warn first: this changes nothing about what Replace deletes.
+    """
+    existing = Path(existing)
+    contents = manifest.get("contents") or {}
+    left_out = _LeftOut([], [])
+    included = _included_sizes(
+        existing,
+        include_video=True,
+        include_datasets=bool(contents.get("datasets_included")),
+        left_out=left_out,
+    )
+    videos = (
+        []
+        if contents.get("video_included")
+        else [
+            size
+            for rel, size in included
+            if Path(rel).suffix.lower() in _VIDEO_SUFFIXES
+        ]
+    )
+    return ReplaceLosses(
+        experiment_id=existing.name,
+        video_files=len(videos),
+        video_bytes=sum(videos),
+        datasets=(
+            ()
+            if contents.get("datasets_included")
+            else _subdirectories(existing / "datasets")
+        ),
+        export_records=_subdirectories(experiment_store.exports_dir(existing)),
+        archives=tuple(sorted(rel for rel, _size in left_out.archives)),
+    )
+
+
+def import_target(dest_root: Path | str, manifest: dict, name: str | None) -> Path:
+    """Where an import of the bundle ``manifest`` describes is placed under ``dest_root``.
+
+    Raises:
+        UserInputError: ``name`` (or the bundle's id) is not a bare folder name.
+    """
+    experiment_id = name or manifest["id"]
+    # the id is a single directory name under the workspace — never a path that
+    # could escape it (a malformed --name)
+    if experiment_id in ("", ".", "..") or any(
+        sep in experiment_id for sep in ("/", "\\")
+    ):
+        raise UserInputError(
+            f"invalid experiment name {experiment_id!r}: must be a bare name"
+        )
+    return Path(dest_root) / experiment_id
+
+
 def import_experiment(
     archive: Path | str,
     dest_root: Path | str,
@@ -798,10 +1087,16 @@ def import_experiment(
     machine already uses for another folder is never re-pointed: the imported recordings are
     pointed at a root of this machine's own instead.
 
+    **Replace deletes what the bundle does not carry** (a slim bundle's video and datasets,
+    export records, earlier archives). It still does, as before; what it deletes is computed
+    by `replace_losses` so the surfaces can say so first, and is carried on the refusal
+    (`ExperimentExistsError.losses`) for a surface that asks before it replaces.
+
     Raises:
         ValueError: Unsupported schema_version, malformed/corrupt archive, or a
             failed integrity check.
-        FileExistsError: A experiment with the target id exists and ``replace`` is False.
+        ExperimentExistsError: An experiment with the target id exists and ``replace`` is
+            False. A ``FileExistsError``.
     """
     archive = Path(archive)
     bar = _Bar(progress)
@@ -812,20 +1107,13 @@ def import_experiment(
         raise ValueError(
             f"export schema_version {version} is newer than supported {SCHEMA_VERSION}"
         )
-    experiment_id = name or manifest["id"]
-    # the id is a single directory name under the workspace — never a path that
-    # could escape it (a malformed --name)
-    if experiment_id in ("", ".", "..") or any(
-        sep in experiment_id for sep in ("/", "\\")
-    ):
-        raise ValueError(
-            f"invalid experiment name {experiment_id!r}: must be a bare name"
-        )
     dest_root = Path(dest_root)
-    dest = dest_root / experiment_id
+    dest = import_target(dest_root, manifest, name)
+    experiment_id = dest.name
     if dest.exists() and not replace:
-        raise FileExistsError(
-            f"experiment {experiment_id!r} already exists; pass replace=True to overwrite"
+        raise ExperimentExistsError(
+            f"experiment {experiment_id!r} already exists; pass replace=True to overwrite",
+            replace_losses(manifest, dest),
         )
     staging = dest_root / f".import-{experiment_id}.tmp"
     shutil.rmtree(staging, ignore_errors=True)
@@ -843,15 +1131,20 @@ def import_experiment(
         extracting = _Meter(bar, extract_cost, n_files)
         bar.phase(STAGE_EXTRACTING, extracting.detail())
         with open(archive, "rb") as raw:
-            with tarfile.open(
-                fileobj=_PositionReader(raw, extracting.read), mode="r:*"
-            ) as tar:
-                # Member by member rather than `extractall`, so each finished file is counted;
-                # `extract` applies the same 3.12 "data" sandbox (no abs/traversal) per member.
-                for member in tar:
-                    tar.extract(member, staging, filter="data")
-                    if member.isfile() and member.name.startswith(f"{_ROOT}/"):
-                        extracting.done()
+            try:
+                with tarfile.open(
+                    fileobj=_PositionReader(raw, extracting.read), mode="r:*"
+                ) as tar:
+                    # Member by member rather than `extractall`, so each finished file is
+                    # counted; `extract` applies the same 3.12 "data" sandbox (no
+                    # abs/traversal) per member.
+                    for member in tar:
+                        tar.extract(member, staging, filter="data")
+                        if member.isfile() and member.name.startswith(f"{_ROOT}/"):
+                            extracting.done()
+            except (tarfile.ReadError, EOFError, zlib.error) as exc:
+                # The manifest came first and read, so the rest was cut short in a copy.
+                raise _not_an_export(archive, exc) from exc
         staged = staging / _ROOT
         if not (staged / experiment_store.CONFIG_FILENAME).is_file():
             raise ValueError("export is missing experiment/config.yaml")

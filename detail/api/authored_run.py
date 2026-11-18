@@ -22,6 +22,8 @@ from typing import Self
 from detail.analysis import provenance
 from detail.api.experiment import AnalysisRun, Experiment
 from detail.core.dataclasses import reconciled_status
+from detail.core.errors import UserInputError
+from detail.core.progress import OperationCancelled
 from detail.storage import analysis_runs as analysis_store
 from detail.storage import behavior_output
 from detail.storage import dirscan
@@ -158,6 +160,20 @@ def ancestors(tree, node: int) -> list[int]:
     return list(reversed(out))
 
 
+def _node_key(node) -> str:
+    """A cluster node given by a user (``118``, ``"118"``) as the key the label state uses.
+
+    Raises:
+        UserInputError: ``node`` is not a whole number.
+    """
+    try:
+        return str(int(node))
+    except (TypeError, ValueError):
+        raise UserInputError(
+            f"node {node!r} is not a node number; the tree's nodes are numbered from 0"
+        ) from None
+
+
 def parent_label(tree, node: int, node_labels: dict) -> str | None:
     """The label on the nearest labelled branch strictly **above** ``node``, or ``None``."""
     current = int(tree.parent[int(node)])
@@ -172,7 +188,9 @@ def parent_label(tree, node: int, node_labels: dict) -> str | None:
 def check_labels(labels: dict, node_labels: dict, tree) -> None:
     """Refuse a set of labels the output could not report unambiguously (§22).
 
-    Three rules, each named in the message with the clusters that break it:
+    Three rules, each named in the message with the clusters that break it, after a node that
+    is not in the tree at all (a ``UserInputError``: a mistyped or negative node number, which
+    numpy would otherwise index from the end and store as a label that matches nothing):
 
     - **A name is unique** (ignoring case) and holds no path separator. Two labels told apart by a
       capital, or a name that reads as two levels in an exported ``label_path``, cannot be read.
@@ -210,6 +228,12 @@ def check_labels(labels: dict, node_labels: dict, tree) -> None:
                 "instead of making a second one"
             )
         seen[key] = label
+    n_nodes = len(tree.parent)
+    outside = sorted(int(n) for n in node_labels if not 0 <= int(n) < n_nodes)
+    if outside:
+        raise UserInputError(
+            f"node {outside[0]} is not in this run's tree, whose nodes are 0–{n_nodes - 1}"
+        )
     parents: dict[str, dict] = {}
     for node, label in node_labels.items():
         if label not in labels:
@@ -467,19 +491,28 @@ def labelled_instances(fit, method, state) -> list:
         found = method.instances_for(
             fit, groups, dict(state.method_params), member_groups=override
         )
-    return fuse_runs(fit, method, found)
+    return fuse_runs(fit, method, found, dict(state.method_params))
 
 
-def fuse_runs(fit, method, instances: list) -> list:
-    """Join consecutive instances of one group within one unit, where the method allows it.
+def fuse_runs(fit, method, instances: list, params: dict) -> list:
+    """Join consecutive instances of one group within one continuity block, where the method
+    allows it.
 
     A sub-floor flicker between two runs of one group was dropped by the method, and the fused
     span covers it, which is right once both sides report the same node. Only where the method
     declares ``instances_are_runs``: joining two bouts a segmenter cut apart would be a claim it
-    did not make.
+    did not make. And never across a block the method declares (``row_block_starts``): a run the
+    method cut at a tracking gap stays cut, or the joined instance claims time nobody saw and a
+    share of time goes past 100% (``tests/api/test_fuse_runs.py``).
     """
+    import numpy as np
+
     if not getattr(method, "instances_are_runs", True):
         return list(instances)
+    block_starts = getattr(method, "row_block_starts", lambda fit, params: None)(
+        fit, params
+    )
+    block = None if block_starts is None else np.cumsum(block_starts)
     recording_index = getattr(fit, "row_recording_index", None)
     if recording_index is None:
         recording_index = fit.recording_index
@@ -492,6 +525,7 @@ def fuse_runs(fit, method, instances: list) -> list:
         return (
             recording_index[left] == recording_index[right]
             and subjects[left] == subjects[right]
+            and (block is None or block[left] == block[right])
         )
 
     fused: list = []
@@ -552,7 +586,7 @@ class LabelOperations:
         *,
         progress=None,
         stamps: dict | None = None,
-        merge: bool = False,
+        merge: bool | set = False,
     ) -> Self:
         """Apply ``change`` to the label state and stamp the labels whose clusters it changed.
 
@@ -564,7 +598,10 @@ class LabelOperations:
         rename, or a label added above — or where the edit is a ``merge`` (the user saying two
         labels are one behavior). A cluster given to another label is a different claim, and
         an answer about the old label says nothing about it: carried along, a cluster moved to
-        a newly made label read the old label's whole review as its own.
+        a newly made label read the old label's whole review as its own. ``merge`` may be a
+        set of label ids instead, filled by ``change`` with the labels it merged away: an edit
+        that merges some labels and relabels other clusters (:meth:`edit_labels`) carries the
+        answers of the merged clusters only.
 
         A label's origin (``label_origins``) is the node's own label's: whatever the edit, a node
         left without a label of its own loses it here, so no origin outlives the label it
@@ -602,11 +639,12 @@ class LabelOperations:
                 if label not in state.labels:
                     del state.membership_changed_at[label]
             kept = None
-            if not merge:
+            if merge is not True:
+                merged = merge or set()
                 kept = {
                     node
                     for node, label in ids_before.items()
-                    if state.node_labels.get(node) == label
+                    if state.node_labels.get(node) == label or label in merged
                 }
             moved_paths.update(path_moves(paths_before, _node_paths(state), kept))
             entry.update(folded or {})
@@ -695,48 +733,76 @@ class LabelOperations:
         """
         from detail.storage import run_labels
 
-        wanted = {str(int(k)): str(v).strip() for k, v in names.items()}
+        wanted = {_node_key(k): str(v).strip() for k, v in names.items()}
         wanted_origins = _origins_as_dicts(origins)
 
         def change(state) -> dict:
-            emptied = set()
-            for node, name in wanted.items():
-                if not name:
-                    old = state.node_labels.pop(node, None)
-                    if old:
-                        emptied.add(old)
-                    continue
-                if node in wanted_origins:
-                    state.label_origins[node] = wanted_origins[node]
-                label = run_labels.find(state.labels, name)
-                current = state.node_labels.get(node)
-                alone = current is not None and [
-                    n for n, lab in state.node_labels.items() if lab == current
-                ] == [node]
-                if label is None and alone:
-                    # The node is its label's only cluster and the name is new: that is a rename,
-                    # and a rename keeps the label's id — so no instance id moves and recorded
-                    # audit judgments keep joining, as renaming a node always did.
-                    state.labels[current] = name
-                    continue
-                if label is None:
-                    label = run_labels.mint(state.labels)
-                    state.labels[label] = name
-                state.node_labels[node] = label
-                if (
-                    current
-                    and current != label
-                    and current not in state.node_labels.values()
-                ):
-                    emptied.add(current)
-            for label in emptied - set(state.node_labels.values()):
-                state.labels.pop(label, None)
-            entry = {"node_names": wanted}
-            if wanted_origins:
-                entry["origins"] = wanted_origins
-            return entry
+            return _apply_names(state, wanted, wanted_origins)
 
         return self._label_edit("name nodes", change, progress=progress)
+
+    def edit_labels(
+        self,
+        names: dict | None = None,
+        *,
+        origins: dict | None = None,
+        renames=(),
+        merges=(),
+        progress=None,
+    ) -> Self:
+        """Name nodes, then rename labels, then merge labels — **as one edit**: one state write
+        and one reprojection, or nothing at all.
+
+        ``names`` and ``origins`` as :meth:`name_nodes` takes them; ``renames`` is
+        ``[(old name, new name)]`` and ``merges`` ``[(source name, into name)]``, applied in
+        order, each name read against the labels as the edits before it left them — so a label
+        just renamed is merged under its new name. What ``detail analysis temporal-interpret``
+        runs: done as one write per pair, a merge naming no label failed after the renames
+        before it had landed, and the corrected command then failed on the old name.
+
+        Raises:
+            ValueError: a name that is no label at that point, a label merged into itself, or a
+                result ``check_labels`` refuses. Nothing is written.
+        """
+        from detail.storage import run_labels
+
+        wanted = (
+            None
+            if names is None
+            else {_node_key(k): str(v).strip() for k, v in names.items()}
+        )
+        wanted_origins = _origins_as_dicts(origins)
+        renames = [(str(a), str(b)) for a, b in renames]
+        merges = [(str(a), str(b)) for a, b in merges]
+        merged: set[str] = set()
+
+        def find(state, name: str) -> str:
+            label = run_labels.find(state.labels, name)
+            if label is None:
+                known = ", ".join(sorted(state.labels.values())) or "none yet"
+                raise ValueError(
+                    f"no label called {name!r} in this run (labels: {known})"
+                )
+            return label
+
+        def change(state) -> dict:
+            entry: dict = {}
+            if wanted:
+                entry.update(_apply_names(state, wanted, wanted_origins))
+            if renames:
+                entry["renames"] = [
+                    _apply_rename(state, find(state, old), new) for old, new in renames
+                ]
+            if merges:
+                tree = self._tree()
+                entry["merges"] = []
+                for source, into in merges:
+                    pair = (find(state, source), find(state, into))
+                    merged.add(pair[0])
+                    entry["merges"].append(_apply_merge(state, tree, *pair))
+            return entry
+
+        return self._label_edit("edit labels", change, progress=progress, merge=merged)
 
     def create_label(self, name: str, *, progress=None) -> str:
         """Make a label with no clusters yet, and return its id."""
@@ -764,7 +830,8 @@ class LabelOperations:
             ValueError: the result breaks a rule ``check_labels`` holds.
         """
         wanted = {
-            str(int(k)): (None if v is None else str(v)) for k, v in assignments.items()
+            _node_key(k): (None if v is None else str(v))
+            for k, v in assignments.items()
         }
         wanted_origins = _origins_as_dicts(origins)
 
@@ -790,11 +857,7 @@ class LabelOperations:
         label's id, never its name, so recorded audit judgments keep joining."""
 
         def change(state) -> dict:
-            if label not in state.labels:
-                raise KeyError(f"no label {label} in this run")
-            old = state.labels[label]
-            state.labels[label] = name.strip()
-            return {"label": label, "from": old, "to": name.strip()}
+            return _apply_rename(state, label, name)
 
         return self._label_edit("rename label", change, progress=progress)
 
@@ -803,30 +866,15 @@ class LabelOperations:
 
         A cluster of ``source`` that sits inside a branch labelled ``into`` already reports
         ``into``, so its own label is dropped rather than refused as redundant.
+
+        The clips taken out of or moved into ``source`` (``api/clip_edits.py``) follow it: a merge
+        says the two are one behavior, so a clip taken out of ``source`` stays out of ``into``, and
+        a clip moved into ``source`` is in ``into``. Left naming the deleted id, the first counted
+        again and the second reported unlabelled. A move whose two ends become ``into`` goes.
         """
 
         def change(state) -> dict:
-            for label in (source, into):
-                if label not in state.labels:
-                    raise KeyError(f"no label {label} in this run")
-            if source == into:
-                raise ValueError("a label cannot be merged into itself")
-            tree = self._tree()
-            moved = [
-                node for node, label in state.node_labels.items() if label == source
-            ]
-            for node in moved:
-                state.node_labels[node] = into
-            for node in moved:
-                if parent_label(tree, int(node), state.node_labels) == into:
-                    del state.node_labels[node]
-            names = (state.labels[source], state.labels[into])
-            del state.labels[source]
-            return {
-                "from": names[0],
-                "into": names[1],
-                "clusters": sorted(moved, key=int),
-            }
+            return _apply_merge(state, self._tree(), source, into)
 
         return self._label_edit("merge labels", change, progress=progress, merge=True)
 
@@ -851,10 +899,16 @@ class LabelOperations:
 
     def label_maps(
         self,
-    ) -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, dict]]:
-        """``(labels, node_labels, membership_changed_at, label_origins)`` as stored: each label
-        id's name, each node's label id, when each label's clusters last changed, and where each
-        labelled node's label came from.
+    ) -> tuple[
+        dict[str, str], dict[str, str], dict[str, str], dict[str, dict], dict[str, dict]
+    ]:
+        """``(labels, node_labels, membership_changed_at, label_origins, clip_edits)`` as
+        stored: each label id's name, each node's label id, when each label's clusters last
+        changed, where each labelled node's label came from, and each edited clip's edit keyed
+        by the clip (``storage/clip_edits.py::by_key``; empty on a run with no clip edits).
+
+        The clip edits are here because they hold label ids too: a merge re-points them, and an
+        undo that put the labels back without them left the edits naming the merge's target.
 
         What :func:`label_change` compares, before and after an edit, so the edit can be put back
         exactly (:meth:`restore_labels`) — label ids included, which a write by name cannot do,
@@ -866,6 +920,7 @@ class LabelOperations:
             dict(state.node_labels),
             dict(state.membership_changed_at or {}),
             {k: dict(v) for k, v in (state.label_origins or {}).items()},
+            clip_edits_by_key(getattr(state, "clip_edits", None) or []),
         )
 
     def restore_labels(
@@ -874,6 +929,7 @@ class LabelOperations:
         node_labels: dict[str, str | None],
         membership_changed_at: dict[str, str | None] | None = None,
         label_origins: dict[str, dict | None] | None = None,
+        clip_edits: dict[str, dict | None] | None = None,
         *,
         progress=None,
     ) -> Self:
@@ -891,12 +947,16 @@ class LabelOperations:
         of the label, whose clusters were by then exactly what was reviewed.
         ``label_origins`` puts back where each node's label came from the same way, so a redo
         of a label written from a screen does not forget the screen.
+        ``clip_edits`` (keyed as :meth:`label_maps` keys them) puts back each clip's edit
+        (``None`` removes it), so undoing a merge points the clips taken out of or moved into
+        the merged label at it again.
 
         Raises:
             ValueError: the result breaks a rule ``check_labels`` holds.
         """
+        wanted_edits = dict(clip_edits or {})
         wanted_labels = {str(k): v for k, v in labels.items()}
-        wanted_nodes = {str(int(k)): v for k, v in node_labels.items()}
+        wanted_nodes = {_node_key(k): v for k, v in node_labels.items()}
         stamps = {str(k): v for k, v in (membership_changed_at or {}).items()}
         wanted_origins = {str(k): v for k, v in (label_origins or {}).items()}
 
@@ -919,17 +979,111 @@ class LabelOperations:
                     state.label_origins.pop(node, None)
                 else:
                     state.label_origins[node] = dict(origin)
-            return {"labels": wanted_labels, "node_labels": wanted_nodes}
+            entry = {"labels": wanted_labels, "node_labels": wanted_nodes}
+            if wanted_edits:
+                from detail.storage import clip_edits as clip_edits_store
+
+                state.clip_edits = clip_edits_store.restore(
+                    state.clip_edits, wanted_edits
+                )
+                entry["clip_edits"] = len(wanted_edits)
+            return entry
 
         return self._label_edit(
             "restore labels", change, progress=progress, stamps=stamps
         )
 
 
+def _apply_names(state, wanted: dict, wanted_origins: dict) -> dict:
+    """:meth:`LabelOperations.name_nodes`' change to ``state``: each node given its label by
+    name, as that method describes, and its history entry."""
+    from detail.storage import run_labels
+
+    emptied = set()
+    for node, name in wanted.items():
+        if not name:
+            old = state.node_labels.pop(node, None)
+            if old:
+                emptied.add(old)
+            continue
+        if node in wanted_origins:
+            state.label_origins[node] = wanted_origins[node]
+        label = run_labels.find(state.labels, name)
+        current = state.node_labels.get(node)
+        alone = current is not None and [
+            n for n, lab in state.node_labels.items() if lab == current
+        ] == [node]
+        if label is None and alone:
+            # The node is its label's only cluster and the name is new: that is a rename,
+            # and a rename keeps the label's id — so no instance id moves and recorded
+            # audit judgments keep joining, as renaming a node always did.
+            state.labels[current] = name
+            continue
+        if label is None:
+            label = run_labels.mint(state.labels)
+            state.labels[label] = name
+        state.node_labels[node] = label
+        if current and current != label and current not in state.node_labels.values():
+            emptied.add(current)
+    for label in emptied - set(state.node_labels.values()):
+        state.labels.pop(label, None)
+    entry = {"node_names": wanted}
+    if wanted_origins:
+        entry["origins"] = wanted_origins
+    return entry
+
+
+def _apply_rename(state, label: str, name: str) -> dict:
+    """:meth:`LabelOperations.rename_label`' change to ``state``, and its history entry."""
+    if label not in state.labels:
+        raise KeyError(f"no label {label} in this run")
+    old = state.labels[label]
+    state.labels[label] = name.strip()
+    return {"label": label, "from": old, "to": name.strip()}
+
+
+def _apply_merge(state, tree, source: str, into: str) -> dict:
+    """:meth:`LabelOperations.merge_labels`' change to ``state``, and its history entry."""
+    for label in (source, into):
+        if label not in state.labels:
+            raise KeyError(f"no label {label} in this run")
+    if source == into:
+        raise ValueError("a label cannot be merged into itself")
+    moved = [node for node, label in state.node_labels.items() if label == source]
+    for node in moved:
+        state.node_labels[node] = into
+    for node in moved:
+        if parent_label(tree, int(node), state.node_labels) == into:
+            del state.node_labels[node]
+    names = (state.labels[source], state.labels[into])
+    del state.labels[source]
+    entry = {
+        "from": names[0],
+        "into": names[1],
+        "clusters": sorted(moved, key=int),
+    }
+    if getattr(state, "clip_edits", None):
+        from detail.storage import clip_edits as clip_edits_store
+
+        state.clip_edits, carried = clip_edits_store.relabel(
+            state.clip_edits, source, into
+        )
+        if carried:
+            entry["clip_edits"] = carried
+    return entry
+
+
+def clip_edits_by_key(edits: list[dict]) -> dict[str, dict]:
+    """The clip edits as :meth:`LabelOperations.label_maps` holds them."""
+    from detail.storage import clip_edits as clip_edits_store
+
+    return clip_edits_store.by_key(edits)
+
+
 def label_change(before: tuple[dict, ...], after: tuple[dict, ...]) -> tuple[dict, ...]:
     """One ``{key: (before, after)}`` per map of :meth:`AuthoredRun.label_maps` -- names,
-    nodes' labels, membership change times, label origins -- for what differs between two
-    reads; ``None`` where one side has no entry."""
+    nodes' labels, membership change times, label origins, clip edits -- for what differs
+    between two reads; ``None`` where one side has no entry."""
     return tuple(
         {
             key: (old.get(key), new.get(key))
@@ -1414,8 +1568,17 @@ class AuthoredRun(AnalysisRun):
 
         Under the edit lock, so it cannot interleave with an edit that is moving the intervals
         under it.
+
+        Raises:
+            ResultsOutOfDateError: the last edit was saved but its reprojection did not land
+                (:attr:`artifact_stale`), so no view is current and :meth:`reproject` must run
+                first. Every reader — a pin and so finalize, the exports and a comparison, and
+                measures — calls this first, which is what makes it the one refusal.
         """
         self._refuse_if_read_only("bring_frame_views_current")
+        # Every reader of the output passes through here first, so this is where a run whose last
+        # rebuild failed refuses rather than hands out the old results as current (#24).
+        analysis_store.refuse_if_stale(self._run_dir())
         # The free case asks nothing of the producer — not its state, not the lock — so every
         # reader can call this unconditionally, whatever state the run is otherwise in.
         if not frame_view.is_pending(self._run_dir()):
@@ -1454,7 +1617,15 @@ class AuthoredRun(AnalysisRun):
             self._write_state(state)
             self._log({"op": op, **(entry or {})})
             if reproject:
-                self._project(progress=progress, reuse=reuse)
+                try:
+                    self._project(progress=progress, reuse=reuse)
+                except OperationCancelled:
+                    raise
+                except Exception as exc:
+                    # Re-raised, not handled: the state is already written and the stale mark
+                    # stays down, so the error has to say the change was saved (#24) — the bare
+                    # cause ("no embedded rows for track 0") read as the edit having failed.
+                    raise analysis_store.RebuildFailedError(self.id, exc) from exc
                 self._set_stale(False)
         return self
 
@@ -1592,6 +1763,9 @@ class AuthoredRun(AnalysisRun):
         from detail.storage import behavior_output as bo
 
         budget = audit.DEFAULT_BUDGET if budget is None else budget
+        # A batch drawn from results known to be out of date would be judged against instances
+        # the rebuild is about to replace (#24).
+        analysis_store.refuse_if_stale(self._run_dir())
         # Before any write. `_record` carries the finalize check, so drawing first would append
         # rows to a finalized run and *then* refuse — the check has to gate the operation, not
         # report on it.

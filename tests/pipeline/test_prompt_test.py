@@ -2,10 +2,19 @@
 
 Uses a mocked DetectionModel so no GPU / network is involved. Verifies sampling,
 per-prompt result shape, save layout, and reproducibility under a seed.
+
+**A class guarded here: a result identified by its position or by half its key (#26).** A
+sample that does not decode is skipped, so the results are shorter than the samples and cannot
+be paired with them by position; and ``frame_idx`` is local to its video part, so two parts'
+frame 7 are different pictures. The overlay JPGs were named by ``frame_idx`` alone and the
+second part's overwrote the first's. Each result carries ``part_index``, ``test.json``'s
+``frame_results`` name it, and the overlays are named by both
+(``test_two_parts_frame_with_the_same_number_keep_their_own_overlays``).
 """
 
 import contextlib
 import json
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -427,3 +436,38 @@ def test_does_not_register_in_recording_yaml(recording_dir):
     )
     assert "prompt_test_runs" not in data
     assert "detection_runs" not in data
+
+
+def test_two_parts_frame_with_the_same_number_keep_their_own_overlays(
+    recording_dir, monkeypatch
+):
+    """A recording with two parts samples part 0's frame k and part 1's frame k. Each
+    keeps its own overlay JPG, and every result in ``test.json`` names its part (#26).
+    Before the fix the JPG was named by the part-local frame number alone, so part 1's
+    overlay overwrote part 0's; and ``frame_results`` (decoded only) could not be paired
+    with ``sampled_frames`` (every request) once one sample failed to decode."""
+    from detail.pipeline import prompt_test
+
+    total = _seed_recording(recording_dir, n_parts=2, n_frames=8)
+    real_read = prompt_test.read_frame_at
+    part_1 = recording_dir / "video" / "part_002.mp4"
+
+    def _part_1_frame_3_fails(path, frame_idx, *a, **k):
+        if Path(path) == part_1 and frame_idx == 3:
+            return None
+        return real_read(path, frame_idx, *a, **k)
+
+    monkeypatch.setattr(prompt_test, "read_frame_at", _part_1_frame_3_fails)
+    with _registered_fake():
+        results = run_prompt_test(
+            recording_dir, _job([_one_prompt()], n=total), save_as="t", seed=0
+        )
+    assert len(results) == total - 1
+    out = recording_dir / "detections" / "prompt_tests" / "t"
+    assert len(list((out / "frames").glob("*.jpg"))) == total - 1
+    test_json = json.loads((out / "test.json").read_text(encoding="utf-8-sig"))
+    decoded = [(r["part_index"], r["frame_idx"]) for r in test_json["frame_results"]]
+    assert len(set(decoded)) == total - 1
+    assert (1, 3) not in decoded
+    assert {p for p, _ in decoded} == {0, 1}
+    assert [(r.part_index, r.frame_idx) for r in results] == decoded

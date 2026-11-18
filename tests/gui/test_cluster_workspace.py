@@ -112,7 +112,7 @@ def _label(qapp, interpret, node: int, name: str, handle) -> None:
     assert _drain(
         qapp, lambda: handle.state().node_names.get(str(node)) == name
     ), f"{name!r} never reached the run"
-    assert _drain(qapp, lambda: interpret._writer is None)
+    assert _drain(qapp, lambda: not interpret.writes_pending())
 
 
 def _select(qapp, interpret, node: int) -> None:
@@ -252,7 +252,7 @@ def test_a_label_shows_at_once_and_reaches_the_run(qapp, fitted):
     # Read the output only once the background write has finished, as BROWSE does (it reloads
     # on `changed`). Polling it mid-write opens `instances.csv` while it is being replaced,
     # which Windows refuses with a sharing violation.
-    assert _drain(qapp, lambda: interpret._writer is None and not interpret._pending)
+    assert _drain(qapp, lambda: not interpret.writes_pending())
     assert any(
         i.label == "moving" for i in handle.instances()
     ), "the output never caught up"
@@ -1027,7 +1027,7 @@ def test_a_fresh_page_shows_no_empty_workspace_while_it_loads(qapp, fitted):
 
 
 def _settle(qapp, interpret):
-    assert _drain(qapp, lambda: not interpret._pending and interpret._writer is None)
+    assert _drain(qapp, lambda: not interpret.writes_pending())
 
 
 def test_typing_an_existing_name_says_it_adds_to_that_label(qapp, fitted):
@@ -1132,10 +1132,10 @@ def test_a_recent_label_entry_labels_the_open_cluster_through_the_queue(qapp, fi
     quick.action(0).trigger()  # what key 1 does
     # Shown at once, written behind it by the page's one write queue.
     assert interpret._names[str(b)] == "climb"
-    assert interpret._writer is not None or interpret._pending
+    assert interpret.writes_pending()
     assert interpret.label_bar().status.text().startswith(f"Labelled #{b} “climb”")
     assert _drain(qapp, lambda: handle.state().node_names.get(str(b)) == "climb")
-    assert _drain(qapp, lambda: interpret._writer is None and not interpret._pending)
+    assert _drain(qapp, lambda: not interpret.writes_pending())
     assert "Output up to date." in interpret.label_bar().status.text()
 
 
@@ -1173,7 +1173,7 @@ def test_key_one_labels_with_the_first_recent_label_but_not_while_typing(qapp, f
         QTest.keyClick(interpret.focusWidget(), Qt.Key.Key_1)
         assert interpret._names.get(str(b)) == "climb"
         assert _drain(qapp, lambda: handle.state().node_names.get(str(b)) == "climb")
-        assert _drain(qapp, lambda: interpret._writer is None)
+        assert _drain(qapp, lambda: not interpret.writes_pending())
     finally:
         workspace.hide()
 
@@ -1214,9 +1214,7 @@ def test_a_labelling_key_with_a_modifier_labels_nothing(qapp, fitted, modifier):
             interpret._icicle, Qt.Key.Key_1, Qt.KeyboardModifier.KeypadModifier
         )
         assert interpret._names.get(str(b)) == "climb", "the keypad's 1 labels"
-        assert _drain(
-            qapp, lambda: interpret._writer is None and not interpret._pending
-        )
+        assert _drain(qapp, lambda: not interpret.writes_pending())
     finally:
         workspace.hide()
 
@@ -1258,7 +1256,7 @@ def test_a_label_written_on_interpret_leaves_the_keyboard_on_interpret(qapp, fit
         QTest.keyClick(focus, Qt.Key.Key_1)
         assert interpret._names.get(str(b)) == "climb", "1 labels the open cluster"
         assert _drain(qapp, lambda: handle.state().node_names.get(str(b)) == "climb")
-        assert _drain(qapp, lambda: interpret._writer is None)
+        assert _drain(qapp, lambda: not interpret.writes_pending())
     finally:
         workspace.hide()
 
@@ -1315,14 +1313,14 @@ def test_rename_and_merge_from_the_labels_panel_reach_the_run(
     )
     interpret._rename_label("climb")
     assert _drain(qapp, lambda: "climbing" in handle.state().labels.values())
-    assert _drain(qapp, lambda: interpret._writer is None)
+    assert _drain(qapp, lambda: not interpret.writes_pending())
 
     monkeypatch.setattr(
         QInputDialog, "getItem", staticmethod(lambda *a, **k: ("climbing", True))
     )
     interpret._merge_label("scale")
     assert _drain(qapp, lambda: list(handle.state().labels.values()) == ["climbing"])
-    assert _drain(qapp, lambda: interpret._writer is None)
+    assert _drain(qapp, lambda: not interpret.writes_pending())
     assert handle.state().node_names == {str(a): "climbing", str(b): "climbing"}
 
 
@@ -2715,7 +2713,7 @@ def test_right_click_put_back_reaches_the_run(qapp, fitted_temporal, monkeypatch
     action.trigger()
     assert not montage.clips()[index].faded, "the fade lifts at once"
     assert _drain(qapp, lambda: len(handle.taken_out("climb")) == 2)
-    assert _drain(qapp, lambda: interpret._writer is None)
+    assert _drain(qapp, lambda: not interpret.writes_pending())
 
 
 def _two_with_clips(view) -> tuple[int, int]:
@@ -3227,7 +3225,7 @@ def test_undo_and_redo_carry_the_origin_with_the_label(qapp, fitted, monkeypatch
     _label(qapp, interpret, node, "climb", handle)
     interpret.undo()
     assert _drain(qapp, lambda: not handle.state().node_labels)
-    assert _drain(qapp, lambda: interpret._writer is None)
+    assert _drain(qapp, lambda: not interpret.writes_pending())
     assert handle.state().label_origins == {}
     assert str(node) not in interpret._origins
     interpret.redo()
@@ -3236,7 +3234,7 @@ def test_undo_and_redo_carry_the_origin_with_the_label(qapp, fitted, monkeypatch
         lambda: handle.state().label_origins.get(str(node), {}).get("comparison")
         == "cmp_07",
     )
-    assert _drain(qapp, lambda: interpret._writer is None)
+    assert _drain(qapp, lambda: not interpret.writes_pending())
     assert interpret._origins[str(node)]["comparison"] == "cmp_07"
     assert interpret.label_bar().origin.text().startswith("From screen cmp_07")
 
@@ -3356,6 +3354,53 @@ def test_a_screen_read_looser_than_its_floor_shows_the_lead_and_the_label_record
     assert interpret._icicle.shades()[lead] == 0.0
 
 
+def test_labels_queued_when_the_page_is_left_still_reach_the_run(
+    qapp, fitted, monkeypatch
+):
+    """Three labels typed quickly, then the page left: all three reach the run (issue #24,
+    finding 1).
+
+    INTERPRET shows a label at once and writes it in the background, one write at a time, each
+    reprojecting the run. The queue used to live on the page and each next write started from
+    the previous one's ``done`` — a delivery ``GuiWorker`` drops once its receiver is gone — so
+    leaving the page (the shell ``deleteLater``\\ s it) lost every write after the one in flight.
+    Measured on main with a slowed write: three names on screen, one on disk. The queue now
+    belongs to the run (``gui/run_writes.py``) and outlives the page.
+    """
+    import threading
+
+    gate = threading.Event()
+    _experiment, handle, workspace = _workspace(qapp, fitted)
+    interpret = workspace._interpret
+    view = interpret._view
+    top = view.children(view.root)
+    nodes = [*top[:2], view.children(top[0])[0]]
+    real = type(handle).name_nodes
+
+    def slow(self, *args, **kwargs):
+        gate.wait(20)
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(handle), "name_nodes", slow)
+    names = {int(node): f"behavior{i}" for i, node in enumerate(nodes)}
+    try:
+        for node, name in names.items():
+            interpret.select(node)
+            interpret._label_field.edit.setText(name)
+            interpret._label_field.submit()
+        assert interpret.writes_pending()
+        workspace.deleteLater()
+        qapp.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+    finally:
+        gate.set()
+
+    def on_disk() -> dict:
+        state = handle.state().node_names
+        return {node: state.get(str(node)) for node in names}
+
+    assert _drain(qapp, lambda: on_disk() == names, 30_000), f"on disk: {on_disk()}"
+
+
 def test_a_screen_with_no_floor_is_listed_with_its_reason_and_cannot_be_ticked(
     qapp, fitted, monkeypatch
 ):
@@ -3418,3 +3463,33 @@ def test_a_screen_with_no_floor_is_listed_with_its_reason_and_cannot_be_ticked(
     _screens_read(qapp, interpret)
     assert bar.selection().is_empty
     assert interpret._icicle.labels_coloured(), "the tree keeps its labels' colours"
+
+
+def test_a_screen_with_nothing_to_contrast_is_listed_and_cannot_be_ticked(
+    qapp, fitted, monkeypatch
+):
+    """A screen over fewer than two groups has no ranking at all, and ticked it did nothing.
+    Listed with why, and not tickable, as a screen with no floor is (#39)."""
+    import detail.api.comparison as comparison_api
+
+    _experiment, _handle, workspace = _workspace(qapp, fitted)
+    interpret = workspace._interpret
+    _screens_read(qapp, interpret)
+
+    class _Nothing(_FakeScreen):
+        def ranking(self):
+            return None
+
+    monkeypatch.setattr(
+        comparison_api, "node_screens", lambda exp, run_id: [_Nothing("cmp_14", [], 0)]
+    )
+    interpret._read_screens()
+    _screens_read(qapp, interpret)
+    bar = interpret.filters()
+    item = bar.screens.list.item(0)
+    assert not (item.flags() & Qt.ItemFlag.ItemIsEnabled), "greyed: it cannot be ticked"
+    assert bar.screens.unavailable.text() == (
+        "Can't be ticked: drug vs vehicle · paired (nothing to contrast: fewer than two "
+        "groups)."
+    )
+    assert bar.screen("cmp_14").leaves is None

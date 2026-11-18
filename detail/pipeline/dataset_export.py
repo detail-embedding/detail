@@ -32,7 +32,7 @@ _SUPPORTED_SOURCES = ("detection", "tracking")
 
 
 def run_dir_for(experiment_root, job: DatasetExportJob) -> Path:
-    """``datasets/<dataset_id>/`` — a experiment-level run dir (not per-recording)."""
+    """``datasets/<dataset_id>/`` — an experiment-level run dir (not per-recording)."""
     return experiment_store.datasets_dir(experiment_root) / job.dataset_id
 
 

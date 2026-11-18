@@ -25,6 +25,7 @@ import pytest
 
 from detail.api import authored_run as authored
 from detail.api.comparison import run_comparison
+from detail.core.errors import UserInputError
 from detail.storage import run_labels
 from detail.storage import temporal_runs
 
@@ -202,6 +203,31 @@ def test_label_nodes_by_id_takes_an_origin_too(authored_cohort):
     assert run.state().label_origins == {str(node): ORIGIN.to_dict()}
 
 
+@pytest.mark.parametrize("door", ["name_nodes", "edit_labels", "label_nodes"])
+def test_a_node_outside_the_tree_is_refused_by_every_edit_door(authored_cohort, door):
+    """Past the end raised a bare ``IndexError``; ``-1`` was stored as a label numpy read from
+    the end, which matched nothing; ``abc`` said ``invalid literal for int()`` (#33)."""
+    run = authored_cohort.run()
+    n_nodes = run.hierarchy().n_nodes
+    label = run.create_label("climb")
+    before = run.state().node_labels
+
+    def edit(node):
+        if door == "label_nodes":
+            return run.label_nodes({node: label})
+        return getattr(run, door)({node: "climb"})
+
+    for node in (n_nodes, -1, 999):
+        with pytest.raises(UserInputError) as err:
+            edit(node)
+        assert str(err.value) == (
+            f"node {node} is not in this run's tree, whose nodes are 0–{n_nodes - 1}"
+        )
+    with pytest.raises(UserInputError, match="node 'abc' is not a node number"):
+        edit("abc")
+    assert run.state().node_labels == before
+
+
 def test_restoring_either_side_puts_the_origin_back(authored_cohort):
     """INTERPRET's ⌘Z and ⇧⌘Z: a label written from a screen, undone, loses its origin with
     the label; redone, gets it back -- by the same four maps the page restores."""
@@ -350,10 +376,17 @@ def test_the_labels_written_from_a_screen_are_listed_from_the_run(
     removed since is gone from the list, and a labels comparison lists nothing."""
     import detail.api.comparison as api
     from detail.api.comparison import labels_from_screen
+    from detail.storage import metadata as md
     from tests.analysis.test_node_measures import synthetic_view
 
     exp = _drugged(authored_cohort)
-    view = synthetic_view(recording_ids=("r1", "r2"))
+    # Two recordings per group: a screen over one per group could have no floor and is
+    # refused before measuring (#39). The node source reads only the (synthetic) view, so
+    # the two extra recordings need metadata and nothing else.
+    for recording, drug in (("r3", "veh"), ("r4", "fent")):
+        exp.create_recording(recording)
+        md.upsert_row(exp.dir, recording, {"animal": recording.upper(), "drug": drug})
+    view = synthetic_view(recording_ids=("r1", "r2", "r3", "r4"))
     monkeypatch.setattr(api, "_node_view", lambda experiment, run_id: view)
     screen = run_comparison(
         exp,

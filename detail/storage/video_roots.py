@@ -28,6 +28,19 @@ class MissingVideoRootError(roots.MissingRootError):
     """
 
 
+class VideoNotRecordedError(MissingVideoRootError, FileNotFoundError):
+    """The file a referenced part resolves to is not the video that was recorded for it.
+
+    Its fingerprint differs: a different video at the same path, such as a root alias this
+    machine already uses for another folder that holds a file of the same name, or a root
+    re-pointed with ``video-root set``. Reading it shows another animal's pixels against this
+    recording's timestamps, so it is treated as not reachable here, the same as a missing root
+    or a missing file. Both bases are deliberate: every ``except MissingVideoRootError``
+    presence gate (`Recording.video_available`) and every ``except FileNotFoundError`` frame
+    source already degrades to "video not here" on them, so none of them reads the wrong file.
+    """
+
+
 def list_video_roots() -> dict[str, Path]:
     """Every registered alias -> absolute directory, from storage.yaml."""
     return roots.list_roots(VIDEO_ROOTS_KEY)

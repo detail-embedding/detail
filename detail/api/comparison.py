@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING
 
 from detail.analysis import cohort, compare, measures, node_measures, provenance
 from detail.configs.comparison import ComparisonConfig
+from detail.core.errors import UserInputError
 from detail.core.utils import utc_timestamp
 from detail.report.tables import write_tidy_csv
 from detail.storage import analysis_runs as analysis_store
@@ -65,6 +66,33 @@ class ComparisonStopped(RuntimeError):
 
 class ComparisonRunError(ValueError):
     """A comparison could not be run against the artifact or metadata it names."""
+
+
+class ScreenRefusedError(ComparisonRunError, UserInputError):
+    """A difference screen refused before measuring because it could have no floor (#39).
+
+    The cohort the user chose is the cause, an ordinary input mistake, so it is a
+    ``UserInputError`` and the CLI root shows it as one ``Error:`` line from any command
+    (``cli.USER_ERRORS``); it stays a ``ComparisonRunError`` for callers that catch the
+    comparison's own refusals.
+    """
+
+
+def screen_refusal(foreseen: compare.NoFloor) -> str:
+    """The sentence a difference screen is refused with before measuring (§24): why it could
+    have no floor, that it is therefore not run, and what would run. One sentence for the
+    launch dialog (shown before Run), ``detail comparison run`` and the Python API.
+
+    Only a screen (``source: nodes``) is refused: it exists to say which clusters clear the
+    floor, so without one it has no output, and saved it was listed greyed and untickable
+    (#39). A comparison of labelled behaviors with no floor is still a description, reported as
+    measured, so the dialog warns and the run goes ahead.
+    """
+    return (
+        f"{foreseen.reason}: this screen is refused before measuring, since it could keep "
+        f"nothing. {foreseen.remedy} Or measure the run's labelled behaviors instead, which "
+        f"are reported as measured, without a floor."
+    )
 
 
 def _artifact_dir(experiment_dir: Path, source_run_id: str) -> Path:
@@ -387,6 +415,7 @@ def prepare_comparison(
         else ComparisonConfig.model_validate(config)
     )
     experiment_dir = Path(experiment.dir)
+    metadata = metadata_store.read_metadata(experiment_dir)
 
     def report(stage: str, fraction: float, detail: str = "") -> None:
         if progress is not None:
@@ -419,6 +448,20 @@ def prepare_comparison(
         run_dir = analysis_store.analysis_dir(experiment_dir, cfg.source_run_id)
         snapshot_id = None
         covered = _check_filter(cfg, list(view.recording_ids))
+        # Before measuring, not after: a screen whose floor is certain to be absent from
+        # the recordings' metadata alone (one animal in a paired design, one unit per group,
+        # one group) would measure for minutes and save a screen that keeps nothing (#39).
+        # Node rows are one per recording per measure, so every shape the rule knows applies.
+        foreseen = compare.no_floor_before_measuring(
+            metadata,
+            covered,
+            group_by=cfg.group_by,
+            aggregate_to=cfg.aggregate_to,
+            levels=cfg.levels,
+            one_row_per_recording=True,
+        )
+        if foreseen is not None:
+            raise ScreenRefusedError(screen_refusal(foreseen))
         chosen = list(node_measures.MEASURES)
         # The node source's own floor (§24): the cache has none since every cluster has clips.
         candidate_floor = float(cfg.candidate_floor_s)
@@ -447,9 +490,7 @@ def prepare_comparison(
         report("measuring", 0.0, f"{len(covered)} recording(s)")
         rows = measures.measure_run(
             run_dir,
-            windows_for=lambda cov: cfg.windows.windows_for(
-                cov.start_t_ns, cov.end_t_ns
-            ),
+            windows_for=cfg.windows.windows_for_coverage,
             measures=cfg.measures,
             progress_cb=lambda done, total: report(
                 "measuring", done / max(total, 1), f"{done}/{total} recording(s)"
@@ -461,6 +502,7 @@ def prepare_comparison(
         )
         source_hash = snapshots_store.artifact_hash(run_dir)
         ranking_measure = None
+        remainders = sorted(measures.remainder_labels(artifact.manifest))
         screened = _screened_labels(
             experiment, cfg.source_run_id, snapshot_id, columns=cfg.group_by
         )
@@ -475,7 +517,6 @@ def prepare_comparison(
         )
 
     report("grouping", 0.0, "")
-    metadata = metadata_store.read_metadata(experiment_dir)
     kept_rows = [r for r in rows if r["recording_id"] in set(covered)]
     design = compare.resolve_design_from_rows(
         kept_rows,
@@ -560,6 +601,9 @@ def prepare_comparison(
         # that scores them is scoring what its own contrast selected, and the record is the
         # one place that can say so -- the number itself looks like any other.
         record["screened_labels"] = screened
+        # A parent label's rows count only its leftover, and every surface names them
+        # "<label> (other)" from this one list (#24; `measures.remainder_labels`).
+        record["remainder_labels"] = remainders
     return Prepared(
         rows=rows,
         obs=obs,
@@ -596,13 +640,40 @@ def run_comparison(
             progress(stage, fraction, detail)
 
     report("writing", 0.0, "")
+    # Everything that reads the experiment comes before the id is claimed (claiming makes
+    # `cmp_NN`), so a failure here leaves no folder holding a `stats.csv` and no record.
+    # A comparison has no members; the recording lineage, label hashes and video fingerprints
+    # capture all the same (§18.5), which is what `drift` re-checks.
+    captured = provenance.capture(
+        experiment_dir,
+        recording_ids=sorted(set(prepared.covered)),
+        members=[],
+        # The hash of **what was measured** — the snapshot, not the run (or the node cache's
+        # digest, for the node source). `drift` compares it against where the run is *now*,
+        # and that asymmetry is the whole mechanism.
+        source={
+            "run_id": cfg.source_run_id,
+            "snapshot_id": prepared.snapshot_id,
+            "content_hash": prepared.source_hash,
+        },
+    )
     comparison_id = comparisons_store.next_comparison_id(experiment_dir)
     cdir = comparisons_store.comparison_dir(experiment_dir, comparison_id)
+    record = {
+        "id": comparison_id,
+        **prepared.record,
+        "provenance": captured,
+        "status": "complete",
+        "created_at": utc_timestamp(),
+    }
     cdir.mkdir(parents=True, exist_ok=True)
     write_tidy_csv(
         cdir / STATS_FILENAME,
         compare.stats_rows(
-            prepared.obs, aggregate_to=cfg.aggregate_to, group_by=cfg.group_by
+            prepared.obs,
+            aggregate_to=cfg.aggregate_to,
+            remainders=frozenset(prepared.record.get("remainder_labels") or ()),
+            group_by=cfg.group_by,
         ),
         compare.STATS_COLUMNS,
     )
@@ -610,27 +681,6 @@ def run_comparison(
         write_tidy_csv(
             cdir / NODES_FILENAME, prepared.hierarchy, node_measures.HIERARCHY_COLUMNS
         )
-    record = {
-        "id": comparison_id,
-        **prepared.record,
-        # A comparison has no members; the recording lineage, label hashes and video fingerprints
-        # capture all the same (§18.5), which is what `drift` re-checks.
-        "provenance": provenance.capture(
-            experiment_dir,
-            recording_ids=sorted(set(prepared.covered)),
-            members=[],
-            # The hash of **what was measured** — the snapshot, not the run (or the node cache's
-            # digest, for the node source). `drift` compares it against where the run is *now*,
-            # and that asymmetry is the whole mechanism.
-            source={
-                "run_id": cfg.source_run_id,
-                "snapshot_id": prepared.snapshot_id,
-                "content_hash": prepared.source_hash,
-            },
-        ),
-        "status": "complete",
-        "created_at": utc_timestamp(),
-    }
     comparisons_store.write_comparison_yaml(cdir, record)
     report("writing", 1.0, comparison_id)
     return Comparison(experiment, comparison_id)
@@ -691,6 +741,16 @@ class Comparison:
         return comparisons_store.comparison_dir(self._experiment.dir, self._id)
 
     def record(self) -> dict:
+        """The saved record.
+
+        Raises:
+            UserInputError: no comparison with this id (a mistyped ``cmp_NN``).
+        """
+        if not (self.dir / comparisons_store.COMPARISON_FILENAME).is_file():
+            raise UserInputError(
+                f"no comparison {self._id!r} in this experiment; "
+                "`detail comparison list` shows the saved ones"
+            )
         return comparisons_store.read_comparison_yaml(self.dir)
 
     def ranking(self):

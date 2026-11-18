@@ -191,6 +191,8 @@ GUARD_FILES = frozenset(
     {
         # --- source scans over detail/ ------------------------------------------- #
         "tests/storage/test_path_serialization.py",
+        # Every write of a stream's alignment goes through a clock gate (#30).
+        "tests/storage/test_alignment_doors.py",
         # The clip window's strips are fed `Curve`s and spell no curve's name themselves.
         "tests/gui/test_clip_strips_scan.py",
         # One rule for a read-bound pool's thread count; `os.cpu_count()` nowhere else.
@@ -210,10 +212,19 @@ GUARD_FILES = frozenset(
         "tests/storage/test_machine_config_reads.py",
         "tests/storage/test_measured_time.py",
         "tests/storage/test_id_ordering.py",
+        # Every id family through its real mint and delete, and a scan for an allocator that
+        # is not the shared never-reused one: a reused id is wrong only in an old record.
+        "tests/storage/test_id_reuse.py",
         "tests/storage/test_atomic_writes.py",
         # Scans for a listing that reads its records bare, and plants the crash shape (a
         # zero-filled record) under every listing a page reads.
         "tests/storage/test_crash_consistency.py",
+        # A file a user hands in is parsed through one reader per format, so a malformed
+        # one is a message naming the file and line, not the parser's traceback (#33).
+        "tests/storage/test_user_file_readers.py",
+        # The CLI root shows a UserInputError as one line and lets a bug's traceback
+        # through; one row per #33 finding with a CLI step.
+        "tests/test_cli_user_errors.py",
         "tests/pipeline/test_atomic_write_seam.py",
         # Counts the syscalls a listing makes rather than scanning for a pattern — same
         # job: the cost model is invisible to every behavioural test.
@@ -228,6 +239,9 @@ GUARD_FILES = frozenset(
         # Every piece of machine-local state has a session floor, so a thread that outlives
         # its test cannot write the real preview cache, model cache or config.
         "tests/test_machine_state_isolation.py",
+        # No test writes into the repository tree: a file planted in `detail/` mid-run and
+        # deleted again is read, half-gone, by every parallel scan of `detail/` (2026-11-17).
+        "tests/test_source_tree_writes.py",
         # Every CLI / GUI call to an API method that takes `progress` passes one; the set is
         # read off the signatures, so a method that gains a callback is covered (#916).
         "tests/test_progress_callers.py",
@@ -283,6 +297,8 @@ GUARD_FILES = frozenset(
         "tests/query_methods/test_registry.py",
         "tests/trackers/test_tracker_progress.py",
         "tests/trackers/test_tracker_resume.py",
+        # Over TRACKERS: n_gaps counts frames the run looked at, at any stride and part (#32).
+        "tests/trackers/test_tracker_gaps.py",
         "tests/test_registry_isolation.py",
         "tests/test_registry_prepopulation.py",
         "tests/test_surfaces.py",
@@ -296,6 +312,8 @@ GUARD_FILES = frozenset(
         "tests/gui/test_export_reach.py",
         "tests/gui/test_reachability.py",
         "tests/gui/test_editing.py",
+        # A run's label writes outlive the page that queued them; quitting asks (#24).
+        "tests/gui/test_run_writes.py",
         "tests/gui/test_form_help_coverage.py",
         "tests/gui/test_frame_source.py",
         "tests/gui/test_failed_run_surface.py",
@@ -331,6 +349,9 @@ GUARD_FILES = frozenset(
         "tests/pipeline/test_label_leakage.py",
         "tests/analysis/test_no_unfiltered_behavior_streams.py",
         "tests/analysis/test_behavior_stream_origin.py",
+        # A screen that could have no floor is refused before measuring: the rule before
+        # and the ranking after must agree on every shape the rule claims to know.
+        "tests/analysis/test_no_floor_before_measuring.py",
         # --- documentation / help anti-drift -------------------------------------- #
         "tests/test_docs_nav.py",
         "tests/test_docs_cli_examples.py",
@@ -406,6 +427,9 @@ _HEAVY_IMPORTS = {
 #: is about time and an unmeasured "it is fine" is how the promise erodes. Checked against
 #: the live scan, so an entry that stops being tripped fails.
 UNIT_EXEMPTIONS = {
+    "tests/api/test_export_reingest_origin.py": "cv2.VideoWriter writes one 30-frame 16x16 "
+    "stub clip per streams-export test, only so a behavior stream has frames to resolve "
+    "against; milliseconds, and the guard belongs with the unit tier it runs in",
     "tests/api/test_analysis.py": "Popen(['python', '-c', 'pass']) only, to fabricate a "
     "live PID for the reattach check — no workload, ~50 ms",
     "tests/api/test_job_reattach.py": "same: a `python -c pass` stand-in process is the "

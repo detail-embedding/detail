@@ -304,7 +304,12 @@ method produced it, re-ingested). A predicted stream is never read as ground tru
 make a recording eligible for an evaluation, and naming it for scoring is refused, because a
 method scored against its own output produces a good-looking number that measures nothing.
 Anything you import is ground truth unless the file says otherwise or you pass `--origin
-predicted`.
+predicted`. Every label file DETAIL exports carries an `origin` column, so re-importing a
+method's output brings it back as `predicted` on its own.
+
+A label file is one animal in one session. A BORIS export holding several observations or
+subjects, or a MED-PC file holding several boxes, is refused until you pick one; they are never
+merged onto one recording.
 
 ## Detection models
 
