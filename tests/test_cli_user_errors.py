@@ -1136,3 +1136,44 @@ def test_finding_38_a_wrong_run_id_leaves_no_output_folder(experiment_dir, tmp_p
         )  # fmt: skip
         _clean_error(result, "nosuch", "`detail analysis list`")
         assert not out.exists()
+
+
+@pytest.mark.parametrize(
+    "header, words",
+    [
+        (
+            "Subject,Behavior,Behavior type,Start (s),Stop (s)\nm,groom,STATE,1,2\n",
+            ("b.csv is a BORIS aggregated export", "export the observation from BORIS"),
+        ),
+        (
+            "Behaviour,Status,Time\ngroom,START,1\n",
+            ("b.csv is not a BORIS tabular events export", "has 'Behaviour', 'Status'"),
+        ),
+    ],
+    ids=["aggregated", "other-columns"],
+)
+def test_finding_34_a_boris_file_this_importer_does_not_read(
+    header, words, processed_recording, tmp_path
+):
+    data = tmp_path / "b.csv"
+    data.write_text(header, encoding="utf-8")
+    result = _invoke(
+        "recording", "add-stream", "--experiment", processed_recording.experiment.dir,
+        "--recording", "recording_001", "--name", "b", "--importer", "boris",
+        "--data", data,
+    )  # fmt: skip
+    _clean_error(result, *words)
+
+
+@pytest.mark.parametrize("importer", ["boris", "behavior_csv"])
+def test_finding_34_a_behavior_file_that_is_not_text(
+    importer, processed_recording, tmp_path
+):
+    data = tmp_path / "b.csv"
+    data.write_bytes("Behavior,Behavior type,Time\nPutzenä,POINT,1\n".encode("cp1252"))
+    result = _invoke(
+        "recording", "add-stream", "--experiment", processed_recording.experiment.dir,
+        "--recording", "recording_001", "--name", "b", "--importer", importer,
+        "--data", data,
+    )  # fmt: skip
+    _clean_error(result, "b.csv is not UTF-8 text")

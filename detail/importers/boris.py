@@ -29,6 +29,7 @@ one-second bout as an instant.
 """
 
 import csv
+import io
 from pathlib import Path
 
 from detail.configs.stream_select import BorisSelectionConfig
@@ -70,7 +71,7 @@ class BorisImporter(StreamImporter):
     def can_import(self, path: Path) -> bool:
         try:
             names = _header_names(path)
-        except OSError:
+        except (OSError, UserInputError):
             return False
         return {_BEHAVIOR, _TYPE, _TIME} <= names and _AGGREGATED not in names
 
@@ -115,18 +116,21 @@ def _read_events(data_path: Path) -> tuple[list[tuple], list[str]]:
     Raises:
         UserInputError: A required column is missing, or a row is malformed.
     """
-    delimiter = _sniff_delimiter(data_path)
+    try:
+        return _parse_events(data_path)
+    except UnicodeDecodeError:
+        raise _not_text(data_path) from None
+
+
+def _parse_events(data_path: Path) -> tuple[list[tuple], list[str]]:
+    """:func:`_read_events` without the decode check, streamed row by row."""
+    delimiter = _delimiter_of(_first_line(data_path))
     observations: list[str] = []
     events = []
     with open(data_path, newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f, delimiter=delimiter)
         fields = {n.strip().lower(): n for n in (reader.fieldnames or [])}
-        for required in (_BEHAVIOR, _TYPE, _TIME):
-            if required not in fields:
-                raise UserInputError(
-                    "BORIS events export needs 'Behavior', 'Behavior type', and "
-                    f"'Time' columns (missing {required!r})"
-                )
+        _check_columns(data_path, reader.fieldnames or [], fields)
         for i, raw in enumerate(reader, start=2):
             label = (raw[fields[_BEHAVIOR]] or "").strip()
             if not label:
@@ -313,16 +317,66 @@ def _rows(numbers: list[int]) -> str:
 
 
 def _header_names(path: Path) -> set[str]:
-    delimiter = _sniff_delimiter(path)
-    with open(path, newline="", encoding="utf-8-sig") as f:
-        header = next(csv.reader(f, delimiter=delimiter), [])
+    """The header's column names, lower-cased; only the first line is read.
+
+    Raises:
+        UserInputError: The file is not UTF-8 text.
+    """
+    first = _first_line(path)
+    header = next(csv.reader(io.StringIO(first), delimiter=_delimiter_of(first)), [])
     return {h.strip().lower() for h in header}
 
 
-def _sniff_delimiter(path: Path) -> str:
-    with open(path, newline="", encoding="utf-8-sig") as f:
-        first = f.readline()
-    return "\t" if "\t" in first else ","
+def _first_line(path: Path) -> str:
+    """The export's first line, BOM-tolerantly.
+
+    Raises:
+        UserInputError: The file is not UTF-8 text.
+    """
+    try:
+        with open(path, newline="", encoding="utf-8-sig") as f:
+            return f.readline()
+    except UnicodeDecodeError:
+        raise _not_text(path) from None
+
+
+def _not_text(path: Path) -> UserInputError:
+    """A file that is not UTF-8 text: a video or another file picked by mistake, or a sheet
+    re-saved in the Windows encoding."""
+    return UserInputError(
+        f"{path} is not UTF-8 text, so it is not a BORIS export as BORIS writes it; "
+        "export it again from BORIS with Export events > Tabular events"
+    )
+
+
+def _delimiter_of(first_line: str) -> str:
+    """BORIS writes tab-separated (``.tsv``) or comma-separated exports: read either."""
+    return "\t" if "\t" in first_line else ","
+
+
+def _check_columns(path: Path, header: list[str], fields: dict) -> None:
+    """Refuse an export this importer does not read, saying what it is and what to export.
+
+    Raises:
+        UserInputError: The *aggregated* export (one row per bout, ``Start (s)`` and
+            ``Stop (s)``), or a file without the tabular events export's columns; the
+            message lists the columns the file has.
+    """
+    if _AGGREGATED in fields:
+        raise UserInputError(
+            f"{path.name} is a BORIS aggregated export (one row per bout, with 'Start (s)' "
+            "and 'Stop (s)' columns). This importer reads the tabular events export, one "
+            "row per START, STOP or POINT with a 'Time' column: export the observation "
+            "from BORIS again with Export events > Tabular events"
+        )
+    missing = [name for name in (_BEHAVIOR, _TYPE, _TIME) if name not in fields]
+    if missing:
+        has = ", ".join(repr(h) for h in header) or "no header row"
+        raise UserInputError(
+            f"{path.name} is not a BORIS tabular events export: it needs 'Behavior', "
+            f"'Behavior type' and 'Time' columns, and has {has} (missing "
+            f"{', '.join(repr(m) for m in missing)})"
+        )
 
 
 def _float(value: str, field: str, row: int) -> float:

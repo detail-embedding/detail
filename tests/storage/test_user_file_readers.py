@@ -15,8 +15,9 @@ one ``Error:`` line (``tests/test_cli_user_errors.py``).
 
 **Where it stops.** Every other parser call in ``detail/`` is listed below with the number
 of calls and why it may stay: a record DETAIL wrote and reads back for itself (a damaged
-one is a listing's problem, ``storage/dirscan.read_each``), or a user file a later slice of
-#33 moves onto the opener. The counts are exact, so a new bare call in a listed file fails
+one is a listing's problem, ``storage/dirscan.read_each``), or a user file whose shape the
+opener does not read (a BORIS export may be tab-separated), with what checks it instead. The
+counts are exact, so a new bare call in a listed file fails
 too, and an entry whose calls are gone fails until it is removed.
 
 **Numbers on the command line (#33 section C).** ``click``'s ``float`` and ``FloatRange``
@@ -44,7 +45,6 @@ _YAML_SEAM = "storage/user_yaml.py"
 _CSV_SEAM = "importers/_csv_common.py"
 
 _RECORD = "a record DETAIL writes and reads back for itself"
-_LATER = "a user file not yet on the reader: a later slice of #33"
 
 #: ``{path under detail/: (calls, why)}`` for ``yaml.safe_load``.
 YAML_ALLOWED: dict[str, tuple[int, str]] = {
@@ -93,8 +93,16 @@ CSV_ALLOWED: dict[str, tuple[int, str]] = {
         "shape; its offset cell goes through core.utils.seconds_to_t_ns",
     ),
     "gui/comparison.py": (1, f"a comparison's tables, {_RECORD}"),
-    "importers/behavior.py": (2, f"a behavior CSV (finding 34), {_LATER}"),
-    "importers/boris.py": (2, f"a BORIS export (finding 34), {_LATER}"),
+    "importers/behavior.py": (
+        1,
+        "can_import's one-row header sniff, which answers False on any problem; the "
+        "import itself reads through the opener",
+    ),
+    "importers/boris.py": (
+        2,
+        "a BORIS export, which BORIS writes tab- or comma-separated: the opener refuses "
+        "a tab-separated file as a spreadsheet mistake. Decoding is checked in boris.py",
+    ),
     "storage/append_log.py": (2, f"an append-only log, {_RECORD}"),
     "storage/behavior_output.py": (3, f"run tables, {_RECORD}"),
     "storage/location_export.py": (1, f"a location export, {_RECORD}"),
