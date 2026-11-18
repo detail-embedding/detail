@@ -35,7 +35,9 @@ def test_export_writes_the_tables(tmp_path):
     )  # fmt: skip
 
     assert result.exit_code == 0, result.output
-    out = tmp_path / "out"
+    # A folder of its own inside --out, and the CLI says which (#29).
+    (out,) = (tmp_path / "out").iterdir()
+    assert f"wrote {out}" in result.output
     with open(out / "measures.csv", encoding="utf-8-sig") as handle:
         rows = list(csv.DictReader(handle))
     assert {row["recording_id"] for row in rows} == set(UNBALANCED)
@@ -59,7 +61,8 @@ def test_a_sliding_window_takes_its_length_and_step(tmp_path):
     )  # fmt: skip
 
     assert result.exit_code == 0, result.output
-    with open(tmp_path / "out" / "measures.csv", encoding="utf-8-sig") as handle:
+    (out,) = (tmp_path / "out").iterdir()
+    with open(out / "measures.csv", encoding="utf-8-sig") as handle:
         windows = {row["window_id"] for row in csv.DictReader(handle)}
     # One second of recording, a 0.4 s window every 0.2 s: more than the one `whole` window,
     # and a count that tracks the options rather than the 300 s/60 s defaults (which would

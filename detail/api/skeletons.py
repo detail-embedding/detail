@@ -29,6 +29,7 @@ from detail.core import atomic
 from detail.core.skeleton import PRESETS, Skeleton
 from detail.storage import locations
 from detail.storage import skeleton_library as library
+from detail.storage.user_yaml import read_user_yaml
 
 #: Where a dependent's record sits under an experiment, and what to call it. Each record that
 #: copies a skeleton carries ``skeleton_ref``; the search reads only that field.
@@ -107,7 +108,7 @@ def resolve_skeleton(source) -> Skeleton:
     text = str(source)
     path = Path(text)
     if path.suffix.lower() in (".yaml", ".yml") and path.is_file():
-        data = yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
+        data = read_user_yaml(path) or {}
         body = data.get("skeleton", data) if isinstance(data, dict) else None
         if not isinstance(body, dict) or "names" not in body:
             raise ValueError(f"{path} holds no skeleton (no 'names')")
@@ -130,7 +131,7 @@ def skeleton_source_name(source) -> str | None:
     text = str(source)
     path = Path(text)
     if path.suffix.lower() in (".yaml", ".yml") and path.is_file():
-        data = yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
+        data = read_user_yaml(path) or {}
         stated = data.get("name") if isinstance(data, dict) else None
         return str(stated) if stated else path.stem
     try:
@@ -174,7 +175,22 @@ def dependents(skeleton_id: str) -> list[dict]:
 
 def dependents_by_skeleton() -> dict[str, list[dict]]:
     """:func:`dependents` for every skeleton at once, ``{skeleton id: [...]}``: one pass over
-    the workspace, which is what a screen listing the whole library wants."""
+    the workspace, which is what a screen listing the whole library wants.
+
+    **Matched on the digest, not the id.** A skeleton id (``sk_01``) means something only on
+    the machine that minted it: an experiment made elsewhere carries a ``skeleton_ref`` whose
+    id may name a different skeleton here. So a dependent counts only for a skeleton here whose
+    content digest equals its ``skeleton_ref.digest`` (:func:`_matching_ids`): the same
+    skeleton under another id is protected, and an unrelated one sharing the id is not locked.
+    A ref with no digest cannot say what it held and is matched on its id, which errs toward
+    protecting.
+
+    Searches the experiments in the managed workspace (``locations.list_experiment_dirs``)
+    only; one created with ``--dir`` elsewhere holds its own copies and is not counted.
+    """
+    by_digest: dict[str, list[str]] = {}
+    for entry in skeletons():
+        by_digest.setdefault(entry["skeleton"].digest(), []).append(entry["id"])
     out: dict[str, list[dict]] = {}
     for exp_dir in locations.list_experiment_dirs():
         exp_name = exp_dir.name
@@ -191,9 +207,11 @@ def dependents_by_skeleton() -> dict[str, list[dict]]:
                     data = yaml.safe_load(atomic.read_text(path)) or {}
                 except (OSError, yaml.YAMLError):
                     continue
-                found = (data.get("skeleton_ref") or {}).get("id")
-                if found:
-                    out.setdefault(str(found), []).append(
+                found = data.get("skeleton_ref") or {}
+                if not isinstance(found, dict):
+                    continue
+                for skeleton_id in _matching_ids(found, by_digest):
+                    out.setdefault(skeleton_id, []).append(
                         {
                             "experiment": str(exp_name),
                             "experiment_dir": exp_dir,
@@ -202,6 +220,22 @@ def dependents_by_skeleton() -> dict[str, list[dict]]:
                         }
                     )
     return out
+
+
+def _matching_ids(found: dict, by_digest: dict[str, list[str]]) -> list[str]:
+    """The skeleton ids here that a ``skeleton_ref`` names.
+
+    The entry with its id *and* its digest when there is one: a copy made here, which locks
+    the skeleton it came from and not a duplicate of it, so *Duplicate* then *Edit* still
+    works. Otherwise every entry holding its digest (a copy made on another machine, or one
+    whose entry was since re-added under another id). A ref with no digest: its id.
+    """
+    ref_id = str(found.get("id") or "")
+    digest = found.get("digest")
+    if not digest:
+        return [ref_id] if ref_id else []
+    holders = by_digest.get(str(digest), [])
+    return [ref_id] if ref_id in holders else list(holders)
 
 
 def _describe(found: list[dict]) -> str:
@@ -298,6 +332,6 @@ def import_skeleton(in_path: Path | str, *, name: str | None = None) -> dict:
     path = Path(in_path)
     if not path.is_file():
         raise FileNotFoundError(f"no skeleton file at {path}")
-    data = yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
+    data = read_user_yaml(path) or {}
     stated = data.get("name") if isinstance(data, dict) else None
     return create_skeleton(name or stated or path.stem, path)

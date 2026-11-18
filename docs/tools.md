@@ -21,6 +21,11 @@ Two modes:
   frame with no limit; that can run for hours, so it asks first and you can **Stop** it.
   A stopped run keeps what it finished.
 
+**Stop** records the run as `stopped` in either mode, even before its first frame, and keeps
+whatever it finished. A tool run happens inside the app or the `detail tools` command that
+started it, so it is not listed under **Active processes**: its page under **Quick tools** is
+where you watch it.
+
 ### GUI
 
 Quick tools → Quick segment. **Add…** one or more videos, pick the mode and frame count,
@@ -41,7 +46,9 @@ slider is showing, since an image can't be re-thresholded later.
 **Export** (frames or mp4, by mode) asks where to put it and creates its own folder there,
 named from the clip and the run (`openfield_01_quick-segment_run_003/`), holding the
 overlay stills plus `test.json`, or the overlay clip under the same name. Two exports never
-land on top of each other, and a folder still says what it is once it has left the app.
+land on top of each other: exporting the same run again (at another threshold, say) makes
+`openfield_01_quick-segment_run_003_2/` beside the first. A folder still says what it is once
+it has left the app.
 
 The Configuration checklist's **See it segment a clip** step opens this tool.
 

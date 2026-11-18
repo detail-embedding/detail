@@ -279,6 +279,9 @@ class CsvColumnBand(ConfigBand):
     def _on_time_column_changed(self) -> None:
         self._seed_time_kind()
         self._rebuild_rows()
+        # The time column decides the clock (a frame index is the video's), and the dialog
+        # gates its alignment row on that, so a change here is a change it must hear about.
+        self.changed.emit()
 
     def _update_hint(self) -> None:
         kind = self._time_kind.currentData()

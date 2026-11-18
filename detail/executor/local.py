@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+import weakref
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -57,7 +58,16 @@ def _alive(pid: int) -> bool:
     it is broadcast to every process on the console, the test runner included.
     ``GetExitCodeProcess`` is the real question — what ``Popen.poll()`` asks.
     ``tests/executor/test_process_liveness.py`` carries the measurements.
+
+    **A child this process spawned is asked through its ``Popen`` first.** A dead child stays
+    a zombie until its parent waits on it, and ``os.kill(pid, 0)`` succeeds on a zombie — so
+    the launcher's own poll of its own coordinator never saw it die and
+    ``AttachedRun.wait()`` spun forever (issue #28, finding 9). ``poll()`` reaps it and
+    answers. A pid this process did not spawn is not its zombie and goes to the probe.
     """
+    exited = _own_child_exited(pid)
+    if exited is not None:
+        return not exited
     if os.name == "nt":
         import _winapi
 
@@ -80,6 +90,29 @@ def _alive(pid: int) -> bool:
             True  # exists, just not signalable by us (shouldn't happen for our worker)
         )
     return True
+
+
+#: Every worker and coordinator ``Popen`` this process started, so :func:`_alive` can ask
+#: the handle rather than probe a pid that may be our own unreaped zombie. Weak: a handle the
+#: executor dropped is reaped by ``subprocess``'s own cleanup, and is then no zombie of ours.
+_OWN_CHILDREN: "weakref.WeakSet[subprocess.Popen]" = weakref.WeakSet()
+_OWN_CHILDREN_LOCK = threading.Lock()
+
+
+def _own_child(proc: subprocess.Popen) -> subprocess.Popen:
+    """Remember ``proc`` as a child this process started; returns it."""
+    with _OWN_CHILDREN_LOCK:
+        _OWN_CHILDREN.add(proc)
+    return proc
+
+
+def _own_child_exited(pid: int) -> bool | None:
+    """For a child this process spawned: whether it has exited (reaping it). Else ``None``."""
+    with _OWN_CHILDREN_LOCK:
+        procs = [p for p in _OWN_CHILDREN if p.pid == pid]
+    if not procs:
+        return None
+    return all(p.poll() is not None for p in procs)
 
 
 def _kill_tree(pid: int, *, force: bool) -> None:
@@ -233,6 +266,7 @@ def spawn_coordinator(
             stderr=subprocess.STDOUT,
             **new_process_group_kwargs(),
         )
+    _own_child(proc)
     with _SPAWNED_LOCK:
         _drop_exited_coordinators()
         _SPAWNED_COORDINATORS.append(proc)
@@ -426,6 +460,7 @@ class LocalExecutor(Executor):
                 stderr=subprocess.STDOUT,
                 **new_process_group_kwargs(),
             )
+        _own_child(proc)
         rundir.set_pid(run_dir, proc.pid)  # so a later/restarted cancel can find it
         self._runs[job.job_id] = run_dir
         self._procs[job.job_id] = proc

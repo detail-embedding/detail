@@ -38,10 +38,11 @@ from detail.api._runner_modules import PIPELINE_RUNNERS
 from detail.configs.display import KEEP_ALL_PROPOSALS
 from detail.configs.quick_segment import QuickSegmentConfig
 from detail.core.dataclasses import Detection, ToolResult
+from detail.core.errors import UserInputError
 from detail.core.progress import ThrottledProgress
 from detail.core.protocols import ModelNotReadyError, Tool
 from detail.core.registries import register_tool
-from detail.core.utils import decode_mask, resolve_device
+from detail.core.utils import decode_mask, new_dir, resolve_device
 from detail.core.visualize import (
     assign_colors,
     bgr_to_rgb,
@@ -272,7 +273,7 @@ class QuickSegment(Tool):
                 ("reading timestamps", (i + 1) / len(videos), f"{i + 1}/{len(videos)}")
             )
 
-        results, samples, labels = run_prompt_test_on_parts(
+        results, _samples, labels = run_prompt_test_on_parts(
             videos,
             prompts,
             model,
@@ -292,7 +293,6 @@ class QuickSegment(Tool):
             prompts,
             labels,
             colors,
-            samples,
             results,
             {
                 "model_id": config.get("model_id"),
@@ -433,7 +433,6 @@ def _save_sampled(
     prompts: list,
     labels: list[str],
     colors: dict,
-    samples: list[tuple[int, int]],
     results: list,
     meta: dict,
 ) -> None:
@@ -452,10 +451,13 @@ def _save_sampled(
         path.parent.mkdir(parents=True, exist_ok=True)
         np.save(path, ts)
 
+    # Each result is filed under the part it names. The sampler's request list is not
+    # parallel to `results` (a sample that does not decode is skipped), so pairing the
+    # two by position put every result after a skipped sample under the wrong clip.
     by_part: dict[tuple[str, int], list] = {}
-    for result, (part_index, _requested) in zip(results, samples):
+    for result in results:
         for label in labels:
-            by_part.setdefault((label, part_index), []).append(result)
+            by_part.setdefault((label, result.part_index), []).append(result)
     for (label, part_index), part_results in by_part.items():
         store = out_dir / label / f"part_{part_index:03d}.zarr"
         store.parent.mkdir(parents=True, exist_ok=True)
@@ -477,8 +479,8 @@ def _save_sampled(
             {
                 **meta,
                 "sampled_frames": [
-                    {"part_index": p, "frame_idx": r.frame_idx}
-                    for r, (p, _f) in zip(results, samples)
+                    {"part_index": r.part_index, "frame_idx": r.frame_idx}
+                    for r in results
                 ],
                 "prompts": [
                     {"label": label, "prompt": prompt.to_dict()}
@@ -664,15 +666,15 @@ def export_run(
 
     One folder is the shareable unit whichever mode produced the run: a sampled run
     renders its overlay stills plus ``test.json`` into it, a consecutive run renders its
-    overlay clip into it. The caller picks where; the name comes from the run so two
-    exports never collide or get mixed together.
+    overlay clip into it. The caller picks where; the name comes from the run, and a
+    second export of the same run (another threshold, say) gets ``_2`` after it rather
+    than landing in the first one's folder, so two exports never collide (#29).
 
     ``min_conf`` is the display threshold the pictures are drawn at. An exported image is
     the one form of this run that can't be re-thresholded, so the caller passes the
     threshold it was showing rather than letting the export pick its own.
     """
-    out = Path(parent_dir) / export_basename(manifest)
-    out.mkdir(parents=True, exist_ok=True)
+    out = new_dir(parent_dir, export_basename(manifest))
     if (Path(run_dir) / PROMPT_TEST_FILENAME).is_file():
         export_frames(run_dir, manifest, out, progress, min_conf)
     else:
@@ -710,6 +712,7 @@ def export_frames(
         )
     index = read_sampled(run_dir)
     sources = manifest.get("source_videos") or [manifest["source_video"]]
+    _require_sources(sources)
     out_dir.mkdir(parents=True, exist_ok=True)
     emit = ThrottledProgress(None if progress is None else (lambda ev: progress(*ev)))
     total = len(index["sampled_frames"])
@@ -725,6 +728,24 @@ def export_frames(
     written += 1
     emit(("exporting", 1.0, f"frame {total}/{total}"), force=True)
     return written
+
+
+def _require_sources(sources: list[str]) -> None:
+    """Refuse an export whose source clip is gone, before anything is written.
+
+    Checked before the writer or the folder is made: a moved clip used to leave an empty
+    ``.mp4`` (or folder) behind, with a message about video-excluded experiment exports,
+    which a Quick segment run is not.
+
+    Raises:
+        UserInputError: A source clip is not at the path the run recorded.
+    """
+    for source in sources:
+        if not Path(source).is_file():
+            raise UserInputError(
+                f"the clip this run was made from is no longer at {source} (moved or "
+                "deleted); put it back there to export this run"
+            )
 
 
 def export_mp4(
@@ -747,6 +768,7 @@ def export_mp4(
             "consecutive mode, or export the overlay frames instead."
         )
     source = manifest["source_video"]
+    _require_sources([source])
     width, height = (int(x) for x in result["resolution"])
     fps = float(result["fps"]) or 30.0
     n = int(result["n_processed"])
@@ -755,6 +777,7 @@ def export_mp4(
     timestamps = load_timestamps(run_dir, result)
 
     out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     emit = ThrottledProgress(None if progress is None else (lambda ev: progress(*ev)))
     writer, _codec = video_store.open_video_writer(out_path, fps, width, height)
     try:

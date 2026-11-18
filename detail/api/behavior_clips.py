@@ -24,27 +24,41 @@ from pathlib import Path
 
 from detail.api import clip_render
 from detail.api.run_preview import ClipQueryPreview
-from detail.core.utils import safe_path_part
+from detail.core.utils import safe_path_part, unique_stems
 
 #: clips.csv — the row behind every clip, so the figure can be rebuilt outside DETAIL. This is
 #: the "data required to recreate this video file" half, and it is why the clip target declares
 #: `inputs` rather than `inputs_reason`.
 CLIP_COLUMNS = [
     "instance_id", "source_label", "label", "label_path", "recording_id", "subject",
-    "start_frame", "end_frame", "t_ns", "end_t_ns", "dur_s",
+    "start_frame", "end_frame", "t_ns", "end_t_ns", "dur_s", "fps",
 ]  # fmt: skip
 
 
-def clip_name(source_label: str, recording_id: str, start: int, end: int) -> str:
-    """``<cluster>_<recording>_<start>-<end>.mp4``.
+def _clip_stem(source_label: str, recording_id: str, start: int, end: int) -> str:
+    stem = f"{source_label}_{recording_id}_{int(start):06d}-{int(end):06d}"
+    return safe_path_part(stem, allow_dot=True)
+
+
+def clip_names(rows: Sequence) -> list[str]:
+    """``<cluster>_<recording>_<start>-<end>.mp4`` for every row, **one file per row**.
 
     The cluster comes first so a name-sorted file browser groups a cluster's clips together and
     plays them back to back — reviewing a whole result in one pass is the point, rather than
     opening a folder per cluster. The zero-padded frame range orders them in time within it, and
     still says where to look in the original video.
+
+    Two rows can name one clip: two subjects matched on the same span of one recording, or two
+    cluster names that clean to one stem (``a/b`` and ``a_b``). Those each carry their subject
+    (``_subject1``), and a number if that still does not separate them, so neither is written
+    over the other — and an empty clip, which is deleted by name, deletes only its own (#29).
     """
-    stem = f"{source_label}_{recording_id}_{int(start):06d}-{int(end):06d}"
-    return safe_path_part(stem, allow_dot=True) + ".mp4"
+    stems = [
+        _clip_stem(str(r.source_label), r.recording_id, r.start_frame, r.end_frame)
+        for r in rows
+    ]
+    keys = [f"subject{int(r.subject or 0)}" for r in rows]
+    return [f"{stem}.mp4" for stem in unique_stems(stems, keys, clean=False)]
 
 
 def export_behavior_clips(
@@ -92,11 +106,9 @@ def export_behavior_clips(
     # rewind) per bout. The subject is in the key because `render_part` draws one track.
     by_part: dict[tuple[str, int, int], list[dict]] = {}
     jobs_by_instance: dict[str, dict] = {}
-    for row in rows:
+    for row, name in zip(rows, clip_names(rows)):
         subject = int(row.subject or 0)
-        out_path = dest / clip_name(
-            str(row.source_label), row.recording_id, row.start_frame, row.end_frame
-        )
+        out_path = dest / name
         scrub, _t_ns = preview._scrub_ctx(
             row.recording_id, embed_run_ids[row.recording_id]
         )
@@ -146,6 +158,7 @@ def export_behavior_clips(
                 "" if row.subject is None else row.subject,
                 row.start_frame, row.end_frame, row.t_ns, row.end_t_ns,
                 round((int(row.end_t_ns) - int(row.t_ns)) / 1e9, 3),
+                clip_render.written_fps(job),
             ]  # fmt: skip
             + [names.get(render, "") for render in wanted]
         )

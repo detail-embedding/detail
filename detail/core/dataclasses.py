@@ -138,7 +138,7 @@ def _cue_to_serialized(cue: Cue) -> tuple[str, object]:
     if isinstance(cue, ImageCue):
         if cue.path is None:
             raise ValueError(
-                "ImageCue must be persisted to a experiment-relative path before "
+                "ImageCue must be persisted to an experiment-relative path before "
                 "serialization; the API layer writes the image under the run "
                 "directory and sets ImageCue.path."
             )
@@ -397,7 +397,7 @@ class DetectionJob:
     created_at: str
     model_variant: str | None = None  # None = the model's default variant
     # "pretrained" = look model_id up in the MODELS registry; "trained" = model_id
-    # is a experiment model.yaml id, loaded via TRAINED_LOADERS (closed-set, §12).
+    # is an experiment model.yaml id, loaded via TRAINED_LOADERS (closed-set, §12).
     weights_source: str = "pretrained"
     batch_size: int = 1  # frames per GPU forward pass (batch-capable models; §7)
     # Process every Nth source frame (1 = every frame). Rows keep the *source* frame
@@ -1018,7 +1018,7 @@ def progress_event_from_dict(d: dict) -> ProgressEvent:
 
 @dataclass
 class ProcessingProgress:
-    """Aggregate progress for a experiment-level processing run (§15).
+    """Aggregate progress for an experiment-level processing run (§15).
 
     Carries the current recording's per-stage ``ProgressEvent`` plus the run-level
     ``elapsed_s`` (for a whole-run ETA). A detached run coordinator writes these to
@@ -1158,6 +1158,10 @@ class PromptTestJob:
 
 @dataclass
 class PromptTestResult:
+    # The part (video file) the frame came from. ``frame_idx`` is local to that part, so a
+    # result is identified by the pair; never by its position among the results, which
+    # skip any sample that failed to decode.
+    part_index: int
     frame_idx: int
     t_ns: int
     frame_image: np.ndarray  # the sampled frame (H, W, 3)

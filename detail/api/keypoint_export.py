@@ -592,6 +592,22 @@ def write_dlc(source: PointSource, part_id: str, csv_path: Path, h5_path: Path) 
 # --------------------------------------------------------------------------- #
 # SLEAP analysis HDF5, one per video part
 # --------------------------------------------------------------------------- #
+def sleap_instance_scores(likelihood: np.ndarray) -> np.ndarray:
+    """``(F, T)`` instance scores from ``(F, T, K)`` point scores: the mean over the points
+    **placed**, NaN where none is.
+
+    A missing point is NaN, and it was set to 0 before the mean, so an animal with two of
+    four points placed at 0.9 scored 0.45 (#32). SLEAP's own mean instance score (its
+    bottom-up multi-class models, ``nanmean`` of the peak values) skips a missing node too.
+    """
+    likelihood = np.asarray(likelihood, dtype=np.float64)
+    placed = np.isfinite(likelihood)
+    count = placed.sum(axis=2)
+    total = np.where(placed, likelihood, 0.0).sum(axis=2)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return np.where(count > 0, total / np.maximum(count, 1), np.nan)
+
+
 def write_sleap(source: PointSource, part_id: str, path: Path, video_name: str) -> Path:
     """SLEAP's analysis HDF5 (``sleap-convert --format analysis``), as SLEAP writes it:
     every matrix stored transposed (``tracks`` as ``(n_tracks, 2, n_nodes, n_frames)``,
@@ -602,15 +618,7 @@ def write_sleap(source: PointSource, part_id: str, path: Path, video_name: str) 
     skeleton = source.skeleton
     n_frames = xy.shape[0]
     occupancy = np.isfinite(xy).all(axis=3).any(axis=2)  # (F, T)
-    instance_scores = np.where(
-        np.isfinite(likelihood).any(axis=2),
-        (
-            np.nanmean(np.where(np.isfinite(likelihood), likelihood, 0.0), axis=2)
-            if likelihood.size
-            else likelihood.sum(axis=2)
-        ),
-        np.nan,
-    )
+    instance_scores = sleap_instance_scores(likelihood)
     edges = [(skeleton.index(a), skeleton.index(b)) for a, b in skeleton.edges]
     provenance = {
         "source_software": "DETAIL",
@@ -701,7 +709,10 @@ def write_nwb(
         starting_frame=[0],
         dimension=[w, h],
         rate=source.fps(part_id),
-        starting_time=0.0,
+        # The part's first frame on the recording's clock, which is the clock the poses'
+        # timestamps use: a later part's map is recording-wide (`add_video_part`), so 0.0
+        # put its video one part-length ahead of its poses (issue #23).
+        starting_time=float(source.timestamps(part_id)[0]) / 1e9,
         num_samples=source.frame_count(part_id),
         unit="n.a.",
     )

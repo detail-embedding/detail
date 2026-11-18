@@ -258,6 +258,11 @@ def test_two_subjects_in_one_recording_are_rendered_separately(tmp_path, video):
     dest, _written = _export(tmp_path, video, rows)
     table = _rows(dest / "clips.csv")
     assert sorted(r["subject"] for r in table) == ["0", "1"]
+    # Subject 1 has no detection on the span, so its clip is empty and dropped — and dropped by
+    # its own name: one shared name deleted subject 0's clip too, leaving only clips.csv (#29).
+    by_subject = {r["subject"]: r["video_overlay"] for r in table}
+    assert by_subject["1"] == ""
+    assert by_subject["0"] and (dest / by_subject["0"]).is_file()
 
 
 def test_the_progress_callback_moves_within_a_single_recording(tmp_path, video):
@@ -375,3 +380,43 @@ def test_numpy_frame_values_survive_the_index(tmp_path, video):
     row.end_frame = np.int64(row.end_frame)
     dest, _written = _export(tmp_path, video, [row])
     assert _rows(dest / "clips.csv")[0]["start_frame"] == "2"
+
+
+def test_a_bout_detected_on_every_fifth_frame_plays_for_its_duration(tmp_path, video):
+    """Through the export a user runs (#32, finding 3): frames 0-30 lasting 1.0 s, detected
+    on every 5th frame (a stride-5 detection run). The clip used to hold the 7 detected
+    frames at 30 fps and play 0.23 s while ``clips.csv`` said 1.0 s. Now it holds all 31, and
+    ``clips.csv`` records the rate it was written at, so frames over ``fps`` is ``dur_s``.
+    """
+    import cv2
+
+    bout = bo.BehaviorInstance("r1", 0, 0, 1_000_000_000, 0, 30, "c01", "")
+    dest = tmp_path / "out"
+    dest.mkdir()
+    behavior_clips.export_behavior_clips(
+        tmp_path,
+        dest,
+        instances=[bout],
+        embed_run_ids={"r1": "emb_01"},
+        renders=(clip_render.RAW,),
+        preview=_FakePreview(video, detected=range(0, _N_FRAMES, 5)),
+    )
+    (row,) = _rows(dest / "clips.csv")
+    cap = cv2.VideoCapture(str(dest / row["video_raw"]))
+    try:
+        fps, n = cap.get(cv2.CAP_PROP_FPS), 0
+        while cap.read()[0]:
+            n += 1
+    finally:
+        cap.release()
+    assert n == 31
+    assert float(row["fps"]) == pytest.approx(fps, rel=1e-3) == pytest.approx(30.0)
+    assert float(row["dur_s"]) <= n / float(row["fps"]) <= float(row["dur_s"]) + 1 / fps
+
+
+def test_a_bout_with_no_clip_has_no_rate(tmp_path, video):
+    """A blank clip column and a rate beside it would claim a file that is not there."""
+    rows = [_instance("r1", "c01", 100, 104)]
+    dest, _written = _export(tmp_path, video, rows)
+    (row,) = _rows(dest / "clips.csv")
+    assert row["video_overlay"] == "" and row["fps"] == ""

@@ -1576,6 +1576,10 @@ _CONFIRMATIONS: dict[str, str] = {
     "editing.py:confirm_leave": "discards unsaved edits the page is holding",
     "arena.py:SceneGeometryDialog._close": "discards unsaved scene-geometry edits",
     "pages.py:_confirm_and_cancel": "kills a running worker; its text comes from the caller",
+    "animation_export.py:confirm_replace": (
+        "writes an export over files of the same name already in the folder (#29); asked "
+        "where the save dialog could not ask itself"
+    ),
     # --- not deletes, and right anyway: an effect with nowhere else to appear -- #
     "launch.py:_covered_subset": (
         "runs on fewer recordings than the user selected. Silently narrowing a run is the "

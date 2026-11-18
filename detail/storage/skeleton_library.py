@@ -34,6 +34,7 @@ from detail.core.skeleton import Skeleton
 from detail.core.utils import utc_timestamp
 from detail.models.hf_access import model_cache_dir
 from detail.storage import dirscan
+from detail.storage import id_allocator
 
 SCHEMA_VERSION = 1
 FILENAME = "skeleton.yaml"
@@ -84,21 +85,10 @@ def write(record: dict) -> None:
 
 
 def _reserve_id() -> str:
-    root = library_dir()
-    root.mkdir(parents=True, exist_ok=True)
-    taken = []
-    for child in root.iterdir():
-        stem, _, num = child.name.rpartition("_")
-        if stem == ID_PREFIX and num.isdigit():
-            taken.append(int(num))
-    n = max(taken, default=0) + 1
-    while True:
-        candidate = f"{ID_PREFIX}_{n:02d}"
-        try:
-            (root / candidate).mkdir()
-            return candidate
-        except FileExistsError:
-            n += 1
+    """Claim the next ``sk_NN`` directory; a deleted skeleton's id is never handed out again
+    on this machine (``storage/id_allocator.py``). Ids are still only local: what a skeleton
+    *is* across machines is its digest."""
+    return id_allocator.claim_dir(library_dir(), ID_PREFIX, digits=2)
 
 
 def create(name: str, skeleton: Skeleton, *, derived_from: str | None = None) -> dict:

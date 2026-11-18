@@ -59,6 +59,10 @@ _SAVE_PRESET_HELP = (
 )
 
 
+_OFFSET_HELP = "video_t_ns = stream_t_ns + offset. Positive if the stream began after the video started."
+_SYNC_HELP = "Scrub the video to where this stream starts, and set the offset from it."
+
+
 def _to_pixmap(image) -> QPixmap:
     """RGB ``(H, W, 3) uint8`` ndarray → QPixmap (mirrors gui/arena.py)."""
     height, width = image.shape[:2]
@@ -117,11 +121,14 @@ class AddStreamDialog(Dialog):
     nothing in ``detail/`` until this dialog used it.)
 
     Two bands under the picker. The **importer's** own config comes from its ``ImporterUI``
-    band (the CSV column mapping; nothing at all for MED-PC or BORIS). The **dialog's** band is
-    importer-agnostic and gated on declared properties, never a hand-written list of ids:
-    *Labels are* on ``role == "behavior"``, *Alignment* on
-    ``clocks.needs_alignment(clock)`` — so MED-PC gets offset-at-import for free, and a new
-    importer inherits both the day it registers.
+    band (the CSV column mapping; the session picker for MED-PC; the observation and subject
+    pickers for BORIS). The **dialog's** band is importer-agnostic and gated on declared
+    properties, never a hand-written list of ids: *Labels are* on ``role == "behavior"``,
+    *Alignment* on ``clocks.needs_alignment`` of the clock the import will **resolve**
+    (``StreamImporter.resolve_clock``), not the class attribute — a CSV whose time column is
+    a frame index is on the video's clock even though its importer declares
+    ``stream_seconds``, so its alignment row is greyed. MED-PC gets offset-at-import for free,
+    and a new importer inherits both the day it registers.
 
     Alignment is part of importing, not an errand afterwards. **Sync to video** opens the
     scrubber from here and returns an offset; nothing is written until Import. The Recording
@@ -211,12 +218,10 @@ class AddStreamDialog(Dialog):
 
         self._offset = FloatSpin("seconds")
         self._offset.setRange(-1e6, 1e6)
-        self._offset.setToolTip(
-            "video_t_ns = stream_t_ns + offset. Positive if the stream began after the "
-            "video started."
-        )
+        self._offset.setToolTip(_OFFSET_HELP)
         self._offset.valueChanged.connect(self._on_offset_typed)
         self._sync_btn = QPushButton("Sync to video…")
+        self._sync_btn.setToolTip(_SYNC_HELP)
         self._sync_btn.clicked.connect(self._sync_to_video)
         offset_row = QHBoxLayout()
         offset_row.addWidget(self._offset, 1)
@@ -256,6 +261,7 @@ class AddStreamDialog(Dialog):
         self._describe_guess(path, guess, claimed)
         if self._band is not None:
             self._band.set_source(path)
+        self._apply_capabilities(self._current_importer()[1])
         self._suggest_name()
         self._refresh()
 
@@ -270,7 +276,7 @@ class AddStreamDialog(Dialog):
         and a CSV that needs a column mapping is by definition one it cannot recognize.
         Falling back to "the importer that can be told how to read a file" puts the mapping
         form in front of the user instead of an empty dialog. Derived from which importer
-        declares a ``config_model`` rather than naming one, so it stays right if another
+        declares that its config maps an unrecognized file rather than naming one, so it stays right if another
         configurable importer is added -- and gives up honestly if two are.
         """
         claimants = []
@@ -287,7 +293,7 @@ class AddStreamDialog(Dialog):
         configurable = [
             importer_id
             for importer_id, cls in self._importers.items()
-            if getattr(cls, "config_model", None) is not None
+            if getattr(cls, "maps_unrecognized_files", False)
         ]
         return (configurable[0], False) if len(configurable) == 1 else (None, False)
 
@@ -355,17 +361,33 @@ class AddStreamDialog(Dialog):
         if self._data.path:
             self._band.set_source(self._data.path)
 
+    def _resolved_clock(self, cls) -> str:
+        """The clock this file + config would import on (``StreamImporter.resolve_clock``).
+
+        The class's declared clock until a file is chosen, or when the file cannot be read:
+        the import will say what is wrong with it, and the gate must not.
+        """
+        declared = getattr(cls, "clock", "stream_seconds")
+        if not self._data.path:
+            return declared
+        config = self._band.config() if self._band is not None else None
+        try:
+            return cls().resolve_clock(Path(self._data.path), config)
+        except Exception:  # noqa: BLE001 - a gate must never block the dialog
+            return declared
+
     def _apply_capabilities(self, cls) -> None:
         """Show or grey the dialog's own rows from what the importer *declares*.
 
-        Read off `role` and `clock` rather than a list of importer ids, so this cannot go
-        stale: an importer registered tomorrow gets the right rows with no edit here.
+        Read off `role` and the resolved clock rather than a list of importer ids, so this
+        cannot go stale: an importer registered tomorrow gets the right rows with no edit
+        here. Re-run on every refresh, since the clock can follow the file and its mapping.
         """
         is_behavior = getattr(cls, "role", None) == "behavior"
         self._origin.setEnabled(is_behavior)
         self._origin_label.setEnabled(is_behavior)
 
-        aligns = clocks.needs_alignment(getattr(cls, "clock", "stream_seconds"))
+        aligns = clocks.needs_alignment(self._resolved_clock(cls))
         has_video = bool(self._recording.video_parts)
         self._offset.setEnabled(aligns)
         self._offset_label.setEnabled(aligns)
@@ -377,7 +399,12 @@ class AddStreamDialog(Dialog):
         else:
             reason = ""
         for widget in (self._offset, self._sync_btn):
-            widget.setToolTip(reason or widget.toolTip())
+            if reason:
+                widget.setToolTip(reason)
+            elif widget is self._sync_btn:
+                widget.setToolTip(_SYNC_HELP)
+            else:
+                widget.setToolTip(_OFFSET_HELP)
         if not aligns:
             self._offset.setValue(0.0)
             self._offset_ns = 0
@@ -488,7 +515,7 @@ class AddStreamDialog(Dialog):
         ):
             return
         importer_id, _cls = self._current_importer()
-        config = self._band.config() if self._band is not None else None
+        config = self._band.preset_config() if self._band is not None else None
         try:
             self._recording.save_stream_preset(
                 name, importer_id, config, overwrite=name in existing
@@ -511,6 +538,14 @@ class AddStreamDialog(Dialog):
         """
         if not self._data.path:
             QMessageBox.warning(self, "Sync to video", "Choose a data file first.")
+            return
+        _importer_id, cls = self._current_importer()
+        if not clocks.needs_alignment(self._resolved_clock(cls)):
+            QMessageBox.information(
+                self,
+                "Sync to video",
+                "This file is on the video's own clock, so it is aligned at import.",
+            )
             return
         run_busy(
             self,
@@ -542,6 +577,9 @@ class AddStreamDialog(Dialog):
     # -- submit -------------------------------------------------------------- #
 
     def _on_band_changed(self) -> None:
+        # The mapping can change the clock (a time column that is a frame index), so the
+        # alignment row is re-gated here, not only when the importer changes.
+        self._apply_capabilities(self._current_importer()[1])
         self._suggest_name()
         self._refresh()
 
@@ -840,12 +878,17 @@ class SyncStreamDialog(Dialog):
         self._anchor.blockSignals(True)  # one _update_offset at the end, not per row
         label_col = self._columns.index("label") if "label" in self._columns else None
         if label_col is None:
-            first = int(events[0][0]) if events else 0
+            # A frame-clock row's t_ns is resolved only at import; there is no stream time
+            # to anchor on, and int(None) raised here.
+            timed = [row for row in events if row[0] is not None]
+            first = int(timed[0][0]) if timed else 0
             self._anchor.addItem(f"stream start (t = {first / 1e9:.3f}s)", first)
             self._anchor_label.setText("Anchor:")
         else:
             for row in events:
                 t_ns, label = row[0], row[label_col]
+                if t_ns is None:  # a frame-clock row, resolved only at import
+                    continue
                 self._anchor.addItem(f"{t_ns / 1e9:8.2f}s   {label}", t_ns)
         self._anchor.blockSignals(False)
         self._update_offset()

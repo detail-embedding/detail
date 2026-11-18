@@ -177,6 +177,46 @@ def test_home_import_collision_then_replace(qapp, tmp_path, monkeypatch):
     assert page._import_btn.isEnabled()
 
 
+def test_home_import_replace_prompt_lists_what_it_deletes(qapp, tmp_path, monkeypatch):
+    """Yes in this prompt deleted the experiment's copied video, datasets and export records
+    when the bundle was slim, and the prompt said only "Replace the existing experiment with
+    the imported one?" (#29). It lists them now, in the CLI's words
+    (`api.experiment.replace_warning`), from the list the import's refusal carries, so nothing
+    walks the experiment on the UI thread."""
+    from detail.api.exporters import format_size
+    from detail.storage import experiment as experiment_store
+
+    proj = _experiment(tmp_path / "a")
+    archive = proj.export(tmp_path / "study.tar")  # slim
+    ws = _home(monkeypatch, tmp_path, archive)
+    existing = export_store.import_experiment(
+        proj.export(tmp_path / "full.tar", include_video=True), ws
+    )
+    (experiment_store.exports_dir(existing) / "export_01").mkdir(parents=True)
+    (video,) = (existing / "recordings").rglob("*.mp4")
+    _sync_run_progress(monkeypatch)
+    asked = []
+
+    def answer(_parent, _title, text, *rest):
+        asked.append(text)
+        return pages.QMessageBox.StandardButton.No
+
+    monkeypatch.setattr(pages.QMessageBox, "question", answer)
+
+    pages.HomePage(on_open=lambda _e: None)._import_experiment()
+
+    assert asked == [
+        "An experiment named 'study' already exists.\n\n"
+        "Replacing it deletes these, and the bundle does not bring them back:\n"
+        f"\u2022 1 video file(s), {format_size(video.stat().st_size)}: the bundle carries "
+        "no video\n"
+        "\u2022 1 export record(s), export_01: no bundle carries them (the exported files "
+        "themselves are not touched)\n\n"
+        "Replace it with the imported one?"
+    ]
+    assert video.is_file(), "declining replaced anyway"
+
+
 def test_home_import_collision_declined(qapp, tmp_path, monkeypatch):
     proj = _experiment(tmp_path / "a")
     archive = proj.export(tmp_path / "study.tar")
@@ -264,7 +304,8 @@ def test_home_import_names_the_recordings_whose_video_was_not_found(
 
     assert len(opened) == 1, "the experiment did not open"
     assert told == [
-        "Video for 1 recording(s) was not found on this computer: Mouse 7 day 1.\n\n"
+        "Video for 1 recording(s) was not found on this computer: Mouse 7 day 1. A file "
+        "at the same path that is a different video counts as not found.\n\n"
         "Open one of them and use Locate video on its file. Every recording whose video "
         "is in the same folder will find it too."
     ]

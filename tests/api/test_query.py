@@ -722,6 +722,22 @@ def test_export_writes_an_empty_csv_for_a_recording_with_no_instances(tmp_path):
         ]
 
 
+def test_a_second_export_into_one_folder_keeps_the_first(tmp_path):
+    """Each export makes its own folder (#29). Writing ``<recording_id>.csv`` straight into
+    ``--out`` replaced the first cut-off's files with the second's, with nothing said.
+    """
+    exp, run = _searched(tmp_path)
+    run.set_cutoff("q01", 0.9)
+    first = run.export(tmp_path / "export")
+    before = (first / "s1.csv").read_bytes()
+    run.set_cutoff("q01", 1.0)
+    second = run.export(tmp_path / "export")
+
+    assert first != second and first.parent == second.parent == tmp_path / "export"
+    assert (first / "s1.csv").read_bytes() == before
+    assert (second / "s1.csv").read_bytes() != before
+
+
 def test_export_before_the_search_completes_says_so(tmp_path):
     proj, _rows = _experiment(tmp_path, ["s1"], n_rows=N_EMBEDDED)
     run_dir = analysis_store.analysis_dir(proj.dir, "an_09")
@@ -739,7 +755,9 @@ def test_export_before_the_search_completes_says_so(tmp_path):
             search_recording_ids=["s1"],
         ),
     )
-    with pytest.raises(FileNotFoundError):
+    # A `partial` run is refused before anything looks for the artifact, naming what the
+    # search never reached (`tests/api/test_query_partial.py` has the class).
+    with pytest.raises(ValueError, match=r"partial.*q01 on s1.*re-run the search"):
         Experiment(proj.dir).query_run("an_09").export(tmp_path / "export")
 
 
@@ -887,12 +905,15 @@ def test_cli_exports_the_artifact(tmp_path):
         "analysis", "query-calibrate",
         "--experiment", str(exp.dir), "--run", "an_01", "--cutoff", "q01=0.9",
     )  # fmt: skip
-    out_dir = tmp_path / "exported"
-    _cli(
+    parent = tmp_path / "exported"
+    output = _cli(
         "analysis", "export-query",
-        "--experiment", str(exp.dir), "--run", "an_01", "--out", str(out_dir),
+        "--experiment", str(exp.dir), "--run", "an_01", "--out", str(parent),
     )  # fmt: skip
 
+    # A folder of its own inside --out, and the CLI says which (#29).
+    (out_dir,) = parent.iterdir()
+    assert str(out_dir) in str(output)
     assert sorted(p.name for p in out_dir.iterdir()) == ["s1.csv", "s2.csv"]
     assert "predicted" in (out_dir / "s1.csv").read_text(encoding="utf-8-sig")
 
@@ -1491,3 +1512,42 @@ def test_a_cutoff_below_the_committed_one_is_estimated_over_its_own_instances(tm
     lower = run.audit_precision(label="q01", cutoff=0.0)
     assert lower["n"] == everywhere["n"] == 20
     assert lower["cutoff"] == 0.0
+
+
+# --- data the search read, deleted since (#33 finding 21) ----------------------------------
+def _audited(tmp_path):
+    exp, run = _searched(tmp_path, n_rows=600)
+    run.set_cutoff("q01", 0.0)
+    for row in run.audit_sample(label="q01", budget=3):
+        run.label_audit(row.instance_id, True)
+    return exp
+
+
+def _audit(exp):
+    return CliRunner().invoke(
+        main, ["analysis", "audit", "--experiment", str(exp.dir), "--run", "an_01"]
+    )
+
+
+def test_audit_after_a_searched_recording_was_deleted_names_it(tmp_path):
+    exp = _audited(tmp_path)
+    exp.delete_recording(exp.resolve_recording("s1").id)
+    result = _audit(exp)
+    assert result.exit_code == 1 and "Traceback" not in result.output
+    assert result.output == (
+        "Error: query run 'an_01' cannot read its candidates: the recording 's1' it "
+        "searched was deleted. Run the query again over the recordings that are left\n"
+    )
+
+
+def test_audit_after_a_searched_embedding_was_deleted_names_it(tmp_path):
+    import shutil
+
+    exp = _audited(tmp_path)
+    shutil.rmtree(exp.get_recording("s2").dir / "embeddings" / "emb_01")
+    result = _audit(exp)
+    assert result.exit_code == 1 and "Traceback" not in result.output
+    assert (
+        "embedding run 'emb_01' of recording 's2', which it searched, was deleted"
+        in (result.output)
+    )

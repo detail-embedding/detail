@@ -139,7 +139,7 @@ def _recover_field(module, field: str, record: dict, recording_dir) -> object:
     # alone would collapse two genuinely-different legacy runs into one spec across
     # recordings — a false-merge, the dangerous direction. Include the recording so it can
     # only ever false-*split* (safe). Not persisted (only legacy on-the-fly grouping
-    # reaches this), so no absolute path lands in a experiment file.
+    # reaches this), so no absolute path lands in an experiment file.
     recording_key = Path(recording_dir).name if recording_dir is not None else "?"
     return f"__unresolved__:{field}:{recording_key}:{record.get('id')}"
 
@@ -164,7 +164,7 @@ def _legacy_identity(module, record: dict, recording_dir) -> dict:
 
 
 def clear_legacy_cache() -> None:
-    """Drop the memoized ``job.json`` legacy-identity recoveries (tests; a experiment
+    """Drop the memoized ``job.json`` legacy-identity recoveries (tests; an experiment
     switch). Keys are unique run-dir paths, so this only bounds growth over a
     long-lived process — it never changes a result."""
     _LEGACY_CACHE.clear()

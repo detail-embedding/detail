@@ -251,7 +251,8 @@ def test_the_manifest_declares_exclusive_overlap_without_claiming_full_coverage(
     assert manifest["origin"] == "predicted"
     assert manifest["label_space"] == "pooled"
     assert manifest["vocabulary"] == ["rearing"]
-    assert manifest["names"] == {"L1": ["rearing"]}
+    # The unlabelled bucket gets an entry with no name: what `unnamed_time` is offered on (#24).
+    assert manifest["names"] == {"L1": ["rearing"], "unlabelled": []}
     assert "score" not in manifest
     assert manifest["method"]["granularity"] == 4
 
@@ -763,6 +764,22 @@ def test_exporting_twice_without_an_edit_pins_once(
     assert len(handle.snapshots()) == 1
 
 
+def test_a_second_export_into_one_folder_keeps_the_first(
+    experiment_dir, recording_dir, make_embedding_run
+):
+    """Each export makes its own folder (#29): two into one ``--out`` are two folders."""
+    proj, run = _fitted_run(experiment_dir, recording_dir, make_embedding_run)
+    handle = proj.temporal_clustering_run(run.id)
+    handle.name_nodes({_branches(handle)[0]: "rearing"})
+    parent = tmp_path_of(handle) / "export"
+    first = handle.export(parent)
+    second = handle.export(parent)
+    assert first != second and first.parent == second.parent == parent
+    assert sorted(p.name for p in first.iterdir()) == sorted(
+        p.name for p in second.iterdir()
+    )
+
+
 def test_cli_exports_the_artifact_and_names_the_pin(
     experiment_dir, recording_dir, make_embedding_run
 ):
@@ -802,7 +819,10 @@ def test_cli_exports_the_artifact_and_names_the_pin(
          "--run", run.id, "--out", str(out_dir)],
     )  # fmt: skip
     assert result.exit_code == 0, result.output
-    written = sorted(out_dir.iterdir())
+    # A folder of its own inside --out, and the CLI says which (#29).
+    (folder,) = out_dir.iterdir()
+    assert f"exported to {folder}" in result.output
+    written = sorted(folder.iterdir())
     assert written, "an export writes one CSV per analyzed recording"
     # Every file carries the header — a recording that produced nothing gets an empty file rather
     # than no file (§19) — and at least one row somewhere is a real instance marked predicted.
