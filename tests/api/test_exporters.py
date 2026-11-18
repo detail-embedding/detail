@@ -984,8 +984,9 @@ def test_the_tracks_export_is_the_file_the_analysis_run_writes(
     result = _export_run(
         processed_recording, processed_recording.tracking_run_id, "tracks", tmp_path
     )
-    elsewhere = tmp_path / "via_the_analysis_door"
-    processed_recording.recording.export_locations("track_01", elsewhere)
+    elsewhere = processed_recording.recording.export_locations(
+        "track_01", tmp_path / "via_the_analysis_door"
+    )
 
     assert (result.dest / "recording_001_tracks.csv").read_bytes() == (
         elsewhere / location_export.TRACKS_FILE

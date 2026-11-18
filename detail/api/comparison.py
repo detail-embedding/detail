@@ -490,9 +490,7 @@ def prepare_comparison(
         report("measuring", 0.0, f"{len(covered)} recording(s)")
         rows = measures.measure_run(
             run_dir,
-            windows_for=lambda cov: cfg.windows.windows_for(
-                cov.start_t_ns, cov.end_t_ns
-            ),
+            windows_for=cfg.windows.windows_for_coverage,
             measures=cfg.measures,
             progress_cb=lambda done, total: report(
                 "measuring", done / max(total, 1), f"{done}/{total} recording(s)"

@@ -308,7 +308,11 @@ def test_a_contradicting_subject_kind_is_refused(authored_cohort):
 def test_a_distill_run_is_named_by_its_own_flag(authored_cohort):
     """``--distill-run`` is the subject, and the refusals name it by that flag rather than a
     spelling derived from the kind (``--distill``), which no command accepts."""
+    from detail.storage import distill_runs
+
     exp = str(authored_cohort.experiment.dir)
+    # A run that exists: an id naming nothing is refused before listing (#33).
+    distill_runs.run_dir(exp, "distill_001").mkdir(parents=True)
     listed = _run("export", "list", "--experiment", exp, "--distill-run", "distill_001")
     assert listed.exit_code == 0, listed.output
     assert "performance" in listed.output

@@ -1,7 +1,7 @@
 """Experiment export / import — portable single-archive bundles (Sections 1-2, 15).
 
-A experiment is already self-contained with relative paths (Tenet 6), so copying it
-"just works". Export packages a experiment's tree — optionally **slim** (no source
+An experiment is already self-contained with relative paths (Tenet 6), so copying it
+"just works". Export packages an experiment's tree — optionally **slim** (no source
 video, no datasets) — into one ``tar`` with a top-level ``export.yaml`` manifest (+
 a payload sha256), and import validates that manifest and places the experiment into
 the managed workspace. No path rewriting; this adds selectivity, an integrity
@@ -48,7 +48,15 @@ MANIFEST_NAME = "export.yaml"
 _ROOT = "experiment"  # the experiment tree lives under this prefix inside the archive
 _VIDEO_SUFFIXES = {".mp4", ".avi", ".mov", ".mkv"}
 _TEXT_SUFFIXES = {".yaml", ".yml", ".csv"}  # scanned for absolute paths (Tenet 6)
-_ABS_MARKERS = ("/Users/", "/home/", "C:\\")
+#: Where an absolute path starts: a home folder on macOS or Linux, or any Windows drive. Not
+#: inside a word, so a URL's ``/home/`` or a time's ``12:30`` is not one.
+_ABS_PATH = re.compile(r"(?<![\w.])/(?:Users|home)/|(?<![A-Za-z0-9])[A-Za-z]:[\\/]")
+#: YAML keys whose values are text a person wrote, or a recorded error message: prose that
+#: may quote a path, never a path DETAIL resolves.
+_FREE_TEXT_KEYS = frozenset({"description", "notes", "error"})
+#: The experiment's own metadata table: the user's columns, which DETAIL stores and shows but
+#: never resolves as paths (a ``raw_file`` column naming where the video came from is data).
+_USER_TABLES = frozenset({"metadata.csv"})
 _CHUNK = 1 << 20
 
 #: The phases an export reports, in order.
@@ -396,7 +404,77 @@ def _is_foreign_owned(parts: tuple[str, ...]) -> bool:
 def _is_scanned(rel: str) -> bool:
     """Whether the portability scan reads ``rel`` — one answer for the scan and for its weight."""
     path = Path(rel)
-    return path.suffix.lower() in _TEXT_SUFFIXES and not _is_foreign_owned(path.parts)
+    return (
+        path.suffix.lower() in _TEXT_SUFFIXES
+        and not _is_foreign_owned(path.parts)
+        and rel not in _USER_TABLES
+    )
+
+
+def _path_strings(node, *, free_text: bool = False):
+    """Every string in a parsed YAML that holds an absolute path, outside free-text keys."""
+    if free_text:
+        return
+    if isinstance(node, dict):
+        for key, value in node.items():
+            yield from _path_strings(key)
+            yield from _path_strings(value, free_text=str(key) in _FREE_TEXT_KEYS)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _path_strings(item)
+    elif isinstance(node, str) and _ABS_PATH.search(node):
+        yield node
+
+
+def _line_offenses(
+    rel: str, lines: list[str], only: list[str] | None = None
+) -> list[str]:
+    """``rel line N: <path>`` for each line holding an absolute path.
+
+    ``only`` limits the lines to those holding one of these paths (the strings a YAML parse
+    found outside free-text keys); a path the parse found on no single line is still named.
+    """
+    found = []
+    wanted = None if only is None else {_path_token(text) for text in only}
+    for number, line in enumerate(lines, start=1):
+        match = _ABS_PATH.search(line)
+        if match is None:
+            continue
+        token = _path_token(line[match.start() :])
+        if wanted is not None and not any(w in line for w in wanted):
+            continue
+        found.append(f"{rel} line {number}: {token}")
+        if wanted is not None:
+            wanted = {w for w in wanted if w not in line}
+    found += [f"{rel}: {w}" for w in sorted(wanted or ())]
+    return found
+
+
+def _path_token(text: str) -> str:
+    """The absolute path in ``text``, up to the first space or quote, cut to a readable size."""
+    match = _ABS_PATH.search(text)
+    token = re.match(r"[^\s'\",]+", text[match.start() :] if match else text)
+    token = token.group(0) if token else text.strip()
+    return token if len(token) <= 80 else token[:77] + "..."
+
+
+def file_portability_offenses(rel: str, text: str) -> list[str]:
+    """Where one experiment file holds an absolute path DETAIL would resolve (Tenet 6).
+
+    A YAML is scanned value by value, past :data:`_FREE_TEXT_KEYS` (a description, a note, a
+    recorded error may quote a folder and is never resolved), so a path in prose does not make
+    an experiment unexportable. A CSV DETAIL writes, or a YAML that does not parse, is scanned
+    line by line, as before. Each offense names the file, the line and the path.
+    """
+    lines = text.splitlines()
+    if Path(rel).suffix.lower() in (".yaml", ".yml"):
+        try:
+            data = parse_user_yaml(text, rel)
+        except UserInputError:
+            return _line_offenses(rel, lines)
+        strings = list(_path_strings(data))
+        return _line_offenses(rel, lines, only=strings) if strings else []
+    return _line_offenses(rel, lines)
 
 
 def portability_offenses(
@@ -405,8 +483,9 @@ def portability_offenses(
     *,
     on_file: Callable[[str], None] | None = None,
 ) -> list[str]:
-    """DETAIL text files that contain an absolute path (Tenet 6 violation), scoped
-    past files DETAIL only stores and never parses (see :func:`_is_foreign_owned`).
+    """Where DETAIL files hold an absolute path (Tenet 6 violation), as ``file line N: path``,
+    scoped past files DETAIL only stores and never parses (see :func:`_is_foreign_owned`) and
+    the user's own metadata table, and past free text (:func:`file_portability_offenses`).
 
     ``on_file(rel)`` is called after each file the scan reads."""
     experiment_dir = Path(experiment_dir)
@@ -415,8 +494,7 @@ def portability_offenses(
         if not _is_scanned(rel):
             continue
         text = (experiment_dir / rel).read_text(errors="replace", encoding="utf-8-sig")
-        if any(marker in text for marker in _ABS_MARKERS):
-            offenders.append(rel)
+        offenders += file_portability_offenses(rel, text)
         if on_file is not None:
             on_file(rel)
     return offenders
@@ -544,7 +622,7 @@ def export_experiment(
     """
     experiment_dir = Path(experiment_dir)
     if not (experiment_dir / experiment_store.CONFIG_FILENAME).is_file():
-        raise FileNotFoundError(f"not a experiment (no config.yaml): {experiment_dir}")
+        raise FileNotFoundError(f"not an experiment (no config.yaml): {experiment_dir}")
     dest = Path(dest)
     bar = _Bar(progress)
     bar.phase(STAGE_SCANNING, "reading the experiment")
@@ -579,9 +657,12 @@ def export_experiment(
         on_file=lambda rel: (checking.read(sizes[rel]), checking.done()),
     )
     if offenders:
-        raise ValueError(
-            "absolute paths in experiment files (Tenet 6) — not portable: "
-            + ", ".join(offenders[:5])
+        more = f" (and {len(offenders) - 5} more)" if len(offenders) > 5 else ""
+        raise UserInputError(
+            "absolute paths in experiment files, which would not exist on another machine "
+            f"(Tenet 6): {'; '.join(offenders[:5])}{more}. A path DETAIL reads must be "
+            "relative to the experiment: edit the file, or move the video under a video "
+            "root (`detail video-root set`)"
         )
     config = experiment_store.read_config(experiment_dir)
     packed_video = any(Path(rel).suffix.lower() in _VIDEO_SUFFIXES for rel in included)
@@ -1014,7 +1095,7 @@ def import_experiment(
     Raises:
         ValueError: Unsupported schema_version, malformed/corrupt archive, or a
             failed integrity check.
-        ExperimentExistsError: A experiment with the target id exists and ``replace`` is
+        ExperimentExistsError: An experiment with the target id exists and ``replace`` is
             False. A ``FileExistsError``.
     """
     archive = Path(archive)

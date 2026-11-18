@@ -26,7 +26,7 @@ from detail.api.exporters import (
     experiment_name,
     register,
 )
-
+from detail.core.utils import unique_stems
 from detail.storage import behavior_output
 from detail.storage import experiment as experiment_store
 
@@ -360,6 +360,21 @@ def _canonical_streams(subject: ExportSubject) -> list[dict]:
     return out
 
 
+def _stream_file_names(recording_id: str, names: list[str]) -> list[str]:
+    """``<recording_id>_<stream>.csv`` per stream, unique in the folder even by case (#29)."""
+    stems = unique_stems(names, [str(i + 1) for i in range(len(names))])
+    return [f"{recording_id}_{stem}.csv" for stem in stems]
+
+
+def _recording_stems(sources: list) -> list[str]:
+    """Each keypoint source's file stem: its recording's name, made path-safe — and, where two
+    names clean to one stem (``Mouse 1 (pre)`` / ``Mouse 1 [pre]``), with the recording id after
+    it, so neither recording's files are written over the other's (#29)."""
+    return unique_stems(
+        [s.recording_name for s in sources], [s.recording_id for s in sources]
+    )
+
+
 def _run_streams(subject, dest, scope, progress, **options):
     """Each stream's canonical CSV with its video time beside it, plus what each one is.
 
@@ -374,6 +389,7 @@ def _run_streams(subject, dest, scope, progress, **options):
     from detail.storage import streams as streams_store
 
     manifests = _canonical_streams(subject)
+    file_names = _stream_file_names(subject.id, [str(m["name"]) for m in manifests])
     written = []
     rows = []
     for index, manifest in enumerate(manifests):
@@ -383,7 +399,7 @@ def _run_streams(subject, dest, scope, progress, **options):
             / streams_store.CANONICAL_DIRNAME
             / streams_store.CANONICAL_FILENAME
         )
-        out = Path(dest) / f"{subject.id}_{safe_name(name)}.csv"
+        out = Path(dest) / file_names[index]
         _write_aligned_stream(source, out, manifest)
         written.append(out)
         rows.append(
@@ -1639,9 +1655,10 @@ def _run_keypoints(subject, dest, scope, progress, **options):
     from detail.api import keypoint_export
 
     sources = _keypoint_sources(subject, options, scope)
+    stems = _recording_stems(sources)
     written = []
     for index, source in enumerate(sources):
-        out = Path(dest) / f"{safe_name(source.recording_name)}_keypoints.csv"
+        out = Path(dest) / f"{stems[index]}_keypoints.csv"
         keypoint_export.write_long_csv(out, [source])
         written.append(out)
         if progress is not None:
@@ -1657,9 +1674,10 @@ def _run_keypoints_dlc(subject, dest, scope, progress, **options):
     from detail.api import keypoint_export
 
     sources = _keypoint_sources(subject, options, scope)
+    stems = _recording_stems(sources)
     written = []
     for index, source in enumerate(sources):
-        stem = safe_name(source.recording_name)
+        stem = stems[index]
         for part_id in source.part_ids():
             written += keypoint_export.write_dlc(
                 source,
@@ -1679,9 +1697,10 @@ def _run_keypoints_sleap(subject, dest, scope, progress, **options):
     from detail.api import keypoint_export
 
     sources = _keypoint_sources(subject, options, scope)
+    stems = _recording_stems(sources)
     written = []
     for index, source in enumerate(sources):
-        stem = safe_name(source.recording_name)
+        stem = stems[index]
         for part_id in source.part_ids():
             written.append(
                 keypoint_export.write_sleap(
@@ -1704,9 +1723,10 @@ def _run_keypoints_nwb(subject, dest, scope, progress, **options):
     from detail.api import keypoint_export
 
     sources = _keypoint_sources(subject, options, scope)
+    stems = _recording_stems(sources)
     written = []
     for index, source in enumerate(sources):
-        stem = safe_name(source.recording_name)
+        stem = stems[index]
         for part_id in source.part_ids():
             written.append(
                 keypoint_export.write_nwb(
@@ -1731,6 +1751,7 @@ def _run_keypoints_video(subject, dest, scope, progress, **options):
     from detail.api import keypoint_export, keypoints_video
 
     sources = _keypoint_sources(subject, options, scope)
+    stems = _recording_stems(sources)
     written = []
     for index, source in enumerate(sources):
 
@@ -1741,7 +1762,7 @@ def _run_keypoints_video(subject, dest, scope, progress, **options):
         written += keypoints_video.export_keypoints_video(
             source,
             dest,
-            safe_name(source.recording_name),
+            stems[index],
             overlay=bool(options.get("overlay", False)),
             progress=_folded,
         )

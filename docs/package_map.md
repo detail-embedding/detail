@@ -328,6 +328,8 @@ detail/
 ├── cli.py                # click-based CLI; entry point `detail` (or `python -m detail`)
 ├── cli_keypoints.py      # §26: the `keypoints` command group, registered on cli.py's root
 │                         # group — its own module so the keypoint work never edits one region of cli.py
+├── cli_numbers.py        # the finite float option types every float option in cli*.py uses
+│                         # (click's own accept nan and inf)
 ├── cli_skeletons.py      # §26: the machine-wide `skeleton` command group (the library)
 ├── __main__.py           # `python -m detail` dispatcher
 └── gui/                  # PyQt6 GUI (docs/gui_design.md): app.py is the shell (mode banner,

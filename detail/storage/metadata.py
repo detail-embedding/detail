@@ -14,6 +14,9 @@ import re
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+from detail.core.errors import UserInputError
+from detail.importers import _csv_common
+
 METADATA_FILENAME = "metadata.csv"
 RECORDING_KEY = "recording_id"
 # Accepted as an import *key* and written into an export for legibility, but never stored
@@ -107,14 +110,15 @@ def _read_raw(
     path = metadata_path(experiment_dir)
     if not path.is_file():
         return [], {}
-    with open(path, newline="", encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f)
-        cols = [c for c in (reader.fieldnames or []) if c != RECORDING_KEY]
-        rows: dict[str, dict[str, str]] = {}
-        for row in reader:
-            recording_id = (row.get(RECORDING_KEY) or "").strip()
-            if recording_id:
-                rows[recording_id] = {c: (row.get(c) or "") for c in cols}
+    # Through the user-CSV opener: the file is the user's, and one saved back from Excel in
+    # the Windows encoding says so instead of failing every command that reads it.
+    fieldnames, records = _csv_common.read_user_csv(path)
+    cols = [c for c in fieldnames if c != RECORDING_KEY]
+    rows: dict[str, dict[str, str]] = {}
+    for row in records:
+        recording_id = (row.get(RECORDING_KEY) or "").strip()
+        if recording_id:
+            rows[recording_id] = {c: (row.get(c) or "") for c in cols}
     return cols, rows
 
 
@@ -336,25 +340,49 @@ def write_metadata(
 
 
 # --- bulk CSV import (§11) --------------------------------------------------- #
+def _read_import(path: Path | str) -> tuple[list[str], list[list[str]]]:
+    """An import CSV's stripped header and its rows as cell lists, through the user-CSV
+    opener (encoding, separator, a trailing empty header column).
+
+    Raises:
+        FileNotFoundError: If the file is absent.
+        UserInputError: As :func:`read_import_header` says.
+    """
+    p = Path(path)
+    if not p.is_file():
+        raise FileNotFoundError(f"no such file: {path}")
+    fieldnames, records = _csv_common.read_user_csv(p)
+    if not fieldnames:
+        raise UserInputError(f"{p.name} is empty")
+    header = [h.strip() for h in fieldnames]
+    blank = [i + 1 for i, h in enumerate(header) if h == ""]
+    if blank:
+        raise UserInputError(
+            f"{p.name}: column {blank[0]} has no header; give it a name, or delete the "
+            "column if it is empty"
+        )
+    repeated = sorted({h for h in header if header.count(h) > 1})
+    if repeated:
+        raise UserInputError(
+            f"{p.name} has duplicate column headers ({', '.join(repeated)}); give each "
+            "column its own name"
+        )
+    rows = [
+        [record.get(name) or "" for name in fieldnames] + list(record.get(None) or [])
+        for record in records
+    ]
+    return header, rows
+
+
 def read_import_header(path: Path | str) -> list[str]:
     """The stripped header row of an import CSV.
 
     Raises:
         FileNotFoundError: If the file is absent.
-        ValueError: An empty file, or an empty or duplicate column header.
+        UserInputError: Not UTF-8 text, not comma-separated, an empty file, or an empty or
+            duplicate column header.
     """
-    p = Path(path)
-    if not p.is_file():
-        raise FileNotFoundError(f"no such file: {path}")
-    with open(p, newline="", encoding="utf-8-sig") as f:  # utf-8-sig tolerates a BOM
-        header = next(csv.reader(f), None)
-    if header is None:
-        raise ValueError("CSV is empty")
-    header = [h.strip() for h in header]
-    if any(h == "" for h in header):
-        raise ValueError("CSV has an empty column header")
-    if len(header) != len(set(header)):
-        raise ValueError("CSV has duplicate column headers")
+    header, _rows = _read_import(path)
     return header
 
 
@@ -382,7 +410,7 @@ def load_import_csv(
         ValueError: Structural problems — empty file, empty or duplicate column headers,
             or a ``key_column`` the CSV does not have.
     """
-    header = read_import_header(path)
+    header, records = _read_import(path)
     if key_column is None:
         key_column = detect_key_column(header)
         if key_column is None:
@@ -395,17 +423,10 @@ def load_import_csv(
     derived = {key_column, RECORDING_KEY, NAME_KEY, FILE_KEY}
     columns = [h for h in header if h not in derived]
     rows: list[tuple[str, dict[str, str]]] = []
-    with open(Path(path), newline="", encoding="utf-8-sig") as f:
-        reader = csv.reader(f)
-        next(reader)  # the header, validated above
-        for raw in reader:
-            if not any(c.strip() for c in raw):
-                continue  # skip blank lines
-            cells = (raw + [""] * len(header))[: len(header)]  # pad short rows
-            values = {
-                h: cells[i].strip() for i, h in enumerate(header) if h not in derived
-            }
-            rows.append((cells[key_idx].strip(), values))
+    for raw in records:  # blank lines and all-blank rows are skipped by the opener
+        cells = (raw + [""] * len(header))[: len(header)]  # pad short rows
+        values = {h: cells[i].strip() for i, h in enumerate(header) if h not in derived}
+        rows.append((cells[key_idx].strip(), values))
     return key_kind(key_column), columns, rows
 
 
