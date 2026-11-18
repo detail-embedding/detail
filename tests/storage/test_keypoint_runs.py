@@ -128,7 +128,6 @@ def test_the_run_reader_finds_a_frames_instances_and_checks_the_skeleton(tmp_pat
     keypoint_runs.write_detect_yaml(run_dir, keypoint_runs.detect_record(_job(), "x"))
     path = keypoint_runs.part_path(run_dir, "part_001")
     assert path == run_dir / "part_001.zarr"
-    assert keypoint_runs.last_frame_written(path) is None  # no store yet
     with KeypointDetectPartWriter(path, ("nose", "tail"), 1) as writer:
         for frame, n in ((2, 1), (5, 2), (9, 1)):
             result = _instances(frame, n)
@@ -147,7 +146,6 @@ def test_the_run_reader_finds_a_frames_instances_and_checks_the_skeleton(tmp_pat
     assert len(empty["row"]) == 0 and empty["points"].shape == (0, 2, 2)
     assert len(run.at("part_002", 5)["frame_idx"]) == 0  # no store for that part
     assert run.rows("part_001")["frame_idx"].tolist() == [2, 5, 5, 9]
-    assert keypoint_runs.last_frame_written(path) == 9
     run.meta["skeleton"]["names"] = ["a", "b"]  # yaml and attrs disagreeing
     with pytest.raises(ValueError, match="cannot be read"):
         run.rows("part_001")

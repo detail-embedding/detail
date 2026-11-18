@@ -67,17 +67,6 @@ def assignment_path(run_dir: Path | str, part_id: str) -> Path:
     return Path(run_dir) / "assignments" / f"{part_id}.zarr"
 
 
-def last_frame_written(path: Path | str) -> int | None:
-    """The frame of the last instance a detect part store holds — the frame resume continues
-    after — or None for no store or an empty one. The writer truncates every column to the
-    common length on open (§9) and flushes only on frame boundaries, so this frame is whole.
-    """
-    path = Path(path)
-    if not path.is_dir():
-        return None
-    return KeypointDetectPartReader(path).last_frame_idx()
-
-
 def write_yaml(path: Path | str, data: dict) -> None:
     """``data`` as YAML, ``schema_version`` first (Tenet 7), tmp + atomic replace."""
     if next(iter(data)) != "schema_version":

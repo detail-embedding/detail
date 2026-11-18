@@ -1,6 +1,6 @@
 """The keypoint stores (§26 "Run directory structure"): the detect part's instance schema —
 columns, dtypes, chunks, the ``layout`` attr, the skeleton in the attrs, the method's extras
-under ``extras/`` — its frame-boundary flush and resume point, the refusal of the per-track
+under ``extras/`` — its frame-boundary flush and its reopen, the refusal of the per-track
 layout, the track part's ``instance_row`` and the assignment part."""
 
 import numpy as np
@@ -99,7 +99,6 @@ def test_detect_part_schema_is_one_row_per_instance(tmp_path):
     np.testing.assert_array_equal(
         rows[f"{EXTRAS_PREFIX}ref_index"][2:3], _result(2, n=1).extras["ref_index"]
     )
-    assert reader.last_frame_idx() == 3
 
 
 def test_a_method_without_box_confidence_or_detection_stores_nan_and_minus_one(
@@ -157,7 +156,7 @@ def test_the_writer_flushes_only_where_a_new_frame_begins(tmp_path):
     ]
 
 
-def test_the_resume_point_is_the_common_length_and_a_resumed_store_appends(tmp_path):
+def test_a_reopened_store_is_cut_to_the_common_length_and_appends(tmp_path):
     path = tmp_path / "part_001.zarr"
     spec = extras_spec(_result(0))
     with KeypointDetectPartWriter(path, NAMES, C, spec) as writer:
@@ -167,7 +166,6 @@ def test_the_resume_point_is_the_common_length_and_a_resumed_store_appends(tmp_p
     root = zarr_store.open_group(path, mode="a")
     root["frame_idx"].resize((6,))
     root["frame_idx"][4:] = [2, 2]
-    assert KeypointDetectPartReader(path).last_frame_idx() == 1
     with KeypointDetectPartWriter(path, NAMES, C, spec) as writer:
         assert writer.rows_written == 4  # cut back to the common length
         _write(writer, _result(2))
