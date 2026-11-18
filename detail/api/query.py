@@ -15,6 +15,7 @@ searched perfectly reads ``open`` rather than ``complete``.
 
 from pathlib import Path
 
+from detail.api import exporters
 from detail.api.authored_run import (
     AuthoredRun,
     SnapshotInterpretation,
@@ -536,7 +537,8 @@ class QueryRun(AuthoredRun):
         return self._edit("name_behavior", mutate, progress=progress)
 
     def export(self, out_dir: Path | str, *, progress=None) -> Path:
-        """Write one per-recording behavior-stream CSV into ``out_dir``.
+        """Write one per-recording behavior-stream CSV into a new folder under ``out_dir``;
+        return that folder. Each export gets its own, so a second one never replaces the first.
 
         §19's deliberate, user-initiated re-ingest: the artifact is never auto-written into a
         recording's ``streams/``, because keeping the prediction/ground-truth boundary
@@ -556,10 +558,12 @@ class QueryRun(AuthoredRun):
         re-cutting it afterwards cannot leave the export describing something unfindable. Pinning
         brings deferred frame views current, the one long step, reported through ``progress``.
         """
-        out_dir = Path(out_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
         pinned = self.pin(reason="export", progress=progress)
         output = self.artifact() if pinned is None else self.snapshot_artifact(pinned)
+        out_dir = exporters.new_export_folder(
+            exporters.ExportSubject("analysis_run", self._experiment.dir, self.id),
+            out_dir,
+        )
         for recording_id in self.state().search_recording_ids:
             behavior_output.write_stream_csv(
                 out_dir / f"{recording_id}.csv", output, recording_id

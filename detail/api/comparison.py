@@ -68,6 +68,33 @@ class ComparisonRunError(ValueError):
     """A comparison could not be run against the artifact or metadata it names."""
 
 
+class ScreenRefusedError(ComparisonRunError, UserInputError):
+    """A difference screen refused before measuring because it could have no floor (#39).
+
+    The cohort the user chose is the cause, an ordinary input mistake, so it is a
+    ``UserInputError`` and the CLI root shows it as one ``Error:`` line from any command
+    (``cli.USER_ERRORS``); it stays a ``ComparisonRunError`` for callers that catch the
+    comparison's own refusals.
+    """
+
+
+def screen_refusal(foreseen: compare.NoFloor) -> str:
+    """The sentence a difference screen is refused with before measuring (§24): why it could
+    have no floor, that it is therefore not run, and what would run. One sentence for the
+    launch dialog (shown before Run), ``detail comparison run`` and the Python API.
+
+    Only a screen (``source: nodes``) is refused: it exists to say which clusters clear the
+    floor, so without one it has no output, and saved it was listed greyed and untickable
+    (#39). A comparison of labelled behaviors with no floor is still a description, reported as
+    measured, so the dialog warns and the run goes ahead.
+    """
+    return (
+        f"{foreseen.reason}: this screen is refused before measuring, since it could keep "
+        f"nothing. {foreseen.remedy} Or measure the run's labelled behaviors instead, which "
+        f"are reported as measured, without a floor."
+    )
+
+
 def _artifact_dir(experiment_dir: Path, source_run_id: str) -> Path:
     run_dir = analysis_store.analysis_dir(experiment_dir, source_run_id)
     if not behavior_output.has_behavior_output(run_dir):
@@ -388,6 +415,7 @@ def prepare_comparison(
         else ComparisonConfig.model_validate(config)
     )
     experiment_dir = Path(experiment.dir)
+    metadata = metadata_store.read_metadata(experiment_dir)
 
     def report(stage: str, fraction: float, detail: str = "") -> None:
         if progress is not None:
@@ -420,6 +448,20 @@ def prepare_comparison(
         run_dir = analysis_store.analysis_dir(experiment_dir, cfg.source_run_id)
         snapshot_id = None
         covered = _check_filter(cfg, list(view.recording_ids))
+        # Before measuring, not after: a screen whose floor is certain to be absent from
+        # the recordings' metadata alone (one animal in a paired design, one unit per group,
+        # one group) would measure for minutes and save a screen that keeps nothing (#39).
+        # Node rows are one per recording per measure, so every shape the rule knows applies.
+        foreseen = compare.no_floor_before_measuring(
+            metadata,
+            covered,
+            group_by=cfg.group_by,
+            aggregate_to=cfg.aggregate_to,
+            levels=cfg.levels,
+            one_row_per_recording=True,
+        )
+        if foreseen is not None:
+            raise ScreenRefusedError(screen_refusal(foreseen))
         chosen = list(node_measures.MEASURES)
         # The node source's own floor (§24): the cache has none since every cluster has clips.
         candidate_floor = float(cfg.candidate_floor_s)
@@ -448,9 +490,7 @@ def prepare_comparison(
         report("measuring", 0.0, f"{len(covered)} recording(s)")
         rows = measures.measure_run(
             run_dir,
-            windows_for=lambda cov: cfg.windows.windows_for(
-                cov.start_t_ns, cov.end_t_ns
-            ),
+            windows_for=cfg.windows.windows_for_coverage,
             measures=cfg.measures,
             progress_cb=lambda done, total: report(
                 "measuring", done / max(total, 1), f"{done}/{total} recording(s)"
@@ -477,7 +517,6 @@ def prepare_comparison(
         )
 
     report("grouping", 0.0, "")
-    metadata = metadata_store.read_metadata(experiment_dir)
     kept_rows = [r for r in rows if r["recording_id"] in set(covered)]
     design = compare.resolve_design_from_rows(
         kept_rows,

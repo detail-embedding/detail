@@ -580,13 +580,13 @@ def import_model_archive(zip_path: Path | str) -> str:
             "export`); to add a .pt checkpoint use `detail model import`"
         ) from None
     with zf:
-        names = [n for n in zf.namelist() if n.strip("/")]
+        names = [n for n in zf.namelist() if n.strip("/") and not _is_finder_litter(n)]
         for member in names:
             if member.startswith("/") or ".." in Path(member).parts:
                 raise ValueError(f"unsafe path in archive: {member}")
         tops = {n.split("/", 1)[0] for n in names}
-        if len(tops) != 1:
-            raise ValueError("archive must contain exactly one model directory")
+        if len(tops) != 1 or not any("/" in n.strip("/") for n in names):
+            raise UserInputError(_one_model_folder_message(zip_path, names, tops))
         model_id = tops.pop()
         imported_store._validate_id(model_id)  # reject built-in / reserved-shape ids
         if imported_store.model_dir(model_id).exists():
@@ -599,7 +599,7 @@ def import_model_archive(zip_path: Path | str) -> str:
         # leaves nothing in the catalog.
         staging = Path(tempfile.mkdtemp(prefix=".restore-", dir=catalog))
         try:
-            zf.extractall(staging)
+            zf.extractall(staging, members=names)
             record = _restored_record(staging / model_id, zip_path)
             skeleton = (
                 _restored_skeleton(record)
@@ -616,6 +616,30 @@ def import_model_archive(zip_path: Path | str) -> str:
     return model_id
 
 
+def _is_finder_litter(member: str) -> bool:
+    """A zip entry macOS adds and nothing reads: ``__MACOSX/`` resource forks, ``.DS_Store``."""
+    parts = member.strip("/").split("/")
+    return parts[0] == "__MACOSX" or parts[-1] == ".DS_Store"
+
+
+def _one_model_folder_message(zip_path: Path, names: list[str], tops: set[str]) -> str:
+    """Why an archive is not one model folder, and what to zip instead."""
+    loose = sorted(n for n in names if "/" not in n.strip("/"))
+    if models_store.MODEL_FILENAME in loose:
+        return (
+            f"{zip_path.name} holds a model folder's contents ({models_store.MODEL_FILENAME} "
+            "is at the top of the zip); zip the model folder itself, so the zip holds one "
+            "folder with model.yaml inside it — or use `detail model export`"
+        )
+    if not tops:
+        return f"{zip_path.name} is empty; it should hold one model folder"
+    return (
+        f"{zip_path.name} must hold exactly one model folder, and holds "
+        f"{', '.join(sorted(tops))}; zip the model folder itself — or use `detail model "
+        "export`"
+    )
+
+
 def _restored_record(model_dir: Path, zip_path: Path) -> dict:
     """The ``model.yaml`` of a model being restored, checked to be a usable model.
 
@@ -629,14 +653,9 @@ def _restored_record(model_dir: Path, zip_path: Path) -> dict:
     """
     path = model_dir / models_store.MODEL_FILENAME
     if not path.is_file():
-        found = (
-            f"no {model_dir.name}/{models_store.MODEL_FILENAME}"
-            if model_dir.is_dir()
-            else f"the file {model_dir.name!r} where a model folder should be"
-        )
         raise UserInputError(
-            f"{zip_path.name} holds {found}; it is not a model export (a .zip made by "
-            "`detail model export`)"
+            f"{zip_path.name} holds no {model_dir.name}/{models_store.MODEL_FILENAME}; it "
+            "is not a model export (a .zip made by `detail model export`)"
         )
     source = f"{zip_path.name}: {model_dir.name}/{models_store.MODEL_FILENAME}"
     text = path.read_bytes()

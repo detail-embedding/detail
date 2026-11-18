@@ -2,7 +2,7 @@
 
 A model id resolves from one of three sources, tried in order by
 ``resolve_detection_model_auto``: the ``MODELS`` registry (pretrained,
-code-defined — ``sam3``/…), a experiment ``models/<id>`` (trained in this
+code-defined — ``sam3``/…), an experiment ``models/<id>`` (trained in this
 experiment), or the machine-global imported-model catalog (``models/imported.py``).
 Experiment-trained and imported models share the same on-disk shape — a ``model.yaml``
 (Section 12) + a local ``best.pt`` constructed through the family's
@@ -61,7 +61,7 @@ def resolve_detection_model_auto(
     model_variant: str | None = None,
 ) -> tuple[DetectionModel, str]:
     """Resolve a model id *without* being told its source — try the pretrained
-    registry → a experiment-trained model → a machine-imported model, and return
+    registry → an experiment-trained model → a machine-imported model, and return
     ``(model, weights_source)``. The id namespaces are disjoint by construction
     (registry ids are names; experiment ids are ``model_NNN``; imports reject both),
     so the first hit is unambiguous.

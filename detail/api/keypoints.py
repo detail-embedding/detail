@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import yaml
 
+from detail.core.errors import UserInputError
 from detail.core.examples import ExampleFrame, ExampleMark, ExampleSet
 from detail.core.skeleton import Skeleton
 from detail.pipeline import subject_frames
@@ -349,7 +350,7 @@ def import_example_set(experiment: "Experiment", yaml_path: Path | str) -> Examp
         )
     data.setdefault("id", "imported")
     data.setdefault("name", path.stem)
-    source = ExampleSet.from_dict(data)
+    source = _parse_example_set(data, path)
     source.skeleton.validate()
     for i, frame in enumerate(source.frames):
         if not (path.parent / frame.image).is_file():
@@ -369,6 +370,34 @@ def import_example_set(experiment: "Experiment", yaml_path: Path | str) -> Examp
     created.skeleton_ref = _local_skeleton_ref(source)
     example_store.write_set(experiment.dir, created)
     return created
+
+
+def _parse_example_set(data: dict, path: Path) -> ExampleSet:
+    """``data`` as an :class:`ExampleSet`, a missing or malformed field named by its frame.
+
+    The parser reads its fields with ``d["recording_id"]``, so a frame without one raised a
+    bare ``KeyError`` that the CLI printed as ``Error: recording_id`` (#33).
+
+    Raises:
+        UserInputError: A frame, or the set itself, lacks a field or holds one of the wrong
+            type.
+    """
+    frames = data.get("frames") or []
+    if not isinstance(frames, list):
+        raise UserInputError(f"{path}: frames must be a list of frames")
+    for i, frame in enumerate(frames):
+        if not isinstance(frame, dict):
+            raise UserInputError(f"{path} frame {i} is not a mapping of its fields")
+        try:
+            ExampleFrame.from_dict(frame)
+        except KeyError as exc:
+            raise UserInputError(f"{path} frame {i} has no {exc.args[0]}") from None
+        except (TypeError, ValueError) as exc:
+            raise UserInputError(f"{path} frame {i}: {exc}") from None
+    try:
+        return ExampleSet.from_dict(data)
+    except KeyError as exc:
+        raise UserInputError(f"{path} has no {exc.args[0]}") from None
 
 
 def _local_skeleton_ref(source: ExampleSet) -> dict | None:

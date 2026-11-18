@@ -3,7 +3,9 @@
 Reads human-scored behavior intervals as ``start_frame,end_frame,label[,subject]``
 (frame-indexed, the ``video_frames`` clock) and emits the canonical ``behavior``-role
 interval stream. ``subject`` is optional — the per-track framework, written but unused
-for now. Frame → ``t_ns`` resolution happens in the import layer (Approach Y), so this
+for now. A ``recording_id`` column (DETAIL's own ``instances.csv`` has one) naming more than one
+recording is refused: a stream belongs to one recording, and another recording's frames are
+not this one's. Frame → ``t_ns`` resolution happens in the import layer (Approach Y), so this
 importer never touches the recording's timestamp map.
 """
 
@@ -11,6 +13,7 @@ import csv
 from pathlib import Path
 
 from detail.core.dataclasses import StreamImportResult
+from detail.core.errors import UserInputError
 from detail.core.protocols import StreamImporter
 from detail.core.registries import register_stream_importer
 from detail.importers import _csv_common
@@ -55,43 +58,60 @@ class BehaviorCsvImporter(StreamImporter):
         aux_paths: dict[str, Path],
         config: dict | None = None,
     ) -> StreamImportResult:
-        with open(data_path, newline="", encoding="utf-8-sig") as f:
-            reader = csv.DictReader(f)
-            _csv_common.reject_duplicate_columns(reader.fieldnames or [], fold=True)
-            fields = {name.strip().lower(): name for name in (reader.fieldnames or [])}
-            missing = [c for c in _REQUIRED if c not in fields]
-            if missing:
+        # Through the user-CSV opener: a sheet in the Windows encoding or with semicolons
+        # says so, and a row a spreadsheet left all empty is skipped.
+        fieldnames, records = _csv_common.read_user_csv(data_path)
+        _csv_common.reject_duplicate_columns(fieldnames, fold=True)
+        fields = {name.strip().lower(): name for name in fieldnames}
+        missing = [c for c in _REQUIRED if c not in fields]
+        if missing:
+            raise ValueError(
+                f"behavior CSV is missing required column(s) {missing}; needs "
+                "start_frame,end_frame,label[,subject]"
+            )
+        has_subject = "subject" in fields
+        has_origin = "origin" in fields
+        has_recording = "recording_id" in fields
+        recordings: list[str] = []
+        origins: set[str] = set()
+        rows: list[tuple] = []
+        for raw in records:
+            i = raw.line
+            start_frame = _int(raw[fields["start_frame"]], "start_frame", i)
+            end_frame = _int(raw[fields["end_frame"]], "end_frame", i)
+            label = (raw[fields["label"]] or "").strip()
+            if not label:
+                raise ValueError(f"behavior CSV row {i}: empty label")
+            if end_frame < start_frame:
                 raise ValueError(
-                    f"behavior CSV is missing required column(s) {missing}; needs "
-                    "start_frame,end_frame,label[,subject]"
+                    f"behavior CSV row {i}: end_frame {end_frame} is before "
+                    f"start_frame {start_frame}"
                 )
-            has_subject = "subject" in fields
-            has_origin = "origin" in fields
-            origins: set[str] = set()
-            rows: list[tuple] = []
-            for i, raw in enumerate(reader, start=2):  # row 1 is the header
-                start_frame = _int(raw[fields["start_frame"]], "start_frame", i)
-                end_frame = _int(raw[fields["end_frame"]], "end_frame", i)
-                label = (raw[fields["label"]] or "").strip()
-                if not label:
-                    raise ValueError(f"behavior CSV row {i}: empty label")
-                if end_frame < start_frame:
-                    raise ValueError(
-                        f"behavior CSV row {i}: end_frame {end_frame} is before "
-                        f"start_frame {start_frame}"
-                    )
-                subject = None
-                if has_subject:
-                    cell = (raw[fields["subject"]] or "").strip()
-                    subject = _int(cell, "subject", i) if cell else None
-                if has_origin:
-                    cell = (raw[fields["origin"]] or "").strip()
-                    if cell:
-                        origins.add(cell)
-                rows.append((None, None, label, subject, start_frame, end_frame))
+            subject = None
+            if has_subject:
+                cell = (raw[fields["subject"]] or "").strip()
+                subject = _int(cell, "subject", i) if cell else None
+            if has_origin:
+                cell = (raw[fields["origin"]] or "").strip()
+                if cell:
+                    origins.add(cell)
+            if has_recording:
+                cell = (raw[fields["recording_id"]] or "").strip()
+                if cell not in recordings:
+                    recordings.append(cell)
+            rows.append((None, None, label, subject, start_frame, end_frame))
         # A header-only file covers no behavior, yet as a stream it marked the recording
         # annotated (#31).
         _csv_common.require_data_rows(rows)
+        if len(recordings) > 1:
+            # A stream belongs to one recording; frames of another recording are not frames
+            # of this one, and importing them would put its bouts on this timeline.
+            raise UserInputError(
+                f"behavior CSV holds rows for {len(recordings)} recordings "
+                f"({', '.join(recordings)}); a stream belongs to one recording. Import each "
+                "recording's rows separately (the ethogram export writes one file per "
+                "recording)"
+            )
         metadata = _behavior_metadata(rows)
         origin = _resolve_origin(origins)
         if origin is not None:

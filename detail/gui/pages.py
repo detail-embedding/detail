@@ -209,7 +209,11 @@ def _part_location(recording_dir, part: dict) -> str:
     if source is None:
         return str(Path(recording_dir) / part["file"])
     try:
-        resolved = recording_store.resolve_part_video_path(recording_dir, part)
+        # Shows where the reference points, so unverified: whether the file there is the
+        # recorded video is the Video section's verify, run off the UI thread.
+        resolved = recording_store.resolve_part_video_path(
+            recording_dir, part, verify=False
+        )
     except video_roots.MissingVideoRootError:
         return (
             f"{source['root']}/{source['rel']}  "
@@ -2267,7 +2271,8 @@ class HomePage(QWidget):
                 self,
                 "Import experiment",
                 f"Video for {len(missing)} recording(s) was not found on this computer: "
-                f"{shown}{more}.\n\nOpen one of them and use Locate video on its file. "
+                f"{shown}{more}. A file at the same path that is a different video counts "
+                "as not found.\n\nOpen one of them and use Locate video on its file. "
                 "Every recording whose video is in the same folder will find it too.",
             )
 
@@ -2275,14 +2280,33 @@ class HomePage(QWidget):
         self._reset_import_btn()
         if isinstance(exc, FileExistsError):
             confirm = QMessageBox.question(
-                self,
-                "Import experiment",
-                f"{exc}\n\nReplace the existing experiment with the imported one?",
+                self, "Import experiment", _replace_prompt(exc)
             )
             if confirm == QMessageBox.StandardButton.Yes:
                 self._run_import(archive, replace=True)
             return
         QMessageBox.critical(self, "Import experiment", str(exc))
+
+
+def _replace_prompt(exc: FileExistsError) -> str:
+    """The Replace question, listing what the replace deletes and the bundle does not bring
+    back. The list rides on the import's refusal (`ExperimentExistsError.losses`), computed in
+    the import's worker, so asking costs the UI thread nothing."""
+    from detail.api.experiment import replace_warning
+    from detail.storage.export import ExperimentExistsError
+
+    if not isinstance(exc, ExperimentExistsError):
+        return f"{exc}\n\nReplace the existing experiment with the imported one?"
+    lines = replace_warning(exc.losses)
+    text = f"An experiment named {exc.losses.experiment_id!r} already exists.\n\n"
+    if lines:
+        # Before the question, so it is read before the answer is chosen.
+        text += (
+            "Replacing it deletes these, and the bundle does not bring them back:\n"
+            + "\n".join(f"\u2022 {line}" for line in lines)
+            + "\n\n"
+        )
+    return text + "Replace it with the imported one?"
 
 
 def _import_and_find_video(
@@ -4945,7 +4969,7 @@ class RecordingDetailPage(QWidget):
             (stage, r["id"], r.get("processing_run_id") or "—", r.get("status"))
             for stage, r in records
         ]
-        # double-click a row to open its result view: a experiment-backed run opens the
+        # double-click a row to open its result view: an experiment-backed run opens the
         # experiment run that produced it (run_NNN); a per-recording-only run (CLI/API,
         # no experiment record) opens a recording-scoped result view directly.
         self._run_targets = [r.get("processing_run_id") for _, r in records]

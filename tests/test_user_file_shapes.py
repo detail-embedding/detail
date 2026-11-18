@@ -548,7 +548,7 @@ def test_a_model_export_restores(tmp_path):
                 rename=lambda m: m.removeprefix("mine/"),
                 drop={"mine/weights/best.pt"},
             ),
-            "holds the file 'model.yaml' where a model folder should be",
+            "holds a model folder's contents (model.yaml is at the top of the zip)",
         ),
     ],
     ids=["no-weights", "renamed-folder", "one-file"],

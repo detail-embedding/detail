@@ -103,7 +103,9 @@ def _validate_keyframes(
         for x, y in vertices:
             if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
                 raise ValueError(
-                    f"vertex ({x}, {y}) at frame {frame_idx} is outside [0, 1]"
+                    f"vertex ({x}, {y}) at frame {frame_idx} is outside [0, 1]: coordinates "
+                    "are fractions of the frame (0 to 1), so divide pixel coordinates by the "
+                    "frame's width and height"
                 )
     return n_vertices
 
@@ -553,11 +555,14 @@ def load_spatial_csv(path: Path | str) -> list[dict]:
         if kind == CALIBRATION_KIND:
             continue
         if kind not in _KINDS:
-            raise ValueError(f"unknown spatial kind {kind!r} in CSV")
+            raise UserInputError(
+                f"{row.source} row {row.line}: unknown spatial kind {kind!r}; the kind "
+                f"column holds one of {sorted([*_KINDS, CALIBRATION_KIND])}"
+            )
         raw_name = row["name"] or ""
         name = raw_name.strip()
         if not name:
-            raise ValueError("spatial CSV row has an empty name")
+            raise UserInputError(f"{row.source} row {row.line}: the name is empty")
         if name != raw_name:
             raise UserInputError(
                 f"{row.source} row {row.line}: name {raw_name!r} has a space at its start "

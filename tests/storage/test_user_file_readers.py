@@ -15,9 +15,17 @@ one ``Error:`` line (``tests/test_cli_user_errors.py``).
 
 **Where it stops.** Every other parser call in ``detail/`` is listed below with the number
 of calls and why it may stay: a record DETAIL wrote and reads back for itself (a damaged
-one is a listing's problem, ``storage/dirscan.read_each``), or a user file a later slice of
-#33 moves onto the opener. The counts are exact, so a new bare call in a listed file fails
+one is a listing's problem, ``storage/dirscan.read_each``), or a user file whose shape the
+opener does not read (a BORIS export may be tab-separated), with what checks it instead. The
+counts are exact, so a new bare call in a listed file fails
 too, and an entry whose calls are gone fails until it is removed.
+
+**Numbers on the command line (#33 section C).** ``click``'s ``float`` and ``FloatRange``
+accept ``nan`` and ``inf``, which then reached ``round(seconds * 1e9)`` as a ``ValueError`` or
+``OverflowError`` traceback, or were stored as a cut-off nothing could pass. Every float
+option in ``detail/cli*.py`` takes its type from ``detail/cli_numbers.py``;
+:func:`float_option_violations` fails on a ``type=float`` or a ``FloatRange`` call anywhere
+else in those modules.
 """
 
 import ast
@@ -37,7 +45,6 @@ _YAML_SEAM = "storage/user_yaml.py"
 _CSV_SEAM = "importers/_csv_common.py"
 
 _RECORD = "a record DETAIL writes and reads back for itself"
-_LATER = "a user file not yet on the reader: a later slice of #33"
 
 #: ``{path under detail/: (calls, why)}`` for ``yaml.safe_load``.
 YAML_ALLOWED: dict[str, tuple[int, str]] = {
@@ -79,14 +86,26 @@ YAML_ALLOWED: dict[str, tuple[int, str]] = {
 #: ``{path under detail/: (calls, why)}`` for ``csv.reader`` / ``csv.DictReader``.
 CSV_ALLOWED: dict[str, tuple[int, str]] = {
     "analysis/comparison_report.py": (2, f"a comparison's tables, {_RECORD}"),
-    "cli.py": (1, f"the stream-preset batch table, {_LATER}"),
+    "api/export_targets.py": (1, f"a stream's canonical CSV, {_RECORD}"),
+    "cli.py": (
+        1,
+        "the stream-preset batch table: headerless, with # comments, so not the opener's "
+        "shape; its offset cell goes through core.utils.seconds_to_t_ns",
+    ),
     "gui/comparison.py": (1, f"a comparison's tables, {_RECORD}"),
-    "importers/behavior.py": (2, f"a behavior CSV (finding 34), {_LATER}"),
-    "importers/boris.py": (2, f"a BORIS export (finding 34), {_LATER}"),
+    "importers/behavior.py": (
+        1,
+        "can_import's one-row header sniff, which answers False on any problem; the "
+        "import itself reads through the opener",
+    ),
+    "importers/boris.py": (
+        2,
+        "a BORIS export, which BORIS writes tab- or comma-separated: the opener refuses "
+        "a tab-separated file as a spreadsheet mistake. Decoding is checked in boris.py",
+    ),
     "storage/append_log.py": (2, f"an append-only log, {_RECORD}"),
     "storage/behavior_output.py": (3, f"run tables, {_RECORD}"),
     "storage/location_export.py": (1, f"a location export, {_RECORD}"),
-    "storage/metadata.py": (3, f"metadata CSVs (finding 32), {_LATER}"),
     "storage/query_eval_csv.py": (
         2,
         f"query-eval tables, {_RECORD}; `query-eval --out` is checked up front in cli.py",
@@ -206,3 +225,61 @@ def test_the_scan_would_catch_a_bare_csv_reader():
             return csv.writer(f)
         """)
     assert _parser_calls(source, _CSV_CALLS, "csv") == 3
+
+
+#: The one module the CLI's float types live in.
+_NUMBER_SEAM = "cli_numbers.py"
+
+
+def float_option_violations(source: str) -> list[str]:
+    """Each ``type=float`` keyword and each ``FloatRange(...)`` call in ``source``, by line.
+
+    Read from the parse tree: ``click.FloatRange(``, an imported bare ``FloatRange(`` and
+    ``type=float`` on any call all count; a docstring or comment naming them does not.
+    """
+    found = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+        if name == "FloatRange":
+            found.append(f"line {node.lineno}: FloatRange(...)")
+        for kw in node.keywords:
+            if (
+                kw.arg == "type"
+                and isinstance(kw.value, ast.Name)
+                and kw.value.id == "float"
+            ):
+                found.append(f"line {node.lineno}: type=float")
+    return found
+
+
+def test_every_cli_float_option_refuses_nan_and_inf():
+    problems = []
+    for py in sorted(_PACKAGE.glob("cli*.py")):
+        if py.name == _NUMBER_SEAM:
+            continue
+        for hit in float_option_violations(py.read_text(encoding="utf-8-sig")):
+            problems.append(f"{py.name} {hit}; use the types in detail/{_NUMBER_SEAM}")
+    assert problems == []
+
+
+def test_the_scan_would_catch_a_plain_float_option():
+    source = textwrap.dedent('''
+        import click
+        from click import FloatRange
+
+        @click.option("--a", type=float)
+        @click.option(
+            "--b",
+            type=click.FloatRange(
+                min=0
+            ),
+        )
+        @click.option("--c", type=FloatRange(0, 1))
+        def cmd(a, b, c):
+            """Never type=float or click.FloatRange( here."""
+            return int(a), float(b)
+        ''')
+    assert len(float_option_violations(source)) == 3

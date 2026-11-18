@@ -722,6 +722,22 @@ def test_export_writes_an_empty_csv_for_a_recording_with_no_instances(tmp_path):
         ]
 
 
+def test_a_second_export_into_one_folder_keeps_the_first(tmp_path):
+    """Each export makes its own folder (#29). Writing ``<recording_id>.csv`` straight into
+    ``--out`` replaced the first cut-off's files with the second's, with nothing said.
+    """
+    exp, run = _searched(tmp_path)
+    run.set_cutoff("q01", 0.9)
+    first = run.export(tmp_path / "export")
+    before = (first / "s1.csv").read_bytes()
+    run.set_cutoff("q01", 1.0)
+    second = run.export(tmp_path / "export")
+
+    assert first != second and first.parent == second.parent == tmp_path / "export"
+    assert (first / "s1.csv").read_bytes() == before
+    assert (second / "s1.csv").read_bytes() != before
+
+
 def test_export_before_the_search_completes_says_so(tmp_path):
     proj, _rows = _experiment(tmp_path, ["s1"], n_rows=N_EMBEDDED)
     run_dir = analysis_store.analysis_dir(proj.dir, "an_09")
@@ -889,12 +905,15 @@ def test_cli_exports_the_artifact(tmp_path):
         "analysis", "query-calibrate",
         "--experiment", str(exp.dir), "--run", "an_01", "--cutoff", "q01=0.9",
     )  # fmt: skip
-    out_dir = tmp_path / "exported"
-    _cli(
+    parent = tmp_path / "exported"
+    output = _cli(
         "analysis", "export-query",
-        "--experiment", str(exp.dir), "--run", "an_01", "--out", str(out_dir),
+        "--experiment", str(exp.dir), "--run", "an_01", "--out", str(parent),
     )  # fmt: skip
 
+    # A folder of its own inside --out, and the CLI says which (#29).
+    (out_dir,) = parent.iterdir()
+    assert str(out_dir) in str(output)
     assert sorted(p.name for p in out_dir.iterdir()) == ["s1.csv", "s2.csv"]
     assert "predicted" in (out_dir / "s1.csv").read_text(encoding="utf-8-sig")
 

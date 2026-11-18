@@ -22,6 +22,7 @@ from typing import Self
 from detail.analysis import provenance
 from detail.api.experiment import AnalysisRun, Experiment
 from detail.core.dataclasses import reconciled_status
+from detail.core.errors import UserInputError
 from detail.core.progress import OperationCancelled
 from detail.storage import analysis_runs as analysis_store
 from detail.storage import behavior_output
@@ -159,6 +160,20 @@ def ancestors(tree, node: int) -> list[int]:
     return list(reversed(out))
 
 
+def _node_key(node) -> str:
+    """A cluster node given by a user (``118``, ``"118"``) as the key the label state uses.
+
+    Raises:
+        UserInputError: ``node`` is not a whole number.
+    """
+    try:
+        return str(int(node))
+    except (TypeError, ValueError):
+        raise UserInputError(
+            f"node {node!r} is not a node number; the tree's nodes are numbered from 0"
+        ) from None
+
+
 def parent_label(tree, node: int, node_labels: dict) -> str | None:
     """The label on the nearest labelled branch strictly **above** ``node``, or ``None``."""
     current = int(tree.parent[int(node)])
@@ -173,7 +188,9 @@ def parent_label(tree, node: int, node_labels: dict) -> str | None:
 def check_labels(labels: dict, node_labels: dict, tree) -> None:
     """Refuse a set of labels the output could not report unambiguously (§22).
 
-    Three rules, each named in the message with the clusters that break it:
+    Three rules, each named in the message with the clusters that break it, after a node that
+    is not in the tree at all (a ``UserInputError``: a mistyped or negative node number, which
+    numpy would otherwise index from the end and store as a label that matches nothing):
 
     - **A name is unique** (ignoring case) and holds no path separator. Two labels told apart by a
       capital, or a name that reads as two levels in an exported ``label_path``, cannot be read.
@@ -211,6 +228,12 @@ def check_labels(labels: dict, node_labels: dict, tree) -> None:
                 "instead of making a second one"
             )
         seen[key] = label
+    n_nodes = len(tree.parent)
+    outside = sorted(int(n) for n in node_labels if not 0 <= int(n) < n_nodes)
+    if outside:
+        raise UserInputError(
+            f"node {outside[0]} is not in this run's tree, whose nodes are 0–{n_nodes - 1}"
+        )
     parents: dict[str, dict] = {}
     for node, label in node_labels.items():
         if label not in labels:
@@ -710,7 +733,7 @@ class LabelOperations:
         """
         from detail.storage import run_labels
 
-        wanted = {str(int(k)): str(v).strip() for k, v in names.items()}
+        wanted = {_node_key(k): str(v).strip() for k, v in names.items()}
         wanted_origins = _origins_as_dicts(origins)
 
         def change(state) -> dict:
@@ -746,7 +769,7 @@ class LabelOperations:
         wanted = (
             None
             if names is None
-            else {str(int(k)): str(v).strip() for k, v in names.items()}
+            else {_node_key(k): str(v).strip() for k, v in names.items()}
         )
         wanted_origins = _origins_as_dicts(origins)
         renames = [(str(a), str(b)) for a, b in renames]
@@ -807,7 +830,8 @@ class LabelOperations:
             ValueError: the result breaks a rule ``check_labels`` holds.
         """
         wanted = {
-            str(int(k)): (None if v is None else str(v)) for k, v in assignments.items()
+            _node_key(k): (None if v is None else str(v))
+            for k, v in assignments.items()
         }
         wanted_origins = _origins_as_dicts(origins)
 
@@ -932,7 +956,7 @@ class LabelOperations:
         """
         wanted_edits = dict(clip_edits or {})
         wanted_labels = {str(k): v for k, v in labels.items()}
-        wanted_nodes = {str(int(k)): v for k, v in node_labels.items()}
+        wanted_nodes = {_node_key(k): v for k, v in node_labels.items()}
         stamps = {str(k): v for k, v in (membership_changed_at or {}).items()}
         wanted_origins = {str(k): v for k, v in (label_origins or {}).items()}
 

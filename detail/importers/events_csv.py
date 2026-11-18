@@ -20,8 +20,6 @@ from detail.core.protocols import StreamImporter
 from detail.core.registries import register_stream_importer
 from detail.importers import _csv_common
 
-_NS_PER_SECOND = 1_000_000_000
-
 
 @register_stream_importer("events_csv")
 class EventsCsvImporter(StreamImporter):
@@ -40,6 +38,14 @@ class EventsCsvImporter(StreamImporter):
         if len(matches) != 1:
             return False
         return _csv_common.has_column(header, _csv_common.LABEL_COLUMN)
+
+    def resolve_clock(self, path: Path, config: dict | None = None) -> str:
+        """The clock this file's time column implies (``frame`` → ``video_frames``)."""
+        header, _first = _csv_common.sniff_header_and_first(Path(path))
+        matches = _csv_common.time_column_matches(header)
+        if len(matches) != 1:
+            return self.clock
+        return _csv_common.TIME_CLOCKS[matches[0][1]]
 
     def import_stream(
         self,
@@ -100,6 +106,4 @@ def _parse_code(value: str | None, row: int) -> int | None:
 
 def _time_to_t_ns(value: str | None, time_key: str, column: str, row: int) -> int:
     """Convert a ``seconds`` or ``t_ns`` cell to int64 ``t_ns`` (Tenet 8)."""
-    if time_key == "t_ns":
-        return _csv_common.parse_int(value, column, row)
-    return round(_csv_common.parse_float(value, column, row) * _NS_PER_SECOND)
+    return _csv_common.cell_to_t_ns(value, time_key, column, row)

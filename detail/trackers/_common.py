@@ -121,6 +121,26 @@ def is_contiguous(mask: np.ndarray) -> bool:
     return n_labels == 2
 
 
+def zero_tracks_error(n_detections: int, params: dict) -> ValueError:
+    """The error for a tracking run that produced no track, naming the real cause.
+
+    With no detections at all, the tracker's settings are not the cause, and saying they "may be
+    too strict" sent the user to tune the wrong stage: the detection run is where to look. Every
+    tracker raises this one message (#33).
+    """
+    if n_detections == 0:
+        return ValueError(
+            "zero tracks produced: the detection run found no detections on this recording, "
+            "so there was nothing to track. Run detection again with a lower --conf or a "
+            "different prompt, then track"
+        )
+    return ValueError(
+        f"zero tracks produced from {n_detections} detection(s); the tracker's settings may "
+        f"be too strict (conf_threshold={params['conf_threshold']}, "
+        f"require_contiguous={params['require_contiguous']})"
+    )
+
+
 def validate_hyperparams(schema: dict, hyperparams: dict) -> dict:
     """Fill defaults, reject unknown/wrong-type keys, enforce the secondary floor.
 
