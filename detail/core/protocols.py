@@ -579,7 +579,13 @@ class StreamImporter(ABC):
 
     @abstractmethod
     def can_import(self, path: Path) -> bool:
-        """True if this importer recognizes the primary data file's format."""
+        """True if this importer recognizes the primary data file's format.
+
+        Claim a file of your own kind even when the import will refuse it (BORIS's
+        aggregated export): the Add-stream dialog hands an unclaimed file to the configurable
+        importer, which reads it as something else without a word, where a claimed one
+        reaches the refusal that says what to do (#33).
+        """
 
     def resolve_clock(self, path: Path, config: dict | None = None) -> str:
         """The clock importing ``path`` with ``config`` would produce, without importing it.

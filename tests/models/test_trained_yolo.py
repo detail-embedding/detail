@@ -254,3 +254,39 @@ def test_the_network_block_would_catch_a_download(tmp_path, monkeypatch):
     with socket.socket() as sock:  # `with`, or the unclosed socket is a ResourceWarning
         with pytest.raises(AssertionError, match="must not reach the network"):
             sock.connect(("example.invalid", 80))
+
+
+def _non_checkpoints(tmp_path) -> list:
+    """Files a user picks for ``model import`` by mistake, each of which made Ultralytics
+    8.4.215 raise from ``YOLO(path)`` (#33 finding 7)."""
+    import torch
+
+    (tmp_path / "notes.pt").write_text(
+        "some notes\n", encoding="utf-8"
+    )  # text, renamed
+    whole = _build_seg_weights(tmp_path / "whole.pt").read_bytes()
+    (tmp_path / "cut.pt").write_bytes(whole[: len(whole) // 2])  # a copy cut short
+    torch.save({"a": 1}, tmp_path / "dict.pt")  # a PyTorch file holding no model
+    torch.save([1, 2, 3], tmp_path / "list.pt")
+    torch.save(torch.nn.Linear(2, 2).state_dict(), tmp_path / "weights.pt")
+    return [
+        tmp_path / n for n in ("notes.pt", "cut.pt", "dict.pt", "list.pt", "weights.pt")
+    ]
+
+
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_a_file_that_is_not_a_checkpoint_is_refused_by_name(tmp_path):
+    """The real Ultralytics on the real files: every one is a ``UserInputError`` naming the
+    file, whatever ``YOLO(path)`` raised. Where Ultralytics is not installed the same
+    reader is driven with each observed error by ``tests/test_cli_user_errors.py``."""
+    pytest.importorskip("ultralytics")
+    from detail.core.errors import UserInputError
+
+    for path in _non_checkpoints(tmp_path):
+        with pytest.raises(
+            UserInputError, match=f"{path.name} is not a YOLO .pt checkpoint"
+        ):
+            TrainedYOLO.introspect(path)
+    classes, task = TrainedYOLO.introspect(tmp_path / "whole.pt")
+    assert task == "segment" and classes

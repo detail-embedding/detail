@@ -25,7 +25,9 @@ from detail.core.dataclasses import (
 from detail.core.installed import is_importable
 from detail.core.protocols import DetectionModel
 from detail.core.registries import register_trained_loader
-from detail.models._ultralytics import SplitPredict, import_ultralytics
+from detail.models._ultralytics import SplitPredict
+from detail.models._ultralytics import import_ultralytics
+from detail.models._ultralytics import read_checkpoint
 
 
 @register_trained_loader("yolo")
@@ -65,12 +67,11 @@ class TrainedYOLO(DetectionModel):
             (``"segment"`` / ``"detect"``).
 
         Raises:
+            FileNotFoundError: ``weights_path`` does not exist.
+            UserInputError: The file is not a YOLO ``.pt`` checkpoint (``read_checkpoint``).
             ValueError: The checkpoint carries no class names.
         """
-        import_ultralytics()
-        from ultralytics import YOLO
-
-        model = YOLO(str(weights_path))
+        model = read_checkpoint(weights_path)
         names = model.names  # {id: name} (or a list)
         classes = (
             [names[k] for k in sorted(names)]

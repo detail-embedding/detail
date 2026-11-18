@@ -353,6 +353,41 @@ def test_an_unreadable_checkpoint_is_said_inline(qapp, tmp_path, monkeypatch):
     assert not dialog._ok.isEnabled()
 
 
+@pytest.mark.parametrize(
+    "name, words",
+    [
+        ("notes.txt", "notes.txt is not a YOLO .pt checkpoint;"),
+        ("junk.pt", "junk.pt is not a YOLO .pt checkpoint Ultralytics can read"),
+    ],
+    ids=["not-a-pt", "unreadable-pt"],
+)
+def test_a_file_that_is_not_a_checkpoint_is_named_inline(
+    name, words, qapp, tmp_path, monkeypatch
+):
+    """Through the real readers (#33 finding 7): Ultralytics stands in raising what 8.4.215
+    raised on a text file renamed ``.pt``, so the line shows the reader's sentence and not
+    Ultralytics' own text, nor a missing-module error where it is not installed."""
+    import sys
+    import types
+
+    from tests.gui.conftest import drain_until
+
+    def _yolo(path):
+        raise TypeError(f"ERROR {path} is not a loadable checkpoint")
+
+    fake = types.ModuleType("ultralytics")
+    fake.YOLO = _yolo
+    monkeypatch.setitem(sys.modules, "ultralytics", fake)
+    w = tmp_path / name
+    w.write_bytes(b"notes")
+    dialog = pages.ImportModelDialog()
+    dialog.set_weights(w)
+    assert drain_until(qapp, lambda: "Cannot import" in dialog._kind.text())
+    assert dialog._kind.text().startswith(f"Cannot import this file: {words}")
+    assert "loadable" not in dialog._kind.text()
+    assert not dialog._ok.isEnabled()
+
+
 def test_a_keypoint_models_page_shows_its_skeleton(qapp, tmp_path, monkeypatch):
     mid = _import_pose_model(tmp_path, monkeypatch)
     detail = pages.GlobalModelDetailPage(mid)

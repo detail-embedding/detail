@@ -12,6 +12,13 @@ when it had been chosen *before* any file, so picking another file — the very 
 missing-column message gave — unticked every column while **Reuse a mapping** still named the
 mapping, and choosing it again did nothing because the selection had not changed. The band keeps
 the mapping until another is chosen and applies it to each file; the stream keeps its name.
+
+**A file an importer refuses, handed to another that misreads it** (#33). BORIS's ``can_import``
+turned down its own *aggregated* export so that it would not be claimed, and the dialog sets up
+any unclaimed file as a time-series CSV: the bouts were offered as channels and nothing said the
+file was BORIS's in the wrong shape. An importer now claims a file of its own kind even when it
+will refuse it (``StreamImporter.can_import``), so the refusal shown under the form is the one
+the CLI prints, from the same check (``boris._check_columns``).
 """
 
 import pytest
@@ -380,6 +387,30 @@ def test_a_recognized_file_is_claimed_by_its_own_importer(qapp, tmp_path):
 
     assert dialog._importer.currentData() == "behavior_csv"
     assert "Read as" in dialog._sniffed.text()
+
+
+def test_a_boris_aggregated_export_is_refused_with_what_to_export(qapp, tmp_path):
+    """A file nothing claimed fell back to the time-series importer, so BORIS's aggregated
+    export was set up as a sensor CSV with its bouts on offer as channels, and no word that
+    it was a BORIS file in the wrong shape (#33). The BORIS importer claims it now, and its
+    own refusal, the one the CLI prints, is the line under the form."""
+    recording, dialog = _dialog(tmp_path, qapp)
+    agg = tmp_path / "b.csv"
+    agg.write_text(
+        "Observation id,Subject,Behavior,Behavior type,Start (s),Stop (s),Duration (s)\n"
+        "obs1,m,groom,STATE,1.0,2.5,1.5\n",
+        encoding="utf-8",
+    )
+
+    dialog._data.set_path(str(agg))
+
+    assert dialog._importer.currentData() == "boris"
+    status = dialog._status.text()
+    assert status.startswith(
+        "Could not read this BORIS export: b.csv is a BORIS aggregated"
+    )
+    assert "Export events > Tabular events" in status
+    assert not dialog._box.button(dialog._box.StandardButton.Ok).isEnabled()
 
 
 def test_the_time_kind_follows_the_time_column(qapp, tmp_path):

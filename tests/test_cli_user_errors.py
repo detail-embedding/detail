@@ -39,6 +39,14 @@ semicolons. Each now names what the user typed and what to change. Prose that qu
 (a metadata cell, a description, a recorded error) no longer blocks ``experiment export``, and
 the model commands no longer leave a throwaway experiment in the temp folder.
 
+**A file picked as a model checkpoint (#33 finding 7).** ``model import`` handed the file
+straight to ``YOLO(path)``, so a text file, an empty or cut-short ``.pt`` or a PyTorch file of
+something else printed Ultralytics' ``TypeError``, ``AttributeError`` or ``RuntimeError``.
+``models/_ultralytics.read_checkpoint`` checks the suffix and size, then turns exactly those
+three into a ``UserInputError``; a ``KeyError`` from inside Ultralytics still propagates. The
+shared venv has no Ultralytics, so its rows stand Ultralytics in raising what 8.4.215 raised;
+``tests/models/test_trained_yolo.py`` reads the real files where it is installed.
+
 The second half of this file is the table: one row per #33 finding with a CLI step, driven
 through the real ``main``, each asserting exit 1, a clean ``Error:`` line and the new
 message's key words.
@@ -411,6 +419,71 @@ def test_finding_6_restore_of_an_empty_model_yaml_leaves_nothing(
         "m.zip: mymodel/model.yaml is not a model record",
     )
     assert list(model_catalog.iterdir()) == []
+
+
+def _ultralytics_raising(monkeypatch, error: BaseException) -> None:
+    """Stand in for Ultralytics so ``YOLO(path)`` raises ``error``, as 8.4.215 did on each file
+    in ``models/_ultralytics._NOT_A_CHECKPOINT``. The shared venv has no Ultralytics; the real
+    files are read in ``tests/models/test_trained_yolo.py`` where it is installed."""
+    import types
+
+    def _yolo(path):
+        raise error
+
+    fake = types.ModuleType("ultralytics")
+    fake.YOLO = _yolo
+    monkeypatch.setitem(sys.modules, "ultralytics", fake)
+
+
+@pytest.mark.parametrize(
+    "name, body, error, words",
+    [
+        ("notes.txt", b"notes", None, ("notes.txt is not a YOLO .pt checkpoint",)),
+        ("model.onnx", b"onnx", None, ("model.onnx is not a YOLO .pt checkpoint",)),
+        ("best.pt", b"", None, ("best.pt is empty", "not a YOLO .pt checkpoint")),
+        (
+            "notes.pt",
+            b"notes",
+            TypeError("ERROR notes.pt is not a loadable checkpoint"),
+            ("notes.pt is not a YOLO .pt checkpoint Ultralytics can read",),
+        ),
+        (
+            "list.pt",
+            b"x",
+            AttributeError("'list' object has no attribute 'model'"),
+            ("list.pt is not a YOLO .pt checkpoint Ultralytics can read",),
+        ),
+        (
+            "zip.pt",
+            b"x",
+            RuntimeError("[enforce fail at inline_container.cc:179]"),
+            ("zip.pt is not a YOLO .pt checkpoint Ultralytics can read",),
+        ),
+    ],
+    ids=["text", "onnx", "empty", "type-error", "attribute-error", "runtime-error"],
+)
+def test_finding_7_import_of_a_file_that_is_not_a_checkpoint(
+    name, body, error, words, model_catalog, tmp_path, monkeypatch
+):
+    _ultralytics_raising(
+        monkeypatch, error or AssertionError("the suffix is checked before Ultralytics")
+    )
+    weights = tmp_path / name
+    weights.write_bytes(body)
+    _clean_error(_invoke("model", "import", weights), *words)
+    assert not model_catalog.exists() or list(model_catalog.iterdir()) == []
+
+
+def test_finding_7_a_bug_inside_ultralytics_keeps_its_traceback(
+    model_catalog, tmp_path, monkeypatch
+):
+    """The catch is the three types observed, not ``Exception``: a ``KeyError`` from inside
+    Ultralytics is a bug to report, not a file the user picked wrongly."""
+    _ultralytics_raising(monkeypatch, KeyError("model"))
+    weights = tmp_path / "best.pt"
+    weights.write_bytes(b"x")
+    result = _invoke("model", "import", weights)
+    assert isinstance(result.exception, KeyError), result.output
 
 
 _SPATIAL_HEADER = (

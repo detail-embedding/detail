@@ -1356,8 +1356,10 @@ model** catalog (shared across every experiment on the machine):
   The check cannot catch a pair named the wrong way round (left and right swapped). The
   skeleton is added to the library unless an entry with the same skeleton is there, and the
   command prints the entry. Use the model as `keypoints detect --model <id>`. `--skeleton` is
-  refused for a detection checkpoint. An import that fails or is stopped part-way adds
-  nothing to the catalog, so the same name can be imported again.
+  refused for a detection checkpoint. Only a `.pt` checkpoint is read: another file (an
+  exported `.onnx`, a text file, an empty or cut-short `.pt`) is refused with its name. An
+  import that fails or is stopped part-way adds nothing to the catalog, so the same name can
+  be imported again.
 - `show <id>`: print one of your models' metadata + provenance (the detail page, as text),
   with its role, and for a keypoint model its skeleton: the library entry, points and pairs.
 - `set-meta <id> [--made-by] [--description] [--notes] [--preview <image>]`: edit a

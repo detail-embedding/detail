@@ -40,6 +40,7 @@ from detail.core.skeleton import Skeleton
 from detail.core.visualize import rgb_to_bgr
 from detail.models._ultralytics import SplitPredict
 from detail.models._ultralytics import import_ultralytics
+from detail.models._ultralytics import read_checkpoint
 
 
 def _to_numpy(value) -> np.ndarray:
@@ -84,12 +85,11 @@ class TrainedYoloPose(KeypointModel):
         swapped. Backend stays lazy (Tenet 13).
 
         Raises:
+            FileNotFoundError: ``weights_path`` does not exist.
+            UserInputError: The file is not a YOLO ``.pt`` checkpoint (``read_checkpoint``).
             ValueError: The checkpoint is not a pose model.
         """
-        import_ultralytics()
-        from ultralytics import YOLO
-
-        model = YOLO(str(weights_path))
+        model = read_checkpoint(weights_path)
         if str(getattr(model, "task", "")) != "pose":
             raise ValueError(
                 f"{weights_path} is a {getattr(model, 'task', 'unknown')!s} model, not a "

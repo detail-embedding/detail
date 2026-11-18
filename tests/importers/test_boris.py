@@ -14,6 +14,7 @@ of each, and a label of two kinds is refused naming its rows. The MED-PC twin is
 
 import pytest
 
+from detail.core.errors import UserInputError
 from detail.importers.boris import BorisImporter
 
 # A minimal real-shaped events export: one state behavior (groom, two bouts) + one point
@@ -50,7 +51,8 @@ def test_declares_role_and_clock():
 def test_can_import(tmp_path):
     good = _write(tmp_path, _EVENTS_CSV)
     bad = _write(tmp_path, "x,y,z\n1,2,3\n", "n.csv")
-    # the aggregated export (has 'Start (s)') is deliberately not this importer
+    # The aggregated export (has 'Start (s)') is claimed, so a dialog that identifies files
+    # routes it here, and refused by the import, which says what to export instead (#33).
     aggregated = _write(
         tmp_path,
         "Behavior,Behavior type,Start (s),Stop (s)\ngroom,STATE,1,2\n",
@@ -58,7 +60,9 @@ def test_can_import(tmp_path):
     )
     assert BorisImporter().can_import(good)
     assert not BorisImporter().can_import(bad)
-    assert not BorisImporter().can_import(aggregated)
+    assert BorisImporter().can_import(aggregated)
+    with pytest.raises(UserInputError, match="agg.csv is a BORIS aggregated export"):
+        BorisImporter().import_stream(aggregated, tmp_path, {})
 
 
 def test_pairs_start_stop_and_point(tmp_path):

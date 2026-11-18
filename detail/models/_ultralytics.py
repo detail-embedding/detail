@@ -19,10 +19,19 @@ exception handler, where it makes a first-attempt failure raise instead of retry
 
 import os
 import threading
+from pathlib import Path
 
 import numpy as np
 
+from detail.core.errors import UserInputError
 from detail.core.visualize import bgr_to_rgb
+
+#: What ``YOLO(path)`` raised on a file that is not an Ultralytics checkpoint, as observed with
+#: Ultralytics 8.4.215 (#33 finding 7): ``TypeError`` for an empty or cut-short file, a text or
+#: other non-PyTorch file renamed ``.pt``, and a PyTorch file holding something other than a
+#: model; ``AttributeError`` for a PyTorch file holding a list; ``RuntimeError`` for a zip that is
+#: not a PyTorch archive. Named, not ``Exception``: anything else is a bug and keeps its traceback.
+_NOT_A_CHECKPOINT = (TypeError, AttributeError, RuntimeError)
 
 
 def import_ultralytics():
@@ -33,6 +42,45 @@ def import_ultralytics():
     import ultralytics
 
     return ultralytics
+
+
+def read_checkpoint(weights_path: Path | str):
+    """The Ultralytics model in a ``.pt`` checkpoint a user hands in, for reading what it is.
+
+    The one reader for a checkpoint picked for import (``model import``, the GUI's Import
+    model): a file that is not one is refused as a :class:`UserInputError` naming it, never as
+    whatever Ultralytics raised (#33 finding 7). The suffix is checked first, so another format
+    Ultralytics can open (an exported ``model.onnx``) is not stored as ``weights/best.pt``,
+    and a missing path is refused before Ultralytics could take its name for one to download.
+
+    Raises:
+        FileNotFoundError: ``weights_path`` does not exist.
+        UserInputError: The file is not a ``.pt`` file, is empty, or Ultralytics cannot read
+            it as a checkpoint.
+    """
+    path = Path(weights_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"checkpoint not found: {path}")
+    if path.suffix.lower() != ".pt":
+        raise UserInputError(
+            f"{path.name} is not a YOLO .pt checkpoint; import the .pt file an Ultralytics "
+            "training wrote (its weights/best.pt)"
+        )
+    if path.stat().st_size == 0:
+        raise UserInputError(
+            f"{path.name} is empty, so it is not a YOLO .pt checkpoint; copy the file again"
+        )
+    import_ultralytics()
+    from ultralytics import YOLO
+
+    try:
+        return YOLO(str(path))
+    except _NOT_A_CHECKPOINT as exc:
+        raise UserInputError(
+            f"{path.name} is not a YOLO .pt checkpoint Ultralytics can read (cut short, or "
+            "another kind of file). Import the weights/best.pt an Ultralytics training "
+            "wrote"
+        ) from exc
 
 
 class SplitPredict:
