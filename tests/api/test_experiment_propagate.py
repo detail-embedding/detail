@@ -9,6 +9,14 @@ copy landed:
 - **A definition's timeline does not travel.** Keyframe motion is flattened to frame 0 and
   an active window refuses the trip, so the tests drive a *moving* polygon and a *windowed*
   region rather than the static ones the happy path uses.
+
+A third is a reporting class: **a per-item result unpacked over the accumulators in a loop
+keeps only the last item's** (#35 finding 12). ``added, flattened, refused = cat.give(...)``
+inside the per-target loop replaced every earlier target's notes, so a recording that kept
+its own "nest" was reported as "nothing new to add — see the notes below" with no notes. The
+notes are now accumulated per target and each refusal names its recording. The fixtures put
+the refusing targets first and in the middle, because one where only the last target refuses
+passes against the bug.
 """
 
 import pytest
@@ -141,8 +149,8 @@ def test_a_set_grained_target_keeps_its_names_and_takes_the_rest(
     assert reads(exp.resolve_recording("empty")) == ["extra", "shared"]
     # Its own "shared" is untouched; only "extra" arrived.
     assert reads(exp.resolve_recording("taken")) == ["extra", "shared"]
-    assert [name for name, _ in result.refused] == ["shared"]
-    assert "already exists" in result.refused[0][1]
+    assert [(rid, name) for rid, name, _ in result.refused] == [("taken", "shared")]
+    assert "already exists" in result.refused[0][2]
 
 
 def test_calibration_is_not_replaced_either(tmp_path):
@@ -208,8 +216,47 @@ def test_a_region_with_an_active_window_is_left_behind_and_named(tmp_path):
     result = exp.propagate_spatial("roi", "r1")
 
     assert result.copied == ["r2"]
-    assert [name for name, _ in result.refused] == ["post-injection zone"]
+    assert [name for _, name, _ in result.refused] == ["post-injection zone"]
     assert [x["name"] for x in exp.resolve_recording("r2").rois] == ["nest"]
+
+
+# --- every target's notes, not the last one's (#35 finding 12) ---------------- #
+# The loop assigned each target's (added, flattened, refused) over the accumulators, so
+# only the last target's notes survived: a refusal on any other recording was reported as
+# "nothing new to add" with nothing saying why. Three targets, the refusing ones placed
+# first and in the middle, so a last-only report cannot pass.
+def test_every_target_s_refusals_are_reported_with_their_target(tmp_path):
+    exp = _experiment_with_recordings(tmp_path, "r1", "first", "middle", "last")
+    src = exp.resolve_recording("r1")
+    src.define_roi("nest", _full_frame())
+    src.define_roi("feeder", _full_frame())
+    exp.resolve_recording("first").define_roi("nest", _full_frame())
+    exp.resolve_recording("middle").define_roi("nest", _full_frame())
+    exp.resolve_recording("middle").define_roi("feeder", _full_frame())
+
+    result = exp.propagate_rois("r1")
+
+    assert sorted(result.copied) == ["first", "last"]
+    assert result.skipped == [
+        ("middle", "nothing new to add — everything offered was refused")
+    ]
+    assert sorted((rid, name) for rid, name, _ in result.refused) == [
+        ("first", "nest"),
+        ("middle", "feeder"),
+        ("middle", "nest"),
+    ]
+
+
+def test_flattened_definitions_are_named_once_across_targets(tmp_path):
+    exp = _experiment_with_recordings(tmp_path, "r1", "r2", "r3")
+    exp.resolve_recording("r1").define_roi(
+        "moving", [(0, _square()), (900, _square(0.05))]
+    )
+
+    result = exp.propagate_rois("r1")
+
+    assert sorted(result.copied) == ["r2", "r3"]
+    assert result.flattened == ["moving"]
 
 
 def test_progress_reports_within_the_batch(tmp_path):

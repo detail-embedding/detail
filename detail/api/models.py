@@ -711,8 +711,16 @@ def _library_entry_for(record: dict, skeleton: Skeleton) -> dict:
 
 
 def remove_imported_model(model_id: str) -> None:
-    """Delete a machine-global imported model (raises if absent)."""
-    if model_id not in imported_store.discover():
+    """Delete a machine-global imported model (raises if absent).
+
+    Also deletes a catalog folder an import cut short left behind (no ``model.yaml``,
+    :func:`imported.unfinished`): it is no model, but it blocks its name, and nothing else
+    could delete it. Only a name in either listing is deleted, so an id is never a path.
+    """
+    if (
+        model_id not in imported_store.discover()
+        and model_id not in imported_store.unfinished()
+    ):
         raise FileNotFoundError(f"no imported model {model_id!r}")
     imported_store.remove(model_id)
 

@@ -361,14 +361,18 @@ def import_example_set(experiment: "Experiment", yaml_path: Path | str) -> Examp
     created = example_store.create_set(
         experiment.dir, source.name, source.skeleton, purpose=source.purpose
     )
-    for frame in source.frames:
-        rgb = _read_rgb(path.parent / frame.image)
-        frame.image = example_store.add_frame_image(experiment.dir, created.id, rgb)
-    created.frames = source.frames
-    created.sources = source.sources
-    created.extra = source.extra
-    created.skeleton_ref = _local_skeleton_ref(source)
-    example_store.write_set(experiment.dir, created)
+    # The set's id is claimed by making its folder, so it exists before the first image is
+    # read; an image that will not decode, or Ctrl-C, removes it again rather than leaving
+    # an empty set behind (#29). Reading every image first would hold them all in memory.
+    with example_store.removed_on_failure(experiment.dir, created.id):
+        for frame in source.frames:
+            rgb = _read_rgb(path.parent / frame.image)
+            frame.image = example_store.add_frame_image(experiment.dir, created.id, rgb)
+        created.frames = source.frames
+        created.sources = source.sources
+        created.extra = source.extra
+        created.skeleton_ref = _local_skeleton_ref(source)
+        example_store.write_set(experiment.dir, created)
     return created
 
 

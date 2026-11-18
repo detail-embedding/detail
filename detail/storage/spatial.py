@@ -41,12 +41,13 @@ class _Kind:
     min_vertices: int
     max_vertices: int | None  # None = unbounded (polygon)
     has_active: bool  # ROIs/POIs may be present for only part of the video
+    plural: str  # what a person calls several, in a refusal they read
 
 
 _KINDS: dict[str, _Kind] = {
-    "arena": _Kind("arenas", "arena", 3, None, False),
-    "roi": _Kind("rois", "roi", 3, None, True),
-    "point": _Kind("points", "point", 1, 1, True),
+    "arena": _Kind("arenas", "arena", 3, None, False, "fields of view"),
+    "roi": _Kind("rois", "roi", 3, None, True, "regions of interest"),
+    "point": _Kind("points", "point", 1, 1, True, "points of interest"),
 }
 
 
@@ -286,6 +287,47 @@ def delete_def(recording_dir: Path | str, kind: str, def_id: str) -> None:
 # --------------------------------------------------------------------------- #
 # Bulk replace — the multi-region manager's "Save all" (§10)
 # --------------------------------------------------------------------------- #
+def validate_defs(kind: str, defs: list[dict]) -> list[int]:
+    """Refuse a whole set of ``kind`` definitions the way a write of it would, writing nothing.
+
+    Each entry is shaped as :func:`replace_defs` takes it. This is every refusal that write
+    can raise about the set itself, so a caller committing several kinds in one go (the scene
+    editor's Save) can check them all before it writes the first: a duplicated name found
+    after the field of view was already written leaves the recording in a state nobody asked
+    for. Returns each definition's vertex count, in order.
+
+    Raises:
+        ValueError: An empty or duplicated name or id, an active interval on a kind that has
+            none, or invalid keyframes / active.
+    """
+    k = _kind(kind)
+    seen: set[str] = set()
+    seen_ids: set[str] = set()
+    counts: list[int] = []
+    for d in defs:
+        kept = d.get("id")
+        if kept is not None:
+            if kept in seen_ids:
+                raise ValueError(f"{k.id_prefix} id {kept!r} is duplicated")
+            seen_ids.add(kept)
+        name = stored_name(d.get("name") or "")
+        if not name:
+            raise ValueError(f"{k.id_prefix} name must be non-empty")
+        if name in seen:
+            raise ValueError(
+                f"two {k.plural} are named {name!r} — give each one its own name"
+            )
+        seen.add(name)
+        active = d.get("active")
+        if active is not None and not k.has_active:
+            raise ValueError(f"{kind!r} does not support an active interval")
+        _validate_active(active)
+        counts.append(
+            _validate_keyframes(d["keyframes"], k.min_vertices, k.max_vertices)
+        )
+    return counts
+
+
 def replace_defs(recording_dir: Path | str, kind: str, defs: list[dict]) -> list[str]:
     """Replace ALL definitions of ``kind`` in one operation — the bulk counterpart to the
     per-def define path, used by the ROI/POI manager's "Save all". Each entry is
@@ -304,31 +346,16 @@ def replace_defs(recording_dir: Path | str, kind: str, defs: list[dict]) -> list
     Raises:
         ValueError: An empty or duplicated name or id, or invalid keyframes / active.
     """
-    k = _kind(kind)
-    prepared: list[tuple[str | None, str, Keyframes, ActiveInterval, int]] = []
-    seen: set[str] = set()
-    seen_ids: set[str] = set()
+    n_vertices_of = validate_defs(kind, defs)
     existing_ids = {entry["id"] for entry in list_defs(recording_dir, kind)}
-    for d in defs:
+    prepared: list[tuple[str | None, str, Keyframes, ActiveInterval, int]] = []
+    for d, n_vertices in zip(defs, n_vertices_of):
         kept = d.get("id")
-        if kept is not None:
-            if kept in seen_ids:
-                raise ValueError(f"{k.id_prefix} id {kept!r} is duplicated")
-            seen_ids.add(kept)
-            if kept not in existing_ids:
-                kept = None
-        name = stored_name(d.get("name") or "")
-        if not name:
-            raise ValueError(f"{k.id_prefix} name must be non-empty")
-        if name in seen:
-            raise ValueError(f"{k.id_prefix} name {name!r} is duplicated")
-        seen.add(name)
-        active = d.get("active")
-        if active is not None and not k.has_active:
-            raise ValueError(f"{kind!r} does not support an active interval")
-        _validate_active(active)
-        n_vertices = _validate_keyframes(d["keyframes"], k.min_vertices, k.max_vertices)
-        prepared.append((kept, name, d["keyframes"], active, n_vertices))
+        if kept not in existing_ids:
+            kept = None
+        prepared.append(
+            (kept, stored_name(d["name"]), d["keyframes"], d.get("active"), n_vertices)
+        )
     # New ids are claimed while the old definitions still exist, so even a recording with no
     # mark yet (made before it existed) cannot hand a new region a kept region's id.
     new_ids = [kept or next_id(recording_dir, kind) for kept, *_ in prepared]
@@ -529,6 +556,22 @@ def load_calibration_csv(path: Path | str) -> dict | None:
     }
 
 
+def spatial_csv_kinds(path: Path | str) -> set[str]:
+    """Which kinds an exported spatial CSV carries: any of ``"arena"``, ``"roi"``,
+    ``"point"`` and ``"calibration"``.
+
+    So an import of "whatever the file holds" asks the file first, rather than trying every
+    kind and reporting the ones it does not hold as refusals (#35 finding 14).
+
+    Raises:
+        FileNotFoundError: if the file is absent.
+        ValueError: if it lacks the columns every spatial CSV has.
+    """
+    return {
+        kind for row in _read_spatial_csv(path) if (kind := (row["kind"] or "").strip())
+    }
+
+
 def load_spatial_csv(path: Path | str) -> list[dict]:
     """Parse an exported spatial CSV back into defs ``{kind, name, keyframes, active}``,
     grouping rows by ``(kind, name)`` and rebuilding keyframes (ordered by ``frame_idx``,
@@ -623,12 +666,14 @@ def _unique_name(recording_dir: Path | str, kind: str, name: str) -> str:
 def import_spatial(recording_dir: Path | str, defs: list[dict]) -> int:
     """Append parsed defs (from ``load_spatial_csv`` or ``read_defs``) onto a recording
     as NEW ids — never clobbering existing definitions. A name that collides with an
-    existing one gets a `` (2)`` suffix. Validates the whole set before writing any
-    (all-or-nothing). Returns the number appended."""
+    existing one gets a `` (2)`` suffix. Validates the whole set, of every kind in it,
+    before writing any (all-or-nothing, Tenet 10). Returns the number appended."""
     prepared: list[tuple[str, str, Keyframes, ActiveInterval, int]] = []
     for d in defs:
         kind = d["kind"]
         k = _kind(kind)
+        if not d.get("name"):
+            raise ValueError(f"{k.id_prefix} name must be non-empty")
         active = d.get("active")
         if active is not None and not k.has_active:
             raise ValueError(f"{kind!r} does not support an active interval")
@@ -781,13 +826,27 @@ def write_calibration_from_points(
     Raises:
         ValueError: if the two points coincide or ``distance_mm <= 0``.
     """
+    block = calibration_from_points(points, distance_mm, resolution)
+    _write_calibration(recording_dir, block)
+    return block
+
+
+def calibration_from_points(
+    points, distance_mm: float, resolution: tuple[int, int]
+) -> dict:
+    """The calibration block :func:`write_calibration_from_points` would store, writing
+    nothing — so a save of several kinds can refuse a bad calibration before its first write.
+
+    Raises:
+        ValueError: if the two points coincide or ``distance_mm <= 0``.
+    """
     if distance_mm <= 0:
         raise ValueError(f"distance_mm must be > 0, got {distance_mm}")
     width, height = int(resolution[0]), int(resolution[1])
     pixel_dist = _pixel_distance(points, width, height)
     if pixel_dist <= 0:
         raise ValueError("the two calibration points must be distinct")
-    block = {
+    return {
         "schema_version": 1,
         "points": [
             [float(points[0][0]), float(points[0][1])],
@@ -797,8 +856,6 @@ def write_calibration_from_points(
         "pixels_per_mm": pixel_dist / distance_mm,
         "ref_resolution": [width, height],
     }
-    _write_calibration(recording_dir, block)
-    return block
 
 
 def write_calibration_scalar(
@@ -830,6 +887,26 @@ def read_calibration(recording_dir: Path | str) -> dict | None:
     return recording_store.read_recording(recording_dir).get(CALIBRATION_KEY)
 
 
+def check_calibration_block(
+    block: dict, resolution: tuple[int, int] | None = None
+) -> None:
+    """Refuse what :func:`write_calibration_block` would refuse, writing nothing — so an
+    import carrying a calibration beside polygons can refuse before its first write.
+
+    Raises:
+        ValueError: if the block has no positive ``pixels_per_mm`` or no resolution, or
+            its aspect ratio differs from ``resolution``'s.
+    """
+    if float(block.get("pixels_per_mm") or 0) <= 0:
+        raise ValueError("calibration block needs a positive pixels_per_mm")
+    if len(block.get("ref_resolution") or []) != 2:
+        raise ValueError("calibration block needs a [width, height] ref_resolution")
+    if resolution is not None:
+        refusal = calibration_aspect_refusal(block, *resolution)
+        if refusal is not None:
+            raise ValueError(refusal)
+
+
 def write_calibration_block(
     recording_dir: Path | str,
     block: dict,
@@ -848,14 +925,7 @@ def write_calibration_block(
         ValueError: if the block has no positive ``pixels_per_mm`` or no resolution, or
             its aspect ratio differs from ``resolution``'s.
     """
-    if float(block.get("pixels_per_mm") or 0) <= 0:
-        raise ValueError("calibration block needs a positive pixels_per_mm")
-    if len(block.get("ref_resolution") or []) != 2:
-        raise ValueError("calibration block needs a [width, height] ref_resolution")
-    if resolution is not None:
-        refusal = calibration_aspect_refusal(block, *resolution)
-        if refusal is not None:
-            raise ValueError(refusal)
+    check_calibration_block(block, resolution)
     stored = {
         "schema_version": 1,
         "points": block.get("points"),

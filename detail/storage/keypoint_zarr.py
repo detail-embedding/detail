@@ -3,8 +3,8 @@
 The **detect** part is instance-indexed with no subject, the shape a detection part has: one
 row per pose instance, rows in frame order, none for a frame with no instance, any number for a
 frame with several. Its writer flushes only on frame boundaries (``boundary_key=frame_idx``, as
-``DetectionPartWriter.add_row``), so the store always ends on a whole frame — the unit resume
-restarts after. Its attrs carry ``layout: "instances"``; a store without it is the per-track
+``DetectionPartWriter.add_row``), so the store always ends on a whole frame, even after a stop
+or a crash. Its attrs carry ``layout: "instances"``; a store without it is the per-track
 layout from before 2026-10-21 and is refused (``LegacyKeypointLayoutError``), never read
 through a second path.
 
@@ -189,17 +189,6 @@ class KeypointDetectPartReader(PartZarrReader):
         if "extras" not in self._root:
             return ()
         return tuple(sorted(self._root["extras"].array_keys()))
-
-    def last_frame_idx(self) -> int | None:
-        """The frame of the last row every column holds, or None for an empty store — the
-        frame resume continues after. The common length is where a reopened writer cuts a
-        torn flush back to, and a flush only ever ends on a frame boundary, so that frame is
-        whole."""
-        names = list(self.column_names) + [EXTRAS_PREFIX + n for n in self.extras_names]
-        n = min(int(self._root[name].shape[0]) for name in names) if names else 0
-        if n == 0:
-            return None
-        return int(self._root["frame_idx"][n - 1])
 
     def read_all(self) -> dict[str, np.ndarray]:
         """Every column, the extras keyed ``extras/<name>``."""

@@ -1,4 +1,12 @@
-"""Tests for the durable distill run — label → train (§12)."""
+"""Tests for the durable distill run — label → train (§12).
+
+**A default selection that includes what the operation refuses** (#35). "No recordings named"
+meant every recording, so one metadata-only recording — which Add recordings allows — refused
+the whole labeling or distill job, and named itself by id. It means every recording *with
+video* now, resolved once in ``Experiment._sampling_recordings`` so the CLI and GUI agree; a
+recording that is *named* and has no video is still refused, by its name. The GUI pickers grey
+such a recording and say how many selecting nothing uses.
+"""
 
 import json
 import types
@@ -540,3 +548,38 @@ def test_a_fresh_distill_starts_its_clock_at_zero(tmp_path, monkeypatch):
     monkeypatch.setattr("detail.api.experiment.time", clock)
     orchestrator = DistillOrchestrator(proj, record["id"], record, lambda e: None)
     assert orchestrator._start == pytest.approx(0.0)  # the identity for a fresh run
+
+
+def test_distill_with_no_recordings_named_samples_those_with_video(
+    tmp_path, monkeypatch
+):
+    """#35 finding 5, the Distill twin of `label_dataset`'s: "none = all" means every recording
+    with video, so a metadata-only recording no longer refuses the whole distill."""
+    from pathlib import Path
+
+    import detail.storage.recording as rec_store
+
+    proj = Experiment.create("p", tmp_path)
+    proj.create_recording("recording_002")  # metadata only
+    _pass_validation(proj, monkeypatch)  # recording_001, with video
+    monkeypatch.setattr(
+        rec_store,
+        "read_recording",
+        lambda d: {
+            "name": Path(d).name,
+            "video": {
+                "files": (
+                    ["video/part_001.mp4"] if Path(d).name == "recording_001" else []
+                )
+            },
+        },
+    )
+    monkeypatch.setattr("detail.api.experiment.spawn_coordinator", lambda *a, **k: 4321)
+    proj.distill(
+        "m",
+        classes=[LabelingClass(0, "mouse", "a mouse")],
+        n_frames=2,
+        trainer_id="faketrainer",
+    )
+    rec = distill_store.read_run(proj.dir, "distill_001")
+    assert rec["config"]["source_recording_ids"] == ["recording_001"]

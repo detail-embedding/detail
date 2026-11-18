@@ -424,6 +424,8 @@ def _signals(*, gpu: bool, done: bool) -> ReadinessSignals:
         sam3_weights=done,
         detection_model=done,
         has_experiment=False,
+        quick_segment_run=False,
+        distilled_model=False,
     )
 
 

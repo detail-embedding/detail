@@ -218,7 +218,13 @@ def test_a_capped_point_is_marked_on_the_curve(qapp, tmp_path, monkeypatch):
     assert len(tab._plot.listDataItems()) == 2
 
 
-def test_the_header_counts_from_the_curve_not_a_stored_total(qapp, tmp_path):
+def _header_count(calibrate) -> int:
+    """The instance count the header states, e.g. `rearing (q01) — 228 instance(s) at …`."""
+    text = calibrate._header.text()
+    return int(text.split(" — ", 1)[1].split(" instance(s)", 1)[0])
+
+
+def test_the_header_counts_at_the_cutoff_not_a_stored_total(qapp, tmp_path):
     """`gui/confidence.py`'s lesson, which §20 says is the calibration curve's verbatim: a
     stored count cannot answer "how many at 0.7?", and a view that forgets shows a confident
     wrong total."""
@@ -226,10 +232,40 @@ def test_the_header_counts_from_the_curve_not_a_stored_total(qapp, tmp_path):
     calibrate = workspace._calibrate
     calibrate._line.setValue(0.0)
     qapp.processEvents()
-    loose = calibrate._count_at(0.0)
+    loose = _header_count(calibrate)
     calibrate._line.setValue(1.0)
     qapp.processEvents()
-    assert calibrate._count_at(1.0) < loose
+    assert _header_count(calibrate) < loose
+
+
+def test_the_header_states_the_count_a_commit_at_that_cutoff_writes(qapp, tmp_path):
+    """The header read the nearest of the curve's 41 points, so between points it printed a
+    neighbour's count beside the exact cutoff, and the per-recording panel under it (which
+    counts at the cutoff) disagreed with it on the same screen (#35). It must state what a
+    commit at that cutoff would keep, so the property is checked against the artifact a commit
+    actually writes, at cutoffs between the curve's points, and against the panel."""
+    exp, run, workspace = _workspace(qapp, tmp_path)
+    calibrate = workspace._calibrate
+    seen = set()
+    for cutoff in (0.037, 0.0612, 0.3333, 0.512, 0.87):
+        calibrate._refresh_header(cutoff)
+        shown = _header_count(calibrate)
+        panel = sum(
+            int(line.split("  ←")[0].split()[-1])
+            for line in calibrate._spread.text().splitlines()
+        )
+        assert shown == panel, f"at {cutoff}: header {shown}, panel {panel}"
+        run.set_cutoff("q01", cutoff)
+        kept = [
+            i
+            for i in exp.query_run(run.id).artifact().instances
+            if i.source_label == "q01"
+        ]
+        assert shown == len(kept), f"at {cutoff}: header {shown}, committed {len(kept)}"
+        seen.add(shown)
+    assert (
+        len(seen) > 1
+    ), "the cutoffs chosen must give different counts to mean anything"
 
 
 # --- the clip grid -------------------------------------------------------------------------
@@ -1947,3 +1983,31 @@ def test_a_committed_cutoff_puts_the_measurements_out_of_date(qapp, tmp_path):
         lambda: not panel._measure_button.isHidden()
         and panel._measure_button.text() == REMEASURE,
     ), f"a commit left the band drawing the old matches: {panel._note.text()!r}"
+
+
+def test_the_calibrate_tab_names_recordings_not_ids(qapp, tmp_path):
+    """§11: the id is the tool's, the name is the user's. The kept panel, the clip captions and
+    the ethogram rows printed `recording_id` while the Browse tab beside them showed names
+    (#35). The names are read off the UI thread with the search results."""
+    exp, _run, _unused = _workspace(qapp, tmp_path)
+    for recording, name in zip(exp.recordings, ("m27 day3", "m31 day1")):
+        recording.set_name(name)
+    workspace = _QueryWorkspace(exp, exp.query_run(_run.id))
+    assert _drain(qapp, lambda: workspace._curves), "the search results never loaded"
+    calibrate = workspace._calibrate
+    calibrate._refresh_header(0.5)
+
+    panel = calibrate._spread.text()
+    assert "m27 day3" in panel and "m31 day1" in panel, panel
+    assert "s1" not in panel.split() and "s2" not in panel.split(), panel
+    captions = [spec.label for spec in calibrate._build_specs()]
+    assert captions and all(c.startswith(("m27 day3 ", "m31 day1 ")) for c in captions)
+    calibrate._refresh_clips()  # the strip under the curve, as drawn
+    cells = [cell._caption.text() for cell in calibrate._grid._cells.values()]
+    assert cells and all(
+        c.startswith(("m27 day3\n", "m31 day1\n")) for c in cells
+    ), cells
+    calibrate._show_ethograms((
+        [("s1", [], 1), ("s2", [], 1)], None,
+    ))  # fmt: skip
+    assert [row[0] for row in calibrate._ethograms._rows] == ["m27 day3", "m31 day1"]

@@ -1958,14 +1958,16 @@ class Experiment:
         cat = spatial_categories.category(category_key)
         src = self.resolve_recording(source)
         if not cat.has_data(src):
-            raise ValueError(f"recording {src.id!r} has no {cat.label.lower()} to copy")
+            raise ValueError(
+                f"recording {src.name!r} has no {cat.label.lower()} to copy"
+            )
         dests = self._propagate_targets(src, targets)
         stage = f"copying {cat.label.lower()}"
         total = len(dests)
         copied: list[str] = []
         skipped: list[tuple[str, str]] = []
         flattened: list[str] = []
-        refused: list[tuple[str, str]] = []
+        refused: list[tuple[str, str, str]] = []
         for index, dest in enumerate(dests):
             detail = f"{dest.name} ({index + 1}/{total})"
             if progress is not None:
@@ -1975,17 +1977,25 @@ class Experiment:
                 skipped.append((dest.id, reason))
             else:
                 try:
-                    added, flattened, refused = cat.give(src, dest, names)
+                    added, dest_flattened, dest_refused = cat.give(src, dest, names)
                 except (ValueError, FileNotFoundError, KeyError, OSError) as exc:
                     skipped.append((dest.id, str(exc)))
                 else:
+                    # Accumulated per target and tagged with it. Assigning them here kept
+                    # only the last target's notes, so a refusal on any other recording was
+                    # reported as "see the notes below" with no notes (#35 finding 12).
+                    flattened += [n for n in dest_flattened if n not in flattened]
+                    refused += [(dest.id, name, why) for name, why in dest_refused]
                     # Only a target that actually received something counts as copied. A
                     # set-shaped kind can have every one of its names refused, which is
                     # not a failure and not a copy.
                     (copied if added else skipped).append(
                         dest.id
                         if added
-                        else (dest.id, "nothing new to add — see the notes below")
+                        else (
+                            dest.id,
+                            "nothing new to add — everything offered was refused",
+                        )
                     )
             if progress is not None:
                 progress(stage, (index + 1) / total, detail)
@@ -2138,6 +2148,15 @@ class Experiment:
         stream_presets.save_preset(
             self._dir, name, importer, config, offset_ns=offset_ns, overwrite=overwrite
         )
+
+    def check_new_stream_preset_name(self, name: str) -> None:
+        """Refuse a name :meth:`save_stream_preset` would refuse without ``overwrite``, so a
+        caller that saves after other work can refuse before doing it.
+
+        Raises:
+            ValueError: An invalid name, or a preset by that name exists.
+        """
+        stream_presets.check_new_name(self._dir, name)
 
     def delete_stream_preset(self, name: str) -> None:
         """Raises: ValueError if no preset named ``name`` exists."""
@@ -3037,6 +3056,22 @@ class Experiment:
         return None
 
     # --- Distill runs (label → train, one durable run — §12) ------------------ #
+    def _sampling_recordings(self, source_recording_ids: list[str] | None) -> list[str]:
+        """The recordings a labeling sample draws from: the ones named, or every one with video.
+
+        "None given" means *all of them that have something to sample*. It meant every
+        recording, so one metadata-only recording — which Add recordings allows — refused the
+        whole job naming itself, and the GUI's "none = all" could not be used at all (#35).
+        Recordings that were *named* are taken as named, so a named one with no video is still
+        refused, by name, by the check that follows.
+        """
+        if source_recording_ids:
+            # Order-keeping de-duplication, as `run_processing` does (issue #28, finding 7).
+            return list(dict.fromkeys(source_recording_ids))
+        with read_cache.pinned():
+            recordings = self.recordings
+            return [r.id for r in recordings if r.video_parts]
+
     def distill(
         self,
         name: str,
@@ -3076,10 +3111,7 @@ class Experiment:
                 hyperparameters.
         """
         import_runner_modules(_PIPELINE_RUNNERS)
-        # Order-keeping de-duplication, as `run_processing` does (issue #28, finding 7).
-        recording_ids = list(
-            dict.fromkeys(source_recording_ids or [s.id for s in self.recordings])
-        )
+        recording_ids = self._sampling_recordings(source_recording_ids)
         if not classes:
             raise ValueError("labeling needs at least one class (a name + text prompt)")
         prompts = [c.prompt for c in classes]
@@ -3135,14 +3167,17 @@ class Experiment:
             }
         )
         if not recording_ids:
-            raise ValueError("labeling needs at least one source recording")
+            raise ValueError("labeling needs at least one source recording with video")
         available = 0
         for sid in recording_ids:
             recording = self.get_recording(sid)  # raises if the recording is unknown
             data = recording_store.read_recording(recording.dir)
             files = data.get("video", {}).get("files", [])
             if not files:
-                raise ValueError(f"recording {sid!r} has no video to sample")
+                raise ValueError(
+                    f"recording {recording.name!r} has no video to sample; choose "
+                    "recordings that have video, or leave the choice empty to use all of them"
+                )
             available += sum(
                 len(recording_store.load_active_timestamps(recording.dir, data, i))
                 for i in range(len(files))
@@ -3571,10 +3606,7 @@ class Experiment:
                 or the chosen model not ready.
         """
         import_runner_modules(_PIPELINE_RUNNERS)
-        # Order-keeping de-duplication, as `run_processing` does (issue #28, finding 7).
-        recording_ids = list(
-            dict.fromkeys(source_recording_ids or [s.id for s in self.recordings])
-        )
+        recording_ids = self._sampling_recordings(source_recording_ids)
         compute = compute or default_compute(api_models.supported_backends(model_id))
         if not classes:
             raise ValueError("labeling needs at least one class (a name + text prompt)")
@@ -3602,14 +3634,17 @@ class Experiment:
             }
         )
         if not recording_ids:
-            raise ValueError("labeling needs at least one source recording")
+            raise ValueError("labeling needs at least one source recording with video")
         available = 0
         for sid in recording_ids:
             recording = self.get_recording(sid)  # raises if the recording is unknown
             data = recording_store.read_recording(recording.dir)
             files = data.get("video", {}).get("files", [])
             if not files:
-                raise ValueError(f"recording {sid!r} has no video to sample")
+                raise ValueError(
+                    f"recording {recording.name!r} has no video to sample; choose "
+                    "recordings that have video, or leave the choice empty to use all of them"
+                )
             # Frame count from the PTS timestamp map (Tenet 8 / CLAUDE.md frame-count rule), not
             # cv2's CAP_PROP_FRAME_COUNT estimate — so the n_frames check matches what's sampleable.
             available += sum(

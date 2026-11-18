@@ -1337,13 +1337,15 @@ def _coco_for_recording(
     recording_dir = experiment_store.recording_path(experiment_dir, recording_id)
     offsets = recording_store.part_frame_offsets(recording_dir)
 
-    parts = sorted(run_dir.glob("part_*.zarr"))
-    rows_total = sum(PartZarrReader(part).n_rows for part in parts)
+    # Play order with each part's play index, which is what the offsets are indexed by: after
+    # a part move the sorted folder listing is not the order the parts play in.
+    parts = recording_store.parts_in_play_order(recording_dir, run_dir)
+    rows_total = sum(PartZarrReader(part).n_rows for _index, part in parts)
     rows_done = 0
     images: dict[int, dict] = {}
     annotations: list[dict] = []
     categories: dict[str, int] = {}
-    for part_index, part in enumerate(parts):
+    for part_index, part in parts:
         columns = PartZarrReader(part).read()
         offset = offsets[part_index] if part_index < len(offsets) else offsets[-1]
         for row in range(len(columns["frame_idx"])):

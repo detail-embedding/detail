@@ -15,6 +15,15 @@ The behaviour half has its own trap, and it is the one `test_config_round_trip.p
 around: a picker that *lists* runs and loads nothing looks identical to one that works. So the
 form is read before and after, and the assertion is that a perturbed value arrived — never that
 the combo has items.
+
+**And a pick the form cannot take whole says so** (#35). A choice this build does not offer left
+its combo on the default, a number out of range was clamped, and a query-eval run's scored
+behaviors were applied to a list still empty, so all were ticked — each under a picker row naming
+the run. Two forms had a note of their own; the rest were silent. The launch dialog now compares
+the pick with what the form reads back, over the module's config model, and names every
+difference in one line under **Start from** (`start_from.unrestored_settings`). Driven over every
+surfaced module's choice fields, with the negative — a form loading its own settings reports
+nothing — over every module too.
 """
 
 import pytest
@@ -369,3 +378,179 @@ def test_a_pick_opens_the_advanced_section_holding_it(qapp, tmp_path):
     assert any(
         s.changed_count() and s._expanded for s in sections
     ), "the section hiding the changed knob stayed folded"
+
+
+# --- what a pick could not restore (#35 findings 2 and 4) --------------------- #
+def _pick(dialog, run_id: str) -> None:
+    combo = dialog._start_from.combo
+    combo.setCurrentIndex(
+        next(i for i in range(combo.count()) if combo.itemText(i).startswith(run_id))
+    )
+
+
+def _vocabulary(form, names) -> None:
+    """The recordings' behaviors arriving, as `apply_recordings` delivers them."""
+    form.apply_recordings([], ([], {None: (list(names), {})}, []))  # none ambiguous
+
+
+def _ticked(form) -> list[str]:
+    return form._checked_behaviors()
+
+
+def test_start_from_a_query_eval_run_ticks_exactly_the_behaviors_it_scored(
+    qapp, tmp_path
+):
+    """Finding 2. The run scored `rear` of `groom, rear, dig` (and skipped `dig`). Start from
+    rebuilt the form before any recording was ticked, so the subset met an empty list and was
+    lost — and the record keeps what it scored beside `params`, not in it, so the picker never
+    even carried it. When the recordings' behaviors arrived, the form ticked all three.
+    """
+    from detail.gui.launch import LaunchAnalysisDialog
+
+    proj = _experiment(tmp_path)
+    dialog = LaunchAnalysisDialog(proj)
+    dialog._module_combo.setCurrentIndex(dialog._module_combo.findData("query_eval"))
+    params = {
+        k: v
+        for k, v in dialog._config.config().items()
+        if k not in ("embed_run_id", "behaviors", "track_id")
+    }
+    run_dir = analysis_store.analysis_dir(proj.dir, "an_01")
+    run_dir.mkdir(parents=True)
+    analysis_store.write_analysis_yaml(
+        run_dir,
+        {
+            "id": "an_01",
+            "module_id": "query_eval",
+            "recording_ids": ["recording_001"],
+            "status": "complete",
+            "params": params,
+            "behaviors": [
+                {"behavior": "rear", "skipped": False},
+                {"behavior": "dig", "skipped": True},
+            ],
+        },
+    )
+    dialog = LaunchAnalysisDialog(proj)
+    dialog._module_combo.setCurrentIndex(dialog._module_combo.findData("query_eval"))
+    _pick(dialog, "an_01")
+    _vocabulary(
+        dialog._config, ["dig", "groom", "rear"]
+    )  # the recordings resolve after
+
+    assert _ticked(dialog._config) == ["rear"]
+    # And a recording added later keeps the subset rather than ticking its newcomers.
+    _vocabulary(dialog._config, ["dig", "groom", "rear", "sniff"])
+    assert _ticked(dialog._config) == ["rear"]
+
+
+def test_a_hand_tick_after_start_from_is_the_users_choice(qapp):
+    """The held subset is for the vocabulary arriving, not a lock: once the user ticks a box,
+    their ticks decide, as they did before any Start from."""
+    from detail.gui.modules.analysis_query_eval import _QueryEvalConfig
+
+    form = _QueryEvalConfig()
+    form.load_config({"behaviors": ["rear"]})
+    _vocabulary(form, ["groom", "rear"])
+    from PyQt6.QtCore import Qt
+
+    form._behaviors.item(0).setCheckState(Qt.CheckState.Checked)  # groom, by hand
+    _vocabulary(form, ["groom", "rear", "sniff"])
+    assert _ticked(form) == ["groom", "rear"]
+
+
+def _module_dialog(tmp_path, module_id):
+    from detail.gui.launch import LaunchAnalysisDialog, LaunchRunDialog
+
+    cls = LaunchRunDialog if module_id in GUI_MODULES else LaunchAnalysisDialog
+    dialog = cls(_experiment(tmp_path))
+    index = dialog._module_combo.findData(module_id)
+    if index < 0:
+        pytest.skip(f"{module_id} is not offered by its launcher in this build")
+    dialog._module_combo.setCurrentIndex(index)
+    return dialog
+
+
+_ALL_MODULES = sorted(surfaced(GUI_MODULES)) + sorted(surfaced(ANALYSIS_GUI_MODULES))
+
+
+@pytest.mark.parametrize("module_id", _ALL_MODULES)
+def test_a_pick_the_form_takes_whole_leaves_no_note(qapp, tmp_path, module_id):
+    """The note's negative: every form loading its own settings back reports nothing, so the
+    note is never noise on a pick that was restored as recorded."""
+    dialog = _module_dialog(tmp_path, module_id)
+    dialog._apply_start_from(dialog._config.config())
+    assert dialog._start_from_note.isHidden(), dialog._start_from_note.text()
+
+
+def _choice_fields(module_id: str, config: dict) -> list[dict]:
+    from detail.configs.describe import describe_config, iter_config_models
+
+    model = dict(iter_config_models())[module_id]
+    return [
+        f
+        for f in describe_config(model)
+        if f["scope"] == "setting" and f["choices"] and f["name"] in config
+    ]
+
+
+def test_every_choice_a_form_cannot_take_is_named(qapp, tmp_path):
+    """Finding 4, over every surfaced module's form rather than the two that had a note of
+    their own: a pick naming a choice this build does not offer used to leave the combo on its
+    default under a picker row naming the run. Every such field is now named in one note.
+    """
+    checked = 0
+    for module_id in _ALL_MODULES:
+        dialog = _module_dialog(tmp_path / module_id, module_id)
+        base = dialog._config.config()
+        for field in _choice_fields(module_id, base):
+            if field["name"] in dialog._config.noted_by_form:
+                continue  # explained beside its own row (tracking, the scan)
+            dialog._apply_start_from({**base, field["name"]: "not_in_this_build"})
+            note = dialog._start_from_note
+            assert (
+                not note.isHidden()
+            ), f"{module_id}.{field['name']} substituted silently"
+            assert f"{field['label']}: that run used 'not_in_this_build'" in note.text()
+            checked += 1
+    assert checked >= 6, f"only {checked} choice fields reached — the sweep is too thin"
+
+
+def test_a_model_this_build_lacks_and_out_of_range_numbers_are_named(qapp, tmp_path):
+    """The issue's own cases, through the real picker: an embedding run whose model is not
+    registered here, and a detection run whose numbers the form clamps. Numbers are named too
+    — a clamp is a run configured differently from the one picked."""
+    from detail.gui.launch import LaunchRunDialog
+
+    proj = _experiment(tmp_path)
+    for run_id, module_id, config in (
+        ("run_001", "detection", {"conf_threshold": 1.7, "batch_size": 0}),
+        ("run_002", "embedding", {"model_id": "dinov2_gone", "align": "flip"}),
+    ):
+        runs_store.write_run(
+            proj.dir,
+            run_id,
+            {
+                "id": run_id,
+                "module_id": module_id,
+                "recording_ids": ["recording_001"],
+                "status": "complete",
+                "config": config,
+            },
+        )
+    dialog = LaunchRunDialog(proj)
+    dialog._module_combo.setCurrentIndex(dialog._module_combo.findData("detection"))
+    _pick(dialog, "run_001")
+    text = dialog._start_from_note.text()
+    assert "Confidence threshold: that run used 1.7" in text
+    assert "Batch size: that run used 0" in text
+
+    dialog._module_combo.setCurrentIndex(dialog._module_combo.findData("embedding"))
+    assert dialog._start_from_note.isHidden(), "a note outlived its module"
+    _pick(dialog, "run_002")
+    text = dialog._start_from_note.text()
+    assert "Model: that run used 'dinov2_gone'" in text
+    assert "Egocentric alignment: that run used 'flip'" in text
+
+    dialog._start_from.combo.setCurrentIndex(0)  # Defaults
+    assert dialog._start_from_note.isHidden()

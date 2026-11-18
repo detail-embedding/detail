@@ -188,18 +188,33 @@ class SkeletonEditorDialog(Dialog):
             )["id"]
 
         def done(saved_id) -> None:
+            self.let_go()
             self._saving = False
             self._saved = saved_id
             self.accept()
 
         def failed(exc: BaseException) -> None:
+            self.let_go()
             self._saving = False
             QMessageBox.warning(self, "Save skeleton", str(exc))
 
         self._saving = True
-        run_busy(self, write, done, label="Saving the skeleton…", on_error=failed)
+        worker = run_busy(
+            self, write, done, label="Saving the skeleton…", on_error=failed
+        )
+        # A save cannot be taken back half-written; closing waits for it, so the library the
+        # caller re-reads on Accepted is never one the dialog closed in front of.
+        self.hold_open_while(worker, self._still_saving)
+
+    def _still_saving(self) -> None:
+        self._status.setText(
+            "Still saving the skeleton — this closes when it is written."
+        )
 
     def reject(self) -> None:
+        if self._saving:
+            super().reject()  # held while the save runs (`hold_open_while`)
+            return
         if self.dirty():
             answer = QMessageBox.question(
                 self,
