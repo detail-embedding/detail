@@ -35,6 +35,7 @@ from detail.api import tools as api_tools
 from detail.cli_numbers import FINITE_FLOAT
 from detail.cli_numbers import finite_float_range
 from detail.cli_numbers import parse_finite
+from detail.configs.stream_select import BorisSelectionConfig, MedpcSessionConfig
 from detail.configs.detection import DetectionConfig
 from detail.configs.display import ConfidenceView
 from detail.configs.embedding import EmbeddingConfig
@@ -60,7 +61,7 @@ from detail.core.dataclasses import (
 )
 from detail.core.errors import UserInputError
 from detail.core.protocols import ModelNotReadyError
-from detail.core.utils import best_supported_backend
+from detail.core.utils import best_supported_backend, seconds_to_t_ns
 from detail.storage import metadata as metadata_store
 from detail.storage import snapshots as snapshots_store
 from detail.storage import streams as streams_store
@@ -87,6 +88,8 @@ _TEMPORAL = TemporalClusteringConfig.model_fields
 _CODEBOOK = TemporalCodebookConfig.model_fields
 _TRK = TrackingConfig.model_fields
 _TRAIN = UltralyticsYOLOConfig.model_fields
+_MEDPC = MedpcSessionConfig.model_fields
+_BORIS = BorisSelectionConfig.model_fields
 _DET_DOC = {p["name"]: p for p in describe_config(DetectionConfig)}
 _EMB_DOC = {p["name"]: p for p in describe_config(EmbeddingConfig)}
 _QE_DOC = {p["name"]: p for p in describe_config(QueryEvalConfig)}
@@ -155,6 +158,35 @@ def _stream_config(
     return {"time_column": time_column, "time_kind": time_kind, "channels": parsed}
 
 
+def _selection_config(importer: str | None, **flags) -> dict | None:
+    """The MED-PC / BORIS selector flags as that importer's ``config``, or ``None``.
+
+    ``flags`` are ``medpc_<field>`` / ``boris_<field>`` keyword values; only the ones given
+    count. A flag for the other importer is refused rather than ignored, since an ignored
+    "--boris-subject mA" on a MED-PC file would import exactly what the user meant to narrow.
+    """
+    given = {k: v for k, v in flags.items() if v is not None}
+    if not given:
+        return None
+    prefixes = {k.split("_", 1)[0] for k in given}
+    if len(prefixes) > 1 or importer not in prefixes:
+        names = ", ".join("--" + k.replace("_", "-") for k in sorted(given))
+        raise click.ClickException(
+            f"{names} only apply to the importer they are named for, and this import uses "
+            f"{importer!r}"
+        )
+    return {k.split("_", 1)[1]: v for k, v in given.items()}
+
+
+def _option_t_ns(seconds: float, what: str) -> int:
+    """Seconds typed on the command line as int64 ``t_ns``, through the one checked
+    conversion: an offset, a minimum match length, a split gap."""
+    try:
+        return seconds_to_t_ns(seconds, what=what)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from None
+
+
 def _read_stream_sources(
     path: Path,
 ) -> tuple[bool, list[tuple[str, Path, int | None]]]:
@@ -191,11 +223,12 @@ def _read_stream_sources(
             offset_ns: int | None = None
             if len(cells) > 2 and cells[2]:
                 try:
-                    offset_ns = round(float(cells[2]) * 1e9)
+                    seconds = float(cells[2])
                 except ValueError:
                     raise ValueError(
                         f"{path}:{line_no}: offset {cells[2]!r} is not a number of seconds"
                     ) from None
+                offset_ns = seconds_to_t_ns(seconds, what=f"{path}:{line_no}: offset")
             rows.append((cells[0], (path.parent / cells[1]).resolve(), offset_ns))
     if not rows:
         raise ValueError(f"{path} lists no recordings")
@@ -1488,6 +1521,36 @@ def recording_relink(
     "carrying the channels named here.",
 )
 @click.option(
+    "--medpc-subject",
+    "medpc_subject",
+    type=str,
+    help="MED-PC, a file holding several sessions: " + _MEDPC["subject"].description,
+)
+@click.option(
+    "--medpc-box",
+    "medpc_box",
+    type=str,
+    help="MED-PC, a file holding several sessions: " + _MEDPC["box"].description,
+)
+@click.option(
+    "--medpc-session",
+    "medpc_session",
+    type=click.IntRange(min=1),
+    help="MED-PC, a file holding several sessions: " + _MEDPC["session"].description,
+)
+@click.option(
+    "--boris-observation",
+    "boris_observation",
+    type=str,
+    help="BORIS: " + _BORIS["observation"].description,
+)
+@click.option(
+    "--boris-subject",
+    "boris_subject",
+    type=str,
+    help="BORIS: " + _BORIS["subject"].description,
+)
+@click.option(
     "--offset",
     "offset_s",
     type=FINITE_FLOAT,
@@ -1523,11 +1586,21 @@ def recording_add_stream(
     time_column: str | None,
     time_kind: str,
     channels: tuple[str, ...],
+    medpc_subject: str | None,
+    medpc_box: str | None,
+    medpc_session: int | None,
+    boris_observation: str | None,
+    boris_subject: str | None,
     offset_s: float,
     preset: str | None,
     save_preset: str | None,
 ) -> None:
-    """Import a time-series stream into a recording (Section 3)."""
+    """Import a time-series stream into a recording (Section 3).
+
+    A MED-PC file holding several sessions, or a BORIS export holding several observations or
+    subjects, is refused until the --medpc-* / --boris-* flags pick one; the refusal lists
+    what the file holds. They are never merged.
+    """
     # A preset carries the importer, and the branch below reads it back off the preset —
     # so `--importer` is not merely redundant there, it is ignored. It was `required=True`
     # while `--preset`'s own help said "instead of --importer", which made the documented
@@ -1542,6 +1615,15 @@ def recording_add_stream(
         else None
     )
     config = _stream_config(time_column, time_kind, channels)
+    selection = _selection_config(
+        importer if preset is None else None,
+        medpc_subject=medpc_subject,
+        medpc_box=medpc_box,
+        medpc_session=medpc_session,
+        boris_observation=boris_observation,
+        boris_subject=boris_subject,
+    )
+    offset_ns = _option_t_ns(offset_s, "--offset")
     try:
         sess = _recording(proj, recording_id)
         if preset is not None:
@@ -1549,7 +1631,7 @@ def recording_add_stream(
                 name,
                 data_path,
                 preset,
-                offset_ns=round(offset_s * 1e9),
+                offset_ns=offset_ns,
                 aux_paths=aux,
                 origin=origin,
             )
@@ -1562,11 +1644,13 @@ def recording_add_stream(
                 aux_paths=aux,
                 covered_behaviors=covered,
                 origin=origin,
-                config=config,
-                offset_ns=round(offset_s * 1e9),
+                config=selection if selection is not None else config,
+                offset_ns=offset_ns,
             )
         # Saved after the import, never before: a preset is worth keeping once the mapping
         # has been shown to read the file, and a saved-but-broken one is worse than none.
+        # Only the mapping: which session or subject this file held is about this file, and
+        # the same choice on the next recording's file would pick another animal's data.
         if save_preset is not None:
             proj.save_stream_preset(save_preset, importer, config)
     except (FileNotFoundError, ValueError) as e:
@@ -1581,6 +1665,8 @@ def recording_add_stream(
     click.echo(
         f"added stream {name!r} ({importer}) to {recording_id}: {len(events)} rows{marker}"
     )
+    for note in (entry.get("metadata") or {}).get("notes") or []:
+        click.echo(f"  note: {note}")
 
 
 @experiment.command("list-stream-presets")
@@ -1959,11 +2045,14 @@ def recording_set_stream_offset(
     `video_t_ns = stream_t_ns + offset`. The canonical data is never rewritten, so this is a
     one-number edit that can be redone at any time. The GUI's *Sync to video* finds the same
     number by scrubbing; this is how a script sets it across many recordings at once.
+
+    Refused for a stream already on the video's clock (behavior labels, a frame-indexed CSV):
+    it has no offset, and one stored would move the preview but not the scoring.
     """
     proj = _open_experiment(experiment_dir)
     try:
         sess = _recording(proj, recording_id)
-        sess.set_stream_offset(name, round(offset_s * 1e9))
+        sess.set_stream_offset(name, _option_t_ns(offset_s, "--offset"))
     except (FileNotFoundError, ValueError) as e:
         raise click.ClickException(str(e))
     click.echo(f"{recording_id}: stream {name!r} offset set to {offset_s:.3f}s")
@@ -5166,7 +5255,7 @@ def analysis_delete(run_id: str, experiment_dir: Path, yes: bool) -> None:
 
 def _split_gap_ns(seconds: float | None) -> int | None:
     """A ``--split-gap`` in seconds as the ``t_ns`` the run records (Tenet 8)."""
-    return None if seconds is None else round(seconds * 1e9)
+    return None if seconds is None else _option_t_ns(seconds, "--split-gap")
 
 
 def _clip_span_label(result: dict) -> str:
@@ -5323,8 +5412,8 @@ def _parse_example(value: str, default_track: int) -> tuple[str | None, dict]:
         return query_name, {
             "recording_id": recording_id,
             "track_id": track_id,
-            "start_t_ns": round(parse_finite(start_text) * 1e9),
-            "end_t_ns": round(parse_finite(end_text) * 1e9),
+            "start_t_ns": seconds_to_t_ns(float(start_text), what="--example start"),
+            "end_t_ns": seconds_to_t_ns(float(end_text), what="--example end"),
         }
     except ValueError:
         raise click.ClickException(
@@ -5486,7 +5575,7 @@ def analysis_query(
             for name, clips in groups.items()
         ],
         "trajectory_split_gap_ns": split_gap_ns,
-        "min_match_ns": round(min_match_s * 1e9),
+        "min_match_ns": _option_t_ns(min_match_s, "--min-match"),
     }
     try:
         run = proj.run_analysis("query", config)

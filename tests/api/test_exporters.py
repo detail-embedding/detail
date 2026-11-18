@@ -376,7 +376,7 @@ def test_ethogram_writes_one_file_per_recording(two_clusters, tmp_path):
     files = [f for f in result.files if f.endswith("_ethogram.csv")]
     assert sorted(files) == ["r1_ethogram.csv", "r2_ethogram.csv"]
     rows = _rows(result.dest / "r1_ethogram.csv")
-    assert list(rows[0]) == ["start_frame", "end_frame", "label"]
+    assert list(rows[0]) == ["start_frame", "end_frame", "label", "subject", "origin"]
     assert all(r["label"] for r in rows), "every span carries a label"
 
 

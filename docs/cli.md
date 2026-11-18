@@ -1463,7 +1463,7 @@ somebody else's machine.
 | experiment (no id flag) | `bundle` | one `.tar` of the whole experiment, importable back |
 | | `metadata` | `metadata.csv`: one row per recording, one column per grouping variable |
 | `--recording <id>` | `geometry` | field of view, distance calibration, every ROI and POI (the **scene geometry**) |
-| | `streams` | one CSV per stream in DETAIL's aligned form, plus `streams.csv` |
+| | `streams` | one CSV per stream: its own time `t_ns` with video time `video_t_ns` beside it (`video_end_t_ns` too for intervals; a behavior stream also carries `origin`), plus `streams.csv` naming each stream's clock and stored alignment offset |
 | | `timestamps` | `frame_idx,t_ns` for every frame of every video part |
 | | `video` | the video parts DETAIL imported a copy of |
 | | `clip` | one mp4 of the frame range `--frames START:END` names, plus `clip.csv` (see [Clips, in three flavours](#clips-in-three-flavours)) |
@@ -1477,8 +1477,8 @@ somebody else's machine.
 | | `keypoints_video` | the footage with the points drawn on, one mp4 per video part, plus `keypoints.csv` |
 | `--run <run_NNN>`, any processing run | `performance` | `performance.md` (the machine it ran on and how long each part took), plus `timings.csv`, `phases.csv` and `machine.yaml` (see [How long a run took](#how-long-a-run-took-and-on-what)) |
 | `--analysis-run <an_NN>` | `clips` | one mp4 per bout + `clips.csv` |
-| | `instances` | `instances.csv`, `coverage.csv`, and the time-per-behavior and bout-duration figures |
-| | `ethogram` | the ethogram as a picture, plus one `start_frame,end_frame,label` CSV per recording |
+| | `instances` | `instances.csv` (with an `origin` column), `coverage.csv`, and the time-per-behavior and bout-duration figures |
+| | `ethogram` | the ethogram as a picture, plus one `start_frame,end_frame,label,subject,origin` CSV per recording, which re-imports as predicted labels |
 | | `frame_labels` | one CSV per recording and subject, one row per video frame (see [Per-frame behavior labels](#per-frame-behavior-labels)) |
 | | `performance` | the same performance report, for the analysis run |
 | `--distill-run <distill_NNN>` | `performance` | the same performance report, one unit per stage |
@@ -1994,7 +1994,24 @@ detail recording add-stream --experiment $PROJ --recording recording_001 \
 #   added stream 'medpc' (medpc) to recording_001: 1234 rows
 ```
 
-`--importer medpc` parses Med Associates `.txt` + `.MPC` into canonical events.
+`--importer medpc` parses Med Associates `.txt` + `.MPC` into canonical events. It reads one
+program layout: event codes in array `E`, their times **in seconds** in array `T`, and an
+`Event stamps ( array E )` block in the program that names each code. A program that logs into
+other arrays is refused by name, and one that logs `T` in ticks is refused when a time is past
+the session length `H`. Unused `(code 0, time 0)` slots after the last event are dropped and
+counted (`note:` in the output); a code-0 event between real events is refused unless the
+program names code 0.
+
+MED-PC can save every box of a day into one data file. A recording is one session, so a file
+holding several is refused, listing them, until you pick one with `--medpc-subject`,
+`--medpc-box` or `--medpc-session N` (its position in the file, from 1). Sessions are never
+merged. In a bundle manifest the same choice is `config: {subject: PX22}` on the stream.
+
+```bash
+detail recording add-stream --experiment $PROJ --recording recording_001 \
+    --name medpc --importer medpc --data day.txt --program program.MPC --medpc-box 4
+```
+
 Align the stream to video time with `--offset` at import or `recording set-stream-offset`
 afterwards (see [Aligning a stream](#aligning-a-stream)). Previewing it against the video,
 and finding the offset by scrubbing, are done in the [GUI](gui.md#recording-detail).
@@ -2043,7 +2060,8 @@ The importer validates strictly and names the problem: no recognized time column
 one time column, a column name repeated in the header, an empty or header-only file, a
 `timeseries_csv` with no value columns or a non-numeric cell (or a `label` column, which means
 you want `events_csv`), and an `events_csv` with no `label`, an empty label, or a non-integer
-`code` / `frame`.
+`code` / `frame`. A time too large to be one (epoch milliseconds in a `seconds` column, say) is
+refused naming its row, as it is by every importer and by `--offset`, rather than stored.
 
 **A CSV that isn't shaped that way.** When the time column is called something else, or you
 only want some of the columns, say so instead of editing the file. `--time-column` names the
@@ -2083,7 +2101,8 @@ detail recording set-stream-offset --experiment $PROJ --recording recording_001 
 
 `video_t_ns = stream_t_ns + offset`. The canonical data is never rewritten, so this is a
 one-number edit you can redo at any time. A `frame`-clocked stream and behavior labels are
-anchored to the video already, and passing an offset for one is refused rather than stored.
+anchored to the video already, and an offset for one is refused rather than stored, both at
+import and by `set-stream-offset`.
 
 The GUI's **Sync to video** finds the same number by scrubbing to the frame where the stream
 starts; these flags are how you set it across a whole experiment without opening anything.
@@ -2169,15 +2188,25 @@ detail recording add-stream --experiment $PROJ --recording recording_001 \
     --name behavior --importer boris --data observations.tsv
 ```
 
+A BORIS export can hold several observations (`Observation id`) and several subjects. A
+recording is one animal in one session, so an export holding more than one of either is refused,
+listing them, until you pick with `--boris-observation` and `--boris-subject` (an empty value
+picks rows with no subject). They are never merged onto one track. In a bundle manifest the
+same choice is `config: {observation: day1, subject: mA}`.
+
 Each behavior is recorded as **point** or **state** (BORIS's *Behavior type* column, else
-inferred from durations) so the evaluation scores it correctly, and the annotation's **covered
+inferred from durations) so the evaluation scores it correctly. A BORIS behavior scored both as
+START/STOP bouts and as POINT events is refused, naming the rows of each kind, since one
+behavior cannot be both; and the annotation's **covered
 behaviors** (the scored vocabulary) default to the labels present. Add
 `--covered-behaviors "groom,rear"` to declare behaviors you *scored but never observed*; the
 evaluation treats them as covered (a real absence, not "unscored") rather than skipping the recording.
 
 **Ground truth vs predictions.** A stream also records where its labels came from. Anything you
-import is ground truth unless you say otherwise; a file the tool exported (`analysis export-temporal-clustering`)
-carries an `origin` column and imports as `predicted` on its own. Override either way with
+import is ground truth unless you say otherwise; a label file the tool exported (`analysis export-temporal-clustering`,
+`export-query`, the `ethogram`, `instances` and `streams` export targets) carries an `origin`
+column and imports with that origin on its own. A file holding rows for several recordings (a
+`recording_id` column, as in `instances.csv`) is refused: a stream belongs to one recording. Override either way with
 `--origin ground_truth|predicted`.
 
 ```bash

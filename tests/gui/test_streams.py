@@ -799,6 +799,228 @@ def test_a_saved_mapping_is_offered_only_under_its_own_importer(qapp, tmp_path):
     # no-op once the list is filtered. An assertion that cannot fail is not a guard.
 
 
+# -- a frame-indexed CSV is on the video's clock (#30 finding 10) -------------------------- #
+def _recording_with_video(tmp_path):
+    import cv2
+    import numpy as np
+
+    proj = Experiment.create("p", tmp_path)
+    recording = proj.create_recording("s1")
+    vid = tmp_path / "clip.mp4"
+    vw = cv2.VideoWriter(str(vid), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (16, 16))
+    for _ in range(30):
+        vw.write(np.zeros((16, 16, 3), np.uint8))
+    vw.release()
+    recording.add_video_part(vid)
+    return recording
+
+
+@pytest.mark.parametrize(
+    "header,body,importer",
+    [
+        ("frame,label", "3,cue\n9,cue\n", "events_csv"),
+        ("frame,heart_rate", "3,1.5\n9,2.5\n", "timeseries_csv"),
+    ],
+)
+def test_a_frame_csv_greys_alignment_and_sync_cannot_raise(
+    qapp, tmp_path, header, body, importer
+):
+    """Gated on the clock the import will record, not the importer's declared one.
+
+    Both CSV importers declare ``stream_seconds``, but a ``frame`` time column is the video's
+    own clock, so the import refuses an offset and Sync had no stream time to anchor on: it
+    raised ``TypeError`` (events) or ``int(None)`` (time series) on the unresolved rows.
+    """
+    from detail.gui.streams import AddStreamDialog, SyncStreamDialog
+
+    recording = _recording_with_video(tmp_path)
+    dialog = AddStreamDialog(recording)
+    _select_importer(dialog, importer)
+    assert dialog._offset.isEnabled()  # before a file: the declared clock
+
+    path = tmp_path / "frames.csv"
+    path.write_text(f"{header}\n{body}", encoding="utf-8")
+    dialog._data.set_path(str(path))
+    _select_importer(dialog, importer)
+
+    assert not dialog._offset.isEnabled()
+    assert not dialog._offset_label.isEnabled()
+    assert not dialog._sync_btn.isEnabled()
+    assert dialog._sync_btn.toolTip() == (
+        "This stream is on the video clock — it is aligned at import."
+    )
+
+    # And the sync dialog itself survives rows whose t_ns is not resolved yet.
+    columns, rows = dialog._parse_rows()
+    assert rows[0][0] is None
+    sync = SyncStreamDialog.for_rows(recording, columns, rows)  # raised here before
+    assert sync._offset_label.text().startswith("Offset = ")
+    sync.close()
+
+    dialog.resize(560, 640)
+    dialog.show()
+    qapp.processEvents()
+    out = _render_dir(tmp_path) / f"add_stream_frame_{importer}.png"
+    assert dialog.grab().save(str(out))
+    dialog.close()
+
+
+def test_changing_the_time_column_regates_alignment(qapp, tmp_path):
+    """The mapping decides the clock, so a time-column change re-runs the gate."""
+    from detail.gui.streams import AddStreamDialog
+
+    recording = _recording_with_video(tmp_path)
+    dialog = AddStreamDialog(recording)
+    p = tmp_path / "f.csv"
+    p.write_text("frame,t_sec,v\n0,0.0,1\n1,0.1,2\n", encoding="utf-8")
+    dialog._data.set_path(str(p))
+    assert dialog._importer.currentData() == "timeseries_csv"
+    assert not dialog._offset.isEnabled()  # frame
+
+    dialog._band._time_col.setCurrentText("t_sec")
+    assert dialog._offset.isEnabled()  # seconds: an external clock
+    assert dialog._sync_btn.isEnabled()
+
+
+def _render_dir(tmp_path):
+    import os
+    from pathlib import Path
+
+    return Path(os.environ.get("DETAIL_RENDER_DIR", tmp_path))
+
+
+# -- files holding several sessions or subjects (#30 findings 3-5) --------------------------- #
+TWO_BOX_TXT = """\
+File: C:\\MED-PC\\Data\\day.txt
+
+
+Start Date: 02/16/26
+Subject: RAT1
+Box: 1
+Start Time: 14:00:38
+MSN: Test_MSN
+H:      10.000
+E:
+     0:       19.000       11.000      100.000
+T:
+     0:        0.000        1.500       10.000
+
+
+Start Date: 02/16/26
+Subject: RAT2
+Box: 2
+Start Time: 14:00:41
+MSN: Test_MSN
+H:       8.000
+E:
+     0:       19.000      100.000
+T:
+     0:        0.500        8.000
+"""
+
+
+def test_a_two_box_medpc_file_asks_which_session(qapp, tmp_path):
+    from detail.gui.streams import AddStreamDialog
+
+    proj = Experiment.create("p", tmp_path)
+    recording = proj.create_recording("s1")
+    data = tmp_path / "day.txt"
+    data.write_text(TWO_BOX_TXT, encoding="utf-8")
+    program = tmp_path / "task.MPC"
+    program.write_text(PROGRAM_MPC, encoding="utf-8")
+
+    dialog = AddStreamDialog(recording)
+    dialog._data.set_path(str(data))
+    assert dialog._importer.currentData() == "medpc"
+    dialog._aux_pickers["program"].set_path(str(program))
+    dialog._refresh()
+
+    combo = dialog._band._session
+    assert [combo.itemText(i) for i in range(combo.count())] == [
+        "— choose one —",
+        "1: Subject RAT1, box 1, 02/16/26 14:00:38",
+        "2: Subject RAT2, box 2, 02/16/26 14:00:41",
+    ]
+    assert dialog._status.text() == (
+        "This file holds 2 sessions; choose the one this recording is."
+    )
+    assert dialog._band.preset_config() is None  # a choice about this file only
+
+    combo.setCurrentIndex(2)
+    assert dialog._problem() is None
+    dialog.resize(560, 640)
+    dialog.show()
+    qapp.processEvents()
+    assert dialog.grab().save(
+        str(_render_dir(tmp_path) / "add_stream_medpc_session.png")
+    )
+    dialog._import()
+
+    entry = recording.streams[0]
+    assert entry["metadata"]["subject"] == "RAT2"
+    assert entry["metadata"]["session"] == 2
+    assert [r[1] for r in recording.stream_events(entry["name"])] == [19, 100]
+
+
+def test_a_one_session_medpc_file_has_nothing_to_choose(qapp, tmp_path):
+    from detail.gui.streams import AddStreamDialog
+
+    proj = Experiment.create("p", tmp_path)
+    recording = proj.create_recording("s1")
+    data = tmp_path / "subject.txt"
+    data.write_text(DATA_TXT, encoding="utf-8")
+    dialog = AddStreamDialog(recording)
+    dialog._data.set_path(str(data))
+
+    assert not dialog._band._session.isEnabled()
+    assert dialog._band.config() is None
+    assert dialog._band.problem() is None
+
+
+BORIS_TWO_SUBJECTS = """\
+Observation id,Subject,Behavior,Behavior type,Time
+day1,mA,groom,START,0.10
+day1,mB,groom,START,0.12
+day1,mA,groom,STOP,0.30
+day1,mB,groom,STOP,0.40
+day2,mA,rear,POINT,0.20
+"""
+
+
+def test_a_boris_export_asks_which_observation_and_subject(qapp, tmp_path):
+    from detail.gui.streams import AddStreamDialog
+
+    recording = _recording_with_video(tmp_path)
+    path = tmp_path / "boris.csv"
+    path.write_text(BORIS_TWO_SUBJECTS, encoding="utf-8")
+    dialog = AddStreamDialog(recording)
+    dialog._data.set_path(str(path))
+    assert dialog._importer.currentData() == "boris"
+    band = dialog._band
+
+    assert dialog._status.text() == (
+        "This export holds 2 observations; choose the one this recording is."
+    )
+    band._observation.setCurrentIndex(band._observation.findData("day1"))
+    subjects = [band._subject.itemText(i) for i in range(band._subject.count())]
+    assert subjects == ["— choose one —", "mA", "mB"]
+    assert dialog._status.text() == (
+        "This export scores 2 subjects; choose the one this stream is for."
+    )
+    band._subject.setCurrentIndex(band._subject.findData("mB"))
+    assert band.config() == {"observation": "day1", "subject": "mB"}
+    dialog.resize(560, 640)
+    dialog.show()
+    qapp.processEvents()
+    assert dialog.grab().save(str(_render_dir(tmp_path) / "add_stream_boris_pick.png"))
+    dialog._import()
+
+    rows = recording.stream_events(recording.streams[0]["name"])
+    assert [(r[0], r[1], r[2]) for r in rows] == [(120_000_000, 400_000_000, "groom")]
+    assert recording.streams[0]["metadata"]["subjects"] == ["mB"]
+    assert recording.streams[0]["metadata"]["observation"] == "day1"
+
+
 def _recording_with_three_streams(tmp_path):
     """Streams added as zebra, apple, mango, so a sort by Name puts them in a different
     order from the one they were built in."""

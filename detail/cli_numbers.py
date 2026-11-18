@@ -7,12 +7,12 @@ lets ``nan`` through and ``FloatRange(min=0)`` lets ``inf`` through. Such a valu
 ``OverflowError`` traceback, or was stored as a cut-off nothing could ever pass.
 
 **Every float option in ``detail/cli*.py`` takes its type from here**, and a number parsed out of
-an option's text (an ``--example`` span, a ``--cutoff BEHAVIOR=VALUE``) goes through
+an option's text (a ``--cutoff BEHAVIOR=VALUE``) goes through
 :func:`parse_finite`. ``tests/storage/test_user_file_readers.py`` fails on a ``type=float`` or a
 bare ``click.FloatRange(`` in the CLI modules.
 
 Not the int64 check: a finite number of seconds can still be too large to be a ``t_ns``. That is
-checked where seconds become ``t_ns``, not by the option type.
+``core.utils.seconds_to_t_ns``'s job, where seconds become ``t_ns``, not the option type's.
 """
 
 import math

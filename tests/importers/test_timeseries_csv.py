@@ -129,3 +129,32 @@ def test_label_column_suggests_events_importer(tmp_path):
     p = _write(tmp_path, "seconds,bpm,label\n0.0,72,press\n")
     with pytest.raises(ValueError, match="Events CSV importer"):
         TimeseriesCsvImporter().import_stream(p, tmp_path, {})
+
+
+# -- times beyond int64; the clock the file resolves to (#30 findings 8, 10) ---------------- #
+def test_a_seconds_value_beyond_int64_is_refused_with_the_row(tmp_path):
+    from detail.importers.timeseries_csv import TimeseriesCsvImporter
+
+    p = tmp_path / "hr.csv"
+    p.write_text("seconds,bpm\n0,70\n1e11,71\n", encoding="utf-8")
+    with pytest.raises(
+        ValueError, match=r"row 3, column 'seconds': .* too large to be a time"
+    ):
+        TimeseriesCsvImporter().import_stream(p, tmp_path, {})
+
+
+@pytest.mark.parametrize(
+    "config,clock",
+    [
+        (None, "video_frames"),
+        ({"time_column": "frame"}, "video_frames"),
+        ({"time_column": "t_sec", "time_kind": "seconds"}, "stream_seconds"),
+        ({"time_column": "frame", "time_kind": "utc"}, "stream_seconds"),
+    ],
+)
+def test_resolve_clock_follows_the_mapping(tmp_path, config, clock):
+    from detail.importers.timeseries_csv import TimeseriesCsvImporter
+
+    p = tmp_path / "f.csv"
+    p.write_text("frame,t_sec,v\n0,0.0,1\n1,0.1,2\n", encoding="utf-8")
+    assert TimeseriesCsvImporter().resolve_clock(p, config) == clock

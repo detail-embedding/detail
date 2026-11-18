@@ -86,11 +86,11 @@ YAML_ALLOWED: dict[str, tuple[int, str]] = {
 #: ``{path under detail/: (calls, why)}`` for ``csv.reader`` / ``csv.DictReader``.
 CSV_ALLOWED: dict[str, tuple[int, str]] = {
     "analysis/comparison_report.py": (2, f"a comparison's tables, {_RECORD}"),
+    "api/export_targets.py": (1, f"a stream's canonical CSV, {_RECORD}"),
     "cli.py": (
         1,
         "the stream-preset batch table: headerless, with # comments, so not the opener's "
-        "shape. Its offset cell (nan, inf) is #33 finding 25, which follows #49's checked "
-        "seconds-to-t_ns conversion",
+        "shape; its offset cell goes through core.utils.seconds_to_t_ns",
     ),
     "gui/comparison.py": (1, f"a comparison's tables, {_RECORD}"),
     "importers/behavior.py": (2, f"a behavior CSV (finding 34), {_LATER}"),

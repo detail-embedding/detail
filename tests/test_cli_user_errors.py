@@ -794,6 +794,20 @@ def test_finding_25_an_offset_that_is_not_finite(value, experiment_dir, tmp_path
     _usage_error(added, "--offset", "is not a finite number")
 
 
+@pytest.mark.parametrize("value", ["NaN", "inf"])
+def test_finding_25_a_time_cell_that_is_not_finite(value, experiment_dir, tmp_path):
+    """Through #49's checked seconds-to-t_ns conversion: the row and column, not "cannot
+    convert float NaN to integer" or an ``OverflowError`` traceback."""
+    _invoke("recording", "create", "--experiment", experiment_dir, "--name", "m1")
+    data = tmp_path / "s.csv"
+    data.write_text(f"seconds,v\n0,1\n{value},2\n", encoding="utf-8")
+    added = _invoke(
+        "recording", "add-stream", "--experiment", experiment_dir, "--recording", "m1",
+        "--name", "s", "--importer", "timeseries_csv", "--data", data,
+    )  # fmt: skip
+    _clean_error(added, "row 3, column 'seconds'", "is not a finite number of seconds")
+
+
 def test_finding_27_a_tile_shorter_than_a_frame_is_named_in_seconds(tmp_path):
     from tests.api.test_comparison import UNBALANCED, _cohort
 
