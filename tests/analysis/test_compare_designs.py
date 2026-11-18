@@ -475,7 +475,29 @@ def test_one_unit_gets_no_floor_and_a_reason():
         {("A", "veh"): {"x": 0.1}, ("A", "fent"): {"x": 0.2}}, levels=["veh", "fent"]
     )
     assert ranking.floor is None
-    assert "single unit" in ranking.no_floor_reason
+    assert ranking.no_floor_reason == (
+        "only one animal (A) has both veh and fent, so a within-animal null has nothing "
+        "to move and no floor can be computed"
+    )
+    assert not ranking.clears_floor(ranking.contrasts[0])
+
+
+def test_a_unit_at_one_level_cannot_be_flipped_so_two_such_and_one_is_one():
+    """Two animals, one of them with a single session: every flip of that one is the
+    identity, so the null's maximum was the observed maximum, which nothing can exceed.
+    The floor is withheld with the reason, naming the one animal that can move."""
+    ranking = _paired_ranking(
+        {
+            ("A", "veh"): {"x": 0.1},
+            ("A", "fent"): {"x": 0.2},
+            ("B", "veh"): {"x": 0.3},
+        },
+        levels=["veh", "fent"],
+    )
+    assert ranking.floor is None
+    assert ranking.no_floor_reason.startswith(
+        "only one animal (A) has both veh and fent"
+    )
     assert not ranking.clears_floor(ranking.contrasts[0])
 
 

@@ -350,10 +350,17 @@ def test_the_labels_written_from_a_screen_are_listed_from_the_run(
     removed since is gone from the list, and a labels comparison lists nothing."""
     import detail.api.comparison as api
     from detail.api.comparison import labels_from_screen
+    from detail.storage import metadata as md
     from tests.analysis.test_node_measures import synthetic_view
 
     exp = _drugged(authored_cohort)
-    view = synthetic_view(recording_ids=("r1", "r2"))
+    # Two recordings per group: a screen over one per group could have no floor and is
+    # refused before measuring (#39). The node source reads only the (synthetic) view, so
+    # the two extra recordings need metadata and nothing else.
+    for recording, drug in (("r3", "veh"), ("r4", "fent")):
+        exp.create_recording(recording)
+        md.upsert_row(exp.dir, recording, {"animal": recording.upper(), "drug": drug})
+    view = synthetic_view(recording_ids=("r1", "r2", "r3", "r4"))
     monkeypatch.setattr(api, "_node_view", lambda experiment, run_id: view)
     screen = run_comparison(
         exp,

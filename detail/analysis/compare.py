@@ -58,6 +58,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from detail.analysis.cohort import cell
+from detail.analysis.cohort import left_out
 from detail.analysis.cohort import missing
 
 # The group-by keys that are not metadata columns. ``subject`` and ``window_id`` come off the
@@ -1262,6 +1263,160 @@ def resolve_design_from_rows(
     )
 
 
+def _levels_needed(kind: str) -> int:
+    """How many levels a unit must hold for the design's null to move it: both of a paired
+    contrast's, two of a profile's (a shuffle within one level is the identity), three of a
+    trend's (a Spearman over fewer is undefined, and :func:`rank_by_design` skips the unit).
+    """
+    return 3 if kind == TREND else 2
+
+
+def _levels_held(design: Design) -> str:
+    """What a unit has to hold to move under ``design``'s null, in the reason's words."""
+    if design.kind == PAIRED and design.levels:
+        return f"both {design.levels[0]} and {design.levels[1]}"
+    if design.kind == TREND:
+        return f"three or more values of '{design.column}'"
+    return f"two or more values of '{design.column}'"
+
+
+def _too_few_units_reason(design: Design, movable: Sequence[tuple]) -> str:
+    """Why a within-unit null cannot move: fewer than two units hold the levels it flips or
+    shuffles. ``movable`` is the units that do, so the one there is can be named. One sentence
+    for :func:`rank_by_design` after measuring and :func:`no_floor_before_measuring` before.
+    """
+    word = _unit_word(design.unit)
+    who = f"only one {word} ({'|'.join(movable[0])})" if movable else f"no {word}"
+    return (
+        f"{who} has {_levels_held(design)}, so a within-{word} null has nothing to move "
+        f"and no floor can be computed"
+    )
+
+
+@dataclass(frozen=True)
+class NoFloor:
+    """Why a comparison over these recordings can have no floor, known before measuring (§24).
+
+    ``reason`` is the sentence the ranking carries as ``no_floor_reason`` once measured, and
+    ``remedy`` what would change the answer, in the data's terms ("Add a second animal that has
+    both veh and fent."). A surface appends what else the user could do.
+    """
+
+    reason: str
+    remedy: str
+
+
+def no_floor_before_measuring(
+    metadata: Mapping[str, Mapping[str, str]],
+    recordings: Sequence[str],
+    *,
+    group_by: Sequence[str],
+    aggregate_to: Sequence[str],
+    levels: Sequence[str] | None = None,
+    one_row_per_recording: bool = False,
+) -> NoFloor | None:
+    """Why no floor could be computed over these recordings, from ``metadata.csv`` alone, or
+    ``None`` when measuring could still give one.
+
+    Three shapes are certain before anything is measured, because they are counts of
+    recordings and their metadata: a within-unit design where fewer than two units hold the
+    levels its null moves (:func:`_too_few_units_reason`, the sentence :func:`rank_by_design`
+    carries afterwards); a between design where every group holds at most one unit, so
+    relabelling changes nothing (:func:`_vacuous_permutation`'s shape); and fewer than two
+    groups to contrast, which ranks nothing at all. The other no-floor reasons (no measure
+    present in enough units, no spread to divide by) need the measurements and are not asked.
+
+    **Never a false refusal.** Every count here is an upper bound on what the ranking will have,
+    since a unit can lose a level to a blank measure and never gain one, so a reason here implies
+    the same reason after measuring. The guard is
+    ``tests/analysis/test_no_floor_before_measuring.py``.
+
+    ``one_row_per_recording`` says each recording yields one observation per measure (whole
+    windows, one subject), which is when a between design with an empty aggregation path can be
+    counted: under windows one recording per group is many observations, and the null can move.
+    A grouping or aggregation column the metadata does not carry (``subject``, ``window_id``) is
+    decided when the comparison runs, and returns ``None``. A recording with no value for a
+    grouping column is left out before counting, as the run leaves it out (§24).
+    """
+    group_by, aggregate_to = list(group_by), list(aggregate_to)
+    rows: dict[str, dict[str, str]] = {}
+    for recording in recordings:
+        values = metadata.get(recording, {})
+        row = {name: cell(values, name) for name in values}
+        row["recording_id"] = recording
+        rows[recording] = row
+    carried: set[str] = set()
+    for row in rows.values():
+        carried |= set(row)
+    if not rows or any(c not in carried for c in [*group_by, *aggregate_to]):
+        return None
+    outside = set(left_out(metadata, recordings, group_by))
+    kept = [r for r in recordings if r not in outside]
+    design = resolve_design(
+        metadata, kept, group_by=group_by, aggregate_to=aggregate_to, levels=levels
+    )
+    word = _unit_word(design.unit)
+
+    def unit_of(recording: str) -> tuple:
+        return tuple(rows[recording][k] for k in aggregate_to)
+
+    if design.within:
+        wanted = set(design.levels) if design.levels else None
+        held: dict[tuple, set[str]] = {}
+        for recording in kept:
+            value = rows[recording][design.column]
+            if wanted is not None and value not in wanted:
+                continue
+            if design.kind == TREND and not _is_number(value):
+                continue
+            held.setdefault(unit_of(recording), set()).add(value)
+        needed = _levels_needed(design.kind)
+        movable = sorted(
+            u for u, levels_held in held.items() if len(levels_held) >= needed
+        )
+        if len(movable) >= 2:
+            return None
+        article = "a second" if movable else "an"
+        return NoFloor(
+            _too_few_units_reason(design, movable),
+            f"Add {article} {word} that has {_levels_held(design)}.",
+        )
+
+    wanted = set(design.levels) if design.levels else None
+    groups: dict[tuple, set[tuple]] = {}
+    for recording in kept:
+        group = tuple(rows[recording][k] for k in group_by)
+        if wanted is not None and group[0] not in wanted:
+            continue
+        unit = unit_of(recording) if aggregate_to else (recording,)
+        groups.setdefault(group, set()).add(unit)
+    if len(groups) < 2:
+        if not groups:
+            what = "no recording has a value for every grouping column"
+        elif len(group_by) == 1:
+            what = (
+                f"these recordings hold one value of '{group_by[0]}' "
+                f"({next(iter(groups))[0]})"
+            )
+        else:
+            what = f"these recordings form one group ({'|'.join(next(iter(groups)))})"
+        remedy = (
+            f"Choose recordings with two values of '{group_by[0]}'."
+            if len(group_by) == 1
+            else "Choose recordings that form two groups."
+        )
+        return NoFloor(f"{what}, so there is nothing to contrast", remedy)
+    if not aggregate_to and not one_row_per_recording:
+        return None
+    if any(len(units) > 1 for units in groups.values()):
+        return None
+    return NoFloor(
+        f"every group holds at most one {word}, so relabelling cannot change any measure "
+        f"and no floor can be computed",
+        f"Add a second {word} to a group.",
+    )
+
+
 def _loo(per_unit: np.ndarray, effect: np.ndarray) -> np.ndarray:
     """Whether the sign survives leaving any one unit out, per measure."""
     valid = ~np.isnan(per_unit)
@@ -1581,18 +1736,25 @@ def rank_by_design(
     null_max = np.abs(null_score).max(axis=0) if N else np.zeros(null_score.shape[1])
     ordered = sorted(float(v) for v in null_max)
 
-    if U < 2:
-        reason = (
-            f"one {_unit_word(design.unit)}: a within-unit null cannot move with a single unit, "
-            f"so no effect could exceed the floor"
-        )
-    elif N and not enough.any():
+    # The units the null can move: those with data at the levels it flips or shuffles. A unit
+    # at one level of a paired contrast has no per-unit effect and every flip of it is the
+    # identity, so two units with one of them so is one unit: its floor was the observed
+    # maximum, which nothing can exceed (`_vacuous_permutation` is the between shape).
+    needed = _levels_needed(design.kind)
+    movable = [
+        units[u]
+        for u in range(U)
+        if N and int((~np.isnan(X[:, u, :])).any(axis=0).sum()) >= needed
+    ]
+    if not N:
+        reason = "there are no observations to rank"
+    elif len(movable) < 2:
+        reason = _too_few_units_reason(design, movable)
+    elif not enough.any():
         reason = (
             f"no measure is present in {max(int(min_units), 1)} or more "
             f"{_unit_word(design.unit)}s, so every effect is undefined"
         )
-    elif not N:
-        reason = "there are no observations to rank"
     elif studentized and s0 is None:
         reason = (
             f"no measure's {_unit_word(design.unit)}s disagree with each other, so the "
