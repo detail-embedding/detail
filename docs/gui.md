@@ -293,7 +293,7 @@ One card per experiment in your workspace: a still from the middle of its footag
 The cards appear at once; the still and the counts fill in a moment later. On a workspace held on a network share that moment is noticeable: the reading is the slow part, not the drawing.
 
 - **New experiment**: name and optional description; created in the workspace.
-- **Import experiment**: pick a `.tar` archive from [`experiment export`](cli.md#moving-experiments-between-machines) or the Export dialog's **Experiment bundle**. A same-id collision asks whether to replace. A bar shows how far the import has got (extracting, then verifying the archive against its checksum, then finding video used in place) and the time left, and **Cancel** stops it with nothing placed; an experiment it was going to replace is left as it was. Video used in place is looked for in the folder the exporting computer kept it in; recordings whose video still isn't found are named when the import finishes.
+- **Import experiment**: pick a `.tar` archive from [`experiment export`](cli.md#moving-experiments-between-machines) or the Export dialog's **Experiment bundle**. A same-id collision asks whether to replace, and first lists what replacing deletes that the archive does not bring back: video files (how many and their size) and datasets when the archive has none, export records, and earlier archives saved in the experiment folder. A bar shows how far the import has got (extracting, then verifying the archive against its checksum, then finding video used in place) and the time left, and **Cancel** stops it with nothing placed; an experiment it was going to replace is left as it was. Video used in place is looked for in the folder the exporting computer kept it in; recordings whose video still isn't found are named when the import finishes. A file at the recorded path that is a different video counts as not found.
 - **Double-click a card** to open its project view.
 
 ## Experiment overview {#experiment}
@@ -1155,17 +1155,23 @@ The same catalogue is on the command line as `detail export`, see the
 - **Let running jobs finish first.** The export reads every file twice, and a file that changes
   in between (a run still writing to the experiment) stops the export with a message naming the
   file, rather than producing an archive that would fail on import. Export records are not
-  packed: they say where *this* machine wrote copies.
-- **Gzip is rarely worth ticking.** DETAIL's data files are compressed already, so it barely shrinks the bundle and makes the export much slower.
+  packed: they say where *this* machine wrote copies. Nor is an earlier archive saved inside the
+  experiment folder. A folder that is a symlink is not followed, so nothing in it travels; the
+  archive's `export.yaml` lists each one under `symlinked_folders_left_out`, and
+  `experiment export` prints them.
 - **Import** from **Experiments → Import experiment**: a bar over the page, with the time left
-  and **Cancel**.
+  and **Cancel**. Importing onto an experiment of the same name asks whether to replace it, and
+  first lists what replacing deletes that the archive does not bring back (a slim archive's
+  video files, with their count and size, and datasets; export records; earlier archives in the
+  folder). Choose **No** and import a copy under another name if you want to keep them.
+- **Gzip is rarely worth ticking.** DETAIL's data files are compressed already, so it barely shrinks the bundle and makes the export much slower.
 - **Video used in place is found again.** When a recording's video was used where it was (not
   copied), the archive notes which folder it was in on the computer that exported it. Importing
   looks in that same folder, so video on a server both computers reach is found without you doing
   anything. It also looks beside every folder it finds, so a study kept as one folder per day is
   found from any one of them, even when the two computers write the server's address
   differently. A folder counts only when a video in it matches the one the recording was made
-  from.
+  from, and a file at the recorded path that is a different video counts as not found.
   Any recording whose video still isn't found is listed by name when the import finishes; open
   one and use **Locate video** on its file, and every recording whose video is in the same folder
   finds it too.

@@ -51,7 +51,11 @@ def validate_source_videos(
     for part in files:
         stem = recording_store.part_stem(part)
         try:
-            path = recording_store.resolve_part_video_path(recording_dir, part)
+            # Unverified: the comparison below is this gate's own, uncached and reported as
+            # `changed_fingerprint` rather than as a missing root.
+            path = recording_store.resolve_part_video_path(
+                recording_dir, part, verify=False
+            )
         except video_roots.MissingVideoRootError as exc:
             issues.append(VideoIssue("missing_root", stem, str(exc)))
             continue
@@ -63,9 +67,7 @@ def validate_source_videos(
         recorded = part.get("fingerprint")
         if part.get("source") is not None and recorded is not None:
             current = integrity.file_fingerprint(path)
-            if current["size"] != recorded.get("size") or current[
-                "sha256_ends"
-            ] != recorded.get("sha256_ends"):
+            if not integrity.same_content(current, recorded):
                 issues.append(
                     VideoIssue(
                         "changed_fingerprint",
