@@ -107,6 +107,19 @@ def test_the_export_does_not_copy_the_instance_table(tmp_path):
     assert (exp.analysis_run_dir("an_01") / "instances.csv").is_file()
 
 
+def test_a_second_export_into_one_folder_keeps_the_first(tmp_path):
+    """The three names are fixed, so each export makes its own folder (#29)."""
+    from detail.api import measures as api
+
+    exp = _cohort(tmp_path, UNBALANCED)
+    first = exp.measures("an_01").export(tmp_path / "out", measures=["n_instances"])
+    before = (first / api.MEASURES_FILENAME).read_bytes()
+    second = exp.measures("an_01").export(tmp_path / "out")
+    assert first != second and first.parent == second.parent == tmp_path / "out"
+    assert (first / api.MEASURES_FILENAME).read_bytes() == before
+    assert "measures" in first.name
+
+
 def test_a_run_with_no_artifact_says_so(tmp_path):
     """Not every analysis produces behavior in time, and the refusal names why rather than
     failing deep inside a reader."""

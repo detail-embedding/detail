@@ -8,7 +8,7 @@ record the run in ``recording.yaml``.
 
 import contextlib
 import shutil
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -1096,12 +1096,21 @@ class Recording:
 
     def export_locations(self, tracking_run_id: str, out_dir: Path | str) -> Path:
         """Compute + write the three location CSVs (``tracks`` / ``roi_relations`` /
-        ``point_relations``) + a ``locations.yaml`` manifest into ``out_dir``;
-        returns ``out_dir``. Tables keyed by ``t_ns`` (joins with streams)."""
+        ``point_relations``) + a ``locations.yaml`` manifest into a new folder under
+        ``out_dir``; returns that folder. Tables keyed by ``t_ns`` (joins with streams).
+
+        The names are fixed, so each export gets its own folder: writing them straight into
+        ``out_dir`` replaced one recording's files with the next one's (#29)."""
+        from detail.api import exporters
         from detail.storage import location_export
 
         tables = self.location_tables(tracking_run_id)
-        return location_export.write_location_tables(out_dir, tables)
+        dest = exporters.new_export_folder(
+            exporters.ExportSubject("recording", self._experiment_dir, self.id),
+            out_dir,
+            what=f"{tracking_run_id}_locations",
+        )
+        return location_export.write_location_tables(dest, tables)
 
     def backfill_kinematics(
         self, embed_run_id: str, *, progress=None, overwrite: bool = False
@@ -1257,6 +1266,18 @@ class Recording:
         data = recording_store.read_recording(self.dir)
         if any(s.get("name") == name for s in data.get("streams", [])):
             raise ValueError(f"stream name {name!r} already exists in recording")
+        # A name that differs only by case is the same folder on macOS and Windows, so the
+        # second import would write its files into the first stream's (#29).
+        same = [
+            s.get("name")
+            for s in data.get("streams", [])
+            if str(s.get("name", "")).casefold() == name.casefold()
+        ]
+        if same:
+            raise UserInputError(
+                f"stream name {name!r} differs from the existing stream {same[0]!r} only by "
+                "case, which is one folder on macOS and Windows; choose another name"
+            )
 
         sdir = streams_store.stream_dir(self.dir, name)
         raw_dir = sdir / streams_store.RAW_DIRNAME
@@ -1264,7 +1285,7 @@ class Recording:
         raw_dir.mkdir(parents=True, exist_ok=True)
         raw_entries = [self._copy_raw(raw_dir, raw_path, 0, "data")]
         for i, (key, path) in enumerate(resolved_aux.items(), start=1):
-            raw_entries.append(self._copy_raw(raw_dir, path, i, key))
+            raw_entries.append(self._copy_raw(raw_dir, path, i, key, raw_entries))
 
         result = instance.import_stream(raw_path, canonical_dir, resolved_aux, config)
         # Only a frame/time-clocked importer needs the timestamp map; a t_ns-native
@@ -1460,9 +1481,30 @@ class Recording:
             offset_ns=int(resolved_offset),
         )
 
-    def _copy_raw(self, raw_dir: Path, src: Path, index: int, role: str) -> dict:
-        """Copy a source file into the stream's ``raw/`` dir; return its manifest entry."""
-        dest = raw_dir / src.name
+    def _copy_raw(
+        self,
+        raw_dir: Path,
+        src: Path,
+        index: int,
+        role: str,
+        copied: Sequence[dict] = (),
+    ) -> dict:
+        """Copy a source file into the stream's ``raw/`` dir; return its manifest entry.
+
+        The copy keeps the file's own name unless an earlier file of this stream (``copied``)
+        already has it — a MED-PC data file and its program both called ``same.txt`` — when it
+        is prefixed with its role (``program_same.txt``). Copying both to ``raw/same.txt`` kept
+        only the last, so the verbatim copy of the data was gone while the manifest still
+        listed it (#29).
+        """
+        taken = {Path(entry["file"]).name.casefold() for entry in copied}
+        name = src.name
+        if name.casefold() in taken:
+            name = f"{role}_{src.name}"
+        n = 2
+        while name.casefold() in taken:
+            name, n = f"{role}{n}_{src.name}", n + 1
+        dest = raw_dir / name
         shutil.copy2(src, dest)
         return {
             "index": index,

@@ -433,12 +433,16 @@ class ClipPopup(Dialog):
         )
 
     def export_png(self) -> None:
-        from PyQt6.QtWidgets import QFileDialog
+        from detail.gui.animation_export import ask_save_path
 
-        path, _filter = QFileDialog.getSaveFileName(
-            self, "Export this frame", self._suggested("png"), "PNG picture (*.png)"
+        path = ask_save_path(
+            self,
+            "Export this frame",
+            self._suggested("png"),
+            "png",
+            "PNG picture (*.png)",
         )
-        if path:
+        if path is not None:
             self.write_png(path)
 
     def write_png(self, path):
