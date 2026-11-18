@@ -5020,7 +5020,7 @@ class RecordingDetailPage(QWidget):
             (stage, r["id"], r.get("processing_run_id") or "—", r.get("status"))
             for stage, r in records
         ]
-        # double-click a row to open its result view: a experiment-backed run opens the
+        # double-click a row to open its result view: an experiment-backed run opens the
         # experiment run that produced it (run_NNN); a per-recording-only run (CLI/API,
         # no experiment record) opens a recording-scoped result view directly.
         self._run_targets = [r.get("processing_run_id") for _, r in records]

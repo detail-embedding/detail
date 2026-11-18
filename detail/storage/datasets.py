@@ -93,7 +93,7 @@ def write_data_yaml(
 ) -> None:
     """Write the trainer-facing ``data.yaml`` (YOLO format).
 
-    ``path: .`` keeps the descriptor portable — no absolute paths in a experiment
+    ``path: .`` keeps the descriptor portable — no absolute paths in an experiment
     file (Tenet 6). It is *not* resolved relative to this file at train time:
     Ultralytics resolves a relative ``path:`` against the current working
     directory, so the trainer rewrites ``path`` to the absolute dataset dir in a

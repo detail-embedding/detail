@@ -275,7 +275,7 @@ def _import_one(
     ``(id, outcome, error)`` — outcome is ``True`` (imported), ``False`` (an error,
     in ``error``), ``"stopped"`` (cancelled mid-file), or ``"skipped"`` (the batch
     was already cancelled when this worker started). Source paths arrive as
-    in-memory pickled args and are never written to a experiment file (Tenet 6)."""
+    in-memory pickled args and are never written to an experiment file (Tenet 6)."""
     from detail.api.experiment import Experiment
 
     if cancel_event.is_set():

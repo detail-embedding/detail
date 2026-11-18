@@ -347,7 +347,7 @@ Every recording-level input lives here (run outputs are read-only). The top show
 
 **ANALYSIS**
 
-- **Streams**: **Add stream** imports an aligned time-series. Choose the **data file** first and the dialog identifies it: MED-PC operant events (`.txt` + `.MPC`), your own CSV as a sensor trace (**Time-series CSV (sensor data)**) or timestamped events (**Events CSV**), or **behavior labels** from an interval CSV or a **BORIS** export. Change the importer above if the guess is wrong.
+- **Streams**: **Add stream** imports an aligned time-series. Choose the **data file** first and the dialog identifies it: MED-PC operant events (`.txt` + `.MPC`), your own CSV as a sensor trace (**Time-series CSV (sensor data)**) or timestamped events (**Events CSV**), or **behavior labels** from an interval CSV or a **BORIS** export. Change the importer above if the guess is wrong. A CSV must be saved as **CSV UTF-8** and comma-separated; one that is not is refused with a message saying what to change.
 
     The rest of the form follows from the importer. A CSV that isn't already shaped for DETAIL (an arbitrary export with its own column names) shows the file's **actual header**: say which column is time and what it holds (a frame index, seconds, raw `t_ns`, or a **UTC timestamp**, where the first row becomes `t=0`), then tick the columns to bring in. Ticked columns become **channels of one stream**, so a pose file with four channels is one stream you align once, not four you align four times.
 
@@ -377,7 +377,7 @@ You can also add a column from a single recording's page, columns are experiment
 
 After your own columns, a fixed set of **completion** checkboxes (Field of view, Distance calibration, ROI, POI, Streams, Detection, Tracking, Embedding) tick themselves in as you work on a recording. Hover one for the detail (how many field-of-view polygons are set, how many detection runs have completed). They're read-only and never exported: a glance at whether an experiment is finished, not stored data.
 
-For bulk work, **Import CSV** merges a filled-in CSV and **Export CSV** writes a fill-in template, the GUI form of [`experiment import-metadata` / `export-metadata`](cli.md#recording-information). Both live in view mode.
+For bulk work, **Import CSV** merges a filled-in CSV and **Export CSV** writes a fill-in template, the GUI form of [`experiment import-metadata` / `export-metadata`](cli.md#recording-information). Both live in view mode. Save the sheet as **CSV UTF-8** and comma-separated (in Excel, Save As → CSV UTF-8 (Comma delimited)); a sheet saved with semicolons or in another encoding is refused with a message saying which.
 
 **Import matches your sheet on `recording_id`, `name`, or the video file name**, whichever you have. Hover **Import CSV** for the list. A sheet made before you imported the videos usually has the file name: head that column `file`, `file_name`, `filename`, `video`, `video_file` or `video_name` (any case). A file name matches on its base name, in any case, with or without the extension, against any of a recording's video parts. If the sheet has none of those headings, the import asks which column holds the video file name. Pick it from the list of the sheet's columns, or cancel.
 
