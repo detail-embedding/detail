@@ -508,6 +508,7 @@ class KeypointTrackModule(ProcessingModule):
     progress_event_class = KeypointProgressEvent
     # frames_total is subject-frames; both passes are folded into one count
     progress_counts_frames = True
+    resumes = False  # no resume: a part is re-run whole
     config_model = KeypointTrackConfig
     # The tracking run reaches identity as its spec (``tracking_identity``), never as its id:
     # ``track_01`` is a per-recording counter, so two recordings' ``track_01`` with different

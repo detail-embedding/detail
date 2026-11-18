@@ -22,6 +22,23 @@ way back.
 
 The tests assert the **files**, never that the call raised: "it raised" is a regression test
 for the exception, and the defect is what is left on disk afterwards.
+
+**The second half (#24): a recorded disagreement that nothing downstream reads.** The mark went
+down and stayed down, but only the next edit, ``analysis status`` and the run page read it. A
+query run's cutoff moved to 0.6, its rebuild died, and ``export-query`` then pinned a snapshot
+recording cutoff 0.6 over instances cut at 0.5; on a clustering run ``measures export``,
+``export-temporal-clustering`` and ``--finalize`` all succeeded on the old instances. The error
+itself ("no embedded rows for track 0 …") named no recording and did not say the change had been
+saved, and INTERPRET titled it "Label not saved" over a label that was on disk.
+
+**The rule.** Every reader of a run's output refuses through one check,
+``analysis_runs.refuse_if_stale``, reached through ``AuthoredRun.bring_frame_views_current`` (which
+a pin — and so finalize, both exports and a comparison — and measures already call first), and
+called directly by the two readers that do not read frame views: a new audit batch and a
+clip-review census. The edit's own failure is a ``RebuildFailedError`` that says the change was
+saved, names the rebuild, and keeps the real failure as its cause. The refusal tests below
+assert that nothing was written (no snapshot, no export, no census), not only that the call
+raised.
 """
 
 import pytest
@@ -58,6 +75,11 @@ def _break_projection(monkeypatch):
     monkeypatch.setattr(TemporalClusteringRun, "_project", explode)
 
 
+#: What an edit raises when its reprojection dies: the change is saved, so the error says so and
+#: names the rebuild (#24); the real failure is its ``__cause__``.
+_EditBoom = analysis_store.RebuildFailedError
+
+
 def _silence_projection(monkeypatch):
     monkeypatch.setattr(TemporalClusteringRun, "_project", lambda self, **_: None)
 
@@ -72,7 +94,7 @@ def test_a_failed_reprojection_leaves_the_disagreement_recorded(
 
     edit = _an_edit(run)
     _break_projection(monkeypatch)
-    with pytest.raises(_Boom):
+    with pytest.raises(_EditBoom):
         run.name_nodes(edit)
 
     written = cohort.read_state().node_names
@@ -85,6 +107,23 @@ def test_a_failed_reprojection_leaves_the_disagreement_recorded(
         "the state and the artifact disagree and nothing on disk says so — a reader that "
         "trusts either file is wrong about the other"
     )
+
+
+def test_the_error_of_a_failed_reprojection_says_the_edit_was_saved(
+    authored_cohort, monkeypatch
+):
+    """The bare cause ("no embedded rows for track 0") read as the edit having failed, and the
+    GUI titled it "Label not saved" — while the label was on disk (#24)."""
+    cohort = authored_cohort
+    run = cohort.run()
+    _break_projection(monkeypatch)
+    with pytest.raises(analysis_store.RebuildFailedError) as info:
+        run.name_nodes(_an_edit(run))
+    message = str(info.value)
+    assert "the change was saved" in message
+    assert f"detail analysis rebuild {run.id}" in message
+    assert "the artifact write died" in message, "the real cause is still named"
+    assert isinstance(info.value.__cause__, _Boom)
 
 
 def test_the_mark_is_down_before_the_state_is_written(authored_cohort, monkeypatch):
@@ -104,7 +143,7 @@ def test_the_mark_is_down_before_the_state_is_written(authored_cohort, monkeypat
 
     monkeypatch.setattr(temporal_runs, "write_temporal_state", watch)
     _break_projection(monkeypatch)
-    with pytest.raises(_Boom):
+    with pytest.raises(_EditBoom):
         cohort.run().name_nodes(_an_edit(cohort.run()))
 
     assert seen["stale_at_state_write"] is True
@@ -122,7 +161,7 @@ def test_rebuilding_clears_the_mark(authored_cohort, monkeypatch):
     """The way back, through the call the CLI and the GUI both drive."""
     cohort = authored_cohort
     _break_projection(monkeypatch)
-    with pytest.raises(_Boom):
+    with pytest.raises(_EditBoom):
         cohort.run().name_nodes(_an_edit(cohort.run()))
     assert cohort.run().artifact_stale
 
@@ -172,7 +211,7 @@ def test_an_edit_after_a_failed_one_rebuilds_everything(authored_cohort, monkeyp
     """A killed reprojection may have left any view half-written, so none of them is trusted."""
     cohort = authored_cohort
     _break_projection(monkeypatch)
-    with pytest.raises(_Boom):
+    with pytest.raises(_EditBoom):
         cohort.run().name_nodes(_an_edit(cohort.run()))
     assert cohort.run().artifact_stale
 
@@ -188,3 +227,140 @@ def test_rebuilding_keeps_nothing(authored_cohort, monkeypatch):
     seen = _record_reuse(monkeypatch)
     cohort.run().reproject()
     assert seen == [False]
+
+
+# --- what the mark refuses (#24) --------------------------------------------------------------
+#
+# The mark went down and stayed down, and nothing but the next edit, `analysis status` and the run
+# page read it. Every reader of the run's output — a pin, and so finalize and both exports and a
+# comparison; measures; a new audit sample or a clip-review census — took the stale artifact as
+# current: an export pinned a snapshot recording cutoff 0.6 over instances cut at 0.5. Each reader
+# below must refuse, naming the command that rebuilds.
+
+_REBUILD = "detail analysis rebuild"
+
+
+def _left_stale(cohort, monkeypatch):
+    """A run whose last edit was saved and whose reprojection died. Returns the run."""
+    _break_projection(monkeypatch)
+    with pytest.raises(_EditBoom):
+        cohort.run().name_nodes(_an_edit(cohort.run()))
+    monkeypatch.undo()
+    run = cohort.run()
+    assert (
+        run.artifact_stale
+    ), "the fixture must leave the run stale, or nothing is tested"
+    return run
+
+
+def _refuses(call, run_id: str) -> None:
+    with pytest.raises(analysis_store.ResultsOutOfDateError) as info:
+        call()
+    message = str(info.value)
+    assert "was saved" in message
+    assert f"{_REBUILD} {run_id}" in message
+
+
+def test_a_pin_of_a_stale_run_refuses_and_writes_no_snapshot(
+    authored_cohort, monkeypatch
+):
+    from detail.storage import snapshots as snapshots_store
+
+    cohort = authored_cohort
+    run = _left_stale(cohort, monkeypatch)
+    before = snapshots_store.discover_snapshots(cohort.run_dir())
+    _refuses(lambda: run.pin(reason="export"), run.id)
+    assert snapshots_store.discover_snapshots(cohort.run_dir()) == before
+
+
+def test_finalizing_a_stale_run_refuses_and_leaves_it_open(
+    authored_cohort, monkeypatch
+):
+    cohort = authored_cohort
+    run = _left_stale(cohort, monkeypatch)
+    _refuses(run.finalize, run.id)
+    assert analysis_store.read_analysis_yaml(cohort.run_dir()).get("status") != (
+        "complete"
+    )
+
+
+def test_exporting_a_stale_clustering_run_refuses(
+    authored_cohort, monkeypatch, tmp_path
+):
+    cohort = authored_cohort
+    run = _left_stale(cohort, monkeypatch)
+    out = tmp_path / "export"
+    _refuses(lambda: run.export(out), run.id)
+    assert not any(out.glob("*.csv")) if out.exists() else True
+
+
+def test_measuring_a_stale_run_refuses(authored_cohort, monkeypatch, tmp_path):
+    cohort = authored_cohort
+    run = _left_stale(cohort, monkeypatch)
+    measures = cohort.experiment.measures(run.id)
+    _refuses(measures.table, run.id)
+    _refuses(lambda: measures.export(tmp_path / "m"), run.id)
+
+
+def test_a_comparison_of_a_stale_run_refuses(authored_cohort, monkeypatch):
+    from detail.api import comparison
+
+    cohort = authored_cohort
+    run = _left_stale(cohort, monkeypatch)
+    _refuses(
+        lambda: comparison._resolve_artifact(cohort.experiment, run.id, None), run.id
+    )
+
+
+def test_a_new_audit_sample_of_a_stale_run_refuses(authored_cohort, monkeypatch):
+    cohort = authored_cohort
+    run = _left_stale(cohort, monkeypatch)
+    _refuses(lambda: run.audit_sample(), run.id)
+
+
+def test_exporting_a_stale_query_run_refuses(tmp_path):
+    """The case the issue reproduced: a cutoff saved, the rebuild dead, the export pinning it."""
+    from tests.api.test_query import _searched
+
+    exp, run = _searched(tmp_path)
+    run.set_cutoff("q01", 0.5)
+    analysis_store.set_artifact_stale(run._run_dir(), True)
+    _refuses(lambda: run.export(tmp_path / "out"), run.id)
+
+    # Through the CLI: an error naming the rebuild, not a traceback and not an export; and the
+    # state the calibrate command echoes says its counts predate the saved cutoff.
+    from click.testing import CliRunner
+
+    from detail.cli import main
+
+    exported = CliRunner().invoke(
+        main,
+        ["analysis", "export-query", "--experiment", str(exp.dir), "--run", run.id,
+         "--out", str(tmp_path / "cli_out")],
+    )  # fmt: skip
+    assert exported.exit_code == 1, exported.output
+    assert f"{_REBUILD} {run.id}" in exported.output
+    assert not (tmp_path / "cli_out").exists() or not any(
+        (tmp_path / "cli_out").iterdir()
+    )
+    shown = CliRunner().invoke(
+        main,
+        ["analysis", "query-calibrate", "--experiment", str(exp.dir), "--run", run.id],
+    )
+    assert "results: out of date" in shown.output, shown.output
+
+
+def test_a_clip_review_census_of_a_stale_run_refuses_and_writes_nothing(
+    fitted_codebook,
+):
+    """A census records the cluster's membership as it is on disk, which a stale run has wrong."""
+    from detail.storage import clip_review as review_store
+
+    experiment, run_id = fitted_codebook
+    run = experiment.temporal_clustering_run(run_id)
+    view = run.node_view()
+    climb, _rear = view.children(view.root)
+    run.name_nodes({climb: "climb"})
+    analysis_store.set_artifact_stale(run._run_dir(), True)
+    _refuses(lambda: run.finish_review(climb), run_id)
+    assert review_store.read_review(run._run_dir()) == []

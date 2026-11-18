@@ -8,6 +8,13 @@ one a refactor could silently undo).
 
 ``render_part`` takes a plain part dict and a job list, so most of this needs no preview and no
 experiment — just a real decodable mp4, which it does need: the whole point is the decode.
+
+**A playback rate that does not match the frames written (#32).** A clip's rate is its bout's
+own (frames spanned over its duration), and the renderer wrote only the frames the track had a
+detection on: a stride-5 run's clips played 4.4 times too fast while ``clips.csv`` said the
+right duration. It hid because every fixture detected the subject on every frame. The rule:
+every frame of the span is written (a frame without a detection is the plain frame, a black
+mask, or a crop held on the last box), so frames over rate is the duration.
 """
 
 import unittest.mock
@@ -213,14 +220,121 @@ def test_bouts_are_sorted_by_the_renderer_not_the_caller(video, tmp_path):
     assert frame_indices(late) == list(range(10, 14))
 
 
-def test_frames_without_a_detection_are_skipped(video, tmp_path):
-    """A gap in the track drops those frames from the clip rather than writing a stale crop."""
+def test_frames_without_a_detection_are_kept(video, tmp_path):
+    """Every frame of the span is written, detected or not, so the clip plays at the speed
+    the behavior happened (#32, finding 3). Skipping the undetected ones kept the clip's frame
+    rate and so played it fast: a stride-5 detection run gave clips 4.4 times too fast.
+    """
     out = tmp_path / "clip.mp4"
     detected = [i for i in range(_N_FRAMES) if i % 2 == 0]
     clip_render.render_part(
         make_part(video, detected), [job(4, 13, out)], 0, 32, renders=(clip_render.RAW,)
     )
-    assert frame_indices(out) == [4, 6, 8, 10, 12]
+    assert frame_indices(out) == list(range(4, 14))
+
+
+@pytest.mark.parametrize("crop", [True, False])
+@pytest.mark.parametrize("render", clip_render.RENDERS)
+def test_a_clip_plays_for_its_bouts_duration_at_any_detection_stride(
+    tmp_path, crop, render
+):
+    """The guard for #32, finding 3, asserted on the file a user plays: a 1.0 s bout of
+    frames 0-30 with a detection on every 5th frame plays for 1.0 s, to within one frame.
+    It played 0.23 s (7 frames at 30 fps) while ``clips.csv`` said 1.0 s."""
+    video = tmp_path / "long.mp4"
+    write_indexed_video(video, 31)
+    _part_index, planned = clip_render.plan_job([31], 0, 30, 1.0, tmp_path / "c.mp4")
+    clip_render.render_part(
+        make_part(video, range(0, 31, 5)),
+        [planned],
+        0,
+        32,
+        renders=(render,),
+        crop=crop,
+    )
+    cap = cv2.VideoCapture(str(planned["path"]))
+    try:
+        fps = cap.get(cv2.CAP_PROP_FPS)
+    finally:
+        cap.release()
+    n = len(read_frames(planned["path"]))
+    assert planned["n_written"] == n == 31
+    assert fps == pytest.approx(planned["fps"], rel=1e-3)
+    # n frames at the bout's rate: n - 1 intervals cover the 1.0 s, the last frame shows for one
+    # more, so the clip lasts the bout plus at most one frame.
+    assert 1.0 - 1e-6 <= n / fps <= 1.0 + 1.0 / fps + 1e-6
+
+
+def test_a_crop_holds_the_last_box_and_starts_on_the_first(
+    video, tmp_path, monkeypatch
+):
+    """A frame with no detection is cut with the box of the detection before it; a frame
+    before the span's first detection, with that first detection's box (#32, finding 3).
+    Asserted on the box each frame was cut with, which the pixels of a solid frame cannot
+    show."""
+    first, second = (0.0, 0.0, 0.5, 0.5), (0.5, 0.5, 1.0, 1.0)
+    part = {
+        "video": video,
+        "reader": _Reader([6, 9], [first, second], ["", ""]),
+        "assignment": _Assignment([0, 0]),
+    }
+    used = []
+    real = clip_render._square_crop
+    monkeypatch.setattr(
+        clip_render,
+        "_square_crop",
+        lambda img, box, size: used.append(tuple(np.asarray(box).tolist()))
+        or real(img, box, size),
+    )
+    out = tmp_path / "clip.mp4"
+    planned = job(4, 11, out)
+    clip_render.render_part(part, [planned], 0, 32, renders=(clip_render.RAW,))
+    assert planned["n_written"] == len(read_frames(out)) == 8
+    assert used == [first] * 5 + [second] * 3  # frames 4-8, then 9-11
+
+
+def test_an_overlay_frame_without_a_detection_is_the_plain_frame(tmp_path):
+    """No mask to draw is not a reason to drop the frame: it is written as it was recorded."""
+    video = tmp_path / "grey.mp4"
+    _write_sized_video(video, 12, width=64, height=64, value=128)
+    out = tmp_path / "clip.mp4"
+    clip_render.render_part(
+        make_part(video, [2]),
+        [job(2, 5, out)],
+        0,
+        64,
+        renders=(clip_render.OVERLAY,),
+        crop=False,
+    )
+    frames = read_frames(out)
+    assert len(frames) == 4
+
+    def chroma(frame):
+        f = frame.astype(np.int16)
+        return float(np.mean(f.max(axis=2) - f.min(axis=2)))
+
+    assert chroma(frames[0]) > 8, "the detected frame carries the tint"
+    # A flat grey comes back from mp4v at a chroma of about 5: the raw-flavour test's bar.
+    assert all(
+        chroma(f) < 8 for f in frames[1:]
+    ), "an undetected frame has nothing drawn"
+
+
+def test_a_mask_frame_without_a_detection_is_black(video, tmp_path):
+    """The mask flavour is data: a frame with no detection is an empty mask, not a skip."""
+    out = tmp_path / "clip.mp4"
+    clip_render.render_part(
+        make_part(video, [2]),
+        [job(2, 5, out)],
+        0,
+        64,
+        renders=(clip_render.MASK,),
+        crop=False,
+    )
+    frames = read_frames(out)
+    assert len(frames) == 4
+    assert frames[0].mean() > 20
+    assert all(f.mean() < 5 for f in frames[1:])
 
 
 def test_a_bout_the_track_is_absent_from_writes_nothing(video, tmp_path):
@@ -238,11 +352,15 @@ def test_a_bout_the_track_is_absent_from_writes_nothing(video, tmp_path):
 
 
 def test_only_the_requested_track_is_rendered(video, tmp_path):
-    """The assignment zarr carries every track; box_map must filter to this one."""
+    """The assignment zarr carries every track; the renderer must read this one only. Over a
+    span only the *other* track was detected on, this one has nothing to show, so no clip.
+    """
     out = tmp_path / "clip.mp4"
-    part = make_part(video, [4, 6, 8], track_id=0, other_frames=[5, 7, 9])
+    part = make_part(video, [2], track_id=0, other_frames=[5, 7, 9])
     clip_render.render_part(part, [job(4, 9, out)], 0, 32, renders=(clip_render.RAW,))
-    assert frame_indices(out) == [4, 6, 8]
+    assert not out.exists()
+    clip_render.render_part(part, [job(2, 9, out)], 0, 32, renders=(clip_render.RAW,))
+    assert frame_indices(out) == list(range(2, 10))
 
 
 def test_a_missing_video_leaves_every_job_empty(tmp_path):

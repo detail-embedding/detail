@@ -22,6 +22,7 @@ import yaml
 from detail.core import atomic
 from detail.storage import dirscan
 from detail.storage import experiment as experiment_store
+from detail.storage import id_allocator
 
 SCHEMA_VERSION = 1
 COMPARISON_FILENAME = "comparison.yaml"
@@ -45,17 +46,9 @@ def discover_comparisons(experiment_dir: Path | str) -> list[str]:
 
 
 def next_comparison_id(experiment_dir: Path | str) -> str:
-    """Experiment-monotonic ``cmp_NN``, one past the highest existing.
-
-    Scan-based like every other allocator here (``tests/storage/test_id_ordering.py`` covers the
-    family), so there is no counter to drift from what is on disk.
-    """
-    nums = [
-        int(cid.split("_", 1)[1])
-        for cid in discover_comparisons(experiment_dir)
-        if cid.startswith("cmp_") and cid.split("_", 1)[1].isdigit()
-    ]
-    return f"cmp_{max(nums, default=0) + 1:02d}"
+    """Claim the next ``cmp_NN`` id (creating its directory); a deleted comparison's id is
+    never handed out again (``storage/id_allocator.py``)."""
+    return id_allocator.claim_dir(comparisons_dir(experiment_dir), "cmp", digits=2)
 
 
 def write_comparison_yaml(comparison_dir: Path | str, record: dict) -> None:

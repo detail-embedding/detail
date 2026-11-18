@@ -92,6 +92,7 @@ from detail.api.clip_views import (
 )
 from detail.core import cpu
 from detail.core import visualize
+from detail.core.errors import UserInputError
 from detail.core.visualize import MASK_TINT, ONION_ALPHA
 from detail.storage import read_cache
 from detail.storage.clip_query_csv import COLUMNS, ClipRow, write_clip_csv
@@ -909,7 +910,7 @@ class ClusterMontage:
 
         Raises:
             ValueError: ``stems`` and the clips differ in number, or two stems are the same.
-            FileExistsError: a GIF of one of these names is already there, and not ``replace``.
+            UserInputError: a GIF of one of these names is already there, and not ``replace``.
         """
         if len(stems) != len(self.clips) or len({s.casefold() for s in stems}) != len(
             stems
@@ -917,7 +918,7 @@ class ClusterMontage:
             raise ValueError("one distinct file name per clip is needed")
         there = existing_gifs(out_dir, stems)
         if there and not replace:
-            raise FileExistsError(
+            raise UserInputError(
                 f"{len(there):,} of these GIFs already exist in {out_dir} "
                 f"({', '.join(there[:3])}{', …' if len(there) > 3 else ''}); choose another "
                 "folder, or remove them first"

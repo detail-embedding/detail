@@ -251,7 +251,8 @@ def test_the_manifest_declares_exclusive_overlap_without_claiming_full_coverage(
     assert manifest["origin"] == "predicted"
     assert manifest["label_space"] == "pooled"
     assert manifest["vocabulary"] == ["rearing"]
-    assert manifest["names"] == {"L1": ["rearing"]}
+    # The unlabelled bucket gets an entry with no name: what `unnamed_time` is offered on (#24).
+    assert manifest["names"] == {"L1": ["rearing"], "unlabelled": []}
     assert "score" not in manifest
     assert manifest["method"]["granularity"] == 4
 

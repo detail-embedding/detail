@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from detail.core import atomic
+from detail.core.errors import UserInputError
+from detail.importers import _csv_common
 
 COLUMNS = [
     "query_id",
@@ -125,34 +127,35 @@ def write_clip_csv(
 
 
 def read_clip_csv(path: Path | str) -> list[ClipRow]:
-    """Read a clip-query CSV into ``ClipRow``s.
+    """Read a clip-query CSV into ``ClipRow``s, through the one opener for a CSV a user
+    hands in.
 
-    Raises
-    ValueError: the file is missing an identifying/span column (not a clip CSV)
+    Raises:
+        UserInputError: the file is not UTF-8 text, is missing an identifying/span column
+            (not a clip CSV), or a row is short of a cell or holds a non-number.
     """
-    with open(path, newline="", encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f)
-        missing = _REQUIRED - set(reader.fieldnames or [])
-        if missing:
-            raise ValueError(
-                f"clip-query CSV {path} missing columns {sorted(missing)} "
-                "(not a clip-query CSV, or regenerate it with the current tool)"
-            )
-        return [
-            ClipRow(
-                query_id=r.get("query_id") or "q01",
-                query_name=r.get("query_name") or "query",
-                kind=r["kind"],
-                rank=int(r["rank"]),
-                recording_id=r["recording_id"],
-                track_id=int(r["track_id"]),
-                embed_run_id=r["embed_run_id"],
-                start_t_ns=int(r["start_t_ns"]),
-                end_t_ns=int(r["end_t_ns"]),
-                start_frame=int(r["start_frame"]),
-                end_frame=int(r["end_frame"]),
-                score=float(r["score"]),
-                example_idx=int(r.get("example_idx") or 0),
-            )
-            for r in reader
-        ]
+    fieldnames, rows = _csv_common.read_user_csv(path)
+    missing = _REQUIRED - set(fieldnames)
+    if missing:
+        raise UserInputError(
+            f"clip-query CSV {path} missing columns {sorted(missing)} "
+            "(not a clip-query CSV, or regenerate it with the current tool)"
+        )
+    return [
+        ClipRow(
+            query_id=r.get("query_id") or "q01",
+            query_name=r.get("query_name") or "query",
+            kind=r["kind"],
+            rank=_csv_common.int_cell(r, "rank"),
+            recording_id=r["recording_id"],
+            track_id=_csv_common.int_cell(r, "track_id"),
+            embed_run_id=r["embed_run_id"],
+            start_t_ns=_csv_common.int_cell(r, "start_t_ns"),
+            end_t_ns=_csv_common.int_cell(r, "end_t_ns"),
+            start_frame=_csv_common.int_cell(r, "start_frame"),
+            end_frame=_csv_common.int_cell(r, "end_frame"),
+            score=_csv_common.float_cell(r, "score"),
+            example_idx=int(r.get("example_idx") or 0),
+        )
+        for r in rows
+    ]

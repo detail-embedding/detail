@@ -184,6 +184,13 @@ def test_stream_config_is_validated_upfront(tmp_path):
                     },
                     {
                         "name": "none_taken",
+                        "importer": "behavior_csv",
+                        "raw": "s.csv",
+                        "config": {"time_column": "t_sec"},
+                    },
+                    {
+                        # BORIS takes a selector config; a CSV mapping key is not one of it.
+                        "name": "wrong_keys",
                         "importer": "boris",
                         "raw": "s.csv",
                         "config": {"time_column": "t_sec"},
@@ -289,3 +296,44 @@ def test_describe_manifest_reflects_the_models():
         fields = sections[model.__name__]["fields"]
         assert [f["name"] for f in fields] == list(model.model_fields)
         assert all(f["help"] for f in fields)  # every field carries help text
+
+
+def test_a_selector_config_is_the_manifest_key_for_medpc_and_boris(tmp_path):
+    """A bundle picks a session or subject the way the CLI flags and the GUI picker do."""
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "d.txt").write_text("Start Date: x\n", encoding="utf-8")
+    (bundle / "p.MPC").write_text("\\  Event stamps ( array E )\n", encoding="utf-8")
+    (bundle / "b.csv").write_text("Behavior,Behavior type,Time\n", encoding="utf-8")
+    manifest = {
+        "recordings": [
+            {
+                "id": "s1",
+                "streams": [
+                    {
+                        "name": "medpc",
+                        "importer": "medpc",
+                        "raw": "d.txt",
+                        "aux": {"program": "p.MPC"},
+                        "config": {"box": "4"},
+                    },
+                    {
+                        "name": "labels",
+                        "importer": "boris",
+                        "raw": "b.csv",
+                        "config": {"observation": "day1", "subject": "mA"},
+                    },
+                    {
+                        "name": "typo",
+                        "importer": "boris",
+                        "raw": "b.csv",
+                        "config": {"subjcet": "mA"},
+                    },
+                ],
+            }
+        ]
+    }
+    errors, _ = mf.validate_manifest(bundle, manifest, [])
+    assert (
+        len(errors) == 1 and "typo" in errors[0] and "invalid config" in errors[0]
+    ), errors

@@ -87,6 +87,25 @@ def sample_offsets_ns(duration_ns: int, fps: float) -> list[int]:
     return [int(round(i * period)) for i in range(count)]
 
 
+def gif_delays_ms(count: int, fps: float) -> list[int]:
+    """Each frame's delay for a GIF of ``count`` frames sampled at ``fps``, in milliseconds the
+    file can store.
+
+    GIF stores a delay in whole hundredths of a second (and Pillow truncates the milliseconds it
+    is given). One delay rounded for every frame played 12 fps at 12.5, 15 at 14.3 and 30 at
+    33.3 — up to 11% off the real time the frames were sampled at (#32). So frame ``i`` ends at
+    ``round(100 * (i + 1) / fps)`` hundredths: each delay is within half a hundredth of
+    ``1 / fps``, and the rounding never adds up, so the whole GIF plays for the span it sampled.
+    The sampling rate stays the one asked for. At most :data:`GIF_FPS_RANGE`'s 50 fps every
+    delay is at least two hundredths, the shortest a browser plays as written.
+    """
+    if fps <= 0:
+        raise ValueError(f"fps must be positive, got {fps!r}")
+    ends = [int(round(100.0 * (i + 1) / float(fps))) for i in range(count)]
+    starts = [0] + ends[:-1]
+    return [max(end - start, 1) * 10 for start, end in zip(starts, ends)]
+
+
 def _fit_frame(rgb: np.ndarray, max_width: int | None) -> np.ndarray:
     """``rgb`` at the size :func:`detail.api.clip_render.fit_within` gives it — scaled down to
     ``max_width`` (aspect kept, never up) and even on both sides, which H.264 needs. When only
@@ -244,14 +263,11 @@ def _write_gif(path, frames, fps, max_width, report) -> int:
         pictures += [on_palette(f) for f in held]
     if not pictures:
         return 0
-    # GIF stores a delay in hundredths of a second and Pillow *truncates* the milliseconds it is
-    # given, so 15 fps (66.7 ms) would be written as 60 ms and play 11% fast. Round to the
-    # nearest hundredth here instead.
     pictures[0].save(
         path,
         save_all=True,
         append_images=pictures[1:],
-        duration=max(int(round(100.0 / float(fps))), 1) * 10,
+        duration=gif_delays_ms(len(pictures), fps),
         loop=0,
         disposal=1,
     )

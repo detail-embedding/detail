@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from detail.api.recording import Recording
+from detail.core.errors import UserInputError
 from detail.storage import recording as recording_store
 
 DATA_TXT = """\
@@ -110,7 +111,7 @@ def test_a_stream_name_that_differs_only_by_case_is_refused(
     sess.add_stream(
         "EMG", raw_path=data, importer="medpc", aux_paths={"program": program}
     )
-    with pytest.raises(ValueError, match="only by case"):
+    with pytest.raises(UserInputError, match="only by case"):
         sess.add_stream(
             "emg", raw_path=data, importer="medpc", aux_paths={"program": program}
         )

@@ -1,3 +1,12 @@
+"""The location export (``analysis/locations.py``): positions, regions and points per frame.
+
+**A position computed against the wrong grid (#32).** A mask cell ``i`` covers ``[i, i+1)``, and
+the export averaged cell indices, so every mask centre sat half a cell up and left of the
+kinematics centre for the same frame; and box corners rounded to the mask grid made a box under
+one cell wide cover no cell, 0% inside a region it sat in. The rules: one centre,
+``geometry.mask_centre_norm``, for every caller; a box covers every cell it touches.
+"""
+
 import json
 
 import numpy as np
@@ -320,3 +329,57 @@ def test_export_rejects_incomplete_tracking(tmp_path):
     recording_store.write_recording(recording.dir, data)
     with pytest.raises(ValueError, match="not complete"):
         recording.export_locations("track_01", tmp_path / "x")
+
+
+# --- positions against the right grid (#32) ------------------------------------------------ #
+def test_the_mask_centre_is_the_kinematics_centre(tmp_path):
+    """A mask cell ``i`` covers ``[i, i+1)``, so its centre is ``i + 0.5``. The location export
+    averaged the cell *indices* and so put every mask centre half a cell up and left of the
+    animal (#32, finding 1): a symmetric mask over the box 0.1-0.5 read 0.2875, not 0.3, and
+    disagreed with the kinematics centre for the same frame. One helper now gives both.
+    """
+    from detail.analysis import geometry
+
+    mask = _mask_square(4, 20, 4, 20).astype(bool)
+    recording = _one_track(tmp_path)
+    (r,) = _dicts(recording.location_tables("track_01").tracks)
+    kinematics = geometry.frame_geometry(mask, [(0.1, 0.1, 0.5, 0.5)], (H, W))
+    assert r["mask_cx_norm"] == pytest.approx(0.3)
+    assert r["mask_cy_norm"] == pytest.approx(0.3)
+    assert r["mask_cx_norm"] == pytest.approx(r["bbox_cx_norm"])
+    assert r["mask_cx_norm"] == pytest.approx(kinematics.cx_norm)
+    assert r["mask_cx_px"] == pytest.approx(12.0)  # 0.3 * 40, not 11.5
+
+
+def test_a_symmetric_animal_on_a_region_edge_reads_the_same_by_box_and_by_mask(
+    tmp_path,
+):
+    """The user-visible half of finding 1: a region whose left edge is exactly at the animal's
+    centre said the box centre was in it and the mask centre was not."""
+    recording = _one_track(tmp_path)
+    recording.define_roi(
+        "right", [(0, [(0.3, 0.0), (1.0, 0.0), (1.0, 1.0), (0.3, 1.0)])]
+    )
+    (r,) = _dicts(recording.location_tables("track_01").roi_relations)
+    assert r["centroid_in_roi"] == 1
+    assert r["mask_centroid_in_roi"] == r["centroid_in_roi"]
+
+
+def test_a_box_thinner_than_a_mask_cell_is_not_zero_percent_inside(tmp_path):
+    """Box corners were rounded to the mask grid, so a box under one cell wide rounded to no
+    cells at all and read ``bbox_frac_in_roi 0.0`` inside a region it sat in (#32, finding 5).
+    The low corner is floored and the high one ceiled, so a box covers every cell it touches.
+    """
+    thin = (0.3025, 0.3025, 0.31, 0.31)  # cells 12.1-12.4: both corners round to 12
+    recording = _setup(
+        tmp_path,
+        detections=[(0, 0, thin, _mask_square(12, 13, 12, 13))],
+        object_ids=[0],
+    )
+    recording.define_roi(
+        "left", [(0, [(0.0, 0.0), (0.5, 0.0), (0.5, 1.0), (0.0, 1.0)])]
+    )
+    (r,) = _dicts(recording.location_tables("track_01").roi_relations)
+    assert r["centroid_in_roi"] == 1
+    assert r["bbox_frac_in_roi"] == pytest.approx(1.0)
+    assert r["bbox_fully_in_roi"] == 1

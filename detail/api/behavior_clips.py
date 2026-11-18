@@ -31,7 +31,7 @@ from detail.core.utils import safe_path_part, unique_stems
 #: `inputs` rather than `inputs_reason`.
 CLIP_COLUMNS = [
     "instance_id", "source_label", "label", "label_path", "recording_id", "subject",
-    "start_frame", "end_frame", "t_ns", "end_t_ns", "dur_s",
+    "start_frame", "end_frame", "t_ns", "end_t_ns", "dur_s", "fps",
 ]  # fmt: skip
 
 
@@ -158,6 +158,7 @@ def export_behavior_clips(
                 "" if row.subject is None else row.subject,
                 row.start_frame, row.end_frame, row.t_ns, row.end_t_ns,
                 round((int(row.end_t_ns) - int(row.t_ns)) / 1e9, 3),
+                clip_render.written_fps(job),
             ]  # fmt: skip
             + [names.get(render, "") for render in wanted]
         )

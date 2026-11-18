@@ -849,6 +849,9 @@ def load_scene_regions(recording) -> list[dict]:
             regions.append(
                 {
                     "kind": kind,
+                    # The stored id rides along so Save hands it back: a region the user
+                    # kept stays the same `roi_NNN` (`storage.spatial.replace_defs`).
+                    "id": entry["id"],
                     "name": entry["name"],
                     "keyframes": {f: list(v) for f, v in loader(entry["id"])}
                     or {0: []},
@@ -1173,6 +1176,8 @@ class SceneGeometryDialog(Dialog):
                         f"'{name}' keyframes must have the same number of points.",
                     )
                 entry = {"name": name, "keyframes": keyframes}
+                if reg.get("id"):
+                    entry["id"] = reg["id"]
                 if kind.has_active:
                     entry["active"] = reg["active"]
                 defs.append(entry)
@@ -1200,7 +1205,7 @@ class SceneGeometryDialog(Dialog):
             # Clearing and redefining the whole set is safe *because* that check is
             # whole-set: if it passes, no arena in this recording is named by any tracking
             # run, so the ids being reminted cannot invalidate a run's record of which
-            # polygon it used. (`next_id` takes the lowest free number, so rebuilding in
+            # polygon it used. (`next_arena_id` takes the lowest free number, so rebuilding in
             # list order also hands back the same ids unless one was deleted.)
             if self._signature("arena") != self._loaded["arena"]:
                 self._recording.clear_arenas()

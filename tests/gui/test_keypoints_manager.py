@@ -182,7 +182,10 @@ def test_delete_asks_then_removes_an_unused_skeleton(qapp, root, monkeypatch):
     assert library.skeleton(made["id"])
     _answer(monkeypatch, QMessageBox.StandardButton.Yes)
     page._delete.click()
-    drain_until(qapp, lambda: page._reading)
+    # Wait on the row count, which has to drop, not on `_reading`, which is True only from the
+    # delete landing until the re-read lands: both can happen within one pump, and a wait for
+    # the flag then never sees it (it used to burn 10 s, with the answer dropped).
+    drain_until(qapp, lambda: page._table.view.model().rowCount() == len(PRESETS))
     _settle(qapp, page)
     assert [e for e in library.skeletons() if not e["builtin"]] == []
     assert page._table.view.model().rowCount() == len(PRESETS)

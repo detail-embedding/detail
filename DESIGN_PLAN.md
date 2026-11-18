@@ -843,7 +843,7 @@ frame_idx,t_ns
 
 A run that thins with `every_n_frames` needs no second map: its rows carry the source frame's own index and `t_ns` (§4).
 
-Loading and `frame_idx → t_ns` lookup of these maps live in `storage/recording`. Canonical `t_ns` ↔ float-seconds conversions (`t_ns_to_seconds` / `seconds_to_t_ns`) live in `core/utils`.
+Loading and `frame_idx → t_ns` lookup of these maps live in `storage/recording`. Canonical `t_ns` ↔ float-seconds conversions (`t_ns_to_seconds` / `seconds_to_t_ns`) live in `core/utils`. `seconds_to_t_ns` is the **one checked conversion**: it refuses a value that is not finite or whose nanoseconds do not fit int64, naming where it came from (`what=`), and every importer and every typed offset goes through it (`check_t_ns` for a value already in ns).
 
 **The map is authoritative for frame *retrieval*, not just for counting.** `storage/video.py::read_frame_at` — the seek behind every preview (detection / tracking / input-image / prompt-test) — takes the part's map and seeks by `t_ns`, so the picture returned is the `frame_idx`-th in presentation order: the same indexing the sequential detection pass assigns, which is what makes an overlay keyed by `frame_idx` land on the right image. Without a map it falls to the packet-PTS index, and failing that to a bounded sequential decode (exact by construction, capped by `SEQUENTIAL_DECODE_FRAME_CAP`). What it must never do is seek by frame *number* via cv2's `CAP_PROP_POS_FRAMES`: that converts the ordinal to a time using the container's *advertised* fps, so on a variable-frame-rate or fps-skewed file it returns the wrong picture **and** reports the requested index back, desyncing overlays by an amount that grows with the frame number. Passing the map is also the fast path — it replaces a whole-file packet scan (≈11 s on a 1 GB part) with a CSV read (≈0.1 s). Because a map is part-local from 0 plus the part's recording offset, the seek converts with one constant per part (`video._map_shift_ns`: `map[0]` minus the stream's start time), and a frame is accepted only if its converted `t_ns` is in the map — so a later part or a late-starting file takes the fast path too, and a map that does not describe the file still falls back. The packet-PTS index skips `is_discard` packets in the same loop the import uses, so the two cannot disagree on an edit-listed file.
 
@@ -864,6 +864,20 @@ Each stream has its own clock. The `alignment` block in `recording.yaml` maps st
 - **Simple case** (most common, **built**): constant signed `offset_ns` — `video_t_ns = stream_t_ns + offset_ns` (positive if the stream began after the video, negative if before). Canonical data stays stream-local and is never rewritten; alignment is applied at read time (`storage/streams.apply_alignment`), so re-aligning is a one-number edit.
 - **Advanced case** (not yet built): user-provided correction table CSV mapping `stream_t_ns → video_t_ns` for non-linear drift or hardware sync data.
 
+**Every alignment door gates on the stored clock, in storage (#30).** `streams_store.check_offset_allowed`
+refuses a non-zero offset for a video-anchored clock; it is called by `Recording.add_stream` (the
+resolved clock) and by `streams_store.set_stream_offset` (the stored clock), the only two writers of
+a stream's `alignment` (`tests/storage/test_alignment_doors.py` scans for a third). The offset is
+read only through `streams_store.stream_offset_ns`, from `alignment.offset_ns`.
+
+**Exporting a stream (the `streams` target, amended pending owner confirmation).** The exported CSV
+keeps the canonical columns, `t_ns` in the stream's own clock, and adds `video_t_ns` right after it
+(`video_end_t_ns` after `end_t_ns` for an interval stream), each `apply_alignment` of its row, so the
+file joins tracks on video time without the canonical data being rewritten. A `behavior` stream's
+file also carries `origin`, since the `behavior_csv` importer reads it back. `streams.csv` lists
+`stream, shape, origin, role, clock, offset_ns, file`, with `origin` empty for a stream that is not
+labels and `offset_ns` the stored offset.
+
 **The offset is set at import, not only afterwards.** `Recording.add_stream` takes `offset_ns` and writes it into the manifest in the same write as the rest of the stream (`--offset` on `recording add-stream`, `offset_ns:` in the bundle manifest, the alignment row on the GUI's import form). It defaults to 0, which *asserts* the stream began with the video rather than merely leaving the field unfilled, so a stream that needs a different number is corrected once rather than discovered later. A non-zero offset on a **video-anchored** stream is refused rather than stored, checked against the clock the import *resolved* (a frame-kind CSV reports `video_frames` from a `stream_seconds` importer, so the declared clock would wrongly accept it); storing a number that read time then ignores is worse than refusing it. Afterwards the offset is editable via `Recording.set_stream_offset`, `recording set-stream-offset`, or the GUI **"Sync to video frame"** helper — scrub to the frame where a chosen stream anchor event occurs and the offset is set to `frame_t_ns(frame) − anchor_t_ns` (`Recording.frame_t_ns` maps a recording-global frame to its video `t_ns`). The correction-table upload (with a `generated`/`user` `active` toggle) remains the documented future extension.
 
 **Alignment correction CSV format:**
@@ -879,15 +893,39 @@ stream_t_ns,video_t_ns
 
 | `importer_id` | shape | `role` | `clock` | `config_model` |
 |---|---|---|---|---|
-| `medpc` | event | — | `stream_seconds` | — (the `.MPC` program is an `aux_input`, not config) |
+| `medpc` | event | — | `stream_seconds` | `MedpcSessionConfig` (which session of a several-session file; the `.MPC` program is an `aux_input`, not config) |
 | `behavior_csv` | interval | `behavior` | `video_frames` | — |
-| `boris` | interval | `behavior` | `video_seconds` | — |
+| `boris` | interval | `behavior` | `video_seconds` | `BorisSelectionConfig` (which observation and subject) |
 | `events_csv` | event | — | `stream_seconds` | — |
 | `timeseries_csv` | continuous | — | `stream_seconds` (`video_frames` when the time column is frames) | `CsvStreamConfig` |
 
 `timeseries_csv` is the worked example for everything below: a continuous CSV cannot be read
 without being told which column is time and which are channels, so it is the importer the config
 channel exists for.
+
+**A config can also pick within a file (#30, amended pending owner confirmation).** A MED-PC data
+file can hold every box of a day (one `Start Date:` block each) and a BORIS export several
+observations and subjects. A recording is one animal in one session, so such a file is **refused
+until its importer's config names one** (`configs/stream_select.py`: `MedpcSessionConfig`
+`{subject, box, session}`, `BorisSelectionConfig` `{observation, subject}`), and the refusal lists
+what the file holds. They are never merged and never cut to the last block. Every field defaults to
+`None`, so a one-session file imports exactly as before with no config. The chosen block is recorded
+in the stream `metadata` (`session` / `sessions_in_file`, `observation` / `observations_in_file`,
+`subjects`). Reached through the same config channel as the CSV mapping: `add_stream(config=)`,
+`add-stream --medpc-subject/--medpc-box/--medpc-session/--boris-observation/--boris-subject`, a
+bundle manifest's `config:`, and a picker band in the GUI's Add stream dialog. A selection is about
+one *file*, so a saved preset does not carry it (`ConfigBand.preset_config`, and `--save-preset`
+saves only the CSV mapping).
+
+**`maps_unrecognized_files`** (class attribute, default `False`) says an importer's config can
+make it read a file nothing recognizes; the Add stream dialog falls back to such an importer for an
+unclaimed file. It is declared rather than inferred from `config_model`, since the MED-PC and BORIS
+configs only pick within files those importers already recognize.
+
+**`resolve_clock(path, config)`** returns the clock an import of that file would record, without
+importing it (default: the declared `clock`; the CSV importers override it from the time column).
+Every surface gating an alignment control on a not-yet-imported file reads this, never the class
+attribute: a `frame` time column is `video_frames` from a `stream_seconds` importer.
 
 A `StreamImporter` declares an optional **`config_model`** — a pydantic model single-sourcing
 its parameters (type / bounds / default / help / label) for the GUI form, the CLI, and the
@@ -1000,6 +1038,10 @@ class StreamImporter(ABC):
     aux_inputs: list[AuxInput] = []   # extra files beyond the primary data file
     config_model: type | None = None  # its own pydantic parameters, or None when the
                                       # format is self-describing ("Importer configuration")
+    maps_unrecognized_files: bool = False  # its config can read a file nothing recognizes
+
+    def resolve_clock(self, path: Path, config: dict | None = None) -> str:
+        """The clock importing this file would record (default: ``clock``)."""
 
     def can_import(self, path: Path) -> bool:
         """Returns True if this importer recognizes the primary data file."""
@@ -1050,7 +1092,12 @@ lockstep — `E[i]` (event code) and `T[i]` (time in **seconds**, last value ==
 (`stream_type="events"`, `aux_inputs=[AuxInput("program", …, [".mpc"])]`) pairs
 E with T, drops sentinels, maps codes→labels, and emits `events` rows
 `(t_ns, code, label)` in stream-local time, with the code→label map kept in the
-manifest `metadata`.
+manifest `metadata`. **This is the one layout it supports, and it refuses others rather than
+guess (#30, pending owner confirmation):** no `E`/`T` arrays is refused by name, and a `T` past the
+session length `H` (the sign of `T` logged in ticks, which would import every time too large) is
+refused. A trailing run of `(code 0, time 0)` pairs (a program's unused, unsealed array space) is
+dropped and counted in `metadata.notes`; a code-0 event between real events is refused unless the
+event map names code 0. A file of several sessions is narrowed by `MedpcSessionConfig` (above).
 
 ### Behavior labels (ground truth)
 
@@ -1069,7 +1116,11 @@ is inclusive):
   START→STOP into an interval and emits a POINT as a zero-length interval, on the
   `video_seconds` clock (seconds → `t_ns`; the import layer fills the frame columns via the
   inverse map). `Subject`→`subject` (names kept in `metadata`, the per-row int stays null);
-  `behavior_types` follow from the markers (verified against a real export).
+  `behavior_types` follow from the markers (verified against a real export). An export holding
+  several `Observation id`s or subjects is refused until `BorisSelectionConfig` names one of each,
+  and START/STOP pairing happens within the chosen rows. A label scored both as START/STOP and as
+  POINT is refused naming the rows of each kind, since `behavior_types` holds one kind per label
+  (#30, pending owner confirmation).
 
 Overlapping intervals of different labels are first-class (co-occurring behaviors);
 same-label overlaps are left untouched on import.
@@ -1115,6 +1166,35 @@ every surface displays.
   name; anything else raises `KeyError` rather than guessing. Display a name wherever one will do.
 
 Guard: `tests/api/test_recording_identity.py`.
+
+### Ids are never reused
+
+The recording rule holds for **every** id the tool mints as `<stem>_<n>`: models, datasets,
+processing, distill, analysis and export runs, comparisons, example sets, skeletons, tool runs, a
+recording's own runs (`det_NN`, `track_NN`, `emb_NN`, `kd_NN`, `kt_NN`) and its ROIs and POIs. A
+deleted thing's id is never handed to the next thing of its kind, because finished runs, distill
+records, comparisons, `roi_relations.csv` and export folders go on naming it.
+
+- **One allocator**, `storage/id_allocator.py`. Each family keeps a high-water mark in
+  `.ids.yaml` beside it (`models/.ids.yaml`, `tools/.ids.yaml`, a recording's own `.ids.yaml` for
+  its runs and regions), keyed by stem, rewritten atomically and only upward. A claim holds an
+  exclusive lock on the sibling `.ids.lock` and, for a family stored as directories, creates the
+  id's directory with `exist_ok=False`, so two processes never take one id.
+- **The next id** is the larger of the mark and one past the highest id on disk. An experiment
+  made before the mark existed therefore continues from its highest id: no stored id changes, and
+  an id reused before the mark existed cannot be detected.
+- **ROI and POI ids are stable**: a rename, a shape edit or the scene editor's Save keeps a
+  region's id (`replace_defs` takes each kept region's `id` back), and a new region gets a
+  never-used one.
+- **Not on the allocator, each for a reason**: recordings keep their own counter in `config.yaml`
+  (above); arenas take the lowest free number, because every record naming one is a tracking run
+  and an arena a tracking run names can be neither deleted nor redefined; snapshots are never
+  deleted; a clustering run's label ids (`L<n>`, §22) still take one past the highest *(open: a
+  high-water mark in the run's state)*.
+- **Ids are local.** A skeleton id (`sk_NN`) means something only on the machine that minted it,
+  so whatever compares a `skeleton_ref` across experiments or machines matches its `digest` (§26).
+
+Guard: `tests/storage/test_id_reuse.py`.
 
 ---
 
@@ -1726,7 +1806,7 @@ ts, elapsed_s, unit, unit_index, unit_total, phase, done, total, eta_unit_s, eta
 
 `ts` is a **wall clock**, not an elapsed: "nothing since 14:02" is the question, and an elapsed cannot answer it without knowing when you are reading. `unit` is the recording a processing run is on, empty for a single-job run. `eta_unit_s` is that unit's own remaining and `eta_run_s` the whole run's — two denominators, never conflated, since recordings differ by hours and the run-wide rate says nothing about whether *this* one is stuck.
 
-Its cadence is its own: `ACTIVITY_INTERVAL_S = 5.0`, not `PROGRESS_INTERVAL_S` (0.5s, a bar frame), which would write 72,000 fsynced rows for a ten-hour run. A row is forced at every phase and unit boundary whatever the clock says, so the lines that mark a change are never the ones the throttle dropped. Writing is `best_effort` like the progress writers beside it — publishing is a statement *about* the work, and a raised write would reach a runner's isolation boundary and be recorded as the work itself failing. Three writers: the orchestrator's emit, the single-job worker, and the distill coordinator. It lives in `storage/` and not the GUI because the run outlives the window, because the GUI only ever sees a rendered string, and because a hung run is a bug report.
+Its cadence is its own: `ACTIVITY_INTERVAL_S = 5.0`, not `PROGRESS_INTERVAL_S` (0.5s, a bar frame), which would write 72,000 fsynced rows for a ten-hour run. A row is forced at every phase and unit boundary whatever the clock says, so the lines that mark a change are never the ones the throttle dropped. The throttle drops rather than holds back, so the log keeps the last sample it dropped and writes it before the next boundary's row: a unit is timed from its first sample to its **last**, not to whichever earlier row the clock kept (#32). Every writer calls `ActivityLog.finish` at its terminal status, which writes that held sample and then a row stamped at the run's end in the last unit and phase, so the run's span and its last unit end when the run did. `ts` carries milliseconds; at whole seconds a 4 s recording read anything from 3 to 5 s. Writing is `best_effort` like the progress writers beside it — publishing is a statement *about* the work, and a raised write would reach a runner's isolation boundary and be recorded as the work itself failing. Three writers: the orchestrator's emit, the single-job worker, and the distill coordinator. It lives in `storage/` and not the GUI because the run outlives the window, because the GUI only ever sees a rendered string, and because a hung run is a bug report.
 
 ### `machine.yaml` and `resources.yaml` — what a job ran on, and its peak memory
 
@@ -2185,7 +2265,8 @@ Results are returned directly — one entry per sampled frame, one `FrameResult`
 ```python
 @dataclass
 class PromptTestResult:
-    frame_idx: int
+    part_index: int                   # the video part the frame came from
+    frame_idx: int                    # local to that part
     t_ns: int
     frame_image: np.ndarray
     results: dict[str, FrameResult]   # prompt label ("prompt_0", …) → that prompt's detections
@@ -2204,9 +2285,11 @@ recordings/recording_001/detections/
         ├── test.json          # model_id, min_conf, n_sample_frames, compute; the sampled frames,
         │                      #   the prompts and their colours, and per-frame counts at min_conf
         └── frames/
-            ├── frame_000042_prompt_0.jpg
-            └── frame_000042_prompt_1.jpg
+            ├── part_000_frame_000042_prompt_0.jpg
+            └── part_000_frame_000042_prompt_1.jpg
 ```
+
+A result is identified by its `(part_index, frame_idx)`, never by its position: `sampled_frames` lists every position requested, while a sample that does not decode is skipped, so the results (and `test.json`'s `frame_results`, each of which names its part) can be shorter. The part is in the overlay name because `frame_idx` is local to its part.
 
 Sampled frames are exact. Each is decoded with `video.read_frame_at` and the part's timestamp map (§3 *Frame timestamp maps*), so the picture is the requested presentation index, and `PromptTestResult.frame_idx` reports the frame actually decoded.
 
@@ -3572,7 +3655,7 @@ tracks.zarr/
 ├── first_frame    (T,) int32
 ├── last_frame     (T,) int32
 ├── n_detections   (T,) int32       # frames where a detection was linked
-├── n_gaps         (T,) int32       # total missed frames within the track span
+├── n_gaps         (T,) int32       # processed frames missed within the track span (§4: at a stride, a frame never looked at is not missed)
 └── mean_conf      (T,) float32
 ```
 
@@ -4208,7 +4291,7 @@ recordings/recording_001/
             └── part_001.zarr/
 ```
 
-`M` = frames in this part where the track has a valid detection. `D` = `model.output_dim`. `det_row` is a back-reference to the source detection zarr row — allows re-rendering with a different pipeline or inspecting the original mask without re-running detection.
+`M` = frames in this part where the track has a valid detection. `D` = `model.output_dim`. **`frame_idx` is part-local**: it counts from 0 inside this part, as every per-part store does (§5 `FrameResult.frame_idx`), while `t_ns` is on the recording's clock. The readers (`run_preview.load_track_trajectory` / `load_track_timeline`) return it **recording-wide**, adding the part's start frame from `recording_store.part_start_frames` (keyed by part stem), so anything built from them (query and clustering instances, frame-span examples, the coverage band, Measurements) numbers frames across the whole recording. `det_row` is a back-reference to the source detection zarr row — allows re-rendering with a different pipeline or inspecting the original mask without re-running detection.
 
 **`det_row` is valid only within the part that wrote it, and names the frame's *representative* detection.** A detection is identified by `(track_id, part_index, det_row)` — the embedding zarr stores no part, so the part is whichever file the row is in, and a flat concatenated read resolves one part's index against another's. Where a frame carries several detections of the subject (anchor secondaries), they are OR-merged into one silhouette and `det_row` records the highest-confidence one only. Both facts make `det_row` a *traceability* handle, not a geometry source: reconstructing where the animal was from it mis-resolves across parts and returns the largest fragment's box rather than the animal's.
 
@@ -4833,7 +4916,7 @@ Also built: `Experiment.set_metadata` (name/description; `description` is a `con
 
 **Deletion (cohesive strategy, gui_design §1.1)** — one model for deleting anything: confirm first; refuse (don't orphan) when a *downstream computation* loses its inputs; delete owns its outputs; an index that merely *points at* an object is pruned while a record *computed from* it blocks; delete lives on the detail page and navigates to the parent index. `Experiment.delete()` (whole experiment), `Experiment.delete_recording(recording_id)` (whole recording; prunes it from every processing-run `per_recording`, removing an emptied run record — never blocked, since a run only indexes a recording), `Experiment.delete_run(run_id)` (above), `Experiment.delete_dataset(dataset_id)` / `Experiment.delete_model(model_id)` (§12; block only on *active* work — the object's own export/training, a model still training from a dataset, or an active detection run using a model — while a completed dependent's lineage just dangles), arena clear. Per-recording run records carry `processing_run_id` (the `run_NNN` that launched them) + `created_at` so the GUI can map `run_NNN` ↔ a per-recording id and label runs descriptively in selectors and the recording "Run history".
 
-**Experiment export / import — move a experiment between machines (§1-2, §15)** — a experiment is already self-contained with relative paths (Tenet 6), so this is selective packaging + an integrity manifest + safe placement, not path rewriting. `Experiment.export(dest, *, include_video=False, include_datasets=False, gzip=False)` packs the experiment tree into a single `tar` (`<id>.segproj.tar`) with a top-level `export.yaml` manifest (`schema_version` first, experiment id/name, `contents` flags, payload sha256). **Slim by default** — outputs + per-part timestamps + metadata + models; **source video and datasets excluded** (heavy; datasets regenerable). **`exports/` is never packed**: export run records say where *this* machine wrote copies, under root names another machine does not have, and while an export run packs, its own record there is rewritten by every report. The exporter refuses if a DETAIL file holds an absolute path (Tenet 6 guard, scoped past `models/*/run/` trainer scratch). `Experiment.import_archive(archive, *, replace=False, name=None)` validates the manifest (schema_version, payload sha256 — truncation guard) and places the experiment into the managed workspace, staging to a temp dir then moving atomically (nothing placed on error — Tenet 10): **hand-off** semantics — create, or replace a same-id experiment (`replace=True`), or `name` for a separate copy; no 3-way merge (assumes sequential use). `storage/export.py` does the work; the CLI (`detail experiment export/import`) is the headless VM↔local path. **Both report progress** (#916) through a `progress(stage, fraction, detail)` callback: export `scanning → checking → hashing → packing`, import `reading → extracting → verifying → placing`, one fraction across the passes with each file weighed by its measured per-file and per-byte cost (`storage/export.py::_PassCost`), moving inside a large file as well as between files. The digest and the tar are two reads, so each file's `(size, mtime_ns)` is taken from the open handle when hashed and compared before and after it is packed; a mismatch raises `ExperimentChangedError` naming the file rather than writing an archive that fails its integrity check on import. The archive is written as `<dest>.partial` and renamed when complete. Import reaches 1.0 *before* it replaces a same-id experiment and reports nothing after, so a callback that raises to cancel can never land between the delete and the rename. The CLI drives `_StageProgress`. The GUI mirrors it: **Export experiment…** on the experiment overview opens the one Export dialog (`gui/export.py::open_export`) with the catalogue's `bundle` target ticked — include-video / datasets / gzip are that target's options — so the export is an export run (#354), listed under Active processes with its bar and ETA and surviving the window closing; the catalogue's bundle names the archive after the experiment (`<name>.tar`, `core.utils.safe_path_part`), and launching an export whose subject is the whole experiment goes straight to that run's page (`app.py::_on_export_launched`; other exports stay on the screen they were started from and show a notice). The run's ETA is the running target's own (`PhaseClock`), since the bar gives each target an equal share; **Import experiment** on the Home page (file pick → import → open; a same-id collision prompts to replace) runs behind `gui/busy.py::run_progress`, a bar with Cancel and the time left (`eta=True`: the import's fraction is time-weighted). (A video-excluded import keeps the `video` entries + timestamps; the `.mp4` blobs are absent → frame previews degrade to a "video not in this export" message — graceful no-video handling.) **Referenced video is found again on import** (#916). A referenced part names its video by a `video_roots` alias, which means nothing on a machine that never registered it, so an imported experiment's video was missing even when both machines reach the same server, until a user located one file by hand. The manifest therefore carries `video_roots: {alias: <the exporting machine's directory>}` for every alias the experiment's recordings name. That is a machine path in the *archive's* manifest, never in an experiment file (Tenet 6): the manifest is not placed with the experiment, and it is a hint the importer verifies, not a path anything resolves. Import adds a `finding video` phase between `verifying` and `placing` (only when a recording references video; a few small reads per root, not weighed in the bar): for each alias this machine cannot resolve to the right videos, the manifest's directory is used when the first referenced file found there matches its recorded fingerprint, the same evidence a Locate gives (`api/recording.py::_relink_root`). Then, for what is still missing, **beside every folder that did hold video** (`storage/export.py::_beside`): the folder itself, a folder of the alias's name inside it, beside it, or around it, the name also tried without a `_N` dedup suffix (auto aliases are folder names, `roots._auto_alias`), and each folder found is looked beside in turn. A lab keeps a study as one folder per day, and the manifest's paths are no help when the two machines spell the server differently or the archive predates them; one folder this machine knows is enough. A guessed folder probes at most 3 of the root's videos, and is used only on a fingerprint match. A share that does not answer is asked once per import, not once per root (`_Reachable`). The search only reads; what it found is applied after the last report, so a cancel leaves this machine's `storage.yaml` as it was. A free alias is registered as is. An alias this machine already uses for another folder is never re-pointed (auto aliases are folder names, so two machines' `lab` can differ): the found folder gets a root of this machine's own, or reuses the deepest one already holding it, and the staged `recording.yaml`s are rewritten to it before placement. `Experiment.referenced_video_missing()` lists what is still not found; the CLI prints it after `imported:` and the GUI names those recordings in a notice once the experiment opens, each pointing at Locate. An archive made before this carries no `video_roots` and imports as before.
+**Experiment export / import — move a experiment between machines (§1-2, §15)** — a experiment is already self-contained with relative paths (Tenet 6), so this is selective packaging + an integrity manifest + safe placement, not path rewriting. `Experiment.export(dest, *, include_video=False, include_datasets=False, gzip=False)` packs the experiment tree into a single `tar` (`<id>.segproj.tar`) with a top-level `export.yaml` manifest (`schema_version` first, experiment id/name, `contents` flags, payload sha256). **Slim by default** — outputs + per-part timestamps + metadata + models; **source video and datasets excluded** (heavy; datasets regenerable). **`exports/` is never packed**: export run records say where *this* machine wrote copies, under root names another machine does not have, and while an export run packs, its own record there is rewritten by every report. **An earlier export archive saved inside the experiment is never packed** (recognised by name, `*.tar` / `*.tar.gz` / `*.tgz` and their `.partial`, and a finished one confirmed by its manifest, so a user's own `.tar` still travels); a symlinked folder is not followed, and `contents.symlinked_folders_left_out` names each one, which `experiment export` prints (#29). The exporter refuses if a DETAIL file holds an absolute path (Tenet 6 guard, scoped past `models/*/run/` trainer scratch). `Experiment.import_archive(archive, *, replace=False, name=None)` validates the manifest (schema_version, payload sha256 — truncation guard) and places the experiment into the managed workspace, staging to a temp dir then moving atomically (nothing placed on error — Tenet 10): **hand-off** semantics — create, or replace a same-id experiment (`replace=True`), or `name` for a separate copy; no 3-way merge (assumes sequential use). **Replace deletes what the bundle does not carry, and says so first** (#29): `storage/export.py::replace_losses` reads the manifest's `contents` flags and walks the existing experiment with the export's own filters, returning the video files (count, bytes) and datasets a bundle without them leaves behind, the export records no bundle carries, and earlier archives in the folder. A refused import carries it (`ExperimentExistsError.losses`, a `FileExistsError`), so the GUI asks without walking the experiment on its UI thread; `api.experiment.replace_warning` words it once for the GUI prompt and `experiment import --replace`, which prints it before replacing and does not ask. `storage/export.py` does the work; the CLI (`detail experiment export/import`) is the headless VM↔local path. **Both report progress** (#916) through a `progress(stage, fraction, detail)` callback: export `scanning → checking → hashing → packing`, import `reading → extracting → verifying → placing`, one fraction across the passes with each file weighed by its measured per-file and per-byte cost (`storage/export.py::_PassCost`), moving inside a large file as well as between files. The digest and the tar are two reads, so each file's `(size, mtime_ns)` is taken from the open handle when hashed and compared before and after it is packed; a mismatch raises `ExperimentChangedError` naming the file rather than writing an archive that fails its integrity check on import. The archive is written as `<dest>.partial` and renamed when complete. Import reaches 1.0 *before* it replaces a same-id experiment and reports nothing after, so a callback that raises to cancel can never land between the delete and the rename. The CLI drives `_StageProgress`. The GUI mirrors it: **Export experiment…** on the experiment overview opens the one Export dialog (`gui/export.py::open_export`) with the catalogue's `bundle` target ticked — include-video / datasets / gzip are that target's options — so the export is an export run (#354), listed under Active processes with its bar and ETA and surviving the window closing; the catalogue's bundle names the archive after the experiment (`<name>.tar`, `core.utils.safe_path_part`), and launching an export whose subject is the whole experiment goes straight to that run's page (`app.py::_on_export_launched`; other exports stay on the screen they were started from and show a notice). The run's ETA is the running target's own (`PhaseClock`), since the bar gives each target an equal share; **Import experiment** on the Home page (file pick → import → open; a same-id collision prompts to replace) runs behind `gui/busy.py::run_progress`, a bar with Cancel and the time left (`eta=True`: the import's fraction is time-weighted). (A video-excluded import keeps the `video` entries + timestamps; the `.mp4` blobs are absent → frame previews degrade to a "video not in this export" message — graceful no-video handling.) **Referenced video is found again on import** (#916). A referenced part names its video by a `video_roots` alias, which means nothing on a machine that never registered it, so an imported experiment's video was missing even when both machines reach the same server, until a user located one file by hand. The manifest therefore carries `video_roots: {alias: <the exporting machine's directory>}` for every alias the experiment's recordings name. That is a machine path in the *archive's* manifest, never in an experiment file (Tenet 6): the manifest is not placed with the experiment, and it is a hint the importer verifies, not a path anything resolves. Import adds a `finding video` phase between `verifying` and `placing` (only when a recording references video; a few small reads per root, not weighed in the bar): for each alias this machine cannot resolve to the right videos, the manifest's directory is used when the first referenced file found there matches its recorded fingerprint, the same evidence a Locate gives (`api/recording.py::_relink_root`). Then, for what is still missing, **beside every folder that did hold video** (`storage/export.py::_beside`): the folder itself, a folder of the alias's name inside it, beside it, or around it, the name also tried without a `_N` dedup suffix (auto aliases are folder names, `roots._auto_alias`), and each folder found is looked beside in turn. A lab keeps a study as one folder per day, and the manifest's paths are no help when the two machines spell the server differently or the archive predates them; one folder this machine knows is enough. A guessed folder probes at most 3 of the root's videos, and is used only on a fingerprint match. A share that does not answer is asked once per import, not once per root (`_Reachable`). The search only reads; what it found is applied after the last report, so a cancel leaves this machine's `storage.yaml` as it was. A free alias is registered as is. An alias this machine already uses for another folder is never re-pointed (auto aliases are folder names, so two machines' `lab` can differ): the found folder gets a root of this machine's own, or reuses the deepest one already holding it, and the staged `recording.yaml`s are rewritten to it before placement. **A referenced file that is present is checked against its recorded fingerprint by the resolver** (`storage/recording.py::resolve_part_video_path`, cached per `(path, size, mtime_ns)` by `integrity.cached_fingerprint`): a different video at the reference raises `video_roots.VideoNotRecordedError`, a `MissingVideoRootError` and a `FileNotFoundError`, so the presence gate (`Recording.video_available`) and every frame reader treat it as not on this machine rather than reading it. A root alias this machine already uses for another folder holding a same-named file used to pass every reader (#29); the run gate (`video_integrity.validate_source_videos`) always checked, and keeps its own uncached comparison. `Experiment.referenced_video_missing()` lists what is still not found, a different video included; the CLI prints it after `imported:` and the GUI names those recordings in a notice once the experiment opens, each pointing at Locate. An archive made before this carries no `video_roots` and imports as before.
 
 **Import progress (§3)** — `Recording.add_video_part(path, progress=None)` copies the part in at its original rate and resolution; a stage that wants fewer frames sets a `every_n_frames` on the run (§4). `progress(stage, fraction, detail)` reports the import stage (Reading timestamps → Copying). `DINOv3.readiness` now reports missing `torch`/`transformers` (not-ready) so the pre-run check explains what to install instead of failing deep in the worker.
 
@@ -5678,7 +5761,9 @@ audited: false               # derived: whether an audit.csv sits beside the art
 
 That is Query's (`pipeline/query.py`), in the order it is written; `audited` is filled in by the
 writer, never taken from the producer. A temporal clustering run's (`pipeline/temporal_clustering.py`)
-adds `label_paths` — parallel to `names`, one path per label — writes no `score` (a cluster
+adds `label_paths` — parallel to `names`, one path per label — gives its `unlabelled` source
+label an entry with no name in both (`unlabelled: []`: the fact §23's `unnamed_labels` condition
+reads, so `unnamed_time` is measured on every clustering run), writes no `score` (a cluster
 assignment has no confidence), declares `overlap: exclusive`, and its `method` carries
 `method_id`, `params`, `granularity` and the method's own fit-summary counts.
 
@@ -7306,7 +7391,11 @@ rather than repairing:
 The edits are `name_nodes` (by name: an existing name adds to that label; a label's only node given
 a new name renames the label), `create_label`, `label_nodes`, `rename_label`, `merge_labels` and
 `delete_label`, all through one door (`LabelOperations._label_edit`) that folds an older state,
-applies the change, checks the rules and recomputes the resolution. The CLI has `--name-node`,
+applies the change, checks the rules and recomputes the resolution. `edit_labels` applies names,
+renames and merges as **one** edit, each name read against the labels as the edits before it left
+them: the CLI's `--name-node`, `--rename-label` and `--merge-label` run through it, so a command
+whose last pair names no label writes nothing (#24; one write per pair had left the earlier pairs
+written). The CLI has `--name-node`,
 `--rename-label` and `--merge-label`; INTERPRET's label box lists **Add to an existing label**
 (greyed, with the reason, where the parent rule forbids it) and its labels list has Rename… and
 Merge into….
@@ -7846,7 +7935,13 @@ cluster and in INTERPRET's montage (faded, tagged), so INTERPRET stays true to t
   and frame view reads `instances.csv`, so all follow.
 - **An edit applies only while it still means what it said**: while the clip's label is
   `from_label` or a label nested under it. A rename keeps it (the id is the same); relabelling the
-  cluster or deleting the label leaves the entry in the state with no effect.
+  cluster or deleting the label leaves the entry in the state with no effect (deleting the label a
+  clip was moved *to* reports the clip unlabelled, as every clip of that label is). **A merge
+  re-points the edits** at the label merged into (`storage/clip_edits.relabel`): the two labels are
+  one behavior, so a clip removed from the source stays removed and one moved into it is in the
+  target; an edit whose two ends become the same label is dropped. Undo puts them back:
+  `label_maps` carries the edits keyed by clip and `restore_labels(..., clip_edits=)` restores them
+  (#24).
 - **The cache readers follow too**, so the label bar and BROWSE's preview agree with the export:
   `NodeView.set_clip_edits` (called by `node_view()` whenever the state file changes) feeds
   `label_time` (a run's covered time moves to `unlabelled` or the target) and `labelled_runs`
@@ -7868,7 +7963,7 @@ no `schema_version` row; its header is its schema.
 | `node` | the labelled cluster it counted toward |
 | `label_path` | that cluster's label path then |
 | `drawn_at` | when the row was written (the name is kept from the draw that came first) |
-| `answer` | `yes` or `no`; empty only in a row an earlier version logged for a draw |
+| `answer` | `yes` or `no`; `withdrawn` for a clip put back after it was answered; empty only in a row an earlier version logged for a draw |
 
 **Why a census.** Review round 11 replaced the random draw of 25 with a review of every clip (the
 user's decision): a draw left most clips unseen, and a clip nobody watched cannot be removed. The
@@ -7895,6 +7990,12 @@ cluster, which writes its census.
   `membership_changed_at` — starts unreviewed rather than showing climb's census. A clip keeps one
   latest answer per path. A rename and a take-out change nothing (a rename carries the answers to
   the new path), and neither does an undo, which restores the label's change time.
+- **Putting a clip back withdraws its answers** (the owner's decision, #24): `put_back_clips`
+  appends a `withdrawn` row for each path the clip has a current answer under
+  (`storage/clip_review.withdraw`), which supersedes the answer without being one. The clip reads
+  as not yet reviewed (`remaining` counts it), so its cluster is no longer *all audited* on a "no"
+  written because the clip was out; the cluster's other clips keep their answers, and finishing
+  again answers it. A version older than this reads the row as an unanswered draw row.
 - **An earlier draw's rows stay readable**: a drawn-but-unanswered row judges nothing; a judged one
   counts as that clip's answer (under its `label_path`; a row with none, under any) until a census
   supersedes it, but no cluster reads as reviewed until
@@ -8429,7 +8530,8 @@ page and an export cannot disagree. One screen at a time: two statistics cannot 
 and cannot be ticked** (`ScreenChoice.leaves` `None`, as for one that cannot be read), with its
 reason in full under the list (`cluster_filters.unavailable_text`): nothing it ranked is shown to
 differ, and ticked it took the labels' colours off the tree, coloured nothing and greyed every
-clip (user, 2026-11-17). A
+clip (user, 2026-11-17); so is one with nothing to contrast (`rank_record` `None`). Such a screen
+is refused at launch when its shape is knowable (§24 *Known before measuring*). A
 tab beside INTERPRET was specified for this (§21) and never built; the dock is the screen it was
 meant to be.
 
@@ -8687,9 +8789,21 @@ measure, and a measure added later applies to every artifact already on disk.
 The output is one row per `(recording, subject, label, label_to, window, measure)`:
 
 ```
-recording_id, subject, label, label_to, window_id, window_start_t_ns, window_end_t_ns,
-measure, value, denominator_ns, n
+recording_id, subject, label, label_to, label_display, label_is_remainder, window_id,
+window_start_t_ns, window_end_t_ns, measure, value, denominator_ns, n
 ```
+
+**A parent label's row counts only its remainder, and says so** (amended in #24, owner decision).
+Labels nest (§22) and a bout counts under its deepest label, so a label with another nested under
+it measures only the time its children did not take. The numbers stay as they are; the row is
+*named* for what it counts. `label` keeps the plain name, because it is the join key a comparison
+groups on (`compare.MEASURE_KEYS`) and a user joins to `instances.csv` on. `label_display` is what
+a person reads — `"<label> (other)"` on such a row, the label itself otherwise — and
+`label_is_remainder` marks the row, so a CSV reader can tell without parsing a name. "Is a parent"
+is decided once, from the manifest's `label_paths` (`measures.remainder_labels`); a producer with
+no hierarchy has none. A comparison stores the list as `remainder_labels` on its record and carries
+the same two columns in `stats.csv` and `ranking.csv`, and every surface that titles a measurement
+reads them.
 
 `denominator_ns` is not optional and not a convenience column — see *Denominators* below.
 
@@ -9049,6 +9163,19 @@ is arithmetically the observed maximum and nothing can ever exceed it. That is w
 `no_floor_reason` rather than printed as a threshold nothing cleared, because a blank column and a
 column of "no" read as "nothing differed" when the truth is "this design cannot tell".
 
+**Known before measuring, refused before measuring.** Three of those shapes are counts of
+recordings and their metadata: a within-unit design where fewer than two units hold the levels
+its null moves, a between design where every group holds at most one unit, and fewer than two
+groups. `compare.no_floor_before_measuring` is the one rule (the same sentence the ranking
+carries afterwards; its counts are upper bounds on the ranking's, so it never refuses what
+measuring could have floored), asked in `prepare_comparison` before the measuring pass. A screen
+(`source: nodes`) exists to say which clusters clear the floor, so without one it has no output:
+it is refused with the reason and what would run (`api.comparison.screen_refusal`), in the launch
+dialog before Run, by `comparison run` and by the API alike. A comparison of labelled behaviors
+with no floor is still a description, reported as measured: the dialog warns in its preview and
+the run goes ahead. The reasons only measuring can know (no measure present in `min_units`
+units, no spread for the moderated t) keep the after-measuring backstop.
+
 ### Designs: the permutation respects the unit, one level down
 
 The between-unit fold change above is one design, and the difference screen's pre-build study
@@ -9120,7 +9247,9 @@ Three rules the within designs share, each from a measurement:
 Beside the effect, every within-design item reports `consistency` (units whose own effect shares
 the sign), `n_units`, `n_present`, and whether the sign survives leaving any one unit out. The
 floor is the same 95th percentile of the largest |effect| over the family, in the same pass, and is
-withheld with `no_floor_reason` when nothing can move (one unit; no measure reaching `min_units`).
+withheld with `no_floor_reason` when nothing can move (fewer than two units holding the levels
+the null moves, since a unit at one level of a paired contrast cannot be flipped; no measure
+reaching `min_units`).
 
 ### The statistic: scored by agreement, not by size
 
@@ -9656,7 +9785,7 @@ each with a layout, shown as **read-only rows** of the skeleton library (below).
 view (12 points)*, *Quadruped overhead view (8 points)*, *Quadruped side view (5 points)*, *Midline
 (3 points)*. An outright rename, by the user's choice: the old ids no longer resolve. A set or run
 saved under one still holds its own copy and runs, and the example-set picker still places it by
-digest; only the library's *Used by* count, which matches the saved id, no longer counts it. A run counts its
+digest, and the library's *Used by* count matches it by digest too (§3 *Ids are never reused*). A run counts its
 skeleton by the **digest of the copy it holds**, never by a name or a library id — two
 experiments that used the same skeleton produce runs with matching identity.
 
@@ -9692,7 +9821,11 @@ breaks a set, a run or a model.
 **Dependents freeze a skeleton.** A library skeleton is **editable and deletable only while
 nothing uses it**. Its dependents are found by a **live search** of the experiments the app knows
 (`locations.list_experiment_dirs`) for example sets, keypoint detect and track runs, embedding runs
-aligned on them, and trained students whose `skeleton_ref.id` names it. The search runs off the UI
+aligned on them, and trained students whose `skeleton_ref` holds it — matched on the ref's
+**digest**, since a library id means something only on the machine that minted it: a ref naming
+this entry by id and digest counts for it alone (so a duplicate of a used skeleton stays
+editable); a ref whose id names a different skeleton here counts for every entry holding its
+digest; a ref with no digest is matched on its id. The search runs off the UI
 thread behind a busy overlay, when a skeleton is selected and again on Save or Delete. While it
 has dependents, **Save** is replaced by **Save as new** (the edit becomes a new skeleton,
 `derived_from` the old one) and **Delete** is greyed, listing what uses it. Once the last dependent
@@ -9736,9 +9869,12 @@ Example set:  [overhead rats ▾]  8 / 8 frames      (this experiment's sets on 
 - The picker is one widget (`gui/example_set_picker.py`), shown by: the **keypoint detect** form
   and **Test keypoints…** when the method is `dinov3_match`, and the **Distill keypoints…** dialog
   when its teacher is the patch method (§12). It is hidden for a model that does not need examples.
-- A set belongs to a skeleton by its `skeleton_ref.id`; a set with no ref (made before the library,
-  or from a bare `Skeleton` or file) matches the first library entry with the same digest, and one
-  matching none is listed under *(no library skeleton)*, so no set an experiment holds is hidden.
+- A set belongs to a skeleton by its `skeleton_ref.id` when that entry holds the set's skeleton
+  (same digest); otherwise (no ref, made before the library or from a bare `Skeleton` or file, or a
+  ref whose id names another skeleton here) it matches the first library entry with the same
+  digest, and one matching none is listed under *(no library skeleton)*, so no set an experiment
+  holds is hidden. An imported set keeps its `skeleton_ref` only when an entry here holds its
+  digest, and the ref then names that entry.
 - **API / CLI** are unchanged in substance: `create_example_set(name, skeleton)` takes a library
   id, a preset id, a `Skeleton` or a skeleton file; `keypoints examples …` stays the scripted
   route; `keypoints examples edit` renames, and `--skeleton` changes the skeleton until the
