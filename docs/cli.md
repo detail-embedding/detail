@@ -230,11 +230,27 @@ table, see the [Parameters reference](reference/parameters.md).
   (relink it), a content change reports changed (remove and re-add). Exits non-zero if
   anything is wrong. A recording with no video yet says so and exits 0. Runs are gated on the
   same check, so a bad referenced video fails the run before it starts.
-- `relink --experiment <dir> --recording <id> --part <N> --video <file>`: point a referenced
-  part at a moved/renamed file. Accepted only if the file's content matches what was recorded
-  (a mismatch is a changed video → remove and re-add). For a whole moved library, re-point the
-  [video root](#video-root) instead. On an experiment made on another computer, relinking one
-  file registers its video root here, so every recording under that root finds its video too.
+- `relink --experiment <dir> --recording <id> --part <N> [--video <file>]`: point a part at
+  its video file.
+    - A **referenced** part: point it at its moved or renamed file. Accepted only if the file's
+      content matches what was recorded (a mismatch is a changed video → remove and re-add). For
+      a whole moved library, re-point the [video root](#video-root) instead. On an experiment
+      made on another computer, relinking one file registers its video root here, so every
+      recording under that root finds its video too.
+    - A **copied** part whose video is not on this computer (an experiment
+      [imported without its video](#moving-experiments-between-machines)): the file is copied
+      back in. It is accepted only if its frame times match the recorded part's exactly (the
+      same number of frames, each at the same time) and its resolution matches; the error says
+      what differs. A part copied in by this version also has to have the same content. Without
+      `--video` it uses the file the part was copied from, when that is still on this computer.
+      It shows a bar while it checks and copies. A copied part whose video is here is refused:
+      there is nothing to put back.
+
+    ```
+    detail recording relink --experiment study_copy --recording m1 --part 0
+    #   using the file it was copied from: /Users/you/raw/m1.mp4
+    #   put back m1 part 0: copied in from /Users/you/raw/m1.mp4
+    ```
 - `add-stream …`: import an aligned time-series
   (see [Streams](#importing-event-streams-med-pc)).
 - `import --experiment <dir> --bundle <folder> [--dry-run]`: bulk-import many
@@ -773,14 +789,23 @@ anything ([below](#how-big-and-how-long)). The subject is whichever of `--record
 none for the experiment itself. `--run` takes the experiment-level processing run id from
 `process list`, not a per-recording id such as `track_01`.
 
+A scope is refused, not ignored, when a target you ask for cannot be narrowed that way:
+`--target instances --frames 0:3` stops with "Behavior instances cannot be narrowed to a frame
+range (only to one cluster, a selection, some recordings)", and nothing is written. `export list`
+shows each target's scopes. So is a `--cluster` the run does not have (the error lists its
+clusters, with the names you gave them), an `--instance` it does not have, a `--frames` range that
+starts past the last frame, and a `--target` given twice. A target that always covers the whole
+run, such as `performance`, is written whole beside targets that do narrow, and `export.yaml`
+lists it under `whole`; asked for alone with a scope, it is refused.
+
 Figure options, for every target that writes a figure (`instances`, `ethogram`):
 `--theme light|dark`. Figures are light, for print, unless you pass `--theme dark` (for slides).
 A comparison's figures are exported with `comparison export`, which takes the same `--theme`.
 
 Clip options, for `--target clip` and `--target clips`: `--render raw|overlay|mask`
-(repeatable), `--crop` / `--full-frame`, and `--size <px>`. `--target clip` also takes
-`--frames START:END` (the inclusive frame range to write) plus `--track <id>` and
-`--embed-run <emb_NN>`:
+(repeatable), `--crop` / `--full-frame`, and `--size <px>`. `--target clip` needs
+`--frames START:END` (the inclusive frame range to write; without it the export is refused) and
+`--embed-run <emb_NN>`, and takes `--track <id>`, which must be a track that embedding run has:
 
 ```bash
 detail export run --experiment ./study --recording recording_004 --target clip \
@@ -825,6 +850,8 @@ selection, written to `analysis/<an_NN>/`.
   refused rather than ignored. `--non-example` marks a clip that is *not* the behavior, in the
   same spec as `--example`; only a method whose negatives are `optional` or `required` can use
   them, and a run that passes them to one that cannot is refused with the method's reason.
+  A `--non-example` whose behavior name has no `--example` (a typo, or a bare one beside named
+  examples) is refused, naming the behaviors that have examples.
 - `query-calibrate --experiment <dir> --run <an_NN> [--curve <behavior> [--steps 21]]
   [--cutoff <behavior>=<confidence> …] [--name <behavior>=<name> …] [--finalize] [--reopen]`:
   set the confidence cutoff that turns a query run's stored search into behavior instances.
@@ -897,7 +924,8 @@ selection, written to `analysis/<an_NN>/`.
   `origin: predicted`, so re-importing one can never be read back as ground truth. A recording
   that matched nothing gets a header-only file: the zero is the finding. A run whose search did
   not reach every recording is refused, naming the ones it missed, so a header-only file never
-  stands for a recording nobody searched.
+  stands for a recording nobody searched; so is a run with no cutoff set yet (run
+  `query-calibrate` first).
 
   The artifact is pinned as it is exported and the snapshot id is printed, so a figure
   built from these CSVs can cite something that survives a later re-cut of the run.
@@ -1363,7 +1391,8 @@ model** catalog (shared across every experiment on the machine):
 - `show <id>`: print one of your models' metadata + provenance (the detail page, as text),
   with its role, and for a keypoint model its skeleton: the library entry, points and pairs.
 - `set-meta <id> [--made-by] [--description] [--notes] [--preview <image>]`: edit a
-  model's metadata (only the flags you pass change).
+  model's metadata (only the flags you pass change; with none it stops with "nothing to
+  change" rather than reporting an update).
 - `export <id> <dest.zip>`: bundle a model (weights + `model.yaml` + preview) into a
   `.zip` to share it (shows progress).
 - `restore <archive.zip>`: bring a model exported with `export` back into the catalog. A
@@ -1998,12 +2027,26 @@ On import, `--replace` replaces a same-id experiment and `--name <new>` lands a 
 
 ```
 replacing experiment 'study' deletes what the bundle does not bring back:
-  - 3 video file(s), 4.2 GB: the bundle carries no video
+  - 3 video file(s), 4.2 GB: the bundle carries no video (it can be put back from the original files with Locate video, or `detail recording relink`)
   - 1 export record(s), export_01: no bundle carries them (the exported files themselves are not touched)
 imported: /Users/you/Documents/DetailExperiments/study
 ```
 
 Without `--replace`, an import onto an existing experiment stops and shows the same list under "--replace would also delete". To keep the video, import with `--name <new>` instead, or export with `--include-video`.
+
+**Putting the video back.** An experiment imported without its video keeps every recording's
+timestamps, so its copied video can be put back from the original files: `detail recording relink
+--recording <name> --part <N>` copies a file back in when its frame times match the recorded
+part's exactly (see [`recording relink`](#recording)). Until then `--include-video` has nothing
+of those recordings to pack, and the export says so rather than printing only `exported:`:
+
+```
+exported: study.segproj.tar
+no video was packed: 2 recording(s) have no video on this machine (put it back with Locate video, or `detail recording relink`)
+```
+
+Recordings whose video is used in place are named the same way: that video never travels in an
+archive.
 
 Both commands show a progress bar on stderr, relabelled as the work moves through
 its phases: export goes `scanning` → `checking` → `hashing` → `packing`, import
@@ -2021,7 +2064,8 @@ renamed when it is complete, so a stopped export never leaves a file that looks
 finished. A video-excluded import is
 fully analysis-ready (embeddings, tracking re-tuning, metadata); the
 frame-preview surfaces show "source video not in this export", and the clip
-picker refuses to mark example clips until the video is on this machine.
+picker refuses to mark example clips until the video is on this machine
+(put it back with `recording relink`, above).
 
 Video that was referenced in place never travels in the archive, but the
 archive records which folder each [video root](#video-root) was on the
@@ -2229,9 +2273,13 @@ Paths in the table resolve relative to the table itself. **The offset column is 
 recording** and that is the point: a preset carries the mapping, which is the same
 everywhere, and not the alignment, which is not: each video and logger pair has its own
 skew. Leave the cell empty for 0. A recording whose file fails is reported and skipped, so
-one unreadable file doesn't sink the batch.
+one unreadable file doesn't sink the batch; when **every** recording is skipped the command
+ends with an error. A header row (`recording`, `Recording ID`, `name`, in any case) is read as
+a header, not as a recording.
 
-One recording at a time takes `--preset` instead of `--importer` and the mapping flags:
+One recording at a time takes `--preset` instead of `--importer` and the mapping flags.
+`--time-column`, `--time-is`, `--channel` and `--covered-behaviors` are refused beside
+`--preset`, which carries its own mapping; without `--offset` the preset's own offset applies:
 
 ```bash
 detail recording add-stream --experiment $PROJ --recording recording_004 \
@@ -2314,9 +2362,9 @@ detail recording import-labels --experiment $PROJ --manifest labels.yaml
 The whole manifest is validated first (every recording must exist, every file must
 resolve, a mapping takes only `file` and `covered_behaviors`, and a recording listed twice
 is refused rather than keeping the second); then each file is imported against its own
-recording's timestamps. A file
-that fails to parse is reported and skipped; the batch continues. Every file in one
-`import-labels` run uses the same `--importer` (`behavior_csv` or `boris`).
+recording's timestamps. A file that fails to parse is reported and skipped; the batch
+continues, and when every file is skipped the command ends with an error. Every file in
+one `import-labels` run uses the same `--importer` (`behavior_csv` or `boris`).
 
 ### Bulk importing recordings
 

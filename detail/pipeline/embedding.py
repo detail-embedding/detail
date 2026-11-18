@@ -1646,7 +1646,12 @@ class EmbeddingModule(ProcessingModule):
         video_integrity.raise_on_video_issues(
             video_integrity.validate_source_videos(recording_dir, recording_data)
         )
-        tracks_path = Path(recording_dir) / "tracking" / tracking_run_id / "tracks.zarr"
+        tracks_path = (
+            recording_store.require_run_output(
+                recording_dir, "tracking", tracking_run_id
+            )
+            / "tracks.zarr"
+        )
         existing = {int(t) for t in PartZarrReader(tracks_path).read()["track_id"]}
         # "All tracks" is resolved per recording, so each recording embeds its own
         # full set (track ids are assigned independently per recording).

@@ -4490,80 +4490,129 @@ class AddVideoPartDialog(Dialog):
         self._status.setVisible(busy)
 
 
+#: The Locate video button's tooltip while nothing is missing.
+_LOCATE_NOTHING = "No video needs locating."
+
+
 class RelinkVideoDialog(Dialog):
-    """Point a referenced video part at a moved/renamed file (Section 2), verified by
-    fingerprint. Synchronous + fast (a head/tail hash + a yaml write) — no worker thread,
-    mirroring the import-field-of-view dialog; the caller runs ``do_relink()`` in a
-    try/except and surfaces errors via ``QMessageBox``."""
+    """Locate video: point a part at its file (Section 2, #29).
 
-    def __init__(self, recording, parent=None):
+    A **referenced** part whose file moved is pointed at the new one, accepted only if its
+    content matches. A **copied** part whose file is not here (an experiment imported without
+    its video) has the chosen file copied back in, accepted only if its frame times and
+    resolution match the recorded part's; the file it was copied from is offered first when it
+    is on this computer.
+
+    Which parts are listed, and what each was copied from, come from the page's off-thread scan
+    (``Recording.parts_to_locate``), so building the dialog reads nothing from disk. The dialog
+    only chooses (`chosen`); the page runs the relink behind a bar, since putting a video back
+    reads and copies the whole file.
+    """
+
+    def __init__(self, recording, locatable, parent=None):
         super().__init__(parent)
-        from detail.storage import recording as recording_store
-
         self._recording = recording
+        self._locatable = {p.index: p for p in locatable}
         self.setWindowTitle("Locate video")
-        self.resize(560, 200)
+        self.resize(640, 330)
         layout = self.body()
         layout.addWidget(
             _instructions(
-                "A referenced video moved or was renamed. Point this part at the file's "
-                "new location — it's accepted only if the content matches what was "
-                "recorded (a changed video means remove and re-add the recording)."
+                "Point a video part at its file.\n"
+                "\u2022 A referenced video that moved or was renamed: choose its new "
+                "location. It is accepted only if its content matches what was recorded "
+                "(a changed video means remove and re-add the recording).\n"
+                "\u2022 A copied video that is not on this computer, as after importing an "
+                "experiment without its video: choose the original file. It is copied back "
+                "in, and accepted only if its frame times and resolution match the recorded "
+                "part's exactly."
             )
         )
         form = QFormLayout()
         self._part = QComboBox()
-        for part in recording.video_parts:
-            if part.get("source") is not None:  # only reference parts can be relinked
-                self._part.addItem(recording_store.part_stem(part), part["index"])
+        for part in locatable:
+            how = "copied, not on this computer" if part.copied else "referenced"
+            self._part.addItem(f"{part.stem} ({how})", part.index)
         form.addRow("Part:", self._part)
+        self._copied_from = QLabel("")
+        self._copied_from.setWordWrap(True)
+        self._copied_from.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        form.addRow("Copied from:", self._copied_from)
+        self._copied_from_row = form.rowCount() - 1
         pick = QWidget()
         pick_row = QHBoxLayout(pick)
         pick_row.setContentsMargins(0, 0, 0, 0)
         self._path = QLineEdit()
         self._path.setReadOnly(True)
-        self._path.setPlaceholderText("Choose the moved video…")
+        self._path.setPlaceholderText("Choose the video file…")
         browse = QPushButton("Browse")
         browse.clicked.connect(self._browse)
         pick_row.addWidget(self._path, 1)
         pick_row.addWidget(browse)
-        form.addRow("New location:", pick)
+        form.addRow("Video file:", pick)
+        self._form = form
         layout.addLayout(form)
         layout.addStretch()
         box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
-        box.button(QDialogButtonBox.StandardButton.Ok).setText("Relink")
+        self._ok = box.button(QDialogButtonBox.StandardButton.Ok)
         box.accepted.connect(self._on_ok)
         box.rejected.connect(self.reject)
         self.set_buttons(box)
+        self._part.currentIndexChanged.connect(self._on_part)
+        self._on_part()
+
+    def _selected(self):
+        return self._locatable.get(self._part.currentData())
+
+    def _on_part(self, *_args) -> None:
+        """Offer the file a copied part was copied from, and say so; a referenced part has none."""
+        part = self._selected()
+        copied = part is not None and part.copied
+        self._form.setRowVisible(self._copied_from_row, copied)
+        self._ok.setText("Copy in" if copied else "Relink")
+        if not copied:
+            self._path.clear()
+            return
+        if part.copied_from is not None:
+            self._copied_from.setText(str(part.copied_from))
+            self._path.setText(str(part.copied_from))
+            return
+        name = part.origin_name or "the original file"
+        self._copied_from.setText(
+            f"{name}, which is not on this computer at the path it was copied from. "
+            "Choose it where it is now."
+        )
+        self._path.clear()
 
     def _browse(self) -> None:
+        start = str(Path(self._path.text()).parent) if self._path.text() else ""
         path, _ = QFileDialog.getOpenFileName(
-            self, "Locate video", "", "Videos (*.mp4 *.avi *.mov *.mkv);;All files (*)"
+            self,
+            "Locate video",
+            start,
+            "Videos (*.mp4 *.avi *.mov *.mkv);;All files (*)",
         )
         if path:
             self._path.setText(path)
 
     def _on_ok(self) -> None:
-        if not self._path.text():
-            QMessageBox.warning(self, "Locate video", "Choose the moved video file.")
-            return
         if self._part.count() == 0:
             QMessageBox.warning(
-                self, "Locate video", "This recording has no referenced parts."
+                self, "Locate video", "This recording has no video to locate."
             )
+            return
+        if not self._path.text():
+            QMessageBox.warning(self, "Locate video", "Choose the video file.")
             return
         self.accept()
 
-    def do_relink(self) -> str | None:
-        """Relink the selected part (synchronous). Raises the ``relink_video_part`` errors.
-
-        Returns the video-root alias the relink registered, or ``None``.
-        """
-        return self._recording.relink_video_part(
-            self._part.currentData(), self._path.text()
-        )
+    def chosen(self) -> tuple[int, str]:
+        """``(part index, file)`` for `Recording.relink_video_part`."""
+        return self._part.currentData(), self._path.text()
 
 
 class CopyToRecordingsDialog(Dialog):
@@ -4960,14 +5009,16 @@ class RecordingDetailPage(QWidget):
         add_part.clicked.connect(self._add_part)
         self._locate_btn = QPushButton("Locate video")
         self._locate_btn.clicked.connect(self._locate_video)
-        # Shown only for referenced parts (a copy-only recording never surfaces the concept),
-        # and enabled only when a referenced video is actually missing — the off-thread scan
-        # (_on_video) flips it. Relinking a present video does nothing, so it stays greyed.
+        # Shown for referenced parts, and for a copied part whose file is not here (an
+        # experiment imported without its video); a copy-only recording with its video never
+        # surfaces the concept. Enabled only when a video is actually missing: the off-thread
+        # scan (_on_video) decides both. Relinking a present video does nothing.
+        self._locatable = []
         self._locate_btn.setVisible(
             any(p.get("source") is not None for p in recording.video_parts)
         )
         self._locate_btn.setEnabled(False)
-        self._locate_btn.setToolTip("No referenced video needs locating.")
+        self._locate_btn.setToolTip(_LOCATE_NOTHING)
         self._move_up = QPushButton("Move up")
         self._move_up.clicked.connect(lambda: self._move_part(-1))
         self._move_down = QPushButton("Move down")
@@ -5626,34 +5677,54 @@ class RecordingDetailPage(QWidget):
         self._parts_table = table
 
     def _scan_video(self) -> None:
-        # verify_videos stats + head/tail-hashes this recording's parts — off the UI thread.
+        # verify_videos stats + head/tail-hashes this recording's parts, and parts_to_locate
+        # resolves where each missing copy came from (a share, perhaps) — off the UI thread.
         self._video_signals = _CallSignals()
-        self._video_signals.done.connect(self._on_video)
+        self._video_signals.done.connect(lambda found: self._on_video(*found))
         self._video_signals.failed.connect(lambda _e: None)  # best-effort
-        verify = self._recording.verify_videos
-        QThreadPool.globalInstance().start(_CallTask(verify, self._video_signals))
+        recording = self._recording
+        QThreadPool.globalInstance().start(
+            _CallTask(
+                lambda: (recording.verify_videos(), recording.parts_to_locate()),
+                self._video_signals,
+            )
+        )
 
-    def _on_video(self, issues) -> None:
+    def _on_video(self, issues, locatable) -> None:
         stale = bool(issues) and getattr(self, "_has_runs", False)
         if getattr(self, "_runs_stale_lbl", None) is not None:
             self._runs_stale_lbl.setVisible(stale)
-        kinds = {i.kind for i in issues}
-        # Locate only helps a *missing* (moved/renamed) referenced file — relink refuses a
-        # changed file, and a present one needs nothing. Enable it only when it can act.
-        missing = bool(kinds & {"missing_file", "missing_root"})
+        self._locatable = list(locatable)
+        copied_stems = {p.stem for p in locatable if p.copied}
+        # Locate only helps a *missing* file — relink refuses a changed referenced file, and a
+        # present one needs nothing. A copied part is listed only while its file is missing.
+        referenced_missing = any(
+            i.kind in {"missing_file", "missing_root"} and i.part_id not in copied_stems
+            for i in issues
+        )
+        missing = referenced_missing or bool(copied_stems)
+        self._locate_btn.setVisible(bool(locatable))
         self._locate_btn.setEnabled(missing)
         self._locate_btn.setToolTip(
-            "Point the moved video at its new file."
+            "Point a moved video at its new file, or copy a video that is not on this "
+            "computer back in from the original."
             if missing
-            else "No referenced video needs locating."
+            else _LOCATE_NOTHING
         )
         if not issues:
             self._video_status_lbl.setVisible(False)
             return
-        if missing:
+        if referenced_missing:
             msg, color = (
                 "A referenced video is missing — Locate it, or re-point its video root.",
                 ERROR,
+            )
+        elif copied_stems:
+            msg, color = (
+                "This recording's video is not on this computer (the experiment was "
+                "imported without it). Locate video copies it back in from the original "
+                "file.",
+                WARN,
             )
         else:
             msg, color = (
@@ -5666,14 +5737,25 @@ class RecordingDetailPage(QWidget):
         self._video_status_lbl.setVisible(True)
 
     def _locate_video(self) -> None:
-        dialog = RelinkVideoDialog(self._recording, parent=self)
+        from detail.gui.busy import run_progress
+
+        dialog = RelinkVideoDialog(self._recording, self._locatable, parent=self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        try:
-            registered = dialog.do_relink()
-        except (FileNotFoundError, IndexError, ValueError) as exc:
-            QMessageBox.critical(self, "Locate video", str(exc))
-            return
+        index, path = dialog.chosen()
+        recording = self._recording
+        # Behind a bar with Cancel: putting a copied video back reads its frame times and
+        # copies the whole file, minutes for a long recording. A cancel leaves no half file.
+        run_progress(
+            self,
+            lambda emit: recording.relink_video_part(index, path, progress=emit),
+            self._on_located,
+            label="Locating video…",
+            on_error=lambda exc: QMessageBox.critical(self, "Locate video", str(exc)),
+            on_cancel=self._scan_video,
+        )
+
+    def _on_located(self, registered: str | None) -> None:
         self._parts_changed()
         self._scan_video()
         if registered is not None:

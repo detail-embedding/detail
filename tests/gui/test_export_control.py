@@ -778,3 +778,51 @@ def test_no_dark_figures_control_where_nothing_draws_one(qapp, authored_cohort):
     assert targets, "the fixture must offer something that draws no figure"
     dialog = ExportDialog(subject, targets, None)
     assert dialog._dark_figures is None
+
+
+# --------------------------------------------------------------------------- #
+# a scope a target cannot take greys that target, it is not sent and refused (#31)
+# --------------------------------------------------------------------------- #
+def test_a_selection_greys_the_per_frame_labels_and_everything_restores_them(
+    qapp, authored_cohort, tmp_path
+):
+    """Per-frame labels narrow by cluster and frames, not a selection.
+
+    Ticked by default beside a selection, they used to write every frame under a manifest that
+    said "2 selected"; the export now refuses that, so the dialog greys the row and says why.
+    Picking "Everything in this run" brings it back, ticked as it would have been.
+    """
+    dialog = _dialog(
+        authored_cohort,
+        target_ids=("instances", "frame_labels"),
+        scope=ExportScope(instance_ids=("a", "b")),
+    )
+    check = dialog._include["frame_labels"]
+    assert not check.isEnabled() and not check.isChecked()
+    assert check.text() == (
+        "Per-frame behavior labels — cannot be narrowed to a selection "
+        "(only to one cluster, a frame range, some recordings)"
+    )
+    assert dialog._include["instances"].isChecked()
+
+    dialog.resize(720, 520)
+    dialog.show()
+    qapp.processEvents()
+    dialog.grab().save(str(tmp_path / "export-selection.png"))
+
+    dialog._scope_pick.setCurrentIndex(1)  # "Everything in this run"
+    assert check.isEnabled() and check.isChecked()
+    assert check.text() == "Per-frame behavior labels"
+    dialog._scope_pick.setCurrentIndex(0)
+    assert not check.isEnabled() and not check.isChecked()
+    dialog.close()
+
+
+def test_a_recording_clip_with_no_frame_range_is_greyed_with_why(
+    qapp, processed_recording
+):
+    """The recording page's Export ticked Clip by default and wrote nothing for it."""
+    dialog = _recording_dialog(processed_recording.experiment, "recording_001")
+    clip = dialog._include["clip"]
+    assert not clip.isEnabled() and not clip.isChecked()
+    assert clip.text() == "Clip — needs a frame range to export"

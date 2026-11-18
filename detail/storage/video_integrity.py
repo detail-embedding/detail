@@ -10,12 +10,17 @@ module is the single source both the hard pre-run gate (``module.validate``) and
 Copied parts (the tool owns the file) are checked for existence only. Reference parts add the
 cheap ``file_fingerprint`` (size + head/tail hash) comparison; a mismatch is a *changed* video,
 whose remedy is remove/re-add (a moved-but-unchanged file is a relink, not a change).
+
+`part_video_mismatch` is the other half: what a file must match to be put back as a copied
+part whose video is missing (an experiment imported without its video).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+
+import numpy as np
 
 from detail.storage import integrity
 from detail.storage import recording as recording_store
@@ -84,3 +89,48 @@ def raise_on_video_issues(issues: list[VideoIssue]) -> None:
     if issues:
         detail = "\n  ".join(f"part {i.part_id}: {i.detail}" for i in issues)
         raise ValueError(f"video input is not usable:\n  {detail}")
+
+
+def part_video_mismatch(
+    recorded_t_ns,
+    t_ns,
+    *,
+    recorded_resolution: list[int] | tuple[int, int] | None,
+    resolution: list[int] | tuple[int, int],
+) -> str | None:
+    """What makes a file not a copied part's video, or ``None`` when it is (#29).
+
+    Putting a copied part's video back (`Recording.relink_video_part`) accepts a file only when
+    its frame times match the part's recorded timestamp map **exactly**: the same number of
+    frames, and every ``t_ns`` equal once both are re-based to start at 0 (the recorded map
+    carries the offset of the parts before it). Every run output is indexed by those frames, so
+    a file that differs in one frame time would put every later row on the wrong picture. The
+    resolution must equal the recorded one too, since boxes and masks are in its pixels.
+
+    ``recorded_t_ns`` is the stored generated map; ``t_ns`` the candidate's, read the way an
+    import reads it (`video.generate_timestamps`). Pure, so a test can hand it literals.
+    """
+    recorded = np.asarray(recorded_t_ns, dtype=np.int64)
+    candidate = np.asarray(t_ns, dtype=np.int64)
+    if len(candidate) != len(recorded):
+        return (
+            f"it has {len(candidate):,} frames, the recorded part has {len(recorded):,}"
+        )
+    if len(recorded):
+        recorded = recorded - recorded[0]
+        candidate = candidate - candidate[0]
+        (different,) = np.nonzero(recorded != candidate)
+        if len(different):
+            i = int(different[0])
+            return (
+                f"its frame times differ from the recorded part's from frame {i:,} "
+                f"({candidate[i] / 1e6:.3f} ms into the part, recorded "
+                f"{recorded[i] / 1e6:.3f} ms)"
+            )
+    if recorded_resolution is not None and list(resolution) != list(
+        recorded_resolution
+    ):
+        w, h = resolution
+        rw, rh = recorded_resolution
+        return f"it is {w}×{h}, the recording is {rw}×{rh}"
+    return None

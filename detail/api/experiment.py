@@ -166,7 +166,8 @@ def replace_warning(losses: "export_store.ReplaceLosses") -> list[str]:
     if losses.video_files:
         lines.append(
             f"{losses.video_files} video file(s), {format_size(losses.video_bytes)}: "
-            "the bundle carries no video"
+            "the bundle carries no video (it can be put back from the original files "
+            "with Locate video, or `detail recording relink`)"
         )
     if losses.datasets:
         lines.append(
@@ -185,6 +186,29 @@ def replace_warning(losses: "export_store.ReplaceLosses") -> list[str]:
             f"{_named(losses.archives)}"
         )
     return lines
+
+
+def no_video_packed_reasons(experiment_dir: Path | str) -> str:
+    """Why a bundle that was asked to include video packs none: the one wording (#29).
+
+    ``experiment export --include-video`` and ``export run`` print it after an archive whose
+    manifest says ``video_included: false``; the GUI's Export dialog shows it while Source video
+    is ticked and `Experiment.video_not_packed` says so. Each surface puts its own tense in front.
+    """
+    missing = export_store.copied_video_missing_recordings(experiment_dir)
+    referenced = export_store.referenced_video_recordings(experiment_dir)
+    reasons = []
+    if missing:
+        reasons.append(
+            f"{len(missing)} recording(s) have no video on this machine (put it back with "
+            "Locate video, or `detail recording relink`)"
+        )
+    if referenced:
+        reasons.append(
+            f"{len(referenced)} recording(s) use their video in place, and video used in "
+            "place never travels"
+        )
+    return "; ".join(reasons) or "no recording has video"
 
 
 def _with_model_defaults(module, config: dict) -> dict:
@@ -1881,6 +1905,14 @@ class Experiment:
 
     def get_recording(self, recording_id: str) -> Recording:
         return Recording(self._dir, recording_id)
+
+    def video_not_packed(self) -> str | None:
+        """Why a bundle with ``include_video`` would pack no video, or ``None`` when it would
+        pack some (`no_video_packed_reasons`). Walks the experiment the way the export does, so
+        a surface calls it off the UI thread."""
+        if export_store.packs_video(self._dir):
+            return None
+        return no_video_packed_reasons(self._dir)
 
     def referenced_video_missing(self) -> list[str]:
         """Ids of recordings whose video is referenced in place and is not on this machine.
@@ -4566,7 +4598,9 @@ class Experiment:
         files are going before the run starts.
 
         Raises:
-            ExportError: if a target is unknown, or cannot run for this subject.
+            ExportError: if a target is unknown, cannot run for this subject, or the request is
+                one ``exporters.check_request`` refuses (a target twice, a scope a target does
+                not take, a cluster or frame range the subject does not have).
             ValueError: if ``options["theme"]`` is not a chart theme (``light`` / ``dark``).
         """
         from detail.api import exporters
@@ -4583,6 +4617,7 @@ class Experiment:
                     f"cannot export {target.label.lower()}: {reason}"
                 )
         self._check_export_recordings(subject, scope)
+        exporters.check_request(subject, targets, scope)
         if options.get("theme") is not None:
             from detail.core.chart_theme import theme as chart_theme
 
@@ -4678,8 +4713,8 @@ class Experiment:
         row counts from disk.
 
         Raises:
-            ExportError: if a target is unknown, or ``scope`` names a recording the export does
-                not span.
+            ExportError: if a target is unknown, ``scope`` names a recording the export does
+                not span, or the request is one ``exporters.check_request`` refuses.
         """
         from detail.api import exporters
 
@@ -4687,6 +4722,7 @@ class Experiment:
         targets = [exporters.target(subject_kind, t) for t in target_ids]
         scope = scope or exporters.ExportScope()
         self._check_export_recordings(subject, scope)
+        exporters.check_request(subject, targets, scope)
         return exporters.estimate(
             subject, targets, scope=scope, parent=parent, **options
         )

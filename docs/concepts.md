@@ -64,6 +64,11 @@ and every run refuses to start on a missing or changed video. Fix a moved file w
 relink` (or the GUI's **Locate video**); a changed file means remove and re-add. On an experiment
 made on another computer, locating one file fixes every recording whose videos share its folder.
 
+An experiment exported without its video keeps each copied part's timestamps, so the same
+**Locate video** puts a copied video back: it copies the original file in again, and only when
+its frame times match the recorded part's exactly, so every run output still lands on the frame
+it was computed from.
+
 ### Run
 
 One execution of a stage over a recording, with a specific config. The id carries a stage prefix
