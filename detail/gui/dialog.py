@@ -55,6 +55,16 @@ just written (reported 2026-11-09). A window beside a page has no "OK" to press,
 whenever its content is refreshed — the base takes default and auto-default off every button of a
 dialog that is not modal, and Enter reaching it clicks nothing (:meth:`keyPressEvent`). Enforced
 by ``requirements.a_non_modal_window_has_no_default_button``.
+
+**A dialog whose answer comes from background work owns its close until the work is done.**
+Esc, the window's close button and a Cancel wired to ``reject`` all close a ``QDialog`` as
+*Rejected* — and the work it started goes on. A launch dialog closed during validation spawned the
+run anyway, with the caller told nothing started (#35 finding 1); Add video part closed on Cancel
+and added the part with the page left showing the old list (finding 8). The dialog passes its
+worker to :meth:`hold_open_while`; until the dialog lets go (:meth:`let_go`, from the worker's
+result) every close request runs the dialog's own ``on_close_request`` instead — stop the work and
+wait for it, or say why it cannot be stopped — and the dialog closes once the result says what
+actually happened. Enforced by ``requirements.a_dialog_that_runs_work_owns_its_close``.
 """
 
 from PyQt6.QtCore import QEvent, QSize, Qt, QTimer
@@ -68,6 +78,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from detail.gui.lifetime import alive
 from detail.gui.scroll import PageScroll
 from detail.gui.selectable import make_text_selectable
 
@@ -156,6 +167,38 @@ class Dialog(QDialog):
         self._stretch_index: int | None = None
         self._body_widget: QWidget | None = None
         self._restretch_timer: QTimer | None = None
+        #: The worker this dialog's answer waits on, and what a close request does meanwhile
+        #: (:meth:`hold_open_while`).
+        self._held_by = None
+        self._on_close_request = None
+
+    # -- work the dialog's answer waits on ---------------------------------------- #
+    def hold_open_while(self, worker, on_close_request) -> None:
+        """Keep the dialog open while ``worker`` runs: a close request calls ``on_close_request``.
+
+        Esc, the window's close button and a Cancel wired to ``reject`` all arrive at
+        :meth:`reject`. While ``worker`` runs, each of them calls ``on_close_request`` instead of
+        closing — which asks the work to stop and says so, or says why it cannot be stopped. The
+        dialog then closes on the worker's own result: accepted if the work happened, rejected
+        if it stopped. Call this before ``worker.start()``, and :meth:`let_go` first thing in
+        every handler of its result.
+        """
+        self._held_by = worker
+        self._on_close_request = on_close_request
+
+    def let_go(self) -> None:
+        """The held work has delivered its result: closing closes again."""
+        self._held_by = None
+        self._on_close_request = None
+
+    def reject(self) -> None:
+        """Close as cancelled — unless held work is still running (:meth:`hold_open_while`)."""
+        worker = self._held_by
+        if worker is not None and alive(worker) and worker.isRunning():
+            self._on_close_request()
+            return
+        self.let_go()
+        super().reject()
 
     def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802 — Qt's name
         """Outline the dialog, since its fill is otherwise indistinguishable from what's behind it.

@@ -10,8 +10,8 @@ runner raised, so one user action gave two different statuses depending on timin
 was ``cancelled``.
 
 **How it hid.** Nothing is wrong where it is written: the worker's mapping is correct for a
-runner with a resume (keypoint detect), and detection's module docstring says "stop is
-failure, never partial", which is what its multi-GPU path does. The inline path never told the
+runner with a resume, and detection's module docstring says "stop is failure, never partial",
+which is what its multi-GPU path does. The inline path never told the
 part to stop (only the multi-GPU poll loop touched ``stop.flag``), so the run simply finished.
 
 **The rule.** Every processing module declares ``resumes`` (no default, like
@@ -21,11 +21,20 @@ raised because the stop reached it. Runners registered outside ``register_proces
 keep the older mapping (see ``detail/executor/runners.py::RunnerSpec``). The detection half
 (the stop reaching the inline loop) is
 ``tests/pipeline/test_detection.py::test_a_cancel_mid_part_reaches_the_inline_loop_and_records_cancelled``.
+
+**No processing module resumes.** Keypoint detect declared ``resumes = True`` and kept a skip
+path past the last frame written, so its cancels landed ``partial``. Nothing could reach that
+path: the only restart, ``Experiment.retry_run``, re-runs each incomplete recording whole under
+a fresh stage run id (Tenet 12), so the runner always started on an empty store. A module's
+``resumes`` is therefore ``False`` until a surface hands a stopped run back to its own run
+directory; change ``test_no_processing_module_claims_a_resume`` in the same change that builds
+one.
 """
 
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 from pathlib import Path
 
 import pytest
@@ -39,6 +48,7 @@ from detail.core.dataclasses import (
     PromptTarget,
     TextCue,
 )
+from detail.core.keypoints import KeypointDetectJob
 from detail.executor import rundir
 from detail.executor.runners import (
     JOB_RUNNERS,
@@ -76,9 +86,55 @@ def test_a_module_that_cannot_resume_records_a_cancel_as_cancelled(module_id):
     assert JOB_RUNNERS[module_id].cancel_status == expected
 
 
-def test_detection_cannot_resume():
-    # The module docstring promises it, and the docs tell users `partial` is resumable.
-    assert PROCESSING_MODULES["detection"].resumes is False
+@pytest.mark.parametrize("module_id", sorted(PROCESSING_MODULES))
+def test_no_processing_module_claims_a_resume(module_id):
+    # `retry_run` is the only restart and always mints a fresh stage run id, so no runner is
+    # ever handed a run directory it already wrote to; `partial` would promise a resume that
+    # no surface reaches (detection, #28; keypoint detect after it).
+    assert PROCESSING_MODULES[module_id].resumes is False, (
+        f"{module_id} declares `resumes = True`, but no surface resumes a processing run: "
+        "`Experiment.retry_run` re-runs the recording under a fresh run id"
+    )
+
+
+def test_a_cancelled_keypoint_detect_run_is_cancelled_not_partial(tmp_path):
+    # Through the worker with keypoint detect's registered spec, only its body swapped: the
+    # real runner returns after a stop, which is the case that landed `partial`.
+    spec = JOB_RUNNERS["keypoint_detect"]
+    run_dir = tmp_path / "kd_01"
+    run_dir.mkdir()
+    rundir.init_run_dir(
+        run_dir,
+        KeypointDetectJob(
+            job_id="kd_01",
+            recording_id="recording_001",
+            detect_run_id="kd_01",
+            detection_run_id="det_01",
+            min_pose_confidence=None,
+            model_id="dinov3_match",
+            model_variant="vit_base",
+            backbone={"id": "dinov3_vit", "variant": "vit_base"},
+            example_set={"id": "ex_01", "digest": "abc", "frames": [], "marks": []},
+            skeleton={"names": ["nose", "tail"], "edges": [["nose", "tail"]]},
+            n_candidates=5,
+            every_n_frames=1,
+            crop_px=448,
+            decode="skeleton",
+            side_rule="off",
+            matching={"topk": 5},
+            batch_size=16,
+            compute=ComputeTarget("cpu", None, None, None),
+            created_at="2026-01-01T00:00:00Z",
+        ),
+    )
+    JOB_RUNNERS["keypoint_detect"] = dataclasses.replace(
+        spec, run=_returns_after_cancel
+    )
+    try:
+        assert run_job(run_dir) == JobStatus.CANCELLED
+    finally:
+        JOB_RUNNERS["keypoint_detect"] = spec
+    assert rundir.read_status(run_dir) == JobStatus.CANCELLED
 
 
 @contextlib.contextmanager

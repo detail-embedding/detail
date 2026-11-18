@@ -27,8 +27,10 @@ Sets are discovered by scanning, like datasets, with no central list.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import shutil
+from collections.abc import Iterator
 from pathlib import Path
 
 import cv2
@@ -136,6 +138,20 @@ def create_set(
     )
     write_set(experiment_dir, example_set)
     return example_set
+
+
+@contextlib.contextmanager
+def removed_on_failure(experiment_dir: Path | str, set_id: str) -> Iterator[None]:
+    """Delete the set ``set_id`` if the block raises (Ctrl-C included), then re-raise.
+
+    For a set just made by :func:`create_set` and still being filled: an import that fails
+    half-way must not leave a set behind that the user never asked for.
+    """
+    try:
+        yield
+    except BaseException:
+        shutil.rmtree(set_dir(experiment_dir, set_id), ignore_errors=True)
+        raise
 
 
 def add_frame_image(experiment_dir: Path | str, set_id: str, rgb: np.ndarray) -> str:

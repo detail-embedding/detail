@@ -15,10 +15,12 @@ class Step:
     """One machine-setup step.
 
     ``kind`` is the sidebar nav kind the panel/marker point at (``None`` for a
-    not-yet-built step, e.g. the Quick-segment wow). ``guides`` marks the steps that
+    not-yet-built step). ``done`` is read from a signal, never written as a literal: a step
+    that can never be ticked tells the user they have not done something they did
+    (``requirements.a_checklist_step_reads_its_state``). ``guides`` marks the steps that
     carry the active nudge — the sidebar ``●`` and a page banner: only the gated,
     actionable steps (Hugging Face, install a detection model). GPU (terminal when no
-    NVIDIA is present), the coming-soon wow, and the optional distill step never guide.
+    NVIDIA is present), Quick segment, and the optional distill step never guide.
     """
 
     kind: str | None
@@ -73,9 +75,28 @@ def readiness_steps(s: ReadinessSignals) -> list[Step]:
                 guides=True,
             )
         )
-    steps.append(Step("quick_segment", "See it segment a clip", False, guides=False))
+    # Quick segment runs SAM 3 on a GPU box. Without one, its model list offers only imported
+    # and distilled detectors, so the step says what it needs, as the SAM 3 rows do.
     steps.append(
-        Step("distill_model", "Recommended: distill a fast model", False, guides=False)
+        Step(
+            "quick_segment",
+            (
+                "See it segment a clip"
+                if s.gpu
+                else "See it segment a clip (needs an NVIDIA GPU or an installed "
+                "detection model)"
+            ),
+            s.quick_segment_run,
+            guides=False,
+        )
+    )
+    steps.append(
+        Step(
+            "distill_model",
+            "Recommended: distill a fast model",
+            s.distilled_model,
+            guides=False,
+        )
     )
     return steps
 
@@ -83,7 +104,7 @@ def readiness_steps(s: ReadinessSignals) -> list[Step]:
 def next_step_kind(s: ReadinessSignals) -> str | None:
     """The kind of the next step still to do — the sidebar ``●`` target and the banner
     trigger. Walks the guiding steps (Hugging Face → install), skipping GPU, the
-    coming-soon wow, and the optional distill step. ``None`` once setup is done."""
+    Quick segment step, and the optional distill step. ``None`` once setup is done."""
     for step in readiness_steps(s):
         if step.guides and not step.done:
             return step.kind

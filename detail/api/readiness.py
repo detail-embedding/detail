@@ -1,8 +1,8 @@
 """Machine-global setup-readiness signals for the Home onboarding panel (§1).
 
 Derived from the live checker framework (``api/checks``): ``readiness_signals`` runs the
-checks **in-process** (cheap, no spawn) and maps them to the five booleans the guided layer
-and the readiness panel read. The GUI recomputes from a **fresh-subprocess** ``run_checks``
+checks **in-process** (cheap, no spawn) and maps them to the booleans the guided layer and the
+readiness panel read. The GUI recomputes from a **fresh-subprocess** ``run_checks``
 and maps with ``signals_from``, so a mid-session install shows up on re-check without an app
 restart. Qt-free, network-free, and never raises (a check that can't answer is not ``OK``).
 """
@@ -13,6 +13,7 @@ from detail.api.checks import run_checks
 from detail.core.dataclasses import CheckResult, CheckStatus
 from detail.models import imported as imported_store
 from detail.storage import locations
+from detail.storage import tool_runs
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,10 @@ class ReadinessSignals:
         detection_model: at least one usable detection model exists (SAM3 or an
             imported model), so the pipeline can run.
         has_experiment: at least one experiment exists in the managed workspace.
+        quick_segment_run: a Quick segment run has completed on this machine — the
+            checklist's "See it segment a clip" step, done.
+        distilled_model: the model library holds a distilled detection model — the
+            checklist's "distill a fast model" step, done.
     """
 
     gpu: bool
@@ -37,10 +42,12 @@ class ReadinessSignals:
     sam3_weights: bool
     detection_model: bool
     has_experiment: bool
+    quick_segment_run: bool
+    distilled_model: bool
 
 
 def signals_from(results: list[CheckResult]) -> ReadinessSignals:
-    """Map check results (plus two cheap workspace probes) to the five checklist booleans.
+    """Map check results (plus cheap workspace probes) to the checklist booleans.
 
     ``sam3`` is honest now: weights alone is not enough — the ``sam3`` package must also
     import (``sam3_backend``), so "SAM 3 ready" can't be true while a run would crash at
@@ -58,9 +65,9 @@ def signals_from(results: list[CheckResult]) -> ReadinessSignals:
     # SAM3 only counts as a usable detector where it can actually run (CUDA); on any other
     # machine a usable model means an imported (CPU/MPS-capable) one.
     # A keypoint (pose) model in the catalog detects nothing (§12), so it does not count.
-    detection_model = any(
-        not imported_store.is_pose_record(rec) for rec in imported_store.list_records()
-    ) or (sam3 and gpu)
+    records = imported_store.list_records()
+    detectors = [rec for rec in records if not imported_store.is_pose_record(rec)]
+    detection_model = bool(detectors) or (sam3 and gpu)
     return ReadinessSignals(
         gpu=gpu,
         hf_token=ok("hf_token"),
@@ -69,6 +76,13 @@ def signals_from(results: list[CheckResult]) -> ReadinessSignals:
         sam3_weights=sam3_weights,
         detection_model=detection_model,
         has_experiment=bool(locations.list_experiment_dirs()),
+        # The last two checklist steps were hard-coded "not done", so their ✓ could never
+        # appear (#35). Each is now the thing the step asks for, read off disk.
+        quick_segment_run=any(
+            run.get("status") == "complete"
+            for run in tool_runs.list_tool_runs("quick_segment")
+        ),
+        distilled_model=any(rec.get("source") == "distilled" for rec in detectors),
     )
 
 

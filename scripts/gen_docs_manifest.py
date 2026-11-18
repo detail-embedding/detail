@@ -93,7 +93,8 @@ _lines = [
     "video and stream files it references; paths are relative to the folder. Import "
     "it with `detail recording import --bundle` or the GUI's **Import bundle…** "
     "(see [Many recordings at once](../user-guides/single-animal/create-an-experiment.md#5-optional-many-recordings-at-once)). "
-    "The whole manifest is validated before anything is created.",
+    "The whole manifest is validated before anything is created, and a key not "
+    "in the tables below is refused, naming it.",
     "",
 ]
 for _section in describe_manifest():

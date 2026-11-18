@@ -17,6 +17,7 @@ from pydantic import ValidationError as PydanticValidationError
 
 
 from detail.api._runner_modules import PIPELINE_RUNNERS as _PIPELINE_RUNNERS
+from detail.core import atomic
 from detail.core.dataclasses import (
     ComputeTarget,
     JobStatus,
@@ -723,6 +724,29 @@ class Recording:
         """
         return spatial_store.replace_defs(self.dir, "point", defs)
 
+    def check_spatial_defs(self, kind: str, defs: list[dict]) -> None:
+        """Refuse a whole set of ``kind`` (``"arena"``, ``"roi"`` or ``"point"``) definitions
+        the way :meth:`set_rois` / :meth:`set_points` / :meth:`define_arena` would, writing
+        nothing — for a caller that commits several kinds at once and must not have written
+        one before another is refused (the scene editor's Save).
+
+        Raises:
+            ValueError: An empty or duplicated name or id, or invalid keyframes / active.
+        """
+        spatial_store.validate_defs(kind, defs)
+
+    def check_distance_calibration(
+        self, points: list[tuple[float, float]], distance_mm: float
+    ) -> None:
+        """Refuse what :meth:`set_distance_calibration` would refuse, writing nothing.
+
+        Raises:
+            ValueError: if there is no video, the points coincide, or ``distance_mm <= 0``.
+        """
+        spatial_store.calibration_from_points(
+            points, distance_mm, self._require_resolution()
+        )
+
     def export_spatial_csv(self, path: Path | str) -> None:
         """Write this recording's whole spatial setup to a round-trippable CSV (Section 10)
         — the field of view, the distance calibration, and the ROIs + POIs — for sharing or
@@ -743,22 +767,89 @@ class Recording:
         here is refused rather than suffixed ``(2)``, keyframe motion is flattened, and an
         active window does not travel.
 
+        All or nothing across ``kinds``: every definition is checked before the first is
+        written, so a bad point does not leave the regions above it behind (a retry then
+        refused them as "already exists").
+
         Returns:
             ``(added, flattened, refused)``.
         """
         by_kind = {}
         for d in spatial_store.load_spatial_csv(path):
             by_kind.setdefault(d["kind"], []).append(d)
-        added, flattened, refused = [], [], []
-        for kind in kinds:
-            if not by_kind.get(kind):
-                continue
-            a, f, r = self.receive_spatial(by_kind[kind], kind)
-            added += a
-            flattened += f
-            refused += r
+        added, flattened, refused = self._receive_spatial_kinds(
+            {kind: by_kind.get(kind, []) for kind in kinds}
+        )
         if not added and not refused:
             raise ValueError(f"{path} carries no {' or '.join(kinds)}")
+        return added, flattened, refused
+
+    def import_scene_csv(
+        self, path: Path | str
+    ) -> tuple[list[str], list[str], list[tuple[str, str]]]:
+        """Take everything an exported spatial CSV carries onto this recording (§10): its
+        field of view, distance calibration, regions and points, each by its own rules
+        (:meth:`import_field_of_view_csv`, :meth:`import_calibration_csv`,
+        :meth:`import_spatial_csv`). Nothing is replaced.
+
+        Only the kinds the file holds are tried. A kind it does not carry is not a refusal:
+        trying all four turned a one-region file into one "Added" line and three "Not added"
+        ones, which reads as a partial failure (#35 finding 14). A kind refused whole (this
+        recording already has a field of view or a calibration) is one refusal, named by
+        what it is.
+
+        Returns:
+            ``(added, flattened, refused)``.
+
+        Raises:
+            FileNotFoundError: the file is absent.
+            ValueError: the file is malformed, or carries no scene geometry at all.
+        """
+        held = spatial_store.spatial_csv_kinds(path)
+        if not held:
+            raise ValueError(f"{path} carries no scene geometry")
+        # All or nothing, like every import (#29): the whole file is parsed, and every kind
+        # it carries is either refused here as a whole (reported, nothing written) or checked
+        # with the rest before the first write, so a bad point cannot leave the field of view
+        # above it behind.
+        by_kind: dict[str, list[dict]] = {}
+        for d in spatial_store.load_spatial_csv(path):
+            by_kind.setdefault(d["kind"], []).append(d)
+        block = (
+            spatial_store.load_calibration_csv(path) if "calibration" in held else None
+        )
+        refused: list[tuple[str, str]] = []
+        if by_kind.get("arena"):
+            refusal = self.field_of_view_refusal()
+            if refusal is not None:
+                refused.append(("field of view", f"recording {self.name!r} {refusal}"))
+                del by_kind["arena"]
+        if block is not None:
+            if self.distance_calibration is not None:
+                refused.append(
+                    (
+                        "distance calibration",
+                        f"recording {self.name!r} already has a distance calibration — "
+                        "delete it here first; nothing is overwritten",
+                    )
+                )
+                block = None
+            else:
+                try:
+                    spatial_store.check_calibration_block(block, self.video_resolution)
+                except ValueError as exc:
+                    refused.append(("distance calibration", str(exc)))
+                    block = None
+        kinds = ("arena", *self._PER_DEFINITION_KINDS)
+        added, flattened, kind_refused = self._receive_spatial_kinds(
+            {kind: by_kind[kind] for kind in kinds if by_kind.get(kind)}
+        )
+        refused = refused + kind_refused
+        if block is not None:
+            spatial_store.write_calibration_block(
+                self.dir, block, self.video_resolution
+            )
+            added.append("distance calibration")
         return added, flattened, refused
 
     def import_spatial_from(
@@ -770,18 +861,12 @@ class Recording:
         Returns:
             ``(added, flattened, refused)``.
         """
-        added, flattened, refused = [], [], []
-        for kind in kinds:
-            defs = spatial_store.read_defs(source.dir, kind)
-            if not defs:
-                continue
-            a, f, r = self.receive_spatial(defs, kind)
-            added += a
-            flattened += f
-            refused += r
+        added, flattened, refused = self._receive_spatial_kinds(
+            {kind: spatial_store.read_defs(source.dir, kind) for kind in kinds}
+        )
         if not added and not refused:
             raise ValueError(
-                f"recording {source.id!r} has no {' or '.join(kinds)} to copy"
+                f"recording {source.name!r} has no {' or '.join(kinds)} to copy"
             )
         return added, flattened, refused
 
@@ -838,32 +923,49 @@ class Recording:
             was dropped, and ``[(name, reason), ...]`` left behind.
 
         Raises:
-            ValueError: nothing in ``defs`` could be taken.
+            ValueError: A definition that is not valid (nothing is written).
         """
-        prepared, flattened, refused = spatial_store.prepare_for_arrival(defs)
-        if kind in self._PER_DEFINITION_KINDS:
-            taken = {e["name"] for e in spatial_store.list_defs(self.dir, kind)}
-            keep = []
-            for d in prepared:
-                if d["name"] in taken:
-                    refused.append(
-                        (
-                            d["name"],
-                            f"already exists on {self.name} — rename or delete the "
-                            "existing one first; nothing is overwritten",
+        return self._receive_spatial_kinds({kind: defs})
+
+    def _receive_spatial_kinds(
+        self, defs_by_kind: dict[str, list[dict]]
+    ) -> tuple[list[str], list[str], list[tuple[str, str]]]:
+        """:meth:`receive_spatial` over several kinds at once, written in one go.
+
+        The policy is applied kind by kind, then everything that may arrive is handed to
+        ``storage.spatial.import_spatial`` together, which checks every definition before
+        writing the first. Applied a kind at a time, a bad point was refused only after the
+        regions had been written (#29).
+        """
+        planned: list[dict] = []
+        flattened: list[str] = []
+        refused: list[tuple[str, str]] = []
+        for kind, defs in defs_by_kind.items():
+            prepared, f, r = spatial_store.prepare_for_arrival(defs)
+            flattened += f
+            refused += r
+            if kind in self._PER_DEFINITION_KINDS:
+                taken = {e["name"] for e in spatial_store.list_defs(self.dir, kind)}
+                keep = []
+                for d in prepared:
+                    if d["name"] in taken:
+                        refused.append(
+                            (
+                                d["name"],
+                                f"already exists on {self.name} — rename or delete the "
+                                "existing one first; nothing is overwritten",
+                            )
                         )
-                    )
-                else:
-                    keep.append(d)
-            prepared = keep
-        # Never raises for "nothing to take". This is called once per kind, so raising
-        # here let a single windowed region abort a transfer whose points were perfectly
-        # transferable — the caller could see neither. Refusals are data; the caller
-        # accumulates them across kinds and decides.
-        if not prepared:
-            return [], flattened, refused
-        spatial_store.import_spatial(self.dir, prepared)
-        return [d["name"] for d in prepared], flattened, refused
+                    else:
+                        keep.append(d)
+                prepared = keep
+            planned += prepared
+        # Never raises for "nothing to take": a single windowed region must not abort a
+        # transfer whose points were perfectly transferable — the caller could see
+        # neither. Refusals are data; the caller decides.
+        if planned:
+            spatial_store.import_spatial(self.dir, planned)
+        return [d["name"] for d in planned], flattened, refused
 
     def propagate_spatial_from(
         self, source: "Recording", kind: str, names: list[str] | None = None
@@ -903,10 +1005,10 @@ class Recording:
         """
         refusal = self.field_of_view_refusal()
         if refusal is not None:
-            raise ValueError(f"recording {self.id!r} {refusal}")
+            raise ValueError(f"recording {self.name!r} {refusal}")
         defs = spatial_store.read_defs(source.dir, "arena")
         if not defs:
-            raise ValueError(f"recording {source.id!r} has no field of view to copy")
+            raise ValueError(f"recording {source.name!r} has no field of view to copy")
         return self.receive_spatial(defs, "arena")
 
     def import_field_of_view_csv(
@@ -923,7 +1025,7 @@ class Recording:
             raise ValueError(f"{path} carries no field of view")
         refusal = self.field_of_view_refusal()
         if refusal is not None:
-            raise ValueError(f"recording {self.id!r} {refusal}")
+            raise ValueError(f"recording {self.name!r} {refusal}")
         return self.receive_spatial(defs, "arena")
 
     # --- distance-calibration carry-over (§10) ------------------------------ #
@@ -944,7 +1046,7 @@ class Recording:
         """
         if self.distance_calibration is not None:
             raise ValueError(
-                f"recording {self.id!r} already has a distance calibration — delete it "
+                f"recording {self.name!r} already has a distance calibration — delete it "
                 "here first; nothing is overwritten"
             )
         return spatial_store.copy_calibration(
@@ -965,7 +1067,7 @@ class Recording:
             raise ValueError(f"{path} carries no distance calibration")
         if self.distance_calibration is not None:
             raise ValueError(
-                f"recording {self.id!r} already has a distance calibration — delete it "
+                f"recording {self.name!r} already has a distance calibration — delete it "
                 "here first; nothing is overwritten"
             )
         return spatial_store.write_calibration_block(
@@ -1205,7 +1307,8 @@ class Recording:
         Runs the named ``StreamImporter`` over ``raw_path`` (plus any
         ``aux_paths`` it declares) to produce canonical rows in stream-local time,
         copies the source files verbatim into ``streams/<name>/raw/``, writes the
-        canonical CSV, and appends the manifest.
+        canonical CSV, and appends the manifest. The folder is built aside and moved into
+        place only once every check has passed, so a refused import leaves nothing behind.
 
         Args:
             name: Unique, path-safe stream name (also the directory name).
@@ -1287,74 +1390,98 @@ class Recording:
             )
 
         sdir = streams_store.stream_dir(self.dir, name)
-        raw_dir = sdir / streams_store.RAW_DIRNAME
-        canonical_dir = sdir / streams_store.CANONICAL_DIRNAME
-        raw_dir.mkdir(parents=True, exist_ok=True)
-        raw_entries = [self._copy_raw(raw_dir, raw_path, 0, "data")]
-        for i, (key, path) in enumerate(resolved_aux.items(), start=1):
-            raw_entries.append(self._copy_raw(raw_dir, path, i, key, raw_entries))
+        if sdir.exists():
+            # No recorded stream owns this folder (the same name, or one differing only by
+            # case, is refused above): an import that failed before imports were staged left
+            # it behind, and it is not anyone's data.
+            shutil.rmtree(sdir)
+        # Built aside and moved into place only after every check below has passed, right
+        # before the manifest names it. Written straight into `streams/<name>/`, a refused
+        # import left `raw/` (and sometimes the canonical CSV) with no manifest entry, and
+        # a retry with another file kept the first one in `raw/` for good (#29).
+        with atomic.staged_dir(sdir) as stage:
+            raw_dir = stage / streams_store.RAW_DIRNAME
+            canonical_dir = stage / streams_store.CANONICAL_DIRNAME
+            raw_dir.mkdir()
+            # Where `raw/` will be once moved into place: the manifest names that, never
+            # the staging folder it is built in.
+            raw_rel = (
+                f"{streams_store.STREAMS_DIRNAME}/{name}/{streams_store.RAW_DIRNAME}"
+            )
+            raw_entries = [self._copy_raw(raw_dir, raw_rel, raw_path, 0, "data")]
+            for i, (key, path) in enumerate(resolved_aux.items(), start=1):
+                raw_entries.append(
+                    self._copy_raw(raw_dir, raw_rel, path, i, key, raw_entries)
+                )
 
-        result = instance.import_stream(raw_path, canonical_dir, resolved_aux, config)
-        # Only a frame/time-clocked importer needs the timestamp map; a t_ns-native
-        # stream (e.g. MED-PC) skips it, so a recording without video still imports.
-        needs_map = bool(result.frame_columns or result.time_columns)
-        frame_t_ns = (
-            self.frame_timestamps() if needs_map else np.empty(0, dtype=np.int64)
-        )
-        rows = clock_store.resolve_native_columns(
-            result.columns,
-            result.rows,
-            result.frame_columns,
-            result.time_columns,
-            frame_t_ns,
-        )
-        canonical_name = streams_store.write_canonical_csv(
-            canonical_dir, result.columns, rows
-        )
-        canonical_rel = (
-            f"{streams_store.STREAMS_DIRNAME}/{name}/"
-            f"{streams_store.CANONICAL_DIRNAME}/{canonical_name}"
-        )
-        dtypes = result.dtypes or streams_store.default_dtypes(result.columns)
-        metadata = dict(result.metadata or {})
-        if covered_behaviors is not None:
-            if "label" not in result.columns:
-                raise ValueError(
-                    "covered_behaviors only applies to a labeled (behavior) stream"
-                )
-            present = {r[result.columns.index("label")] for r in result.rows}
-            missing = present - set(covered_behaviors)
-            if missing:
-                raise ValueError(
-                    "covered_behaviors must include every labeled behavior; missing "
-                    f"{sorted(missing)}"
-                )
-            metadata["covered_behaviors"] = sorted(set(covered_behaviors))
-        resolved_origin = self._resolve_stream_origin(instance, result, origin)
-        # Checked against the *resolved* clock, not the importer's declared one: a CSV read
-        # on the frame kind reports `video_frames` from a `stream_seconds` importer, so the
-        # declared clock would wrongly accept an offset that read time then ignores.
-        resolved_clock = result.clock or instance.clock
-        streams_store.check_offset_allowed(name, resolved_clock, int(offset_ns))
-        manifest = {
-            "name": name,
-            "type": result.type,
-            "shape": result.shape or streams_store.stream_shape({"type": result.type}),
-            "role": instance.role,
-            "clock": resolved_clock,
-            "columns": result.columns,
-            "dtypes": dtypes,
-            "importer": importer,
-            "alignment": {"offset_ns": int(offset_ns), "active": "offset"},
-            "raw": raw_entries,
-            "files": [{"index": 0, "file": canonical_rel}],
-            "metadata": metadata,
-        }
-        if result.sample_rate_hz is not None:
-            manifest["sample_rate_hz"] = result.sample_rate_hz
-        if resolved_origin is not None:
-            manifest["origin"] = resolved_origin
-        streams_store.append_stream_to_recording_yaml(self.dir, manifest)
+            result = instance.import_stream(
+                raw_path, canonical_dir, resolved_aux, config
+            )
+            # Only a frame/time-clocked importer needs the timestamp map; a t_ns-native
+            # stream (e.g. MED-PC) skips it, so a recording without video still imports.
+            needs_map = bool(result.frame_columns or result.time_columns)
+            frame_t_ns = (
+                self.frame_timestamps() if needs_map else np.empty(0, dtype=np.int64)
+            )
+            rows = clock_store.resolve_native_columns(
+                result.columns,
+                result.rows,
+                result.frame_columns,
+                result.time_columns,
+                frame_t_ns,
+            )
+            canonical_name = streams_store.write_canonical_csv(
+                canonical_dir, result.columns, rows
+            )
+            canonical_rel = (
+                f"{streams_store.STREAMS_DIRNAME}/{name}/"
+                f"{streams_store.CANONICAL_DIRNAME}/{canonical_name}"
+            )
+            dtypes = result.dtypes or streams_store.default_dtypes(result.columns)
+            metadata = dict(result.metadata or {})
+            if covered_behaviors is not None:
+                if "label" not in result.columns:
+                    raise ValueError(
+                        "covered_behaviors only applies to a labeled (behavior) stream"
+                    )
+                present = {r[result.columns.index("label")] for r in result.rows}
+                missing = present - set(covered_behaviors)
+                if missing:
+                    raise ValueError(
+                        "covered_behaviors must include every labeled behavior; missing "
+                        f"{sorted(missing)}"
+                    )
+                metadata["covered_behaviors"] = sorted(set(covered_behaviors))
+            resolved_origin = self._resolve_stream_origin(instance, result, origin)
+            # Checked against the *resolved* clock, not the importer's declared one: a CSV read
+            # on the frame kind reports `video_frames` from a `stream_seconds` importer, so the
+            # declared clock would wrongly accept an offset that read time then ignores.
+            resolved_clock = result.clock or instance.clock
+            streams_store.check_offset_allowed(name, resolved_clock, int(offset_ns))
+            manifest = {
+                "name": name,
+                "type": result.type,
+                "shape": result.shape
+                or streams_store.stream_shape({"type": result.type}),
+                "role": instance.role,
+                "clock": resolved_clock,
+                "columns": result.columns,
+                "dtypes": dtypes,
+                "importer": importer,
+                "alignment": {"offset_ns": int(offset_ns), "active": "offset"},
+                "raw": raw_entries,
+                "files": [{"index": 0, "file": canonical_rel}],
+                "metadata": metadata,
+            }
+            if result.sample_rate_hz is not None:
+                manifest["sample_rate_hz"] = result.sample_rate_hz
+            if resolved_origin is not None:
+                manifest["origin"] = resolved_origin
+        try:
+            streams_store.append_stream_to_recording_yaml(self.dir, manifest)
+        except BaseException:
+            shutil.rmtree(sdir, ignore_errors=True)
+            raise
 
     @staticmethod
     def _validated_stream_config(
@@ -1491,12 +1618,15 @@ class Recording:
     def _copy_raw(
         self,
         raw_dir: Path,
+        raw_rel: str,
         src: Path,
         index: int,
         role: str,
         copied: Sequence[dict] = (),
     ) -> dict:
-        """Copy a source file into the stream's ``raw/`` dir; return its manifest entry.
+        """Copy a source file into the stream's ``raw/`` dir (``raw_dir``, where it is being
+        built); return its manifest entry, which names it under ``raw_rel``, the
+        recording-relative posix path ``raw/`` will have once the stream is in place.
 
         The copy keeps the file's own name unless an earlier file of this stream (``copied``)
         already has it — a MED-PC data file and its program both called ``same.txt`` — when it
@@ -1515,7 +1645,7 @@ class Recording:
         shutil.copy2(src, dest)
         return {
             "index": index,
-            "file": dest.relative_to(self.dir).as_posix(),
+            "file": f"{raw_rel}/{name}",
             "role": role,
         }
 
@@ -1649,6 +1779,23 @@ class Recording:
         dtypes = manifest.get("dtypes") if manifest else None
         _columns, rows = streams_store.read_canonical(self.dir, name, dtypes=dtypes)
         return rows
+
+    def stream_row_counts(self) -> dict[str, int | None]:
+        """``{stream name: data rows}`` for every stream, ``None`` where its file is missing.
+
+        For a table that shows a count per stream: it reads each canonical file to the end
+        (a long sensor trace is seconds), so a GUI calls it off the UI thread. A stream whose
+        file is gone is ``None`` rather than raising, so one missing file costs its own row and
+        not the others' counts.
+        """
+        counts: dict[str, int | None] = {}
+        for manifest in self.streams:
+            name = manifest.get("name")
+            try:
+                counts[name] = streams_store.count_canonical_rows(self.dir, name)
+            except FileNotFoundError:
+                counts[name] = None
+        return counts
 
     def stream_preview(self, name: str):
         """A read-only accessor for previewing a stream (Section 3): its events in

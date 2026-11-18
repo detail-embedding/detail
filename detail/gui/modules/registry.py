@@ -78,6 +78,11 @@ class ConfigWidget(QWidget):
         """Optional hook: receive the launch dialog's ``Experiment`` so the form can
         offer experiment-scoped choices (e.g. trained models). Default no-op."""
 
+    #: Settings this form explains in place when a loaded value cannot be restored (tracking
+    #: names a tracker this build does not offer beside the tracker row). The launch dialog's
+    #: shared note (`start_from.unrestored_settings`) leaves these to the form.
+    noted_by_form: frozenset[str] = frozenset()
+
     #: The pydantic model behind this form's rows, when it has one. Set it and the base
     #: ``load_config`` below restores every field the form built with ``build_fields``, so a
     #: subclass only writes the setters for widgets it built by hand.

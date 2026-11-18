@@ -131,10 +131,11 @@ def read_clip_csv(path: Path | str) -> list[ClipRow]:
     hands in.
 
     Raises:
-        UserInputError: the file is not UTF-8 text, is missing an identifying/span column
-            (not a clip CSV), or a row is short of a cell or holds a non-number.
+        UserInputError: the file is not UTF-8 text, names a column twice, is missing an
+            identifying/span column (not a clip CSV), or a row is short of a cell or holds a non-number.
     """
     fieldnames, rows = _csv_common.read_user_csv(path)
+    _csv_common.reject_duplicate_columns(fieldnames)
     missing = _REQUIRED - set(fieldnames)
     if missing:
         raise UserInputError(

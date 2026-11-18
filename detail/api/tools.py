@@ -52,6 +52,12 @@ def default_model_for_machine() -> str:
     )
 
 
+#: The tool-run statuses that have a result to open, export and look at. A stopped run keeps
+#: what it finished (`run_tool`), so it is one of them; a surface that offers the result view
+#: reads this rather than testing for ``"complete"``.
+OPENABLE_STATUSES = ("complete", "stopped")
+
+
 def run_tool(
     tool_id: str,
     config: dict,

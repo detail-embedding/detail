@@ -603,8 +603,49 @@ def part_start_frames(
 
 
 def part_frame_offsets(recording_dir: Path | str) -> list[int] | None:
-    """`part_start_frames` in part order — for a caller that walks every part positionally
-    (tracking §13, the per-recording location export), so position and stem agree.
+    """`part_start_frames` in play order: ``part_frame_offsets[i]`` is where the part
+    ``recording.yaml`` lists at position ``i`` starts. Index it with a play index from
+    `parts_in_play_order`, never with a position in a sorted folder listing.
     ``None`` if the recording has no video manifest."""
     offsets = part_start_frames(recording_dir)
     return None if offsets is None else list(offsets.values())
+
+
+def parts_in_play_order(
+    recording_dir: Path | str, folder: Path | str, recording: dict | None = None
+) -> list[tuple[int, Path]]:
+    """The ``part_*.zarr`` stores in ``folder``, as ``(play index, path)`` in play order.
+
+    **Play order is ``recording.yaml``'s part list, not the file names.** A stage names each
+    part's store after the part's stem, and *Move up / Move down*
+    (`reorder_video_parts`) reorders the list while every stem stays, so after a move the
+    sorted folder listing (``part_001``, ``part_002``, …) is not the order the parts play
+    in. A reader that walks the sorted listing and indexes the part list, its offsets, its
+    timestamp maps or its videos by position reads another part's. The play index this
+    returns is the one to index ``video_files``, `part_frame_offsets` and
+    ``load_active_timestamps`` with; a part with no store in ``folder`` is simply absent.
+
+    With no video manifest (a synthetic direct-call test) the sorted listing is the only
+    order there is, and is returned with its positions.
+
+    Raises:
+        ValueError: ``folder`` holds a store for a part the recording does not list.
+    """
+    folder = Path(folder)
+    found = {path.stem: path for path in folder.glob("part_*.zarr")}
+    if recording is None:
+        try:
+            recording = read_recording(recording_dir)
+        except FileNotFoundError:
+            recording = None
+    files = ((recording or {}).get("video") or {}).get("files")
+    if not files:
+        return list(enumerate(path for _stem, path in sorted(found.items())))
+    stems = [part_stem(file) for file in files]
+    unlisted = sorted(set(found) - set(stems))
+    if unlisted:
+        raise ValueError(
+            f"{Path(recording_dir).name}: {folder} holds part store(s) {unlisted} that "
+            "recording.yaml does not list, so their place in the recording is unknown"
+        )
+    return [(index, found[stem]) for index, stem in enumerate(stems) if stem in found]

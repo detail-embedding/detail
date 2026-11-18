@@ -41,12 +41,13 @@ class _Kind:
     min_vertices: int
     max_vertices: int | None  # None = unbounded (polygon)
     has_active: bool  # ROIs/POIs may be present for only part of the video
+    plural: str  # what a person calls several, in a refusal they read
 
 
 _KINDS: dict[str, _Kind] = {
-    "arena": _Kind("arenas", "arena", 3, None, False),
-    "roi": _Kind("rois", "roi", 3, None, True),
-    "point": _Kind("points", "point", 1, 1, True),
+    "arena": _Kind("arenas", "arena", 3, None, False, "fields of view"),
+    "roi": _Kind("rois", "roi", 3, None, True, "regions of interest"),
+    "point": _Kind("points", "point", 1, 1, True, "points of interest"),
 }
 
 
@@ -216,6 +217,18 @@ def next_id(recording_dir: Path | str, kind: str) -> str:
     return id_allocator.claim(recording_dir, k.id_prefix, digits=3, taken=taken)
 
 
+def stored_name(name: str) -> str:
+    """A definition's name as it is stored: without spaces at either end.
+
+    The one rule both directions share. The GUI always stripped, the API stored what it
+    was given, and the CSV import stripped, so a region named ``" padded "`` through the API
+    exported with its spaces and came back as a different name (#31). The CSV reader refuses
+    such a name instead of stripping it, because there a padded name is a typing mistake
+    that can collide with another row's.
+    """
+    return str(name).strip()
+
+
 def append_to_manifest(
     recording_dir: Path | str,
     kind: str,
@@ -235,6 +248,7 @@ def append_to_manifest(
             (arenas), or the active interval is malformed.
     """
     k = _kind(kind)
+    name = stored_name(name)
     if not name:
         raise ValueError(f"{k.id_prefix} name must be non-empty")
     if active is not None and not k.has_active:
@@ -273,6 +287,47 @@ def delete_def(recording_dir: Path | str, kind: str, def_id: str) -> None:
 # --------------------------------------------------------------------------- #
 # Bulk replace — the multi-region manager's "Save all" (§10)
 # --------------------------------------------------------------------------- #
+def validate_defs(kind: str, defs: list[dict]) -> list[int]:
+    """Refuse a whole set of ``kind`` definitions the way a write of it would, writing nothing.
+
+    Each entry is shaped as :func:`replace_defs` takes it. This is every refusal that write
+    can raise about the set itself, so a caller committing several kinds in one go (the scene
+    editor's Save) can check them all before it writes the first: a duplicated name found
+    after the field of view was already written leaves the recording in a state nobody asked
+    for. Returns each definition's vertex count, in order.
+
+    Raises:
+        ValueError: An empty or duplicated name or id, an active interval on a kind that has
+            none, or invalid keyframes / active.
+    """
+    k = _kind(kind)
+    seen: set[str] = set()
+    seen_ids: set[str] = set()
+    counts: list[int] = []
+    for d in defs:
+        kept = d.get("id")
+        if kept is not None:
+            if kept in seen_ids:
+                raise ValueError(f"{k.id_prefix} id {kept!r} is duplicated")
+            seen_ids.add(kept)
+        name = stored_name(d.get("name") or "")
+        if not name:
+            raise ValueError(f"{k.id_prefix} name must be non-empty")
+        if name in seen:
+            raise ValueError(
+                f"two {k.plural} are named {name!r} — give each one its own name"
+            )
+        seen.add(name)
+        active = d.get("active")
+        if active is not None and not k.has_active:
+            raise ValueError(f"{kind!r} does not support an active interval")
+        _validate_active(active)
+        counts.append(
+            _validate_keyframes(d["keyframes"], k.min_vertices, k.max_vertices)
+        )
+    return counts
+
+
 def replace_defs(recording_dir: Path | str, kind: str, defs: list[dict]) -> list[str]:
     """Replace ALL definitions of ``kind`` in one operation — the bulk counterpart to the
     per-def define path, used by the ROI/POI manager's "Save all". Each entry is
@@ -291,31 +346,16 @@ def replace_defs(recording_dir: Path | str, kind: str, defs: list[dict]) -> list
     Raises:
         ValueError: An empty or duplicated name or id, or invalid keyframes / active.
     """
-    k = _kind(kind)
-    prepared: list[tuple[str | None, str, Keyframes, ActiveInterval, int]] = []
-    seen: set[str] = set()
-    seen_ids: set[str] = set()
+    n_vertices_of = validate_defs(kind, defs)
     existing_ids = {entry["id"] for entry in list_defs(recording_dir, kind)}
-    for d in defs:
+    prepared: list[tuple[str | None, str, Keyframes, ActiveInterval, int]] = []
+    for d, n_vertices in zip(defs, n_vertices_of):
         kept = d.get("id")
-        if kept is not None:
-            if kept in seen_ids:
-                raise ValueError(f"{k.id_prefix} id {kept!r} is duplicated")
-            seen_ids.add(kept)
-            if kept not in existing_ids:
-                kept = None
-        name = d.get("name") or ""
-        if not name:
-            raise ValueError(f"{k.id_prefix} name must be non-empty")
-        if name in seen:
-            raise ValueError(f"{k.id_prefix} name {name!r} is duplicated")
-        seen.add(name)
-        active = d.get("active")
-        if active is not None and not k.has_active:
-            raise ValueError(f"{kind!r} does not support an active interval")
-        _validate_active(active)
-        n_vertices = _validate_keyframes(d["keyframes"], k.min_vertices, k.max_vertices)
-        prepared.append((kept, name, d["keyframes"], active, n_vertices))
+        if kept not in existing_ids:
+            kept = None
+        prepared.append(
+            (kept, stored_name(d["name"]), d["keyframes"], d.get("active"), n_vertices)
+        )
     # New ids are claimed while the old definitions still exist, so even a recording with no
     # mark yet (made before it existed) cannot hand a new region a kept region's id.
     new_ids = [kept or next_id(recording_dir, kind) for kept, *_ in prepared]
@@ -427,12 +467,29 @@ def export_spatial(
 _SPATIAL_CSV_REQUIRED = _SPATIAL_CSV_COLUMNS[:8]
 
 
-def _parse_active(row: dict) -> ActiveInterval:
+def _parse_active(row: _csv_common.CsvRow) -> ActiveInterval:
+    """The row's active window, ``None`` for "the whole video" (both bounds blank).
+
+    One bound alone is refused: read as "no window", ``active_start=5`` with a blank end
+    widened the region to the whole video, the worse of the two mistakes
+    (:func:`prepare_for_arrival` says why) (#31).
+
+    Raises:
+        UserInputError: One bound blank, or a bound that is not an integer.
+    """
     start = (row.get("active_start") or "").strip()
     end = (row.get("active_end") or "").strip()
-    if start == "" or end == "":
+    if start == "" and end == "":
         return None
-    return (int(start), int(end))
+    if start == "" or end == "":
+        raise UserInputError(
+            f"{row.source} row {row.line}: active_start and active_end are both set or "
+            "both blank (blank means the whole video); this row sets only one"
+        )
+    return (
+        _csv_common.int_cell(row, "active_start"),
+        _csv_common.int_cell(row, "active_end"),
+    )
 
 
 def _read_spatial_csv(path: Path | str) -> list[_csv_common.CsvRow]:
@@ -442,6 +499,7 @@ def _read_spatial_csv(path: Path | str) -> list[_csv_common.CsvRow]:
     if not p.is_file():
         raise FileNotFoundError(f"no such file: {path}")
     fieldnames, rows = _csv_common.read_user_csv(p)
+    _csv_common.reject_duplicate_columns(fieldnames)
     missing = set(_SPATIAL_CSV_REQUIRED) - set(fieldnames)
     if missing:
         raise UserInputError(f"spatial CSV missing columns: {sorted(missing)}")
@@ -498,6 +556,22 @@ def load_calibration_csv(path: Path | str) -> dict | None:
     }
 
 
+def spatial_csv_kinds(path: Path | str) -> set[str]:
+    """Which kinds an exported spatial CSV carries: any of ``"arena"``, ``"roi"``,
+    ``"point"`` and ``"calibration"``.
+
+    So an import of "whatever the file holds" asks the file first, rather than trying every
+    kind and reporting the ones it does not hold as refusals (#35 finding 14).
+
+    Raises:
+        FileNotFoundError: if the file is absent.
+        ValueError: if it lacks the columns every spatial CSV has.
+    """
+    return {
+        kind for row in _read_spatial_csv(path) if (kind := (row["kind"] or "").strip())
+    }
+
+
 def load_spatial_csv(path: Path | str) -> list[dict]:
     """Parse an exported spatial CSV back into defs ``{kind, name, keyframes, active}``,
     grouping rows by ``(kind, name)`` and rebuilding keyframes (ordered by ``frame_idx``,
@@ -506,9 +580,16 @@ def load_spatial_csv(path: Path | str) -> list[dict]:
     Calibration rows are skipped — they carry no polygon; read them with
     ``load_calibration_csv``.
 
+    A hand-edited file is read as strictly as it was written (#31): a name with a space at
+    either end (``nest `` beside ``nest`` merged the two into one polygon), a definition
+    whose rows disagree on the active window or set only one bound, a ``(kind, name,
+    frame_idx, vertex_index)`` given twice (the later row won), and vertex indexes that
+    skip one (``0, 1, 5`` made a triangle) are each refused, naming the row.
+
     Raises:
         FileNotFoundError: if the file is absent.
-        ValueError: on structural problems (missing columns, unknown kind, empty name).
+        ValueError: on structural problems (missing or repeated columns, unknown kind,
+            empty name), or any of the refusals above.
     """
     groups: dict[tuple[str, str], dict] = {}
     order: list[tuple[str, str]] = []
@@ -521,18 +602,37 @@ def load_spatial_csv(path: Path | str) -> list[dict]:
                 f"{row.source} row {row.line}: unknown spatial kind {kind!r}; the kind "
                 f"column holds one of {sorted([*_KINDS, CALIBRATION_KIND])}"
             )
-        name = (row["name"] or "").strip()
+        raw_name = row["name"] or ""
+        name = raw_name.strip()
         if not name:
             raise UserInputError(f"{row.source} row {row.line}: the name is empty")
+        if name != raw_name:
+            raise UserInputError(
+                f"{row.source} row {row.line}: name {raw_name!r} has a space at its start "
+                "or end; remove it (a region's name never does)"
+            )
         key = (kind, name)
+        active = _parse_active(row)
         if key not in groups:
-            groups[key] = {"active": _parse_active(row), "frames": {}}
+            groups[key] = {"active": active, "frames": {}, "line": row.line}
             order.append(key)
+        elif groups[key]["active"] != active:
+            raise UserInputError(
+                f"{row.source} row {row.line}: {kind} {name!r} has active window "
+                f"{active} here and {groups[key]['active']} on row {groups[key]['line']}; "
+                "a definition has one window, the same on every row"
+            )
         frame_idx = _csv_common.int_cell(row, "frame_idx")
         vi = _csv_common.int_cell(row, "vertex_index")
-        groups[key]["frames"].setdefault(frame_idx, {})[vi] = (
-            _csv_common.float_cell(row, "x"),
-            _csv_common.float_cell(row, "y"),
+        frame = groups[key]["frames"].setdefault(frame_idx, {})
+        if vi in frame:
+            raise UserInputError(
+                f"{row.source} row {row.line}: {kind} {name!r} frame {frame_idx} vertex "
+                f"{vi} is given twice (first on row {frame[vi][1]}); keep one"
+            )
+        frame[vi] = (
+            (_csv_common.float_cell(row, "x"), _csv_common.float_cell(row, "y")),
+            row.line,
         )
     defs: list[dict] = []
     for kind, name in order:
@@ -540,7 +640,13 @@ def load_spatial_csv(path: Path | str) -> list[dict]:
         keyframes: Keyframes = []
         for frame_idx in sorted(g["frames"]):
             by_index = g["frames"][frame_idx]
-            keyframes.append((frame_idx, [by_index[i] for i in sorted(by_index)]))
+            indexes = sorted(by_index)
+            if indexes != list(range(len(indexes))):
+                raise UserInputError(
+                    f"{path}: {kind} {name!r} frame {frame_idx} has vertex indexes "
+                    f"{indexes}; they count up from 0 with none skipped"
+                )
+            keyframes.append((frame_idx, [by_index[i][0] for i in indexes]))
         defs.append(
             {"kind": kind, "name": name, "keyframes": keyframes, "active": g["active"]}
         )
@@ -560,12 +666,14 @@ def _unique_name(recording_dir: Path | str, kind: str, name: str) -> str:
 def import_spatial(recording_dir: Path | str, defs: list[dict]) -> int:
     """Append parsed defs (from ``load_spatial_csv`` or ``read_defs``) onto a recording
     as NEW ids — never clobbering existing definitions. A name that collides with an
-    existing one gets a `` (2)`` suffix. Validates the whole set before writing any
-    (all-or-nothing). Returns the number appended."""
+    existing one gets a `` (2)`` suffix. Validates the whole set, of every kind in it,
+    before writing any (all-or-nothing, Tenet 10). Returns the number appended."""
     prepared: list[tuple[str, str, Keyframes, ActiveInterval, int]] = []
     for d in defs:
         kind = d["kind"]
         k = _kind(kind)
+        if not d.get("name"):
+            raise ValueError(f"{k.id_prefix} name must be non-empty")
         active = d.get("active")
         if active is not None and not k.has_active:
             raise ValueError(f"{kind!r} does not support an active interval")
@@ -579,7 +687,7 @@ def import_spatial(recording_dir: Path | str, defs: list[dict]) -> int:
             recording_dir,
             kind,
             def_id,
-            _unique_name(recording_dir, kind, name),
+            _unique_name(recording_dir, kind, stored_name(name)),
             n_vertices,
             active,
         )
@@ -612,11 +720,25 @@ def prepare_for_arrival(
       than missing — and unlike the geometry there is no way to *see* it happened, because
       the editor draws one frame at a time.
 
+    **A field of view travels alone**: ``defs`` holding more than one is refused, naming them.
+
     Pure, and takes parsed defs rather than a directory, so a setup **pulled** from a CSV
     obeys the same rules as one **pushed** from a recording. They were three policies
     before this: import appended and suffixed a collision, the field-of-view import
     replaced, and only the push flattened or refused anything.
+
+    Raises:
+        ValueError: ``defs`` holds more than one field of view.
     """
+    arenas = [d["name"] for d in defs if d["kind"] == "arena"]
+    if len(arenas) > 1:
+        # A recording has one field of view; two break the batch tracking picker, which
+        # intersects arena ids across recordings. Taking every one made two (#31).
+        raise ValueError(
+            f"the source holds {len(arenas)} fields of view "
+            f"({', '.join(map(repr, arenas))}); a recording has one, so keep the one you "
+            "want and import again"
+        )
     out: list[dict] = []
     flattened: list[str] = []
     refused: list[tuple[str, str]] = []
@@ -704,13 +826,27 @@ def write_calibration_from_points(
     Raises:
         ValueError: if the two points coincide or ``distance_mm <= 0``.
     """
+    block = calibration_from_points(points, distance_mm, resolution)
+    _write_calibration(recording_dir, block)
+    return block
+
+
+def calibration_from_points(
+    points, distance_mm: float, resolution: tuple[int, int]
+) -> dict:
+    """The calibration block :func:`write_calibration_from_points` would store, writing
+    nothing — so a save of several kinds can refuse a bad calibration before its first write.
+
+    Raises:
+        ValueError: if the two points coincide or ``distance_mm <= 0``.
+    """
     if distance_mm <= 0:
         raise ValueError(f"distance_mm must be > 0, got {distance_mm}")
     width, height = int(resolution[0]), int(resolution[1])
     pixel_dist = _pixel_distance(points, width, height)
     if pixel_dist <= 0:
         raise ValueError("the two calibration points must be distinct")
-    block = {
+    return {
         "schema_version": 1,
         "points": [
             [float(points[0][0]), float(points[0][1])],
@@ -720,8 +856,6 @@ def write_calibration_from_points(
         "pixels_per_mm": pixel_dist / distance_mm,
         "ref_resolution": [width, height],
     }
-    _write_calibration(recording_dir, block)
-    return block
 
 
 def write_calibration_scalar(
@@ -753,6 +887,26 @@ def read_calibration(recording_dir: Path | str) -> dict | None:
     return recording_store.read_recording(recording_dir).get(CALIBRATION_KEY)
 
 
+def check_calibration_block(
+    block: dict, resolution: tuple[int, int] | None = None
+) -> None:
+    """Refuse what :func:`write_calibration_block` would refuse, writing nothing — so an
+    import carrying a calibration beside polygons can refuse before its first write.
+
+    Raises:
+        ValueError: if the block has no positive ``pixels_per_mm`` or no resolution, or
+            its aspect ratio differs from ``resolution``'s.
+    """
+    if float(block.get("pixels_per_mm") or 0) <= 0:
+        raise ValueError("calibration block needs a positive pixels_per_mm")
+    if len(block.get("ref_resolution") or []) != 2:
+        raise ValueError("calibration block needs a [width, height] ref_resolution")
+    if resolution is not None:
+        refusal = calibration_aspect_refusal(block, *resolution)
+        if refusal is not None:
+            raise ValueError(refusal)
+
+
 def write_calibration_block(
     recording_dir: Path | str,
     block: dict,
@@ -771,14 +925,7 @@ def write_calibration_block(
         ValueError: if the block has no positive ``pixels_per_mm`` or no resolution, or
             its aspect ratio differs from ``resolution``'s.
     """
-    if float(block.get("pixels_per_mm") or 0) <= 0:
-        raise ValueError("calibration block needs a positive pixels_per_mm")
-    if len(block.get("ref_resolution") or []) != 2:
-        raise ValueError("calibration block needs a [width, height] ref_resolution")
-    if resolution is not None:
-        refusal = calibration_aspect_refusal(block, *resolution)
-        if refusal is not None:
-            raise ValueError(refusal)
+    check_calibration_block(block, resolution)
     stored = {
         "schema_version": 1,
         "points": block.get("points"),

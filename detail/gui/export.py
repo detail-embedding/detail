@@ -272,6 +272,7 @@ class ExportDialog(Dialog):
         self._only = tuple(only)
         self._seed = dict(seed or {})
         self._busy = False
+        self._enabled_before_busy: dict = {}
         self._space_ok = True
         self._estimate = None
         self._estimate_generation = 0
@@ -502,6 +503,11 @@ class ExportDialog(Dialog):
         self._estimate_timer.timeout.connect(self._start_estimate)
 
         layout.addLayout(form)
+        #: What the dialog is doing while the export is submitted, and why it will not close.
+        self._status = QLabel("")
+        self._status.setWordWrap(True)
+        self._status.hide()
+        layout.addWidget(self._status)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -876,7 +882,17 @@ class ExportDialog(Dialog):
         self._submit_call = call  # keep it alive until it has emitted
         call.done.connect(self._on_submitted)
         call.failed.connect(self._on_submit_failed)
+        # Submitting cannot be stopped part-way (it validates, reserves and starts the run in one
+        # call), and it is short. So Esc and the window's close wait for it rather than closing
+        # on a run that then starts with nobody shown it.
+        self.hold_open_while(call, self._still_submitting)
         call.start()
+
+    def _still_submitting(self) -> None:
+        self._status.setText(
+            "Still submitting the export — it cannot be stopped part-way. Its run opens on "
+            "its own page in a moment."
+        )
 
     def _set_busy(self, busy: bool) -> None:
         """Freeze the form in place while the run is submitted — no overlay.
@@ -884,13 +900,22 @@ class ExportDialog(Dialog):
         An overlay is for waiting on *work*; submitting is short, and the work has moved to a
         run with its own page. `launch._set_form_busy` is the same gesture over a different form
         and names that dialog's own fields, so it cannot be borrowed.
+
+        Each tick box gets back the state it had, not "enabled if it is enabled now": going busy
+        greys them all, so reading their state on the way back read the greying itself, and a
+        refused export left every box dead (#35).
         """
         self._busy = busy
         self._buttons.setEnabled(not busy)
         self._sync_export_enabled()
-        for check in (*self._include.values(), *self._renders.values()):
-            check.setEnabled(not busy and check.isEnabled())
+        checks = (*self._include.values(), *self._renders.values())
+        if busy:
+            self._enabled_before_busy = {check: check.isEnabled() for check in checks}
+        for check in checks:
+            check.setEnabled(not busy and self._enabled_before_busy.get(check, True))
         self._out.setEnabled(not busy)
+        self._status.setText("Submitting the export…" if busy else "")
+        self._status.setVisible(busy)
 
     def _on_submitted(self, handle) -> None:
         """Hand the handle up and close. The shell takes it from here.
@@ -899,6 +924,7 @@ class ExportDialog(Dialog):
         page, which the shell opens with this handle live — the same thing launching a
         processing or analysis run already does.
         """
+        self.let_go()
         self.run_handle = handle
         self.accept()
 
@@ -908,6 +934,7 @@ class ExportDialog(Dialog):
         Submission is where a bad target or an unavailable one is caught (`run_export`
         validates before it reserves an id), so this is the path a user actually meets.
         """
+        self.let_go()
         self._set_busy(False)
         QMessageBox.critical(self, "Export", str(exc))
 

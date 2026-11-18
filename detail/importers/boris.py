@@ -37,6 +37,7 @@ from detail.core.errors import UserInputError
 from detail.core.dataclasses import StreamImportResult
 from detail.core.protocols import StreamImporter
 from detail.core.registries import register_stream_importer
+from detail.importers import _csv_common
 from detail.storage import clocks
 
 _COLUMNS = ["t_ns", "end_t_ns", "label", "subject", "start_frame", "end_frame"]
@@ -84,6 +85,7 @@ class BorisImporter(StreamImporter):
     ) -> StreamImportResult:
         cfg = BorisSelectionConfig.model_validate(config or {})
         events, observations = _read_events(data_path)
+        _csv_common.require_data_rows(events)  # a header-only export scored nothing
         events, observation = _choose_observation(events, observations, cfg.observation)
         events, _subject = _choose_subject(events, cfg.subject)
         rows, subjects, labels, types = _pair_events(events)
@@ -129,6 +131,7 @@ def _parse_events(data_path: Path) -> tuple[list[tuple], list[str]]:
     events = []
     with open(data_path, newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f, delimiter=delimiter)
+        _csv_common.reject_duplicate_columns(reader.fieldnames or [], fold=True)
         fields = {n.strip().lower(): n for n in (reader.fieldnames or [])}
         _check_columns(data_path, reader.fieldnames or [], fields)
         for i, raw in enumerate(reader, start=2):

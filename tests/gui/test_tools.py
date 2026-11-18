@@ -6,6 +6,13 @@ built: *a pane handed more height than its hint with nowhere to put it* (`gui_de
 stretched row shares that growth among its rows — the header laid out at 241px against a 17px
 hint. `test_the_sampled_grid_packs_its_rows_at_the_top` checks it; the check itself, and why a
 grid label beside a thumbnail is not spread, is `tests/gui/layout_checks.py`.
+
+A second: **a status gate that tests for ``complete`` where the promise covers more** (#35
+finding 16). `run_tool` records a run the user stopped as ``stopped`` and promises it is still
+openable, and the CLI exports one, but the run page gave only ``complete`` its result view: a
+stopped run was a bare "Status: stopped" with no playback and no export.
+`api.tools.OPENABLE_STATUSES` is the one list, and the tests open real stopped runs of each
+shape, export one through the page's own button, and open one stopped before its first frame.
 """
 
 import numpy as np
@@ -15,7 +22,7 @@ from tests import waits
 
 pytest.importorskip("PyQt6")
 
-from PyQt6.QtWidgets import QPushButton  # noqa: E402
+from PyQt6.QtWidgets import QLabel, QPushButton  # noqa: E402
 
 from detail.api import tools as api_tools  # noqa: E402
 from detail.core.registries import register_model  # noqa: E402
@@ -310,6 +317,90 @@ def test_run_detail_page_hosts_result_then_deletes(qapp, complete_run, monkeypat
     )
     page._delete()
     assert deleted == [True] and api_tools.list_tool_runs() == []
+
+
+# --- a stopped run opens like a complete one (#35 finding 16) ------------------ #
+# `run_tool` promises a stopped run "is still there and still openable", and the CLI exports
+# one; the page gave only `status == "complete"` its result view, so a stopped run showed a
+# bare "Status: stopped". Real stopped runs, one per shape the page meets: a consecutive
+# run stopped part-way (player + Export mp4), a sampled one (frame view + Export frames),
+# and one stopped before its first frame (nothing to play, said so).
+def _stopped_run(tmp_path, monkeypatch, *, mode, after):
+    monkeypatch.setattr(locations, "experiments_root", lambda: tmp_path)
+    register_model("stub_seg")(_StubDetector)
+    video = tmp_path / "clip.mp4"
+    _write_video(video, n_frames=20)
+    calls = {"n": 0}
+
+    def stop() -> bool:
+        calls["n"] += 1
+        return calls["n"] > after
+
+    record = api_tools.run_tool(
+        "quick_segment", _config(video, n_frames=6, mode=mode), stop_check=stop
+    )
+    assert record["status"] == "stopped"
+    assert record["result"]["n_processed"] == after
+    return record
+
+
+@pytest.mark.parametrize(
+    "mode, export", [("consecutive", "Export mp4"), ("sample", "Export frames")]
+)
+def test_a_stopped_run_opens_with_its_result_and_export(
+    qapp, tmp_path, monkeypatch, mode, export
+):
+    record = _stopped_run(tmp_path, monkeypatch, mode=mode, after=2)
+    page = pages.ToolRunDetailPage("quick_segment", record["id"], on_deleted=None)
+    buttons = {b.text(): b for b in page.findChildren(QPushButton)}
+    assert export in buttons, f"a stopped {mode} run offers no {export}"
+    assert buttons[export].isEnabled()
+    labels = [w.text() for w in page.findChildren(QLabel)]
+    assert any("(stopped early)" in text for text in labels), labels
+    assert "Status: stopped" not in labels
+
+
+def test_a_stopped_run_exports_the_frames_it_finished(qapp, tmp_path, monkeypatch):
+    """Through the page's own button, to a folder picked in the (patched) file dialog."""
+    import cv2
+
+    record = _stopped_run(tmp_path, monkeypatch, mode="consecutive", after=3)
+    page = pages.ToolRunDetailPage("quick_segment", record["id"], on_deleted=None)
+    out = tmp_path / "exported"
+    out.mkdir()
+    monkeypatch.setattr(
+        "detail.gui.tools.quick_segment.QFileDialog.getExistingDirectory",
+        lambda *a, **k: str(out),
+    )
+    saved = []
+    monkeypatch.setattr(
+        "detail.gui.tools.quick_segment.QMessageBox.information",
+        lambda _p, _t, text: saved.append(text),
+    )
+    monkeypatch.setattr(
+        "detail.gui.tools.quick_segment.QMessageBox.critical",
+        lambda _p, _t, text: saved.append(f"FAILED {text}"),
+    )
+    button = next(b for b in page.findChildren(QPushButton) if b.text() == "Export mp4")
+    button.click()
+    waits.until(qapp, lambda: saved, "the export's result")
+    assert saved[0].startswith("Saved to"), saved
+    (mp4,) = out.rglob("*.mp4")
+    cap = cv2.VideoCapture(str(mp4))
+    try:
+        assert int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) == 3
+    finally:
+        cap.release()
+
+
+def test_a_run_stopped_before_its_first_frame_says_there_is_nothing(
+    qapp, tmp_path, monkeypatch
+):
+    record = _stopped_run(tmp_path, monkeypatch, mode="consecutive", after=0)
+    page = pages.ToolRunDetailPage("quick_segment", record["id"], on_deleted=None)
+    labels = [w.text() for w in page.findChildren(QLabel)]
+    assert "Stopped before its first frame — there is nothing to show." in labels
+    assert [b.text() for b in page.findChildren(QPushButton)] == ["Delete run"]
 
 
 def test_quick_tools_mode_navigates_to_tool_and_run(qapp, complete_run):

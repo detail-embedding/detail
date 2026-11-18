@@ -417,9 +417,11 @@ def test_progress_names_each_phase_and_counts_frames_across_the_run(tracked):
     assert any(e.eta_s is not None for e in events[2:-1])
 
 
-def test_a_stopped_run_resumes_after_the_last_whole_frame(tracked, monkeypatch):
-    """Stop after the first batch (frames 0, 1), resume: the second run starts at frame 2,
-    places nothing twice, and the store equals an uninterrupted run's."""
+def test_a_stopped_run_keeps_whole_frames_and_records_their_coverage(
+    tracked, monkeypatch
+):
+    """Stop after the first batch (frames 0, 1): the store keeps both frames whole and the
+    yaml's coverage says so. There is no resume (§26): a re-run gets a fresh run id."""
     it, recording = tracked
     stop = threading.Event()
     original = _FakeKeypointModel.__init__
@@ -431,33 +433,13 @@ def test_a_stopped_run_resumes_after_the_last_whole_frame(tracked, monkeypatch):
     monkeypatch.setattr(_FakeKeypointModel, "__init__", init)
     _m, _c, run_dir, events = _run(it, recording, _config(), stop_event=stop)
     assert events[-1].message == "stopped"
-    first = KeypointDetectRun(recording.dir, "kd_01").rows("part_001")
-    assert first["frame_idx"].tolist() == [0, 1, 1]
+    rows = KeypointDetectRun(recording.dir, "kd_01").rows("part_001")
+    assert rows["frame_idx"].tolist() == [0, 1, 1]
     assert read_detect_yaml(run_dir)["coverage"]["part_001"] == {
         "frames": 2,
         "frames_with_instance": 2,
         "instances": 3,
     }
-    monkeypatch.setattr(_FakeKeypointModel, "__init__", original)
-    _FakeKeypointModel.instances.clear()
-    _m, _c, run_dir, events = _run(it, recording, _config())
-    model = _FakeKeypointModel.instances[-1]
-    assert model.frames_seen == [2, 3, 4]
-    assert events[1].frames_done == 2 and events[1].frames_total == 5
-    rows = KeypointDetectRun(recording.dir, "kd_01").rows("part_001")
-    assert rows["frame_idx"].tolist() == [f for f, _box in DET_ROWS]
-    assert rows["detection_row"].tolist() == list(range(9))
-    assert read_detect_yaml(run_dir)["coverage"]["part_001"]["instances"] == 9
-
-
-def test_a_finished_run_resumed_places_nothing(tracked):
-    it, recording = tracked
-    _run(it, recording, _config())
-    _FakeKeypointModel.instances.clear()
-    _m, _c, run_dir, events = _run(it, recording, _config())
-    assert _FakeKeypointModel.instances[-1].batches == []
-    assert events[1].frames_done == 5 == events[1].frames_total
-    assert len(KeypointDetectRun(recording.dir, "kd_01").rows("part_001")["t_ns"]) == 9
 
 
 def test_a_stop_before_any_frame_keeps_the_record_and_writes_no_store(tracked):

@@ -122,13 +122,20 @@ def add_video_parts(
 
 
 def add_tracking_parts(
-    recording_dir: Path, whole_map: np.ndarray, part_lengths: list[int]
+    recording_dir: Path,
+    *,
+    detection_run_id: str = "det_01",
+    tracking_run_id: str | None = "track_01",
+    detected: set[str] | None = None,
 ) -> None:
-    """A complete ``det_01`` / ``track_01`` over every part of `add_video_parts`' recording,
-    subject 0 detected and tracked on every frame.
+    """A complete detection run (and tracking run, unless ``tracking_run_id`` is ``None``) over
+    every part ``recording.yaml`` lists, subject 0 detected and tracked on every frame of the
+    parts in ``detected`` (default: every part; the others get an empty store).
 
-    Each part's stores hold **part-local** ``frame_idx`` (§5) and recording-wide ``t_ns`` from
-    the map, as the stages write them.
+    Walks the parts in **play order** and names each store after its stem, as the stages do,
+    so after `Recording.reorder_video_parts` the stores keep their names while the play order
+    moves. Each store holds **part-local** ``frame_idx`` (§5) and the part's recording-wide
+    ``t_ns`` from its map.
     """
     import json
 
@@ -136,40 +143,51 @@ def add_tracking_parts(
     from detail.storage.zarr_io import AssignmentPartWriter, DetectionPartWriter
 
     data = recording_store.read_recording(recording_dir)
-    data["detection_runs"] = [{"id": "det_01", "status": "complete"}]
-    data["tracking_runs"] = [
-        {"id": "track_01", "status": "complete", "detection_run_id": "det_01"}
-    ]
-    recording_store.write_recording(recording_dir, data)
-    det_dir = recording_dir / "detections" / "det_01"
-    trk_dir = recording_dir / "tracking" / "track_01"
-    det_dir.mkdir(parents=True, exist_ok=True)
-    (trk_dir / "assignments").mkdir(parents=True, exist_ok=True)
-    (det_dir / "job.json").write_text(
-        json.dumps({"schema_version": 1, "status": "complete"}), encoding="utf-8"
+    data.setdefault("detection_runs", []).append(
+        {"id": detection_run_id, "status": "complete"}
     )
-    (trk_dir / "track.yaml").write_text(
-        yaml.dump({"schema_version": 1, "detection_run_id": "det_01"}),
+    if tracking_run_id is not None:
+        data.setdefault("tracking_runs", []).append(
+            {
+                "id": tracking_run_id,
+                "status": "complete",
+                "detection_run_id": detection_run_id,
+            }
+        )
+    recording_store.write_recording(recording_dir, data)
+    det_dir = recording_dir / "detections" / detection_run_id
+    det_dir.mkdir(parents=True, exist_ok=True)
+    (det_dir / "job.json").write_text(
+        json.dumps(
+            {"schema_version": 1, "status": "complete", "mask_resolution": [40, 40]}
+        ),
         encoding="utf-8",
     )
-    first = 0
-    for number, length in enumerate(part_lengths, start=1):
-        stem = f"part_{number:03d}"
+    trk_dir = None
+    if tracking_run_id is not None:
+        trk_dir = recording_dir / "tracking" / tracking_run_id
+        (trk_dir / "assignments").mkdir(parents=True, exist_ok=True)
+        (trk_dir / "track.yaml").write_text(
+            yaml.dump({"schema_version": 1, "detection_run_id": detection_run_id}),
+            encoding="utf-8",
+        )
+    for index, file in enumerate(recording_store.video_files(data)):
+        stem = recording_store.part_stem(file)
+        stamps = recording_store.load_active_timestamps(
+            recording_dir, data, index
+        ).values
+        frames = range(len(stamps)) if detected is None or stem in detected else ()
         with DetectionPartWriter(det_dir / f"{stem}.zarr") as writer:
-            for local in range(length):
+            for local in frames:
                 writer.add_row(
-                    local,
-                    int(whole_map[first + local]),
-                    0,
-                    "mouse",
-                    0.9,
-                    (0.1, 0.1, 0.2, 0.2),
-                    "",
+                    local, int(stamps[local]), 0, "mouse", 0.9, (0.1, 0.1, 0.4, 0.4), ""
                 )
-        with AssignmentPartWriter(trk_dir / "assignments" / f"{stem}.zarr") as writer:
-            for _ in range(length):
-                writer.add_object_id(0)
-        first += length
+        if trk_dir is not None:
+            with AssignmentPartWriter(
+                trk_dir / "assignments" / f"{stem}.zarr"
+            ) as writer:
+                for _ in frames:
+                    writer.add_object_id(0)
 
 
 def write_video(path: Path, n_frames: int = 5, size: int = 40) -> Path:
