@@ -28,6 +28,17 @@ a name too long for the disk, a full disk. A ``FileNotFoundError`` is deliberate
 there: a file DETAIL expected to find is a bug at the site that should have checked, and
 ``test_the_root_boundary_rejects_a_missing_file_as_a_user_error`` fails if it is added.
 
+**Numbers, unhelpful messages and leftovers (#33 sections C–E).** ``click``'s ``float`` took
+``nan`` and ``inf`` straight to ``round(seconds * 1e9)``; every float option now takes its type
+from ``detail/cli_numbers.py`` (scanned by ``tests/storage/test_user_file_readers.py``). A
+message that was not a traceback still named the wrong thing: a unit the user never typed
+(``every_ns``), a cause that was not the cause (tracker settings when detection found nothing;
+"no video parts yet" for a recording that does not exist), a file to open instead of the reason
+in it (``job.json``), or the codec of a spreadsheet saved in the Windows encoding or with
+semicolons. Each now names what the user typed and what to change. Prose that quotes a folder
+(a metadata cell, a description, a recorded error) no longer blocks ``experiment export``, and
+the model commands no longer leave a throwaway experiment in the temp folder.
+
 The second half of this file is the table: one row per #33 finding with a CLI step, driven
 through the real ``main``, each asserting exit 1, a clean ``Error:`` line and the new
 message's key words.
@@ -722,3 +733,447 @@ def test_finding_22_an_import_name_too_long_for_the_disk(
     _clean_error(result, "a file or folder name is too long for this disk")
     leftovers = list(workspace.iterdir()) if workspace.exists() else []
     assert leftovers == []
+
+
+# --------------------------------------------------------------------------- #
+# Sections C (numbers), D (messages that do not help) and E (leftovers).
+# --------------------------------------------------------------------------- #
+def _usage_error(result, *words: str) -> str:
+    """The ``Error:`` line of a command click refused before it ran (exit 2)."""
+    assert isinstance(result.exception, SystemExit), result.exception
+    assert result.exit_code == 2, result.output
+    assert "Traceback" not in result.output
+    errors = [l for l in result.output.splitlines() if l.startswith("Error: ")]
+    assert len(errors) == 1, result.output
+    for word in words:
+        assert word in errors[0], (word, result.output)
+    return errors[0]
+
+
+def _query(experiment_dir, *args: str):
+    return _invoke(
+        "analysis", "query", "--experiment", experiment_dir, "--embed-run", "emb_01",
+        "--search", "m1", *args,
+    )  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    "args, words",
+    [
+        (("--example", "m1:0-1", "--min-match", "nan"), ("--min-match", "'nan'")),
+        (("--example", "m1:0-1", "--split-gap", "inf"), ("--split-gap", "'inf'")),
+    ],
+    ids=["min-match-nan", "split-gap-inf"],
+)
+def test_finding_24_a_number_option_refuses_nan_and_inf(args, words, experiment_dir):
+    _usage_error(_query(experiment_dir, *args), *words, "is not a finite number")
+
+
+@pytest.mark.parametrize(
+    "example, words",
+    [
+        ("m1:x:0.1-0.2", "bad track 'x' in --example 'm1:x:0.1-0.2'"),
+        ("m1:0-inf", "bad span in --example 'm1:0-inf'"),
+    ],
+    ids=["track-not-a-number", "span-inf"],
+)
+def test_finding_24_a_bad_example_spec(example, words, experiment_dir):
+    _invoke("recording", "create", "--experiment", experiment_dir, "--name", "m1")
+    _clean_error(_query(experiment_dir, "--example", example), words)
+
+
+@pytest.mark.parametrize("value", ["inf", "nan", "-inf"])
+def test_finding_25_an_offset_that_is_not_finite(value, experiment_dir, tmp_path):
+    _invoke("recording", "create", "--experiment", experiment_dir, "--name", "m1")
+    data = tmp_path / "s.csv"
+    data.write_text("seconds,v\n0,1\n1,2\n", encoding="utf-8")
+    added = _invoke(
+        "recording", "add-stream", "--experiment", experiment_dir, "--recording", "m1",
+        "--name", "s", "--importer", "timeseries_csv", "--data", data, "--offset", value,
+    )  # fmt: skip
+    _usage_error(added, "--offset", "is not a finite number")
+
+
+@pytest.mark.parametrize("value", ["NaN", "inf"])
+def test_finding_25_a_time_cell_that_is_not_finite(value, experiment_dir, tmp_path):
+    """Through #49's checked seconds-to-t_ns conversion: the row and column, not "cannot
+    convert float NaN to integer" or an ``OverflowError`` traceback."""
+    _invoke("recording", "create", "--experiment", experiment_dir, "--name", "m1")
+    data = tmp_path / "s.csv"
+    data.write_text(f"seconds,v\n0,1\n{value},2\n", encoding="utf-8")
+    added = _invoke(
+        "recording", "add-stream", "--experiment", experiment_dir, "--recording", "m1",
+        "--name", "s", "--importer", "timeseries_csv", "--data", data,
+    )  # fmt: skip
+    _clean_error(added, "row 3, column 'seconds'", "is not a finite number of seconds")
+
+
+def test_finding_27_a_tile_shorter_than_a_frame_is_named_in_seconds(tmp_path):
+    from tests.api.test_comparison import UNBALANCED, _cohort
+
+    exp = _cohort(tmp_path, UNBALANCED)  # 100 Hz
+    result = _invoke(
+        "measures", "export", "--experiment", exp.dir, "--run", "an_01",
+        "--out", tmp_path / "out", "--windows", "absolute", "--every", "0.0000000001",
+    )  # fmt: skip
+    line = _clean_error(result)
+    assert line == (
+        "Error: Tile width (--every) 1e-10 s is shorter than one frame of this recording "
+        "(0.010 s at 100 fps); use at least 0.010 s"
+    )
+
+
+def test_finding_28_free_text_does_not_block_an_export(experiment_dir, tmp_path):
+    from detail.api.experiment import Experiment
+
+    _invoke("recording", "create", "--experiment", experiment_dir, "--name", "m1")
+    sheet = tmp_path.parent / f"{tmp_path.name}_meta.csv"  # outside the experiment
+    sheet.write_text("name,raw_file\nm1,/home/lab/raw/m1.mp4\n", encoding="utf-8")
+    imported = _invoke(
+        "experiment", "import-metadata", "--experiment", experiment_dir, "--csv", sheet
+    )
+    assert imported.exit_code == 0, imported.output
+    Experiment(experiment_dir).set_metadata(
+        description=r"videos were on D:\raw before the move"
+    )
+    archive = tmp_path.parent / f"{tmp_path.name}_a.tar"
+    exported = _invoke(
+        "experiment", "export", "--experiment", experiment_dir, "--out", archive
+    )
+    assert exported.exit_code == 0, exported.output
+
+
+def test_finding_28_a_path_detail_reads_is_named_with_its_line(
+    experiment_dir, tmp_path
+):
+    _invoke("recording", "create", "--experiment", experiment_dir, "--name", "m1")
+    config = experiment_dir / "config.yaml"
+    config.write_text(
+        config.read_text(encoding="utf-8-sig") + "leak: D:\\videos\\m1.mp4\n",
+        encoding="utf-8",
+    )
+    archive = tmp_path.parent / f"{tmp_path.name}_a.tar"
+    result = _invoke(
+        "experiment", "export", "--experiment", experiment_dir, "--out", archive
+    )
+    lines = len(config.read_text(encoding="utf-8-sig").splitlines())
+    _clean_error(result, f"config.yaml line {lines}: D:\\videos\\m1.mp4")
+
+
+class _FailedRun:
+    id = "an_02"
+    status = "failed"
+    error = "soft_knn needs a background of 500 rows; the search found 120"
+
+
+def test_finding_29_a_failed_run_prints_its_recorded_reason():
+    with pytest.raises(click.ClickException) as err:
+        cli._check_status(_FailedRun(), "query")
+    assert err.value.message == (
+        "query run 'an_02' did not complete (status='failed'): soft_knn needs a background "
+        "of 500 rows; the search found 120"
+    )
+
+
+def test_finding_29_a_run_with_no_recorded_reason_still_points_at_its_log():
+    run = _FailedRun()
+    run.error = None
+    with pytest.raises(click.ClickException, match="check job.json"):
+        cli._check_status(run, "query")
+
+
+@pytest.mark.parametrize(
+    "flag, value, line",
+    [
+        (
+            "--recording",
+            "recording 009",
+            "Error: no recording 'recording 009' in this experiment — known: recording_001",
+        ),
+        (
+            "--run",
+            "track_01",
+            "Error: no processing run 'track_01' in this experiment; `detail process "
+            "list` shows them",
+        ),
+        (
+            "--analysis-run",
+            "an_09",
+            "Error: no analysis run 'an_09' in this experiment; `detail analysis list` "
+            "shows them",
+        ),
+    ],
+    ids=["recording", "run", "analysis-run"],
+)
+def test_finding_31_export_of_a_subject_that_does_not_exist(
+    flag, value, line, processed_recording, tmp_path
+):
+    it = processed_recording
+    for command in ("list", "run"):
+        args = ["export", command, "--experiment", it.experiment.dir, flag, value]
+        if command == "run":
+            args += ["--target", "clip", "--out", tmp_path / "out"]
+        assert _clean_error(_invoke(*args)) == line
+
+
+def test_finding_31_export_list_takes_a_recording_name(processed_recording):
+    it = processed_recording
+    it.recording.set_name("mouse one")
+    result = _invoke(
+        "export", "list", "--experiment", it.experiment.dir, "--recording", "mouse one"
+    )
+    assert result.exit_code == 0, result.output
+    assert "no video parts yet" not in result.output
+
+
+@pytest.mark.parametrize(
+    "raw, words",
+    [
+        (
+            "recording_id,owner\nrecording_001,Ren\u00e9e\n".encode("cp1252"),
+            ("is not UTF-8 text", "CSV UTF-8"),
+        ),
+        (
+            b"recording_id;sex\nrecording_001;f\n",
+            ("looks semicolon-separated", "save it with commas"),
+        ),
+        (
+            b"recording_id\tsex\nrecording_001\tf\n",
+            ("looks tab-separated", "save it with commas"),
+        ),
+        (
+            b"recording_id,,sex\nrecording_001,,f\n",
+            ("column 2 has no header",),
+        ),
+    ],
+    ids=["windows-encoding", "semicolons", "tabs", "unnamed-column"],
+)
+def test_finding_32_metadata_csv_mistakes(raw, words, experiment_dir, tmp_path):
+    _invoke("recording", "create", "--experiment", experiment_dir, "--name", "m1")
+    sheet = tmp_path / "sheet.csv"
+    sheet.write_bytes(raw)
+    result = _invoke(
+        "experiment", "import-metadata", "--experiment", experiment_dir, "--csv", sheet
+    )
+    assert result.exit_code == 1, result.output
+    assert "Traceback" not in result.output
+    for word in words:
+        assert word in result.output, (word, result.output)
+
+
+def test_finding_32_a_trailing_empty_column_is_ignored(experiment_dir, tmp_path):
+    from detail.storage import metadata
+
+    _invoke("recording", "create", "--experiment", experiment_dir, "--name", "m1")
+    sheet = tmp_path / "sheet.csv"
+    sheet.write_bytes(b"name,sex,\r\nm1,f,\r\n,,\r\n")
+    result = _invoke(
+        "experiment", "import-metadata", "--experiment", experiment_dir, "--csv", sheet
+    )
+    assert result.exit_code == 0, result.output
+    assert [row["sex"] for row in metadata.read_metadata(experiment_dir).values()] == [
+        "f"
+    ]
+
+
+_REGION = "roi,z,,,0,0,0.1,0.1,,,,\nroi,z,,,0,1,0.5,0.1,,,,\nroi,z,,,0,2,0.5,0.5,,,,\n"
+
+
+@pytest.mark.parametrize(
+    "body, words",
+    [
+        (
+            "roi,z,,,0,0,64,48,,,,\nroi,z,,,0,1,70,48,,,,\nroi,z,,,0,2,70,60,,,,\n",
+            "coordinates are fractions of the frame (0 to 1)",
+        ),
+        ("box,z,,,0,0,0.1,0.1,,,,\n", "rig.csv row 2: unknown spatial kind 'box'"),
+        (",x,,,0,0,0.1,0.1,,,,\n", "rig.csv row 2: unknown spatial kind ''"),
+    ],
+    ids=["pixels", "unknown-kind", "kind-missing"],
+)
+def test_finding_33_spatial_csv_messages(
+    body, words, experiment_dir, recording_dir, tmp_path
+):
+    csv_path = tmp_path / "rig.csv"
+    csv_path.write_text(_SPATIAL_HEADER + body, encoding="utf-8")
+    result = _invoke(
+        "recording", "import-spatial", "--experiment", experiment_dir,
+        "--recording", "recording_001", "--csv", csv_path,
+    )  # fmt: skip
+    _clean_error(result, words)
+
+
+def test_finding_33_a_blank_spreadsheet_row_is_skipped(
+    experiment_dir, recording_dir, tmp_path
+):
+    csv_path = tmp_path / "rig.csv"
+    csv_path.write_text(
+        _SPATIAL_HEADER + _REGION.replace("\n", "\n,,,,,,,,,,,\n", 1), encoding="utf-8"
+    )
+    result = _invoke(
+        "recording", "import-spatial", "--experiment", experiment_dir,
+        "--recording", "recording_001", "--csv", csv_path,
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+
+
+def _add_stream(it, data, *args):
+    return _invoke(
+        "recording", "add-stream", "--experiment", it.experiment.dir,
+        "--recording", "recording_001", "--name", "s", "--importer", "timeseries_csv",
+        "--data", data, *args,
+    )  # fmt: skip
+
+
+@pytest.mark.parametrize("frame", [600, -1])
+def test_finding_34_a_frame_outside_the_video(frame, processed_recording, tmp_path):
+    data = tmp_path / "s.csv"
+    data.write_text(f"frame,v\n0,1\n{frame},2\n", encoding="utf-8")
+    line = _clean_error(_add_stream(processed_recording, data))
+    assert line.startswith(
+        f"Error: frame {frame} is outside the video, whose frames are numbered 0 to 4"
+    )
+    assert "behavior" not in line
+
+
+def test_finding_34_epoch_milliseconds_in_a_utc_column(processed_recording, tmp_path):
+    data = tmp_path / "s.csv"
+    data.write_text("utc,v\n1788000000000,1\n1788000001000,2\n", encoding="utf-8")
+    result = _add_stream(
+        processed_recording, data, "--time-column", "utc", "--time-is", "utc"
+    )
+    _clean_error(
+        result,
+        "row 2, column 'utc': 1788000000000 is not Unix time in seconds",
+        "divide the column by 1000",
+    )
+
+
+def test_finding_34_a_semicolon_stream_csv(processed_recording, tmp_path):
+    data = tmp_path / "s.csv"
+    data.write_text("seconds;v\n0;1\n1;2\n", encoding="utf-8")
+    _clean_error(_add_stream(processed_recording, data), "looks semicolon-separated")
+
+
+def test_finding_35_an_example_frame_without_a_field(tmp_path):
+    from detail.api.experiment import Experiment
+
+    proj = Experiment.create("p", tmp_path)
+    exp = ["--experiment", proj.dir]
+    _invoke("keypoints", "examples", "create", "rats", "--skeleton", "midline_3", *exp)
+    out = tmp_path / "shared"
+    _invoke("keypoints", "examples", "export", "ex_01", "--out", out, *exp)
+    data = yaml.safe_load((out / "examples.yaml").read_text(encoding="utf-8-sig"))
+    (out / "img.png").write_bytes(b"x")
+    frame = {
+        "image": "img.png", "tracking_run_id": "track_01", "track_id": 0,
+        "part_id": "part_001", "frame_idx": 0, "t_ns": 0, "bbox": [0, 0, 1, 1],
+    }  # fmt: skip
+    data["frames"] = [dict(frame, recording_id="recording_001")] * 3 + [frame]
+    (out / "examples.yaml").write_text(yaml.dump(data), encoding="utf-8")
+    result = _invoke("keypoints", "examples", "import", out / "examples.yaml", *exp)
+    _clean_error(result, "examples.yaml frame 3 has no recording_id")
+
+
+def test_finding_35_a_finder_zip_is_read_past_its_litter(model_catalog, tmp_path):
+    archive = tmp_path / "m.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("mymodel/model.yaml", "")
+        zf.writestr("__MACOSX/mymodel/._model.yaml", "x")
+        zf.writestr("mymodel/.DS_Store", "x")
+    # Past the folder check to the record itself: the litter is not a second folder.
+    _clean_error(
+        _invoke("model", "restore", archive),
+        "m.zip: mymodel/model.yaml is not a model record",
+    )
+    assert list(model_catalog.iterdir()) == []
+
+
+def test_finding_35_a_zip_of_the_folder_contents(model_catalog, tmp_path):
+    archive = tmp_path / "m.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("model.yaml", "schema_version: 1\n")
+        zf.writestr("weights.pt", "x")
+    _clean_error(
+        _invoke("model", "restore", archive),
+        "m.zip holds a model folder's contents",
+        "zip the model folder itself",
+    )
+
+
+@pytest.mark.parametrize(
+    "args",
+    [("model", "check", "sam3"), ("model", "remove", "nosuch"), ("hf-token", "hf_x")],
+    ids=["check", "remove", "hf-token"],
+)
+def test_finding_37_model_commands_leave_no_experiment_behind(
+    args, tmp_path, monkeypatch, model_catalog
+):
+    import tempfile
+
+    from detail.api import models as api_models
+    from detail.storage import credentials
+
+    system_tmp = tmp_path / "system_tmp"
+    system_tmp.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(system_tmp))
+    monkeypatch.setattr(api_models, "model_readiness", lambda *a: _Ready())
+    monkeypatch.setattr(credentials, "set_hf_token", lambda token: "alice")
+    _invoke(*args)
+    assert list(system_tmp.iterdir()) == []
+
+
+class _Ready:
+    ready, reason, message, action_url = True, "installed", None, None
+
+
+def test_finding_38_a_wrong_run_id_leaves_no_output_folder(experiment_dir, tmp_path):
+    for command in ("export-query", "export-temporal-clustering"):
+        out = tmp_path.parent / f"{tmp_path.name}_{command}"
+        result = _invoke(
+            "analysis", command, "--experiment", experiment_dir, "--run", "nosuch",
+            "--out", out,
+        )  # fmt: skip
+        _clean_error(result, "nosuch", "`detail analysis list`")
+        assert not out.exists()
+
+
+@pytest.mark.parametrize(
+    "header, words",
+    [
+        (
+            "Subject,Behavior,Behavior type,Start (s),Stop (s)\nm,groom,STATE,1,2\n",
+            ("b.csv is a BORIS aggregated export", "export the observation from BORIS"),
+        ),
+        (
+            "Behaviour,Status,Time\ngroom,START,1\n",
+            ("b.csv is not a BORIS tabular events export", "has 'Behaviour', 'Status'"),
+        ),
+    ],
+    ids=["aggregated", "other-columns"],
+)
+def test_finding_34_a_boris_file_this_importer_does_not_read(
+    header, words, processed_recording, tmp_path
+):
+    data = tmp_path / "b.csv"
+    data.write_text(header, encoding="utf-8")
+    result = _invoke(
+        "recording", "add-stream", "--experiment", processed_recording.experiment.dir,
+        "--recording", "recording_001", "--name", "b", "--importer", "boris",
+        "--data", data,
+    )  # fmt: skip
+    _clean_error(result, *words)
+
+
+@pytest.mark.parametrize("importer", ["boris", "behavior_csv"])
+def test_finding_34_a_behavior_file_that_is_not_text(
+    importer, processed_recording, tmp_path
+):
+    data = tmp_path / "b.csv"
+    data.write_bytes("Behavior,Behavior type,Time\nPutzenä,POINT,1\n".encode("cp1252"))
+    result = _invoke(
+        "recording", "add-stream", "--experiment", processed_recording.experiment.dir,
+        "--recording", "recording_001", "--name", "b", "--importer", importer,
+        "--data", data,
+    )  # fmt: skip
+    _clean_error(result, "b.csv is not UTF-8 text")

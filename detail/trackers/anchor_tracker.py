@@ -276,11 +276,7 @@ class AnchorTracker(Tracker):
             emit(_event(part_index + 1), force=True)
 
         if first_frame is None and not interrupted:
-            raise ValueError(
-                "zero tracks produced; hyperparams may be too strict "
-                f"(conf_threshold={params['conf_threshold']}, "
-                f"require_contiguous={params['require_contiguous']})"
-            )
+            raise _common.zero_tracks_error(n_assigned + n_unassigned, params)
 
         _common.clear_zarr(output_dir / "tracks.zarr")
         self._write_tracks_zarr(

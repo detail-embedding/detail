@@ -263,8 +263,21 @@ def test_all_below_conf_raises_zero_tracks(tmp_path):
     det = _det_run(tmp_path)
     box = (0.1, 0.1, 0.4, 0.4)
     _write_part(det / "part_001.zarr", [(f, [_det(box, 0.02)]) for f in range(3)])
-    with pytest.raises(ValueError, match="zero tracks produced"):
+    with pytest.raises(
+        ValueError, match="from 3 detection.*settings may be too strict"
+    ):
         AnchorTracker().track(_job(), det, tmp_path / "track_01")
+
+
+def test_a_detection_run_that_found_nothing_is_named_as_the_cause(tmp_path):
+    """Blaming the tracker's settings sent the user to tune the wrong stage (#33)."""
+    det = _det_run(tmp_path)
+    _write_part(det / "part_001.zarr", [(f, []) for f in range(3)])
+    with pytest.raises(
+        ValueError, match="the detection run found no detections"
+    ) as err:
+        AnchorTracker().track(_job(), det, tmp_path / "track_01")
+    assert "too strict" not in str(err.value)
 
 
 # --- schema edges: gaps, empty parts, multi-part ---------------------------- #

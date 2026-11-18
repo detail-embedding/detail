@@ -332,7 +332,7 @@ def test_add_behavior_frame_past_video_raises(experiment_dir, recording_dir, tmp
     p.write_text(
         "start_frame,end_frame,label\n1,9,groom\n", encoding="utf-8"
     )  # frame 9 > 4
-    with pytest.raises(ValueError, match="past the video"):
+    with pytest.raises(ValueError, match="frame 9 is outside the video"):
         _recording(experiment_dir).add_stream(
             "behavior", raw_path=p, importer="behavior_csv"
         )

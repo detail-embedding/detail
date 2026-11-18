@@ -23,7 +23,7 @@ from detail.storage import experiment as experiment_store
 
 
 def run_dir_for(experiment_root, job: TrainingJob) -> Path:
-    """``models/<model_id>/`` — a experiment-level run dir (not per-recording)."""
+    """``models/<model_id>/`` — an experiment-level run dir (not per-recording)."""
     return experiment_store.models_dir(experiment_root) / job.model_id
 
 

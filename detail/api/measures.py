@@ -88,7 +88,7 @@ class Measures:
         spec = windows or WindowSpec()
         return measures_lib.measure_run(
             self._current_run_dir(progress),
-            windows_for=lambda cov: spec.windows_for(cov.start_t_ns, cov.end_t_ns),
+            windows_for=spec.windows_for_coverage,
             measures=measures,
         )
 
@@ -128,7 +128,7 @@ class Measures:
         report("measuring", 0.0, self.id)
         rows = measures_lib.measure_run(
             run_dir,
-            windows_for=lambda cov: spec.windows_for(cov.start_t_ns, cov.end_t_ns),
+            windows_for=spec.windows_for_coverage,
             measures=measures,
         )
         measures_lib.write_measures(out / MEASURES_FILENAME, rows)

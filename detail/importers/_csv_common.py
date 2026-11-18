@@ -18,6 +18,7 @@ can say "row 7: expected 12 cells, found 6" instead of failing on a missing valu
 from __future__ import annotations
 
 import csv
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -59,22 +60,39 @@ class CsvRow(dict):
         self.expected = expected
 
 
+#: Separators a spreadsheet uses instead of a comma, as a message names them.
+_OTHER_SEPARATORS = {";": "semicolon", "\t": "tab"}
+
+
 def read_user_csv(path: Path | str) -> tuple[list[str], list[CsvRow]]:
     """Read a CSV a user handed in into ``(fieldnames, rows)``, BOM-tolerantly.
 
-    Blank lines are skipped, as ``csv.DictReader`` skips them. An empty file gives
-    ``([], [])``; what that means is the caller's to say.
+    Blank lines are skipped, as ``csv.DictReader`` skips them, and so is a row whose every cell
+    is empty (``,,,,``, which a spreadsheet leaves where a row was cleared). A header cell left
+    empty at the end of the header, over a column empty in every row, is dropped: a spreadsheet
+    writes one for a stray formatted cell, and refusing the import for it named nothing the
+    user could see. An empty file gives ``([], [])``; what that means is the caller's to say.
+
+    A file that is one column whose header holds a semicolon or a tab is a spreadsheet saved
+    with another separator (European Excel uses ``;``). It is refused, saying so, rather than
+    read as one column, which every reader then reported as a missing column; never a silent
+    switch of separator.
 
     Raises:
         FileNotFoundError: No file at ``path``.
-        UserInputError: The file is not UTF-8 text (or not text at all).
+        UserInputError: The file is not UTF-8 text (or not text at all), or it is separated
+            by semicolons or tabs.
     """
     source = str(path)
     try:
         with open(path, newline="", encoding="utf-8-sig") as f:
             reader = csv.reader(f)
             header = next(reader, [])
-            records = [(reader.line_num, cells) for cells in reader if cells]
+            records = [
+                (reader.line_num, cells)
+                for cells in reader
+                if any(cell.strip() for cell in cells)
+            ]
     except UnicodeDecodeError:
         raise UserInputError(
             f"{source} is not UTF-8 text. If it is a spreadsheet, save it from Excel with "
@@ -82,6 +100,21 @@ def read_user_csv(path: Path | str) -> tuple[list[str], list[CsvRow]]:
         ) from None
     except csv.Error as exc:
         raise UserInputError(f"{source} is not a CSV text file ({exc})") from None
+    if len(header) == 1:
+        for separator, name in _OTHER_SEPARATORS.items():
+            if separator in header[0]:
+                raise UserInputError(
+                    f"{source} looks {name}-separated (its header is the one column "
+                    f"{header[0]!r}); save it with commas — in Excel, Save As → CSV UTF-8 "
+                    "(Comma delimited)"
+                )
+    while (
+        header
+        and not header[-1].strip()
+        and all(not "".join(cells[len(header) - 1 :]).strip() for _, cells in records)
+    ):
+        header = header[:-1]
+        records = [(line, cells[: len(header)]) for line, cells in records]
     rows = []
     for line, cells in records:
         values: dict = dict(zip(header, cells))
@@ -246,9 +279,11 @@ def parse_utc_epoch_seconds(value: str | None, column: str, row: int) -> float:
     if not text:
         raise ValueError(f"row {row}, column {column!r}: empty UTC timestamp")
     try:
-        return float(text)
+        epoch = float(text)
     except ValueError:
-        pass
+        epoch = None
+    if epoch is not None:
+        return _checked_epoch(epoch, text, column, row)
     try:
         parsed = datetime.fromisoformat(text)
     except ValueError:
@@ -259,6 +294,28 @@ def parse_utc_epoch_seconds(value: str | None, column: str, row: int) -> float:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.timestamp()
+
+
+def _checked_epoch(epoch: float, text: str, column: str, row: int) -> float:
+    """``epoch`` (Unix seconds), refused when it is no instant a clock could hold.
+
+    Epoch *milliseconds* in a UTC column, the common logger mistake, used to fail on the
+    datetime conversion as "year 58629 is out of range", which names nothing the user typed.
+
+    Raises:
+        UserInputError: Not finite, or beyond what a date can hold.
+    """
+    where = f"row {row}, column {column!r}"
+    if not math.isfinite(epoch):
+        raise UserInputError(f"{where}: {text!r} is not a time")
+    try:
+        datetime.fromtimestamp(epoch, tz=timezone.utc)
+    except (ValueError, OverflowError, OSError):
+        raise UserInputError(
+            f"{where}: {text} is not Unix time in seconds: it falls outside the years 1 to "
+            "9999. If it counts milliseconds, divide the column by 1000"
+        ) from None
+    return epoch
 
 
 def require_data_rows(rows: list[dict[str, str]]) -> None:

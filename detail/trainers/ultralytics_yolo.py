@@ -104,7 +104,7 @@ class UltralyticsYOLOTrainer(Trainer):
         resolves a relative ``path:`` against the *current working directory* —
         and ``train`` runs under ``chdir`` into the weights cache, so ``.`` would
         resolve there, not at the dataset. The copy is written to the machine-local
-        weights cache (never a experiment file) at a stable name keyed by ``model_dir``
+        weights cache (never an experiment file) at a stable name keyed by ``model_dir``
         so the path Ultralytics bakes into ``run/args.yaml`` survives for resume.
         """
         spec = yaml.safe_load(
@@ -170,7 +170,7 @@ class UltralyticsYOLOTrainer(Trainer):
             raise FileNotFoundError(f"no checkpoint to resume in {model_dir}")
         # Refresh the machine-local data config so a dataset moved on disk resumes against its
         # current location, not the stale path baked into the checkpoint; prepare_dataset raises a
-        # clear error if the dataset descriptor is gone. (A experiment moved across machines still
+        # clear error if the dataset descriptor is gone. (An experiment moved across machines still
         # can't resume — the checkpoint's args.yaml holds this machine's cache path.)
         self.prepare_dataset(dataset_dir, model_dir)
         self._training_data_yaml(dataset_dir, model_dir)
