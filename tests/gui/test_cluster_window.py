@@ -70,7 +70,7 @@ def _quiet(qapp, interpret, timeout_ms: int = 20_000) -> bool:
     """Every queued label write has landed."""
     return _drain(
         qapp,
-        lambda: interpret._writer is None and not interpret._pending,
+        lambda: not interpret.writes_pending(),
         timeout_ms,
     )
 
@@ -285,7 +285,7 @@ def test_finish_while_labels_are_saving_waits_for_them_and_locks_every_label_sur
 
     monkeypatch.setattr(run, "label_maps", slow)
     interpret._label(b, "rear")
-    assert interpret._writer is not None, "the write is still in flight"
+    assert interpret.writes_pending(), "the write is still in flight"
     interpret._finish.click()
     reason = interpret._edit_reason()
     assert reason.startswith("The run is being finished")

@@ -153,3 +153,42 @@ def test_the_new_example_set_window_needs_a_name(qapp):
     dialog._name.setText("  ")
     dialog._name.textEdited.emit("  ")
     assert not dialog._ok.isEnabled() and "name" in dialog._ok.toolTip()
+
+
+def test_a_set_is_filed_under_its_ref_only_when_that_entry_holds_its_skeleton(proj):
+    """A library id means something only on the machine that minted it. A set whose
+    ``skeleton_ref.id`` names an entry here holding a different skeleton (a set from another
+    machine, or an id freed and reused) is filed by its digest, not under that entry."""
+    from detail.core.examples import ExampleSet
+
+    three = Skeleton(names=("a", "b", "c"))
+    theirs = library.create_skeleton("fly 3pt", three)
+    mine = library.create_skeleton("two", TWO)
+    entries = library.skeletons()
+    foreign = ExampleSet(
+        id="ex_01",
+        purpose="example",
+        created_at="2026-01-01T00:00:00Z",
+        name="from elsewhere",
+        skeleton=TWO,
+        skeleton_ref={"id": theirs["id"], "name": "rat", "digest": TWO.digest()},
+    )
+    assert mod.skeleton_of(foreign, entries) == mine["id"]
+    nowhere = ExampleSet(
+        id="ex_02",
+        purpose="example",
+        created_at="2026-01-01T00:00:00Z",
+        name="nothing here",
+        skeleton=Skeleton(names=("x", "y")),
+        skeleton_ref={"id": theirs["id"]},
+    )
+    assert mod.skeleton_of(nowhere, entries) is None
+    own = ExampleSet(
+        id="ex_03",
+        purpose="example",
+        created_at="2026-01-01T00:00:00Z",
+        name="own",
+        skeleton=three,
+        skeleton_ref={"id": theirs["id"]},
+    )
+    assert mod.skeleton_of(own, entries) == theirs["id"]

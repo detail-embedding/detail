@@ -78,8 +78,6 @@ _ORPHANS_WITH_REASONS = {
     "enumerating them, so nothing in detail/ needs to ask which are marked",
     "doc_url": "help-system link builder, same",
     "topic_body": "help-system topic renderer, same",
-    "apply_alignment": "constant-offset stream alignment; raises NotImplementedError for the "
-    "unbuilt §3 correction table, so it is half a feature that declares itself",
     "all_targets": "the export registry sweep's enumeration seam "
     "(tests/api/test_export_registry.py). Deliberately unfiltered, which is why no surface "
     "can use it: a surface asks targets_for(subject), which drops what has no inputs on "

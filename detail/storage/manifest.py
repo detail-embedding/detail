@@ -20,7 +20,6 @@ import re
 import typing
 from pathlib import Path
 
-import yaml
 from pydantic import (
     BaseModel,
     Field,
@@ -29,9 +28,11 @@ from pydantic import (
     model_validator,
 )
 
+from detail.core.errors import UserInputError
 from detail.core.registries import STREAM_IMPORTERS
 from detail.importers import import_stream_importers
 from detail.storage import video as video_store
+from detail.storage.user_yaml import read_user_yaml
 
 MANIFEST_NAMES = ("manifest.yaml", "manifest.yml")
 SCHEMA_VERSION = 1
@@ -169,10 +170,11 @@ def load_manifest(bundle_dir: Path | str) -> dict:
         raise FileNotFoundError(
             f"no manifest ({' or '.join(MANIFEST_NAMES)}) in {bundle_dir}"
         )
-    with open(path, encoding="utf-8-sig") as f:
-        data = yaml.safe_load(f)
+    data = read_user_yaml(path)
     if not isinstance(data, dict) or not isinstance(data.get("recordings"), list):
-        raise ValueError("manifest must be a mapping with a 'recordings' list")
+        raise UserInputError(
+            f"{path}: manifest must be a mapping with a 'recordings' list"
+        )
     return data
 
 
@@ -204,7 +206,8 @@ def _format_errors(exc: ValidationError, manifest: dict) -> list[str]:
 def _prefix(loc: tuple, manifest: dict) -> str:
     if len(loc) >= 2 and loc[0] == "recordings" and isinstance(loc[1], int):
         recordings = manifest.get("recordings") or []
-        sid = recordings[loc[1]].get("id") if loc[1] < len(recordings) else None
+        item = recordings[loc[1]] if loc[1] < len(recordings) else None
+        sid = item.get("id") if isinstance(item, dict) else None
         head = (
             f"recording {sid!r}"
             if isinstance(sid, str) and sid
@@ -219,6 +222,11 @@ def _prefix(loc: tuple, manifest: dict) -> str:
 def _message(err: dict) -> str:
     kind = err["type"]
     field = err["loc"][-1] if err["loc"] else ""
+    if kind == "model_type" and len(err["loc"]) == 2 and err["loc"][0] == "recordings":
+        return (
+            f"each entry under recordings must be a mapping with an id, not "
+            f"{err['input']!r}"
+        )
     if kind == "value_error":
         return err["msg"].removeprefix("Value error, ")
     if kind == "missing":

@@ -54,6 +54,7 @@ from detail.core.dataclasses import (
     processing_progress_to_dict,
     reconciled_status,
 )
+from detail.core.errors import UserInputError
 from detail.core.progress import remaining_seconds
 from detail.core.registries import TRAINERS
 from detail.models import distilled as distilled_store
@@ -145,6 +146,45 @@ class _RecordingSteps:
     def finish(self) -> None:
         if self._progress is not None and self._done:
             self._progress(self._stage, 1.0, f"{self._total}/{self._total}")
+
+
+def _named(ids: Sequence[str], limit: int = 5) -> str:
+    shown = ", ".join(ids[:limit])
+    return shown + (f" and {len(ids) - limit} more" if len(ids) > limit else "")
+
+
+def replace_warning(losses: "export_store.ReplaceLosses") -> list[str]:
+    """One line per kind of thing a replace deletes for good, empty when it deletes nothing the
+    bundle does not bring back (`export_store.replace_losses`).
+
+    The one wording: the GUI's Replace prompt and ``experiment import --replace`` each render
+    these lines, so the two cannot describe the same replace differently.
+    """
+    from detail.api.exporters import format_size
+
+    lines = []
+    if losses.video_files:
+        lines.append(
+            f"{losses.video_files} video file(s), {format_size(losses.video_bytes)}: "
+            "the bundle carries no video"
+        )
+    if losses.datasets:
+        lines.append(
+            f"{len(losses.datasets)} dataset(s), {_named(losses.datasets)}: "
+            "the bundle carries no datasets"
+        )
+    if losses.export_records:
+        lines.append(
+            f"{len(losses.export_records)} export record(s), "
+            f"{_named(losses.export_records)}: no bundle carries them "
+            "(the exported files themselves are not touched)"
+        )
+    if losses.archives:
+        lines.append(
+            f"{len(losses.archives)} earlier archive(s) saved in the experiment folder, "
+            f"{_named(losses.archives)}"
+        )
+    return lines
 
 
 def _with_model_defaults(module, config: dict) -> dict:
@@ -408,6 +448,8 @@ class RunOrchestrator:
                     self._orchestrate_parallel(k)
         finally:
             self._finalize(n)
+            # The log's end is the run's end, not the last row its throttle kept (#32).
+            self._activity.finish(elapsed_s=self._elapsed())
 
     def _run_batch(self, module, n: int) -> None:
         """Run a batch module once over the whole subset, mapping its
@@ -1567,6 +1609,26 @@ class Experiment:
         )
         return cls(dest)
 
+    @staticmethod
+    def replace_losses(
+        archive: Path | str, *, name: str | None = None
+    ) -> "export_store.ReplaceLosses | None":
+        """What importing ``archive`` with ``replace=True`` would delete and not bring back, or
+        ``None`` when there is no experiment to replace.
+
+        The same answer an import without ``replace`` carries on its refusal
+        (`export_store.ExperimentExistsError.losses`); `replace_warning` words it. Walks the
+        existing experiment, so a surface calls it off the UI thread.
+
+        Raises:
+            ValueError: ``archive`` is not a DETAIL export, or ``name`` is not a bare name.
+        """
+        manifest = export_store.read_manifest(archive)
+        dest = export_store.import_target(locations.experiments_root(), manifest, name)
+        if not dest.exists():
+            return None
+        return export_store.replace_losses(manifest, dest)
+
     def export(
         self,
         dest: Path | str | None = None,
@@ -2702,7 +2764,7 @@ class Experiment:
 
     def delete(self) -> None:
         """Delete the whole experiment directory — every recording, run, model, and
-        dataset it owns. Nothing outside a experiment depends on it, so this is
+        dataset it owns. Nothing outside an experiment depends on it, so this is
         never blocked (the cohesive delete strategy, gui_design §1.1). The
         ``Experiment`` instance is dead afterwards.
 
@@ -4634,7 +4696,7 @@ class Experiment:
         return analysis_store.analysis_dir(self._dir, run_id)
 
     def run_analysis(self, module_id: str, config: dict) -> AnalysisRun:
-        """Launch a experiment-scoped analysis run (§16): one module over a selection
+        """Launch an experiment-scoped analysis run (§16): one module over a selection
         of recordings, producing artifacts in ``analysis/<run_id>/``. A single
         executor job (not a per-recording fan-out). Returns a run handle.
 
@@ -4776,6 +4838,7 @@ class Experiment:
         """
         from detail.api.query import QueryRun
 
+        self._require_analysis_run(run_id, "query")
         return QueryRun(None, self, run_id)
 
     def temporal_clustering_run(self, run_id: str):
@@ -4787,7 +4850,21 @@ class Experiment:
         """
         from detail.api.temporal_clustering import TemporalClusteringRun
 
+        self._require_analysis_run(run_id, "temporal-clustering")
         return TemporalClusteringRun(None, self, run_id)
+
+    def _require_analysis_run(self, run_id: str, kind: str) -> None:
+        """Refuse a run id that names no analysis run, before a handle is built on it.
+
+        Raises:
+            UserInputError: no ``analysis/<run_id>/analysis.yaml`` in this experiment.
+        """
+        adir = analysis_store.analysis_dir(self._dir, run_id)
+        if not (adir / analysis_store.ANALYSIS_FILENAME).is_file():
+            raise UserInputError(
+                f"no {kind} run {run_id!r} in this experiment; `detail analysis list` "
+                "shows its runs"
+            )
 
     def cancel_analysis(self, run_id: str) -> None:
         """Stop an active analysis run (kill its worker), then record its real

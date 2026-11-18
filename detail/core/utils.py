@@ -5,13 +5,17 @@ Device resolution (Section 12), track-id resolution (Section 13), and canonical
 reference (Tenet 8).
 """
 
+from collections.abc import Sequence
 from datetime import datetime, timezone
+import math
 import os
+from pathlib import Path
 import re
 
 import numpy as np
 
 from detail.core.dataclasses import ComputeTarget, PolygonKeyframes
+from detail.core.errors import UserInputError
 
 NS_PER_SECOND = 1_000_000_000
 
@@ -53,6 +57,62 @@ def safe_stem(name: str) -> str:
         return safe
     digest = hashlib.sha256(str(name).encode("utf-8")).hexdigest()[:6]
     return f"{safe}-{digest}"
+
+
+def unique_stems(
+    names: Sequence[str], keys: Sequence[str], *, clean: bool = True
+) -> list[str]:
+    """One file stem per name, **unique inside one output folder**, ignoring case.
+
+    A name that cleans to a stem nothing else in this output shares keeps that plain stem, so
+    the usual export reads as it always did. Names that clean to one stem — ``Mouse 1 (pre)``
+    and ``Mouse 1 [pre]``, ``a/b`` and ``a_b``, or ``Mouse`` and ``mouse``, which are one file
+    on macOS and Windows — *each* carry ``_<key>`` instead, so neither looks like the original
+    and the other the copy. ``keys`` (a recording id, a subject) say which is which; a
+    numbered suffix backs them up if a keyed stem still lands on another one.
+
+    ``clean=False`` takes ``names`` as stems already made path-safe by the caller.
+    """
+    stems = [safe_path_part(n) if clean else str(n) for n in names]
+    counts: dict[str, int] = {}
+    for stem in stems:
+        counts[stem.casefold()] = counts.get(stem.casefold(), 0) + 1
+    wanted = [
+        stem if counts[stem.casefold()] == 1 else f"{stem}_{safe_path_part(key)}"
+        for stem, key in zip(stems, keys, strict=True)
+    ]
+    # A plain stem is claimed first, so a name that never collided keeps its name even when a
+    # keyed stem lands on it.
+    taken = {stem.casefold() for stem, plain in zip(wanted, stems) if stem == plain}
+    out = []
+    for stem, plain in zip(wanted, stems):
+        if stem == plain:
+            out.append(stem)
+            continue
+        candidate, n = stem, 2
+        while candidate.casefold() in taken:
+            candidate, n = f"{stem}_{n}", n + 1
+        taken.add(candidate.casefold())
+        out.append(candidate)
+    return out
+
+
+def new_dir(parent: Path | str, name: str) -> Path:
+    """Create and return ``parent/name``, or ``parent/name_2``… — never a folder that exists.
+
+    The folder is claimed by ``mkdir`` itself rather than checked and then made, so two exports
+    started in the same second cannot both decide the same name is free.
+    """
+    parent = Path(parent)
+    parent.mkdir(parents=True, exist_ok=True)
+    candidate, index = parent / name, 2
+    while True:
+        try:
+            candidate.mkdir()
+        except FileExistsError:
+            candidate, index = parent / f"{name}_{index}", index + 1
+            continue
+        return candidate
 
 
 def utc_timestamp() -> str:
@@ -329,9 +389,53 @@ def t_ns_to_seconds(t_ns: int) -> float:
     return t_ns / NS_PER_SECOND
 
 
-def seconds_to_t_ns(seconds: float) -> int:
-    """Convert float seconds to int64 nanoseconds (Tenet 8), rounding to nearest ns."""
-    return round(seconds * NS_PER_SECOND)
+#: The int64 range every ``t_ns`` must fit (Tenet 8): about ±292 years of nanoseconds.
+T_NS_MIN = -(2**63)
+T_NS_MAX = 2**63 - 1
+
+
+def seconds_to_t_ns(seconds: float, *, what: str = "time") -> int:
+    """Convert float seconds to int64 nanoseconds (Tenet 8), rounding to nearest ns.
+
+    **The one checked seconds → ``t_ns`` conversion.** Every importer and every offset a user
+    types goes through here, so a value that cannot be a time is refused where it enters,
+    naming where it came from (``what``: ``"row 7, column 'seconds'"``), rather than stored and
+    failing later. Unchecked, ``round(x * 1e9)`` happily returns a Python int far past int64:
+    epoch *milliseconds* in a seconds column (a common logger mistake) stored as
+    ``1788000000000000000000``, and the stream's preview then died with ``OverflowError``.
+
+    Raises:
+        UserInputError: If ``seconds`` is not finite (``nan``/``inf``), or its nanoseconds do not
+            fit in int64.
+    """
+    value = float(seconds)
+    if math.isnan(value) or math.isinf(value):
+        raise UserInputError(f"{what}: {seconds!r} is not a finite number of seconds")
+    t_ns = round(value * NS_PER_SECOND)
+    if not T_NS_MIN <= t_ns <= T_NS_MAX:
+        raise UserInputError(
+            f"{what}: {seconds!r} seconds is too large to be a time — it is beyond the "
+            "int64 nanosecond range (about ±292 years). Does it hold milliseconds or an "
+            "epoch timestamp rather than seconds?"
+        )
+    return t_ns
+
+
+def check_t_ns(t_ns: int, *, what: str = "time") -> int:
+    """``t_ns`` itself, refused if it does not fit in int64 (Tenet 8).
+
+    For a value that arrives already in nanoseconds (a ``t_ns`` column), which has no
+    multiplication to overflow in but can still be too large to store.
+
+    Raises:
+        UserInputError: If ``t_ns`` is outside the int64 range.
+    """
+    if not T_NS_MIN <= int(t_ns) <= T_NS_MAX:
+        raise UserInputError(
+            f"{what}: {t_ns} ns is beyond the int64 range (about ±292 years), so it cannot "
+            "be a time"
+        )
+    return int(t_ns)
 
 
 def polygon_at_frame(pk: PolygonKeyframes, frame_idx: int) -> np.ndarray:

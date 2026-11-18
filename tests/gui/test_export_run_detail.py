@@ -4,7 +4,7 @@
 which hits the "(record not found)" branch and never reaches `_render()` — not the "Wrote to"
 label, not the outcomes table, not the "Open folder" button. So the two things a user actually
 looks at on this page (where did my files go, and can I get to them) had no test at all: a
-record/folder desync (`_unique_dir` renaming the destination `write_export` actually used, never
+record/folder desync (`new_dir` renaming the destination `write_export` actually used, never
 written back) and a discarded `QDesktopServices.openUrl` return value both shipped invisibly.
 """
 

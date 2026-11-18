@@ -667,6 +667,21 @@ def test_recording_detail_calibration_summary_reads_its_value(qapp, tmp_path):
     assert "4.8 px/mm" in labels and "200 mm reference" in labels
 
 
+def test_recording_detail_shows_a_calibration_with_no_video_yet(qapp, tmp_path):
+    """A calibration copied onto a recording with no video is allowed on purpose; the page
+    raised a ``TypeError`` building its summary (#33). It shows the calibration's own
+    value, at the resolution it was measured on."""
+    from detail.gui.pages import RecordingDetailPage
+    from detail.storage import spatial as spatial_store
+
+    proj = Experiment.create("p", tmp_path)
+    recording = proj.create_recording("s1")
+    spatial_store.write_calibration_scalar(recording.dir, 2.0, (100, 50))
+
+    page = RecordingDetailPage(recording, experiment=proj)
+    assert "2 px/mm at 100x50 (no video yet)" in _scene_label_texts(page)
+
+
 def test_recording_detail_says_a_calibration_no_longer_fits_its_video(qapp, tmp_path):
     """A video replaced by one of another shape leaves a calibration that gives no scale.
 
@@ -1650,3 +1665,77 @@ def test_import_dialog_disables_a_calibration_from_another_rig(qapp, tmp_path):
     assert (
         _row_for_name(same, "Distance calibration").flags() & Qt.ItemFlag.ItemIsEnabled
     )
+
+
+def _three_part_recording(tmp_path):
+    """A recording with three video parts of 60, 70 and 80 frames and no processing runs
+    (the only state in which reordering is allowed)."""
+    import cv2
+    import numpy as np
+
+    proj = Experiment.create("p", tmp_path)
+    recording = proj.create_recording("s1")
+    for n_frames in (60, 70, 80):
+        vid = tmp_path / f"clip_{n_frames}.mp4"
+        vw = cv2.VideoWriter(str(vid), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (16, 16))
+        for _ in range(n_frames):
+            vw.write(np.zeros((16, 16, 3), np.uint8))
+        vw.release()
+        recording.add_video_part(vid)
+    return proj, proj.get_recording("s1")
+
+
+def _part_frame_counts(recording) -> list[int]:
+    import cv2
+
+    counts = []
+    for part in recording.video_parts:
+        cap = cv2.VideoCapture(str(recording.dir / part["file"]))
+        counts.append(int(cap.get(cv2.CAP_PROP_FRAME_COUNT)))
+        cap.release()
+    return counts
+
+
+def test_the_video_parts_table_does_not_sort(qapp, tmp_path):
+    """Its row order *is* the part order Move up / Move down edits, so a header click
+    must not reorder it (#26). Listed in `test_table_sorting.SORT_EXEMPT`."""
+    from detail.gui.pages import RecordingDetailPage
+
+    _proj, recording = _three_part_recording(tmp_path)
+    page = RecordingDetailPage(recording)
+    assert page._parts_table.objectName() == "video_parts"
+    assert not page._parts_table.isSortingEnabled()
+
+
+@pytest.mark.parametrize(
+    "delta, expected",
+    [(1, [60, 70, 80]), (-1, [60, 80, 70])],
+    ids=["move_down_on_the_last_part_does_nothing", "move_up_moves_the_last_part"],
+)
+def test_move_acts_on_the_part_the_row_shows_even_when_reordered(
+    qapp, tmp_path, delta, expected
+):
+    """Reorder the parts view (as a header click did before the table stopped sorting),
+    select the top row — part #2, the last — and press Move down / Move up. The part the
+    row shows moves; before the fix the row's *position* was used, so Move down on
+    the last part swapped parts 0 and 1 and rewrote both timestamp maps (#26)."""
+    from detail.gui.pages import RecordingDetailPage
+    from detail.gui.tables import row_id
+
+    _proj, recording = _three_part_recording(tmp_path)
+    assert _part_frame_counts(recording) == [60, 70, 80]
+    page = RecordingDetailPage(recording)
+    table = page._parts_table
+    # `sortByColumn` reorders the model whether or not header-click sorting is enabled,
+    # so this still exercises the identity read with sorting turned off.
+    table.sortByColumn(0, Qt.SortOrder.DescendingOrder)
+    assert [table.model().index(r, 0).data() for r in range(3)] == ["2", "1", "0"]
+    table.selectRow(0)
+    assert row_id(table.currentIndex()) == 2
+
+    page._move_part(delta)
+
+    assert _part_frame_counts(recording) == expected
+    # The moved part stays selected, wherever it now sits.
+    expected_selected = 2 if delta == 1 else 1
+    assert row_id(page._parts_table.currentIndex()) == expected_selected

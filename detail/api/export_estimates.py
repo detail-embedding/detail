@@ -279,7 +279,10 @@ def _first_video(experiment_dir: Path, recording_id: str) -> Path | None:
     recording_dir = experiment_store.recording_path(experiment_dir, recording_id)
     data = recording_store.read_recording(recording_dir)
     for part in recording_store.video_files(data):
-        path = recording_store.resolve_part_video_path(recording_dir, part)
+        try:
+            path = recording_store.resolve_part_video_path(recording_dir, part)
+        except FileNotFoundError:  # a different video at the reference: not this one
+            continue
         if path.is_file():
             return path
     return None

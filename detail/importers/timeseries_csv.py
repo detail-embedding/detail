@@ -30,6 +30,7 @@ import statistics
 from datetime import datetime, timezone
 from pathlib import Path
 
+from detail.core import utils
 from detail.configs.stream_csv import CsvChannel, CsvStreamConfig
 from detail.core.dataclasses import StreamImportResult
 from detail.core.protocols import StreamImporter
@@ -61,6 +62,7 @@ class TimeseriesCsvImporter(StreamImporter):
     clock = "stream_seconds"
     aux_inputs = []
     config_model = CsvStreamConfig
+    maps_unrecognized_files = True
 
     def can_import(self, path: Path) -> bool:
         header, first = _csv_common.sniff_header_and_first(Path(path))
@@ -86,6 +88,21 @@ class TimeseriesCsvImporter(StreamImporter):
             except (TypeError, ValueError):
                 return False
         return True
+
+    def resolve_clock(self, path: Path, config: dict | None = None) -> str:
+        """The clock the chosen (or sniffed) time column implies: ``frame`` is the video's."""
+        cfg = CsvStreamConfig.model_validate(config or {})
+        kind = cfg.time_kind
+        if kind == "auto":
+            name = cfg.time_column
+            if name is None:
+                header, _first = _csv_common.sniff_header_and_first(Path(path))
+                matches = _csv_common.time_column_matches(header)
+                if len(matches) != 1:
+                    return self.clock
+                name = matches[0][0]
+            kind = name.strip().lower()
+        return _KIND_CLOCKS.get(kind, self.clock)
 
     def import_stream(
         self,
@@ -244,15 +261,16 @@ def _utc_series(
         for i, raw in enumerate(raw_rows, start=2)
     ]
     anchor = epoch_s[0]
-    t_ns = [round((s - anchor) * _NS_PER_SECOND) for s in epoch_s]
+    t_ns = [
+        utils.seconds_to_t_ns(s - anchor, what=f"row {i}, column {time_source!r}")
+        for i, s in enumerate(epoch_s, start=2)
+    ]
     return t_ns, datetime.fromtimestamp(anchor, tz=timezone.utc).isoformat()
 
 
 def _time_to_t_ns(value: str | None, time_kind: str, column: str, row: int) -> int:
     """Convert a ``seconds`` or ``t_ns`` cell to int64 ``t_ns`` (Tenet 8)."""
-    if time_kind == "t_ns":
-        return _csv_common.parse_int(value, column, row)
-    return round(_csv_common.parse_float(value, column, row) * _NS_PER_SECOND)
+    return _csv_common.cell_to_t_ns(value, time_kind, column, row)
 
 
 def _sample_rate_hz(t_ns_values: list[int]) -> float | None:

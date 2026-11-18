@@ -71,8 +71,15 @@ def _generator_scripts() -> list[pathlib.Path]:
     raise AssertionError("mkdocs.yml has no gen-files plugin")
 
 
-def _docs_modules() -> list[pathlib.Path]:
-    return sorted(ANALYSIS.glob("*_docs.py"))
+def _docs_modules(package: pathlib.Path = ANALYSIS) -> list[pathlib.Path]:
+    return sorted(package.glob("*_docs.py"))
+
+
+def _generators_of(
+    module: pathlib.Path, scripts: list[pathlib.Path]
+) -> list[pathlib.Path]:
+    """The generator scripts that import ``module``, read off their source."""
+    return [s for s in scripts if module.stem in s.read_text(encoding="utf-8-sig")]
 
 
 def _written_pages(script: pathlib.Path) -> set[str]:
@@ -93,8 +100,7 @@ def test_at_least_one_docs_module_exists():
 @pytest.mark.parametrize("module", _docs_modules(), ids=lambda p: p.stem)
 def test_every_docs_module_is_rendered_by_a_generator(module):
     """The module's text reaches a page, and the page reaches the nav."""
-    scripts = _generator_scripts()
-    users = [s for s in scripts if module.stem in s.read_text(encoding="utf-8-sig")]
+    users = _generators_of(module, _generator_scripts())
     assert users, (
         f"detail/analysis/{module.name} describes something for the docs and no generator in "
         "mkdocs.yml's gen-files list imports it, so nothing it says is reachable by a user. "
@@ -110,19 +116,19 @@ def test_every_docs_module_is_rendered_by_a_generator(module):
     )
 
 
-def test_the_scan_would_catch_an_unrendered_module():
-    """The negative case. A scan that matches everything today passes vacuously forever."""
-    orphan = ANALYSIS / "zz_orphan_docs.py"
+def test_the_scan_would_catch_an_unrendered_module(tmp_path):
+    """The negative case. A scan that matches everything today passes vacuously forever.
+
+    The orphan is planted in a copy of the package's shape under ``tmp_path``, never in
+    ``detail/analysis/``: a file created and deleted in the source tree mid-run is seen coming and
+    going by every other test that walks ``detail/`` in parallel (``tests/source_tree.py``).
+    """
+    orphan = tmp_path / "zz_orphan_docs.py"
     orphan.write_text('"""Temporary, for the guard\'s own test."""\n', encoding="utf-8")
-    try:
-        modules = _docs_modules()
-        assert orphan in modules, "the glob did not pick the orphan up"
-        scripts = _generator_scripts()
-        assert not [
-            s for s in scripts if orphan.stem in s.read_text(encoding="utf-8-sig")
-        ], "an unrendered module was not detected as unrendered"
-    finally:
-        orphan.unlink()
+    assert orphan in _docs_modules(tmp_path), "the glob did not pick the orphan up"
+    assert not _generators_of(
+        orphan, _generator_scripts()
+    ), "an unrendered module was not detected as unrendered"
 
 
 def test_the_behavior_clustering_page_answers_what_the_hierarchy_is_built_on():

@@ -20,6 +20,7 @@ import yaml
 from detail.api import clip_views
 from detail.api.clip_views import ClipViewSettings, MaskHistory
 from detail.api.run_preview import ClipQueryPreview
+from detail.core.errors import UserInputError
 from detail.core.visualize import MASK_TINT
 from detail.storage import recording as recording_store
 
@@ -419,6 +420,18 @@ def test_pane_frames_sample_real_time_or_take_every_frame():
     assert clip_views.pane_frames(t_ns, 4, 4, 15.0) == [4]
 
 
+def test_pane_frames_clamp_a_span_past_the_end_and_refuse_one_that_starts_there():
+    """The montage export clamps a span past the video's end; the pane and view exports
+    raised a bare ``IndexError`` from deep in the frame reader instead (#33)."""
+    t_ns = (np.arange(5) * 1e9 / 30).astype(np.int64)
+    assert clip_views.pane_frames(t_ns, 3, 40, None) == [3, 4]
+    assert clip_views.pane_frames(t_ns, 3, 40, 30.0) == [3, 4]
+    with pytest.raises(
+        UserInputError, match=r"frame 5 is past the end .* \(5 frames\)"
+    ):
+        clip_views.pane_frames(t_ns, 5, 40, None)
+
+
 def test_a_pane_export_decodes_no_video_and_writes_what_the_pane_shows(
     tmp_path, monkeypatch
 ):
@@ -473,6 +486,23 @@ def _export(recording, tmp_path, pane, name, **kwargs):
         path=tmp_path / name,
         **kwargs,
     )
+
+
+def test_a_pane_export_past_the_video_end_writes_what_there_is(tmp_path):
+    """An mp4 with no ``fps`` takes every frame of the span, the path that indexed past the
+    end; it writes the frames there are."""
+    import cv2
+
+    recording = walking(tmp_path, keypoints=False)  # 5 frames
+    out = _export(recording, tmp_path, clip_views.MASKS, "m.mp4", first=3, last=40)
+    cap = cv2.VideoCapture(str(out))
+    try:
+        count = 0
+        while cap.read()[0]:
+            count += 1
+    finally:
+        cap.release()
+    assert count == 2
 
 
 def test_an_unknown_pane_is_refused(tmp_path):

@@ -9,7 +9,9 @@ sample.
 
 Columns ``recording_id, subject, t_ns, end_t_ns, node, label_path, drawn_at, answer``. A clip is a
 leaf run (``ClipRef``); ``node`` is the labelled cluster it counted toward and ``label_path`` that
-cluster's label path when it was judged. ``answer`` is ``yes`` / ``no``. ``drawn_at`` is when the
+cluster's label path when it was judged. ``answer`` is ``yes`` / ``no``, or ``withdrawn``: the
+clip was put back in its label after the answer, so the answer no longer describes it and the clip
+reads as not yet reviewed (:func:`withdraw`). ``drawn_at`` is when the
 row was written (ISO-8601 UTC), which is what "judged since the label's clusters changed" compares
 (``membership_changed_at``); the name is kept from the random draw this file first recorded.
 
@@ -46,6 +48,10 @@ REVIEW_COLUMNS = [
 ]
 YES = "yes"
 NO = "no"
+#: Written for a clip put back in its label (``put_back_clips``): supersedes the clip's answer
+#: under that path without being one. The owner's rule (#24): the census said "no" because the
+#: clip was taken out; once it is back, that answer describes a clip that is not there.
+WITHDRAWN = "withdrawn"
 
 
 @dataclass(frozen=True)
@@ -68,6 +74,10 @@ class ReviewRow:
     @property
     def judged(self) -> bool:
         return self.answer in (YES, NO)
+
+    @property
+    def withdrawn(self) -> bool:
+        return self.answer == WITHDRAWN
 
     @property
     def yes(self) -> bool | None:
@@ -168,11 +178,12 @@ def latest_by_path(rows: list[ReviewRow]) -> dict[tuple, tuple[int, ReviewRow]]:
     label path, and a clip judged as climb and later as rear has one answer for each — the
     rear one does not overwrite what was said about climb, and the climb one is not read as an
     answer about rear. ``position`` is the row's place in the log, so :func:`answer_for` can
-    tell which of two candidates is the later.
+    tell which of two candidates is the later. A withdrawal is kept here as the latest row too,
+    so it supersedes the answer before it (:func:`answer_for` reads it as no answer).
     """
     out: dict[tuple, tuple[int, ReviewRow]] = {}
     for position, row in enumerate(rows):
-        if row.judged:
+        if row.judged or row.withdrawn:
             out[(row.clip.key, row.label_path)] = (position, row)
     return out
 
@@ -190,4 +201,37 @@ def answer_for(latest: dict, key: tuple, label_path: str) -> ReviewRow | None:
         for found in (latest.get((key, label_path)), latest.get((key, "")))
         if found is not None
     ]
-    return max(candidates, key=lambda pair: pair[0])[1] if candidates else None
+    if not candidates:
+        return None
+    row = max(candidates, key=lambda pair: pair[0])[1]
+    return None if row.withdrawn else row
+
+
+def withdraw(
+    run_dir: Path | str, keys, *, drawn_at: str | None = None
+) -> list[ReviewRow]:
+    """Withdraw every current answer about the clips ``keys`` (``ClipRef.key``s), under every
+    label path it was given as, in one durable write. Returns the rows written.
+
+    What putting a clip back does to its review: the clip reads as not yet reviewed again, so the
+    cluster it is in is not "all reviewed" on an answer about a clip that is no longer out.
+    """
+    wanted = set(keys)
+    stamp = drawn_at or utc_timestamp()
+    rows = [
+        ReviewRow(
+            recording_id=row.recording_id,
+            subject=row.subject,
+            t_ns=row.t_ns,
+            end_t_ns=row.end_t_ns,
+            node=row.node,
+            label_path=row.label_path,
+            drawn_at=stamp,
+            answer=WITHDRAWN,
+        )
+        for (key, _path), (_position, row) in latest_by_path(
+            read_review(run_dir)
+        ).items()
+        if key in wanted and row.judged
+    ]
+    return append_rows(run_dir, rows)

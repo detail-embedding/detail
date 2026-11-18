@@ -840,7 +840,12 @@ STREAM_COLUMNS = ["start_frame", "end_frame", "label", "subject", "origin"]
 
 
 def write_stream_csv(
-    path: Path | str, output: BehaviorOutput, recording_id: str
+    path: Path | str,
+    output: BehaviorOutput,
+    recording_id: str,
+    *,
+    instances: list | None = None,
+    keep_unnamed: bool = False,
 ) -> Path:
     """Project one recording's instances into a CSV the ``behavior_csv`` importer reads.
 
@@ -851,16 +856,25 @@ def write_stream_csv(
     The ``origin`` column carries the artifact's own ``origin`` through, so a predicted
     artifact re-ingests as a stream that declares itself and can never be read back as ground
     truth. Rows are filtered to one recording, since a stream belongs to one recording while
-    the artifact spans the run's whole selection. Unlabeled rows are dropped: a behavior
-    stream's ``label`` is required, and an unnamed cluster has nothing to call itself.
+    the artifact spans the run's whole selection. Unlabeled rows are dropped by default: a
+    behavior stream's ``label`` is required, and an unnamed cluster has nothing to call itself.
+
+    **The one writer of this file shape.** The catalogue ``ethogram`` export target writes
+    through here too, passing ``instances`` (its scope-narrowed rows) and ``keep_unnamed``
+    (an unnamed cluster is written under its producer's own id, ``source_label``, because the
+    ethogram is a picture of everything that happened). A second writer of the same header
+    without ``origin`` is how a method's output once re-imported as ground truth.
     """
     path = Path(path)
     origin = output.manifest.get("origin") or "predicted"
-    rows = [
-        [row.start_frame, row.end_frame, row.label, _cell(row.subject), origin]
-        for row in output.instances
-        if row.recording_id == recording_id and row.label
-    ]
+    source = output.instances if instances is None else instances
+    rows = []
+    for row in source:
+        label = row.label or (row.source_label if keep_unnamed else "")
+        if row.recording_id == recording_id and label:
+            rows.append(
+                [row.start_frame, row.end_frame, label, _cell(row.subject), origin]
+            )
     _write_csv(path, STREAM_COLUMNS, rows)
     return path
 
