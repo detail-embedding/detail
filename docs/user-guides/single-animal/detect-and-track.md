@@ -40,7 +40,8 @@ The **Distill new model** dialog opens. Fill in the top part:
 
 - **Model type:** **Detector (boxes, masks)**.
 - **Name:** a name for the model, such as `mouse detector`.
-- **Recordings:** leave none selected to use every recording.
+- **Recordings:** leave none selected to use every recording that has video. A recording
+  without video is greyed out, and the label says how many have video.
 - **Frames to label:** set **500** for a GPU in your own computer. It starts at 1000, which
   takes twice as long to label for little gain on a few short videos.
 - **Classes:** in the first box type the name to give what it finds, such as `mouse`. In the
@@ -54,7 +55,7 @@ The **Distill new model** dialog opens. Fill in the top part:
     2. **Name**: the new model's name.
     3. **Experiment**: which experiment's recordings to learn from.
     4. **Recordings**: the recordings to label frames from. Click to select some; none
-       selected means all.
+       selected means every recording with video. A recording without video is greyed out.
     5. **Teacher**: the model that labels the frames. `sam3` is the one that finds an
        animal from words.
     6. **Teacher size**: a size of the teacher, for a teacher that comes in sizes. SAM 3

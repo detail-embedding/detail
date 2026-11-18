@@ -119,8 +119,17 @@ class ImportQueue(QObject):
     def cancel(self) -> None:
         """Stop the queue: the in-flight recording finishes; remaining queued ones are
         marked ``cancelled`` (kept, tags preserved). The worker's current batch is
-        handled by ``import_pending``; not-yet-started batches are marked here."""
-        self._cancel.set()
+        handled by ``import_pending``; not-yet-started batches are marked here.
+
+        The stop is for **what is queued now**. With no worker running there is nothing to
+        stop, and the event is left clear: set, it waited for the next ``submit`` and handed
+        that batch a stop nobody asked for, so a recording added after a Cancel imported as
+        ``cancelled`` with its video never copied (#35). A Cancel enabled by a table read a
+        moment before the queue went idle — or the quit path, which decides from run records
+        rather than from this queue — reaches here with nothing running.
+        """
+        if self._worker is not None:
+            self._cancel.set()
         for spec in self._pending:  # queued-but-never-handed-to-a-worker
             with contextlib.suppress(FileNotFoundError, ValueError):
                 recording_store.set_import_status(
@@ -162,10 +171,13 @@ class ImportQueue(QObject):
 
     def _on_batch_finished(self) -> None:
         self._worker = None
-        if self._pending and not self._cancel.is_set():
+        # A stop applied to the batch that just ended. `cancel` emptied `_pending` when it was
+        # asked, so anything pending now was submitted *after* it and is not stopped by it —
+        # leaving those behind a set event stranded them as "queued" for good.
+        self._cancel.clear()
+        if self._pending:
             self._drain()  # specs queued while this batch ran
         else:
             self._items.clear()  # any cancelled remainder are terminal now
-            self._cancel.clear()
             self._fold = None  # the next submit starts a fresh count and clock
             self.idle.emit()

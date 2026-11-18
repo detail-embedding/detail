@@ -13,8 +13,10 @@ POSIX ``rename`` never enters it, so this is a no-op there.
 
 import contextlib
 import os
+import shutil
+import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 RETRY_ATTEMPTS = 20
@@ -57,6 +59,47 @@ def replace(src: Path | str, dst: Path | str) -> None:
     if not os.path.isdir(src):
         _flush_to_disk(src)
     retry_on_lock(lambda: os.replace(src, dst))
+
+
+@contextlib.contextmanager
+def staged_dir(dest: Path | str) -> Iterator[Path]:
+    """Build a new directory aside and move it to ``dest`` only when the block finishes.
+
+    Yields an empty directory to fill. A normal exit moves it to ``dest``; any exception -- a
+    refusal raised half-way, a full disk, Ctrl-C -- removes it, so ``dest`` appears whole or
+    not at all. An import that writes into its final folder and then checks leaves that
+    folder behind on a refusal, and the leftover blocks the retry ("already exists") or
+    mixes into it (#29 Part 5); building here is how an import avoids that whatever its
+    last check turns out to be.
+
+    The build sits one level down in a hidden sibling, ``<parent>/.<name>.staging-XXXX/
+    <name>``, so a scan of ``dest.parent`` that recognises an entry by a marker file
+    (``model.yaml``) never sees a half-built one, and the move is a rename on one disk.
+
+    Raises:
+        FileExistsError: ``dest`` exists when the block finishes. The caller decides what
+            an existing ``dest`` means before it starts; this only refuses to move over it.
+    """
+    dest = Path(dest)
+    made_parent = not dest.parent.exists()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    holder = Path(tempfile.mkdtemp(prefix=f".{dest.name}.staging-", dir=dest.parent))
+    moved = False
+    try:
+        stage = holder / dest.name
+        stage.mkdir()
+        yield stage
+        if dest.exists():
+            raise FileExistsError(f"{dest} already exists; nothing was moved over it")
+        retry_on_lock(lambda: os.rename(stage, dest))
+        moved = True
+    finally:
+        shutil.rmtree(holder, ignore_errors=True)
+        if made_parent and not moved:
+            # The first entry of its kind (`streams/`, the model catalog) made the parent
+            # too; a failure takes that back as well. `rmdir` only removes it while empty.
+            with contextlib.suppress(OSError):
+                dest.parent.rmdir()
 
 
 def _flush_to_disk(path: Path | str) -> None:
