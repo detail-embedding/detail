@@ -22,7 +22,9 @@ Two modes:
   A stopped run keeps what it finished.
 
 **Stop** records the run as `stopped` in either mode, even before its first frame, and keeps
-whatever it finished. A tool run happens inside the app or the `detail tools` command that
+whatever it finished. A stopped run opens like a finished one: you can play it and export it,
+and its summary line says it stopped early. One stopped before its first frame says there is
+nothing to show. A tool run happens inside the app or the `detail tools` command that
 started it, so it is not listed under **Active processes**: its page under **Quick tools** is
 where you watch it.
 

@@ -726,6 +726,29 @@ class Recording:
         """
         return spatial_store.replace_defs(self.dir, "point", defs)
 
+    def check_spatial_defs(self, kind: str, defs: list[dict]) -> None:
+        """Refuse a whole set of ``kind`` (``"arena"``, ``"roi"`` or ``"point"``) definitions
+        the way :meth:`set_rois` / :meth:`set_points` / :meth:`define_arena` would, writing
+        nothing — for a caller that commits several kinds at once and must not have written
+        one before another is refused (the scene editor's Save).
+
+        Raises:
+            ValueError: An empty or duplicated name or id, or invalid keyframes / active.
+        """
+        spatial_store.validate_defs(kind, defs)
+
+    def check_distance_calibration(
+        self, points: list[tuple[float, float]], distance_mm: float
+    ) -> None:
+        """Refuse what :meth:`set_distance_calibration` would refuse, writing nothing.
+
+        Raises:
+            ValueError: if there is no video, the points coincide, or ``distance_mm <= 0``.
+        """
+        spatial_store.calibration_from_points(
+            points, distance_mm, self._require_resolution()
+        )
+
     def export_spatial_csv(self, path: Path | str) -> None:
         """Write this recording's whole spatial setup to a round-trippable CSV (Section 10)
         — the field of view, the distance calibration, and the ROIs + POIs — for sharing or
@@ -764,6 +787,51 @@ class Recording:
             raise ValueError(f"{path} carries no {' or '.join(kinds)}")
         return added, flattened, refused
 
+    def import_scene_csv(
+        self, path: Path | str
+    ) -> tuple[list[str], list[str], list[tuple[str, str]]]:
+        """Take everything an exported spatial CSV carries onto this recording (§10): its
+        field of view, distance calibration, regions and points, each by its own rules
+        (:meth:`import_field_of_view_csv`, :meth:`import_calibration_csv`,
+        :meth:`import_spatial_csv`). Nothing is replaced.
+
+        Only the kinds the file holds are tried. A kind it does not carry is not a refusal:
+        trying all four turned a one-region file into one "Added" line and three "Not added"
+        ones, which reads as a partial failure (#35 finding 14). A kind refused whole (this
+        recording already has a field of view or a calibration) is one refusal, named by
+        what it is.
+
+        Returns:
+            ``(added, flattened, refused)``.
+
+        Raises:
+            FileNotFoundError: the file is absent.
+            ValueError: the file is malformed, or carries no scene geometry at all.
+        """
+        held = spatial_store.spatial_csv_kinds(path)
+        if not held:
+            raise ValueError(f"{path} carries no scene geometry")
+        added, flattened, refused = [], [], []
+        if "arena" in held:
+            try:
+                a, f, r = self.import_field_of_view_csv(path)
+            except ValueError as exc:
+                refused.append(("field of view", str(exc)))
+            else:
+                added, flattened, refused = added + a, flattened + f, refused + r
+        kinds = tuple(k for k in self._PER_DEFINITION_KINDS if k in held)
+        if kinds:
+            a, f, r = self.import_spatial_csv(path, kinds=kinds)
+            added, flattened, refused = added + a, flattened + f, refused + r
+        if "calibration" in held:
+            try:
+                self.import_calibration_csv(path)
+            except ValueError as exc:
+                refused.append(("distance calibration", str(exc)))
+            else:
+                added.append("distance calibration")
+        return added, flattened, refused
+
     def import_spatial_from(
         self, source: "Recording", kinds: tuple[str, ...] = ("roi", "point")
     ) -> tuple[list[str], list[str], list[tuple[str, str]]]:
@@ -784,7 +852,7 @@ class Recording:
             refused += r
         if not added and not refused:
             raise ValueError(
-                f"recording {source.id!r} has no {' or '.join(kinds)} to copy"
+                f"recording {source.name!r} has no {' or '.join(kinds)} to copy"
             )
         return added, flattened, refused
 
@@ -906,10 +974,10 @@ class Recording:
         """
         refusal = self.field_of_view_refusal()
         if refusal is not None:
-            raise ValueError(f"recording {self.id!r} {refusal}")
+            raise ValueError(f"recording {self.name!r} {refusal}")
         defs = spatial_store.read_defs(source.dir, "arena")
         if not defs:
-            raise ValueError(f"recording {source.id!r} has no field of view to copy")
+            raise ValueError(f"recording {source.name!r} has no field of view to copy")
         return self.receive_spatial(defs, "arena")
 
     def import_field_of_view_csv(
@@ -926,7 +994,7 @@ class Recording:
             raise ValueError(f"{path} carries no field of view")
         refusal = self.field_of_view_refusal()
         if refusal is not None:
-            raise ValueError(f"recording {self.id!r} {refusal}")
+            raise ValueError(f"recording {self.name!r} {refusal}")
         return self.receive_spatial(defs, "arena")
 
     # --- distance-calibration carry-over (§10) ------------------------------ #
@@ -947,7 +1015,7 @@ class Recording:
         """
         if self.distance_calibration is not None:
             raise ValueError(
-                f"recording {self.id!r} already has a distance calibration — delete it "
+                f"recording {self.name!r} already has a distance calibration — delete it "
                 "here first; nothing is overwritten"
             )
         return spatial_store.copy_calibration(
@@ -968,7 +1036,7 @@ class Recording:
             raise ValueError(f"{path} carries no distance calibration")
         if self.distance_calibration is not None:
             raise ValueError(
-                f"recording {self.id!r} already has a distance calibration — delete it "
+                f"recording {self.name!r} already has a distance calibration — delete it "
                 "here first; nothing is overwritten"
             )
         return spatial_store.write_calibration_block(

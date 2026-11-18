@@ -103,8 +103,8 @@ Click **Edit scene geometry…**. The editor opens on the recording's first fram
         **Export as CSV…**.
     24. **Export as CSV…**: saves this recording's whole setup to one file, to share or
         reuse.
-    25. **Save**: saves every change. The editor stays open. **Save** is greyed out when
-        there is nothing to save.
+    25. **Save**: saves every change. The editor stays open. **Save** lights up after any
+        change and is greyed out when there is nothing to save.
     26. **Close**: closes the editor. It asks first if there are changes you have not saved.
 
 Draw the field of view:
