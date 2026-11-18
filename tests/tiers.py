@@ -239,6 +239,9 @@ GUARD_FILES = frozenset(
         # Every piece of machine-local state has a session floor, so a thread that outlives
         # its test cannot write the real preview cache, model cache or config.
         "tests/test_machine_state_isolation.py",
+        # No test writes into the repository tree: a file planted in `detail/` mid-run and
+        # deleted again is read, half-gone, by every parallel scan of `detail/` (2026-11-17).
+        "tests/test_source_tree_writes.py",
         # Every CLI / GUI call to an API method that takes `progress` passes one; the set is
         # read off the signatures, so a method that gains a callback is covered (#916).
         "tests/test_progress_callers.py",

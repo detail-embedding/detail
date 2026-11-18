@@ -741,8 +741,10 @@ this experiment at once; `train promote` it for cross-experiment reuse.
 
 ### `locations export`
 `--experiment`, `--recording`, `--tracking track_NN`, `--out <dir>`: a per-recording export
-straight to `--out`, writing `tracks.csv` / `roi_relations.csv` / `point_relations.csv` + a
-`locations.yaml` manifest (per-track position relative to the recording's ROIs/POIs,
+into a new folder inside `--out` (named for the experiment, the recording, the tracking run and
+the time, and printed), writing `tracks.csv` / `roi_relations.csv` / `point_relations.csv` + a
+`locations.yaml` manifest. Exporting another recording into the same `--out` makes another
+folder, so one never replaces the other (per-track position relative to the recording's ROIs/POIs,
 keyed by `t_ns`). No run record. For a recorded, batchable version, see `analysis
 run` below.
 
@@ -883,7 +885,8 @@ selection, written to `analysis/<an_NN>/`.
   The earlier one-by-one audit follows under its own heading, read as before and never merged
   into the clip review.
 - `export-query --experiment <dir> --run <an_NN> --out <dir>`: write a calibrated query run's
-  behaviors as one behavior-stream CSV per searched recording. Each row carries
+  behaviors as one behavior-stream CSV per searched recording, into a new folder inside `--out`
+  that the command prints, so exporting again at another cutoff keeps the first export. Each row carries
   `origin: predicted`, so re-importing one can never be read back as ground truth. A recording
   that matched nothing gets a header-only file: the zero is the finding. A run whose search did
   not reach every recording is refused, naming the ones it missed, so a header-only file never
@@ -1007,7 +1010,8 @@ selection, written to `analysis/<an_NN>/`.
   size floor, and a run saved with one ignores it.
 
 - `export-temporal-clustering --experiment <dir> --run <an_NN> --out <dir>`: write one
-  behavior-stream CSV per fitted recording. Each row carries `origin: predicted`, so re-importing
+  behavior-stream CSV per fitted recording, into a new folder inside `--out` that the command
+  prints. Each row carries `origin: predicted`, so re-importing
   one can never read back as ground truth.
 
   The artifact is pinned as it is exported and the snapshot id is printed, so a figure
@@ -1023,7 +1027,8 @@ selection, written to `analysis/<an_NN>/`.
   temporal-clustering run. It writes the same files a clip grid's **Export ▾** writes in the app. `--out` writes the montage itself: the node's
   clips side by side, each cropped to its animal and labelled `#rank · recording · start`, all
   starting together and each looping from its start the moment it ends. `--per-clip-gifs`
-  writes one GIF per clip into a folder, named `rank_recording_m-ss.t.gif`; `--csv` writes the
+  writes one GIF per clip into a folder, named `rank_recording_m-ss.t.gif`, and refuses before
+  writing anything when that folder already holds a GIF of one of those names; `--csv` writes the
   clips as a list: a clip-query CSV (`analysis query --from-csv` reads it as example clips) with
   the clip's typicality rank, its recording's name, the subject, the times in seconds, the node
   and the run after the standard columns. Give at least one of the three. The defaults: 25 clips,
@@ -1187,8 +1192,8 @@ full list, with what each one reports and what it needs, is the
   it uses at a window edge. `--measure` below takes the id in the first column, not the name.
 - `export --experiment <dir> --run <an_NN> --out <dir> [--measure <name> …]
   [--windows whole|absolute|normalized|sliding] [--every <seconds>] [--parts N]
-  [--length <seconds>] [--step <seconds>]`: measure the run and write three files into
-  `<dir>`, `measures.csv` (one row per recording, subject, label, window and measure, with the
+  [--length <seconds>] [--step <seconds>]`: measure the run and write three files into a new
+  folder inside `<dir>` (printed; a second export never replaces the first), `measures.csv` (one row per recording, subject, label, window and measure, with the
   observed time each rate was taken against; a label with labels nested inside it counts only
   what they leave, so its row has `label_display` "<label> (other)" and `label_is_remainder`
   `True`, while `label` keeps the plain name to join on), `frames.csv` (one row per frame: whether it was
@@ -1601,7 +1606,9 @@ Things every format shares. A missing point is empty or NaN, never zero. `likeli
 across methods. DeepLabCut and SLEAP files carry no time, so `timestamps.csv` (`frame_idx` to
 `t_ns` per part) goes with them. Every export ships `params.csv` and `coverage.csv` (frames
 placed per track and part, and each point's count at the cut-off). Files are named by the
-recording's name, not its id.
+recording's name, not its id. When two names would make the same file name (`Mouse 1 (pre)`
+and `Mouse 1 [pre]`, or `Mouse` and `mouse`), each of those gets its recording id after the
+name, so every recording keeps its own files.
 
 `keypoints export` adds the options the generic `export run` does not have: `--cutoff` sets the
 display cut-off (default: the detect method's own), under which a point is written not visible
@@ -1757,7 +1764,11 @@ frame labels), join on `t_ns`, which is the same clock in every file.
 ### Re-exporting
 
 Every export makes a new folder, so re-exporting never overwrites the last one and never touches
-anything else in the directory you pointed at.
+anything else in the directory you pointed at. The same holds for `analysis export-query`,
+`analysis export-temporal-clustering`, `measures export` and `locations export`. Inside one
+export no two files share a name: names built from your text (a recording's, a cluster's) that
+would come out the same carry the recording id or the subject, and a clip export writes one
+file per bout even when two subjects did the same thing at the same time.
 
 ## Tracking
 

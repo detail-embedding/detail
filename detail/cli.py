@@ -4995,7 +4995,10 @@ def locations() -> None:
 )  # fmt: skip
 @click.option(
     "--out", "out_dir", required=True, type=click.Path(file_okay=False),
-    help="Output directory for tracks/roi_relations/point_relations CSVs + locations.yaml.",
+    help=(
+        "Directory to create the export folder in; each export makes a new one holding "
+        "tracks/roi_relations/point_relations CSVs + locations.yaml."
+    ),
 )  # fmt: skip
 def locations_export(
     experiment_dir: Path, recording_id: str, tracking_run_id: str, out_dir: str
@@ -6026,7 +6029,10 @@ def _width_note(estimate: dict, goal: float) -> str:
 @click.option("--run", "run_id", required=True, help="Query run id (e.g. an_01).")
 @click.option(
     "--out", "out_dir", required=True, type=click.Path(file_okay=False, path_type=Path),
-    help="Directory to write one behavior-stream CSV per searched recording into.",
+    help=(
+        "Directory to create the export folder in; each export makes a new one holding a "
+        "behavior-stream CSV per searched recording."
+    ),
 )  # fmt: skip
 def analysis_export_query(experiment_dir: Path, run_id: str, out_dir: Path) -> None:
     """Export a query run's calibrated behaviors as per-recording behavior-stream CSVs.
@@ -6567,7 +6573,10 @@ def analysis_temporal_interpret(
 )
 @click.option(
     "--out", "out_dir", required=True, type=click.Path(file_okay=False, path_type=Path),
-    help="Directory to write one behavior-stream CSV per fitted recording into.",
+    help=(
+        "Directory to create the export folder in; each export makes a new one holding a "
+        "behavior-stream CSV per fitted recording."
+    ),
 )  # fmt: skip
 def analysis_export_temporal_clustering(
     experiment_dir: Path, run_id: str, out_dir: Path
@@ -6752,6 +6761,7 @@ def analysis_cluster_montage(
         MontageLayers,
         clip_file_stem,
         cluster_montage,
+        existing_gifs,
         montage_labels,
         montage_origin,
     )
@@ -6799,6 +6809,14 @@ def analysis_cluster_montage(
                     blind_aliases([c.recording_id for c in clips]) if blind else {}
                 )
                 labels = montage_labels(clips, blind=blind, aliases=aliases or None)
+                stems = [clip_file_stem(c, aliases.get(c.recording_id)) for c in clips]
+                if gif_dir is not None and existing_gifs(gif_dir, stems):
+                    # Before anything is written, so a refusal leaves nothing half done.
+                    raise UserInputError(
+                        f"{gif_dir} already holds GIFs of these names "
+                        f"({', '.join(existing_gifs(gif_dir, stems)[:3])}); choose another "
+                        "folder for --per-clip-gifs, or remove them first"
+                    )
                 if out_path is not None:
                     written = montage.export(
                         out_path,
@@ -6814,7 +6832,7 @@ def analysis_cluster_montage(
                         gif_dir,
                         layers,
                         labels,
-                        [clip_file_stem(c, aliases.get(c.recording_id)) for c in clips],
+                        stems,
                         max_width=max_width or GIF_DEFAULT_WIDTH,
                         fps=fps or GIF_DEFAULT_FPS,
                         progress=bar,
@@ -7395,7 +7413,10 @@ def measures_list() -> None:
 @click.option("--run", "run_id", required=True, help="Analysis run id (e.g. an_01).")
 @click.option(
     "--out", "out_dir", required=True, type=click.Path(file_okay=False, path_type=Path),
-    help="Directory to write measures.csv, frames.csv and measures.yaml into.",
+    help=(
+        "Directory to create the export folder in; each export makes a new one holding "
+        "measures.csv, frames.csv and measures.yaml."
+    ),
 )  # fmt: skip
 @click.option(
     "--measure", "measures_opt", multiple=True,

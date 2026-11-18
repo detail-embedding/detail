@@ -155,7 +155,7 @@ def run(job: ExportJob, run_dir, progress_cb, stop_event) -> None:
 
     record = export_store.read_export_yaml(run_dir)
     record.update(
-        # `job.folder` is minted at submit time and can be renamed by `_unique_dir` inside
+        # `job.folder` is minted at submit time and can be renamed by `new_dir` inside
         # `write_export` if it collides with a folder already on disk (#475) — write back what
         # was actually created so `exporters.destination_of` never points at the wrong folder.
         folder=result.dest.name,
