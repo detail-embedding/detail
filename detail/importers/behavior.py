@@ -13,6 +13,7 @@ import csv
 from pathlib import Path
 
 from detail.core.dataclasses import StreamImportResult
+from detail.core.errors import UserInputError
 from detail.core.protocols import StreamImporter
 from detail.core.registries import register_stream_importer
 from detail.storage import streams as streams_store
@@ -98,7 +99,7 @@ class BehaviorCsvImporter(StreamImporter):
         if len(recordings) > 1:
             # A stream belongs to one recording; frames of another recording are not frames
             # of this one, and importing them would put its bouts on this timeline.
-            raise ValueError(
+            raise UserInputError(
                 f"behavior CSV holds rows for {len(recordings)} recordings "
                 f"({', '.join(recordings)}); a stream belongs to one recording. Import each "
                 "recording's rows separately (the ethogram export writes one file per "

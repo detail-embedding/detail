@@ -32,6 +32,7 @@ import csv
 from pathlib import Path
 
 from detail.configs.stream_select import BorisSelectionConfig
+from detail.core.errors import UserInputError
 from detail.core.dataclasses import StreamImportResult
 from detail.core.protocols import StreamImporter
 from detail.core.registries import register_stream_importer
@@ -112,7 +113,7 @@ def _read_events(data_path: Path) -> tuple[list[tuple], list[str]]:
     distinct observation ids in file order (empty when the export has no such column).
 
     Raises:
-        ValueError: A required column is missing, or a row is malformed.
+        UserInputError: A required column is missing, or a row is malformed.
     """
     delimiter = _sniff_delimiter(data_path)
     observations: list[str] = []
@@ -122,17 +123,17 @@ def _read_events(data_path: Path) -> tuple[list[tuple], list[str]]:
         fields = {n.strip().lower(): n for n in (reader.fieldnames or [])}
         for required in (_BEHAVIOR, _TYPE, _TIME):
             if required not in fields:
-                raise ValueError(
+                raise UserInputError(
                     "BORIS events export needs 'Behavior', 'Behavior type', and "
                     f"'Time' columns (missing {required!r})"
                 )
         for i, raw in enumerate(reader, start=2):
             label = (raw[fields[_BEHAVIOR]] or "").strip()
             if not label:
-                raise ValueError(f"BORIS row {i}: empty Behavior")
+                raise UserInputError(f"BORIS row {i}: empty Behavior")
             marker = (raw[fields[_TYPE]] or "").strip().upper()
             if marker not in ("START", "STOP", "POINT"):
-                raise ValueError(
+                raise UserInputError(
                     f"BORIS row {i}: unexpected Behavior type {marker!r} "
                     "(expected START, STOP, or POINT)"
                 )
@@ -175,11 +176,11 @@ def _choose_observation(
     """The events of the one observation imported, and its id (``None`` with no column).
 
     Raises:
-        ValueError: Several observations and none named, or a named one the file lacks.
+        UserInputError: Several observations and none named, or a named one the file lacks.
     """
     if wanted is None:
         if len(observations) > 1:
-            raise ValueError(
+            raise UserInputError(
                 f"this BORIS export holds {len(observations)} observations "
                 f"({', '.join(map(repr, observations))}). A recording is one session, so "
                 "choose one observation; they are never merged"
@@ -187,7 +188,7 @@ def _choose_observation(
         return events, (observations[0] if observations else None)
     if wanted not in observations:
         held = ", ".join(map(repr, observations)) or "no 'Observation id' column"
-        raise ValueError(
+        raise UserInputError(
             f"observation {wanted!r} is not in this BORIS export; it holds {held}"
         )
     return [e for e in events if e[5] == wanted], wanted
@@ -197,7 +198,7 @@ def _choose_subject(events: list[tuple], wanted: str | None) -> tuple[list[tuple
     """The events of the one subject imported, and that subject (``""`` for none).
 
     Raises:
-        ValueError: Several subjects and none named, or a named one with no rows.
+        UserInputError: Several subjects and none named, or a named one with no rows.
     """
     subjects: list[str] = []
     for event in events:
@@ -205,14 +206,14 @@ def _choose_subject(events: list[tuple], wanted: str | None) -> tuple[list[tuple
             subjects.append(event[1])
     if wanted is None:
         if len(subjects) > 1:
-            raise ValueError(
+            raise UserInputError(
                 f"this BORIS export scores {len(subjects)} subjects "
                 f"({', '.join(map(_subject_name, subjects))}). A behavior stream is one "
                 "animal's labels, so choose one subject; their bouts are never pooled"
             )
         return events, (subjects[0] if subjects else "")
     if wanted not in subjects:
-        raise ValueError(
+        raise UserInputError(
             f"subject {_subject_name(wanted)} has no rows in this BORIS export; it scores "
             f"{', '.join(map(_subject_name, subjects)) or 'no rows'}"
         )
@@ -227,7 +228,7 @@ def _pair_events(events: list[tuple]):
     overlap). Returns ``(rows, subjects, labels, behavior_types)``.
 
     Raises:
-        ValueError: On a STOP without an open START, a second START before a STOP, or a
+        UserInputError: On a STOP without an open START, a second START before a STOP, or a
             START left unpaired at the end (a truncated / malformed export).
     """
     _refuse_mixed_kinds(events)
@@ -250,14 +251,14 @@ def _pair_events(events: list[tuple]):
             rows.append((t, t, label, None, None, None))
         elif marker == "START":
             if key in open_start:
-                raise ValueError(
+                raise UserInputError(
                     f"BORIS row {row_no}: START for {label!r} before the previous "
                     f"START (row {open_start[key][1]}) was STOPped"
                 )
             open_start[key] = (time_s, row_no)
         else:  # STOP
             if key not in open_start:
-                raise ValueError(
+                raise UserInputError(
                     f"BORIS row {row_no}: STOP for {label!r} with no open START"
                 )
             start_s, start_row = open_start.pop(key)
@@ -275,7 +276,7 @@ def _pair_events(events: list[tuple]):
             )
     if open_start:
         label, row = next(iter((k[1], v[1]) for k, v in open_start.items()))
-        raise ValueError(
+        raise UserInputError(
             f"BORIS: START for {label!r} (row {row}) has no matching STOP "
             "(truncated export?)"
         )
@@ -290,7 +291,7 @@ def _refuse_mixed_kinds(events: list[tuple]) -> None:
     halves of such a label.
 
     Raises:
-        ValueError: Naming the label and the rows of each kind.
+        UserInputError: Naming the label and the rows of each kind.
     """
     rows_by_kind: dict[str, dict[str, list[int]]] = {}
     for _time, _subject, label, marker, row_no, *_rest in events:
@@ -298,7 +299,7 @@ def _refuse_mixed_kinds(events: list[tuple]) -> None:
         rows_by_kind.setdefault(label, {}).setdefault(kind, []).append(row_no)
     for label, kinds in rows_by_kind.items():
         if len(kinds) > 1:
-            raise ValueError(
+            raise UserInputError(
                 f"BORIS behavior {label!r} is scored both as START/STOP bouts (rows "
                 f"{_rows(kinds['state'])}) and as POINT events (rows {_rows(kinds['point'])}). "
                 "A behavior is one kind or the other; rename one of them in BORIS, or fix "
@@ -328,6 +329,6 @@ def _float(value: str, field: str, row: int) -> float:
     try:
         return float(str(value).strip())
     except (TypeError, ValueError):
-        raise ValueError(
+        raise UserInputError(
             f"BORIS row {row}: {field} {value!r} is not a number"
         ) from None

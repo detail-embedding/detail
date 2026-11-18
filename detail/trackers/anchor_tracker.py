@@ -290,6 +290,8 @@ class AnchorTracker(Tracker):
             n_present_frames=n_present_frames,
             conf_sum=conf_sum,
             class_name=class_name,
+            every_n_frames=every_n_frames,
+            part_frame_offsets=part_frame_offsets,
         )
         self._write_track_yaml(
             output_dir / "track.yaml",
@@ -302,12 +304,28 @@ class AnchorTracker(Tracker):
         )
 
     def _write_tracks_zarr(
-        self, path, *, first_frame, last_frame, n_present_frames, conf_sum, class_name
+        self,
+        path,
+        *,
+        first_frame,
+        last_frame,
+        n_present_frames,
+        conf_sum,
+        class_name,
+        every_n_frames,
+        part_frame_offsets,
     ) -> None:
         with TracksSummaryWriter(path) as w:
             if first_frame is None:
                 return
-            n_gaps = (last_frame - first_frame + 1) - n_present_frames
+            # Frames the run looked at and missed, not source frames: at a stride, a frame
+            # never processed is not a gap (§4, §13; #32).
+            n_gaps = (
+                _common.processed_frames_between(
+                    first_frame, last_frame, every_n_frames, part_frame_offsets
+                )
+                - n_present_frames
+            )
             mean_conf = conf_sum / n_present_frames if n_present_frames else 0.0
             w.add_track(
                 track_id=SUBJECT_ID,

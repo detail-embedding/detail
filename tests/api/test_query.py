@@ -739,7 +739,9 @@ def test_export_before_the_search_completes_says_so(tmp_path):
             search_recording_ids=["s1"],
         ),
     )
-    with pytest.raises(FileNotFoundError):
+    # A `partial` run is refused before anything looks for the artifact, naming what the
+    # search never reached (`tests/api/test_query_partial.py` has the class).
+    with pytest.raises(ValueError, match=r"partial.*q01 on s1.*re-run the search"):
         Experiment(proj.dir).query_run("an_09").export(tmp_path / "export")
 
 
@@ -1491,3 +1493,42 @@ def test_a_cutoff_below_the_committed_one_is_estimated_over_its_own_instances(tm
     lower = run.audit_precision(label="q01", cutoff=0.0)
     assert lower["n"] == everywhere["n"] == 20
     assert lower["cutoff"] == 0.0
+
+
+# --- data the search read, deleted since (#33 finding 21) ----------------------------------
+def _audited(tmp_path):
+    exp, run = _searched(tmp_path, n_rows=600)
+    run.set_cutoff("q01", 0.0)
+    for row in run.audit_sample(label="q01", budget=3):
+        run.label_audit(row.instance_id, True)
+    return exp
+
+
+def _audit(exp):
+    return CliRunner().invoke(
+        main, ["analysis", "audit", "--experiment", str(exp.dir), "--run", "an_01"]
+    )
+
+
+def test_audit_after_a_searched_recording_was_deleted_names_it(tmp_path):
+    exp = _audited(tmp_path)
+    exp.delete_recording(exp.resolve_recording("s1").id)
+    result = _audit(exp)
+    assert result.exit_code == 1 and "Traceback" not in result.output
+    assert result.output == (
+        "Error: query run 'an_01' cannot read its candidates: the recording 's1' it "
+        "searched was deleted. Run the query again over the recordings that are left\n"
+    )
+
+
+def test_audit_after_a_searched_embedding_was_deleted_names_it(tmp_path):
+    import shutil
+
+    exp = _audited(tmp_path)
+    shutil.rmtree(exp.get_recording("s2").dir / "embeddings" / "emb_01")
+    result = _audit(exp)
+    assert result.exit_code == 1 and "Traceback" not in result.output
+    assert (
+        "embedding run 'emb_01' of recording 's2', which it searched, was deleted"
+        in (result.output)
+    )

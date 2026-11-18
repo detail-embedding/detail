@@ -10,6 +10,7 @@ from detail.core.dataclasses import CheckResult, CheckStatus, RecordingTarget
 from detail.core.protocols import Check
 from detail.core.registries import register_check
 from detail.help import HelpTopic
+from detail.storage import recording as recording_store
 from detail.storage import video_integrity
 
 
@@ -26,6 +27,13 @@ class VideoIntegrityCheck(Check):
         if target is None:  # a machine-context call — nothing to check
             return CheckResult(
                 self.check_id, CheckStatus.SKIPPED, "no recording target"
+            )
+        if not recording_store.video_files(target.recording_data):
+            return CheckResult(
+                self.check_id,
+                CheckStatus.SKIPPED,
+                "no video yet",
+                target.recording_id,
             )
         issues = video_integrity.validate_source_videos(
             target.recording_dir, target.recording_data

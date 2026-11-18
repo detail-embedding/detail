@@ -14,8 +14,9 @@ Cross-process channel is file-based: workers write per-part progress JSONs
 under ``<run_dir>/parts/<part_id>.json``; the coordinator polls these between
 ``DetectionProgressEvent`` emissions. Stop = the coordinator touches
 ``<run_dir>/stop.flag``; workers poll it and exit early with ``status="failed"``.
-Per the design decision, **detection treats stop as failure** (not partial) —
-detection has no resume support, so partial would be misleading.
+Per the design decision, **a stop is never partial** — detection has no resume
+support, so partial would be misleading. A stopped part is failed; under a cancel the worker
+records the run ``cancelled`` (``DetectionModule.resumes = False``).
 """
 
 import hashlib
@@ -243,6 +244,15 @@ def _run_inline(
         worker.start()
         while worker.is_alive():
             worker.join(_PROGRESS_POLL_INTERVAL_S)
+            # The part polls the flag, not the event: touch it the moment a stop arrives, as
+            # the multi-GPU loop does. Checking only between parts never reached a one-part
+            # recording's frame loop, so a cancel ran the whole part to its end (#28).
+            if (
+                stop_event is not None
+                and stop_event.is_set()
+                and not stop_flag.exists()
+            ):
+                stop_flag.touch()
             if progress_cb is not None:
                 progress_cb(
                     _aggregate_event(
@@ -506,6 +516,7 @@ class DetectionModule(ProcessingModule):
     progress_event_class = DetectionProgressEvent
     # frames_total is the timestamp map's frames, one per frame read
     progress_counts_frames = True
+    resumes = False  # detection has no resume: a re-run starts the recording over
     identity_fields = (
         "model_id",
         "model_variant",

@@ -500,3 +500,37 @@ def test_keypoint_instances_reads_a_parts_unassigned_instances(tracked, monkeypa
     empty = recording.keypoint_instances("kd_01", "part_001")
     assert empty["frame_idx"].shape == (0,) and empty["points"].shape == (0, 2, 2)
     assert empty["candidates"].shape == (0, 2, 2, 2), "a part nothing was placed in"
+
+
+def test_an_imported_set_keeps_its_skeleton_link_only_on_a_digest_match(tmp_path):
+    """A skeleton id means something only on the machine that minted it. An imported set
+    keeps ``skeleton_ref`` only when a library entry here holds the set's skeleton, and then
+    names that entry; otherwise it carries none and is listed by its digest."""
+    from detail.api import skeletons as library
+    from detail.storage import skeleton_library
+
+    here = library.create_skeleton("rats", SK)
+    other = library.create_skeleton("fly", Skeleton(names=("a", "b", "c")))
+    a = Experiment.create("a", tmp_path / "a")
+    b = Experiment.create("b", tmp_path / "b")
+    made = a.create_example_set("rats", here["id"])
+    body = yaml.safe_load(
+        (example_store.set_dir(a.dir, made.id) / "examples.yaml").read_text(
+            encoding="utf-8-sig"
+        )
+    )
+
+    def imported(ref):
+        path = tmp_path / f"set_{len(list(tmp_path.glob('set_*')))}.yaml"
+        path.write_text(yaml.dump({**body, "skeleton_ref": ref}), encoding="utf-8")
+        return b.import_example_set(path).skeleton_ref
+
+    assert imported(body["skeleton_ref"]) == library.ref(here["id"])
+    # minted elsewhere under an id that names a different skeleton here
+    assert imported({**body["skeleton_ref"], "id": other["id"]}) == library.ref(
+        here["id"]
+    )
+    # a ref whose digest is not the set's skeleton
+    assert imported({**body["skeleton_ref"], "digest": "0" * 16}) is None
+    skeleton_library.remove(here["id"])  # "another machine": nothing here holds it
+    assert imported(body["skeleton_ref"]) is None

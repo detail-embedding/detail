@@ -40,6 +40,8 @@ detail/
 │   │                     # QUERY_METHODS, POSE_CLUSTER_METHODS (empty since pose clustering was
 │   │                     # removed), TEMPORAL_CLUSTER_METHODS, TOOLS, CHECKS, STREAM_CONSUMERS;
 │   │                     # MODEL_REGISTRIES makes the three model dicts one model-id namespace
+│   ├── errors.py         # UserInputError: an ordinary input mistake, shown by the CLI root
+│   │                     # as one `Error:` line (cli.USER_ERRORS) and by GUI dialogs
 │   ├── atomic.py         # replace / retry_on_lock / file_lock — the seam every
 │   │                     # concurrently-read experiment file is written through
 │   ├── utils.py          # resolve_device, resolve_track_id, t_ns conv, polygon_at_frame
@@ -99,6 +101,9 @@ detail/
 │   │                     # storage.yaml — one parse per change on disk, a stat per lookup
 │   ├── roots.py          # the alias maps in storage.yaml; register_root is its only writer
 │   ├── dirscan.py        # one enumeration per listing, instead of a stat per field
+│   ├── user_yaml.py      # THE reader for YAML a user hands in or edits: a mistake is a
+│   │                     # UserInputError naming the file and line (#33)
+│   ├── id_allocator.py   # §3: every never-reused `<stem>_<n>` id (a high-water mark beside each family)
 │   ├── video_roots.py    # storage.yaml's `video_roots:` alias map (reference-in-place video)
 │   ├── zarr_store.py     # the retrying LocalStore every zarr group is opened through
 │   ├── zarr_io.py        # detection/tracking/embedding/kinematics zarr writers and readers
@@ -233,7 +238,8 @@ detail/
 │   ├── medpc.py          # MedPCImporter — Med Associates operant data (.txt + .MPC) → events
 │   ├── timeseries_csv.py # continuous CSV; config_model = CsvStreamConfig (explicit column mapping)
 │   ├── behavior.py, boris.py, events_csv.py
-│   └── _csv_common.py    # parsing helpers the CSV importers share
+│   └── _csv_common.py    # parsing helpers the CSV importers share; read_user_csv is THE
+│                         # opener for any CSV a user hands in (stream, spatial, clip list)
 ├── trainers/             # concrete Trainer implementations
 │   └── ultralytics_yolo.py
 ├── tools/                # Tool implementations (DESIGN_PLAN.md §27 (Tools)); import_tools() populates TOOLS

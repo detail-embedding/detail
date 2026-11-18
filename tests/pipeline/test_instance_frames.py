@@ -13,6 +13,10 @@ pipelines. This test runs **every registered method** of both registries on a tr
 first 50 frames and a 30-frame stretch were never embedded, and asserts each instance's frames are
 the ones at its ``t_ns``. A method registered without an entry in ``PARAMS`` fails here rather
 than going unchecked.
+
+The lookup reads the embedding loaders' ``frame_idx``, so it is only as right as they are: past
+the first video part they returned part-local numbers until #23. That next layer, a part-local
+frame read as a recording-wide one, is guarded by ``tests/pipeline/test_part_frames.py``.
 """
 
 from __future__ import annotations

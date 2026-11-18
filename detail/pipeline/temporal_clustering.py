@@ -138,11 +138,13 @@ def resolve_method(method_id: str):
 
 def append_history(run_dir: Path | str, entry: dict) -> None:
     """Append one operation to ``history.jsonl`` — provenance, never authoritative (§21)."""
-    path = Path(run_dir) / temporal_runs.HISTORY_FILENAME
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps({"at": utc_timestamp(), **entry}) + "\n")
-        f.flush()
+    from detail.storage.append_log import append_line
+
+    # Through `append_line`, so a line a crash cut short is not glued onto the next one.
+    append_line(
+        Path(run_dir) / temporal_runs.HISTORY_FILENAME,
+        json.dumps({"at": utc_timestamp(), **entry}),
+    )
 
 
 def load_trajectory(
@@ -324,10 +326,18 @@ def _manifest(run_id: str, record: dict, state, method, fit=None) -> dict:
     would be read as one. (``medoid_dist`` exists, but "far from the medoid" is not a probability
     and presenting it as one is exactly the mistake §19 warns about.)
     """
+    from detail.api import authored_run
+
     names = {
         str(cluster_id): ([name] if name else [])
         for cluster_id, name in sorted(state.names.items())
     }
+    # The unlabelled bucket is a source label too (§22: `unlabelled`, empty `label`), and §19's
+    # `names` says "partial by design": it gets an entry with no name. That entry is the fact
+    # `measures.CONDITIONS["unnamed_labels"]` reads, so a clustering run is offered
+    # `unnamed_time` with nothing labelled or with some clusters left unnamed. Without it,
+    # `names` held named labels only and the condition could never hold for a clustering run.
+    names[authored_run.UNLABELLED] = []
     # Whatever the method thinks is worth recording about its own fit. Asked rather than read:
     # the counts that matter differ per method, and reaching into the fit for them is the same
     # layering break `resolve` exists to close.
@@ -342,8 +352,11 @@ def _manifest(run_id: str, record: dict, state, method, fit=None) -> dict:
         # Parallel to `names`: same keys, same order, one path per label. The writer pairs them
         # positionally, so they are built from one sorted iteration rather than two.
         "label_paths": {
-            str(cluster_id): ([path] if path else [])
-            for cluster_id, path in sorted(state.resolved_paths.items())
+            **{
+                str(cluster_id): ([path] if path else [])
+                for cluster_id, path in sorted(state.resolved_paths.items())
+            },
+            authored_run.UNLABELLED: [],
         },
         "behavior_types": {n: "state" for n in state.names.values() if n},
         "method": {

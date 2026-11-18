@@ -21,6 +21,7 @@ import numpy as np
 import yaml
 
 from detail.core import atomic
+from detail.analysis.geometry import mask_centre_norm
 from detail.core.utils import active_polygon_at_frame, decode_mask
 from detail.executor import rundir
 from detail.storage import recording as recording_store
@@ -88,10 +89,10 @@ def _bbox_features(box, fw: float, fh: float) -> dict:
 def _mask_features(mask, mw: int, mh: int, fw: float, fh: float, fallback) -> dict:
     """Mask centroid (normalized + px) and area. ``fallback`` (bbox centroid norm)
     is used when the mask is empty."""
-    ys, xs = np.where(mask)
-    if len(xs):
-        cx_n, cy_n = float(xs.mean()) / mw, float(ys.mean()) / mh
-    else:
+    # The kinematics centre (cell centres, ``+ 0.5``), not the mean cell index: that was half
+    # a mask cell up and left of the animal (#32).
+    cx_n, cy_n = mask_centre_norm(mask)
+    if not np.isfinite(cx_n):
         cx_n, cy_n = fallback
     area_norm = float(mask.sum()) / (mw * mh)
     return {
@@ -120,6 +121,17 @@ def _roi_geometry(poly_norm, mw, mh, fw, fh) -> dict:
     }
 
 
+def _cells(norm: float, n: int, rounding) -> int:
+    """A normalized box edge on an ``n``-cell grid, ``rounding`` outward (``np.floor`` for a
+    low edge, ``np.ceil`` for a high one), with an edge within 1e-9 of a cell boundary taken
+    as on it."""
+    value = float(norm) * n
+    nearest = round(value)
+    if abs(value - nearest) < 1e-9:
+        return int(nearest)
+    return int(rounding(value))
+
+
 def _roi_relation(geom, feat, mask, mw, mh) -> dict:
     verts_n, verts_px, roi_grid = geom["verts_n"], geom["verts_px"], geom["grid"]
     centroid_in = cv2.pointPolygonTest(
@@ -128,8 +140,16 @@ def _roi_relation(geom, feat, mask, mw, mh) -> dict:
     mask_cen_in = cv2.pointPolygonTest(
         verts_n, (feat["mcx_norm"], feat["mcy_norm"]), False
     )
-    bx1, by1 = int(round(feat["x1_norm"] * mw)), int(round(feat["y1_norm"] * mh))
-    bx2, by2 = int(round(feat["x2_norm"] * mw)), int(round(feat["y2_norm"] * mh))
+    # Every cell the box touches: the low corner floored, the high one ceiled. Rounding both
+    # left a box under one cell wide covering no cell at all, so it read 0% inside a region
+    # it sat in (#32). `_cells` keeps a corner on a cell edge (0.3 x 40 is 12.000000000000002)
+    # from taking in the next cell.
+    bx1, by1 = _cells(feat["x1_norm"], mw, np.floor), _cells(
+        feat["y1_norm"], mh, np.floor
+    )
+    bx2, by2 = _cells(feat["x2_norm"], mw, np.ceil), _cells(
+        feat["y2_norm"], mh, np.ceil
+    )
     bbox_grid = np.zeros((mh, mw), dtype=bool)
     bbox_grid[max(by1, 0) : by2, max(bx1, 0) : bx2] = True
     bbox_n, mask_n = int(bbox_grid.sum()), int(mask.sum())

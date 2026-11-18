@@ -1,13 +1,14 @@
 """runs_lock: two processing runs launched together must not claim the same ``run_NNN``.
 
-``next_run_id`` is max+1 over a scan of ``runs/``, so between one launch's scan and its write
-another launch can scan and get the same id. Both then write ``run.yaml.tmp`` to the one path
+``next_run_id`` was max+1 over a scan of ``runs/``, so between one launch's scan and its write
+another launch could scan and get the same id. Both then write ``run.yaml.tmp`` to the one path
 and the loser's atomic replace fails with ``FileNotFoundError`` — its tmp already consumed.
 Measured for real: six embedding runs started together, one died on exactly that.
 
 Each ``runs_lock`` opens its own file description, so ``fcntl.flock`` serializes concurrent
 holders — the same kernel lock that serializes separate processes — which these thread-based
-tests exercise directly. Remove the lock from ``phase`` below and it fails.
+tests exercise directly. The id itself is now claimed through ``storage/id_allocator.py``,
+which cannot race on its own (``test_the_claim_alone_cannot_race``).
 """
 
 import threading
@@ -48,36 +49,25 @@ def test_concurrent_reservations_get_distinct_ids(tmp_path):
     assert sorted(runs_store.discover_runs(tmp_path)) == sorted(out)
 
 
-def test_the_race_is_real_without_the_lock(tmp_path):
-    """Guard the guard: the same reservation without the lock must collide, or the test
-    above is passing for a reason other than the lock."""
+def test_the_claim_alone_cannot_race(tmp_path):
+    """Since ``next_run_id`` claims through ``storage/id_allocator.py`` (a locked mark plus an
+    ``exist_ok=False`` directory), concurrent launches get distinct ids even without
+    ``runs_lock``; the lock still keeps a claimed directory from being seen without its
+    record. The scan-then-write shape this replaced is shown colliding by
+    ``test_the_analysis_race_is_real_without_the_claim`` below."""
     out: list[str] = []
     n = 8
     barrier = threading.Barrier(n)
 
     def unlocked() -> None:
         rendezvous(barrier)
-        run_id = runs_store.next_run_id(tmp_path)
-        time.sleep(0.01)
-        try:
-            runs_store.write_run(
-                tmp_path, run_id, {"id": run_id, "module_id": "embedding"}
-            )
-        except OSError:
-            # The loser's tmp file was consumed by the winner's replace. Swallowed here
-            # because *this* test wants the collision, and an escaping thread exception
-            # is a warning, which the suite turns into an error.
-            out.append("raised")
-            return
-        out.append(run_id)
+        out.append(runs_store.next_run_id(tmp_path))
 
     threads = [threading.Thread(target=unlocked) for _ in range(n)]
     for t in threads:
         t.start()
     join_all(threads)
-    ids = [r for r in out if r != "raised"]
-    collided = len(set(ids)) < n or "raised" in out
-    assert collided, f"expected colliding ids or a failed write without the lock: {out}"
+    assert sorted(out) == [f"run_{i:03d}" for i in range(1, n + 1)]
 
 
 def test_runs_lock_creates_the_directory_it_guards(tmp_path):

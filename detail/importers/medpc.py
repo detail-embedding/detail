@@ -37,6 +37,7 @@ from pathlib import Path
 
 from detail.configs.stream_select import MedpcSessionConfig
 from detail.core import utils
+from detail.core.errors import UserInputError
 from detail.core.dataclasses import AuxInput, StreamImportResult
 from detail.core.protocols import StreamImporter
 from detail.core.registries import register_stream_importer
@@ -161,7 +162,7 @@ def select_session(headers: list[dict[str, str]], config: MedpcSessionConfig) ->
     """The 0-based index of the one session ``config`` picks out of ``headers``.
 
     Raises:
-        ValueError: If no session matches, or several do (including a several-session file
+        UserInputError: If no session matches, or several do (including a several-session file
             with no selector at all). The message lists every session in the file.
     """
     candidates = list(range(len(headers)))
@@ -178,15 +179,15 @@ def select_session(headers: list[dict[str, str]], config: MedpcSessionConfig) ->
     listing = "; ".join(describe_session(i + 1, h) for i, h in enumerate(headers))
     asked = {k: v for k, v in config.model_dump().items() if v is not None}
     if not candidates:
-        raise ValueError(
+        raise UserInputError(
             f"no session in this MED-PC file matches {asked}; the file holds: {listing}"
         )
     if not asked:
-        raise ValueError(
+        raise UserInputError(
             f"this MED-PC file holds {len(headers)} sessions ({listing}). A recording is one "
             "session, so choose one by subject, box or session number; they are never merged"
         )
-    raise ValueError(
+    raise UserInputError(
         f"{len(candidates)} sessions in this MED-PC file match {asked}; choose one by session "
         f"number too. The file holds: {listing}"
     )
@@ -200,7 +201,7 @@ def parse_event_map(mpc_text: str) -> dict[int, str]:
     at the next section (a non-blank comment line that is not a ``code = label``).
 
     Raises:
-        ValueError: If no ``Event stamps`` block is present, or it has no entries.
+        UserInputError: If no ``Event stamps`` block is present, or it has no entries.
     """
     lines = mpc_text.splitlines()
     start = None
@@ -209,7 +210,7 @@ def parse_event_map(mpc_text: str) -> dict[int, str]:
             start = idx + 1
             break
     if start is None:
-        raise ValueError(
+        raise UserInputError(
             "MED-PC program has no 'Event stamps ( array E )' block — cannot map "
             "event codes to labels"
         )
@@ -223,7 +224,7 @@ def parse_event_map(mpc_text: str) -> dict[int, str]:
             break  # reached the next section (e.g. "Variables")
         event_map[int(entry.group(1))] = entry.group(2)
     if not event_map:
-        raise ValueError(
+        raise UserInputError(
             "MED-PC program 'Event stamps' block has no '<code> = <label>' entries"
         )
     return event_map
@@ -255,7 +256,7 @@ class MedPCImporter(StreamImporter):
     ) -> StreamImportResult:
         program_path = aux_paths.get("program")
         if program_path is None:
-            raise ValueError(
+            raise UserInputError(
                 "MED-PC import needs the 'program' (.MPC) file for event labels"
             )
         cfg = MedpcSessionConfig.model_validate(config or {})
@@ -271,13 +272,13 @@ class MedPCImporter(StreamImporter):
         codes = arrays.get("E")
         times = arrays.get("T")
         if codes is None or times is None:
-            raise ValueError(
+            raise UserInputError(
                 "MED-PC data file has no E (events) and T (times) arrays — got "
                 f"arrays {sorted(arrays)}. This importer reads one program layout: event "
                 "codes in E, their times in seconds in T"
             )
         if len(codes) != len(times):
-            raise ValueError(
+            raise UserInputError(
                 f"MED-PC E and T arrays differ in length ({len(codes)} vs "
                 f"{len(times)}) — file may be truncated"
             )
@@ -292,7 +293,7 @@ class MedPCImporter(StreamImporter):
         for index, code, time in pairs:
             code_int = int(round(code))
             if code_int == 0 and 0 not in event_map:
-                raise ValueError(
+                raise UserInputError(
                     f"MED-PC E({index}) is event code 0 at {time:g}s, between recorded "
                     "events, and the program's event map has no code 0. An unused slot "
                     "would come after the last event; refusing rather than inventing an "
@@ -349,13 +350,13 @@ def _check_times_within_session(
     (the last ``T`` equals ``H`` in the supported layout) is applied. No ``H``, no check.
 
     Raises:
-        ValueError: If any time exceeds ``H``.
+        UserInputError: If any time exceeds ``H``.
     """
     if session_s is None or not pairs:
         return
     index, _code, latest = max(pairs, key=lambda p: p[2])
     if latest > session_s + _H_TOLERANCE_S:
-        raise ValueError(
+        raise UserInputError(
             f"MED-PC T({index}) is {latest:g}, past the session length H = {session_s:g}s. "
             "This importer reads T as seconds; a program that logs time in ticks (e.g. "
             "10 ms) is not a layout it supports"

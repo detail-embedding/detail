@@ -69,6 +69,9 @@ def _row(recording_id, label, window, measure_id, value, denom, n) -> dict:
         "subject": "",
         "label": label,
         "label_to": "",
+        # A node's figures count its whole subtree, never a remainder (#24): nothing to rename.
+        "label_display": label,
+        "label_is_remainder": False,
         "window_id": window[0],
         "window_start_t_ns": window[1],
         "window_end_t_ns": window[2],

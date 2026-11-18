@@ -1019,3 +1019,60 @@ def test_a_boris_export_asks_which_observation_and_subject(qapp, tmp_path):
     assert [(r[0], r[1], r[2]) for r in rows] == [(120_000_000, 400_000_000, "groom")]
     assert recording.streams[0]["metadata"]["subjects"] == ["mB"]
     assert recording.streams[0]["metadata"]["observation"] == "day1"
+
+
+def _recording_with_three_streams(tmp_path):
+    """Streams added as zebra, apple, mango, so a sort by Name puts them in a different
+    order from the one they were built in."""
+    proj = Experiment.create("p", tmp_path)
+    recording = proj.create_recording("s1")
+    src = tmp_path / "_src"
+    src.mkdir()
+    (src / "subject.txt").write_text(DATA_TXT, encoding="utf-8")
+    (src / "task.MPC").write_text(PROGRAM_MPC, encoding="utf-8")
+    for name in ("zebra", "apple", "mango"):
+        recording.add_stream(
+            name,
+            raw_path=src / "subject.txt",
+            importer="medpc",
+            aux_paths={"program": src / "task.MPC"},
+        )
+    return proj.get_recording("s1")
+
+
+def test_a_sorted_streams_table_acts_on_the_stream_the_row_shows(
+    qapp, tmp_path, monkeypatch
+):
+    """Sort the Streams table by Name, select the top row, Delete: the stream that row
+    shows is the one deleted (#26). Before the fix the handler read the row's position
+    into the build-order name list, so row 0 (apple) deleted zebra."""
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtWidgets import QMessageBox
+
+    from detail.gui.pages import RecordingDetailPage
+    from detail.gui.tables import row_id
+
+    recording = _recording_with_three_streams(tmp_path)
+    page = RecordingDetailPage(recording)
+    assert page._stream_names == ["zebra", "apple", "mango"]
+
+    table = page._streams_table
+    table.sortByColumn(0, Qt.SortOrder.AscendingOrder)
+    shown = [table.model().index(r, 0).data() for r in range(3)]
+    assert shown == ["apple", "mango", "zebra"]
+    table.selectRow(0)
+    assert page._selected_stream() == "apple"
+    assert page._current_stream_name() == "apple"
+    assert row_id(table.currentIndex()) == "apple"
+
+    asked = []
+
+    def _confirm(_parent, _title, text, *a, **k):
+        asked.append(text)
+        return QMessageBox.StandardButton.Yes
+
+    monkeypatch.setattr(QMessageBox, "question", _confirm)
+    page._delete_stream()
+    assert "'apple'" in asked[0]
+    remaining = [s["name"] for s in recording.streams]
+    assert remaining == ["zebra", "mango"]

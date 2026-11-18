@@ -15,6 +15,7 @@ import shutil
 from pathlib import Path
 
 from detail.core import atomic
+from detail.core.errors import UserInputError
 from detail.storage import clocks
 from detail.storage import recording as recording_store
 
@@ -218,11 +219,11 @@ def check_offset_allowed(name: str, clock: str | None, offset_ns: int) -> None:
     so. A legacy manifest with no ``clock`` is an external-clock stream.
 
     Raises:
-        ValueError: If ``offset_ns`` is non-zero and ``clock`` is video-anchored.
+        UserInputError: If ``offset_ns`` is non-zero and ``clock`` is video-anchored.
     """
     clock = clock or "stream_seconds"
     if offset_ns and not clocks.needs_alignment(clock):
-        raise ValueError(
+        raise UserInputError(
             f"stream {name!r} is on the {clock!r} clock, which is already the video's own, "
             "so it has no alignment offset to set (it would be ignored when scoring but "
             "drawn by the preview)"

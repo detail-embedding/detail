@@ -17,6 +17,7 @@ import yaml
 from detail.core import atomic
 from detail.storage import dirscan
 from detail.storage import experiment as experiment_store
+from detail.storage import id_allocator
 
 SCHEMA_VERSION = 1
 MODEL_FILENAME = "model.yaml"
@@ -33,14 +34,11 @@ def discover_models(experiment_dir: Path | str) -> list[str]:
 
 
 def next_model_id(experiment_dir: Path | str) -> str:
-    """Experiment-monotonic ``model_NNN`` id, one past the highest existing."""
-    nums = []
-    for mid in discover_models(experiment_dir):
-        try:
-            nums.append(int(mid.rsplit("_", 1)[-1]))
-        except ValueError:
-            pass
-    return f"model_{max(nums, default=0) + 1:03d}"
+    """Claim the next ``model_NNN`` id (creating its directory); a deleted model's id is never
+    handed out again (``storage/id_allocator.py``)."""
+    return id_allocator.claim_dir(
+        experiment_store.models_dir(experiment_dir), "model", digits=3
+    )
 
 
 def write_model_yaml(model_dir: Path | str, record: dict) -> None:

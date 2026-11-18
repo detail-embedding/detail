@@ -144,7 +144,9 @@ def export_metadata(
         for key, column in ((NAME_KEY, names), (FILE_KEY, files))
         if column is not None
     ]
-    with open(Path(out_path), "w", newline="", encoding="utf-8") as f:
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow([RECORDING_KEY, *(key for key, _ in derived), *cols])
         for recording_id, values in rows.items():

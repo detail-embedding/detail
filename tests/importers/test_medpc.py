@@ -252,3 +252,17 @@ def test_list_sessions_describes_each_block_as_the_refusal_does(tmp_path):
         "1: Subject RAT1, box 1, 02/16/26 14:00:38",
         "2: Subject RAT2, box 2, 02/16/26 14:00:41",
     ]
+
+
+def test_the_refusals_are_user_input_errors(tmp_path):
+    """One ``Error:`` line on the CLI, not a traceback: these are mistakes in the user's file."""
+    from detail.core.errors import UserInputError
+
+    for data in (
+        _TWO_BOXES,
+        _session("RAT1", "1", [2, 100], [100, 1000], h=10.0),
+        _session("RAT1", "1", [2, 0, 100], [1.0, 2.0, 3.0]),
+        "Start Date: x\nMSN: x\nE:\n     0:  2.000\nT:\n     0:  1e19\n",
+    ):
+        with pytest.raises(UserInputError):
+            _import(tmp_path, data)

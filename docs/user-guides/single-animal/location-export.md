@@ -120,7 +120,7 @@ tracked animal (0 with one animal).
 
 | Column | What it is |
 |---|---|
-| `roi_id`, `roi_name` | The region's id and name, such as `Right wall`. |
+| `roi_id`, `roi_name` | The region's id and name, such as `Right wall`. A region keeps its id when you rename it, edit its shape or delete other regions, and a new region never takes a deleted one's id, so two runs can be joined on `roi_id`. |
 | `centroid_in_roi` | 1 if the centre of the animal's box is inside the region, 0 if not. |
 | `mask_centroid_in_roi` | The same, for the centre of its outline. |
 | `bbox_frac_in_roi`, `mask_frac_in_roi` | How much of the box, or of the outline, is inside the region, from 0 to 1. |
@@ -131,7 +131,7 @@ tracked animal (0 with one animal).
 
 | Column | What it is |
 |---|---|
-| `point_id`, `point_name` | The point's id and name, such as `Port`. |
+| `point_id`, `point_name` | The point's id and name, such as `Port`. Point ids stay the same across edits, as region ids do. |
 | `centroid_dist`, `mask_centroid_dist` | How far the centre of the box, or of the outline, is from the point. |
 | `point_in_bbox`, `point_in_mask` | 1 if the point is inside the box, or inside the outline itself. |
 

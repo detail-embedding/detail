@@ -13,6 +13,7 @@ import re
 import numpy as np
 
 from detail.core.dataclasses import ComputeTarget, PolygonKeyframes
+from detail.core.errors import UserInputError
 
 NS_PER_SECOND = 1_000_000_000
 
@@ -346,15 +347,15 @@ def seconds_to_t_ns(seconds: float, *, what: str = "time") -> int:
     ``1788000000000000000000``, and the stream's preview then died with ``OverflowError``.
 
     Raises:
-        ValueError: If ``seconds`` is not finite (``nan``/``inf``), or its nanoseconds do not
+        UserInputError: If ``seconds`` is not finite (``nan``/``inf``), or its nanoseconds do not
             fit in int64.
     """
     value = float(seconds)
     if math.isnan(value) or math.isinf(value):
-        raise ValueError(f"{what}: {seconds!r} is not a finite number of seconds")
+        raise UserInputError(f"{what}: {seconds!r} is not a finite number of seconds")
     t_ns = round(value * NS_PER_SECOND)
     if not T_NS_MIN <= t_ns <= T_NS_MAX:
-        raise ValueError(
+        raise UserInputError(
             f"{what}: {seconds!r} seconds is too large to be a time — it is beyond the "
             "int64 nanosecond range (about ±292 years). Does it hold milliseconds or an "
             "epoch timestamp rather than seconds?"
@@ -369,10 +370,10 @@ def check_t_ns(t_ns: int, *, what: str = "time") -> int:
     multiplication to overflow in but can still be too large to store.
 
     Raises:
-        ValueError: If ``t_ns`` is outside the int64 range.
+        UserInputError: If ``t_ns`` is outside the int64 range.
     """
     if not T_NS_MIN <= int(t_ns) <= T_NS_MAX:
-        raise ValueError(
+        raise UserInputError(
             f"{what}: {t_ns} ns is beyond the int64 range (about ±292 years), so it cannot "
             "be a time"
         )

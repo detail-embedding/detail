@@ -19,8 +19,8 @@ label's figures (the backend's ``membership_changed_at`` rule).
 
 **No verdicts.** Whether a precision is good enough is the reader's call (§19).
 
-Every removal and every finish is written in order and off the UI thread (``_write``), so leaving the
-page loses nothing. **One copy of what is removed**: ``self._data["taken"]``, the run's take-outs as
+Every removal and every finish is written in order and off the UI thread (``_write``) by the run's
+write queue (``gui/run_writes.py``), which outlives the page, so leaving the page loses nothing. **One copy of what is removed**: ``self._data["taken"]``, the run's take-outs as
 last read, updated by each mark the moment it is made, with every mark still in the write queue laid
 back over a read that lands before it (``_pending``) — so leaving a cluster and coming back, or a
 reload from INTERPRET mid-queue, shows exactly what Finish will record. A clip's edit counts as a
@@ -69,7 +69,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from detail.gui import plot_theme
+from detail.gui import plot_theme, run_writes
 from detail.gui.busy import run_busy
 from detail.gui.grip_splitter import GripSplitter
 from detail.gui.label_clean import (
@@ -333,11 +333,9 @@ class LabelCheckTab(QWidget):
         #: This review's changes, oldest first — what ⌘Z steps back through. Cleared on Finish
         #: and when another cluster opens.
         self._history: list[dict] = []
-        #: Writes not yet done, oldest first, and the one being written.
-        self._writes: list = []
-        self._writer: BackgroundCall | None = None
-        #: What runs once every write is done: a read must see the writes made before it.
-        self._after_writes: list = []
+        #: The run's write queue: shared with INTERPRET and kept by the app, so a mark queued
+        #: here lands after the page is gone (``run_writes``).
+        self._writes = run_writes.queue_for(run)
         #: Marks made and not yet seen by a read: ``(write number, {clip key: edit or None})``,
         #: oldest first — laid over every read that lands before they do (`_render`).
         self._pending: list[tuple[int, dict]] = []
@@ -359,6 +357,10 @@ class LabelCheckTab(QWidget):
         root.addWidget(self._pages, 1)
         self._pages.setCurrentIndex(self.PAGE_EMPTY)
         self.reload()
+        # Marks queued on a page since left are still landing: read the run again once they
+        # have, or this page shows it without them.
+        if self._writes.busy():
+            self._writes.when_idle(self.reload, owner=self)
 
     # -- construction ----------------------------------------------------------------------
     def _build_empty(self) -> QWidget:
@@ -1379,34 +1381,16 @@ class LabelCheckTab(QWidget):
         lands after the take-out it undoes and a finish after every mark before it. ``change``:
         the marks it writes, laid over any read that lands before it does."""
         self._queued += 1
+        number = self._queued
         if change:
-            self._pending.append((self._queued, change))
-        self._writes.append((write, what, self._queued))
-        self._write_next()
-
-    def _write_next(self) -> None:
-        if self._writer is not None:
-            return
-        if not self._writes:
-            waiting, self._after_writes = self._after_writes, []
-            for then in waiting:
-                then()
-            return
-        write, what, number = self._writes.pop(0)
-        writer = BackgroundCall(write, receiver=self)
-        self._writer = writer
+            self._pending.append((number, change))
 
         def done(_result) -> None:
-            self._writer = None
             self._landed = number
-            if not self._writes:
+            if not self._writes.busy():
                 self.changed.emit()
-            self._write_next()
 
         def failed(exc) -> None:
-            self._writer = None
-            self._writes.clear()
-            self._after_writes.clear()
             # Nothing queued will be written: the next read is the run as it stands.
             self._pending.clear()
             self._finishing = None
@@ -1414,19 +1398,18 @@ class LabelCheckTab(QWidget):
             self._open = None
             self.reload()
 
-        writer.done.connect(done)
-        writer.failed.connect(failed)
-        writer.finished.connect(writer.deleteLater)
-        writer.start()
+        # The run's queue, not this page's: a queue held here lost every write after the one in
+        # flight when the page was left (#24).
+        self._writes.submit(write, owner=self, done=done, failed=failed, title=what)
 
     def _when_written(self, then) -> None:
         """Run ``then`` once every queued write is done — at once if none are waiting."""
-        self._after_writes.append(then)
-        self._write_next()
+        self._writes.when_idle(then, owner=self)
 
     def writes_pending(self) -> bool:
-        """Whether a change made is not yet on disk."""
-        return self._writer is not None or bool(self._writes)
+        """Whether a change made on this run — here or on a page since left — is not yet on
+        disk."""
+        return self._writes.busy()
 
 
 def _apply_change(taken: dict, change: dict) -> None:

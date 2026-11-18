@@ -264,3 +264,12 @@ def test_stream_offset_ns_reads_the_alignment_block_only():
     assert streams_store.stream_offset_ns(_manifest(offset_ns=7)) == 7
     assert streams_store.stream_offset_ns({"offset_ns": 7}) == 0
     assert streams_store.stream_offset_ns({"alignment": None}) == 0
+
+
+def test_the_offset_refusal_is_a_user_input_error(recording_dir):
+    from detail.core.errors import UserInputError
+
+    manifest = {**_manifest("behavior"), "clock": "video_frames", "role": "behavior"}
+    streams_store.append_stream_to_recording_yaml(recording_dir, manifest)
+    with pytest.raises(UserInputError):
+        streams_store.set_stream_offset(recording_dir, "behavior", 5_000_000_000)

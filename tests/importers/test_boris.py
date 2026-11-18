@@ -269,3 +269,12 @@ def test_a_time_beyond_int64_is_refused_with_its_row(tmp_path):
         ValueError, match=r"BORIS row 2, Time: 1000000000000.0 seconds is too large"
     ):
         BorisImporter().import_stream(_write(tmp_path, text), tmp_path, {})
+
+
+def test_the_refusals_are_user_input_errors(tmp_path):
+    from detail.core.errors import UserInputError
+
+    mixed = _boris(["o,m,rear,START,0.5", "o,m,rear,STOP,1.5", "o,m,rear,POINT,2.0"])
+    for text in (_TWO_OBSERVATIONS, _TWO_SUBJECTS, mixed):
+        with pytest.raises(UserInputError):
+            BorisImporter().import_stream(_write(tmp_path, text), tmp_path, {})
