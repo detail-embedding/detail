@@ -18,7 +18,7 @@ which imports every registered backend module so that a subset run matches the f
 That is a property worth keeping, and it means a static import closure answers "run
 everything" for most changes. A mirror-plus-mention
 heuristic answers usefully for the same changes: 5 test files for ``detail/gui/scrubber.py``,
-19 for ``detail/storage/video.py``, 20 for ``detail/api/recording.py``, out of about 530.
+19 for ``detail/storage/video.py``, 21 for ``detail/api/recording.py``, out of about 530.
 
 Those numbers are asserted against the live tree by
 ``tests/test_impact.py::test_the_worked_example_in_the_docstring_is_still_true``: the three

@@ -84,7 +84,9 @@ def run_render_preview(
     recording_store.raise_on_legacy_downsampling(det_envelope.get("job"))
 
     requested = set(int(t) for t in job.track_ids)
-    candidates = _collect_candidates(detection_dir, tracking_dir, requested)
+    candidates = _collect_candidates(
+        recording_dir, data, detection_dir, tracking_dir, requested
+    )
     if not candidates:
         raise ValueError(
             f"no detections found in tracking run {job.tracking_run_id!r} "
@@ -200,14 +202,21 @@ class _Candidate:
 
 
 def _collect_candidates(
-    detection_dir: Path, tracking_dir: Path, requested: set[int]
+    recording_dir: Path,
+    data: dict,
+    detection_dir: Path,
+    tracking_dir: Path,
+    requested: set[int],
 ) -> list[_Candidate]:
     # Group detection rows by (track, part, frame); a group renders as one image
-    # (its masks OR-merged), matching what the embedding stage embeds.
+    # (its masks OR-merged), matching what the embedding stage embeds. ``part_index`` is the
+    # part's **play** index — what ``video_files`` and the timestamp maps are indexed by —
+    # not its position in the sorted folder listing, which a part move makes differ.
     groups: dict[tuple[int, int, int], list[int]] = {}
-    det_parts = sorted(detection_dir.glob("part_*.zarr"))
     readers: dict[int, dict] = {}
-    for part_index, part_path in enumerate(det_parts):
+    for part_index, part_path in recording_store.parts_in_play_order(
+        recording_dir, detection_dir, data
+    ):
         det = DetectionPartReader(part_path).read()
         readers[part_index] = det
         object_id = PartZarrReader(

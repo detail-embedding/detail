@@ -287,6 +287,9 @@ GUARD_FILES = frozenset(
         # Over every consumer of a per-part store's frame_idx: a frame and a time written together
         # agree through the recording's map on part 2 as on part 1 (#23).
         "tests/pipeline/test_part_frames.py",
+        # Over every reader that walks a run's part stores: after a part move, the sorted file
+        # names are not the play order, and a position in them names another part.
+        "tests/pipeline/test_part_play_order.py",
         # Data-driven over the temporal registry: a per-timeline statistic measured over
         # many recordings' timelines pooled reads the jitter between them, not a frame
         # period, and a gap rule over pooled rows never cuts at a seam.
