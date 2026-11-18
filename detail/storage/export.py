@@ -965,7 +965,7 @@ def import_target(dest_root: Path | str, manifest: dict, name: str | None) -> Pa
     """Where an import of the bundle ``manifest`` describes is placed under ``dest_root``.
 
     Raises:
-        ValueError: ``name`` (or the bundle's id) is not a bare folder name.
+        UserInputError: ``name`` (or the bundle's id) is not a bare folder name.
     """
     experiment_id = name or manifest["id"]
     # the id is a single directory name under the workspace — never a path that
@@ -973,7 +973,7 @@ def import_target(dest_root: Path | str, manifest: dict, name: str | None) -> Pa
     if experiment_id in ("", ".", "..") or any(
         sep in experiment_id for sep in ("/", "\\")
     ):
-        raise ValueError(
+        raise UserInputError(
             f"invalid experiment name {experiment_id!r}: must be a bare name"
         )
     return Path(dest_root) / experiment_id
