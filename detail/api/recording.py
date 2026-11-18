@@ -1260,6 +1260,13 @@ class Recording:
         data = recording_store.read_recording(self.dir)
         if any(s.get("name") == name for s in data.get("streams", [])):
             raise ValueError(f"stream name {name!r} already exists in recording")
+        if covered_behaviors is not None and instance.role != "behavior":
+            # By the importer's role, before anything is copied: an events CSV has a `label`
+            # column too, and the vocabulary was stored on it where nothing reads it.
+            raise UserInputError(
+                f"covered_behaviors only applies to a behavior stream; importer "
+                f"{importer!r} makes a {instance.role or 'data'} stream"
+            )
 
         sdir = streams_store.stream_dir(self.dir, name)
         raw_dir = sdir / streams_store.RAW_DIRNAME

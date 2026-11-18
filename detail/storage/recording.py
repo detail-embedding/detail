@@ -236,6 +236,36 @@ def remove_run_entry(recording_dir: Path | str, runs_key: str, run_id: str) -> b
     return True
 
 
+#: Where an upstream stage keeps one run's output under a recording, and the file (a glob)
+#: whose presence says the output is there: ``{kind: (folder, pattern)}``.
+RUN_OUTPUTS = {
+    "detection": ("detections", "part_*.zarr"),
+    "tracking": ("tracking", "tracks.zarr"),
+}
+
+
+def require_run_output(recording_dir: Path | str, kind: str, run_id: str) -> Path:
+    """The folder of a ``kind`` run recorded as complete, refused when its output is gone.
+
+    A stage's ``validate()`` reads the run record, which says ``complete`` whether or not
+    the folder is still on disk (deleted by hand, a copy without it). Checked here, the run
+    is refused before it is submitted, rather than submitted and failed with the cause only
+    in ``job.json`` (#31).
+
+    Raises:
+        UserInputError: the folder, or the output in it, is missing.
+    """
+    folder, pattern = RUN_OUTPUTS[kind]
+    run_dir = Path(recording_dir) / folder / run_id
+    if not run_dir.is_dir() or not any(run_dir.glob(pattern)):
+        raise UserInputError(
+            f"{kind} run {run_id!r} is recorded as complete but its output is not on "
+            f"disk ({folder}/{run_id}/{pattern} in recording {Path(recording_dir).name!r}); "
+            f"run {kind} again, or delete that run"
+        )
+    return run_dir
+
+
 def set_run_status(
     recording_dir: Path | str, runs_key: str, run_id: str, status: str
 ) -> bool:

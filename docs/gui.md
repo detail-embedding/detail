@@ -1084,6 +1084,15 @@ only watched. Each folder also gets a `params.csv` of the settings that produced
 [notes](#notes) on what you exported from as `notes.md` when it has any, and an `export.yaml`
 manifest. Each row's tooltip names the files it writes.
 
+Opened on part of a run (a cluster, the instances you selected, a clip's span), the dialog
+shows an **Of:** choice between that part and *Everything in this run*. A row that cannot be
+narrowed to the part you chose is greyed and says why, rather than writing everything under a
+manifest that says it was narrowed: with a selection, *Per-frame behavior labels* reads
+"cannot be narrowed to a selection". Choose *Everything in this run* and it comes back. On a
+recording, **Clip** is greyed until there is a frame range to write: use **Export video…** in a
+clip player. A whole-run report such as the performance report is written whole beside a
+narrowed export, and `export.yaml` lists it under `whole`.
+
 - **The clip you are watching.** A clip player has an **Export video…** button beside its
   Masks checkbox, on a clustering result, a behavior scan, a query, the audit tab and the spatial
   map. It writes the span on screen, in the flavour on screen: masks on draws the outline, masks

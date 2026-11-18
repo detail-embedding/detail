@@ -965,6 +965,32 @@ def pane_frames(
     return out
 
 
+def require_track(
+    experiment_dir: Path | str, recording_id: str, embed_run_id: str, track_id: int
+) -> None:
+    """Refuse a ``track_id`` the embedding run did not embed in this recording.
+
+    A drawing of a subject that is not there is a file of blank frames, written and reported
+    as an export (#31). The GUI offers only tracks that exist; a script or the CLI can name
+    any number.
+
+    Raises:
+        UserInputError: naming the tracks the run has.
+    """
+    from detail.api.run_preview import embedding_track_ids
+    from detail.storage import experiment as experiment_store
+
+    tracks = embedding_track_ids(
+        experiment_store.recording_path(experiment_dir, recording_id), embed_run_id
+    )
+    if int(track_id) not in tracks:
+        raise UserInputError(
+            f"track {int(track_id)} is not in embedding run {embed_run_id!r} on "
+            f"recording {recording_id!r}; its tracks: "
+            f"{', '.join(str(t) for t in sorted(tracks)) or 'none'}"
+        )
+
+
 def export_clip_pane(
     experiment_dir: Path | str,
     *,
@@ -992,11 +1018,13 @@ def export_clip_pane(
 
     Raises:
         ValueError: an unknown pane or suffix, or keypoints asked of a run with none.
+        UserInputError: a ``track_id`` the run does not have (:func:`require_track`).
     """
     from detail.api.run_preview import ClipQueryPreview
 
     if pane not in PANES:
         raise ValueError(f"pane must be one of {PANES}, not {pane!r}")
+    require_track(experiment_dir, recording_id, embed_run_id, track_id)
     kind = format_of(path)
     if kind == GIF:
         fps = GIF_DEFAULT_FPS if fps is None else fps

@@ -745,6 +745,7 @@ class KeypointDetectModule(ProcessingModule):
                 f"detection run {detection_run_id!r} is {det_entry.get('status')!r}, "
                 "not complete"
             )
+        recording_store.require_run_output(recording_dir, "detection", detection_run_id)
         recording_store.raise_on_legacy_downsampling(det_entry)
         config["every_n_frames"] = resolve_downstream_every_n(
             config.get("every_n_frames"), int(det_entry.get("every_n_frames") or 1)

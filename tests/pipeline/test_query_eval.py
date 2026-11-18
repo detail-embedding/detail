@@ -614,6 +614,45 @@ def test_evaluate_query_reports_progress(
     assert any("groom" in d for _s, _f, d in events)  # a live, per-behavior message
 
 
+@pytest.mark.parametrize(
+    "extra, says",
+    [
+        (
+            ["--stream", "nope"],
+            "no selected recording has a behavior stream named 'nope'",
+        ),
+        (["--embed-run", "emb_99"], "has embed run 'emb_99' at track 0"),
+        (["--track", "3"], "has embed run 'emb_01' at track 3"),
+        (
+            ["--behavior", "nope"],
+            "is annotated for 'nope'; behaviors annotated there: bite, groom",
+        ),
+    ],
+    ids=["stream", "embed_run", "track", "behavior"],
+)
+def test_cli_query_eval_refuses_an_unknown_name_and_writes_nothing(
+    experiment_dir, recording_dir, make_embedding_run, tmp_path, extra, says
+):
+    """Each printed "groom [state]: skipped — no eligible recordings" and exited 0, with
+    `--out` never written, though `docs/cli.md` says an unknown name fails with the
+    available names (#31, finding 44)."""
+    _setup(experiment_dir, recording_dir, make_embedding_run, tmp_path)
+    out = tmp_path / "metrics.csv"
+    args = [
+        "analysis", "query-eval", "--experiment", str(experiment_dir),
+        "--embed-run", "emb_01", "--behavior", "groom", "--band", "0.2",
+        "--out", str(out),
+    ]  # fmt: skip
+    if extra[0] == "--embed-run":
+        args[args.index("emb_01")] = extra[1]
+    else:
+        args += extra
+    result = CliRunner().invoke(main, args)
+    assert result.exit_code == 1, result.output
+    assert says in result.output
+    assert not out.exists()
+
+
 def test_cli_query_eval_appends_rows(
     experiment_dir, recording_dir, make_embedding_run, tmp_path
 ):

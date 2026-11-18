@@ -306,18 +306,24 @@ class ExportDialog(Dialog):
         # to tell "DETAIL cannot export my streams" from "this recording has no streams yet",
         # and only the second is something they can act on.
         self._include: dict[str, QCheckBox] = {}
+        #: Whether each target is ticked when nothing stops it — restored when a scope that
+        #: greyed it is widened again.
+        self._default_ticked: dict[str, bool] = {}
+        self._runnable: dict[str, bool] = {}
         box = QVBoxLayout()
         for target in self._targets:
             reason = exporters.unavailable_reason(target, subject)
             check = QCheckBox(
                 target.label if reason is None else f"{target.label} — {reason}"
             )
+            self._runnable[target.id] = reason is None
+            # The bundle is opt-in; data is the default. A caller that named `only` has
+            # already made this choice, so honour it rather than re-asking.
+            self._default_ticked[target.id] = (
+                target.id in self._only if self._only else not target.portable
+            )
             if reason is None:
-                # The bundle is opt-in; data is the default. A caller that named `only` has
-                # already made this choice, so honour it rather than re-asking.
-                check.setChecked(
-                    target.id in self._only if self._only else not target.portable
-                )
+                check.setChecked(self._default_ticked[target.id])
                 check.setToolTip(
                     f"{target.artifact}\nAlso writes: "
                     + ", ".join(target.included_files())
@@ -339,6 +345,7 @@ class ExportDialog(Dialog):
             self._scope_pick.addItem(self._scope_rest.describe().capitalize(), True)
             self._scope_pick.addItem("Everything in this run", False)
             form.addRow("Of:", self._scope_pick)
+        self._sync_scope_fit()
 
         # Which recordings. A processing run spans many, and what a video or a CSV costs is
         # *per recording*: an export that wrote one video per recording of a large run
@@ -532,6 +539,7 @@ class ExportDialog(Dialog):
         if self._kp_source is not None:
             self._kp_source.currentIndexChanged.connect(self._changed)
         if self._scope_pick is not None:
+            self._scope_pick.currentIndexChanged.connect(self._sync_scope_fit)
             self._scope_pick.currentIndexChanged.connect(self._changed)
         self._out.textChanged.connect(self._changed)
         self._changed()
@@ -604,6 +612,36 @@ class ExportDialog(Dialog):
 
     def _chosen(self) -> list:
         return [t for t in self._targets if self._include[t.id].isChecked()]
+
+    def _picked_scope(self) -> ExportScope:
+        """The page's scope as the *Of:* picker has it, without the recordings the list owns."""
+        if self._scope_pick is not None and not self._scope_pick.currentData():
+            return ExportScope()
+        return self._scope_rest
+
+    def _sync_scope_fit(self, *_args) -> None:
+        """Grey a target the picked scope cannot be applied to, saying why; restore it after.
+
+        The export refuses a scope a target does not take (`exporters.check_request`), so a
+        target ticked by default here would turn the whole export into an error: a selection
+        with *Per-frame behavior labels* ticked, or a recording's *Clip* with no frame range.
+        Asked of the same pure predicate the export uses, so the two cannot disagree.
+        """
+        scope = self._picked_scope()
+        for target in self._targets:
+            if not self._runnable[target.id]:
+                continue
+            check = self._include[target.id]
+            why = exporters.scope_refusal(target, scope, self._subject)
+            if why is None:
+                if not check.isEnabled():
+                    check.setEnabled(True)
+                    check.setText(target.label)
+                    check.setChecked(self._default_ticked[target.id])
+                continue
+            check.setChecked(False)
+            check.setEnabled(False)
+            check.setText(f"{target.label} — {why}")
 
     # -- which recordings ------------------------------------------------------------- #
     def _ticked_recordings(self) -> list[str]:

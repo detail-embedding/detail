@@ -125,6 +125,108 @@ def _only(scope: ExportScope | None, options: dict) -> set[str] | None:
     return {str(chosen)} if chosen else None
 
 
+def _clusters(artifact) -> dict[str, list[str]]:
+    """``{source label: [its names]}`` an analysis run's artifact holds."""
+    names = behavior_output._names_map(artifact.manifest)
+    clusters = {str(row.source_label): [] for row in artifact.instances}
+    for source, labels in names.items():
+        clusters[source] = labels
+    return clusters
+
+
+def _frame_count(subject: ExportSubject) -> int | None:
+    """How many frames a frames scope can reach on ``subject``, or ``None`` when unknown.
+
+    A recording's is its timestamp maps' total (Tenet 8). An analysis run's is its longest
+    frame view, the rows `frame_labels` writes. Unknown (no video, views pending a rebuild)
+    is not a refusal: the target says so itself when it runs.
+    """
+    if subject.kind == "recording":
+        from detail.storage import recording as recording_store
+
+        recording_dir = _recording_dir(subject)
+        try:
+            data = recording_store.read_recording(recording_dir)
+        except (FileNotFoundError, ValueError):
+            return None
+        files = (data.get("video") or {}).get("files") or []
+        if not files:
+            return None
+        try:
+            return sum(
+                len(
+                    recording_store.load_active_timestamps_cached(
+                        recording_dir, data, index
+                    ).values
+                )
+                for index in range(len(files))
+            )
+        except (FileNotFoundError, ValueError):
+            return None
+    if subject.kind == "analysis_run":
+        from detail.storage import frame_view
+
+        run_dir = _analysis_dir(subject)
+        try:
+            units = frame_view.discover_frame_views(run_dir)
+            counts = [
+                frame_view.read_frame_view(run_dir, rid, sub).n_frames
+                for rid, sub in units
+            ]
+        except (FileNotFoundError, frame_view.FrameViewsPendingError):
+            return None
+        return max(counts) if counts else None
+    return None
+
+
+def scope_problem(subject: ExportSubject, scope: ExportScope) -> str | None:
+    """Why ``scope`` names something ``subject`` does not have, or ``None`` when it is fine.
+
+    A cluster or a selected instance the run does not hold, or a frame range that starts past
+    the last frame, would otherwise write header-only files and be reported as written. The message lists what
+    there is, by id and by the name the user gave it.
+    """
+    artifact = None
+    if subject.kind == "analysis_run" and (
+        scope.cluster is not None or scope.instance_ids
+    ):
+        try:
+            artifact = behavior_output.read_behavior_output(_analysis_dir(subject))
+        except (FileNotFoundError, ValueError):
+            artifact = None
+    if artifact is not None and scope.cluster is not None:
+        clusters = _clusters(artifact)
+        if str(scope.cluster) not in clusters:
+            named = [
+                f"{source} ({', '.join(labels)})" if labels else source
+                for source, labels in sorted(clusters.items())
+            ]
+            by_name = [s for s, labels in clusters.items() if scope.cluster in labels]
+            hint = f"; {scope.cluster!r} is the name of {by_name[0]}" if by_name else ""
+            return (
+                f"this run has no cluster {scope.cluster!r}{hint}. Its clusters: "
+                f"{', '.join(named) or 'none'}"
+            )
+    if artifact is not None and scope.instance_ids:
+        known = {row.instance_id for row in artifact.instances}
+        unknown = [i for i in scope.instance_ids if i not in known]
+        if unknown:
+            more = f" and {len(unknown) - 3} more" if len(unknown) > 3 else ""
+            return (
+                f"this run has no instance {', '.join(map(repr, unknown[:3]))}{more}; "
+                "a selection names instances by their instance_id"
+            )
+    if scope.frames is not None:
+        total = _frame_count(subject)
+        if total is not None and scope.frames[0] >= total:
+            return (
+                f"frames {scope.frames[0]}-{scope.frames[1]} start past the end: "
+                f"this {subject.kind.replace('_', ' ')} has {total} frames "
+                f"(0-{total - 1})"
+            )
+    return None
+
+
 def unavailable_reason(target: ExportTarget, subject: ExportSubject) -> str | None:
     """Why ``target`` cannot run for ``subject``, or ``None`` when it can.
 
@@ -428,7 +530,8 @@ def _run_clip(subject, dest, scope, progress, **options):
     *are* options: they say what to draw, not how much.
     """
     if scope is None or scope.frames is None:
-        return []  # `write_export` records this as "had nothing to write", visibly
+        # `requires=("frames",)` refuses this before anything runs; kept for a direct caller.
+        raise ExportError("a clip needs a frame range (START:END) to export")
     from detail.api import clip_export
 
     embed_run_id = options.get("embed_run_id") or ""
@@ -437,6 +540,15 @@ def _run_clip(subject, dest, scope, progress, **options):
             "a clip needs the embedding run its frames were read through — the run that "
             "resolves the tracking and detection behind the masks; pass --embed-run"
         )
+    from detail.api.clip_views import require_track
+
+    # A track the run does not have draws a clip with nothing outlined, reported as written.
+    require_track(
+        subject.experiment_dir,
+        subject.id,
+        embed_run_id,
+        int(options.get("track_id") or 0),
+    )
     return clip_export.export_clip(
         subject.experiment_dir,
         dest,
@@ -463,6 +575,7 @@ register(
         ),
         data_files=("clip.csv",),
         scopes=("frames",),
+        requires=("frames",),
         renders=clip_render.RENDERS,
         run=_run_clip,
         estimate=est.clip,
@@ -1686,8 +1799,10 @@ def _no_geometry(subject) -> str | None:
         spatial_store.list_defs(recording_dir, kind)
         for kind in spatial_store.ALL_SPATIAL_KINDS
     )
-    if not drawn:
-        return "nothing has been drawn on this recording yet"
+    # The calibration is part of the geometry file (`export_spatial` writes it), so a
+    # recording that has only a calibration has something to export.
+    if not drawn and spatial_store.read_calibration(recording_dir) is None:
+        return "nothing has been drawn or calibrated on this recording yet"
     return None
 
 

@@ -23,6 +23,7 @@ The surface half of this lives elsewhere, because no one file can see all three:
 import pytest
 
 from detail.configs.tracking import DEFAULT_TRACKER, TrackingConfig
+from detail.core.errors import UserInputError
 from detail.core.registries import TRACKERS
 from detail.pipeline.tracking import TrackingModule
 
@@ -33,8 +34,51 @@ COMPLETE_DETECTION = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _detection_on_disk(recording_dir):
+    """The output the record above describes: validate refuses a complete run whose folder
+    is gone (`test_a_detection_run_whose_folder_is_gone_is_refused_at_validate`)."""
+    (recording_dir / "detections" / "det_01" / "part_000.zarr").mkdir(parents=True)
+
+
 def _validate(recording_dir, config):
     return TrackingModule().validate(recording_dir, dict(COMPLETE_DETECTION), config)
+
+
+@pytest.mark.parametrize("gone", ["folder", "parts"])
+def test_a_detection_run_whose_folder_is_gone_is_refused_at_validate(
+    recording_dir, gone
+):
+    """It validated, submitted, then failed, with the cause only in `job.json` (#31, 50)."""
+    import shutil
+
+    det = recording_dir / "detections" / "det_01"
+    shutil.rmtree(det if gone == "folder" else det / "part_000.zarr")
+    with pytest.raises(UserInputError) as caught:
+        _validate(recording_dir, {"detection_run_id": "det_01"})
+    assert str(caught.value) == (
+        "detection run 'det_01' is recorded as complete but its output is not on disk "
+        f"(detections/det_01/part_*.zarr in recording {recording_dir.name!r}); "
+        "run detection again, or delete that run"
+    )
+
+
+def test_keypoint_detection_and_embedding_check_their_upstream_folder_too(
+    recording_dir,
+):
+    """The two other stages that read an upstream run's folder, through the same check."""
+    import inspect
+
+    from detail.pipeline import embedding, keypoint_detect
+
+    for module, kind in (
+        (keypoint_detect.KeypointDetectModule, "detection"),
+        (embedding.EmbeddingModule, "tracking"),
+    ):
+        source = " ".join(inspect.getsource(module.validate).split())
+        assert f'require_run_output( recording_dir, "{kind}"' in source.replace(
+            "require_run_output(recording_dir", "require_run_output( recording_dir"
+        ), f"{module.__name__}.validate does not check its {kind} run's folder"
 
 
 def test_a_config_with_no_tracker_resolves_to_the_default(recording_dir):

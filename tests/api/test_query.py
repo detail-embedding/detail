@@ -21,6 +21,7 @@ from click.testing import CliRunner
 from detail.cli import main
 
 from detail.api.experiment import Experiment
+from detail.core.errors import UserInputError
 from detail.pipeline.query import QueryModule
 from detail.storage import analysis_runs as analysis_store
 from detail.storage import behavior_output, frame_view, query_runs
@@ -720,6 +721,16 @@ def test_export_writes_an_empty_csv_for_a_recording_with_no_instances(tmp_path):
         assert (out / name).read_text(encoding="utf-8-sig").splitlines() == [
             "start_frame,end_frame,label,subject,origin"
         ]
+
+
+def test_export_with_nothing_calibrated_is_refused_and_writes_nothing(tmp_path):
+    """Skipping `query-calibrate` wrote a header-only CSV per recording and a pinned snapshot,
+    which `docs/cli.md` reads as "searched and matched nothing" (#31, finding 46)."""
+    exp, run = _searched(tmp_path)
+    with pytest.raises(UserInputError, match="nothing is calibrated yet"):
+        run.export(tmp_path / "export")
+    assert not (tmp_path / "export").exists()
+    assert run.snapshots() == []
 
 
 def test_export_before_the_search_completes_says_so(tmp_path):

@@ -856,13 +856,24 @@ def test_a_read_landing_mid_queue_keeps_the_marks_still_being_written(
     assert len(handle.taken_out("climb")) == 2
 
 
-def test_an_edit_made_under_another_label_is_not_a_removal_here(qapp, labelled):
+def test_an_edit_made_under_another_label_is_not_a_removal_here(
+    qapp, labelled, monkeypatch
+):
     """The backend counts an edit only when it was made from the cluster's label or one above
-    it (``_not_its_label``); the page showed every edit on the clip as a removal."""
+    it (``_not_its_label``); the page showed every edit on the clip as a removal.
+
+    Taking a clip out of a label it is not in is refused now (#31), but such an edit is still
+    on disk in runs edited before, so the page has to read it right: it is planted with that
+    check switched off.
+    """
     experiment, handle, nodes = labelled
     view = handle.node_view()
     rows = view.clips(nodes["rear"]).rows()[:2]
+    monkeypatch.setattr(
+        type(handle), "_refuse_clips_not_in", lambda self, state, refs, label: None
+    )
     handle.take_out_clips(rows, "climb", None)  # made under another label
+    monkeypatch.undo()
     widget = _tab(qapp, experiment, handle)
     try:
         _click_row(qapp, widget, ("cluster", "rear", nodes["rear"]))

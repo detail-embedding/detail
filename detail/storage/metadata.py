@@ -53,6 +53,15 @@ def _normalized_header(header: str) -> str:
     return header.strip().lower().replace(" ", "_").replace("-", "_")
 
 
+def is_recording_key_header(cell: str) -> bool:
+    """Whether a header cell names the recording key — ``recording``, ``Recording ID``,
+    ``name`` … — in any case, spacing or hyphenation, the way every header is matched here.
+
+    A header read as data becomes a recording called "Recording ID" that matches nothing.
+    """
+    return _normalized_header(cell) in ("recording", RECORDING_KEY, NAME_KEY)
+
+
 def is_video_key_header(cell: str) -> bool:
     """Whether a header cell names a video-file-name key (:data:`VIDEO_KEY_HEADERS`)."""
     return _normalized_header(cell) in VIDEO_KEY_HEADERS

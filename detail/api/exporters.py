@@ -36,12 +36,26 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from detail.core.errors import UserInputError
+
 #: What a target may be narrowed to. `None` scope always means the whole subject.
 SCOPE_KINDS = ("cluster", "selection", "frames", "recordings")
 
+#: How each scope kind reads in a sentence about what a target can be narrowed to.
+_KIND_WORDS = {
+    "cluster": "one cluster",
+    "selection": "a selection",
+    "frames": "a frame range",
+    "recordings": "some recordings",
+}
 
-class ExportError(ValueError):
-    """The subject, target or scope handed to an export does not describe something writable."""
+
+class ExportError(UserInputError):
+    """The subject, target or scope handed to an export does not describe something writable.
+
+    A :class:`UserInputError`: every one of these is something the person asked for (a target,
+    a scope, a cluster) that this export cannot do, so a surface shows it as one line.
+    """
 
 
 @dataclass(frozen=True)
@@ -103,13 +117,24 @@ class ExportScope:
             and not self.recording_ids
         )
 
+    def kinds(self) -> tuple[str, ...]:
+        """The `SCOPE_KINDS` this scope sets, in that order — what it asks a target to narrow."""
+        set_ = {
+            "cluster": self.cluster is not None,
+            "selection": bool(self.instance_ids),
+            "frames": self.frames is not None,
+            "recordings": bool(self.recording_ids),
+        }
+        return tuple(kind for kind in SCOPE_KINDS if set_[kind])
+
     def describe(self) -> str:
+        """Every part that is set, so the manifest's ``scope`` line names all of what applied."""
         parts = []
         if self.instance_ids:
             parts.append(f"{len(self.instance_ids)} selected")
-        elif self.cluster is not None:
+        if self.cluster is not None:
             parts.append(f"cluster {self.cluster}")
-        elif self.frames is not None:
+        if self.frames is not None:
             parts.append(f"frames {self.frames[0]}-{self.frames[1]}")
         if self.recording_ids:
             parts.append(
@@ -195,6 +220,12 @@ class ExportTarget:
     ``scopes`` lists what the target may be narrowed to (`SCOPE_KINDS`). ``"recordings"`` in it
     is a promise that ``run`` writes only the recordings in ``scope.recording_ids`` and that
     ``estimate`` prices only those; the sweep runs it on a two-recording fixture to check.
+    A scope kind a target does not list is **refused** for it (:func:`scope_refusal`), never
+    ignored. A target with no ``scopes`` at all is a whole-subject report: it is written whole
+    beside a narrowed target, and the manifest says so.
+
+    ``requires`` lists the scope kinds the target cannot run without (a clip needs a frame
+    range). Each is also in ``scopes``.
     """
 
     id: str
@@ -209,6 +240,7 @@ class ExportTarget:
     #: combined list while being exactly the Save-PNG button this rule exists to prevent.
     figure_files: tuple[str, ...] = ()
     scopes: tuple[str, ...] = ()
+    requires: tuple[str, ...] = ()
     portable: bool = False
     #: Renders this target accepts, when it writes clips. Empty for everything else.
     renders: tuple[str, ...] = field(default_factory=tuple)
@@ -286,6 +318,94 @@ def unavailable_reason(target: ExportTarget, subject: ExportSubject) -> str | No
 def available_targets(subject: ExportSubject) -> list[ExportTarget]:
     """Just the ones that can run — what decides whether the control appears at all."""
     return [t for t in targets_for(subject) if unavailable_reason(t, subject) is None]
+
+
+def _narrowing(subject: ExportSubject, scope: ExportScope) -> tuple[str, ...]:
+    """The kinds ``scope`` narrows ``subject`` by. A recording's own id is not a narrowing."""
+    kinds = scope.kinds()
+    if subject.kind == "recording" and set(scope.recording_ids) <= {subject.id}:
+        kinds = tuple(k for k in kinds if k != "recordings")
+    return kinds
+
+
+def scope_refusal(
+    target: ExportTarget, scope: ExportScope, subject: ExportSubject | None = None
+) -> str | None:
+    """Why ``target`` cannot be written for ``scope``, or ``None`` when it can.
+
+    Pure: it reads the target's declaration and the scope, nothing on disk, so the Export
+    dialog can ask it on every change. A target asked to narrow by a kind it does not take
+    would write everything and the manifest would record the narrowing as applied, so that is
+    refused here rather than ignored. A whole-subject report (no ``scopes``) is not refused:
+    it is written whole beside the targets that do narrow (see :func:`check_request`).
+    """
+    kinds = scope.kinds() if subject is None else _narrowing(subject, scope)
+    missing = [k for k in target.requires if k not in kinds]
+    if missing:
+        return f"needs {' and '.join(_KIND_WORDS[k] for k in missing)} to export"
+    if not target.scopes:
+        return None
+    foreign = [k for k in kinds if k not in target.scopes]
+    if not foreign:
+        return None
+    can = ", ".join(_KIND_WORDS[k] for k in target.scopes)
+    return (
+        f"cannot be narrowed to {' or '.join(_KIND_WORDS[k] for k in foreign)} "
+        f"(only to {can})"
+    )
+
+
+def whole_subject_targets(
+    subject: ExportSubject, targets: Sequence[ExportTarget], scope: ExportScope
+) -> tuple[str, ...]:
+    """The ids of ``targets`` written whole although ``scope`` narrows: the whole-subject reports."""
+    if not _narrowing(subject, scope):
+        return ()
+    return tuple(t.id for t in targets if not t.scopes)
+
+
+def check_request(
+    subject: ExportSubject, targets: Sequence[ExportTarget], scope: ExportScope | None
+) -> None:
+    """Refuse an export that would quietly do something other than what was asked.
+
+    The one check every way into an export makes (`Experiment.run_export`,
+    `Experiment.estimate_export`, :func:`write_export`), so the CLI, the GUI and a script
+    are refused the same way, before anything is written:
+
+    - a target named twice (it would run twice, and list its files twice);
+    - a scope kind a chosen target does not take, or a scope a target needs and was not given
+      (:func:`scope_refusal`);
+    - a narrowing that no chosen target can apply — only whole-subject reports were asked for;
+    - a cluster the subject does not have, or a frame range past its end
+      (``export_targets.scope_problem``).
+
+    Raises:
+        ExportError: naming the target, and what it can be narrowed to or what is missing.
+    """
+    scope = scope or ExportScope()
+    seen: set[str] = set()
+    for target in targets:
+        if target.id in seen:
+            raise ExportError(f"export target {target.id!r} is asked for twice")
+        seen.add(target.id)
+    for target in targets:
+        reason = scope_refusal(target, scope, subject)
+        if reason is not None:
+            raise ExportError(f"{target.label} {reason}")
+    narrowing = _narrowing(subject, scope)
+    if narrowing and targets and all(not t.scopes for t in targets):
+        names = ", ".join(t.label for t in targets)
+        raise ExportError(
+            f"{names} always writes the whole {subject.kind.replace('_', ' ')}, so "
+            f"{scope.describe()} narrows nothing; export it without a scope"
+        )
+    _load()
+    from detail.api import export_targets
+
+    problem = export_targets.scope_problem(subject, scope)
+    if problem is not None:
+        raise ExportError(problem)
 
 
 def recordings_of(subject: ExportSubject) -> list[str]:
@@ -698,7 +818,8 @@ def write_export(
             Each target takes what it recognises and ignores the rest.
 
     Raises:
-        ExportError: if no target was asked for, or one does not belong to this subject kind.
+        ExportError: if no target was asked for, one does not belong to this subject kind,
+            or the request is one :func:`check_request` refuses.
     """
     wanted = [targets] if isinstance(targets, ExportTarget) else list(targets)
     if not wanted:
@@ -712,12 +833,13 @@ def write_export(
         reason = unavailable_reason(target, subject)
         if reason is not None:
             raise ExportError(f"cannot export {target.label.lower()}: {reason}")
+    scope = scope or ExportScope()
+    check_request(subject, wanted, scope)
     parent = Path(parent)
     parent.mkdir(parents=True, exist_ok=True)
     dest = _unique_dir(parent, folder or folder_name(subject))
     dest.mkdir()
 
-    scope = scope or ExportScope()
     written: list[Path] = []
     outcomes: list[TargetOutcome] = []
     for index, target in enumerate(wanted):
@@ -757,7 +879,9 @@ def write_export(
                 files=tuple(sorted(_relative(dest, p) for p in produced)),
             )
         )
-    relative = tuple(sorted(_relative(dest, p) for p in written))
+    # A set: several targets share a file (every keypoint target writes `coverage.csv`), and the
+    # manifest lists what is in the folder, each file once.
+    relative = tuple(sorted({_relative(dest, p) for p in written}))
 
     params = _params_for(subject)
     if params:
@@ -778,7 +902,16 @@ def write_export(
         if relative or any(o.status == "failed" for o in outcomes)
         else _empty_reason(wanted, scope)
     )
-    _write_manifest(dest, subject, wanted, scope, relative, empty_reason, outcomes)
+    _write_manifest(
+        dest,
+        subject,
+        wanted,
+        scope,
+        relative,
+        empty_reason,
+        outcomes,
+        whole=whole_subject_targets(subject, wanted, scope),
+    )
     return ExportResult(
         dest, tuple(t.id for t in wanted), relative, empty_reason, tuple(outcomes)
     )
@@ -889,8 +1022,13 @@ def _write_manifest(
     files: tuple[str, ...],
     empty_reason: str,
     outcomes: Sequence["TargetOutcome"] = (),
+    whole: Sequence[str] = (),
 ) -> None:
-    """Write ``export.yaml`` — schema_version first, then what this export wrote."""
+    """Write ``export.yaml`` — schema_version first, then what this export wrote.
+
+    ``whole`` names the targets written whole beside a narrowed scope (whole-subject reports),
+    so the ``scope`` line is never read as having narrowed them.
+    """
     from datetime import datetime, timezone
 
     import yaml
@@ -903,6 +1041,7 @@ def _write_manifest(
         "subject_kind": subject.kind,
         "subject_id": subject.id,
         "scope": scope.describe(),
+        **({"whole": list(whole)} if whole else {}),
         "artifacts": [t.artifact for t in targets],
         "written_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "files": list(files),

@@ -278,6 +278,9 @@ GUARD_FILES = frozenset(
         "tests/api/test_authored_edit_ordering.py",
         "tests/api/test_wrapper_signatures.py",
         "tests/api/test_export_registry.py",
+        # Over the export catalogue: a scope kind a target does not take is refused, never
+        # ignored and recorded as applied (#31, findings 40-43).
+        "tests/api/test_export_scope_refusals.py",
         "tests/pipeline/test_producer_parity.py",
         # Over every consumer of a per-part store's frame_idx: a frame and a time written together
         # agree through the recording's map on part 2 as on part 1 (#23).
