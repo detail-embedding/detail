@@ -94,6 +94,8 @@ def _make_hp_widget(name: str, typ: type, default) -> QWidget:
 
 
 class _TrackingConfig(ConfigWidget):
+    noted_by_form = frozenset({"tracker_id"})  # its own note, beside the row
+
     def __init__(self):
         super().__init__()
         self._model_names: dict = {}  # {model_id: name}; filled by on_experiment_set
@@ -357,6 +359,13 @@ class _TrackingConfig(ConfigWidget):
         """
         tracker_id = config.get("tracker_id")
         substituted = bool(tracker_id) and self._tracker.findText(tracker_id) < 0
+        # A substituted tracker's settings are another tracker's, and the note below says they
+        # were not carried; the dialog's shared note would only repeat it, name by name.
+        self.noted_by_form = (
+            frozenset({"tracker_id", "hyperparams"})
+            if substituted
+            else frozenset({"tracker_id"})
+        )
         if tracker_id and not substituted:
             self._tracker.setCurrentText(tracker_id)
             self._tracker_note.setVisible(False)

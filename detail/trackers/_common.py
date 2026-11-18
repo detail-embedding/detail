@@ -23,6 +23,7 @@ import yaml
 
 from detail.core import atomic
 from detail.core.utils import bbox_iou, polygon_at_frame
+from detail.storage import recording as recording_store
 
 Bbox = tuple[float, float, float, float]
 SUBJECT_ID = 0  # single-subject trackers: the one track is always object_id 0
@@ -242,3 +243,19 @@ def clear_zarr(path: Path | str) -> None:
     path = Path(path)
     if path.exists():
         shutil.rmtree(path)
+
+
+def parts_in_play_order(detection_run_dir: Path) -> list[tuple[int, Path]]:
+    """A detection run's part stores as ``(play index, path)``, in the order the parts play.
+
+    A tracker carries its state from one part into the next and indexes
+    ``part_frame_offsets`` (play order) by part, so it must walk the parts as they play:
+    after a part move the sorted folder listing is a different order (it keeps the file
+    names). The recording is two levels up (``recordings/<id>/detections/<run>``, §3),
+    as ``tracking.run`` resolves it; with no ``recording.yaml`` there the sorted listing is
+    the only order there is.
+    """
+    detection_run_dir = Path(detection_run_dir)
+    return recording_store.parts_in_play_order(
+        detection_run_dir.parent.parent, detection_run_dir
+    )

@@ -38,6 +38,9 @@ _SEAMS = (
     "resolve_constructor(",
     "frame_timestamps(",
     "stream_events(",
+    # A per-stream row count reads each stream's file to the end (#35: 3 s for one
+    # 400,000-row sensor trace), so it is a seam like the read it replaced.
+    "stream_row_counts(",
     "detection_preview(",
     "tracking_preview(",
     "input_image_preview(",
@@ -186,11 +189,11 @@ _WRAPPERS = (
 )
 
 # (file relative to gui/, seam) still called inline on the UI thread. Every preview,
-# editor, export, and stream dialog is migrated; the one remaining is a per-stream row
-# count on the recording-detail streams table (typically small streams). Off-threading
-# it means reordering that section's table-vs-buttons build, deferred as low-value.
+# editor, export, and stream dialog is migrated, and so is the per-stream row count on the
+# recording-detail streams table: "typically small streams" was the reason it stayed inline,
+# and a 400,000-row trace froze the page for 3 s on every build (#35). It is a
+# `BackgroundCall` filling the Rows column now, so no `stream_events(` allowance is left.
 ALLOWED: set[tuple[str, str]] = {
-    ("pages.py", "stream_events("),
     # --- the property seams, still built inline (see the second class above) ------- #
     # Home's card is migrated (`_card_facts` runs through a BackgroundCall), the experiment
     # overview always was, and the **rail** followed in #316 — `sections.py` now reads a
@@ -271,6 +274,21 @@ def test_the_scan_would_actually_catch_one():
         == set()
     )
     assert _seams_in("    # source_crop( is named in this comment, not called") == set()
+    # The two spellings the streams table's Rows column has had: the old inline read, and
+    # the count that replaced it, which is just as slow if called inline.
+    assert _seams_in(
+        '                n_events = len(self._recording.stream_events(s["name"]))'
+    ) == {"stream_events("}
+    assert _seams_in("        counts = self._recording.stream_row_counts()") == {
+        "stream_row_counts("
+    }
+    assert (
+        _seams_in(
+            "        call = BackgroundCall(lambda: recording.stream_row_counts(), "
+            "receiver=table)"
+        )
+        == set()
+    )
     # The spelling the lane read had while it ran inline on every INTERPRET node click.
     assert _seams_in(
         "            for run in view.labelled_runs({str(int(node)): name}, apply_edits=False):"

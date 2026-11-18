@@ -28,6 +28,7 @@ import re
 import shutil
 from pathlib import Path
 
+from detail.core import atomic
 from detail.core.registries import KEYPOINT_MODELS, MODELS, TRAINED_LOADERS
 from detail.core.skeleton import Skeleton
 from detail.core.skeleton import check_against_model
@@ -81,6 +82,23 @@ def is_pose_record(record: dict) -> bool:
     return record.get("task") == POSE_TASK
 
 
+def unfinished() -> list[str]:
+    """Sorted names of catalog folders with no ``model.yaml``: what an import cut short
+    before imports were staged left behind. Not models (:func:`discover` skips them), but
+    each blocks its name, so ``model remove`` takes them too. A hidden ``.staging`` folder
+    is an import in progress, never listed."""
+    root = catalog_dir()
+    if not root.is_dir():
+        return []
+    return sorted(
+        p.name
+        for p in root.iterdir()
+        if p.is_dir()
+        and not p.name.startswith(".")
+        and not (p / models_store.MODEL_FILENAME).is_file()
+    )
+
+
 def remove(model_id: str) -> None:
     """Delete an imported model's catalog directory (idempotent)."""
     shutil.rmtree(model_dir(model_id), ignore_errors=True)
@@ -123,6 +141,8 @@ def import_model(
     weights_path = Path(weights_path)
     if not weights_path.is_file():
         raise FileNotFoundError(f"weights not found: {weights_path}")
+    if preview is not None and not Path(preview).is_file():
+        raise FileNotFoundError(f"preview image not found: {preview}")
 
     probe = _PROBE_FAMILY if family in (None, POSE_FAMILY) else family
     loader = TRAINED_LOADERS.get(probe)
@@ -171,6 +191,12 @@ def import_model(
     _validate_id(model_id)
     mdir = model_dir(model_id)
     if mdir.exists():
+        if model_id in unfinished():
+            raise ValueError(
+                f"a folder for imported model {model_id!r} is left from an import that did "
+                f"not finish; delete it with `detail model remove {model_id}`, or pass a "
+                "different --name"
+            )
         raise ValueError(
             f"imported model {model_id!r} already exists; remove it or pass a "
             "different --name"
@@ -190,18 +216,22 @@ def import_model(
         "description": description or "",
         "notes": notes or "",
     }
-    (mdir / "weights").mkdir(parents=True)
-    shutil.copy2(weights_path, mdir / WEIGHTS_RELPATH)
-    record["preview"] = set_preview(mdir, preview) if preview is not None else None
-    if pose_skeleton is not None:
-        record.update(
-            pose_record_fields(
-                pose_skeleton,
-                skeleton_name or f"{name or model_id} skeleton",
-                mdir / WEIGHTS_RELPATH,
+    # Built aside and moved into the catalog whole: written in place, a copy cut short
+    # (Ctrl-C, a full disk, a preview that failed) left a folder with no model.yaml that
+    # blocked the name and that `model remove` could not see (#29).
+    with atomic.staged_dir(mdir) as stage:
+        (stage / "weights").mkdir()
+        shutil.copy2(weights_path, stage / WEIGHTS_RELPATH)
+        record["preview"] = set_preview(stage, preview) if preview is not None else None
+        if pose_skeleton is not None:
+            record.update(
+                pose_record_fields(
+                    pose_skeleton,
+                    skeleton_name or f"{name or model_id} skeleton",
+                    stage / WEIGHTS_RELPATH,
+                )
             )
-        )
-    models_store.write_model_yaml(mdir, record)
+        models_store.write_model_yaml(stage, record)
     return model_id
 
 

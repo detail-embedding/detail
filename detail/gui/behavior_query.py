@@ -1144,6 +1144,10 @@ class ClipExampleDialog(Dialog):
         self._negatives_reason = negatives_reason
         self._clips: list[tuple[int, str, dict]] = []  # the clip table's rows, in order
         self._warnings: dict[int, str] = {}  # id(spec) -> why a pre-loaded clip fails
+        # id(spec) -> a frame-only clip's start in `t_ns`, from the pre-load check. The Time
+        # column sorts on it, so a column holding both spellings sorts on one unit; the spec
+        # itself keeps its frames, so what is saved back is what was loaded.
+        self._start_t_ns: dict[int, int] = {}
         self._pending_start: int | None = None
         self._pending_frame: int | None = None  # where that start is, for its tick
         # The balance picker's columns and values: one metadata file, read once on open.
@@ -1614,6 +1618,7 @@ class ClipExampleDialog(Dialog):
         removed = self.behaviors.pop(self._active)
         for spec in removed["examples"] + removed["negatives"]:
             self._warnings.pop(id(spec), None)
+            self._start_t_ns.pop(id(spec), None)
         self._active = max(min(self._active, len(self.behaviors) - 1), 0)
         self._refresh_behaviors()
         self._refresh_clips()
@@ -1648,10 +1653,7 @@ class ClipExampleDialog(Dialog):
                 [
                     behavior,
                     QStandardItem(_KIND_WORD[kind]),
-                    num_cell(
-                        int(spec.get("start_t_ns", spec.get("start_frame", 0))),
-                        _span_text(spec),
-                    ),
+                    num_cell(self._sort_t_ns(spec), _span_text(spec)),
                     QStandardItem(
                         recording.name
                         if recording is not None
@@ -1738,6 +1740,7 @@ class ClipExampleDialog(Dialog):
         clips = self.behaviors[b][kind]
         clips[:] = [c for c in clips if c is not spec]
         self._warnings.pop(id(spec), None)
+        self._start_t_ns.pop(id(spec), None)
         self._refresh_clips()
         self._refresh_behaviors()
         what = (
@@ -1796,9 +1799,25 @@ class ClipExampleDialog(Dialog):
     def _on_initial_checked(self, specs: list[dict], results: object) -> None:
         present = {id(spec) for _b, _kind, spec in self._clips}
         for spec, result in zip(specs, results):
-            if not result["ok"] and id(spec) in present:
+            if id(spec) not in present:
+                continue
+            if not result["ok"]:
                 self._warnings[id(spec)] = result["reason"]
+            if "start_t_ns" not in spec and result.get("start_t_ns") is not None:
+                self._start_t_ns[id(spec)] = int(result["start_t_ns"])
         self._refresh_clips()
+
+    def _sort_t_ns(self, spec: dict) -> int | None:
+        """The clip's start in `t_ns`, the one unit the Time column sorts on.
+
+        A clip marked here has it. A frame-only clip (an older config, a CLI ``--example``)
+        has it once the pre-load check has resolved its frames; until then, or if they never
+        resolve, ``None``, which sorts below every time. Sorting it on its frame number
+        instead put every frame-only clip first whatever its time (#35).
+        """
+        if "start_t_ns" in spec:
+            return int(spec["start_t_ns"])
+        return self._start_t_ns.get(id(spec))
 
     def _set_marking(self, reason: str | None) -> None:
         # `set_available`, not `setEnabled`: a greyed button with no tooltip reads as broken

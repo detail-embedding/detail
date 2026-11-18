@@ -120,7 +120,7 @@ class AnchorTracker(Tracker):
         params = self.validate_hyperparams(job.hyperparams)
         detection_run_dir = Path(detection_run_dir)
         output_dir = Path(output_dir)
-        parts = sorted(detection_run_dir.glob("part_*.zarr"))
+        parts = _common.parts_in_play_order(detection_run_dir)
         (output_dir / "assignments").mkdir(parents=True, exist_ok=True)
         # ≤1 arena per run is enforced upstream (Recording._validate_tracking).
         arena_polygon = next(iter(arena_polygons.values())) if arena_polygons else None
@@ -136,7 +136,7 @@ class AnchorTracker(Tracker):
                     == 0
                 )
             )
-            for p in parts
+            for _play_index, p in parts
         )
 
         # Resume (Section 7): restore the single-subject accumulators from the last
@@ -198,14 +198,14 @@ class AnchorTracker(Tracker):
             if stop_event is not None and stop_event.is_set():
                 interrupted = True
                 break
-            part_path = parts[part_index]
+            play_index, part_path = parts[part_index]
             _common.clear_zarr(output_dir / "assignments" / part_path.name)
             data = DetectionPartReader(part_path).read()
             n_rows = len(data["frame_idx"])
             object_ids = np.full(n_rows, -1, dtype=np.int32)
             groups = _common.group_by_frame(data["frame_idx"], every_n_frames)
             frame_offset = (
-                part_frame_offsets[part_index]
+                part_frame_offsets[play_index]
                 if part_frame_offsets is not None
                 else global_offset
             )
