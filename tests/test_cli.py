@@ -2710,19 +2710,124 @@ def test_experiment_import_replace_prints_what_it_deletes_first(tmp_path, monkey
     refused = r.invoke(main, ["experiment", "import", str(archive)])
     assert refused.exit_code != 0
     assert "--replace would also delete:\n" in refused.output
-    assert f"  - 1 video file(s), {size}: the bundle carries no video" in refused.output
+    put_back = (
+        " (it can be put back from the original files with Locate video, or `detail "
+        "recording relink`)"
+    )
+    assert (
+        f"  - 1 video file(s), {size}: the bundle carries no video{put_back}\n"
+        in refused.output
+    )
 
     res = r.invoke(main, ["experiment", "import", str(archive), "--replace"])
 
     assert res.exit_code == 0, res.output
     assert res.stdout.startswith(
         "replacing experiment 'study' deletes what the bundle does not bring back:\n"
-        f"  - 1 video file(s), {size}: the bundle carries no video\n"
+        f"  - 1 video file(s), {size}: the bundle carries no video{put_back}\n"
         "  - 1 export record(s), export_01: no bundle carries them (the exported files "
         "themselves are not touched)\n"
         "imported: "
     ), res.stdout
     assert not copied.exists()
+
+
+def _slim_imported_copy(tmp_path, monkeypatch):
+    """`_study_with_copied_video` exported slim and imported as ``study_copy``: its recording
+    keeps the copied part's entry and timestamps, and not the file."""
+    r, pdir, _copied = _study_with_copied_video(tmp_path, monkeypatch)
+    archive = tmp_path / "study.tar"
+    r.invoke(
+        main, ["experiment", "export", "--experiment", str(pdir), "--out", str(archive)]
+    )
+    res = r.invoke(main, ["experiment", "import", str(archive), "--name", "study_copy"])
+    assert res.exit_code == 0, res.output
+    return r, tmp_path / "ws" / "study_copy"
+
+
+def test_recording_relink_puts_copied_video_back_from_where_it_was_copied(
+    tmp_path, monkeypatch
+):
+    """``relink`` refused a copied part ("nothing to relink"), so a slim import's video could
+    not be put back (#29). Without --video it uses the file the part was copied from."""
+    r, copy = _slim_imported_copy(tmp_path, monkeypatch)
+    relink = ["recording", "relink", "--experiment", str(copy), "--recording", "m1"]
+    original = tmp_path / "trial.mp4"
+
+    res = r.invoke(main, [*relink, "--part", "0"])
+
+    assert res.exit_code == 0, res.output
+    assert res.stdout == (
+        f"using the file it was copied from: {original.resolve()}\n"
+        f"put back m1 part 0: copied in from {original.resolve()}\n"
+    )
+    (placed,) = (copy / "recordings").rglob("part_001.mp4")
+    assert placed.read_bytes() == original.read_bytes()
+    verify = r.invoke(
+        main, ["recording", "verify", "--experiment", str(copy), "--recording", "m1"]
+    )
+    assert verify.exit_code == 0, verify.output
+
+
+def test_recording_relink_refuses_a_file_that_is_not_the_copied_parts_video(
+    tmp_path, monkeypatch
+):
+    r, copy = _slim_imported_copy(tmp_path, monkeypatch)
+    other = tmp_path / "other.mp4"
+    _write_video(other, n_frames=8)
+
+    res = r.invoke(
+        main,
+        ["recording", "relink", "--experiment", str(copy), "--recording", "m1",
+         "--part", "0", "--video", str(other)],
+    )  # fmt: skip
+
+    assert res.exit_code == 1
+    assert res.output == (
+        f"Error: {other} is not the video of part 0 (part_001): its content differs from "
+        "the file that was copied in\n"
+    )
+    assert not list((copy / "recordings").rglob("part_001.mp4"))
+
+
+def test_recording_relink_without_video_names_what_it_needs(tmp_path, monkeypatch):
+    """On another computer the file it was copied from is nowhere this machine can see."""
+    from detail.storage import locations
+
+    r, copy = _slim_imported_copy(tmp_path, monkeypatch)
+    monkeypatch.setattr(locations, "STORAGE_PATH", tmp_path / "cfg" / "other.yaml")
+
+    res = r.invoke(
+        main,
+        ["recording", "relink", "--experiment", str(copy), "--recording", "m1",
+         "--part", "0"],
+    )  # fmt: skip
+
+    assert res.exit_code == 1
+    assert res.output == (
+        "Error: --video is required: the file this part was copied from is not on this "
+        "machine\n"
+    )
+
+
+def test_experiment_export_include_video_that_packs_none_says_why(
+    tmp_path, monkeypatch
+):
+    """It printed only ``exported:``, and the manifest's ``video_requested: true`` was the
+    only trace that the video asked for was not in the archive (#29)."""
+    r, copy = _slim_imported_copy(tmp_path, monkeypatch)
+    export = ["experiment", "export", "--experiment", str(copy)]
+
+    res = r.invoke(main, [*export, "--out", str(tmp_path / "a.tar"), "--include-video"])
+
+    assert res.exit_code == 0, res.output
+    assert res.stdout == (
+        f"exported: {tmp_path / 'a.tar'}\n"
+        "no video was packed: 1 recording(s) have no video on this machine (put it back "
+        "with Locate video, or `detail recording relink`)\n"
+    )
+    slim = r.invoke(main, [*export, "--out", str(tmp_path / "b.tar")])
+    assert slim.stdout == f"exported: {tmp_path / 'b.tar'}\n", "not asked, not said"
 
 
 def test_experiment_import_replace_with_nothing_lost_prints_no_list(

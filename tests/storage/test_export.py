@@ -1128,7 +1128,9 @@ def test_replace_lists_what_a_slim_bundle_does_not_bring_back(tmp_path):
         export_records=("export_01",),
     )
     assert replace_warning(refused.value.losses) == [
-        f"1 video file(s), {video.stat().st_size} B: the bundle carries no video",
+        f"1 video file(s), {video.stat().st_size} B: the bundle carries no video (it can "
+        "be put back from the original files with Locate video, or `detail recording "
+        "relink`)",
         "1 dataset(s), dataset_001: the bundle carries no datasets",
         "1 export record(s), export_01: no bundle carries them (the exported files "
         "themselves are not touched)",

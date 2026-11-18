@@ -50,7 +50,7 @@ from detail.gui.dialog import Dialog
 from detail.gui.workers import BackgroundCall
 from detail.gui.spin import FloatSpin, IntSpin
 from detail.gui.sizing import mono_font, set_available
-from detail.gui.status_color import ERROR, set_label_color
+from detail.gui.status_color import ERROR, WARN, set_label_color
 
 
 @runtime_checkable
@@ -421,8 +421,19 @@ class ExportDialog(Dialog):
                 "because DETAIL's data files are compressed "
                 "already. Worth it only for a slow link and a bundle of mostly text."
             )
+            # Says so when ticking Source video would pack none (#29): every copied video is
+            # missing here (an experiment imported without it) or the video is used in place.
+            # Filled off the UI thread with the estimate (`_start_estimate`).
+            self._bundle_video_note = QLabel("")
+            self._bundle_video_note.setWordWrap(True)
+            self._bundle_video_note.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+            set_label_color(self._bundle_video_note, WARN)
+            self._bundle_video_note.setVisible(False)
             box = QVBoxLayout()
             box.addWidget(self._bundle_video)
+            box.addWidget(self._bundle_video_note)
             box.addWidget(self._bundle_datasets)
             box.addWidget(self._bundle_gzip)
             holder = QWidget()
@@ -739,6 +750,33 @@ class ExportDialog(Dialog):
         call.done.connect(lambda result, g=generation: self._on_estimated(g, result))
         call.failed.connect(lambda exc, g=generation: self._on_estimate_failed(g, exc))
         call.start()
+        self._start_video_note(chosen, options, generation)
+
+    def _start_video_note(self, chosen, options: dict, generation: int) -> None:
+        """Ask, off the UI thread, whether a bundle with Source video ticked would pack any.
+
+        The CLI prints ``no video was packed: …`` after the export; here it is said while the
+        box is ticked, in the same words (`api.experiment.no_video_packed_reasons`), before
+        the export is spent on an archive without the video it was asked for.
+        """
+        if self._bundle_video is None:
+            return
+        self._bundle_video_note.setVisible(False)
+        if not (options.get("include_video") and any(t.portable for t in chosen)):
+            return
+        experiment_dir = self._subject.experiment_dir
+        call = BackgroundCall(
+            lambda: Experiment(experiment_dir).video_not_packed(), receiver=self
+        )
+        self._video_note_call = call  # kept alive until it has emitted
+        call.done.connect(lambda note, g=generation: self._on_video_note(g, note))
+        call.start()
+
+    def _on_video_note(self, generation: int, note: str | None) -> None:
+        if generation != self._estimate_generation or note is None:
+            return
+        self._bundle_video_note.setText(f"No video will be packed: {note}.")
+        self._bundle_video_note.setVisible(True)
 
     def _on_estimated(self, generation: int, result) -> None:
         if generation != self._estimate_generation:

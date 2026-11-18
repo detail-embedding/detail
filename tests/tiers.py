@@ -437,6 +437,9 @@ _HEAVY_IMPORTS = {
 #: is about time and an unmeasured "it is fine" is how the promise erodes. Checked against
 #: the live scan, so an entry that stops being tripped fails.
 UNIT_EXEMPTIONS = {
+    "tests/api/test_put_video_back.py": "cv2.VideoWriter writes 32x24 stub clips of 5 to 9 "
+    "frames, because putting a video back reads a real file's frame times and copies it; the "
+    "16 tests take about 4 s together.",
     "tests/api/test_export_reingest_origin.py": "cv2.VideoWriter writes one 30-frame 16x16 "
     "stub clip per streams-export test, only so a behavior stream has frames to resolve "
     "against; milliseconds, and the guard belongs with the unit tier it runs in",

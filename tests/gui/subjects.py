@@ -700,6 +700,8 @@ def _providers(experiment, recording) -> dict:
         "experiment": lambda: experiment,
         "recording": lambda: recording,
         "recordings": lambda: [recording],
+        # Locate video's parts come from the page's off-thread scan.
+        "locatable": lambda: recording.parts_to_locate(),
         "stream_name": lambda: an_imported_stream(recording),
         # A dialog that reports back through a callback needs one that does nothing; what it
         # reports is the caller's business, not this walk's.
