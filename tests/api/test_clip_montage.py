@@ -31,6 +31,7 @@ from PIL import Image
 from detail.api import clip_montage as cm
 from detail.api.animation import sample_offsets_ns
 from detail.api.clip_views import ClipViewSettings
+from detail.core.errors import UserInputError
 from tests.clip_fixtures import count_decodes, walking
 
 STEP = int(1e9 / 30)
@@ -819,6 +820,33 @@ def test_a_stopped_side_by_side_batch_keeps_only_finished_gifs(tmp_path):
     for name in on_disk:
         with Image.open(tmp_path / "gifs" / name) as gif:
             assert gif.n_frames == 5, f"{name} is half-written"
+
+
+def test_gifs_already_in_the_folder_are_refused_unless_replace(tmp_path):
+    """A folder is picked, the names in it are not, so a second export into one folder wrote
+    over the first's GIFs with nothing asked (#29). The GUI asks and passes ``replace``; the
+    CLI refuses."""
+    recording = walking(tmp_path)
+    clips = [_clip(recording, i + 1, 0, 4) for i in range(2)]
+    out = tmp_path / "gifs"
+    out.mkdir()
+    (out / "g1.gif").write_bytes(b"the first export")
+    assert cm.existing_gifs(out, ["g0", "g1"]) == ["g1.gif"]
+    montage = cm.ClusterMontage(recording.dir.parent.parent, clips, workers=1)
+    try:
+        with pytest.raises(UserInputError, match="g1.gif"):
+            montage.export_clip_gifs(
+                out, cm.DEFAULT_LAYERS, ["l"] * 2, ["g0", "g1"], max_width=64, fps=10
+            )
+        assert (out / "g1.gif").read_bytes() == b"the first export"
+        assert not (out / "g0.gif").exists(), "refused before anything was written"
+        montage.export_clip_gifs(
+            out, cm.DEFAULT_LAYERS, ["l"] * 2, ["g0", "g1"], max_width=64, fps=10,
+            replace=True,
+        )  # fmt: skip
+    finally:
+        montage.close()
+    assert (out / "g1.gif").read_bytes() != b"the first export"
 
 
 # --- the clip list ------------------------------------------------------------------------ #

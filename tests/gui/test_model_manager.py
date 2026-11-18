@@ -265,7 +265,7 @@ def test_a_failed_restore_is_shown_not_swallowed(qapp, tmp_path, monkeypatch):
     )
     page._restore_model()
     assert drain_until(qapp, lambda: bool(shown))
-    assert "exactly one model directory" in shown[0]
+    assert "must hold exactly one model folder, and holds a, b" in shown[0]
     assert page._restored.isHidden()
 
 

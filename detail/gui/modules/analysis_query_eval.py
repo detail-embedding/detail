@@ -41,6 +41,7 @@ from detail.gui.forms import ConfigForm
 from detail.gui.grip_splitter import GripSplitter
 from detail.gui.help_ui import field_label
 from detail.gui.modules._common import common_complete_run_items, repopulate_combo
+from detail.gui.status_color import WARN, set_label_color
 from detail.gui._pydantic_form import (
     build_fields,
     field_meta,
@@ -144,6 +145,13 @@ class _QueryEvalConfig(ConfigWidget):
             field_label("query_eval", "stream_name", "Ground-truth stream:"),
             self._stream,
         )
+        # Says why the picker has no "first stream" entry and the behavior list is empty
+        # until a stream is chosen; blank otherwise.
+        self._stream_notice = QLabel("")
+        self._stream_notice.setWordWrap(True)
+        set_label_color(self._stream_notice, WARN)
+        self._stream_notice.hide()
+        form.addRow(self._stream_notice)
 
         self._behaviors = QListWidget()
         self._behaviors.setMaximumHeight(120)
@@ -238,23 +246,46 @@ class _QueryEvalConfig(ConfigWidget):
             entry[0].update(covered)
             entry[1].update(types)
 
+        # A recording with several ground-truth streams has no "first" one: the backend
+        # refuses to guess (`resolve_behavior_stream`), so the unnamed read is asked only of
+        # a recording with exactly one, and the others are named back to the form.
+        ambiguous: list[str] = []
         for s in recordings:
             if not s.is_annotated:
                 continue
-            add(None, s.covered_behaviors(), s.behavior_types())
-            for manifest in ground_truth_streams(s):
+            streams = ground_truth_streams(s)
+            if len(streams) == 1:
+                add(None, s.covered_behaviors(), s.behavior_types())
+            elif len(streams) > 1:
+                ambiguous.append(str(getattr(s, "name", None) or s.id))
+            for manifest in streams:
                 name = manifest.get("name")
                 add(name, s.covered_behaviors(name), s.behavior_types(name))
-        return embed_items, {k: (sorted(c), t) for k, (c, t) in by_stream.items()}
+        by_name = {k: (sorted(c), t) for k, (c, t) in by_stream.items()}
+        return embed_items, by_name, ambiguous
 
     def apply_recordings(self, recordings: list, resolved: object) -> None:
-        embed_items, by_stream = resolved
+        embed_items, by_stream, ambiguous = resolved
         repopulate_combo(self._embed, embed_items)
         self._by_stream = by_stream
         previous = self._stream.currentData()
         self._stream.blockSignals(True)
         self._stream.clear()
-        self._stream.addItem("(first behavior stream)", None)
+        if ambiguous:
+            # No "first stream" here: which one that is depends on the order they were
+            # added, and the run would refuse it anyway.
+            self._by_stream.pop(None, None)
+            self._stream.addItem("— choose a stream —", None)
+            self._stream_notice.setText(
+                f"{', '.join(ambiguous)} "
+                f"{'carries' if len(ambiguous) == 1 else 'carry'} more than one "
+                "ground-truth label stream. Choose which one to score against."
+            )
+            self._stream_notice.show()
+        else:
+            self._stream.addItem("(first behavior stream)", None)
+            self._stream_notice.setText("")
+            self._stream_notice.hide()
         for name in sorted(k for k in by_stream if k is not None):
             self._stream.addItem(name, name)
         index = self._stream.findData(previous)

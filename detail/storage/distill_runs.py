@@ -21,6 +21,7 @@ import yaml
 
 from detail.core import atomic
 from detail.storage import dirscan
+from detail.storage import id_allocator
 
 SCHEMA_VERSION = 1
 DISTILL_FILENAME = "distill.yaml"
@@ -38,14 +39,9 @@ def run_dir(experiment_dir: Path | str, run_id: str) -> Path:
 
 
 def next_distill_id(experiment_dir: Path | str) -> str:
-    """Experiment-monotonic ``distill_NNN`` id, one past the highest existing."""
-    nums = []
-    for rid in discover_runs(experiment_dir):
-        try:
-            nums.append(int(rid.rsplit("_", 1)[-1]))
-        except ValueError:
-            pass
-    return f"distill_{max(nums, default=0) + 1:03d}"
+    """Claim the next ``distill_NNN`` id (creating its directory); a deleted run's id is never
+    handed out again (``storage/id_allocator.py``)."""
+    return id_allocator.claim_dir(distill_dir(experiment_dir), "distill", digits=3)
 
 
 def write_run(experiment_dir: Path | str, run_id: str, record: dict) -> None:

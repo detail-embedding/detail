@@ -2,6 +2,14 @@
 
 Fixtures mirror the real "Export events" table: one row per START/STOP/POINT marker with a
 ``Time`` in seconds; state behaviors span a START→STOP pair, points are single POINT rows.
+
+**The class (#30): an export holding several observations or animals is flattened onto one
+track.** The importer never read ``Observation id`` and wrote every row with ``subject`` null, so
+two sessions landed on one recording and two animals' bouts became one label track that query
+evaluation scored against both. A label scored as both bouts and points was marked all-point.
+The rule: several observations or subjects are refused until ``BorisSelectionConfig`` picks one
+of each, and a label of two kinds is refused naming its rows. The MED-PC twin is
+``tests/importers/test_medpc.py``.
 """
 
 import pytest
@@ -161,3 +169,112 @@ def test_missing_required_column(tmp_path):
     body = "Subject,Behavior\nm1,groom\n"
     with pytest.raises(ValueError, match="Behavior type"):
         BorisImporter().import_stream(_write(tmp_path, body, "m.csv"), tmp_path, {})
+
+
+# -- several observations or subjects, mixed kinds, int64 (#30 findings 4, 5, 7, 8) --------- #
+def _boris(rows, header="Observation id,Subject,Behavior,Behavior type,Time"):
+    return header + "\n" + "\n".join(rows) + "\n"
+
+
+_TWO_OBSERVATIONS = _boris(
+    [
+        "day1,mA,groom,START,0.5",
+        "day1,mA,groom,STOP,1.0",
+        "day2,mA,groom,START,0.7",
+        "day2,mA,groom,STOP,2.0",
+    ]
+)
+_TWO_SUBJECTS = _boris(
+    [
+        "obs1,mA,groom,START,0.5",
+        "obs1,mB,groom,START,0.7",
+        "obs1,mA,groom,STOP,1.5",
+        "obs1,mB,groom,STOP,2.0",
+    ]
+)
+
+
+def _spans(result):
+    return [(r[0], r[1], r[2]) for r in result.rows]
+
+
+def test_several_observations_are_refused_naming_them(tmp_path):
+    """Merging them put two sessions on one timeline; overlapping ones failed with a START
+    error that pointed at the wrong cause."""
+    with pytest.raises(ValueError) as err:
+        BorisImporter().import_stream(_write(tmp_path, _TWO_OBSERVATIONS), tmp_path, {})
+    assert str(err.value) == (
+        "this BORIS export holds 2 observations ('day1', 'day2'). A recording is one "
+        "session, so choose one observation; they are never merged"
+    )
+
+
+def test_an_observation_selector_imports_only_its_rows(tmp_path):
+    result = BorisImporter().import_stream(
+        _write(tmp_path, _TWO_OBSERVATIONS), tmp_path, {}, {"observation": "day2"}
+    )
+    assert _spans(result) == [(700_000_000, 2_000_000_000, "groom")]
+    assert result.metadata["observation"] == "day2"
+    assert result.metadata["observations_in_file"] == 2
+
+
+def test_several_subjects_are_refused_naming_them(tmp_path):
+    """Pooled, animal B's grooming scored as a miss or false positive for animal A."""
+    with pytest.raises(ValueError) as err:
+        BorisImporter().import_stream(_write(tmp_path, _TWO_SUBJECTS), tmp_path, {})
+    assert str(err.value) == (
+        "this BORIS export scores 2 subjects ('mA', 'mB'). A behavior stream is one "
+        "animal's labels, so choose one subject; their bouts are never pooled"
+    )
+
+
+def test_a_subject_selector_imports_only_that_animal(tmp_path):
+    result = BorisImporter().import_stream(
+        _write(tmp_path, _TWO_SUBJECTS), tmp_path, {}, {"subject": "mB"}
+    )
+    assert _spans(result) == [(700_000_000, 2_000_000_000, "groom")]
+    assert result.metadata["subjects"] == ["mB"]
+
+
+def test_a_named_observation_the_file_lacks_is_refused(tmp_path):
+    with pytest.raises(
+        ValueError, match="observation 'day9' is not in this BORIS export"
+    ):
+        BorisImporter().import_stream(
+            _write(tmp_path, _TWO_OBSERVATIONS), tmp_path, {}, {"observation": "day9"}
+        )
+
+
+def test_a_one_observation_one_subject_file_imports_unchanged(tmp_path):
+    result = BorisImporter().import_stream(_write(tmp_path, _EVENTS_CSV), tmp_path, {})
+    assert len(result.rows) == 3
+    assert result.metadata["observation"] == "obs1"
+
+
+def test_a_label_scored_as_both_bouts_and_points_is_refused(tmp_path):
+    """Marked all-point, the 1 s bout was scored as an instant."""
+    text = _boris(["o,m,rear,START,0.5", "o,m,rear,STOP,1.5", "o,m,rear,POINT,2.0"])
+    with pytest.raises(ValueError) as err:
+        BorisImporter().import_stream(_write(tmp_path, text), tmp_path, {})
+    assert str(err.value) == (
+        "BORIS behavior 'rear' is scored both as START/STOP bouts (rows 2, 3) and as POINT "
+        "events (rows 4). A behavior is one kind or the other; rename one of them in BORIS, "
+        "or fix its behavior type, and export again"
+    )
+
+
+def test_a_time_beyond_int64_is_refused_with_its_row(tmp_path):
+    text = _boris(["o,m,bite,POINT,1e12"])
+    with pytest.raises(
+        ValueError, match=r"BORIS row 2, Time: 1000000000000.0 seconds is too large"
+    ):
+        BorisImporter().import_stream(_write(tmp_path, text), tmp_path, {})
+
+
+def test_the_refusals_are_user_input_errors(tmp_path):
+    from detail.core.errors import UserInputError
+
+    mixed = _boris(["o,m,rear,START,0.5", "o,m,rear,STOP,1.5", "o,m,rear,POINT,2.0"])
+    for text in (_TWO_OBSERVATIONS, _TWO_SUBJECTS, mixed):
+        with pytest.raises(UserInputError):
+            BorisImporter().import_stream(_write(tmp_path, text), tmp_path, {})

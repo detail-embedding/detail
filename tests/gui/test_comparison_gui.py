@@ -1471,3 +1471,61 @@ def test_the_overview_of_a_profile_carries_each_rows_pair(qapp, tmp_path):
         "veh",
         "change (most different pair)",
     ]
+
+
+# --------------------------------------------------------------------------- #
+# a screen that could have no floor is refused before Run (#39)
+# --------------------------------------------------------------------------- #
+def test_a_screen_that_could_have_no_floor_is_refused_before_run(
+    qapp, tmp_path, monkeypatch
+):
+    """One animal, two sessions, every cluster: the run would refuse it before measuring
+    (`prepare_comparison`), so the form refuses it before Run with the same sentence. With
+    the labelled behaviors instead, the comparison runs and the summary says it will have no
+    floor, since a description of one animal is still a description."""
+    from tests.api.test_comparison import ONE_ANIMAL
+
+    monkeypatch.setattr(ComparisonLaunchDialog, "_node_cache_reason", lambda self: None)
+    dialog = ComparisonLaunchDialog(_cohort(tmp_path, ONE_ANIMAL))
+    _check(dialog._group_by, "drug")
+    assert dialog.config()["aggregate_to"] == ["animal"], "the unit is pre-selected"
+    assert _ok(dialog), dialog.validation_error()
+    assert "No floor will be computed: only one animal (A) has both fent and veh" in (
+        dialog._summary.text()
+    )
+    assert "Add a second animal that has both fent and veh." in dialog._summary.text()
+
+    dialog._measure_source.setCurrentIndex(1)
+    assert dialog.measure_source() == "nodes"
+    assert not _ok(dialog)
+    status = dialog._status.text()
+    assert status.startswith("only one animal (A) has both fent and veh"), status
+    assert "this screen is refused before measuring" in status
+    assert "No floor will be computed" not in dialog._summary.text(), "not said twice"
+
+    dialog._measure_source.setCurrentIndex(0)
+    assert _ok(dialog), dialog.validation_error()
+
+
+def test_one_unit_per_group_is_refused_as_a_screen_and_warned_as_a_comparison(
+    qapp, tmp_path, monkeypatch
+):
+    """The between shape: two animals, one per group, every recording its own observation.
+    The existing one-recording warning stays beside the new line, since it says something
+    else (a group with no spread) and holds for a group of one next to a group of two.
+    """
+    from tests.api.test_comparison import ONE_PER_GROUP
+
+    monkeypatch.setattr(ComparisonLaunchDialog, "_node_cache_reason", lambda self: None)
+    dialog = ComparisonLaunchDialog(_cohort(tmp_path, ONE_PER_GROUP))
+    _check(dialog._group_by, "drug")
+    assert dialog.config()["aggregate_to"] == []
+    summary = dialog._summary.text()
+    assert "no spread" in summary
+    assert (
+        "No floor will be computed: every group holds at most one recording" in summary
+    )
+
+    dialog._measure_source.setCurrentIndex(1)
+    assert not _ok(dialog)
+    assert dialog._status.text().startswith("every group holds at most one recording")

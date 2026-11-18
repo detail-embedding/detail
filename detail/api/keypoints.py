@@ -15,10 +15,12 @@ from typing import TYPE_CHECKING
 import numpy as np
 import yaml
 
+from detail.core.errors import UserInputError
 from detail.core.examples import ExampleFrame, ExampleMark, ExampleSet
 from detail.core.skeleton import Skeleton
 from detail.pipeline import subject_frames
 from detail.storage import example_sets as example_store
+from detail.storage.user_yaml import read_user_yaml
 
 if TYPE_CHECKING:
     from detail.api.experiment import Experiment
@@ -303,7 +305,7 @@ def import_example_set(experiment: "Experiment", yaml_path: Path | str) -> Examp
     path = Path(yaml_path)
     if not path.is_file():
         raise FileNotFoundError(f"no example set file at {path}")
-    data = yaml.safe_load(path.read_text(encoding="utf-8-sig"))
+    data = read_user_yaml(path)
     if not isinstance(data, dict):
         raise ValueError(f"{path} is not a mapping")
     if "schema_version" not in data and "names" in data:
@@ -316,7 +318,7 @@ def import_example_set(experiment: "Experiment", yaml_path: Path | str) -> Examp
         )
     data.setdefault("id", "imported")
     data.setdefault("name", path.stem)
-    source = ExampleSet.from_dict(data)
+    source = _parse_example_set(data, path)
     source.skeleton.validate()
     names = set(source.skeleton.names)
     for i, frame in enumerate(source.frames):
@@ -340,8 +342,58 @@ def import_example_set(experiment: "Experiment", yaml_path: Path | str) -> Examp
     created.frames = source.frames
     created.sources = source.sources
     created.extra = source.extra
+    created.skeleton_ref = _local_skeleton_ref(source)
     example_store.write_set(experiment.dir, created)
     return created
+
+
+def _parse_example_set(data: dict, path: Path) -> ExampleSet:
+    """``data`` as an :class:`ExampleSet`, a missing or malformed field named by its frame.
+
+    The parser reads its fields with ``d["recording_id"]``, so a frame without one raised a
+    bare ``KeyError`` that the CLI printed as ``Error: recording_id`` (#33).
+
+    Raises:
+        UserInputError: A frame, or the set itself, lacks a field or holds one of the wrong
+            type.
+    """
+    frames = data.get("frames") or []
+    if not isinstance(frames, list):
+        raise UserInputError(f"{path}: frames must be a list of frames")
+    for i, frame in enumerate(frames):
+        if not isinstance(frame, dict):
+            raise UserInputError(f"{path} frame {i} is not a mapping of its fields")
+        try:
+            ExampleFrame.from_dict(frame)
+        except KeyError as exc:
+            raise UserInputError(f"{path} frame {i} has no {exc.args[0]}") from None
+        except (TypeError, ValueError) as exc:
+            raise UserInputError(f"{path} frame {i}: {exc}") from None
+    try:
+        return ExampleSet.from_dict(data)
+    except KeyError as exc:
+        raise UserInputError(f"{path} has no {exc.args[0]}") from None
+
+
+def _local_skeleton_ref(source: ExampleSet) -> dict | None:
+    """The ``skeleton_ref`` an imported set keeps: the library entry **here** holding its
+    skeleton, or ``None``.
+
+    A library id means something only on the machine that minted it, so the file's ref is
+    kept only when its digest is the set's own skeleton and an entry here holds that digest;
+    the ref then names that entry (the file's id when it is one of them). Otherwise the set
+    is listed by its digest, or under *(no library skeleton)*, like any set without a ref.
+    """
+    from detail.api import skeletons as library
+
+    ref = source.skeleton_ref or {}
+    digest = source.skeleton.digest()
+    if ref.get("digest") != digest:
+        return None
+    holders = [e["id"] for e in library.skeletons() if e["skeleton"].digest() == digest]
+    if not holders:
+        return None
+    return library.ref(ref["id"] if ref.get("id") in holders else holders[0])
 
 
 def _read_rgb(path: Path) -> np.ndarray:

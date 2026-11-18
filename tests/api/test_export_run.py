@@ -13,6 +13,12 @@ Two properties carry the design:
   the run record via `runners.job_params`; a record is `.yaml`; `storage/export.py` scans those
   and *refuses the bundle* on `/Users/`. An absolute destination would therefore not fail here —
   it would brick the experiment the next time somebody exported it.
+
+**A class guarded here: a file numbered by its position in a filtered list (#26).** The video
+target skips parts referenced in place, and numbered what it copied by position among the rest,
+so with part 1 referenced, part 2 and 3's videos came out as ``part001`` / ``part002`` beside the
+timestamps target's ``part002`` / ``part003``. Each file now carries its part's own number
+(``test_exported_video_files_carry_their_parts_own_number``).
 """
 
 from __future__ import annotations
@@ -176,7 +182,7 @@ def test_a_renamed_folder_is_reflected_in_the_record(
     """**The class.** *A name minted before the work runs, never reconciled with what ran (#475).*
 
     `run_export` mints the destination folder name at submit time and writes it into the record
-    immediately. `write_export`'s `_unique_dir` can rename that folder if it already exists on
+    immediately. `write_export`'s `new_dir` can rename that folder if it already exists on
     disk — two exports of the same subject minted within the same wall-clock second collide in
     practice — and returns the real path as `ExportResult.dest`. The worker used to drop that on
     the floor: the record kept the pre-collision name forever, so `exporters.destination_of`
@@ -268,3 +274,58 @@ def test_a_new_stage_is_reported_at_once(monkeypatch):
     report("packing", 0.5, "c")  # inside the interval, but a new stage
 
     assert [e.message for e in events] == ["hashing · a", "packing · c"]
+
+
+def test_exported_video_files_carry_their_parts_own_number(tmp_path, monkeypatch):
+    """Part 1 referenced in place, parts 2 and 3 copied in. The video target skips part 1,
+    and the files it writes must still say part 2 and part 3, matching the timestamps
+    target's files for the same parts (#26). Before the fix they were numbered by position
+    among the copied parts, so part 3's video sat beside part 2's timestamps."""
+    import csv
+
+    import cv2
+    import numpy as np
+
+    from detail.storage import locations
+
+    monkeypatch.setattr(locations, "CONFIG_DIR", tmp_path / "cfg")
+    monkeypatch.setattr(locations, "STORAGE_PATH", tmp_path / "cfg" / "storage.yaml")
+    proj = Experiment.create("p", tmp_path / "exp")
+    recording = proj.create_recording("s1")
+    for n, storage in ((5, "reference"), (6, "copy"), (7, "copy")):
+        src = tmp_path / "external" / f"clip_{n}.mp4"
+        src.parent.mkdir(exist_ok=True)
+        vw = cv2.VideoWriter(str(src), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (32, 24))
+        for _ in range(n):
+            vw.write(np.zeros((24, 32, 3), np.uint8))
+        vw.release()
+        if storage == "reference":
+            recording.add_video_part(src, storage="reference")
+        else:
+            recording.add_video_part(src)
+    assert [bool(p.get("source")) for p in recording.video_parts] == [
+        True,
+        False,
+        False,
+    ]
+
+    subject = exporters.ExportSubject("recording", proj.dir, recording.id)
+    result = exporters.write_export(
+        subject,
+        [
+            exporters.target("recording", "video"),
+            exporters.target("recording", "timestamps"),
+        ],
+        tmp_path / "out",
+    )
+    videos = sorted(f for f in result.files if f.endswith(".mp4"))
+    stamps = sorted(f for f in result.files if f.endswith("_timestamps.csv"))
+    assert videos == [f"{recording.id}_part002.mp4", f"{recording.id}_part003.mp4"]
+    assert stamps == [f"{recording.id}_part{i:03d}_timestamps.csv" for i in (1, 2, 3)]
+    # The pairing a user makes by name is the right one: part 3's video has part 3's frames.
+    cap = cv2.VideoCapture(str(result.dest / f"{recording.id}_part003.mp4"))
+    stamps_csv = result.dest / f"{recording.id}_part003_timestamps.csv"
+    with open(stamps_csv, encoding="utf-8-sig") as handle:
+        n_stamps = len(list(csv.DictReader(handle)))
+    assert int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) == n_stamps
+    cap.release()

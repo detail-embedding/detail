@@ -8,9 +8,16 @@ all share one identity notion without a ``storage -> analysis`` import.
 """
 
 import hashlib
+import os
+import threading
 from pathlib import Path
 
 _CHUNK = 1 << 20  # 1 MiB
+
+_LOCK = threading.Lock()
+#: ``(absolute path, size, mtime_ns) -> fingerprint``: one entry per state of a file this process
+#: has fingerprinted (`cached_fingerprint`).
+_FINGERPRINTS: dict[tuple[str, int, int], dict] = {}
 
 
 def sha256_file(path: Path | str) -> str:
@@ -42,3 +49,37 @@ def file_fingerprint(path: Path | str) -> dict:
         "mtime_ns": stat.st_mtime_ns,
         "sha256_ends": digest.hexdigest(),
     }
+
+
+def same_content(current: dict, recorded: dict | None) -> bool:
+    """Whether two fingerprints describe the same video: the decision keys on ``size`` and
+    ``sha256_ends`` only, since ``mtime_ns`` is advisory (a harmless re-copy changes it).
+    """
+    recorded = recorded or {}
+    return (current.get("size"), current.get("sha256_ends")) == (
+        recorded.get("size"),
+        recorded.get("sha256_ends"),
+    )
+
+
+def cached_fingerprint(path: Path | str) -> dict:
+    """:func:`file_fingerprint`, read once per state of the file in this process.
+
+    For a reader that resolves a referenced part on every call (a frame read, a preview tile):
+    after the first, the check costs one ``stat``. Keyed on size and ``mtime_ns`` as well as
+    the path, so a file replaced at the same path is fingerprinted again.
+
+    Raises:
+        FileNotFoundError: ``path`` does not exist.
+    """
+    absolute = os.path.abspath(path)
+    st = os.stat(absolute)
+    key = (absolute, st.st_size, st.st_mtime_ns)
+    with _LOCK:
+        hit = _FINGERPRINTS.get(key)
+    if hit is not None:
+        return hit
+    found = file_fingerprint(absolute)
+    with _LOCK:
+        _FINGERPRINTS[key] = found
+    return found

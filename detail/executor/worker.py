@@ -89,18 +89,30 @@ def run_job(run_dir) -> JobStatus:
         # part that says *where* it failed — is discarded at the one moment it is wanted.
         # It goes to stderr, which `LocalExecutor.submit` points at run_dir/worker.log.
         traceback.print_exc()
-        rundir.set_status(
-            run_dir, JobStatus.FAILED, error=f"{type(exc).__name__}: {exc}"
+        # A runner without resume that raised because the stop reached it (detection fails a
+        # stopped part) was cancelled, not broken; the reason stays in `error`.
+        status = (
+            JobStatus.CANCELLED
+            if spec.cancel_status == JobStatus.CANCELLED
+            and rundir.cancel_requested(run_dir)
+            else JobStatus.FAILED
         )
-        return JobStatus.FAILED
+        rundir.set_status(run_dir, status, error=f"{type(exc).__name__}: {exc}")
+        return status
     finally:
         stop_event.set()
         run_facts.record(run_dir, peaks)
+        # Whatever the outcome, the log ends when the job did, not at the last row its
+        # throttle kept (#32).
+        log.finish(elapsed_s=time.monotonic() - start)
 
     # A stop-and-keep alone is a finish the user chose, so it lands COMPLETE; only a cancel is
-    # an interruption. (A cancel wins if both were asked.)
+    # an interruption. (A cancel wins if both were asked.) An interruption is `partial`
+    # (resumable) only for a runner that can resume (`RunnerSpec.cancel_status`).
     status = (
-        JobStatus.PARTIAL if rundir.cancel_requested(run_dir) else JobStatus.COMPLETE
+        (spec.cancel_status or JobStatus.PARTIAL)
+        if rundir.cancel_requested(run_dir)
+        else JobStatus.COMPLETE
     )
     rundir.set_status(run_dir, status)
     return status
