@@ -343,8 +343,9 @@ After **Import stream**, the stream is listed under **Streams** on the recording
 
 ??? info "What everything on this screen does"
     1. **The streams table**: one row per stream: its **Name**, its **Type** (here **event**),
-       how many **Rows** it has, and its **Offset (s)**, the alignment. Click a row to choose
-       it for the buttons.
+       how many **Rows** it has, and its **Offset (s)**, the alignment. **Rows** fills in a
+       moment after the page opens, and says **missing** if the stream's file is gone. Click a
+       row to choose it for the buttons.
     2. **Add stream**: adds another stream.
     3. **Preview**: shows the stream against the video (below).
     4. **Sync to video**: opens the same window as in the dialog, to change the alignment.

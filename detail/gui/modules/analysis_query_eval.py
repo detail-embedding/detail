@@ -535,21 +535,23 @@ def _metrics_table(record: dict, by_behavior: dict) -> QTableView:
     for b in record.get("behaviors", []):
         m = by_behavior.get(b["behavior"])
         if m is None:  # skipped — show why
+            # Numeric cells with no value, so they sort below every scored row instead of
+            # being compared as text against the numbers in their column.
             model.appendRow(
                 [
                     QStandardItem(b["behavior"]),
                     QStandardItem(b.get("behavior_type", "")),
-                    QStandardItem("—"),
-                    QStandardItem(f"skipped: {b.get('skipped', '')}"),
+                    num_cell(None, "—"),
+                    num_cell(None, f"skipped: {b.get('skipped', '')}"),
                 ]
-                + [QStandardItem("") for _ in range(4)]
+                + [num_cell(None, "") for _ in range(4)]
             )
         else:
             model.appendRow(
                 [
                     QStandardItem(m.behavior),
                     QStandardItem(m.behavior_type),
-                    QStandardItem(str(m.n_folds)),
+                    num_cell(m.n_folds),
                     num_cell(m.ap, f"{m.ap:.3f}"),
                     num_cell(m.ap_std, f"±{m.ap_std:.3f}"),
                     num_cell(m.precision, f"{m.precision:.3f}"),
@@ -764,7 +766,7 @@ class _QueryEvalResult(QWidget):
             folds = []
         for f in folds:
             self._fold_model.appendRow(
-                [QStandardItem(str(x)) for x in (f.fold, f.n_gt, f.tp, f.fp, f.fn)]
+                [num_cell(x) for x in (f.fold, f.n_gt, f.tp, f.fp, f.fn)]
                 + [
                     num_cell(v, f"{v:.3f}")
                     for v in (f.ap, f.precision, f.recall, f.best_f1)
@@ -1088,7 +1090,7 @@ class _QueryEvalExploreDialog(Dialog):
         self._rows = rows
         self._clips_model.removeRows(0, self._clips_model.rowCount())
         for index, (rank, outcome, start, end, score, iou) in enumerate(rows):
-            rank_item = QStandardItem("" if rank is None else str(rank))
+            rank_item = num_cell(rank, "" if rank is None else str(rank))
             # Identity is the row's own index into `self._rows` — stamped so
             # `_on_clip_row` survives a sort instead of trusting the clicked row's
             # position.
@@ -1097,7 +1099,7 @@ class _QueryEvalExploreDialog(Dialog):
                 [
                     rank_item,
                     QStandardItem(outcome),
-                    QStandardItem(_span_text(start, end)),
+                    num_cell(start, _span_text(start, end)),
                     num_cell(score, "" if score is None else f"{score:.3f}"),
                     num_cell(iou, "" if iou is None else f"{iou:.2f}"),
                 ]

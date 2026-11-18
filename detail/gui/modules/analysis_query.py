@@ -499,8 +499,13 @@ def _sparkline_font() -> QFont:
     return mono_font()
 
 
-def _clip_specs(candidates, recording_id, subject, embed_run_id, timeline) -> list:
+def _clip_specs(
+    candidates, recording_id, subject, embed_run_id, timeline, *, name: str
+) -> list:
     """``QueryCandidate``s -> ``ClipSpec``s, which every clip surface in the GUI speaks.
+
+    ``name`` is the recording's, for the caption (§11: the id is the tool's). Required, so a
+    caller cannot fall back to the id by forgetting it.
 
     The candidate carries trajectory **rows**; a clip surface needs times, so the unit's
     timeline supplies them by direct indexing — the same projection the artifact writer does.
@@ -519,7 +524,7 @@ def _clip_specs(candidates, recording_id, subject, embed_run_id, timeline) -> li
                 embed_run_id,
                 int(t_ns[c.start_row]),
                 int(t_ns[c.end_row]),
-                f"{recording_id} {c.confidence:.2f}",
+                f"{name} {c.confidence:.2f}",
                 score=float(c.confidence),
             )
         )
@@ -562,6 +567,9 @@ class _CalibrateTab(QWidget):
         self._specs: dict[str, list] = {}
         self._timelines: dict[tuple, object] = {}
         self._curve: list = []
+        #: ``{recording_id: name}``, read off the UI thread with the results (`set_names`).
+        #: The kept panel and the clip captions name recordings by it (§11).
+        self._names: dict[str, str] = {}
         self._syncing = False  # two controls drive one cutoff; do not let them echo
 
         from detail.gui.behavior_query import (
@@ -869,17 +877,35 @@ class _CalibrateTab(QWidget):
                 symbolSize=plot_theme.MARKS.marker_size + 2,
             )
 
-    def _count_at(self, cutoff: float) -> int:
-        """The curve's instance count nearest ``cutoff`` — read, never recomputed.
+    def set_names(self, names: dict[str, str]) -> None:
+        """The recordings' names, read off the UI thread by the workspace's load."""
+        if names != self._names:
+            self._names = dict(names)
+            self._specs.clear()  # their captions carry the name
+        self._grid.set_names(names)
 
-        Instance count is not guaranteed to fall as the cutoff rises (§20: a method that
-        re-forms extents can split one instance into two), so this reads the nearest measured
-        point rather than interpolating a shape the data need not have.
+    def _name(self, recording_id: str) -> str:
+        """The recording's name, or its id if it has none left (deleted since the run)."""
+        return self._names.get(recording_id, recording_id)
+
+    def _kept_at(self, cutoff: float) -> dict[str, int]:
+        """``{recording_id: instances}`` a commit at ``cutoff`` would keep, every searched
+        recording included (a recording that matched nothing keeps 0, not absence).
+
+        Exact, not read off the curve: the header used to print the nearest of the curve's
+        41 points beside the exact cutoff, so between points it stated a neighbour's count
+        (284 at 0.037 where a commit keeps 251) while this panel, counting at the cutoff,
+        said another number on the same screen (#35). ``candidates_at`` is the method's own
+        ``instances_at``, the call the commit projects through, so this holds for a method
+        that re-forms extents as the cutoff moves too. It is a slice of the results the
+        workspace already loaded, cheap enough per drag (the curve calls it 41 times).
         """
-        if not self._curve:
-            return 0
-        nearest = min(self._curve, key=lambda p: abs(p["cutoff"] - cutoff))
-        return int(nearest["n_instances"])
+        kept = {rid: 0 for rid in self._run.state().search_recording_ids}
+        for (recording_id, _subject), candidates in self._run.candidates_at(
+            self._behavior_id, cutoff
+        ).items():
+            kept[recording_id] = kept.get(recording_id, 0) + len(candidates)
+        return kept
 
     def _refresh_view(self, cutoff: float) -> None:
         """Everything a cutoff change touches. The strip keeps its list; only its line moves."""
@@ -889,7 +915,8 @@ class _CalibrateTab(QWidget):
     def _refresh_header(self, cutoff: float) -> None:
         behavior = self._run.state().behavior(self._behavior_id)
         total = self._curve[0]["n_instances"] if self._curve else 0
-        shown = self._count_at(cutoff)
+        kept = self._kept_at(cutoff)  # once, for the header and the panel below it
+        shown = sum(kept.values())
         committed = (
             "not calibrated"
             if behavior.cutoff is None
@@ -900,9 +927,9 @@ class _CalibrateTab(QWidget):
             f"{committed}"
         )
         self._confidence.set_caption(showing_caption(shown, total))
-        self._draw_spread(cutoff)
+        self._draw_spread(cutoff, kept)
 
-    def _draw_spread(self, cutoff: float) -> None:
+    def _draw_spread(self, cutoff: float, kept: dict[str, int] | None = None) -> None:
         """How many instances each recording keeps at this cutoff (§20).
 
         The panel exists to catch a cutoff that keeps most of one animal's behavior and little
@@ -914,25 +941,24 @@ class _CalibrateTab(QWidget):
         context" and could not tell what it was for. A kept count says the thing directly, and
         the outlier marker names the case the panel was built to catch.
         """
-        # Seed every *searched* recording, not just the ones with candidates. A recording that
-        # matched nothing has a real answer — zero — and leaving its row out reads as "not
-        # searched", which is exactly the distinction coverage exists to preserve (§20).
-        counts = {rid: 0 for rid in self._run.state().search_recording_ids}
-        for (recording_id, _subject), candidates in self._run.candidates_at(
-            self._behavior_id, 0.0
-        ).items():
-            counts[recording_id] = counts.get(recording_id, 0) + sum(
-                1 for c in candidates if (c.confidence or 0.0) >= cutoff
-            )
+        # Every *searched* recording, not just the ones with candidates (`_kept_at`). A
+        # recording that matched nothing has a real answer — zero — and leaving its row out
+        # reads as "not searched", which is exactly the distinction coverage exists to
+        # preserve (§20).
+        counts = kept if kept is not None else self._kept_at(cutoff)
         if not counts:
             self._spread.setText("(no recordings searched)")
             return
         peak = max(counts.values())
         typical = sorted(counts.values())[len(counts) // 2]
         lines = []
-        for recording_id, kept in sorted(counts.items()):
+        # By name, which is how the user knows the animal (§11): the ids read
+        # `recording_000…` here while the Browse tab beside it showed names.
+        rows = sorted((self._name(rid), n) for rid, n in counts.items())
+        width = max(22, max(len(name) for name, _n in rows))
+        for name, kept in rows:
             bar = "█" * (int(round(20 * kept / peak)) if peak else 0)
-            line = f"{recording_id:<22} {bar:<20} {kept:>4}"
+            line = f"{name:<{width}} {bar:<20} {kept:>4}"
             # Named rather than left to the eye: an animal contributing a fraction of the
             # others is the finding this panel is for.
             if typical and kept * 4 <= typical:
@@ -978,7 +1004,12 @@ class _CalibrateTab(QWidget):
                 continue
             specs.extend(
                 _clip_specs(
-                    candidates, recording_id, subject, state.embed_run_id, timeline
+                    candidates,
+                    recording_id,
+                    subject,
+                    state.embed_run_id,
+                    timeline,
+                    name=self._name(recording_id),
                 )
             )
         return specs
@@ -1212,7 +1243,9 @@ class _CalibrateTab(QWidget):
         # always 0 here.
         r, g, b = self._map_colour()
         self._ethograms.set_rows(
-            [(rid, bands) for rid, bands, _width in rows],
+            # The row's label is display only (the strip's signals carry row indices), so
+            # it is the recording's name.
+            [(self._name(rid), bands) for rid, bands, _width in rows],
             [(r / 255, g / 255, b / 255, 1.0)],
             selected=None,
             lengths_ns=[width for _rid, _bands, width in rows],
@@ -1543,19 +1576,22 @@ class _QueryWorkspace(MultiViewWorkspace):
             # searched unit, plus the extraction each one needs — and the curve that follows
             # is a slice of it, so both belong on the same side of the thread boundary.
             run.load_results(behavior_id, progress=emit)  # off-thread
-            return run.frequency_curve(behavior_id, steps=_CURVE_STEPS)
+            names = experiment.recording_names() if experiment is not None else {}
+            return run.frequency_curve(behavior_id, steps=_CURVE_STEPS), names
 
+        experiment = self._experiment
         run_progress(
             self,
             work,
-            lambda curve: self._on_loaded(behavior_id, curve),
+            lambda result: self._on_loaded(behavior_id, *result),
             label="Loading search results…",
             # Switching behavior mid-load: the older one landing last showed it, not the choice.
             supersedes="results",
         )
 
-    def _on_loaded(self, behavior_id: str, curve) -> None:
+    def _on_loaded(self, behavior_id: str, curve, names: dict[str, str]) -> None:
         self._curves[behavior_id] = list(curve)
+        self._calibrate.set_names(names)
         self._show_behavior(behavior_id)
 
     def _show_behavior(self, behavior_id: str) -> None:

@@ -24,6 +24,8 @@ def _s(**kw):
         sam3_weights=False,
         detection_model=False,
         has_experiment=False,
+        quick_segment_run=False,
+        distilled_model=False,
     )
     base.update(kw)
     return ReadinessSignals(**base)

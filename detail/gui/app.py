@@ -1370,15 +1370,17 @@ class MainWindow(QMainWindow):
         self._switch_mode("home")  # back to the experiments list (rail hidden)
 
     def _open_recording(self, recording_id: str) -> None:
+        recording = self._experiment.get_recording(recording_id)
         self._show(
             gui_pages.RecordingDetailPage(
-                self._experiment.get_recording(recording_id),
+                recording,
                 on_open_run=self._open_run,
                 on_deleted=self._on_recording_deleted,
                 experiment=self._experiment,
                 on_open_recording_run=self._open_recording_run,
             ),
-            f"{self._experiment.name}  ›  {recording_id}",
+            # The path line names the recording as the user does (§11), not by its id.
+            f"{self._experiment.name}  ›  {recording.name}",
         )
         self._set_page_export("recording", recording_id)
 
@@ -1389,7 +1391,8 @@ class MainWindow(QMainWindow):
             gui_pages.RecordingRunDetailPage(
                 self._experiment, recording_id, module_id, run_id
             ),
-            f"{self._experiment.name}  ›  {recording_id}  ›  {run_id}",
+            f"{self._experiment.name}  ›  "
+            f"{self._experiment.get_recording(recording_id).name}  ›  {run_id}",
         )
 
     def _on_recording_deleted(self) -> None:

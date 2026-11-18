@@ -306,10 +306,21 @@ def _eligible(recording, upstream: str) -> bool:
     return any(r.get("status") == "complete" for r in runs)
 
 
-def _covered_subset(config_widget, recordings: list[str], parent, title: str):
+def _covered_subset(
+    config_widget,
+    recordings: list[str],
+    parent,
+    title: str,
+    *,
+    names: dict[str, str],
+):
     """Narrow a launch to the recordings covered by the config's chosen upstream spec
     (§6.5), confirming the reduced set. Returns the covered ids, or None if the user
-    cancels / none remain. ``covered_recording_ids() is None`` means all are covered."""
+    cancels / none remain. ``covered_recording_ids() is None`` means all are covered.
+
+    ``names`` maps each id to the recording's name, which is what the confirmation lists
+    (§11): it said `recording_004, recording_007` where the list above it said their names.
+    Required, so a caller cannot fall back to ids by leaving it out."""
     covered = config_widget.covered_recording_ids()
     if covered is None:
         return recordings
@@ -328,7 +339,7 @@ def _covered_subset(config_widget, recordings: list[str], parent, title: str):
             title,
             f"{len(dropped)} selected recording(s) lack the chosen upstream run and "
             "will be skipped:\n"
-            + ", ".join(dropped)
+            + ", ".join(names.get(sid, sid) for sid in dropped)
             + f"\n\nRun on the remaining {len(remaining)}?",
         )
         if answer != QMessageBox.StandardButton.Yes:
@@ -561,6 +572,7 @@ class LaunchRunDialog(Dialog):
         with read_cache.pinned():
             self._all_recordings = self._experiment.recordings
             self._recording_ids = [s.id for s in self._all_recordings]
+            self._recording_names = {s.id: s.name for s in self._all_recordings}
             for recording in self._all_recordings:
                 eligible = _eligible(recording, upstream)
                 # The name is the handle (§11) — you pick recordings by what you called them.
@@ -718,7 +730,13 @@ class LaunchRunDialog(Dialog):
         )
 
     def _narrow_to_covered(self, recordings: list[str]) -> list[str] | None:
-        return _covered_subset(self._config, recordings, self, "Launch run")
+        return _covered_subset(
+            self._config,
+            recordings,
+            self,
+            "Launch run",
+            names=self._recording_names,
+        )
 
 
 class LaunchAnalysisDialog(Dialog):
@@ -822,6 +840,7 @@ class LaunchAnalysisDialog(Dialog):
         ):  # one read per recording, not one per `requires` entry
             self._all_recordings = self._experiment.recordings
             self._recording_ids = [s.id for s in self._all_recordings]
+            self._recording_names = {s.id: s.name for s in self._all_recordings}
             for recording in self._all_recordings:
                 eligible = all(_eligible(recording, r) for r in requires)
                 need = " + ".join(requires)
@@ -909,7 +928,13 @@ class LaunchAnalysisDialog(Dialog):
         if error:
             QMessageBox.warning(self, "Launch analysis", error)
             return
-        recordings = _covered_subset(self._config, recordings, self, "Launch analysis")
+        recordings = _covered_subset(
+            self._config,
+            recordings,
+            self,
+            "Launch analysis",
+            names=self._recording_names,
+        )
         if recordings is None:
             return
         module_id = self._module_id()

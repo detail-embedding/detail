@@ -1,5 +1,12 @@
 """GUI stream dialogs: add + preview construct and render (Section 3).
 
+One recorded class is guarded here (with `test_ui_thread_blocking.py`): **a slow read allowed
+onto the UI thread because its input is "typically small".** The recording page's streams
+table counted each stream's rows by reading the whole file inline on every build, 3 s for one
+400,000-row trace, and a stream whose file was gone raised and stopped the page building (#35).
+The Rows column now starts as "…", is filled by a background count, and a missing file reads
+**missing** in its own row.
+
 **A chosen mapping dropped by the next file** (#35). The CSV band re-applied a saved mapping only
 when it had been chosen *before* any file, so picking another file — the very advice the
 missing-column message gave — unticked every column while **Reuse a mapping** still named the
@@ -804,6 +811,39 @@ def test_a_saved_mapping_is_offered_only_under_its_own_importer(qapp, tmp_path):
     # above is what makes that true: every listed mapping already carries the selected
     # importer, so the `setCurrentIndex` this fix removed could only ever have been a
     # no-op once the list is filtered. An assertion that cannot fail is not a guard.
+
+
+def test_the_streams_table_counts_rows_off_the_ui_thread(qapp, tmp_path):
+    """The Rows column used to be `len(stream_events(name))` per stream, inline, on every
+    page build: seconds for a long sensor trace, and a stream whose file had gone raised
+    `FileNotFoundError` and stopped the page building at all (#35). The page now builds with a
+    placeholder, the counts land from a background read, and a missing file says so in its
+    own row."""
+    from detail.gui.pages import RecordingDetailPage
+    from detail.storage import streams as streams_store
+    from tests.gui.conftest import drain_until
+
+    recording = _recording_with_stream(tmp_path)  # "medpc": three rows
+    missing = (
+        streams_store.stream_dir(recording.dir, "medpc")
+        / streams_store.CANONICAL_DIRNAME
+        / streams_store.CANONICAL_FILENAME
+    )
+    expected = len(recording.stream_events("medpc"))
+    assert expected == 3
+
+    page = RecordingDetailPage(recording)
+    model = page._streams_table.model()
+    assert model.item(0, 2).text() == "…", "the count is not read while the page builds"
+    drain_until(qapp, lambda: model.item(0, 2).text() != "…")
+    assert model.item(0, 2).text() == str(expected)
+
+    missing.unlink()
+    page = RecordingDetailPage(recording)  # builds: the missing file is not read inline
+    model = page._streams_table.model()
+    drain_until(qapp, lambda: model.item(0, 2).text() != "…")
+    assert model.item(0, 2).text() == "missing"
+    assert "not in the recording folder" in model.item(0, 2).toolTip()
 
 
 # -- a frame-indexed CSV is on the video's clock (#30 finding 10) -------------------------- #

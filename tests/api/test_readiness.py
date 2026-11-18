@@ -6,6 +6,8 @@ probes (imported catalog, experiment listing). These tests pin the check results
 the mapping is deterministic on any machine/CI, plus one real-wiring smoke test.
 """
 
+import pytest
+
 from detail.api.readiness import ReadinessSignals, readiness_signals, signals_from
 from detail.core.dataclasses import CheckResult, CheckStatus
 
@@ -14,7 +16,17 @@ def _res(check_id, ok):
     return CheckResult(check_id, CheckStatus.OK if ok else CheckStatus.WARN, "")
 
 
-def _pin(monkeypatch, *, gpu, hf, sam3_weights, sam3_backend, imported, experiments):
+def _pin(
+    monkeypatch,
+    *,
+    gpu,
+    hf,
+    sam3_weights,
+    sam3_backend,
+    imported,
+    experiments,
+    tool_runs=(),
+):
     results = [
         _res("cuda", gpu),
         _res("hf_token", hf),
@@ -33,6 +45,10 @@ def _pin(monkeypatch, *, gpu, hf, sam3_weights, sam3_backend, imported, experime
     )
     monkeypatch.setattr(
         "detail.api.readiness.locations.list_experiment_dirs", lambda: experiments
+    )
+    monkeypatch.setattr(
+        "detail.api.readiness.tool_runs.list_tool_runs",
+        lambda tool_id=None: [r for r in tool_runs if r["tool_id"] == tool_id],
     )
 
 
@@ -63,6 +79,8 @@ def test_readiness_signals_all_false_on_a_fresh_machine(monkeypatch):
         sam3_weights=False,
         detection_model=False,
         has_experiment=False,
+        quick_segment_run=False,
+        distilled_model=False,
     )
 
 
@@ -73,8 +91,9 @@ def test_readiness_signals_all_true_when_fully_set_up(monkeypatch):
         hf=True,
         sam3_weights=True,
         sam3_backend=True,
-        imported=["m1"],
+        imported=[{"id": "m1", "source": "distilled"}],
         experiments=["exp1"],
+        tool_runs=[{"tool_id": "quick_segment", "status": "complete"}],
     )
     assert readiness_signals() == ReadinessSignals(
         gpu=True,
@@ -84,6 +103,8 @@ def test_readiness_signals_all_true_when_fully_set_up(monkeypatch):
         sam3_weights=True,
         detection_model=True,
         has_experiment=True,
+        quick_segment_run=True,
+        distilled_model=True,
     )
 
 
@@ -193,3 +214,54 @@ def test_gpu_and_hf_token_map_to_their_checks(monkeypatch):
     )
     signals = readiness_signals()
     assert signals.gpu is True and signals.hf_token is False
+
+
+# --- the checklist's last two steps read real state (#35) ---------------------------------
+
+
+def test_a_completed_quick_segment_run_ticks_see_it_segment_a_clip(
+    tmp_path, monkeypatch
+):
+    """Through the real tool-run store: the step is done once a run has *completed*. A run
+    that failed or was stopped before it showed anything has not shown a clip segmented.
+
+    Its own workspace: the tools tree is machine-global, so another test on this worker may
+    already have left a completed run in the shared one.
+    """
+    from detail.storage import locations, tool_runs
+
+    monkeypatch.setattr(locations, "experiments_root", lambda: tmp_path)
+
+    assert signals_from([]).quick_segment_run is False
+    tool_runs.write_tool_run(
+        "quick_segment", "run_001", {"id": "run_001", "status": "failed"}
+    )
+    assert signals_from([]).quick_segment_run is False
+    tool_runs.write_tool_run(
+        "quick_segment", "run_002", {"id": "run_002", "status": "complete"}
+    )
+    assert signals_from([]).quick_segment_run is True
+
+
+@pytest.mark.parametrize(
+    "record, distilled",
+    [
+        ({"id": "m1", "source": "imported"}, False),
+        ({"id": "m1", "source": "distilled"}, True),
+        # a distilled *keypoint* model detects nothing, and the step is about a detector
+        ({"id": "k1", "source": "distilled", "task": "pose"}, False),
+    ],
+)
+def test_only_a_distilled_detector_ticks_the_distill_step(
+    monkeypatch, record, distilled
+):
+    _pin(
+        monkeypatch,
+        gpu=False,
+        hf=False,
+        sam3_weights=False,
+        sam3_backend=False,
+        imported=[record],
+        experiments=[],
+    )
+    assert readiness_signals().distilled_model is distilled

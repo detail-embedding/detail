@@ -97,7 +97,7 @@ from detail.gui.tables import (
 )
 from detail.gui.tables import refit_slack
 from detail.gui.tables import refill_table_widget, row_id, stamp_row_id
-from detail.gui.tables import SortCell
+from detail.gui.tables import SortCell, num_cell
 from detail.gui.tables import MIN_VISIBLE_ROWS
 from detail.gui import requirements
 from detail.api import models as api_models
@@ -3867,6 +3867,9 @@ class GlobalModelsPage(QWidget):
         self._installed = None
         self._scan_failed = False
         self._table = None
+        self._picked_key: tuple[str, str | None] | None = (
+            None  # the model the user picked
+        )
         self._banner = None
         self._on_readiness_changed = on_readiness_changed
         layout = QVBoxLayout(self)
@@ -3935,6 +3938,16 @@ class GlobalModelsPage(QWidget):
         self._scan_installed()
 
     def _render_table(self) -> None:
+        # What the user chose on the table this replaces: the scan lands a second or two after
+        # the page opens, and rebuilding dropped a row picked or a column sorted in that window
+        # (#35). The pick is held by model (`_on_selection`), not by position: the rows re-band
+        # below, and `_rebuild_table` has already re-read them by the time this runs.
+        picked_key = self._picked_key
+        sort = None
+        if self._table is not None:
+            header = self._table.horizontalHeader()
+            if header.sortIndicatorSection() >= 0:  # only a user's own click sets one
+                sort = (header.sortIndicatorSection(), header.sortIndicatorOrder())
         # Suggested first, then installed, then the rest — a stable sort, so the catalog's own
         # order holds inside each band. Installed is unknown until the cache scan lands, so the
         # installed rows move up once when it does; the suggested ones never move. Sorting
@@ -3976,9 +3989,24 @@ class GlobalModelsPage(QWidget):
                 max_rows=self._max_rows,
                 min_rows=min(MIN_VISIBLE_ROWS, self._max_rows),
             )
+        if sort is not None:
+            self._table.sortByColumn(*sort)
         self._table.selectionModel().currentRowChanged.connect(self._on_selection)
         self._table_holder.addWidget(self._table)
+        if picked_key is not None:
+            self._reselect(picked_key)
         self._update_actions()
+
+    def _reselect(self, key: tuple[str, str | None]) -> None:
+        """Select the row showing model ``key``, wherever the rebuild and the sort put it."""
+        model = self._table.model()
+        for r in range(model.rowCount()):
+            index = model.index(r, 0)
+            row = self._rows[row_id(index)]
+            if (row.id, row.variant) == key:
+                self._table.setCurrentIndex(index)
+                self._table.selectRow(r)
+                return
 
     def _scan_installed(self) -> None:
         # is_installed stats the HF / Ultralytics caches per model — off the UI thread
@@ -4015,6 +4043,8 @@ class GlobalModelsPage(QWidget):
         return self._rows[key] if key is not None else None
 
     def _on_selection(self, *_args) -> None:
+        row = self._selected()
+        self._picked_key = None if row is None else (row.id, row.variant)
         self._update_actions()
 
     def _update_actions(self) -> None:
@@ -5029,7 +5059,8 @@ class RecordingDetailPage(QWidget):
         confirm = QMessageBox.question(
             self,
             "Delete recording",
-            f"Delete recording {self._recording.id} and all its runs, field-of-view "
+            # The name, which is what this page and the Recordings table call it (§11).
+            f"Delete recording '{self._recording.name}' and all its runs, field-of-view "
             "regions, and imported video? This cannot be undone.",
         )
         if confirm != QMessageBox.StandardButton.Yes:
@@ -5356,14 +5387,15 @@ class RecordingDetailPage(QWidget):
         if streams:
             rows = []
             for s in streams:
-                n_events = len(self._recording.stream_events(s["name"]))
                 offset_s = (s.get("alignment") or {}).get("offset_ns", 0) / 1e9
                 kind = s.get("role") or s.get("shape") or s.get("type", "")
                 rows.append(
                     (
                         s["name"],
                         kind,
-                        n_events,
+                        # Filled in by `_count_stream_rows`: a count is a read of the whole
+                        # file, seconds for a long sensor trace, so not on the UI thread.
+                        num_cell(None, "…"),
                         # Formatted to 3dp *and* keyed on the number: as a bare string this
                         # column sorted "10.000" before "9.000".
                         SortCell(f"{offset_s:.3f}", offset_s),
@@ -5377,6 +5409,7 @@ class RecordingDetailPage(QWidget):
             self._streams_holder.addWidget(table)
             self._stream_widgets.append(table)
             self._streams_table = table
+            self._count_stream_rows(table)
 
         row_holder = QWidget()
         row = QHBoxLayout(row_holder)
@@ -5408,6 +5441,47 @@ class RecordingDetailPage(QWidget):
         row.addStretch()
         self._streams_holder.addWidget(row_holder)
         self._stream_widgets.append(row_holder)
+
+    def _count_stream_rows(self, table) -> None:
+        """Fill the Rows column off the UI thread.
+
+        The count used to be the length of ``stream_events`` per stream, inline, on every page
+        build and every stream add or delete: 3 s for one 400,000-row, 6-channel trace, and a
+        stream whose file had gone raised ``FileNotFoundError`` and stopped the page building
+        (#35). ``receiver=table``: a rebuild discards this table, and its late count is
+        dropped rather than written into a table nobody sees.
+        """
+        recording = self._recording
+        call = BackgroundCall(lambda: recording.stream_row_counts(), receiver=table)
+        call.done.connect(lambda counts: self._show_stream_rows(table, counts))
+        call.failed.connect(lambda exc: self._show_stream_rows(table, {}, exc))
+        call.start()
+
+    def _show_stream_rows(self, table, counts: dict, error=None) -> None:
+        model = table.model()
+        for r in range(model.rowCount()):
+            name = model.item(r, 0).text()
+            if name in counts and counts[name] is not None:
+                cell = num_cell(counts[name])
+            elif name in counts:
+                cell = num_cell(None, "missing")
+                cell.setToolTip(
+                    "This stream's file is not in the recording folder. Delete the stream "
+                    "and add it again from its source file."
+                )
+            else:
+                cell = num_cell(None, "?")
+                cell.setToolTip(f"Couldn't count this stream's rows: {error}")
+            cell.setFont(MONO)
+            model.setItem(r, 2, cell)
+        # Sized at build to "…": widen it to what it now holds, or "missing" reads "mis…".
+        table.resizeColumnToContents(2)
+        refit_slack(table)  # and give the Offset column back exactly the room left
+        header = table.horizontalHeader()
+        if (
+            header.sortIndicatorSection() == 2
+        ):  # sorted on Rows: re-sort on the real counts
+            table.sortByColumn(2, header.sortIndicatorOrder())
 
     def _current_stream_name(self) -> str | None:
         """The selected stream (or the sole stream), without prompting — for gating.
