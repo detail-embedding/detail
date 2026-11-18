@@ -82,7 +82,8 @@ class CsvColumnBand(ConfigBand):
         self._error: str | None = None
         self._source: str | None = None
         self._missing: list[str] = []
-        self._pending: dict | None = None  # a preset chosen before a file was
+        #: The saved mapping last chosen, kept until another one is: re-applied to each file.
+        self._mapping: dict | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -162,8 +163,12 @@ class CsvColumnBand(ConfigBand):
         self._time_col.blockSignals(False)
         self._seed_time_kind()
         self._rebuild_rows()
-        if self._pending is not None:
-            self.set_config(self._pending)
+        # The mapping still showing in "Reuse a mapping" applies to this file too. Only a
+        # mapping chosen *before* any file used to be re-applied, so picking another file
+        # unticked every column while the row above still named the mapping — and choosing it
+        # again did nothing, because the selection had not changed.
+        if self._mapping is not None:
+            self.set_config(self._mapping)
 
     def config(self) -> dict | None:
         if not self._columns:
@@ -185,10 +190,9 @@ class CsvColumnBand(ConfigBand):
         channels than the preset says.
         """
         self._missing = []
+        self._mapping = dict(config)
         if not self._columns:
-            self._pending = dict(config)  # no file yet; apply it when one arrives
-            return
-        self._pending = None
+            return  # no file yet; `set_source` applies it when one arrives
         self._rows = {
             c: {"checked": False, "name": _default_channel_name(c)}
             for c in self._columns
@@ -224,8 +228,8 @@ class CsvColumnBand(ConfigBand):
             # stream with fewer channels than every other recording's, and nothing later
             # says why one recording is short.
             return (
-                f"this CSV has no {', '.join(self._missing)} (named by the saved setup) — "
-                "untick it from the setup, or pick a file that has it."
+                f"this CSV has no {', '.join(self._missing)}, which the chosen mapping names "
+                "— pick a file that has it, or choose another mapping."
             )
         if not self._columns:
             return None  # no file yet; the dialog says so

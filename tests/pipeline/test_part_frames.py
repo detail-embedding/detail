@@ -67,7 +67,7 @@ def two_parts(recording_dir, make_embedding_run):
     from tests.experiments import add_tracking_parts, add_video_parts
 
     whole = add_video_parts(recording_dir, [PART, PART])
-    add_tracking_parts(recording_dir, whole, [PART, PART])
+    add_tracking_parts(recording_dir)
     local = np.tile(np.arange(PART), 2)
     emb = np.arange(2 * PART, dtype=np.float32)[:, None] * np.ones(4, np.float32) + 1
     make_embedding_run(

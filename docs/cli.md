@@ -248,7 +248,8 @@ table, see the [Parameters reference](reference/parameters.md).
   pixels. A name the recording already has is **refused by name** and
   reported; the ones that do not collide still arrive (regions and points are sets, so one
   collision does not refuse the rest). To change one, delete it here first: it is never
-  overwritten, and no name is silently suffixed.
+  overwritten, and no name is silently suffixed. A file with an invalid row (a point outside
+  the frame) imports nothing, so you can fix the file and run the command again.
 
   ```
   $ detail recording import-spatial --experiment exp --recording r2 --from-recording r1
@@ -438,7 +439,7 @@ The file is an `examples.yaml` as the tool writes it (`schema_version` first, th
 one entry per frame with its `image` path relative to the file and its `marks`), with the images
 beside it; `examples export` writes exactly that. A bare skeleton file imports too, as an empty
 set. The set keeps its link to a library skeleton only when a skeleton on this machine has the same
-points, edges and pairs; otherwise it is listed under *(no library skeleton)*. Deleting a set a keypoint run lists is refused, so a run always finds its frames.
+points, edges and pairs; otherwise it is listed under *(no library skeleton)*. If an image will not open, the import stops and no set is added. Deleting a set a keypoint run lists is refused, so a run always finds its frames.
 
 **Detect.** One run per selection of recordings:
 
@@ -1337,7 +1338,8 @@ model** catalog (shared across every experiment on the machine):
   The check cannot catch a pair named the wrong way round (left and right swapped). The
   skeleton is added to the library unless an entry with the same skeleton is there, and the
   command prints the entry. Use the model as `keypoints detect --model <id>`. `--skeleton` is
-  refused for a detection checkpoint.
+  refused for a detection checkpoint. An import that fails or is stopped part-way adds
+  nothing to the catalog, so the same name can be imported again.
 - `show <id>`: print one of your models' metadata + provenance (the detail page, as text),
   with its role, and for a keypoint model its skeleton: the library entry, points and pairs.
 - `set-meta <id> [--made-by] [--description] [--notes] [--preview <image>]`: edit a
@@ -1350,7 +1352,8 @@ model** catalog (shared across every experiment on the machine):
   the command prints the entry it matched or added. A file that is not such an export, or one
   whose `model.yaml` is empty, is refused and leaves nothing in the catalog; a bare `.pt`
   checkpoint is added with `import` instead.
-- `remove <id>`: delete an imported model.
+- `remove <id>`: delete an imported model. It also deletes a folder that an import stopped
+  part-way by an earlier version left in the catalog, which kept its name from being used.
 
 ### `modules`
 List the registered processing modules and their dependency chain.
@@ -1852,10 +1855,11 @@ what the model or trainer supports. The GUI forms and the Python API default the
 ## Inspecting and troubleshooting runs
 
 - `detail recording status` (above) lists a recording's detection, tracking and embedding runs
-  and their status: `complete`, `failed`, `cancelled`, `partial` (interrupted, resumable), or
-  an active state. `process status <run_NNN>` covers the rest, keypoint runs included. Only a
-  stage that can pick up where it stopped (keypoint detect) is ever `partial`; cancelling
-  detection, tracking, embedding or keypoint track records `cancelled`, and you run it again.
+  and their status: `complete`, `failed`, `cancelled`, or an active state.
+  `process status <run_NNN>` covers the rest, keypoint runs included. No stage picks up where
+  it stopped: cancelling detection, tracking, embedding, keypoint detect or keypoint track
+  records `cancelled`, and you run it again (`process retry` re-runs it whole). A keypoint
+  detect run cancelled by an older version may read `partial`; it does not resume either.
 - A blocking command exits non-zero and points you at the details when a run
   doesn't complete. The `attach` commands are the exception: they watch a run and print
   its status, and Ctrl-C leaves the run going, so they exit 0 whatever the status says.
@@ -2053,7 +2057,9 @@ detail recording add-stream --experiment $PROJ --recording recording_001 \
 ```
 
 Align the stream to video time with `--offset` at import or `recording set-stream-offset`
-afterwards (see [Aligning a stream](#aligning-a-stream)). Previewing it against the video,
+afterwards (see [Aligning a stream](#aligning-a-stream)). An import that is refused adds
+nothing to the recording, so you can fix the file and run the command again under the same
+name. Previewing it against the video,
 and finding the offset by scrubbing, are done in the [GUI](gui.md#recording-detail).
 
 ### Importing your own CSV streams
@@ -2162,6 +2168,10 @@ detail recording add-stream --experiment $PROJ --recording recording_001 \
 detail experiment list-stream-presets --experiment $PROJ
 #   dlc_pose  importer=timeseries_csv  time=t_sec (seconds)  channels: nose_x, nose_y
 ```
+
+The preset is saved only after the import works. A preset name that is already taken is
+refused before anything is imported; choose another name, or delete the old preset first with
+`experiment delete-stream-preset`.
 
 Then the rest of the experiment, from a table of one row per recording:
 

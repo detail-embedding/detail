@@ -12,6 +12,8 @@ is a one-number edit that never rewrites data. All paths are recording-relative.
 import csv
 import re
 import shutil
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from detail.core import atomic
@@ -104,6 +106,20 @@ def _parse_cell(value: str, dtype: str):
     return value
 
 
+@contextmanager
+def _canonical_rows(recording_dir: Path | str, name: str) -> Iterator:
+    """A ``csv.reader`` over a stream's canonical CSV, header first: the one opener for it.
+
+    Raises:
+        FileNotFoundError: If the canonical file is absent.
+    """
+    path = stream_dir(recording_dir, name) / CANONICAL_DIRNAME / CANONICAL_FILENAME
+    if not path.is_file():
+        raise FileNotFoundError(f"no canonical stream file at {path}")
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        yield csv.reader(f)
+
+
 def read_canonical(
     recording_dir: Path | str, name: str, dtypes: dict[str, str] | None = None
 ) -> tuple[list[str], list[tuple]]:
@@ -117,11 +133,7 @@ def read_canonical(
     Raises:
         FileNotFoundError: If the canonical file is absent.
     """
-    path = stream_dir(recording_dir, name) / CANONICAL_DIRNAME / CANONICAL_FILENAME
-    if not path.is_file():
-        raise FileNotFoundError(f"no canonical stream file at {path}")
-    with open(path, newline="", encoding="utf-8-sig") as f:
-        reader = csv.reader(f)
+    with _canonical_rows(recording_dir, name) as reader:
         columns = next(reader)
         col_dtypes = dtypes if dtypes is not None else default_dtypes(columns)
         rows = [
@@ -132,6 +144,20 @@ def read_canonical(
             for row in reader
         ]
     return columns, rows
+
+
+def count_canonical_rows(recording_dir: Path | str, name: str) -> int:
+    """How many data rows a stream's canonical CSV holds, without parsing a cell.
+
+    Still a read of the whole file (a row can be quoted across lines, so a byte count of
+    newlines is not a row count), which is why the GUI asks for it off the UI thread.
+
+    Raises:
+        FileNotFoundError: If the canonical file is absent.
+    """
+    with _canonical_rows(recording_dir, name) as reader:
+        next(reader, None)  # the header
+        return sum(1 for _row in reader)
 
 
 def stream_shape(manifest: dict) -> str:

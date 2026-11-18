@@ -350,8 +350,11 @@ class Tracker(ABC):
     ) -> None:
         """Link detections into tracks and write the assignment + summary zarrs.
 
-        ``part_frame_offsets[i]`` is the recording-global frame index of part i's
-        frame 0, so a tracker uses ``part_frame_offsets[i] + local_frame`` for
+        ``part_frame_offsets[i]`` is the recording-global frame index of frame 0 of the
+        part ``recording.yaml`` lists at position i (play order, which a part move makes
+        differ from the sorted file names: walk parts with
+        ``recording_store.parts_in_play_order``), so a tracker uses
+        ``part_frame_offsets[i] + local_frame`` for
         arena polygon lookup (Section 10). ``None`` means part-local indexing
         only — appropriate for single-part recordings or no-arena runs.
         """

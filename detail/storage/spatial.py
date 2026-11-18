@@ -601,12 +601,14 @@ def _unique_name(recording_dir: Path | str, kind: str, name: str) -> str:
 def import_spatial(recording_dir: Path | str, defs: list[dict]) -> int:
     """Append parsed defs (from ``load_spatial_csv`` or ``read_defs``) onto a recording
     as NEW ids — never clobbering existing definitions. A name that collides with an
-    existing one gets a `` (2)`` suffix. Validates the whole set before writing any
-    (all-or-nothing). Returns the number appended."""
+    existing one gets a `` (2)`` suffix. Validates the whole set, of every kind in it,
+    before writing any (all-or-nothing, Tenet 10). Returns the number appended."""
     prepared: list[tuple[str, str, Keyframes, ActiveInterval, int]] = []
     for d in defs:
         kind = d["kind"]
         k = _kind(kind)
+        if not d.get("name"):
+            raise ValueError(f"{k.id_prefix} name must be non-empty")
         active = d.get("active")
         if active is not None and not k.has_active:
             raise ValueError(f"{kind!r} does not support an active interval")
@@ -806,6 +808,26 @@ def read_calibration(recording_dir: Path | str) -> dict | None:
     return recording_store.read_recording(recording_dir).get(CALIBRATION_KEY)
 
 
+def check_calibration_block(
+    block: dict, resolution: tuple[int, int] | None = None
+) -> None:
+    """Refuse what :func:`write_calibration_block` would refuse, writing nothing — so an
+    import carrying a calibration beside polygons can refuse before its first write.
+
+    Raises:
+        ValueError: if the block has no positive ``pixels_per_mm`` or no resolution, or
+            its aspect ratio differs from ``resolution``'s.
+    """
+    if float(block.get("pixels_per_mm") or 0) <= 0:
+        raise ValueError("calibration block needs a positive pixels_per_mm")
+    if len(block.get("ref_resolution") or []) != 2:
+        raise ValueError("calibration block needs a [width, height] ref_resolution")
+    if resolution is not None:
+        refusal = calibration_aspect_refusal(block, *resolution)
+        if refusal is not None:
+            raise ValueError(refusal)
+
+
 def write_calibration_block(
     recording_dir: Path | str,
     block: dict,
@@ -824,14 +846,7 @@ def write_calibration_block(
         ValueError: if the block has no positive ``pixels_per_mm`` or no resolution, or
             its aspect ratio differs from ``resolution``'s.
     """
-    if float(block.get("pixels_per_mm") or 0) <= 0:
-        raise ValueError("calibration block needs a positive pixels_per_mm")
-    if len(block.get("ref_resolution") or []) != 2:
-        raise ValueError("calibration block needs a [width, height] ref_resolution")
-    if resolution is not None:
-        refusal = calibration_aspect_refusal(block, *resolution)
-        if refusal is not None:
-            raise ValueError(refusal)
+    check_calibration_block(block, resolution)
     stored = {
         "schema_version": 1,
         "points": block.get("points"),

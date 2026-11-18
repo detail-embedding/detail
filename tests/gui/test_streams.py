@@ -1,4 +1,18 @@
-"""GUI stream dialogs: add + preview construct and render (Section 3)."""
+"""GUI stream dialogs: add + preview construct and render (Section 3).
+
+One recorded class is guarded here (with `test_ui_thread_blocking.py`): **a slow read allowed
+onto the UI thread because its input is "typically small".** The recording page's streams
+table counted each stream's rows by reading the whole file inline on every build, 3 s for one
+400,000-row trace, and a stream whose file was gone raised and stopped the page building (#35).
+The Rows column now starts as "…", is filled by a background count, and a missing file reads
+**missing** in its own row.
+
+**A chosen mapping dropped by the next file** (#35). The CSV band re-applied a saved mapping only
+when it had been chosen *before* any file, so picking another file — the very advice the
+missing-column message gave — unticked every column while **Reuse a mapping** still named the
+mapping, and choosing it again did nothing because the selection had not changed. The band keeps
+the mapping until another is chosen and applies it to each file; the stream keeps its name.
+"""
 
 import pytest
 
@@ -799,6 +813,39 @@ def test_a_saved_mapping_is_offered_only_under_its_own_importer(qapp, tmp_path):
     # no-op once the list is filtered. An assertion that cannot fail is not a guard.
 
 
+def test_the_streams_table_counts_rows_off_the_ui_thread(qapp, tmp_path):
+    """The Rows column used to be `len(stream_events(name))` per stream, inline, on every
+    page build: seconds for a long sensor trace, and a stream whose file had gone raised
+    `FileNotFoundError` and stopped the page building at all (#35). The page now builds with a
+    placeholder, the counts land from a background read, and a missing file says so in its
+    own row."""
+    from detail.gui.pages import RecordingDetailPage
+    from detail.storage import streams as streams_store
+    from tests.gui.conftest import drain_until
+
+    recording = _recording_with_stream(tmp_path)  # "medpc": three rows
+    missing = (
+        streams_store.stream_dir(recording.dir, "medpc")
+        / streams_store.CANONICAL_DIRNAME
+        / streams_store.CANONICAL_FILENAME
+    )
+    expected = len(recording.stream_events("medpc"))
+    assert expected == 3
+
+    page = RecordingDetailPage(recording)
+    model = page._streams_table.model()
+    assert model.item(0, 2).text() == "…", "the count is not read while the page builds"
+    drain_until(qapp, lambda: model.item(0, 2).text() != "…")
+    assert model.item(0, 2).text() == str(expected)
+
+    missing.unlink()
+    page = RecordingDetailPage(recording)  # builds: the missing file is not read inline
+    model = page._streams_table.model()
+    drain_until(qapp, lambda: model.item(0, 2).text() != "…")
+    assert model.item(0, 2).text() == "missing"
+    assert "not in the recording folder" in model.item(0, 2).toolTip()
+
+
 # -- a frame-indexed CSV is on the video's clock (#30 finding 10) -------------------------- #
 def _recording_with_video(tmp_path):
     import cv2
@@ -1076,3 +1123,41 @@ def test_a_sorted_streams_table_acts_on_the_stream_the_row_shows(
     assert "'apple'" in asked[0]
     remaining = [s["name"] for s in recording.streams]
     assert remaining == ["zebra", "mango"]
+
+
+def test_a_chosen_mapping_applies_to_the_next_file_picked(qapp, tmp_path):
+    """#35 finding 9. Only a mapping chosen *before* any file was re-applied, so picking
+    another file — the advice the missing-column message gives — unticked every column while
+    **Reuse a mapping** still named the mapping, and choosing it again did nothing because the
+    selection had not changed. The mapping showing is the mapping applied, file after file.
+    """
+    from detail.gui.streams import AddStreamDialog
+
+    proj = Experiment.create("p", tmp_path)
+    recording = proj.create_recording("s1")
+    proj.save_stream_preset(
+        "dlc",
+        "timeseries_csv",
+        {
+            "time_column": "t_sec",
+            "time_kind": "seconds",
+            "channels": [{"column": "elbow", "name": "elbow"}],
+        },
+    )
+    dialog = AddStreamDialog(recording)
+    dialog._data.set_path(str(_pose_csv(tmp_path)))  # has no `elbow`
+    dialog._preset.setCurrentIndex(dialog._preset.findData("dlc"))
+    problem = dialog._band.problem()
+    assert problem == (
+        "this CSV has no elbow, which the chosen mapping names — pick a file that has it, "
+        "or choose another mapping."
+    ), "the advice must be something the user can do (there is no row to untick)"
+
+    other = tmp_path / "pose_002.csv"
+    other.write_text("t_sec,elbow,nose_x\n0,1,2\n0.1,3,4\n", encoding="utf-8")
+    dialog._data.set_path(str(other))
+
+    assert dialog._preset.currentData() == "dlc"
+    assert dialog._band.config()["channels"] == [{"column": "elbow", "name": "elbow"}]
+    assert dialog._band.problem() is None
+    assert dialog._name.text() == "dlc", "the stream keeps the mapping's name"
