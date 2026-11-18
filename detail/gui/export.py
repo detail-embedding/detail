@@ -272,6 +272,7 @@ class ExportDialog(Dialog):
         self._only = tuple(only)
         self._seed = dict(seed or {})
         self._busy = False
+        self._enabled_before_busy: dict = {}
         self._space_ok = True
         self._estimate = None
         self._estimate_generation = 0
@@ -306,18 +307,24 @@ class ExportDialog(Dialog):
         # to tell "DETAIL cannot export my streams" from "this recording has no streams yet",
         # and only the second is something they can act on.
         self._include: dict[str, QCheckBox] = {}
+        #: Whether each target is ticked when nothing stops it — restored when a scope that
+        #: greyed it is widened again.
+        self._default_ticked: dict[str, bool] = {}
+        self._runnable: dict[str, bool] = {}
         box = QVBoxLayout()
         for target in self._targets:
             reason = exporters.unavailable_reason(target, subject)
             check = QCheckBox(
                 target.label if reason is None else f"{target.label} — {reason}"
             )
+            self._runnable[target.id] = reason is None
+            # The bundle is opt-in; data is the default. A caller that named `only` has
+            # already made this choice, so honour it rather than re-asking.
+            self._default_ticked[target.id] = (
+                target.id in self._only if self._only else not target.portable
+            )
             if reason is None:
-                # The bundle is opt-in; data is the default. A caller that named `only` has
-                # already made this choice, so honour it rather than re-asking.
-                check.setChecked(
-                    target.id in self._only if self._only else not target.portable
-                )
+                check.setChecked(self._default_ticked[target.id])
                 check.setToolTip(
                     f"{target.artifact}\nAlso writes: "
                     + ", ".join(target.included_files())
@@ -339,6 +346,7 @@ class ExportDialog(Dialog):
             self._scope_pick.addItem(self._scope_rest.describe().capitalize(), True)
             self._scope_pick.addItem("Everything in this run", False)
             form.addRow("Of:", self._scope_pick)
+        self._sync_scope_fit()
 
         # Which recordings. A processing run spans many, and what a video or a CSV costs is
         # *per recording*: an export that wrote one video per recording of a large run
@@ -506,6 +514,11 @@ class ExportDialog(Dialog):
         self._estimate_timer.timeout.connect(self._start_estimate)
 
         layout.addLayout(form)
+        #: What the dialog is doing while the export is submitted, and why it will not close.
+        self._status = QLabel("")
+        self._status.setWordWrap(True)
+        self._status.hide()
+        layout.addWidget(self._status)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -543,6 +556,7 @@ class ExportDialog(Dialog):
         if self._kp_source is not None:
             self._kp_source.currentIndexChanged.connect(self._changed)
         if self._scope_pick is not None:
+            self._scope_pick.currentIndexChanged.connect(self._sync_scope_fit)
             self._scope_pick.currentIndexChanged.connect(self._changed)
         self._out.textChanged.connect(self._changed)
         self._changed()
@@ -615,6 +629,36 @@ class ExportDialog(Dialog):
 
     def _chosen(self) -> list:
         return [t for t in self._targets if self._include[t.id].isChecked()]
+
+    def _picked_scope(self) -> ExportScope:
+        """The page's scope as the *Of:* picker has it, without the recordings the list owns."""
+        if self._scope_pick is not None and not self._scope_pick.currentData():
+            return ExportScope()
+        return self._scope_rest
+
+    def _sync_scope_fit(self, *_args) -> None:
+        """Grey a target the picked scope cannot be applied to, saying why; restore it after.
+
+        The export refuses a scope a target does not take (`exporters.check_request`), so a
+        target ticked by default here would turn the whole export into an error: a selection
+        with *Per-frame behavior labels* ticked, or a recording's *Clip* with no frame range.
+        Asked of the same pure predicate the export uses, so the two cannot disagree.
+        """
+        scope = self._picked_scope()
+        for target in self._targets:
+            if not self._runnable[target.id]:
+                continue
+            check = self._include[target.id]
+            why = exporters.scope_refusal(target, scope, self._subject)
+            if why is None:
+                if not check.isEnabled():
+                    check.setEnabled(True)
+                    check.setText(target.label)
+                    check.setChecked(self._default_ticked[target.id])
+                continue
+            check.setChecked(False)
+            check.setEnabled(False)
+            check.setText(f"{target.label} — {why}")
 
     # -- which recordings ------------------------------------------------------------- #
     def _ticked_recordings(self) -> list[str]:
@@ -876,7 +920,17 @@ class ExportDialog(Dialog):
         self._submit_call = call  # keep it alive until it has emitted
         call.done.connect(self._on_submitted)
         call.failed.connect(self._on_submit_failed)
+        # Submitting cannot be stopped part-way (it validates, reserves and starts the run in one
+        # call), and it is short. So Esc and the window's close wait for it rather than closing
+        # on a run that then starts with nobody shown it.
+        self.hold_open_while(call, self._still_submitting)
         call.start()
+
+    def _still_submitting(self) -> None:
+        self._status.setText(
+            "Still submitting the export — it cannot be stopped part-way. Its run opens on "
+            "its own page in a moment."
+        )
 
     def _set_busy(self, busy: bool) -> None:
         """Freeze the form in place while the run is submitted — no overlay.
@@ -884,13 +938,22 @@ class ExportDialog(Dialog):
         An overlay is for waiting on *work*; submitting is short, and the work has moved to a
         run with its own page. `launch._set_form_busy` is the same gesture over a different form
         and names that dialog's own fields, so it cannot be borrowed.
+
+        Each tick box gets back the state it had, not "enabled if it is enabled now": going busy
+        greys them all, so reading their state on the way back read the greying itself, and a
+        refused export left every box dead (#35).
         """
         self._busy = busy
         self._buttons.setEnabled(not busy)
         self._sync_export_enabled()
-        for check in (*self._include.values(), *self._renders.values()):
-            check.setEnabled(not busy and check.isEnabled())
+        checks = (*self._include.values(), *self._renders.values())
+        if busy:
+            self._enabled_before_busy = {check: check.isEnabled() for check in checks}
+        for check in checks:
+            check.setEnabled(not busy and self._enabled_before_busy.get(check, True))
         self._out.setEnabled(not busy)
+        self._status.setText("Submitting the export…" if busy else "")
+        self._status.setVisible(busy)
 
     def _on_submitted(self, handle) -> None:
         """Hand the handle up and close. The shell takes it from here.
@@ -899,6 +962,7 @@ class ExportDialog(Dialog):
         page, which the shell opens with this handle live — the same thing launching a
         processing or analysis run already does.
         """
+        self.let_go()
         self.run_handle = handle
         self.accept()
 
@@ -908,6 +972,7 @@ class ExportDialog(Dialog):
         Submission is where a bad target or an unavailable one is caught (`run_export`
         validates before it reserves an id), so this is the path a user actually meets.
         """
+        self.let_go()
         self._set_busy(False)
         QMessageBox.critical(self, "Export", str(exc))
 

@@ -105,8 +105,8 @@ Click **Edit scene geometry…**. The editor opens on the recording's first fram
         **Export as CSV…**.
     24. **Export as CSV…**: saves this recording's whole setup to one file, to share or
         reuse.
-    25. **Save**: saves every change. The editor stays open. **Save** is greyed out when
-        there is nothing to save.
+    25. **Save**: saves every change. The editor stays open. **Save** lights up after any
+        change and is greyed out when there is nothing to save.
     26. **Close**: closes the editor. It asks first if there are changes you have not saved.
 
 Draw the field of view:
@@ -345,8 +345,9 @@ After **Import stream**, the stream is listed under **Streams** on the recording
 
 ??? info "What everything on this screen does"
     1. **The streams table**: one row per stream: its **Name**, its **Type** (here **event**),
-       how many **Rows** it has, and its **Offset (s)**, the alignment. Click a row to choose
-       it for the buttons.
+       how many **Rows** it has, and its **Offset (s)**, the alignment. **Rows** fills in a
+       moment after the page opens, and says **missing** if the stream's file is gone. Click a
+       row to choose it for the buttons.
     2. **Add stream**: adds another stream.
     3. **Preview**: shows the stream against the video (below).
     4. **Sync to video**: opens the same window as in the dialog, to change the alignment.
@@ -407,7 +408,8 @@ data)** and shows the file's own columns, for you to say what each one is:
        importer recognised the file.
     4. **Reuse a mapping**: fills the time column, what it holds and the ticked columns from
        a mapping you saved, for the next recording's file. It says so if the file is missing
-       a column the mapping names.
+       a column the mapping names; choose another file and the mapping is applied to that one
+       too, or choose another mapping.
     5. **Save as…**: saves this mapping under a name, for **Reuse a mapping**.
     6. **Time column**: the column that holds the time.
     7. **Time is**: what the time column counts.

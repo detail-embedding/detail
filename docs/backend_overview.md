@@ -158,7 +158,7 @@ Each tracked detection becomes a feature vector, an **embedding** (a fixed-lengt
 - **Executor**: runs a job as a process.
   - A local executor runs each job as a subprocess. Jobs are plain data, so a cloud executor could replace it without changing callers; none is built.
   - Progress streams while the job runs.
-  - Only some runs resume. Training continues from its last checkpoint and keypoint detect from the last frame it wrote. Detection, tracking and embedding do not resume: a failed processing run re-runs its incomplete recordings whole (`process retry`).
+  - Only some runs resume. Training continues from its last checkpoint. Detection, tracking, embedding and the keypoint stages do not resume: a failed or cancelled processing run re-runs its incomplete recordings whole (`process retry`).
 - **Custom model training**: two phases.
   - Generate a labeled dataset by sampling and auto-labeling frames from chosen recordings.
   - Train a model on it with a pluggable trainer. The trained model registers with the experiment and is usable by any detection run.

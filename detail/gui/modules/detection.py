@@ -102,14 +102,12 @@ class _DetectionConfig(ConfigWidget):
         form.addRow(label_with("Class name:", help_button("class-name")), self._class)
         conf_meta = field_meta(DetectionConfig, "conf_threshold")  # label
         self._conf = field_widget(DetectionConfig, "conf_threshold")
-        self._conf.setValue(0.5)
         form.addRow(
             field_label("detection", "conf_threshold", conf_meta["label"] + ":"),
             self._conf,
         )
         batch_meta = field_meta(DetectionConfig, "batch_size")  # label
         self._batch = field_widget(DetectionConfig, "batch_size")
-        self._batch.setValue(1)
         form.addRow(
             field_label("detection", "batch_size", batch_meta["label"] + ":"),
             self._batch,

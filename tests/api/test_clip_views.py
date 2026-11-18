@@ -457,6 +457,29 @@ def test_a_pane_export_decodes_no_video_and_writes_what_the_pane_shows(
         assert gif.n_frames == 5 and gif.size == (W, H)
 
 
+def test_a_pane_export_of_a_track_the_run_does_not_have_is_refused(tmp_path):
+    """It wrote a file of blank panes anyway (#31, finding 51). The GUI offers only tracks
+    that exist; a script can name any number."""
+    recording = walking(tmp_path, keypoints=False)
+    out = tmp_path / "masks.gif"
+    with pytest.raises(
+        UserInputError,
+        match=r"track 7 is not in embedding run 'emb_01' .*; its tracks: 0$",
+    ):
+        clip_views.export_clip_pane(
+            recording.dir.parent.parent,
+            recording_id=recording.id,
+            embed_run_id="emb_01",
+            track_id=7,
+            first=0,
+            last=4,
+            pane=clip_views.MASKS,
+            settings=PLAIN,
+            path=out,
+        )
+    assert not out.exists()
+
+
 def test_a_keypoint_pane_export_of_a_run_with_none_is_refused(tmp_path):
     recording = walking(tmp_path, keypoints=False)
     with pytest.raises(ValueError, match="no keypoints to export"):

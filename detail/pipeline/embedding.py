@@ -508,7 +508,9 @@ def _mean_mask_color_rgb(
     recording_store.raise_on_legacy_downsampling(env.get("job"))
     files = recording_store.video_files(data)
     requested = {int(t) for t in track_ids}
-    candidates = _collect_candidates(detection_dir, tracking_dir, requested)
+    candidates = _collect_candidates(
+        recording_dir, data, detection_dir, tracking_dir, requested
+    )
     if not candidates:
         raise ValueError(
             f"no detections for track_ids {sorted(requested)} in "
@@ -810,7 +812,9 @@ def run(job: EmbeddingJob, run_dir, progress_cb, stop_event) -> None:
     progress_dir.mkdir(parents=True, exist_ok=True)
     stop_flag = run_dir / _embedding_worker.STOP_FLAG_NAME
 
-    det_parts = sorted(detection_dir.glob("part_*.zarr"))
+    det_parts = recording_store.parts_in_play_order(
+        recording_dir, detection_dir, recording_data
+    )
     units = _build_units(
         job=job,
         det_parts=det_parts,
@@ -873,7 +877,7 @@ def run(job: EmbeddingJob, run_dir, progress_cb, stop_event) -> None:
 def _build_units(
     *,
     job: EmbeddingJob,
-    det_parts: list[Path],
+    det_parts: list[tuple[int, Path]],
     tracking_dir: Path,
     recording_dir: Path,
     source_files: list[dict],
@@ -885,6 +889,10 @@ def _build_units(
     """One unit per (track_id, part_index). Flat list — ordered by track then
     part so the inline path stays sequential per-track (matching the existing
     progress contract) and the multi-GPU dispatcher can round-robin freely.
+
+    ``det_parts`` is `recording_store.parts_in_play_order`'s ``(play index, path)``: the
+    play index is what picks the part's source video, so a part move (which keeps every
+    file name) cannot pair one part's detections with another part's video.
 
     An aligned run (§14) computes every unit's heading here, once, so the worker embeds
     exactly the frames with a heading and the bar's denominator counts those frames.
@@ -904,7 +912,7 @@ def _build_units(
     )
     units: list[dict] = []
     for track_id in job.track_ids:
-        for part_index, part_path in enumerate(det_parts):
+        for part_index, part_path in det_parts:
             part_id = part_path.stem
             assignment_path = tracking_dir / "assignments" / part_path.name
             video_path = recording_store.resolve_part_video_path(
@@ -1638,7 +1646,12 @@ class EmbeddingModule(ProcessingModule):
         video_integrity.raise_on_video_issues(
             video_integrity.validate_source_videos(recording_dir, recording_data)
         )
-        tracks_path = Path(recording_dir) / "tracking" / tracking_run_id / "tracks.zarr"
+        tracks_path = (
+            recording_store.require_run_output(
+                recording_dir, "tracking", tracking_run_id
+            )
+            / "tracks.zarr"
+        )
         existing = {int(t) for t in PartZarrReader(tracks_path).read()["track_id"]}
         # "All tracks" is resolved per recording, so each recording embeds its own
         # full set (track ids are assigned independently per recording).

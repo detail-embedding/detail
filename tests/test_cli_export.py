@@ -197,15 +197,69 @@ def test_run_writes_per_frame_labels_for_a_frame_range(authored_cohort, tmp_path
 def test_an_empty_export_says_why_rather_than_leaving_an_empty_folder(
     authored_cohort, tmp_path
 ):
+    """A cluster the run has, holding no instance: nothing to write, said so."""
+    from detail.storage import behavior_output as bo
+
+    run_dir = authored_cohort.run_dir()
+    artifact = bo.read_behavior_output(run_dir)
+    manifest = {
+        **artifact.manifest,
+        "names": {**artifact.manifest.get("names", {}), "c09": ["sleep"]},
+        "vocabulary": [*artifact.manifest.get("vocabulary", []), "sleep"],
+    }
+    bo.write_behavior_output(
+        run_dir, instances=artifact.instances, coverage=artifact.coverage,
+        manifest=manifest,
+    )  # fmt: skip
     result = _run(
         "export", "run",
         "--experiment", str(authored_cohort.experiment.dir),
         "--analysis-run", "an_01", "--target", "instances",
-        "--out", str(tmp_path / "out"), "--cluster", "nope",
+        "--out", str(tmp_path / "out"), "--cluster", "c09",
     )  # fmt: skip
     assert result.exit_code == 0, result.output
     assert "nothing to write" in result.output
-    assert "cluster nope" in result.output
+    assert "cluster c09" in result.output
+
+
+def test_an_unknown_cluster_exits_non_zero_and_writes_nothing(
+    authored_cohort, tmp_path
+):
+    """`--target ethogram --cluster zz` said "Wrote 2 file(s)" and exited 0."""
+    result = _run(
+        "export", "run",
+        "--experiment", str(authored_cohort.experiment.dir),
+        "--analysis-run", "an_01", "--target", "ethogram",
+        "--out", str(tmp_path / "out"), "--cluster", "zz",
+    )  # fmt: skip
+    assert result.exit_code == 1, result.output
+    assert "this run has no cluster 'zz'" in result.output
+    assert not (tmp_path / "out").exists()
+
+
+def test_a_scope_the_target_does_not_take_exits_non_zero(authored_cohort, tmp_path):
+    result = _run(
+        "export", "run",
+        "--experiment", str(authored_cohort.experiment.dir),
+        "--analysis-run", "an_01", "--target", "instances",
+        "--out", str(tmp_path / "out"), "--frames", "0:3",
+    )  # fmt: skip
+    assert result.exit_code == 1, result.output
+    assert "Behavior instances cannot be narrowed to a frame range" in result.output
+    assert not (tmp_path / "out").exists()
+
+
+def test_a_clip_without_frames_exits_non_zero(processed_recording, tmp_path):
+    """It exited 0 with "Clip had nothing to write for everything."."""
+    result = _run(
+        "export", "run",
+        "--experiment", str(processed_recording.experiment.dir),
+        "--recording", "recording_001", "--target", "clip",
+        "--embed-run", "emb_01", "--out", str(tmp_path / "out"),
+    )  # fmt: skip
+    assert result.exit_code == 1, result.output
+    assert "Clip needs a frame range to export" in result.output
+    assert not (tmp_path / "out").exists()
 
 
 def test_an_unknown_target_lists_what_is_available(authored_cohort, tmp_path):

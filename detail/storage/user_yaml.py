@@ -12,6 +12,11 @@ file". A wrong top-level shape is the caller's to name (:func:`require_mapping` 
 common one). ``UserInputError`` is a ``ValueError``, so ``dirscan.UNREADABLE_RECORD_ERRORS``
 still skips such a record in a listing.
 
+**A key written twice is refused** (#31). ``yaml.safe_load`` keeps the last of two equal keys
+in one mapping, so a labels manifest listing ``recording_001:`` twice imported only the second
+file and said nothing. :func:`refuse_unknown_keys` is the other half of reading a hand-written
+mapping: a misspelled key (``vidoe:``) is named rather than ignored.
+
 Run records DETAIL writes and reads back for itself keep their own readers;
 ``tests/storage/test_user_file_readers.py`` lists every other ``yaml.safe_load`` with why.
 """
@@ -23,6 +28,36 @@ import yaml
 
 from detail.core import atomic
 from detail.core.errors import UserInputError
+
+
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """``yaml.SafeLoader`` that refuses a key repeated in one mapping.
+
+    Keys a ``<<`` merge brings in may be overridden, as YAML intends; only the keys written
+    in the mapping itself are compared.
+    """
+
+    def construct_mapping(self, node, deep=False):
+        if isinstance(node, yaml.MappingNode):
+            first_line: dict = {}
+            for key_node, _value in node.value:
+                if key_node.tag == "tag:yaml.org,2002:merge":
+                    continue
+                key = self.construct_object(key_node, deep=True)
+                try:
+                    seen = first_line.get(key)
+                except TypeError:  # an unhashable key: the base class names it
+                    continue
+                if seen is not None:
+                    raise yaml.constructor.ConstructorError(
+                        None,
+                        None,
+                        f"key {key!r} appears twice in one mapping (first on line {seen}); "
+                        "keep one",
+                        key_node.start_mark,
+                    )
+                first_line[key] = key_node.start_mark.line + 1
+        return super().construct_mapping(node, deep=deep)
 
 
 def _syntax_message(source: str, exc: yaml.YAMLError) -> str:
@@ -40,7 +75,8 @@ def parse_user_yaml(text: str | bytes, source: Path | str) -> Any:
     """``yaml.safe_load(text)``, with a mistake reported against ``source``.
 
     Raises:
-        UserInputError: ``text`` is not valid YAML, or is bytes that are not UTF-8 text.
+        UserInputError: ``text`` is not valid YAML, repeats a key in one mapping, or is
+            bytes that are not UTF-8 text.
     """
     if isinstance(text, bytes):
         try:
@@ -48,7 +84,7 @@ def parse_user_yaml(text: str | bytes, source: Path | str) -> Any:
         except UnicodeDecodeError:
             raise UserInputError(f"{source} is not a text file") from None
     try:
-        return yaml.safe_load(text)
+        return yaml.load(text, Loader=_UniqueKeyLoader)  # noqa: S506 — a SafeLoader
     except yaml.YAMLError as exc:
         raise UserInputError(_syntax_message(str(source), exc)) from exc
 
@@ -80,3 +116,22 @@ def require_mapping(data: Any, source: Path | str, what: str) -> dict:
             f"found {found}"
         )
     return data
+
+
+def refuse_unknown_keys(
+    data: dict, allowed: tuple[str, ...], source: Path | str, what: str
+) -> None:
+    """Refuse a key ``data`` has that ``allowed`` does not name.
+
+    A misspelled key is otherwise ignored, and the reader goes on as if it were absent: a
+    manifest's ``vidoe:`` made a recording with no video and called the manifest valid.
+
+    Raises:
+        UserInputError: Naming each unknown key and the keys ``what`` takes.
+    """
+    unknown = [k for k in data if k not in allowed]
+    if unknown:
+        raise UserInputError(
+            f"{source}: {what} has unknown key(s) {', '.join(map(repr, unknown))}; "
+            f"the keys it takes are {', '.join(allowed)}"
+        )

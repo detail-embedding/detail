@@ -1,4 +1,11 @@
-"""Shared setup-step model (readiness_guide) — one source of truth for the guidance."""
+"""Shared setup-step model (readiness_guide) — one source of truth for the guidance.
+
+One recorded class is guarded here (with `requirements.a_checklist_step_reads_its_state`):
+**a checklist step whose tick is a literal.** "See it segment a clip" and "Recommended: distill a
+fast model" were built with `done=False`, so neither could ever show ✓ while the docs said the
+checklist marks each step when done (#35). Each now reads a `ReadinessSignals` field, and
+without an NVIDIA GPU the Quick segment step says what it needs.
+"""
 
 import itertools
 
@@ -20,6 +27,8 @@ def _s(**kw):
         sam3_weights=False,
         detection_model=False,
         has_experiment=False,
+        quick_segment_run=False,
+        distilled_model=False,
     )
     base.update(kw)
     return ReadinessSignals(**base)
@@ -130,3 +139,46 @@ def test_guides_step_only_for_incomplete_guiding_page():
     assert (
         readiness_guide.guides_step("hugging_face", hf_done) is None
     )  # done → no banner
+
+
+# --- the last two steps tick from real state, and say what Quick segment needs (#35) -----
+
+
+def _step(steps, kind):
+    return next(s for s in steps if s.kind == kind)
+
+
+def test_see_it_segment_a_clip_ticks_once_a_quick_segment_run_completed():
+    for gpu in (True, False):
+        assert not _step(
+            readiness_guide.readiness_steps(_s(gpu=gpu)), "quick_segment"
+        ).done
+        steps = readiness_guide.readiness_steps(_s(gpu=gpu, quick_segment_run=True))
+        assert _step(steps, "quick_segment").done
+
+
+def test_the_distill_step_ticks_once_a_distilled_model_exists():
+    assert not _step(readiness_guide.readiness_steps(_s()), "distill_model").done
+    steps = readiness_guide.readiness_steps(_s(distilled_model=True))
+    assert _step(steps, "distill_model").done
+
+
+def test_without_an_nvidia_gpu_quick_segment_says_what_it_needs():
+    # On a GPU box Quick segment runs SAM 3; without one, `default_model_for_machine` refuses
+    # SAM 3 and the tool's model list offers only installed detectors. The step says so, as
+    # the SAM 3 rows already do, instead of reading like any other step.
+    on_gpu = _step(readiness_guide.readiness_steps(_s(gpu=True)), "quick_segment")
+    assert on_gpu.label == "See it segment a clip"
+    off_gpu = _step(readiness_guide.readiness_steps(_s(gpu=False)), "quick_segment")
+    assert off_gpu.label == (
+        "See it segment a clip (needs an NVIDIA GPU or an installed detection model)"
+    )
+
+
+def test_neither_late_step_guides():
+    # Ticking them must not turn them into nudges: setup is complete without either.
+    signals = _s(gpu=True, hf_token=True, sam3_backend=True, sam3_weights=True)
+    assert readiness_guide.is_setup_complete(signals)
+    steps = readiness_guide.readiness_steps(signals)
+    assert not _step(steps, "quick_segment").guides
+    assert not _step(steps, "distill_model").guides

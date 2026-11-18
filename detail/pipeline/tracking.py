@@ -131,6 +131,7 @@ class TrackingModule(ProcessingModule):
                 f"detection run {detection_run_id!r} is {det.get('status')!r}, "
                 "not complete"
             )
+        recording_store.require_run_output(recording_dir, "detection", detection_run_id)
         recording_store.raise_on_legacy_downsampling(det)
         config["every_n_frames"] = resolve_downstream_every_n(
             config.get("every_n_frames"), int(det.get("every_n_frames") or 1)

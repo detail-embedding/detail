@@ -641,13 +641,44 @@ def _one_model_folder_message(zip_path: Path, names: list[str], tops: set[str]) 
 
 
 def _restored_record(model_dir: Path, zip_path: Path) -> dict:
-    """The ``model.yaml`` of a model being restored, checked to be a record at all."""
+    """The ``model.yaml`` of a model being restored, checked to be a usable model.
+
+    It is a record (a mapping) whose ``id`` is its folder's name, with the weights it names
+    beside it. Checking only that ``model.yaml`` existed, a zip without weights restored and
+    was listed "installed", and one whose folder had been renamed restored under the new
+    name while its record kept the old id, so two models answered to one id (#31).
+
+    Raises:
+        UserInputError: No ``model.yaml``, or one that fails a check above.
+    """
     path = model_dir / models_store.MODEL_FILENAME
     if not path.is_file():
-        raise ValueError("archive has no model.yaml")
+        raise UserInputError(
+            f"{zip_path.name} holds no {model_dir.name}/{models_store.MODEL_FILENAME}; it "
+            "is not a model export (a .zip made by `detail model export`)"
+        )
     source = f"{zip_path.name}: {model_dir.name}/{models_store.MODEL_FILENAME}"
     text = path.read_bytes()
-    return require_mapping(parse_user_yaml(text, source), source, "a model record")
+    record = require_mapping(parse_user_yaml(text, source), source, "a model record")
+    if record.get("id") != model_dir.name:
+        raise UserInputError(
+            f"{source} is model {record.get('id')!r}, but its folder in the archive is "
+            f"{model_dir.name!r}; a model is restored under its own id, so restore the zip "
+            "as `detail model export` wrote it"
+        )
+    best = (record.get("weights") or {}).get("best")
+    weights = model_dir / str(best) if best else None
+    if (
+        weights is None
+        or ".." in Path(str(best)).parts
+        or Path(str(best)).is_absolute()
+        or not weights.is_file()
+    ):
+        raise UserInputError(
+            f"{zip_path.name} holds no weights for model {model_dir.name!r} (its "
+            f"model.yaml names {best!r}); export it again with `detail model export`"
+        )
+    return record
 
 
 def _restored_skeleton(record: dict) -> Skeleton:
@@ -680,8 +711,16 @@ def _library_entry_for(record: dict, skeleton: Skeleton) -> dict:
 
 
 def remove_imported_model(model_id: str) -> None:
-    """Delete a machine-global imported model (raises if absent)."""
-    if model_id not in imported_store.discover():
+    """Delete a machine-global imported model (raises if absent).
+
+    Also deletes a catalog folder an import cut short left behind (no ``model.yaml``,
+    :func:`imported.unfinished`): it is no model, but it blocks its name, and nothing else
+    could delete it. Only a name in either listing is deleted, so an id is never a path.
+    """
+    if (
+        model_id not in imported_store.discover()
+        and model_id not in imported_store.unfinished()
+    ):
         raise FileNotFoundError(f"no imported model {model_id!r}")
     imported_store.remove(model_id)
 

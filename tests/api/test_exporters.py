@@ -255,19 +255,192 @@ def test_every_target_promises_the_sidecars(authored_cohort):
 # --------------------------------------------------------------------------- #
 # empty
 # --------------------------------------------------------------------------- #
+def _name_an_empty_cluster(cohort, source="c09", name="sleep"):
+    """Give the artifact a named cluster with no instances: real, and nothing to write."""
+    from detail.storage import behavior_output as bo
+
+    run_dir = cohort.run_dir()
+    artifact = bo.read_behavior_output(run_dir)
+    manifest = dict(artifact.manifest)
+    manifest["names"] = {**(manifest.get("names") or {}), source: [name]}
+    manifest["vocabulary"] = [*(manifest.get("vocabulary") or []), name]
+    bo.write_behavior_output(
+        run_dir,
+        instances=artifact.instances,
+        coverage=artifact.coverage,
+        manifest=manifest,
+    )
+
+
 def test_an_export_with_nothing_to_write_says_so(authored_cohort, tmp_path):
-    """An empty folder reads as a failure; a manifest that says why does not."""
+    """An empty folder reads as a failure; a manifest that says why does not.
+
+    The cluster is one the run has and that holds no instance: an unknown one is refused
+    (`test_an_unknown_cluster_is_refused_naming_the_clusters`), which is a different answer.
+    """
+    _name_an_empty_cluster(authored_cohort)
     result = _export(
-        authored_cohort,
-        ["instances"],
-        tmp_path,
-        scope=ExportScope(cluster="a-cluster-that-does-not-exist"),
+        authored_cohort, ["instances"], tmp_path, scope=ExportScope(cluster="c09")
     )
     assert result.is_empty
     assert not result.files
     manifest = exporters.read_manifest(result.dest)
     assert manifest["files"] == []
-    assert "cluster a-cluster-that-does-not-exist" in manifest["empty"]
+    assert "cluster c09" in manifest["empty"]
+
+
+# --------------------------------------------------------------------------- #
+# what was asked is refused, never ignored (#31, findings 40-43)
+# --------------------------------------------------------------------------- #
+def test_a_scope_a_target_does_not_take_is_refused_and_nothing_is_written(
+    two_clusters, tmp_path
+):
+    """`--target instances --frames 0:3` wrote every instance and recorded a frames scope."""
+    with pytest.raises(exporters.ExportError, match="cannot be narrowed to a frame"):
+        _export(
+            two_clusters,
+            ["instances"],
+            tmp_path / "out",
+            scope=ExportScope(frames=(0, 3)),
+        )
+    assert not (tmp_path / "out").exists(), "a refused export creates no folder"
+
+
+@pytest.mark.parametrize("target_id", ["ethogram", "frame_labels", "instances"])
+def test_an_unknown_cluster_is_refused_naming_the_clusters(
+    frame_labelled, tmp_path, target_id
+):
+    with pytest.raises(exporters.ExportError) as caught:
+        _export(
+            frame_labelled,
+            [target_id],
+            tmp_path / "out",
+            scope=ExportScope(cluster="zz"),
+        )
+    assert str(caught.value) == (
+        "this run has no cluster 'zz'. Its clusters: c01 (rearing), c02"
+    )
+    assert not (tmp_path / "out").exists()
+
+
+def test_a_cluster_given_by_its_name_says_which_id_it_is(two_clusters, tmp_path):
+    with pytest.raises(exporters.ExportError, match="'rearing' is the name of c01"):
+        _export(
+            two_clusters, ["ethogram"], tmp_path, scope=ExportScope(cluster="rearing")
+        )
+
+
+def test_frames_past_the_end_are_refused(frame_labelled, tmp_path):
+    """The fixture's frame views are 100 frames long: 99 is the last one."""
+    with pytest.raises(exporters.ExportError) as caught:
+        _export(
+            frame_labelled,
+            ["frame_labels"],
+            tmp_path / "past",
+            scope=ExportScope(frames=(5000, 6000)),
+        )
+    assert "has 100 frames (0-99)" in str(caught.value)
+    last = _export(
+        frame_labelled,
+        ["frame_labels"],
+        tmp_path / "last",
+        scope=ExportScope(frames=(99, 6000)),
+    )
+    assert [int(r["frame_idx"]) for r in _frame_rows(last)] == [99]
+
+
+def test_an_unknown_selection_is_refused(authored_cohort, tmp_path):
+    with pytest.raises(exporters.ExportError, match="no instance 'not-an-id'"):
+        _export(
+            authored_cohort,
+            ["instances"],
+            tmp_path,
+            scope=ExportScope(instance_ids=("not-an-id",)),
+        )
+
+
+def test_a_target_asked_for_twice_is_refused(authored_cohort, tmp_path):
+    with pytest.raises(exporters.ExportError, match="'instances' is asked for twice"):
+        _export(authored_cohort, ["instances", "instances"], tmp_path)
+
+
+def test_the_scope_line_names_the_cluster_and_the_frames(frame_labelled, tmp_path):
+    result = _export(
+        frame_labelled,
+        ["frame_labels"],
+        tmp_path,
+        scope=ExportScope(cluster="c01", frames=(0, 9)),
+    )
+    assert exporters.read_manifest(result.dest)["scope"] == "cluster c01, frames 0-9"
+
+
+def _whole_report():
+    """A copy of `instances` that declares no scopes: a whole-subject report, as `performance` is."""
+    import dataclasses
+
+    real = exporters.target("analysis_run", "instances")
+
+    def write(subject, dest, scope, progress, **options):
+        out = dest / "report.md"
+        out.write_text("the whole run\n", encoding="utf-8")
+        return [out]
+
+    return dataclasses.replace(real, id="report", label="Report", scopes=(), run=write)
+
+
+@pytest.fixture
+def fake_targets(monkeypatch):
+    """Let the stand-in targets below answer `unavailable_reason` like a real one."""
+    for target_id in ("report", "a", "b"):
+        monkeypatch.setitem(
+            export_targets._REASONS, ("analysis_run", target_id), lambda subject: None
+        )
+
+
+def test_a_whole_run_report_beside_a_narrowed_target_is_named_in_the_manifest(
+    two_clusters, tmp_path, fake_targets
+):
+    subject = _subject(two_clusters)
+    targets = [exporters.target("analysis_run", "instances"), _whole_report()]
+    result = exporters.write_export(
+        subject, targets, tmp_path, scope=ExportScope(cluster="c01")
+    )
+    manifest = exporters.read_manifest(result.dest)
+    assert manifest["scope"] == "cluster c01"
+    assert manifest["whole"] == ["report"]
+    plain = exporters.write_export(subject, targets, tmp_path / "plain")
+    assert "whole" not in exporters.read_manifest(plain.dest)
+
+
+def test_a_narrowing_only_whole_run_reports_were_asked_for_is_refused(
+    two_clusters, tmp_path, fake_targets
+):
+    with pytest.raises(exporters.ExportError, match="narrows nothing"):
+        exporters.write_export(
+            _subject(two_clusters),
+            [_whole_report()],
+            tmp_path,
+            scope=ExportScope(cluster="c01"),
+        )
+
+
+def test_a_file_two_targets_share_is_listed_once(two_clusters, tmp_path, fake_targets):
+    """Every keypoint target writes `coverage.csv`; five of them listed it five times."""
+    import dataclasses
+
+    def shared(name):
+        def write(subject, dest, scope, progress, **options):
+            out = dest / "coverage.csv"
+            out.write_text("x\n", encoding="utf-8")
+            return [out, dest / f"{name}.csv"]
+
+        return write
+
+    real = exporters.target("analysis_run", "instances")
+    a = dataclasses.replace(real, id="a", run=shared("a"))
+    b = dataclasses.replace(real, id="b", run=shared("b"))
+    result = exporters.write_export(_subject(two_clusters), [a, b], tmp_path)
+    assert [f for f in result.files if f == "coverage.csv"] == ["coverage.csv"]
 
 
 # --------------------------------------------------------------------------- #
@@ -1156,3 +1329,49 @@ def test_the_bundle_and_its_folder_are_named_after_the_experiment(
 
     assert "Top_Down_Study.tar" in result.files, result.files
     assert result.dest.name.startswith("Top_Down_Study_export_"), result.dest.name
+
+
+def test_a_recording_with_only_a_calibration_can_export_its_geometry(
+    authored_cohort, tmp_path
+):
+    """The geometry file carries the calibration, so a calibration alone is something to write.
+
+    `export list` said "nothing has been drawn" while the spatial editor's Export and
+    `recording export-spatial` both wrote the file (#31, finding 52).
+    """
+    from detail.storage import experiment as experiment_store
+    from detail.storage import spatial as spatial_store
+
+    subject = ExportSubject("recording", authored_cohort.experiment.dir, "r1")
+    geometry = exporters.target("recording", "geometry")
+    assert exporters.unavailable_reason(geometry, subject) == (
+        "nothing has been drawn or calibrated on this recording yet"
+    )
+    directory = experiment_store.recording_path(authored_cohort.experiment.dir, "r1")
+    spatial_store.write_calibration_scalar(directory, 2.5, (40, 40))
+    assert exporters.unavailable_reason(geometry, subject) is None
+
+    result = exporters.write_export(subject, [geometry], tmp_path)
+    rows = _rows(result.dest / "r1_spatial.csv")
+    assert [r["kind"] for r in rows] == ["calibration"]
+
+
+@pytest.mark.parametrize("call", ["run_export", "estimate_export"])
+def test_the_experiment_refuses_a_scope_before_it_reserves_a_run(
+    authored_cohort, tmp_path, call
+):
+    """Each way into an export checks on its own: the CLI asks `estimate_export` first, so a
+    script calling `run_export` directly is covered only by this."""
+    from detail.api.experiment import Experiment
+
+    experiment = Experiment(authored_cohort.experiment.dir)
+    with pytest.raises(exporters.ExportError, match="cannot be narrowed to a frame"):
+        getattr(experiment, call)(
+            "analysis_run",
+            "an_01",
+            ["instances"],
+            tmp_path / "out",
+            scope=ExportScope(frames=(0, 3)),
+        )
+    assert experiment.export_runs == []
+    assert not (tmp_path / "out").exists()

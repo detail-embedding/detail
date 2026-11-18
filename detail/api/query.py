@@ -552,12 +552,22 @@ class QueryRun(AuthoredRun):
             FileNotFoundError: If the run carries no artifact yet.
             ValueError: If the search did not reach every unit (cancelled, or a behavior's
                 search failed on one) — the message names them; re-run the search.
+            UserInputError: If no behavior has a cutoff yet (nothing is calibrated).
 
         The artifact is **pinned first** and the CSVs are written from the pinned copy (§21), so
         an exported file always corresponds to a snapshot still on disk: reopening the run and
         re-cutting it afterwards cannot leave the export describing something unfindable. Pinning
         brings deferred frame views current, the one long step, reported through ``progress``.
         """
+        self._refuse_if_incomplete("be exported")
+        if not any(b.cutoff is not None for b in self.state().behaviors):
+            # A header-only file reads as "searched and matched nothing" (`docs/cli.md`), and
+            # here nothing was calibrated: no behavior has a cutoff to cut the search at.
+            raise UserInputError(
+                "nothing is calibrated yet, so there is nothing to export: set a cutoff for "
+                "at least one behavior (`detail analysis query-calibrate --cutoff q01=0.8`, "
+                "or Calibrate in the app) first"
+            )
         pinned = self.pin(reason="export", progress=progress)
         output = self.artifact() if pinned is None else self.snapshot_artifact(pinned)
         out_dir = exporters.new_export_folder(

@@ -480,6 +480,10 @@ def _recording_with_detections(proj, sid, det_records):
     data = recording_store.read_recording(sdir)
     data["detection_runs"] = det_records
     recording_store.write_recording(sdir, data)
+    # The output each record describes: tracking's validate refuses a complete run whose
+    # folder is gone, which would otherwise stop these batches before the check under test.
+    for record in det_records:
+        (sdir / "detections" / record["id"] / "part_000.zarr").mkdir(parents=True)
 
 
 def test_coordinator_resolves_detection_spec_per_recording(tmp_path, monkeypatch):

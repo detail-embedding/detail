@@ -164,9 +164,18 @@ class PropagationResult:
     to forget — what the trip *changed* about the definitions themselves. A copy that
     silently flattened a moving polygon or left an ROI behind is a copy that did not do
     what the button said.
+
+    Every target's notes, not the last one's: ``refused`` names the recording each
+    definition was refused on, since one name can be taken on three targets and free on
+    four. ``flattened`` names source definitions, once each — losing camera motion is a
+    fact about the definition, the same on every target it reached.
     """
 
+    #: Ids of the recordings that received something.
     copied: list[str]
+    #: ``(recording id, reason)`` for each target that received nothing.
     skipped: list[tuple[str, str]]
+    #: Source definitions copied at their frame-0 position, each named once.
     flattened: list[str]
-    refused: list[tuple[str, str]]
+    #: ``(recording id, definition name, reason)`` for each definition a target refused.
+    refused: list[tuple[str, str, str]]

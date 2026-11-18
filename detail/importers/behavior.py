@@ -61,6 +61,7 @@ class BehaviorCsvImporter(StreamImporter):
         # Through the user-CSV opener: a sheet in the Windows encoding or with semicolons
         # says so, and a row a spreadsheet left all empty is skipped.
         fieldnames, records = _csv_common.read_user_csv(data_path)
+        _csv_common.reject_duplicate_columns(fieldnames, fold=True)
         fields = {name.strip().lower(): name for name in fieldnames}
         missing = [c for c in _REQUIRED if c not in fields]
         if missing:
@@ -99,6 +100,9 @@ class BehaviorCsvImporter(StreamImporter):
                 if cell not in recordings:
                     recordings.append(cell)
             rows.append((None, None, label, subject, start_frame, end_frame))
+        # A header-only file covers no behavior, yet as a stream it marked the recording
+        # annotated (#31).
+        _csv_common.require_data_rows(rows)
         if len(recordings) > 1:
             # A stream belongs to one recording; frames of another recording are not frames
             # of this one, and importing them would put its bouts on this timeline.

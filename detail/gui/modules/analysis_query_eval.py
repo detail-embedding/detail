@@ -155,7 +155,10 @@ class _QueryEvalConfig(ConfigWidget):
 
         self._behaviors = QListWidget()
         self._behaviors.setMaximumHeight(120)
-        self._behaviors.itemChanged.connect(lambda _item: self._update_type_fields())
+        self._behaviors.itemChanged.connect(self._on_behavior_ticked)
+        #: The behaviors a loaded config names, held until the vocabulary they tick arrives
+        #: with the recordings (`apply_recordings`). ``None`` once the user ticks one by hand.
+        self._wanted_behaviors: set[str] | None = None
         form.addRow(
             field_label("query_eval", "behaviors", "Behaviors:"), self._behaviors
         )
@@ -294,10 +297,15 @@ class _QueryEvalConfig(ConfigWidget):
         # Same stream, new recordings: keep whatever the user had checked.
         self._refresh_behaviors()
 
+    def _on_behavior_ticked(self, _item) -> None:
+        self._wanted_behaviors = None  # the user's ticks decide from here on
+        self._update_type_fields()
+
     def _on_stream_selected(self, *_args) -> None:
         # A different stream is a different vocabulary, so the previous stream's checked
         # names carry no meaning — clearing first makes _set_behaviors check them all
         # (its first-populate rule), rather than leaving every box unchecked.
+        self._wanted_behaviors = None
         self._behaviors.clear()
         self._refresh_behaviors()
 
@@ -309,14 +317,20 @@ class _QueryEvalConfig(ConfigWidget):
 
     def _set_behaviors(self, names: list[str]) -> None:
         checked = set(self._checked_behaviors())
+        wanted = self._wanted_behaviors
         self._behaviors.blockSignals(True)  # repopulating is not a user edit
         self._behaviors.clear()
         for name in names:
             item = QListWidgetItem(name)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            # Check known-checked names; on the first populate (nothing checked yet),
-            # check all so a single-behavior experiment runs with no extra clicks.
-            on = name in checked or not checked
+            if wanted is not None:
+                # A loaded config's subset, which usually arrives before its vocabulary does:
+                # Start from rebuilds the form, and the recordings resolve after that.
+                on = name in wanted
+            else:
+                # Check known-checked names; on the first populate (nothing checked yet),
+                # check all so a single-behavior experiment runs with no extra clicks.
+                on = name in checked or not checked
             item.setCheckState(Qt.CheckState.Checked if on else Qt.CheckState.Unchecked)
             self._behaviors.addItem(item)
         self._behaviors.blockSignals(False)
@@ -452,18 +466,19 @@ class _QueryEvalConfig(ConfigWidget):
             )
         if config.get("max_results"):
             self._max_results.setValue(int(config["max_results"]))
-        # Check exactly the behaviors the run scored (its recordings are already re-checked,
-        # so on_recordings_changed populated the vocabulary before this runs).
-        scored = {
-            b["behavior"] for b in config.get("behaviors", []) if not b.get("skipped")
-        }
-        for i in range(self._behaviors.count()):
-            item = self._behaviors.item(i)
-            item.setCheckState(
-                Qt.CheckState.Checked
-                if item.text() in scored
-                else Qt.CheckState.Unchecked
+        # The behaviors are names, the shape `config()` emits (a run record's per-behavior
+        # dicts are turned into names where the record is read: `start_from.record_settings`).
+        # Held as well as applied: Start from rebuilds the form before any recording is
+        # ticked, so the vocabulary is usually still empty here and the subset is applied when
+        # it arrives. Empty means "nothing named" — no run scores zero behaviors — and leaves
+        # the form's own first-populate rule in charge.
+        names = config.get("behaviors") or []
+        if names:
+            self._wanted_behaviors = set(names)
+            self._set_behaviors(
+                [self._behaviors.item(i).text() for i in range(self._behaviors.count())]
             )
+            self._update_type_fields()
         self._update_method_fields()  # re-gate for the loaded matcher
 
 
@@ -520,21 +535,23 @@ def _metrics_table(record: dict, by_behavior: dict) -> QTableView:
     for b in record.get("behaviors", []):
         m = by_behavior.get(b["behavior"])
         if m is None:  # skipped — show why
+            # Numeric cells with no value, so they sort below every scored row instead of
+            # being compared as text against the numbers in their column.
             model.appendRow(
                 [
                     QStandardItem(b["behavior"]),
                     QStandardItem(b.get("behavior_type", "")),
-                    QStandardItem("—"),
-                    QStandardItem(f"skipped: {b.get('skipped', '')}"),
+                    num_cell(None, "—"),
+                    num_cell(None, f"skipped: {b.get('skipped', '')}"),
                 ]
-                + [QStandardItem("") for _ in range(4)]
+                + [num_cell(None, "") for _ in range(4)]
             )
         else:
             model.appendRow(
                 [
                     QStandardItem(m.behavior),
                     QStandardItem(m.behavior_type),
-                    QStandardItem(str(m.n_folds)),
+                    num_cell(m.n_folds),
                     num_cell(m.ap, f"{m.ap:.3f}"),
                     num_cell(m.ap_std, f"±{m.ap_std:.3f}"),
                     num_cell(m.precision, f"{m.precision:.3f}"),
@@ -749,7 +766,7 @@ class _QueryEvalResult(QWidget):
             folds = []
         for f in folds:
             self._fold_model.appendRow(
-                [QStandardItem(str(x)) for x in (f.fold, f.n_gt, f.tp, f.fp, f.fn)]
+                [num_cell(x) for x in (f.fold, f.n_gt, f.tp, f.fp, f.fn)]
                 + [
                     num_cell(v, f"{v:.3f}")
                     for v in (f.ap, f.precision, f.recall, f.best_f1)
@@ -1073,7 +1090,7 @@ class _QueryEvalExploreDialog(Dialog):
         self._rows = rows
         self._clips_model.removeRows(0, self._clips_model.rowCount())
         for index, (rank, outcome, start, end, score, iou) in enumerate(rows):
-            rank_item = QStandardItem("" if rank is None else str(rank))
+            rank_item = num_cell(rank, "" if rank is None else str(rank))
             # Identity is the row's own index into `self._rows` — stamped so
             # `_on_clip_row` survives a sort instead of trusting the clicked row's
             # position.
@@ -1082,7 +1099,7 @@ class _QueryEvalExploreDialog(Dialog):
                 [
                     rank_item,
                     QStandardItem(outcome),
-                    QStandardItem(_span_text(start, end)),
+                    num_cell(start, _span_text(start, end)),
                     num_cell(score, "" if score is None else f"{score:.3f}"),
                     num_cell(iou, "" if iou is None else f"{iou:.2f}"),
                 ]

@@ -1200,6 +1200,27 @@ class QueryEvalModule(AnalysisModule):
                 "no requested recording is annotated for the behavior(s) and has embed "
                 f"run {cfg.embed_run_id!r} at track {cfg.track_id}"
             )
+        # Per behavior, not only for the set: one misspelt `--behavior` beside a real one
+        # would otherwise be scored as "skipped — no eligible recordings" and exit 0.
+        searched = [Recording(experiment_dir, sid) for sid in eligible]
+        unscored = [
+            b
+            for b in cfg.behaviors
+            if not any(sess.is_annotated_for(b, cfg.stream_name) for sess in searched)
+        ]
+        if unscored:
+            available = sorted(
+                {
+                    b
+                    for sess in searched
+                    for b in sess.covered_behaviors(cfg.stream_name)
+                }
+            )
+            raise ValueError(
+                f"no recording with embed run {cfg.embed_run_id!r} at track "
+                f"{cfg.track_id} is annotated for {', '.join(map(repr, unscored))}; "
+                f"behaviors annotated there: {', '.join(available) or '(none)'}"
+            )
         validate_comparability(
             [
                 (experiment_store.recording_path(experiment_dir, sid), cfg.embed_run_id)

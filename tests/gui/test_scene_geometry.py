@@ -22,7 +22,32 @@ test that only checks the dialog builds:
 - **A shared canvas has to be told what it is drawing.** `max_points` was a constructor
   argument when one dialog meant one kind. With four kinds on one canvas, a stale max lets a
   click put a third vertex on a two-point calibration.
+
+- **A control that reports pending edits is told by every edit, and only by edits** (#35
+  finding 10). Save greys out when nothing is pending, and the docs call that the sign your
+  edits are in. Rename, the known distance, the whole-video box and the active-window bounds
+  wrote into a definition and never told Save, so it stayed grey; two tests hid it by calling
+  `_sync()` by hand after the edit. The other way round, a scrub wrote the canvas back at its
+  6-decimal precision over a vertex stored with more, and lit Save with nothing changed. Every
+  handler that writes a definition ends in `_edited()` (or `_sync()`), checked over the class's
+  source with negative cases; each control is driven through its own signal; and "changed" is
+  compared at the canvas's precision.
+
+- **An edit lands on the frame being shown** (#35 finding 11). A new field of view or
+  calibration got its first keyframe at frame 0 whatever frame was showing, so the canvas was
+  read-only there, and **Set keyframe here** then made two keyframes, which locks the point
+  count. A new definition now starts on the frame showing, and the calibration (stored with no
+  frame) is edited on any frame. Clicked with the mouse on frame 500 here.
+
+- **A commit of several parts checks everything its writes refuse before the first write** (#35
+  finding 13). The pre-check missed a name used twice, so the field of view was stored and then
+  `set_rois` refused. It now asks the storage layer's own validators
+  (`Recording.check_spatial_defs`, `check_distance_calibration`) for every kind; asserted on
+  what is stored, not on the message.
 """
+
+import ast
+from pathlib import Path
 
 import pytest
 
@@ -71,6 +96,13 @@ def _row_of(dialog, index):
 
 def _index_of(dialog, name):
     return next(i for i, r in enumerate(dialog._regions) if r["name"] == name)
+
+
+def _rename(dialog, name):
+    """Type a name the way a person does: the field's own signal, never a hand `_sync()`.
+    Calling `_sync()` by hand is what hid #35 finding 10 — the handler never did."""
+    dialog._name.setText(name)
+    dialog._name.editingFinished.emit()
 
 
 # --- the active window survives the trip through the editor ------------------ #
@@ -401,8 +433,7 @@ def test_save_keeps_the_window_open_and_tracks_pending_edits(qapp, tmp_path):
 
     index = _index_of(dialog, "nest")
     dialog._list.setCurrentRow(_row_of(dialog, index))
-    dialog._regions[index]["name"] = "renamed"
-    dialog._sync()
+    _rename(dialog, "renamed")
     assert dialog._save.isEnabled()
 
     dialog._save_all()
@@ -421,9 +452,8 @@ def test_closing_with_pending_edits_asks_first(qapp, tmp_path, monkeypatch):
     dialog = _workspace(rec)
     dialog.show()
     qapp.processEvents()
-    index = _index_of(dialog, "nest")
-    dialog._regions[index]["name"] = "renamed"
-    dialog._sync()
+    dialog._list.setCurrentRow(_row_of(dialog, _index_of(dialog, "nest")))
+    _rename(dialog, "renamed")
 
     asked = []
     with monkeypatch.context() as patch:
@@ -485,3 +515,371 @@ def test_the_canvas_reports_every_kind_of_edit(qapp, tmp_path):
     assert len(seen) == 1
     canvas.clear()
     assert len(seen) == 2
+
+
+# --- every edit reaches Save (#35 finding 10) -------------------------------- #
+# Save greys out when nothing is pending, and the docs call that the sign your edits are
+# in. Four handlers wrote into a definition and never told Save — rename, the known
+# distance, the whole-video box and the active-window bounds — and two tests hid it by
+# calling `_sync()` by hand after the edit. Each case below drives the control's own
+# signal on a freshly opened dialog, so the only thing that can light Save is the handler.
+def _everything(tmp_path):
+    _exp, rec = _recording(tmp_path)
+    rec.define_roi("nest", _kf())
+    rec.define_roi("feeder", [(0, _square()), (300, _square(0.05))])
+    rec.define_roi("late", _kf(0.1), active=(0, 900))
+    rec.define_point("lever", [(0, [(0.5, 0.5)])])
+    rec.set_distance_calibration([(0.1, 0.1), (0.5, 0.1)], 10.0)
+    return rec
+
+
+def _pick(dialog, name):
+    dialog._list.setCurrentRow(_row_of(dialog, _index_of(dialog, name)))
+
+
+def _scrub(dialog, frame):
+    """Move the scrubber, whose `frame_changed` is what reaches the dialog."""
+    dialog._scrubber.set_total(1000)
+    dialog._scrubber.set_frame(frame, decode=False)
+
+
+_EDITS = {
+    "rename": ("nest", lambda d: _rename(d, "burrow")),
+    "known distance": ("Distance calibration", lambda d: d._distance.setValue(25.0)),
+    "distance unit": ("Distance calibration", lambda d: d._unit.setCurrentText("cm")),
+    "whole-video box": ("nest", lambda d: d._whole_video.setChecked(False)),
+    "set active start": (
+        "late",
+        lambda d: (_scrub(d, 100), d._set_start.click()),
+    ),
+    "set active end": ("late", lambda d: (_scrub(d, 500), d._set_end.click())),
+    "set keyframe here": ("nest", lambda d: (_scrub(d, 200), d._set_kf.click())),
+    "delete keyframe": ("feeder", lambda d: (_scrub(d, 300), d._del_kf.click())),
+    "undo point": ("nest", lambda d: d._undo.click()),
+    "clear points": ("nest", lambda d: d._clear.click()),
+    "delete": ("nest", lambda d: d._delete.click()),
+    "canvas drag": (
+        "nest",
+        lambda d: (
+            d._canvas.set_polygon(_square(0.05), editable=True),
+            d._canvas.edited.emit(),
+        ),
+    ),
+}
+
+
+@pytest.mark.parametrize("control", sorted(_EDITS))
+def test_every_edit_control_lights_save(qapp, tmp_path, control):
+    rec = _everything(tmp_path)
+    dialog = _workspace(rec)
+    name, act = _EDITS[control]
+    _pick(dialog, name)
+    assert not dialog._save.isEnabled(), "Save was live before any edit"
+    act(dialog)
+    assert dialog._dirty(), f"{control} did not change anything — the case is vacuous"
+    assert dialog._save.isEnabled(), f"{control} changed a definition; Save stayed grey"
+
+
+@pytest.mark.parametrize("name", ["nest", "feeder", "late", "lever"])
+def test_looking_is_not_an_edit(qapp, tmp_path, name):
+    """Selecting a definition and scrubbing writes the canvas back into it. Its vertices
+    came from the API with more decimals than the canvas keeps (``0.2 + 0.1``), so that
+    write-back used to read as an edit and light Save with nothing changed — which is also
+    what made the active-window cases above pass with their own fix removed."""
+    rec = _everything(tmp_path)
+    dialog = _workspace(rec)
+    _pick(dialog, name)
+    for frame in (100, 300, 0):
+        _scrub(dialog, frame)
+    assert dialog._dirty() == [] and not dialog._save.isEnabled()
+
+
+@pytest.mark.parametrize("kind_id", [k.id for k in SPATIAL_KINDS])
+def test_every_add_button_lights_save(qapp, tmp_path, kind_id):
+    _exp, rec = _recording(tmp_path)
+    dialog = _workspace(rec)
+    assert not dialog._save.isEnabled()
+    dialog._add_buttons[kind_id].click()
+    assert dialog._save.isEnabled()
+
+
+@pytest.mark.parametrize("kind_id", [k.id for k in SPATIAL_KINDS])
+def test_the_name_field_shows_the_definition_selected(qapp, tmp_path, kind_id):
+    """Adding selects the new definition with its handler suppressed, so the Name field
+    stayed blank (or kept the one selected before) although the definition had a name.
+    """
+    rec = _everything(tmp_path) if kind_id != "calibration" else _recording(tmp_path)[1]
+    dialog = _workspace(rec)
+    if kind_id != "calibration":
+        _pick(dialog, "nest")
+    dialog._add_buttons[kind_id].click()
+    assert dialog._name.text() == dialog._current()["name"]
+    dialog._delete.click()
+    assert dialog._name.text() == "", "the Name field kept a deleted definition's name"
+
+
+# --- the rule, over the class's source --------------------------------------- #
+# The cases above cover today's controls. A handler added tomorrow is covered by this: a
+# method of `SceneGeometryDialog` that writes into a definition must call `_edited()` or
+# `_sync()` (which ends in the same Save refresh). `_capture_current` is the one helper,
+# named with its reason.
+_DEFINITION_KEYS = {"name", "keyframes", "active", "distance_mm", "visible"}
+_HELPERS = {
+    "_capture_current": "writes the canvas back; every caller ends in _edited or _sync",
+}
+
+
+def _is_self_attr(node, attr):
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == attr
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "self"
+    )
+
+
+def _region_names(fn) -> set[str]:
+    """Names bound to a definition in ``fn``: from `self._current()`, an index into
+    `self._regions`, a loop over it, or a dict handed to `self._regions.append`."""
+    names = set()
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target, value = node.targets[0], node.value
+            if isinstance(target, ast.Name) and (
+                (isinstance(value, ast.Call) and _is_self_attr(value.func, "_current"))
+                or (
+                    isinstance(value, ast.Subscript)
+                    and _is_self_attr(value.value, "_regions")
+                )
+            ):
+                names.add(target.id)
+        elif isinstance(node, ast.For) and _is_self_attr(node.iter, "_regions"):
+            if isinstance(node.target, ast.Name):
+                names.add(node.target.id)
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "append"
+            and _is_self_attr(node.func.value, "_regions")
+        ):
+            names |= {a.id for a in node.args if isinstance(a, ast.Name)}
+    return names
+
+
+def _writes_a_definition(target, names) -> bool:
+    if not isinstance(target, ast.Subscript):
+        return False
+    node = target
+    while isinstance(node, ast.Subscript):
+        node = node.value
+    return _is_self_attr(node, "_regions") or (
+        isinstance(node, ast.Name) and node.id in names
+    )
+
+
+def _unsynced_edits(source: str, cls: str = "SceneGeometryDialog") -> list[str]:
+    """Methods of ``cls`` that write into a definition and never tell Save."""
+    klass = next(
+        n
+        for n in ast.walk(ast.parse(source))
+        if isinstance(n, ast.ClassDef) and n.name == cls
+    )
+    found = []
+    for fn in klass.body:
+        if not isinstance(fn, ast.FunctionDef) or fn.name in _HELPERS:
+            continue
+        names = _region_names(fn)
+        targets = []
+        for node in ast.walk(fn):
+            if isinstance(node, (ast.Assign, ast.Delete)):
+                targets += node.targets
+            elif isinstance(node, ast.AugAssign):
+                targets.append(node.target)
+        if not any(_writes_a_definition(t, names) for t in targets):
+            continue
+        calls = {
+            node.func.attr
+            for node in ast.walk(fn)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "self"
+        }
+        if not calls & {"_edited", "_sync"}:
+            found.append(fn.name)
+    return found
+
+
+def test_every_handler_that_writes_a_definition_tells_save():
+    import detail.gui.arena as arena
+
+    source = Path(arena.__file__).read_text(encoding="utf-8-sig")
+    assert _unsynced_edits(source) == []
+    for helper in _HELPERS:  # an exemption that excuses nothing is stale
+        assert f"def {helper}(" in source, f"{helper} is exempt but no longer exists"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        'reg = self._current()\n        reg["name"] = "x"',
+        'self._regions[0]["active"] = None',
+        'for reg in self._regions:\n            reg["visible"] = False',
+        'reg = self._regions[i]\n        del reg["keyframes"][3]',
+        'new = {"kind": "roi"}\n        new["distance_mm"] = 1.0\n'
+        "        self._regions.append(new)",
+    ],
+)
+def test_the_save_scan_would_catch_an_unsynced_handler(body):
+    source = f"class SceneGeometryDialog:\n    def _on_x(self, i=0):\n        {body}\n"
+    assert _unsynced_edits(source) == ["_on_x"]
+    fixed = source + "        self._edited()\n"
+    assert _unsynced_edits(fixed) == []
+
+
+def test_the_save_scan_ignores_a_dict_that_is_not_a_definition():
+    source = (
+        "class SceneGeometryDialog:\n"
+        "    def _save_all(self):\n"
+        "        entry = {}\n"
+        '        entry["active"] = None\n'
+    )
+    assert _unsynced_edits(source) == []
+
+
+# --- a new definition is drawable on the frame showing (#35 finding 11) ------- #
+@pytest.mark.parametrize("kind_id, clicks", [("arena", 3), ("calibration", 2)])
+def test_a_definition_started_on_a_later_frame_can_be_drawn_there(
+    qapp, tmp_path, kind_id, clicks
+):
+    """A field of view or calibration started on frame 500 took no clicks.
+
+    Its first keyframe went to frame 0, so frame 500 was "interpolated" and the canvas
+    read-only; **Set keyframe here** then made two keyframes, which locks the point count,
+    so clicks still did nothing. Clicked here with the mouse, on a shown canvas.
+    """
+    from PyQt6.QtCore import QPoint
+    from PyQt6.QtTest import QTest
+
+    _exp, rec = _recording(tmp_path)
+    dialog = _workspace(rec)
+    dialog.resize(1040, 740)
+    dialog.show()
+    qapp.processEvents()
+    dialog._canvas.set_image(_BLANK)  # a frame on screen, as with real footage
+    _scrub(dialog, 500)
+    dialog._add_buttons[kind_id].click()
+    qapp.processEvents()
+
+    rect = dialog._canvas._image_rect()
+    spots = [(0.2, 0.2), (0.8, 0.3), (0.5, 0.8)][:clicks]
+    for fx, fy in spots:
+        at = QPoint(
+            round(rect.x() + fx * rect.width()), round(rect.y() + fy * rect.height())
+        )
+        QTest.mouseClick(dialog._canvas, Qt.MouseButton.LeftButton, pos=at)
+    drawn = dialog._canvas.normalized_polygon()
+    assert len(drawn) == clicks, f"{clicks} clicks on frame 500 placed {len(drawn)}"
+    assert dialog._save.isEnabled()
+
+    if kind_id == "calibration":
+        dialog._distance.setValue(40.0)
+    dialog._save_all()
+    if kind_id == "arena":
+        ((frame, points),) = rec.arena_keyframes(rec.arenas[0]["id"])
+        assert frame == 500 and len(points) == 3
+    else:
+        cal = rec.distance_calibration
+        assert len(cal["points"]) == 2 and cal["distance_mm"] == 40.0
+
+
+def test_a_calibration_has_no_keyframes_to_set(qapp, tmp_path):
+    """The calibration is stored with no frame, so the editor offers no keyframe on it."""
+    _exp, rec = _recording(tmp_path)
+    rec.set_distance_calibration([(0.1, 0.1), (0.5, 0.1)], 10.0)
+    dialog = _workspace(rec)
+    _pick(dialog, "Distance calibration")
+    _scrub(dialog, 700)
+    assert not dialog._set_kf.isEnabled() and not dialog._del_kf.isEnabled()
+    assert "same on every frame" in dialog._set_kf.toolTip()
+    assert dialog._undo.isEnabled(), "the calibration is not editable on frame 700"
+
+
+# --- Save is one transaction (#35 finding 13) --------------------------------- #
+def _two_named(rec, kind):
+    if kind == "arena":
+        rec.define_arena("cage", _kf())
+        rec.define_arena("cage 2", _kf(0.05))
+    else:
+        rec.define_arena("cage", _kf())
+    if kind == "roi":
+        rec.define_roi("a", _kf())
+        rec.define_roi("b", _kf(0.05))
+    if kind == "point":
+        rec.define_point("a", [(0, [(0.5, 0.5)])])
+        rec.define_point("b", [(0, [(0.6, 0.6)])])
+
+
+@pytest.mark.parametrize("kind", ["arena", "roi", "point"])
+def test_a_name_used_twice_is_refused_before_anything_is_written(
+    qapp, tmp_path, monkeypatch, kind
+):
+    """Every refusal a write can raise is checked before the first write.
+
+    The pre-check did not look for a name used twice, so the field of view was written and
+    then `set_rois` refused — the comment promised one transaction. Asserted on what is
+    stored: the edited field of view must be unchanged on disk.
+    """
+    from PyQt6.QtWidgets import QMessageBox
+
+    _exp, rec = _recording(tmp_path)
+    _two_named(rec, kind)
+    stored_fov = rec.arena_keyframes(rec.arenas[0]["id"])
+    stored = {k: [e["name"] for e in getattr(rec, f"{k}s")] for k in ("roi", "point")}
+
+    dialog = _workspace(rec)
+    told = []
+    dialog._refuse = lambda _title, message: told.append(message)
+    monkeypatch.setattr(
+        QMessageBox, "critical", staticmethod(lambda *a, **k: told.append(a[2]))
+    )
+    fov = next(r for r in dialog._regions if r["kind"] == "arena")
+    fov["keyframes"] = {0: [(0.3, 0.3), (0.7, 0.3), (0.5, 0.7)]}
+    names = [r for r in dialog._regions if r["kind"] == kind]
+    names[1]["name"] = names[0]["name"]
+    dialog._save_all()
+
+    assert told and "named" in told[0], told
+    assert rec.arena_keyframes(rec.arenas[0]["id"]) == stored_fov
+    assert {
+        k: [e["name"] for e in getattr(rec, f"{k}s")] for k in ("roi", "point")
+    } == stored
+
+
+def test_a_calibration_the_write_would_refuse_is_refused_first(
+    qapp, tmp_path, monkeypatch
+):
+    """The calibration is written last, so its refusal (two points on one spot) used to
+    arrive after the field of view and every region were already stored."""
+    from PyQt6.QtWidgets import QMessageBox
+
+    _exp, rec = _recording(tmp_path)
+    rec.define_arena("cage", _kf())
+    rec.set_distance_calibration([(0.1, 0.1), (0.5, 0.1)], 10.0)
+    stored_fov = rec.arena_keyframes(rec.arenas[0]["id"])
+
+    dialog = _workspace(rec)
+    told = []
+    dialog._refuse = lambda _title, message: told.append(message)
+    monkeypatch.setattr(
+        QMessageBox, "critical", staticmethod(lambda *a, **k: told.append(a[2]))
+    )
+    next(r for r in dialog._regions if r["kind"] == "arena")["keyframes"] = {
+        0: [(0.3, 0.3), (0.7, 0.3), (0.5, 0.7)]
+    }
+    cal = next(r for r in dialog._regions if r["kind"] == "calibration")
+    cal["keyframes"] = {0: [(0.4, 0.4), (0.4, 0.4)]}
+    dialog._save_all()
+
+    assert told and "distinct" in told[0], told
+    assert rec.arena_keyframes(rec.arenas[0]["id"]) == stored_fov

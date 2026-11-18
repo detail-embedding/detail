@@ -35,6 +35,7 @@ from detail.api import tools as api_tools
 from detail.cli_numbers import FINITE_FLOAT
 from detail.cli_numbers import finite_float_range
 from detail.cli_numbers import parse_finite
+from detail.cli_paths import UserPath
 from detail.configs.stream_select import BorisSelectionConfig, MedpcSessionConfig
 from detail.configs.detection import DetectionConfig
 from detail.configs.display import ConfidenceView
@@ -214,7 +215,7 @@ def _read_stream_sources(
             if line_no == 1 and metadata_store.is_video_key_header(cells[0]):
                 by_video = True
                 continue
-            if line_no == 1 and cells[0].lower() in ("recording", "recording_id"):
+            if line_no == 1 and metadata_store.is_recording_key_header(cells[0]):
                 continue  # an optional header, so the file reads as a table
             if len(cells) < 2 or not cells[1]:
                 raise ValueError(
@@ -587,7 +588,7 @@ _EXPERIMENT_OPT = click.option(
     "--experiment",
     "experiment_dir",
     required=True,
-    type=click.Path(file_okay=False, path_type=Path),
+    type=UserPath(file_okay=False, path_type=Path),
     help="Experiment directory.",
 )
 
@@ -888,7 +889,7 @@ def experiment() -> None:
     "--dir",
     "parent_dir",
     required=True,
-    type=click.Path(file_okay=False, path_type=Path),
+    type=UserPath(file_okay=False, path_type=Path),
     help="Parent directory to create the experiment inside.",
 )
 def experiment_create(name: str, parent_dir: Path) -> None:
@@ -930,7 +931,7 @@ def experiment_status(experiment_dir: Path) -> None:
     "--csv",
     "csv_path",
     required=True,
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    type=UserPath(exists=True, dir_okay=False, path_type=Path),
     help="CSV with a key column + grouping-variable columns (§11).",
 )
 @click.option(
@@ -976,7 +977,7 @@ def experiment_import_metadata(
     "--csv",
     "csv_path",
     required=True,
-    type=click.Path(dir_okay=False, path_type=Path),
+    type=UserPath(dir_okay=False, path_type=Path),
     help="Write the grouping variables to this CSV (a fill-in template, §11).",
 )
 def experiment_export_metadata(experiment_dir: Path, csv_path: Path) -> None:
@@ -1050,7 +1051,7 @@ def experiment_set_metadata(
 @click.option(
     "--out",
     "out_path",
-    type=click.Path(dir_okay=False, path_type=Path),
+    type=UserPath(dir_okay=False, path_type=Path),
     help="Archive path (default <id>.segproj.tar beside the experiment).",
 )
 @click.option("--include-video", is_flag=True, help="Include source video (large).")
@@ -1106,7 +1107,7 @@ def _echo_no_video_packed(experiment_dir: Path, contents: dict) -> None:
 
 
 @experiment.command("import")
-@click.argument("archive", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("archive", type=UserPath(exists=True, dir_okay=False, path_type=Path))
 @click.option(
     "--replace",
     is_flag=True,
@@ -1311,7 +1312,7 @@ def _with_stage_progress(call):
     "--video",
     "video_path",
     required=True,
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    type=UserPath(exists=True, dir_okay=False, path_type=Path),
     help="Video file to import as the next part.",
 )
 @click.option(
@@ -1480,7 +1481,7 @@ def recording_verify(experiment_dir: Path, recording_id: str) -> None:
 @click.option(
     "--video",
     "video_path",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    type=UserPath(exists=True, dir_okay=False, path_type=Path),
     help="The video file. For a copied part, defaults to the file it was copied from "
     "when that is on this machine.",
 )
@@ -1553,13 +1554,13 @@ def recording_relink(
     "--data",
     "data_path",
     required=True,
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    type=UserPath(exists=True, dir_okay=False, path_type=Path),
     help="Primary stream data file to import.",
 )
 @click.option(
     "--program",
     "program_path",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    type=UserPath(exists=True, dir_okay=False, path_type=Path),
     help="MED-PC .MPC program (the 'program' aux input for the medpc importer).",
 )
 @click.option(
@@ -1635,17 +1636,18 @@ def recording_relink(
     "--offset",
     "offset_s",
     type=FINITE_FLOAT,
-    default=0.0,
-    show_default=True,
+    default=None,
     help="Alignment offset in seconds, set at import: positive if the stream began after "
-    "the video. Only for an external-clock stream; edit later with set-stream-offset.",
+    "the video. Only for an external-clock stream; edit later with set-stream-offset. "
+    "Default 0, or with --preset the preset's own offset.",
 )
 @click.option(
     "--preset",
     default=None,
     type=str,
     help="Use a saved preset's importer + config instead of --importer and the mapping "
-    "flags. See `experiment list-stream-presets`.",
+    "flags (--time-column, --time-is, --channel), which are refused beside it. See "
+    "`experiment list-stream-presets`.",
 )
 @click.option(
     "--save-preset",
@@ -1653,7 +1655,8 @@ def recording_relink(
     default=None,
     type=str,
     help="Save this import's importer + mapping under this name, for reuse on the "
-    "experiment's other recordings. Saved only if the import succeeds.",
+    "experiment's other recordings. Saved only if the import succeeds; a name already "
+    "taken is refused before anything is imported.",
 )
 def recording_add_stream(
     experiment_dir: Path,
@@ -1672,7 +1675,7 @@ def recording_add_stream(
     medpc_session: int | None,
     boris_observation: str | None,
     boris_subject: str | None,
-    offset_s: float,
+    offset_s: float | None,
     preset: str | None,
     save_preset: str | None,
 ) -> None:
@@ -1688,6 +1691,24 @@ def recording_add_stream(
     # preset form unrunnable: click refused it before the body could branch.
     if (importer is None) == (preset is None):
         raise click.ClickException("pass exactly one of --importer or --preset")
+    if preset is not None:
+        # The preset carries the mapping, and the branch below never reads these: refused
+        # rather than dropped, so a `--channel` meant to narrow the import is not ignored.
+        mapping = [
+            flag
+            for flag, given in (
+                ("--time-column", time_column is not None),
+                ("--time-is", time_kind != "auto"),
+                ("--channel", bool(channels)),
+                ("--covered-behaviors", covered_behaviors is not None),
+            )
+            if given
+        ]
+        if mapping:
+            raise UserInputError(
+                f"{', '.join(mapping)} cannot be used with --preset, which carries its own "
+                "mapping; drop them, or pass --importer with the flags instead"
+            )
     proj = _open_experiment(experiment_dir)
     aux = {"program": program_path} if program_path is not None else None
     covered = (
@@ -1704,9 +1725,14 @@ def recording_add_stream(
         boris_observation=boris_observation,
         boris_subject=boris_subject,
     )
-    offset_ns = _option_t_ns(offset_s, "--offset")
+    # `None` with --preset means "the preset's own offset"; without one it is 0.
+    offset_ns = None if offset_s is None else _option_t_ns(offset_s, "--offset")
     try:
         sess = _recording(proj, recording_id)
+        if save_preset is not None:
+            # The preset is saved after the import, but its name is checked before: a
+            # taken name failed the command with the stream already added (#29).
+            proj.check_new_stream_preset_name(save_preset)
         if preset is not None:
             sess.add_stream_from_preset(
                 name,
@@ -1716,7 +1742,9 @@ def recording_add_stream(
                 aux_paths=aux,
                 origin=origin,
             )
-            importer = proj.get_stream_preset(preset)["importer"]
+            saved = proj.get_stream_preset(preset)
+            importer = saved["importer"]
+            config = saved.get("config") or None
         else:
             sess.add_stream(
                 name,
@@ -1726,16 +1754,21 @@ def recording_add_stream(
                 covered_behaviors=covered,
                 origin=origin,
                 config=selection if selection is not None else config,
-                offset_ns=offset_ns,
+                offset_ns=0 if offset_ns is None else offset_ns,
             )
-        # Saved after the import, never before: a preset is worth keeping once the mapping
-        # has been shown to read the file, and a saved-but-broken one is worse than none.
-        # Only the mapping: which session or subject this file held is about this file, and
-        # the same choice on the next recording's file would pick another animal's data.
-        if save_preset is not None:
-            proj.save_stream_preset(save_preset, importer, config)
     except (FileNotFoundError, ValueError) as e:
         raise click.ClickException(str(e))
+    # Saved after the import, never before: a preset is worth keeping once the mapping
+    # has been shown to read the file, and a saved-but-broken one is worse than none.
+    # Only the mapping: which session or subject this file held is about this file, and
+    # the same choice on the next recording's file would pick another animal's data.
+    if save_preset is not None:
+        try:
+            proj.save_stream_preset(save_preset, importer, config)
+        except ValueError as e:
+            raise click.ClickException(
+                f"added stream {name!r} to {recording_id}, but the preset was not saved: {e}"
+            )
     events = sess.stream_events(name)
     entry = next((s for s in sess.streams if s.get("name") == name), {})
     marker = (
@@ -1789,7 +1822,7 @@ def experiment_delete_stream_preset(experiment_dir: Path, name: str) -> None:
     "--out",
     "out_path",
     required=True,
-    type=click.Path(dir_okay=False, path_type=Path),
+    type=UserPath(dir_okay=False, path_type=Path),
     help="Write the preset to this file.",
 )
 def experiment_export_stream_preset(
@@ -1806,7 +1839,7 @@ def experiment_export_stream_preset(
 
 @experiment.command("import-stream-preset")
 @_EXPERIMENT_OPT
-@click.argument("path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("path", type=UserPath(exists=True, dir_okay=False, path_type=Path))
 @click.option(
     "--name", default=None, type=str, help="Save under this name instead of the file's."
 )
@@ -1899,7 +1932,7 @@ def experiment_delete_heading(experiment_dir: Path, name: str) -> None:
     "--out",
     "out_path",
     required=True,
-    type=click.Path(dir_okay=False, path_type=Path),
+    type=UserPath(dir_okay=False, path_type=Path),
     help="Write the definition to this file.",
 )
 def experiment_export_heading(experiment_dir: Path, name: str, out_path: Path) -> None:
@@ -1914,7 +1947,7 @@ def experiment_export_heading(experiment_dir: Path, name: str, out_path: Path) -
 
 @experiment.command("import-heading")
 @_EXPERIMENT_OPT
-@click.argument("path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("path", type=UserPath(exists=True, dir_okay=False, path_type=Path))
 @click.option(
     "--name", default=None, type=str, help="Save under this name instead of the file's."
 )
@@ -1945,7 +1978,7 @@ def experiment_import_heading(
     "--sources",
     "sources_path",
     required=True,
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    type=UserPath(exists=True, dir_okay=False, path_type=Path),
     help="CSV of `recording,file[,offset_s]` — one row per recording. Paths resolve "
     "relative to this file. The offset column is per recording, which is the point: "
     "each video and logger pair has its own skew. Head the first column `video` to key "
@@ -1981,6 +2014,10 @@ def experiment_apply_stream_preset(
     click.echo(f"imported {counts['done']}, skipped {len(skipped)}")
     for ref, error in skipped:
         click.echo(f"  skipped {ref}: {error}", err=True)
+    if skipped and not counts["done"]:
+        raise click.ClickException(
+            "nothing was imported: every recording was skipped (reasons above)"
+        )
 
 
 _ONLY_OPT = click.option(
@@ -2019,10 +2056,11 @@ def _propagate_cli(
         click.echo(
             f"  camera motion dropped (copied at frame 0): {', '.join(result.flattened)}"
         )
-    for name, reason in result.refused:
-        click.echo(f"  not copied: {name} {reason}", err=True)
-    for ref, error in result.skipped:
-        click.echo(f"  skipped {ref}: {error}", err=True)
+    names = proj.recording_names()
+    for rid, name, reason in result.refused:
+        click.echo(f"  not copied to {names.get(rid, rid)}: {name}: {reason}", err=True)
+    for rid, error in result.skipped:
+        click.echo(f"  skipped {names.get(rid, rid)}: {error}", err=True)
 
 
 @experiment.command("propagate-fov")
@@ -2145,7 +2183,7 @@ def recording_set_stream_offset(
     "--bundle",
     "bundle_dir",
     required=True,
-    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    type=UserPath(exists=True, file_okay=False, path_type=Path),
     help="Bundle folder holding a manifest.yaml + the referenced video/stream files.",
 )
 @click.option(
@@ -2192,7 +2230,7 @@ def recording_import(experiment_dir: Path, bundle_dir: Path, dry_run: bool) -> N
     "--manifest",
     "manifest_path",
     required=True,
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    type=UserPath(exists=True, dir_okay=False, path_type=Path),
     help="Labels manifest (schema_version: 1; labels: {recording_id: file}).",
 )
 @click.option(
@@ -2237,6 +2275,10 @@ def recording_import_labels(
     )
     for sid, error in skipped:
         click.echo(f"  skipped {sid}: {error}", err=True)
+    if skipped and not counts["done"]:
+        raise click.ClickException(
+            "nothing was imported: every recording was skipped (reasons above)"
+        )
 
 
 @recording.command("status")
@@ -2298,7 +2340,7 @@ def recording_status(experiment_dir: Path, recording_id: str) -> None:
     "--csv",
     "csv_path",
     required=True,
-    type=click.Path(dir_okay=False, path_type=Path),
+    type=UserPath(dir_okay=False, path_type=Path),
     help="Write the recording's whole spatial setup to this CSV (round-trippable, §10).",
 )
 def recording_export_spatial(
@@ -2352,7 +2394,7 @@ def _report_arrival(
 @click.option(
     "--csv",
     "csv_path",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    type=UserPath(exists=True, dir_okay=False, path_type=Path),
     help="Import ROIs + POIs from an exported CSV.",
 )
 def recording_import_spatial(
@@ -2399,7 +2441,7 @@ def recording_import_spatial(
 @click.option(
     "--csv",
     "csv_path",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    type=UserPath(exists=True, dir_okay=False, path_type=Path),
     help="Import the field of view from an exported spatial CSV.",
 )
 def recording_import_fov(
@@ -2444,7 +2486,7 @@ def recording_import_fov(
 @click.option(
     "--csv",
     "csv_path",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    type=UserPath(exists=True, dir_okay=False, path_type=Path),
     help="Import the distance calibration from an exported spatial CSV.",
 )
 def recording_import_calibration(
@@ -3834,7 +3876,10 @@ def dataset_create(
     "recording_ids",
     multiple=True,
     type=str,
-    help="Source recording id (repeatable; default: every recording in the experiment).",
+    help=(
+        "Source recording id (repeatable; default: every recording in the experiment "
+        "that has video)."
+    ),
 )
 @click.option(
     "--class",
@@ -4344,7 +4389,10 @@ def distill() -> None:
     "recording_ids",
     multiple=True,
     type=str,
-    help="Source recording id (repeatable; default: every recording in the experiment).",
+    help=(
+        "Source recording id (repeatable; default: every recording in the experiment "
+        "that has video)."
+    ),
 )
 @click.option(
     "--class",
@@ -4676,7 +4724,7 @@ def model() -> None:
 @click.option(
     "--experiment",
     "experiment_dir",
-    type=click.Path(file_okay=False, path_type=Path),
+    type=UserPath(file_okay=False, path_type=Path),
     help="Accepted for older scripts and ignored: models are machine-global, so no "
     "experiment is needed.",
 )
@@ -4709,7 +4757,7 @@ def model_check(
 @click.option(
     "--experiment",
     "experiment_dir",
-    type=click.Path(file_okay=False, path_type=Path),
+    type=UserPath(file_okay=False, path_type=Path),
     help="Accepted for older scripts and ignored: the weights cache is machine-global, so "
     "no experiment is needed.",
 )
@@ -4754,7 +4802,7 @@ _IMPORT_SKELETON_HELP = (
 
 
 @model.command("import")
-@click.argument("weights", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("weights", type=UserPath(exists=True, dir_okay=False, path_type=Path))
 @click.option(
     "--family",
     default=None,
@@ -4770,7 +4818,7 @@ _IMPORT_SKELETON_HELP = (
 @click.option("--notes", default=None, help="Optional free-text notes.")
 @click.option(
     "--preview",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    type=UserPath(exists=True, dir_okay=False, path_type=Path),
     default=None,
     help="An image to store as the model's preview.",
 )
@@ -4855,7 +4903,7 @@ def model_show(model_id: str) -> None:
 
 @model.command("export")
 @click.argument("model_id")
-@click.argument("dest", type=click.Path(dir_okay=False, path_type=Path))
+@click.argument("dest", type=UserPath(dir_okay=False, path_type=Path))
 def model_export(model_id: str, dest: Path) -> None:
     """Export one of your models to a .zip (weights + metadata + preview) to share it."""
     from detail.api import models as api_models
@@ -4877,7 +4925,7 @@ def model_export(model_id: str, dest: Path) -> None:
 @click.option("--notes", default=None, help="Optional free-text notes.")
 @click.option(
     "--preview",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    type=UserPath(exists=True, dir_okay=False, path_type=Path),
     default=None,
     help="An image to set as the model's preview.",
 )
@@ -4891,6 +4939,10 @@ def model_set_meta(
     """Edit one of your models' metadata (made-by / description / notes / preview)."""
     from detail.api import models as api_models
 
+    if made_by is None and description is None and notes is None and preview is None:
+        raise UserInputError(
+            "nothing to change; pass --made-by, --description, --notes or --preview"
+        )
     try:
         api_models.update_model_metadata(
             model_id, made_by=made_by, description=description, notes=notes
@@ -4903,7 +4955,7 @@ def model_set_meta(
 
 
 @model.command("restore")
-@click.argument("archive", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("archive", type=UserPath(exists=True, dir_okay=False, path_type=Path))
 def model_restore(archive: Path) -> None:
     """Restore a model exported with `model export` (a .zip) into the catalog."""
     from detail.api import models as api_models
@@ -4968,7 +5020,8 @@ def model_list() -> None:
 @model.command("remove")
 @click.argument("model_id")
 def model_remove(model_id: str) -> None:
-    """Remove a machine-global imported model."""
+    """Remove a machine-global imported model, or a folder an import stopped part-way by an
+    earlier version left in the catalog."""
     from detail.api import models as api_models
 
     try:
@@ -4994,7 +5047,7 @@ def locations() -> None:
     help="Completed tracking run id (e.g. track_01).",
 )  # fmt: skip
 @click.option(
-    "--out", "out_dir", required=True, type=click.Path(file_okay=False),
+    "--out", "out_dir", required=True, type=UserPath(file_okay=False),
     help=(
         "Directory to create the export folder in; each export makes a new one holding "
         "tracks/roi_relations/point_relations CSVs + locations.yaml."
@@ -5544,7 +5597,7 @@ def _query_methods() -> list[str]:
 )  # fmt: skip
 @click.option(
     "--from-csv", "from_csv",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    type=UserPath(exists=True, dir_okay=False, path_type=Path),
     help="Also seed examples from a prior clip CSV, grouped by its query_name column — the "
     "same path as reusing a previous run's examples.",
 )  # fmt: skip
@@ -5631,12 +5684,25 @@ def analysis_query(
     if not any(groups.values()):
         raise click.ClickException("provide at least one --example or --from-csv")
     # Non-examples group by behavior the same way examples do, so `--non-example
-    # rearing=rec:1.0-2.0` lands on the behavior it names. A group with only non-examples is
-    # a behavior with nothing to search *for*; validate() reports it with the rest.
+    # rearing=rec:1.0-2.0` lands on the behavior it names. One naming no behavior with
+    # examples would be a behavior with nothing to search *for*: the config cannot carry it,
+    # so it is refused here rather than dropped.
     negatives: dict = {}
     for spec in non_examples:
         name, clip = _parse_example(spec, track_id)
         negatives.setdefault(name, []).append(clip)
+    orphans = [name for name in negatives if not groups.get(name)]
+    if orphans:
+        shown = ", ".join("(no name)" if n is None else repr(n) for n in orphans)
+        known = ", ".join(
+            "(no name)" if n is None else repr(n)
+            for n, clips in groups.items()
+            if clips
+        )
+        raise UserInputError(
+            f"--non-example names {shown}, which has no --example; non-examples attach "
+            f"to a behavior that has examples: {known}"
+        )
     split_gap_ns = _split_gap_ns(trajectory_split_gap_s)
     groups = _screen_example_clips(
         proj.dir, embed_run_id, groups, split_gap_ns, strict, method_id=method
@@ -6028,7 +6094,7 @@ def _width_note(estimate: dict, goal: float) -> str:
 @_EXPERIMENT_OPT
 @click.option("--run", "run_id", required=True, help="Query run id (e.g. an_01).")
 @click.option(
-    "--out", "out_dir", required=True, type=click.Path(file_okay=False, path_type=Path),
+    "--out", "out_dir", required=True, type=UserPath(file_okay=False, path_type=Path),
     help=(
         "Directory to create the export folder in; each export makes a new one holding a "
         "behavior-stream CSV per searched recording."
@@ -6572,7 +6638,7 @@ def analysis_temporal_interpret(
     "--run", "run_id", required=True, help="Temporal-clustering run id (e.g. an_01)."
 )
 @click.option(
-    "--out", "out_dir", required=True, type=click.Path(file_okay=False, path_type=Path),
+    "--out", "out_dir", required=True, type=UserPath(file_okay=False, path_type=Path),
     help=(
         "Directory to create the export folder in; each export makes a new one holding a "
         "behavior-stream CSV per fitted recording."
@@ -6617,21 +6683,21 @@ def analysis_export_temporal_clustering(
 @click.option(
     "--out",
     "out_path",
-    type=click.Path(dir_okay=False, path_type=Path),
+    type=UserPath(dir_okay=False, path_type=Path),
     default=None,
     help="Write the montage itself: an .mp4 or .gif.",
 )
 @click.option(
     "--per-clip-gifs",
     "gif_dir",
-    type=click.Path(file_okay=False, path_type=Path),
+    type=UserPath(file_okay=False, path_type=Path),
     default=None,
     help="Write one GIF per clip into this folder, named rank_recording_m-ss.t.gif.",
 )
 @click.option(
     "--csv",
     "csv_path",
-    type=click.Path(dir_okay=False, path_type=Path),
+    type=UserPath(dir_okay=False, path_type=Path),
     default=None,
     help="Write the clips as a CSV list: a clip-query CSV (`detail analysis query "
     "--from-csv` reads it as example clips) with rank, recording name, subject, times in "
@@ -6962,31 +7028,31 @@ def analysis_cluster_montage(
     show_default=True, help=_QE["point_window_s"].description,
 )  # fmt: skip
 @click.option(
-    "--out", "out_path", required=True, type=click.Path(dir_okay=False, path_type=Path),
+    "--out", "out_path", required=True, type=UserPath(dir_okay=False, path_type=Path),
     help="Metrics CSV to append one row per behavior to (created if absent).",
 )  # fmt: skip
 @click.option(
-    "--pr-out", "pr_out_dir", default=None, type=click.Path(file_okay=False, path_type=Path),
+    "--pr-out", "pr_out_dir", default=None, type=UserPath(file_okay=False, path_type=Path),
     help="Optional directory for per-behavior PR-curve points.",
 )  # fmt: skip
 @click.option(
     "--predictions-out", "predictions_out", default=None,
-    type=click.Path(dir_okay=False, path_type=Path),
+    type=UserPath(dir_okay=False, path_type=Path),
     help="Optional CSV of per-clip prediction outcomes (TP/FP + matched GT). Overwritten.",
 )  # fmt: skip
 @click.option(
     "--ground-truth-out", "ground_truth_out", default=None,
-    type=click.Path(dir_okay=False, path_type=Path),
+    type=UserPath(dir_okay=False, path_type=Path),
     help="Optional CSV of ground-truth outcomes (matched / FN / exemplar). Overwritten.",
 )  # fmt: skip
 @click.option(
     "--folds-out", "folds_out", default=None,
-    type=click.Path(dir_okay=False, path_type=Path),
+    type=UserPath(dir_okay=False, path_type=Path),
     help="Optional CSV of per-fold metrics behind the mean±std row. Overwritten.",
 )  # fmt: skip
 @click.option(
     "--overlap-out", "overlap_out", default=None,
-    type=click.Path(dir_okay=False, path_type=Path),
+    type=UserPath(dir_okay=False, path_type=Path),
     help="Optional CSV of recall/precision/AP at each overlap level, each beside its "
          "null (a value that doesn't clear its null isn't real). Overwritten.",
 )  # fmt: skip
@@ -7003,6 +7069,7 @@ def analysis_query_eval(
     ground-truth intervals. One row per --behavior is appended to --out so a shell
     sweep over configs / embedding runs builds a comparison table."""
     from detail.pipeline.query_eval import (
+        QueryEvalModule,
         _overlap_rows,
         evaluate_query,
         null_at as query_eval_null_at,
@@ -7046,6 +7113,13 @@ def analysis_query_eval(
         "iou_threshold": iou_threshold,
         "point_window_s": point_window_s,
     }
+    # The module's own checks, which a launched run gets and this direct call skipped: an
+    # unknown --stream, --embed-run, --track or --behavior fails naming what there is, rather
+    # than scoring nothing (`docs/cli.md`).
+    try:
+        config = QueryEvalModule().validate(experiment_dir, config)
+    except (ValueError, KeyError, FileNotFoundError) as e:
+        raise click.ClickException(str(e))
     bar = _StageProgress()
     try:
         results = evaluate_query(experiment_dir, config, progress=bar)
@@ -7103,9 +7177,12 @@ def analysis_query_eval(
                     Path(pr_out_dir) / f"{embed_run_id}_{r.behavior}_fold_{j:02d}.csv",
                     fm.pr_points,
                 )
-    if rows:
-        query_eval_csv.append_metrics(out_path, rows)
-        click.echo(f"metrics: {out_path}")
+    if not rows:
+        raise click.ClickException(
+            "every behavior was skipped, so nothing was scored and --out was not written"
+        )
+    query_eval_csv.append_metrics(out_path, rows)
+    click.echo(f"metrics: {out_path}")
     if folds_out is not None:
         query_eval_csv.write_folds_csv(folds_out, fold_rows)
         click.echo(f"folds: {folds_out}")
@@ -7268,7 +7345,7 @@ def video_root_group() -> None:
 
 @video_root_group.command("set")
 @click.argument("alias")
-@click.argument("path", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.argument("path", type=UserPath(exists=True, file_okay=False, path_type=Path))
 def video_root_set(alias: str, path: Path) -> None:
     """Register (or re-point) video root ALIAS to directory PATH on this machine.
 
@@ -7412,7 +7489,7 @@ def measures_list() -> None:
 @_EXPERIMENT_OPT
 @click.option("--run", "run_id", required=True, help="Analysis run id (e.g. an_01).")
 @click.option(
-    "--out", "out_dir", required=True, type=click.Path(file_okay=False, path_type=Path),
+    "--out", "out_dir", required=True, type=UserPath(file_okay=False, path_type=Path),
     help=(
         "Directory to create the export folder in; each export makes a new one holding "
         "measures.csv, frames.csv and measures.yaml."
@@ -7735,7 +7812,7 @@ _THEME_HELP = (
 @click.option(
     "--out",
     "out_dir",
-    type=click.Path(path_type=Path),
+    type=UserPath(path_type=Path),
     default=None,
     help="Where to write; defaults into the comparison's own folder.",
 )
@@ -7826,7 +7903,7 @@ def tools() -> None:
 @tools.command("quick-segment")
 @click.argument(
     "videos", nargs=-1, required=True,
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    type=UserPath(exists=True, dir_okay=False, path_type=Path),
 )  # fmt: skip
 @click.option(
     "--prompt",
@@ -7886,7 +7963,7 @@ def tools() -> None:
 @click.option(
     "--export",
     "export_path",
-    type=click.Path(dir_okay=False, path_type=Path),
+    type=UserPath(dir_okay=False, path_type=Path),
     default=None,
     help="Also render the overlay clip to this .mp4 (playback is GUI-only).",
 )
@@ -8212,7 +8289,7 @@ def _frame_range(text: str | None) -> tuple[int, int] | None:
     "--out",
     "out_dir",
     required=True,
-    type=click.Path(file_okay=False, path_type=Path),
+    type=UserPath(file_okay=False, path_type=Path),
     help="Where to put the export folder. The folder itself is named for you.",
 )
 @click.option(
@@ -8498,7 +8575,7 @@ def notes_show(experiment_dir: Path, kind: str, entry_id: str) -> None:
 @click.option(
     "--file",
     "source",
-    type=click.Path(exists=True, dir_okay=False, allow_dash=True, path_type=Path),
+    type=UserPath(exists=True, dir_okay=False, allow_dash=True, path_type=Path),
     help="Read the new notes from this file (`-` for standard input).",
 )
 @click.option("--clear", is_flag=True, help="Remove the notes.")

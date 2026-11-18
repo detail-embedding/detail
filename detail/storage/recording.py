@@ -236,6 +236,36 @@ def remove_run_entry(recording_dir: Path | str, runs_key: str, run_id: str) -> b
     return True
 
 
+#: Where an upstream stage keeps one run's output under a recording, and the file (a glob)
+#: whose presence says the output is there: ``{kind: (folder, pattern)}``.
+RUN_OUTPUTS = {
+    "detection": ("detections", "part_*.zarr"),
+    "tracking": ("tracking", "tracks.zarr"),
+}
+
+
+def require_run_output(recording_dir: Path | str, kind: str, run_id: str) -> Path:
+    """The folder of a ``kind`` run recorded as complete, refused when its output is gone.
+
+    A stage's ``validate()`` reads the run record, which says ``complete`` whether or not
+    the folder is still on disk (deleted by hand, a copy without it). Checked here, the run
+    is refused before it is submitted, rather than submitted and failed with the cause only
+    in ``job.json`` (#31).
+
+    Raises:
+        UserInputError: the folder, or the output in it, is missing.
+    """
+    folder, pattern = RUN_OUTPUTS[kind]
+    run_dir = Path(recording_dir) / folder / run_id
+    if not run_dir.is_dir() or not any(run_dir.glob(pattern)):
+        raise UserInputError(
+            f"{kind} run {run_id!r} is recorded as complete but its output is not on "
+            f"disk ({folder}/{run_id}/{pattern} in recording {Path(recording_dir).name!r}); "
+            f"run {kind} again, or delete that run"
+        )
+    return run_dir
+
+
 def set_run_status(
     recording_dir: Path | str, runs_key: str, run_id: str, status: str
 ) -> bool:
@@ -573,8 +603,49 @@ def part_start_frames(
 
 
 def part_frame_offsets(recording_dir: Path | str) -> list[int] | None:
-    """`part_start_frames` in part order — for a caller that walks every part positionally
-    (tracking §13, the per-recording location export), so position and stem agree.
+    """`part_start_frames` in play order: ``part_frame_offsets[i]`` is where the part
+    ``recording.yaml`` lists at position ``i`` starts. Index it with a play index from
+    `parts_in_play_order`, never with a position in a sorted folder listing.
     ``None`` if the recording has no video manifest."""
     offsets = part_start_frames(recording_dir)
     return None if offsets is None else list(offsets.values())
+
+
+def parts_in_play_order(
+    recording_dir: Path | str, folder: Path | str, recording: dict | None = None
+) -> list[tuple[int, Path]]:
+    """The ``part_*.zarr`` stores in ``folder``, as ``(play index, path)`` in play order.
+
+    **Play order is ``recording.yaml``'s part list, not the file names.** A stage names each
+    part's store after the part's stem, and *Move up / Move down*
+    (`reorder_video_parts`) reorders the list while every stem stays, so after a move the
+    sorted folder listing (``part_001``, ``part_002``, …) is not the order the parts play
+    in. A reader that walks the sorted listing and indexes the part list, its offsets, its
+    timestamp maps or its videos by position reads another part's. The play index this
+    returns is the one to index ``video_files``, `part_frame_offsets` and
+    ``load_active_timestamps`` with; a part with no store in ``folder`` is simply absent.
+
+    With no video manifest (a synthetic direct-call test) the sorted listing is the only
+    order there is, and is returned with its positions.
+
+    Raises:
+        ValueError: ``folder`` holds a store for a part the recording does not list.
+    """
+    folder = Path(folder)
+    found = {path.stem: path for path in folder.glob("part_*.zarr")}
+    if recording is None:
+        try:
+            recording = read_recording(recording_dir)
+        except FileNotFoundError:
+            recording = None
+    files = ((recording or {}).get("video") or {}).get("files")
+    if not files:
+        return list(enumerate(path for _stem, path in sorted(found.items())))
+    stems = [part_stem(file) for file in files]
+    unlisted = sorted(set(found) - set(stems))
+    if unlisted:
+        raise ValueError(
+            f"{Path(recording_dir).name}: {folder} holds part store(s) {unlisted} that "
+            "recording.yaml does not list, so their place in the recording is unknown"
+        )
+    return [(index, found[stem]) for index, stem in enumerate(stems) if stem in found]

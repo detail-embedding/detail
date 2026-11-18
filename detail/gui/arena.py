@@ -63,6 +63,16 @@ from detail.gui.workers import BackgroundCall
 _BLANK_FRAME = np.zeros((360, 480, 3), np.uint8)
 
 
+#: Decimal places a vertex keeps on the canvas. The scene editor's "has this changed" check
+#: compares at the same precision, or a vertex stored with more (an API or CSV definition)
+#: reads as an edit the moment the canvas hands it back on a scrub, and lights Save.
+_VERTEX_DECIMALS = 6
+
+
+def _rounded(point) -> tuple[float, float]:
+    return (round(point[0], _VERTEX_DECIMALS), round(point[1], _VERTEX_DECIMALS))
+
+
 def _arrival_report(
     added: list[str], flattened: list[str], refused: list[tuple[str, str]]
 ) -> str:
@@ -526,7 +536,7 @@ class ArenaCanvas(QWidget):
         self._changed()
 
     def normalized_polygon(self) -> list[tuple[float, float]]:
-        return [(round(x, 6), round(y, 6)) for x, y in self._points]
+        return [_rounded(p) for p in self._points]
 
     def _widget_points(self, rect: QRectF) -> list[QPointF]:
         return [
@@ -678,6 +688,10 @@ class SpatialKind:
     #: ROIs/POIs may be present for part of the video; a field of view is always in effect
     #: and a calibration is not a shape in time at all.
     has_active: bool
+    #: Whether the shape can move over the video. A calibration cannot: it is two points
+    #: and a distance, stored with no frame at all, so the editor edits it on whatever frame
+    #: is showing rather than on a keyframe (`SceneGeometryDialog._edit_frame`).
+    keyframed: bool
     #: At most one may exist (the calibration). The others are lists.
     singleton: bool
     #: How a setup arriving from elsewhere is refused — the grain at which a collision is
@@ -708,6 +722,7 @@ class SpatialKind:
 SPATIAL_KINDS: tuple[SpatialKind, ...] = (
     SpatialKind(
         id="arena",
+        keyframed=True,
         collision_grain="kind",
         description="Optional polygon that defines the region of the video used for detection and tracking.",
         label="Field of view",
@@ -722,6 +737,7 @@ SPATIAL_KINDS: tuple[SpatialKind, ...] = (
     ),
     SpatialKind(
         id="calibration",
+        keyframed=False,
         collision_grain="kind",
         description="A known distance between two points, so analysis can report millimetres.",
         label="Distance calibration",
@@ -736,6 +752,7 @@ SPATIAL_KINDS: tuple[SpatialKind, ...] = (
     ),
     SpatialKind(
         id="roi",
+        keyframed=True,
         collision_grain="definition",
         description="Named polygon zones for location analysis.",
         label="Regions of interest",
@@ -750,6 +767,7 @@ SPATIAL_KINDS: tuple[SpatialKind, ...] = (
     ),
     SpatialKind(
         id="point",
+        keyframed=True,
         collision_grain="definition",
         description="Named landmark points for location analysis.",
         label="Points of interest",
@@ -1133,7 +1151,8 @@ class SceneGeometryDialog(Dialog):
             (
                 r["name"],
                 tuple(
-                    (f, tuple(map(tuple, v))) for f, v in sorted(r["keyframes"].items())
+                    (f, tuple(map(_rounded, v)))
+                    for f, v in sorted(r["keyframes"].items())
                 ),
                 r["active"],
                 r.get("distance_mm"),
@@ -1181,6 +1200,14 @@ class SceneGeometryDialog(Dialog):
                 if kind.has_active:
                     entry["active"] = reg["active"]
                 defs.append(entry)
+            # Then the rest of what the write would refuse — a name used twice, above all —
+            # asked of the storage layer's own check, so this list cannot drift from the
+            # writer's. Found here it refuses before anything is written; found by the write
+            # it came after the field of view was already stored (#35 finding 13).
+            try:
+                self._recording.check_spatial_defs(kind.id, defs)
+            except ValueError as exc:
+                return self._refuse(title, str(exc))
             prepared[kind.id] = defs
         cal = by_kind["calibration"][0] if by_kind["calibration"] else None
         calibration_touched = (
@@ -1196,11 +1223,19 @@ class SceneGeometryDialog(Dialog):
                 return self._refuse(
                     title, "The distance calibration needs a known distance."
                 )
+            try:
+                self._recording.check_distance_calibration(
+                    points, float(cal["distance_mm"])
+                )
+            except ValueError as exc:
+                return self._refuse(title, f"The distance calibration: {exc}")
 
         try:
-            # Arenas first, and only when they changed. First because `clear_arenas`
-            # refuses while any tracking run holds an arena, and a refusal has to land
-            # before anything else is committed — the dialog promises one transaction.
+            # Everything the writes below can refuse about the setup itself was checked
+            # above; what is left is the arena lock and the disk. Arenas first, and only
+            # when they changed. First because `clear_arenas` refuses while any tracking
+            # run holds an arena, and a refusal has to land before anything else is
+            # committed — the dialog promises one transaction.
             #
             # Clearing and redefining the whole set is safe *because* that check is
             # whole-set: if it passes, no arena in this recording is named by any tracking
@@ -1235,6 +1270,17 @@ class SceneGeometryDialog(Dialog):
         return [
             k.id for k in SPATIAL_KINDS if self._signature(k.id) != self._loaded[k.id]
         ]
+
+    def _edited(self) -> None:
+        """A handler changed a definition: tell Save.
+
+        Every handler that writes into a definition ends here, or in :meth:`_sync`, which
+        does the same. Four did not — rename, the known distance, the whole-video box and
+        the active-window bounds — so Save stayed grey after them while the docs call a
+        grey Save the sign that your edits are in (#35 finding 10). The rule is checked
+        over this class's source by `tests/gui/test_scene_geometry.py`.
+        """
+        self._sync_dirty()
 
     def _sync_dirty(self) -> None:
         """Save is live only when there is something to save — the dialog's only sign that
@@ -1300,16 +1346,9 @@ class SceneGeometryDialog(Dialog):
         # Read the selection on this thread; `run` executes in a worker and must not touch
         # a widget the dialog owns.
         plan = dialog.plan()
-        notes = dialog.run(plan, None)
-        if notes:
-            lines = "\n".join(f"{c} — {s}: {n}" for c, s, n in notes)
-            QMessageBox.information(
-                self,
-                "Copy to other recordings",
-                f"Copied. {len(notes)} thing(s) were left as they were:\n{lines}",
-            )
-        else:
-            QMessageBox.information(self, "Copy to other recordings", "Copied.")
+        QMessageBox.information(
+            self, "Copy to other recordings", dialog.run(plan, None)
+        )
 
     def _import_spatial(self) -> None:
         from detail.gui.pages import _ImportSpatialDialog
@@ -1471,8 +1510,15 @@ class SceneGeometryDialog(Dialog):
             reg["name"] = name
             self._rebuild_list()
             self._select_region(self._selected)
+            self._edited()
 
     def _select_region(self, index: int | None) -> None:
+        """Select ``index`` without the list's own handler, and show its name.
+
+        The handler is suppressed, so the name is set here: a definition added with a **+**
+        button was selected with the Name field still blank (or still showing the one
+        selected before), although it already had a name.
+        """
         if index is None:
             return
         for row in range(self._list.count()):
@@ -1481,6 +1527,7 @@ class SceneGeometryDialog(Dialog):
                 self._list.setCurrentRow(row)
                 self._loading = False
                 self._selected = index
+                self._name.setText(self._regions[index]["name"])
                 return
 
     def _add_region(self, kind_id: str) -> None:
@@ -1498,16 +1545,18 @@ class SceneGeometryDialog(Dialog):
         while f"{kind.default_base} {n}" in existing:
             n += 1
         name = kind.label if kind.singleton else f"{kind.default_base} {n}"
+        # Its first keyframe is the frame on screen, for every kind that moves: starting a
+        # field of view at 0 while showing frame 500 left the canvas on an "interpolated"
+        # frame that took no clicks (#35 finding 11). Save drops a keyframe left empty.
         new = {
             "kind": kind_id,
             "name": name,
-            "keyframes": {self._frame if kind.has_active else 0: []},
+            "keyframes": {self._edit_frame(kind): []},
             "active": None,
             "visible": True,
             "locked": None,
         }
         if kind_id == "calibration":
-            new["keyframes"] = {0: []}
             new["distance_mm"] = 0.0
         self._regions.append(new)
         self._rebuild_list()
@@ -1558,12 +1607,27 @@ class SceneGeometryDialog(Dialog):
         scrubbed — which reads as the frame having been the edit.
         """
         self._capture_current()
-        self._sync_dirty()
+        self._edited()
+
+    def _edit_frame(self, kind: SpatialKind) -> int:
+        """The keyframe an edit of a ``kind`` definition lands on.
+
+        The frame on screen, except for a kind that does not move (the calibration): that
+        has one entry, at 0, whatever frame is showing. Otherwise a calibration added on
+        frame 500 got its entry at 0, so the canvas on 500 showed an "interpolated" frame
+        that took no clicks (#35 finding 11).
+        """
+        return self._frame if kind.keyframed else 0
 
     def _capture_current(self) -> None:
+        """Write the canvas back into the selected definition. A helper, not an edit
+        handler: every caller ends in :meth:`_edited` or :meth:`_sync`."""
         reg = self._current()
-        if reg is not None and not reg["locked"] and self._frame in reg["keyframes"]:
-            reg["keyframes"][self._frame] = self._canvas.normalized_polygon()
+        if reg is None or reg["locked"]:
+            return
+        frame = self._edit_frame(self._kind_of(reg))
+        if frame in reg["keyframes"]:
+            reg["keyframes"][frame] = self._canvas.normalized_polygon()
 
     def _ghost_for(
         self, reg: dict, frame: int, *, respect_active: bool = False
@@ -1612,13 +1676,14 @@ class SceneGeometryDialog(Dialog):
         if reg is None:
             self._canvas.set_polygon([], editable=False)
             self._canvas.set_max_points(None)
+            self._name.setText("")  # not the name of one just deleted
             self._name.setEnabled(False)
             set_available(self._delete, False, "Select a definition to delete it")
             for button in (self._set_kf, self._del_kf, self._undo, self._clear):
                 set_available(button, False, "Select a definition to edit it")
             self._kf_label.setText(
                 "Nothing selected — every definition is shown. Pick one to edit it, or "
-                "click the frame to start a region of interest."
+                "start a new one with a + button."
             )
             return
         locked = bool(reg["locked"])
@@ -1626,20 +1691,31 @@ class SceneGeometryDialog(Dialog):
         self._name.setEnabled(not locked)
         set_available(self._delete, not locked, reg["locked"] or "")
         self._canvas.set_max_points(editable_kind.max_points)
-        is_keyframe = self._frame in reg["keyframes"]
+        edit_frame = self._edit_frame(editable_kind)
+        is_keyframe = edit_frame in reg["keyframes"]
         if is_keyframe and not locked:
-            self._canvas.set_polygon(reg["keyframes"][self._frame], editable=True)
+            self._canvas.set_polygon(reg["keyframes"][edit_frame], editable=True)
         else:
             self._canvas.set_polygon(
                 self._ghost_for(reg, self._frame), editable=False, prominent=locked
             )
-        self._canvas.set_allow_topology(len(reg["keyframes"]) <= 1)
+        # Points can be added or removed while at most one keyframe holds any. An empty
+        # keyframe holds no shape to keep in step with (Save drops it), so it does not
+        # count: a frame-0 entry nobody drew on used to lock a shape started on frame 500.
+        drawn = sum(1 for v in reg["keyframes"].values() if v)
+        self._canvas.set_allow_topology(drawn <= 1)
+        fixed = not editable_kind.keyframed
+        still = f"a {editable_kind.noun} is the same on every frame"
         for button, on, why in (
-            (self._set_kf, not is_keyframe, "this frame is already a keyframe"),
+            (
+                self._set_kf,
+                not is_keyframe and not fixed,
+                still if fixed else "this frame is already a keyframe",
+            ),
             (
                 self._del_kf,
-                is_keyframe and len(reg["keyframes"]) > 1,
-                _no_delete_reason(is_keyframe),
+                is_keyframe and len(reg["keyframes"]) > 1 and not fixed,
+                still if fixed else _no_delete_reason(is_keyframe),
             ),
             (self._undo, is_keyframe, _INTERPOLATED_FRAME),
             (self._clear, is_keyframe, _INTERPOLATED_FRAME),
@@ -1647,6 +1723,11 @@ class SceneGeometryDialog(Dialog):
             set_available(button, on and not locked, reg["locked"] or why)
         if locked:
             self._kf_label.setText(reg["locked"])
+            return
+        if fixed:
+            self._kf_label.setText(
+                f"The {editable_kind.noun} is the same on every frame — draw it on any."
+            )
             return
         frames = ", ".join(str(f) for f in sorted(reg["keyframes"]))
         state = "keyframe (editable)" if is_keyframe else "interpolated"
@@ -1659,14 +1740,16 @@ class SceneGeometryDialog(Dialog):
 
     def _set_keyframe(self) -> None:
         reg = self._current()
-        if reg is None or reg["locked"]:
+        if reg is None or reg["locked"] or not self._kind_of(reg).keyframed:
             return
         reg["keyframes"][self._frame] = self._canvas.normalized_polygon()
         self._sync()
 
     def _delete_keyframe(self) -> None:
         reg = self._current()
-        if reg and not reg["locked"] and self._frame in reg["keyframes"]:
+        if reg is None or not self._kind_of(reg).keyframed:
+            return
+        if not reg["locked"] and self._frame in reg["keyframes"]:
             if len(reg["keyframes"]) > 1:
                 del reg["keyframes"][self._frame]
                 self._sync()
@@ -1685,6 +1768,7 @@ class SceneGeometryDialog(Dialog):
             return
         value = self._distance.value()
         reg["distance_mm"] = value * (10.0 if self._unit.currentText() == "cm" else 1.0)
+        self._edited()
 
     # -- active window (ROIs/POIs only) -------------------------------------- #
     def _build_active_controls(self, layout) -> None:
@@ -1723,6 +1807,7 @@ class SceneGeometryDialog(Dialog):
         elif reg["active"] is None:
             reg["active"] = (0, max(self._total - 1, 0))
         self._refresh_active()
+        self._edited()
 
     def _set_active_bound(self, *, start: bool) -> None:
         reg = self._current()
@@ -1739,6 +1824,7 @@ class SceneGeometryDialog(Dialog):
             lo = hi = self._frame
         reg["active"] = (lo, hi)
         self._refresh_active()
+        self._edited()
 
     def _refresh_active(self) -> None:
         reg = self._current()

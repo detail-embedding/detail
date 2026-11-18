@@ -11,7 +11,10 @@ Manifest reference page (``describe_manifest`` → ``scripts/gen_docs_manifest.p
 so the docs cannot drift from what the code accepts. Validation is two-phase and
 **exhaustive** (Tenet 10): the models report every structural problem at once, then
 a procedural pass reports every cross-file problem (missing files, mismatched video
-parts, importer-specific inputs) that a schema can't express. Building the
+parts, importer-specific inputs) that a schema can't express. **A key the models do not
+name is refused**, naming it (``extra="forbid"``): ignored, a misspelled ``vidoe:`` made a
+recording with no video, the dry run called the manifest valid, and the corrected manifest
+was then refused because the id existed (#31). Building the
 executable specs lives in ``api/imports`` (this layer stays storage-only); the
 source paths it references are read-only inputs, never persisted (Tenet 6).
 """
@@ -22,6 +25,7 @@ from pathlib import Path
 
 from pydantic import (
     BaseModel,
+    ConfigDict,
     Field,
     ValidationError,
     field_validator,
@@ -31,6 +35,7 @@ from pydantic import (
 from detail.core.errors import UserInputError
 from detail.core.registries import STREAM_IMPORTERS
 from detail.importers import import_stream_importers
+from detail.storage import metadata as metadata_store
 from detail.storage import video as video_store
 from detail.storage.user_yaml import read_user_yaml
 
@@ -42,6 +47,8 @@ _SAFE_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 # --- schema (single source for validation + the Manifest reference) --------- #
 class StreamSpec(BaseModel):
     """One aligned time-series stream to import onto the recording."""
+
+    model_config = ConfigDict(extra="forbid")
 
     name: str = Field(
         description="Stream name, path-safe ([A-Za-z0-9_-]) and unique within the recording."
@@ -77,12 +84,15 @@ class StreamSpec(BaseModel):
 class RecordingSpec(BaseModel):
     """One recording to create, with its optional video parts, streams, and metadata."""
 
+    model_config = ConfigDict(extra="forbid")
+
     id: str = Field(
         description="Recording id: [A-Za-z0-9_-], unique in the manifest, not already in the experiment."
     )
     metadata: dict[str, str] = Field(
         default_factory=dict,
-        description="Grouping variables (any keys) written to the experiment metadata.",
+        description="Grouping variables written to the experiment metadata: any keys but "
+        "`recording_id`, which is the recording's own `id`. A blank value is stored blank.",
     )
     video: list[str] = Field(
         default_factory=list,
@@ -104,8 +114,19 @@ class RecordingSpec(BaseModel):
     def _stringify(cls, value: object) -> object:
         # Grouping variables are strings; a YAML scalar like `box: 4` is coerced so
         # a numeric value is accepted rather than rejected (matches the old leniency).
+        # A blank value (`sex:`) is YAML null, stored blank, never as the text "None".
         if isinstance(value, dict):
-            return {k: str(v) for k, v in value.items()}
+            return {k: "" if v is None else str(v) for k, v in value.items()}
+        return value
+
+    @field_validator("metadata")
+    @classmethod
+    def _no_key_column(cls, value: dict[str, str]) -> dict[str, str]:
+        if metadata_store.RECORDING_KEY in value:
+            raise ValueError(
+                f"metadata cannot set {metadata_store.RECORDING_KEY!r}: it is the "
+                "recording's own `id`"
+            )
         return value
 
     @model_validator(mode="after")
@@ -120,6 +141,8 @@ class RecordingSpec(BaseModel):
 
 class Manifest(BaseModel):
     """A bundle manifest: the ``schema_version`` and the list of recordings to import."""
+
+    model_config = ConfigDict(extra="forbid")
 
     schema_version: int = Field(
         default=SCHEMA_VERSION, description="Manifest schema version (must be 1)."
@@ -219,6 +242,10 @@ def _prefix(loc: tuple, manifest: dict) -> str:
     return ""
 
 
+#: Which model an unknown key sits in, by the length of its pydantic ``loc``.
+_MODEL_AT_DEPTH = {1: Manifest, 3: RecordingSpec, 5: StreamSpec}
+
+
 def _message(err: dict) -> str:
     kind = err["type"]
     field = err["loc"][-1] if err["loc"] else ""
@@ -231,6 +258,10 @@ def _message(err: dict) -> str:
         return err["msg"].removeprefix("Value error, ")
     if kind == "missing":
         return f"missing {field!r}"
+    if kind == "extra_forbidden":
+        model = _MODEL_AT_DEPTH.get(len(err["loc"]))
+        known = f" (it takes {', '.join(model.model_fields)})" if model else ""
+        return f"unknown key {field!r}{known}"
     if kind in ("int_type", "int_parsing"):
         return f"{field} must be an integer"
     if kind == "list_type":

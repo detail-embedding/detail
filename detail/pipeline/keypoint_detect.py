@@ -16,10 +16,9 @@ batched in a bounded buffer of ``batch_size``; the writer flushes only on frame 
 Progress names each phase and forces an emit at every boundary (§6): ``counting frames`` →
 ``loading model`` → ``placing keypoints``.
 
-Resume (§26): per part, after the last frame written — the store's columns are cut to their
-common length, which is a flush and therefore a frame boundary, and the walk reads forward past
-it. A stop keeps what was written and records coverage; the executor's status is the only
-status.
+No resume (§26, Tenet 12): a stop keeps what was written and records coverage, and a cancelled
+or failed run is re-run whole under a fresh run id (``Experiment.retry_run``), so a run directory
+never starts with rows in it. The executor's status is the only status.
 """
 
 from __future__ import annotations
@@ -376,16 +375,13 @@ def resolve_min_pose_confidence(model_cls, model_id: str, value: float | None):
 
 class _Progress:
     """One place the stage's events are shaped (§6): frames across the whole run, the ETA
-    from the work done since this process started, and the phase message."""
+    from the work done so far, and the phase message."""
 
-    def __init__(
-        self, progress_cb, parts_total: int, frames_total: int, done_at_start: int
-    ):
+    def __init__(self, progress_cb, parts_total: int, frames_total: int):
         self._cb = progress_cb
         self.parts_total = parts_total
         self.frames_total = frames_total
-        self.frames_done = done_at_start
-        self._done_at_start = done_at_start
+        self.frames_done = 0
         self._start = time.monotonic()
         self.parts_done = 0
 
@@ -393,10 +389,7 @@ class _Progress:
         if self._cb is None:
             return
         elapsed = time.monotonic() - self._start
-        own_total = max(self.frames_total - self._done_at_start, 0)
-        own_fraction = (
-            (self.frames_done - self._done_at_start) / own_total if own_total else 1.0
-        )
+        fraction = self.frames_done / self.frames_total if self.frames_total else 1.0
         self._cb(
             KeypointProgressEvent(
                 track_id=None,
@@ -407,8 +400,8 @@ class _Progress:
                 elapsed_s=elapsed,
                 eta_s=(
                     0.0
-                    if not own_total or own_fraction >= 1.0
-                    else remaining_seconds(own_fraction, elapsed)
+                    if not self.frames_total or fraction >= 1.0
+                    else remaining_seconds(fraction, elapsed)
                 ),
                 message=message,
             )
@@ -456,10 +449,9 @@ def run(job: KeypointDetectJob, run_dir, progress_cb, stop_event) -> None:
     needs_mask = per_detection and bool(getattr(model, "needs_mask", False))
 
     # One event before the count, so a long count is not silence (§6).
-    _Progress(progress_cb, len(files), 0, 0).emit("counting frames")
+    _Progress(progress_cb, len(files), 0).emit("counting frames")
     plan: list[dict] = []
     frames_total = 0
-    done_at_start = 0
     for part_index, part in enumerate(files):
         part_id = recording_store.part_stem(part)
         if per_detection:
@@ -473,30 +465,25 @@ def run(job: KeypointDetectJob, run_dir, progress_cb, stop_event) -> None:
         frames = part_frames(
             det, timestamps, job.every_n_frames, per_detection=per_detection
         )
-        store = keypoint_runs.part_path(run_dir, part_id)
-        last = keypoint_runs.last_frame_written(store)
-        skip = 0 if last is None else sum(1 for f, _t, _r in frames if f <= last)
         frames_total += len(frames)
-        done_at_start += skip
         plan.append(
             {
                 "part_index": part_index,
                 "part_id": part_id,
-                "store": store,
+                "store": keypoint_runs.part_path(run_dir, part_id),
                 "det_path": detection_dir / f"{part_id}.zarr",
                 "video_path": recording_store.resolve_part_video_path(
                     recording_dir, part
                 ),
                 "frames": frames,
-                "skip": skip,
-                "walked": skip,
+                "walked": 0,
             }
         )
 
     keypoint_runs.write_detect_yaml(
         run_dir, keypoint_runs.detect_record(job, skeleton.digest())
     )
-    progress = _Progress(progress_cb, len(plan), frames_total, done_at_start)
+    progress = _Progress(progress_cb, len(plan), frames_total)
     progress.emit("loading model")
     model.load(resolve_device(job.compute, model.supported_backends))
     if getattr(model, "reports_confidence", False):
@@ -512,7 +499,7 @@ def run(job: KeypointDetectJob, run_dir, progress_cb, stop_event) -> None:
         if stop_event is not None and stop_event.is_set():
             stopped = True
             break
-        todo = part["frames"][part["skip"] :]
+        todo = part["frames"]
         det = None
         if per_detection and todo:
             det = _read_det(part["det_path"], with_masks=needs_mask)
@@ -535,14 +522,14 @@ def run(job: KeypointDetectJob, run_dir, progress_cb, stop_event) -> None:
         part["part_id"]: _part_coverage(part["store"], part["walked"]) for part in plan
     }
     elapsed = time.monotonic() - progress._start
-    walked_now = progress.frames_done - done_at_start
+    walked = progress.frames_done
     keypoint_runs.update_detect_yaml(
         run_dir,
         coverage=coverage,
         timing={
-            "frames": int(walked_now),
+            "frames": int(walked),
             "seconds": round(elapsed, 3),
-            "frames_per_s": round(walked_now / elapsed, 2) if elapsed > 0 else None,
+            "frames_per_s": round(walked / elapsed, 2) if elapsed > 0 else None,
         },
     )
     progress.emit("stopped" if stopped else "complete")
@@ -659,7 +646,7 @@ class KeypointDetectModule(ProcessingModule):
     progress_event_class = KeypointProgressEvent
     # frames_total is the frames the model ran on (detected ones, for a per-detection model)
     progress_counts_frames = True
-    resumes = True  # resumes per part after the last frame written (§26)
+    resumes = False  # keypoint detect has no resume: a re-run starts the recording over
     config_model = KeypointDetectConfig
     identity_fields = (
         "model_id",
@@ -745,6 +732,7 @@ class KeypointDetectModule(ProcessingModule):
                 f"detection run {detection_run_id!r} is {det_entry.get('status')!r}, "
                 "not complete"
             )
+        recording_store.require_run_output(recording_dir, "detection", detection_run_id)
         recording_store.raise_on_legacy_downsampling(det_entry)
         config["every_n_frames"] = resolve_downstream_every_n(
             config.get("every_n_frames"), int(det_entry.get("every_n_frames") or 1)

@@ -174,8 +174,10 @@ def _gather_parts(experiment_root, record: dict, module_id: str) -> list[dict]:
         )
         recording_store.raise_on_legacy_downsampling(det_entry)
         files = recording_store.video_files(data)
-        for part_index, part_path in enumerate(
-            sorted(detection_dir.glob("part_*.zarr"))
+        # The play index picks the part's video: after a part move the sorted folder listing
+        # is not the order the parts play in, so a position in it names another part.
+        for part_index, part_path in recording_store.parts_in_play_order(
+            recording_dir, detection_dir, data
         ):
             parts.append(
                 {
