@@ -170,6 +170,11 @@ def test_a_folder_left_by_an_older_failed_import_does_not_mix_into_the_retry(tmp
 
     assert sorted(p.name for p in leftover.iterdir()) == ["pose.csv"]
     assert [s["name"] for s in rec.streams] == ["pose"]
+    # The stream was built in a staging folder: the manifest names where its files ended
+    # up, never where they were built.
+    named = [e["file"] for e in rec.streams[0]["raw"] + rec.streams[0]["files"]]
+    assert named == ["streams/pose/raw/pose.csv", "streams/pose/canonical/part_001.csv"]
+    assert all((rec.dir / f).is_file() for f in named)
 
 
 def test_add_stream_with_a_taken_preset_name_adds_nothing(tmp_path):

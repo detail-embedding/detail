@@ -1755,7 +1755,7 @@ def test_cancel_model_kills_worker_and_marks_cancelled(tmp_path):
     assert models_store.read_model_yaml(mdir)["status"] == "cancelled"
 
 
-def test_run_processing_honors_external_cancel_sentinel(tmp_path):
+def test_run_processing_honors_external_cancel_sentinel(tmp_path, monkeypatch):
     """Experiment.cancel_run's on-disk sentinel stops a *live* orchestrator before it
     runs the next recording — the dir-based cancel can't touch the in-process thread,
     so without the sentinel the batch would continue and overwrite the status."""
@@ -1764,8 +1764,17 @@ def test_run_processing_honors_external_cancel_sentinel(tmp_path):
     proj = Experiment.create("proj", tmp_path)
     _video_recording(proj, "recording_001")
     _video_recording(proj, "recording_002")
-    # pre-set the sentinel for the id this batch gets (fresh experiment → run_001)
-    runs_store.request_cancel(proj.dir, "run_001")
+    # Set the sentinel the moment the batch claims its id, before anything runs. (A
+    # sentinel written ahead of the claim would make `run_001/` exist, and a claimed
+    # directory is never handed out, so the batch would take `run_002`.)
+    claim = runs_store.next_run_id
+
+    def claim_then_cancel(experiment_dir):
+        run_id = claim(experiment_dir)
+        runs_store.request_cancel(experiment_dir, run_id)
+        return run_id
+
+    monkeypatch.setattr(runs_store, "next_run_id", claim_then_cancel)
     run = proj.run_processing(
         "tracking", ["recording_001", "recording_002"], dict(TRACKING_CONFIG)
     )
@@ -1774,7 +1783,13 @@ def test_run_processing_honors_external_cancel_sentinel(tmp_path):
     assert run.status == "cancelled"
     rec = runs_store.read_run(proj.dir, "run_001")
     assert rec["status"] == "cancelled"
-    assert rec["per_recording"] == {}  # broke at the first loop-top check; nothing ran
+    # Broke at the first loop-top check; nothing ran — and the record says so for each
+    # recording, so `process retry` picks them up (#28, finding 1).
+    assert {sid: e["status"] for sid, e in rec["per_recording"].items()} == {
+        "recording_001": "cancelled",
+        "recording_002": "cancelled",
+    }
+    assert all(e["run_id"] is None for e in rec["per_recording"].values())
 
 
 def test_cancel_run_keeps_complete_status(tmp_path):
@@ -2352,6 +2367,7 @@ def test_a_failed_terminal_write_does_not_escape_to_the_coordinator(
     orchestrator._experiment = experiment
     orchestrator._module_id = "tracking"
     orchestrator._per_recording = {"recording_001": {"status": "complete"}}
+    orchestrator._recording_ids = ["recording_001"]
     orchestrator._cancelled = threading.Event()
     orchestrator._status = "running"
     monkeypatch.setattr(

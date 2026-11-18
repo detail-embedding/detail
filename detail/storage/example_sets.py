@@ -43,6 +43,7 @@ from detail.core.skeleton import Skeleton
 from detail.core.utils import utc_timestamp
 from detail.storage import dirscan
 from detail.storage import experiment as experiment_store
+from detail.storage import id_allocator
 from detail.storage import read_cache
 
 SCHEMA_VERSION = 1
@@ -104,22 +105,10 @@ def write_set(experiment_dir: Path | str, example_set: ExampleSet) -> None:
 
 
 def _reserve_id(root: Path) -> str:
-    """Create and return the next ``ex_NN`` directory under ``root``; ``mkdir`` without
-    ``exist_ok`` is the lock, so two creators racing never share an id."""
-    root.mkdir(parents=True, exist_ok=True)
-    taken = []
-    for child in root.iterdir():
-        stem, _, num = child.name.rpartition("_")
-        if stem == ID_PREFIX and num.isdigit():
-            taken.append(int(num))
-    n = max(taken, default=0) + 1
-    while True:
-        candidate = f"{ID_PREFIX}_{n:02d}"
-        try:
-            (root / candidate).mkdir()
-            return candidate
-        except FileExistsError:
-            n += 1
+    """Claim the next ``ex_NN`` directory under ``root``: two creators racing never share an
+    id, and a deleted set's id is never handed out again, so a distill record's
+    ``example_set.id`` cannot come to name another set (``storage/id_allocator.py``)."""
+    return id_allocator.claim_dir(root, ID_PREFIX, digits=2)
 
 
 def create_set(

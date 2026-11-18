@@ -132,6 +132,51 @@ def test_every_record_kind_that_copies_a_skeleton_is_searched(root):
     ]
 
 
+def _foreign_set(exp: Experiment, ref: dict) -> None:
+    """An example set copied in from another machine: its ``skeleton_ref`` names that
+    machine's library."""
+    path = exp.dir / "examples" / "ex_09" / "examples.yaml"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        yaml.dump({"schema_version": 1, "id": "ex_09", "skeleton_ref": ref}),
+        encoding="utf-8",
+    )
+
+
+def test_a_ref_with_the_same_id_and_other_content_does_not_lock_a_skeleton(root):
+    """``sk_01`` here is "fly 3pt"; an experiment made where ``sk_01`` was "rat 12pt" must not
+    lock it. Skeleton ids are local to a machine; the digest says what a skeleton is."""
+    fly = library.create_skeleton("fly 3pt", SK)
+    _foreign_set(
+        Experiment.create("imported", root),
+        {"id": fly["id"], "name": "rat 12pt", "digest": MOVED.digest()},
+    )
+    assert library.dependents(fly["id"]) == []
+    library.delete_skeleton(fly["id"])
+
+
+def test_a_ref_with_the_same_content_under_another_id_protects_it(root):
+    rats = library.create_skeleton("rats", SK)
+    _foreign_set(
+        Experiment.create("imported", root),
+        {"id": "sk_77", "name": "rats elsewhere", "digest": SK.digest()},
+    )
+    assert [d["kind"] for d in library.dependents(rats["id"])] == ["example set"]
+    with pytest.raises(ValueError, match="delete those first"):
+        library.delete_skeleton(rats["id"])
+
+
+def test_a_duplicate_of_a_used_skeleton_is_not_locked_by_the_originals_users(root):
+    """A copy made here names its entry by id *and* digest, so it locks that entry only:
+    *Duplicate* then *Edit* still works."""
+    made = library.create_skeleton("rats", SK)
+    Experiment.create("lab", root).create_example_set("overhead", made["id"])
+    copy = library.duplicate_skeleton(made["id"])
+    assert library.dependents(copy["id"]) == []
+    assert library.dependents(made["id"])
+    library.update_skeleton(copy["id"], skeleton=MOVED)
+
+
 def test_duplicate_export_and_import(root, tmp_path):
     copy = library.duplicate_skeleton("quadruped_side_5")
     assert copy["name"] == f"{PRESETS['quadruped_side_5'][0]} copy"

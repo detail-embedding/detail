@@ -209,7 +209,11 @@ def _part_location(recording_dir, part: dict) -> str:
     if source is None:
         return str(Path(recording_dir) / part["file"])
     try:
-        resolved = recording_store.resolve_part_video_path(recording_dir, part)
+        # Shows where the reference points, so unverified: whether the file there is the
+        # recorded video is the Video section's verify, run off the UI thread.
+        resolved = recording_store.resolve_part_video_path(
+            recording_dir, part, verify=False
+        )
     except video_roots.MissingVideoRootError:
         return (
             f"{source['root']}/{source['rel']}  "
@@ -2267,7 +2271,8 @@ class HomePage(QWidget):
                 self,
                 "Import experiment",
                 f"Video for {len(missing)} recording(s) was not found on this computer: "
-                f"{shown}{more}.\n\nOpen one of them and use Locate video on its file. "
+                f"{shown}{more}. A file at the same path that is a different video counts "
+                "as not found.\n\nOpen one of them and use Locate video on its file. "
                 "Every recording whose video is in the same folder will find it too.",
             )
 
@@ -2275,14 +2280,33 @@ class HomePage(QWidget):
         self._reset_import_btn()
         if isinstance(exc, FileExistsError):
             confirm = QMessageBox.question(
-                self,
-                "Import experiment",
-                f"{exc}\n\nReplace the existing experiment with the imported one?",
+                self, "Import experiment", _replace_prompt(exc)
             )
             if confirm == QMessageBox.StandardButton.Yes:
                 self._run_import(archive, replace=True)
             return
         QMessageBox.critical(self, "Import experiment", str(exc))
+
+
+def _replace_prompt(exc: FileExistsError) -> str:
+    """The Replace question, listing what the replace deletes and the bundle does not bring
+    back. The list rides on the import's refusal (`ExperimentExistsError.losses`), computed in
+    the import's worker, so asking costs the UI thread nothing."""
+    from detail.api.experiment import replace_warning
+    from detail.storage.export import ExperimentExistsError
+
+    if not isinstance(exc, ExperimentExistsError):
+        return f"{exc}\n\nReplace the existing experiment with the imported one?"
+    lines = replace_warning(exc.losses)
+    text = f"An experiment named {exc.losses.experiment_id!r} already exists.\n\n"
+    if lines:
+        # Before the question, so it is read before the answer is chosen.
+        text += (
+            "Replacing it deletes these, and the bundle does not bring them back:\n"
+            + "\n".join(f"\u2022 {line}" for line in lines)
+            + "\n\n"
+        )
+    return text + "Replace it with the imported one?"
 
 
 def _import_and_find_video(
@@ -4945,7 +4969,7 @@ class RecordingDetailPage(QWidget):
             (stage, r["id"], r.get("processing_run_id") or "—", r.get("status"))
             for stage, r in records
         ]
-        # double-click a row to open its result view: a experiment-backed run opens the
+        # double-click a row to open its result view: an experiment-backed run opens the
         # experiment run that produced it (run_NNN); a per-recording-only run (CLI/API,
         # no experiment record) opens a recording-scoped result view directly.
         self._run_targets = [r.get("processing_run_id") for _, r in records]
@@ -4980,7 +5004,11 @@ class RecordingDetailPage(QWidget):
         )
         if confirm != QMessageBox.StandardButton.Yes:
             return
-        self._experiment.delete_recording(self._recording.id)
+        try:
+            self._experiment.delete_recording(self._recording.id)
+        except ValueError as exc:  # a run is still using it — the message names the run
+            QMessageBox.warning(self, "Delete recording", str(exc))
+            return
         if self._on_deleted is not None:
             self._on_deleted()
 
@@ -5247,7 +5275,10 @@ class RecordingDetailPage(QWidget):
             refusal = self._recording.calibration_refusal()
             if refusal is not None:
                 return f"unusable: {refusal}"
-            text = f"{self._recording.pixels_per_mm:.4g} px/mm"
+            text = (
+                f"{self._recording.pixels_per_mm:.4g} px/mm"
+                f"{self._recording.calibration_reference()}"
+            )
             if entry.get("distance_mm"):
                 text += f"  ·  {entry['distance_mm']:.0f} mm reference"
             return text
@@ -5308,7 +5339,11 @@ class RecordingDetailPage(QWidget):
                         SortCell(f"{offset_s:.3f}", offset_s),
                     )
                 )
-            table = _table(["Name", "Type", "Rows", "Offset (s)"], rows)
+            # Each row carries its stream's name: the table sorts, so a row's position
+            # is not the stream's place in `_stream_names` once a header is clicked.
+            table = _table(
+                ["Name", "Type", "Rows", "Offset (s)"], rows, ids=self._stream_names
+            )
             self._streams_holder.addWidget(table)
             self._stream_widgets.append(table)
             self._streams_table = table
@@ -5345,12 +5380,16 @@ class RecordingDetailPage(QWidget):
         self._stream_widgets.append(row_holder)
 
     def _current_stream_name(self) -> str | None:
-        """The selected stream (or the sole stream), without prompting — for gating."""
+        """The selected stream (or the sole stream), without prompting — for gating.
+
+        Read from the selected row's own stamped name (:func:`row_id`), never from its
+        position: the table sorts, and `_stream_names` stays in build order.
+        """
         if self._streams_table is None:
             return None
-        idx = self._streams_table.currentIndex().row()
-        if 0 <= idx < len(self._stream_names):
-            return self._stream_names[idx]
+        name = row_id(self._streams_table.currentIndex())
+        if name is not None:
+            return name
         if len(self._stream_names) == 1:
             return self._stream_names[0]
         return None
@@ -5384,15 +5423,13 @@ class RecordingDetailPage(QWidget):
         self._sync_btn.setToolTip("" if has_video else "Import a video part first")
 
     def _selected_stream(self) -> str | None:
+        """The stream an action applies to, or ``None`` after asking for a selection."""
         if self._streams_table is None:
             return None
-        idx = self._streams_table.currentIndex().row()
-        if 0 <= idx < len(self._stream_names):
-            return self._stream_names[idx]
-        if len(self._stream_names) == 1:  # single stream — no need to select first
-            return self._stream_names[0]
-        QMessageBox.information(self, "Streams", "Select a stream first.")
-        return None
+        name = self._current_stream_name()  # a single stream needs no selection
+        if name is None:
+            QMessageBox.information(self, "Streams", "Select a stream first.")
+        return name
 
     def _add_stream(self) -> None:
         from detail.gui.streams import AddStreamDialog
@@ -5452,7 +5489,12 @@ class RecordingDetailPage(QWidget):
         parts = self._recording.video_parts
         self._parts_heading.setText(f"Video parts ({len(parts)})")
         rows = [(p["index"], _part_location(self._recording.dir, p)) for p in parts]
-        table = _table(["#", "Location"], rows)
+        # This table edits *order* (Move up / Move down), so its rows stay in part order:
+        # a header-click sort would show an order that is not the recording's. Each row
+        # also carries its part's index, so the move handler never trusts a row position.
+        table = _table(["#", "Location"], rows, ids=[p["index"] for p in parts])
+        table.setObjectName("video_parts")  # SORT_EXEMPT says why
+        table.setSortingEnabled(False)
         if self._parts_table is not None:
             self._parts_table.deleteLater()
         self._parts_holder.addWidget(table)
@@ -5542,19 +5584,28 @@ class RecordingDetailPage(QWidget):
             self._scan_video()
 
     def _move_part(self, delta: int) -> None:
-        row = self._parts_table.currentIndex().row()
+        # The selected part's own index, stamped on its row — not the row's position.
+        part = row_id(self._parts_table.currentIndex())
         n = len(self._recording.video_parts)
-        if row < 0 or not (0 <= row + delta < n):
+        if part is None or not (0 <= part + delta < n):
             return
         order = list(range(n))
-        order[row], order[row + delta] = order[row + delta], order[row]
+        order[part], order[part + delta] = order[part + delta], order[part]
         try:
             self._recording.reorder_video_parts(order)
         except ValueError as e:
             QMessageBox.warning(self, "Reorder video parts", str(e))
             return
         self._parts_changed()
-        self._parts_table.selectRow(row + delta)
+        self._select_part(part + delta)
+
+    def _select_part(self, index: int) -> None:
+        """Select the row showing video part ``index``, wherever that row sits."""
+        model = self._parts_table.model()
+        for r in range(model.rowCount()):
+            if row_id(model.index(r, 0)) == index:
+                self._parts_table.selectRow(r)
+                return
 
 
 def _run_cadence(experiment, record: dict) -> tuple[str, str]:
@@ -7424,7 +7475,8 @@ class MeasuresPanel(QWidget):
             (
                 row["recording_id"],
                 str(row["subject"]),
-                row["label"] or "(unnamed)",
+                # A parent label's row counts only its remainder, and says so (#24).
+                row["label_display"] or "(unnamed)",
                 MEASURES[row["measure"]].label,
                 *comparison_report.shown_value(
                     row["value"], MEASURES[row["measure"]].unit

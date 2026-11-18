@@ -42,6 +42,7 @@ from pathlib import Path
 import yaml
 
 from detail.core import atomic
+from detail.storage.user_yaml import read_user_yaml
 
 SCHEMA_VERSION = 1
 PRESETS_FILENAME = "stream_presets.yaml"
@@ -177,7 +178,9 @@ def export_preset(experiment_dir: Path | str, name: str, out_path: Path | str) -
         ValueError: No preset named ``name`` exists.
     """
     preset = get_preset(experiment_dir, name)
-    Path(out_path).write_text(
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(
         yaml.dump({"schema_version": SCHEMA_VERSION, **preset}, sort_keys=False),
         encoding="utf-8",
     )
@@ -201,7 +204,7 @@ def import_preset(
     path = Path(in_path)
     if not path.is_file():
         raise FileNotFoundError(f"no stream preset file at {path}")
-    data = yaml.safe_load(path.read_text(encoding="utf-8-sig"))
+    data = read_user_yaml(path)
     if not isinstance(data, dict):
         raise ValueError(f"{path} is not a mapping")
     if data.get("schema_version") != SCHEMA_VERSION:

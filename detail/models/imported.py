@@ -3,13 +3,13 @@
 User-imported detection weights live **outside any experiment**, shared across all of
 them — the data-defined twin of the code-defined pretrained registry (``MODELS``).
 Each imported model is a directory under ``model_cache_dir()/imported/<id>/``
-holding a ``model.yaml`` (the same schema as a experiment trained model — Section 12)
+holding a ``model.yaml`` (the same schema as an experiment trained model — Section 12)
 and ``weights/best.pt``. Class names are read straight from the checkpoint at
 import time (the per-family ``introspect`` hook), so sharing a model is just
 sharing its ``.pt``.
 
 Discovered by scanning; constructed by ``models/resolve.py`` via the family's
-``TRAINED_LOADERS`` loader — identical to a experiment trained model, only the
+``TRAINED_LOADERS`` loader — identical to an experiment trained model, only the
 directory is machine-global instead of experiment-local.
 
 A **keypoint (YOLO-pose) model** shares the catalog (§12 *Keypoint models in the catalog*):
@@ -46,7 +46,7 @@ KEYPOINTS_ROLE = "keypoints"
 # checkpoint today is an Ultralytics one, and its task decides detection vs keypoints (§12).
 _PROBE_FAMILY = "yolo"
 # Experiment trained-model ids are model_NNN; reserve that shape so a `--model <id>`
-# never has to guess between a experiment model and an imported one.
+# never has to guess between an experiment model and an imported one.
 _RESERVED_ID = re.compile(r"^model_\d+$")
 
 

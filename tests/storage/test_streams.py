@@ -235,3 +235,41 @@ def test_streams_by_role(recording_dir):
     streams_store.append_stream_to_recording_yaml(recording_dir, behavior)
     found = streams_store.streams_by_role(recording_dir, "behavior")
     assert [s["name"] for s in found] == ["gt"]
+
+
+@pytest.mark.parametrize("clock", ["video_frames", "video_seconds"])
+def test_set_stream_offset_refuses_a_video_anchored_stream(recording_dir, clock):
+    """The storage door every surface reaches (API, CLI, GUI) refuses it, so none has to
+    remember to. Stored, the preview drew the labels late while scoring read them unshifted.
+    """
+    manifest = {**_manifest("behavior"), "clock": clock, "role": "behavior"}
+    streams_store.append_stream_to_recording_yaml(recording_dir, manifest)
+    with pytest.raises(ValueError, match="already the video's own"):
+        streams_store.set_stream_offset(recording_dir, "behavior", 5_000_000_000)
+    on_disk = recording_store.read_recording(recording_dir)["streams"][0]
+    assert on_disk["alignment"]["offset_ns"] == 0
+
+
+def test_set_stream_offset_still_aligns_an_external_clock(recording_dir):
+    manifest = {**_manifest("medpc"), "clock": "stream_seconds"}
+    streams_store.append_stream_to_recording_yaml(recording_dir, manifest)
+    streams_store.set_stream_offset(recording_dir, "medpc", 3_480_000_000)
+    assert streams_store.stream_offset_ns(
+        streams_store.list_streams(recording_dir)[0]
+    ) == (3_480_000_000)
+
+
+def test_stream_offset_ns_reads_the_alignment_block_only():
+    """A top-level ``offset_ns`` is not where the offset lives; reading it reported 0."""
+    assert streams_store.stream_offset_ns(_manifest(offset_ns=7)) == 7
+    assert streams_store.stream_offset_ns({"offset_ns": 7}) == 0
+    assert streams_store.stream_offset_ns({"alignment": None}) == 0
+
+
+def test_the_offset_refusal_is_a_user_input_error(recording_dir):
+    from detail.core.errors import UserInputError
+
+    manifest = {**_manifest("behavior"), "clock": "video_frames", "role": "behavior"}
+    streams_store.append_stream_to_recording_yaml(recording_dir, manifest)
+    with pytest.raises(UserInputError):
+        streams_store.set_stream_offset(recording_dir, "behavior", 5_000_000_000)

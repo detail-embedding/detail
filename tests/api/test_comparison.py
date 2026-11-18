@@ -35,6 +35,7 @@ from detail.api.comparison import (
     run_comparison,
 )
 from detail.configs.comparison import ComparisonConfig
+from detail.core.errors import UserInputError
 from detail.configs.windows import WindowSpec
 from detail.api.experiment import Experiment
 from detail.storage import analysis_runs
@@ -792,6 +793,20 @@ DOSES = {
     for d in (0, 25, 50, 75)
 }
 
+#: One animal, two sessions: a paired design whose null has nothing to flip (#39). The
+#: animal has a sex, so the launch dialog can tell it from a track slot and infer the unit
+#: (`cohort.infer_subject_column`: a one-value column earns its place by determining another).
+ONE_ANIMAL = {
+    "r1": ({"animal": "A", "sex": "F", "drug": "veh"}, 2),
+    "r2": ({"animal": "A", "sex": "F", "drug": "fent"}, 4),
+}
+
+#: Two animals, one per group: a between design relabelling cannot move.
+ONE_PER_GROUP = {
+    "r1": ({"animal": "A", "drug": "veh"}, 2),
+    "r2": ({"animal": "B", "drug": "fent"}, 4),
+}
+
 _PAIRED = {
     "source_run_id": "an_01",
     "group_by": ["drug"],
@@ -1243,3 +1258,84 @@ def test_the_record_resolves_the_statistic_it_ranked_on(tmp_path):
     assert between.record()["statistic"] == "moderated_t"
     assert between.record()["ranking_statistic"] == "effect"
     assert between.ranking().statistic == "effect"
+
+
+# --------------------------------------------------------------------------- #
+# a screen that could have no floor is refused before measuring (#39)
+# --------------------------------------------------------------------------- #
+def _node_view_over(monkeypatch, plan):
+    import detail.api.comparison as api
+    from tests.analysis.test_node_measures import synthetic_view
+
+    view = synthetic_view(recording_ids=tuple(plan))
+    monkeypatch.setattr(api, "_node_view", lambda experiment, run_id: view)
+
+
+@pytest.mark.parametrize(
+    ("plan", "aggregate_to", "reason", "remedy"),
+    [
+        (
+            ONE_ANIMAL,
+            ["animal"],
+            "only one animal (A) has both fent and veh",
+            "Add a second animal that has both fent and veh.",
+        ),
+        (
+            ONE_PER_GROUP,
+            [],
+            "every group holds at most one recording",
+            "Add a second recording to a group.",
+        ),
+    ],
+)
+def test_a_screen_that_could_have_no_floor_is_refused_before_measuring(
+    tmp_path, monkeypatch, plan, aggregate_to, reason, remedy
+):
+    """The design and its unit count were resolved after the measuring pass, so a paired
+    screen over two recordings from one animal measured for minutes and saved a screen that
+    kept nothing and could not be ticked (#39). The shapes a count of recordings decides are
+    refused first, with the reason and what would run; nothing is measured or written.
+    """
+    from detail.api.comparison import screen_comparison
+
+    exp = _cohort(tmp_path, plan)
+    _node_view_over(monkeypatch, plan)
+    config = {
+        "source_run_id": "an_01",
+        "source": "nodes",
+        "group_by": ["drug"],
+        "aggregate_to": aggregate_to,
+        "candidate_floor_s": 1.0,
+    }
+    stages = []
+    with pytest.raises(ComparisonRunError) as excinfo:
+        run_comparison(
+            exp, config, progress=lambda stage, fraction, detail: stages.append(stage)
+        )
+    message = str(excinfo.value)
+    # The cohort is the user's choice: one `Error:` line from the CLI root (#52).
+    assert isinstance(excinfo.value, UserInputError)
+    assert message.startswith(reason), message
+    assert "this screen is refused before measuring" in message
+    assert remedy in message and "labelled behaviors instead" in message
+    assert "measuring" not in stages, "refused before the measuring pass"
+    assert exp.comparisons == [], "nothing is written"
+    # The live screen is the same computation, so it is refused the same way (§22).
+    with pytest.raises(ComparisonRunError, match="refused before measuring"):
+        screen_comparison(exp, config)
+
+
+def test_a_labelled_comparison_over_one_animal_runs_and_says_it_has_no_floor(tmp_path):
+    """A comparison of named behaviors with no floor is still a description, reported as
+    measured (§24): it is not refused, and the ranking carries the same sentence the launch
+    would have warned with."""
+    exp = _cohort(tmp_path, ONE_ANIMAL)
+    comp = run_comparison(exp, _PAIRED)
+    ranking = comp.ranking()
+    assert ranking.floor is None
+    assert ranking.no_floor_reason.startswith(
+        "only one animal (A) has both fent and veh"
+    )
+    comp.export(formats=("png",))
+    summary = (comp.dir / "summary.md").read_text(encoding="utf-8-sig")
+    assert "No floor computed" in summary

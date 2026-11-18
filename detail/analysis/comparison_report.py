@@ -22,6 +22,7 @@ one is not.
 import json
 import math
 from collections import defaultdict
+from collections.abc import Collection
 from pathlib import Path
 from typing import Callable, Mapping
 
@@ -41,6 +42,8 @@ RANKING_COLUMNS = [
     "measure",
     "label",
     "label_to",
+    "label_display",
+    "label_is_remainder",
     "window_id",
     "effect",
     "magnitude",
@@ -100,7 +103,15 @@ def shown_value(value, unit: str) -> tuple[str, str]:
     return f"{float(value):.4g}", unit
 
 
-def measure_title(measure_key: tuple) -> str:
+def remainders_of(record: dict) -> frozenset[str]:
+    """The labels a comparison's rows count only a parent's leftover of (#24), as recorded.
+
+    Empty for a record written before the field existed and for a node comparison, whose labels
+    are nodes."""
+    return frozenset(record.get("remainder_labels") or ())
+
+
+def measure_title(measure_key: tuple, remainders: Collection[str]) -> str:
     """What a *person* reads for one measurement: ``Bouts · rearing · whole recording``.
 
     The twin of :func:`_measure_stem`, which keeps producing the id form. The split is the point:
@@ -109,15 +120,22 @@ def measure_title(measure_key: tuple) -> str:
     places is what put `n_instances__rearing__whole` on screen.
 
     Only the measure id maps to a label — the remaining parts of the key are the user's own
-    behavior names, a transition's destination, and the window, all already human.
+    behavior names, a transition's destination, and the window, all already human. A parent
+    label whose rows count only its leftover reads "<label> (other)" (``remainders``, from
+    :func:`remainders_of`; required, because leaving it out shows the leftover under the plain
+    name, which reads as all of the parent).
     """
-    from detail.analysis.measures import MEASURES
+    from detail.analysis.measures import MEASURES, display_label
 
     if not measure_key:
         return "measure"
     spec = MEASURES.get(measure_key[0])
     parts = [spec.label if spec is not None else measure_key[0]]
-    parts += [_readable_label(p) for p in measure_key[1:] if p and p != "whole"]
+    parts += [
+        _readable_label(display_label(p, remainders) if i < 2 else p)
+        for i, p in enumerate(measure_key[1:])
+        if p and p != "whole"
+    ]
     return "  ·  ".join(parts)
 
 
@@ -471,7 +489,7 @@ def ranking_rows(
             suffix = f" {shown_unit}" if shown_unit else ""
             pair = item.pair
             cells = [
-                measure_title(item.measure_key),
+                measure_title(item.measure_key, remainders_of(record)),
                 " \u2192 ".join(pair) if pair else "\u2014",
                 f"{a_text}{suffix}" if a_text else "\u2014",
                 f"{b_text}{suffix}" if b_text else "\u2014",
@@ -498,7 +516,7 @@ def ranking_rows(
         rows = []
         for item in items:
             cells = [
-                measure_title(item.measure_key),
+                measure_title(item.measure_key, remainders_of(record)),
                 "—" if item.effect is None else f"{item.effect:+.2f}",
             ]
             cells += [_t_cell(item)] if _studentized(ranking) else []
@@ -526,7 +544,7 @@ def ranking_rows(
         b_text, _ = shown_value(None if item.b is None else item.b.mean, unit)
         suffix = f" {shown_unit}" if shown_unit else ""
         cells = [
-            measure_title(item.measure_key),
+            measure_title(item.measure_key, remainders_of(record)),
             f"{a_text}{suffix}" if a_text else "—",
             f"{b_text}{suffix}" if b_text else "—",
             _change_text(item),
@@ -552,6 +570,11 @@ def ranking_csv_rows(ranking, record: dict) -> list[dict]:
     """Every ranked item with its verdict — ``ranking.csv``, complete where the tables and
     figures over a large family are the shown set."""
     kept = set(ranking.kept) if ranking.kept is not None else None
+    # A parent label's row counts only its leftover (#24): `label` stays the join key, and
+    # the two columns say so, as stats.csv's do.
+    from detail.analysis.measures import display_label
+
+    remainders = remainders_of(record)
     out = []
     for rank, item in enumerate(ranking.contrasts, start=1):
         keyed = dict(
@@ -565,6 +588,9 @@ def ranking_csv_rows(ranking, record: dict) -> list[dict]:
                 "measure": keyed.get("measure", ""),
                 "label": keyed.get("label", ""),
                 "label_to": keyed.get("label_to", ""),
+                "label_display": display_label(keyed.get("label", ""), remainders),
+                "label_is_remainder": bool(keyed.get("label"))
+                and keyed.get("label") in remainders,
                 "window_id": keyed.get("window_id", ""),
                 "effect": "" if effect is None else effect,
                 "magnitude": "" if item.magnitude is None else item.magnitude,
@@ -731,7 +757,7 @@ def _write_grid_tables(out_dir: Path, record: dict, by_measure: dict) -> list[Pa
         unit = measure_unit(measure_key)
         scale = _scale_for(measure_key)
         shown_unit = shown_value(0.0, unit)[1]
-        name = measure_title(measure_key)
+        name = measure_title(measure_key, remainders_of(record))
         rows += [
             {
                 "measure": f"{name} ({shown_unit})" if shown_unit else name,
@@ -910,7 +936,9 @@ def _paired_figures(
     return written
 
 
-def _ranking_figure(out_dir: Path, ranking, note: str, formats, style) -> list[Path]:
+def _ranking_figure(
+    out_dir: Path, ranking, note: str, formats, style, remainders: Collection[str]
+) -> list[Path]:
     """Draw the difference ranking. Takes a ``compare.Ranking``, which cannot exist without its
     floor — so "no ranking without a floor" is structural rather than remembered (§24).
     """
@@ -934,7 +962,7 @@ def _ranking_figure(out_dir: Path, ranking, note: str, formats, style) -> list[P
         # studentized ranking, the |effect| otherwise (\u00a724 *The statistic*).
         figlib.ranked_bars_with_floor(
             ax,
-            [measure_title(c.measure_key) for c in drawn],
+            [measure_title(c.measure_key, remainders) for c in drawn],
             [c.score for c in drawn],
             ranking.floor,
             style=style,
@@ -1202,7 +1230,7 @@ def _write_summary(path: Path, record: dict, by_measure: dict, ranking) -> None:
                 for v in (summary.mean, summary.median, summary.sd)
             ]
             shown_unit = shown_value(summary.mean, unit)[1]
-            name = measure_title(measure_key)
+            name = measure_title(measure_key, remainders_of(record))
             name = f"{name} ({shown_unit})" if shown_unit else name
             lines.append(
                 f"| {name} | {tablib.md_cell('|'.join(summary.group))} | {summary.n} | "
@@ -1254,8 +1282,10 @@ def export_comparison(
     Counting figures rather than weighing them is right *here*, unlike a loop over spans of very
     different sizes: every figure is one render of a handful of points.
     """
+    from detail.report import figures as figlib
     from detail.storage import comparisons as comparisons_store
 
+    figlib.check_formats(tuple(formats))
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     source = comparisons_store.comparison_dir(experiment_dir, record["id"])
@@ -1303,7 +1333,9 @@ def export_comparison(
     report("paired figures", 1.0, "")
     if ranking is not None:
         report("ranking", 0.0, "")
-        artifacts += _ranking_figure(figures_dir, ranking, note, formats, style)
+        artifacts += _ranking_figure(
+            figures_dir, ranking, note, formats, style, remainders_of(record)
+        )
         ranking_path = out_dir / RANKING_FILENAME
         tablib.write_tidy_csv(
             ranking_path, ranking_csv_rows(ranking, record), RANKING_COLUMNS

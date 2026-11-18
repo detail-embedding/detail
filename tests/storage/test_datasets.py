@@ -131,7 +131,7 @@ def test_discover_and_next_id(tmp_path):
     assert ds.next_dataset_id(proj) == "dataset_001"
     for did in ("dataset_001", "dataset_002"):
         d = ds.dataset_dir(proj, did)
-        d.mkdir(parents=True)
+        d.mkdir(parents=True, exist_ok=True)  # the first was claimed by next_dataset_id
         ds.write_dataset_yaml(d, {"id": did})
     assert ds.discover_datasets(proj) == ["dataset_001", "dataset_002"]
     assert ds.next_dataset_id(proj) == "dataset_003"

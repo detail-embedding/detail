@@ -86,10 +86,6 @@ _WRITE_ONCE_ARTIFACT = (
     "writes a one-shot artifact into a fresh output folder for a person to open; nothing in "
     "detail/ reads it back or rewrites it, so there is no concurrent reader to tear"
 )
-_USER_INPUT = (
-    "reads a file a person authored and handed in; no code in detail/ writes it, so there is "
-    "no replace for the read to race"
-)
 _PACKAGED = "reads YAML shipped inside the package; nothing rewrites it at run time"
 _READ_BACK_LATER = (
     "reads back an artifact this code wrote in an earlier, finished call; its writer is not "
@@ -117,14 +113,6 @@ ALLOWED = {
         "writes the descriptor ultralytics reads, in the same call, before training starts; "
         "and reads the dataset's data.yaml, whose entry above says why that is not raced"
     ),
-    "storage/labels_manifest.py::load_labels_manifest": _USER_INPUT,
-    "storage/manifest.py::load_manifest": _USER_INPUT,
-    "storage/stream_presets.py::import_preset": _USER_INPUT,
-    "storage/heading_definitions.py::import_definition": _USER_INPUT,
-    "api/skeletons.py::resolve_skeleton": _USER_INPUT,
-    "api/skeletons.py::skeleton_source_name": _USER_INPUT,
-    "api/skeletons.py::import_skeleton": _USER_INPUT,
-    "api/keypoints.py::import_example_set": _USER_INPUT,
     "configs/baselines.py::load_baselines": _PACKAGED,
     "report/exporter.py::previous_artifacts": _READ_BACK_LATER,
     "tools/quick_segment.py::read_sampled": _READ_BACK_LATER,

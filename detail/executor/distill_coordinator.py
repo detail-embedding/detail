@@ -76,7 +76,11 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
 
-        DistillOrchestrator(experiment, run_id, record, emit).run()
+        try:
+            DistillOrchestrator(experiment, run_id, record, emit).run()
+        finally:
+            # The log ends when the run did, not at the last row its throttle kept (#32).
+            log.finish()
     except KeyboardInterrupt:
         _mark_terminal(experiment_root, run_id, "cancelled", "interrupted (SIGINT)")
         return 1

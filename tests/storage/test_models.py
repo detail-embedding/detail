@@ -33,7 +33,7 @@ def test_discover_and_next_model_id(tmp_path):
     assert mstore.next_model_id(proj) == "model_001"
     for mid in ("model_001", "model_002"):
         d = mstore.model_dir(proj, mid)
-        d.mkdir(parents=True)
+        d.mkdir(parents=True, exist_ok=True)  # the first was claimed by next_model_id
         mstore.write_model_yaml(d, {"id": mid})
     assert mstore.discover_models(proj) == ["model_001", "model_002"]
     assert mstore.next_model_id(proj) == "model_003"

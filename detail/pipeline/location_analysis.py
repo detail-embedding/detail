@@ -1,6 +1,6 @@
 """Location-export analysis module (§16) — the first AnalysisModule.
 
-Wraps the pure per-recording compute (``analysis/locations.py``) as a experiment-scoped,
+Wraps the pure per-recording compute (``analysis/locations.py``) as an experiment-scoped,
 executor-backed analysis run: one run over a *selection* of recordings, writing each
 recording's CSVs into ``analysis/<run_id>/<recording_id>/``. It is an *iterating*
 analysis (per-recording, no cross-recording pooling), so it needs no grouping variables

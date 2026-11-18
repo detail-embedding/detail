@@ -61,7 +61,7 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 
 def _drain(qapp, worker, timeout_ms=3000):
     """Let the off-thread worker finish, then deliver its queued signals."""
-    worker.wait(timeout_ms)
+    finished(worker, "the busy call's worker", timeout_ms)
     for _ in range(5):
         qapp.processEvents()
 

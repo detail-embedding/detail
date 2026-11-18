@@ -32,6 +32,7 @@ from detail.gui.modules.registry import (  # noqa: E402
     GUI_MODULES,
 )
 from detail.storage import locations  # noqa: E402
+from tests.gui.conftest import drain_until  # noqa: E402
 from tests.gui.layout_checks import (  # noqa: E402
     assert_one_content_column,
     assert_top_justified,
@@ -44,8 +45,6 @@ def _noop(*_args, **_kwargs):
 
 def _drain(qapp, predicate, timeout_ms: int = 10_000) -> bool:
     """Spin the event loop until ``predicate`` holds — see ``conftest.drain_until``."""
-    from tests.gui.conftest import drain_until
-
     return drain_until(qapp, predicate, timeout_ms)
 
 
@@ -542,8 +541,11 @@ def test_version_history_shows_the_running_build_and_opens_its_history(
     # from 572px to 732px and squeezed the rail out of room to widen (test_window_state).
     # A new minimum climbs label -> banner -> window one posted layout pass at a time, so give
     # it room to arrive rather than reading it after a single pump.
-    widened = _drain(
-        qapp, lambda: window.minimumSizeHint().width() != narrowest, timeout_ms=300
+    widened = drain_until(
+        qapp,
+        lambda: window.minimumSizeHint().width() != narrowest,
+        300,
+        raise_on_timeout=False,
     )
     assert not widened, f"{narrowest}px -> {window.minimumSizeHint().width()}px"
 
@@ -776,7 +778,9 @@ def test_a_closed_rail_section_reads_nothing(qapp, tmp_path, monkeypatch):
     ), "a section with children must declare itself a folder"
     # The property, not a proxy for it: a *folder* whose contents have not been read. Drained
     # rather than checked immediately, or a fill merely queued would pass this.
-    assert not _drain(qapp, lambda: node.childCount() > 0, timeout_ms=500)
+    assert not drain_until(
+        qapp, lambda: node.childCount() > 0, 500, raise_on_timeout=False
+    )
     assert (
         threads == []
     ), f"the rail read its children with every folder closed: {threads}"

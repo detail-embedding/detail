@@ -37,6 +37,26 @@ FAILED = "failed"
 
 GROUPABLE = (DONE, QUEUED)
 
+#: Every run status -> the row state it draws. **One table for every unit kind that reads a
+#: status off a record** (a processing run's recordings, a distill's stages), so a status is
+#: mapped once and a new one fails ``tests/gui/test_run_units.py`` until it is mapped here.
+#:
+#: The bug this replaces: each builder tested ``== "complete"`` and ``== "failed"`` and let
+#: everything else fall through to *running* or *queued*. A cancelled recording read as
+#: ``running · ~15s left`` under a live event and a partial one as ``queued`` — a stopped
+#: recording described as still to come. ``cancelled`` and ``partial`` are over and did not
+#: finish, so they draw as the news (`FAILED`, never grouped) with the status as their text.
+#: ``pending`` / ``running`` are the two that defer to the live event: the record cannot know
+#: which recording is in flight, so those draw `RUNNING` only for the one the event names.
+STATUS_STATE = {
+    "complete": DONE,
+    "failed": FAILED,
+    "cancelled": FAILED,
+    "partial": FAILED,
+    "running": RUNNING,
+    "pending": QUEUED,
+}
+
 #: List every unit up to this many; beyond it, fold the groupable states into count rows.
 #:
 #: Eight because that is about where a list stops being read and starts being scrolled — and
@@ -161,10 +181,11 @@ def processing_units(
         entry = per.get(rid) or {}
         status = entry.get("status")
         name = names.get(rid, rid)
-        if status == "complete":
+        state = STATUS_STATE.get(status)
+        if state == DONE:
             units.append(Unit(name, DONE, 1.0, entry.get("detail") or ""))
-        elif status == "failed":
-            units.append(Unit(name, FAILED, 0.0, _failure(entry)))
+        elif state == FAILED:
+            units.append(Unit(name, FAILED, 0.0, _ended(status, entry)))
         elif rid == current:
             units.append(Unit(name, RUNNING, _inner_fraction(inner), _running(inner)))
         else:
@@ -220,13 +241,14 @@ def distill_units(record: dict, progress=None) -> list[Unit]:
         status = (stages.get(key) or {}).get("status") or "pending"
         if _stage_trails(status, phase, stage_phase):
             status = "running"
-        if status == "complete":
+        state = STATUS_STATE.get(status)
+        if state == DONE:
             units.append(Unit(name, DONE, 1.0, ""))
-        elif status in ("failed", "cancelled"):
+        elif state == FAILED:
             units.append(
-                Unit(name, FAILED, 0.0, _failure({"error": record.get("error")}))
+                Unit(name, FAILED, 0.0, _ended(status, {"error": record.get("error")}))
             )
-        elif status == "running":
+        elif state == RUNNING:
             live = progress if phase == stage_phase else None
             units.append(
                 Unit(name, RUNNING, _stage_fraction(live), _stage_status(live))
@@ -382,6 +404,18 @@ def _event_fraction(progress) -> float:
     total = getattr(progress, "frames_total", 0) or 0
     done = getattr(progress, "frames_done", 0) or 0
     return min(max(done / total, 0.0), 1.0) if total else 0.0
+
+
+def _ended(status: str, entry: dict) -> str:
+    """The text of a row that is over and did not finish: the reason for a failure, and the
+    status itself for a cancel or a partial — the word a person needs, since both draw in the
+    failure's colour and "cancelled" is not a failure (with the reason after it, if one was
+    recorded)."""
+    if status == "failed":
+        return _failure(entry)
+    if entry.get("error"):
+        return f"{status} · {_failure(entry)}"
+    return status
 
 
 def _failure(entry: dict) -> str:

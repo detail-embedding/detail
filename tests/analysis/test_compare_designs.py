@@ -475,7 +475,29 @@ def test_one_unit_gets_no_floor_and_a_reason():
         {("A", "veh"): {"x": 0.1}, ("A", "fent"): {"x": 0.2}}, levels=["veh", "fent"]
     )
     assert ranking.floor is None
-    assert "single unit" in ranking.no_floor_reason
+    assert ranking.no_floor_reason == (
+        "only one animal (A) has both veh and fent, so a within-animal null has nothing "
+        "to move and no floor can be computed"
+    )
+    assert not ranking.clears_floor(ranking.contrasts[0])
+
+
+def test_a_unit_at_one_level_cannot_be_flipped_so_two_such_and_one_is_one():
+    """Two animals, one of them with a single session: every flip of that one is the
+    identity, so the null's maximum was the observed maximum, which nothing can exceed.
+    The floor is withheld with the reason, naming the one animal that can move."""
+    ranking = _paired_ranking(
+        {
+            ("A", "veh"): {"x": 0.1},
+            ("A", "fent"): {"x": 0.2},
+            ("B", "veh"): {"x": 0.3},
+        },
+        levels=["veh", "fent"],
+    )
+    assert ranking.floor is None
+    assert ranking.no_floor_reason.startswith(
+        "only one animal (A) has both veh and fent"
+    )
     assert not ranking.clears_floor(ranking.contrasts[0])
 
 
@@ -561,7 +583,9 @@ def test_the_record_rebuilds_the_same_ranking_from_the_stored_rows():
     shares = _baseline_spread_cohort(n=6)
     meta, rows = _crossover(shares)
     obs = c.observations(rows, meta, group_by=["session"], aggregate_to=["animal"])
-    stored = c.stats_rows(obs, aggregate_to=["animal"], group_by=["session"])
+    stored = c.stats_rows(
+        obs, aggregate_to=["animal"], remainders=(), group_by=["session"]
+    )
     assert all(row["denominator_ns"] == HOUR for row in stored)
     rebuilt = comparison_report._observations(
         [{k: ("" if v is None else str(v)) for k, v in row.items()} for row in stored]
