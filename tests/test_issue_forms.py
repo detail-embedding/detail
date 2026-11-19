@@ -24,7 +24,7 @@ BODY = REPO / ".github" / "bug_report_body.md"
 
 
 def _load(name: str) -> dict:
-    return yaml.safe_load((FORMS / name).read_text(encoding="utf-8"))
+    return yaml.safe_load((FORMS / name).read_text(encoding="utf-8-sig"))
 
 
 def _field_labels(form: dict) -> list[str]:
@@ -71,12 +71,12 @@ def test_blank_issues_are_off_and_questions_and_security_go_elsewhere():
 
 def test_the_terminal_body_has_the_bug_forms_sections_in_order():
     labels = _field_labels(_load("bug_report.yml"))
-    assert _body_headings(BODY.read_text(encoding="utf-8")) == labels
+    assert _body_headings(BODY.read_text(encoding="utf-8-sig")) == labels
 
 
 def test_the_drift_check_sees_a_dropped_or_reordered_section():
     labels = _field_labels(_load("bug_report.yml"))
-    text = BODY.read_text(encoding="utf-8")
+    text = BODY.read_text(encoding="utf-8-sig")
     assert _body_headings(text.replace("### Workaround\n", "")) != labels
     swapped = (
         text.replace("### Terminal output", "### SWAP")
