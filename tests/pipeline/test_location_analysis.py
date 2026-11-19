@@ -136,6 +136,11 @@ def test_location_analysis_end_to_end(tmp_path):
     # a single --tracking id becomes a uniform per-recording map (§6.5)
     assert rec["tracking_run_ids"] == {"recording_001": "track_01"}
     assert rec["artifacts"][0]["path"] == "recording_001/tracks.csv"  # relative path
+    # options nobody set are still written down, resolved (Tenet 9): the record says every
+    # frame and the whole mask rather than saying nothing
+    assert rec["params"]["sample_fps"] is None
+    assert rec["params"]["remove_thin_parts"] is False
+    assert rec["params"]["thin_part_scale"] == 0.12
 
 
 def test_location_analysis_accepts_tracking_spec(tmp_path):
@@ -181,8 +186,22 @@ def test_location_job_from_dict_legacy_single_id_shim():
         "s1": "track_01",
         "s2": "track_01",
     }
+    # a job from before the measurement options existed measured every frame of the whole
+    # mask, which is what the config model's defaults say
+    old = LocationAnalysisJob.from_dict(legacy)
+    assert (old.sample_fps, old.remove_thin_parts, old.thin_part_scale) == (
+        None,
+        False,
+        0.12,
+    )
     new = LocationAnalysisJob(
-        "an_02", ["s1", "s2"], {"s1": "track_02", "s2": "track_01"}, "t"
+        "an_02", ["s1", "s2"], {"s1": "track_02", "s2": "track_01"}, "t", 5.0, True, 0.2
+    )
+    back = LocationAnalysisJob.from_dict(new.to_dict())
+    assert (back.sample_fps, back.remove_thin_parts, back.thin_part_scale) == (
+        5.0,
+        True,
+        0.2,
     )
     assert LocationAnalysisJob.from_dict(new.to_dict()).tracking_run_ids == {
         "s1": "track_02",
@@ -394,3 +413,43 @@ def test_validate_refuses_a_calibration_of_another_shape(tmp_path):
     recording_store.write_recording(rec.dir, data)
     with pytest.raises(ValueError, match="recording_001.*different video shape"):
         proj.run_analysis("location_export", _config("recording_001"))
+
+
+def test_the_runner_measures_with_the_options_the_job_carries(tmp_path):
+    """The options reach the compute through the job, not only through ``validate``: a worker
+    rebuilds the job from ``job.json`` and never sees the config (detail#75)."""
+    proj = Experiment.create("p", tmp_path)
+    _add_tracked_recording(proj, "recording_001")
+    module = ANALYSIS_MODULES["location_export"]
+    config = {
+        **_config("recording_001"),
+        "remove_thin_parts": True,
+        "thin_part_scale": 0.3,
+    }
+    job = type(module.build_job("an_01", config)).from_dict(
+        module.build_job("an_01", config).to_dict()
+    )
+    run_dir = ar.analysis_dir(proj.dir, "an_01")
+    ar.write_analysis_yaml(
+        run_dir, {"id": "an_01", "module_id": "location_export", "status": "running"}
+    )
+    module.runner(job, run_dir, lambda *_: None, threading.Event())
+    manifest = yaml.safe_load(
+        (run_dir / "recording_001" / "locations.yaml").read_text(encoding="utf-8")
+    )
+    assert manifest["remove_thin_parts"] is True
+    assert manifest["thin_part_scale"] == 0.3
+    record = ar.read_analysis_yaml(run_dir)
+    assert record["status"] == "complete"
+    assert record["params"]["remove_thin_parts"] is True
+    assert record["params"]["thin_part_scale"] == 0.3
+    assert record["params"]["sample_fps"] is None
+
+
+def test_validate_refuses_an_option_outside_its_bounds(tmp_path):
+    proj = Experiment.create("p", tmp_path)
+    _add_tracked_recording(proj, "recording_001")
+    with pytest.raises(ValueError, match="sample_fps"):
+        proj.run_analysis(
+            "location_export", {**_config("recording_001"), "sample_fps": -1.0}
+        )

@@ -37,10 +37,41 @@ def mask_centre_norm(mask: np.ndarray) -> tuple[float, float]:
     200-cell mask comes back as 0.225 and 0.2475) and put the location export's mask centre
     half a cell away from the kinematics one for the same frame (#32).
     """
-    mx, my = mask_centroid(mask)
     height, width = mask.shape[:2]
-    if not np.isfinite(mx) or height <= 0 or width <= 0:
+    return window_centre_norm(mask, 0, 0, width, height)
+
+
+def mask_extent(mask: np.ndarray) -> tuple[int, int, int, int] | None:
+    """``(y0, y1, x0, x1)``: the rows and columns a ``(H, W)`` bool mask occupies, as the
+    bounds of the slices that cut it out; ``None`` when the mask is empty.
+
+    An animal fills a few percent of a full-resolution mask grid. Measuring it on this window
+    rather than on the grid is the difference between scanning forty thousand cells and two
+    million, on every frame.
+    """
+    rows = np.flatnonzero(mask.any(axis=1))
+    if len(rows) == 0:
+        return None
+    cols = np.flatnonzero(mask.any(axis=0))
+    return int(rows[0]), int(rows[-1]) + 1, int(cols[0]), int(cols[-1]) + 1
+
+
+def window_centre_norm(
+    window: np.ndarray, x0: int, y0: int, width: int, height: int
+) -> tuple[float, float]:
+    """:func:`mask_centre_norm` of a mask given as a ``window`` cut from a ``(height, width)``
+    grid at column ``x0``, row ``y0``; ``(nan, nan)`` when empty.
+
+    The same numbers as measuring the whole grid, bit for bit: the cell indices are summed as
+    integers and shifted before the one division, so a window and the grid it came from
+    cannot disagree in the last place. This is where the ``+ 0.5`` of a cell's centre lives.
+    """
+    ys, xs = np.nonzero(window)
+    count = len(xs)
+    if count == 0 or height <= 0 or width <= 0:
         return (float("nan"), float("nan"))
+    mx = float(int(xs.sum()) + count * int(x0)) / count
+    my = float(int(ys.sum()) + count * int(y0)) / count
     return ((mx + 0.5) / width, (my + 0.5) / height)
 
 

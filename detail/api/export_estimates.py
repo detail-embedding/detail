@@ -51,7 +51,9 @@ MASKS_FALLBACK_RLE_BYTES = (
 #: tracks: slow because each row is placed against the recording's ROIs and points; a
 #: recording with none is faster.
 TRACKS_ROWS_PER_S = 600
-TRACKS_BYTES_PER_ROW = 215
+#: 352 measured on a calibrated 1080p recording once the body columns were added (it was 215
+#: before them); an uncalibrated recording's rows are shorter, its mm columns being blank.
+TRACKS_BYTES_PER_ROW = 350
 #: vectors: rows of 1024 float32. The index CSV is ~51 bytes a row.
 VECTORS_ROWS_PER_S = 100_000
 VECTORS_INDEX_BYTES_PER_ROW = 51

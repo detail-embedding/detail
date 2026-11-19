@@ -5,6 +5,17 @@ the export averaged cell indices, so every mask centre sat half a cell up and le
 kinematics centre for the same frame; and box corners rounded to the mask grid made a box under
 one cell wide cover no cell, 0% inside a region it sat in. The rules: one centre,
 ``geometry.mask_centre_norm``, for every caller; a box covers every cell it touches.
+
+**A tail measured as body, and a measure that follows the calibration (detail#75).** A rat's
+tail moves the mask's centre and dominates any length, so a body is measured after an opening
+removes thin parts, when the user asks for it. The opening is sized from the animal's own mask
+area: one experiment's millimetre calibration turned out to be wrong, and an opening sized in
+millimetres would have changed every body's shape with it. The rules: thin-part removal is a
+choice and off unless chosen; with it off the body *is* the mask, to the last digit; the
+opening never reads the calibration; a frame the opening would erase is measured whole.
+
+**Rows that were never tracked.** Sampling keeps the tracked frame nearest each tick of a clock
+and never interpolates, so a gap in tracking stays a gap in every table.
 """
 
 import json
@@ -383,3 +394,358 @@ def test_a_box_thinner_than_a_mask_cell_is_not_zero_percent_inside(tmp_path):
     assert r["centroid_in_roi"] == 1
     assert r["bbox_frac_in_roi"] == pytest.approx(1.0)
     assert r["bbox_fully_in_roi"] == 1
+
+
+# --------------------------------------------------------------------------------------------- #
+# the body: shape, thin parts, sampling (detail#75)
+# --------------------------------------------------------------------------------------------- #
+#: The columns an export had before the body was added. A reader that takes columns by position
+#: must still find these where they were.
+_COLUMNS_BEFORE_THE_BODY = [
+    "frame_idx", "t_ns", "object_id",
+    "bbox_x1_norm", "bbox_y1_norm", "bbox_x2_norm", "bbox_y2_norm",
+    "bbox_x1_px", "bbox_y1_px", "bbox_x2_px", "bbox_y2_px",
+    "bbox_cx_norm", "bbox_cy_norm", "bbox_cx_px", "bbox_cy_px",
+    "mask_cx_norm", "mask_cy_norm", "mask_cx_px", "mask_cy_px",
+    "bbox_area_norm", "bbox_area_px", "mask_area_norm", "mask_area_px",
+    "bbox_cx_mm", "bbox_cy_mm", "mask_cx_mm", "mask_cy_mm",
+    "bbox_area_mm2", "mask_area_mm2",
+]  # fmt: skip
+_BODY_COLUMNS = [
+    "body_cx_norm", "body_cy_norm", "body_cx_px", "body_cy_px",
+    "body_area_norm", "body_area_px",
+    "body_length_px", "body_width_px", "body_angle_deg",
+    "body_cx_mm", "body_cy_mm", "body_area_mm2",
+    "body_length_mm", "body_width_mm",
+]  # fmt: skip
+
+
+def _rat(tail: bool = True) -> np.ndarray:
+    """A 20 x 10 cell body (rows 10-19, columns 4-23) with a 1-cell-thick tail to its right."""
+    m = _mask_square(10, 20, 4, 24)
+    if tail:
+        m[15, 24:38] = 1
+    return m
+
+
+def _frames(masks, object_ids=None):
+    """``_setup`` arguments for one mask per frame, all of track 0 unless told otherwise."""
+    detections = [(f, 0, (0.0, 0.0, 1.0, 1.0), m) for f, m in enumerate(masks)]
+    return detections, (object_ids or [0] * len(masks))
+
+
+def test_the_body_columns_come_after_every_column_an_older_export_has(tmp_path):
+    columns, _rows = _one_track(tmp_path).location_tables("track_01").tracks
+    assert columns == _COLUMNS_BEFORE_THE_BODY + _BODY_COLUMNS
+
+
+def test_with_thin_parts_kept_the_body_is_the_mask(tmp_path):
+    recording = _setup(tmp_path, *_frames([_rat()]))
+    recording.set_pixels_per_mm(2.0)
+    tables = recording.location_tables("track_01")
+    row = _dicts(tables.tracks)[0]
+    for what in ("cx_norm", "cy_norm", "cx_px", "cy_px", "area_norm", "area_px"):
+        assert row[f"body_{what}"] == row[f"mask_{what}"], what
+    for what in ("cx_mm", "cy_mm", "area_mm2"):
+        assert row[f"body_{what}"] == row[f"mask_{what}"], what
+    assert tables.source["remove_thin_parts"] is False
+    assert tables.source["thin_part_opening_px"] == {}
+    assert tables.source["body_axis"] == "shape"
+
+
+def test_length_and_width_are_the_axes_of_the_body(tmp_path):
+    # a 20 x 10 px rectangle: four standard deviations of a uniform length L is 4 L / sqrt(12)
+    recording = _setup(tmp_path, *_frames([_rat(tail=False)]))
+    recording.set_pixels_per_mm(2.0)
+    row = _dicts(recording.location_tables("track_01").tracks)[0]
+    assert row["body_length_px"] == pytest.approx(4 * 20 / 12**0.5, abs=0.01)
+    assert row["body_width_px"] == pytest.approx(4 * 10 / 12**0.5, abs=0.01)
+    assert row["body_angle_deg"] == pytest.approx(0.0, abs=0.01)  # long axis along x
+    assert row["body_length_mm"] == pytest.approx(row["body_length_px"] / 2.0, abs=0.01)
+    assert row["body_width_mm"] == pytest.approx(row["body_width_px"] / 2.0, abs=0.01)
+
+
+def test_an_upright_body_points_up_and_a_blank_calibration_blanks_only_mm(tmp_path):
+    upright = _mask_square(4, 34, 16, 24)  # 30 tall, 8 wide
+    row = _dicts(
+        _setup(tmp_path, *_frames([upright])).location_tables("track_01").tracks
+    )[0]
+    assert row["body_angle_deg"] == pytest.approx(90.0, abs=0.01)
+    assert row["body_length_px"] == pytest.approx(4 * 30 / 12**0.5, abs=0.01)
+    assert row["body_length_mm"] == "" and row["body_width_mm"] == ""
+    assert row["body_cx_mm"] == "" and row["body_area_mm2"] == ""
+
+
+def test_the_same_animal_measures_the_same_on_a_coarser_mask_grid():
+    from detail.analysis.locations import body_axes
+
+    fine = np.zeros((80, 80), bool)
+    fine[20:40, 8:48] = True  # the 20 x 10 body, drawn at twice the resolution
+    coarse = np.zeros((40, 40), bool)
+    coarse[10:20, 4:24] = True
+    a, b = body_axes(fine, 0.5, 0.5), body_axes(coarse, 1.0, 1.0)
+    assert a["length_px"] == pytest.approx(b["length_px"], rel=1e-9)
+    assert a["width_px"] == pytest.approx(b["width_px"], rel=1e-9)
+    # a grid that is finer one way than the other is still measured in video pixels
+    wide_cells = np.zeros((40, 20), bool)
+    wide_cells[10:20, 2:12] = True
+    assert body_axes(wide_cells, 2.0, 1.0)["length_px"] == pytest.approx(b["length_px"])
+    assert body_axes(np.zeros((4, 4), bool), 1.0, 1.0) == {
+        "length_px": None, "width_px": None, "angle_deg": None
+    }  # fmt: skip
+
+
+def test_removing_thin_parts_takes_the_tail_out_of_the_body(tmp_path):
+    recording = _setup(tmp_path, *_frames([_rat()] * 3))
+    kept = _dicts(recording.location_tables("track_01").tracks)[0]
+    tables = recording.location_tables(
+        "track_01", remove_thin_parts=True, thin_part_scale=0.3
+    )
+    gone = _dicts(tables.tracks)[0]
+    # the mask's own columns do not move: they are still the whole detection
+    for name in _COLUMNS_BEFORE_THE_BODY:
+        assert gone[name] == kept[name], name
+    # with its tail, the animal reads longer and centred further right than its body is
+    assert kept["body_length_px"] > 1.2 * gone["body_length_px"]
+    assert kept["body_cx_px"] > gone["body_cx_px"] + 0.5
+    assert gone["body_cx_px"] == pytest.approx(14.0, abs=0.3)  # columns 4-23
+    # the opening rounds the rectangle's corners, so within a few percent of the full box
+    assert gone["body_length_px"] == pytest.approx(4 * 20 / 12**0.5, rel=0.05)
+    assert gone["body_width_px"] == pytest.approx(4 * 10 / 12**0.5, rel=0.05)
+    assert gone["body_area_px"] < gone["mask_area_px"]
+    assert tables.source["remove_thin_parts"] is True
+    assert tables.source["thin_part_scale"] == 0.3
+    # 0.3 * sqrt(214 px of mask) = 4.39 px, one opening for track 0
+    assert tables.source["thin_part_opening_px"] == {"0": 4.39}
+
+
+def test_the_opening_is_sized_from_the_animal_and_never_from_the_calibration(tmp_path):
+    options = {"remove_thin_parts": True, "thin_part_scale": 0.3}
+    recording = _setup(tmp_path, *_frames([_rat()] * 3))
+    before = recording.location_tables("track_01", **options)
+    recording.set_pixels_per_mm(7.5)  # a calibration, and then a different one
+    mid = recording.location_tables("track_01", **options)
+    recording.set_pixels_per_mm(0.4)
+    after = recording.location_tables("track_01", **options)
+    pixel_columns = [c for c in _BODY_COLUMNS if not c.endswith(("_mm", "_mm2"))]
+    for tables in (mid, after):
+        assert (
+            tables.source["thin_part_opening_px"]
+            == before.source["thin_part_opening_px"]
+        )
+        for name in pixel_columns:
+            assert (
+                _dicts(tables.tracks)[0][name] == _dicts(before.tracks)[0][name]
+            ), name
+
+
+def test_masks_too_coarse_for_the_opening_are_refused_not_left_untouched(tmp_path):
+    recording = _setup(tmp_path, *_frames([_rat()]))
+    # 0.05 * sqrt(214) is 0.7 of a cell: an opening that small would remove nothing
+    with pytest.raises(ValueError, match="less than one and a half mask cells"):
+        recording.location_tables(
+            "track_01", remove_thin_parts=True, thin_part_scale=0.05
+        )
+
+
+def test_a_frame_the_opening_would_erase_is_measured_whole(tmp_path):
+    sliver = np.zeros((H, W), np.uint8)
+    sliver[15, 4:30] = 1  # one cell thick: no opening leaves anything of it
+    recording = _setup(tmp_path, *_frames([_rat(), _rat(), sliver, _rat()]))
+    rows = _dicts(
+        recording.location_tables(
+            "track_01", remove_thin_parts=True, thin_part_scale=0.3
+        ).tracks
+    )
+    assert rows[2]["body_area_px"] == rows[2]["mask_area_px"] == 26.0
+    assert rows[2]["body_length_px"] == pytest.approx(4 * 26 / 12**0.5, abs=0.01)
+    assert (
+        rows[0]["body_area_px"] < rows[0]["mask_area_px"]
+    )  # the others lost their tail
+
+
+def test_an_animal_at_the_edge_of_the_frame_is_not_eroded_by_the_edge(tmp_path):
+    from detail.analysis.geometry import mask_extent
+    from detail.analysis.locations import body_window, thin_part_kernel
+
+    kernel, _diameter = thin_part_kernel(214.0, 0.3, 1.0, 1.0)
+    inside = _mask_square(10, 20, 10, 30).astype(bool)
+    at_edge = _mask_square(10, 20, 0, 20).astype(
+        bool
+    )  # the same body, against the left edge
+    areas = []
+    for mask in (inside, at_edge):
+        body, _x0, _y0 = body_window(mask, mask_extent(mask), kernel)
+        areas.append(int(body.sum()))
+    # the edge of the frame is not background: where the animal leaves the frame the opening
+    # must not round it off as if it ended there
+    assert areas[1] >= areas[0]
+
+
+def test_each_track_gets_its_own_opening(tmp_path):
+    small = np.zeros((H, W), np.uint8)
+    small[30:34, 4:12] = 1  # 8 x 4 = 32 cells
+    detections = [
+        (0, 0, (0.0, 0.0, 1.0, 1.0), _rat()),
+        (0, 1, (0.0, 0.0, 1.0, 1.0), small),
+    ]
+    recording = _setup(tmp_path, detections, [0, 1])
+    source = recording.location_tables(
+        "track_01", remove_thin_parts=True, thin_part_scale=0.3
+    ).source
+    assert source["thin_part_opening_px"] == {"0": 4.39, "1": 1.7}
+
+
+def test_sampling_keeps_the_frame_nearest_each_tick():
+    from detail.analysis.locations import sampled_indices
+
+    ns = 1_000_000_000
+    t = (np.arange(100) * ns / 62.5).astype(np.int64)  # 1.6 s of a 62.5 fps video
+    kept = sampled_indices(t, 5.0)
+    # the answer worked out the slow way: for each tick, the frame nearest it
+    period = ns / 5
+    nearest_tick = np.rint(t / period)
+    expected = [
+        int(
+            np.flatnonzero(nearest_tick == k)[
+                np.argmin(np.abs(t - k * period)[nearest_tick == k])
+            ]
+        )
+        for k in np.unique(nearest_tick)
+    ]
+    assert kept.tolist() == expected
+    assert (
+        len(kept) == 9
+    )  # ticks at 0, 0.2, ... 1.6 s; the last frame is 16 ms from 1.6
+    assert kept[0] == 0 and np.all(np.diff(kept) > 0)
+    # a rate above the video's keeps every frame, and never invents one
+    assert sampled_indices(t, 1000.0).tolist() == list(range(100))
+    assert sampled_indices(np.array([], dtype=np.int64), 5.0).tolist() == []
+
+
+def test_sampling_leaves_a_gap_in_tracking_a_gap():
+    from detail.analysis.locations import sampled_indices
+
+    ns = 1_000_000_000
+    # tracked for 1 s, lost for 3 s, tracked for 1 s, at 50 fps
+    t = np.r_[np.arange(50), 200 + np.arange(50)] * (ns // 50)
+    kept = sampled_indices(t, 5.0)
+    seconds = t[kept] / ns
+    assert not np.any(
+        (seconds > 1.1) & (seconds < 3.9)
+    )  # nothing made up across the gap
+    assert len(kept) == 12  # ticks 0 to 1.0 s and 4.0 to 5.0 s, six each
+    # two frames equally near one tick: the earlier one, every time
+    assert sampled_indices(
+        np.array([90, 110], dtype=np.int64) * (ns // 1000), 10.0
+    ).tolist() == [0]
+
+
+def test_a_sampled_export_has_the_same_frames_in_every_table(tmp_path):
+    masks = [_rat()] * 12  # frames 0..11, 1000 ns apart
+    recording = _setup(tmp_path, *_frames(masks))
+    recording.define_roi(
+        "left", [(0, [(0.0, 0.0), (0.5, 0.0), (0.5, 1.0), (0.0, 1.0)])]
+    )
+    recording.define_point("p", [(0, [(0.9, 0.9)])])
+    seen = []
+    tables = recording.location_tables(
+        "track_01", sample_fps=250_000.0
+    )  # every 4000 ns
+    for table in (tables.tracks, tables.roi_relations, tables.point_relations):
+        seen.append([row["frame_idx"] for row in _dicts(table)])
+    # ticks at 0, 4000, 8000 and 12000 ns: frame 11, at 11000, is the nearest to the last
+    assert seen == [[0, 4, 8, 11]] * 3
+    assert tables.source["sample_fps"] == 250_000.0
+    every = recording.location_tables("track_01")
+    assert [row["frame_idx"] for row in _dicts(every.tracks)] == list(range(12))
+    assert every.source["sample_fps"] is None
+
+
+def test_progress_counts_only_the_rows_a_sampled_export_keeps(tmp_path):
+    from detail.analysis.locations import compute_location_tables
+    from detail.configs.location_export import LocationExportConfig
+
+    recording = _setup(tmp_path, *_frames([_rat()] * 12))
+    calls = []
+    compute_location_tables(
+        recording,
+        "track_01",
+        on_progress=lambda done, total: calls.append((done, total)),
+        options=LocationExportConfig(sample_fps=250_000.0),
+    )
+    assert calls == [
+        (1, 4),
+        (2, 4),
+        (3, 4),
+        (4, 4),
+    ]  # a bar over 12 would stop at a third
+
+
+def test_each_track_is_sampled_on_its_own_frames(tmp_path):
+    # track 0 on even frames, track 1 on odd ones: a clock every 4000 ns keeps the nearest
+    # frame of each, not the frames of whichever track is on the tick
+    detections, ids = [], []
+    for frame in range(12):
+        detections.append((frame, 0, (0.0, 0.0, 1.0, 1.0), _rat()))
+        ids.append(frame % 2)
+    rows = _dicts(
+        _setup(tmp_path, detections, ids)
+        .location_tables("track_01", sample_fps=250_000.0)
+        .tracks
+    )
+    by_track = {
+        oid: [r["frame_idx"] for r in rows if r["object_id"] == oid] for oid in (0, 1)
+    }
+    assert by_track[0] == [0, 4, 8]
+    # frames 3 and 5 are equally near the tick at 4000 ns, 7 and 9 the one at 8000: the earlier
+    assert by_track[1] == [1, 3, 7, 11]
+
+
+def test_an_option_the_export_does_not_have_is_refused_not_dropped(tmp_path):
+    recording = _one_track(tmp_path)
+    with pytest.raises(ValueError, match="no option sample_rate; it has sample_fps"):
+        recording.location_tables("track_01", sample_rate=5)
+    with pytest.raises(ValueError, match="sample_fps"):
+        recording.location_tables("track_01", sample_fps=0)
+    with pytest.raises(ValueError, match="thin_part_scale"):
+        recording.export_locations("track_01", tmp_path / "out", thin_part_scale=0.9)
+
+
+def test_the_manifest_says_how_the_body_was_measured(tmp_path):
+    recording = _setup(tmp_path, *_frames([_rat()] * 3))
+    out = recording.export_locations(
+        "track_01", tmp_path / "out", remove_thin_parts=True, thin_part_scale=0.3
+    )
+    manifest = yaml.safe_load((out / "locations.yaml").read_text(encoding="utf-8"))
+    assert list(manifest)[0] == "schema_version"
+    assert manifest["remove_thin_parts"] is True
+    assert manifest["thin_part_scale"] == 0.3
+    assert manifest["sample_fps"] is None
+    assert manifest["thin_part_opening_px"] == {"0": 4.39}
+    assert manifest["columns"]["tracks"][-len(_BODY_COLUMNS) :] == _BODY_COLUMNS
+
+
+def test_a_window_of_the_grid_gives_the_centre_the_whole_grid_gives():
+    from detail.analysis.geometry import (
+        mask_centre_norm,
+        mask_extent,
+        window_centre_norm,
+    )
+
+    rng = np.random.default_rng(0)
+    for _ in range(50):
+        mask = np.zeros((108, 192), bool)
+        y, x = rng.integers(0, 80), rng.integers(0, 150)
+        blob = rng.random((rng.integers(3, 28), rng.integers(3, 42))) > 0.4
+        mask[y : y + blob.shape[0], x : x + blob.shape[1]] = blob
+        if not mask.any():
+            continue
+        y0, y1, x0, x1 = mask_extent(mask)
+        assert mask[y0:y1, x0:x1].sum() == mask.sum()
+        # equal, not approximately: an export made on the window must not differ in the last
+        # digit from one made on the grid, or a re-run would not reproduce an older file
+        assert window_centre_norm(
+            mask[y0:y1, x0:x1], x0, y0, 192, 108
+        ) == mask_centre_norm(mask)
+    assert mask_extent(np.zeros((4, 4), bool)) is None

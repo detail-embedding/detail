@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from detail.configs.location_export import LocationExportConfig
+from detail.configs.location_export import option_names
+from detail.configs.location_export import options_from
 from detail.core.progress import ThrottledProgress, remaining_seconds
 from detail.core.utils import utc_timestamp
 from detail.executor.runners import (
@@ -32,12 +34,19 @@ _CSV_KINDS = ("tracks", "roi_relations", "point_relations")
 class LocationAnalysisJob:
     """One location-export run over a recording selection. ``tracking_run_ids`` maps each
     recording to *its own* tracking run (§6.5 "Upstream run specs") — resolved from the
-    selected spec at launch, so the recordings need not share a ``track_NN`` ordinal."""
+    selected spec at launch, so the recordings need not share a ``track_NN`` ordinal.
+
+    The measurement options (``configs.location_export.option_names``) are carried by name
+    and have no default here: the config model is the one place a default is written, and a
+    job built without one would record a setting nobody chose."""
 
     job_id: str
     source_recording_ids: list[str]
     tracking_run_ids: dict[str, str]
     created_at: str
+    sample_fps: float | None
+    remove_thin_parts: bool
+    thin_part_scale: float
 
     def to_dict(self) -> dict:
         return {
@@ -45,6 +54,7 @@ class LocationAnalysisJob:
             "source_recording_ids": list(self.source_recording_ids),
             "tracking_run_ids": dict(self.tracking_run_ids),
             "created_at": self.created_at,
+            **{name: getattr(self, name) for name in option_names()},
         }
 
     @classmethod
@@ -55,11 +65,15 @@ class LocationAnalysisJob:
         run_ids = d.get("tracking_run_ids")
         if run_ids is None:
             run_ids = {sid: d["tracking_run_id"] for sid in recordings}
+        # Compat: a job from before the options existed measured every frame of the whole
+        # mask, which is what the model's defaults say.
+        options = options_from(d)
         return cls(
             job_id=d["job_id"],
             source_recording_ids=recordings,
             tracking_run_ids=dict(run_ids),
             created_at=d["created_at"],
+            **{name: getattr(options, name) for name in option_names()},
         )
 
 
@@ -97,7 +111,7 @@ class LocationExportModule(AnalysisModule):
     progress_counts_frames = False
 
     def validate(self, experiment_dir, config: dict) -> dict:
-        LocationExportConfig.model_validate(config)  # bounds/shape only
+        model = LocationExportConfig.model_validate(config)  # bounds/shape only
         recording_ids = list(config.get("source_recording_ids") or [])
         if not recording_ids:
             raise ValueError("location export needs at least one source recording")
@@ -118,6 +132,10 @@ class LocationExportModule(AnalysisModule):
                 if refusal is not None:
                     raise ValueError(f"recording {sid!r}: {refusal}")
         config.update(selection)
+        # The options this model owns outright, resolved and written back (Tenet 9): the
+        # record then says "every frame" or "the whole mask" where the user left it unset.
+        # Only these fields: the model does not cover the selection keys beside them.
+        config.update({name: getattr(model, name) for name in option_names()})
         return config
 
     def build_job(self, run_id: str, config: dict) -> LocationAnalysisJob:
@@ -128,11 +146,13 @@ class LocationExportModule(AnalysisModule):
         if mapping is None:
             run_id_single = config.get("tracking_run_id")
             mapping = {sid: run_id_single for sid in recording_ids}
+        options = options_from(config)
         return LocationAnalysisJob(
             job_id=run_id,
             source_recording_ids=recording_ids,
             tracking_run_ids=dict(mapping),
             created_at=utc_timestamp(),
+            **{name: getattr(options, name) for name in option_names()},
         )
 
     def run_dir_for(self, experiment_root, job):
@@ -157,6 +177,7 @@ class LocationExportModule(AnalysisModule):
         total = len(recordings)
         emit = ThrottledProgress(progress_cb)
         started = time.monotonic()
+        options = options_from(job.to_dict())
 
         per_recording: dict[str, dict] = {}
         succeeded: list[str] = []
@@ -184,7 +205,10 @@ class LocationExportModule(AnalysisModule):
             try:
                 recording = Recording(experiment_root, sid)
                 tables = compute_location_tables(
-                    recording, job.tracking_run_ids[sid], on_progress=on_rows
+                    recording,
+                    job.tracking_run_ids[sid],
+                    on_progress=on_rows,
+                    options=options,
                 )
                 write_location_tables(run_dir / sid, tables)
             except Exception as exc:  # noqa: BLE001 — per-recording isolation boundary
