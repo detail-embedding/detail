@@ -165,5 +165,10 @@ Only a maintainer does this. An agent does it only on an explicit instruction.
 
 ## Report a bug
 
-Use the bug report form under **Issues**. [`docs/bug_reports.md`](docs/bug_reports.md) explains
-what to capture before it is lost, starting with the terminal output.
+Use the bug report form under **Issues**. It asks for the output of `detail doctor`, so run that
+first. [`docs/bug_reports.md`](docs/bug_reports.md) explains what to capture before it is lost,
+starting with the terminal output. Filing from a terminal, where `gh` cannot fill in the form,
+use [`.github/bug_report_body.md`](.github/bug_report_body.md) instead.
+
+Questions go to **Discussions**, not Issues. Report a security problem privately, through
+**Security ▸ Report a vulnerability**, never in a public issue.

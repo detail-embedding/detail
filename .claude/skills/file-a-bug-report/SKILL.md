@@ -11,9 +11,11 @@ re-check every claim about our code and can never re-observe the box.
 
 **Collect ruthlessly, conclude tentatively.**
 
-`docs/bug_reports.md` is the full spec and has a worked example. `gh issue create --template
-"Bug report"` is the form: `--template` takes the `name:` in the front matter of
-`.github/ISSUE_TEMPLATE/bug_report.md`, not the file name.
+`docs/bug_reports.md` is the full spec and has a worked example. From a terminal, copy
+`.github/bug_report_body.md`, fill it in, and file it with
+`gh issue create --type Bug --label bug --title "..." --body-file report.md`. `gh` cannot fill
+in the bug form (`.github/ISSUE_TEMPLATE/bug_report.yml`); the body file has the form's
+headings in the same order.
 
 ## 1. Capture, before you write a sentence
 

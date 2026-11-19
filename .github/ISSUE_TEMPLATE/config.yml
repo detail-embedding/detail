@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question, or how do I...
+    url: https://github.com/detail-embedding/detail/discussions
+    about: Ask in Discussions. Issues are for bugs, docs problems and feature requests.
+  - name: Security problem
+    url: https://github.com/detail-embedding/detail/security/advisories/new
+    about: Report it privately, not in a public issue.
