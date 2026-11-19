@@ -38,7 +38,7 @@ Core terms used across the tool.
 
 **Analysis**: deriving results from tracks and embeddings, an **experiment-level** run over a selection of recordings (location export, behavior scan, behavior-query evaluation, behavior clustering), separate from the per-recording stages.
 
-**Location export**: an analysis that writes each subject's per-frame spatial features relative to the recording's ROIs/POIs (`tracks.csv` / `roi_relations.csv` / `point_relations.csv`), keyed by `t_ns`.
+**Location export**: an analysis that writes each subject's per-frame position, body length and width, and spatial features relative to the recording's ROIs/POIs (`tracks.csv` / `roi_relations.csv` / `point_relations.csv`), keyed by `t_ns`.
 
 **Behavior scan**: an analysis that searches a cohort for behaviors you can name, from a few example clips each; the `query` module on the CLI and in run records. See [Behavior scan](concepts.md#query).
 

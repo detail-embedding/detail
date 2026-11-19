@@ -373,6 +373,13 @@ event streams on time. Distances and positions come in normalized and pixel unit
 millimetres (`_mm`) when the recording has a distance calibration. Run it big (`analysis run`,
 many recordings) or quick (`locations export`, one recording).
 
+`tracks.csv` also measures the **body**: its centre, area, length, width and the direction of
+its long axis. The body is the whole mask unless you ask for thin parts (a tail, a limb, an
+antenna) to be left out, which is recommended for rats and mice and never forced, because for
+some animals the thin part is the body. Length and width are measured along and across the
+body's long axis, found from its shape. A sampling rate writes a few rows a second instead of
+every frame.
+
 ### Behavior scan (query) { #query }
 
 **Behavior scan** is the app's name for the `query` module, which is the name `analysis query`

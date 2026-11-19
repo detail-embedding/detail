@@ -767,9 +767,20 @@ this experiment at once; `train promote` it for cross-experiment reuse.
 into a new folder inside `--out` (named for the experiment, the recording, the tracking run and
 the time, and printed), writing `tracks.csv` / `roi_relations.csv` / `point_relations.csv` + a
 `locations.yaml` manifest. Exporting another recording into the same `--out` makes another
-folder, so one never replaces the other (per-track position relative to the recording's ROIs/POIs,
-keyed by `t_ns`). No run record. For a recorded, batchable version, see `analysis
-run` below.
+folder, so one never replaces the other (per-track position, body length and width, and
+position relative to the recording's ROIs/POIs, keyed by `t_ns`). No run record. For a
+recorded, batchable version, see `analysis run` below.
+
+Three options choose what is measured and how often. `analysis run` takes the same three:
+
+- `--sample-fps <n>`: rows per second for each subject. Without it, every tracked frame. With
+  it, the tracked frame nearest each tick of a clock at that rate, and nothing interpolated.
+- `--remove-thin-parts` / `--keep-thin-parts`: measure the body without a tail, limb or
+  antenna (the `body_` columns). Off unless you ask; recommended for rats and mice.
+- `--thin-part-scale <x>`: how thick a part must be to count as body, as a share of the
+  square root of the subject's own mask area. Default 0.12.
+
+`locations.yaml` records all three, and the size of the opening used for each subject.
 
 ### `export`
 Get data out of DETAIL in open formats. `export list` shows what a subject can produce;
@@ -841,6 +852,8 @@ selection, written to `analysis/<an_NN>/`.
   per-recording analysis module across the selection (writes `an_NN`). For
   `location_export` (the default), output lands in `analysis/<an_NN>/<recording_id>/` as
   the three CSVs. Same output as `locations export`, but recorded, with progress + batch.
+  It takes `--sample-fps`, `--remove-thin-parts` and `--thin-part-scale` as
+  [`locations export`](#locations-export) does, and refuses them for any other module.
 - `query --experiment <dir> --search <id> [--search <id> …] --embed-run <emb_NN> --method <id> [--method-param <name>=<value> …] [--behavior <name> …] --example <[name=]recording:start-end> [--example … | --from-csv <clips.csv>] [--non-example <[name=]recording:start-end> …] [--track 0] [--split-gap <s>] [--min-match <s>] [--strict]`: search a cohort for behaviors you can name, from a few example clips each. One run searches **several behaviors**: declare names with `--behavior rear --behavior groom` and attach clips with a `name=` prefix (`--example rear=s1:0:12.4-13.1`); a bare `--example` makes one default behavior. Spans are **seconds** by default (`s1:0:12.4-13.1`, `recording[:track]:start-end`) or **frames** with an `f` suffix (`s1:0:1240f-1310f`). `--from-csv` reuses a prior clip CSV's rows as examples, which is also how you reuse a previous run's. Writes one opaque shard per (behavior × recording × subject) under `analysis/<an_NN>/search/`. **There is no threshold flag**: the search stores no cutoff, so choosing one afterwards costs nothing and never a second search. The run therefore finishes **open** rather than complete: it stays open until you close it. Turn the results into behavior instances with `analysis query-calibrate`, below. `--method` defaults to [`soft_knn`](modules/soft_knn.md), which is fast; its page says what is and is not known about how well it retrieves. `--min-match <s>` sets the shortest match the search returns, in seconds (default 0, no minimum). It is applied while matches are formed, so a brief spike cannot crowd out a longer match beside it, and changing it means searching again.
 
   The method's own parameters are set with `--method-param <name>=<value>`, repeatable,

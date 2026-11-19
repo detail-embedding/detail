@@ -1,8 +1,8 @@
 # 6. Location export
 
 **Location export** writes where the animal is on every frame, as spreadsheet files: its
-position, its size, whether it is inside each region you drew, and how far it is from each
-point. Every row carries its time, so the files line up with other data you recorded, such as
+position, its size, how long and wide its body is, whether it is inside each region you drew,
+and how far it is from each point. Every row carries its time, so the files line up with other data you recorded, such as
 lever presses or drug infusions.
 
 It needs only the tracking from chapter 3, and the regions and points from chapter 2. It does
@@ -54,7 +54,9 @@ analysis run** dialog:
 2. Click **Select all**.
 3. **Tracking run:** check that the tracking from chapter 3 is ticked. With one tracking, it
    is ticked for you.
-4. Click **Run**.
+4. Leave **Rows per second** at **every frame** and **Remove thin parts** unticked. *About
+   this step*, below, says when to change them.
+5. Click **Run**.
 
 ![The Launch an analysis run dialog for Location export: module Location export, all three recordings ticked, and the tracking run list with the tracking from chapter 3 ticked, highlighted. Numbered markers sit on every control.](../../assets/user-guides/single-animal/location-export/launch-location-export.png)
 
@@ -70,6 +72,30 @@ analysis run** dialog:
     7. **Run**: starts the export.
     8. **Cancel**: closes the dialog without starting anything.
     9. **?**: a short explanation of the setting beside it.
+
+The picture was taken before **Rows per second** and **Remove thin parts** were added. They
+sit under **Tracking run**, each with a **?** beside it.
+
+??? info "About this step: rows per second and thin parts"
+    - **Rows per second.** Left at **every frame**, the export writes a row for every frame
+      the animal was tracked on. Set it to a number, such as 5, and it writes about that many
+      rows a second: the tracked frame nearest each tick of a clock. Nothing is filled in
+      between, so a stretch where the animal was lost has no rows. A few rows a second is
+      enough for distance travelled, speed and body shape, and the export finishes many times
+      sooner. On a 30-minute video at 1920 x 1080, 5 rows a second took about half a minute
+      on a desktop computer, and a minute and a half with thin parts removed.
+    - **Remove thin parts.** Ticked, the body is measured without its thin parts: a tail, a
+      limb, an antenna. Tick it for rats and mice. A rat's tail moves the centre of its
+      outline and makes it read far longer than its body is: 260 mm against 180 mm, on one
+      rat seen from above. Leave it unticked for an
+      animal whose thin parts are its body, such as a fish or a snake. Only the `body_`
+      columns change; the `mask_` columns and the region and point files are still the
+      whole outline.
+    - **Thin part scale**, under **Advanced Settings**: how thick a part must be to count as
+      body. It is a share of the animal's own size in the picture, so it does not depend on
+      the distance calibration. The default, 0.12, removes a rat's tail seen from above and
+      from the side. Raise it if a tail survives; lower it if the head or the legs are
+      being cut off.
 
 ??? warning "Check which tracking run is ticked"
     When nothing was ticked before, the list ticks the tracking that covers the most of the
@@ -115,6 +141,10 @@ tracked animal (0 with one animal).
 | `bbox_cx`, `bbox_cy` | The centre of that box. |
 | `mask_cx`, `mask_cy` | The centre of the animal's outline, which follows the body more closely than the box. |
 | `bbox_area`, `mask_area` | The size of the box and of the outline. |
+| `body_cx`, `body_cy` | The centre of the body. The same as `mask_cx`, `mask_cy` unless **Remove thin parts** was ticked; then it is the centre without the tail. |
+| `body_area` | The size of the body. |
+| `body_length`, `body_width` | How long and how wide the body is, along and across its long axis. Their ratio says how stretched out or balled up the animal is. |
+| `body_angle_deg` | Which way the long axis points in the picture, from 0 to 180 degrees: 0 is left to right, 90 is up and down. It does not say which end is the head. |
 
 **`roi_relations.csv`**: the animal and each region, one row per region per frame.
 
@@ -142,6 +172,10 @@ Positions, sizes and distances come in up to three units, at the end of each nam
 - `_mm` (and `_mm2` for areas): millimetres, from the calibration in chapter 2. Blank for a
   recording with no calibration.
 
+`body_length` and `body_width` come in `_px` and `_mm` only. The folder also holds
+`locations.yaml`, which records how the files were made: the rows per second, whether thin
+parts were removed, and how big a part counted as thin for each animal.
+
 **Check:** each recording has a row for nearly every frame, and the `_mm` columns are filled
 in. On the demo, box1's `tracks.csv` has 8,854 rows, one for each tracked frame.
 
@@ -158,7 +192,11 @@ in. On the demo, box1's `tracks.csv` has 8,854 rows, one for each tracked frame.
     - **The `_mm` columns are blank:** the recording has no distance calibration. Add one
       (chapter 2, step 3) and run the export again.
     - **Far fewer rows than frames:** the tracking lost the animal for those frames (see
-      chapter 3).
+      chapter 3), or **Rows per second** was set, which writes that many rows a second and
+      no more.
+    - **"thin parts cannot be removed from these masks":** the outlines are too coarse for
+      the size of part you asked to remove. Raise **Thin part scale**, or untick **Remove
+      thin parts**.
 
 ## 4. Optional: export the body points
 
