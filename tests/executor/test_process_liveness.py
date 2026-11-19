@@ -35,6 +35,16 @@ Also here, because it is the same pair of processes: ``_is_our_worker`` recognis
 whose run dir is not ASCII. That one is the text-decoding class of
 ``tests/test_encoding_guard.py`` (a subprocess decoded on the locale codec); these are its
 behaviour tests on the site where it cost something — a live worker read as "not ours".
+
+And one in this file's own fixtures: **a wait whose probe is missing on this platform, read as
+"done".** The zombie test waited for its child to exit by watching ``/proc/<pid>/stat`` and
+stopped as soon as the file was absent — meant for a reaped child, but macOS has no ``/proc``,
+so it stopped on its first pass with the coordinator still starting, and the test failed every
+time on macOS while Linux CI stayed green. The rule: a wait ends on its condition or fails at its
+deadline, and a probe it cannot ask is a failure, never a pass. ``_wait_exited_unreaped`` asks
+psutil, which answers on every platform; the ``test_the_exit_wait_would_fail_*`` cases hold it
+to that. Swept: no other ``/proc`` read in the repo is a wait, and the other deadline loops in
+``tests/`` end on their own condition and fail or return it at the deadline.
 """
 
 import ast
@@ -45,6 +55,7 @@ import subprocess
 import sys
 import time
 
+import psutil
 import pytest
 
 from detail.executor import local
@@ -260,6 +271,41 @@ def test_a_live_worker_is_recognised_whatever_its_run_dir_is_called(tmp_path, na
 # --------------------------------------------------------------------------- #
 # a coordinator this process spawned and never reaped (issue #28, finding 9)
 # --------------------------------------------------------------------------- #
+def _wait_exited_unreaped(pid: int, timeout_s: float) -> None:
+    """Return once ``pid`` has exited, **without reaping it**; fail the test otherwise.
+
+    POSIX asks psutil for the process state — ``/proc`` on Linux, ``sysctl`` on macOS —
+    which reads a zombie without ``waitpid``-ing it, and accepts **only** ``zombie``: a
+    child gone entirely was reaped by someone else, so the probe below would never meet the
+    zombie this test exists for. Windows has no zombie; an exited process is just exited,
+    and ``wait`` there is ``WaitForSingleObject``, which reaps nothing.
+    """
+    try:
+        proc = psutil.Process(pid)
+    except psutil.NoSuchProcess:
+        pytest.fail(f"pid {pid} was already gone: nothing left to probe")
+    if os.name == "nt":
+        try:
+            proc.wait(timeout=timeout_s)
+        except psutil.TimeoutExpired:
+            pytest.fail(f"pid {pid} did not exit within {timeout_s} s")
+        return
+    deadline = time.monotonic() + timeout_s
+    status = None
+    while time.monotonic() < deadline:
+        # ZombieProcess subclasses NoSuchProcess, and some platforms raise it for a zombie.
+        try:
+            status = proc.status()
+        except psutil.ZombieProcess:
+            return
+        except psutil.NoSuchProcess:
+            pytest.fail(f"pid {pid} was reaped by someone else: no zombie to probe")
+        if status == psutil.STATUS_ZOMBIE:
+            return
+        time.sleep(0.05)
+    pytest.fail(f"pid {pid} did not exit within {timeout_s} s (last state {status!r})")
+
+
 def test_an_exited_coordinator_this_process_spawned_reads_dead(tmp_path):
     """**The class: a liveness probe that answers "exists" for a process that has exited.**
 
@@ -276,19 +322,32 @@ def test_an_exited_coordinator_this_process_spawned_reads_dead(tmp_path):
     **not** reaped by the test. Against a plain ``os.kill(pid, 0)`` probe this fails.
     """
     pid = local.spawn_coordinator(tmp_path, (), entrypoint="this")
-    deadline = time.monotonic() + 10
-    # Wait for the child to exit without reaping it: /proc shows a zombie as state Z.
-    stat = pathlib.Path(f"/proc/{pid}/stat")
-    while time.monotonic() < deadline:
-        if (
-            os.name == "nt"
-            or not stat.exists()
-            or stat.read_text(encoding="utf-8-sig").split()[2] == "Z"
-        ):
-            break
-        time.sleep(0.05)
     try:
+        _wait_exited_unreaped(pid, timeout_s=10)
         assert local.pid_alive(pid) is False
         assert local.coordinator_alive(tmp_path, pid) is False
     finally:
         local.reap_coordinator(pid)
+
+
+def test_the_exit_wait_would_fail_on_a_process_still_running():
+    """The negative case for the wait above: the old one ended at once on macOS, here."""
+    proc = _sleeper()
+    try:
+        with pytest.raises(pytest.fail.Exception, match="did not exit"):
+            _wait_exited_unreaped(proc.pid, timeout_s=0.3)
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no zombie to reap")
+def test_the_exit_wait_would_fail_on_a_child_already_reaped():
+    """A reaped child cannot be the zombie the coordinator test needs: refuse, not pass."""
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "pass"], **local.new_process_group_kwargs()
+    )
+    pid = proc.pid
+    proc.wait()
+    with pytest.raises(pytest.fail.Exception, match="gone|reaped"):
+        _wait_exited_unreaped(pid, timeout_s=1)
