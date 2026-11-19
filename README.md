@@ -4,7 +4,7 @@
 
 A species-agnostic tool for behavioral analysis. Powered by open-source segmentation, tracking, and image embedding models.
 
-**Documentation.** The docs site is the authoritative resource.
+**Documentation.** The docs site, [detail-embedding.github.io/detail](https://detail-embedding.github.io/detail/), is the authoritative resource. The app also opens a copy that matches your install, offline: the Docs page, or `detail docs`.
 
 - [User guides](docs/user-guides/index.md): step by step, from installing DETAIL to analyzed behavior, with every screen explained (start here)
 - [Getting started](docs/getting-started.md): install, GPU/CUDA, SAM3, and Hugging Face setup

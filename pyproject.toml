@@ -24,17 +24,21 @@ dependencies = [
                       # imported lazily inside the functions that use it
     "psutil",        # RAM for the performance report's machine block (core, #394); also
                       # SAM3's inference path imports it without declaring it (see `sam3` below)
-    # Docs toolchain in base (not only the `[docs]` extra) so a first install can serve the
-    # site locally (`mkdocs serve`) while the repo is private and nothing is published.
-    # REVERT WHEN PUBLIC: delete these five from base — they already live in `[docs]` — and
-    # rely on the hosted site. (`matplotlib` above stays; `mike` is
-    # publish-only and stays out of base.)
+    # Docs toolchain in base (not only the `[docs]` extra): the in-app Docs page and
+    # `detail docs` build the site on the user's machine (detail/docs_access.py), so help
+    # works offline and matches the installed version. Keep these when the site is hosted
+    # too. (`matplotlib` above stays; `mike` is publish-only and stays out of base.)
     "mkdocs",
     "mkdocs-material",
     "mkdocstrings[python]",
     "mkdocs-click",
     "mkdocs-gen-files",
 ]
+
+[project.urls]
+Homepage = "https://github.com/detail-embedding/detail"
+Documentation = "https://detail-embedding.github.io/detail/"
+Issues = "https://github.com/detail-embedding/detail/issues"
 
 [project.optional-dependencies]
 torch = [
@@ -96,10 +100,9 @@ dev = [
     # which a fresh clone silently loses (#378).
     "pre-commit",
 ]
-# While the repo is private, the build deps below (all but `mike`) are ALSO in base
-# `dependencies` so a first install can host docs locally; this extra stays the canonical
-# list + the publish-only `mike`. On publish, base loses them and this becomes the only home
-# again. CI (`docs.yml`) installs `.[docs]`; leaving it intact keeps CI green.
+# The build deps below (all but `mike`) are ALSO in base `dependencies` so the app can build
+# its offline docs; this extra stays the canonical list + the publish-only `mike`.
+# CI (`docs.yml`) installs `.[docs]`; leaving it intact keeps CI green.
 docs = [
     "mkdocs",
     "mkdocs-material",

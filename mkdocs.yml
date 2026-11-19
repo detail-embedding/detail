@@ -1,5 +1,9 @@
 site_name: DETAIL
 site_description: A species-agnostic tool for behavioral video analysis.
+# The published site (docs/docs_design.md §8). The local offline build still links
+# page-to-page relatively; this only fills the sitemap and each page's canonical link.
+site_url: https://detail-embedding.github.io/detail/
+repo_url: https://github.com/detail-embedding/detail
 docs_dir: docs
 # Flat page URLs (<page>.html, not <page>/index.html) so the built site is browsable
 # over file:// — the offline in-app / `detail docs` path (detail/docs_access.py).
