@@ -28,14 +28,14 @@ apply; do not delete one because you did not get to it — say what you could no
 
 ## Environment
 
-<!-- Paste `detail doctor` verbatim. Do not summarize it. -->
+<!--
+Paste `detail doctor` verbatim. Do not summarize it. Its System section already gives the
+DETAIL build and commit, OS, Python, GPU, NVIDIA driver, CUDA and package versions.
+-->
 
 ```
 ```
 
-- **OS / version:**
-- **GPU / driver / CUDA:** <!-- if relevant -->
-- **DETAIL commit:**
 - **How it was launched:** <!-- GUI, CLI, which terminal app -->
 
 ## Reproduction

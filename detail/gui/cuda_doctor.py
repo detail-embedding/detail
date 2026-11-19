@@ -2,14 +2,14 @@
 
 Qt-free so the probe/diagnosis are unit-testable. ``probe`` runs off the UI thread (it
 imports torch lazily, Tenet 13, and shells out to ``nvidia-smi``); ``diagnose`` is pure.
-The page renders the ``Diagnosis``. ``nvidia-smi`` is a GUI-side diagnostic, not pipeline
-code, so the FFmpeg-subprocess rule (Tenet 15) does not apply.
+The page renders the ``Diagnosis``. ``nvidia-smi`` is a diagnostic, not pipeline code, so the
+FFmpeg-subprocess rule (Tenet 15) does not apply; it is read through ``core/hostinfo``, which
+``detail doctor`` reads too.
 """
 
-import re
-import subprocess
 from dataclasses import dataclass
 
+from detail.core import hostinfo
 from detail.core.utils import cuda_available, cuda_device_names, mps_available
 
 # PyTorch's CUDA wheel tags, newest first. The suggestion is the newest tag at or below the
@@ -57,29 +57,10 @@ class Diagnosis:
     fix_reason: str | None  # why this wheel: the driver's CUDA → the tag it can run
 
 
-def _run_nvidia_smi() -> tuple[str | None, str | None]:
-    """(driver_version, driver_cuda) from ``nvidia-smi``, or (None, None) if absent."""
-    try:
-        out = subprocess.run(
-            ["nvidia-smi"],
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None, None  # a missing binary, or one that hung
-    if out.returncode != 0:
-        return None, None
-    driver = re.search(r"Driver Version:\s*([\d.]+)", out.stdout)
-    cuda = re.search(r"CUDA Version:\s*([\d.]+)", out.stdout)
-    return (driver.group(1) if driver else None, cuda.group(1) if cuda else None)
-
-
 def probe() -> ProbeResult:
     """Gather the machine's CUDA facts. Off the UI thread — imports torch lazily and
     shells out to ``nvidia-smi``."""
-    driver_version, driver_cuda = _run_nvidia_smi()
+    driver_version, driver_cuda = hostinfo.nvidia_smi()
     try:
         import torch
 
