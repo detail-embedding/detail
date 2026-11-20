@@ -250,6 +250,11 @@ def test_the_report_reads_a_location_measures_unit_label_and_pseudo_count():
     assert (
         report.measure_axis_label(("time_moving", "", "", "whole")) == "Time moving (%)"
     )
+    # a ratio has a unit, so it is not read as a count, and prints none
+    ratio = ("body_elongation", "", "", "whole")
+    assert report.measure_unit(ratio) == report.RATIO_UNIT
+    assert report.measure_axis_label(ratio) == "Body length : width"
+    assert report.shown_value(2.4321, report.RATIO_UNIT) == ("2.432", "")
     pseudo = report.pseudo_count(1.0)
     # one second means nothing in metres, millimetres or a ratio: nothing is added
     for measure_id in (

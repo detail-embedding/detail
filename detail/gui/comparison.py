@@ -53,6 +53,7 @@ from PyQt6.QtWidgets import (
 )
 
 from detail.analysis import cohort, compare, comparison_report, node_measures
+from detail.analysis import location_measures
 from detail.analysis.measures import MEASURES
 from detail.configs.comparison import ComparisonConfig
 from detail.configs.windows import WindowSpec
@@ -65,6 +66,7 @@ from detail.gui.notes import NotesBox
 from detail.gui.status_color import WARN, set_label_color
 from detail.gui._pydantic_form import (
     any_field_value,
+    any_field_widget,
     choice_combo,
     field_meta,
     field_widget,
@@ -208,6 +210,33 @@ def _measurable_runs(experiment) -> list[str]:
     return behavior_output.discover_behavior_outputs(Path(experiment.dir))
 
 
+#: The module whose runs the locations source reads (§24 *The locations source*).
+_LOCATION_MODULE = "location_export"
+#: The config fields that say how a location-export run is read into measures.
+_LOCATION_FIELDS = (
+    "location_sample_fps",
+    "location_smooth_s",
+    "location_moving_threshold",
+    "location_jump_speed",
+)
+
+
+def _location_runs(experiment) -> list[str]:
+    """Finished location-export runs: what the locations source can compare."""
+    return [
+        run.id
+        for run in experiment.analysis_runs
+        if run.module_id == _LOCATION_MODULE and run.status in ("complete", "partial")
+    ]
+
+
+def _comparable_runs(experiment) -> list[str]:
+    """Every run a comparison can be made over, in id order: the runs with a behavior
+    artifact and the finished location exports. Which sources each one offers is the
+    *Measure* picker's question (``_sync_measure_source``)."""
+    return sorted(set(_measurable_runs(experiment)) | set(_location_runs(experiment)))
+
+
 class _StageBar:
     """Fold `run_comparison`'s per-stage fraction into one that only goes forward.
 
@@ -261,7 +290,9 @@ class ComparisonLaunchDialog(Dialog):
         form = ConfigForm(layout)
 
         self._source = QComboBox()
-        for run_id in _measurable_runs(experiment):
+        #: The location-export runs among them: what decides which sources a run offers.
+        self._location_runs = set(_location_runs(experiment))
+        for run_id in _comparable_runs(experiment):
             self._source.addItem(_source_label(experiment, run_id), run_id)
         # The newest, not the oldest. `discover_behavior_outputs` returns ascending id order and
         # a combo opens on index 0, so a user with twenty analyses landed on `an_01`. Ascending
@@ -269,7 +300,7 @@ class ComparisonLaunchDialog(Dialog):
         self._source.setCurrentIndex(self._source.count() - 1)
         self._source.currentIndexChanged.connect(lambda *_: self._on_source_changed())
         form.addRow(
-            label_with("Behavior result:", help_button("comparison-source")),
+            label_with("Result to compare:", help_button("comparison-source")),
             self._source,
         )
 
@@ -279,6 +310,9 @@ class ComparisonLaunchDialog(Dialog):
         self._measure_source = QComboBox()
         self._measure_source.addItem("Labelled behaviors", "labels")
         self._measure_source.addItem("Every cluster (named or not)", "nodes")
+        # Distance, speed and body shape, read from a location-export run (§24 *The
+        # locations source*). Offered for those runs and greyed, with the reason, for others.
+        self._measure_source.addItem("Movement and body shape", "locations")
         self._measure_source.currentIndexChanged.connect(
             lambda *_: self._on_measure_source_changed()
         )
@@ -443,6 +477,34 @@ class ComparisonLaunchDialog(Dialog):
                 advanced="Difference ranking",
             )
 
+        # How a location-export run is read into measures. Built from the model, like the
+        # ranking knobs, and enabled only while *Movement and body shape* is the measure.
+        self._location_fields = {
+            name: any_field_widget(ComparisonConfig, name) for name in _LOCATION_FIELDS
+        }
+        rate = self._location_fields["location_sample_fps"]
+        rate.setSpecialValueText("every row")
+        # An optional box opens on "unset", and unset here is a real choice (every row) that
+        # is not the model's default: seed it, or every comparison launched from this form
+        # reads the run at another rate than one launched from the CLI.
+        set_any_field_value(
+            ComparisonConfig,
+            "location_sample_fps",
+            rate,
+            ComparisonConfig.model_fields["location_sample_fps"].default,
+        )
+        for name, widget in self._location_fields.items():
+            # Off until *Movement and body shape* is the measure (`_on_measure_source_changed`).
+            widget.setEnabled(False)
+            form.addRow(
+                label_with(
+                    f"{field_meta(ComparisonConfig, name)['label']}:",
+                    help_button("comparison-locations"),
+                ),
+                widget,
+                advanced="Locations",
+            )
+
         self._status = QLabel("")
         self._status.setWordWrap(True)
         layout.addWidget(self._status)
@@ -478,6 +540,9 @@ class ComparisonLaunchDialog(Dialog):
     def _on_measure_source_changed(self) -> None:
         self._fill_measures()
         nodes = self.measure_source() == "nodes"
+        locations = self.measure_source() == "locations"
+        for widget in self._location_fields.values():
+            widget.setEnabled(locations)
         # The node source measures the whole recording (§24): the window picker is greyed
         # with that set, not hidden, so the constraint reads as one.
         if nodes and self._windows.findText("whole") >= 0:
@@ -488,13 +553,17 @@ class ComparisonLaunchDialog(Dialog):
         )
         # Nor from a pinned copy: a snapshot pins the labelled artifact, and every cluster
         # is measured from the run's current node cache.
-        if nodes:
+        if nodes or locations:
             self._snapshot.setCurrentIndex(0)
-        self._snapshot.setEnabled(not nodes)
+        self._snapshot.setEnabled(not (nodes or locations))
         self._snapshot.setToolTip(
             "Every cluster is measured from the run's current node cache."
             if nodes
-            else ""
+            else (
+                "A location-export run is never rewritten, so it has no snapshots."
+                if locations
+                else ""
+            )
         )
         self._refresh()
 
@@ -516,16 +585,40 @@ class ComparisonLaunchDialog(Dialog):
             return "this run has no node cache — rebuild it from its workspace"
         return None
 
+    def _source_reasons(self) -> dict[str, str | None]:
+        """``{source: why the chosen run cannot offer it}``, ``None`` where it can.
+
+        A location-export run offers movement and body shape and nothing else; every other
+        run offers its labelled behaviors, and its clusters when it has a node cache.
+        """
+        if self.source_run_id() in self._location_runs:
+            no_behaviors = "a location-export run holds no behaviors"
+            return {"labels": no_behaviors, "nodes": no_behaviors, "locations": None}
+        return {
+            "labels": None,
+            "nodes": self._node_cache_reason(),
+            "locations": "pick a location-export run under Result to compare",
+        }
+
     def _sync_measure_source(self) -> None:
-        """Grey out *Every cluster* with the reason when the chosen run cannot offer it."""
-        reason = self._node_cache_reason()
+        """Grey out each measure the chosen run cannot offer, with the reason, and move the
+        selection off one that just became unavailable."""
+        reasons = self._source_reasons()
         model = self._measure_source.model()
-        item = model.item(1)
-        if item is not None:
-            item.setEnabled(reason is None)
-            item.setToolTip(reason or "")
-        if reason is not None and self.measure_source() == "nodes":
-            self._measure_source.setCurrentIndex(0)
+        for index in range(self._measure_source.count()):
+            reason = reasons.get(self._measure_source.itemData(index))
+            item = model.item(index)
+            if item is not None:
+                item.setEnabled(reason is None)
+                item.setToolTip(reason or "")
+        if reasons.get(self.measure_source()) is not None:
+            offered = [
+                index
+                for index in range(self._measure_source.count())
+                if reasons.get(self._measure_source.itemData(index)) is None
+            ]
+            if offered:
+                self._measure_source.setCurrentIndex(offered[0])
 
     def _fill_snapshots(self) -> None:
         """Which pinned copy of the source's artifact to read (§21).
@@ -615,6 +708,17 @@ class ComparisonLaunchDialog(Dialog):
         self._measures_fixed = nodes
         self._measures.blockSignals(True)
         self._measures.clear()
+        if self.measure_source() == "locations":
+            # Another registry: what a location-export run can be measured for.
+            for measure_id, spec in location_measures.MEASURES.items():
+                item = _checkable(spec.label, data=measure_id)
+                item.setToolTip(spec.description)
+                if measure_id in checked:
+                    item.setCheckState(Qt.CheckState.Checked)
+                self._measures.addItem(item)
+            self._measures.blockSignals(False)
+            fit_list_height(self._measures)
+            return
         for measure_id, spec in MEASURES.items():
             why = unmet_condition(spec, manifest) if manifest is not None else None
             if nodes and measure_id not in node_measures.MEASURES:
@@ -746,7 +850,10 @@ class ComparisonLaunchDialog(Dialog):
 
     def validation_error(self) -> str | None:
         if not self.source_run_id():
-            return "No behavior result to compare — run a behavior scan or a clustering first."
+            return (
+                "Nothing to compare yet — run a behavior scan, a clustering or a location "
+                "export first."
+            )
         if not _checked(self._group_by):
             return "Pick at least one column to compare across."
         if self._nested():
@@ -877,7 +984,7 @@ class ComparisonLaunchDialog(Dialog):
             return ""
         deferred = cohort.deferred_columns(self._metadata, recordings, group_by)
         if deferred:
-            return f"Decided when it runs: {', '.join(deferred)} come from the behavior result."
+            return f"Decided when it runs: {', '.join(deferred)} come from the result itself."
         try:
             design = compare.resolve_design(
                 self._metadata,
@@ -1054,6 +1161,10 @@ class ComparisonLaunchDialog(Dialog):
         for key, widget in self._ranking_fields.items():
             if config.get(key) is not None:
                 set_any_field_value(ComparisonConfig, key, widget, config[key])
+        # `in`, not `is not None`: an unset rate ("every row") is a value to restore.
+        for key, widget in self._location_fields.items():
+            if key in config:
+                set_any_field_value(ComparisonConfig, key, widget, config[key])
         source = config.get("source")
         if source and self._measure_source.findData(source) >= 0:
             self._measure_source.setCurrentIndex(self._measure_source.findData(source))
@@ -1076,7 +1187,7 @@ class ComparisonLaunchDialog(Dialog):
             "source_run_id": self.source_run_id(),
             "source_snapshot": (
                 None
-                if self.measure_source() == "nodes"
+                if self.measure_source() in ("nodes", "locations")
                 else self._snapshot.currentData()
             ),
             "source": self.measure_source(),
@@ -1100,6 +1211,10 @@ class ComparisonLaunchDialog(Dialog):
             **{
                 name: any_field_value(ComparisonConfig, name, widget)
                 for name, widget in self._ranking_fields.items()
+            },
+            **{
+                name: any_field_value(ComparisonConfig, name, widget)
+                for name, widget in self._location_fields.items()
             },
         }
 
@@ -1735,6 +1850,14 @@ class ComparisonDetailPage(QWidget):
             lines.append(
                 f"every cluster of {record.get('source_run_id', '')} at or above "
                 f"{record.get('candidate_floor_s')} s, named or not, ranked on share of time"
+            )
+        if record.get("source") == "locations":
+            exported = record.get("location_export") or {}
+            thin = "removed" if exported.get("remove_thin_parts") else "kept"
+            lines.append(
+                f"movement and body shape from location export "
+                f"{record.get('source_run_id', '')} (thin parts {thin}); each measure "
+                "tested on its own"
             )
         # A label this comparison scores that a screen over the same column chose (§24): the
         # one line that keeps the effect from reading as an independent finding.

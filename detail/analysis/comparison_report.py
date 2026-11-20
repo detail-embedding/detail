@@ -72,6 +72,13 @@ RANKING_COLUMNS = [
 SHOWN_BELOW_FLOOR = 10
 
 
+#: The unit of a measure that is one quantity divided by another of the same kind (a body's
+#: length over its width). It is named, because the report reads ``""`` as a plain count,
+#: whose pseudo-count is one bout; and it is printed as nothing, because "2.4 ratio" is not
+#: how anyone writes a ratio.
+RATIO_UNIT = "ratio"
+
+
 def measure_unit(measure_key: tuple) -> str:
     """The unit a measure's numbers are in, or ``""`` when it is a plain count.
 
@@ -101,6 +108,8 @@ def shown_value(value, unit: str) -> tuple[str, str]:
         return f"{float(value) / 1e9:.3g}", "s"
     if unit == "fraction":
         return f"{float(value) * 100:.3g}", "%"
+    if unit == RATIO_UNIT:
+        return f"{float(value):.4g}", ""
     return f"{float(value):.4g}", unit
 
 
@@ -153,7 +162,7 @@ def measure_axis_label(measure_key: tuple) -> str:
     from detail.analysis.measures import spec_of
 
     unit = measure_unit(measure_key)
-    shown = {"ns": "s", "fraction": "%"}.get(unit, unit)
+    shown = {"ns": "s", "fraction": "%", RATIO_UNIT: ""}.get(unit, unit)
     spec = spec_of(measure_key[0]) if measure_key else None
     name = spec.label if spec is not None else (measure_key[0] if measure_key else "")
     return f"{name} ({shown})" if shown else name
@@ -1114,8 +1123,10 @@ _SUMMARY_ROWS = 20
 def statistic_sentence(ranking) -> str:
     """What the ranking scores by, in one line every surface prints beside the floor (\u00a724
     *The statistic*): the moderated t with its ``s0``, or the effect. Empty for a between
-    design, which has only the effect to rank on."""
-    if ranking.design == compare.BETWEEN:
+    design, which has only the effect to rank on, and for a ranking read by each measure's
+    own test, which is ordered by that test's p and says so in :func:`floor_sentence`.
+    """
+    if ranking.design == compare.BETWEEN or ranking.verdict == compare.VERDICT_OWN:
         return ""
     unit = "|".join(ranking.unit) or "unit"
     if ranking.statistic == compare.STATISTIC_T:
@@ -1136,6 +1147,8 @@ def statistic_note(record: Mapping) -> str:
     """
     if record.get("design") in (None, compare.BETWEEN):
         return ""
+    if record.get("verdict") == compare.VERDICT_OWN:
+        return "ordered by each measure's own test, smallest p first"
     statistic = record.get("ranking_statistic")
     if statistic == compare.STATISTIC_T:
         return "ranked on the moderated t: the mean per-unit effect over its spread"
