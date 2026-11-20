@@ -14,6 +14,12 @@ the animal to face right and never turns it, yet every surface here once turned 
 because the one turn read the axis and not the run. Each surface now takes the run's own flip
 (``ClipPoints.flips``, from ``pipeline.embedding.headings_for_run``) through
 :func:`clip_views.aligned_matrix`; the side-view tests below fail on any surface that turns one.
+
+**A side view holds still.** The first fix placed a side view as a turn places a frame, centred
+on that frame's body-axis middle, so every jitter of the keypoints moved the picture: the live
+tiles bobbed up and down while the export, which flips the clip's fixed crop, stayed still. A
+side view now keeps the surface's own as-recorded placement, mirrored where flagged; the
+side-view tests fail if the keypoints move it.
 """
 
 from __future__ import annotations
@@ -67,27 +73,40 @@ def test_the_turn_puts_the_front_straight_above_the_back_at_the_centre(front, ba
 
 
 @pytest.mark.parametrize("flipped", [False, True])
-def test_a_side_view_is_flipped_about_its_middle_never_turned(flipped):
-    out = (64, 48)
-    front, back = np.array([10.0, 30.0]), np.array([20.0, 10.0])  # facing down-left
-    matrix = clip_views.aligned_matrix(front, back, 48, out, float(flipped))
-    moved = np.array([front, back]) @ matrix[:, :2].T + matrix[:, 2]
-    (fx, fy), (bx, by) = moved
-    assert (fx + bx) / 2 == pytest.approx(32) and (fy + by) / 2 == pytest.approx(24)
-    assert fy - by == pytest.approx(20), "no turn: the front stays 20 px below the back"
-    assert (
-        fx > bx
-    ) == flipped, "flipped to face right only where the embedding flipped"
-    assert abs(fx - bx) == pytest.approx(10)
+def test_a_side_view_keeps_its_recorded_placement_mirrored_where_flipped(flipped):
+    out = (48, 48)
+    recorded = clip_views.crop_matrix((10, 5, 40, 35), 48)
+    front, back = np.array([30.0, 20.0]), np.array([20.0, 25.0])
+
+    def aligned(front, back):
+        return clip_views.aligned_matrix(
+            front, back, 30, out, float(flipped), recorded=recorded
+        )
+
+    matrix = aligned(front, back)
+    assert np.array_equal(
+        aligned(front + [0.0, 4.0], back - [0.0, 3.0]), matrix
+    ), "the keypoints never move a side view: a jitter in them would move the picture"
+    points = np.array([[12.0, 7.0], [33.0, 30.0]])
+    as_recorded = points @ recorded[:, :2].T + recorded[:, 2]
+    placed = points @ matrix[:, :2].T + matrix[:, 2]
+    assert placed[:, 1] == pytest.approx(as_recorded[:, 1]), "not turned, not moved"
+    expected = 47 - as_recorded[:, 0] if flipped else as_recorded[:, 0]
+    assert placed[:, 0] == pytest.approx(expected), "mirrored only where flipped"
 
 
 def test_an_overhead_run_turns_and_a_side_view_without_a_heading_is_not_placed():
     front, back = np.array([10.0, 10.0]), np.array([20.0, 20.0])
+    recorded = np.eye(2, 3)
     assert np.array_equal(
-        clip_views.aligned_matrix(front, back, 48, (64, 48), None),
+        clip_views.aligned_matrix(front, back, 48, (64, 48), None, recorded=recorded),
         clip_views.turn_matrix(front, back, 48, (64, 48)),
     )
-    assert clip_views.aligned_matrix(front, back, 48, (64, 48), float("nan")) is None
+    nan = float("nan")
+    assert (
+        clip_views.aligned_matrix(front, back, 48, (64, 48), nan, recorded=recorded)
+        is None
+    )
 
 
 def test_a_frame_with_no_axis_is_marked_not_blanked():
@@ -153,9 +172,11 @@ def test_a_side_view_clip_is_flipped_as_its_embedding_flipped_it_not_turned_up(
     frame = preview.clip_frame(recording.id, "emb_01", 0, 0, ClipViewSettings())
     # Nose (12, 12) over tail (18, 18): facing up-left, so the embedding flipped it.
     assert frame.flip == 1.0, "the run's own flip, read from its headings"
-    row, col, tall, wide = _extent(_views(recording, aligned=True).masks)
-    assert row == pytest.approx(24, abs=1) and col == pytest.approx(32, abs=1)
-    assert (tall, wide) == _extent(_views(recording).masks)[2:], "a square: not turned"
+    plain, aligned = _views(recording), _views(recording, aligned=True)
+    # The picture as recorded, mirrored: not turned, and not moved onto the body's middle
+    # (which would move it with every jitter of the keypoints).
+    assert np.array_equal(aligned.masks, plain.masks[:, ::-1])
+    assert np.array_equal(aligned.frame, plain.frame[:, ::-1])
 
 
 def test_a_side_view_frame_its_embedding_has_no_heading_for_plays_as_recorded(tmp_path):
@@ -312,16 +333,30 @@ def test_a_side_view_tile_is_flipped_never_turned_and_marked_without_a_heading(
     t = _timestamps(recording)
     reader = previews.PreviewReader.open(recording, 0, "track_01")
     with reader.clip(0, int(t[10]), int(t[40]), 64, footage=False, trail=1) as clip:
-        _r, _c, tall, wide = _tile_shape(clip.frame_at(0))
+        row, col, tall, wide = _tile_shape(clip.frame_at(0))
         ends = _ends_facing_right(clip)
+        # The same frames with the keypoints jittering up and down, as a pose estimate does.
+        jittered = (
+            ends
+            + np.array([0.0, 0.06])
+            * np.where(np.arange(len(ends)) % 2, 1.0, -1.0)[:, None, None]
+        )
         for flip in (0.0, 1.0):
             clip.set_pose(axes=ends, flips=np.full(len(ends), flip))
-            row, col, tall_now, wide_now = _tile_shape(clip.frame_at(0))
+            steady = clip.frame_at(0)
+            clip.set_pose(axes=jittered, flips=np.full(len(ends), flip))
+            assert np.array_equal(
+                clip.frame_at(0), steady
+            ), "the keypoints never move a side view"
+            row_now, col_now, tall_now, wide_now = _tile_shape(steady)
             assert tall_now == pytest.approx(tall, abs=1), "not turned"
             assert wide_now == pytest.approx(wide, abs=1)
-            assert row == pytest.approx(32, abs=1.5) and col == pytest.approx(
-                32, abs=1.5
-            )
+            # Within resampling: the as-recorded tile is resized, the aligned one warped,
+            # and the two count pixels half a pixel apart (about a pixel at this scale).
+            assert row_now == pytest.approx(row, abs=1.5), "where it was recorded"
+            assert col_now == pytest.approx(
+                63 - col if flip else col, abs=1.5
+            ), "mirrored about the tile's middle where flipped"
         clip.set_pose(axes=ends, flips=np.full(len(ends), np.nan))
         assert (clip.frame_at(0)[1, 1] == 40).all(), "no heading: marked"
 
@@ -474,8 +509,13 @@ def test_a_side_view_export_tile_is_not_turned(tmp_path):
         plain = montage.tile(0, 0, MontageLayers(mask=True), 48)
         aligned = montage.tile(0, 0, MontageLayers(mask=True, aligned=True), 48)
         row, col, tall, wide = _tile_shape(aligned)
-        assert (tall, wide) == _tile_shape(plain)[2:], "a square, not a diamond"
-        assert row == pytest.approx(24, abs=1.5) and col == pytest.approx(24, abs=1.5)
+        plain_row, plain_col, plain_tall, plain_wide = _tile_shape(plain)
+        assert tall == pytest.approx(plain_tall, abs=1), "a square, not a diamond"
+        assert wide == pytest.approx(plain_wide, abs=1)
+        # Frame 0 faces left, so its embedding flipped it: the as-recorded tile, mirrored
+        # (within resampling: resized as recorded, warped aligned).
+        assert row == pytest.approx(plain_row, abs=1.5)
+        assert col == pytest.approx(47 - plain_col, abs=1.5)
         marked = montage.tile(0, 2, MontageLayers(mask=True, aligned=True), 48)
         assert (marked[1, 1] == 40).all(), "no heading or axis: marked"
     finally:

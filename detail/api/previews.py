@@ -805,6 +805,7 @@ class PreviewClip:
             max(x1 - x0, y1 - y0, 1),
             (self.tile_px, self.tile_px),
             None if self._flips is None else float(self._flips[offset]),
+            recorded=self._crop_matrix(),
         )
 
     def frame_at(self, offset: int) -> np.ndarray:
@@ -861,11 +862,9 @@ class PreviewClip:
 
     def _crop_matrix(self) -> np.ndarray:
         """``_to_tile``'s crop, square and scale as an affine: proxy pixels to tile pixels."""
-        x0, y0, x1, y1 = self.crop
-        side = max(x1 - x0, y1 - y0, 1)
-        top, left = (side - (y1 - y0)) // 2, (side - (x1 - x0)) // 2
-        k = self.tile_px / side
-        return np.array([[k, 0.0, k * (left - x0)], [0.0, k, k * (top - y0)]])
+        from detail.api.clip_views import crop_matrix
+
+        return crop_matrix(self.crop, self.tile_px)
 
     def _draw_points(self, tile: np.ndarray, offset: int, matrix) -> np.ndarray:
         """The subject's keypoints on ``tile``, placed the way its picture was."""

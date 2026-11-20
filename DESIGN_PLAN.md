@@ -8314,12 +8314,16 @@ PNG…* (`write_clip_frame`, off the UI thread through `run_busy`). The plain pl
 video…** is hidden in this window.
 
 **Aligned** (`ClipViewSettings.aligned`, `TileLook.aligned`, `MontageLayers.aligned`) is **one matrix**,
-`clip_views.aligned_matrix(front, back, side, out_wh, flip)`, which follows how the clip's embedding
+`clip_views.aligned_matrix(front, back, side, out_wh, flip, recorded=)`, which follows how the clip's embedding
 aligned. Overhead or unaligned (`flip` `None`): `turn_matrix`, rotate about the body axis's middle so
 back→front points **up** (Align pose's direction), put the middle at the output's centre, scale
 `side` to the output's height. **A side view (`align: mirror`) is never turned upright**:
-`mirror_matrix` places it the same way with no rotation, flipped left-right where the embedding
-flipped that frame, so the animal faces right as the model saw it. The flag is
+`mirror_matrix` keeps the surface's own as-recorded placement (`recorded`: the clip's fixed crop as
+an affine, `clip_views.crop_matrix`, for a tile; the identity for the clip window), flipped
+left-right about the picture's middle where the embedding flipped that frame, so the animal faces
+right as the model saw it. **It never reads the keypoints**: placing a side view on each frame's
+body-axis middle, as a turn must, moved the picture with every jitter of the points, and the live
+tiles bobbed up and down while the export, which flips the fixed crop, held still. The flag is
 `ClipPoints.flips` → `pipeline.embedding.headings_for_run` at every frame with the run's own
 settings (`ClipFrame.flip`, `PreviewClip.set_pose(flips=)`), the one computation the embedding
 flips by; a frame it gives no heading (NaN) is drawn as recorded and marked *no axis*. Turning a

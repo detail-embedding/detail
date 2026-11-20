@@ -82,6 +82,7 @@ from detail.api.clip_views import (
     ClipViewSettings,
     aligned_matrix,
     blind_aliases,
+    crop_matrix,
     draw_footage,
     draw_masks_pane,
     draw_pose_pane,
@@ -763,7 +764,12 @@ class ClusterMontage:
                     )
                 )
             matrix = aligned_matrix(
-                ends[0], ends[1], max(x1 - x0, y1 - y0, 1), (size, size), read.flip
+                ends[0],
+                ends[1],
+                max(x1 - x0, y1 - y0, 1),
+                (size, size),
+                read.flip,
+                recorded=crop_matrix(prepared.crop, size),
             )
             if matrix is None:
                 return mark_no_axis(

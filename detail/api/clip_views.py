@@ -422,24 +422,36 @@ def turn_matrix(
     return np.hstack([linear, shift[:, None]])
 
 
+def crop_matrix(crop: tuple[int, int, int, int], size: int) -> np.ndarray:
+    """A clip's as-recorded tile placement as a ``2 × 3`` affine, frame pixels to tile pixels:
+    the fixed ``crop`` ``(x0, y0, x1, y1)``, centred in a square, scaled to ``size`` — what
+    ``previews._to_tile`` and the montage's as-recorded tile cut."""
+    x0, y0, x1, y1 = crop
+    side = max(x1 - x0, y1 - y0, 1)
+    top, left = (side - (y1 - y0)) // 2, (side - (x1 - x0)) // 2
+    k = size / side
+    return np.array([[k, 0.0, k * (left - x0)], [0.0, k, k * (top - y0)]])
+
+
 def mirror_matrix(
-    front: np.ndarray,
-    back: np.ndarray,
-    side: float,
-    out_wh: tuple[int, int],
-    flipped: bool,
+    recorded: np.ndarray, out_wh: tuple[int, int], flipped: bool
 ) -> np.ndarray:
-    """The ``2 × 3`` affine of a **side-view** run's Aligned picture: no turn, flipped left to
-    right about the body's middle where ``flipped`` (the embedding's own flip, §14 ``mirror``),
-    that middle at the centre of an ``out_wh`` picture, a ``side``-pixel span scaled to the
-    output's height — :func:`turn_matrix`'s placement without its rotation."""
-    front = np.asarray(front, dtype=np.float64)
-    back = np.asarray(back, dtype=np.float64)
-    centre = (front + back) / 2.0
-    scale = float(out_wh[1]) / max(float(side), 1e-6)
-    linear = np.array([[-scale if flipped else scale, 0.0], [0.0, scale]])
-    shift = np.array([out_wh[0] / 2.0, out_wh[1] / 2.0]) - linear @ centre
-    return np.hstack([linear, shift[:, None]])
+    """The ``2 × 3`` affine of a **side-view** run's Aligned picture: the surface's own
+    as-recorded placement ``recorded`` (frame pixels to ``out_wh`` pixels), mirrored left to
+    right about the picture's middle where ``flipped`` (the embedding's own flip, §14
+    ``mirror``).
+
+    It never reads the keypoints. A turn has to centre each frame on its body axis, so the
+    picture moves with every jitter of the points; a side view needs no turn, so it keeps the
+    clip's fixed crop and stays still, as a montage export of it does."""
+    recorded = np.asarray(recorded, dtype=np.float64)
+    if not flipped:
+        return recorded.copy()
+    mirror = np.array([[-1.0, 0.0], [0.0, 1.0]])
+    shift = np.array([float(out_wh[0]) - 1.0, 0.0])
+    return np.hstack(
+        [mirror @ recorded[:, :2], (mirror @ recorded[:, 2] + shift)[:, None]]
+    )
 
 
 def aligned_matrix(
@@ -448,12 +460,16 @@ def aligned_matrix(
     side: float,
     out_wh: tuple[int, int],
     flip: float | None,
+    *,
+    recorded: np.ndarray,
 ) -> np.ndarray | None:
     """The **Aligned** picture's affine for one frame, the way the clip's embedding aligned:
     :func:`turn_matrix` (body up) for an overhead or unaligned run (``flip`` ``None``), and
-    :func:`mirror_matrix` for a side-view one (``flip`` the embedding's flag), so a side view
-    stays a side view, as the embedding saw it. ``None`` where a side-view run has no heading
-    on this frame (``flip`` NaN): the frame is drawn as recorded and marked, never guessed.
+    :func:`mirror_matrix` for a side-view one (``flip`` the embedding's flag): the surface's
+    as-recorded placement ``recorded``, mirrored where flagged, so a side view stays a side
+    view, as the embedding saw it, and holds still. ``None`` where a side-view run has no
+    heading on this frame (``flip`` NaN): the frame is drawn as recorded and marked, never
+    guessed.
 
     Every surface that draws a clip Aligned (the clip window, the live tiles, the exports)
     takes its matrix from here, so none of them turns a side view upright."""
@@ -461,7 +477,7 @@ def aligned_matrix(
         return turn_matrix(front, back, side, out_wh)
     if not np.isfinite(flip):
         return None
-    return mirror_matrix(front, back, side, out_wh, bool(flip))
+    return mirror_matrix(recorded, out_wh, bool(flip))
 
 
 def turn_picture(
@@ -575,7 +591,9 @@ def turn_views(
             return mark_no_axis(footage), masks, pose, False
         return footage, mark_no_axis(masks), pose, False
     wh = _wh(frame)
-    matrix = aligned_matrix(ends[0], ends[1], wh[1], wh, frame.flip)
+    matrix = aligned_matrix(
+        ends[0], ends[1], wh[1], wh, frame.flip, recorded=np.eye(2, 3)
+    )
     if matrix is None:
         if footage is not None:
             return mark_no_axis(footage), masks, pose, False
