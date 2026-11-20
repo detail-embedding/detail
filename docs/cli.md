@@ -17,7 +17,8 @@ as UTF-8 or a file that is not the kind a command reads, stops the command with 
 `Error:` line that names the file (and the line or row) and says what to change. So does a
 mistyped id (a run, a comparison or a tracking run that does not exist), and a folder or disk
 that cannot take the write: one you do not have permission to write to, a read-only disk, a
-name too long for the disk, or a full disk. A command that writes one file you name (`--out`,
+name too long for the disk or with a character it refuses (Windows refuses any of
+`< > : " | ? *`), or a full disk. A command that writes one file you name (`--out`,
 `--csv`, `--export`) creates a missing folder in that path. A number option refuses `nan` and
 `inf`.
 

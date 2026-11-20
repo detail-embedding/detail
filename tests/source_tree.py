@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import pathlib
 import sys
+import types
 
 #: Write-shaped audit events, and which positional arguments are paths they create, change or
 #: remove. ``open`` is filtered by its flags in :func:`written_paths`; ``os.rename`` changes
@@ -111,15 +112,27 @@ def written_paths(event: str, args: tuple) -> list[str]:
     return out
 
 
-def in_tree(path: str, root: pathlib.Path) -> bool:
-    """Whether ``path`` is inside ``root`` and not under a tool-owned name."""
-    full = os.path.abspath(path)
-    base = str(root)
-    if full != base and not full.startswith(base + os.sep):
+def in_tree(
+    path: str, root: str | os.PathLike, *, flavour: types.ModuleType = os.path
+) -> bool:
+    """Whether ``path`` is inside ``root`` and not under a tool-owned name.
+
+    Both sides are compared in one spelling, ``normcase(abspath(...))``, because the two arrive
+    spelled by different rules. The root is pytest's rootdir, which keeps the working
+    directory's spelling, and a Windows shell can start in ``c:\\...``. The paths written come
+    from ``Path.resolve()``, which gives the disk's ``C:\\...``. Compared as raw strings, no
+    write was ever in the tree, and the guard refused nothing for the whole run (#66).
+    ``abspath`` on the root too: a rootless ``/r`` gains the current drive on Windows, as the
+    written path does. ``flavour`` is the path module, so a test can check Windows rules
+    (``ntpath``) on any platform.
+    """
+    full = flavour.normcase(flavour.abspath(path))
+    base = flavour.normcase(flavour.abspath(root))
+    if full != base and not full.startswith(base + flavour.sep):
         return False
     if full == base:
         return False  # ``mkdir(parents=True, exist_ok=True)`` passes through the root itself
-    parts = full[len(base) + 1 :].split(os.sep)
+    parts = full[len(base) + 1 :].split(flavour.sep)
     return not any(
         part in ALLOWED_PARTS or part.startswith(_ALLOWED_PREFIXES) for part in parts
     )

@@ -16,10 +16,12 @@ polygon editor — use the GUI) and render-preview (interactive — use the GUI)
 
 import csv
 import errno
+import os
 import subprocess
 import sys
 import threading
 from pathlib import Path
+from pathlib import PurePath
 from typing import Any
 from typing import get_args
 
@@ -808,9 +810,55 @@ USER_OS_ERRNOS: dict[int, str] = {
 }
 
 
+#: A name the disk refuses for its characters, the sibling of a name too long for it.
+REFUSED_NAME_MESSAGE = (
+    "the disk does not accept this file or folder name: {file}. Choose another name, "
+    'without any of < > : " | ? *'
+)
+
+#: Windows' own numbers for a name its disk refuses. CPython maps neither to
+#: ``ENAMETOOLONG``: ``ERROR_INVALID_NAME`` becomes ``EINVAL`` (a name too long *or* holding a
+#: refused character), and ``ERROR_FILENAME_EXCED_RANGE`` (a whole path too long, when long
+#: paths are off) becomes ``ENOENT``, raised as a ``FileNotFoundError``.
+_ERROR_INVALID_NAME = 123
+_ERROR_FILENAME_EXCED_RANGE = 206
+
+#: The longest single file or folder name NTFS, ext4, APFS and exFAT hold, in characters.
+_NAME_MAX = 255
+
+#: Characters Windows refuses in a name, as does an exFAT or FAT disk or an SMB share
+#: mounted on Linux or macOS.
+_REFUSED_IN_NAMES = frozenset('<>:"|?*')
+
+
+def _refused_name_template(exc: OSError) -> str | None:
+    """The message for a name the disk refused, when the error does not say so by number.
+
+    ``EINVAL`` alone is any invalid argument, so it is the user's name only when the name
+    shows why: a part longer than any disk holds, or a character Windows refuses. Windows says
+    "invalid name" outright (``ERROR_INVALID_NAME``) from ``mkdir`` but not from ``open``, so
+    the name, not the number, decides between the two messages (#67).
+    """
+    winerror = getattr(exc, "winerror", None)
+    if winerror == _ERROR_FILENAME_EXCED_RANGE:
+        return USER_OS_ERRNOS[errno.ENAMETOOLONG]
+    if exc.errno != errno.EINVAL or exc.filename is None:
+        return None
+    path = PurePath(os.fsdecode(exc.filename))
+    names = path.parts[1:] if path.anchor else path.parts
+    if any(len(name) > _NAME_MAX for name in names):
+        return USER_OS_ERRNOS[errno.ENAMETOOLONG]
+    if winerror == _ERROR_INVALID_NAME or any(
+        _REFUSED_IN_NAMES.intersection(name) for name in names
+    ):
+        return REFUSED_NAME_MESSAGE
+    return None
+
+
 def user_os_error_message(exc: OSError) -> str | None:
-    """The one-line message for an ``OSError`` in :data:`USER_OS_ERRNOS`, else ``None``."""
-    template = USER_OS_ERRNOS.get(exc.errno)
+    """The one-line message for an ``OSError`` the user's folder, disk or name caused, else
+    ``None``: a number in :data:`USER_OS_ERRNOS`, or a name the disk refused."""
+    template = _refused_name_template(exc) or USER_OS_ERRNOS.get(exc.errno)
     if template is None:
         return None
     target = exc.filename
@@ -840,9 +888,10 @@ class _ConsoleSafeGroup(click.Group):
         command caught still reaches the user as one ``Error:`` line, not a traceback.
 
         Only the named :data:`USER_ERRORS`, and an ``OSError`` whose number is in
-        :data:`USER_OS_ERRNOS`, are turned into a message. Anything else — a ``KeyError``,
-        a ``TypeError``, a plain ``ValueError``, a ``FileNotFoundError`` — is a bug in the
-        code that raised it and keeps its traceback.
+        :data:`USER_OS_ERRNOS` or whose name the disk refused (:func:`user_os_error_message`),
+        are turned into a message. Anything else — a ``KeyError``, a ``TypeError``, a plain
+        ``ValueError``, a ``FileNotFoundError`` — is a bug in the code that raised it and
+        keeps its traceback.
         """
         try:
             return super().invoke(ctx)
