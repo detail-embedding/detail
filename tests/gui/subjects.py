@@ -700,6 +700,8 @@ def _providers(experiment, recording) -> dict:
         "experiment": lambda: experiment,
         "recording": lambda: recording,
         "recordings": lambda: [recording],
+        # A form's recording selection, as ids (the min-area estimate is handed one).
+        "recording_ids": lambda: [recording.id],
         # Locate video's parts come from the page's off-thread scan.
         "locatable": lambda: recording.parts_to_locate(),
         "stream_name": lambda: an_imported_stream(recording),

@@ -209,6 +209,8 @@ detail/
 │                         # bout_segmentation.py (detector params, segment_recording, pool_recordings,
 │                         # bout_medoid_distance — the bout steps temporal clustering uses);
 │                         # locations.py (compute_location_tables — per-track ROI/POI features);
+│                         # contour_area.py (the labeling Min contour area estimate: background
+│                         # subtraction over sampled frames, and the suggestion rule);
 │                         # metrics_docs.py / query_methods_docs.py (single sources for two doc pages)
 ├── cluster_methods/      # TemporalClusterMethod implementations: dtw_finch, codebook_viterbi;
 │                         # _common.py the steps they share (kmeans_level, blas_safe_openmp).

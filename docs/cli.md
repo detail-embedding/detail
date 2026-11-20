@@ -707,6 +707,16 @@ for its background colour), then the run's own progress follows.
   frame is decoded exactly; one that can't be is replaced by another frame from the same video.
   The validation share is drawn over the frames that made it into the dataset. Writes
   `dataset_NNN`.
+- `estimate-min-area --experiment <dir> [--recording <name or id> …]`: suggest a
+  `--min-contour-area` for `label` and `distill run` from the recordings' video (default every
+  recording with video). Reads one frame every 4 seconds, takes their median as the background,
+  and prints a row per recording: frames read, the largest moving blob's (the animal's) minimum,
+  1st-percentile and median area, and the other blobs' median and 95th percentile, in pixels.
+  The suggestion is the largest round number at or below half the smallest animal 1st percentile
+  and above the largest other-blob median; when those overlap it prints `no suggestion` and why.
+  It does not run the teacher: on a dark animal against a dark background the animal breaks
+  into pieces, so its area is a lower bound. Writes nothing. The same estimate is **Estimate…**
+  beside **Min contour area** in the GUI.
 - `keypoints --experiment <dir> --name <name> --n-frames N --teacher patch|detect`: the third
   dataset source, a YOLO-pose dataset taught by the patch method or by finished keypoint detect
   runs, the label stage of [`keypoints distill`](#keypoints) on its own. Same teacher and label

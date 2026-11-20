@@ -38,6 +38,7 @@ from detail.gui.sizing import set_available
 from detail.gui.status_color import ERROR, MUTED, READY, set_label_color
 from detail.gui.forms import ConfigForm
 from detail.gui.help_ui import field_label
+from detail.gui.min_area_estimate import min_area_row, open_estimate
 from detail.gui._pydantic_form import (
     build_fields,
     field_meta,
@@ -241,8 +242,10 @@ class GenerateLabelingDialog(Dialog):
             self._background,
         )
         ma_label, self._min_area = fields["min_contour_area"]
+        self._min_area_row = min_area_row(self._min_area, self._estimate_min_area)
         form.addRow(
-            field_label("labeling", "min_contour_area", ma_label + ":"), self._min_area
+            field_label("labeling", "min_contour_area", ma_label + ":"),
+            self._min_area_row,
         )
         self._compute = ComputeTargetRow()
         self._compute.add_to(form.section())
@@ -342,6 +345,15 @@ class GenerateLabelingDialog(Dialog):
             compute=self._compute.compute_target(),
             parent=self,
             model_variant=self._variant.currentData(),
+        )
+
+    def _estimate_min_area(self) -> None:
+        """*Estimate…* beside Min contour area, over the recordings selected here."""
+        open_estimate(
+            self,
+            self._experiment,
+            selected_recording_ids(self._recordings) or None,
+            self._min_area,
         )
 
     def _run(self) -> None:
@@ -628,9 +640,10 @@ class DistillDialog(Dialog):
             self._background,
         )
         _, self._min_area = fields["min_contour_area"]
+        self._min_area_row = min_area_row(self._min_area, self._estimate_min_area)
         form.addRow(
             field_label("labeling", "min_contour_area", "Min contour area (px):"),
-            self._min_area,
+            self._min_area_row,
         )
         self._compute = ComputeTargetRow()  # labeling (also drives Test prompts)
         self._compute.add_to(form.section(), prefix="Label")
@@ -826,6 +839,18 @@ class DistillDialog(Dialog):
             parent=self,
             model_variant=self._variant.currentData(),
         ).exec()
+
+    def _estimate_min_area(self) -> None:
+        """*Estimate…* beside Min contour area, over the recordings selected here."""
+        if self._experiment is None:
+            QMessageBox.warning(self, "Estimate", "Create an experiment first.")
+            return
+        open_estimate(
+            self,
+            self._experiment,
+            selected_recording_ids(self._recordings) or None,
+            self._min_area,
+        )
 
     def _run(self) -> None:
         if self._experiment is None:

@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 import yaml
 
 
+from detail.analysis import contour_area
 from detail.api import models as api_models
 from detail.api import spatial_categories
 from detail.api._runner_modules import PIPELINE_RUNNERS as _PIPELINE_RUNNERS
@@ -3599,6 +3600,67 @@ class Experiment:
         executor = LocalExecutor(self._dir, runner_modules=_PIPELINE_RUNNERS)
         executor.submit(job)  # run_dir = datasets/<id>/; writes job.json there
         return DatasetRun(ExecutorRunHandle(executor, dataset_id), self, dataset_id)
+
+    def estimate_min_contour_area(
+        self,
+        source_recording_ids: list[str] | None = None,
+        *,
+        progress: Callable[[str, float, str], None] | None = None,
+        sample_every_s: float = contour_area.SAMPLE_EVERY_S,
+        max_samples: int = contour_area.MAX_SAMPLES,
+    ) -> contour_area.MinAreaEstimate:
+        """Suggest a ``min_contour_area`` for labeling from the recordings' video (§12).
+
+        Reads a frame every few seconds of each recording, subtracts the median background,
+        and measures the largest moving blob (the animal) and the rest; then suggests a limit
+        between the two. It does not run the teacher, and on a dark animal over a dark
+        background the animal's area is a lower bound. The method and its limits are
+        ``detail.analysis.contour_area``'s docstring. Writes nothing.
+
+        ``source_recording_ids=None`` uses every recording with video, as labeling does.
+        ``progress(stage, fraction, detail)`` is driven while each recording is read.
+        ``sample_every_s`` and ``max_samples`` set how densely each recording is sampled.
+
+        Raises:
+            ValueError: An unknown recording, or a named recording with no video.
+            FileNotFoundError: A recording's video cannot be opened.
+        """
+        recording_ids = self._sampling_recordings(source_recording_ids)
+        if not recording_ids:
+            raise ValueError("no recording has video to estimate from")
+        videos = []
+        for sid in recording_ids:
+            recording = self.get_recording(sid)  # raises if the recording is unknown
+            data = recording_store.read_recording(recording.dir)
+            files = data.get("video", {}).get("files", [])
+            if not files:
+                raise ValueError(
+                    f"recording {recording.name!r} has no video to estimate from; choose "
+                    "recordings that have video, or leave the choice empty to use all of them"
+                )
+            parts = [
+                (
+                    recording_store.resolve_part_video_path(recording.dir, part),
+                    recording_store.load_active_timestamps_cached(
+                        recording.dir, data, i
+                    ).values,
+                )
+                for i, part in enumerate(files)
+            ]
+            videos.append(
+                contour_area.RecordingVideo(
+                    recording_id=sid,
+                    name=recording.name,
+                    parts=parts,
+                    resolution=recording.video_resolution,
+                )
+            )
+        return contour_area.estimate(
+            videos,
+            progress=progress,
+            sample_every_s=sample_every_s,
+            max_samples=max_samples,
+        )
 
     def label_dataset(
         self,

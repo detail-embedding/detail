@@ -4003,6 +4003,56 @@ def dataset_label(
     _check_status(run, "labeling")
 
 
+@dataset.command("estimate-min-area")
+@_EXPERIMENT_OPT
+@click.option(
+    "--recording",
+    "recording_refs",
+    multiple=True,
+    type=str,
+    help="Recording name or id to measure (repeatable; default: every recording with video).",
+)
+def dataset_estimate_min_area(
+    experiment_dir: Path, recording_refs: tuple[str, ...]
+) -> None:
+    """Suggest a --min-contour-area for labeling from the recordings' video.
+
+    Measures the largest moving blob (the animal) and the other blobs by background
+    subtraction on a frame every few seconds. A dark animal on a dark background is broken
+    into pieces, so its area is a lower bound. Writes nothing.
+    """
+    proj = _open_experiment(experiment_dir)
+    bar = _StageProgress()
+    try:
+        result = proj.estimate_min_contour_area(
+            _resolve_recording_refs(proj, recording_refs) or None, progress=bar
+        )
+    except (FileNotFoundError, ValueError) as e:
+        raise click.ClickException(str(e))
+    finally:
+        bar.close()
+    click.echo(
+        f"{'recording':<24} {'frames':>6}  animal px: {'min':>6} {'p1':>6} {'p50':>6}"
+        f"  other px: {'p50':>6} {'p95':>6}"
+    )
+
+    def cell(table: dict, key: int) -> str:
+        return f"{table[key]:>6.0f}" if key in table else f"{'–':>6}"
+
+    for row in result.per_recording:
+        low = f"{row.animal_min:>6.0f}" if row.animal_min is not None else f"{'–':>6}"
+        click.echo(
+            f"{row.name:<24} {row.n_frames:>6}  {'':11}{low} {cell(row.animal, 1)} "
+            f"{cell(row.animal, 50)}  {'':10}{cell(row.other, 50)} {cell(row.other, 95)}"
+        )
+    for warning in result.warnings:
+        click.echo(f"note: {warning}")
+    if result.suggestion is None:
+        click.echo(f"no suggestion: {result.reason}")
+    else:
+        click.echo(f"suggested --min-contour-area: {result.reason}")
+
+
 @dataset.command("list")
 @_EXPERIMENT_OPT
 def dataset_list(experiment_dir: Path) -> None:
