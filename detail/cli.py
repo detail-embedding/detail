@@ -7628,6 +7628,19 @@ def _comparison_help(name: str) -> str:
     return ComparisonConfig.model_fields[name].description or ""
 
 
+def _comparison_choices(name: str) -> list[str]:
+    """The values a `comparison run` choice takes, read off the config model's ``Literal``.
+
+    Typed here by hand they were complete on the day they were typed: a source added to the
+    model would have been refused by the one surface that claims to mirror the API.
+    """
+    import typing
+
+    from detail.configs.comparison import ComparisonConfig
+
+    return list(typing.get_args(ComparisonConfig.model_fields[name].annotation))
+
+
 @main.group()
 def comparison() -> None:
     """Compare behavior between groups defined by recording metadata (§24)."""
@@ -7639,7 +7652,8 @@ def comparison() -> None:
     "--source-run",
     "source_run_id",
     required=True,
-    help="Analysis run holding the behavior output.",
+    help="Analysis run to compare over: one holding a behavior output, or, with "
+    "--source locations, a location-export run.",
 )
 @click.option(
     "--snapshot",
@@ -7664,7 +7678,7 @@ def comparison() -> None:
 )
 @click.option(
     "--source",
-    type=click.Choice(["labels", "nodes"]),
+    type=click.Choice(_comparison_choices("source")),
     default=_comparison_default("source"),
     show_default=True,
     help=_comparison_help("source"),
@@ -7733,10 +7747,45 @@ def comparison() -> None:
 )
 @click.option(
     "--statistic",
-    type=click.Choice(["moderated_t", "effect"]),
+    type=click.Choice(_comparison_choices("statistic")),
     default=_comparison_default("statistic"),
     show_default=True,
     help=_comparison_help("statistic"),
+)
+@click.option(
+    "--location-sample-fps",
+    type=FINITE_FLOAT,
+    default=_comparison_default("location_sample_fps"),
+    show_default=True,
+    help=_comparison_help("location_sample_fps")
+    + " Pass --location-every-row to read every row.",
+)
+@click.option(
+    "--location-every-row",
+    is_flag=True,
+    help="Locations source: read every row of the run instead of thinning to "
+    "--location-sample-fps.",
+)
+@click.option(
+    "--location-smooth-s",
+    type=FINITE_FLOAT,
+    default=_comparison_default("location_smooth_s"),
+    show_default=True,
+    help=_comparison_help("location_smooth_s"),
+)
+@click.option(
+    "--location-moving-threshold",
+    type=FINITE_FLOAT,
+    default=_comparison_default("location_moving_threshold"),
+    show_default=True,
+    help=_comparison_help("location_moving_threshold"),
+)
+@click.option(
+    "--location-jump-speed",
+    type=FINITE_FLOAT,
+    default=_comparison_default("location_jump_speed"),
+    show_default=True,
+    help=_comparison_help("location_jump_speed"),
 )
 def comparison_run(
     experiment_dir,
@@ -7761,6 +7810,11 @@ def comparison_run(
     candidate_floor_s,
     suppress_nesting,
     statistic,
+    location_sample_fps,
+    location_every_row,
+    location_smooth_s,
+    location_moving_threshold,
+    location_jump_speed,
 ) -> None:
     """Run a comparison and save it.
 
@@ -7774,6 +7828,8 @@ def comparison_run(
     named values — follows from what the ``--group-by`` column does within the unit, and is
     printed when the run ends (§24).
     ``--source nodes`` screens every node of a clustering run's node cache, named or not.
+    ``--source locations`` compares distance travelled, time moving, speed and body shape,
+    read from a location-export run, each measure by its own test.
     """
     proj = _open_experiment(experiment_dir)
     if not aggregate_to:
@@ -7808,6 +7864,12 @@ def comparison_run(
                 "candidate_floor_s": candidate_floor_s,
                 "suppress_nesting": suppress_nesting,
                 "statistic": statistic,
+                "location_sample_fps": (
+                    None if location_every_row else location_sample_fps
+                ),
+                "location_smooth_s": location_smooth_s,
+                "location_moving_threshold": location_moving_threshold,
+                "location_jump_speed": location_jump_speed,
             },
             progress=bar,
         )
@@ -7839,6 +7901,13 @@ def comparison_run(
         click.echo(
             f"  every node of {record['source_run_id']} at or above "
             f"{record.get('candidate_floor_s')} s, ranked on share of time"
+        )
+    if record.get("source") == "locations":
+        exported = record.get("location_export") or {}
+        thin = "removed" if exported.get("remove_thin_parts") else "kept"
+        click.echo(
+            f"  locations of {record['source_run_id']} (thin parts {thin}): each measure "
+            f"tested on its own over {record.get('draws')} shuffles"
         )
     if record.get("source_snapshot"):
         click.echo(f"  read {record['source_run_id']} @ {record['source_snapshot']}")

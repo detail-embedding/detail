@@ -119,6 +119,21 @@ STATISTIC_T = "moderated_t"
 STATISTIC_EFFECT = "effect"
 STATISTICS = (STATISTIC_T, STATISTIC_EFFECT)
 
+#: What an item must do to count as a finding (§24 *The verdict*).
+#:
+#: ``family``: clear the floor, the 95th percentile of the largest score over the *whole
+#: family* under the null. Right when the family is a screen: hundreds of clusters in one unit,
+#: where ranking by difference always produces a most-different one.
+#:
+#: ``own``: reach its own test, the share of the null's draws in which *this* measure differed
+#: at least as much. Right when the family is a handful of measures a person chose, in
+#: different units (a distance, a share of time, a length): one floor over those belongs to
+#: the noisiest of them, and a small change every animal shares, in a measure that hardly
+#: varies, could never clear it. The false-discovery rate over the family rides beside it.
+VERDICT_FAMILY = "family"
+VERDICT_OWN = "own"
+VERDICTS = (VERDICT_FAMILY, VERDICT_OWN)
+
 #: How close, relative to the observed value, a null draw must come to count as reaching it.
 #: A null recomputes the observed configuration by other arithmetic (a matrix product where the
 #: effect is a ``nansum``, a fresh ``fmean`` where the contrast read a summary's mean), so the
@@ -639,6 +654,10 @@ class Ranking:
     #: by, ``None`` on a ranking by the effect.
     statistic: str = STATISTIC_EFFECT
     s0: float | None = None
+    #: What an item must do to count as a finding (:data:`VERDICTS`): clear the family's floor,
+    #: or reach its own test. Every "clears" method below reads it, so a surface asks the
+    #: ranking and never works a verdict out from ``floor`` itself.
+    verdict: str = VERDICT_FAMILY
 
     @property
     def profile(self) -> bool:
@@ -661,6 +680,8 @@ class Ranking:
         # takes the `lo <= 0 or hi <= 0` branch. It is named anyway because it is the case a
         # reader comes here about, and because the converse does not hold: a missing centre is
         # also `None` and is not unbounded. Do not read a test that mutates it away as coverage.
+        if self.verdict == VERDICT_OWN:
+            return self.clears_at(item, FLOOR_ALPHA)
         if self.floor is None or item.unbounded or item.score is None:
             return False
         return not _reaches(self.floor, item.score)
@@ -695,7 +716,14 @@ class Ranking:
         clears :meth:`floor_at`, so this agrees with the item's ``score`` (its t, or its
         magnitude) clearing ``floor_at(alpha)`` at every level, and with :meth:`clears_floor`
         at :data:`FLOOR_ALPHA`; a hover's p and a slider's threshold cannot disagree.
-        ``False`` with no floor, or no p."""
+        ``False`` with no floor, or no p.
+
+        Where the verdict is each measure's own (:data:`VERDICT_OWN`) the p read is ``own_p``,
+        and there is no floor to be without: the item's own null is all the test needs.
+        """
+        if self.verdict == VERDICT_OWN:
+            p = getattr(item, "own_p", None)
+            return p is not None and p <= float(alpha)
         if self.floor is None:
             return False
         p = getattr(item, "family_p", None)
@@ -1459,6 +1487,32 @@ def _spearman_rows(X: np.ndarray, d: np.ndarray) -> np.ndarray:
     return r
 
 
+def _spearman_null(X: np.ndarray, shuffled: np.ndarray) -> np.ndarray:
+    """``(rows of X, draws)``: Spearman ρ of every row of ``X`` against every row of
+    ``shuffled``, one shuffle of the levels per draw.
+
+    The same numbers as :func:`_spearman_rows` called once per draw, with ``X`` ranked once.
+    Ranking it again for every draw is what a trend over few measures and many draws spent
+    its time on: two measures, six units and 10,000 draws (what a locations comparison
+    draws) took 22 s to rank and take 1.5 s. A screen of 1,348 nodes at 200 draws is not
+    helped; its 8 s are elsewhere. The shuffles are drawn by the caller, one
+    ``rng.permutation`` per draw as before, and three saved comparisons re-rank to exactly
+    the numbers they had.
+    """
+    from scipy.stats import rankdata
+
+    Dr = rankdata(shuffled, axis=1)
+    Dc = Dr - Dr.mean(axis=1, keepdims=True)
+    dn = np.linalg.norm(Dc, axis=1)
+    R = rankdata(X, axis=1)
+    Rc = R - R.mean(axis=1, keepdims=True)
+    rn = np.linalg.norm(Rc, axis=1)
+    safe = np.where(rn > 0, rn, 1.0)
+    r = (Rc @ Dc.T) / (safe[:, None] * dn[None, :])
+    r[rn == 0] = 0.0
+    return r
+
+
 def rank_by_design(
     obs: Sequence[Observation],
     design: Design,
@@ -1694,9 +1748,7 @@ def rank_by_design(
             r = _spearman_rows(np.nan_to_num(block), d)
             rho[:, u] = np.where(valid_u, r, np.nan)
             shuffled = np.stack([rng.permutation(d) for _ in range(draws)])
-            rnull = np.stack(
-                [_spearman_rows(np.nan_to_num(block), s) for s in shuffled], axis=1
-            )
+            rnull = _spearman_null(np.nan_to_num(block), shuffled)
             rnull[~valid_u] = 0.0
             null_sum += rnull
             null_sq += rnull**2
