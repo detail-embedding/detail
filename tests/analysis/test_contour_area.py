@@ -255,11 +255,11 @@ def test_nothing_the_user_reads_names_a_species():
         "min_area_estimate.py": inspect.getsource(min_area_estimate),
         "the CLI command": inspect.getsource(cli.dataset_estimate_min_area.callback),
     }
-    gui = (root / "docs" / "gui.md").read_text(encoding="utf-8")
+    gui = (root / "docs" / "gui.md").read_text(encoding="utf-8-sig")
     texts["docs/gui.md"] = next(
         line for line in gui.splitlines() if line.startswith("**Min contour area**")
     )
-    cli_doc = (root / "docs" / "cli.md").read_text(encoding="utf-8")
+    cli_doc = (root / "docs" / "cli.md").read_text(encoding="utf-8-sig")
     start = cli_doc.index("- `estimate-min-area")
     texts["docs/cli.md"] = cli_doc[start : cli_doc.index("\n- `", start + 1)]
     species = re.compile(
