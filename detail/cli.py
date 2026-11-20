@@ -4066,9 +4066,10 @@ def dataset_estimate_min_area(
 ) -> None:
     """Suggest a --min-contour-area for labeling from the recordings' video.
 
-    Measures the largest moving blob (the animal) and the other blobs by background
-    subtraction on a frame every few seconds. A dark animal on a dark background is broken
-    into pieces, so its area is a lower bound. Writes nothing.
+    Measures the moving blobs of animal size (counting how many animals are seen at once)
+    and the leftover blobs, by background subtraction on a frame every few seconds. A subject
+    close in brightness to its background breaks into pieces, so its area is a lower bound.
+    Writes nothing.
     """
     proj = _open_experiment(experiment_dir)
     bar = _StageProgress()
@@ -4081,8 +4082,8 @@ def dataset_estimate_min_area(
     finally:
         bar.close()
     click.echo(
-        f"{'recording':<24} {'frames':>6}  animal px: {'min':>6} {'p1':>6} {'p50':>6}"
-        f"  other px: {'p50':>6} {'p95':>6}"
+        f"{'recording':<24} {'frames':>6} {'animals':>7}  animal px: {'min':>6} "
+        f"{'p1':>6} {'p50':>6}  leftover px: {'p50':>6} {'p95':>6}"
     )
 
     def cell(table: dict, key: int) -> str:
@@ -4091,8 +4092,9 @@ def dataset_estimate_min_area(
     for row in result.per_recording:
         low = f"{row.animal_min:>6.0f}" if row.animal_min is not None else f"{'–':>6}"
         click.echo(
-            f"{row.name:<24} {row.n_frames:>6}  {'':11}{low} {cell(row.animal, 1)} "
-            f"{cell(row.animal, 50)}  {'':10}{cell(row.other, 50)} {cell(row.other, 95)}"
+            f"{row.name:<24} {row.n_frames:>6} {row.n_animals:>7}  {'':11}{low} "
+            f"{cell(row.animal, 1)} {cell(row.animal, 50)}  {'':13}{cell(row.other, 50)} "
+            f"{cell(row.other, 95)}"
         )
     for warning in result.warnings:
         click.echo(f"note: {warning}")

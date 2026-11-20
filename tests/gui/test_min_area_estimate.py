@@ -111,7 +111,7 @@ def test_the_window_shows_the_table_and_hands_back_the_suggestion(qapp, tmp_path
     model = dialog._table.model()
     assert model.rowCount() == 1
     assert model.item(0, 0).text() == "M5"
-    assert model.item(0, 3).text() == "953"
+    assert model.item(0, 4).text() == "953"
     assert dialog._summary.text().startswith("Suggested: 450 px")
     assert not dialog._warnings.isHidden()
     assert dialog._use.isEnabled()

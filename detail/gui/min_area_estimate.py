@@ -4,11 +4,11 @@ Opened from the labeling forms (**Distill new model**'s detector page and **Labe
 it runs ``Experiment.estimate_min_contour_area`` off the UI thread (``busy.run_progress``, with
 Cancel) over the recordings the form has selected, and shows:
 
-- a row per recording: frames sampled, the animal's area (minimum, p1, median) and the other
-  blobs' (median, p95), in pixels;
+- a row per recording: frames sampled, how many animals were seen at once, the animals' area
+  (minimum, p1, median) and the leftover blobs' (median, p95), in pixels;
 - the suggested value and how it was reached, or why there is none;
 - what the estimate cannot see: it subtracts a median background rather than running the
-  teacher, so a dark animal on a dark background reads small and in pieces.
+  teacher, so a subject close in brightness to its background reads small and in pieces.
 
 **Use this value** hands the suggestion back (:meth:`chosen_value`); the form writes it into
 the field. Nothing is written to the experiment. The computation is
@@ -33,20 +33,21 @@ from detail.gui.tables import SortCell, fit_table_height, fit_table_width, list_
 
 #: The estimate's limit, on screen in the window and in the docs (``docs/gui.md``).
 LIMIT_NOTE = (
-    "This measures moving blobs by subtracting the background, not the teacher's masks. On a "
-    "dark animal against a dark background the animal breaks into pieces, so its area here "
-    "is a lower bound and the other blobs include pieces of it. Check the value with Test "
-    "prompts before a long run."
+    "This measures moving blobs by subtracting the background, not the teacher's masks. A "
+    "subject close in brightness to its background breaks into pieces, so its area here is a "
+    "lower bound and the leftover blobs include pieces of it. Animals seen at once are counted "
+    "and each is measured as an animal. Check the value with Test prompts before a long run."
 )
 
 _COLUMNS = (
     "Recording",
     "Frames",
+    "Animals",
     "Animal min",
     "Animal p1",
     "Animal median",
-    "Other median",
-    "Other p95",
+    "Leftover median",
+    "Leftover p95",
 )
 
 
@@ -158,6 +159,7 @@ class MinAreaEstimateDialog(Dialog):
                 [
                     name,
                     frames,
+                    SortCell(str(row.n_animals), row.n_animals),
                     _px(row.animal_min),
                     _px(row.animal.get(1)),
                     _px(row.animal.get(50)),
@@ -195,7 +197,7 @@ class MinAreaEstimateDialog(Dialog):
         elif self._result is None:
             reason = "Nothing has been measured yet"
         elif self._result.suggestion is None:
-            reason = "No value separates the animal from the other blobs"
+            reason = "No value separates the animals from the leftover blobs"
         else:
             reason = None
         set_available(self._use, reason is None, reason or "")

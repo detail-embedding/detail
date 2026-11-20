@@ -3,36 +3,55 @@
 ``LabelingConfig.min_contour_area`` is applied by ``core.utils.mask_to_polygon`` to each
 external contour of a teacher mask: a piece smaller than the limit is cut out of the label,
 and a detection is dropped only when every piece is. Set too low, specks of mask survive into
-the training labels; set too high, real pieces of the animal (a tail that detached from the
-body) are cut. The right value depends on how big the animal is in the frame, which the form
-cannot know. This module measures it without running the teacher.
+the training labels; set too high, real pieces of the subject (a part of the body the mask
+split off) are cut. The right value depends on how big the subject is in the frame, which the
+form cannot know. This module measures it without running the teacher.
 
-**How.** Per recording, read the video sequentially (``grab``, no seeking) and keep one grey
-frame every ``sample_every_s`` seconds of the timestamp map. The per-pixel median of those
-frames is the empty background. On each kept frame, threshold ``|frame - background| >
-DIFF_THRESHOLD``, open with a 5x5 ellipse, close with a 9x9 ellipse, and label the connected
-components. The largest component is the animal; every other one is an "other blob".
+**Species-agnostic by construction.** Nothing here knows what is being filmed or how big it
+is: there is no size in pixels anywhere in the method. Every quantity that would be one is
+measured on the selected recordings:
+
+- **Foreground** is ``|frame - background|`` (so a subject lighter or darker than the
+  background is found the same way) above a threshold chosen per recording from that
+  difference itself (:func:`foreground_threshold`): Otsu's split of the pooled differences,
+  never below the background's own noise (its median plus ``NOISE_SIGMAS`` robust standard
+  deviations). A low-contrast subject is not lost to a fixed grey level, and a frame with
+  nothing moving does not threshold into noise.
+- **Smoothing scales with the subject.** A first pass with no smoothing finds the typical
+  largest moving blob; its width scale is the square root of its area. The opening that
+  removes specks and the closing that rejoins a split body are ellipses ``OPEN_SHARE`` and
+  ``CLOSE_SHARE`` of that width (:func:`kernel_sides`), and are skipped when that comes to
+  less than 3 px. A fixed kernel would erase a subject a few pixels across, or barely touch
+  one that fills the frame.
+- **How many subjects** is counted, not assumed (:func:`count_animals`): a blob at least
+  ``ANIMAL_SHARE`` of the typical largest one counts as an animal, and the recording's count is
+  the median over its frames. Each animal's blob is measured as an animal; a second animal is
+  never reported as a leftover blob. The result names any recording with more than one.
+
+**How it reads.** Per recording, the video is read sequentially (``grab``, no seeking), keeping
+one grey frame every ``sample_every_s`` seconds of the timestamp map; their per-pixel median is
+the empty background.
 
 **Known limits**, the reason the result is a starting point and not an answer:
 
-- A dark animal on a dark background breaks into pieces under the subtraction, so the animal
-  area is a **lower bound**, and the other blobs mix noise with fragments of the animal. On the
-  Linear Track mirror crops the animal read about 1,900-2,700 px here, and the teacher's masks
-  about 4,000-6,500 px by eye.
-- One animal is assumed: with two in a frame, the second is an "other blob".
-- An animal that stays in one place for most of the recording becomes part of the median
+- A subject close in brightness to the background breaks into pieces under the subtraction,
+  so its area is a **lower bound**, and the leftover blobs mix noise with fragments of it.
+- A subject that stays in one place for most of the recording becomes part of the median
   background.
+- Two subjects that touch are one blob on that frame; the median count over frames absorbs
+  it, the area on that frame does not.
 - Areas are pixel counts of components. The labeling stage filters on ``cv2.contourArea``,
   which is a little smaller for the same blob.
 
-**The suggestion** (:func:`suggest`). The ceiling is half the smallest animal p1 over the
-recordings: a piece below it cannot be a whole animal, even allowing for the subtraction
-underestimating it. The floor is the largest other-blob **median**: the typical noise blob.
-Not the p95, because the other blobs' upper tail is partly the animal's own fragments (the
-first limit above), so on a dark animal the p95 reaches into the animal's range and would
-refuse every value. The suggestion is the largest round number at or below the ceiling and
-above the floor. When the floor reaches the ceiling there is no value that separates them,
-and the result says so and suggests nothing rather than guessing.
+**The suggestion** (:func:`suggest`) compares two distributions measured here, nothing else.
+The ceiling is half the smallest animal p1 over the recordings: a piece below it cannot be a
+whole animal, even allowing for the subtraction underestimating it. The floor is the largest
+leftover-blob **median**: the typical noise blob. Not its p95, because the largest leftover
+blobs are partly fragments of the subject (the first limit above), so on a low-contrast
+subject they reach into the subject's own range and would refuse every value. The suggestion
+is the largest round number at or below the ceiling and above the floor. When the floor
+reaches the ceiling the two distributions overlap, no value separates them, and the result
+says so and suggests nothing.
 """
 
 from collections.abc import Callable
@@ -43,11 +62,17 @@ from pathlib import Path
 
 import numpy as np
 
-#: A pixel is foreground when its grey level differs from the background by more than this.
-DIFF_THRESHOLD = 20
-#: Opening removes specks smaller than this ellipse; closing fills gaps narrower than this one.
-OPEN_KERNEL = 5
-CLOSE_KERNEL = 9
+#: The foreground threshold is never below the background's noise: the median difference plus
+#: this many robust standard deviations (1.4826 x the median absolute deviation).
+NOISE_SIGMAS = 5.0
+#: A blob at least this share of the recording's typical largest blob counts as an animal.
+ANIMAL_SHARE = 1 / 3
+#: Opening and closing kernel sides, as a share of the subject's width scale (sqrt of its
+#: typical area). A side under 3 px skips the operation.
+OPEN_SHARE = 0.1
+CLOSE_SHARE = 0.2
+#: Pixels sampled from each frame's difference image for the threshold (a strided subset).
+THRESHOLD_SAMPLE = 20_000
 #: One sampled frame per this many seconds of video.
 SAMPLE_EVERY_S = 4.0
 #: At most this many sampled frames per recording; a longer recording samples more sparsely.
@@ -85,9 +110,10 @@ class RecordingVideo:
 class RecordingAreas:
     """One recording's measured areas, in pixels.
 
-    ``animal`` maps each of :data:`ANIMAL_PERCENTILES` to the largest component's area at that
-    percentile, ``other`` each of :data:`OTHER_PERCENTILES` to the other blobs'. Either is
-    empty when nothing of that kind was found.
+    ``animal`` maps each of :data:`ANIMAL_PERCENTILES` to the animals' blob area at that
+    percentile, ``other`` each of :data:`OTHER_PERCENTILES` to the leftover blobs'. Either is
+    empty when nothing of that kind was found. ``n_animals`` is how many animals were counted
+    at once (:func:`count_animals`); ``threshold`` the foreground threshold, in grey levels.
     """
 
     recording_id: str
@@ -97,15 +123,17 @@ class RecordingAreas:
     animal: dict[int, float]
     n_other: int
     other: dict[int, float]
+    n_animals: int = 1
+    threshold: float | None = None
 
 
 @dataclass(frozen=True)
 class MinAreaEstimate:
     """The per-recording table and the suggested limit.
 
-    ``suggestion`` is None when no value separates the animal from the other blobs, or there
-    was nothing to measure; ``reason`` says which, or how the value was reached. ``ceiling`` is
-    half the smallest animal p1, ``floor`` the largest other-blob median.
+    ``suggestion`` is None when no value separates the animals from the leftover blobs, or
+    there was nothing to measure; ``reason`` says which, or how the value was reached.
+    ``ceiling`` is half the smallest animal p1, ``floor`` the largest leftover-blob median.
     """
 
     per_recording: list[RecordingAreas]
@@ -146,37 +174,132 @@ def sample_indices(
     return out
 
 
-def blob_areas(grey: np.ndarray, background: np.ndarray) -> np.ndarray:
-    """The foreground components' pixel areas on one grey frame, largest first."""
+def _difference(grey: np.ndarray, background: np.ndarray) -> np.ndarray:
+    """``|grey - background|`` as uint8: a subject lighter or darker than the background alike."""
     import cv2
 
-    diff = np.abs(grey.astype(np.int16) - background.astype(np.int16))
-    mask = (diff > DIFF_THRESHOLD).astype(np.uint8)
-    opening = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (OPEN_KERNEL, OPEN_KERNEL))
-    closing = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (CLOSE_KERNEL, CLOSE_KERNEL))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, opening)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, closing)
+    return cv2.absdiff(grey, background)
+
+
+def foreground_threshold(diffs: list[np.ndarray]) -> float:
+    """The grey-level difference above which a pixel is foreground, from these differences.
+
+    Otsu's split of the pooled differences, raised to the background's noise floor (median +
+    ``NOISE_SIGMAS`` robust standard deviations, at least one grey level each). Otsu alone
+    separates a subject of any contrast from the background when the subject is a fair share
+    of the pixels; when it is a few pixels in a large frame, Otsu can split the noise instead,
+    and the floor stops that.
+    """
+    import cv2
+
+    pooled = []
+    for diff in diffs:
+        flat = diff.ravel()
+        step = max(1, len(flat) // THRESHOLD_SAMPLE)
+        pooled.append(flat[::step])
+    values = np.concatenate(pooled) if pooled else np.zeros(1, np.uint8)
+    otsu, _ = cv2.threshold(
+        values.reshape(-1, 1), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+    )
+    median = float(np.median(values))
+    sigma = 1.4826 * float(np.median(np.abs(values.astype(np.float64) - median)))
+    return max(float(otsu), median + NOISE_SIGMAS * max(sigma, 1.0))
+
+
+def kernel_sides(width: float) -> tuple[int, int]:
+    """``(open, close)`` ellipse sides for a subject of this width scale; odd, 0 = skip."""
+
+    def side(share: float) -> int:
+        value = int(round(share * width))
+        if value < 3:
+            return 0
+        return value if value % 2 else value + 1
+
+    return side(OPEN_SHARE), side(CLOSE_SHARE)
+
+
+def blob_areas(
+    diff: np.ndarray, threshold: float, open_side: int = 0, close_side: int = 0
+) -> np.ndarray:
+    """The foreground components' pixel areas on one difference image, largest first."""
+    import cv2
+
+    mask = (diff > threshold).astype(np.uint8)
+    if open_side:
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (open_side, open_side))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    if close_side:
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_side, close_side))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
     _n, _labels, stats, _centroids = cv2.connectedComponentsWithStats(mask)
     return np.sort(stats[1:, cv2.CC_STAT_AREA].astype(np.int64))[::-1]
 
 
-def measure(frames: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
-    """``(animal_areas, other_areas)`` over the kept frames of one recording.
+def count_animals(per_frame: list[np.ndarray]) -> tuple[int, float]:
+    """``(n_animals, typical_largest)`` from each frame's areas (largest first).
 
-    The background is their per-pixel median. A frame with no component contributes no
-    animal area.
+    A blob at least ``ANIMAL_SHARE`` of the typical (median) largest blob counts as an animal;
+    the count is the median over the frames that have any blob.
     """
+    largest = [int(areas[0]) for areas in per_frame if len(areas)]
+    if not largest:
+        return 0, 0.0
+    typical = float(np.median(largest))
+    counts = [
+        int(np.sum(areas >= ANIMAL_SHARE * typical))
+        for areas in per_frame
+        if len(areas)
+    ]
+    return max(1, int(round(float(np.median(counts))))), typical
+
+
+@dataclass(frozen=True)
+class Measured:
+    """What :func:`measure` found on one recording's frames."""
+
+    animal: np.ndarray
+    other: np.ndarray
+    n_animals: int
+    threshold: float | None
+    kernels: tuple[int, int]
+
+
+def measure(frames: list[np.ndarray]) -> Measured:
+    """Animal and leftover-blob areas over the kept frames of one recording.
+
+    The background is their per-pixel median, the threshold :func:`foreground_threshold`. A
+    first pass without smoothing sizes the subject; the second smooths with kernels scaled to
+    it (:func:`kernel_sides`), counts the animals (:func:`count_animals`) and splits each
+    frame's blobs: up to that many blobs of animal size are animals, the rest are leftovers.
+    """
+    empty = np.zeros(0, dtype=np.int64)
     if not frames:
-        return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.int64)
+        return Measured(empty, empty, 0, None, (0, 0))
     background = np.median(np.stack(frames), axis=0).astype(np.uint8)
+    diffs = [_difference(grey, background) for grey in frames]
+    threshold = foreground_threshold(diffs)
+    _n, typical = count_animals([blob_areas(d, threshold) for d in diffs])
+    if not typical:
+        return Measured(empty, empty, 0, threshold, (0, 0))
+    kernels = kernel_sides(math.sqrt(typical))
+    per_frame = [blob_areas(d, threshold, *kernels) for d in diffs]
+    n_animals, typical = count_animals(per_frame)
     animal: list[int] = []
     other: list[int] = []
-    for grey in frames:
-        areas = blob_areas(grey, background)
-        if len(areas):
-            animal.append(int(areas[0]))
-            other.extend(int(a) for a in areas[1:])
-    return np.asarray(animal, dtype=np.int64), np.asarray(other, dtype=np.int64)
+    for areas in per_frame:
+        if not len(areas):
+            continue
+        big = int(np.sum(areas >= ANIMAL_SHARE * typical))
+        taken = min(n_animals, max(big, 1))
+        animal.extend(int(a) for a in areas[:taken])
+        other.extend(int(a) for a in areas[taken:])
+    return Measured(
+        np.asarray(animal, dtype=np.int64),
+        np.asarray(other, dtype=np.int64),
+        n_animals,
+        threshold,
+        kernels,
+    )
 
 
 def summarize(
@@ -185,6 +308,8 @@ def summarize(
     n_frames: int,
     animal: np.ndarray,
     other: np.ndarray,
+    n_animals: int = 1,
+    threshold: float | None = None,
 ) -> RecordingAreas:
     """One recording's percentile row from its raw areas."""
 
@@ -201,6 +326,8 @@ def summarize(
         animal=pct(animal, ANIMAL_PERCENTILES),
         n_other=int(len(other)),
         other=pct(other, OTHER_PERCENTILES),
+        n_animals=n_animals,
+        threshold=threshold,
     )
 
 
@@ -221,7 +348,7 @@ def suggest(
     """``(suggestion, ceiling, floor, reason, warnings)`` for these recordings.
 
     The rule is the module docstring's: the largest round number at or below half the smallest
-    animal p1 and above the largest other-blob median. ``None`` when nothing separates them.
+    animal p1 and above the largest leftover-blob median. ``None`` when nothing separates them.
     """
     measured = [r for r in recordings if r.animal]
     if not measured:
@@ -246,10 +373,18 @@ def suggest(
             + ", so "
             "the background there is a poor median and the areas are unreliable."
         )
+    several = [f"{r.name} ({r.n_animals})" for r in recordings if r.n_animals > 1]
+    if several:
+        warnings.append(
+            "More than one animal at once in "
+            + ", ".join(several)
+            + ": each is measured as an animal, not as a leftover blob. Where they touch "
+            "they read as one blob on that frame."
+        )
     overlapping = [r.name for r in noisy if r.other[95] >= ceiling]
     if overlapping:
         warnings.append(
-            "The larger other blobs in "
+            "The larger leftover blobs in "
             + ", ".join(overlapping)
             + " reach past the ceiling: they are probably pieces of the animal that the "
             "subtraction split off. Check the value with Test prompts."
@@ -259,7 +394,7 @@ def suggest(
             None,
             ceiling,
             floor,
-            f"No value separates them: the typical other blob ({floor:.0f} px) is as large "
+            f"No value separates them: the typical leftover blob ({floor:.0f} px) is as large "
             f"as half the smallest animal ({ceiling:.0f} px, in {smallest.name}). The "
             "subtraction may be breaking the animal into pieces; set the value by eye with "
             "Test prompts.",
@@ -273,7 +408,7 @@ def suggest(
         ceiling,
         floor,
         f"{value} px: at or below half the smallest animal ({ceiling:.0f} px, the p1 of "
-        f"{smallest.name}) and above the typical other blob ({floor:.0f} px).",
+        f"{smallest.name}) and above the typical leftover blob ({floor:.0f} px).",
         warnings,
     )
 
@@ -336,7 +471,7 @@ def estimate(
     sample_every_s: float = SAMPLE_EVERY_S,
     max_samples: int = MAX_SAMPLES,
 ) -> MinAreaEstimate:
-    """Measure the animal and other-blob areas of each recording and suggest a limit.
+    """Measure the animal and leftover-blob areas of each recording and suggest a limit.
 
     ``progress(stage, fraction, detail)`` is driven while each recording is read (weighed by
     the frames to read, which is nearly all the time) and when it is measured. It is called
@@ -378,9 +513,17 @@ def estimate(
         frames = _read_samples(video, plan, on_frame)
         done += weight
         report((f"Measuring {video.name}", done / total, of), force=True)
-        animal, other = measure(frames)
+        found = measure(frames)
         rows.append(
-            summarize(video.recording_id, video.name, len(frames), animal, other)
+            summarize(
+                video.recording_id,
+                video.name,
+                len(frames),
+                found.animal,
+                found.other,
+                found.n_animals,
+                found.threshold,
+            )
         )
     value, ceiling, floor, reason, warnings = suggest(rows)
     report(("Done", 1.0, ""), force=True)

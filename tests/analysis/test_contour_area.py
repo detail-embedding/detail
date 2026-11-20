@@ -1,11 +1,19 @@
 """The *Min contour area* estimate (``detail.analysis.contour_area``) and its API and CLI.
 
 The estimate sizes a labeling filter from the video alone: one grey frame every few seconds,
-a median background, and the largest moving blob taken as the animal. What is pinned here:
+a median background, and the moving blobs of animal size taken as the animals. What is pinned
+here:
 
-- **The suggestion rule**, on the Linear Track pilot's own numbers (the case it was built for)
-  and on the edges: a conflict suggests nothing, nothing moving suggests nothing, and a rounded
-  value never falls to the floor.
+- **It is species-agnostic.** The class this guards against is *a size or a contrast of one
+  kind of subject built into the method*: a fixed grey-level threshold, a fixed smoothing
+  kernel, "the largest blob is the animal", or a species word in what the user reads. Each
+  synthetic case is one that such an assumption gets wrong: a subject a few pixels across (a
+  fixed 5x5 opening erases it), a low-contrast subject (a fixed threshold of 20 misses it), a
+  large dark subject on a light background, two subjects at once (the second would be called
+  noise), and the same scene at three times the scale (the suggestion must scale with it).
+- **The suggestion rule** on a worked example (the Linear Track pilot's numbers, as inputs
+  only) and on the edges: a conflict suggests nothing, nothing moving suggests nothing, and a
+  rounded value never falls to the floor.
 - **Sampling reads the timestamp map**, not a frame rate: spacing is even in time on a
   variable-rate part, a long recording widens the spacing to stay within the cap, and a part's
   frame count is its map's length.
@@ -135,6 +143,132 @@ def test_a_short_sample_is_flagged():
     assert any("short clip" in w and "Fewer than" in w for w in warnings)
 
 
+# --- species-agnostic: synthetic subjects of very different size and contrast ---- #
+N_FRAMES = 15
+
+
+def _scene(size, *, background, noise, seed):
+    """``N_FRAMES`` flat ``background`` frames with Gaussian ``noise``, and the generator."""
+    width, height = size
+    rng = np.random.default_rng(seed)
+    frames = [
+        float(background) + rng.normal(0, noise, (height, width))
+        for _ in range(N_FRAMES)
+    ]
+    return frames, rng
+
+
+def _render(frames, rng, boxes):
+    out = []
+    for grey, placed in zip(frames, boxes):
+        img = grey.copy()
+        for x, y, w, h, level in placed:
+            img[y : y + h, x : x + w] = level + rng.normal(0, 2.0, (h, w))
+        out.append(np.clip(img, 0, 255).astype(np.uint8))
+    return out
+
+
+def _moving(size, w, h, level, *, bands=1, background, noise=2.0, seed=0):
+    """Frames with a ``w`` x ``h`` subject at grey ``level`` in each of ``bands`` horizontal
+    bands. Each visits five positions, so no pixel is covered in more than a fifth of the
+    frames and the median background is clean."""
+    width, height = size
+    frames, rng = _scene(size, background=background, noise=noise, seed=seed)
+    band_h = height // bands
+    boxes = []
+    for i in range(N_FRAMES):
+        placed = []
+        for b in range(bands):
+            slot = (i + 2 * b) % 5
+            x = 2 + slot * ((width - w - 4) // 4)
+            y = b * band_h + (band_h - h) // 2
+            placed.append((x, y, w, h, level))
+        boxes.append(placed)
+    return _render(frames, rng, boxes)
+
+
+def _animal_median(frames):
+    found = ca.measure(frames)
+    return float(np.median(found.animal)), found
+
+
+def test_a_subject_a_few_pixels_across_is_measured_not_erased():
+    frames = _moving((320, 240), 4, 4, 90, background=20)
+    median, found = _animal_median(frames)
+    assert found.n_animals == 1
+    assert 0.7 * 16 <= median <= 1.3 * 16
+    assert found.kernels == (0, 0)  # smoothing scaled to a 4 px subject is no smoothing
+
+
+def test_a_low_contrast_subject_is_found_by_an_adaptive_threshold():
+    frames = _moving((240, 160), 30, 20, 140, background=128, noise=1.5)
+    median, found = _animal_median(frames)
+    assert found.threshold < 12
+    assert 0.85 * 600 <= median <= 1.15 * 600
+
+
+def test_a_large_dark_subject_on_a_light_background_is_measured():
+    frames = _moving((240, 160), 80, 60, 40, background=200)
+    median, found = _animal_median(frames)
+    assert found.n_animals == 1
+    assert 0.9 * 4800 <= median <= 1.1 * 4800
+    assert found.kernels[1] > 9  # smoothing grew with the subject
+
+
+def test_two_subjects_are_both_animals_and_named_in_the_result():
+    frames = _moving((240, 200), 20, 15, 200, bands=2, background=30)
+    median, found = _animal_median(frames)
+    assert found.n_animals == 2
+    assert 0.85 * 300 <= median <= 1.15 * 300
+    assert len(found.animal) == 2 * N_FRAMES
+    assert not len(found.other) or np.max(found.other) < 300 / 3
+    row = ca.summarize("r", "pair", N_FRAMES, found.animal, found.other, 2)
+    *_, warnings = ca.suggest([row])
+    assert any("More than one animal" in w and "pair (2)" in w for w in warnings)
+
+
+def test_the_suggestion_scales_with_the_subject():
+    def ceiling(scale):
+        frames = _moving(
+            (120 * scale, 90 * scale), 10 * scale, 8 * scale, 200, background=40
+        )
+        found = ca.measure(frames)
+        row = ca.summarize("r", "r", N_FRAMES, found.animal, found.other)
+        return ca.suggest([row])[1]
+
+    small, large = ceiling(1), ceiling(3)
+    assert 0.8 * 9 <= large / small <= 1.2 * 9
+
+
+def test_nothing_the_user_reads_names_a_species():
+    """The method and its words are for any subject; species belong in the issue's example."""
+    import inspect
+    import pathlib
+    import re
+
+    from detail import cli
+    from detail.gui import min_area_estimate
+
+    root = pathlib.Path(ca.__file__).resolve().parents[2]
+    texts = {
+        "contour_area.py": inspect.getsource(ca),
+        "min_area_estimate.py": inspect.getsource(min_area_estimate),
+        "the CLI command": inspect.getsource(cli.dataset_estimate_min_area.callback),
+    }
+    gui = (root / "docs" / "gui.md").read_text(encoding="utf-8")
+    texts["docs/gui.md"] = next(
+        line for line in gui.splitlines() if line.startswith("**Min contour area**")
+    )
+    cli_doc = (root / "docs" / "cli.md").read_text(encoding="utf-8")
+    start = cli_doc.index("- `estimate-min-area")
+    texts["docs/cli.md"] = cli_doc[start : cli_doc.index("\n- `", start + 1)]
+    species = re.compile(
+        r"\b(mouse|mice|rats?|tails?|flies|fly|zebrafish|larvae?|worms?)\b", re.I
+    )
+    named = {where: species.findall(text) for where, text in texts.items()}
+    assert not any(named.values()), named
+
+
 # --- a real video ------------------------------------------------------------ #
 def _frame(i: int) -> np.ndarray:
     grey = np.full((H, W), 30, np.uint8)
@@ -163,7 +297,7 @@ def _write_video(path, n_frames=60):
 @pytest.fixture
 def measured_experiment(tmp_path):
     experiment = Experiment.create("p", tmp_path / "exp")
-    recording = experiment.add_recording("mouse a")
+    recording = experiment.add_recording("subject a")
     recording.add_video_part(_write_video(tmp_path / "a.mp4"))
     experiment.add_recording("no video")
     return experiment
@@ -185,7 +319,7 @@ def _video(experiment, name):
 
 
 def test_a_moving_rectangle_is_measured_at_its_own_area(measured_experiment):
-    result = ca.estimate([_video(measured_experiment, "mouse a")])
+    result = ca.estimate([_video(measured_experiment, "subject a")])
     (row,) = result.per_recording
     assert row.n_frames == 15  # one every 4 s of a 60 s video
     area = ANIMAL[0] * ANIMAL[1]
@@ -201,7 +335,7 @@ def test_progress_moves_within_one_recording_and_names_its_phases(
     monkeypatch.setattr(progress_mod, "PROGRESS_INTERVAL_S", 0.0)
     events = []
     ca.estimate(
-        [_video(measured_experiment, "mouse a")],
+        [_video(measured_experiment, "subject a")],
         progress=lambda *e: events.append(e),
     )
     reading = [f for stage, f, _ in events if stage.startswith("Reading")]
@@ -223,7 +357,7 @@ def test_the_api_reads_every_recording_with_video_by_default(measured_experiment
     result = measured_experiment.estimate_min_contour_area(
         progress=lambda *e: events.append(e)
     )
-    assert [r.name for r in result.per_recording] == ["mouse a"]
+    assert [r.name for r in result.per_recording] == ["subject a"]
     assert events and events[-1][1] == 1.0
 
 
@@ -242,11 +376,11 @@ def test_the_cli_prints_the_table_and_the_suggestion(measured_experiment):
             "--experiment",
             str(measured_experiment.dir),
             "--recording",
-            "mouse a",
+            "subject a",
         ],
     )
     assert out.exit_code == 0, out.output
-    assert "mouse a" in out.output
+    assert "subject a" in out.output
     assert "suggested --min-contour-area:" in out.output
 
 
