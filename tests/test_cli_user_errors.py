@@ -28,6 +28,18 @@ a name too long for the disk, a full disk. A ``FileNotFoundError`` is deliberate
 there: a file DETAIL expected to find is a bug at the site that should have checked, and
 ``test_the_root_boundary_rejects_a_missing_file_as_a_user_error`` fails if it is added.
 
+**The same mistake under another number (#67).** The table is keyed by POSIX ``errno``, and
+Windows reports a name its disk refuses under none of them: ``mkdir`` raises ``EINVAL`` with
+``ERROR_INVALID_NAME`` for a name too long and for one holding a ``?`` alike, ``open`` a bare
+``EINVAL``, and a whole path too long (long paths off) is ``ERROR_FILENAME_EXCED_RANGE``, which
+CPython turns into a ``FileNotFoundError``. So on Windows ``experiment create``, ``recording
+add-stream --name`` and ``experiment import --name`` printed a traceback where Linux printed one
+line, and CI, on Linux, never saw it. ``EINVAL`` cannot join the table — it is any invalid
+argument — so ``cli._refused_name_template`` reads the *name*: a part longer than any disk
+holds, or a character Windows refuses. The ``*-windows`` rows give each shape its
+``winerror`` by hand, so they hold on every platform; ``invalid-argument`` is the negative case,
+an ``EINVAL`` whose name shows nothing, which keeps its traceback.
+
 **Numbers, unhelpful messages and leftovers (#33 sections C–E).** ``click``'s ``float`` took
 ``nan`` and ``inf`` straight to ``round(seconds * 1e9)``; every float option now takes its type
 from ``detail/cli_numbers.py`` (scanned by ``tests/storage/test_user_file_readers.py``). A
@@ -110,6 +122,53 @@ NAMED_OS = {
     ),
 }
 
+
+def _from_windows(exc: OSError, winerror: int) -> OSError:
+    """``exc`` as Windows raises it, on any platform: CPython sets ``winerror`` only there."""
+    exc.winerror = winerror
+    return exc
+
+
+_TOO_LONG = (
+    f"Error: a file or folder name is too long for this disk: /w/{'x' * 300}. Use a "
+    "shorter name"
+)
+_REFUSED = (
+    "Error: the disk does not accept this file or folder name: /w/a?b. Choose another "
+    'name, without any of < > : " | ? *'
+)
+
+#: The same two mistakes as Windows reports them, none under ``ENAMETOOLONG`` (#67): measured
+#: there, ``mkdir`` raises ``EINVAL`` with ``ERROR_INVALID_NAME`` (123) for a name too long and
+#: for one holding a ``?`` alike, ``open`` raises a bare ``EINVAL`` for both, and a whole path
+#: too long (long paths off) is ``ERROR_FILENAME_EXCED_RANGE`` (206), a ``FileNotFoundError``.
+NAMED_OS |= {
+    "too-long-mkdir-windows": (
+        _from_windows(
+            OSError(errno.EINVAL, "syntax is incorrect", "/w/" + "x" * 300), 123
+        ),
+        _TOO_LONG,
+    ),
+    "too-long-open-windows": (
+        OSError(errno.EINVAL, "Invalid argument", "/w/" + "x" * 300),
+        _TOO_LONG,
+    ),
+    "path-too-long-windows": (
+        _from_windows(
+            FileNotFoundError(errno.ENOENT, "filename too long", "/w/" + "x" * 300), 206
+        ),
+        _TOO_LONG,
+    ),
+    "refused-name-mkdir-windows": (
+        _from_windows(OSError(errno.EINVAL, "syntax is incorrect", "/w/a?b"), 123),
+        _REFUSED,
+    ),
+    "refused-name-open-windows": (
+        OSError(errno.EINVAL, "Invalid argument", "/w/a?b"),
+        _REFUSED,
+    ),
+}
+
 #: Raised by a stub command; the root must let each through, traceback and all.
 EXCLUDED = {
     "value": ValueError("a bug that happens to be a ValueError"),
@@ -121,6 +180,8 @@ EXCLUDED = {
     # A file DETAIL expected to find is a bug at the site that should have checked.
     "not-found": FileNotFoundError(errno.ENOENT, "No such file", "/w/part_001.mp4"),
     "io": OSError(errno.EIO, "Input/output error", "/w/a.zarr"),
+    # EINVAL is any invalid argument: only a name that shows why makes it the user's.
+    "invalid-argument": OSError(errno.EINVAL, "Invalid argument", "/w/a.zarr"),
 }
 
 
@@ -570,6 +631,13 @@ def test_finding_14_and_22_a_name_too_long_for_the_disk(tmp_path):
     name = "x" * 300
     result = _invoke("experiment", "create", name, "--dir", tmp_path)
     _clean_error(result, "a file or folder name is too long for this disk", name)
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Linux and macOS disks take a ?")
+def test_a_name_with_a_character_the_disk_refuses(tmp_path):
+    result = _invoke("experiment", "create", "a?b", "--dir", tmp_path)
+    _clean_error(result, "the disk does not accept this file or folder name", "a?b")
     assert list(tmp_path.iterdir()) == []
 
 
