@@ -7638,18 +7638,41 @@ def measures_export(
     click.echo(f"wrote {out}")
 
 
-def _refuse_unanswered_unit(experiment, group_by: list, recordings: list) -> None:
+def _refuse_unanswered_unit(
+    experiment,
+    group_by: list,
+    recordings: list,
+    *,
+    source_run_id: str,
+    source: str,
+    snapshot: str | None,
+) -> None:
     """Raise unless the cohort has no repeats — and name the column when it does.
 
     The GUI infers the same column and pre-selects it (`analysis/cohort.py`); the CLI cannot
     pre-select anything, so it names it in the refusal. Surface parity is the point: a user who
     reads "pass a column" and does not know *which* column is left where the GUI's first version
     left everyone.
+
+    The cohort is the recordings the run covers (`source_recordings`), not the experiment's:
+    over a run that covered one session per animal, counting every recording demanded an
+    answer to a question the comparison does not have. A run that cannot offer the source is
+    left to refuse itself, in its own words.
     """
     from detail.analysis import cohort
+    from detail.api.comparison import ComparisonRunError, source_recordings
 
     metadata = experiment.recording_metadata
-    ids = recordings or [r.id for r in experiment.recordings]
+    ids = recordings
+    if not ids:
+        try:
+            ids = source_recordings(
+                experiment, source_run_id, source=source, snapshot=snapshot
+            )
+        except ComparisonRunError:
+            return
+        if not ids:
+            return
     subject = cohort.infer_subject_column(metadata, ids, group_by=group_by)
     if subject is None:
         return  # nothing repeats: `[]` is the only answer, and it is the one taken
@@ -7882,7 +7905,14 @@ def comparison_run(
     """
     proj = _open_experiment(experiment_dir)
     if not aggregate_to:
-        _refuse_unanswered_unit(proj, list(group_by or ()), list(recordings or ()))
+        _refuse_unanswered_unit(
+            proj,
+            list(group_by or ()),
+            list(recordings or ()),
+            source_run_id=source_run_id,
+            source=source,
+            snapshot=source_snapshot,
+        )
     path = [] if tuple(aggregate_to) == ("none",) else list(aggregate_to)
     if levels and len(levels) != 2:
         raise click.UsageError(

@@ -1358,7 +1358,8 @@ the recordings by a column of `metadata.csv`, and report how the groups differ.
   answers and the output looks identical either way, so the CLI refuses rather than choosing, and
   the refusal names the column it found and how many recordings it covers, so you know which one to
   pass. When no animal contributed more than one recording there is nothing to decide, and the
-  command runs with one observation per recording. It is recorded on every row of `stats.csv` and
+  command runs with one observation per recording. The recordings counted are the ones the source
+  run covers (or `--recording`'s, when you name them), not every recording in the experiment. It is recorded on every row of `stats.csv` and
   in `summary.md`.
 
   `--measure` defaults to every measure the source run can answer: one that needs something

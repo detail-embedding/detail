@@ -879,6 +879,19 @@ def write_stream_csv(
     return path
 
 
+def covered_recording_ids(run_dir: Path | str) -> list[str]:
+    """The recordings the artifact at ``run_dir`` covers, in ``coverage.csv``'s order.
+
+    Read from ``coverage.csv`` alone: a surface describing what a comparison will compare asks
+    this before the run, and the instance table grows with the run.
+
+    Raises:
+        ValueError: ``coverage.csv`` is missing a required column.
+    """
+    rows = _read_rows(Path(run_dir) / COVERAGE_FILENAME, _COVERAGE_REQUIRED)
+    return list(dict.fromkeys(row["recording_id"] for row in rows))
+
+
 def has_behavior_output(run_dir: Path | str) -> bool:
     """Whether an analysis run directory carries the artifact."""
     return (Path(run_dir) / MANIFEST_FILENAME).is_file()

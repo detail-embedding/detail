@@ -512,6 +512,29 @@ def test_a_labels_comparison_prints_what_it_is_not_independent_of(
     assert "screened=climb" in listed.output
 
 
+def test_the_unit_question_counts_the_recordings_the_run_covers(tmp_path):
+    """One recording per animal in the run; the experiment holds a second recording of one
+    of them that the run never analyzed. Nothing repeats among what is compared, so there is
+    no question to ask, and asking it from the experiment's count was the bug."""
+    from detail.storage import metadata as md
+
+    one_each = {
+        f"r{a}": ({"animal": a, "drug": drug}, 3 + i)
+        for i, (a, drug) in enumerate(
+            [("A", "veh"), ("B", "fent"), ("C", "veh"), ("D", "fent")]
+        )
+    }
+    exp = _cohort(tmp_path, one_each)
+    exp.create_recording("outside")
+    md.upsert_row(exp.dir, "outside", {"animal": "A", "drug": "fent"})
+    result = _run(
+        "comparison", "run", "--experiment", str(exp.dir), "--source-run", "an_01",
+        "--group-by", "drug", "--measure", "n_instances",
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    assert "one observation is: (one per recording)" in result.output
+
+
 def test_run_says_which_recordings_were_left_out(tmp_path):
     from tests.api.test_comparison import DOSES
 

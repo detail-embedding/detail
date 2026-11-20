@@ -25,8 +25,6 @@ also use, so a live screen and the saved comparison cannot disagree.
 
 import hashlib
 import json
-import hashlib
-import json
 import math
 from collections.abc import Callable
 from collections.abc import Sequence
@@ -45,6 +43,7 @@ from detail.storage import behavior_output
 from detail.storage import comparisons as comparisons_store
 from detail.storage import experiment as experiment_store
 from detail.storage import metadata as metadata_store
+from detail.storage import node_cache as node_cache_store
 from detail.storage import snapshots as snapshots_store
 
 if (
@@ -220,6 +219,61 @@ def _location_run(experiment_dir: Path, source_run_id: str) -> tuple[Path, dict]
             "reads a finished run"
         )
     return run_dir, record
+
+
+def _finished_recordings(run_record: dict) -> list[str]:
+    """The recordings a location-export run finished: what a locations comparison covers."""
+    return [
+        recording_id
+        for recording_id, state in (run_record.get("per_recording") or {}).items()
+        if (state or {}).get("status") == "complete"
+    ]
+
+
+def source_recordings(
+    experiment,
+    source_run_id: str,
+    *,
+    source: str = "labels",
+    snapshot: str | None = None,
+) -> list[str]:
+    """The recordings a comparison of ``source`` over ``source_run_id`` covers, before any
+    ``recordings`` filter: the rule :func:`prepare_comparison` applies, without measuring.
+
+    A behavior artifact covers the recordings in its ``coverage.csv`` (the snapshot's, when one
+    is named), a node cache the recordings it was built over, and a location export the
+    recordings it finished. A surface describing the cohort before a run asks this, so what it
+    shows is what the run will compare: the launch dialog described every recording in the
+    experiment, and over a run that covered some of them offered columns, values and animals
+    the run never saw.
+
+    Raises:
+        ComparisonRunError: The run cannot offer ``source``: no behavior artifact, no such
+            snapshot, no node cache, or not a finished location export.
+        ValueError: ``source`` is not one a comparison has.
+    """
+    experiment_dir = Path(experiment.dir)
+    if source == "labels":
+        run_dir = _artifact_dir(experiment_dir, source_run_id)
+        if snapshot:
+            run_dir = snapshots_store.snapshot_dir(run_dir, snapshot)
+            if not behavior_output.has_behavior_output(run_dir):
+                raise ComparisonRunError(
+                    f"run {source_run_id!r} has no snapshot {snapshot!r}"
+                )
+        return behavior_output.covered_recording_ids(run_dir)
+    if source == "nodes":
+        run_dir = analysis_store.analysis_dir(experiment_dir, source_run_id)
+        try:
+            return list(node_cache_store.read_recording_ids(run_dir))
+        except (FileNotFoundError, ValueError) as error:
+            raise ComparisonRunError(
+                f"run {source_run_id!r} has no node cache this build can read: {error}"
+            ) from error
+    if source == "locations":
+        _, record = _location_run(experiment_dir, source_run_id)
+        return _finished_recordings(record)
+    raise ValueError(f"a comparison has no source {source!r}")
 
 
 def location_source_hash(run_dir: Path, recording_ids: Sequence[str]) -> str:
@@ -537,12 +591,7 @@ def prepare_comparison(
         run_dir, run_record = _location_run(experiment_dir, cfg.source_run_id)
         snapshot_id = None
         report("loading", 0.0, cfg.source_run_id)
-        finished = [
-            recording_id
-            for recording_id, state in (run_record.get("per_recording") or {}).items()
-            if (state or {}).get("status") == "complete"
-        ]
-        covered = _check_filter(cfg, finished)
+        covered = _check_filter(cfg, _finished_recordings(run_record))
         report("measuring", 0.0, f"{len(covered)} recording(s)")
         try:
             rows = location_measures.location_rows(

@@ -90,6 +90,7 @@ from detail.gui.pages import (
 )
 from detail.gui.recording_items import (
     fill_recording_list,
+    offer_recordings,
     select_recording_ids,
     selected_recording_ids,
 )
@@ -285,6 +286,8 @@ class ComparisonLaunchDialog(Dialog):
         self._worker: StageProgressWorker | None = None
         self._metadata = experiment.recording_metadata
         self._subject_column: str | None = None
+        #: ``{(run, source, snapshot): recordings it covers, or None}``, read once per choice.
+        self._covered_by: dict[tuple, list[str] | None] = {}
 
         layout = self.body()
         form = ConfigForm(layout)
@@ -393,7 +396,7 @@ class ComparisonLaunchDialog(Dialog):
         )
         fill_recording_list(self._recordings, list(experiment.recordings))
         fit_list_height(self._recordings)
-        self._recordings.itemSelectionChanged.connect(self._refresh)
+        self._recordings.itemSelectionChanged.connect(self._on_recordings_changed)
         form.addRow(
             label_with(
                 "Recordings (all if none):", help_button("comparison-recordings")
@@ -404,6 +407,8 @@ class ComparisonLaunchDialog(Dialog):
 
         self._snapshot = QComboBox()
         self._fill_snapshots()
+        # A snapshot is a frozen copy of the artifact, and may cover other recordings.
+        self._snapshot.currentIndexChanged.connect(lambda *_: self._sync_cohort())
         form.addRow(
             label_with("Read snapshot:", help_button("comparison-snapshot")),
             self._snapshot,
@@ -522,9 +527,8 @@ class ComparisonLaunchDialog(Dialog):
         self._buttons.rejected.connect(self.reject)
 
         self._sync_window_fields(self._windows.currentText())
-        self._fill_group_by()
         self._sync_measure_source()
-        self._refresh()
+        self._sync_cohort()
         form.finish()
         if seed:
             self._apply_seed(seed)
@@ -536,6 +540,49 @@ class ComparisonLaunchDialog(Dialog):
         self._fill_snapshots()
         self._sync_measure_source()
         self._fill_measures()
+        self._sync_cohort()
+
+    def _covered_recordings(self) -> list[str] | None:
+        """The recordings the chosen run covers for the chosen measure, or ``None`` when that
+        cannot be read (the run then refuses in its own words).
+
+        The rule the run applies (``api.comparison.source_recordings``), asked here so every
+        preview below counts the recordings the run will compare. Read once per choice: a
+        coverage table, a run record or a node cache's id list, one small read each.
+        """
+        run_id = self.source_run_id()
+        if not run_id:
+            return None
+        source = self.measure_source()
+        snapshot = self._snapshot.currentData() if source == "labels" else None
+        key = (run_id, source, snapshot)
+        if key not in self._covered_by:
+            from detail.api.comparison import source_recordings
+
+            try:
+                self._covered_by[key] = source_recordings(
+                    self._experiment, run_id, source=source, snapshot=snapshot
+                )
+            except (OSError, ValueError):
+                self._covered_by[key] = None
+        return self._covered_by[key]
+
+    def _sync_cohort(self) -> None:
+        """Offer only the recordings the chosen run covers, then describe every column over
+        them: what *Compare across* and *Average within* list, and the counts beside them.
+        """
+        self._recordings.blockSignals(True)
+        offer_recordings(
+            self._recordings,
+            self._covered_recordings(),
+            f"not in {self.source_run_id()}",
+        )
+        self._recordings.blockSignals(False)
+        self._on_recordings_changed()
+
+    def _on_recordings_changed(self) -> None:
+        self._fill_group_by()
+        self._refresh()
 
     def _on_measure_source_changed(self) -> None:
         self._fill_measures()
@@ -565,7 +612,9 @@ class ComparisonLaunchDialog(Dialog):
                 else ""
             )
         )
-        self._refresh()
+        # The same run covers other recordings under another measure: a clustering run's
+        # node cache, say, against its labelled artifact.
+        self._sync_cohort()
 
     def measure_source(self) -> str:
         return self._measure_source.currentData() or "labels"
@@ -632,6 +681,9 @@ class ComparisonLaunchDialog(Dialog):
         from detail.storage import snapshots as snapshots_store
 
         wanted = self._snapshot.currentData() if self._snapshot.count() else None
+        # Quiet while it is rebuilt: each step would re-read the cohort of a half-chosen
+        # source. The caller syncs it once, after.
+        self._snapshot.blockSignals(True)
         self._snapshot.clear()
         self._snapshot.addItem("Current artifact", None)
         run_id = self.source_run_id()
@@ -641,6 +693,7 @@ class ComparisonLaunchDialog(Dialog):
                 self._snapshot.addItem(snapshot_id, snapshot_id)
         index = self._snapshot.findData(wanted)
         self._snapshot.setCurrentIndex(max(index, 0))
+        self._snapshot.blockSignals(False)
 
     def _apply_seed(self, seed: dict) -> None:
         """Pre-fill from a saved comparison's record — "same source, different grouping" is the
@@ -769,8 +822,19 @@ class ComparisonLaunchDialog(Dialog):
 
     # -- what is in each column ------------------------------------------------ #
     def _selected_recordings(self) -> list[str]:
-        return selected_recording_ids(self._recordings) or [
-            r.id for r in self._experiment.recordings
+        """The recordings the comparison will compare: those ticked, else every one the chosen
+        run covers. Every preview on this form is described over these."""
+        covered = self._covered_recordings()
+        if covered is None:
+            covered = self._recordings_all()
+        chosen = set(selected_recording_ids(self._recordings))
+        return [r for r in covered if r in chosen] or list(covered)
+
+    def _recordings_all(self) -> list[str]:
+        """Every recording in the experiment, as the recordings list holds them."""
+        return [
+            self._recordings.item(row).data(Qt.ItemDataRole.UserRole)
+            for row in range(self._recordings.count())
         ]
 
     def _fill_group_by(self) -> None:
@@ -782,23 +846,31 @@ class ComparisonLaunchDialog(Dialog):
         it says so.
         """
         recordings = self._selected_recordings()
-        self._group_by.blockSignals(True)
-        self._group_by.clear()
         columns = [c for c in self._columns if c not in _ROW_KEYS]
+        offered = []
         for summary in cohort.describe_columns(self._metadata, recordings, columns):
             refusal = summary.usable_for_grouping
             text = f"{summary.name}   —   {refusal or summary.describe()}"
-            item = _checkable(text, data=summary.name)
-            if refusal:
-                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
-            self._group_by.addItem(item)
+            offered.append((summary.name, text, bool(refusal)))
         # The row keys come off the measures table, which does not exist until the run — so
         # there is nothing to describe and nothing to refuse. Saying where they come from beats
         # `describe_columns` reporting them, correctly but uselessly, as "no values recorded".
         for name in _ROW_KEYS:
-            self._group_by.addItem(
-                _checkable(f"{name}   —   {_ROW_KEY_NOTE[name]}", data=name)
-            )
+            offered.append((name, f"{name}   —   {_ROW_KEY_NOTE[name]}", False))
+        if [(name, text) for name, text, _ in offered] == _offered(self._group_by):
+            return
+        # Re-described when the recordings change (another run, another selection), keeping
+        # what was ticked where it can still be: a column that now holds one value is greyed
+        # and comes back unticked.
+        already = set(_checked(self._group_by))
+        self._group_by.blockSignals(True)
+        self._group_by.clear()
+        for name, text, refused in offered:
+            item = _checkable(text, data=name)
+            if refused:
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+            self._group_by.addItem(item)
+        _set_checked(self._group_by, already)
         self._group_by.blockSignals(False)
         fit_list_height(self._group_by)
 
@@ -853,6 +925,11 @@ class ComparisonLaunchDialog(Dialog):
             return (
                 "Nothing to compare yet — run a behavior scan, a clustering or a location "
                 "export first."
+            )
+        if self._covered_recordings() == []:
+            return (
+                f"{self.source_run_id()} has not finished a recording yet, so there is "
+                "nothing in it to compare."
             )
         if not _checked(self._group_by):
             return "Pick at least one column to compare across."
@@ -1097,6 +1174,13 @@ class ComparisonLaunchDialog(Dialog):
             recordings = recordings[: sum(g.n_recordings for g in groups)]
         head = f"{len(groups)} group(s) over {len(recordings)} recording(s):"
         lines = []
+        covered = self._covered_recordings()
+        total = len(self._recordings_all())
+        if covered is not None and len(covered) < total:
+            lines.append(
+                f"    {self.source_run_id()} covers {len(covered)} of this experiment's "
+                f"{total} recordings; only those can be compared."
+            )
         for group in groups:
             bit = f"    {group.label} — {group.n_recordings} recording(s)"
             if group.n_subjects is not None:

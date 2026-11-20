@@ -16,6 +16,8 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QListWidget, QListWidgetItem
 
 _ID_ROLE = Qt.ItemDataRole.UserRole
+#: The name the row was filled with, so a note added after it can be taken off again.
+_NAME_ROLE = Qt.ItemDataRole.UserRole + 1
 
 
 def fill_recording_list(listwidget: QListWidget, recordings) -> None:
@@ -24,6 +26,28 @@ def fill_recording_list(listwidget: QListWidget, recordings) -> None:
     for recording in recordings:
         item = QListWidgetItem(recording.name, listwidget)
         item.setData(_ID_ROLE, recording.id)
+        item.setData(_NAME_ROLE, recording.name)
+
+
+def offer_recordings(listwidget: QListWidget, offered, note: str) -> None:
+    """Grey the rows whose id is not in ``offered``, ``note`` after the name, and unselect
+    them; ``None`` offers every row again.
+
+    For a picker whose choices depend on another choice, such as the recordings a chosen run
+    covers. Greyed rather than hidden, so a recording missing from the run reads as missing
+    rather than as forgotten.
+    """
+    keep = None if offered is None else set(offered)
+    for row in range(listwidget.count()):
+        item = listwidget.item(row)
+        name = item.data(_NAME_ROLE) or item.text()
+        if keep is None or item.data(_ID_ROLE) in keep:
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEnabled)
+            item.setText(name)
+        else:
+            item.setSelected(False)
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+            item.setText(f"{name}   ({note})")
 
 
 def select_recording_ids(listwidget: QListWidget, recording_ids) -> None:
