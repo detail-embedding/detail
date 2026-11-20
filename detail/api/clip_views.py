@@ -31,7 +31,6 @@ import threading
 
 import cv2
 import numpy as np
-import yaml
 
 from detail.analysis import body_axis
 from detail.analysis.body_axis import BodyAxis
@@ -43,7 +42,6 @@ from detail.api.animation import (
     sample_offsets_ns,
     write_animation,
 )
-from detail.core import atomic
 from detail.core import visualize
 from detail.core.dataclasses import Detection
 from detail.core.errors import UserInputError
@@ -784,16 +782,15 @@ class ClipPoints:
         from detail.analysis.body_axis import SOURCE_NONE
         from detail.executor import rundir
         from detail.pipeline.embedding import headings_for_run
+        from detail.storage.user_yaml import read_user_yaml
 
         recording_dir, tracking_run_id, settings = self._mirror
         # A heading's angle is the same at any scale of the frame, so the recording's own
         # size serves; the masks' size is read only when the recording records none.
         mask_w, mask_h = self.frame_wh
         if min(self.frame_wh) <= 0:
-            track_meta = yaml.safe_load(
-                atomic.read_text(
-                    recording_dir / "tracking" / tracking_run_id / "track.yaml"
-                )
+            track_meta = read_user_yaml(
+                recording_dir / "tracking" / tracking_run_id / "track.yaml"
             )
             detection_dir = (
                 recording_dir / "detections" / track_meta["detection_run_id"]
