@@ -60,6 +60,7 @@ import errno
 import io
 import itertools
 import os
+import pathlib
 import stat
 import sys
 import tarfile
@@ -98,12 +99,14 @@ NAMED_OS = {
         "Error: permission denied for /ro/exp/metadata.csv. Check that you can write to "
         "that folder, or choose another one",
     ),
+    # The folder is a ``Path`` the boundary builds, so it prints with this platform's
+    # separators (``\ro\exp`` on Windows); the other rows print the name as the error gave it.
     "permission-tmp": (
         PermissionError(
             errno.EACCES, "Permission denied", "/ro/exp/config.yaml.123.ab12cd34.tmp"
         ),
-        "Error: permission denied for /ro/exp. Check that you can write to that folder, "
-        "or choose another one",
+        f"Error: permission denied for {pathlib.Path('/ro/exp')}. Check that you can write "
+        "to that folder, or choose another one",
     ),
     "read-only": (
         OSError(errno.EROFS, "Read-only file system", "/mnt/share/exp/config.yaml"),
