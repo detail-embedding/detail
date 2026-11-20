@@ -1259,14 +1259,16 @@ The instance table is not copied here: the run already writes `instances.csv` in
 `analysis/<an_NN>/`.
 
 ### `comparison`
-Group statistics across recording metadata: take a behavior result, split the recordings by a
-column of `metadata.csv`, and report how the groups differ.
+Group statistics across recording metadata: take a behavior result or a location export, split
+the recordings by a column of `metadata.csv`, and report how the groups differ.
 
-- `run --experiment <dir> --source-run <an_NN> [--snapshot <snap_NN>] [--source labels|nodes] --group-by <column> --aggregate-to <column|none>
+- `run --experiment <dir> --source-run <an_NN> [--snapshot <snap_NN>] [--source labels|nodes|locations] --group-by <column> --aggregate-to <column|none>
   [--level <value> --level <value>] [--measure <name> …] [--recording <id> …] [--windows whole|absolute|normalized|sliding]
   [--every <seconds>] [--parts N] [--length <seconds>] [--step <seconds>] [--draws N] [--seed N]
   [--presence-s <seconds>] [--pseudo-count-s <seconds>] [--min-units-fraction <share>] [--no-suppress-nesting]
-  [--statistic moderated_t|effect]`: measure each unit, group them, and
+  [--statistic moderated_t|effect] [--location-sample-fps <n> | --location-every-row]
+  [--location-smooth-s <seconds>] [--location-moving-threshold <cm/s>]
+  [--location-jump-speed <body lengths/s>]`: measure each unit, group them, and
   save the result to `comparisons/<cmp_NN>/`. Prints the `cmp_NN`, the design it resolved and
   what the ranking scores by. A recording whose video is not on this machine (a slim import,
   an unplugged drive) is measured all the same; the record notes the video as missing.
@@ -1284,6 +1286,20 @@ column of `metadata.csv`, and report how the groups differ.
   at some level), need that in `--min-units-fraction` of the cohort (default half) for an effect
   to be defined, and add `--pseudo-count-s` of time to both sides of a ratio so a behavior absent
   at one level has a finite one.
+
+  **Movement and body shape.** `--source locations` with `--source-run` naming a
+  location-export run compares distance travelled, time moving, speed when moving, and the
+  body's length, width, length-to-width ratio and area (`--measure` takes their ids:
+  `distance`, `time_moving`, `speed_moving`, `body_length`, `body_width`, `body_elongation`,
+  `body_area`). The run must have measured the body, on calibrated recordings; export it
+  with `--remove-thin-parts` for rats and mice. Each measure is tested on its own and the
+  result is ordered by that test's p, smallest first, with the false-discovery rate over the
+  measures beside it: these are a handful of measures in different units, and one floor
+  shared between them would belong to the noisiest. At least 10,000 shuffles are drawn
+  whatever `--draws` says. The four `--location-…` options say how the run is read: how many
+  rows a second (5), how long the path is smoothed over (1 s), the speed that counts as
+  moving (2 cm/s), and the speed above which a step is a tracking jump (7.5 body lengths a
+  second). `--snapshot` does not apply.
 
   **A within-unit ranking scores by agreement, not by size.** By default (`--statistic
   moderated_t`) each measure is ranked, and the floor taken, on its moderated t: the mean

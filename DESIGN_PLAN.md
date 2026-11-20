@@ -57,7 +57,7 @@ This document is the approved design for the DETAIL infrastructure redesign. Com
 | Authored Runs (§21) | **Built.** `api/authored_run.py` carries the contract — open vs partial, one writer, `finalize()` / `reopen()`, refuse-if-finalized, reproject-on-edit. `mutable` is declared on `AnalysisModule` so the API and CLI know it as well as the GUI; two modules set it (`query`, `temporal_clustering`). Of the shared pieces recorded as extraction targets, the run handle base `AuthoredRun` was extracted; `Experiment.run_authored` and a shared `MutableRunWorkspace` were not (each module keeps its own launch path and workspace). |
 | Behavior Discovery (§22) | **Temporal built** — `pipeline/temporal_clustering.py`, the `cluster_methods/` registry, CLI `analysis temporal-clustering` / `temporal-interpret`, and the INTERPRET workspace; it emits the §19 artifact. The pose half of this section is design, not built: its protocol and an empty method registry (`POSE_CLUSTER_METHODS`) are in the tree, and no pose clustering module is registered. **Node-centric interpretation built** (labels on tree nodes, no granularity, the node cache listing every node's clips with their typicality and a rebuild, the icicle shaded by the cluster-view filters, the label bar, and a live montage of every clip from the preview cache). Labels are stored things with ids (one label across several clusters, the parent rule, rename and merge). AUDIT is a list of labels and clusters beside a review pane, with the figures in INTERPRET's label bar (§19, §22); on a temporal run every clip of a cluster is reviewed, the wrong ones marked (removed or moved, `clip_edits`, faded in place on INTERPRET too) and the finish recorded as a census (`clip_review.csv`, `finish_review`) that gives the cluster's exact precision, built; and BROWSE is the labelled-data browser (filters, ethogram, list). Not yet built from §22's text: the descriptor histograms behind *Measurements that set it apart*, arena-normalized maps, BROWSE's location filter, and re-attaching audit answers after a branch is sub-labelled. |
 | Measures (§23) | **Built, on all three surfaces** — `analysis/measures.py` (eleven measures, each declaring how it meets a window boundary and what unit its value carries) and `analysis/windows.py` (whole / absolute / normalized / sliding, the model in `configs/windows.py`). Pure windowed queries over the §19 artifact; a windowed denominator needs the frame view's observed mask, which every producer now writes. `noise_time` is deliberately absent (see *The measures*). Reachable as `Experiment.measures(run_id)`, as `detail measures export` / `list`, and as the Measures panel on an analysis run's page. |
-| Comparison (§24) | **Built, on all three surfaces** — `analysis/compare.py`, `analysis/comparison_report.py`, `analysis/node_measures.py`, `configs/comparison.py`, `storage/comparisons.py`, `api/comparison.py`, CLI `comparison run` / `export` / `list` / `delete`. Descriptive only, saved with its outputs; the aggregation path is declared, never defaulted, the design (between / paired / trend / profile) is resolved from the chosen column and recorded, the node source screens a clustering run's unlabelled nodes, and every ranking ships with its permutation floor. The GUI section is **static by design**: a saved comparison holds its outputs; the live screen over a clustering run's clusters is INTERPRET's Differences line (§22), which reads a saved node comparison back. |
+| Comparison (§24) | **Built, on all three surfaces** — `analysis/compare.py`, `analysis/comparison_report.py`, `analysis/node_measures.py`, `configs/comparison.py`, `storage/comparisons.py`, `api/comparison.py`, CLI `comparison run` / `export` / `list` / `delete`. Descriptive only, saved with its outputs; the aggregation path is declared, never defaulted, the design (between / paired / trend / profile) is resolved from the chosen column and recorded, the node source screens a clustering run's unlabelled nodes, and every ranking ships with its permutation floor. The locations source compares distance, time moving, speed and body shape read from a location-export run, each measure by its own test. The GUI section is **static by design**: a saved comparison holds its outputs; the live screen over a clustering run's clusters is INTERPRET's Differences line (§22), which reads a saved node comparison back. |
 | Surface Visibility (§25) | **Built** (#203) — `detail/surfaces.py`, sections declared once in `gui/sections.py`, fifteen enumeration points, `DETAIL_SHOW_ALL` escape hatch. Nothing is hidden: the capabilities it hid were removed from the tree on 2026-11-10; the mechanism stays. Nothing is staged. This sentence is a copy of `surfaces.HIDDEN` and had already drifted once, so `tests/test_surfaces.py` now checks it against the table. Hiding a *module or method* still needs the docs generator and the static `mkdocs.yml` nav taught about it. |
 | Keypoints (§26) | **Built; audit not kept** — spec rewritten 2026-10-07 from the keypoints review, replacing the integration branch `keypoints` (#626) rather than merging it: `dinov3_match` on a shared patch-matching engine plus a distilled YOLO-pose student; two stages, `keypoint_detect → keypoint_track`; alignment is §14's, distill §12's, the shared model layer §5's. Every planned piece landed except the audit, which was parked by the user (2026-10-09) and its API and CLI later removed, so the verdict reads built without it; the detect form's *Test keypoints* (no cut-off field, by the user's decision) has landed too. **The 2026-10-21 revision is built:** detect stores unassigned instances per part on a detection run (`keypoint_detect`'s `upstream` is `"detection"`); keypoint track assigns them to a tracking run's subjects by mask (`pipeline/pose_match.py`; §26 *Assignment*). |
 | Tools (§27) | **Built** — the `Tool` protocol, the `TOOLS` registry, `storage/tool_runs.py` (machine-global `tools/<tool_id>/run_NNN/tool.yaml`), `api/tools.py`, the GUI's Quick tools mode, and CLI `detail tools`. One tool is registered: Quick segment. Each tool's CLI command is hand-written. |
@@ -9082,8 +9082,10 @@ declared rather than raised from inside the computation.
 
 ### Deferred
 
-- **Continuous per-frame values** — a kinematic readout, a regressor's output. Measures over those
-  (mean speed during rearing, say) need the second artifact shape §19 defers.
+- **Continuous per-frame values conditioned on a behavior** — mean speed during rearing, a
+  regressor's output within a bout. Those need the second artifact shape §19 defers. What a
+  location-export run already holds per frame is measured per recording by §24's *locations
+  source*: distance, time moving, speed and body shape need no behavior to be defined.
 - **The stream join** that makes event-referenced windows real. The window model accommodates it;
   the join is its own work.
 - **Cross-artifact measures.** Comparing labels from two different producing runs needs the naming
@@ -9398,6 +9400,78 @@ nobody asked for, so for the node source the per-measurement tables and figures 
 nodes and the first ten below the floor after suppression; `ranking.csv` carries every candidate
 with its effect, floor and verdict, and `stats.csv` every observation, so nothing is lost by it.
 
+### The locations source
+
+A behavior artifact says *what* an animal did; a location-export run (§16) says where its body
+was and what shape it had, a row per frame. `source: locations` turns one finished
+location-export run into one value per recording, track and window for each measure below, in
+`measures.COLUMNS`' own schema with an empty `label`, so `observations`, the designs, the
+tables and the per-measure figures consume them unchanged. Nothing is re-measured from masks: a
+comparison stays seconds, and the per-frame values are the run's
+(`analysis/location_measures.py`).
+
+| measure | definition | unit |
+|---|---|---|
+| `distance` | length of the smoothed path of the body's centre, within unbroken stretches of tracking | m |
+| `time_moving` | share of path time faster than `location_moving_threshold` | fraction |
+| `speed_moving` | mean speed over that time; no value for an animal that never moved | cm/s |
+| `body_length`, `body_width` | median of the run's per-frame length and width | mm |
+| `body_elongation` | median of length ÷ width, frame by frame | ratio |
+| `body_area` | median area of the body | cm² |
+
+A unit is never `""`: the report reads that as a count, whose pseudo-count is one bout. A
+ratio's unit is named and printed as nothing.
+
+Four settings, config fields like any other and written to the record: `location_sample_fps`
+(the run's rows are thinned to at most this many a second by the export's own rule, default
+5, so runs exported at different rates are measured alike; a run exported slower is read as it
+is), `location_smooth_s` (1 s), `location_moving_threshold` (2 cm/s) and
+`location_jump_speed` (7.5 body lengths per second). The rules they implement, each from a
+failure on real recordings (detail#70):
+
+- **A raw centre path over-counts**, so it is a running mean before it is measured.
+- **A gap or a jump is not movement**: the path breaks at a gap in tracking and at a raw step
+  faster than the jump speed, and nothing is joined across a break. The rule is a *speed*
+  because a length per step means a different thing at every sampling rate
+  (`tests/configs/test_unit_conventions.py` is the guard that said so).
+- **A window takes the steps that fall in it**: the path is smoothed once per track, so
+  distance over adjacent windows sums to the distance over their union.
+
+**What it needs of the run.** The body columns (§16 *The body*): a run from before them is
+refused, naming the run to make again. A distance calibration on every recording compared:
+one exported without is refused, rather than measured in pixels beside recordings measured in
+millimetres. A snapshot is refused, as it is over nodes; a finished run is never rewritten, and
+the record's `location_export` says how it was exported (`sample_fps`, `remove_thin_parts`,
+`thin_part_scale`), because whether the body has its tail changes every body measure. Drift
+reads each compared recording's manifest and the size of its table.
+
+### The verdict
+
+What an item must do to count as a finding is a property of the ranking, recorded as `verdict`
+and asked of the ranking (`Ranking.clears_floor` / `clears_at`), never worked out by a surface
+from `floor`.
+
+- **`family`** (labels, nodes): clear the floor, the 95th percentile of the largest score over
+  the whole family under the null. Right for a screen: hundreds of clusters in one unit, where
+  ranking by difference always produces a most-different one.
+- **`own`** (locations): reach its own test, `own_p ≤ 0.05`, the share of the null's draws in
+  which *this* measure differed at least as much. Right for a handful of measures a person
+  chose, in different units. One floor over a distance, a share of time and a length belongs
+  to the noisiest of them: on the cohort this was written for, every rat's body was shorter
+  under naloxone (10 of 10, by 6%) and no floor shared with a distance that halved could be
+  cleared by 6% of anything. The false-discovery rate over the family (`q`) rides beside it
+  for a reader who wants the correction.
+
+Under `own` the ranking is ordered by `own_p`, smallest first, because the sizes are not
+comparable; it ranks on the effect whatever `statistic` asked (the moderated t borrows spread
+across the family, which means nothing across units), and `ranking_statistic` says so; it
+draws at least 10,000 shuffles (`draws` is recorded as drawn), because its family is small and
+at 200 the smallest p a trend can show is 0.005; `ranking.csv` leaves `floor` blank; and no
+ranking figure is drawn, since bars of size across units against a floor nothing was judged by
+would chart the wrong question. A trend's null ranks each unit's data once rather than once
+per draw (`compare._spearman_null`), which is what makes that many draws a second and leaves
+every saved comparison's numbers exactly where they were.
+
 ### The saved comparison
 
 A comparison is a **saved object holding its outputs**, not a transient view. It is cheap to
@@ -9543,6 +9617,14 @@ names — a name can mean the same thing in two runs in a way an id never can.
 ### Deferred
 
 - **Inference.** Deliberate. `stats.csv` is the handoff.
+- **Occupancy maps** over the locations source: time per place, averaged over each group's
+  units. Not a row of `stats.csv`; it needs a frame the recordings share (a region to register
+  to, or a check that the views agree) and a figure and table of its own (detail#70).
+- **A between-unit relationship to a continuous variable.** A numeric column that is constant
+  within each unit resolves to a between design scored by its largest pairwise contrast, not to
+  a trend across units (detail#70).
+- **Region measures** from `roi_relations.csv` (time in a region, entries), and the share of a
+  recording a measure was made from as a measure of its own.
 - **Windows over the node source.** The cache's leaf runs make §23's window model applicable; a
   drug effect is time-locked and a behaviour that changes within a session is its own question.
   Whole recording first.
