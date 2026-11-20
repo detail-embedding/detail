@@ -20,11 +20,15 @@ exception handler, where it makes a first-attempt failure raise instead of retry
 import os
 import threading
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from detail.core.errors import UserInputError
 from detail.core.visualize import bgr_to_rgb
+
+if TYPE_CHECKING:
+    from ultralytics import YOLO
 
 #: What ``YOLO(path)`` raised on a file that is not an Ultralytics checkpoint, as observed with
 #: Ultralytics 8.4.215 (#33 finding 7): ``TypeError`` for an empty or cut-short file, a text or
@@ -44,7 +48,7 @@ def import_ultralytics():
     return ultralytics
 
 
-def read_checkpoint(weights_path: Path | str):
+def read_checkpoint(weights_path: Path | str) -> "YOLO":
     """The Ultralytics model in a ``.pt`` checkpoint a user hands in, for reading what it is.
 
     The one reader for a checkpoint picked for import (``model import``, the GUI's Import
