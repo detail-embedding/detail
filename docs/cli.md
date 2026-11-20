@@ -1086,9 +1086,11 @@ selection, written to `analysis/<an_NN>/`.
   footage with the animal outlined instead. `--sort random` shuffles the cluster's clips, the same
   way every time for the same node, so a montage of 25 is a fair look at a large cluster rather
   than its centre alone. `--aligned` turns each clip so the animal's body points up, frame by
-  frame, as **Aligned** does on every clip grid in the app: it needs the keypoint run the
+  frame, as **Aligned** does on every clip grid in the app; a side-view embedding (aligned by
+  `mirror`) is flipped where it flipped instead, facing right, never turned. It needs the keypoint run the
   embedding read and a heading definition, and without them every frame is drawn as recorded; a
-  frame whose body axis cannot be measured is drawn as recorded with a small *no axis* mark.
+  frame whose body axis (or, on a side view, heading) cannot be measured is drawn as recorded
+  with a small *no axis* mark.
   `--context 1` plays a second of footage either side of each clip (**Show ▾**'s context on a
   clip grid); the labels and the `--csv` list still name each clip's own span. Every cluster has clips, however small. A run fitted before the node
   cache existed has none listed until it is built: the command says so and names
