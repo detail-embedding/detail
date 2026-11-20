@@ -29,11 +29,23 @@ source could not do this: the path is built at runtime (``ANALYSIS / "zz_orphan_
 the writes the sweep for this change looked for hide behind helpers and fixtures. This file holds
 the guard's negative cases. Not covered: writes from a child process and from C code that does not
 call Python's file functions.
+
+**The guard was off on Windows, and nothing said so (#66).** It decided "inside the tree" by
+comparing strings, and the two sides are spelled by different rules: the root is pytest's
+rootdir, which keeps the working directory's spelling (a shell VS Code starts on Windows is in
+``c:\\...``), while the paths a test writes come from ``Path.resolve()``, which gives ``C:\\...``.
+No write matched, so the guard refused nothing for the whole run. Its own negative cases did
+write into the tree, and the three files they left (``detail/zz_planted`` and two others) broke
+the next run as well. ``in_tree`` now compares ``normcase(abspath(...))`` of both sides, and
+``test_the_tree_is_one_tree_however_its_drive_letter_is_spelled`` checks that with ``ntpath`` on
+every platform, since CI is Linux and Windows is the only place the spelling differs. The same
+string-prefix shape counts reads in ``tests/round_trips.py`` and is normalised the same way.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import ntpath
 import os
 import pathlib
 import sys
@@ -125,3 +137,20 @@ def test_the_predicates_read_each_event_shape():
     assert not source_tree.in_tree("/r/.pytest_cache/v/cache/lastfailed", root)
     assert not source_tree.in_tree("/r/pytest-cache-files-k2j4/README.md", root)
     assert not source_tree.in_tree("/r", root)
+
+
+@pytest.mark.parametrize("root", [r"C:\w\repo", r"c:\w\repo"])
+def test_the_tree_is_one_tree_however_its_drive_letter_is_spelled(root):
+    """Windows rules, checked on every platform: ``C:`` and ``c:`` are the same disk (#66)."""
+
+    def inside(path: str) -> bool:
+        return source_tree.in_tree(path, root, flavour=ntpath)
+
+    assert inside(r"C:\w\repo\detail\zz_planted")
+    assert inside(r"c:\w\repo\detail\zz_planted")
+    assert inside(r"C:\W\Repo\tests\zz_planted.py")
+    assert not inside(r"C:\w\repox\a.py")
+    assert not inside(r"D:\w\repo\detail\a.py")
+    assert not inside(r"C:\w\repo\.git\detail-test-runs.jsonl")
+    assert not inside(r"C:\w\repo\detail\__pycache__\a.cpython-312.pyc")
+    assert not inside(r"C:\w\repo")
