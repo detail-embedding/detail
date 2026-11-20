@@ -54,6 +54,7 @@ from PyQt6.QtWidgets import (
 
 from detail.analysis import cohort, compare, comparison_report, node_measures
 from detail.analysis import location_measures
+from detail.storage import location_export
 from detail.analysis.measures import MEASURES
 from detail.configs.comparison import ComparisonConfig
 from detail.configs.windows import WindowSpec
@@ -210,8 +211,6 @@ def _measurable_runs(experiment) -> list[str]:
     return behavior_output.discover_behavior_outputs(Path(experiment.dir))
 
 
-#: The module whose runs the locations source reads (§24 *The locations source*).
-_LOCATION_MODULE = "location_export"
 #: The config fields that say how a location-export run is read into measures.
 _LOCATION_FIELDS = (
     "location_sample_fps",
@@ -222,12 +221,13 @@ _LOCATION_FIELDS = (
 
 
 def _location_runs(experiment) -> list[str]:
-    """Finished location-export runs: what the locations source can compare."""
-    return [
-        run.id
-        for run in experiment.analysis_runs
-        if run.module_id == _LOCATION_MODULE and run.status in ("complete", "partial")
-    ]
+    """The runs that wrote location tables: what the locations source can compare.
+
+    Found by scanning for the tables, like the behavior results beside them, and not by
+    reading every run's record, which is a round trip per run on the UI thread. A run that is
+    still writing is listed too; launching over it is refused, saying it is not finished.
+    """
+    return location_export.discover_location_exports(Path(experiment.dir))
 
 
 def _comparable_runs(experiment) -> list[str]:

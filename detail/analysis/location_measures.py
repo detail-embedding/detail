@@ -31,20 +31,19 @@ millimetres.
 Pure over tables: numpy and csv only, no zarr, no Qt.
 """
 
-import csv
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-import yaml
 
 from detail.analysis import measures as measures_lib
 from detail.analysis.locations import sampled_indices
+from detail.storage import location_export
 
 NS_PER_S = 1_000_000_000
-TRACKS_FILE = "tracks.csv"
-MANIFEST_FILE = "locations.yaml"
+TRACKS_FILE = location_export.TRACKS_FILE
+MANIFEST_FILE = location_export.MANIFEST_FILE
 
 #: The columns of ``tracks.csv`` a comparison reads. All of them arrived with the body
 #: (detail#75); a run made before it has none and is refused, by name.
@@ -273,18 +272,17 @@ def window_values(
 
 
 def read_manifest(recording_dir: Path) -> dict:
-    """One recording's ``locations.yaml``.
+    """One recording's ``locations.yaml``, through the export's own reader.
 
     Raises:
         LocationSourceError: The run wrote none for this recording.
     """
-    path = Path(recording_dir) / MANIFEST_FILE
-    if not path.is_file():
+    manifest = location_export.read_location_manifest(recording_dir)
+    if manifest is None:
         raise LocationSourceError(
             f"{Path(recording_dir).name} has no {MANIFEST_FILE} in this location-export run"
         )
-    with open(path, encoding="utf-8-sig") as handle:
-        return yaml.safe_load(handle) or {}
+    return manifest
 
 
 def require_body(manifest: Mapping, recording_id: str, run_id: str) -> None:
@@ -312,28 +310,26 @@ def require_body(manifest: Mapping, recording_id: str, run_id: str) -> None:
 def read_tracks(recording_dir: Path) -> dict[str, Track]:
     """``{object_id: Track}`` from one recording's ``tracks.csv``, each in time order.
 
-    A blank cell (a frame with an empty mask has no length) reads as NaN.
+    Read through the export's own reader. A blank cell (a frame with an empty mask has no
+    length) reads as NaN.
     """
+    columns, rows = location_export.read_location_csv(Path(recording_dir) / TRACKS_FILE)
+    at = {name: index for index, name in enumerate(columns)}
     names = ("t_ns", *_BODY_COLUMNS)
-    columns: dict[str, dict[str, list[float]]] = {}
-    with open(
-        Path(recording_dir) / TRACKS_FILE, newline="", encoding="utf-8-sig"
-    ) as handle:
-        for row in csv.DictReader(handle):
-            track = columns.setdefault(row["object_id"], {name: [] for name in names})
-            for name in names:
-                cell = row[name]
-                track[name].append(float(cell) if cell != "" else np.nan)
+    picked = [at[name] for name in names]
+    subject = at["object_id"]
+    by_track: dict[str, list[list[float]]] = {}
+    for row in rows:
+        by_track.setdefault(row[subject], []).append(
+            [float(row[i]) if row[i] != "" else np.nan for i in picked]
+        )
     out = {}
-    for object_id, track in columns.items():
-        t_ns = np.asarray(track["t_ns"], dtype=np.int64)
+    for object_id, values in by_track.items():
+        table = np.asarray(values, dtype=np.float64)
+        t_ns = table[:, 0].astype(np.int64)
         order = np.argsort(t_ns, kind="stable")
         out[object_id] = Track(
-            t_ns[order],
-            *(
-                np.asarray(track[name], dtype=np.float64)[order]
-                for name in _BODY_COLUMNS
-            ),
+            t_ns[order], *(table[order, k] for k in range(1, len(names)))
         )
     return out
 
@@ -424,9 +420,7 @@ def run_fingerprint(run_dir: Path, recordings: Sequence[str]) -> dict:
         manifest = recording_dir / MANIFEST_FILE
         tracks = recording_dir / TRACKS_FILE
         out[recording_id] = {
-            "manifest": (
-                manifest.read_text(encoding="utf-8-sig") if manifest.is_file() else None
-            ),
+            "manifest": location_export.read_location_manifest(recording_dir),
             "tracks_bytes": tracks.stat().st_size if tracks.is_file() else None,
         }
     return out

@@ -72,6 +72,7 @@ YAML_ALLOWED: dict[str, tuple[int, str]] = {
     "storage/id_allocator.py": (1, f"the id high-water marks, {_RECORD}"),
     "storage/heading_definitions.py": (1, f"the experiment's own store, {_RECORD}"),
     "storage/keypoint_runs.py": (2, f"run records, {_RECORD}"),
+    "storage/location_export.py": (1, f"locations.yaml, {_RECORD}"),
     "storage/locations.py": (1, "the machine's storage.yaml, which DETAIL writes"),
     "storage/models.py": (1, f"model.yaml, {_RECORD}"),
     "storage/runs.py": (1, f"run records, {_RECORD}"),
