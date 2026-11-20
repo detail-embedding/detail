@@ -35,6 +35,16 @@ Also here, because it is the same pair of processes: ``_is_our_worker`` recognis
 whose run dir is not ASCII. That one is the text-decoding class of
 ``tests/test_encoding_guard.py`` (a subprocess decoded on the locale codec); these are its
 behaviour tests on the site where it cost something — a live worker read as "not ours".
+
+And one in this file's own fixtures: **a wait whose probe is missing on this platform, read as
+"done".** The zombie test waited for its child to exit by watching ``/proc/<pid>/stat`` and
+stopped as soon as the file was absent, and skipped the wait on Windows. macOS has no
+``/proc``, so the wait ended on its first pass with the coordinator still starting; the test
+failed every time on macOS and Windows while Linux CI stayed green (#68). The rule: a wait ends
+on its condition or fails at its deadline, and a probe it cannot ask is a failure, never a
+pass. ``_wait_for_exit_without_reaping`` asks each platform its own way (``/proc`` on Linux,
+``ps`` on macOS, ``WaitForSingleObject`` on Windows), and the
+``test_the_exit_wait_would_fail_*`` cases hold it to that.
 """
 
 import ast
@@ -314,7 +324,10 @@ def _wait_for_exit_without_reaping(pid: int, timeout_s: float) -> None:
     proc_stat = pathlib.Path(f"/proc/{pid}/stat")
     while time.monotonic() < deadline:
         if pathlib.Path("/proc/self").exists():  # Linux: a zombie is state Z in /proc
-            state = proc_stat.read_text(encoding="utf-8-sig").split()[2]
+            try:
+                state = proc_stat.read_text(encoding="utf-8-sig").split()[2]
+            except FileNotFoundError:
+                state = ""
         else:  # macOS: no /proc; ps reports a zombie as Z too
             state = subprocess.run(
                 ["ps", "-o", "stat=", "-p", str(pid)],
@@ -325,5 +338,30 @@ def _wait_for_exit_without_reaping(pid: int, timeout_s: float) -> None:
             ).stdout.strip()[:1]
         if state == "Z":
             return
+        # Gone entirely: someone else reaped it, so there is no zombie left to probe.
+        assert state, f"pid {pid} was reaped by someone else: no zombie to probe"
         time.sleep(0.05)
     raise AssertionError(f"pid {pid} still running after {timeout_s}s")
+
+
+def test_the_exit_wait_would_fail_on_a_process_still_running():
+    """The negative case for the wait above: the old one ended at once on macOS."""
+    proc = _sleeper()
+    try:
+        with pytest.raises(AssertionError, match="still running"):
+            _wait_for_exit_without_reaping(proc.pid, timeout_s=0.3)
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no zombie to reap")
+def test_the_exit_wait_would_fail_on_a_child_already_reaped():
+    """A reaped child cannot be the zombie the coordinator test needs: refuse, not pass."""
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "pass"], **local.new_process_group_kwargs()
+    )
+    pid = proc.pid
+    proc.wait()
+    with pytest.raises(AssertionError, match="reaped by someone else"):
+        _wait_for_exit_without_reaping(pid, timeout_s=1)
