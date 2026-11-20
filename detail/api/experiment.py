@@ -24,11 +24,13 @@ import yaml
 
 from detail.api import models as api_models
 from detail.api import spatial_categories
+from detail.api import tuning as tuning_api
 from detail.api._runner_modules import PIPELINE_RUNNERS as _PIPELINE_RUNNERS
 from detail.api.models import ImportedModelRef  # re-exported; machine-global (§5)
 from detail.api.recording import Recording
 from detail.configs.distill import DistillConfig
 from detail.configs.labeling import LabelingConfig
+from detail.configs.tuning import TuningConfig
 from detail.core import progress as progress_mod
 from detail.core.dataclasses import (
     ACTIVE_STATUSES,
@@ -56,6 +58,7 @@ from detail.core.dataclasses import (
 )
 from detail.core.errors import UserInputError
 from detail.core.progress import remaining_seconds
+from detail.core.protocols import ModelNotReadyError
 from detail.core.registries import TRAINERS
 from detail.models import distilled as distilled_store
 from detail.core.utils import check_cuda_indices, default_compute, utc_timestamp
@@ -99,6 +102,7 @@ from detail.storage import runs as runs_store
 from detail.storage import read_cache
 from detail.storage import recording as recording_store
 from detail.storage import stream_presets
+from detail.storage import tunings as tunings_store
 from detail.trainers import import_trainers
 
 if TYPE_CHECKING:
@@ -1024,6 +1028,12 @@ class _StageFailed(RuntimeError):
     fails the whole run with this stage's reason."""
 
 
+class _TuneFailed(_StageFailed):
+    """The optional ``tune`` stage did not complete. The model it measures is trained and
+    kept, so the run ends ``partial`` with the reason — never ``complete`` with the option
+    dropped, and never ``failed`` as if the model were lost."""
+
+
 def _prior_distill_elapsed(experiment_dir, run_id: str) -> float:
     """Seconds the previous attempt of this distill run had already been going.
 
@@ -1045,12 +1055,40 @@ DISTILL_STAGES_BY_KIND = {
     "keypoints": ("label", "train", "register"),
 }
 
+#: The progress phase each stage reports under.
+DISTILL_STAGE_PHASES = {
+    "label": "labeling",
+    "train": "training",
+    "tune": "tuning",
+    "register": "registering",
+}
+
 
 def distill_stage_names(record: dict) -> tuple[str, ...]:
     """The stages a distill record runs, in order — what cancel, resume, reconcile and the
     roll-up iterate, so a third stage is one declaration rather than four hand-written
     loops over ``("label", "train")``."""
-    return DISTILL_STAGES_BY_KIND[record.get("kind") or "detection"]
+    kind = record.get("kind") or "detection"
+    stages = DISTILL_STAGES_BY_KIND[kind]
+    if kind == "detection" and (record.get("config") or {}).get("tune"):
+        stages = (*stages, "tune")  # §12 *Tune detection and tracking settings*
+    return stages
+
+
+def distill_rollup(record: dict, stages: dict, otherwise: str) -> str:
+    """A distill's status once nothing is running: ``complete`` when its final stage is,
+    ``partial`` when only the optional ``tune`` stage fell short (the model is trained and
+    kept), else ``otherwise`` (``failed`` or ``cancelled``)."""
+    names = distill_stage_names(record)
+
+    def status(name: str) -> str | None:
+        return (stages.get(name) or {}).get("status")
+
+    if status(names[-1]) == JobStatus.COMPLETE.value:
+        return "complete"
+    if names[-1] == "tune" and status("train") == JobStatus.COMPLETE.value:
+        return "partial"
+    return otherwise
 
 
 def distill_final_stage(record: dict) -> str:
@@ -1111,12 +1149,19 @@ class DistillOrchestrator:
                 self._finalize("cancelled")
                 return
             self._train_stage(dataset_id)
+            if "tune" in self._stage_names:
+                if self._cancel_requested():
+                    self._finalize("cancelled")
+                    return
+                self._tune_stage()
             if "register" in self._stage_names:
                 if self._cancel_requested():
                     self._finalize("cancelled")
                     return
                 self._register_stage()
             self._finalize("complete")
+        except _TuneFailed as exc:
+            self._finalize("partial", str(exc))
         except _StageFailed as exc:
             self._finalize("failed", str(exc))
 
@@ -1225,6 +1270,48 @@ class DistillOrchestrator:
             raise _StageFailed(f"training {run.status}: {run.error}")
         self._set_stage("train", "complete", model_id=run.id)
 
+    def _tune_stage(self) -> None:
+        """The optional third stage of a detector distill: measure the trained model on a
+        sample of the source recordings and recommend detection and tracking settings
+        (``api/tuning.py``). It runs on the training compute, where the model is."""
+        cfg = self._config
+        model_id = (self._stages.get("train") or {}).get("model_id")
+        stage_index = self._stage_names.index("tune")
+        self._emit_fold("tuning", stage_index, 0.0, "starting tuning")
+        try:
+            run = tuning_api.launch(
+                self._experiment,
+                model_id,
+                cfg.get("source_recording_ids"),
+                sample_seconds=cfg["tune"]["sample_seconds"],
+                compute=ComputeTarget.from_dict(cfg["train_compute"]),
+                source={"kind": "distill", "distill_id": self.id},
+            )
+        except (ValueError, FileNotFoundError, ModelNotReadyError) as exc:
+            self._set_stage("tune", JobStatus.FAILED.value, model_id=model_id)
+            raise _TuneFailed(f"tuning could not start: {exc}") from exc
+        self._set_stage("tune", "running", model_id=model_id, tuning_id=run.id)
+
+        def report(ev) -> None:
+            # Detection on the sample is most of the stage; the sweep is the rest. Nominal,
+            # for the bar only — the ETA is the runner's own, for the phase it is in.
+            frac = ev.frames_done / ev.frames_total if ev.frames_total else 0.0
+            inner = 0.8 * frac if ev.phase == "detecting" else 0.8 + 0.2 * frac
+            self._emit_fold(
+                "tuning", stage_index, inner, ev.message or ev.phase, ev.eta_s
+            )
+
+        self._pump(run, report, "tuning")
+        run.wait()
+        if run.status != JobStatus.COMPLETE.value:
+            self._set_stage("tune", run.status)
+            raise _TuneFailed(
+                f"tuning {run.status}: {run.error}; the model is trained and kept, and "
+                "resuming the distill tunes it again"
+            )
+        self._set_stage("tune", "complete", model_id=model_id, tuning_id=run.id)
+        self._emit_fold("tuning", stage_index, 1.0, "tuned")
+
     def _register_stage(self) -> None:
         """The keypoint distill's third stage: promote the trained student into the catalog
         (``api/keypoint_distill.register_student``). Sub-second and idempotent, so it gets
@@ -1277,7 +1364,11 @@ class DistillOrchestrator:
         if phase != self._phase:
             self._phase = phase
             self._stage_start = time.monotonic()
-        overall = distill_overall_fraction(phase, inner_fraction)
+        overall = distill_overall_fraction(
+            phase,
+            inner_fraction,
+            tuple(DISTILL_STAGE_PHASES[name] for name in self._stage_names),
+        )
         now = time.monotonic()
         if eta_s is None:
             eta_s = remaining_seconds(inner_fraction, now - self._stage_start)
@@ -3125,6 +3216,10 @@ class Experiment:
         trainer_id: str = "ultralytics_yolo",
         hyperparams: dict | None = None,
         train_compute: ComputeTarget | None = None,
+        tune: bool = False,
+        tune_sample_seconds: float = TuningConfig.model_fields[
+            "sample_seconds"
+        ].default,
     ) -> "AttachedDistillRun":
         """Distill a fast detector in one durable run (§12): label a frame sample with a
         prompt-capable model, then train a closed-set YOLO on those labels.
@@ -3135,6 +3230,11 @@ class Experiment:
         :class:`AttachedDistillRun` — the run survives the app closing and any process can
         reattach. The trained model lands in ``models/<id>/`` (usable in this experiment at
         once); promote it with :meth:`promote_model` for cross-experiment reuse.
+
+        ``tune=True`` adds a third stage after training: :meth:`tune_tracking` on the new
+        model over ``tune_sample_seconds`` of each source recording, on ``train_compute``.
+        Its result is a report the detection and tracking forms offer; a tune that fails
+        leaves the run ``partial`` with the model kept.
 
         Raises:
             ValueError: no/duplicate classes, a non-prompt-capable label model, a recording
@@ -3188,6 +3288,11 @@ class Experiment:
         if train_compute.backend == "cuda" and train_compute.device_indices:
             check_cuda_indices(train_compute.device_indices)
         hyperparams = trainer.validate_hyperparams(hyperparams or {})
+        tune_cfg = (
+            TuningConfig.model_validate({"sample_seconds": tune_sample_seconds})
+            if tune
+            else None
+        )
         # Enforce the run-level composition + a non-empty name before the recording sweep.
         DistillConfig.model_validate(
             {
@@ -3237,6 +3342,13 @@ class Experiment:
             "label_compute": label_compute.to_dict(),
             "train_compute": train_compute.to_dict(),
         }
+        stages = {
+            "label": {"status": "pending", "dataset_id": None},
+            "train": {"status": "pending", "model_id": None},
+        }
+        if tune_cfg is not None:
+            config["tune"] = tune_cfg.model_dump()
+            stages["tune"] = {"status": "pending", "model_id": None, "tuning_id": None}
         # Reserve before spawning so the run is discoverable and a coordinator that dies on
         # launch reconciles to failed (not stuck running).
         distill_store.write_run(
@@ -3248,10 +3360,7 @@ class Experiment:
                 "status": "running",
                 "created_at": utc_timestamp(),
                 "config": config,
-                "stages": {
-                    "label": {"status": "pending", "dataset_id": None},
-                    "train": {"status": "pending", "model_id": None},
-                },
+                "stages": stages,
                 "resume": False,
             },
         )
@@ -3339,10 +3448,7 @@ class Experiment:
                     stage["status"] = "cancelled"
                 stages[name] = stage
         record["stages"] = stages
-        final_status = (stages.get(distill_final_stage(record)) or {}).get("status")
-        record["status"] = (
-            "complete" if final_status == JobStatus.COMPLETE.value else "cancelled"
-        )
+        record["status"] = distill_rollup(record, stages, "cancelled")
         distill_store.write_run(self._dir, run_id, record)
 
     def delete_distill(self, run_id: str) -> None:
@@ -3418,6 +3524,16 @@ class Experiment:
         """
         if name == "register":
             return None, None
+        if name == "tune":
+            if not (stage.get("model_id") and stage.get("tuning_id")):
+                return None, None
+            run_dir = tunings_store.tuning_dir(
+                self._dir, stage["model_id"], stage["tuning_id"]
+            )
+            try:
+                return rundir.read_status(run_dir).value, run_dir
+            except (FileNotFoundError, KeyError, ValueError):
+                return None, run_dir
         art_id = stage.get("dataset_id") if name == "label" else stage.get("model_id")
         if art_id is None:
             return None, None
@@ -3468,13 +3584,7 @@ class Experiment:
             changed = True
             stages[name] = stage
         record["stages"] = stages
-        final = stages.get(distill_final_stage(record)) or {}
-        if alive:
-            new_status = "running"
-        elif final.get("status") == JobStatus.COMPLETE.value:
-            new_status = "complete"
-        else:
-            new_status = "failed"
+        new_status = "running" if alive else distill_rollup(record, stages, "failed")
         if new_status != record.get("status"):
             record["status"] = new_status
             changed = True
@@ -3928,6 +4038,64 @@ class Experiment:
         if trainer_cls is None:
             return []
         return trainer_cls().metric_history(models_store.model_dir(self._dir, model_id))
+
+    def tune_tracking(
+        self,
+        model_id: str,
+        source_recording_ids: list[str] | None = None,
+        *,
+        sample_seconds: float = TuningConfig.model_fields["sample_seconds"].default,
+        compute: ComputeTarget | None = None,
+    ) -> "tuning_api.TuningRun":
+        """Tune a trained detector's detection and tracking settings (§12 *Tune detection
+        and tracking settings*).
+
+        Runs the model once at a low confidence over ``sample_seconds`` of each recording
+        (a few windows spread across it), tracks those detections with ``anchor_tracker``
+        at every setting of the sweep, measures each one without labels, and picks the most
+        stable. The result is a report in ``models/<id>/tuning/<tuning_id>/tuning.yaml``:
+        nothing defaults to it, and the detection and tracking forms offer it.
+
+        Args:
+            model_id: A finished detector this experiment trained.
+            source_recording_ids: Recordings to sample; None means every one with video.
+            sample_seconds: Seconds of video per recording (``TuningConfig``).
+            compute: Where detection runs; defaults to the fastest the model supports.
+
+        Returns:
+            A :class:`~detail.api.tuning.TuningRun`; ``wait()`` then ``record()``.
+
+        Raises:
+            FileNotFoundError: no such model.
+            ValueError: the model is unfinished or a keypoint model, a named recording has
+                no video, the sample size is out of range, or the model is being tuned.
+            ModelNotReadyError: the model's weights are not usable here.
+        """
+        return tuning_api.launch(
+            self,
+            model_id,
+            source_recording_ids,
+            sample_seconds=sample_seconds,
+            compute=compute,
+            source={"kind": "standalone"},
+        )
+
+    def tunings(self, model_id: str) -> list[dict]:
+        """Every tuning of a model (``tuning.yaml`` records), newest first."""
+        return tuning_api.list_for_model(self._dir, model_id)
+
+    def tuned_settings(self, model_id: str) -> "tuning_api.TunedSettings | None":
+        """The newest complete tuning of a model, from a distill or a standalone tune, or
+        None when it has none. Its ``describe()`` says which one it is."""
+        return tuning_api.tuned_settings(self._dir, model_id)
+
+    def tuned_settings_for_detection(
+        self, detection: dict
+    ) -> "tuning_api.TunedSettings | None":
+        """The tuning of the model a detection used — ``detection`` is a detection run's
+        record or a selection's identity — with the confidence it was made at
+        (``needs_new_detection`` says when it kept too little for the setting)."""
+        return tuning_api.tuned_settings_for_detection(self._dir, detection)
 
     def train_model(
         self,

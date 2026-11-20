@@ -17,6 +17,7 @@ PIPELINE_RUNNERS: tuple[str, ...] = (
     "detail.pipeline.keypoint_detect",
     "detail.pipeline.keypoint_track",  # also registers the two track methods
     "detail.pipeline.keypoint_dataset",  # the label stage of a keypoint distill (§12)
+    "detail.pipeline.tune_tracking",  # a detector's settings tuning (§12)
     "detail.pipeline.dataset_export",
     "detail.pipeline.export_run",
     "detail.pipeline.labeling",

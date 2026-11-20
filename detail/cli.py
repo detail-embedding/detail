@@ -52,6 +52,7 @@ from detail.configs.describe import describe_config
 from detail.configs.query_eval import QueryEvalConfig
 from detail.configs.quick_segment import QuickSegmentConfig
 from detail.configs.tracking import TrackingConfig
+from detail.configs.tuning import TUNE_HELP, TuningConfig
 from detail.configs.windows import WindowSpec
 from detail.configs.training import UltralyticsYOLOConfig
 from detail.core import buildinfo
@@ -91,6 +92,7 @@ _MONTAGE_SORT = _clip_montage.DEFAULT_SORT
 _TEMPORAL = TemporalClusteringConfig.model_fields
 _CODEBOOK = TemporalCodebookConfig.model_fields
 _TRK = TrackingConfig.model_fields
+_TUNE = TuningConfig.model_fields
 _TRAIN = UltralyticsYOLOConfig.model_fields
 _MEDPC = MedpcSessionConfig.model_fields
 _BORIS = BorisSelectionConfig.model_fields
@@ -100,6 +102,7 @@ _QE_DOC = {p["name"]: p for p in describe_config(QueryEvalConfig)}
 _QRY_DOC = {p["name"]: p for p in describe_config(QueryConfig)}
 _QSEG_DOC = {p["name"]: p for p in describe_config(QuickSegmentConfig)}
 _VIEW_DOC = {p["name"]: p for p in describe_config(ConfidenceView)}
+_TUNE_DOC = {p["name"]: p for p in describe_config(TuningConfig)}
 
 
 def _int_range(doc: dict) -> click.IntRange:
@@ -4566,6 +4569,17 @@ def distill() -> None:
     type=int,
     help="Training CUDA device index (repeatable).",
 )
+@click.option(
+    "--tune/--no-tune", "tune", default=False, show_default=True, help=TUNE_HELP
+)
+@click.option(
+    "--tune-seconds",
+    "tune_seconds",
+    default=_TUNE["sample_seconds"].default,
+    show_default=True,
+    type=_float_range(_TUNE_DOC["sample_seconds"]),
+    help=_TUNE["sample_seconds"].description + " Only with --tune.",
+)
 def distill_run(
     experiment_dir: Path,
     name: str,
@@ -4589,9 +4603,12 @@ def distill_run(
     label_devices: tuple[int, ...],
     train_backend: str | None,
     train_devices: tuple[int, ...],
+    tune: bool,
+    tune_seconds: float,
 ) -> None:
     """Label a frame sample, then train a YOLO detector on it — one durable run; blocks
-    until complete (Ctrl-C detaches, the run keeps going in the background)."""
+    until complete (Ctrl-C detaches, the run keeps going in the background). With --tune,
+    then measure the new model and recommend detection and tracking settings."""
     proj = _open_experiment(experiment_dir)
     if not class_specs:
         raise click.ClickException("provide at least one --class NAME:PROMPT")
@@ -4634,6 +4651,8 @@ def distill_run(
             train_compute=(
                 _compute_target(train_backend, train_devices) if train_backend else None
             ),
+            tune=tune,
+            tune_sample_seconds=tune_seconds,
         )
     except (FileNotFoundError, ValueError) as e:
         raise click.ClickException(str(e))
@@ -4685,8 +4704,25 @@ def distill_status(run_id: str, experiment_dir: Path) -> None:
         # A keypoint distill's third stage (§12 *Distill keypoints*).
         register = stages.get("register") or {}
         click.echo(f"  register: status={register.get('status')} role=keypoints")
+    if "tune" in stages:
+        # A detector distill's optional third stage (§12 *Tune detection and tracking*).
+        tune = stages.get("tune") or {}
+        click.echo(
+            f"  tune: status={tune.get('status')} tuning={tune.get('tuning_id')}"
+        )
     if record.get("error"):
         click.echo(f"  error: {record['error']}")
+    tune = stages.get("tune") or {}
+    if tune.get("status") == "complete" and tune.get("tuning_id"):
+        click.echo("")
+        _print_tuning(
+            proj,
+            next(
+                r
+                for r in proj.tunings(tune["model_id"])
+                if r["id"] == tune["tuning_id"]
+            ),
+        )
 
 
 @distill.command("attach")
@@ -4949,6 +4985,167 @@ def model_show(model_id: str) -> None:
         click.echo(f"base_model:  {ref.provenance.get('base_model') or '—'}")
         click.echo(f"metrics:     {ref.provenance.get('metrics') or {}}")
         click.echo(f"trained:     {api_models.training_summary(ref.provenance) or '—'}")
+
+
+def _trained_model_id(proj: Experiment, ref: str) -> str:
+    """One of this experiment's trained models, by id or name (§11)."""
+    models = proj.models
+    for model in models:
+        if ref == model.id:
+            return model.id
+    named = [m.id for m in models if m.name == ref]
+    if len(named) == 1:
+        return named[0]
+    if named:
+        raise click.ClickException(
+            f"{len(named)} models are named {ref!r} ({', '.join(named)}); use the id"
+        )
+    raise click.ClickException(f"no trained model {ref!r} in this experiment")
+
+
+def _print_tuning(proj: Experiment, record: dict) -> None:
+    """One tuning's whole table and its pick, with the flags that apply it."""
+    from detail.api import tuning as tuning_api
+
+    click.echo(
+        f"tuning {record['id']} of {record['model_id']} "
+        f"(from {tuning_api.source_label(record)}, status={record.get('status')})"
+    )
+    for rec in record.get("recordings") or []:
+        click.echo(
+            f"  {rec['name']}: {rec['sampled_frames']} frames sampled in "
+            f"{len(rec['windows'])} windows at {rec['frame_rate']:g} fps"
+        )
+    rows = sorted(
+        record.get("table") or [],
+        key=lambda r: (r["mean_jumpy_pct"], r["max_secondary"]),
+    )
+    if rows:
+        click.echo(
+            f"  {'anchor':>6} {'second':>6} {'max':>3} {'--conf':>6} "
+            f"{'tracked% (min)':>14} {'jumpy%':>7} {'merged%':>8} {'grew%':>6}"
+        )
+    for row in rows:
+        per = list(row["per_recording"].values())
+        mean = lambda key: (
+            sum(q[key] for q in per) / len(per) if per else 0.0
+        )  # noqa: E731
+        mark = "  (defaults)" if row.get("is_default") else ""
+        click.echo(
+            f"  {row['conf_threshold']:>6g} {row['secondary_conf']:>6g} "
+            f"{row['max_secondary']:>3d} {row['detection_conf']:>6g} "
+            f"{min((q['tracked_pct'] for q in per), default=0.0):>14.2f} "
+            f"{row['mean_jumpy_pct']:>7.2f} {mean('merged_pct'):>8.2f} "
+            f"{mean('grew_pct'):>6.2f}{mark}"
+        )
+    pick = record.get("pick") or {}
+    setting = pick.get("setting")
+    for warning in record.get("warnings") or []:
+        click.echo(f"note: {warning}")
+    if not setting:
+        click.echo(f"no recommendation: {pick.get('reason') or record.get('error')}")
+        return
+    verdict = "keep the defaults" if pick.get("keep_defaults") else "recommended"
+    click.echo(f"{verdict}: {pick.get('reason')}")
+    if not pick.get("keep_defaults"):
+        click.echo(f"  detail process detection … --conf {setting['detection_conf']:g}")
+        click.echo(
+            f"  detail process tracking … --conf-threshold {setting['conf_threshold']:g} "
+            f"--secondary-conf {setting['secondary_conf']:g} "
+            f"--max-secondary {setting['max_secondary']}"
+        )
+
+
+@model.command("tune")
+@click.argument("model_ref")
+@_EXPERIMENT_OPT
+@click.option(
+    "--recording",
+    "recording_refs",
+    multiple=True,
+    type=str,
+    help="Recording to sample, by name or id (repeatable; default: every one with video).",
+)
+@click.option(
+    "--sample-seconds",
+    "sample_seconds",
+    default=_TUNE["sample_seconds"].default,
+    show_default=True,
+    type=_float_range(_TUNE_DOC["sample_seconds"]),
+    help=_TUNE["sample_seconds"].description,
+)
+@click.option(
+    "--backend",
+    type=click.Choice(["cpu", "cuda", "mps"]),
+    default=None,
+    help="Where detection on the sample runs (default: the best available).",
+)
+@click.option(
+    "--device",
+    "devices",
+    multiple=True,
+    type=int,
+    help="CUDA device index (repeatable).",
+)
+def model_tune(
+    model_ref: str,
+    experiment_dir: Path,
+    recording_refs: tuple[str, ...],
+    sample_seconds: float,
+    backend: str | None,
+    devices: tuple[int, ...],
+) -> None:
+    """Measure one of this experiment's trained detectors on a sample of its recordings and
+    recommend detection and tracking settings (the most stable mask that still tracks).
+
+    The model runs once at a low confidence over a few windows of each recording; then the
+    tracker runs at every setting of a small grid and each is measured without labels. The
+    whole table is printed with the recommendation and the flags that apply it; nothing
+    changes until you pass those flags. `detail model tuning` shows it again later.
+    """
+    proj = _open_experiment(experiment_dir)
+    model_id = _trained_model_id(proj, model_ref)
+    try:
+        run = proj.tune_tracking(
+            model_id,
+            _resolve_recording_refs(proj, recording_refs) or None,
+            sample_seconds=sample_seconds,
+            compute=_compute_target(backend, devices) if backend else None,
+        )
+    except (FileNotFoundError, ValueError) as e:
+        raise click.ClickException(_error_text(e))
+    click.echo(f"submitted tuning: {run.id}")
+    _stream_progress(run, "tune")
+    _check_status(run, "tune")
+    _print_tuning(proj, run.record())
+
+
+@model.command("tuning")
+@click.argument("model_ref")
+@_EXPERIMENT_OPT
+def model_tuning(model_ref: str, experiment_dir: Path) -> None:
+    """Show the newest finished tuning of one of this experiment's trained detectors, from a
+    distill's tune stage or `detail model tune`, and list the others."""
+    proj = _open_experiment(experiment_dir)
+    model_id = _trained_model_id(proj, model_ref)
+    records = proj.tunings(model_id)
+    if not records:
+        raise click.ClickException(
+            f"{model_id} has never been tuned; run `detail model tune {model_ref}`"
+        )
+    from detail.api import tuning as tuning_api
+
+    found = proj.tuned_settings(model_id)
+    for record in records:
+        click.echo(
+            f"{record['id']}: {record.get('status')} "
+            f"(from {tuning_api.source_label(record)}, {record.get('created_at')})"
+        )
+    if found is None:
+        click.echo("none has finished")
+        return
+    click.echo(f"\nshowing {found.describe()}")
+    _print_tuning(proj, next(r for r in records if r["id"] == found.tuning_id))
 
 
 @model.command("export")

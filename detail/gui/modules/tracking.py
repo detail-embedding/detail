@@ -33,7 +33,7 @@ from detail.gui.modules._common import (
     spec_groups,
     spec_items,
 )
-from detail.gui.help_ui import field_label
+from detail.gui.help_ui import field_label, help_button, label_with
 from detail.gui.modules._every_n import EveryNRow, source_rate
 from detail.gui._pydantic_form import field_meta
 from detail.gui.modules.registry import (
@@ -44,6 +44,7 @@ from detail.gui.modules.registry import (
 )
 from detail.gui.spin import FRACTION, FloatSpin, IntSpin
 from detail.gui.status_color import WARN
+from detail.gui.tuning import TunedSettingsRow, untuned_reason
 from detail.storage import read_cache
 
 _NO_ARENA = "(whole frame)"
@@ -99,6 +100,7 @@ class _TrackingConfig(ConfigWidget):
     def __init__(self):
         super().__init__()
         self._model_names: dict = {}  # {model_id: name}; filled by on_experiment_set
+        self._experiment = None
         import_runner_modules(PIPELINE_RUNNERS)  # populate the TRACKERS registry
         self._config_form = ConfigForm(self, TrackingConfig)
         self._form = self._config_form.main
@@ -125,6 +127,12 @@ class _TrackingConfig(ConfigWidget):
             self._tracker.setCurrentIndex(default_index)
         self._form.addRow(
             field_label("tracking", "tracker_id", "Tracker:"), self._tracker
+        )
+        # The newest tuning of the detection's model (§12 *Tune detection and tracking
+        # settings*): fills the anchor tracker's three knobs under Advanced Settings.
+        self._tuned = TunedSettingsRow(self._use_tuned)
+        self._form.addRow(
+            label_with("Tuned settings:", help_button("tuned-settings")), self._tuned
         )
         # Says what was substituted when a previous run's tracker is one this build does not
         # offer. On `_form`, not in the `_KNOBS` section: `advanced().clear(_KNOBS)` wipes
@@ -162,8 +170,51 @@ class _TrackingConfig(ConfigWidget):
             lambda _index: self.coverage_changed.emit()
         )
         self._detection.currentIndexChanged.connect(self._sync_upstream_every_n)
+        self._detection.currentIndexChanged.connect(self._sync_tuned)
         self._tracker.currentTextChanged.connect(self._rebuild_hyperparams)
+        self._tracker.currentTextChanged.connect(self._sync_tuned)
         self._rebuild_hyperparams()
+        self._sync_tuned()
+
+    def _sync_tuned(self, *_args) -> None:
+        """Offer the tuning of the selected detection's model, warning when that detection
+        kept less than the tuned setting needs."""
+        from detail.pipeline.tune_tracking import TRACKER_ID
+
+        spec = self._detection.currentData()
+        identity = spec.get("identity", {}) if isinstance(spec, dict) else {}
+        if self._tracker.currentText() != TRACKER_ID:
+            self._tuned.offer(None, f"Tuned settings are for the {TRACKER_ID} tracker")
+            return
+        if self._experiment is None or not identity:
+            self._tuned.offer(None, "Choose a detection run first")
+            return
+        found = self._experiment.tuned_settings_for_detection(identity)
+        if found is None:
+            model_id = identity.get("model_id")
+            self._tuned.offer(
+                None,
+                (
+                    untuned_reason(model_id)
+                    if identity.get("weights_source") == "trained"
+                    else "Only a detector trained in this experiment has tuned settings"
+                ),
+            )
+            return
+        warning = None
+        if found.needs_new_detection:
+            warning = (
+                f"This detection run kept detections at {found.detection_conf_used:g} and "
+                f"above; the tuned setting needs {found.setting.detection_conf:g}. Run "
+                "detection again at that confidence for the full effect."
+            )
+        self._tuned.offer(found, warning=warning)
+
+    def _use_tuned(self, setting) -> None:
+        for name, value in setting.hyperparams().items():
+            widget = self._hp_widgets.get(name)
+            if widget is not None:
+                widget.setValue(value)
 
     def _sync_upstream_every_n(self, *_args) -> None:
         """Adopt the picked detection run's cadence: it is the floor this stage can use."""
@@ -241,6 +292,8 @@ class _TrackingConfig(ConfigWidget):
         # A run record stores a model *id*; a picker has to show the name (§11). O(models),
         # not O(recordings), so it stays inside the UI-thread rule.
         self._model_names = experiment.model_names() if experiment is not None else {}
+        self._experiment = experiment
+        self._sync_tuned()
 
     def resolve_recordings(self, recordings: list) -> dict:
         """Off the UI thread (CLAUDE.md): every disk read this selection needs, once.

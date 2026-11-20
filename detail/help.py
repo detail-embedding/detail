@@ -44,6 +44,7 @@ HELP: dict[str, HelpTopic] = {
     "compute-target": HelpTopic("concepts", "compute-target"),
     "model-kinds": HelpTopic("concepts", "model-variant"),
     "location-export": HelpTopic("concepts", "location-export"),
+    "tuned-settings": HelpTopic("gui", "tuned-settings"),
     "comparison-source": HelpTopic("gui", "comparison-source"),
     "comparison-measure": HelpTopic("gui", "comparison-measure"),
     "comparison-groups": HelpTopic("gui", "comparison-groups"),

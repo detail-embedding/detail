@@ -142,6 +142,8 @@ from detail.gui.workers import (
 )
 from detail.storage import analysis_runs as analysis_runs_store
 from detail.gui import run_units
+from detail.gui import tuning as gui_tuning
+from detail.configs.tuning import TUNE_HELP
 from detail.storage import clocks, credentials, read_cache
 from detail.gui.sizing import mono_font
 
@@ -7173,9 +7175,48 @@ class ModelDetailPage(_FitDetailPage):
                 promote = QPushButton("Promote to global")
                 promote.clicked.connect(self._promote)
                 self._add(promote)
+            if record.get("status") in ("complete", "partial") and (
+                record.get("task") != "pose"
+            ):
+                self._add_tuning()
             delete = QPushButton("Delete model")
             delete.clicked.connect(self._delete)
             self._add(delete)
+
+    def _add_tuning(self) -> None:
+        """The newest tuning of this detector and **Tune settings…** (§12 *Tune detection
+        and tracking settings*). O(tunings of one model), not O(recordings)."""
+        found = self._experiment.tuned_settings(self._model_id)
+        summary = QLabel(
+            f"Tuned settings: {found.describe()}. {found.reason}"
+            if found is not None
+            else "Tuned settings: none yet. Tune settings… measures this model on a "
+            "sample of the recordings and recommends detection and tracking settings."
+        )
+        summary.setWordWrap(True)
+        self._add(summary)
+        if found is not None:
+            show = QPushButton("Show tuning…")
+            show.clicked.connect(
+                lambda _=False, tid=found.tuning_id: self._show_tuning(tid)
+            )
+            self._add(show)
+        tune = QPushButton("Tune settings…")
+        tune.setToolTip(TUNE_HELP)
+        tune.clicked.connect(self._open_tune)
+        self._add(tune)
+
+    def _show_tuning(self, tuning_id: str) -> None:
+        record = next(
+            r for r in self._experiment.tunings(self._model_id) if r["id"] == tuning_id
+        )
+        gui_tuning.TuningDialog(record, parent=self).exec()
+
+    def _open_tune(self) -> None:
+        dialog = gui_tuning.TuneDialog(self._experiment, self._model_id, parent=self)
+        dialog.exec()
+        if dialog.record is not None:
+            self._build()
 
     def _cancel(self) -> None:
         _confirm_and_cancel(
@@ -7390,6 +7431,14 @@ class DistillRunDetail(_FitDetailPage):
             "Train:",
             QLabel(f"{train.get('status', '—')}  ·  model {shown}"),
         )
+        tune = stages.get("tune")
+        if tune is not None:
+            # A detector distill's optional third stage (§12 *Tune detection and tracking
+            # settings*): its result is a report the detection and tracking forms offer.
+            form.addRow(
+                "Tune:",
+                QLabel(f"{tune.get('status', '—')}  ·  {tune.get('tuning_id') or '—'}"),
+            )
         if "register" in stages:
             # A keypoint distill's third stage (§12 *Distill keypoints*): the student joins the
             # catalog under `role: keypoints`, so the keypoint method picker can offer it.
@@ -7419,6 +7468,14 @@ class DistillRunDetail(_FitDetailPage):
             # either (this package's most-repeated class is two pages answering one question
             # with two mechanisms).
             self._add_training_status(model_id)
+        if (tune or {}).get("status") == "complete" and tune.get("tuning_id"):
+            show = QPushButton("Show tuning…")
+            show.clicked.connect(
+                lambda _=False, mid=tune["model_id"], tid=tune["tuning_id"]: (
+                    self._show_tuning(mid, tid)
+                )
+            )
+            self._add(show)
         if self._on_open_model is not None and model_id and training_started:
             # The rest of the model page — rename, Promote to global…, weights, full lineage —
             # this run detail only manages the run record and (above) the model's live
@@ -7435,13 +7492,21 @@ class DistillRunDetail(_FitDetailPage):
             cancel.clicked.connect(self._cancel)
             self._add(cancel)
         else:
-            if record.get("status") in ("failed", "cancelled"):
+            if record.get("status") in ("failed", "cancelled", "partial"):
+                # `partial`: the model trained and the optional tune stage fell short; a
+                # resume tunes again and keeps the model.
                 resume = QPushButton("Resume distill")
                 resume.clicked.connect(self._resume)
                 self._add(resume)
             delete = QPushButton("Delete distill run")
             delete.clicked.connect(self._delete)
             self._add(delete)
+
+    def _show_tuning(self, model_id: str, tuning_id: str) -> None:
+        record = next(
+            r for r in self._experiment.tunings(model_id) if r["id"] == tuning_id
+        )
+        gui_tuning.TuningDialog(record, parent=self).exec()
 
     def _add_training_status(self, model_id: str) -> None:
         """The trained model's own curve + Stop and keep, inline.

@@ -583,3 +583,178 @@ def test_distill_with_no_recordings_named_samples_those_with_video(
     )
     rec = distill_store.read_run(proj.dir, "distill_001")
     assert rec["config"]["source_recording_ids"] == ["recording_001"]
+
+
+# --- the optional tune stage (§12 *Tune detection and tracking settings*) ---- #
+class _FakeTuneRun(_FakeRun):
+    """Stand-in for ``api.tuning.TuningRun``."""
+
+
+def _tune_events():
+    from detail.pipeline.tune_tracking import TuneProgressEvent
+
+    return [
+        TuneProgressEvent("detecting", 50, 100, 1.0, 1.0, "detecting a, window 1/5"),
+        TuneProgressEvent("sweeping", 10, 43, 2.0, 3.0, "setting 10/43"),
+    ]
+
+
+def _reserve_tuned(proj, **over):
+    record = _reserve(
+        proj,
+        stages={
+            "label": {"status": "pending", "dataset_id": None},
+            "train": {"status": "pending", "model_id": None},
+            "tune": {"status": "pending", "model_id": None, "tuning_id": None},
+        },
+        **over,
+    )
+    record["config"]["tune"] = {"sample_seconds": 60.0}
+    distill_store.write_run(proj.dir, record["id"], record)
+    return record
+
+
+def _stub_label_and_train(proj, monkeypatch):
+    monkeypatch.setattr(proj, "label_dataset", lambda **kw: _FakeRun("dataset_001", []))
+    monkeypatch.setattr(proj, "train_model", lambda **kw: _FakeRun("model_001", []))
+
+
+def test_a_tuned_distill_has_a_third_stage_and_only_then():
+    from detail.api.experiment import distill_stage_names
+
+    assert distill_stage_names({"config": {}}) == ("label", "train")
+    assert distill_stage_names({"config": {"tune": {"sample_seconds": 60}}}) == (
+        "label",
+        "train",
+        "tune",
+    )
+    assert distill_stage_names(
+        {"kind": "keypoints", "config": {"tune": {"sample_seconds": 60}}}
+    ) == ("label", "train", "register")
+
+
+def test_the_tune_stage_runs_after_training_on_the_new_model(tmp_path, monkeypatch):
+    proj = Experiment.create("p", tmp_path)
+    record = _reserve_tuned(proj)
+    _stub_label_and_train(proj, monkeypatch)
+    launched = {}
+
+    def _launch(experiment, model_id, recording_ids, **kw):
+        launched.update(model_id=model_id, recording_ids=recording_ids, **kw)
+        return _FakeTuneRun("tune_001", _tune_events())
+
+    monkeypatch.setattr("detail.api.tuning.launch", _launch)
+    emitted = []
+    DistillOrchestrator(proj, "distill_001", record, emitted.append).run()
+
+    assert launched["model_id"] == "model_001"
+    assert launched["recording_ids"] == ["recording_001"]
+    assert launched["sample_seconds"] == 60.0
+    assert launched["source"] == {"kind": "distill", "distill_id": "distill_001"}
+    assert launched["compute"].to_dict() == record["config"]["train_compute"]
+    rec = distill_store.read_run(proj.dir, "distill_001")
+    assert rec["status"] == "complete"
+    assert rec["stages"]["tune"] == {
+        "status": "complete",
+        "model_id": "model_001",
+        "tuning_id": "tune_001",
+    }
+    tuning = [e for e in emitted if e.phase == "tuning"]
+    assert tuning[0].message == "starting tuning"
+    assert all(e.stage_index == 2 and e.stage_count == 3 for e in tuning)
+    assert any(0 < e.inner_fraction < 1 for e in tuning)
+    training_end = max(e.overall_fraction for e in emitted if e.phase == "training")
+    assert training_end < 1.0  # training no longer fills the bar on its own
+    assert emitted[-1].overall_fraction == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("how", ["fails", "refused"])
+def test_a_tune_that_falls_short_leaves_the_run_partial_with_the_model(
+    tmp_path, monkeypatch, how
+):
+    proj = Experiment.create("p", tmp_path)
+    record = _reserve_tuned(proj)
+    _stub_label_and_train(proj, monkeypatch)
+
+    def _launch(*a, **k):
+        if how == "refused":
+            raise ValueError("model 'model_001' cannot run on 'cuda'")
+        return _FakeTuneRun("tune_001", [], status="failed", error="out of memory")
+
+    monkeypatch.setattr("detail.api.tuning.launch", _launch)
+    DistillOrchestrator(proj, "distill_001", record, lambda _p: None).run()
+
+    rec = distill_store.read_run(proj.dir, "distill_001")
+    assert rec["status"] == "partial"
+    assert rec["stages"]["train"]["status"] == "complete"
+    assert rec["stages"]["tune"]["status"] == "failed"
+    reason = "cannot run on 'cuda'" if how == "refused" else "out of memory"
+    assert reason in rec["error"]
+
+
+def test_resuming_a_partial_distill_tunes_again_and_keeps_the_model(
+    tmp_path, monkeypatch
+):
+    proj = Experiment.create("p", tmp_path)
+    record = _reserve_tuned(proj, resume=True)
+    record["stages"]["label"] = {"status": "complete", "dataset_id": "dataset_001"}
+    record["stages"]["train"] = {"status": "complete", "model_id": "model_001"}
+    record["stages"]["tune"] = {"status": "failed", "model_id": "model_001"}
+    trained = []
+    monkeypatch.setattr(proj, "label_dataset", lambda **kw: trained.append("label"))
+    monkeypatch.setattr(proj, "train_model", lambda **kw: trained.append("train"))
+    monkeypatch.setattr(
+        "detail.api.tuning.launch", lambda *a, **k: _FakeTuneRun("tune_002", [])
+    )
+    DistillOrchestrator(proj, "distill_001", record, lambda _p: None).run()
+    assert trained == []
+    rec = distill_store.read_run(proj.dir, "distill_001")
+    assert rec["status"] == "complete"
+    assert rec["stages"]["tune"]["tuning_id"] == "tune_002"
+
+
+def test_reconcile_rolls_a_dead_tune_up_to_partial(tmp_path, monkeypatch):
+    from detail.storage import tunings as tunings_store
+
+    monkeypatch.setattr(
+        "detail.api.experiment.coordinator_alive", lambda _rd, _p: False
+    )
+    monkeypatch.setattr("detail.api.experiment.worker_alive", lambda _rd: False)
+    proj = Experiment.create("p", tmp_path)
+    record = _reserve_tuned(proj)
+    record["stages"]["label"] = {"status": "complete", "dataset_id": "dataset_001"}
+    record["stages"]["train"] = {"status": "complete", "model_id": "model_001"}
+    record["stages"]["tune"] = {
+        "status": "running",
+        "model_id": "model_001",
+        "tuning_id": "tune_001",
+    }
+    distill_store.write_run(proj.dir, "distill_001", record)
+    distill_store.set_coordinator_pid(proj.dir, "distill_001", 999999)
+    _write_job_json(
+        tunings_store.tuning_dir(proj.dir, "model_001", "tune_001"), "failed"
+    )
+    rec = proj.distill_run_record("distill_001")
+    assert rec["stages"]["tune"]["status"] == "failed"
+    assert rec["status"] == "partial"
+
+
+def test_distill_records_the_tune_choice(tmp_path, monkeypatch):
+    proj = Experiment.create("p", tmp_path)
+    _pass_validation(proj, monkeypatch)
+    monkeypatch.setattr("detail.api.experiment.spawn_coordinator", lambda *a, **k: 1)
+    kw = dict(
+        classes=[LabelingClass(0, "mouse", "a mouse")],
+        n_frames=2,
+        source_recording_ids=["recording_001"],
+        trainer_id="faketrainer",
+    )
+    proj.distill("m", **kw)
+    plain = distill_store.read_run(proj.dir, "distill_001")
+    assert "tune" not in plain["config"] and "tune" not in plain["stages"]
+    proj.distill("m", tune=True, tune_sample_seconds=90, **kw)
+    tuned = distill_store.read_run(proj.dir, "distill_002")
+    assert tuned["config"]["tune"] == {"sample_seconds": 90.0}
+    assert tuned["stages"]["tune"]["status"] == "pending"
+    with pytest.raises(ValueError, match="sample_seconds"):
+        proj.distill("m", tune=True, tune_sample_seconds=1, **kw)
