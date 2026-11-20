@@ -276,19 +276,54 @@ def test_an_exited_coordinator_this_process_spawned_reads_dead(tmp_path):
     **not** reaped by the test. Against a plain ``os.kill(pid, 0)`` probe this fails.
     """
     pid = local.spawn_coordinator(tmp_path, (), entrypoint="this")
-    deadline = time.monotonic() + 10
-    # Wait for the child to exit without reaping it: /proc shows a zombie as state Z.
-    stat = pathlib.Path(f"/proc/{pid}/stat")
-    while time.monotonic() < deadline:
-        if (
-            os.name == "nt"
-            or not stat.exists()
-            or stat.read_text(encoding="utf-8-sig").split()[2] == "Z"
-        ):
-            break
-        time.sleep(0.05)
     try:
+        _wait_for_exit_without_reaping(pid, timeout_s=10)
         assert local.pid_alive(pid) is False
         assert local.coordinator_alive(tmp_path, pid) is False
     finally:
         local.reap_coordinator(pid)
+
+
+#: ``SYNCHRONIZE``: the access right a handle needs to be waited on, and nothing more.
+_SYNCHRONIZE = 0x00100000
+
+
+def _wait_for_exit_without_reaping(pid: int, timeout_s: float) -> None:
+    """Block until child ``pid`` has exited, leaving it unreaped; fail if it never does.
+
+    The test above asserts on an exited child that nobody has waited on, so the wait must
+    observe the exit **without** the ``Popen`` handle the probe consults. Each platform has its
+    own way, and a platform with none must fail here rather than fall through to the
+    assertion. The loop this replaced broke out at once on Windows (``os.name == "nt"``) and
+    on macOS (no ``/proc``), so the assertion ran while the child was still starting: on
+    Windows it failed every run (#68), because the child takes 63-125 ms to exit there.
+    """
+    if os.name == "nt":
+        import _winapi
+
+        handle = _winapi.OpenProcess(_SYNCHRONIZE, False, pid)
+        try:
+            waited = _winapi.WaitForSingleObject(handle, int(timeout_s * 1000))
+        finally:
+            _winapi.CloseHandle(handle)
+        assert (
+            waited == _winapi.WAIT_OBJECT_0
+        ), f"pid {pid} still running after {timeout_s}s"
+        return
+    deadline = time.monotonic() + timeout_s
+    proc_stat = pathlib.Path(f"/proc/{pid}/stat")
+    while time.monotonic() < deadline:
+        if pathlib.Path("/proc/self").exists():  # Linux: a zombie is state Z in /proc
+            state = proc_stat.read_text(encoding="utf-8-sig").split()[2]
+        else:  # macOS: no /proc; ps reports a zombie as Z too
+            state = subprocess.run(
+                ["ps", "-o", "stat=", "-p", str(pid)],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            ).stdout.strip()[:1]
+        if state == "Z":
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"pid {pid} still running after {timeout_s}s")
