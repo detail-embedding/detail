@@ -267,3 +267,26 @@ def test_the_report_reads_a_location_measures_unit_label_and_pseudo_count():
         assert pseudo((measure_id, "", "", "whole"), None) == 0.0
     # and one second of a share of time is one second over the path time
     assert pseudo(("time_moving", "", "", "whole"), 1000 * NS) == pytest.approx(0.001)
+
+
+def test_location_exports_are_found_by_their_tables_not_by_a_run_record(tmp_path):
+    """A picker lists them on the UI thread, so discovery reads no run record: the first
+    version read every run's ``analysis.yaml`` to ask its module, and the UI-thread guard
+    refused it."""
+    from detail.storage import location_export
+
+    analysis = tmp_path / "analysis"
+    write_run(analysis / "an_02", {"r1": {0: track(np.arange(30) * 10.0)}})
+    write_run(analysis / "an_10", {"r1": {0: track(np.arange(30) * 10.0)}})
+    (analysis / "an_03" / "r1").mkdir(parents=True)  # a run of another kind: no tables
+    (analysis / "an_03" / "behavior_output.yaml").write_text("x: 1\n", encoding="utf-8")
+    assert location_export.discover_location_exports(tmp_path) == ["an_02", "an_10"]
+    assert location_export.discover_location_exports(tmp_path / "nowhere") == []
+    assert location_export.has_location_tables(analysis / "an_02")
+    assert not location_export.has_location_tables(analysis / "an_03")
+    manifest = location_export.read_location_manifest(analysis / "an_02" / "r1")
+    assert (
+        manifest["pixels_per_mm"] == 2.0
+        and "body_length_mm" in manifest["columns"]["tracks"]
+    )
+    assert location_export.read_location_manifest(analysis / "an_03" / "r1") is None
