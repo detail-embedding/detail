@@ -290,3 +290,54 @@ def test_a_file_that_is_not_a_checkpoint_is_refused_by_name(tmp_path):
             TrainedYOLO.introspect(path)
     classes, task = TrainedYOLO.introspect(tmp_path / "whole.pt")
     assert task == "segment" and classes
+
+
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_a_checkpoint_from_another_ultralytics_version_is_named_as_one(
+    tmp_path, monkeypatch
+):
+    """A real checkpoint whose model uses a part this Ultralytics lacks, as one trained with a
+    newer release does, is a version mismatch, not "cut short, or another kind of file".
+    Both ways the part can be missing: a class in a module this version has, and a module it
+    does not have."""
+    pytest.importorskip("ultralytics")
+    import types
+
+    import torch
+    import ultralytics
+    import ultralytics.nn.modules.block as block
+    from ultralytics import YOLO
+
+    from detail.core.errors import UserInputError
+
+    class FutureBlock(torch.nn.Module):
+        pass
+
+    FutureBlock.__module__ = block.__name__
+    FutureBlock.__qualname__ = "FutureBlock"
+    future = types.ModuleType("ultralytics.nn.future")
+
+    class FutureModule(torch.nn.Module):
+        pass
+
+    FutureModule.__module__ = future.__name__
+    FutureModule.__qualname__ = "FutureModule"
+    future.FutureModule = FutureModule
+    cases = {
+        "newer_class.pt": (FutureBlock, "ultralytics.nn.modules.block.FutureBlock"),
+        "newer_module.pt": (FutureModule, "ultralytics.nn.future"),
+    }
+    with monkeypatch.context() as saving:
+        saving.setattr(block, "FutureBlock", FutureBlock, raising=False)
+        saving.setitem(sys.modules, future.__name__, future)
+        for name, (part, _named) in cases.items():
+            model = YOLO("yolo11n-seg.yaml").model
+            model.model[0] = part()
+            torch.save({"model": model, "train_args": {}}, tmp_path / name)
+    for name, (_part, named) in cases.items():
+        with pytest.raises(UserInputError) as refused:
+            TrainedYOLO.introspect(tmp_path / name)
+        message = str(refused.value)
+        assert f"{name} was saved by a different Ultralytics version" in message
+        assert f"({ultralytics.__version__})" in message and named in message

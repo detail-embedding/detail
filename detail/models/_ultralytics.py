@@ -18,6 +18,7 @@ exception handler, where it makes a first-attempt failure raise instead of retry
 """
 
 import os
+import re
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -36,6 +37,37 @@ if TYPE_CHECKING:
 #: model; ``AttributeError`` for a PyTorch file holding a list; ``RuntimeError`` for a zip that is
 #: not a PyTorch archive. Named, not ``Exception``: anything else is a bug and keeps its traceback.
 _NOT_A_CHECKPOINT = (TypeError, AttributeError, RuntimeError)
+
+
+#: Unpickling a checkpoint looks up each saved class by module and name. A class this
+#: Ultralytics does not have fails as ``AttributeError("Can't get attribute 'C' on <module
+#: 'ultralytics...'>")``; a module it does not have, as ``ModuleNotFoundError`` with that
+#: module's ``name`` (Ultralytics re-raises it with the original as its cause).
+_CANT_GET_ATTRIBUTE = re.compile(
+    r"Can't get attribute '([^']+)' on <module '(ultralytics[\w.]*)'"
+)
+
+
+def _part_this_ultralytics_lacks(exc: BaseException) -> str | None:
+    """The Ultralytics class or module a checkpoint needs and this install lacks, or ``None``.
+
+    A checkpoint trained with another Ultralytics version is a real checkpoint: refusing it
+    as "cut short, or another kind of file" sends the user looking for the wrong problem.
+    Only parts *of Ultralytics* count; a missing third-party module is not a version mismatch
+    and keeps its traceback.
+    """
+    seen = exc
+    while seen is not None:
+        if isinstance(seen, ModuleNotFoundError) and (seen.name or "").startswith(
+            "ultralytics"
+        ):
+            return seen.name
+        if isinstance(seen, AttributeError):
+            match = _CANT_GET_ATTRIBUTE.search(str(seen))
+            if match:
+                return f"{match.group(2)}.{match.group(1)}"
+        seen = seen.__cause__ or seen.__context__
+    return None
 
 
 def import_ultralytics():
@@ -59,8 +91,9 @@ def read_checkpoint(weights_path: Path | str) -> "YOLO":
 
     Raises:
         FileNotFoundError: ``weights_path`` does not exist.
-        UserInputError: The file is not a ``.pt`` file, is empty, or Ultralytics cannot read
-            it as a checkpoint.
+        UserInputError: The file is not a ``.pt`` file, is empty, Ultralytics cannot read
+            it as a checkpoint, or it was saved by an Ultralytics version whose model parts
+            this install does not have.
     """
     path = Path(weights_path)
     if not path.is_file():
@@ -74,12 +107,23 @@ def read_checkpoint(weights_path: Path | str) -> "YOLO":
         raise UserInputError(
             f"{path.name} is empty, so it is not a YOLO .pt checkpoint; copy the file again"
         )
-    import_ultralytics()
+    ultralytics = import_ultralytics()
     from ultralytics import YOLO
 
     try:
         return YOLO(str(path))
-    except _NOT_A_CHECKPOINT as exc:
+    except (*_NOT_A_CHECKPOINT, ModuleNotFoundError) as exc:
+        part = _part_this_ultralytics_lacks(exc)
+        if part is not None:
+            release = ".".join(ultralytics.__version__.split(".")[:2])
+            raise UserInputError(
+                f"{path.name} was saved by a different Ultralytics version than the one "
+                f"installed here ({ultralytics.__version__}): it uses {part}, which this "
+                f"version does not have. Import a checkpoint trained with Ultralytics "
+                f"{release}"
+            ) from exc
+        if isinstance(exc, ModuleNotFoundError):
+            raise
         raise UserInputError(
             f"{path.name} is not a YOLO .pt checkpoint Ultralytics can read (cut short, or "
             "another kind of file). Import the weights/best.pt an Ultralytics training "
