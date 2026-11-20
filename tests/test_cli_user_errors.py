@@ -432,6 +432,7 @@ def _ultralytics_raising(monkeypatch, error: BaseException) -> None:
 
     fake = types.ModuleType("ultralytics")
     fake.YOLO = _yolo
+    fake.__version__ = "8.4.215"
     monkeypatch.setitem(sys.modules, "ultralytics", fake)
 
 
@@ -445,19 +446,22 @@ def _ultralytics_raising(monkeypatch, error: BaseException) -> None:
             "notes.pt",
             b"notes",
             TypeError("ERROR notes.pt is not a loadable checkpoint"),
-            ("notes.pt is not a YOLO .pt checkpoint Ultralytics can read",),
+            (
+                "notes.pt is not a YOLO .pt checkpoint Ultralytics 8.4.215 can read",
+                "different Ultralytics version",
+            ),
         ),
         (
             "list.pt",
             b"x",
             AttributeError("'list' object has no attribute 'model'"),
-            ("list.pt is not a YOLO .pt checkpoint Ultralytics can read",),
+            ("list.pt is not a YOLO .pt checkpoint Ultralytics 8.4.215 can read",),
         ),
         (
             "zip.pt",
             b"x",
             RuntimeError("[enforce fail at inline_container.cc:179]"),
-            ("zip.pt is not a YOLO .pt checkpoint Ultralytics can read",),
+            ("zip.pt is not a YOLO .pt checkpoint Ultralytics 8.4.215 can read",),
         ),
     ],
     ids=["text", "onnx", "empty", "type-error", "attribute-error", "runtime-error"],

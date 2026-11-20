@@ -357,7 +357,10 @@ def test_an_unreadable_checkpoint_is_said_inline(qapp, tmp_path, monkeypatch):
     "name, words",
     [
         ("notes.txt", "notes.txt is not a YOLO .pt checkpoint;"),
-        ("junk.pt", "junk.pt is not a YOLO .pt checkpoint Ultralytics can read"),
+        (
+            "junk.pt",
+            "junk.pt is not a YOLO .pt checkpoint Ultralytics 8.4.215 can read",
+        ),
     ],
     ids=["not-a-pt", "unreadable-pt"],
 )
@@ -377,6 +380,7 @@ def test_a_file_that_is_not_a_checkpoint_is_named_inline(
 
     fake = types.ModuleType("ultralytics")
     fake.YOLO = _yolo
+    fake.__version__ = "8.4.215"
     monkeypatch.setitem(sys.modules, "ultralytics", fake)
     w = tmp_path / name
     w.write_bytes(b"notes")

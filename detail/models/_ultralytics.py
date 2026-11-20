@@ -74,16 +74,19 @@ def read_checkpoint(weights_path: Path | str) -> "YOLO":
         raise UserInputError(
             f"{path.name} is empty, so it is not a YOLO .pt checkpoint; copy the file again"
         )
-    import_ultralytics()
+    ultralytics = import_ultralytics()
     from ultralytics import YOLO
 
     try:
         return YOLO(str(path))
     except _NOT_A_CHECKPOINT as exc:
+        # A checkpoint trained with another Ultralytics release can fail here too (a model
+        # part this version lacks), so the message names the version rather than guessing.
         raise UserInputError(
-            f"{path.name} is not a YOLO .pt checkpoint Ultralytics can read (cut short, or "
-            "another kind of file). Import the weights/best.pt an Ultralytics training "
-            "wrote"
+            f"{path.name} is not a YOLO .pt checkpoint Ultralytics "
+            f"{ultralytics.__version__} can read: it is cut short, another kind of file, or "
+            "saved by a different Ultralytics version. Import the weights/best.pt an "
+            "Ultralytics training wrote"
         ) from exc
 
 
