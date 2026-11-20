@@ -32,9 +32,10 @@ KINDS = ("stat", "open", "scandir")
 
 def _roots(root: Path) -> tuple[str, ...]:
     # Both spellings: macOS's tmp_path is a /var symlink into /private/var, and the code under
-    # test may hold either form.
+    # test may hold either form. ``normcase``: on Windows ``c:\`` and ``C:\`` are one disk,
+    # and a case-sensitive prefix would stop counting, so a read-cost guard would pass (#66).
     spellings = {os.path.abspath(root), os.path.realpath(root)}
-    return tuple(s.rstrip(os.sep) + os.sep for s in spellings)
+    return tuple(os.path.normcase(s.rstrip(os.sep) + os.sep) for s in spellings)
 
 
 @contextlib.contextmanager
@@ -52,7 +53,7 @@ def counting(
         def wrapped(*args, **kwargs):
             target = args[0] if args else kwargs.get("path", kwargs.get("file"))
             if isinstance(target, (str, bytes, os.PathLike)):
-                path = os.path.abspath(os.fsdecode(os.fspath(target)))
+                path = os.path.normcase(os.path.abspath(os.fsdecode(os.fspath(target))))
                 if (path + os.sep).startswith(prefixes):
                     seen[kind] += 1
             return func(*args, **kwargs)
