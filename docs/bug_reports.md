@@ -130,7 +130,10 @@ journalctl --since '-3h' -p warning                              # Linux
 
 **Every platform.** `detail doctor` — the machine's install state, run in a fresh subprocess
 so it reflects the current install rather than the app's memory of it (`detail/cli.py`, and
-`docs/cli.md`). Paste it verbatim; do not summarize it.
+`docs/cli.md`). Its first section, **System**, is the environment block: the build and
+commit, OS, Python and the kind of environment, CPU, RAM, GPU, the NVIDIA driver and the
+newest CUDA it supports, the CUDA the PyTorch build targets, and every package version. Paste
+it verbatim; do not summarize it.
 
 ### Ask the human while they are standing there
 

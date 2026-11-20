@@ -1,4 +1,5 @@
-"""``hostinfo`` — the machine block of the performance report (#394, OQ-RUN-9).
+"""``hostinfo`` — the machine block of the performance report (#394, OQ-RUN-9), and the System
+section of ``detail doctor`` (the tests after ``collect``'s).
 
 ``psutil`` is a core dependency now, so RAM is a real measurement on a normal install; these
 tests pin the three things that made it worth a guard: ``psutil`` is *declared* core, a present
@@ -18,6 +19,7 @@ from __future__ import annotations
 import builtins
 import pathlib
 import re
+import sys
 import tomllib
 
 from detail.core import hostinfo
@@ -94,3 +96,100 @@ def test_the_facts_round_trip_through_safe_yaml():
 
     facts = hostinfo.collect()
     assert yaml.safe_load(yaml.dump(facts, sort_keys=False)) == facts
+
+
+# --- `detail doctor`'s System section ----------------------------------------------------
+#
+# The bug-report form asks for `detail doctor` pasted whole, so these rows are what a fixer on
+# another machine gets instead of asking. Before them, doctor printed install checks only: no
+# build, OS, Python, GPU name, driver or CUDA, so every report needed a second round trip.
+
+_NVIDIA_SMI_HEADER = """\
+Wed Nov 19 09:12:44 2026
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.82.07              Driver Version: 580.82.07      CUDA Version: 13.0     |
+|-----------------------------------------+------------------------+----------------------+
+"""
+
+SYSTEM_ROWS = [
+    "Build",
+    "OS",
+    "Python",
+    "CPU",
+    "RAM",
+    "GPU",
+    "NVIDIA driver",
+    "PyTorch",
+    "Packages",
+]
+
+
+def test_nvidia_smi_header_gives_the_driver_and_the_newest_cuda_it_supports():
+    assert hostinfo.parse_nvidia_smi(_NVIDIA_SMI_HEADER) == ("580.82.07", "13.0")
+
+
+def test_nvidia_smi_output_without_a_header_gives_neither():
+    assert hostinfo.parse_nvidia_smi("NVIDIA-SMI has failed") == (None, None)
+
+
+def test_the_system_report_has_every_row_a_bug_report_needs_in_order():
+    assert [label for label, _ in hostinfo.system_report()] == SYSTEM_ROWS
+
+
+def test_no_system_row_carries_a_path_or_the_home_folder():
+    """The rows are pasted into public issues. A row naming the environment's folder would
+    publish the reporter's user name; the Python row says which *kind* of environment instead.
+    """
+    text = "\n".join(value for _, value in hostinfo.system_report())
+    for leak in (str(pathlib.Path.home()), sys.prefix, "/Users/", "/home/", ":\\"):
+        assert leak not in text, leak
+
+
+def test_package_versions_are_read_from_detail_metadata_without_tooling_extras(
+    monkeypatch,
+):
+    declared = [
+        "numpy>=2",
+        'pytest>=8; extra == "dev"',
+        'ultralytics<8.5,>=8.4; extra == "yolo"',
+        'pyobjc-framework-Cocoa; sys_platform == "darwin" and extra == "gui"',
+        "mike; extra == 'docs'",
+        'numpy<3; extra == "analysis"',  # declared twice: reported once
+    ]
+    monkeypatch.setattr(hostinfo.metadata, "requires", lambda name: declared)
+    monkeypatch.setattr(hostinfo.metadata, "version", lambda name: "1.0")
+    names = [name for name, _ in hostinfo.package_versions()]
+    assert names == ["numpy", "ultralytics", "pyobjc-framework-Cocoa", "sam3"]
+
+
+def test_a_declared_package_that_is_not_installed_is_left_out(monkeypatch):
+    def _version(name):
+        if name == "ultralytics":
+            raise hostinfo.metadata.PackageNotFoundError(name)
+        return "1.0"
+
+    monkeypatch.setattr(
+        hostinfo.metadata, "requires", lambda name: ["numpy", "ultralytics"]
+    )
+    monkeypatch.setattr(hostinfo.metadata, "version", _version)
+    assert hostinfo.package_versions() == [("numpy", "1.0"), ("sam3", "1.0")]
+
+
+def test_the_real_install_reports_its_core_packages_and_not_its_test_runner():
+    names = {name for name, _ in hostinfo.package_versions()}
+    assert {"numpy", "zarr", "click"} <= names
+    assert "pytest" not in names  # installed here, but only by the dev extra
+
+
+def test_the_system_report_survives_a_torch_that_will_not_import(monkeypatch):
+    real_import = builtins.__import__
+
+    def _no_torch(name, *args, **kwargs):
+        if name == "torch" or name.startswith("torch."):
+            raise ImportError("no torch")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_torch)
+    rows = dict(hostinfo.system_report())
+    assert rows["PyTorch"] == "not installed, or fails to import"
+    assert rows["GPU"] == "none that PyTorch can use"

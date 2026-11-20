@@ -19,6 +19,7 @@ import errno
 import os
 import subprocess
 import sys
+import textwrap
 import threading
 from pathlib import Path
 from pathlib import PurePath
@@ -7342,18 +7343,36 @@ _DOCTOR_GLYPH = {
     "unknown": "?",
     "skipped": "–",
 }
+_DOCTOR_LABEL_WIDTH = 14
+_DOCTOR_WIDTH = 88
+
+
+def _doctor_fact(label: str, value: str) -> str:
+    """One System row, its value wrapped under itself (the package list runs long)."""
+    return textwrap.fill(
+        value,
+        width=_DOCTOR_WIDTH,
+        initial_indent=f"  {label:<{_DOCTOR_LABEL_WIDTH}} ",
+        subsequent_indent=" " * (_DOCTOR_LABEL_WIDTH + 3),
+        break_long_words=False,
+        break_on_hyphens=False,
+    )
 
 
 @main.command("doctor")
 def doctor() -> None:
     """Check this machine's setup (§1): PyTorch/CUDA, the SAM 3 backend, Hugging Face, and
-    model weights. Runs the checks in a fresh subprocess, so it reflects the *current* install
-    state (handy for debugging an install over SSH). Each failing check names the docs page
-    that explains the fix and prints the copy-paste command that fixes it. Exits non-zero if
-    any check failed.
+    model weights. It starts with a System section — the build, OS, Python, GPU, NVIDIA driver,
+    PyTorch build and package versions — made to be pasted into a bug report whole. Runs the
+    checks in a fresh subprocess, so it reflects the *current* install state (handy for
+    debugging an install over SSH). Each failing check names the docs page that explains the
+    fix and prints the copy-paste command that fixes it. Exits non-zero if any check failed.
     """
     from detail.api import checks as api_checks
 
+    click.echo("System")
+    for label, value in api_checks.system_report():
+        click.echo(_doctor_fact(label, value))
     results = {r.check_id: r for r in api_checks.run_checks()}
     groups: dict[str, list] = {}
     for info in api_checks.list_checks():
