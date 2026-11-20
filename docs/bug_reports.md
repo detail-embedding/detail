@@ -31,8 +31,9 @@ signal that platform ever sends** — and Windows is untested by CI besides (`CL
 coverage, not one bug.
 
 **What this doc is not.** It does not govern how a *user* writes an issue. Users are served by
-`.github/ISSUE_TEMPLATE/bug_report.md`, which GitHub puts in front of them; nothing here
-should ever be quoted at someone reporting a problem. It also does not govern *fixing* — that
+the issue forms in `.github/ISSUE_TEMPLATE/` (bug report, docs problem, feature request),
+which GitHub puts in front of them; nothing here should ever be quoted at someone reporting a
+problem. It also does not govern *fixing* — that
 is `CLAUDE.md`'s "Fixing a bug means fixing its class", which begins where a good report ends.
 
 **Relationship to `CLAUDE.md`.** This doc is the single full home for these rules, so they
@@ -146,9 +147,19 @@ Ask them, and record the answers in the report as answers — not as assumptions
 
 ## 4. Writing the report
 
-Use `.github/ISSUE_TEMPLATE/bug_report.md`. Its headings are the required sections;
-`gh issue create --template "Bug report"` gets them from an agent's side (`--template` takes the
-template's front-matter `name:`, not its file name).
+A user files through the bug report form, `.github/ISSUE_TEMPLATE/bug_report.yml`. From a
+terminal, copy `.github/bug_report_body.md`, fill it in, and file it:
+
+```sh
+gh issue create --type Bug --label bug --title "<what broke, where>" --body-file report.md
+```
+
+`gh` cannot fill in an issue form, and it skips the form's required fields, so the body file
+is what keeps a terminal report complete. Its `###` headings are the form's fields in the
+same order, which is how GitHub writes a submitted form, so both kinds of report read alike;
+`tests/test_issue_forms.py` keeps them in step. The deeper sections below (evidence, what
+you ruled out, the hypothesis, the discriminating test) go under its *What you've ruled out,
+or a guess at the cause* heading.
 
 **Separate observation from inference, visibly.** Evidence goes in a section of measurements
 with units and timestamps. The hypothesis goes in its own section, and says in its own words
@@ -256,8 +267,9 @@ Settled decisions (most recent first). Reverse or amend here; don't re-litigate 
 
 | Decision | Rationale |
 | --- | --- |
+| Issue forms with required fields, and blank issues off for everyone below Write access (reverses "blank issues stay enabled") | for public release: a Markdown template enforced nothing, and most reports from outside would arrive without `detail doctor`. A one-field docs form covers the two-line typo the old decision protected, and GitHub still offers maintainers a blank issue (§4) |
+| A terminal report uses `.github/bug_report_body.md`, whose headings are the bug form's fields | `gh` cannot fill in a form, so without the body file a terminal report has no structure at all; matching headings keep the two kinds of report alike, and a test keeps them in step (§4) |
 | This doc is the full home for the reporting rules; `CLAUDE.md` keeps a pointer + checklist | one home so the rules can't diverge across two files (§1); mirrors `docs_design.md`'s arrangement |
-| Blank issues stay enabled — no `ISSUE_TEMPLATE/config.yml` | the template is a checklist for whoever diagnoses, not a gate; forcing it onto a two-line docs typo is friction that gets routed around (§4) |
 | The training-deadlock worked example stays in full, in this doc rather than in `CLAUDE.md` | the gaps only teach with their evidence attached, and `CLAUDE.md` is loaded every session and is for operative rules, not case history (§6) |
 | Two CPU-time samples are required, not encouraged | one sample cannot distinguish "idle" from "between writes"; this is the single measurement that made the training-deadlock report diagnosable at all (§3) |
 | Reports name a discriminating test rather than only a hypothesis | the degenerate-signature case is common and no amount of symptom detail resolves it; only the reporter can cheaply run the test (§5) |

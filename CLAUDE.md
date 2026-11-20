@@ -86,7 +86,8 @@ evidence a change is green. Tests, docs and the PR body are the `ship-a-change` 
 A report from a machine the fixer cannot reach is the only record of that machine's state.
 **Collect ruthlessly, conclude tentatively**: capture what decays first (the terminal scrollback)
 and include the one cheap command that separates the hypotheses still standing. Procedure: the
-`file-a-bug-report` skill. Spec: `docs/bug_reports.md`. Form: `.github/ISSUE_TEMPLATE/bug_report.md`.
+`file-a-bug-report` skill. Spec: `docs/bug_reports.md`. Form: `.github/ISSUE_TEMPLATE/bug_report.yml`;
+from a terminal, `.github/bug_report_body.md` with `gh issue create --body-file`.
 
 ## Hard Rules
 
