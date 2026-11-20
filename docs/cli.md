@@ -1415,8 +1415,11 @@ model** catalog (shared across every experiment on the machine):
   The check cannot catch a pair named the wrong way round (left and right swapped). The
   skeleton is added to the library unless an entry with the same skeleton is there, and the
   command prints the entry. Use the model as `keypoints detect --model <id>`. `--skeleton` is
-  refused for a detection checkpoint. An import that fails or is stopped part-way adds
-  nothing to the catalog, so the same name can be imported again.
+  refused for a detection checkpoint. Only a `.pt` checkpoint is read: another file (an
+  exported `.onnx`, a text file, an empty or cut-short `.pt`) is refused with its name; the message says a checkpoint from a different
+  Ultralytics version can fail this way too. An
+  import that fails or is stopped part-way adds nothing to the catalog, so the same name can
+  be imported again.
 - `show <id>`: print one of your models' metadata + provenance (the detail page, as text),
   with its role, and for a keypoint model its skeleton: the library entry, points and pairs.
 - `set-meta <id> [--made-by] [--description] [--notes] [--preview <image>]`: edit a
@@ -1439,7 +1442,15 @@ List the registered processing modules and their dependency chain.
 
 ### `doctor`
 Check this machine's setup: PyTorch / CUDA, the SAM 3 backend package, Hugging Face,
-and model weights. It runs the checks in a fresh subprocess, so it reflects the
+and model weights.
+
+It starts with a **System** section, which is what a bug report needs: your build of
+DETAIL and its commit, the operating system, the Python version and what kind of
+environment it runs in, CPU, RAM, GPU, the NVIDIA driver and the newest CUDA it supports,
+which CUDA your PyTorch was built for, and the version of every package DETAIL uses. No line
+in it names a folder or your user name, so you can paste the whole section into an issue.
+
+It runs the checks in a fresh subprocess, so it reflects the
 *current* install state (handy for debugging a setup over SSH). Each failing check
 names the docs page that explains the fix; when a backend package is missing it also
 prints the full copy-paste install sequence for this machine, with the real detected

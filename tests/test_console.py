@@ -5,9 +5,9 @@ at all.** Python takes ``sys.stdout``'s encoding from the locale — ``cp1252`` 
 default Windows console, ASCII under ``LANG=C`` — and the default error handler *raises*,
 so the first character the stream cannot represent aborts the command mid-output with a
 ``UnicodeEncodeError`` traceback. ``detail doctor`` printed its ``Environment`` header and
-died on the check mark of its first status row. That made the one command
-``.github/ISSUE_TEMPLATE/bug_report.md`` asks a reporter to paste ("Paste ``detail
-doctor`` verbatim") the one command a Windows reporter could not run — and Windows is the
+died on the check mark of its first status row. That made the one command the bug report
+form (``.github/ISSUE_TEMPLATE/bug_report.yml``) asks a reporter to paste the one command
+a Windows reporter could not run — and Windows is the
 platform CI never exercises, so its reports are often the only signal it sends.
 
 **How it hid.** Three ways at once. CI is Linux and the dev box is macOS, and both default

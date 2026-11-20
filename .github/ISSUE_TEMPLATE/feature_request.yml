@@ -1,0 +1,27 @@
+name: Feature request
+description: Something DETAIL doesn't do yet that would help your work.
+type: Feature
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The task or question in your own work, and where DETAIL gets in the way today.
+      placeholder: >-
+        I compare grooming bouts across two cohorts, and I export each recording's clusters
+        to a spreadsheet by hand to line them up.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would help?
+      description: What you'd like DETAIL to do. A sketch of the screen or command is welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: workaround
+    attributes:
+      label: How do you do it now?
+      description: Any workaround you use today, even a slow one.

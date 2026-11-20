@@ -1,0 +1,19 @@
+name: Docs problem
+description: Something in the documentation is wrong, missing or hard to follow.
+labels: ["documentation"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Which page, and what's wrong?
+      description: Paste the page's address, or name the page and its section. Then say what is wrong or missing.
+      placeholder: >-
+        Getting started, GPU and CUDA: the install command fails on Windows because it uses
+        a backslash.
+    validations:
+      required: true
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: What should it say?
+      description: If you know, the wording or the step that would have helped.

@@ -132,6 +132,8 @@ def import_model(
 
     Raises:
         FileNotFoundError: ``weights_path`` (or ``preview``) does not exist.
+        UserInputError: ``weights_path`` is not a checkpoint the family's ``introspect``
+            reads (for YOLO, not a ``.pt`` checkpoint: ``_ultralytics.read_checkpoint``).
         ValueError: Unknown / non-importable family, a family that disagrees with the
             checkpoint's task, a pose checkpoint without a skeleton (or with one that does
             not fit it), a skeleton for a detection checkpoint, a class-less checkpoint, an

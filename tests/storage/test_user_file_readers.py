@@ -26,6 +26,15 @@ accept ``nan`` and ``inf``, which then reached ``round(seconds * 1e9)`` as a ``V
 option in ``detail/cli*.py`` takes its type from ``detail/cli_numbers.py``;
 :func:`float_option_violations` fails on a ``type=float`` or a ``FloatRange`` call anywhere
 else in those modules.
+
+**Checkpoints (#33 finding 7).** ``model import`` of a file that is not a YOLO checkpoint (a
+text file, an empty or cut-short ``.pt``, a PyTorch file of something else) showed whatever
+``YOLO(path)`` raised: a ``TypeError``, ``AttributeError`` or ``RuntimeError`` traceback, or
+a missing-``onnxruntime`` error for an ``.onnx``, which with ``onnxruntime`` installed would
+have been stored as ``weights/best.pt``. A checkpoint a user picks is read by
+``detail/models/_ultralytics.py::read_checkpoint``, which checks the suffix and size first and
+turns the three types Ultralytics raised into a ``UserInputError`` naming the file. Every
+other ``YOLO(...)`` call is listed in :data:`CHECKPOINT_ALLOWED` with why it may stay.
 """
 
 import ast
@@ -118,6 +127,23 @@ CSV_ALLOWED: dict[str, tuple[int, str]] = {
 }
 
 
+#: The Ultralytics checkpoint reader, and the other ``YOLO(...)`` calls with why each may stay.
+_CHECKPOINT_SEAM = "models/_ultralytics.py"
+_LOADS_ITS_OWN = (
+    "load() of the weights/best.pt DETAIL copied into a catalog or experiment, after "
+    "read_checkpoint accepted the file at import or training wrote it"
+)
+CHECKPOINT_ALLOWED: dict[str, tuple[int, str]] = {
+    "models/trained_yolo.py": (1, _LOADS_ITS_OWN),
+    "models/yolo_pose.py": (1, _LOADS_ITS_OWN),
+    "trainers/ultralytics_yolo.py": (
+        2,
+        "a base model named from Ultralytics' own list, and the last.pt a training wrote; "
+        "a failure there is the training job's recorded error",
+    ),
+}
+
+
 def _parser_calls(source: str, names: frozenset[str], module: str) -> int:
     """How many calls in ``source`` reach ``<module>.<name>`` or a bare imported ``name``.
 
@@ -187,8 +213,40 @@ def test_a_user_csv_is_read_through_the_one_opener():
     assert _drift(_CSV_CALLS, "csv", _CSV_SEAM, CSV_ALLOWED) == []
 
 
+def test_a_picked_checkpoint_is_read_through_the_one_reader():
+    """A checkpoint a user picks is read by ``_ultralytics.read_checkpoint``, which refuses a
+    file that is not one by name; a bare ``YOLO(path)`` showed Ultralytics' own exception
+    (#33 finding 7)."""
+    assert (
+        _drift(frozenset({"YOLO"}), "ultralytics", _CHECKPOINT_SEAM, CHECKPOINT_ALLOWED)
+        == []
+    )
+
+
+def test_the_scan_would_catch_a_bare_yolo_checkpoint_read():
+    source = textwrap.dedent("""
+        def introspect(path):
+            import_ultralytics()
+            from ultralytics import YOLO
+
+            return YOLO(str(path)).names
+
+        def other(path):
+            import ultralytics
+
+            return ultralytics.YOLO(
+                str(path)
+            )
+        """)
+    assert _parser_calls(source, frozenset({"YOLO"}), "ultralytics") == 2
+
+
 def test_every_exemption_says_why():
-    for rel, (count, why) in {**YAML_ALLOWED, **CSV_ALLOWED}.items():
+    for rel, (count, why) in {
+        **YAML_ALLOWED,
+        **CSV_ALLOWED,
+        **CHECKPOINT_ALLOWED,
+    }.items():
         assert count > 0 and len(why) > 10, rel
 
 
