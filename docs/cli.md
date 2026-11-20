@@ -1385,9 +1385,7 @@ model** catalog (shared across every experiment on the machine):
   skeleton is added to the library unless an entry with the same skeleton is there, and the
   command prints the entry. Use the model as `keypoints detect --model <id>`. `--skeleton` is
   refused for a detection checkpoint. Only a `.pt` checkpoint is read: another file (an
-  exported `.onnx`, a text file, an empty or cut-short `.pt`) is refused with its name. A
-  checkpoint from a different Ultralytics version, whose model uses a part the installed one
-  lacks, is refused as that: the message names the installed version and the missing part. An
+  exported `.onnx`, a text file, an empty or cut-short `.pt`) is refused with its name. An
   import that fails or is stopped part-way adds nothing to the catalog, so the same name can
   be imported again.
 - `show <id>`: print one of your models' metadata + provenance (the detail page, as text),

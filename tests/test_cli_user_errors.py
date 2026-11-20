@@ -432,7 +432,6 @@ def _ultralytics_raising(monkeypatch, error: BaseException) -> None:
 
     fake = types.ModuleType("ultralytics")
     fake.YOLO = _yolo
-    fake.__version__ = "8.4.215"
     monkeypatch.setitem(sys.modules, "ultralytics", fake)
 
 
@@ -460,42 +459,8 @@ def _ultralytics_raising(monkeypatch, error: BaseException) -> None:
             RuntimeError("[enforce fail at inline_container.cc:179]"),
             ("zip.pt is not a YOLO .pt checkpoint Ultralytics can read",),
         ),
-        (
-            "newer.pt",
-            b"x",
-            AttributeError(
-                "Can't get attribute 'FutureBlock' on <module "
-                "'ultralytics.nn.modules.block' from 'block.py'>"
-            ),
-            (
-                "newer.pt was saved by a different Ultralytics version",
-                "(8.4.215)",
-                "ultralytics.nn.modules.block.FutureBlock",
-                "trained with Ultralytics 8.4",
-            ),
-        ),
-        (
-            "newmod.pt",
-            b"x",
-            ModuleNotFoundError(
-                "No module named 'ultralytics.nn.future'", name="ultralytics.nn.future"
-            ),
-            (
-                "newmod.pt was saved by a different Ultralytics version",
-                "ultralytics.nn.future",
-            ),
-        ),
     ],
-    ids=[
-        "text",
-        "onnx",
-        "empty",
-        "type-error",
-        "attribute-error",
-        "runtime-error",
-        "newer-ultralytics-class",
-        "newer-ultralytics-module",
-    ],
+    ids=["text", "onnx", "empty", "type-error", "attribute-error", "runtime-error"],
 )
 def test_finding_7_import_of_a_file_that_is_not_a_checkpoint(
     name, body, error, words, model_catalog, tmp_path, monkeypatch
@@ -519,20 +484,6 @@ def test_finding_7_a_bug_inside_ultralytics_keeps_its_traceback(
     weights.write_bytes(b"x")
     result = _invoke("model", "import", weights)
     assert isinstance(result.exception, KeyError), result.output
-
-
-def test_finding_7_a_missing_third_party_module_keeps_its_traceback(
-    model_catalog, tmp_path, monkeypatch
-):
-    """Only a part *of Ultralytics* is a version mismatch: a checkpoint needing some other
-    package that is not installed is not one, and is not called one."""
-    _ultralytics_raising(
-        monkeypatch, ModuleNotFoundError("No module named 'dill'", name="dill")
-    )
-    weights = tmp_path / "best.pt"
-    weights.write_bytes(b"x")
-    result = _invoke("model", "import", weights)
-    assert isinstance(result.exception, ModuleNotFoundError), result.output
 
 
 _SPATIAL_HEADER = (
