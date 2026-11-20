@@ -136,8 +136,9 @@ first. Hover over a clip to pause the others; double-click it to open it at full
     5. **Most typical ▾**: the order of the clips: **Most typical** first, **Least typical**
        first, or **Random**. The least typical ones show where a cluster's edges are.
     6. **Show ▾**: what the clips show: the video, the animal's outline, a trail of where the
-       outline has been, the keypoints, **As recorded** or **Aligned** (turned the way the
-       embedding saw them), and how much footage either side.
+       outline has been, the keypoints, **As recorded** or **Aligned** (head up from
+       above; from the side, flipped to face right as the embedding saw them), and how much
+       footage either side.
     7. **Export ▾**: saves the clips (see *Save the clips*, below).
     8. **Size**: how big the clips are.
     9. **Label this behavior**: type a label for the chosen cluster (step 5).
@@ -239,8 +240,9 @@ step through the cluster's clips in the montage's order.
        and traces of the animal's speed, size, length, bend and turning under it.
     4. **Blind mode**: hides which cluster and recording the clip is from, to judge it
        without knowing.
-    5. **As recorded**: **As recorded** plays the video as filmed; **Aligned** turns it the
-       way the embedding saw it, the head pointing right.
+    5. **As recorded**: **As recorded** plays the video as filmed; **Aligned** turns it so
+       the head points up. A side view (an embedding aligned by **mirror**) is flipped to face
+       right instead, as the embedding saw it, and never turned.
     6. **Export ▾**: saves what you see as a video or a GIF, or this frame as a picture.
     7. **The slider**: moves through the clip.
     8. **Pause**: pauses or plays the clip.

@@ -80,6 +80,7 @@ from detail.api.animation import (
 )
 from detail.api.clip_views import (
     ClipViewSettings,
+    aligned_matrix,
     blind_aliases,
     draw_footage,
     draw_masks_pane,
@@ -87,7 +88,6 @@ from detail.api.clip_views import (
     frame_turn,
     mark_no_axis,
     turn_mask,
-    turn_matrix,
     turn_picture,
 )
 from detail.core import cpu
@@ -196,8 +196,10 @@ class MontageLayers:
     #: Which keypoints leave a trail, by name; ``None`` is every point.
     trail_points: tuple[str, ...] | None = None
     #: **Aligned**: each tile frame turned about the animal's middle so its body points up
-    #: (``clip_views.turn_matrix``, the clip window's and the live montage's own turn), the crop
-    #: kept at its as-recorded size. A frame with no body axis is drawn as recorded and marked;
+    #: (``clip_views.aligned_matrix``, the clip window's and the live montage's own turn), the
+    #: crop kept at its as-recorded size; a side-view (``mirror``) run's frames are flipped where
+    #: its embedding flipped them, not turned. A frame with no body axis is drawn as recorded
+    #: and marked;
     #: a run with no keypoints or heading definition draws every frame as recorded.
     aligned: bool = False
 
@@ -760,9 +762,15 @@ class ClusterMontage:
                         read, clip.subject, picture, layers, prepared.crop, size, fill
                     )
                 )
-            matrix = turn_matrix(
-                ends[0], ends[1], max(x1 - x0, y1 - y0, 1), (size, size)
+            matrix = aligned_matrix(
+                ends[0], ends[1], max(x1 - x0, y1 - y0, 1), (size, size), read.flip
             )
+            if matrix is None:
+                return mark_no_axis(
+                    self._as_recorded(
+                        read, clip.subject, picture, layers, prepared.crop, size, fill
+                    )
+                )
             tile = turn_picture(picture, matrix, (size, size), fill)
             if layers.raw and layers.mask:
                 tile = _outline_turned(

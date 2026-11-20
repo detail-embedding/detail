@@ -31,6 +31,7 @@ import threading
 
 import cv2
 import numpy as np
+import yaml
 
 from detail.analysis import body_axis
 from detail.analysis.body_axis import BodyAxis
@@ -42,6 +43,7 @@ from detail.api.animation import (
     sample_offsets_ns,
     write_animation,
 )
+from detail.core import atomic
 from detail.core import visualize
 from detail.core.dataclasses import Detection
 from detail.core.errors import UserInputError
@@ -85,7 +87,9 @@ class ClipViewSettings:
     pose_aligned: bool = False
     #: **Aligned** orientation: every picture — the footage with what is drawn on it, the masks
     #: pane, the pose pane — turned about the animal's middle so its body points up, frame by
-    #: frame (:func:`turn_matrix`). A frame with no body axis is drawn as recorded and marked
+    #: frame (:func:`turn_matrix`); a side-view (``mirror``) run's pictures are flipped where
+    #: its embedding flipped them instead (:func:`aligned_matrix`). A frame with no body axis
+    #: is drawn as recorded and marked
     #: (:func:`mark_no_axis`). ``pose_aligned`` is the pose pane's own, older alignment (scaled
     #: and centred too); with it on, the pose pane is not turned a second time.
     aligned: bool = False
@@ -137,6 +141,10 @@ class ClipFrame:
     point_trail: PointTrail | None = None
     centre_trail: np.ndarray | None = None
     mask_history: list | None = None
+    #: How a **side-view** embedding (``align: mirror``) drew this frame: ``1.0`` flipped,
+    #: ``0.0`` not, NaN where it has no heading here; ``None`` for any other run, whose
+    #: Aligned picture is turned (:func:`aligned_matrix`).
+    flip: float | None = None
 
     def subject(self, track_id: int) -> Detection | None:
         """The clip's animal's detection on this frame, or ``None`` when it is not here."""
@@ -416,6 +424,48 @@ def turn_matrix(
     return np.hstack([linear, shift[:, None]])
 
 
+def mirror_matrix(
+    front: np.ndarray,
+    back: np.ndarray,
+    side: float,
+    out_wh: tuple[int, int],
+    flipped: bool,
+) -> np.ndarray:
+    """The ``2 × 3`` affine of a **side-view** run's Aligned picture: no turn, flipped left to
+    right about the body's middle where ``flipped`` (the embedding's own flip, §14 ``mirror``),
+    that middle at the centre of an ``out_wh`` picture, a ``side``-pixel span scaled to the
+    output's height — :func:`turn_matrix`'s placement without its rotation."""
+    front = np.asarray(front, dtype=np.float64)
+    back = np.asarray(back, dtype=np.float64)
+    centre = (front + back) / 2.0
+    scale = float(out_wh[1]) / max(float(side), 1e-6)
+    linear = np.array([[-scale if flipped else scale, 0.0], [0.0, scale]])
+    shift = np.array([out_wh[0] / 2.0, out_wh[1] / 2.0]) - linear @ centre
+    return np.hstack([linear, shift[:, None]])
+
+
+def aligned_matrix(
+    front: np.ndarray,
+    back: np.ndarray,
+    side: float,
+    out_wh: tuple[int, int],
+    flip: float | None,
+) -> np.ndarray | None:
+    """The **Aligned** picture's affine for one frame, the way the clip's embedding aligned:
+    :func:`turn_matrix` (body up) for an overhead or unaligned run (``flip`` ``None``), and
+    :func:`mirror_matrix` for a side-view one (``flip`` the embedding's flag), so a side view
+    stays a side view, as the embedding saw it. ``None`` where a side-view run has no heading
+    on this frame (``flip`` NaN): the frame is drawn as recorded and marked, never guessed.
+
+    Every surface that draws a clip Aligned (the clip window, the live tiles, the exports)
+    takes its matrix from here, so none of them turns a side view upright."""
+    if flip is None:
+        return turn_matrix(front, back, side, out_wh)
+    if not np.isfinite(flip):
+        return None
+    return mirror_matrix(front, back, side, out_wh, bool(flip))
+
+
 def turn_picture(
     picture: np.ndarray, matrix: np.ndarray, out_wh: tuple[int, int], fill
 ) -> np.ndarray:
@@ -512,7 +562,7 @@ def turn_views(
     pose: np.ndarray | None,
 ) -> tuple[np.ndarray | None, np.ndarray, np.ndarray | None, bool]:
     """The three pictures in the **Aligned** orientation (``settings.aligned``): each turned
-    by the one :func:`turn_matrix` of this frame's axis, at the frame's own size. Returns
+    by the one :func:`aligned_matrix` of this frame's axis, at the frame's own size. Returns
     ``(footage, masks, pose, turned)``; ``turned`` is False on a frame with no axis, whose
     pictures come back as recorded with the footage (or, without it, the masks pane) marked.
 
@@ -527,7 +577,11 @@ def turn_views(
             return mark_no_axis(footage), masks, pose, False
         return footage, mark_no_axis(masks), pose, False
     wh = _wh(frame)
-    matrix = turn_matrix(ends[0], ends[1], wh[1], wh)
+    matrix = aligned_matrix(ends[0], ends[1], wh[1], wh, frame.flip)
+    if matrix is None:
+        if footage is not None:
+            return mark_no_axis(footage), masks, pose, False
+        return footage, mark_no_axis(masks), pose, False
     if footage is not None:
         footage = turn_picture(footage, matrix, wh, (0, 0, 0))
     masks = turn_picture(masks, matrix, wh, (255, 255, 255))
@@ -584,6 +638,11 @@ class ClipPoints:
     the front and which the back): the embedding run's own when it was aligned, else the
     experiment's one saved definition that fits this skeleton. Several that fit is a choice
     this window does not make for you, so it uses none and ``axis_note`` says why.
+
+    A **side-view** embedding (``align: mirror``) also hands over ``mirror``: ``(recording_dir,
+    tracking_run_id, alignment settings)``, from which :meth:`flips` reads the flip the
+    embedding made on each frame, so the Aligned picture flips where it flipped rather than
+    turning the animal upright.
     """
 
     def __init__(
@@ -596,6 +655,7 @@ class ClipPoints:
         definition: dict | None = None,
         axis_note: str | None = None,
         cutoff: float | None = None,
+        mirror: tuple[Path, str, dict] | None = None,
     ) -> None:
         self.run = run
         self.note = note
@@ -604,8 +664,10 @@ class ClipPoints:
         self.definition = definition
         self.axis_note = note if run is None else axis_note
         self.cutoff = cutoff
+        self._mirror = mirror
         self._series: dict[tuple[int, str], tuple | None] = {}
         self._typical: dict[int, float] = {}
+        self._flips: dict[int, dict[str, tuple[np.ndarray, np.ndarray]]] = {}
         self._lock = threading.Lock()
 
     @property
@@ -673,6 +735,15 @@ class ClipPoints:
         cutoff = meta.get("heading_cutoff")
         if cutoff is None:
             cutoff = meta.get("pose_min_score")
+        mirror = None
+        if meta.get("align") == "mirror" and meta.get("tracking_run_id"):
+            from detail.pipeline.embedding import _alignment_settings
+
+            mirror = (
+                Path(recording_dir),
+                str(meta["tracking_run_id"]),
+                _alignment_settings(meta),
+            )
         return cls(
             run,
             None,
@@ -681,7 +752,74 @@ class ClipPoints:
             definition=definition,
             axis_note=axis_note,
             cutoff=None if cutoff is None else float(cutoff),
+            mirror=mirror,
         )
+
+    def flips(self, track_id: int, part_stem: str, frames) -> np.ndarray | None:
+        """``(n,)`` float, how a **side-view** embedding drew one subject on part-local
+        ``frames`` of one part: ``1.0`` flipped, ``0.0`` not, NaN where it has no heading
+        (a gap longer than its *Max gap*, before the first or after the last heading). ``None``
+        for any other run: its Aligned picture is turned, not flipped (:func:`aligned_matrix`).
+
+        The flags are `pipeline.embedding.headings_for_run`'s at every frame with the run's own
+        settings, the one computation the embedding flips by, read whole once per subject.
+        """
+        if self._mirror is None:
+            return None
+        frames = np.asarray(frames, dtype=np.int64)
+        out = np.full(len(frames), np.nan, dtype=np.float64)
+        known = self._flip_series(int(track_id)).get(part_stem)
+        if known is None or not len(known[0]) or not len(frames):
+            return out
+        at = np.clip(np.searchsorted(known[0], frames), 0, len(known[0]) - 1)
+        hit = known[0][at] == frames
+        out[hit] = known[1][at[hit]]
+        return out
+
+    def _flip_series(self, track_id: int) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+        with self._lock:
+            found = self._flips.get(track_id)
+        if found is not None:
+            return found
+        from detail.analysis.body_axis import SOURCE_NONE
+        from detail.executor import rundir
+        from detail.pipeline.embedding import headings_for_run
+
+        recording_dir, tracking_run_id, settings = self._mirror
+        # A heading's angle is the same at any scale of the frame, so the recording's own
+        # size serves; the masks' size is read only when the recording records none.
+        mask_w, mask_h = self.frame_wh
+        if min(self.frame_wh) <= 0:
+            track_meta = yaml.safe_load(
+                atomic.read_text(
+                    recording_dir / "tracking" / tracking_run_id / "track.yaml"
+                )
+            )
+            detection_dir = (
+                recording_dir / "detections" / track_meta["detection_run_id"]
+            )
+            mask_h, mask_w = rundir.read_envelope(detection_dir)["mask_resolution"]
+        per_part = headings_for_run(
+            recording_dir,
+            tracking_run_id,
+            [track_id],
+            1,
+            settings,
+            (int(mask_h), int(mask_w)),
+        )
+        series = {}
+        for (_track, part_id), headings in per_part.items():
+            frames = np.asarray(headings["frame_idx"], dtype=np.int64)
+            flag = np.where(
+                np.asarray(headings["source"]) == SOURCE_NONE,
+                np.nan,
+                np.asarray(headings["mirrored"], dtype=np.float64),
+            )
+            order = np.argsort(frames, kind="stable")
+            series[part_id] = (frames[order], flag[order])
+        with self._lock:
+            self._flips[track_id] = series
+        return series
 
     def window(
         self, track_id: int, part_frame_counts: list[int], first: int, last: int

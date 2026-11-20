@@ -1970,7 +1970,17 @@ class ClipQueryPreview:
             point_trail=point_trail,
             centre_trail=centre_trail,
             mask_history=mask_history,
+            flip=self._flip(points, int(track_id), part_index, int(actual)),
         )
+
+    @staticmethod
+    def _flip(points, track_id: int, part_index: int, actual: int) -> float | None:
+        """A side-view embedding's flip on this frame (``ClipFrame.flip``), read only when
+        it is drawn Aligned would need it: ``None`` for any other run."""
+        if points.run is None:
+            return None
+        found = points.flips(track_id, points.part_stems[part_index], [actual])
+        return None if found is None else float(found[0])
 
     def clip_views(
         self,

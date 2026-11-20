@@ -419,14 +419,16 @@ class ClipTiles:
         source = tile.source_frames()
         stem = self._catalog.part_stem(clip.recording_id, part)
         xy, scores = points.rows_at(clip.subject, stem, source)
-        axes = None
+        axes = flips = None
         if look.aligned:
             axis = points.axis(clip.subject)
             if axis is not None:
                 axes = tile_axes(xy, scores, axis)
+                flips = points.flips(clip.subject, stem, source)
         tile.set_pose(
             axes=axes,
             points=(xy, scores, points.skeleton) if look.keypoints else None,
+            flips=flips,
         )
 
     def close(self) -> None:

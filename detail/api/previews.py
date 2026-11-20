@@ -707,6 +707,8 @@ class PreviewClip:
         #: normalized ``(n, 2, 2)`` (front, back), NaN where the frame has none; ``None`` draws
         #: every frame as recorded.
         self._axes: np.ndarray | None = None
+        #: A side-view run's flip per tile frame (``ClipPoints.flips``), or ``None``: turned.
+        self._flips: np.ndarray | None = None
         #: Keypoints drawn on the tile (:meth:`set_pose`): ``(points (n, K, 2), scores (n, K),
         #: skeleton)``, or ``None``.
         self._points: tuple | None = None
@@ -758,10 +760,13 @@ class PreviewClip:
         *,
         axes: np.ndarray | None = None,
         points: tuple | None = None,
+        flips: np.ndarray | None = None,
     ) -> None:
         """Turn the tiles so the body points up (``axes``: ``(n, 2, 2)`` normalized front and
         back per tile frame, NaN where there is none) and/or draw the keypoints on them
         (``points``: ``(points (n, K, 2), scores (n, K), skeleton)``), one row per tile frame.
+        A side-view run's ``flips`` (``(n,)``, ``ClipPoints.flips``) flip the tiles where its
+        embedding flipped them instead of turning them (``clip_views.aligned_matrix``).
 
         Raises:
             ValueError: a row count that is not the clip's.
@@ -769,31 +774,37 @@ class PreviewClip:
         for name, rows in (
             ("axes", axes),
             ("points", None if points is None else points[0]),
+            ("flips", flips),
         ):
             if rows is not None and len(rows) != len(self):
                 raise ValueError(
                     f"{name}: {len(rows)} rows for a clip of {len(self)} frames"
                 )
         self._axes = None if axes is None else np.asarray(axes, dtype=np.float64)
+        self._flips = None if flips is None else np.asarray(flips, dtype=np.float64)
         self._points = points
 
     def _matrix(self, offset: int) -> np.ndarray | None:
-        """The turn for tile ``offset`` (``clip_views.turn_matrix``), or ``None``: as recorded,
-        whether by choice or because the frame gives no axis."""
+        """The turn for tile ``offset`` (``clip_views.aligned_matrix``), or ``None``: as
+        recorded, whether by choice or because the frame gives no axis."""
         if self._axes is None:
             return None
         ends = self._axes[offset]
         if not np.isfinite(ends).all():
             return None
-        from detail.api.clip_views import turn_matrix
+        from detail.api.clip_views import aligned_matrix
 
         wh = np.array(self._reader.size, dtype=np.float64)
         front, back = ends[0] * wh, ends[1] * wh
         if np.allclose(front, back):
             return None
         x0, y0, x1, y1 = self.crop
-        return turn_matrix(
-            front, back, max(x1 - x0, y1 - y0, 1), (self.tile_px, self.tile_px)
+        return aligned_matrix(
+            front,
+            back,
+            max(x1 - x0, y1 - y0, 1),
+            (self.tile_px, self.tile_px),
+            None if self._flips is None else float(self._flips[offset]),
         )
 
     def frame_at(self, offset: int) -> np.ndarray:

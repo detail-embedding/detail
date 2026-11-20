@@ -7,6 +7,13 @@ body ends up pointing **up** (the clip window's Align pose direction), about its
 picture's centre; the footage, the masks and the keypoints turn together; a frame with no body axis
 is drawn as recorded and marked, never blank; a run with no keypoints or no heading definition
 says why, in the clip window's words.
+
+**A side view is never turned upright.** The class this guards: a surface that aligns a clip by
+the body axis alone, ignoring how its embedding aligned. A ``mirror`` (side-view) embedding flips
+the animal to face right and never turns it, yet every surface here once turned it nose-up,
+because the one turn read the axis and not the run. Each surface now takes the run's own flip
+(``ClipPoints.flips``, from ``pipeline.embedding.headings_for_run``) through
+:func:`clip_views.aligned_matrix`; the side-view tests below fail on any surface that turns one.
 """
 
 from __future__ import annotations
@@ -18,7 +25,12 @@ from detail.api import clip_views
 from detail.api.clip_views import ClipViewSettings
 from detail.api.run_preview import ClipQueryPreview
 from detail.core.visualize import MASK_TINT
-from tests.clip_fixtures import H, W, two_animals, with_heading, with_keypoints
+from tests.clip_fixtures import H
+from tests.clip_fixtures import W
+from tests.clip_fixtures import two_animals
+from tests.clip_fixtures import with_heading
+from tests.clip_fixtures import with_keypoints
+from tests.clip_fixtures import with_side_heading
 
 
 def _views(recording, frame=0, **kwargs):
@@ -52,6 +64,30 @@ def test_the_turn_puts_the_front_straight_above_the_back_at_the_centre(front, ba
     assert (fy + by) / 2 == pytest.approx(24), "its middle at the centre"
     length = np.hypot(*np.subtract(front, back))
     assert by - fy == pytest.approx(length), "a side of the output's height: no scaling"
+
+
+@pytest.mark.parametrize("flipped", [False, True])
+def test_a_side_view_is_flipped_about_its_middle_never_turned(flipped):
+    out = (64, 48)
+    front, back = np.array([10.0, 30.0]), np.array([20.0, 10.0])  # facing down-left
+    matrix = clip_views.aligned_matrix(front, back, 48, out, float(flipped))
+    moved = np.array([front, back]) @ matrix[:, :2].T + matrix[:, 2]
+    (fx, fy), (bx, by) = moved
+    assert (fx + bx) / 2 == pytest.approx(32) and (fy + by) / 2 == pytest.approx(24)
+    assert fy - by == pytest.approx(20), "no turn: the front stays 20 px below the back"
+    assert (
+        fx > bx
+    ) == flipped, "flipped to face right only where the embedding flipped"
+    assert abs(fx - bx) == pytest.approx(10)
+
+
+def test_an_overhead_run_turns_and_a_side_view_without_a_heading_is_not_placed():
+    front, back = np.array([10.0, 10.0]), np.array([20.0, 20.0])
+    assert np.array_equal(
+        clip_views.aligned_matrix(front, back, 48, (64, 48), None),
+        clip_views.turn_matrix(front, back, 48, (64, 48)),
+    )
+    assert clip_views.aligned_matrix(front, back, 48, (64, 48), float("nan")) is None
 
 
 def test_a_frame_with_no_axis_is_marked_not_blanked():
@@ -101,6 +137,44 @@ def test_a_frame_without_the_subjects_axis_plays_as_recorded_and_says_so(tmp_pat
     assert (turned.frame[2, 2] == 40).all(), "marked"
     assert np.array_equal(turned.frame[30:], plain.frame[30:]), "as recorded below it"
     assert np.array_equal(turned.masks, plain.masks)
+
+
+def _extent(picture) -> tuple[float, float, int, int]:
+    """``(centre row, centre col, height, width)`` of the tinted animal."""
+    rows, cols = np.nonzero(_tinted(picture))
+    return rows.mean(), cols.mean(), int(np.ptp(rows)), int(np.ptp(cols))
+
+
+def test_a_side_view_clip_is_flipped_as_its_embedding_flipped_it_not_turned_up(
+    tmp_path,
+):
+    recording = with_side_heading(with_keypoints(two_animals(tmp_path)))
+    preview = ClipQueryPreview(recording.dir.parent.parent)
+    frame = preview.clip_frame(recording.id, "emb_01", 0, 0, ClipViewSettings())
+    # Nose (12, 12) over tail (18, 18): facing up-left, so the embedding flipped it.
+    assert frame.flip == 1.0, "the run's own flip, read from its headings"
+    row, col, tall, wide = _extent(_views(recording, aligned=True).masks)
+    assert row == pytest.approx(24, abs=1) and col == pytest.approx(32, abs=1)
+    assert (tall, wide) == _extent(_views(recording).masks)[2:], "a square: not turned"
+
+
+def test_a_side_view_frame_its_embedding_has_no_heading_for_plays_as_recorded(tmp_path):
+    recording = with_side_heading(with_keypoints(two_animals(tmp_path)))
+    preview = ClipQueryPreview(recording.dir.parent.parent)
+    frame = preview.clip_frame(recording.id, "emb_01", 0, 2, ClipViewSettings())
+    assert frame.flip is not None and np.isnan(frame.flip)
+    aligned = _views(recording, frame=2, aligned=True)
+    assert (aligned.frame[2, 2] == 40).all(), "marked"
+    assert np.array_equal(aligned.masks, _views(recording, frame=2).masks)
+
+
+def test_an_overhead_run_has_no_flip(tmp_path):
+    recording = with_heading(with_keypoints(two_animals(tmp_path)))
+    preview = ClipQueryPreview(recording.dir.parent.parent)
+    assert (
+        preview.clip_frame(recording.id, "emb_01", 0, 0, ClipViewSettings()).flip
+        is None
+    )
 
 
 def test_without_a_heading_definition_aligned_changes_nothing_and_says_why(tmp_path):
@@ -227,6 +301,80 @@ def test_an_aligned_tile_turns_the_animal_up_about_its_middle(
         assert np.array_equal(marked[40:], as_recorded[40:]), "and drawn as recorded"
 
 
+def test_a_side_view_tile_is_flipped_never_turned_and_marked_without_a_heading(
+    processed_recording, write_vfr_video
+):
+    from detail.api import previews
+    from tests.api.test_previews import _timestamps, _tracked_recording
+
+    _built, recording, _ = _tracked_recording(processed_recording, write_vfr_video)
+    recording.build_preview()
+    t = _timestamps(recording)
+    reader = previews.PreviewReader.open(recording, 0, "track_01")
+    with reader.clip(0, int(t[10]), int(t[40]), 64, footage=False, trail=1) as clip:
+        _r, _c, tall, wide = _tile_shape(clip.frame_at(0))
+        ends = _ends_facing_right(clip)
+        for flip in (0.0, 1.0):
+            clip.set_pose(axes=ends, flips=np.full(len(ends), flip))
+            row, col, tall_now, wide_now = _tile_shape(clip.frame_at(0))
+            assert tall_now == pytest.approx(tall, abs=1), "not turned"
+            assert wide_now == pytest.approx(wide, abs=1)
+            assert row == pytest.approx(32, abs=1.5) and col == pytest.approx(
+                32, abs=1.5
+            )
+        clip.set_pose(axes=ends, flips=np.full(len(ends), np.nan))
+        assert (clip.frame_at(0)[1, 1] == 40).all(), "no heading: marked"
+
+
+def test_the_tile_source_hands_a_side_view_tile_its_runs_flips(
+    processed_recording, write_vfr_video, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from detail.analysis.body_axis import BodyAxis
+    from detail.api.clip_tiles import TileLook
+    from tests.api.test_clip_tiles import _tiles
+    from tests.api.test_previews import _timestamps, _tracked_recording
+
+    _built, recording, _ = _tracked_recording(processed_recording, write_vfr_video)
+    recording.build_preview()
+    t = _timestamps(recording)
+    tiles = _tiles(recording, [(int(t[10]), int(t[40]))])
+
+    def rows_at(track_id, stem, frames):
+        x = (2 + np.asarray(frames) // 4 + 5) / 40.0
+        points = np.stack(
+            [np.stack([x + 0.1, np.full(len(x), 0.25)], 1),
+             np.stack([x - 0.1, np.full(len(x), 0.25)], 1)], axis=1,
+        )  # fmt: skip
+        return points, np.full(points.shape[:2], 0.9)
+
+    asked = []
+
+    def flips(track_id, stem, frames):
+        asked.append((track_id, stem))
+        return np.zeros(len(frames))
+
+    points = SimpleNamespace(
+        run=object(),
+        skeleton=None,
+        rows_at=rows_at,
+        flips=flips,
+        axis=lambda track: BodyAxis((0,), (1,), (), (40, 40), None, 10.0),
+    )
+    monkeypatch.setattr(tiles._catalog, "points", lambda rid: points)
+    monkeypatch.setattr(tiles._catalog, "part_stem", lambda rid, part: "part_001")
+    plain = tiles.frame(0, 0, 64, True, look=TileLook(footage=False))
+    aligned = tiles.frame(0, 0, 64, True, look=TileLook(footage=False, aligned=True))
+    assert asked == [(0, "part_001")], "the side-view flips are asked for once per clip"
+    _r, _c, tall, wide = _tile_shape(plain)
+    _r, _c, tall_now, wide_now = _tile_shape(aligned)
+    assert tall_now == pytest.approx(tall, abs=1) and wide_now == pytest.approx(
+        wide, abs=1
+    )
+    tiles.close()
+
+
 def test_the_tile_source_reads_the_keypoints_once_and_turns_its_tiles(
     processed_recording, write_vfr_video, monkeypatch
 ):
@@ -257,6 +405,7 @@ def test_the_tile_source_reads_the_keypoints_once_and_turns_its_tiles(
         run=object(),
         skeleton=None,
         rows_at=rows_at,
+        flips=lambda track_id, stem, frames: None,
         axis=lambda track: BodyAxis((0,), (1,), (), (40, 40), None, 10.0),
     )
     monkeypatch.setattr(tiles._catalog, "points", lambda rid: points)
@@ -312,6 +461,23 @@ def test_an_aligned_export_tile_is_turned_and_a_frame_without_an_axis_is_marked(
         assert (marked[1, 1] == 40).all()
         raw = montage.tile(0, 0, MontageLayers(raw=True, mask=True, aligned=True), 48)
         assert _tinted(raw).any(), "the outline is placed by the same turn"
+    finally:
+        montage.close()
+
+
+def test_a_side_view_export_tile_is_not_turned(tmp_path):
+    from detail.api.clip_montage import MontageLayers
+
+    recording = with_side_heading(with_keypoints(two_animals(tmp_path)))
+    montage = _montage(recording)
+    try:
+        plain = montage.tile(0, 0, MontageLayers(mask=True), 48)
+        aligned = montage.tile(0, 0, MontageLayers(mask=True, aligned=True), 48)
+        row, col, tall, wide = _tile_shape(aligned)
+        assert (tall, wide) == _tile_shape(plain)[2:], "a square, not a diamond"
+        assert row == pytest.approx(24, abs=1.5) and col == pytest.approx(24, abs=1.5)
+        marked = montage.tile(0, 2, MontageLayers(mask=True, aligned=True), 48)
+        assert (marked[1, 1] == 40).all(), "no heading or axis: marked"
     finally:
         montage.close()
 

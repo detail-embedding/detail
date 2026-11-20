@@ -101,12 +101,12 @@ def two_animals(tmp_path):
     return _add_embedding(recording)
 
 
-def _name_keypoint_run(recording, run_id="kt_01", *, heading=False):
+def _name_keypoint_run(recording, run_id="kt_01", *, heading=False, align="rotate"):
     meta_path = recording.dir / "embeddings" / "emb_01" / "embedding.yaml"
     meta = yaml.safe_load(meta_path.read_text(encoding="utf-8-sig"))
     meta["keypoint_run_id"] = run_id
     if heading:
-        meta["align"] = "rotate"
+        meta["align"] = align
         meta["heading_definition"] = {"front": ["nose"], "back": ["tail"]}
     meta_path.write_text(yaml.dump(meta, sort_keys=False), encoding="utf-8")
 
@@ -151,6 +151,13 @@ def with_keypoints(recording):
 def with_heading(recording):
     """The embedding was aligned by nose (front) and tail (back)."""
     _name_keypoint_run(recording, heading=True)
+    return recording
+
+
+def with_side_heading(recording):
+    """The embedding was aligned by nose (front) and tail (back) as a **side view**
+    (``align: mirror``): flipped to face right, never turned."""
+    _name_keypoint_run(recording, heading=True, align="mirror")
     return recording
 
 
