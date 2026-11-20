@@ -48,6 +48,17 @@ class TrackingConfig(BaseModel):
         ),
         json_schema_extra={"scope": "selection", "label": "Field of view (resolved)"},
     )
+    exclude_classes: list[str] | None = Field(
+        None,
+        description=(
+            "Detection classes the tracker never takes as the subject or merges into it. "
+            "Omit it to leave out the detection model's auxiliary classes (the `cable` a "
+            "tethered distill adds), and nothing for any other model; `[]` tracks every "
+            "class. `validate()` resolves it, records it with the run, and refuses a name "
+            "the detection run does not have."
+        ),
+        json_schema_extra={"advanced": True, "label": "Leave out classes"},
+    )
     every_n_frames: int | None = Field(
         None,
         ge=1,

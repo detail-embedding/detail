@@ -31,6 +31,7 @@ from detail.api.experiment import Experiment
 from detail.api.models import prompt_capable_models
 from detail.configs.distill import DEFAULT_N_FRAMES
 from detail.configs.labeling import LabelingConfig
+from detail.configs.labeling import with_tether
 from detail.core.dataclasses import LabelingClass
 from detail.gui.compute_target import ComputeTargetRow
 from detail.gui.dialog import Dialog
@@ -244,6 +245,8 @@ class GenerateLabelingDialog(Dialog):
         form.addRow(
             field_label("labeling", "min_contour_area", ma_label + ":"), self._min_area
         )
+        tether_label, self._tether = fields["tether"]
+        form.addRow(field_label("labeling", "tether", tether_label + ":"), self._tether)
         self._compute = ComputeTargetRow()
         self._compute.add_to(form.section())
         form.finish()
@@ -328,6 +331,11 @@ class GenerateLabelingDialog(Dialog):
                 self, "Test prompts", "Add at least one class with a text prompt."
             )
             return None
+        try:  # the cable is tested too: it is the check that it separates (§12)
+            classes, _ = with_tether(classes, self._tether.isChecked())
+        except ValueError as exc:
+            QMessageBox.information(self, "Test prompts", str(exc))
+            return None
         selected = selected_recording_ids(self._recordings)
         recordings = [self._experiment.get_recording(sid) for sid in selected] or list(
             self._experiment.recordings
@@ -366,6 +374,7 @@ class GenerateLabelingDialog(Dialog):
                 min_contour_area=self._min_area.value(),
                 val_split=self._val_split.value(),
                 background_share=self._background.value(),
+                tether=self._tether.isChecked(),
                 compute=self._compute.compute_target(),
                 sampling=self._sampling.currentText(),
                 model_id=self._model.currentText(),
@@ -632,6 +641,8 @@ class DistillDialog(Dialog):
             field_label("labeling", "min_contour_area", "Min contour area (px):"),
             self._min_area,
         )
+        tether_label, self._tether = fields["tether"]
+        form.addRow(field_label("labeling", "tether", tether_label + ":"), self._tether)
         self._compute = ComputeTargetRow()  # labeling (also drives Test prompts)
         self._compute.add_to(form.section(), prefix="Label")
 
@@ -811,6 +822,11 @@ class DistillDialog(Dialog):
                 self, "Test prompts", "Add at least one class with a text prompt."
             )
             return
+        try:  # the cable is tested too: it is the check that it separates (§12)
+            classes, _ = with_tether(classes, self._tether.isChecked())
+        except ValueError as exc:
+            QMessageBox.information(self, "Test prompts", str(exc))
+            return
         selected = selected_recording_ids(self._recordings)
         recordings = [self._experiment.get_recording(sid) for sid in selected] or list(
             self._experiment.recordings
@@ -870,6 +886,7 @@ class DistillDialog(Dialog):
                 min_contour_area=self._min_area.value(),
                 val_split=self._val_split.value(),
                 background_share=self._background.value(),
+                tether=self._tether.isChecked(),
                 label_model_id=self._model.currentText(),
                 label_model_variant=self._variant.currentData(),
                 label_compute=self._compute.compute_target(),

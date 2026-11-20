@@ -8,6 +8,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from detail.core.dataclasses import LabelingClass
+
 
 class LabelingConfig(BaseModel):
     """Sample ``n_frames`` across the selected recordings (proportional to recording length) and label
@@ -71,3 +73,46 @@ class LabelingConfig(BaseModel):
         "label so the trained detector learns what nothing there looks like. 0 keeps none.",
         json_schema_extra={"advanced": True, "label": "Background share"},
     )
+    tether: bool = Field(
+        False,
+        description="The video shows a tether, cable or patch cord attached to the animal. "
+        "Adds a second class, `cable` (prompt: cable), beside your classes, so the trained "
+        "detector learns the cable as a thing of its own instead of as a faint piece of the "
+        "animal. The dataset and the model record it as an auxiliary class, and tracking on "
+        "that model leaves it out by default, so a cable is never the subject or merged into "
+        "it. Works for any species.",
+        json_schema_extra={"advanced": True, "label": "Tether or cable in the video"},
+    )
+
+
+#: The class a tethered video adds (§12 *Tether or cable in the video*). The prompt is "cable",
+#: never "tether": on a tethered-mouse pilot SAM 3 found nothing at all for "tether" (0 of 10
+#: frames) and found the cable on 9 of 10 frames for "cable".
+TETHER_CLASS = "cable"
+TETHER_PROMPT = "cable"
+
+
+def with_tether(
+    classes: list[LabelingClass], tether: bool
+) -> tuple[list[LabelingClass], list[str]]:
+    """``classes`` plus the tether class when ``tether`` is set, and the auxiliary class names.
+
+    Returns the user's classes unchanged and ``[]`` when ``tether`` is off.
+
+    Raises:
+        ValueError: ``tether`` is set and a class is already named ``cable`` or already
+            prompts ``cable``: the option would add the same class twice.
+    """
+    if not tether:
+        return list(classes), []
+    for c in classes:
+        if c.name.strip().lower() == TETHER_CLASS or (
+            c.prompt.strip().lower() == TETHER_PROMPT
+        ):
+            raise ValueError(
+                f"class {c.name!r} is already the cable; turn off Tether or cable in the "
+                "video, or rename that class, so the cable is labelled once"
+            )
+    next_id = max((c.class_id for c in classes), default=-1) + 1
+    cable = LabelingClass(class_id=next_id, name=TETHER_CLASS, prompt=TETHER_PROMPT)
+    return [*classes, cable], [TETHER_CLASS]

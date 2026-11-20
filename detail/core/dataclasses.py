@@ -472,6 +472,10 @@ class LabelingJob:
     # passes LabelingConfig's resolved value; 0.0 is what a job recorded before the field
     # existed did.
     background_share: float = 0.0
+    # Classes labelled so the student learns them apart, never tracked as the subject (§12
+    # *Tether or cable in the video*): the tether option's `cable`. A job recorded before the
+    # field existed had none.
+    auxiliary_classes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -490,6 +494,7 @@ class LabelingJob:
             "model_id": self.model_id,
             "model_variant": self.model_variant,
             "background_share": self.background_share,
+            "auxiliary_classes": list(self.auxiliary_classes),
         }
 
     @classmethod
@@ -510,6 +515,7 @@ class LabelingJob:
             model_id=d.get("model_id", "sam3"),
             model_variant=d.get("model_variant"),
             background_share=d.get("background_share", 0.0),
+            auxiliary_classes=list(d.get("auxiliary_classes") or []),
         )
 
 
@@ -684,6 +690,10 @@ class TrackingJob:
     # Link every Nth *source* frame — a multiple of the stride detection ran at (§4).
     # The trackers age tracks by stepping this, so max_missed counts processed frames.
     every_n_frames: int = 1
+    # Detection classes the tracker never takes as the subject or a merged piece (§13): by
+    # default a model's auxiliary classes, e.g. a tether's `cable`. Their rows stay in the
+    # assignments as -1, so the assignments line up with the detection rows as before.
+    exclude_classes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -696,6 +706,7 @@ class TrackingJob:
             "arena_ids": list(self.arena_ids),
             "created_at": self.created_at,
             "every_n_frames": self.every_n_frames,
+            "exclude_classes": list(self.exclude_classes),
         }
 
     @classmethod
@@ -710,6 +721,7 @@ class TrackingJob:
             arena_ids=list(d["arena_ids"]),
             created_at=d["created_at"],
             every_n_frames=int(d.get("every_n_frames") or 1),
+            exclude_classes=list(d.get("exclude_classes") or []),
         )
 
 

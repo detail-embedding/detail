@@ -203,7 +203,12 @@ class AnchorTracker(Tracker):
             data = DetectionPartReader(part_path).read()
             n_rows = len(data["frame_idx"])
             object_ids = np.full(n_rows, -1, dtype=np.int32)
-            groups = _common.group_by_frame(data["frame_idx"], every_n_frames)
+            groups = _common.group_by_frame(
+                data["frame_idx"],
+                every_n_frames,
+                data["class_name"],
+                getattr(job, "exclude_classes", ()),
+            )
             frame_offset = (
                 part_frame_offsets[play_index]
                 if part_frame_offsets is not None

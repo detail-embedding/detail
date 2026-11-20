@@ -16,6 +16,7 @@ def _labeling(**over):
         "min_contour_area": 100,
         "val_split": 0.15,
         "background_share": 0.1,
+        "tether": False,
     }
     d.update(over)
     return d

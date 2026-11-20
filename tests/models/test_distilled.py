@@ -273,3 +273,16 @@ def test_a_detection_promote_adds_no_pose_fields(tmp_path):
     rec = imported_store.read(gid)
     assert not imported_store.is_pose_record(rec)
     assert "skeleton" not in rec and "role" not in rec
+
+
+def test_promote_carries_the_auxiliary_classes(tmp_path):
+    """The catalog copy is what another experiment's tracking reads (§12, §13)."""
+    proj = experiment_store.create_experiment(tmp_path, "tethered")
+    mdir = _trained_model(proj)
+    record = models_store.read_model_yaml(mdir)
+    record["auxiliary_classes"] = ["cable"]
+    models_store.write_model_yaml(mdir, record)
+    gid = distilled.register_distilled_model(
+        proj, "model_001", source_experiment_name="tethered", source_experiment_id="t"
+    )
+    assert imported_store.read(gid)["auxiliary_classes"] == ["cable"]

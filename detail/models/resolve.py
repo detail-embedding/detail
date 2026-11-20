@@ -104,6 +104,26 @@ def resolve_pretrained_or_imported(
     )
 
 
+def detection_model_record(
+    experiment_root: Path | str, model_id: str, weights_source: str | None
+) -> dict | None:
+    """The ``model.yaml`` of a detection run's trained or imported model, or ``None``.
+
+    ``None`` for a built-in (pretrained) model, which has no record, and for a local model
+    whose record is gone. A pure disk read: nothing is constructed or loaded.
+    """
+    if weights_source == "trained":
+        model_dir = models_store.model_dir(experiment_root, model_id)
+    elif weights_source == "imported":
+        model_dir = imported_store.model_dir(model_id)
+    else:
+        return None
+    try:
+        return models_store.read_model_yaml(model_dir)
+    except FileNotFoundError:
+        return None
+
+
 def _load_from_model_yaml(model_dir: Path | str) -> DetectionModel:
     """Construct a closed-set DetectionModel from a ``model.yaml`` directory
     (experiment-trained or machine-imported) via its family's ``TRAINED_LOADERS``

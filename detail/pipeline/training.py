@@ -100,6 +100,8 @@ def _train(job: TrainingJob, run_dir: Path, progress_cb, stop_event) -> dict:
     record = models_store.read_model_yaml(run_dir)
     record["model_family"] = trainer.model_family  # resolves the trained-apply loader
     record["classes"] = dataset.get("classes", [])
+    # Carried from the dataset so tracking on this model can leave them out (§13).
+    record["auxiliary_classes"] = list(dataset.get("auxiliary_classes") or [])
     if dataset.get("task"):
         # A pose dataset (§12 *Distill keypoints*): the student carries the task and the
         # skeleton copy it was trained on, which is what the keypoint resolver reads back.

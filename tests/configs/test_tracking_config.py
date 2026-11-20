@@ -16,6 +16,7 @@ def test_round_trips():
         "arena_name": "rig A camera",
         "hyperparams": {"iou_threshold": 0.3},
         "every_n_frames": 2,
+        "exclude_classes": ["cable"],
     }
     assert TrackingConfig.model_validate(d).model_dump() == d
 
@@ -31,6 +32,7 @@ def test_defaults():
         "arena_name": None,
         "hyperparams": None,
         "every_n_frames": None,
+        "exclude_classes": None,  # validate() resolves it from the detection model
     }
 
 

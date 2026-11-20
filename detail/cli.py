@@ -2986,6 +2986,22 @@ def _tracking_opts(f):
             help=_TRK["every_n_frames"].description,
         ),
         click.option(
+            "--exclude-class",
+            "exclude_class",
+            multiple=True,
+            metavar="NAME",
+            help=_TRK["exclude_classes"].description
+            + " Repeatable; replaces the model's own list.",
+        ),
+        click.option(
+            "--track-all-classes",
+            "track_all_classes",
+            is_flag=True,
+            default=False,
+            help="Track every class, the model's auxiliary ones included (sets "
+            "exclude_classes to []).",
+        ),
+        click.option(
             "--hyperparam",
             "raw_hyperparams",
             multiple=True,
@@ -3046,6 +3062,20 @@ def _tracking_opts(f):
     ):
         f = opt(f)
     return f
+
+
+def _exclude_classes(
+    exclude_class: tuple[str, ...], track_all_classes: bool
+) -> list[str] | None:
+    """The tracking config's ``exclude_classes`` from its two flags: ``None`` (resolve from
+    the detection model) when neither is given."""
+    if exclude_class and track_all_classes:
+        raise click.ClickException(
+            "pass --exclude-class or --track-all-classes, not both"
+        )
+    if track_all_classes:
+        return []
+    return list(exclude_class) or None
 
 
 def _parse_run_ref(ref: str) -> tuple[str, str]:
@@ -3221,6 +3251,8 @@ def tracking_run(
     raw_hyperparams: tuple[str, ...],
     arena_ref: str | None,
     every_n_frames: int | None,
+    exclude_class: tuple[str, ...],
+    track_all_classes: bool,
 ) -> None:
     """Submit a tracking run; blocks until complete."""
     if (
@@ -3247,6 +3279,7 @@ def tracking_run(
             hyperparams=hyperparams,
             arena_name=arena_ref,
             every_n_frames=every_n_frames,
+            exclude_classes=_exclude_classes(exclude_class, track_all_classes),
         )
     except ValueError as e:
         raise click.ClickException(str(e))
@@ -3514,6 +3547,8 @@ def process_tracking(
     raw_hyperparams: tuple[str, ...],
     arena_ref: str | None,
     every_n_frames: int | None,
+    exclude_class: tuple[str, ...],
+    track_all_classes: bool,
     detection_ref: str | None,
 ) -> None:
     """Run tracking across the selected recordings; writes an experiment run (run_NNN).
@@ -3543,6 +3578,7 @@ def process_tracking(
         # recording, where the same id is a different polygon on each of them.
         "arena_name": arena_ref,
         "every_n_frames": every_n_frames,
+        "exclude_classes": _exclude_classes(exclude_class, track_all_classes),
     }
     if detection_ref:
         config["detection_spec"] = _spec_from_ref(proj, "detection", detection_ref)
@@ -4000,6 +4036,13 @@ def dataset_create(
     type=finite_float_range(0.0, 0.5),
     help=_LAB["background_share"].description,
 )
+@click.option(
+    "--tether/--no-tether",
+    "tether",
+    default=_LAB["tether"].default,
+    show_default=True,
+    help=_LAB["tether"].description,
+)
 @_BACKEND_OPT
 @_DEVICE_OPT
 def dataset_label(
@@ -4015,6 +4058,7 @@ def dataset_label(
     min_contour_area: int,
     val_split: float,
     background_share: float,
+    tether: bool,
     backend: str,
     devices: tuple[int, ...],
 ) -> None:
@@ -4041,6 +4085,7 @@ def dataset_label(
             min_contour_area=min_contour_area,
             val_split=val_split,
             background_share=background_share,
+            tether=tether,
             compute=_compute_target(backend, devices),
             sampling=sampling,
             model_id=model_id,
@@ -4498,6 +4543,13 @@ def distill() -> None:
     help=_LAB["background_share"].description,
 )
 @click.option(
+    "--tether/--no-tether",
+    "tether",
+    default=_LAB["tether"].default,
+    show_default=True,
+    help=_LAB["tether"].description,
+)
+@click.option(
     "--label-model",
     "label_model_id",
     default="sam3",
@@ -4577,6 +4629,7 @@ def distill_run(
     min_contour_area: int,
     val_split: float,
     background_share: float,
+    tether: bool,
     label_model_id: str,
     label_model_variant: str | None,
     base_model: str,
@@ -4623,6 +4676,7 @@ def distill_run(
             min_contour_area=min_contour_area,
             val_split=val_split,
             background_share=background_share,
+            tether=tether,
             label_model_id=label_model_id,
             label_model_variant=label_model_variant,
             label_compute=(

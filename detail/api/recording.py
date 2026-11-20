@@ -2706,9 +2706,13 @@ class Recording:
         arena_ids: list[str] | None = None,
         arena_name: str | None = None,
         every_n_frames: int | None = None,
+        exclude_classes: list[str] | None = None,
     ) -> RunHandle:
         """Link detections into tracks, optionally arena-filtered (Section 13).
         Thin wrapper over ``run``. ``every_n_frames`` omitted inherits the detection run's.
+
+        ``exclude_classes`` omitted leaves out the detection model's auxiliary classes (a
+        tethered distill's ``cable``, §12); ``[]`` tracks every class.
 
         ``tracker_id`` omitted takes ``configs.tracking.DEFAULT_TRACKER``, and ``hyperparams``
         omitted takes the chosen tracker's own defaults. Both are left *out* of the config
@@ -2725,6 +2729,7 @@ class Recording:
             "arena_ids": arena_ids,
             "arena_name": arena_name,
             "every_n_frames": every_n_frames,
+            "exclude_classes": exclude_classes,
         }
         if tracker_id is not None:
             config["tracker_id"] = tracker_id

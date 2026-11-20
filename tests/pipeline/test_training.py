@@ -750,3 +750,24 @@ def test_the_api_reads_the_history_through_the_record_s_trainer(tmp_path):
     history = exp.model_metric_history("model_001")
 
     assert [row["epoch"] for row in history] == [1, 2], history
+
+
+@pytest.mark.parametrize("auxiliary", [["cable"], None])
+def test_the_model_carries_the_datasets_auxiliary_classes(tmp_path, auxiliary):
+    """§12 *Tether or cable in the video*: tracking reads the model, so the dataset's
+    auxiliary classes have to reach model.yaml (a dataset from before the field: none).
+    """
+    proj = _dataset(experiment_store.create_experiment(tmp_path, "p"))
+    if auxiliary is not None:
+        ddir = datasets_store.dataset_dir(proj, "dataset_001")
+        record = datasets_store.read_dataset_yaml(ddir)
+        record["auxiliary_classes"] = auxiliary
+        datasets_store.write_dataset_yaml(ddir, record)
+    mdir = models_store.model_dir(proj, "model_001")
+    mdir.mkdir(parents=True)
+    models_store.write_model_yaml(
+        mdir, {"id": "model_001", "trainer_id": "stub_trainer", "status": "running"}
+    )
+    with _registered_stub():
+        training.run(_job(), mdir, progress_cb=lambda e: None, stop_event=None)
+    assert models_store.read_model_yaml(mdir)["auxiliary_classes"] == (auxiliary or [])

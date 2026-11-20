@@ -2028,7 +2028,7 @@ Two runs are interchangeable iff their specs are equal. `api/run_spec.py::freeze
 | module | `identity_fields` | `lineage_ref` (upstream_module, ref_field) | record change |
 |--------|-------------------|--------------------------------------------|---------------|
 | detection | `model_id, model_variant, weights_source, conf_threshold, every_n_frames, prompt_fingerprint, prompt_classes` | `None` (roots at the recording's video) | **+`prompt_fingerprint`** (short digest of `Prompt.to_dict()`; the prompt is the class definition for open-set models — omitting it false-merges "mouse" vs "cage") **and +`prompt_classes`** (the sorted target names — the human-readable half, redundant for equivalence so it can only ever false-*split*) |
-| tracking | `tracker_id, arena_ids, hyperparams, every_n_frames` | `("detection","detection_run_id")` | **+`hyperparams`** (`config["hyperparams"]`, enriched in validate; was `job.json`-only) |
+| tracking | `tracker_id, arena_ids, hyperparams, every_n_frames, exclude_classes` (the last's identity default is `[]`: a run recorded before it existed tracked every class) | `("detection","detection_run_id")` | **+`hyperparams`** (`config["hyperparams"]`, enriched in validate; was `job.json`-only) |
 | embedding | `model_id, model_variant, constructor, every_n_frames, align, heading_definition, max_gap_s, mirror_hold_s, facing_camera_ratio, keypoint_track_identity` (the last six are alignment's, §14; `keypoint_track_identity` is the auxiliary keypoint track run's spec, `None` without alignment) | `("tracking","tracking_run_id")` (+ `aux_refs = (("keypoint_track","keypoint_run_id"),)`) | — (the constructor **name**, not the resolved `renderer_spec` — centered recipes size per-recording, so the resolved spec is intentionally recording-specific and must not be identity) |
 | keypoint_detect (§26) | `model_id, model_variant, weights_source, backbone_id, backbone_variant, skeleton_digest, example_set_digest, n_candidates, every_n_frames, crop_px, decode, side_rule, matching` (the matching constants as one dict), `min_pose_confidence` | `("detection","detection_run_id")` | compute, batch size and the display cut-off are not identity |
 | keypoint_track (§26) | `tracking_identity` (the tracking run's spec, never its id — ids restart per recording, §6.5 *auxiliary inputs*), `match` (`min_inside`, `mask_grow`), `method`, `config` (every field of the method's config, filter constants and decode cut-off included); the detect run's identity by lineage | `("keypoint_detect","detect_run_id")` | the display cut-off is not identity |
@@ -2924,6 +2924,9 @@ class LabelingJob:
     model_variant: str | None = None
     background_share: float = 0.0    # cap on empty-label frames; the API passes
                                      # LabelingConfig's resolved value (default 0.1)
+    auxiliary_classes: list[str] = field(default_factory=list)
+                                     # labelled, never tracked as the subject: the
+                                     # tether option's ["cable"] (*Tether or cable in the video*)
 
 @dataclass
 class TrainingJob:
@@ -3015,6 +3018,9 @@ classes:
   - id: 1
     name: "food_pellet"
 
+auxiliary_classes: []       # labeling source: classes labelled so the student learns them
+                            # apart, never tracked as the subject — ["cable"] with the tether
+                            # option (*Tether or cable in the video*); absent on older datasets
 val_split: 0.15
 background_share: 0.1       # labeling source: the cap on empty-label frames
 n_train: 8494               # split drawn over the examples written, so
@@ -3079,6 +3085,10 @@ classes:
     name: "mouse"
   - id: 1
     name: "food_pellet"
+
+auxiliary_classes: []         # copied from the dataset: classes tracking leaves out by default
+                              # (§13 `exclude_classes`) — ["cable"] for a tethered distill;
+                              # absent on older models and on imports, which reads as []
 
 weights:
   best: "run/weights/best.pt"
@@ -3244,7 +3254,7 @@ config:                          # serialized DistillConfig + the experiment-awa
   source_recording_ids: ["rec_001", "rec_002"]
   labeling: {model_id: "sam3", model_variant: null, n_frames: 500, sampling: "stratified",
              logit_threshold: 0.5, min_contour_area: 100, val_split: 0.15,
-             background_share: 0.1}
+             background_share: 0.1, tether: false}
   training: {epochs: 100, batch_size: 32, imgsz: 640, patience: 100}
   label_compute: {backend: "cuda", device_indices: null, cloud_provider: null, cloud_instance: null}
   train_compute: {backend: "cuda", device_indices: null, cloud_provider: null, cloud_instance: null}
@@ -3293,6 +3303,37 @@ label stage re-labels from scratch. `delete_distill(run_id)` prunes only the `di
 never the produced dataset, trained model, or a promoted global model.
 
 **Surfaces (parity):** `Experiment.distill(...)` (API) · `detail distill run|list|status|attach|resume|cancel|delete` (CLI) · one bespoke `DistillDialog` (GUI, with a `Test prompts…` preview) — distill is §12, so a bespoke surface does not conflict with "one launch surface per module" (that governs §6.5/§16 modules).
+
+### Tether or cable in the video (an auxiliary class the tracker leaves out)
+
+**The failure it fixes.** A tethered animal's cable leaves its head with a box that always
+overlaps the body's. A student distilled with the animal class alone learns the cable as a faint
+piece of the animal (on a tethered-mouse pilot it found it as its own `mouse` detection at
+0.05–0.4), and `anchor_tracker`, which gates fragments on box overlap alone, merges it into the
+subject: the cable sat inside the tracked mask on 20–27% of frames. The teacher was not the
+cause: SAM 3's animal masks stopped at the head.
+
+**The option.** `LabelingConfig.tether` (`bool`, default `False`, advanced; label *Tether or
+cable in the video*) adds one class, `cable`, prompted `cable`, after the user's classes
+(`configs/labeling.with_tether`). The prompt is `cable`, never `tether`: on the pilot SAM 3
+found nothing for `tether` (0 of 10 frames) and the cable on 9 of 10 for `cable`. A class already
+named or prompting `cable` is refused rather than labelled twice. The option is the labeling
+config's, so it reaches both places labeling is launched from: `label_dataset(tether=)` /
+`dataset label --tether` / Auto-label, and `distill(tether=)` / `distill run --tether` /
+the Distill new model dialog, where the label stage applies it (`config.labeling.tether`).
+**Test prompts** with the option on tests the cable prompt beside the user's — the few-frame
+check that the cable comes out as its own mask.
+
+**Where it is recorded.** The labeling job resolves the option to `auxiliary_classes: ["cable"]`;
+the label runner writes it to `dataset.yaml`, training copies it to `model.yaml`, and promote
+carries it to the catalog copy. An imported checkpoint has none. The species is never named:
+the option adds the cable, whatever the user's classes are.
+
+**What reads it.** Tracking's `exclude_classes` (§13) resolves, when omitted, to the detection
+model's `auxiliary_classes`, so a run on that model tracks the animal and never takes the cable
+as the subject or merges it. Re-distilling the pilot with the cable class took the cable out of
+the tracked mask on all three mice (26.5% → 3.7%, 19.9% → 0.1%, 19.7% → 0.7% of frames), with
+tracked frames unchanged at 100%.
 
 ### Distill keypoints (label with the patch method or a keypoint detect run → train YOLO-pose → register)
 
@@ -3551,6 +3592,7 @@ class TrackingJob:
     arena_ids: list[str]    # empty = no arena restriction
     created_at: str
     every_n_frames: int = 1 # resolved from the detection run (§4)
+    exclude_classes: list[str] = field(default_factory=list)  # see below
 
 @dataclass
 class TrackingProgressEvent:
@@ -3563,6 +3605,22 @@ class TrackingProgressEvent:
     eta_s: float | None
     message: str | None = None
 ```
+
+### Leaving classes out (`exclude_classes`)
+
+`TrackingConfig.exclude_classes: list[str] | None` names detection classes no tracker takes as
+the subject or merges into it. Omitted, `validate()` resolves it to the detection run's model's
+`auxiliary_classes` (§12 *Tether or cable in the video*; a built-in model has no record and
+resolves to `[]`) and writes the list back (Tenet 9); it is an identity field. Given, every name
+must be one of the detection run's classes (the model's, or a prompt's), and a list that names
+all of them is refused. `[]` tracks every class. Surfaces: `run_tracking(exclude_classes=)`,
+`--exclude-class NAME` (repeatable) / `--track-all-classes`, and the form's *Leave out classes*
+row (the model's auxiliary classes, or nothing; another list is the CLI's or the API's).
+
+**Excluded rows stay in the assignments as `-1`.** `_common.group_by_frame` leaves an excluded
+row out of its frame's candidates and leaves the row where it is, so each part's assignment
+array stays parallel to all of that part's detection rows and no reader of the assignments
+changes. The frame still counts as processed.
 
 ### Cross-part continuity and resume
 

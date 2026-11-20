@@ -374,6 +374,13 @@ Each hyperparameter has a dedicated flag (e.g. `--iou-threshold`,
 selected tracker's schema (coerced to its declared type) for parameters
 without a dedicated flag. See [Choosing a tracker](#tracking). Writes `track_NN`.
 
+**Classes left out.** A detection run whose model was distilled with `--tether` has an
+auxiliary `cable` class, and tracking leaves it out by default: the cable is never the subject
+and is never merged into it. `--exclude-class NAME` (repeatable) names the classes to leave out
+instead, and `--track-all-classes` leaves out none. A detection run from any other model leaves
+out nothing unless you name a class. The run records the list it used (`exclude_classes`).
+`process tracking` takes the same two flags.
+
 **The knobs belong to the tracker, not to the command.** Each tracker declares its own
 set, so a flag one accepts another rejects: `--max-secondary` is `anchor_tracker`'s and
 `--iou-threshold` is not a knob `iou_single_tracker` has. Setting one the chosen tracker
@@ -704,10 +711,20 @@ for its background colour), then the run's own progress follows.
   `0.5`), `--min-contour-area` (px, default `100`), `--val-split` (default `0.15`),
   `--background-share` (default `0.1`, at most `0.5`: frames where the model found none of the
   classes are kept with an empty label, up to this share of the dataset, so the detector learns
-  what an empty frame looks like; `0` keeps none), plus `--backend` / `--device`. Each sampled
+  what an empty frame looks like; `0` keeps none), `--tether` (off by default: the video shows a
+  tether, cable or patch cord; see below), plus `--backend` / `--device`. Each sampled
   frame is decoded exactly; one that can't be is replaced by another frame from the same video.
   The validation share is drawn over the frames that made it into the dataset. Writes
   `dataset_NNN`.
+
+  **A tether or cable in the video.** `--tether` adds a second class, `cable`, prompted `cable`,
+  beside your `--class` ones, for any animal. A detector trained without it tends to find the
+  cable as a faint piece of the animal, and tracking then merges it into the animal's mask.
+  Trained with it, the detector finds the cable as a thing of its own; the dataset and the model
+  record `cable` as an auxiliary class, and tracking on that model leaves it out unless you say
+  otherwise (`tracking run --exclude-class` / `--track-all-classes`). The prompt is `cable`
+  rather than `tether` because SAM 3 found no tether at all on frames where it found the cable.
+  A class of yours already named or prompting `cable` is refused.
 - `keypoints --experiment <dir> --name <name> --n-frames N --teacher patch|detect`: the third
   dataset source, a YOLO-pose dataset taught by the patch method or by finished keypoint detect
   runs, the label stage of [`keypoints distill`](#keypoints) on its own. Same teacher and label
@@ -750,7 +767,7 @@ this experiment at once; `train promote` it for cross-experiment reuse.
 - `run --experiment <dir> --name <name> --class NAME:PROMPT [--class …] --n-frames N`: launch a
   distill run. Labeling options mirror `dataset label` (`--label-model` (default `sam3`),
   `--label-model-variant`, `--sampling`, `--logit-threshold`, `--min-contour-area`, `--val-split`,
-  `--background-share`, `--recording <id>` repeatable); training options mirror `train run` (`--base-model`, `--trainer`,
+  `--background-share`, `--tether`, `--recording <id>` repeatable); training options mirror `train run` (`--base-model`, `--trainer`,
   `--epochs` / `--batch-size` / `--imgsz` / `--patience`). Compute is **per stage**,
   `--label-backend` / `--label-device` (SAM3 needs CUDA) and `--train-backend` / `--train-device`.
   One bar shows the folded `labeling → training` progress with an ETA. Ctrl-C detaches (the run

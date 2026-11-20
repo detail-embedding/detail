@@ -328,6 +328,8 @@ def _finalize(
                 "sampling": job.sampling,
             },
             "classes": [{"id": c.class_id, "name": c.name} for c in job.classes],
+            # §12 *Tether or cable in the video*: labelled, never tracked as the subject.
+            "auxiliary_classes": list(job.auxiliary_classes),
             "val_split": job.val_split,
             "background_share": job.background_share,
             "n_train": n_train,

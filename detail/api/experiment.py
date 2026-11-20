@@ -29,6 +29,7 @@ from detail.api.models import ImportedModelRef  # re-exported; machine-global (�
 from detail.api.recording import Recording
 from detail.configs.distill import DistillConfig
 from detail.configs.labeling import LabelingConfig
+from detail.configs.labeling import with_tether
 from detail.core import progress as progress_mod
 from detail.core.dataclasses import (
     ACTIVE_STATUSES,
@@ -1163,6 +1164,7 @@ class DistillOrchestrator:
                 val_split=lab["val_split"],
                 # A distill recorded before the field existed labelled with no background.
                 background_share=lab.get("background_share", 0.0),
+                tether=bool(lab.get("tether", False)),
                 compute=ComputeTarget.from_dict(cfg["label_compute"]),
                 sampling=lab["sampling"],
                 model_id=lab["model_id"],
@@ -3125,9 +3127,12 @@ class Experiment:
         trainer_id: str = "ultralytics_yolo",
         hyperparams: dict | None = None,
         train_compute: ComputeTarget | None = None,
+        tether: bool = False,
     ) -> "AttachedDistillRun":
         """Distill a fast detector in one durable run (§12): label a frame sample with a
-        prompt-capable model, then train a closed-set YOLO on those labels.
+        prompt-capable model, then train a closed-set YOLO on those labels. ``tether=True``
+        labels a ``cable`` class beside ``classes``, which the model records as auxiliary so
+        tracking leaves it out (§12 *Tether or cable in the video*).
 
         Validates the union of the labeling and training pre-flight up front (Tenet 10),
         reserves the run record, then spawns a **detached distill coordinator** that
@@ -3140,13 +3145,16 @@ class Experiment:
             ValueError: no/duplicate classes, a non-prompt-capable label model, a recording
                 without video, ``n_frames`` above the frames available, the label model not
                 ready, an unknown/unready trainer, an unsupported train backend, or invalid
-                hyperparameters.
+                hyperparameters; or ``tether`` with a class already named or prompting
+                ``cable``.
         """
         import_runner_modules(_PIPELINE_RUNNERS)
         recording_ids = self._sampling_recordings(source_recording_ids)
         if not classes:
             raise ValueError("labeling needs at least one class (a name + text prompt)")
-        prompts = [c.prompt for c in classes]
+        # The label stage adds the cable itself (label_dataset); checked here so a bad
+        # combination is refused before the run exists (Tenet 10).
+        prompts = [c.prompt for c in with_tether(classes, tether)[0]]
         if len(set(prompts)) != len(prompts):
             raise ValueError(
                 "two classes share a text prompt; prompts must be distinct"
@@ -3167,6 +3175,7 @@ class Experiment:
                 "min_contour_area": min_contour_area,
                 "val_split": val_split,
                 "background_share": background_share,
+                "tether": tether,
             }
         )
         trainer_cls = TRAINERS.get(trainer_id)
@@ -3616,6 +3625,7 @@ class Experiment:
         background_share: float = LabelingConfig.model_fields[
             "background_share"
         ].default,
+        tether: bool = False,
     ) -> DatasetRun:
         """Build a YOLO dataset by running a prompt-capable model on a sample of frames (§12) —
         the distill-into-YOLO source, no existing detection run needed. ``model_id`` picks which
@@ -3624,7 +3634,9 @@ class Experiment:
         length; ``sampling`` picks how frames are drawn within each video (``"stratified"`` spreads
         them evenly across time, ``"uniform"`` is fully random). ``source_recording_ids=None`` uses
         every recording. Frames where the model found none of the classes are kept with an
-        empty label, up to ``background_share`` of the dataset. Returns a run handle.
+        empty label, up to ``background_share`` of the dataset. ``tether=True`` adds the
+        ``cable`` class beside ``classes`` and records it as auxiliary (§12 *Tether or cable in
+        the video*). Returns a run handle.
 
         The flat scalar parameters (``model_id``, ``model_variant``, ``n_frames``, ``sampling``,
         ``logit_threshold``, ``min_contour_area``, ``val_split``, ``background_share``) are
@@ -3635,13 +3647,15 @@ class Experiment:
             ValueError: no classes, duplicate class prompts, a scalar out of its model bounds
                 (bad ``sampling`` / ``val_split`` / ``n_frames`` / thresholds), a model that is not
                 prompt-capable, a recording without video, ``n_frames`` above the frames available,
-                or the chosen model not ready.
+                the chosen model not ready, or ``tether`` with a class already named or
+                prompting ``cable``.
         """
         import_runner_modules(_PIPELINE_RUNNERS)
         recording_ids = self._sampling_recordings(source_recording_ids)
         compute = compute or default_compute(api_models.supported_backends(model_id))
         if not classes:
             raise ValueError("labeling needs at least one class (a name + text prompt)")
+        classes, auxiliary_classes = with_tether(classes, tether)
         prompts = [c.prompt for c in classes]
         if len(set(prompts)) != len(prompts):
             raise ValueError(
@@ -3663,6 +3677,7 @@ class Experiment:
                 "min_contour_area": min_contour_area,
                 "val_split": val_split,
                 "background_share": background_share,
+                "tether": tether,
             }
         )
         if not recording_ids:
@@ -3709,6 +3724,7 @@ class Experiment:
             sampling=cfg.sampling,
             model_id=cfg.model_id,
             model_variant=cfg.model_variant,
+            auxiliary_classes=auxiliary_classes,
         )
         ddir = datasets_store.dataset_dir(self._dir, dataset_id)
         ddir.mkdir(parents=True, exist_ok=True)

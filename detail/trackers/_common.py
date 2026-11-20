@@ -38,7 +38,10 @@ def iou(a: Bbox, b: Bbox) -> float:
 
 
 def group_by_frame(
-    frame_idx: np.ndarray, every_n_frames: int = 1
+    frame_idx: np.ndarray,
+    every_n_frames: int = 1,
+    class_name: np.ndarray | None = None,
+    exclude_classes: list[str] | tuple[str, ...] = (),
 ) -> dict[int, list[int]]:
     """``{frame_value: row_indices}`` in frame order (rows are written in frame
     order, so the dict's insertion order is ascending frame).
@@ -46,13 +49,28 @@ def group_by_frame(
     ``every_n_frames`` thins to this run's cadence, keeping frames ``0, N, 2N, …``. The
     predicate is on the *source* frame index, the same rule every stage uses, so it
     composes with whatever stride detection already ran at (§4).
+
+    A row whose ``class_name`` is in ``exclude_classes`` is left out of its frame's rows,
+    so no tracker can take it as the subject or merge it (§13; a tether's ``cable``, §12).
+    Its frame is still a processed frame, and the row keeps its place in the part, so the
+    tracker writes it ``-1`` and the assignments stay parallel to the detection rows.
     """
+    # A membership test per row, not `np.isin`: the column reads back as numpy's
+    # variable-width StringDType, which does not cast to the fixed-width `str` isin needs.
+    excluded = set(exclude_classes)
+    skip = (
+        [str(name) in excluded for name in class_name]
+        if excluded and class_name is not None
+        else None
+    )
     groups: dict[int, list[int]] = {}
     for i, f in enumerate(frame_idx):
         frame = int(f)
         if frame % every_n_frames:
             continue
-        groups.setdefault(frame, []).append(i)
+        rows = groups.setdefault(frame, [])
+        if skip is None or not skip[i]:
+            rows.append(i)
     return groups
 
 

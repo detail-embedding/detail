@@ -43,10 +43,15 @@ from detail.gui.modules.registry import (
     surfaced,
 )
 from detail.gui.spin import FRACTION, FloatSpin, IntSpin
-from detail.gui.status_color import WARN
+from detail.gui.status_color import MUTED, WARN, set_label_color
+from detail.models import resolve
 from detail.storage import read_cache
 
 _NO_ARENA = "(whole frame)"
+#: The two choices of the form's *Leave out classes* row (§13 ``exclude_classes``). A list of
+#: other names is set from the CLI (`--exclude-class`) or the API.
+_EXCLUDE_DEFAULT = "The model's auxiliary classes"
+_EXCLUDE_NONE = "Nothing: track every class"
 # The tracker's own knobs are a group inside Advanced Settings, so the form opens on the
 # four choices that decide the run and the tuning sits one click away.
 _KNOBS = "Tracker parameters"
@@ -99,6 +104,7 @@ class _TrackingConfig(ConfigWidget):
     def __init__(self):
         super().__init__()
         self._model_names: dict = {}  # {model_id: name}; filled by on_experiment_set
+        self._experiment_dir = None  # where a detection run's trained model lives
         import_runner_modules(PIPELINE_RUNNERS)  # populate the TRACKERS registry
         self._config_form = ConfigForm(self, TrackingConfig)
         self._form = self._config_form.main
@@ -144,6 +150,21 @@ class _TrackingConfig(ConfigWidget):
             field_label("tracking", "every_n_frames", every_n_meta["label"] + ":"),
             self._every_n,
         )
+        # §13 exclude_classes: the model's auxiliary classes (a tether's cable) or nothing.
+        exclude_meta = field_meta(TrackingConfig, "exclude_classes")
+        self._exclude = QComboBox()
+        self._exclude.setToolTip(exclude_meta["help"])
+        self._exclude.addItem(_EXCLUDE_DEFAULT, None)
+        self._exclude.addItem(_EXCLUDE_NONE, [])
+        self._config_form.addRow(
+            field_label("tracking", "exclude_classes", exclude_meta["label"] + ":"),
+            self._exclude,
+        )
+        self._exclude_note = QLabel("")
+        self._exclude_note.setWordWrap(True)
+        set_label_color(self._exclude_note, MUTED)
+        self._config_form.addRow("", self._exclude_note, advanced=True)
+        self._auxiliary: list[tuple[dict, list[str]]] = []
         self._recordings: list = []
         self._groups: list[dict] = []
         self._arena_groups: list[dict] = []
@@ -162,8 +183,34 @@ class _TrackingConfig(ConfigWidget):
             lambda _index: self.coverage_changed.emit()
         )
         self._detection.currentIndexChanged.connect(self._sync_upstream_every_n)
+        self._detection.currentIndexChanged.connect(self._sync_exclude_note)
+        self._exclude.currentIndexChanged.connect(self._sync_exclude_note)
         self._tracker.currentTextChanged.connect(self._rebuild_hyperparams)
         self._rebuild_hyperparams()
+        self._sync_exclude_note()
+
+    def _selected_auxiliary(self) -> list[str]:
+        """The selected detection run's model's auxiliary classes (resolved off-thread)."""
+        spec = self._detection.currentData()
+        return next((aux for s, aux in self._auxiliary if s == spec), [])
+
+    def _sync_exclude_note(self, *_args) -> None:
+        """Say what *Leave out classes* does for the detection run picked above."""
+        auxiliary = self._selected_auxiliary()
+        if self._exclude.currentData() is not None:
+            text = (
+                f"Every class is tracked, {', '.join(auxiliary)} included."
+                if auxiliary
+                else "Every class is tracked."
+            )
+        elif auxiliary:
+            text = (
+                f"Leaves out {', '.join(auxiliary)}: the model learned it beside the "
+                "animal so it is never taken as the animal or merged into it."
+            )
+        else:
+            text = "This detection run's model has no auxiliary classes; every class is tracked."
+        self._exclude_note.setText(text)
 
     def _sync_upstream_every_n(self, *_args) -> None:
         """Adopt the picked detection run's cadence: it is the floor this stage can use."""
@@ -241,6 +288,7 @@ class _TrackingConfig(ConfigWidget):
         # A run record stores a model *id*; a picker has to show the name (§11). O(models),
         # not O(recordings), so it stays inside the UI-thread rule.
         self._model_names = experiment.model_names() if experiment is not None else {}
+        self._experiment_dir = experiment.dir if experiment is not None else None
 
     def resolve_recordings(self, recordings: list) -> dict:
         """Off the UI thread (CLAUDE.md): every disk read this selection needs, once.
@@ -264,6 +312,7 @@ class _TrackingConfig(ConfigWidget):
             "groups": groups,
             "arena_groups": arena_groups,
             "rates": rates,
+            "auxiliary": _auxiliary_by_spec(self._experiment_dir, groups),
         }
 
     def apply_recordings(self, recordings: list, resolved: dict) -> None:
@@ -272,6 +321,7 @@ class _TrackingConfig(ConfigWidget):
         self._groups = resolved["groups"]
         self._arena_groups = resolved["arena_groups"]
         self._rates = resolved["rates"]
+        self._auxiliary = resolved.get("auxiliary", [])
         repopulate_spec_combo(
             self._detection,
             spec_items(self._groups, len(self._recordings))
@@ -285,6 +335,7 @@ class _TrackingConfig(ConfigWidget):
         self._every_n.set_rates(self._rates)
         self._sync_upstream_every_n()
         self._update_missed_notes()
+        self._sync_exclude_note()
 
     def on_recordings_changed(self, recordings: list) -> None:
         """Synchronous path for direct callers (the launch dialog uses resolve→apply)."""
@@ -409,12 +460,30 @@ class _TrackingConfig(ConfigWidget):
             # arena id, which is what the job and the run record store.
             "arena_name": self._arena.currentData(),
             "every_n_frames": self._every_n.value(),
+            # None resolves to the detection model's auxiliary classes in validate().
+            "exclude_classes": self._exclude.currentData(),
         }
 
     def validation_error(self) -> str | None:
         if self._detection.currentData() is None:
             return "No detection run in the selected recordings — run detection first."
         return self._every_n.warning()
+
+
+def _auxiliary_by_spec(experiment_dir, groups: list[dict]) -> list[tuple[dict, list]]:
+    """Off the UI thread: each detection spec's model's auxiliary classes (§12), one
+    ``model.yaml`` read per spec, not per recording. An imported model is found without
+    the experiment; a trained one needs it."""
+    out = []
+    for group in groups:
+        identity = (group.get("spec") or {}).get("identity") or {}
+        record = resolve.detection_model_record(
+            experiment_dir or "",
+            identity.get("model_id", ""),
+            identity.get("weights_source"),
+        )
+        out.append((group["spec"], list((record or {}).get("auxiliary_classes") or [])))
+    return out
 
 
 @register_module_ui

@@ -154,6 +154,11 @@ frame to frame by IoU continuity, so a distractor cannot steal
 it). See the [CLI
 guide](cli.md#tracking) for when to use which.
 
+A tracker can leave classes out: it never takes them as the subject or merges them into it. By
+default it leaves out the detection model's **auxiliary classes**, the classes a model learned
+only so it could tell them apart from the animal, such as the `cable` a distill adds for a
+tethered animal.
+
 ### Embedding run { #embedding-run }
 
 For a chosen track, renders the subject's masked image each frame and embeds it into a feature

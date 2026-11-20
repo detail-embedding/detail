@@ -16,6 +16,7 @@ def test_valid_config_round_trips():
         "min_contour_area": 50,
         "val_split": 0.2,
         "background_share": 0.25,
+        "tether": True,
     }
     assert LabelingConfig.model_validate(d).model_dump() == d
 
@@ -29,6 +30,7 @@ def test_defaults():
     assert cfg.min_contour_area == 100
     assert cfg.val_split == 0.15
     assert cfg.background_share == 0.1
+    assert cfg.tether is False
 
 
 @pytest.mark.parametrize("share", [-0.1, 0.51])

@@ -15,6 +15,7 @@ from detail.core.dataclasses import (
 from detail.core.registries import TRACKERS
 from detail.core.utils import resolve_downstream_every_n, utc_timestamp
 from detail.executor.runners import ProcessingModule, register_processing_module
+from detail.models import resolve
 from detail.storage import experiment
 from detail.storage import recording as recording_store
 from detail.storage import spatial as spatial_store
@@ -90,8 +91,15 @@ class TrackingModule(ProcessingModule):
     # re-submits a tracking run under its own id — retry re-runs it whole under a fresh one —
     # so no user can reach that resume, and `partial` would promise it (#28).
     resumes = False
-    identity_fields = ("tracker_id", "arena_ids", "hyperparams", "every_n_frames")
-    identity_defaults = {"every_n_frames": 1}
+    identity_fields = (
+        "tracker_id",
+        "arena_ids",
+        "hyperparams",
+        "every_n_frames",
+        "exclude_classes",
+    )
+    # A run recorded before exclude_classes existed tracked every class.
+    identity_defaults = {"every_n_frames": 1, "exclude_classes": []}
     lineage_ref = ("detection", "detection_run_id")
 
     def recompute_identity_from_job(self, job) -> dict:
@@ -146,6 +154,9 @@ class TrackingModule(ProcessingModule):
         config["hyperparams"] = tracker_cls().validate_hyperparams(
             config.get("hyperparams") or {}
         )
+        config["exclude_classes"] = self._resolve_exclude_classes(
+            config, det, Path(recording_dir).parent.parent
+        )
 
         for run_entry in recording_data.get("tracking_runs", []):
             if (
@@ -158,6 +169,41 @@ class TrackingModule(ProcessingModule):
                 )
         config["arena_ids"] = arena_ids
         return config
+
+    @staticmethod
+    def _resolve_exclude_classes(
+        config: dict, det: dict, experiment_root: Path
+    ) -> list[str]:
+        """The classes this run leaves out, resolved and written back (Tenet 9).
+
+        Omitted, it is the detection model's ``auxiliary_classes`` (§12 *Tether or cable in
+        the video*): the run tracks the animal, never the cable the model learned beside it.
+        A built-in model has no record and so no auxiliary classes. Given, each name must be
+        a class the detection run has.
+        """
+        record = resolve.detection_model_record(
+            experiment_root, det.get("model_id", ""), det.get("weights_source")
+        )
+        requested = config.get("exclude_classes")
+        if requested is None:
+            return list((record or {}).get("auxiliary_classes") or [])
+        known = (
+            [c["name"] for c in record.get("classes", [])]
+            if record is not None
+            else list(det.get("prompt_classes") or [])
+        )
+        unknown = [name for name in requested if name not in known]
+        if unknown:
+            raise ValueError(
+                f"detection run {det['id']!r} has no class named "
+                f"{', '.join(repr(n) for n in unknown)}; it has: {known or 'none'}"
+            )
+        if known and set(known) <= set(requested):
+            raise ValueError(
+                f"leaving out {sorted(requested)} leaves nothing to track on detection run "
+                f"{det['id']!r}; keep at least one of its classes: {known}"
+            )
+        return list(dict.fromkeys(requested))
 
     @staticmethod
     def _resolve_arena(
@@ -215,6 +261,7 @@ class TrackingModule(ProcessingModule):
             arena_ids=list(config.get("arena_ids") or []),
             created_at=utc_timestamp(),
             every_n_frames=int(config.get("every_n_frames") or 1),
+            exclude_classes=list(config.get("exclude_classes") or []),
         )
 
     def extra_record_fields(self, config: dict) -> dict:
@@ -229,4 +276,5 @@ class TrackingModule(ProcessingModule):
             "arena_name": config.get("arena_name"),
             "hyperparams": dict(config.get("hyperparams") or {}),
             "every_n_frames": int(config.get("every_n_frames") or 1),
+            "exclude_classes": list(config.get("exclude_classes") or []),
         }

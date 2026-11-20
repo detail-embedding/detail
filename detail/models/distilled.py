@@ -98,6 +98,7 @@ def register_distilled_model(
             "model_family": record.get("model_family", "yolo"),
             "task": record.get("task", "segment"),
             "classes": record.get("classes", []),
+            "auxiliary_classes": list(record.get("auxiliary_classes") or []),
             "weights": {"best": imported_store.WEIGHTS_RELPATH},
             "status": "complete",
             "created_at": utc_timestamp(),

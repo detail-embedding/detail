@@ -273,7 +273,8 @@ def test_switching_tracker_rebuilds_its_knob_section(qapp):
     # quietly test nothing.
     widget._tracker.setCurrentText("iou_single_tracker")
     assert widget._tracker.currentText() == "iou_single_tracker"
-    assert section.labeled_rows() == len(widget._hp_widgets)
+    # The knobs, plus the one row above them that is not a knob: *Leave out classes* (§13).
+    assert section.labeled_rows() == len(widget._hp_widgets) + 1
     assert (
         section.labeled_rows() != anchor_knobs
     )  # a different tracker, different knobs
