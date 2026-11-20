@@ -21,12 +21,25 @@ compare machines. Now a missing `psutil` means something actually went wrong wit
 
 Every probe is individually guarded. A report is a diagnostic, and one that raises because a
 driver is unusual has failed at the only job it had.
+
+**The same machine, for a bug report.** :func:`system_report` is the first section of
+``detail doctor``: these facts plus what a fixer on another machine needs and cannot look up —
+the exact build, the Python environment, which CUDA the PyTorch build targets beside the
+newest one the driver supports, and every package detail runs with. Its rows are pasted into
+public issues, so none of them carries a folder path or a user name. It adds no key to
+:func:`collect`, whose dict is the ``machine.yaml`` a run writes (``DESIGN_PLAN.md`` §6).
+
+**One ``nvidia-smi`` reader.** :func:`nvidia_smi` serves this module and the GUI's CUDA doctor
+(``gui/cuda_doctor.py``), which used to parse the same header with its own copy.
 """
 
 from __future__ import annotations
 
+from importlib import metadata
 import os
+from pathlib import Path
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -81,28 +94,47 @@ def _torch_facts(load_torch: bool = True) -> dict:
     return facts
 
 
-def _driver() -> str:
-    """The NVIDIA driver version, which is the field a timing difference most often turns on.
+_NVIDIA_SMI_DRIVER = re.compile(r"Driver Version:\s*([\d.]+)")
+_NVIDIA_SMI_CUDA = re.compile(r"CUDA Version:\s*([\d.]+)")
 
-    Read from `nvidia-smi` because torch does not expose it. Absent on every non-NVIDIA machine,
-    which is not a failure.
+
+def parse_nvidia_smi(stdout: str) -> tuple[str | None, str | None]:
+    """``(driver version, newest CUDA the driver supports)`` from ``nvidia-smi``'s header."""
+    driver = _NVIDIA_SMI_DRIVER.search(stdout)
+    cuda = _NVIDIA_SMI_CUDA.search(stdout)
+    return (driver.group(1) if driver else None, cuda.group(1) if cuda else None)
+
+
+def nvidia_smi() -> tuple[str | None, str | None]:
+    """``(driver version, newest CUDA the driver supports)``, or ``(None, None)``.
+
+    Read from ``nvidia-smi`` because torch exposes neither. Absent on every non-NVIDIA machine,
+    which is not a failure. The CUDA the driver reports is a ceiling, not the version in use:
+    a PyTorch build for any CUDA at or below it runs.
     """
     exe = shutil.which("nvidia-smi")
     if exe is None:
-        return UNKNOWN
+        return None, None
     try:
         out = subprocess.run(
-            [exe, "--query-gpu=driver_version", "--format=csv,noheader"],
+            [exe],
             capture_output=True,
             encoding="utf-8",
             errors="replace",
             timeout=5,
             check=False,
         )
-    except Exception:  # noqa: BLE001
-        return UNKNOWN
-    first = (out.stdout or "").strip().splitlines()
-    return first[0].strip() if first else UNKNOWN
+    except (OSError, subprocess.SubprocessError):
+        return None, None  # a binary that could not start, or one that hung
+    if out.returncode != 0:
+        return None, None
+    return parse_nvidia_smi(out.stdout or "")
+
+
+def _driver() -> str:
+    """The NVIDIA driver version, which is the field a timing difference most often turns on."""
+    driver, _ = nvidia_smi()
+    return driver or UNKNOWN
 
 
 def _ram_gb():
@@ -166,3 +198,139 @@ def as_lines(facts: dict) -> list[str]:
         ("torch", "torch"),
     ]
     return [f"| {label} | {facts.get(key, UNKNOWN)} |" for label, key in order]
+
+
+#: Extras that install tools for working on detail, not anything detail runs with.
+_TOOLING_EXTRAS = frozenset({"dev", "docs"})
+#: Installed outside detail's own metadata: SAM 3 is a git clone, because Meta ships it off PyPI.
+_UNDECLARED_PACKAGES = ("sam3",)
+_REQUIREMENT_NAME = re.compile(r"[A-Za-z0-9._-]+")
+_MARKER_EXTRA = re.compile(r"""extra\s*==\s*["']([^"']+)["']""")
+
+
+def package_versions() -> list[tuple[str, str]]:
+    """``(name, version)`` for each installed package detail runs with, in declaration order.
+
+    Read from detail's own package metadata, so a dependency added to ``pyproject.toml`` is
+    reported the day it is added; a list kept here would drift from it. The ``dev`` and
+    ``docs`` extras are left out, and so is anything not installed: an extra nobody installed
+    is not news, and its absence is what ``detail doctor``'s checks are for.
+    """
+    try:
+        declared = metadata.requires("detail") or []
+    except metadata.PackageNotFoundError:
+        declared = []  # running from a source tree that was never installed
+    names: list[str] = []
+    for requirement in declared:
+        match = _REQUIREMENT_NAME.match(requirement)
+        if match is None:
+            continue
+        _, _, marker = requirement.partition(";")
+        extras = set(_MARKER_EXTRA.findall(marker))
+        if extras and extras <= _TOOLING_EXTRAS:
+            continue
+        if match.group(0) not in names:
+            names.append(match.group(0))
+    names.extend(name for name in _UNDECLARED_PACKAGES if name not in names)
+    versions = []
+    for name in names:
+        try:
+            versions.append((name, metadata.version(name)))
+        except metadata.PackageNotFoundError:
+            continue
+    return versions
+
+
+def _os_name() -> str:
+    """The OS and its version; on Linux the distribution too, since `platform` names only the
+    kernel and C library."""
+    name = platform.platform()
+    if sys.platform.startswith("linux"):
+        try:
+            pretty = platform.freedesktop_os_release().get("PRETTY_NAME")
+        except OSError:
+            pretty = None
+        if pretty:
+            name = f"{pretty} ({name})"
+    return name
+
+
+def _environment_kind() -> str:
+    """Which kind of Python environment this is. Never its path."""
+    if (Path(sys.prefix) / "conda-meta").is_dir():
+        return "conda environment"
+    if sys.prefix != sys.base_prefix:
+        return "virtual environment"
+    return "system Python, no environment"
+
+
+def _gb(value) -> str:
+    """A memory size for a row: ``64.0 GB``, or the word the probe gave back."""
+    return f"{value} GB" if isinstance(value, (int, float)) else str(value)
+
+
+def _gpu_line(facts: dict) -> str:
+    """Every GPU PyTorch can use; the first with its memory, from :func:`collect`."""
+    if facts["accelerator"] == "cuda":
+        from detail.core.utils import cuda_device_names
+
+        line = f"{facts['gpu']} ({_gb(facts['gpu_memory_gb'])})"
+        others = cuda_device_names()[1:]
+        return f"{line}, plus {', '.join(others)}" if others else line
+    if facts["accelerator"] == "mps":
+        return f"{facts['gpu']}, through MPS"
+    return "none that PyTorch can use"
+
+
+def _driver_line(driver: str | None, driver_cuda: str | None) -> str:
+    if driver is None:
+        return "none found (nvidia-smi is missing or did not answer)"
+    if driver_cuda is None:
+        return driver
+    return f"{driver}, supports CUDA up to {driver_cuda}"
+
+
+def _torch_line(version: str) -> str:
+    """The PyTorch version and what it was built for: CUDA, ROCm, or neither.
+
+    The build is the half that decides whether a GPU is usable: a CPU-only wheel on an NVIDIA
+    machine reports no GPU at all, and only this line beside the driver's says why.
+    """
+    if version == UNKNOWN:
+        return "not installed, or fails to import"
+    try:
+        import torch
+    except Exception:  # noqa: BLE001 — a report must survive a broken install
+        return version
+    cuda = getattr(torch.version, "cuda", None)
+    hip = getattr(torch.version, "hip", None)
+    if cuda:
+        return f"{version}, built for CUDA {cuda}"
+    if hip:
+        return f"{version}, built for ROCm {hip}"
+    return f"{version}, built without CUDA"
+
+
+def system_report() -> list[tuple[str, str]]:
+    """This machine and install as ``(label, value)`` rows: ``detail doctor``'s first section.
+
+    What a bug report needs and a fixer on another machine cannot look up. No value carries a
+    folder path or a user name, because the rows are made to be pasted into a public issue.
+    Imports torch, which a ``detail doctor`` process can afford and a pipeline job must not.
+    """
+    from detail.core import buildinfo
+
+    facts = collect()
+    driver, driver_cuda = nvidia_smi()
+    packages = ", ".join(f"{name}=={version}" for name, version in package_versions())
+    return [
+        ("Build", buildinfo.build_info().describe()),
+        ("OS", _os_name()),
+        ("Python", f"{platform.python_version()}, {_environment_kind()}"),
+        ("CPU", f"{facts['cpu']}, {facts['cpu_cores']} cores"),
+        ("RAM", _gb(facts["ram_gb"])),
+        ("GPU", _gpu_line(facts)),
+        ("NVIDIA driver", _driver_line(driver, driver_cuda)),
+        ("PyTorch", _torch_line(facts["torch"])),
+        ("Packages", packages or "none found in detail's install metadata"),
+    ]

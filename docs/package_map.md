@@ -47,7 +47,9 @@ detail/
 │   ├── utils.py          # resolve_device, resolve_track_id, t_ns conv, polygon_at_frame
 │   ├── rle.py            # §26: RunMask, a COCO RLE mask read as runs; the assignment's few-pixel
 │   │                     # membership test with no decode (utils.decode_mask is the dense read)
-│   ├── ids.py, hostinfo.py
+│   ├── ids.py
+│   ├── hostinfo.py       # this machine: the performance report's machine block, machine.yaml,
+│   │                     # `detail doctor`'s System section; the one `nvidia-smi` reader
 │   ├── installed.py      # is_importable: the one package probe; re-reads .pth files on a
 │   │                     # miss so an editable install made with the app open is seen
 │   ├── buildinfo.py      # the running build + history + update check, read from git;

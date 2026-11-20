@@ -4778,6 +4778,50 @@ def test_cli_doctor_exits_zero_without_failures(monkeypatch):
     assert _runner().invoke(main, ["doctor"]).exit_code == 0
 
 
+def test_cli_doctor_opens_with_the_system_section_a_bug_report_needs(monkeypatch):
+    """The bug-report form asks for `detail doctor` pasted whole; the build, OS, GPU, driver,
+    PyTorch build and packages have to be in it, ahead of the checks. The system report runs
+    for real here: only the subprocess checks are stubbed."""
+    from detail.api import checks as api_checks
+    from detail.core.dataclasses import CheckResult, CheckStatus
+
+    infos = api_checks.list_checks()
+    monkeypatch.setattr(
+        api_checks,
+        "run_checks",
+        lambda **k: [CheckResult(i.check_id, CheckStatus.OK, "") for i in infos],
+    )
+    out = _runner().invoke(main, ["doctor"]).output
+    lines = out.splitlines()
+    assert lines[0] == "System"
+    system = out[: out.index("\nEnvironment")]
+    for label in (
+        "Build",
+        "OS",
+        "Python",
+        "GPU",
+        "NVIDIA driver",
+        "PyTorch",
+        "Packages",
+    ):
+        assert f"\n  {label} " in system, label
+
+
+def test_cli_doctor_wraps_a_long_fact_under_its_own_column():
+    from detail.cli import _DOCTOR_WIDTH, _doctor_fact
+
+    value = ", ".join(f"package-{n}==1.{n}.0" for n in range(30))
+    lines = _doctor_fact("Packages", value).splitlines()
+    assert len(lines) > 1
+    assert lines[0].startswith("  Packages       package-0==1.0.0")
+    for line in lines[1:]:
+        assert line.startswith(" " * 17) and not line.startswith(" " * 18)
+    assert all(len(line) <= _DOCTOR_WIDTH for line in lines)
+    # no package is split from its version across a line break
+    items = [i.strip() for line in lines for i in line[17:].split(",") if i.strip()]
+    assert items == value.split(", ")
+
+
 # --- analysis attach: the CLI half of the analysis reattach (§16) ------------ #
 def _complete_analysis_run(tmp_path, run_id="an_01"):
     from detail.api.experiment import Experiment

@@ -23,6 +23,7 @@ from detail.checks.commands import (
     terminal_launch_argv,
     terminal_name,
 )
+from detail.core import hostinfo
 from detail.core.dataclasses import CheckResult, CheckStatus
 from detail.core.registries import CHECKS
 
@@ -38,6 +39,7 @@ __all__ = [
     "run_check",
     "run_checks",
     "setup_scripts",
+    "system_report",
     "terminal_launch_argv",
     "terminal_name",
 ]
@@ -125,6 +127,16 @@ def run_recording_checks(experiment_dir) -> list[CheckResult]:
         for check_id in recording_ids:
             results.append(_run_inline_target(check_id, target))
     return results
+
+
+def system_report() -> list[tuple[str, str]]:
+    """This machine and install as ``(label, value)`` rows: build, OS, Python, CPU, RAM, GPU,
+    NVIDIA driver, PyTorch build and package versions.
+
+    ``detail doctor`` prints it first. No value carries a folder path or a user name, so it can
+    be pasted into a public bug report. Imports torch in this process.
+    """
+    return hostinfo.system_report()
 
 
 def run_check(check_id: str) -> CheckResult:

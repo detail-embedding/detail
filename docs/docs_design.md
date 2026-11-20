@@ -573,12 +573,22 @@ support policy (which versions we keep) is §4's Migration & version policy, onc
 successor **Zensical** (same team, MIT) is a near-drop-in but pre-1.0 with only preliminary
 mkdocstrings support. Adopt Material now; revisit Zensical when it stabilizes.
 
-**Hosting — deferred (§10).** The repo is private on the free plan, which blocks free GitHub Pages
-and Read the Docs Community. Preview is **local `mkdocs serve`** for now; no host is provisioned.
-When we publish, the recorded options are: a public output repo (CI pushes `site/` to a public
-Pages repo — free), GitHub Pro (Pages from the private repo, ~$4/mo), making the repo public, or a
-gated preview via Cloudflare Pages + Access (free, email allow-list). The site builds locally and
-in CI without any of these.
+**Hosting.** GitHub Pages at `https://detail-embedding.github.io/detail/` (`site_url` in
+`mkdocs.yml`). `.github/workflows/docs.yml` builds with `--strict` on every PR and push; on a push
+to `main` its `deploy` job publishes the build with `actions/deploy-pages` — no `gh-pages` branch,
+so no ruleset touches it. The site therefore shows `main`, which is what the README's install
+(`git clone`) gives a user. The repository's Pages source must be set to **GitHub Actions**; until
+it is, the deploy job fails and nothing else does. Keep Pages off, or private, while the repository
+is private, or the docs publish before the code.
+
+The app's own docs are separate and stay: the Docs page and `detail docs` build the site on the
+user's machine (`detail/docs_access.py`, the `offline` plugin), so help works with no network and
+matches the installed version. That is why the docs toolchain is in the base install, not only the
+`[docs]` extra. `$DETAIL_DOCS_URL` points the app at a hosted site instead.
+
+**Move to `mike` (§10) when** the install instructions name a release rather than `main`, or more
+than one release is supported at once. It deploys into a `gh-pages` branch, which then needs an
+exception in the rulesets so the workflow can write to it.
 
 ---
 
@@ -654,7 +664,7 @@ or planned:
 **Current state.** The **site scaffold is built** (roadmap 1): `mkdocs.yml` (Material, the `now`
 nav, mkdocstrings + mkdocs-click), the Home / Getting-started / Concepts + Glossary pages, the
 generated API + CLI reference, `mkdocs build --strict` in CI, and `mkdocs serve` preview. The
-`CLAUDE.md` rule migration is done (roadmap 2). No host yet — preview is local. Single-source
+`CLAUDE.md` rule migration is done (roadmap 2). Hosted on GitHub Pages from `main` (§8). Single-source
 parameter docs are built (roadmap 3; pydantic config models, §7), with every module migrated, and
 the GUI's `?` help reads them.
 
@@ -676,7 +686,8 @@ the GUI's `?` help reads them.
 6. **Planned destinations** — Examples, Troubleshooting/FAQ, Changelog, Migration & version policy,
    About — each created when its trigger fires (§4). Contributing exists as `CONTRIBUTING.md` at
    the repo root; it is not yet a site page.
-7. **Hosting** — decided when publishing (§8); **`mike` versioning** with the first release.
+7. **Hosting** *(done — GitHub Pages from `main`, §8)*; **`mike` versioning** once a release is
+   what users install.
 8. **Executed-snippet checks** (§9). The word check landed as `tests/test_docs_voice.py`; what
    is left is running fenced examples, and the `eval` and product-name word-list rows that check
    does not enforce.
@@ -693,12 +704,13 @@ prose.
 
 | Decision | Rationale |
 | --- | --- |
+| Host on GitHub Pages, deployed from `main` by `actions/deploy-pages`; versioned `mike` deploys wait until users install releases | users install by cloning `main`, so docs from `main` match; the app's offline docs already match an older install; no `gh-pages` branch means no ruleset exception (§8) |
 | User guides: numbered markers on every control of each new screen, a one-line-per-marker legend, guarded by `test_user_guide_legends.py` | the reader is a non-specialist who needs every button explained; a combined legend line silently misnumbered 27 markers against 24 descriptions (§6) |
 | One home per task: a task is a step in a user guide chapter; the Workflows section is retired and "Guides" is renamed "Manual" (§4) | Workflows, Guides and the user guides each explained the same tasks; three of five Workflows pages repeated chapters 1 and 2 and one named a page the app no longer had. The section table in §4 is the rule, guarded by `test_docs_nav.py` |
 | GUI help = a `?` beside each config field and an Info button per page, each opening a popover with that section of the shipped docs and an **Open full docs ↗** link (`gui/help_ui.py`). Amends the per-module Help-link row below | the docs stay the one home for the prose (the popover reads the shipped markdown, never its own copy), and the answer is one click from the field it is about (§3, §7) |
 | *(replaced by the row above)* Workflows section: step-by-step task tutorials with auto-rendered GUI screenshots + a committed sample dataset | operators need a guided path for common tasks |
 | GUI screenshots are auto-rendered committed PNGs (Option 1: a `gen_docs_screens.py` generator you rerun) — not hand screenshots, and not the golden-compare pixel-diff (deferred) | a generator keeps images honest without hand-capture and keeps the docs build Qt-free; the golden-compare's cross-platform (Mac↔Linux) determinism cost isn't worth it yet — cheap to add later (§6, §9) |
-| Preview via local `mkdocs serve` only; production hosting deferred | repo is private on the free plan; no host is needed to build or preview (§8) |
+| *(replaced by the row above)* Preview via local `mkdocs serve` only; production hosting deferred | repo is private on the free plan; no host is needed to build or preview (§8) |
 | Glossary (user-facing, term → definition) seeded now under Concepts | direct fix for opaque vocabulary; distinct from the internal writer word-list (§4) |
 | Product name is a placeholder — single-source via `site_name`, minimize literal use | the name will change; a rename must be one edit (§5, §8) |
 | Mechanics baseline = the Google developer documentation style guide | avoid authoring a full grammar manual; record only deviations (§5) |
