@@ -5048,7 +5048,7 @@ def _location_options(command):
     """
     options = [
         click.option(
-            "--sample-fps", "sample_fps", default=None, type=float,
+            "--sample-fps", "sample_fps", default=None, type=FINITE_FLOAT,
             help=_LOC["sample_fps"].description,
         ),  # fmt: skip
         click.option(
@@ -5056,7 +5056,7 @@ def _location_options(command):
             help=_LOC["remove_thin_parts"].description,
         ),  # fmt: skip
         click.option(
-            "--thin-part-scale", "thin_part_scale", default=None, type=float,
+            "--thin-part-scale", "thin_part_scale", default=None, type=FINITE_FLOAT,
             help=_LOC["thin_part_scale"].description
             + f" Default: {_LOC['thin_part_scale'].default}.",
         ),  # fmt: skip

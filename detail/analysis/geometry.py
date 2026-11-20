@@ -37,8 +37,11 @@ def mask_centre_norm(mask: np.ndarray) -> tuple[float, float]:
     200-cell mask comes back as 0.225 and 0.2475) and put the location export's mask centre
     half a cell away from the kinematics one for the same frame (#32).
     """
+    mx, my = mask_centroid(mask)
     height, width = mask.shape[:2]
-    return window_centre_norm(mask, 0, 0, width, height)
+    if not np.isfinite(mx) or height <= 0 or width <= 0:
+        return (float("nan"), float("nan"))
+    return ((mx + 0.5) / width, (my + 0.5) / height)
 
 
 def mask_extent(mask: np.ndarray) -> tuple[int, int, int, int] | None:
@@ -62,9 +65,10 @@ def window_centre_norm(
     """:func:`mask_centre_norm` of a mask given as a ``window`` cut from a ``(height, width)``
     grid at column ``x0``, row ``y0``; ``(nan, nan)`` when empty.
 
-    The same numbers as measuring the whole grid, bit for bit: the cell indices are summed as
-    integers and shifted before the one division, so a window and the grid it came from
-    cannot disagree in the last place. This is where the ``+ 0.5`` of a cell's centre lives.
+    The same numbers as :func:`mask_centre_norm` on the whole grid, bit for bit: the cell
+    indices are summed as integers and shifted before the one division, so a window and the
+    grid it came from cannot disagree in the last place. The two share the ``+ 0.5`` of a
+    cell's centre, and ``tests/analysis/test_locations.py`` holds them equal.
     """
     ys, xs = np.nonzero(window)
     count = len(xs)

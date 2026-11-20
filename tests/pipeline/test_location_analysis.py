@@ -435,7 +435,7 @@ def test_the_runner_measures_with_the_options_the_job_carries(tmp_path):
     )
     module.runner(job, run_dir, lambda *_: None, threading.Event())
     manifest = yaml.safe_load(
-        (run_dir / "recording_001" / "locations.yaml").read_text(encoding="utf-8")
+        (run_dir / "recording_001" / "locations.yaml").read_text(encoding="utf-8-sig")
     )
     assert manifest["remove_thin_parts"] is True
     assert manifest["thin_part_scale"] == 0.3
@@ -449,7 +449,11 @@ def test_the_runner_measures_with_the_options_the_job_carries(tmp_path):
 def test_validate_refuses_an_option_outside_its_bounds(tmp_path):
     proj = Experiment.create("p", tmp_path)
     _add_tracked_recording(proj, "recording_001")
+    module = ANALYSIS_MODULES["location_export"]
     with pytest.raises(ValueError, match="sample_fps"):
-        proj.run_analysis(
-            "location_export", {**_config("recording_001"), "sample_fps": -1.0}
-        )
+        module.validate(proj.dir, {**_config("recording_001"), "sample_fps": -1.0})
+    # and a good config comes back with every option resolved, set or not
+    resolved = module.validate(proj.dir, {**_config("recording_001"), "sample_fps": 5})
+    assert resolved["sample_fps"] == 5.0
+    assert resolved["remove_thin_parts"] is False
+    assert resolved["thin_part_scale"] == 0.12

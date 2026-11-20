@@ -5744,7 +5744,7 @@ def _location_manifest(out):
     import yaml
 
     (folder,) = [p for p in out.iterdir() if p.is_dir()]
-    return yaml.safe_load((folder / "locations.yaml").read_text(encoding="utf-8"))
+    return yaml.safe_load((folder / "locations.yaml").read_text(encoding="utf-8-sig"))
 
 
 def test_locations_export_measures_with_the_options_typed(

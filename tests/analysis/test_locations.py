@@ -717,7 +717,7 @@ def test_the_manifest_says_how_the_body_was_measured(tmp_path):
     out = recording.export_locations(
         "track_01", tmp_path / "out", remove_thin_parts=True, thin_part_scale=0.3
     )
-    manifest = yaml.safe_load((out / "locations.yaml").read_text(encoding="utf-8"))
+    manifest = yaml.safe_load((out / "locations.yaml").read_text(encoding="utf-8-sig"))
     assert list(manifest)[0] == "schema_version"
     assert manifest["remove_thin_parts"] is True
     assert manifest["thin_part_scale"] == 0.3
