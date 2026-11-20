@@ -813,7 +813,7 @@ its own progress bar.
 
 ### Location export
 
-Writes per-track ROI/POI features (`tracks.csv`, `roi_relations.csv`, `point_relations.csv`). Tick a **tracking run** by kind (tick more than one when the recordings were tracked through different chains, as under [behavior clustering](#behavior-clustering)), and it writes each recording's CSVs to `analysis/<an_NN>/<recording_id>/`. The detail page has **Open output folder**. For CSVs in a folder of your choosing, use the CLI `locations export --out <dir>`. See [Location export](modules/location_export.md) and [the concept](concepts.md#location-export).
+Writes per-track ROI/POI features (`tracks.csv`, `roi_relations.csv`, `point_relations.csv`). Tick a **tracking run** by kind (tick more than one when the recordings were tracked through different chains, as under [behavior clustering](#behavior-clustering)), and it writes each recording's CSVs to `analysis/<an_NN>/<recording_id>/`. **Rows per second** writes that many rows a second instead of every tracked frame, which is many times faster; **Remove thin parts** measures the body without a tail or limb (recommended for rats and mice), with **Thin part scale** under **Advanced Settings**. The detail page has **Open output folder**. For CSVs in a folder of your choosing, use the CLI `locations export --out <dir>`. See [Location export](modules/location_export.md) and [the concept](concepts.md#location-export).
 
 ### Behavior scan
 

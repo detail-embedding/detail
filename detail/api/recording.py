@@ -1341,33 +1341,54 @@ class Recording:
             )
         return rec
 
-    def location_tables(self, tracking_run_id: str):
+    def location_tables(self, tracking_run_id: str, **options):
         """Per-frame, per-track spatial features for a completed tracking run —
-        bbox/centroids/areas + position relative to this recording's ROIs/POIs.
+        bbox/centroids/areas, the body's centre, area, length and width, and position
+        relative to this recording's ROIs/POIs.
 
         Returns an ``analysis.locations.LocationTables`` (compute only, no write) —
         the reuse hook for a preview or a future analysis module. Read-only; the
         compute is pure (no executor, no run record).
 
+        Args:
+            tracking_run_id: A complete tracking run of this recording.
+            **options: The measurement options of ``configs.location_export``:
+                ``sample_fps`` (rows per second per subject; unset is every tracked frame),
+                ``remove_thin_parts`` (measure the body without a tail or limb) and
+                ``thin_part_scale``.
+
         Raises:
-            ValueError: If the tracking run is missing or not complete.
+            ValueError: If the tracking run is missing or not complete, an option is not
+                one this export has, or one is outside its bounds.
         """
         from detail.analysis import locations as _locations
+        from detail.configs import location_export as _config
 
         self._require_complete_tracking(tracking_run_id)
-        return _locations.compute_location_tables(self, tracking_run_id)
+        unknown = sorted(set(options) - set(_config.option_names()))
+        if unknown:
+            raise UserInputError(
+                f"location export has no option {', '.join(unknown)}; it has "
+                f"{', '.join(_config.option_names())}"
+            )
+        return _locations.compute_location_tables(
+            self, tracking_run_id, options=_config.options_from(options)
+        )
 
-    def export_locations(self, tracking_run_id: str, out_dir: Path | str) -> Path:
+    def export_locations(
+        self, tracking_run_id: str, out_dir: Path | str, **options
+    ) -> Path:
         """Compute + write the three location CSVs (``tracks`` / ``roi_relations`` /
         ``point_relations``) + a ``locations.yaml`` manifest into a new folder under
         ``out_dir``; returns that folder. Tables keyed by ``t_ns`` (joins with streams).
+        ``options`` are :meth:`location_tables`'s.
 
         The names are fixed, so each export gets its own folder: writing them straight into
         ``out_dir`` replaced one recording's files with the next one's (#29)."""
         from detail.api import exporters
         from detail.storage import location_export
 
-        tables = self.location_tables(tracking_run_id)
+        tables = self.location_tables(tracking_run_id, **options)
         dest = exporters.new_export_folder(
             exporters.ExportSubject("recording", self._experiment_dir, self.id),
             out_dir,

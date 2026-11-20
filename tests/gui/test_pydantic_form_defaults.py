@@ -86,7 +86,6 @@ def _discard_widgets(qapp):
 #: Models `build_fields` builds no scalar widget for, and why. A claim, like `UNIT_EXEMPTIONS`:
 #: `test_every_no_scalar_entry_is_still_true` fails on one that has grown a field.
 NO_SCALAR_FIELDS = {
-    "LocationExportConfig": "only list-valued ROI/POI selections, no numbers or toggles",
     "TrackingConfig": "a tracker id plus that tracker's own hyperparameter dict",
     "CsvStreamConfig": "a column name, a choice, and a list of channels — every value is "
     "read off the CSV being imported, so there is no number or toggle to seed",

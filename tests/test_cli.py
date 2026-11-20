@@ -5724,3 +5724,105 @@ def test_set_stream_offset_refuses_behavior_labels(tmp_path):
     assert res.exit_code != 0
     assert "already the video's own" in res.output
     assert exp.get_recording("r1").streams[0]["alignment"]["offset_ns"] == 0
+
+
+# --------------------------------------------------------------------------------------------- #
+# the location export's measurement options (detail#75)
+# --------------------------------------------------------------------------------------------- #
+def _locations_export(it, out, *options):
+    return _runner().invoke(
+        main,
+        [
+            "locations", "export", "--experiment", str(it.experiment.dir),
+            "--recording", "recording_001", "--tracking", "track_01", "--out", str(out),
+            *options,
+        ],
+    )  # fmt: skip
+
+
+def _location_manifest(out):
+    import yaml
+
+    (folder,) = [p for p in out.iterdir() if p.is_dir()]
+    return yaml.safe_load((folder / "locations.yaml").read_text(encoding="utf-8-sig"))
+
+
+def test_locations_export_measures_with_the_options_typed(
+    processed_recording, tmp_path
+):
+    out = tmp_path / "out"
+    result = _locations_export(
+        processed_recording, out,
+        "--sample-fps", "2.5", "--remove-thin-parts", "--thin-part-scale", "0.3",
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    manifest = _location_manifest(out)
+    assert manifest["sample_fps"] == 2.5
+    assert manifest["remove_thin_parts"] is True
+    assert manifest["thin_part_scale"] == 0.3
+    assert "body_length_px" in manifest["columns"]["tracks"]
+
+
+def test_locations_export_left_alone_measures_every_frame_of_the_whole_mask(
+    processed_recording, tmp_path
+):
+    out = tmp_path / "out"
+    assert _locations_export(processed_recording, out).exit_code == 0
+    manifest = _location_manifest(out)
+    assert manifest["sample_fps"] is None
+    assert manifest["remove_thin_parts"] is False
+    assert (
+        manifest["thin_part_scale"] == 0.12
+    )  # the config model's, not a second copy here
+
+
+def test_locations_export_refuses_an_option_it_cannot_apply(
+    processed_recording, tmp_path
+):
+    out = tmp_path / "out"
+    result = _locations_export(processed_recording, out, "--thin-part-scale", "0.9")
+    assert result.exit_code != 0
+    assert "thin_part_scale" in result.output and "Traceback" not in result.output
+    # a 40 x 40 mask has no part thinner than the 1.9 px this asks to remove
+    coarse = _locations_export(
+        processed_recording, out, "--remove-thin-parts", "--thin-part-scale", "0.05"
+    )
+    assert coarse.exit_code != 0
+    assert "thin parts cannot be removed from these masks" in coarse.output
+    assert not out.exists() or not any(out.iterdir())  # nothing half-written
+
+
+def test_analysis_run_refuses_location_options_given_to_another_module(tmp_path):
+    r = _runner()
+    r.invoke(main, ["experiment", "create", "p1", "--dir", str(tmp_path)])
+    result = r.invoke(
+        main,
+        [
+            "analysis", "run", "--experiment", str(tmp_path / "p1"),
+            "--recording", "recording_001", "--module", "query",
+            "--tracking", "track_01", "--sample-fps", "5", "--remove-thin-parts",
+        ],
+    )  # fmt: skip
+    assert result.exit_code != 0
+    assert "--sample-fps, --remove-thin-parts belong to the location_export module" in (
+        result.output
+    )
+
+
+def test_the_location_options_are_the_config_models_on_both_commands():
+    """An option's help, and that it exists at all, comes from the model: a field added to it
+    without a flag on either command, or a flag whose help was typed by hand, fails here.
+    """
+    from detail import cli as cli_module
+    from detail.configs.location_export import LocationExportConfig, option_names
+
+    for command in (cli_module.locations_export, cli_module.analysis_run):
+        params = {p.name: p for p in command.params}
+        for name in option_names():
+            assert name in params, f"{command.name} has no flag for {name}"
+            described = LocationExportConfig.model_fields[name].description
+            assert params[name].help.startswith(described), (command.name, name)
+            assert params[name].default is None, (
+                f"{command.name} --{name}: a flag with its own default would be a second "
+                "place the default is written"
+            )

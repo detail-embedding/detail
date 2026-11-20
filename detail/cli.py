@@ -5039,6 +5039,38 @@ def locations() -> None:
     """Location export — per-frame, per-track spatial features vs ROIs/POIs."""
 
 
+def _location_options(command):
+    """The location export's measurement options, on any command that launches one.
+
+    Help, bounds and defaults are the config model's (``configs/location_export.py``); each
+    flag defaults to "not given", so the model's default is what an unset option resolves to
+    and the two commands that take these cannot disagree about it.
+    """
+    options = [
+        click.option(
+            "--sample-fps", "sample_fps", default=None, type=FINITE_FLOAT,
+            help=_LOC["sample_fps"].description,
+        ),  # fmt: skip
+        click.option(
+            "--remove-thin-parts/--keep-thin-parts", "remove_thin_parts", default=None,
+            help=_LOC["remove_thin_parts"].description,
+        ),  # fmt: skip
+        click.option(
+            "--thin-part-scale", "thin_part_scale", default=None, type=FINITE_FLOAT,
+            help=_LOC["thin_part_scale"].description
+            + f" Default: {_LOC['thin_part_scale'].default}.",
+        ),  # fmt: skip
+    ]
+    for option in reversed(options):
+        command = option(command)
+    return command
+
+
+def _given_location_options(**values) -> dict:
+    """The location options the user typed, by config field name; unset ones left out."""
+    return {name: value for name, value in values.items() if value is not None}
+
+
 @locations.command("export")
 @_EXPERIMENT_OPT
 @_RECORDING_OPT
@@ -5053,13 +5085,29 @@ def locations() -> None:
         "tracks/roi_relations/point_relations CSVs + locations.yaml."
     ),
 )  # fmt: skip
+@_location_options
 def locations_export(
-    experiment_dir: Path, recording_id: str, tracking_run_id: str, out_dir: str
+    experiment_dir: Path,
+    recording_id: str,
+    tracking_run_id: str,
+    out_dir: str,
+    sample_fps: float | None,
+    remove_thin_parts: bool | None,
+    thin_part_scale: float | None,
 ) -> None:
-    """Write per-frame, per-track spatial features (relative to the recording's
-    ROIs/POIs) for a completed tracking run, keyed by t_ns."""
+    """Write per-frame, per-track spatial features (position, body shape, and position
+    relative to the recording's ROIs/POIs) for a completed tracking run, keyed by t_ns.
+    """
     sess = _recording(_open_experiment(experiment_dir), recording_id)
-    out = sess.export_locations(tracking_run_id, out_dir)
+    options = _given_location_options(
+        sample_fps=sample_fps,
+        remove_thin_parts=remove_thin_parts,
+        thin_part_scale=thin_part_scale,
+    )
+    try:
+        out = sess.export_locations(tracking_run_id, out_dir, **options)
+    except ValueError as e:
+        raise click.ClickException(str(e))
     click.echo(f"exported: {out}")
 
 
@@ -5090,18 +5138,33 @@ def analysis() -> None:
     "recording's own match (alternative to --tracking). Repeat it to cover recordings "
     "tracked through different chains: each reads its run of the one named setting it has.",
 )  # fmt: skip
+@_location_options
 def analysis_run(
     experiment_dir: Path,
     recording_ids: tuple[str, ...],
     module_id: str,
     tracking_run_id: str | None,
     tracking_refs: tuple[str, ...],
+    sample_fps: float | None,
+    remove_thin_parts: bool | None,
+    thin_part_scale: float | None,
 ) -> None:
     """Launch an analysis run over the selected recordings; writes ``an_NN``."""
     if bool(tracking_run_id) == bool(tracking_refs):
         raise click.ClickException("pass exactly one of --tracking or --tracking-ref")
+    options = _given_location_options(
+        sample_fps=sample_fps,
+        remove_thin_parts=remove_thin_parts,
+        thin_part_scale=thin_part_scale,
+    )
+    if options and module_id != "location_export":
+        # Applied or refused, never dropped: another module would ignore them in silence.
+        given = ", ".join(f"--{name.replace('_', '-')}" for name in options)
+        raise click.ClickException(
+            f"{given} belong to the location_export module, not to {module_id}"
+        )
     proj = _open_experiment(experiment_dir)
-    config = {"source_recording_ids": list(recording_ids)}
+    config = {"source_recording_ids": list(recording_ids), **options}
     if tracking_refs:
         config.update(_spec_selection(proj, "tracking", tracking_refs))
     else:

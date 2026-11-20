@@ -3,17 +3,25 @@
 Config: a tracking-run picker offering tracking **specs** (§6.5) — a run's full-lineage
 kind — found across the selected recordings, annotated with ``N/M`` coverage, several of which
 may be ticked (``PooledSpecPicker``); ``config()`` emits ``tracking_spec`` or
-``tracking_specs`` and the run resolves them to each recording's own tracking run. Result: the
+``tracking_specs`` and the run resolves them to each recording's own tracking run. Below it,
+the measurement options (rows per second, thin parts), each row built from
+``LocationExportConfig`` so its range, default and help are the model's. Result: the
 per-recording CSV artifacts the run produced, read from its ``analysis.yaml`` manifest.
 """
 
 from PyQt6.QtWidgets import (
-    QFormLayout,
     QLabel,
     QVBoxLayout,
     QWidget,
 )
 
+from detail.configs.location_export import LocationExportConfig
+from detail.configs.location_export import option_names
+from detail.gui._pydantic_form import any_field_value
+from detail.gui._pydantic_form import any_field_widget
+from detail.gui._pydantic_form import field_meta
+from detail.gui._pydantic_form import set_any_field_value
+from detail.gui.forms import ConfigForm
 from detail.gui.help_ui import field_label
 from detail.gui.modules._common import PooledSpecPicker
 from detail.gui.modules.registry import (
@@ -22,18 +30,37 @@ from detail.gui.modules.registry import (
     register_analysis_module_ui,
 )
 
+#: What the rows-per-second box reads when it is left unset.
+EVERY_FRAME_TEXT = "every frame"
+
 
 class _LocationExportConfig(ConfigWidget):
     def __init__(self) -> None:
         super().__init__()
         self._model_names: dict = {}  # {model_id: name}; filled by on_experiment_set
-        form = QFormLayout(self)
+        form = ConfigForm(self, LocationExportConfig)
         self._tracking = PooledSpecPicker("tracking")
         form.addRow(
             field_label("location_export", "tracking_run_id", "Tracking run:"),
             self._tracking.widget,
         )
         self._tracking.changed.connect(lambda _item: self.coverage_changed.emit())
+        # One row per measurement option, enumerated from the model: an option added to it
+        # gets a row, a value in `config()` and a restore in `load_config` without being
+        # named here. `_options` rather than `_fields`, because the base `load_config` cannot
+        # set an optional box and this form restores every option the same way itself.
+        self._options: dict[str, QWidget] = {}
+        for name in option_names():
+            widget = any_field_widget(LocationExportConfig, name)
+            label = field_meta(LocationExportConfig, name)["label"]
+            form.addRow(field_label("location_export", name, f"{label}:"), widget)
+            self._options[name] = widget
+        self._options["sample_fps"].setSpecialValueText(EVERY_FRAME_TEXT)
+        # The scale means something only while thin parts are being removed.
+        thin = self._options["remove_thin_parts"]
+        thin.toggled.connect(self._options["thin_part_scale"].setEnabled)
+        self._options["thin_part_scale"].setEnabled(thin.isChecked())
+        form.finish()
 
     def on_experiment_set(self, experiment) -> None:
         # A run record stores a model *id*; a picker has to show the name (§11). O(models),
@@ -60,7 +87,18 @@ class _LocationExportConfig(ConfigWidget):
         return self._tracking.covered()
 
     def config(self) -> dict:
-        return self._tracking.selection()
+        options = {
+            name: any_field_value(LocationExportConfig, name, widget)
+            for name, widget in self._options.items()
+        }
+        return {**self._tracking.selection(), **options}
+
+    def load_config(self, config: dict) -> None:
+        """Restore the measurement options of a previous run; the tracking selection is
+        re-asked, because it names runs this selection of recordings may not have."""
+        for name, widget in self._options.items():
+            if name in config:
+                set_any_field_value(LocationExportConfig, name, widget, config[name])
 
     def validation_error(self) -> str | None:
         if not self._tracking.specs():
