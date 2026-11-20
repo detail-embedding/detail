@@ -440,7 +440,10 @@ def inspect_checkpoint(weights_path: Path | str) -> dict:
         for a pose checkpoint; they are what a skeleton is checked against.
 
     Raises:
-        ValueError: The file is not a checkpoint those readers understand.
+        FileNotFoundError: ``weights_path`` does not exist.
+        UserInputError: The file is not a YOLO ``.pt`` checkpoint
+            (``models/_ultralytics.read_checkpoint``, the one reader both use).
+        ValueError: A checkpoint with no class names, or a pose one with no ``kpt_shape``.
     """
     from detail.core.registries import TRAINED_LOADERS
     from detail.models.yolo_pose import TrainedYoloPose
@@ -478,6 +481,7 @@ def import_model(
 
     Raises:
         FileNotFoundError: ``weights_path`` (or ``preview``) does not exist.
+        UserInputError: ``weights_path`` is not a YOLO ``.pt`` checkpoint.
         ValueError: Unknown family or one that disagrees with the task, an unknown skeleton,
             a pose checkpoint without a fitting skeleton, a skeleton for a detection
             checkpoint, a class-less checkpoint, or an id collision.

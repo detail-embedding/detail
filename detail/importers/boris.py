@@ -55,6 +55,10 @@ _BEHAVIOR = "behavior"
 _TYPE = "behavior type"
 _TIME = "time"
 _AGGREGATED = "start (s)"  # a column unique to the *aggregated* export we do not read
+#: The columns that make a file the tabular events export this importer reads.
+_EVENTS_COLUMNS = frozenset({_BEHAVIOR, _TYPE, _TIME})
+#: The columns that make a file BORIS's *aggregated* export, which it refuses.
+_AGGREGATED_COLUMNS = frozenset({_BEHAVIOR, _TYPE, _AGGREGATED})
 
 
 @register_stream_importer("boris")
@@ -70,11 +74,18 @@ class BorisImporter(StreamImporter):
     config_model = BorisSelectionConfig
 
     def can_import(self, path: Path) -> bool:
+        """A BORIS export of either kind, by its header.
+
+        The *aggregated* export is claimed although the import refuses it: a file nothing
+        claimed was set up as a time-series CSV by the Add-stream dialog, with no word that
+        it was a BORIS file in the wrong shape (#33). Claimed, it reaches this importer,
+        whose refusal (:func:`_check_columns`) says what to export instead, on every surface.
+        """
         try:
             names = _header_names(path)
         except (OSError, UserInputError):
             return False
-        return {_BEHAVIOR, _TYPE, _TIME} <= names and _AGGREGATED not in names
+        return _EVENTS_COLUMNS <= names or _AGGREGATED_COLUMNS <= names
 
     def import_stream(
         self,

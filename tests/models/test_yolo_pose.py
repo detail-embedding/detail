@@ -254,7 +254,10 @@ def test_introspect_reads_k_and_flip_idx_and_refuses_a_non_pose_checkpoint(
     fake = types.ModuleType("ultralytics")
     fake.YOLO = _Yolo
     monkeypatch.setitem(sys.modules, "ultralytics", fake)
-    monkeypatch.setattr(yolo_pose, "import_ultralytics", lambda: None)
+    for name in ("pose.pt", "seg.pt"):
+        (tmp_path / name).write_bytes(
+            b"w"
+        )  # the reader refuses a path that is not there
 
     assert TrainedYoloPose.introspect(tmp_path / "pose.pt") == (3, [0, 2, 1])
     with pytest.raises(ValueError, match="not a pose model"):
