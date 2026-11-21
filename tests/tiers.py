@@ -139,6 +139,7 @@ FILE_TIER = {
     "tests/cluster_methods/test_hierarchy.py": "slow",
     # --- matplotlib figure rendering ------------------------------------------------ #
     "tests/analysis/test_comparison_figures_shape.py": "slow",
+    "tests/analysis/test_comparison_paper_figures.py": "slow",
     "tests/report/test_comparison_figures.py": "slow",
     "tests/report/test_figures.py": "slow",
     "tests/report/test_behavior_figures.py": "slow",

@@ -22,6 +22,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from detail.core import atomic
 from detail.core.errors import UserInputError
 from detail.report.style import (
     DEFAULT_STYLE,
@@ -137,7 +138,7 @@ def _rewrite_svg(fig, path: Path) -> None:
         if "$" in t.get_text() and t.get_ha() == "center"
     }
     raw = path.with_name(path.stem + ".matplotlib.svg")
-    path.replace(raw)
+    atomic.replace(path, raw)
     try:
         svg_edit.clean(raw, path, centred)
     finally:

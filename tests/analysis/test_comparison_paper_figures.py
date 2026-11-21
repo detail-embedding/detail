@@ -419,7 +419,9 @@ def test_units_is_wide_one_row_per_unit_with_a_column_per_group(paired):
 
 def test_the_methods_paragraph_says_what_ran(paired):
     comp, ranking, _saved = paired
-    text = (comp.dir / comparison_report.METHODS_FILENAME).read_text(encoding="utf-8")
+    text = (comp.dir / comparison_report.METHODS_FILENAME).read_text(
+        encoding="utf-8-sig"
+    )
     assert "every one of the 256 sign-flip configurations (an exact test)" in text
     assert "tested on its own" in text and "n = 8" in text
     assert "smallest P an exact test of 8 animals can report is 0.00781" in text
