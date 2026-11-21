@@ -133,7 +133,6 @@ _ORPHANS_WITH_REASONS = {
     "t_ns_to_seconds": "unit helper on the public core API",
     "experiment_path": "path helper on the public storage API",
     "box_map": "detection-row helper on the public clip-render API",
-    "read_location_csv": "the reader half of the location-export format, for consumers of it",
     # --- the floor a rule names, with no report to ship it in ---------------------------- #
     # The behavior clusterers were removed (docs/removed_capabilities.md, section 2) and the
     # shared functions only they called were deleted after them. This one stays because

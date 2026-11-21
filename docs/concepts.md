@@ -500,6 +500,15 @@ Three things to know:
   design allows: shuffling labels across animals for a between design, flipping each animal's
   own direction or shuffling its sessions for a within one, so the pairing is never thrown away.
 
+**Movement and body shape.** A comparison over a location export measures how far each animal
+went, how much of the time it was moving, how fast it moved, and how long, wide and large its
+body was, instead of behaviors. The designs are the same. The verdict is not: these are a
+handful of measures you chose, in different units, so each is tested on its own (its own p,
+with a false-discovery rate over the measures beside it) rather than against one floor shared
+with the others. A small change every animal shows, in a measure that hardly varies, is then a
+finding; against a floor set by a distance that halves it could never be. The location export
+must have measured the body, on calibrated recordings.
+
 **Screening clusters nobody has named.** A comparison over a clustering run can measure its
 **nodes** instead of its labels: every cluster in the tree, named or not, ranked by how its share of
 time differs across your column, with its rate (bouts per second) and mean bout length shown

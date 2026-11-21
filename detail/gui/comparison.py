@@ -53,6 +53,8 @@ from PyQt6.QtWidgets import (
 )
 
 from detail.analysis import cohort, compare, comparison_report, node_measures
+from detail.analysis import location_measures
+from detail.storage import location_export
 from detail.analysis.measures import MEASURES
 from detail.configs.comparison import ComparisonConfig
 from detail.configs.windows import WindowSpec
@@ -65,6 +67,7 @@ from detail.gui.notes import NotesBox
 from detail.gui.status_color import WARN, set_label_color
 from detail.gui._pydantic_form import (
     any_field_value,
+    any_field_widget,
     choice_combo,
     field_meta,
     field_widget,
@@ -87,6 +90,7 @@ from detail.gui.pages import (
 )
 from detail.gui.recording_items import (
     fill_recording_list,
+    offer_recordings,
     select_recording_ids,
     selected_recording_ids,
 )
@@ -208,6 +212,32 @@ def _measurable_runs(experiment) -> list[str]:
     return behavior_output.discover_behavior_outputs(Path(experiment.dir))
 
 
+#: The config fields that say how a location-export run is read into measures.
+_LOCATION_FIELDS = (
+    "location_sample_fps",
+    "location_smooth_s",
+    "location_moving_threshold",
+    "location_jump_speed",
+)
+
+
+def _location_runs(experiment) -> list[str]:
+    """The runs that wrote location tables: what the locations source can compare.
+
+    Found by scanning for the tables, like the behavior results beside them, and not by
+    reading every run's record, which is a round trip per run on the UI thread. A run that is
+    still writing is listed too; launching over it is refused, saying it is not finished.
+    """
+    return location_export.discover_location_exports(Path(experiment.dir))
+
+
+def _comparable_runs(experiment) -> list[str]:
+    """Every run a comparison can be made over, in id order: the runs with a behavior
+    artifact and the finished location exports. Which sources each one offers is the
+    *Measure* picker's question (``_sync_measure_source``)."""
+    return sorted(set(_measurable_runs(experiment)) | set(_location_runs(experiment)))
+
+
 class _StageBar:
     """Fold `run_comparison`'s per-stage fraction into one that only goes forward.
 
@@ -256,12 +286,16 @@ class ComparisonLaunchDialog(Dialog):
         self._worker: StageProgressWorker | None = None
         self._metadata = experiment.recording_metadata
         self._subject_column: str | None = None
+        #: ``{(run, source, snapshot): recordings it covers, or None}``, read once per choice.
+        self._covered_by: dict[tuple, list[str] | None] = {}
 
         layout = self.body()
         form = ConfigForm(layout)
 
         self._source = QComboBox()
-        for run_id in _measurable_runs(experiment):
+        #: The location-export runs among them: what decides which sources a run offers.
+        self._location_runs = set(_location_runs(experiment))
+        for run_id in _comparable_runs(experiment):
             self._source.addItem(_source_label(experiment, run_id), run_id)
         # The newest, not the oldest. `discover_behavior_outputs` returns ascending id order and
         # a combo opens on index 0, so a user with twenty analyses landed on `an_01`. Ascending
@@ -269,7 +303,7 @@ class ComparisonLaunchDialog(Dialog):
         self._source.setCurrentIndex(self._source.count() - 1)
         self._source.currentIndexChanged.connect(lambda *_: self._on_source_changed())
         form.addRow(
-            label_with("Behavior result:", help_button("comparison-source")),
+            label_with("Result to compare:", help_button("comparison-source")),
             self._source,
         )
 
@@ -279,6 +313,9 @@ class ComparisonLaunchDialog(Dialog):
         self._measure_source = QComboBox()
         self._measure_source.addItem("Labelled behaviors", "labels")
         self._measure_source.addItem("Every cluster (named or not)", "nodes")
+        # Distance, speed and body shape, read from a location-export run (§24 *The
+        # locations source*). Offered for those runs and greyed, with the reason, for others.
+        self._measure_source.addItem("Movement and body shape", "locations")
         self._measure_source.currentIndexChanged.connect(
             lambda *_: self._on_measure_source_changed()
         )
@@ -359,7 +396,7 @@ class ComparisonLaunchDialog(Dialog):
         )
         fill_recording_list(self._recordings, list(experiment.recordings))
         fit_list_height(self._recordings)
-        self._recordings.itemSelectionChanged.connect(self._refresh)
+        self._recordings.itemSelectionChanged.connect(self._on_recordings_changed)
         form.addRow(
             label_with(
                 "Recordings (all if none):", help_button("comparison-recordings")
@@ -370,6 +407,8 @@ class ComparisonLaunchDialog(Dialog):
 
         self._snapshot = QComboBox()
         self._fill_snapshots()
+        # A snapshot is a frozen copy of the artifact, and may cover other recordings.
+        self._snapshot.currentIndexChanged.connect(lambda *_: self._sync_cohort())
         form.addRow(
             label_with("Read snapshot:", help_button("comparison-snapshot")),
             self._snapshot,
@@ -443,6 +482,34 @@ class ComparisonLaunchDialog(Dialog):
                 advanced="Difference ranking",
             )
 
+        # How a location-export run is read into measures. Built from the model, like the
+        # ranking knobs, and enabled only while *Movement and body shape* is the measure.
+        self._location_fields = {
+            name: any_field_widget(ComparisonConfig, name) for name in _LOCATION_FIELDS
+        }
+        rate = self._location_fields["location_sample_fps"]
+        rate.setSpecialValueText("every row")
+        # An optional box opens on "unset", and unset here is a real choice (every row) that
+        # is not the model's default: seed it, or every comparison launched from this form
+        # reads the run at another rate than one launched from the CLI.
+        set_any_field_value(
+            ComparisonConfig,
+            "location_sample_fps",
+            rate,
+            ComparisonConfig.model_fields["location_sample_fps"].default,
+        )
+        for name, widget in self._location_fields.items():
+            # Off until *Movement and body shape* is the measure (`_on_measure_source_changed`).
+            widget.setEnabled(False)
+            form.addRow(
+                label_with(
+                    f"{field_meta(ComparisonConfig, name)['label']}:",
+                    help_button("comparison-locations"),
+                ),
+                widget,
+                advanced="Locations",
+            )
+
         self._status = QLabel("")
         self._status.setWordWrap(True)
         layout.addWidget(self._status)
@@ -460,9 +527,8 @@ class ComparisonLaunchDialog(Dialog):
         self._buttons.rejected.connect(self.reject)
 
         self._sync_window_fields(self._windows.currentText())
-        self._fill_group_by()
         self._sync_measure_source()
-        self._refresh()
+        self._sync_cohort()
         form.finish()
         if seed:
             self._apply_seed(seed)
@@ -474,10 +540,56 @@ class ComparisonLaunchDialog(Dialog):
         self._fill_snapshots()
         self._sync_measure_source()
         self._fill_measures()
+        self._sync_cohort()
+
+    def _covered_recordings(self) -> list[str] | None:
+        """The recordings the chosen run covers for the chosen measure, or ``None`` when that
+        cannot be read (the run then refuses in its own words).
+
+        The rule the run applies (``api.comparison.source_recordings``), asked here so every
+        preview below counts the recordings the run will compare. Read once per choice: a
+        coverage table, a run record or a node cache's id list, one small read each.
+        """
+        run_id = self.source_run_id()
+        if not run_id:
+            return None
+        source = self.measure_source()
+        snapshot = self._snapshot.currentData() if source == "labels" else None
+        key = (run_id, source, snapshot)
+        if key not in self._covered_by:
+            from detail.api.comparison import source_recordings
+
+            try:
+                self._covered_by[key] = source_recordings(
+                    self._experiment, run_id, source=source, snapshot=snapshot
+                )
+            except (OSError, ValueError):
+                self._covered_by[key] = None
+        return self._covered_by[key]
+
+    def _sync_cohort(self) -> None:
+        """Offer only the recordings the chosen run covers, then describe every column over
+        them: what *Compare across* and *Average within* list, and the counts beside them.
+        """
+        self._recordings.blockSignals(True)
+        offer_recordings(
+            self._recordings,
+            self._covered_recordings(),
+            f"not in {self.source_run_id()}",
+        )
+        self._recordings.blockSignals(False)
+        self._on_recordings_changed()
+
+    def _on_recordings_changed(self) -> None:
+        self._fill_group_by()
+        self._refresh()
 
     def _on_measure_source_changed(self) -> None:
         self._fill_measures()
         nodes = self.measure_source() == "nodes"
+        locations = self.measure_source() == "locations"
+        for widget in self._location_fields.values():
+            widget.setEnabled(locations)
         # The node source measures the whole recording (§24): the window picker is greyed
         # with that set, not hidden, so the constraint reads as one.
         if nodes and self._windows.findText("whole") >= 0:
@@ -488,15 +600,21 @@ class ComparisonLaunchDialog(Dialog):
         )
         # Nor from a pinned copy: a snapshot pins the labelled artifact, and every cluster
         # is measured from the run's current node cache.
-        if nodes:
+        if nodes or locations:
             self._snapshot.setCurrentIndex(0)
-        self._snapshot.setEnabled(not nodes)
+        self._snapshot.setEnabled(not (nodes or locations))
         self._snapshot.setToolTip(
             "Every cluster is measured from the run's current node cache."
             if nodes
-            else ""
+            else (
+                "A location-export run is never rewritten, so it has no snapshots."
+                if locations
+                else ""
+            )
         )
-        self._refresh()
+        # The same run covers other recordings under another measure: a clustering run's
+        # node cache, say, against its labelled artifact.
+        self._sync_cohort()
 
     def measure_source(self) -> str:
         return self._measure_source.currentData() or "labels"
@@ -516,16 +634,40 @@ class ComparisonLaunchDialog(Dialog):
             return "this run has no node cache — rebuild it from its workspace"
         return None
 
+    def _source_reasons(self) -> dict[str, str | None]:
+        """``{source: why the chosen run cannot offer it}``, ``None`` where it can.
+
+        A location-export run offers movement and body shape and nothing else; every other
+        run offers its labelled behaviors, and its clusters when it has a node cache.
+        """
+        if self.source_run_id() in self._location_runs:
+            no_behaviors = "a location-export run holds no behaviors"
+            return {"labels": no_behaviors, "nodes": no_behaviors, "locations": None}
+        return {
+            "labels": None,
+            "nodes": self._node_cache_reason(),
+            "locations": "pick a location-export run under Result to compare",
+        }
+
     def _sync_measure_source(self) -> None:
-        """Grey out *Every cluster* with the reason when the chosen run cannot offer it."""
-        reason = self._node_cache_reason()
+        """Grey out each measure the chosen run cannot offer, with the reason, and move the
+        selection off one that just became unavailable."""
+        reasons = self._source_reasons()
         model = self._measure_source.model()
-        item = model.item(1)
-        if item is not None:
-            item.setEnabled(reason is None)
-            item.setToolTip(reason or "")
-        if reason is not None and self.measure_source() == "nodes":
-            self._measure_source.setCurrentIndex(0)
+        for index in range(self._measure_source.count()):
+            reason = reasons.get(self._measure_source.itemData(index))
+            item = model.item(index)
+            if item is not None:
+                item.setEnabled(reason is None)
+                item.setToolTip(reason or "")
+        if reasons.get(self.measure_source()) is not None:
+            offered = [
+                index
+                for index in range(self._measure_source.count())
+                if reasons.get(self._measure_source.itemData(index)) is None
+            ]
+            if offered:
+                self._measure_source.setCurrentIndex(offered[0])
 
     def _fill_snapshots(self) -> None:
         """Which pinned copy of the source's artifact to read (§21).
@@ -539,6 +681,9 @@ class ComparisonLaunchDialog(Dialog):
         from detail.storage import snapshots as snapshots_store
 
         wanted = self._snapshot.currentData() if self._snapshot.count() else None
+        # Quiet while it is rebuilt: each step would re-read the cohort of a half-chosen
+        # source. The caller syncs it once, after.
+        self._snapshot.blockSignals(True)
         self._snapshot.clear()
         self._snapshot.addItem("Current artifact", None)
         run_id = self.source_run_id()
@@ -548,6 +693,7 @@ class ComparisonLaunchDialog(Dialog):
                 self._snapshot.addItem(snapshot_id, snapshot_id)
         index = self._snapshot.findData(wanted)
         self._snapshot.setCurrentIndex(max(index, 0))
+        self._snapshot.blockSignals(False)
 
     def _apply_seed(self, seed: dict) -> None:
         """Pre-fill from a saved comparison's record — "same source, different grouping" is the
@@ -615,6 +761,17 @@ class ComparisonLaunchDialog(Dialog):
         self._measures_fixed = nodes
         self._measures.blockSignals(True)
         self._measures.clear()
+        if self.measure_source() == "locations":
+            # Another registry: what a location-export run can be measured for.
+            for measure_id, spec in location_measures.MEASURES.items():
+                item = _checkable(spec.label, data=measure_id)
+                item.setToolTip(spec.description)
+                if measure_id in checked:
+                    item.setCheckState(Qt.CheckState.Checked)
+                self._measures.addItem(item)
+            self._measures.blockSignals(False)
+            fit_list_height(self._measures)
+            return
         for measure_id, spec in MEASURES.items():
             why = unmet_condition(spec, manifest) if manifest is not None else None
             if nodes and measure_id not in node_measures.MEASURES:
@@ -665,8 +822,19 @@ class ComparisonLaunchDialog(Dialog):
 
     # -- what is in each column ------------------------------------------------ #
     def _selected_recordings(self) -> list[str]:
-        return selected_recording_ids(self._recordings) or [
-            r.id for r in self._experiment.recordings
+        """The recordings the comparison will compare: those ticked, else every one the chosen
+        run covers. Every preview on this form is described over these."""
+        covered = self._covered_recordings()
+        if covered is None:
+            covered = self._recordings_all()
+        chosen = set(selected_recording_ids(self._recordings))
+        return [r for r in covered if r in chosen] or list(covered)
+
+    def _recordings_all(self) -> list[str]:
+        """Every recording in the experiment, as the recordings list holds them."""
+        return [
+            self._recordings.item(row).data(Qt.ItemDataRole.UserRole)
+            for row in range(self._recordings.count())
         ]
 
     def _fill_group_by(self) -> None:
@@ -678,23 +846,31 @@ class ComparisonLaunchDialog(Dialog):
         it says so.
         """
         recordings = self._selected_recordings()
-        self._group_by.blockSignals(True)
-        self._group_by.clear()
         columns = [c for c in self._columns if c not in _ROW_KEYS]
+        offered = []
         for summary in cohort.describe_columns(self._metadata, recordings, columns):
             refusal = summary.usable_for_grouping
             text = f"{summary.name}   —   {refusal or summary.describe()}"
-            item = _checkable(text, data=summary.name)
-            if refusal:
-                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
-            self._group_by.addItem(item)
+            offered.append((summary.name, text, bool(refusal)))
         # The row keys come off the measures table, which does not exist until the run — so
         # there is nothing to describe and nothing to refuse. Saying where they come from beats
         # `describe_columns` reporting them, correctly but uselessly, as "no values recorded".
         for name in _ROW_KEYS:
-            self._group_by.addItem(
-                _checkable(f"{name}   —   {_ROW_KEY_NOTE[name]}", data=name)
-            )
+            offered.append((name, f"{name}   —   {_ROW_KEY_NOTE[name]}", False))
+        if [(name, text) for name, text, _ in offered] == _offered(self._group_by):
+            return
+        # Re-described when the recordings change (another run, another selection), keeping
+        # what was ticked where it can still be: a column that now holds one value is greyed
+        # and comes back unticked.
+        already = set(_checked(self._group_by))
+        self._group_by.blockSignals(True)
+        self._group_by.clear()
+        for name, text, refused in offered:
+            item = _checkable(text, data=name)
+            if refused:
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+            self._group_by.addItem(item)
+        _set_checked(self._group_by, already)
         self._group_by.blockSignals(False)
         fit_list_height(self._group_by)
 
@@ -746,7 +922,15 @@ class ComparisonLaunchDialog(Dialog):
 
     def validation_error(self) -> str | None:
         if not self.source_run_id():
-            return "No behavior result to compare — run a behavior scan or a clustering first."
+            return (
+                "Nothing to compare yet — run a behavior scan, a clustering or a location "
+                "export first."
+            )
+        if self._covered_recordings() == []:
+            return (
+                f"{self.source_run_id()} has not finished a recording yet, so there is "
+                "nothing in it to compare."
+            )
         if not _checked(self._group_by):
             return "Pick at least one column to compare across."
         if self._nested():
@@ -877,7 +1061,7 @@ class ComparisonLaunchDialog(Dialog):
             return ""
         deferred = cohort.deferred_columns(self._metadata, recordings, group_by)
         if deferred:
-            return f"Decided when it runs: {', '.join(deferred)} come from the behavior result."
+            return f"Decided when it runs: {', '.join(deferred)} come from the result itself."
         try:
             design = compare.resolve_design(
                 self._metadata,
@@ -990,6 +1174,13 @@ class ComparisonLaunchDialog(Dialog):
             recordings = recordings[: sum(g.n_recordings for g in groups)]
         head = f"{len(groups)} group(s) over {len(recordings)} recording(s):"
         lines = []
+        covered = self._covered_recordings()
+        total = len(self._recordings_all())
+        if covered is not None and len(covered) < total:
+            lines.append(
+                f"    {self.source_run_id()} covers {len(covered)} of this experiment's "
+                f"{total} recordings; only those can be compared."
+            )
         for group in groups:
             bit = f"    {group.label} — {group.n_recordings} recording(s)"
             if group.n_subjects is not None:
@@ -1054,6 +1245,10 @@ class ComparisonLaunchDialog(Dialog):
         for key, widget in self._ranking_fields.items():
             if config.get(key) is not None:
                 set_any_field_value(ComparisonConfig, key, widget, config[key])
+        # `in`, not `is not None`: an unset rate ("every row") is a value to restore.
+        for key, widget in self._location_fields.items():
+            if key in config:
+                set_any_field_value(ComparisonConfig, key, widget, config[key])
         source = config.get("source")
         if source and self._measure_source.findData(source) >= 0:
             self._measure_source.setCurrentIndex(self._measure_source.findData(source))
@@ -1076,7 +1271,7 @@ class ComparisonLaunchDialog(Dialog):
             "source_run_id": self.source_run_id(),
             "source_snapshot": (
                 None
-                if self.measure_source() == "nodes"
+                if self.measure_source() in ("nodes", "locations")
                 else self._snapshot.currentData()
             ),
             "source": self.measure_source(),
@@ -1100,6 +1295,10 @@ class ComparisonLaunchDialog(Dialog):
             **{
                 name: any_field_value(ComparisonConfig, name, widget)
                 for name, widget in self._ranking_fields.items()
+            },
+            **{
+                name: any_field_value(ComparisonConfig, name, widget)
+                for name, widget in self._location_fields.items()
             },
         }
 
@@ -1735,6 +1934,14 @@ class ComparisonDetailPage(QWidget):
             lines.append(
                 f"every cluster of {record.get('source_run_id', '')} at or above "
                 f"{record.get('candidate_floor_s')} s, named or not, ranked on share of time"
+            )
+        if record.get("source") == "locations":
+            exported = record.get("location_export") or {}
+            thin = "removed" if exported.get("remove_thin_parts") else "kept"
+            lines.append(
+                f"movement and body shape from location export "
+                f"{record.get('source_run_id', '')} (thin parts {thin}); each measure "
+                "tested on its own"
             )
         # A label this comparison scores that a screen over the same column chose (§24): the
         # one line that keeps the effect from reading as an independent finding.

@@ -226,6 +226,23 @@ class MeasureSpec:
 MEASURES: dict[str, MeasureSpec] = {}
 
 
+def spec_of(measure_id: str):
+    """What a surface needs to print a measure, whatever source it belongs to.
+
+    A behavior measure's :class:`MeasureSpec`, a location measure's
+    ``location_measures.LocationMeasure``, or ``None`` for an id neither registry has. Both
+    carry ``label``, ``description``, ``unit`` and ``fans_out``, which is all a table, an axis
+    or a pseudo-count asks. Every renderer goes through here: one that read :data:`MEASURES`
+    directly printed a location measure by its raw id, with no unit.
+    """
+    spec = MEASURES.get(measure_id)
+    if spec is not None:
+        return spec
+    from detail.analysis import location_measures
+
+    return location_measures.MEASURES.get(measure_id)
+
+
 def register_measure(measure_id: str, **kwargs) -> Callable[[Callable], Callable]:
     """Register ``fn(selection, ctx) -> value`` under ``measure_id``.
 

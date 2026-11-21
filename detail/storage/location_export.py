@@ -13,6 +13,11 @@ from pathlib import Path
 
 import yaml
 
+from detail.core import atomic
+from detail.core.ids import sorted_by_id
+from detail.storage import dirscan
+from detail.storage import experiment as experiment_store
+
 TRACKS_FILE = "tracks.csv"
 ROI_FILE = "roi_relations.csv"
 POINT_FILE = "point_relations.csv"
@@ -52,6 +57,36 @@ def write_location_tables(out_dir: Path | str, tables) -> Path:
     with open(out_dir / MANIFEST_FILE, "w", encoding="utf-8") as f:
         yaml.dump(manifest, f, sort_keys=False)
     return out_dir
+
+
+def read_location_manifest(recording_dir: Path | str) -> dict | None:
+    """One recording's ``locations.yaml``, or ``None`` where the run wrote none for it."""
+    path = Path(recording_dir) / MANIFEST_FILE
+    if not path.is_file():
+        return None
+    return yaml.safe_load(atomic.read_text(path)) or {}
+
+
+def has_location_tables(run_dir: Path | str) -> bool:
+    """Whether an analysis run wrote location tables for at least one recording."""
+    return any(
+        (recording_dir / MANIFEST_FILE).is_file()
+        for recording_dir in dirscan.child_dirs(Path(run_dir))
+    )
+
+
+def discover_location_exports(experiment_dir: Path | str) -> list[str]:
+    """Ids of the analysis runs that wrote location tables, in numeric id order.
+
+    By scanning for the artifact, the way ``behavior_output.discover_behavior_outputs`` finds
+    behavior results: no run record is read, so a picker can list them on the UI thread. A
+    run still writing is listed with the recordings it has reached; whether it is finished is
+    its record's question, asked by whatever reads it.
+    """
+    root = experiment_store.analysis_dir(experiment_dir)
+    return sorted_by_id(
+        path.name for path in dirscan.child_dirs(root) if has_location_tables(path)
+    )
 
 
 def read_location_csv(path: Path | str) -> tuple[list[str], list[tuple]]:

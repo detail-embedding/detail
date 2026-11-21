@@ -19,6 +19,7 @@ that never draw anything. `detail/report/figures.py` is legitimately a matplotli
 one is not.
 """
 
+import dataclasses
 import json
 import math
 from collections import defaultdict
@@ -71,6 +72,13 @@ RANKING_COLUMNS = [
 SHOWN_BELOW_FLOOR = 10
 
 
+#: The unit of a measure that is one quantity divided by another of the same kind (a body's
+#: length over its width). It is named, because the report reads ``""`` as a plain count,
+#: whose pseudo-count is one bout; and it is printed as nothing, because "2.4 ratio" is not
+#: how anyone writes a ratio.
+RATIO_UNIT = "ratio"
+
+
 def measure_unit(measure_key: tuple) -> str:
     """The unit a measure's numbers are in, or ``""`` when it is a plain count.
 
@@ -79,9 +87,9 @@ def measure_unit(measure_key: tuple) -> str:
     unlabelled floats mixing nanoseconds, counts and ratios, which is what every comparison
     surface shipped: a mean duration printed as ``4956702127.6595745``.
     """
-    from detail.analysis.measures import MEASURES
+    from detail.analysis.measures import spec_of
 
-    spec = MEASURES.get(measure_key[0] if measure_key else "")
+    spec = spec_of(measure_key[0] if measure_key else "")
     return spec.unit if spec is not None else ""
 
 
@@ -100,6 +108,8 @@ def shown_value(value, unit: str) -> tuple[str, str]:
         return f"{float(value) / 1e9:.3g}", "s"
     if unit == "fraction":
         return f"{float(value) * 100:.3g}", "%"
+    if unit == RATIO_UNIT:
+        return f"{float(value):.4g}", ""
     return f"{float(value):.4g}", unit
 
 
@@ -125,11 +135,11 @@ def measure_title(measure_key: tuple, remainders: Collection[str]) -> str:
     :func:`remainders_of`; required, because leaving it out shows the leftover under the plain
     name, which reads as all of the parent).
     """
-    from detail.analysis.measures import MEASURES, display_label
+    from detail.analysis.measures import display_label, spec_of
 
     if not measure_key:
         return "measure"
-    spec = MEASURES.get(measure_key[0])
+    spec = spec_of(measure_key[0])
     parts = [spec.label if spec is not None else measure_key[0]]
     parts += [
         _readable_label(display_label(p, remainders) if i < 2 else p)
@@ -149,11 +159,11 @@ def _readable_label(label) -> str:
 
 def measure_axis_label(measure_key: tuple) -> str:
     """``total_time (s)`` — the measure with the unit a reader will actually see."""
-    from detail.analysis.measures import MEASURES
+    from detail.analysis.measures import spec_of
 
     unit = measure_unit(measure_key)
-    shown = {"ns": "s", "fraction": "%"}.get(unit, unit)
-    spec = MEASURES.get(measure_key[0]) if measure_key else None
+    shown = {"ns": "s", "fraction": "%", RATIO_UNIT: ""}.get(unit, unit)
+    spec = spec_of(measure_key[0]) if measure_key else None
     name = spec.label if spec is not None else (measure_key[0] if measure_key else "")
     return f"{name} ({shown})" if shown else name
 
@@ -217,10 +227,10 @@ def pseudo_count(seconds: float) -> Callable[[tuple, float | None], float]:
     one bout over the denominator, whatever ``seconds`` is: there is no bout per second. Both
     are off at ``seconds == 0``, so ``pseudo_count_s: 0`` ranks the raw ratios it records.
     """
-    from detail.analysis.measures import MEASURES
+    from detail.analysis.measures import spec_of
 
     def pseudo(measure_key: tuple, denominator_ns: float | None) -> float:
-        spec = MEASURES.get(measure_key[0] if measure_key else "")
+        spec = spec_of(measure_key[0] if measure_key else "")
         unit = spec.unit if spec is not None else ""
         if unit == "ns":
             return float(seconds) * 1e9
@@ -291,7 +301,30 @@ def rank_record(obs, record: dict, ancestors=None):
         )
     if ancestors is not None and record.get("suppress_nesting", True):
         ranking = compare.suppress_nesting(ranking, ancestors)
+    if record.get("verdict") == compare.VERDICT_OWN:
+        ranking = by_own_test(ranking)
     return ranking
+
+
+def by_own_test(ranking):
+    """``ranking`` read by each measure's own test (:data:`compare.VERDICT_OWN`): the same
+    items and the same numbers, ordered by their own p, smallest first, and a finding where
+    that p is at most :data:`compare.FLOOR_ALPHA`.
+
+    The order is by evidence rather than by size because the sizes are not comparable: a
+    distance that halves and a body that shortens by a twentieth are in different units, and
+    the larger number is not the surer finding. A measure with no p goes last.
+    """
+
+    def order(item):
+        p = getattr(item, "own_p", None)
+        return (p is None, p if p is not None else 0.0, -(item.magnitude or 0.0))
+
+    return dataclasses.replace(
+        ranking,
+        verdict=compare.VERDICT_OWN,
+        contrasts=sorted(ranking.contrasts, key=order),
+    )
 
 
 def left_out_sentence(record: dict, names: Mapping[str, str] | None = None) -> str:
@@ -420,6 +453,34 @@ def _floor_cell(ranking, item) -> str:
     return "yes" if ranking.clears_floor(item) else "no"
 
 
+def _own_p_cell(item) -> str:
+    """The item's own p with the false-discovery rate over the family after it:
+    ``0.002 · q 0.01``."""
+    own = p_text(getattr(item, "own_p", None))
+    q = p_text(getattr(item, "q", None))
+    if not own:
+        return "—"
+    return f"{own} · q {q}" if q else own
+
+
+#: The ranking tables' header for :func:`_own_p_cell`.
+OWN_P_HEADER = "p (own · q)"
+
+
+def _verdict_headers(ranking) -> list[str]:
+    """The two columns that say whether an item is a finding and by what p (§24 *The
+    verdict*), named for the rule the ranking uses."""
+    if ranking.verdict == compare.VERDICT_OWN:
+        return [f"p ≤ {compare.FLOOR_ALPHA:g}", OWN_P_HEADER]
+    return ["clears floor", P_HEADER]
+
+
+def _verdict_cells(ranking, item) -> list[str]:
+    if ranking.verdict == compare.VERDICT_OWN:
+        return [_floor_cell(ranking, item), _own_p_cell(item)]
+    return [_floor_cell(ranking, item), _p_cell(item)]
+
+
 def _t_cell(item) -> str:
     """The moderated t as a cell: ``+8.8``, ``—`` for none."""
     t = getattr(item, "statistic", None)
@@ -476,7 +537,7 @@ def ranking_rows(
         headers = ["measure", "between", "a", "b", "change (a \u2192 b)"]
         headers += ["t"] if _studentized(ranking) else []
         headers += ["in that direction", "present"] if within else []
-        headers += ["clears floor", P_HEADER] if with_floor else []
+        headers += _verdict_headers(ranking) if with_floor else []
         headers += ["kept"] if ranking.kept is not None else []
         headers += ["suggestion"]
         rows = []
@@ -501,7 +562,7 @@ def ranking_rows(
                     f"{item.consistency} of {item.n_units}",
                     f"{item.present_a} / {item.present_b}",
                 ]
-            cells += [_floor_cell(ranking, item), _p_cell(item)] if with_floor else []
+            cells += _verdict_cells(ranking, item) if with_floor else []
             cells += [_kept_cell(ranking, item)] if ranking.kept is not None else []
             cells += [suggestion(item, ranking, record)]
             rows.append(cells)
@@ -510,7 +571,7 @@ def ranking_rows(
         headers = ["measure", "mean ρ"]
         headers += ["t"] if _studentized(ranking) else []
         headers += ["in that direction", "present"]
-        headers += ["clears floor", P_HEADER] if with_floor else []
+        headers += _verdict_headers(ranking) if with_floor else []
         headers += ["kept"] if ranking.kept is not None else []
         headers += ["suggestion"]
         rows = []
@@ -524,7 +585,7 @@ def ranking_rows(
                 f"{item.consistency} of {item.n_units}",
                 str(item.n_present),
             ]
-            cells += [_floor_cell(ranking, item), _p_cell(item)] if with_floor else []
+            cells += _verdict_cells(ranking, item) if with_floor else []
             cells += [_kept_cell(ranking, item)] if ranking.kept is not None else []
             cells += [suggestion(item, ranking, record)]
             rows.append(cells)
@@ -534,7 +595,7 @@ def ranking_rows(
     headers += ["t"] if _studentized(ranking) else []
     if ranking.design == compare.PAIRED:
         headers += ["in that direction", "present"]
-    headers += ["clears floor", P_HEADER] if with_floor else []
+    headers += _verdict_headers(ranking) if with_floor else []
     headers += ["kept"] if ranking.kept is not None else []
     headers += ["suggestion"]
     rows = []
@@ -555,7 +616,7 @@ def ranking_rows(
                 f"{item.consistency} of {item.n_units}",
                 f"{item.present_a} / {item.present_b}",
             ]
-        cells += [_floor_cell(ranking, item), _p_cell(item)] if with_floor else []
+        cells += _verdict_cells(ranking, item) if with_floor else []
         cells += [_kept_cell(ranking, item)] if ranking.kept is not None else []
         cells += [suggestion(item, ranking, record)]
         rows.append(cells)
@@ -597,7 +658,13 @@ def ranking_csv_rows(ranking, record: dict) -> list[dict]:
                 # The moderated t where the ranking scores by it (§24 *The statistic*): the
                 # floor is in its unit, and `clears` is `|statistic|` against `floor`.
                 "statistic": _number_or_blank(item.statistic),
-                "floor": "" if ranking.floor is None else ranking.floor,
+                # No floor where each measure is read by its own test: the family's
+                # floor is not what `clears` was decided against, and printing it says it was.
+                "floor": (
+                    ""
+                    if ranking.floor is None or ranking.verdict == compare.VERDICT_OWN
+                    else ranking.floor
+                ),
                 "clears": ranking.clears_floor(item),
                 "kept": (
                     ranking.clears_floor(item)
@@ -724,9 +791,9 @@ def _fans_out(measure_key: tuple) -> bool:
     like is a §24 design question that has not been answered, and drawing 400 wrong answers is
     not a way of answering it.
     """
-    from detail.analysis.measures import MEASURES
+    from detail.analysis.measures import spec_of
 
-    spec = MEASURES.get(measure_key[0] if measure_key else "")
+    spec = spec_of(measure_key[0] if measure_key else "")
     return bool(spec is not None and spec.fans_out)
 
 
@@ -946,6 +1013,10 @@ def _ranking_figure(
 
     if not ranking.contrasts:
         return []
+    if ranking.verdict == compare.VERDICT_OWN:
+        # Bars of size across measures in different units, against a floor none of them was
+        # judged by, would be a chart of the wrong question. The table carries the verdicts.
+        return []
     # Unbounded changes have no bar to draw — a fold change from zero is off every axis — so they
     # are listed in `summary.md` and left out of the chart rather than given an invented height.
     drawn = [c for c in ranking.contrasts if c.score is not None]
@@ -1052,8 +1123,10 @@ _SUMMARY_ROWS = 20
 def statistic_sentence(ranking) -> str:
     """What the ranking scores by, in one line every surface prints beside the floor (\u00a724
     *The statistic*): the moderated t with its ``s0``, or the effect. Empty for a between
-    design, which has only the effect to rank on."""
-    if ranking.design == compare.BETWEEN:
+    design, which has only the effect to rank on, and for a ranking read by each measure's
+    own test, which is ordered by that test's p and says so in :func:`floor_sentence`.
+    """
+    if ranking.design == compare.BETWEEN or ranking.verdict == compare.VERDICT_OWN:
         return ""
     unit = "|".join(ranking.unit) or "unit"
     if ranking.statistic == compare.STATISTIC_T:
@@ -1074,6 +1147,8 @@ def statistic_note(record: Mapping) -> str:
     """
     if record.get("design") in (None, compare.BETWEEN):
         return ""
+    if record.get("verdict") == compare.VERDICT_OWN:
+        return "ordered by each measure's own test, smallest p first"
     statistic = record.get("ranking_statistic")
     if statistic == compare.STATISTIC_T:
         return "ranked on the moderated t: the mean per-unit effect over its spread"
@@ -1089,6 +1164,19 @@ def floor_sentence(ranking) -> str:
         if ranking.exact
         else f"{ranking.draws} shuffled draws"
     )
+    if ranking.verdict == compare.VERDICT_OWN:
+        what = {
+            compare.TREND: "its mean ρ was at least as far from zero, each unit's levels "
+            "shuffled within it",
+            compare.PAIRED: "its mean change was at least as large",
+            compare.PROFILE: "its largest change between two levels was at least as large, "
+            "each unit's levels shuffled within it",
+        }.get(ranking.design, "its change between groups was at least as large")
+        return (
+            f"Each measure is tested on its own: its p is the share of {how} in which "
+            f"{what}. No floor is shared between measures, which are in different units; "
+            f"q is the false-discovery rate over the **{len(ranking.contrasts)}** tested."
+        )
     if ranking.statistic == compare.STATISTIC_T:
         within = (
             ", each unit's levels shuffled within it"
