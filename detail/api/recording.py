@@ -1341,7 +1341,7 @@ class Recording:
             )
         return rec
 
-    def location_tables(self, tracking_run_id: str, **options):
+    def location_tables(self, tracking_run_id: str, **options: float | bool | None):
         """Per-frame, per-track spatial features for a completed tracking run —
         bbox/centroids/areas, the body's centre, area, length and width, and position
         relative to this recording's ROIs/POIs.
@@ -1376,7 +1376,10 @@ class Recording:
         )
 
     def export_locations(
-        self, tracking_run_id: str, out_dir: Path | str, **options
+        self,
+        tracking_run_id: str,
+        out_dir: Path | str,
+        **options: float | bool | None,
     ) -> Path:
         """Compute + write the three location CSVs (``tracks`` / ``roi_relations`` /
         ``point_relations``) + a ``locations.yaml`` manifest into a new folder under
