@@ -9550,7 +9550,12 @@ resolved (`group_order`: the levels a user named, reference first; numeric level
 order; numeric before text), and coloured by what they are (`group_colors`, over every group of
 the record so a filter repaints nothing): the reference level grey, an ordered variable's levels
 one hue from light to dark (checked monotone), two levels grey and the hue, three or more named
-values distinct hues. The axis names the thing and its unit (`panel_label`: *Rearing (% time)*,
+values distinct hues. The hues are the theme's (`theme_hues`): from blue on white, and from orange
+on the dark surface, where the ramp runs from the hue towards light (a dark shade sinks into the
+background) and a bar's fill tints towards the surface rather than towards white. The difference
+ranking draws what cleared the floor plus the first ten below it, its height following the bar
+count, with the measure said once on the axis when every bar is of one measure. The axis names
+the thing and its unit (`panel_label`: *Rearing (% time)*,
 *Distance (m)*; `MeasureSpec.axis`), a ratio's bars start at 1 with the baseline a labelled
 tick, an annotated panel reserves headroom for its bracket and an unannotated one does not, and
 nothing is clipped to the axes, so a dot at zero is a whole dot in every output. The composite

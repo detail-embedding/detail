@@ -194,6 +194,93 @@ def test_a_ramp_that_turns_back_is_refused():
     assert len(figlib.one_hue_ramp("#0072B2", 4)) == 4
 
 
+def test_dark_figures_start_from_orange_and_light_from_blue():
+    """Blue on the dark surface read worse than orange (user, 2026-11-20): the dark theme's
+    hues start at orange and go round from there, the light theme's at blue."""
+    light, dark = DEFAULT_STYLE, DEFAULT_STYLE.with_theme("dark")
+    assert comparison_report.theme_hues(light)[0] == light.chart.hue("blue")
+    assert comparison_report.theme_hues(dark)[0] == dark.chart.hue("orange")
+    assert set(comparison_report.theme_hues(dark)) == set(dark.chart.categorical)
+    two = comparison_report.group_colors({}, None, [("veh",), ("drug",)], dark)
+    assert list(two.values()) == [dark.chart.text_muted, dark.chart.hue("orange")]
+    ranking = compare.Ranking([], 0.3, 200, 0, design=compare.TREND)
+    groups = [("0",), ("25",), ("50",), ("75",)]
+    # on the dark surface the ramp starts at orange and gets lighter (lighter is more
+    # there, and a dark shade sinks into the background); on white it gets darker
+    ramp = [
+        comparison_report.group_colors({}, ranking, groups, dark)[g] for g in groups[1:]
+    ]
+    assert ramp[0].lower() == dark.chart.hue("orange").lower()
+    assert [figlib.luminance(c) for c in ramp] == sorted(
+        figlib.luminance(c) for c in ramp
+    )
+    on_white = [
+        comparison_report.group_colors({}, ranking, groups, light)[g]
+        for g in groups[1:]
+    ]
+    lums = [figlib.luminance(c) for c in on_white]
+    assert lums == sorted(lums, reverse=True)
+    # a bar's fill tints towards the surface it sits on, never towards white on a dark one
+    assert figlib.tint("#E69F00", towards=dark.chart.surface) != figlib.tint("#E69F00")
+
+
+def _node_ranking(n: int, clearing: int) -> compare.Ranking:
+    """A family-verdict ranking of ``n`` node items, the first ``clearing`` above the floor."""
+    items = [
+        compare.Effect(
+            measure_key=("time_fraction", f"node:{1000 + i}", "", "whole"),
+            effect=0.5,
+            n_units=8,
+            n_present=8,
+            consistency=8,
+            loo_sign_stable=True,
+            pair=("veh", "drug"),
+            statistic=(3.0 if i < clearing else 0.5) - i * 0.001,
+            family_p=0.01 if i < clearing else 0.5,
+        )
+        for i in range(n)
+    ]
+    return compare.Ranking(
+        items,
+        1.0,
+        200,
+        0,
+        design=compare.PAIRED,
+        levels=("veh", "drug"),
+        statistic=compare.STATISTIC_T,
+        s0=0.2,
+    )
+
+
+def test_the_ranking_figure_grows_with_its_bars_and_names_the_measure_once(tmp_path):
+    """Forty bars at a fixed height overlapped their labels into a smear (user, 2026-11-20):
+    the bars are what cleared plus the first ten below, the height follows the count, and
+    over one measure the measure is said once on the axis rather than on every bar."""
+    ranking = _node_ranking(40, 5)
+    captured = {}
+    original = figlib.save_figure
+
+    def spy(fig, out_stem, formats=("pdf", "svg", "png"), **kwargs):
+        ax = fig.axes[0]
+        captured["height"] = fig.get_size_inches()[1]
+        captured["labels"] = [t.get_text() for t in ax.get_yticklabels()]
+        captured["xlabel"] = ax.get_xlabel()
+        return original(fig, out_stem, formats, **kwargs)
+
+    figlib.save_figure = spy
+    try:
+        comparison_report._ranking_figure(
+            tmp_path, ranking, "one observation is: animal", ("png",), DEFAULT_STYLE, ()
+        )
+    finally:
+        figlib.save_figure = original
+    assert len(captured["labels"]) == 5 + comparison_report.SHOWN_BELOW_FLOOR
+    assert captured["height"] == pytest.approx(0.9 + comparison_report._BAR_ROW_IN * 15)
+    assert captured["labels"][0] == "node 1000"
+    assert captured["xlabel"].startswith("Share of time: ")
+    assert not any("Share of time" in label for label in captured["labels"])
+
+
 # --------------------------------------------------------------------------- #
 # the bars
 # --------------------------------------------------------------------------- #

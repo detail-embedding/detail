@@ -1045,7 +1045,8 @@ def group_colors(record: dict, ranking, groups: list[tuple], style) -> dict[tupl
 
     chart = style.chart
     grey = chart.text_muted
-    hue = chart.hue("blue")
+    hues = theme_hues(style)
+    hue = hues[0]
     names = ["|".join(g) for g in groups]
     ordered = (ranking is not None and ranking.design == compare.TREND) or (
         len(groups) > 2 and all(compare.is_number(n) for n in names)
@@ -1053,12 +1054,28 @@ def group_colors(record: dict, ranking, groups: list[tuple], style) -> dict[tupl
     if not groups:
         return {}
     if ordered:
-        colors = [grey, *figlib.one_hue_ramp(hue, len(groups) - 1)]
+        colors = [
+            grey,
+            *figlib.one_hue_ramp(hue, len(groups) - 1, lighten=style.theme == "dark"),
+        ]
     elif len(groups) <= 2:
         colors = [grey, hue][: len(groups)]
     else:
-        colors = chart.identities(len(groups))
+        colors = [hues[i % len(hues)] for i in range(len(groups))]
     return dict(zip(groups, colors))
+
+
+def theme_hues(style) -> list[str]:
+    """The identity hues a comparison figure takes, in order, for the style's surface: the
+    palette from blue on white, and from orange on the dark surface, where orange reads
+    better than blue and the rest follow it round (user, 2026-11-20). The first is the one
+    hue an ordered variable's ramp and a two-level contrast take."""
+    chart = style.chart
+    order = list(chart.categorical)
+    if style.theme == "dark":
+        start = order.index(chart.hue("orange"))
+        order = order[start:] + order[:start]
+    return order
 
 
 def _units_by_group(obs, measurement: tuple, groups: list[tuple], scale: float):
@@ -1331,7 +1348,7 @@ def _panels_figure(
             )
         handles = [
             Patch(
-                facecolor=figlib.tint(colors[g]),
+                facecolor=figlib.tint(colors[g], towards=style.chart.surface),
                 edgecolor=colors[g],
                 linewidth=0.7,
                 label="|".join(g),
@@ -1383,26 +1400,44 @@ def _ranking_figure(
     drawn = [c for c in ranking.contrasts if c.score is not None]
     if not drawn:
         return []
-    # A family of a thousand nodes is not a bar chart: the drawn set is what the screen shows.
-    if len(drawn) > _MAX_DRAWN_BARS:
-        drawn = drawn[:_MAX_DRAWN_BARS]
+    # A family of a thousand nodes is not a bar chart: the bars are what cleared the floor
+    # and the first few below it, as the screen shows them; never more than `_MAX_DRAWN_BARS`.
+    clearing = [c for c in drawn if ranking.clears_floor(c)]
+    drawn = (clearing + [c for c in drawn if c not in clearing][:SHOWN_BELOW_FLOOR])[
+        :_MAX_DRAWN_BARS
+    ]
+    labels, xlabel = _ranking_labels(drawn, ranking, remainders)
     with figlib.styled(style):
         import matplotlib.pyplot as plt
 
-        fig, ax = plt.subplots()
+        # Tall enough for its bars: at a fixed height forty labels overlapped into a smear.
+        fig, ax = plt.subplots(
+            figsize=(style.single_col_width_in, 0.9 + _BAR_ROW_IN * len(drawn))
+        )
         # The bars are the score the floor is in the unit of: the moderated t on a
         # studentized ranking, the |effect| otherwise (\u00a724 *The statistic*).
         figlib.ranked_bars_with_floor(
             ax,
-            [measure_title(c.measure_key, remainders) for c in drawn],
+            labels,
             [c.score for c in drawn],
             ranking.floor,
             style=style,
-            xlabel=_ranking_xlabel(ranking),
+            xlabel=xlabel,
+            color=theme_hues(style)[0],
         )
         if ranking.design != compare.TREND and not _studentized(ranking):
             _label_fold_change(ax, drawn)
-        _caption(ax, note, style)
+        # As the figure's title line rather than `_caption`'s strip above the axes, which
+        # the floor's "chance" label also sits in: the two collided wherever the floor fell
+        # under the note. Constrained layout keeps a suptitle clear of the axes' annotations.
+        fig.suptitle(
+            note,
+            x=0.0,
+            ha="left",
+            fontsize=style.type.annotation,
+            color=style.chart.text_muted,
+            fontweight="normal",
+        )
         return figlib.save_figure(
             fig, out_dir / "difference_ranking", formats, editable_svg=True
         )
@@ -1410,6 +1445,35 @@ def _ranking_figure(
 
 #: Bars the ranking figure draws at most — the top of the ranking, which is what it is for.
 _MAX_DRAWN_BARS = 40
+#: The ranking figure's height per bar, in inches: a 7 pt label with air either side.
+_BAR_ROW_IN = 0.16
+
+
+def _ranking_labels(
+    drawn: list, ranking, remainders: Collection[str]
+) -> tuple[list[str], str]:
+    """The bars' labels and the axis label. Over one measure (a node screen is always one)
+    the measure's name is said once, on the axis, and each bar is its label alone: forty
+    bars each starting "Share of time · " said nothing forty times."""
+    xlabel = _ranking_xlabel(ranking)
+    measures = {c.measure_key[0] for c in drawn}
+    if len(measures) != 1:
+        return [measure_title(c.measure_key, remainders) for c in drawn], xlabel
+    from detail.analysis.measures import display_label, spec_of
+
+    (measure,) = measures
+    spec = spec_of(measure)
+    name = spec.label if spec is not None else measure
+    labels = [
+        "  ·  ".join(
+            _readable_label(display_label(p, remainders) if i < 2 else p)
+            for i, p in enumerate(c.measure_key[1:])
+            if p and p != "whole"
+        )
+        or name
+        for c in drawn
+    ]
+    return labels, f"{name}: {xlabel}"
 
 
 def _ranking_xlabel(ranking) -> str:

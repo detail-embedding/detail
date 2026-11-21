@@ -746,12 +746,15 @@ def paired_lines(
 # --------------------------------------------------------------------------------------------- #
 
 
-def tint(color: str, amount: float = 0.6) -> tuple:
-    """``color`` moved ``amount`` of the way to white: a bar's fill under its own edge."""
+def tint(color: str, amount: float = 0.6, *, towards: str = "#ffffff") -> tuple:
+    """``color`` moved ``amount`` of the way to ``towards`` (white unless told otherwise): a
+    bar's fill under its own edge. A figure on the dark surface tints towards that surface,
+    or every fill goes pale and grey."""
     from matplotlib.colors import to_rgb
 
     rgb = np.array(to_rgb(color))
-    return tuple(rgb + (1.0 - rgb) * amount)
+    target = np.array(to_rgb(towards))
+    return tuple(rgb + (target - rgb) * amount)
 
 
 def luminance(color: str) -> float:
@@ -765,21 +768,27 @@ def luminance(color: str) -> float:
 
 def check_ordered_ramp(colors: list[str]) -> None:
     """Refuse a ramp that is not monotone in lightness: one that turns back reads as two
-    groups, and an ordered variable's colour is read for its order.
+    groups, and an ordered variable's colour is read for its order. Either direction: on
+    paper the steps get darker, on the dark surface they get lighter, and both read as more.
 
     Raises:
-        ValueError: two neighbouring steps do not get darker.
+        ValueError: the steps do not all go one way.
     """
     lums = [luminance(c) for c in colors]
-    if not all(a > b for a, b in zip(lums, lums[1:])):
+    darker = all(a > b for a, b in zip(lums, lums[1:]))
+    lighter = all(a < b for a, b in zip(lums, lums[1:]))
+    if not (darker or lighter):
         raise ValueError(f"the ramp is not monotone in lightness: {lums}")
 
 
-def one_hue_ramp(color: str, n: int) -> list[str]:
-    """``n`` steps of one hue, light to dark, for the levels of an ordered variable.
+def one_hue_ramp(color: str, n: int, *, lighten: bool = False) -> list[str]:
+    """``n`` steps of one hue for the levels of an ordered variable, checked monotone in
+    lightness (:func:`check_ordered_ramp`). One step is the colour itself.
 
-    From a light tint of ``color`` through the colour itself to a dark shade of it, checked to
-    get darker at every step (:func:`check_ordered_ramp`). One step is the colour itself.
+    Light to dark by default, from a light tint of ``color`` through the colour itself to a
+    dark shade of it: on white, darker is more. ``lighten`` runs from the colour itself to a
+    light tint of it, for the dark surface, where a dark shade sinks into the background and
+    lighter is more.
     """
     from matplotlib.colors import LinearSegmentedColormap, to_hex, to_rgb
 
@@ -788,9 +797,11 @@ def one_hue_ramp(color: str, n: int) -> list[str]:
     if n == 1:
         return [to_hex(color)]
     base = np.array(to_rgb(color))
-    light = base + (1.0 - base) * 0.55
-    dark = base * 0.45
-    cmap = LinearSegmentedColormap.from_list("one_hue", [light, base, dark])
+    if lighten:
+        stops = [base, base + (1.0 - base) * 0.75]
+    else:
+        stops = [base + (1.0 - base) * 0.55, base, base * 0.45]
+    cmap = LinearSegmentedColormap.from_list("one_hue", stops)
     colors = [to_hex(cmap(v)) for v in np.linspace(0.0, 1.0, n)]
     check_ordered_ramp(colors)
     return colors
@@ -849,7 +860,7 @@ def bars_with_units(
         np.where(np.isnan(heights), 0.0, heights),
         bottom=baseline,
         width=0.68,
-        color=[tint(c) for c in colors],
+        color=[tint(c, towards=style.chart.surface) for c in colors],
         edgecolor=colors,
         linewidth=marks.thin_line_width * 0.8,
         zorder=1,
@@ -978,6 +989,7 @@ def ranked_bars_with_floor(
     *,
     style: FigureStyle = DEFAULT_STYLE,
     xlabel: str = "",
+    color: str | None = None,
 ) -> None:
     """Horizontal bars ranked by magnitude, with the null floor drawn across them (§24).
 
@@ -986,8 +998,9 @@ def ranked_bars_with_floor(
     produces a top hit whether or not anything is there, and this screen runs on every comparison.
     A bar that does not cross the line has not been shown to differ from chance.
 
-    One colour for every bar: the bars are one series, and a hue per rank spent the identity
-    channel saying nothing. ``None`` is drawn as an explicit annotation rather than omitted, so a
+    One colour for every bar (``color``, the first identity colour unless the caller's figures
+    share another hue): the bars are one series, and a hue per rank spent the identity channel
+    saying nothing. ``None`` is drawn as an explicit annotation rather than omitted, so a
     figure with no floor says so instead of looking like a figure whose bars all cleared it.
     """
     positions = np.arange(len(labels), dtype=float)
@@ -995,7 +1008,7 @@ def ranked_bars_with_floor(
         positions,
         values,
         height=style.marks.bar_fraction,
-        color=style.color(0),
+        color=color or style.color(0),
         edgecolor=style.chart.surface,
         linewidth=0,
         zorder=2,
