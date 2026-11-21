@@ -224,6 +224,64 @@ def test_dark_figures_start_from_orange_and_light_from_blue():
     assert figlib.tint("#E69F00", towards=dark.chart.surface) != figlib.tint("#E69F00")
 
 
+def _hue_angle(color: str) -> float:
+    import colorsys
+
+    from matplotlib.colors import to_rgb
+
+    return colorsys.rgb_to_hls(*to_rgb(color))[0]
+
+
+def test_a_named_and_an_ordered_column_interleave_and_share_a_hue_per_name():
+    """Sex × dose (user, 2026-11-20): every F then every M, each group its own hue, read as
+    eight conditions. The two sexes at one dose sit side by side, each sex is one hue and the
+    dose sets its lightness, as a dose alone does. The between ranking lists its levels in
+    string order (F|0, F|25, …), which is not the design's order and must not be taken as it.
+    """
+    doses = ("0", "25", "50", "75")
+    groups = {(sex, dose) for sex in ("F", "M") for dose in doses}
+    ranking = compare.Ranking(
+        [],
+        0.3,
+        200,
+        0,
+        design=compare.BETWEEN,
+        level_values=tuple(sorted("|".join(g) for g in groups)),
+    )
+    record = {
+        "group_by": ["sex", "dose"],
+        "groups": sorted("|".join(g) for g in groups),
+    }
+    assert comparison_report.group_columns(groups) == ([1], [0])
+    order = comparison_report.group_order(record, ranking, groups)
+    assert order == [(sex, dose) for dose in doses for sex in ("F", "M")]
+    assert comparison_report._all_groups(record, ranking, []) == order
+    for style in (DEFAULT_STYLE, DEFAULT_STYLE.with_theme("dark")):
+        colors = comparison_report.group_colors(record, ranking, order, style)
+        assert (
+            style.chart.text_muted not in colors.values()
+        ), "no grey: F|0 and M|0 differ"
+        for sex in ("F", "M"):
+            ramp = [colors[(sex, dose)] for dose in doses]
+            figlib.check_ordered_ramp(ramp)
+            angles = [_hue_angle(c) for c in ramp]
+            assert max(angles) - min(angles) < 0.02, f"{sex} is one hue: {ramp}"
+        lums = [figlib.luminance(colors[("F", d)]) for d in doses]
+        assert lums == sorted(lums, reverse=style.theme != "dark")
+        assert (
+            abs(_hue_angle(colors[("F", "0")]) - _hue_angle(colors[("M", "0")])) > 0.05
+        )
+    # a named column alone keeps distinct hues, and a constant column is not a column
+    assert comparison_report.group_columns({("F", "x"), ("M", "x")}) == ([], [0])
+    two = comparison_report.group_colors(
+        record, None, [("F", "x"), ("M", "x")], DEFAULT_STYLE
+    )
+    assert list(two.values()) == [
+        DEFAULT_STYLE.chart.text_muted,
+        DEFAULT_STYLE.chart.hue("blue"),
+    ]
+
+
 def _node_ranking(n: int, clearing: int) -> compare.Ranking:
     """A family-verdict ranking of ``n`` node items, the first ``clearing`` above the floor."""
     items = [

@@ -1007,19 +1007,47 @@ def p_label(p: float | None, symbol: str = "P", *, bound: float | None = None) -
     return f"{name} = {p:.3f}" if p < 0.01 or crowded else f"{name} = {p:.2f}"
 
 
+def group_columns(groups: Collection[tuple]) -> tuple[list[int], list[int]]:
+    """The positions of a group tuple that vary across ``groups``, split into the ordered
+    ones (every value a number: a dose, a day) and the named ones (a sex, a strain). A
+    position every group shares says nothing about a group and is in neither."""
+    width = max((len(g) for g in groups), default=0)
+    ordered: list[int] = []
+    named: list[int] = []
+    for i in range(width):
+        values = {g[i] for g in groups if i < len(g)}
+        if len(values) < 2:
+            continue
+        (ordered if all(compare.is_number(v) for v in values) else named).append(i)
+    return ordered, named
+
+
+def _group_sort_key(group: tuple, ordered: list[int], named: list[int]) -> tuple:
+    """Ordered columns first, then named, then every part: in a sex × dose design the two
+    sexes at one dose sit side by side (user, 2026-11-20), as they would on paper."""
+    return (
+        tuple(compare.level_sort_key(group[i]) for i in ordered),
+        tuple(compare.level_sort_key(group[i]) for i in named),
+        tuple(compare.level_sort_key(part) for part in group),
+    )
+
+
 def group_order(record: dict, ranking, groups: Collection[tuple]) -> list[tuple]:
     """The groups in the order a figure draws them (detail#76): the levels a user named,
-    reference first; else the order the design resolved (numeric levels in numeric order);
-    else numeric before text, each sorted. Never plain string order, which drew doses 10, 25,
-    5."""
+    reference first; else the order a within-unit design resolved (numeric levels in numeric
+    order); else by the ordered columns first (numeric, in numeric order), then the named
+    ones, so the groups of a sex × dose design interleave by dose. Never plain string order,
+    which drew doses 10, 25, 5 and every F before every M. A between design's level list is
+    that string order, so it is not taken as the design's."""
     joined = {"|".join(g): g for g in groups}
     preferred = list(record.get("levels") or ())
-    if not preferred and ranking is not None:
+    if not preferred and ranking is not None and ranking.design != compare.BETWEEN:
         preferred = list(ranking.level_values)
     first = [joined[name] for name in preferred if name in joined]
+    ordered, named = group_columns(groups)
     rest = sorted(
         (g for g in groups if g not in first),
-        key=lambda g: tuple(compare.level_sort_key(part) for part in g),
+        key=lambda g: _group_sort_key(g, ordered, named),
     )
     return first + rest
 
@@ -1038,8 +1066,12 @@ def group_colors(record: dict, ranking, groups: list[tuple], style) -> dict[tupl
 
     The reference level (the one an effect is read against: the first) is grey; the levels of
     an ordered variable take one hue from light to dark, checked monotone; two levels are grey
-    and the hue; three or more named values take distinct hues. A missing group leaves the
-    others' colours where they were, because the map is over every group of the record.
+    and the hue; three or more named values take distinct hues. In a design of a named column
+    and an ordered one (sex × dose) each named value takes one hue and the ordered value sets
+    its lightness, the same ramp a dose alone takes, so every dose of one sex is one family
+    of colour (user, 2026-11-20); there is no grey, since two groups at the reference dose
+    would otherwise be told apart by nothing. A missing group leaves the others' colours where
+    they were, because the map is over every group of the record.
     """
     from detail.report import figures as figlib
 
@@ -1047,17 +1079,37 @@ def group_colors(record: dict, ranking, groups: list[tuple], style) -> dict[tupl
     grey = chart.text_muted
     hues = theme_hues(style)
     hue = hues[0]
+    lighten = style.theme == "dark"
     names = ["|".join(g) for g in groups]
     ordered = (ranking is not None and ranking.design == compare.TREND) or (
         len(groups) > 2 and all(compare.is_number(n) for n in names)
     )
     if not groups:
         return {}
+    ordered_cols, named_cols = group_columns(groups)
+    if ordered_cols and named_cols:
+        named_values = sorted(
+            {tuple(g[i] for i in named_cols) for g in groups},
+            key=lambda v: tuple(compare.level_sort_key(part) for part in v),
+        )
+        ordered_values = sorted(
+            {tuple(g[i] for i in ordered_cols) for g in groups},
+            key=lambda v: tuple(compare.level_sort_key(part) for part in v),
+        )
+        ramps = {
+            value: figlib.one_hue_ramp(
+                hues[k % len(hues)], len(ordered_values), lighten=lighten
+            )
+            for k, value in enumerate(named_values)
+        }
+        return {
+            g: ramps[tuple(g[i] for i in named_cols)][
+                ordered_values.index(tuple(g[i] for i in ordered_cols))
+            ]
+            for g in groups
+        }
     if ordered:
-        colors = [
-            grey,
-            *figlib.one_hue_ramp(hue, len(groups) - 1, lighten=style.theme == "dark"),
-        ]
+        colors = [grey, *figlib.one_hue_ramp(hue, len(groups) - 1, lighten=lighten)]
     elif len(groups) <= 2:
         colors = [grey, hue][: len(groups)]
     else:

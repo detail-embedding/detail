@@ -9547,10 +9547,14 @@ verdict (a measure that had to clear the family's floor, having been found by sc
 never 0. A test against an ordered variable is labelled with the variable (`dose: P = 0.002`),
 never "trend", which a reader takes to mean "not quite". Groups are drawn in the order the design
 resolved (`group_order`: the levels a user named, reference first; numeric levels in numeric
-order; numeric before text), and coloured by what they are (`group_colors`, over every group of
+order; the ordered columns before the named ones, so a sex × dose design interleaves by dose
+with the two sexes at one dose side by side; a between design's level list is string order and
+is not taken as the design's), and coloured by what they are (`group_colors`, over every group of
 the record so a filter repaints nothing): the reference level grey, an ordered variable's levels
 one hue from light to dark (checked monotone), two levels grey and the hue, three or more named
-values distinct hues. The hues are the theme's (`theme_hues`): from blue on white, and from orange
+values distinct hues, and in a design of a named column and an ordered one (`group_columns`)
+each named value one hue with the ordered value setting its lightness, no grey, so every dose of
+one sex is one family of colour. The hues are the theme's (`theme_hues`): from blue on white, and from orange
 on the dark surface, where the ramp runs from the hue towards light (a dark shade sinks into the
 background) and a bar's fill tints towards the surface rather than towards white. The difference
 ranking draws what cleared the floor plus the first ten below it, its height following the bar
