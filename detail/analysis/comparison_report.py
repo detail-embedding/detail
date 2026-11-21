@@ -22,6 +22,7 @@ one is not.
 import dataclasses
 import json
 import math
+import statistics
 from collections import defaultdict
 from collections.abc import Collection
 from pathlib import Path
@@ -37,7 +38,72 @@ from detail.report.style import DEFAULT_STYLE, FigureStyle
 STATS_FILENAME = "stats.csv"
 NODES_FILENAME = "nodes.csv"
 RANKING_FILENAME = "ranking.csv"
+#: The statistics behind every result that cleared, one row per measure and contrast.
+SIGNIFICANT_FILENAME = "significant.csv"
+#: One row per unit and measurement, one column per group: the shape a person pastes into
+#: Prism or R.
+UNITS_FILENAME = "units.csv"
+#: The per-unit effects a within-unit ranking averaged, one row per unit and measurement.
+UNIT_EFFECTS_FILENAME = "unit_effects.csv"
+#: A paragraph for the Methods, generated from the record so it cannot disagree with what ran.
+METHODS_FILENAME = "methods.txt"
+#: The figure formats every surface writes unless told otherwise: a PDF with editable type for
+#: a manuscript, an SVG rewritten for editing by hand, and the PNG the GUI shows.
+DEFAULT_FORMATS = ("pdf", "svg", "png")
+#: The composite figure's stem: the chosen measurements as one row or grid of panels.
+PANELS_STEM = "panels"
+#: How many panels the composite holds at most; past it the per-measurement figures stand alone.
+PANELS_MAX = 12
 TABLE_COLUMNS = ["group", "n", "coverage", "mean", "median", "sd"]
+SIGNIFICANT_COLUMNS = [
+    "rank",
+    "measure",
+    "label",
+    "label_to",
+    "window_id",
+    "measurement",
+    "contrast",
+    "pair_a",
+    "pair_b",
+    "a_mean",
+    "a_sem",
+    "a_n",
+    "b_mean",
+    "b_sem",
+    "b_n",
+    "unit",
+    "effect",
+    "change",
+    "statistic",
+    "p",
+    "p_kind",
+    "family_p",
+    "own_p",
+    "q",
+    "n_units",
+    "in_direction",
+]
+UNITS_COLUMNS_FIXED = [
+    "measure",
+    "label",
+    "label_to",
+    "window_id",
+    "measurement",
+    "unit",
+    "observation",
+]
+UNIT_EFFECTS_COLUMNS = [
+    "measure",
+    "label",
+    "label_to",
+    "window_id",
+    "measurement",
+    "observation",
+    "effect",
+    "effect_is",
+    "pair_a",
+    "pair_b",
+]
 RANKING_COLUMNS = [
     "rank",
     "measure",
@@ -166,6 +232,34 @@ def measure_axis_label(measure_key: tuple) -> str:
     spec = spec_of(measure_key[0]) if measure_key else None
     name = spec.label if spec is not None else (measure_key[0] if measure_key else "")
     return f"{name} ({shown})" if shown else name
+
+
+def panel_label(measure_key: tuple, remainders: Collection[str]) -> str:
+    """What a figure's y axis says: the thing and its unit, ``Rearing (% time)``,
+    ``node 1354 (bouts/s)``, ``Distance (m)`` (detail#76).
+
+    A behavior measure names the behavior and says what of it is measured in the unit a
+    reader sees (``MeasureSpec.axis``); a location measure is the thing itself. Falls back to
+    :func:`measure_axis_label` for a measure that declares no axis.
+    """
+    from detail.analysis.measures import display_label, spec_of
+
+    if not measure_key:
+        return "measure"
+    spec = spec_of(measure_key[0])
+    axis = getattr(spec, "axis", "") if spec is not None else ""
+    if not axis:
+        return measure_axis_label(measure_key)
+    label = measure_key[1] if len(measure_key) > 1 else ""
+    if not label:
+        # A location measure's axis is the thing itself; a behavior measure's is what of
+        # the behavior is measured, and with no behavior to name it stands behind its label.
+        return axis if axis.startswith(spec.label) else f"{spec.label} ({axis})"
+    name = _readable_label(display_label(label, remainders))
+    if len(measure_key) > 2 and measure_key[2]:
+        name = f"{name} \u2192 {_readable_label(measure_key[2])}"
+    # An axis starts with a capital, whatever case the behavior was typed in.
+    return f"{name[:1].upper()}{name[1:]} ({axis})"
 
 
 def _read_stats(comparison_dir: Path) -> list[dict]:
@@ -869,29 +963,261 @@ def _write_grid_tables(out_dir: Path, record: dict, by_measure: dict) -> list[Pa
     return written
 
 
-def _measure_figures(
-    out_dir: Path, by_measure: dict, note: str, formats, style, report=_SILENT
-) -> list[Path]:
-    """One figure per *measurement* — dots across groups, or a curve across windows.
+def p_symbol(ranking) -> str:
+    """Which P a figure writes (detail#76): ``P_FWE`` where a measure had to clear the
+    family's floor, having been found by screening many; ``P`` where it was tested on its
+    own."""
+    return "P" if ranking.verdict == compare.VERDICT_OWN else "P_FWE"
 
-    **The window is not part of a figure's identity.** It used to be: `_by_measure` bucketed on
-    the whole `measure_key`, which ends in `window_id`, so a sliding-window comparison wrote one
-    two-point dot plot per window — hundreds of figures for a sliding window over one
-    recording, where §24 asks for "dot plots, time-resolved
-    curves, the difference ranking". Collapsing the window out removes the blow-up and produces
-    the missing curve in the same change, because a measurement over many windows *is* the curve.
+
+def item_p(ranking, item) -> tuple[float | None, float | None]:
+    """``(p, bound)``: the P the ranking judged ``item`` by, and the bound it is reported as
+    where a shuffled test could not resolve lower (``1 / draws``), else ``None``.
+
+    A shuffled family-wise P of zero means no draw reached the observed statistic, which is
+    not a P of zero: it is below the test's resolution, and is written ``< 1/draws``.
+    """
+    p = item.own_p if ranking.verdict == compare.VERDICT_OWN else item.family_p
+    if p is None:
+        return None, None
+    if p <= 0.0 and not ranking.exact:
+        return p, 1.0 / max(int(ranking.draws), 1)
+    return p, None
+
+
+def p_label(p: float | None, symbol: str = "P", *, bound: float | None = None) -> str:
+    """``P = 0.004``, ``P < 0.001``, ``P_FWE < 0.005``: a P as a figure writes it.
+
+    Three decimals below 0.01 and two above, ``< 0.001`` below that, and the bound form where
+    a shuffled test could not resolve lower. Two decimals would print a significant 0.045 as
+    the threshold itself, so that case takes three. ``symbol`` is ``P`` or ``P_FWE``; the P is
+    set in italic math text, which the SVG rewrite keeps as one text object.
+    """
+    head, _, sub = symbol.partition("_")
+    name = rf"$\mathit{{{head}}}$"
+    if sub:
+        name = rf"$\mathit{{{head}}}_{{\mathrm{{{sub}}}}}$"
+    if bound is not None:
+        return f"{name} < {bound:.2g}"
+    if p is None:
+        return ""
+    if p < 0.001:
+        return f"{name} < 0.001"
+    crowded = p < compare.FLOOR_ALPHA and f"{p:.2f}" == f"{compare.FLOOR_ALPHA:.2f}"
+    return f"{name} = {p:.3f}" if p < 0.01 or crowded else f"{name} = {p:.2f}"
+
+
+def group_order(record: dict, ranking, groups: Collection[tuple]) -> list[tuple]:
+    """The groups in the order a figure draws them (detail#76): the levels a user named,
+    reference first; else the order the design resolved (numeric levels in numeric order);
+    else numeric before text, each sorted. Never plain string order, which drew doses 10, 25,
+    5."""
+    joined = {"|".join(g): g for g in groups}
+    preferred = list(record.get("levels") or ())
+    if not preferred and ranking is not None:
+        preferred = list(ranking.level_values)
+    first = [joined[name] for name in preferred if name in joined]
+    rest = sorted(
+        (g for g in groups if g not in first),
+        key=lambda g: tuple(compare.level_sort_key(part) for part in g),
+    )
+    return first + rest
+
+
+def _all_groups(record: dict, ranking, summaries) -> list[tuple]:
+    """Every group the comparison holds, in drawing order, so a colour is fixed by what a
+    group is and a figure over a subset of them repaints nothing."""
+    groups = {s.group for s in summaries}
+    for name in record.get("groups") or ():
+        groups.add(tuple(str(name).split("|")))
+    return group_order(record, ranking, groups)
+
+
+def group_colors(record: dict, ranking, groups: list[tuple], style) -> dict[tuple, str]:
+    """``{group: colour}`` by what the group is, not where it sits (detail#76).
+
+    The reference level (the one an effect is read against: the first) is grey; the levels of
+    an ordered variable take one hue from light to dark, checked monotone; two levels are grey
+    and the hue; three or more named values take distinct hues. A missing group leaves the
+    others' colours where they were, because the map is over every group of the record.
     """
     from detail.report import figures as figlib
 
-    written: list[Path] = []
+    chart = style.chart
+    grey = chart.text_muted
+    hue = chart.hue("blue")
+    names = ["|".join(g) for g in groups]
+    ordered = (ranking is not None and ranking.design == compare.TREND) or (
+        len(groups) > 2 and all(compare.is_number(n) for n in names)
+    )
+    if not groups:
+        return {}
+    if ordered:
+        colors = [grey, *figlib.one_hue_ramp(hue, len(groups) - 1)]
+    elif len(groups) <= 2:
+        colors = [grey, hue][: len(groups)]
+    else:
+        colors = chart.identities(len(groups))
+    return dict(zip(groups, colors))
+
+
+def _units_by_group(obs, measurement: tuple, groups: list[tuple], scale: float):
+    """Per group, ``[(unit, value)]`` for one single-window measurement, in shown units."""
+    out: dict[tuple, list[tuple[str, float]]] = {g: [] for g in groups}
+    for row in obs:
+        if _measurement(row.measure_key) != measurement or row.group not in out:
+            continue
+        out[row.group].append(("|".join(row.key), row.value / scale))
+    return [sorted(out[g]) for g in groups]
+
+
+def _contrast_item(ranking, measure_key: tuple):
+    """The ranked item for a full measure key, or ``None``."""
+    if ranking is None:
+        return None
+    for item in ranking.contrasts:
+        if item.measure_key == measure_key:
+            return item
+    return None
+
+
+def _bracket_text(ranking, item, record: dict) -> str:
+    """The P as the plot writes it; a test against an ordered variable names the variable,
+    never "trend", which a reader takes to mean "not quite significant"."""
+    p, bound = item_p(ranking, item)
+    label = p_label(p, p_symbol(ranking), bound=bound)
+    if ranking.design == compare.TREND:
+        return f"{record.get('design_column') or 'trend'}: {label}"
+    return label
+
+
+def _bracket_span(ranking, item, drawn: list[tuple]) -> tuple[int, int] | None:
+    """Which drawn groups the item's P brackets: every level of a trend, else its pair."""
+    names = ["|".join(g) for g in drawn]
+    if ranking.design == compare.TREND:
+        return (0, len(drawn) - 1) if len(drawn) > 1 else None
+    pair = item.pair if getattr(item, "pair", None) else ranking.levels
+    if pair is None or pair[0] not in names or pair[1] not in names:
+        return None
+    a, b = names.index(pair[0]), names.index(pair[1])
+    return (min(a, b), max(a, b))
+
+
+def draw_measurement(
+    ax, measurement: tuple, obs, record: dict, ranking, *, style, colors
+) -> bool:
+    """One measurement into ``ax`` (detail#76): bars of the mean with s.e.m., every unit a
+    dot, the same unit joined across groups, and its P bracketed when the ranking judged it
+    to differ. Returns whether a bracket was drawn.
+
+    ``colors`` is the record-wide ``{group: colour}``; the groups drawn are those with an
+    observation, in :func:`group_order`. A ratio's bars start at 1, and the baseline is a
+    labelled tick.
+    """
+    from detail.report import figures as figlib
+
+    unit = measure_unit(measurement)
+    scale = _scale_for(measurement)
+    baseline = 1.0 if unit == RATIO_UNIT else 0.0
+    present = {row.group for row in obs if _measurement(row.measure_key) == measurement}
+    drawn = group_order(record, ranking, present)
+    observations = _units_by_group(obs, measurement, drawn, scale)
+    figlib.bars_with_units(
+        ax,
+        ["|".join(g) for g in drawn],
+        observations,
+        colors=[colors.get(g, style.chart.neutral) for g in drawn],
+        style=style,
+        ylabel=panel_label(measurement, remainders_of(record)),
+        baseline=baseline,
+    )
+    top = max((v for group in observations for _, v in group), default=baseline)
+    window = next(
+        (
+            row.measure_key[3]
+            for row in obs
+            if _measurement(row.measure_key) == measurement and len(row.measure_key) > 3
+        ),
+        "whole",
+    )
+    item = _contrast_item(ranking, (*measurement, window))
+    span = None
+    if item is not None and ranking.clears_floor(item):
+        span = _bracket_span(ranking, item, drawn)
+    y_bar, y_text = figlib.fit_baseline_axis(
+        ax, baseline, top, annotated=span is not None
+    )
+    if span is not None:
+        figlib.bracket(
+            ax,
+            span[0],
+            span[1],
+            _bracket_text(ranking, item, record),
+            y_bar=y_bar,
+            y_text=y_text,
+            style=style,
+        )
+    return span is not None
+
+
+def _measurements(by_measure: dict) -> list[tuple[tuple, dict[str, list]]]:
+    """Each drawn measurement with its summaries per window, in registry order."""
     grouped: dict[tuple, dict[str, list]] = {}
     for measure_key, summaries in by_measure.items():
         if _fans_out(measure_key):
             continue
         window = measure_key[3] if len(measure_key) > 3 else ""
         grouped.setdefault(_measurement(measure_key), {})[window] = summaries
+    return sorted(grouped.items(), key=lambda kv: measurement_order(kv[0]))
 
-    ordered_measurements = sorted(grouped.items())
+
+def measurement_order(measurement: tuple):
+    """Sort key: registry order for the measure, then the label; the same row sits in the
+    same place in every comparison."""
+    from detail.analysis.measures import MEASURES
+
+    ids = list(MEASURES)
+    name = measurement[0] if measurement else ""
+    index = ids.index(name) if name in ids else len(ids)
+    return (index, tuple(str(p) for p in measurement[1:]))
+
+
+def _single_window(per_window: dict) -> bool:
+    return len(per_window) == 1
+
+
+def _measure_figures(
+    out_dir: Path,
+    by_measure: dict,
+    obs,
+    record: dict,
+    ranking,
+    note: str,
+    formats,
+    style,
+    report=_SILENT,
+) -> list[Path]:
+    """One figure per *measurement* — bars with every unit across groups, or a curve across
+    windows.
+
+    **The window is not part of a figure's identity.** It used to be: `_by_measure` bucketed on
+    the whole `measure_key`, which ends in `window_id`, so a sliding-window comparison wrote one
+    two-point dot plot per window — hundreds of figures for a sliding window over one
+    recording. Collapsing the window out removes the blow-up and produces the missing curve in
+    the same change, because a measurement over many windows *is* the curve.
+
+    **One figure, not two** (detail#76). The dot plot and the paired-lines figure it used to
+    draw beside it are one panel now: bars of the mean with s.e.m., every unit a dot, and the
+    same unit joined across the groups it appears in, with its P on the plot when the ranking
+    judged it to differ.
+    """
+    from detail.report import figures as figlib
+
+    written: list[Path] = []
+    ordered_measurements = _measurements(by_measure)
+    colors = group_colors(
+        record, ranking, _all_groups(record, ranking, obs_summaries(obs)), style
+    )
     for index, (measurement, per_window) in enumerate(ordered_measurements):
         report("figures", index / len(ordered_measurements), _measure_stem(measurement))
         windows = sorted(per_window, key=windows_lib.window_sort_key)
@@ -899,19 +1225,20 @@ def _measure_figures(
         with figlib.styled(style):
             import matplotlib.pyplot as plt
 
-            fig, ax = plt.subplots()
-            if len(windows) == 1:
-                ordered = sorted(per_window[windows[0]], key=lambda s: s.group)
-                figlib.observation_dots(
-                    ax,
-                    ["|".join(s.group) for s in ordered],
-                    [[v / scale for v in s.values] for s in ordered],
-                    style=style,
-                    ylabel=measure_axis_label(measurement),
+            if _single_window(per_window):
+                n_groups = len({s.group for s in per_window[windows[0]]})
+                fig, ax = plt.subplots(
+                    figsize=(min(3.5, max(1.9, 1.0 + 0.42 * n_groups)), 2.3)
+                )
+                draw_measurement(
+                    ax, measurement, obs, record, ranking, style=style, colors=colors
                 )
             else:
-                groups = sorted(
-                    {s.group for windowed in per_window.values() for s in windowed}
+                fig, ax = plt.subplots()
+                groups = group_order(
+                    record,
+                    ranking,
+                    {s.group for windowed in per_window.values() for s in windowed},
                 )
                 series = []
                 for group in groups:
@@ -927,80 +1254,114 @@ def _measure_figures(
                     series,
                     style=style,
                     xlabel="window",
-                    ylabel=measure_axis_label(measurement),
+                    ylabel=panel_label(measurement, remainders_of(record)),
                 )
+                for line, group in zip(ax.lines, groups):
+                    line.set_color(colors.get(group, line.get_color()))
+                if len(series) > 1:
+                    figlib.place_legend(ax, style=style)
             _caption(ax, note, style)
             written += figlib.save_figure(
-                fig, out_dir / _measure_stem(measurement), formats
+                fig, out_dir / _measure_stem(measurement), formats, editable_svg=True
             )
     return written
 
 
-def _paired_figures(
-    out_dir: Path, obs, note: str, formats, style, report=_SILENT
+def obs_summaries(obs):
+    """Group summaries over ``obs``, for the group list alone."""
+    return compare.summarize(obs)
+
+
+def panel_measurements(by_measure: dict, record: dict, ranking) -> list[tuple]:
+    """The measurements the composite figure holds (detail#76): over the node source the
+    clusters the screen kept, in rank order; otherwise every single-window measurement, in
+    registry order; at most :data:`PANELS_MAX`."""
+    single = [
+        m for m, per_window in _measurements(by_measure) if _single_window(per_window)
+    ]
+    if record.get("source") == "nodes" and ranking is not None:
+        kept = [item.measure_key[1] for item in ranking.kept_items()]
+        single = sorted(
+            (m for m in single if m[1] in kept),
+            key=lambda m: (kept.index(m[1]), measurement_order(m)),
+        )
+    return single[:PANELS_MAX]
+
+
+def _panels_figure(
+    out_dir: Path,
+    by_measure: dict,
+    obs,
+    record: dict,
+    ranking,
+    note: str,
+    formats,
+    style,
 ) -> list[Path]:
-    """A line per subject, when the same subject appears in more than one group.
+    """The chosen measurements as one figure (detail#76): a row or grid of panels at a double
+    column's width, one legend, panel letters. The common case, three locomotion measures or
+    the clusters that cleared, is one export rather than files to assemble by hand."""
+    from matplotlib.patches import Patch
 
-    Fires on the structure rather than on a setting: if no observation key spans two groups there
-    is nothing to pair and nothing is drawn. That is the crossover shape
-    `analysis/cohort.infer_subject_column` already detects on the selecting side.
-
-    Reads observations, not `GroupSummary` — `compare.summarize` buckets by group and sorts the
-    values, dropping `Observation.key`, so the summaries cannot say which point belongs to which
-    animal. That is exactly the identity a paired plot is made of.
-    """
     from detail.report import figures as figlib
 
-    written: list[Path] = []
-    by_window: dict[tuple, dict[str, dict[tuple, dict[tuple, float]]]] = {}
-    for row in obs:
-        window = row.measure_key[3] if len(row.measure_key) > 3 else ""
-        by_window.setdefault(_measurement(row.measure_key), {}).setdefault(
-            window, {}
-        ).setdefault(row.key, {})[row.group] = row.value
+    panels = panel_measurements(by_measure, record, ranking)
+    if len(panels) < 2:
+        return []
+    groups = _all_groups(record, ranking, obs_summaries(obs))
+    colors = group_colors(record, ranking, groups, style)
+    n = len(panels)
+    cols = n if n <= 4 else (3 if n in (5, 6, 9) else 4)
+    rows = -(-n // cols)
+    with figlib.styled(style):
+        import matplotlib.pyplot as plt
 
-    ordered = sorted(by_window.items())
-    for index, (measurement, per_window) in enumerate(ordered):
-        report("paired figures", index / len(ordered), _measure_stem(measurement))
-        # A pairing has one line per subject; across many windows there is one line per subject
-        # *per window*, which is a different figure and a design question §24 has not answered.
-        # Keying on the measurement alone silently answered it the worst way: every window wrote
-        # into the same slot, the last one survived, and it was captioned as the whole
-        # measurement. The time-resolved reading is the curve `_measure_figures` draws.
-        if len(per_window) != 1:
-            continue
-        per_subject = next(iter(per_window.values()))
-        groups = sorted({g for spans in per_subject.values() for g in spans})
-        spanning = {key: spans for key, spans in per_subject.items() if len(spans) > 1}
-        if len(groups) < 2 or not spanning:
-            continue
-        scale = _scale_for(measurement)
-        pairs = [
-            (
-                "|".join(key),
-                [
-                    None if group not in spans else spans[group] / scale
-                    for group in groups
-                ],
+        fig, axes = plt.subplots(
+            rows,
+            cols,
+            figsize=(style.double_col_width_in, 1.75 * rows + 0.45),
+            squeeze=False,
+        )
+        flat = [ax for row in axes for ax in row]
+        for ax in flat[n:]:
+            ax.set_visible(False)
+        for ax, measurement in zip(flat, panels):
+            draw_measurement(
+                ax, measurement, obs, record, ranking, style=style, colors=colors
             )
-            for key, spans in sorted(spanning.items())
+        handles = [
+            Patch(
+                facecolor=figlib.tint(colors[g]),
+                edgecolor=colors[g],
+                linewidth=0.7,
+                label="|".join(g),
+            )
+            for g in groups
         ]
-        with figlib.styled(style):
-            import matplotlib.pyplot as plt
-
-            fig, ax = plt.subplots()
-            figlib.paired_lines(
-                ax,
-                ["|".join(g) for g in groups],
-                pairs,
-                style=style,
-                ylabel=measure_axis_label(measurement),
-            )
-            _caption(ax, note, style)
-            written += figlib.save_figure(
-                fig, out_dir / f"{_measure_stem(measurement)}__paired", formats
-            )
-    return written
+        fig.legend(
+            handles=handles,
+            loc="outside upper right",
+            ncol=len(handles),
+            frameon=False,
+            fontsize=style.type.tick,
+            handlelength=1.0,
+            handleheight=0.8,
+            columnspacing=0.9,
+            handletextpad=0.4,
+        )
+        fig.suptitle(
+            note,
+            x=0.0,
+            ha="left",
+            fontsize=style.type.annotation,
+            color=style.chart.text_muted,
+            fontweight="normal",
+        )
+        # Last: the letters are placed from the laid-out panels, labels included.
+        figlib.panel_letters_outside(fig, flat[:n], style=style)
+        return figlib.save_figure(
+            fig, out_dir / PANELS_STEM, formats, editable_svg=True
+        )
 
 
 def _ranking_figure(
@@ -1042,7 +1403,9 @@ def _ranking_figure(
         if ranking.design != compare.TREND and not _studentized(ranking):
             _label_fold_change(ax, drawn)
         _caption(ax, note, style)
-        return figlib.save_figure(fig, out_dir / "difference_ranking", formats)
+        return figlib.save_figure(
+            fig, out_dir / "difference_ranking", formats, editable_svg=True
+        )
 
 
 #: Bars the ranking figure draws at most — the top of the ranking, which is what it is for.
@@ -1271,6 +1634,285 @@ def _summary_ranking_lines(record: dict, ranking) -> list[str]:
     return lines
 
 
+def _sem(values) -> float | None:
+    if len(values) < 2:
+        return None
+    return statistics.stdev(values) / math.sqrt(len(values))
+
+
+def _measurement_cells(item, record: dict) -> dict:
+    keyed = dict(zip(("measure", "label", "label_to", "window_id"), item.measure_key))
+    return {
+        "measure": keyed.get("measure", ""),
+        "label": keyed.get("label", ""),
+        "label_to": keyed.get("label_to", ""),
+        "window_id": keyed.get("window_id", ""),
+        "measurement": measure_title(item.measure_key, remainders_of(record)),
+    }
+
+
+def _contrast_text(ranking, item, record: dict) -> str:
+    if ranking.design == compare.TREND:
+        return f"trend over {record.get('design_column') or ''}".strip()
+    pair = item.pair if getattr(item, "pair", None) else ranking.levels
+    return f"{pair[1]} vs {pair[0]}" if pair else ""
+
+
+def significant_rows(ranking, record: dict) -> list[dict]:
+    """One row per result that cleared (detail#76): the group means and s.e.m., the effect,
+    the statistic, the P it was judged by and which P that is, the others beside it, n, and
+    how many units went the effect's way. ``ranking.csv`` holds every item; this is what a
+    paper cites, beside the figures."""
+    rows = []
+    rank_of = {item.measure_key: i for i, item in enumerate(ranking.contrasts, start=1)}
+    for item in ranking.kept_items():
+        unit = measure_unit(item.measure_key)
+        scale = _scale_for(item.measure_key)
+        shown_unit = shown_value(0.0, unit)[1]
+        a, b = item.a, item.b
+        p, bound = item_p(ranking, item)
+        is_effect = isinstance(item, compare.Effect)
+        if ranking.design == compare.TREND and item.effect is not None:
+            change = f"rho {item.effect:+.2f}"
+        else:
+            change = _change_text(item)
+        rows.append(
+            {
+                "rank": rank_of[item.measure_key],
+                **_measurement_cells(item, record),
+                "contrast": _contrast_text(ranking, item, record),
+                "pair_a": "" if item.pair is None else item.pair[0],
+                "pair_b": "" if item.pair is None else item.pair[1],
+                "a_mean": "" if a is None or a.mean is None else a.mean / scale,
+                "a_sem": (
+                    ""
+                    if a is None or _sem(a.values) is None
+                    else _sem(a.values) / scale
+                ),
+                "a_n": "" if a is None else a.n,
+                "b_mean": "" if b is None or b.mean is None else b.mean / scale,
+                "b_sem": (
+                    ""
+                    if b is None or _sem(b.values) is None
+                    else _sem(b.values) / scale
+                ),
+                "b_n": "" if b is None else b.n,
+                "unit": shown_unit,
+                "effect": _number_or_blank(getattr(item, "effect", None)),
+                "change": change,
+                "statistic": _number_or_blank(item.statistic),
+                "p": "" if p is None else p,
+                "p_kind": (
+                    "own" if ranking.verdict == compare.VERDICT_OWN else "family-wise"
+                )
+                + ("" if bound is None else f" (below 1/{ranking.draws})"),
+                "family_p": _number_or_blank(item.family_p),
+                "own_p": _number_or_blank(item.own_p),
+                "q": _number_or_blank(item.q),
+                "n_units": item.n_units if is_effect else ranking.n_units,
+                "in_direction": item.consistency if is_effect else "",
+            }
+        )
+    return rows
+
+
+def units_rows(obs, record: dict, groups: list[tuple]) -> tuple[list[str], list[dict]]:
+    """``(columns, rows)``: one row per unit and measurement with a column per group, in the
+    unit a reader sees (detail#76). The long ``stats.csv`` reshaped, because this is the
+    shape Prism and a spreadsheet take."""
+    names = ["|".join(g) for g in groups]
+    columns = UNITS_COLUMNS_FIXED + names
+    cells: dict[tuple, dict] = {}
+    for row in obs:
+        key = (row.measure_key, row.key)
+        if key not in cells:
+            keyed = dict(
+                zip(("measure", "label", "label_to", "window_id"), row.measure_key)
+            )
+            unit = measure_unit(row.measure_key)
+            cells[key] = {
+                "measure": keyed.get("measure", ""),
+                "label": keyed.get("label", ""),
+                "label_to": keyed.get("label_to", ""),
+                "window_id": keyed.get("window_id", ""),
+                "measurement": measure_title(row.measure_key, remainders_of(record)),
+                "unit": shown_value(0.0, unit)[1],
+                "observation": "|".join(row.key),
+                **{name: "" for name in names},
+            }
+        cells[key]["|".join(row.group)] = row.value / _scale_for(row.measure_key)
+    ordered = sorted(cells, key=lambda k: (measurement_order(k[0][:3]), k[0], k[1]))
+    return columns, [cells[k] for k in ordered]
+
+
+def unit_effect_rows(ranking, record: dict) -> list[dict]:
+    """The per-unit effects a within-unit ranking averaged (detail#76), one row per unit and
+    measurement; empty for a between design, whose effect is a contrast of group means.
+    """
+    rows = []
+    if ranking is None:
+        return rows
+    for item in ranking.contrasts:
+        if not isinstance(item, compare.Effect) or not item.unit_effects:
+            continue
+        effect_is = (
+            "Spearman rho over the unit's levels"
+            if ranking.design == compare.TREND
+            else "log ratio of the unit's level means, b over a"
+        )
+        for unit, value in item.unit_effects:
+            rows.append(
+                {
+                    **_measurement_cells(item, record),
+                    "observation": unit,
+                    "effect": value,
+                    "effect_is": effect_is,
+                    "pair_a": "" if item.pair is None else item.pair[0],
+                    "pair_b": "" if item.pair is None else item.pair[1],
+                }
+            )
+    return rows
+
+
+def methods_sentence(record: dict, ranking) -> str:
+    """A paragraph for a Methods section, from the record and its ranking (detail#76): which
+    test, what was shuffled, how many draws or that it was exact, which P is reported and at
+    what level, the correction beside it, and n. Generated, so it cannot disagree with what
+    ran."""
+    unit = _unit_word(record)
+    column = record.get("design_column") or ", ".join(record.get("group_by") or [])
+    groups = record.get("groups") or []
+    n_obs = record.get("n_observations", 0)
+    head = (
+        f"Each {unit} is one observation ({n_obs} observations over "
+        f"{len(groups)} group(s) of {column})."
+    )
+    if ranking is None or not ranking.contrasts:
+        return f"{head} Fewer than two groups were compared, so nothing was contrasted."
+    n = ranking.n_units
+    family = len(ranking.contrasts)
+    if ranking.design == compare.BETWEEN:
+        largest = (
+            " The effect is the largest log ratio between any two groups."
+            if ranking.profile
+            else ""
+        )
+        design = (
+            f"Groups were compared between {unit}s (n = {n}): each measure's effect is the "
+            f"log ratio of the group means.{largest}"
+        )
+        null = f"{ranking.draws} shuffles of the group labels among the {unit}s"
+    elif ranking.design == compare.PAIRED:
+        a, b = ranking.levels or ("a", "b")
+        design = (
+            f"{b} was compared with {a} within each {unit} (n = {n}): each measure's "
+            f"effect is the mean over {unit}s of the log ratio of the {unit}'s {b} value to "
+            f"its {a} value."
+        )
+        null = (
+            f"every one of the {ranking.draws} sign-flip configurations (an exact test)"
+            if ranking.exact
+            else f"{ranking.draws} random sign flips of the per-{unit} effects"
+        )
+    elif ranking.design == compare.TREND:
+        design = (
+            f"The relationship to {column} was tested within each {unit} (n = {n}): each "
+            f"measure's effect is the mean over {unit}s of Spearman's rank correlation "
+            f"between the {unit}'s values and {column}."
+        )
+        null = f"{ranking.draws} shuffles of each {unit}'s {column} values within it"
+    else:
+        design = (
+            f"{column} was compared within each {unit} (n = {n}) over its "
+            f"{len(ranking.level_values)} values: each measure's effect is the largest mean "
+            f"log ratio between any two of them, the pair chosen by the same statistic the "
+            f"null uses."
+        )
+        null = f"{ranking.draws} shuffles of each {unit}'s {column} values within it"
+    statistic = ""
+    if ranking.statistic == compare.STATISTIC_T:
+        s0 = "" if ranking.s0 is None else f" (s0 = {ranking.s0:.3g})"
+        statistic = (
+            f" Measures were scored by a moderated t: the mean effect over its spread "
+            f"across {unit}s plus the family's median spread{s0}."
+        )
+    if ranking.floor is None:
+        verdict = (
+            f" No null distribution could be computed ({ranking.no_floor_reason}); the "
+            f"effects are reported as measured, without a test."
+        )
+    elif ranking.verdict == compare.VERDICT_OWN:
+        verdict = (
+            f" Each of the {family} measures was tested on its own against {null}: P is the "
+            f"share of draws in which the measure's statistic reached the observed one, and "
+            f"a measure is reported as differing at P <= {compare.FLOOR_ALPHA:g}, with a "
+            f"Benjamini-Hochberg false-discovery rate (q) over the {family} measures beside it."
+        )
+    else:
+        verdict = (
+            f" The null distribution was {null}. P_FWE is family-wise: the share of draws in "
+            f"which the largest statistic over the {family} measures reached the observed one, "
+            f"and a measure is reported as differing at P_FWE <= {compare.FLOOR_ALPHA:g}. "
+            f"Each measure's own P and a Benjamini-Hochberg false-discovery rate (q) over the "
+            f"family are reported beside it."
+        )
+    floor = ""
+    if ranking.floor is not None and ranking.exact:
+        floor = (
+            f" The smallest P an exact test of {n} {unit}s can report is "
+            f"{2.0 / ranking.draws:.3g}."
+        )
+    elif ranking.floor is not None:
+        floor = f" A P below 1/{ranking.draws} is reported as that bound."
+    return f"{head} {design}{statistic}{verdict}{floor}"
+
+
+def shown_observations(record: dict, obs, ranking, ancestors):
+    """The observations the per-measurement tables and figures cover: over the node source
+    the kept nodes and the first few below the floor (§24 *The node source*); every
+    observation otherwise."""
+    if record.get("source") != "nodes" or ranking is None:
+        return list(obs)
+    labels = {item.measure_key[1] for item in shown_items(ranking, ancestors)}
+    return [o for o in obs if o.measure_key[1] in labels]
+
+
+def write_result_tables(
+    out_dir: Path, record: dict, obs, ranking, *, shown=None
+) -> list[Path]:
+    """Write the result tables beside a comparison (detail#76): ``ranking.csv`` (every
+    item), ``significant.csv`` (what cleared), ``units.csv`` (wide, over ``shown`` or every
+    observation), ``unit_effects.csv`` and ``methods.txt``. Written by the run and again by
+    every export, so a script reads a result without drawing anything."""
+    out_dir = Path(out_dir)
+    written = []
+    shown = list(obs) if shown is None else list(shown)
+    if ranking is not None:
+        path = out_dir / RANKING_FILENAME
+        tablib.write_tidy_csv(path, ranking_csv_rows(ranking, record), RANKING_COLUMNS)
+        written.append(path)
+        path = out_dir / SIGNIFICANT_FILENAME
+        tablib.write_tidy_csv(
+            path, significant_rows(ranking, record), SIGNIFICANT_COLUMNS
+        )
+        written.append(path)
+        path = out_dir / UNIT_EFFECTS_FILENAME
+        tablib.write_tidy_csv(
+            path, unit_effect_rows(ranking, record), UNIT_EFFECTS_COLUMNS
+        )
+        written.append(path)
+    columns, rows = units_rows(
+        shown, record, _all_groups(record, ranking, obs_summaries(shown))
+    )
+    path = out_dir / UNITS_FILENAME
+    tablib.write_tidy_csv(path, rows, columns)
+    written.append(path)
+    path = out_dir / METHODS_FILENAME
+    path.write_text(methods_sentence(record, ranking) + "\n", encoding="utf-8")
+    written.append(path)
+    return written
+
+
 def _write_summary(path: Path, record: dict, by_measure: dict, ranking) -> None:
     path_of = (
         "|".join(record.get("aggregate_to") or []) or "(none — one point per recording)"
@@ -1298,8 +1940,14 @@ def _write_summary(path: Path, record: dict, by_measure: dict, ranking) -> None:
         lines.append(f"- **not independent**: {screened_sentence(record)}")
     lines += [
         "",
-        "Descriptive only — no tests, no corrections, no models. `stats.csv` is long form, one row "
-        "per observation with its factors, for inferential work elsewhere.",
+        "Descriptive only — no models. `stats.csv` is long form, one row per observation with "
+        "its factors, for inferential work elsewhere; `units.csv` is the same, one row per "
+        "unit with a column per group; `significant.csv` holds the statistics behind every "
+        "result that cleared.",
+        "",
+        "## Methods",
+        "",
+        methods_sentence(record, ranking),
         "",
     ]
     if ranking is not None and ranking.contrasts:
@@ -1354,7 +2002,7 @@ def export_comparison(
     record: dict,
     out_dir: Path,
     *,
-    formats: tuple[str, ...] = ("pdf", "svg", "png"),
+    formats: tuple[str, ...] = DEFAULT_FORMATS,
     style: FigureStyle = DEFAULT_STYLE,
     progress: Callable[[str, float, str], None] | None = None,
 ) -> dict:
@@ -1384,13 +2032,12 @@ def export_comparison(
     summaries = compare.summarize(obs, coverage_by_group=compare.coverage_by_group(obs))
     note = observation_note(record)
     ranking = rank_record(obs, record, ancestors)
-    figure_obs = obs
-    if record.get("source") == "nodes" and ranking is not None:
-        # The shown set (§24 *The node source*): the per-measurement tables and figures over
-        # the kept nodes and the first few below the floor; `ranking.csv` carries the rest.
-        labels = {item.measure_key[1] for item in shown_items(ranking, ancestors)}
+    # The shown set (§24 *The node source*): the per-measurement tables and figures over
+    # the kept nodes and the first few below the floor; `ranking.csv` carries the rest.
+    figure_obs = shown_observations(record, obs, ranking, ancestors)
+    if len(figure_obs) != len(obs):
+        labels = {o.measure_key[1] for o in figure_obs}
         summaries = [s for s in summaries if s.measure_key[1] in labels]
-        figure_obs = [o for o in obs if o.measure_key[1] in labels]
     by_measure = _by_measure(summaries)
 
     tables_dir = out_dir / "tables"
@@ -1415,21 +2062,30 @@ def export_comparison(
     artifacts += _write_tables(tables_dir, by_measure)
     artifacts += _write_grid_tables(tables_dir, record, by_measure)
     report("tables", 1.0, f"{len(artifacts) - 1} table(s)")
-    artifacts += _measure_figures(figures_dir, by_measure, note, formats, style, report)
+    artifacts += _measure_figures(
+        figures_dir,
+        by_measure,
+        figure_obs,
+        record,
+        ranking,
+        note,
+        formats,
+        style,
+        report,
+    )
     report("figures", 1.0, "")
-    artifacts += _paired_figures(figures_dir, figure_obs, note, formats, style, report)
-    report("paired figures", 1.0, "")
+    report("panels", 0.0, "")
+    artifacts += _panels_figure(
+        figures_dir, by_measure, figure_obs, record, ranking, note, formats, style
+    )
+    report("panels", 1.0, "")
+    report("ranking", 0.0, "")
     if ranking is not None:
-        report("ranking", 0.0, "")
         artifacts += _ranking_figure(
             figures_dir, ranking, note, formats, style, remainders_of(record)
         )
-        ranking_path = out_dir / RANKING_FILENAME
-        tablib.write_tidy_csv(
-            ranking_path, ranking_csv_rows(ranking, record), RANKING_COLUMNS
-        )
-        artifacts.append(ranking_path)
-        report("ranking", 1.0, "")
+    artifacts += write_result_tables(out_dir, record, obs, ranking, shown=figure_obs)
+    report("ranking", 1.0, "")
     report("summary", 0.0, "")
     summary = out_dir / "summary.md"
     _write_summary(summary, record, by_measure, ranking)

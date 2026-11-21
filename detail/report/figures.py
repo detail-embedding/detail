@@ -25,10 +25,10 @@ import matplotlib.pyplot as plt
 from detail.core.errors import UserInputError
 from detail.report.style import (
     DEFAULT_STYLE,
-    SAVE_PARAMS,
     FigureStyle,
     diverging_cmap,
     rc_params,
+    save_params,
     sequential_cmap,
 )
 
@@ -87,17 +87,26 @@ def check_formats(formats: tuple[str, ...]) -> None:
 
 
 def save_figure(
-    fig, out_stem: Path | str, formats: tuple[str, ...] = ("pdf", "svg", "png")
+    fig,
+    out_stem: Path | str,
+    formats: tuple[str, ...] = ("pdf", "svg", "png"),
+    *,
+    editable_svg: bool = False,
 ) -> list[Path]:
     """Save ``fig`` as ``<out_stem>.<fmt>`` for each format, close it, and return the paths.
 
     Self-sufficient: it does not rely on being called inside ``styled``. The save-time settings
     (editable fonts, stable SVG ids, the tight crop, the surface behind the figure) are applied
     here, and colliding category labels are turned before the first format is written.
+
+    ``editable_svg`` rewrites each SVG for editing by hand (``svg_edit``): no clipping masks,
+    markers as plain paths, a math-text label as one text object. Off by default, because the
+    rewrite refuses a pattern fill or a gradient; the comparison figures, which draw neither,
+    ask for it.
     """
     stem = Path(out_stem)
     written: list[Path] = []
-    with plt.rc_context(SAVE_PARAMS):
+    with plt.rc_context(save_params()):
         _turn_colliding_tick_labels(fig)
         for fmt in formats:
             path = stem.with_suffix(f".{fmt}")
@@ -109,9 +118,30 @@ def save_figure(
                 pad_inches=0.04,
                 facecolor=fig.get_facecolor(),
             )
+            if fmt == "svg" and editable_svg:
+                _rewrite_svg(fig, path)
             written.append(path)
     plt.close(fig)
     return written
+
+
+def _rewrite_svg(fig, path: Path) -> None:
+    """Replace matplotlib's SVG at ``path`` with its editable rewrite (``svg_edit.clean``)."""
+    from matplotlib.text import Text
+
+    from detail.report import svg_edit
+
+    centred = {
+        t.get_text()
+        for t in fig.findobj(Text)
+        if "$" in t.get_text() and t.get_ha() == "center"
+    }
+    raw = path.with_name(path.stem + ".matplotlib.svg")
+    path.replace(raw)
+    try:
+        svg_edit.clean(raw, path, centred)
+    finally:
+        raw.unlink(missing_ok=True)
 
 
 #: The angles a colliding row of category labels is turned to, smallest first.
@@ -335,6 +365,35 @@ def panel_letters(axes, *, style: FigureStyle = DEFAULT_STYLE, letters=None) -> 
             fontweight="bold",
             color=style.chart.text,
             annotation_clip=False,
+        )
+
+
+def panel_letters_outside(fig, axes, *, style: FigureStyle = DEFAULT_STYLE) -> None:
+    """Bold ``A``, ``B``, … at the top-left of each panel *including its labels*.
+
+    :func:`panel_letters` offsets the letter a fixed distance from the axes' corner, which a
+    long y label runs under: in a grid of panels with labels of different lengths one letter
+    sat on "Body length : width". This draws the figure once to measure each panel's tight
+    box (axes, ticks and labels) and puts the letter just outside it, in figure coordinates,
+    so it is never on a label however long.
+    """
+    fig.draw_without_rendering()
+    renderer = fig.canvas.get_renderer()
+    to_figure = fig.transFigure.inverted()
+    for index, ax in enumerate(axes):
+        box = ax.get_tightbbox(renderer)
+        if box is None:
+            continue
+        (x0, _), (_, y1) = to_figure.transform([(box.x0, box.y0), (box.x1, box.y1)])
+        fig.text(
+            x0,
+            y1,
+            chr(ord("A") + index),
+            ha="left",
+            va="bottom",
+            fontsize=style.type.panel_letter,
+            fontweight="bold",
+            color=style.chart.text,
         )
 
 
@@ -679,6 +738,235 @@ def paired_lines(
     # A legend per subject is unreadable past a handful; the lines carry the message either way.
     if 1 < len(pairs) <= 8:
         place_legend(ax, style=style)
+
+
+# --------------------------------------------------------------------------------------------- #
+# Bars of a group with every unit on them (§24, detail#76)
+# --------------------------------------------------------------------------------------------- #
+
+
+def tint(color: str, amount: float = 0.6) -> tuple:
+    """``color`` moved ``amount`` of the way to white: a bar's fill under its own edge."""
+    from matplotlib.colors import to_rgb
+
+    rgb = np.array(to_rgb(color))
+    return tuple(rgb + (1.0 - rgb) * amount)
+
+
+def luminance(color: str) -> float:
+    """Relative luminance (WCAG), 0 for black and 1 for white."""
+    from matplotlib.colors import to_rgb
+
+    rgb = np.array(to_rgb(color))
+    lin = np.where(rgb <= 0.04045, rgb / 12.92, ((rgb + 0.055) / 1.055) ** 2.4)
+    return float(lin @ np.array([0.2126, 0.7152, 0.0722]))
+
+
+def check_ordered_ramp(colors: list[str]) -> None:
+    """Refuse a ramp that is not monotone in lightness: one that turns back reads as two
+    groups, and an ordered variable's colour is read for its order.
+
+    Raises:
+        ValueError: two neighbouring steps do not get darker.
+    """
+    lums = [luminance(c) for c in colors]
+    if not all(a > b for a, b in zip(lums, lums[1:])):
+        raise ValueError(f"the ramp is not monotone in lightness: {lums}")
+
+
+def one_hue_ramp(color: str, n: int) -> list[str]:
+    """``n`` steps of one hue, light to dark, for the levels of an ordered variable.
+
+    From a light tint of ``color`` through the colour itself to a dark shade of it, checked to
+    get darker at every step (:func:`check_ordered_ramp`). One step is the colour itself.
+    """
+    from matplotlib.colors import LinearSegmentedColormap, to_hex, to_rgb
+
+    if n < 1:
+        return []
+    if n == 1:
+        return [to_hex(color)]
+    base = np.array(to_rgb(color))
+    light = base + (1.0 - base) * 0.55
+    dark = base * 0.45
+    cmap = LinearSegmentedColormap.from_list("one_hue", [light, base, dark])
+    colors = [to_hex(cmap(v)) for v in np.linspace(0.0, 1.0, n)]
+    check_ordered_ramp(colors)
+    return colors
+
+
+def bars_with_units(
+    ax,
+    group_labels: list[str],
+    observations: list[list[tuple[str, float]]],
+    *,
+    colors: list[str],
+    style: FigureStyle = DEFAULT_STYLE,
+    ylabel: str = "",
+    baseline: float = 0.0,
+) -> list[str]:
+    """Bars of each group's mean with s.e.m., every unit as a dot, and a line joining the
+    same unit across the groups it appears in (§24, detail#76).
+
+    ``observations`` holds, per group, ``[(unit, value), ...]``. A unit is an animal when the
+    comparison aggregated to one, a recording otherwise; a unit present in more than one group
+    is joined, which is the pairing a within-unit design is built on, and one present in a
+    single group is a dot alone. ``colors`` is one colour per group, decided by the caller from
+    what the group *is* (a control grey, an ordered variable's ramp) so a missing group does
+    not repaint the others.
+
+    Every unit sits at the same horizontal offset in every group, in sorted order, so the dots
+    and the lines agree about which animal is which; the offsets are fixed, not random, so a
+    re-export is byte-identical (§18.5 L1). Nothing here is clipped to the axes: a dot at zero
+    is a whole dot, in every output. The bar is a tint of the group's colour under an edge of
+    the colour itself; the error bar is ink (``chart.summary``), never the group's colour, or it
+    vanishes into the bar. A bar grows from ``baseline`` (a ratio's is 1).
+
+    Returns the units in the order they were placed.
+    """
+    marks = style.marks
+    ink = style.chart.summary
+    units = sorted({unit for group in observations for unit, _ in group})
+    offsets = dict(zip(units, _unit_offsets(len(units))))
+    x = np.arange(len(group_labels), dtype=float)
+    means, sems = [], []
+    for values in observations:
+        numbers = np.array([v for _, v in values], dtype=float)
+        if len(numbers) == 0:
+            means.append(np.nan)
+            sems.append(0.0)
+            continue
+        means.append(float(numbers.mean()))
+        sems.append(
+            float(numbers.std(ddof=1) / np.sqrt(len(numbers)))
+            if len(numbers) > 1
+            else 0.0
+        )
+    heights = np.array(means) - baseline
+    ax.bar(
+        x,
+        np.where(np.isnan(heights), 0.0, heights),
+        bottom=baseline,
+        width=0.68,
+        color=[tint(c) for c in colors],
+        edgecolor=colors,
+        linewidth=marks.thin_line_width * 0.8,
+        zorder=1,
+    )
+    by_unit: dict[str, list[tuple[float, float]]] = {u: [] for u in units}
+    for centre, values in zip(x, observations):
+        for unit, value in values:
+            by_unit[unit].append((centre + offsets[unit], value))
+    for unit in units:
+        points = by_unit[unit]
+        if len(points) > 1:
+            ax.plot(
+                [p[0] for p in points],
+                [p[1] for p in points],
+                color=ink,
+                alpha=0.3,
+                linewidth=marks.thin_line_width * 0.55,
+                zorder=2,
+                solid_capstyle="round",
+                clip_on=False,
+                label=unit,
+            )
+    for centre, values, color in zip(x, observations, colors):
+        if not values:
+            continue
+        ax.scatter(
+            [centre + offsets[unit] for unit, _ in values],
+            [value for _, value in values],
+            s=marks.marker_size**2 * 0.45,
+            facecolor=color,
+            edgecolor=style.chart.surface,
+            linewidth=marks.marker_ring * 0.6,
+            zorder=3,
+            clip_on=False,
+        )
+    drawn = ~np.isnan(heights)
+    ax.errorbar(
+        x[drawn],
+        np.array(means)[drawn],
+        yerr=np.array(sems)[drawn],
+        fmt="none",
+        ecolor=ink,
+        elinewidth=marks.summary_width * 0.7,
+        capsize=1.9,
+        capthick=marks.summary_width * 0.7,
+        zorder=4,
+    )
+    ax.set_xticks(x)
+    ax.set_xticklabels(group_labels)
+    ax.set_xlim(-0.62, len(group_labels) - 0.38)
+    ax.tick_params(axis="x", length=0)
+    _label_axes(ax, ylabel=ylabel)
+    return units
+
+
+def _unit_offsets(n: int) -> np.ndarray:
+    """Where ``n`` units sit across a bar: spread over ±0.17 of the slot, one at the middle."""
+    if n <= 1:
+        return np.zeros(max(n, 0))
+    return np.linspace(-0.17, 0.17, n)
+
+
+def fit_baseline_axis(
+    ax, baseline: float, top: float, *, annotated: bool
+) -> tuple[float, float]:
+    """Set the y axis to grow from ``baseline`` with room for a bracket only when one is drawn.
+
+    An annotated panel needs headroom for its P value; an unannotated one should not reserve
+    it, or every panel of a set carries a blank strip. A bar that does not start at zero says
+    so: the baseline is a labelled tick. Returns ``(y_bar, y_text)``, where a bracket and its
+    text go in data coordinates.
+    """
+    from matplotlib.ticker import FormatStrFormatter, MaxNLocator
+
+    span = max(top - baseline, 1e-9)
+    ax.set_ylim(baseline, baseline + span * (1.27 if annotated else 1.07))
+    locator = MaxNLocator(nbins=4, min_n_ticks=3)
+    ticks = locator.tick_values(baseline, baseline + span * 1.05)
+    ticks = [t for t in ticks if baseline <= t <= baseline + span * 1.06]
+    if baseline != 0.0:
+        ticks = [baseline] + [t for t in ticks if t - baseline > 0.12 * span]
+    ax.set_yticks(ticks)
+    ax.yaxis.set_major_formatter(FormatStrFormatter("%g"))
+    return baseline + span * 1.10, baseline + span * 1.13
+
+
+def bracket(
+    ax,
+    x0: float,
+    x1: float,
+    text: str,
+    *,
+    y_bar: float,
+    y_text: float,
+    style: FigureStyle = DEFAULT_STYLE,
+) -> None:
+    """A bracket spanning ``x0`` to ``x1`` with ``text`` above it: a P value on the plot."""
+    ink = style.chart.summary
+    span = ax.get_ylim()[1] - ax.get_ylim()[0]
+    drop = span * 0.02
+    ax.plot(
+        [x0, x0, x1, x1],
+        [y_bar - drop, y_bar, y_bar, y_bar - drop],
+        color=ink,
+        linewidth=style.marks.thin_line_width * 0.7,
+        clip_on=False,
+        zorder=5,
+    )
+    ax.text(
+        0.5 * (x0 + x1),
+        y_text,
+        text,
+        ha="center",
+        va="bottom",
+        fontsize=style.type.annotation,
+        color=ink,
+        clip_on=False,
+    )
 
 
 def ranked_bars_with_floor(

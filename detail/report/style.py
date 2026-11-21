@@ -89,6 +89,22 @@ SAVE_PARAMS: dict = {
 }
 
 
+def save_params() -> dict:
+    """:data:`SAVE_PARAMS` plus the math-text faces, which matplotlib reads when a figure is
+    drawn. An italic *P* in an annotation is math text, and without these it is set in
+    Computer Modern beside the house face; with them it is the house face in italic, so a
+    rewritten SVG (``svg_edit``) is one text object in one family."""
+    family = installed_families()[0]
+    return {
+        **SAVE_PARAMS,
+        "mathtext.default": "regular",
+        "mathtext.fontset": "custom",
+        "mathtext.rm": family,
+        "mathtext.it": f"{family}:italic",
+        "mathtext.bf": f"{family}:bold",
+    }
+
+
 @functools.cache
 def installed_families() -> tuple[str, ...]:
     """The house faces this machine has, in preference order; DejaVu Sans when it has none.
@@ -128,7 +144,7 @@ def rc_params(style: FigureStyle = DEFAULT_STYLE) -> dict:
         "figure.constrained_layout.use": True,
         "figure.constrained_layout.h_pad": 0.04,
         "figure.constrained_layout.w_pad": 0.04,
-        **SAVE_PARAMS,
+        **save_params(),
         # Surfaces and ink
         "figure.facecolor": colors.surface,
         "savefig.facecolor": colors.surface,

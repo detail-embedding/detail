@@ -469,7 +469,10 @@ page shows them, and `measures export` writes them as CSV. Full list:
 The group question: does this differ between these animals? Pick a behavior result, filter to the
 recordings you want, group them by a column of your recording information (treatment, sex,
 timepoint), and read the [measures](measures.md) side by side. Saved to `comparisons/<cmp_NN>/`
-and exportable as tables, figures and a `stats.csv`.
+with the statistics a paper cites (`ranking.csv`, `significant.csv`, the per-animal values in
+wide form, a Methods paragraph) and exportable as tables and figures: bars of the mean with
+s.e.m., every animal a dot joined across the groups it appears in, and the P value on the plot
+where the comparison found a difference, sized and typeset for a journal column.
 
 Three things to know:
 

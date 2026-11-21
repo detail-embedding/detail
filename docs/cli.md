@@ -1372,11 +1372,21 @@ the recordings by a column of `metadata.csv`, and report how the groups differ.
   many permutations the difference ranking's floor is drawn from.
 - `export <cmp_NN> --experiment <dir> --out <dir> [--format pdf|svg|png …] [--theme light|dark]`: write the publication
   tree, `stats.csv` (long form, one row per observation), `tables/` (per measure: groups as rows
-  with n / coverage / mean / median / sd), `figures/` (every observation as a point, plus the
-  difference ranking with its chance floor), `summary.md`, and `manifest.json` with a SHA-256 per
-  artifact, plus `ranking.csv` (every ranked measure or node with its effect, its `statistic`
-  where the ranking is on the moderated t, floor and verdict, and its `family_p` / `own_p` /
-  `q`) and, for a node screen, the `nodes.csv` hierarchy. Warns if the source data has changed since
+  with n / coverage / mean / median / sd), `figures/` (one panel per measurement: bars of the
+  mean with s.e.m., every animal a dot, the same animal joined across groups, and the P value
+  on the plot when the comparison found a difference, `P_FWE` where the measure had to clear
+  the family's floor and `P` where it was tested on its own; `panels`, the measurements as one
+  row or grid with one legend; a curve per windowed measurement; and the difference ranking
+  with its chance floor), `summary.md`, and `manifest.json` with a SHA-256 per artifact. The
+  run itself already wrote, and the export writes again: `ranking.csv` (every ranked measure
+  or node with its effect, its `statistic` where the ranking is on the moderated t, floor and
+  verdict, and its `family_p` / `own_p` / `q`), `significant.csv` (one row per result that
+  cleared, with the group means and s.e.m., the effect, the P it was judged by and which P
+  that is, n and how many animals went that way), `units.csv` (one row per animal and
+  measurement, a column per group, in readable units), `unit_effects.csv` (each animal's own
+  change, which the ranking averaged) and `methods.txt` (a paragraph for a Methods section,
+  written from the comparison) and, for a node screen, the `nodes.csv` hierarchy. The SVG is
+  rewritten for editing by hand and the PDF has editable type. Warns if the source data has changed since
   the comparison was run, or if a recording's video is not on this machine, so it cannot be
   checked. `--format` is repeatable and takes any format matplotlib writes (`jpg`, `tiff`,
   `eps`, …); an unknown one is refused before anything is drawn. `--theme dark`

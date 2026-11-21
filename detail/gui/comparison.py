@@ -1392,16 +1392,15 @@ class ComparisonsPage(QWidget):
         self._on_created = on_created or on_open
 
         layout = QVBoxLayout(self)
-        header = QHBoxLayout()
-        header.addWidget(_heading("Comparisons"))
-        header.addStretch(1)
-        new_btn = QPushButton("New comparison")
-        new_btn.clicked.connect(self._new_comparison)
-        header.addWidget(new_btn)
-        layout.addLayout(header)
+        layout.addWidget(_heading("Comparisons"))
         self._caption_box = QVBoxLayout()
         layout.addLayout(self._caption_box)
         self._caption: QLabel | None = None
+        # On the left under the heading, where every other collection page puts its "New …"
+        # button (Analysis, Processing); it sat alone at the right here.
+        new_btn = QPushButton("New comparison")
+        new_btn.clicked.connect(self._new_comparison)
+        layout.addWidget(new_btn, alignment=Qt.AlignmentFlag.AlignLeft)
 
         self._ids: list[str] = []
         self._table = IndexTable(
@@ -1635,8 +1634,10 @@ class ComparisonExportDialog(Dialog):
         layout = self.body()
         layout.addWidget(
             _instructions(
-                "Writes stats.csv (one row per observation), the per-measure tables, the "
-                "contrast grid as LaTeX, Markdown and CSV, the figures, summary.md and a "
+                "Writes stats.csv (one row per observation), units.csv (one row per animal, "
+                "a column per group), the per-measure tables, the contrast grid as LaTeX, "
+                "Markdown and CSV, ranking.csv and significant.csv (the statistics behind "
+                "every result that cleared), methods.txt, the figures, summary.md and a "
                 "manifest with a hash of every file."
             )
         )
@@ -1660,7 +1661,9 @@ class ComparisonExportDialog(Dialog):
                     "png": "PNG (raster — for a slide, and what this page shows)",
                 }[name]
             )
-            box.setChecked(name in ("pdf", "png"))
+            # The default every surface shares (detail#76): the API's, the CLI's and the
+            # catalogue's, read off one constant rather than chosen again here.
+            box.setChecked(name in comparison_report.DEFAULT_FORMATS)
             self._formats[name] = box
             layout.addWidget(box)
         self._dark = _dark_figures_box()
@@ -2045,6 +2048,14 @@ class ComparisonDetailPage(QWidget):
             floor_note = QLabel(floor_text)
             floor_note.setWordWrap(True)
             out.append(floor_note)
+        # The paragraph a Methods section takes, generated from the record (detail#76), so
+        # what a paper says ran is what ran. Muted: it is there to copy, not to read first.
+        methods = QLabel(comparison_report.methods_sentence(self._record, ranking))
+        methods.setObjectName("methods")
+        methods.setWordWrap(True)
+        methods.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        set_label_color(methods, status_color.MUTED)
+        out.append(methods)
         kept = ranking.kept_items()
         if ranking.kept is not None:
             out.append(
@@ -2248,9 +2259,10 @@ class ComparisonDetailPage(QWidget):
         self._export_btn.setEnabled(False)
         run_progress(
             self,
-            lambda emit: self._comparison.export(
-                formats=("png", "pdf"), theme=theme, progress=emit
-            ),
+            # The same formats an export writes, so a redraw beside the comparison leaves
+            # the tree a manuscript takes (PDF) and an editor opens (SVG), not only the PNG
+            # this page shows.
+            lambda emit: self._comparison.export(theme=theme, progress=emit),
             self._exported,
             label="Rendering figures…",
             on_error=self._export_failed,
@@ -2291,8 +2303,8 @@ class ComparisonDetailPage(QWidget):
         """The figures belonging to the rows the Overview shows, in the same order.
 
         A stem names its measurement, so the mapping is by name rather than by a second registry
-        — which is also why the ranking figure comes first: it is the one panel about the whole
-        comparison rather than one measure of it.
+        — which is also why the panels figure and the ranking come first: they are the panels
+        about the whole comparison rather than one measure of it.
         """
         contrasts = self._reading.contrasts if self._reading is not None else []
         wanted = [
@@ -2303,8 +2315,12 @@ class ComparisonDetailPage(QWidget):
         ]
         by_stem = {p.stem: p for p in paths}
         chosen = [by_stem[stem] for stem in wanted if stem in by_stem]
-        ranking = by_stem.get("difference_ranking")
-        return ([ranking] if ranking else []) + chosen
+        whole = [
+            by_stem[stem]
+            for stem in (comparison_report.PANELS_STEM, "difference_ranking")
+            if stem in by_stem
+        ]
+        return whole + chosen
 
     def _export_failed(self, exc) -> None:
         self._export_btn.setEnabled(True)
