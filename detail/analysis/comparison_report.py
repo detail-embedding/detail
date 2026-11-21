@@ -1172,6 +1172,13 @@ def _bracket_span(ranking, item, drawn: list[tuple]) -> tuple[int, int] | None:
     return (min(a, b), max(a, b))
 
 
+def group_axis_label(record: dict) -> str:
+    """What a group tick is made of, as the x axis says it (user, 2026-11-20): the grouping
+    columns joined as the ticks are (*Sex | fentanyl_dose* over *F|0*), one column's name
+    alone when there is one."""
+    return " | ".join(str(c) for c in record.get("group_by") or ())
+
+
 def draw_measurement(
     ax, measurement: tuple, obs, record: dict, ranking, *, style, colors
 ) -> bool:
@@ -1200,6 +1207,7 @@ def draw_measurement(
         ylabel=panel_label(measurement, remainders_of(record)),
         baseline=baseline,
     )
+    ax.set_xlabel(group_axis_label(record))
     top = max((v for group in observations for _, v in group), default=baseline)
     window = next(
         (
@@ -1412,6 +1420,8 @@ def _panels_figure(
             loc="outside upper right",
             ncol=len(handles),
             frameon=False,
+            title=group_axis_label(record),
+            title_fontsize=style.type.tick,
             fontsize=style.type.tick,
             handlelength=1.0,
             handleheight=0.8,

@@ -55,7 +55,7 @@ def paired(tmp_path_factory):
         saved[str(out_stem).rsplit("\\", 1)[-1].rsplit("/", 1)[-1]] = (
             [ax for ax in fig.axes if ax.get_visible()],
             [t.get_text() for t in fig.texts],
-            len(fig.legends),
+            [legend.get_title().get_text() for legend in fig.legends],
         )
         return original(fig, out_stem, formats, **kwargs)
 
@@ -452,11 +452,27 @@ def test_panels_holds_every_measurement_with_letters_and_one_legend(paired):
     comp, ranking, saved = paired
     axes, texts, legends = saved[comparison_report.PANELS_STEM]
     assert len(axes) == len(ranking.contrasts) == 7
-    assert legends == 1
+    assert legends == ["session"], "one legend, titled with the grouping column"
     letters = [t for t in texts if len(t) == 1 and t.isupper()]
     assert letters == list("ABCDEFG")
     assert comparison_report.observation_note(comp.record()) in texts
     assert (comp.dir / "figures" / "panels.png").is_file()
+
+
+def test_the_x_axis_says_what_a_group_is(paired):
+    """A tick reading *F|0* says nothing about what F and 0 are (user, 2026-11-20): the x
+    axis names the grouping columns, joined as the ticks are, on every bar panel."""
+    comp, ranking, saved = paired
+    for measure in {item.measure_key[0] for item in ranking.contrasts}:
+        assert [ax.get_xlabel() for ax in saved[measure][0]] == ["session"]
+    assert all(
+        ax.get_xlabel() == "session" for ax in saved[comparison_report.PANELS_STEM][0]
+    )
+    assert (
+        comparison_report.group_axis_label({"group_by": ["Sex", "dose"]})
+        == "Sex | dose"
+    )
+    assert comparison_report.group_axis_label({}) == ""
 
 
 # --------------------------------------------------------------------------- #

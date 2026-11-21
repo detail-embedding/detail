@@ -9558,7 +9558,9 @@ one sex is one family of colour. The hues are the theme's (`theme_hues`): from b
 on the dark surface, where the ramp runs from the hue towards light (a dark shade sinks into the
 background) and a bar's fill tints towards the surface rather than towards white. The difference
 ranking draws what cleared the floor plus the first ten below it, its height following the bar
-count, with the measure said once on the axis when every bar is of one measure. The axis names
+count, with the measure said once on the axis when every bar is of one measure. The x axis of a
+bar panel names the grouping columns, joined as the ticks are (`group_axis_label`: *Sex |
+fentanyl_dose* over *F|0*), and the composite's legend carries the same title. The y axis names
 the thing and its unit (`panel_label`: *Rearing (% time)*,
 *Distance (m)*; `MeasureSpec.axis`), a ratio's bars start at 1 with the baseline a labelled
 tick, an annotated panel reserves headroom for its bracket and an unannotated one does not, and
