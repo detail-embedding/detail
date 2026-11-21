@@ -221,6 +221,11 @@ class MeasureSpec:
     #: instead of a user finding a column of zeros. `DESIGN_PLAN` §23 specifies this shape.
     requires: tuple[str, ...] = ()
     needs_denominator: bool = False
+    #: What a figure's axis says after the behavior's name, in the unit a reader sees:
+    #: ``Rearing (% time)``, ``Rearing (bouts)``. Distinct from ``label`` because an axis
+    #: names the thing and its unit, and "Share of time (%)" names neither the behavior nor
+    #: what the number is of. Empty for a measure that is not drawn (``fans_out``).
+    axis: str = ""
 
 
 MEASURES: dict[str, MeasureSpec] = {}
@@ -348,6 +353,7 @@ def select(instances: Sequence, rule: str, ctx: Context) -> Selection:
     additive=True,
     label="Bouts",
     description="How many separate bouts of the behavior occurred.",
+    axis="bouts",
 )
 def _n_instances(sel: Selection, ctx: Context) -> float:
     return float(len(sel.instances))
@@ -360,6 +366,7 @@ def _n_instances(sel: Selection, ctx: Context) -> float:
     needs_denominator=True,
     label="Rate",
     description="Bouts per second of observed time — not per second of window length.",
+    axis="bouts/s",
 )
 def _rate(sel: Selection, ctx: Context) -> float:
     """Onsets per second of **observed** time — never per second of window length."""
@@ -374,6 +381,7 @@ def _rate(sel: Selection, ctx: Context) -> float:
     duration_shaped=True,
     label="Total time",
     description="How much time the behavior occupies in total.",
+    axis="s in total",
 )
 def _total_time(sel: Selection, ctx: Context) -> float:
     return float(sum(sel.overlaps))
@@ -387,6 +395,7 @@ def _total_time(sel: Selection, ctx: Context) -> float:
     label="Share of time",
     description="What proportion of the observed time the behavior occupies.",
     needs_denominator=True,
+    axis="% time",
 )
 def _time_fraction(sel: Selection, ctx: Context) -> float:
     return sum(sel.overlaps) / ctx.denominator_ns
@@ -408,6 +417,7 @@ def _durations(sel: Selection) -> list[int]:
     duration_shaped=True,
     label="Mean bout length",
     description="How long a typical bout lasts.",
+    axis="s per bout, mean",
 )
 def _duration_mean(sel: Selection, ctx: Context) -> float | None:
     d = _durations(sel)
@@ -421,6 +431,7 @@ def _duration_mean(sel: Selection, ctx: Context) -> float | None:
     duration_shaped=True,
     label="Median bout length",
     description="The middle bout length, unmoved by a few very long or short bouts.",
+    axis="s per bout, median",
 )
 def _duration_median(sel: Selection, ctx: Context) -> float | None:
     d = _durations(sel)
@@ -434,6 +445,7 @@ def _duration_median(sel: Selection, ctx: Context) -> float | None:
     duration_shaped=True,
     label="Bout length spread",
     description="How variable the bout lengths are (population sd).",
+    axis="s, bout length sd",
 )
 def _duration_sd(sel: Selection, ctx: Context) -> float | None:
     """Population sd, not sample: these are the bouts that occurred, not a draw from a larger set."""
@@ -448,6 +460,7 @@ def _duration_sd(sel: Selection, ctx: Context) -> float | None:
     duration_shaped=True,
     label="Time to first bout",
     description="How long from the start of the window until the behavior first occurs.",
+    axis="s to first bout",
 )
 def _latency_to_first(sel: Selection, ctx: Context) -> float | None:
     """Time from the window's start to the first onset. ``None`` when the behavior never occurs —
@@ -465,6 +478,7 @@ def _latency_to_first(sel: Selection, ctx: Context) -> float | None:
     duration_shaped=True,
     label="Gap between bouts",
     description="The mean pause between consecutive bouts — the gap, not the bout.",
+    axis="s between bouts",
 )
 def _inter_bout_interval(sel: Selection, ctx: Context) -> float | None:
     """Mean gap between consecutive bouts of one label — the pause, not the bout."""
@@ -521,6 +535,7 @@ def _transitions(sel: Selection, ctx: Context) -> dict:
     requires=("unnamed_labels",),
     label="Time in unnamed clusters",
     description="Observed time in real clusters that have not been named yet.",
+    axis="s in unnamed clusters",
 )
 def _unnamed_time(sel: Selection, ctx: Context) -> float:
     """Observed time in real clusters the user has not named yet.

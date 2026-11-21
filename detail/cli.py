@@ -8036,6 +8036,14 @@ _THEME_HELP = (
 )
 
 
+def _comparison_formats() -> tuple[str, ...]:
+    """The figure formats a comparison export writes unless told otherwise: the one default
+    every surface shares (`comparison_report.DEFAULT_FORMATS`), not retyped here."""
+    from detail.analysis.comparison_report import DEFAULT_FORMATS
+
+    return DEFAULT_FORMATS
+
+
 @comparison.command("export")
 @click.argument("comparison_id")
 @_EXPERIMENT_OPT
@@ -8050,7 +8058,7 @@ _THEME_HELP = (
     "--format",
     "formats",
     multiple=True,
-    default=("pdf", "svg", "png"),
+    default=_comparison_formats(),
     show_default=True,
     help="A figure format to write; repeat for several. Any format matplotlib writes "
     "(jpg, tiff, eps, …); an unknown one is refused before anything is drawn.",

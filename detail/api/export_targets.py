@@ -1091,7 +1091,7 @@ def _comparison_record(subject: ExportSubject) -> dict | None:
 
 def _run_comparison(subject, dest, scope, progress, **options):
     """A comparison's figures and its tables — the picture and the numbers under it."""
-    from detail.analysis.comparison_report import export_comparison
+    from detail.analysis.comparison_report import DEFAULT_FORMATS, export_comparison
 
     record = _comparison_record(subject)
     if record is None:
@@ -1100,7 +1100,9 @@ def _run_comparison(subject, dest, scope, progress, **options):
         subject.experiment_dir,
         record,
         Path(dest),
-        formats=FIGURE_FORMATS,
+        # The comparison's own default, the same on every surface (detail#76), not the
+        # catalogue's: a PDF with editable type is what a manuscript takes.
+        formats=DEFAULT_FORMATS,
         style=_figure_style(options),
         progress=progress,
     )

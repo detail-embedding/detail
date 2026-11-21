@@ -203,6 +203,40 @@ def test_the_detail_page_shows_the_verdict_by_each_measures_own_p(location_page)
     assert not any("_" in name for name in names)  # labels, never raw ids
 
 
+def test_the_overview_carries_the_methods_paragraph_and_leads_with_the_panels(
+    location_page, tmp_path
+):
+    """The Methods paragraph is on the page, selectable, and reads from the record
+    (detail#76); the Overview's figure grid puts the composite first, then the top rows'.
+    """
+    from detail.analysis import comparison_report
+
+    methods = next(
+        label
+        for label in location_page.findChildren(QLabel)
+        if label.objectName() == "methods"
+    )
+    assert methods.text() == comparison_report.methods_sentence(
+        location_page._record, location_page._reading.ranking
+    )
+    assert "tested on its own" in methods.text()
+    paths = [
+        tmp_path / "figures" / name
+        for name in ("body_length.png", "panels.png", "distance.png")
+    ]
+    ordered = location_page._overview_paths(paths)
+    assert ordered[0].name == "panels.png"
+    assert [p.name for p in ordered[1:]] == [
+        comparison_report._measure_stem(comparison_report._measurement(c.measure_key))
+        + ".png"
+        for c in location_page._reading.contrasts[: location_page._TOP_N]
+        if comparison_report._measure_stem(
+            comparison_report._measurement(c.measure_key)
+        )
+        in ("body_length", "distance")
+    ]
+
+
 def test_the_detail_page_renders_at_a_laptop_size(location_page, qapp, tmp_path):
     location_page.resize(1100, 700)
     location_page.show()

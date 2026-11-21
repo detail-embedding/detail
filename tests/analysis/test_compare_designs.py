@@ -621,10 +621,10 @@ def test_a_missing_token_is_no_value_either():
     )
     assert design.kind == c.TREND
     assert "trend over 0, 25, 50, 75" in design.reason
-    assert not c._is_number("nan")
-    assert not c._is_number("NA")
-    assert not c._is_number("inf")
-    assert c._is_number("25")
+    assert not c.is_number("nan")
+    assert not c.is_number("NA")
+    assert not c.is_number("inf")
+    assert c.is_number("25")
 
 
 # --------------------------------------------------------------------------- #

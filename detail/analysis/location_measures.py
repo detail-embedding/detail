@@ -76,6 +76,12 @@ class LocationMeasure:
     unit: str
     fans_out: bool = False
 
+    @property
+    def axis(self) -> str:
+        """The figure's axis label: the measure's name and its unit, ``Distance (m)``."""
+        shown = {"fraction": "%", "ratio": ""}.get(self.unit, self.unit)
+        return f"{self.label} ({shown})" if shown else self.label
+
 
 def _measure(measure_id: str, label: str, unit: str, description: str):
     return measure_id, LocationMeasure(measure_id, label, description, unit)

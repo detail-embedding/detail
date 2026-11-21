@@ -538,6 +538,11 @@ class Effect:
     own_p: float | None = None
     q: float | None = None
     statistic: float | None = None
+    #: The per-unit effects ``effect`` is the mean of, ``(unit, effect)`` for each unit with
+    #: one: a unit's log ratio of its level means (paired, and a profile's chosen pair), or its
+    #: Spearman ρ over its levels (trend). Computed for the ranking and thrown away before
+    #: detail#76; a reader who wants to say "9 of 10 fell" needs the ten numbers.
+    unit_effects: tuple[tuple[str, float], ...] = ()
 
     @property
     def magnitude(self) -> float | None:
@@ -1117,7 +1122,7 @@ class Design:
         return self.kind != BETWEEN
 
 
-def _is_number(text: str) -> bool:
+def is_number(text: str) -> bool:
     """A finite number. ``nan`` and ``inf`` parse under ``float`` and are not levels of a dose."""
     if missing(text):
         return False
@@ -1127,9 +1132,9 @@ def _is_number(text: str) -> bool:
         return False
 
 
-def _level_sort_key(value: str):
+def level_sort_key(value: str):
     """Numeric levels sort as numbers (0, 25, 50, 75), the rest as text."""
-    return (0, float(value), "") if _is_number(value) else (1, 0.0, value)
+    return (0, float(value), "") if is_number(value) else (1, 0.0, value)
 
 
 def _unit_word(unit: Sequence[str]) -> str:
@@ -1152,7 +1157,7 @@ def _design_from_pairs(
         if not missing(value):
             by_unit.setdefault(key, set()).add(value)
     distinct = sorted(
-        {v for values in by_unit.values() for v in values}, key=_level_sort_key
+        {v for values in by_unit.values() for v in values}, key=level_sort_key
     )
     chosen: tuple[str, str] | None = None
     if levels:
@@ -1201,7 +1206,7 @@ def _design_from_pairs(
             f"{word}s",
         )
 
-    numeric = bool(distinct) and all(_is_number(v) for v in distinct)
+    numeric = bool(distinct) and all(is_number(v) for v in distinct)
     if chosen is None and numeric and len(distinct) >= 3:
         return Design(
             TREND,
@@ -1395,7 +1400,7 @@ def no_floor_before_measuring(
             value = rows[recording][design.column]
             if wanted is not None and value not in wanted:
                 continue
-            if design.kind == TREND and not _is_number(value):
+            if design.kind == TREND and not is_number(value):
                 continue
             held.setdefault(unit_of(recording), set()).add(value)
         needed = _levels_needed(design.kind)
@@ -1573,11 +1578,11 @@ def rank_by_design(
     elif design.kind == PROFILE:
         level_values = sorted(
             {o.group[0] for o in obs if o.group and not missing(o.group[0])},
-            key=_level_sort_key,
+            key=level_sort_key,
         )
     else:
         level_values = sorted(
-            {o.group[0] for o in obs if o.group and _is_number(o.group[0])}, key=float
+            {o.group[0] for o in obs if o.group and is_number(o.group[0])}, key=float
         )
     level_index = {(lvl,): j for j, lvl in enumerate(level_values)}
     ranked = [
@@ -1842,6 +1847,11 @@ def rank_by_design(
                 present_b=None if present_b is None else int(present_b[n]),
                 pair=pair,
                 statistic=None if math.isnan(t) else t,
+                unit_effects=tuple(
+                    ("|".join(units[u]), float(per_unit[n, u]))
+                    for u in range(U)
+                    if valid[n, u]
+                ),
             )
         )
     if not reason:

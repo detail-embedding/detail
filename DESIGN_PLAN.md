@@ -9502,21 +9502,77 @@ comparisons/<cmp_NN>/
   stats.csv           the tidy source of truth — one row per observation with its factors
   nodes.csv           source: nodes only — the node hierarchy the ranking is suppressed over
 
-  written by `comparison export` (Comparison.export), into this folder or --out:
+  written by the run and again by every export (comparison_report.write_result_tables):
   ranking.csv         every ranked item: effect, statistic (the moderated t where the ranking
                       is on it; the floor is in its unit), floor, clears, kept, family_p /
                       own_p / q (the floor read as a p, the item's own p, the BH q over the
                       family), consistency, n_units, pair_a / pair_b (the levels or groups
                       the effect is between)
+  significant.csv     one row per item that cleared: the group means and s.e.m., the effect,
+                      the statistic, the p it was judged by and which p that is (p_kind:
+                      own / family-wise, and the bound where a shuffled test could not
+                      resolve lower), own_p / family_p / q beside it, n, and how many units
+                      went the effect's way — what a paper cites beside the figures
+  units.csv           the per-unit values in wide form: one row per unit and measurement, a
+                      column per group, in the unit a reader sees — the shape Prism takes
+  unit_effects.csv    the per-unit effects a within-unit ranking averaged (a unit's log
+                      ratio of its level means, or its Spearman ρ), which were computed for
+                      the ranking and thrown away before detail#76
+  methods.txt         a paragraph for a Methods section, generated from the record and its
+                      ranking (comparison_report.methods_sentence): which test, what was
+                      shuffled, how many draws or that it was exact, which p is reported and
+                      at what level, the correction beside it, n, and the smallest p the
+                      test can report
+
+  written by `comparison export` (Comparison.export), into this folder or --out:
   tables/             per measure: groups as rows, summary columns
-  figures/            dot plots, time-resolved curves, the difference ranking with its floor
-  summary.md          the quick-look
+  figures/            one panel per measurement (below), the composite `panels`, a curve per
+                      windowed measurement, the difference ranking with its floor
+  summary.md          the quick-look, with the Methods paragraph
   manifest.json       provenance + per-artifact SHA-256
 ```
 
-`run_comparison` writes only the first three; the rest are rendered from them on export
-(`analysis/comparison_report.py`), which copies `stats.csv` along when exporting elsewhere so the
-tree is self-contained.
+`run_comparison` writes the first three and the result tables; the figures, the per-measure
+tables and the summary are rendered from them on export (`analysis/comparison_report.py`), which
+copies `stats.csv` along when exporting elsewhere so the tree is self-contained.
+
+**The figure of one measurement** (detail#76, the paper's group-difference figures as the
+template). Bars of the group mean with s.e.m., every unit as a dot at a fixed offset so the same
+animal sits in the same place in every bar, and a line joining the same unit across the groups it
+appears in; its P on the plot, as a bracket over the groups it compares, only when the ranking
+judged the measure to differ (`Ranking.clears_floor`), and nothing when it did not: no stars, no
+"n.s.". The P is the one the verdict used, and the symbol says which — `P_FWE` under the family
+verdict (a measure that had to clear the family's floor, having been found by screening many),
+`P` under the own verdict — written `< 1/draws` where a shuffled test could not resolve lower,
+never 0. A test against an ordered variable is labelled with the variable (`dose: P = 0.002`),
+never "trend", which a reader takes to mean "not quite". Groups are drawn in the order the design
+resolved (`group_order`: the levels a user named, reference first; numeric levels in numeric
+order; the ordered columns before the named ones, so a sex × dose design interleaves by dose
+with the two sexes at one dose side by side; a between design's level list is string order and
+is not taken as the design's), and coloured by what they are (`group_colors`, over every group of
+the record so a filter repaints nothing): the reference level grey, an ordered variable's levels
+one hue from light to dark (checked monotone), two levels grey and the hue, three or more named
+values distinct hues, and in a design of a named column and an ordered one (`group_columns`)
+each named value one hue with the ordered value setting its lightness, no grey, so every dose of
+one sex is one family of colour. The hues are the theme's (`theme_hues`): from blue on white, and from orange
+on the dark surface, where the ramp runs from the hue towards light (a dark shade sinks into the
+background) and a bar's fill tints towards the surface rather than towards white. The difference
+ranking draws what cleared the floor plus the first ten below it, its height following the bar
+count, with the measure said once on the axis when every bar is of one measure. The x axis of a
+bar panel names the grouping columns, joined as the ticks are (`group_axis_label`: *Sex |
+fentanyl_dose* over *F|0*), and the composite's legend carries the same title. The y axis names
+the thing and its unit (`panel_label`: *Rearing (% time)*,
+*Distance (m)*; `MeasureSpec.axis`), a ratio's bars start at 1 with the baseline a labelled
+tick, an annotated panel reserves headroom for its bracket and an unannotated one does not, and
+nothing is clipped to the axes, so a dot at zero is a whole dot in every output. The composite
+`panels` figure holds the chosen measurements (every single-window one, in registry order; over
+the node source the clusters the screen kept, in rank order; at most `PANELS_MAX`) as one row or
+grid at a double column's width with one legend and panel letters. Every figure is 5.5 to 8 pt
+type on thin axes with no top or right spine (`core/chart_theme`), and the SVG is rewritten for
+editing by hand (`report/svg_edit.py`: no clipping masks, markers as plain paths, a P label as one
+text object in the house face), the PDF has editable type, and the formats are the same default
+on every surface (`DEFAULT_FORMATS`: the API, the CLI, the GUI's export dialog and redraw, the
+catalogue target).
 
 **The export tree and the primitives under it are §18's, reused wholesale** — `report/style.py`,
 `tables.py` (`write_tidy_csv`, `pivot_to_grid`, LaTeX/Markdown/CSV), `figures.py`, deterministic
@@ -9526,10 +9582,12 @@ rendering, publication styling.
 
 - **Not a per-module exporter registry.** A comparison has no member module to dispatch on, so it
   exports through the same primitives by its own entry point (`analysis/comparison_report.py`).
-- **The points come from a sibling of `figures.grouped_dots`.** That one takes one value and one
-  error per group, which is the shape this section explicitly rejects — at these cohort sizes a bar
-  and an error bar hide the whole dataset. `figures.observation_dots` plots every observation with
-  the group's median drawn across them, and the comparison's per-measure figures use it.
+- **The points are never hidden behind the bar.** `figures.grouped_dots` takes one value and one
+  error per group, which is the shape this section rejects — at these cohort sizes a bar and an
+  error bar alone hide the whole dataset. The comparison's per-measure figures use
+  `figures.bars_with_units`, which draws the bar *and* every unit on it, joined where the unit
+  recurs; `figures.observation_dots` (every observation with the group's median) remains for a
+  surface that wants no summary bar.
 
 **Provenance is §18.5's `capture` / `drift`**: the artifact's producing run, its upstream DAG,
 model weights, code SHA, environment. A surface rendering these numbers **warns on drift**, because
@@ -9575,9 +9633,10 @@ names — a name can mean the same thing in two runs in a way an id never can.
   covers.
 - **GUI** — the experiment's **Comparisons** section: list, launch dialog (source, the column,
   the unit, two levels to contrast, with the design it will run shown before Run), and a detail
-  view with the tables, the dot plots, the time-resolved curves and the difference ranking — the
-  within-design ranking as effect, units in that direction, present, floor and a one-line
-  suggestion per item — plus an export button (off-thread).
+  view with the tables, the Methods paragraph, the per-measurement panels, the composite, the
+  time-resolved curves and the difference ranking — the within-design ranking as effect, units
+  in that direction, present, floor and a one-line suggestion per item — plus an export button
+  (off-thread).
 
 ### Guards
 
@@ -9613,10 +9672,30 @@ names — a name can mean the same thing in two runs in a way an id never can.
   enumerated over `ComparisonConfig.model_fields`.
 - **n and coverage on every group row.**
 - **Determinism**: a re-export is byte-identical (§18.5 L1), and the permutation is seeded.
+- **A P on the plot is the verdict's P, drawn only where the verdict holds**
+  (`tests/analysis/test_comparison_paper_figures.py`): a bracket appears for exactly the items
+  `clears_floor` keeps, carries `P_FWE` under the family verdict and `P` under the own one, is
+  the bound form where the shuffled P is zero, and names the column rather than "trend"; groups
+  draw in design order with colours fixed by the record's full group list; every unit is drawn
+  and joined where it recurs; `significant.csv` holds exactly the kept items with the means the
+  figure drew; the per-unit effects in `unit_effects.csv` average to the ranking's effects; the
+  Methods paragraph names the draws, the exactness and the verdict the ranking used; the SVG
+  holds no clip path and no `<use>`, and one text object per P label; and the default formats
+  are one constant on every surface.
 
 ### Deferred
 
 - **Inference.** Deliberate. `stats.csv` is the handoff.
+- **An ordered series and a paired contrast side by side on a shared y axis** (a dose series
+  and a second treatment against the same control, as the paper's figure draws them): two
+  comparisons' worth, since one comparison resolves one design (detail#76, item 11).
+- **Example bouts for a cluster that differs** — the run's most typical members, one per
+  animal, drawn as outlines beside the cluster's bars, which is what tells a reader what
+  "cluster 1354" is (detail#76, item 12). The figure of the cluster's numbers is here; the
+  figure of what the cluster looks like is the clip engine's, and goes beside it.
+- **The within-unit change as a panel of its own** (each unit's difference or ratio to the
+  reference), for the small paired effect on a measure with a large spread between units,
+  which reads as "no difference" in bars of the mean (detail#76).
 - **Occupancy maps** over the locations source: time per place, averaged over each group's
   units. Not a row of `stats.csv`; it needs a frame the recordings share (a region to register
   to, or a check that the views agree) and a figure and table of its own (detail#70).

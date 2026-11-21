@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING
 
 from detail.analysis import cohort, compare, measures, node_measures, provenance
 from detail.analysis import location_measures
+from detail.analysis.comparison_report import DEFAULT_FORMATS
 from detail.configs.comparison import ComparisonConfig
 from detail.core.errors import UserInputError
 from detail.core.utils import utc_timestamp
@@ -838,6 +839,19 @@ def run_comparison(
         write_tidy_csv(
             cdir / NODES_FILENAME, prepared.hierarchy, node_measures.HIERARCHY_COLUMNS
         )
+    # The result tables (`ranking.csv`, `significant.csv`, `units.csv`, `unit_effects.csv`,
+    # `methods.txt`) are written by the run, not only by an export: a script reads a
+    # comparison's result without drawing anything (detail#76).
+    from detail.analysis import comparison_report
+
+    report("writing", 0.5, "ranking")
+    ancestors = (
+        node_measures.ancestors_from_rows(prepared.hierarchy)
+        if prepared.hierarchy is not None
+        else None
+    )
+    ranking = comparison_report.rank_record(prepared.obs, record, ancestors)
+    comparison_report.write_result_tables(cdir, record, prepared.obs, ranking)
     comparisons_store.write_comparison_yaml(cdir, record)
     report("writing", 1.0, comparison_id)
     return Comparison(experiment, comparison_id)
@@ -984,7 +998,7 @@ class Comparison:
         self,
         out_dir: Path | str | None = None,
         *,
-        formats: tuple[str, ...] = ("pdf", "svg", "png"),
+        formats: tuple[str, ...] = DEFAULT_FORMATS,
         style: "FigureStyle | None" = None,
         theme: str | None = None,
         progress: Callable[[str, float, str], None] | None = None,

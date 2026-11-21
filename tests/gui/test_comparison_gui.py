@@ -816,7 +816,7 @@ def test_the_export_dialog_asks_where_and_in_what_format(qapp, tmp_path):
     dialog = ComparisonExportDialog(exp.get_comparison(_ran(exp)))
 
     assert dialog.destination() == exp.comparisons[-1].dir
-    assert set(dialog.formats()) == {"pdf", "png"}
+    assert set(dialog.formats()) == {"pdf", "svg", "png"}
     dialog._formats["svg"].setChecked(True)
     assert "svg" in dialog.formats()
 
