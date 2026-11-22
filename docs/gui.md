@@ -1051,9 +1051,8 @@ A distilled model doesn't land in **Global models** on its own: a trained model 
 **Keypoints manager** (a banner tab) is the machine's skeleton library. A skeleton is defined here
 once and copied by whatever uses it, so the same skeleton serves every experiment.
 
-The page is a table: the four built-in presets (**Quadruped overhead view (12 points)**,
-**Quadruped overhead view (8 points)**, **Quadruped side view (5 points)** and **Midline (3
-points)**) and then your own skeletons, **Name · Kind · Points · Used by**. **Used
+The page is a table: the two built-in presets (**Midline (3 points)**: head, midpoint and
+tail; **Midline (2 points)**: head and tail) and then your own skeletons, **Name · Kind · Points · Used by**. **Used
 by** counts the example sets, keypoint runs, datasets and trained models in your experiments that
 copied it. A copy counts when it holds the same points, edges and pairs, whatever id it was given
 on the machine where it was made, so an experiment from another computer does not lock an

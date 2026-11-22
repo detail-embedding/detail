@@ -204,9 +204,8 @@ The spec is DESIGN_PLAN §26 and §14.
 them (drawn, and used to keep a placement coherent) and the left/right pairs among them. A name
 is just a label: the tool never guesses what a point is from its name, so which point is the
 animal's left is something you say, not something it infers. Skeletons live in one library on
-the machine, the **Keypoints manager**, shared by every experiment; the built-in presets
-(Quadruped overhead view with 12 or 8 points, Quadruped side view, and Midline with 3 points)
-are read-only entries in it.
+the machine, the **Keypoints manager**, shared by every experiment; the two built-in presets
+(Midline with 3 points and Midline with 2 points) are read-only entries in it.
 Whatever uses a skeleton keeps its own copy, so a missing library never breaks a run. While
 anything uses a skeleton its points stay fixed, and an edit is saved as a new skeleton. A
 skeleton also remembers where you drew each point (its layout), so it reopens as you

@@ -30,14 +30,14 @@ def test_presets_come_first_and_are_read_only(root):
     made = library.create_skeleton("mine", SK)
     assert [e["id"] for e in library.skeletons()][-1] == made["id"]
     with pytest.raises(ValueError, match="built-in preset and cannot change"):
-        library.update_skeleton("quadruped_side_5", name="x")
+        library.update_skeleton("midline_2", name="x")
     with pytest.raises(ValueError, match="built-in preset and cannot be deleted"):
-        library.delete_skeleton("quadruped_side_5")
+        library.delete_skeleton("midline_2")
 
 
 def test_create_from_a_preset_a_library_id_a_dict_or_a_file(root, tmp_path):
-    assert library.create_skeleton("p", "quadruped_side_5")["skeleton"] == (
-        PRESETS["quadruped_side_5"][1]
+    assert library.create_skeleton("p", "midline_2")["skeleton"] == (
+        PRESETS["midline_2"][1]
     )
     first = library.create_skeleton("a", SK)
     assert library.create_skeleton("b", first["id"])["skeleton"] == SK
@@ -76,7 +76,7 @@ def test_dependents_freeze_the_points_until_they_are_deleted(root):
     b = Experiment.create("lab b", root)
     set_a = a.create_example_set("overhead", made["id"])
     b.create_example_set("side", made["id"])
-    a.create_example_set("unrelated", "quadruped_side_5")
+    a.create_example_set("unrelated", "midline_2")
 
     found = library.dependents(made["id"])
     assert [(d["experiment"], d["kind"]) for d in found] == [
@@ -84,7 +84,7 @@ def test_dependents_freeze_the_points_until_they_are_deleted(root):
         ("lab b", "example set"),
     ]
     assert found[0]["record"] == f"examples/{set_a.id}/examples.yaml"
-    assert set(library.dependents_by_skeleton()) == {made["id"], "quadruped_side_5"}
+    assert set(library.dependents_by_skeleton()) == {made["id"], "midline_2"}
 
     with pytest.raises(
         ValueError, match="used by example set .*save the change as a new"
@@ -178,18 +178,18 @@ def test_a_duplicate_of_a_used_skeleton_is_not_locked_by_the_originals_users(roo
 
 
 def test_duplicate_export_and_import(root, tmp_path):
-    copy = library.duplicate_skeleton("quadruped_side_5")
-    assert copy["name"] == f"{PRESETS['quadruped_side_5'][0]} copy"
-    assert copy["derived_from"] == "quadruped_side_5"
+    copy = library.duplicate_skeleton("midline_2")
+    assert copy["name"] == f"{PRESETS['midline_2'][0]} copy"
+    assert copy["derived_from"] == "midline_2"
     out = tmp_path / "shared.yaml"
     library.export_skeleton(copy["id"], out)
     assert out.read_text(encoding="utf-8-sig").startswith("schema_version: 1\n")
     with pytest.raises(FileExistsError, match="already exists"):
         library.export_skeleton(copy["id"], out)
-    library.export_skeleton("quadruped_overhead_12", out, overwrite=True)
+    library.export_skeleton("midline_3", out, overwrite=True)
     back = library.import_skeleton(out)
-    assert back["name"] == PRESETS["quadruped_overhead_12"][0]
-    assert back["skeleton"] == PRESETS["quadruped_overhead_12"][1]
+    assert back["name"] == PRESETS["midline_3"][0]
+    assert back["skeleton"] == PRESETS["midline_3"][1]
     bare = tmp_path / "bare.yaml"
     bare.write_text(yaml.dump(SK.to_dict()), encoding="utf-8")
     assert library.import_skeleton(bare)["name"] == "bare"

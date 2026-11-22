@@ -432,7 +432,7 @@ one chosen frame, show it, delete it:
 
 ```bash
 detail keypoints examples list --experiment my_experiment
-detail keypoints examples create "overhead rats" --skeleton quadruped_overhead_12 --experiment my_experiment
+detail keypoints examples create "overhead rats" --skeleton midline_3 --experiment my_experiment
 detail keypoints examples sample ex_01 --recording cage_a --recording cage_b -n 5 --experiment my_experiment
 detail keypoints examples sample ex_01 --recording cage_a --strategy spread -n 3 --experiment my_experiment
 detail keypoints examples add-frame ex_01 --recording cage_a --tracking-run track_01 --part part_001 --frame 1830 --track 0 --experiment my_experiment
@@ -446,7 +446,7 @@ experiment can import:
 
 ```bash
 detail keypoints examples edit ex_01 --name "side rats" --experiment my_experiment
-detail keypoints examples edit ex_01 --skeleton quadruped_side_5 --experiment my_experiment
+detail keypoints examples edit ex_01 --skeleton midline_2 --experiment my_experiment
 detail keypoints examples duplicate ex_01 --name "side rats 2" --experiment my_experiment
 detail keypoints examples create "copied" --skeleton ex_01 --experiment other_experiment
 detail keypoints examples export ex_01 --out shared/side_rats --experiment my_experiment
@@ -595,17 +595,17 @@ detail distill status distill_001 --experiment my_experiment
 
 ### `skeleton`
 The machine's skeleton library, the CLI twin of the GUI's Keypoints manager. It needs no
-`--experiment`: skeletons are shared by every experiment on the machine. The four presets are
+`--experiment`: skeletons are shared by every experiment on the machine. The two presets are
 listed first and cannot change.
 
 ```bash
 detail skeleton list
 detail skeleton show sk_01
-detail skeleton create "rat overhead" --from quadruped_overhead_12
+detail skeleton create "rat overhead" --from midline_3
 detail skeleton edit sk_01 --name "rat, top view"
 detail skeleton edit sk_01 --skeleton my_rats.yaml
 detail skeleton save-as-new sk_01 "rat overhead v2" --skeleton my_rats.yaml
-detail skeleton duplicate quadruped_side_5 --name "side rats"
+detail skeleton duplicate midline_2 --name "head and tail"
 detail skeleton export sk_01 shared/rat_overhead.yaml
 detail skeleton import shared/rat_overhead.yaml
 detail skeleton delete sk_01
