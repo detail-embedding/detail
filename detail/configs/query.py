@@ -23,12 +23,12 @@ The method's *own* parameters are a second model, declared by the method
 (``QueryMethod.config_model`` — e.g. ``configs/query_soft_knn.py``) and carried here as an opaque
 dict, so adding a method needs no change to this file.
 
-``method`` is a plain ``str`` rather than a ``Literal``, unlike query evaluation's ``method``
-(``configs/query_eval.py``). That is the *old* engine's fixed matcher list; §20's methods are a
-registry (``QUERY_METHODS``) whose whole point is that a method can be added without editing
-the module. So the choices come from the registry at the point each surface offers them — the
-CLI's ``click.Choice``, the GUI's combo — and ``validate()`` refuses an unknown id, naming what
-is registered.
+``method`` is a plain ``str`` rather than a ``Literal``. Query eval, a module since removed,
+typed its ``method`` as a ``Literal`` over the *old* engine's fixed matcher list; §20's methods
+are a registry (``QUERY_METHODS``) whose whole point is that a method can be added without
+editing the module. So the choices come from the registry at the point each surface offers
+them — the CLI's ``click.Choice``, the GUI's combo — and ``validate()`` refuses an unknown id,
+naming what is registered.
 """
 
 from typing import Any

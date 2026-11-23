@@ -32,8 +32,6 @@ _LISTING = re.compile(r"streams_by_role\([^)]*[\"']behavior[\"']\s*\)")
 ALLOWED: dict[str, str] = {
     "analysis/behavior_labels.py": "defines ground_truth_streams and resolves an explicitly "
     "named stream, so it is the thing doing the filtering",
-    "pipeline/query_eval.py": "builds the 'available stream names' list for a typo error "
-    "message; a predicted name that exists should say so, then be refused by the resolver",
     "analysis/provenance.py": "filters inline on is_predicted() to hash only ground-truth "
     "labels; the listing is the input to that filter",
 }

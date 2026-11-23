@@ -163,3 +163,129 @@ def test_an_embedding_run_made_with_a_removed_input_image_opens_and_renders(
         )
     )
     assert image.ndim == 3 and image.dtype == np.uint8
+
+
+#: The header ``metrics.csv`` carried in the last version that wrote one. Written out, not
+#: imported: the writer went with the module, and the file on a user's disk is what is left.
+_QUERY_EVAL_METRICS_HEADER = (
+    "embed_run_id,behavior,behavior_type,n_recordings,fusion,band_s,iou_threshold,"
+    "point_window_s,n_exemplars,seed,trajectory_split_gap_s,max_results,n_gt,n_pred,tp,fp,fn,"
+    "ap,precision,recall,best_f1,best_f1_threshold,n_folds,ap_std,precision_std,recall_std,"
+    "best_f1_std,method,recall_null,recall_lift,ap_null,ap_lift,n_holdout,negative_pool"
+)
+_QUERY_EVAL_ARTIFACTS = [
+    {"path": "metrics.csv", "kind": "query_eval_metrics", "label": "metrics"},
+    {"path": "folds.csv", "kind": "query_eval_folds", "label": "per-fold metrics"},
+    {
+        "path": "overlap.csv",
+        "kind": "query_eval_overlap",
+        "label": "scores vs nulls by overlap",
+    },
+    {
+        "path": "predictions.csv",
+        "kind": "query_eval_predictions",
+        "label": "predictions",
+    },
+    {
+        "path": "ground_truth.csv",
+        "kind": "query_eval_ground_truth",
+        "label": "ground truth",
+    },
+    {"path": "pr/groom/", "kind": "query_eval_pr", "label": "PR · groom"},
+]
+
+
+def a_query_eval_run_on_disk(tmp_path) -> Experiment:
+    """An experiment holding one completed Behavior-query eval run, ``an_01``, as that module
+    left it: the record it wrote (one behavior scored, one skipped) and its tables as text.
+
+    Shared with ``tests/gui/test_run_detail.py``, which opens the same run's page.
+    """
+    from detail.storage import analysis_runs as analysis_store
+
+    experiment = Experiment.create("p", tmp_path)
+    run_dir = analysis_store.analysis_dir(experiment.dir, "an_01")
+    (run_dir / "pr" / "groom").mkdir(parents=True)
+    (run_dir / "metrics.csv").write_text(
+        _QUERY_EVAL_METRICS_HEADER
+        + "\nemb_01,groom,state,1,min,0.5,0.5,0.5,1,0,,,3,4,3,1,0,0.8,0.75,1.0,0.85,0.1,"
+        "2,0.05,0.0,0.0,0.0,dtw,0.2,0.8,0.1,0.7,1,unlabeled\n",
+        encoding="utf-8",
+    )
+    (run_dir / "folds.csv").write_text(
+        "behavior,fold,n_gt,n_pred,tp,fp,fn,ap,precision,recall,best_f1,best_f1_threshold\n"
+        "groom,0,3,4,3,1,0,0.8,0.75,1.0,0.85,0.1\n"
+        "groom,1,3,4,2,2,1,0.7,0.5,0.66,0.6,0.2\n",
+        encoding="utf-8",
+    )
+    (run_dir / "pr" / "groom" / "fold_00.csv").write_text(
+        "recall,precision\n0.5,1.0\n1.0,0.75\n", encoding="utf-8"
+    )
+    analysis_store.write_analysis_yaml(
+        run_dir,
+        {
+            "id": "an_01",
+            "module_id": "query_eval",
+            "recording_ids": ["recording_001"],
+            "status": "complete",
+            "embed_run_id": "emb_01",
+            "track_id": 0,
+            "params": {
+                "method": "dtw",
+                "fusion": "min",
+                "band_s": 0.5,
+                "iou_threshold": 0.5,
+                "n_exemplars": 1,
+                "seed": 0,
+                "folds": 2,
+            },
+            "behaviors": [
+                {
+                    "behavior": "groom",
+                    "behavior_type": "state",
+                    "n_recordings": 1,
+                    "n_folds": 2,
+                    "skipped": None,
+                },
+                {
+                    "behavior": "rear",
+                    "behavior_type": "state",
+                    "n_recordings": 0,
+                    "n_folds": 0,
+                    "skipped": "no eligible recordings",
+                },
+            ],
+            "columns": _QUERY_EVAL_METRICS_HEADER.split(","),
+            "artifacts": _QUERY_EVAL_ARTIFACTS,
+        },
+    )
+    return experiment
+
+
+def test_an_analysis_run_made_by_a_removed_module_lists_reads_and_deletes(tmp_path):
+    """Behavior-query eval (``query_eval``) is gone; a run it wrote is still an analysis run.
+
+    The analysis half of the class: the record names a module no registry holds, with a
+    per-behavior list and artifact kinds nothing reads any more. Listing, reading and deleting
+    it need none of that; launching another is refused by name.
+    """
+    from detail.executor.runners import ANALYSIS_MODULES
+
+    experiment = a_query_eval_run_on_disk(tmp_path)
+    run_dir = experiment.analysis_run_dir("an_01")
+
+    assert [(r.id, r.module_id, r.status) for r in experiment.analysis_runs] == [
+        ("an_01", "query_eval", "complete")
+    ]
+    record = experiment.analysis_record("an_01")
+    assert record["module_id"] == "query_eval"
+    assert [b["behavior"] for b in record["behaviors"]] == ["groom", "rear"]
+    assert experiment.authored_run("an_01") is None
+
+    with pytest.raises(ValueError, match="unknown analysis module: 'query_eval'"):
+        experiment.run_analysis("query_eval", record["params"])
+    assert "query_eval" not in ANALYSIS_MODULES
+
+    experiment.delete_analysis("an_01")
+    assert experiment.analysis_runs == []
+    assert not run_dir.exists()

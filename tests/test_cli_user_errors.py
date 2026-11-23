@@ -623,31 +623,6 @@ def test_finding_9_query_from_a_csv_that_is_not_a_clip_list(
     _clean_error(result, words)
 
 
-def test_finding_9_query_eval_checks_out_before_evaluating(
-    experiment_dir, recording_dir, tmp_path
-):
-    """No embedding run exists, so an evaluation would fail on that; failing on ``--out``
-    instead shows the check ran first."""
-    out = tmp_path / "notes.csv"
-    out.write_text("a,b\n1,2\n", encoding="utf-8")
-    result = _invoke(
-        "analysis",
-        "query-eval",
-        "--experiment",
-        experiment_dir,
-        "--search",
-        "recording_001",
-        "--embed-run",
-        "emb_01",
-        "--behavior",
-        "groom",
-        "--out",
-        out,
-    )
-    _clean_error(result, f"--out {out} is not a query-eval metrics CSV")
-    assert out.read_text(encoding="utf-8-sig") == "a,b\n1,2\n"
-
-
 # --------------------------------------------------------------------------- #
 # Section B: missing files, folders and ids. Findings 11, 12 (--format) and 21 need a
 # comparison or a searched query run, and are rows in `tests/test_comparison_cli.py` and
@@ -1325,3 +1300,18 @@ def test_finding_34_a_behavior_file_that_is_not_text(
         "--data", data,
     )  # fmt: skip
     _clean_error(result, "b.csv is not UTF-8 text")
+
+
+def test_a_float_option_with_no_bounds_still_refuses_nan_and_inf():
+    """``finite_float_range`` with no bounds is the finite type, never click's plain FLOAT.
+
+    A field with an exclusive lower bound hands click no ``min``, so it lands here. The options
+    that did were query eval's, a module since removed, so the branch is asserted directly.
+    """
+    import click
+
+    from detail.cli_numbers import FINITE_FLOAT, finite_float_range
+
+    assert finite_float_range() is FINITE_FLOAT
+    with pytest.raises(click.BadParameter, match="is not a finite number"):
+        FINITE_FLOAT.convert("nan", None, None)

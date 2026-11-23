@@ -164,7 +164,7 @@ Each tracked detection becomes a feature vector, an **embedding** (a fixed-lengt
   - Train a model on it with a pluggable trainer. The trained model registers with the experiment and is usable by any detection run.
 - **Grouping variables and analysis** (experiment level):
   - `metadata.csv`: one row per recording with the variables compared across groups (animal id, treatment, condition, ...).
-  - Analysis runs live at the experiment level since one analysis can span recordings. Four modules exist: location export (a tracking run plus each recording's ROIs/POIs), behavior scan (`query`: finds a behavior from example clips in an embedding run), its evaluation against labels (`query_eval`), and behavior clustering (`temporal_clustering`: bouts from an embedding run's pose trajectories).
+  - Analysis runs live at the experiment level since one analysis can span recordings. Three modules exist: location export (a tracking run plus each recording's ROIs/POIs), behavior scan (`query`: finds a behavior from example clips in an embedding run), and behavior clustering (`temporal_clustering`: bouts from an embedding run's pose trajectories).
   - Comparisons contrast a behavior result between groups of recordings defined by `metadata.csv`.
 
 ## Python API and CLI

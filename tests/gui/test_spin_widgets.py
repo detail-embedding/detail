@@ -20,7 +20,8 @@ import detail  # noqa: E402
 from detail.api._runner_modules import PIPELINE_RUNNERS  # noqa: E402
 from detail.configs.detection import DetectionConfig  # noqa: E402
 from detail.configs.labeling import LabelingConfig  # noqa: E402
-from detail.configs.query_eval import QueryEvalConfig  # noqa: E402
+from detail.configs.query import QueryConfig  # noqa: E402
+from detail.configs.temporal_dtw_finch import TemporalDtwFinchConfig  # noqa: E402
 from detail.executor.runners import import_runner_modules  # noqa: E402
 from detail.gui import modules as _gui_modules  # noqa: E402,F401 (registers UIs)
 from detail.gui._pydantic_form import (  # noqa: E402
@@ -154,7 +155,7 @@ def test_field_widget_infers_the_kind_from_the_field(qapp):
     once here rather than at each call site."""
     assert field_widget(DetectionConfig, "conf_threshold").singleStep() == 0.05
     assert isinstance(field_widget(DetectionConfig, "every_n_frames"), IntSpin)
-    band = field_widget(QueryEvalConfig, "band_s")
+    band = field_widget(TemporalDtwFinchConfig, "band_s")
     # Three decimals, because this project's durations routinely run shorter than a frame
     # (one frame at 59 Hz is 0.017 s) and a two-decimal cap cannot express one — it was
     # rounding `abd_smooth_half_s`, 0.034, down to 0.03 on the way into the form.
@@ -182,8 +183,8 @@ def test_ui_max_caps_the_display_without_moving_the_model_bound(qapp):
 @pytest.mark.parametrize(
     "model, field",
     [
-        (QueryEvalConfig, "max_results"),  # int, ge=1
-        (QueryEvalConfig, "trajectory_split_gap_s"),  # float, ge=0
+        (DetectionConfig, "batch_size"),  # int, ge=1
+        (QueryConfig, "trajectory_split_gap_s"),  # float, ge=0
     ],
 )
 def test_optional_spin_round_trips_none_through_its_sentinel(qapp, model, field):
@@ -199,7 +200,7 @@ def test_optional_spin_round_trips_none_through_its_sentinel(qapp, model, field)
 def test_a_meaningful_zero_stays_reachable(qapp):
     """The sentinel sits one step *below* the field's floor, not on 0 — a split gap of 0
     (never split) is a real value, and three modules used to make it mean "auto"."""
-    spin = optional_spin(QueryEvalConfig, "trajectory_split_gap_s", "(auto)")
+    spin = optional_spin(QueryConfig, "trajectory_split_gap_s", "(auto)")
     spin.setValue(0.0)
     assert optional_value(spin) == 0.0
 

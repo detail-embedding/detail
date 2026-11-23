@@ -71,10 +71,11 @@ def test_the_export_is_not_something_an_embedder_opts_into(qapp):
     the twelve surfaces nobody was working on lose it silently.
     """
     embedders = _embedders()
-    # Five since the hidden capabilities' GUIs (clusterers, behavior query and discovery) were
-    # removed; the floor is there to catch the sweep going blind, not to count surfaces.
+    # Four since the hidden capabilities' GUIs (clusterers, behavior query and discovery) and
+    # then query eval's explorer were removed; the floor is there to catch the sweep going
+    # blind, not to count surfaces.
     assert (
-        len(embedders) >= 5
+        len(embedders) >= 4
     ), f"the sweep stopped finding embedders: {sorted(embedders)}"
 
     params = set(inspect.signature(_ClipPlayer.__init__).parameters)
