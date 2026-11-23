@@ -962,7 +962,9 @@ class _EventStrip(QWidget):
     playhead. Click to jump (emits the clicked ``t_ns``). The ``video_range``
     band (if given) shades where the video covers the timeline."""
 
-    clicked = Signal(int)  # t_ns at the click position
+    #: ``t_ns`` at the click position. ``object``, not ``int``: a Qt ``int`` is 32 bits and
+    #: passes 2**31 ns 2.1 s in (``tests/gui/test_signal_widths.py``).
+    clicked = Signal(object)
     _ROW_H = 16
     _LABEL_W = 150
 

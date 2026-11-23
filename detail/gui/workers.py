@@ -455,7 +455,9 @@ class InstallModelWorker(GuiWorker):
     """Download a model's weights off the UI thread (§5), forwarding the byte-level
     ``InstallProgress`` stream as a Qt signal so the Models tab can show a bar."""
 
-    progress = Signal(int, int, str)  # bytes_done, bytes_total (-1 if unknown), file
+    #: ``(bytes_done, bytes_total or -1, file)``. The byte counts are ``object``: a Qt ``int``
+    #: is 32 bits and a weight file passes 2 GB (``tests/gui/test_signal_widths.py``).
+    progress = Signal(object, object, str)
     finished_install = Signal(str)  # "" on success, else the error message
 
     def __init__(

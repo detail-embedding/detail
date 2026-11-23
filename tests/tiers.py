@@ -244,6 +244,9 @@ GUARD_FILES = frozenset(
         # The Qt binding is named only in `detail/gui/qt.py`; no other binding, no skip on a
         # missing one, and no Qt in the backend packages (#107).
         "tests/test_qt_binding.py",
+        # A nanosecond time or a byte count never travels in a 32-bit `Signal(int)` argument:
+        # PySide6 overflowed a montage offset 2.1 s in and crashed the app.
+        "tests/gui/test_signal_widths.py",
         # Every piece of machine-local state has a session floor, so a thread that outlives
         # its test cannot write the real preview cache, model cache or config.
         "tests/test_machine_state_isolation.py",

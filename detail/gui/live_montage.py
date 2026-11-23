@@ -416,9 +416,10 @@ class _PictureWorker(GuiWorker):
     window left its open clips and drawn tiles to the garbage collector.
     """
 
-    delivered = Signal(
-        int, int, int, object
-    )  # generation, index, offset_ns, QImage|None
+    #: ``(generation, index, offset_ns, QImage | None)``. ``offset_ns`` is ``object``: a Qt
+    #: ``int`` is 32 bits and passes 2**31 ns 2.1 s into a clip
+    #: (``tests/gui/test_signal_widths.py``).
+    delivered = Signal(int, int, object, object)
 
     def __init__(self, *, receiver) -> None:
         super().__init__(receiver=receiver)
