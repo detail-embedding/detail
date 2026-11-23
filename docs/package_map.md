@@ -80,6 +80,8 @@ detail/
 │   │   temporal_clustering.py         # a module's (or tool's) run config
 │   ├── keypoint_detect.py, keypoint_track.py  # §26 (+ the flat method models)
 │   ├── keypoint_dataset.py  # the label stage of a keypoint distill (§12 *Distill keypoints*)
+│   ├── tuning.py         # TuningConfig: a detector tuning's sample size (§12 *Tune detection
+│   │                     # and tracking settings*), read by the distill form, CLI and API
 │   ├── query_soft_knn.py, temporal_codebook.py, temporal_dtw_finch.py  # a registry method's own
 │   │                     # parameters (the method's half of the config)
 │   ├── stream_csv.py     # the CSV stream importer's config (§3)
@@ -143,6 +145,7 @@ detail/
 │   │  # the per-artifact record stores:
 │   ├── comparisons.py, datasets.py, distill_runs.py, models.py, query_runs.py, temporal_runs.py,
 │   │   snapshots.py, notes.py   # §24, §12, §12, §12, §20, §22, §21, §15 (an entry's notes.md)
+│   ├── tunings.py        # §12: a model's tunings, models/<id>/tuning/tune_NNN/tuning.yaml
 │   ├── metadata.py       # grouping variables (§11)
 │   ├── spatial.py        # arena / ROI / POI keyframes (§10)
 │   ├── streams.py, stream_presets.py, clocks.py  # §3: canonical stream CSVs + alignment, saved
@@ -173,6 +176,8 @@ detail/
 │   ├── pose_match.py           # §26 *Assignment*: the one pose → subject match (share of points
 │   │                           # inside the grown mask, one-to-one), for keypoint track and the
 │   │                           # distill teacher
+│   ├── tune_tracking.py        # §12 *Tune detection and tracking settings*: the tune_tracking
+│   │                           # runner — sample windows, one detection pass, anchor_tracker swept
 │   ├── keypoint_dataset.py     # §12 *Distill keypoints*: the keypoint_dataset runner — a teacher's
 │   │                           # instances assigned by pose_match, one YOLO-pose label line per tracked animal
 │   ├── keypoint_preview.py     # §12 *Distill keypoints*: what *Test cut-off…* and *Test keypoints…*
@@ -211,7 +216,9 @@ detail/
 │                         # bout_segmentation.py (detector params, segment_recording, pool_recordings,
 │                         # bout_medoid_distance — the bout steps temporal clustering uses);
 │                         # locations.py (compute_location_tables — per-track ROI/POI features);
-│                         # metrics_docs.py / query_methods_docs.py (single sources for two doc pages)
+│                         # metrics_docs.py / query_methods_docs.py (single sources for two doc pages);
+│                         # track_quality.py (§12: a tracking output's label-free quality — tracked,
+│                         # merged, grew, jumpy — the tuning grid and its pick)
 ├── cluster_methods/      # TemporalClusterMethod implementations: dtw_finch, codebook_viterbi;
 │                         # _common.py the steps they share (kmeans_level, blas_safe_openmp).
 │                         # POSE_CLUSTER_METHODS is empty since pose clustering was removed
@@ -320,6 +327,8 @@ detail/
 │   ├── skeletons.py      # §26: the skeleton library (presets + sk_NN), dependents by live search
 │   ├── keypoints.py      # §26: example sets (a skeleton copied from the library + the frames
 │   │                     # marked on it) — module-level functions Experiment delegates to
+│   ├── tuning.py         # §12 *Tune detection and tracking settings*: launch, TuningRun,
+│   │                     # TunedSettings (the newest tuning of a model, from either source)
 │   ├── keypoint_distill.py  # §12 *Distill keypoints*: keypoint_dataset / keypoint_test /
 │   │                     # distill_keypoints / register_student, behind Experiment's one-liners;
 │   │                     # DISTILL_STAGES_BY_KIND lives in experiment.py
@@ -388,6 +397,8 @@ detail/
     ├── keypoint_distill.py  # §12 *Distill keypoints*: the Distill keypoints… dialog (teacher runs read
     │                     # off the UI thread, label knobs off KeypointDatasetConfig)
     ├── keypoint_test.py  # §12: *Test cut-off…* (distill dialog) and *Test keypoints* (detect form)
+    ├── tuning.py         # §12: TuningView, Tune settings… (model page), Use tuned settings
+    │                     # (detection and tracking forms)
     ├── scrubber.py       # FrameScrubber (playback, busy_changed) + frame_source.py, decode_order.py
     ├── editing.py        # the unsaved-edits protocol the shell prompts against
     ├── export.py         # the one Export control, placed by the shell (§18)

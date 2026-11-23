@@ -3294,6 +3294,105 @@ never the produced dataset, trained model, or a promoted global model.
 
 **Surfaces (parity):** `Experiment.distill(...)` (API) · `detail distill run|list|status|attach|resume|cancel|delete` (CLI) · one bespoke `DistillDialog` (GUI, with a `Test prompts…` preview) — distill is §12, so a bespoke surface does not conflict with "one launch surface per module" (that governs §6.5/§16 modules).
 
+### Tune detection and tracking settings (an opt-in third distill stage, or standalone)
+
+A distilled detector can track its subject on every frame and still give a mask that jumps
+from frame to frame: the student often finds the subject in pieces, and which detection
+confidence and tracker merging put it back together depends on the model and the scene. So
+the setting is **measured, never assumed**. A tuning measures a trained detector of this
+experiment on a sample of its recordings and recommends a detection confidence plus
+`anchor_tracker`'s `conf_threshold` / `secondary_conf` / `max_secondary`. It reads no label
+(the Labels rule): its inputs are the model, the recordings' video and the grid.
+
+**The job** (`pipeline/tune_tracking.py`, job type `tune_tracking`, cancel → `cancelled`):
+
+1. **Sample.** `TuningConfig.sample_seconds` (default 300, 10–3600) per recording as
+   `SAMPLE_WINDOWS` (5) windows centred at even steps through the recording's frames, each
+   clipped to its part; the whole recording when it is shorter. A window is a duration turned
+   into rows at the recording's own rate (median timestamp step). Each part is walked
+   **sequentially from its first frame** (Tenet 11, no seek), decoding only frames inside a
+   window, and the walk stops after the last one. Frame counts and `t_ns` come from the
+   timestamp map.
+2. **Detect once**, at the lowest confidence any setting needs (0.05), with an empty prompt
+   (a trained detector is closed-set). Each window is one part of a scratch detection run in
+   the normal schema (§9), `frame_idx` local to the window. A threshold above the stored
+   confidence keeps exactly what detecting at it would have kept, so one pass serves every
+   setting.
+3. **Sweep** the real `anchor_tracker.track`, unchanged, at each setting of
+   `analysis/track_quality.grid()`: anchor ∈ {0.1, 0.25, 0.5, 0.7}, secondary ∈ {0.05, 0.1,
+   0.25, 0.5} never above the anchor, max merged ∈ {0, 2, 4, 8}; with nothing merged the
+   secondary equals the anchor, so 43 settings. No arena is applied.
+4. **Measure** each setting per recording, label-free (`analysis/track_quality.py`): tracked,
+   merged, grew (union > 1.15 × the anchor alone), **jumpy** (area > 35% off its centred rolling
+   median over 1 s, computed inside each window, at least a tenth of the window present), median
+   area, anchor confidence below 0.5, unassigned per frame. Areas from the RLE
+   (`pycocotools.mask.area` / `merge`), never a decode.
+5. **Pick**: of the settings whose tracked share is within 0.5 points of the best on every
+   recording, the lowest mean jumpy share (recordings weigh equally); ties within 0.05 points go
+   to fewer merged pieces, then a higher confidence. The **default** is what a user gets without
+   tuning, the detection form's default confidence (0.5) under the tracker's defaults, as the
+   stored detections allow it (`effective_setting`): when it is within the tie margin, the answer
+   is "keep the defaults". A recording with two detections ≥ 0.5 whose boxes do not touch on more
+   than half its frames reads multi-subject; the tracker follows one, so the pick is then
+   restricted to settings that merge nothing, and the record says so.
+
+**Storage.** A tuning lives with its model, whoever started it:
+`models/<model_id>/tuning/<tune_NNN>/` holds the job's `job.json` and `tuning.yaml` (atomic,
+`schema_version` first). The scratch detections and assignments are removed when the job ends.
+
+```yaml
+# models/<model_id>/tuning/tune_001/tuning.yaml
+schema_version: 1
+id: tune_001
+model_id: model_002
+status: complete                 # running | complete | failed | cancelled
+created_at: "2026-11-19T20:00:00Z"
+source: {kind: distill, distill_id: distill_001}   # or {kind: standalone}
+config: {sample_seconds: 300.0, windows: 5, recording_ids: [...], tracker_id: anchor_tracker,
+         detection_conf: 0.05}
+finished_at: "2026-11-19T20:09:12Z"
+recordings:
+- {recording_id: recording_001, name: M2, frame_rate: 100.0, sampled_frames: 30000,
+   windows: [[0, 2900, 8900], ...], multi_subject_share: 0.0}   # [part, start, stop)
+default: {detection_conf: 0.5, conf_threshold: 0.5, secondary_conf: 0.5, max_secondary: 2}
+table:                            # one row per setting
+- {detection_conf: 0.05, conf_threshold: 0.1, secondary_conf: 0.05, max_secondary: 4,
+   is_default: false, mean_jumpy_pct: 0.25,
+   per_recording: {recording_001: {n_frames: 30000, tracked_pct: 100.0, merged_pct: 61.2,
+     grew_pct: 20.4, jumpy_pct: 0.42, median_area: 2410, low_conf_pct: 3.1,
+     unassigned_per_frame: 0.4}}}
+pick: {setting: {...}, keep_defaults: false, reason: "..."}
+warnings: []
+```
+
+**A report, never a default** (Tenet 9). Nothing reads a tuning to resolve a run's parameters.
+The detection and tracking forms offer the newest **complete** tuning of the model in play,
+from either source, saying which (`api/tuning.TunedSettings.describe()`); **Use tuned
+settings** writes the values into the form's own fields, and the run records them as it records
+any. The tracking form keys the lookup on the selected detection's identity (`model_id`,
+`weights_source`, `conf_threshold`) and says when that detection kept less than the setting
+needs. The CLI prints the flags instead.
+
+**As a distill stage.** `Experiment.distill(..., tune=True, tune_sample_seconds=…)` records
+`config.tune: {sample_seconds}` and a `stages.tune: {status, model_id, tuning_id}`, so
+`distill_stage_names` is `label → train → tune` for that record only (a detector distill; a
+keypoint distill has none). The orchestrator composes `api/tuning.launch` on the new model,
+on `train_compute` (where the model is), with `source: {kind: distill, distill_id}`. The bar
+folds it at a nominal 0.1 weight, normalized over the stages the run has
+(`distill_overall_fraction(phase, f, phases)`), and its ETA is the runner's own per phase
+(`PhaseClock`: detecting, then sweeping). A tune that cannot start or does not complete leaves
+the run **`partial`**, with the error and the model kept, never `complete` with the option
+dropped and never `failed` as if the model were lost (`distill_rollup`, shared by the
+orchestrator, cancel and reconcile-on-open); `resume_distill` reuses the dataset and the
+trained model and tunes again.
+
+**Surfaces (parity):** `Experiment.tune_tracking` / `tunings` / `tuned_settings` /
+`tuned_settings_for_detection` and `distill(tune=…)` (API) · `detail model tune|tuning` and
+`distill run --tune --tune-seconds` (CLI; `distill status` prints a complete tune's table) ·
+the distill form's opt-in under Advanced, **Tune settings…** and **Show tuning…** on a trained
+detector's page, **Show tuning…** on the distill page, **Use tuned settings** on the detection
+and tracking forms (GUI).
+
 ### Distill keypoints (label with the patch method or a keypoint detect run → train YOLO-pose → register)
 
 > Specified 2026-10-07 (PR 8 of the §26 build); built 2026-10-08. The mechanics are those of

@@ -200,6 +200,7 @@ def processing_units(
 _DISTILL_STAGES = (
     ("label", "labeling", "Label frames"),
     ("train", "training", "Train model"),
+    ("tune", "tuning", "Tune settings"),
     ("register", "registering", "Register student"),
 )
 

@@ -47,6 +47,7 @@ from detail.gui.model_availability import (
 from detail.gui.modules._every_n import EveryNRow
 from detail.gui._pydantic_form import field_meta, field_widget
 from detail.gui.modules.registry import ConfigWidget, ModuleUI, register_module_ui
+from detail.gui.tuning import TunedSettingsRow, untuned_reason
 
 # NOT imported at module scope: gui.preview reaches back into gui.modules (for the
 # pydantic form helpers and the confidence row), so a top-level import here closes a
@@ -105,6 +106,12 @@ class _DetectionConfig(ConfigWidget):
         form.addRow(
             field_label("detection", "conf_threshold", conf_meta["label"] + ":"),
             self._conf,
+        )
+        # The newest tuning of a trained model (§12 *Tune detection and tracking
+        # settings*): fills the confidence above, and nothing else defaults to it.
+        self._tuned = TunedSettingsRow(self._use_tuned)
+        form.addRow(
+            label_with("Tuned settings:", help_button("tuned-settings")), self._tuned
         )
         batch_meta = field_meta(DetectionConfig, "batch_size")  # label
         self._batch = field_widget(DetectionConfig, "batch_size")
@@ -229,6 +236,21 @@ class _DetectionConfig(ConfigWidget):
         self._sync_variants()
         self._sync_backends()
         self._sync_batch_default()
+        self._sync_tuned()
+
+    def _sync_tuned(self) -> None:
+        """Offer the selected model's newest tuning, or say why there is none."""
+        entry = self._entry()
+        if entry is None or entry["kind"] != "trained" or self._experiment is None:
+            self._tuned.offer(
+                None, "Only a detector trained in this experiment has tuned settings"
+            )
+            return
+        found = self._experiment.tuned_settings(entry["id"])
+        self._tuned.offer(found, None if found else untuned_reason(entry["id"]))
+
+    def _use_tuned(self, setting) -> None:
+        self._conf.setValue(setting.detection_conf)
 
     def _sync_batch_default(self) -> None:
         # Batch-capable models (YOLO, incl. trained/imported) default to a tunable batch

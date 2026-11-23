@@ -1065,26 +1065,32 @@ def processing_progress_from_dict(d: dict) -> ProcessingProgress:
     )
 
 
-# Stage weights fold the two distill stages into one bar (§12). Training usually
-# dominates wall-clock, so it carries the larger share; the fraction is nominal — the
-# renderer shows the phase message alongside, so the exact split need not be measured.
-DISTILL_STAGE_WEIGHTS = {"labeling": 0.45, "training": 0.55}
+# Stage weights fold the distill stages into one bar (§12). Training usually dominates
+# wall-clock, so it carries the larger share; the fraction is nominal — the renderer shows
+# the phase message alongside, so the exact split need not be measured. ``tuning`` is the
+# optional third stage of a detector distill; a run without it folds over the first two.
+DISTILL_STAGE_WEIGHTS = {"labeling": 0.45, "training": 0.55, "tuning": 0.1}
 DISTILL_STAGE_ORDER = ("labeling", "training")
 
 
-def distill_overall_fraction(phase: str, inner_fraction: float) -> float:
+def distill_overall_fraction(
+    phase: str, inner_fraction: float, phases: tuple[str, ...] = DISTILL_STAGE_ORDER
+) -> float:
     """Fold a stage's inner fraction into the whole-run fraction (stage-weighted, §12).
 
-    Stages before ``phase`` count fully; the active stage contributes its clamped
-    ``inner_fraction`` scaled by its weight. An unrecognized phase reads as all named
-    stages done.
+    ``phases`` are the weighted phases this run has, in order; their weights are normalized
+    so a run's bar ends at 1 whichever stages it has. Stages before ``phase`` count fully;
+    the active stage contributes its clamped ``inner_fraction`` scaled by its weight. An
+    unrecognized phase reads as all named stages done.
     """
+    weighted = [p for p in phases if p in DISTILL_STAGE_WEIGHTS]
+    total = sum(DISTILL_STAGE_WEIGHTS[p] for p in weighted) or 1.0
     offset = 0.0
     clamped = max(0.0, min(1.0, inner_fraction))
-    for name in DISTILL_STAGE_ORDER:
+    for name in weighted:
         if name == phase:
-            return offset + DISTILL_STAGE_WEIGHTS[name] * clamped
-        offset += DISTILL_STAGE_WEIGHTS[name]
+            return offset + DISTILL_STAGE_WEIGHTS[name] / total * clamped
+        offset += DISTILL_STAGE_WEIGHTS[name] / total
     return offset
 
 
@@ -1096,7 +1102,9 @@ class DistillProgress:
     reattach to a run that outlived the app.
     """
 
-    phase: str  # "labeling" | "training" | "registering" (a keypoint distill's third)
+    phase: (
+        str  # "labeling" | "training" | "tuning" or "registering" (an optional third)
+    )
     stage_index: int  # 0-based index of the active stage
     stage_count: int  # 2, or 3 for a keypoint distill (§12 *Distill keypoints*)
     inner_fraction: float  # 0..1 within the active stage

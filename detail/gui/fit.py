@@ -31,6 +31,7 @@ from detail.api.experiment import Experiment
 from detail.api.models import prompt_capable_models
 from detail.configs.distill import DEFAULT_N_FRAMES
 from detail.configs.labeling import LabelingConfig
+from detail.configs.tuning import TUNE_HELP, TuningConfig
 from detail.core.dataclasses import LabelingClass
 from detail.gui.compute_target import ComputeTargetRow
 from detail.gui.dialog import Dialog
@@ -651,6 +652,19 @@ class DistillDialog(Dialog):
         form.addRow("Student (the fast model):", self._base_model)
         self._train_compute = ComputeTargetRow()
         self._train_compute.add_to(form.section(), prefix="Train")
+        # --- Optional tune stage (§12 *Tune detection and tracking settings*) ---
+        self._tune = QCheckBox("Tune detection and tracking settings")
+        self._tune.setToolTip(TUNE_HELP)
+        form.addRow("After training:", self._tune, advanced=True)
+        self._tune_seconds = field_widget(TuningConfig, "sample_seconds")
+        form.addRow(
+            TuningConfig.model_fields["sample_seconds"].json_schema_extra["label"]
+            + ":",
+            self._tune_seconds,
+            advanced=True,
+        )
+        self._tune.toggled.connect(self._sync_tune)
+        self._sync_tune()
         self._form = form
         self._hparams: dict[str, QWidget] = {}
         form.finish()
@@ -742,6 +756,13 @@ class DistillDialog(Dialog):
                 self._recordings, self._experiment.recordings
             )
         self._recordings_label.setText(sampling_label(with_video))
+
+    def _sync_tune(self, *_args) -> None:
+        set_available(
+            self._tune_seconds,
+            self._tune.isChecked(),
+            "Tick Tune detection and tracking settings to set its sample",
+        )
 
     def _sync_trainer(self) -> None:
         trainer_id = self._trainer.currentData()
@@ -877,6 +898,8 @@ class DistillDialog(Dialog):
                 trainer_id=trainer_id,
                 hyperparams=hyperparams,
                 train_compute=self._train_compute.compute_target(),
+                tune=self._tune.isChecked(),
+                tune_sample_seconds=float(self._tune_seconds.value()),
             )
         except (ValueError, FileNotFoundError) as exc:
             QMessageBox.critical(self, "Distill", str(exc))

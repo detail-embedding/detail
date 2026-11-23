@@ -36,11 +36,16 @@ class RunnerSpec:
 JOB_RUNNERS: dict[str, RunnerSpec] = {}
 
 
-def register_runner(job_type: str, run_dir_for: Callable) -> Callable:
-    """Register the runner callable for ``job_type`` along with its run-dir resolver."""
+def register_runner(
+    job_type: str, run_dir_for: Callable, cancel_status: JobStatus | None = None
+) -> Callable:
+    """Register the runner callable for ``job_type`` along with its run-dir resolver.
+    ``cancel_status`` is :class:`RunnerSpec`'s: what a cancelled run is recorded as."""
 
     def decorator(fn: Callable) -> Callable:
-        JOB_RUNNERS[job_type] = RunnerSpec(run=fn, run_dir_for=run_dir_for)
+        JOB_RUNNERS[job_type] = RunnerSpec(
+            run=fn, run_dir_for=run_dir_for, cancel_status=cancel_status
+        )
         return fn
 
     return decorator

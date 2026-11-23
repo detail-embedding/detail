@@ -755,13 +755,18 @@ this experiment at once; `train promote` it for cross-experiment reuse.
   `--label-backend` / `--label-device` (SAM3 needs CUDA) and `--train-backend` / `--train-device`.
   One bar shows the folded `labeling → training` progress with an ETA. Ctrl-C detaches (the run
   keeps going); `distill attach` to rejoin. Writes `distill_NNN` (+ its `dataset_NNN` / `model_NNN`).
+  `--tune` (off by default) adds a third stage after training: the same measurement as
+  [`model tune`](#model), on the new model, over `--tune-seconds` (default 300) of each source
+  recording, on the training compute. It costs detection time on that sample. If training finishes
+  and tuning does not, the run ends `partial` with the model kept, and `resume` tunes again.
 - `attach <distill_NNN>` / `resume <distill_NNN>` / `cancel <distill_NNN>`: rejoin a run, resume a
   failed/cancelled one (reuses a complete dataset, resumes a cancelled or crashed training), or stop a running one.
 - `list` / `status <distill_NNN>` / `delete <distill_NNN>`: inspect and remove distill runs.
   `delete` removes only the run record: its dataset and trained model stay (delete those with
   `dataset delete` / `train delete`). `status` prints the run's `kind` (`detection`, or
   `keypoints` for one launched by [`keypoints distill`](#keypoints), whose third stage,
-  `register`, it prints too).
+  `register`, it prints too). For a run made with `--tune` it prints the `tune` stage, and once
+  that is complete, the whole tuning table and the flags that apply it.
 
 ### `locations export`
 `--experiment`, `--recording`, `--tracking track_NN`, `--out <dir>`: a per-recording export
@@ -1445,6 +1450,25 @@ model** catalog (shared across every experiment on the machine):
   checkpoint is added with `import` instead.
 - `remove <id>`: delete an imported model. It also deletes a folder that an import stopped
   part-way by an earlier version left in the catalog, which kept its name from being used.
+- `tune <model> --experiment <dir> [--recording <name|id> …] [--sample-seconds 300]
+  [--backend …] [--device N]`: measure one of **this experiment's** trained detectors (by id or
+  name) and recommend detection and tracking settings. The model runs once at confidence 0.05
+  over 5 windows of each recording (`--sample-seconds` in all, the whole recording when it is
+  shorter); then `anchor_tracker` runs over those detections at 43 settings of its anchor
+  confidence, secondary confidence and maximum merged pieces, and each is measured without
+  labels: the share of frames tracked, merged and grown by merging, and the headline, **jumpy**,
+  the share of frames whose mask area is more than 35% off its rolling median over 1 s. The pick
+  is the lowest mean jumpy share among the settings that track within half a point of the best
+  on every recording (ties go to fewer merged pieces, then a higher confidence); when the
+  defaults are within that margin it says to keep them. It prints the whole table, the pick, and
+  the `process detection --conf …` and `process tracking --conf-threshold … --secondary-conf …
+  --max-secondary …` flags that apply it; nothing defaults to it. A recording with two confident
+  detections far apart on most frames looks like more than one subject, and then only settings
+  that merge nothing are considered. A low jumpy share is a steady mask, not proof of a right
+  one: check merged and grew beside it and look at a few frames. Stored in
+  `models/<id>/tuning/tune_NNN/tuning.yaml`.
+- `tuning <model> --experiment <dir>`: list a trained detector's tunings, from `distill run
+  --tune` or `model tune`, and print the newest finished one, saying which it is.
 
 ### `modules`
 List the registered processing modules and their dependency chain.

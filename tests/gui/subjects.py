@@ -676,6 +676,62 @@ def _an_advanced_player(experiment, recording):
     return player
 
 
+def a_tuning_record() -> dict:
+    """A finished tuning with a pick, the defaults and a warning: everything the window draws."""
+    per = {
+        "n_frames": 1500,
+        "tracked_pct": 100.0,
+        "merged_pct": 40.0,
+        "grew_pct": 10.0,
+        "jumpy_pct": 0.4,
+        "median_area": 900,
+        "low_conf_pct": 1.0,
+        "unassigned_per_frame": 0.2,
+    }
+    setting = {
+        "detection_conf": 0.05,
+        "conf_threshold": 0.1,
+        "secondary_conf": 0.05,
+        "max_secondary": 4,
+    }
+    return {
+        "id": "tune_001",
+        "model_id": "model_001",
+        "status": "complete",
+        "created_at": "2026-11-19T10:00:00Z",
+        "source": {"kind": "standalone"},
+        "recordings": [
+            {
+                "recording_id": "recording_001",
+                "name": "a",
+                "frame_rate": 30.0,
+                "sampled_frames": 1500,
+                "windows": [[0, 0, 300]] * 5,
+                "multi_subject_share": 0.0,
+            }
+        ],
+        "table": [
+            {
+                **setting,
+                "is_default": False,
+                "mean_jumpy_pct": 0.4,
+                "per_recording": {"recording_001": per},
+            },
+            {
+                "detection_conf": 0.5,
+                "conf_threshold": 0.5,
+                "secondary_conf": 0.5,
+                "max_secondary": 2,
+                "is_default": True,
+                "mean_jumpy_pct": 2.0,
+                "per_recording": {"recording_001": {**per, "jumpy_pct": 2.0}},
+            },
+        ],
+        "pick": {"setting": setting, "keep_defaults": False, "reason": "Steadiest."},
+        "warnings": ["A warning."],
+    }
+
+
 def _providers(experiment, recording) -> dict:
     """What each constructor argument is filled with, keyed by the parameter's **name**.
 
@@ -750,6 +806,9 @@ def _providers(experiment, recording) -> dict:
         "query": lambda: {"name": "rearing", "fusion": "min", "band_ns": 0},
         "queries": lambda: [{"name": "rearing", "examples": [], "matches": []}],
         "record": a_query_eval_record,
+        # A detector's tuning (§12 *Tune detection and tracking settings*): its own name, not
+        # "record", which is a query-eval record's above.
+        "tuning": a_tuning_record,
         "by_behavior": a_query_eval_metrics,
         "behavior": lambda: "rearing",
         # The keypoint labeling screen (§26) opens on an example set; one is made in the
