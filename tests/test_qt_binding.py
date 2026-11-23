@@ -200,7 +200,7 @@ def _repository_sources() -> dict[str, str]:
     for root in ("detail", "tests", "scripts"):
         for path in sorted((REPO / root).rglob("*.py")):
             sources[path.relative_to(REPO).as_posix()] = path.read_text(
-                encoding="utf-8"
+                encoding="utf-8-sig"
             )
     return sources
 
@@ -214,7 +214,7 @@ def test_the_binding_is_named_in_one_file():
 
 def test_the_shim_really_imports_the_binding():
     """Not vacuous: the one allowed site is where the binding actually comes from."""
-    shim = (REPO / THE_SHIM).read_text(encoding="utf-8")
+    shim = (REPO / THE_SHIM).read_text(encoding="utf-8-sig")
     modules = {_top(module) for _, module, _ in _imported(ast.parse(shim))}
     assert {"PySide6", "shiboken6"} <= modules
 

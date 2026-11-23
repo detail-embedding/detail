@@ -53,6 +53,13 @@ _ORPHANS_WITH_REASONS = {
     "cluster_labels": "called by evaluation drivers kept outside this repository",
     "small_multiples": "called by evaluation drivers kept outside this repository",
     "agreement_panel": "called by evaluation drivers kept outside this repository",
+    # --- the Qt shim's test-facing half (#107) ---------------------------------------- #
+    # Called only by the GUI tests, and kept in `detail/gui/qt.py` because that is the one file
+    # allowed to name the binding: two read shiboken6, and the third is the replacement the binding
+    # guard (`tests/test_qt_binding.py`) points every wait to.
+    "qwait": "the GIL-releasing wait the binding guard requires in place of QTest.qWait",
+    "created_by_python": "reads shiboken6, which only the shim may import; the test window cleanup",
+    "owned_by_python": "reads shiboken6, which only the shim may import; the cleanup's guard",
     # --- a registration point waiting for its first implementation -------------------- #
     "register_stream_consumer": "STREAM_CONSUMERS is empty by design (CLAUDE.md); this is the "
     "hook a first consumer will register through",
