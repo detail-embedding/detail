@@ -290,8 +290,10 @@ class LocationPlotsPanel(QWidget):
         theme = plot_theme.current().name
 
         def work(emit):
+            # Every report is also where a newer draw stops this one (`busy.run_progress`):
+            # a run of quick changes costs the last draw, not one per change.
             spec = plots.build(view, chosen, progress=emit)
-            return plot_render.render_png(spec, theme=theme)
+            return plot_render.render_png(spec, theme=theme, progress=emit)
 
         self._status.setText("")
         run_progress(

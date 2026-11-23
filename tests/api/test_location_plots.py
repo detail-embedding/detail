@@ -187,20 +187,22 @@ def test_a_second_plot_rereads_nothing(proj, monkeypatch):
     plots.build(LocationPlotView(kind="speed"))
 
 
-def test_build_and_export_report_reading_then_drawing_then_writing(proj, tmp_path):
+def test_build_and_export_report_reading_measuring_drawing_then_writing(proj, tmp_path):
     finished_run(proj, {"a": {0: _walk()}, "b": {0: _walk()}})
     stages = []
     paths = proj.location_plots("an_01").export(
-        LocationPlotView(kind="body_hist"),
-        tmp_path / "out" / "hist",
+        LocationPlotView(kind="trace"),
+        tmp_path / "out" / "path",
         formats=("png", "svg", "pdf"),
         progress=lambda stage, fraction, detail: stages.append((stage, fraction)),
     )
     assert [p.suffix for p in paths] == [".png", ".svg", ".pdf"]
     assert all(p.is_file() and p.stat().st_size > 0 for p in paths)
-    seen = [s for s, _ in stages]
-    assert seen.index("reading") < seen.index("drawing") < seen.index("writing")
-    assert ("writing", 1.0) in stages
+    seen = list(dict.fromkeys(s for s, _ in stages))
+    assert seen == ["reading", "measuring", "drawing", "writing"]
+    # A panel per recording, each reported as it is drawn.
+    assert [f for s, f in stages if s == "drawing"] == [0.0, 0.5]
+    assert stages[-1] == ("writing", 1.0)
 
 
 def test_an_unknown_export_format_is_refused_before_anything_is_read(proj, tmp_path):
