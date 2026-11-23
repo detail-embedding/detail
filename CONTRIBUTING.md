@@ -90,7 +90,9 @@ under a non-commercial license.
 To agree, add a line to [`.github/cla-signatures.md`](.github/cla-signatures.md) in your first
 pull request, in a commit you make yourself: your GitHub username, full name, the date, and the
 CLA version. The **CLA** check on the pull request fails until that line is there, and names the
-username it looked for.
+username it looked for. It also fails if the line is added in someone else's commit, or if the
+pull request adds a line for another person or changes one already recorded: each person signs
+for themselves.
 
 If your employer or school has rights in what you write, make sure it allows you to contribute
 on these terms before you sign.
