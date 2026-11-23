@@ -482,8 +482,7 @@ away.
 has instead. A choice this computer does not offer, such as a model that is not registered
 here, stays on the form's default; a number outside what the form allows now is set to the
 nearest value it does allow. For example `Confidence threshold: that run used 1.7 (outside what
-this form allows); this form has 1.0.` A Query eval run brings back the behaviors it scored,
-ticked once you check recordings that carry them.
+this form allows); this form has 1.0.`
 
 **What it does not carry** is your recordings or the run's upstream artifact: the embedding
 run or the tracking run. Those are chosen for the run you are making, not copied
@@ -858,14 +857,6 @@ A behavior with no cutoff is **absent** from the run's behavior output rather th
 The same cutoffs can be set from the CLI: `analysis query-calibrate --run <an_NN> --curve q01` prints the curve as numbers and `--cutoff q01=0.82` commits one.
 
 The CLI `analysis query` runs the same search: the command and the run records keep the `query` name. See [Behavior scan](modules/query.md) and the [CLI guide](cli.md#analysis).
-
-### Behavior-query evaluation
-
-Measures how well a query retrieves a labeled behavior against human ground truth, so you can compare embedding configurations with a citable accuracy ([how it works](concepts.md#behavior-query-eval)). **New analysis… → Behavior-query eval**, check the annotated recording(s), pick the **embed run**, pick the **ground-truth stream**, and check the **behaviors** to score. Name the stream whenever a recording carries more than one, left on **(first behavior stream)**, such a recording stops the run instead of being scored against whichever stream was added first (the **Behaviors** list is the chosen stream's vocabulary, and labels from the other streams are treated as unscored). Pick the **Method** (the windowed matchers are scored by overlap; the per-frame classifier `soft_knn` scores every frame), the match tolerance, and **Folds** for cross-validation. Settings a method doesn't use are greyed out.
-
-The run writes `metrics.csv`, `folds.csv`, and per-clip detail. Open it for the **report**: a per-behavior table (AP ± std, precision, recall, best-F1), PR curves, and a by-strictness table where every score sits beside its **null** (the same result with the answer destroyed); the **lift** column is the part that is real. **Explore clips** opens a window to inspect the retrieval: a timeline of query / ground-truth / true / false positives / misses, a whole-recording scrubber, and a clip player. To run a variant, open **New analysis** and set **Start from** to this run. See [Behavior-query eval](modules/query_eval.md) and the [CLI guide](cli.md#analysis).
-
-
 
 ### Behavior clustering
 

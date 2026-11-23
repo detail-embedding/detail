@@ -239,9 +239,8 @@ operant box's events, a sensor log, a controller that switched a light, or behav
 scored by hand. DETAIL keeps it with the recording and lines it up with the video, so each
 event sits on the frame it happened.
 
-No analysis reads an event or sensor stream yet: today a stream is kept with the recording
-and shown against the video in **Preview**. Behavior you scored by hand is read: Behavior-query
-eval checks a behavior scan against it ([chapter 7](behavior-scan.md#if-you-have-hand-scored-videos)).
+No analysis reads a stream yet: today a stream is kept with the recording and shown against
+the video in **Preview**.
 
 !!! note "The demo has no streams"
     The demo has only its videos, so the pictures in this step use two small files made up

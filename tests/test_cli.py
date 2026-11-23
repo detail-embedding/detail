@@ -481,46 +481,6 @@ def test_docs_command_serve_runs_mkdocs_serve(monkeypatch, tmp_path):
     assert "mkdocs" in ran["cmd"] and "serve" in ran["cmd"]
 
 
-def test_cli_query_eval_drives_progress_bar(tmp_path, monkeypatch):
-    # query-eval is synchronous but loads embeddings + runs a similarity search per
-    # behavior — the CLI must pass a progress callback so a long run isn't silent.
-    # Assert the callback is wired and survives a stage transition.
-    r = _runner()
-    r.invoke(main, ["experiment", "create", "p1", "--dir", str(tmp_path)])
-    pdir = str(tmp_path / "p1")
-    seen = {}
-
-    def fake_eval(experiment_dir, config, progress=None):
-        seen["progress"] = progress
-        assert callable(progress)
-        progress("loading", 0.0, "groom: finding eligible recordings")
-        progress("querying", 0.45, "groom: querying 1 recording(s)")  # stage change
-        progress("scoring", 1.0, "done")
-        return []
-
-    monkeypatch.setattr("detail.pipeline.query_eval.evaluate_query", fake_eval)
-    # The empty experiment has nothing the module's checks would accept; this is about the bar.
-    monkeypatch.setattr(
-        "detail.pipeline.query_eval.QueryEvalModule.validate",
-        lambda self, experiment_dir, config: config,
-    )
-    result = r.invoke(
-        main,
-        [
-            "analysis", "query-eval",
-            "--experiment", pdir,
-            "--embed-run", "emb_01",
-            "--behavior", "groom",
-            "--out", str(tmp_path / "m.csv"),
-        ],
-    )  # fmt: skip
-    assert callable(seen["progress"])
-    # Nothing scored is not a success: the fake evaluator returned no behavior (#31, 44).
-    assert result.exit_code == 1, result.output
-    assert "every behavior was skipped" in result.output
-    assert not (tmp_path / "m.csv").exists()
-
-
 def test_recording_status_shows_video(tmp_path):
     r = _runner()
     r.invoke(main, ["experiment", "create", "p1", "--dir", str(tmp_path)])

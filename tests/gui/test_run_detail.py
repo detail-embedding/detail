@@ -752,155 +752,43 @@ def _table_cells(page) -> set[str]:
     return cells
 
 
-def test_analysis_run_detail_builds_query_eval_result_widget(qapp, tmp_path):
-    # The query-eval result view reads the aggregate metrics + per-fold detail + PR
-    # curves through QueryEvalPreview and builds the report (per-behavior table, a
-    # behavior-driven per-fold table, and the mean±std summary). A skipped behavior
-    # renders its reason; a 2-fold run shows both folds.
-    from PyQt6.QtWidgets import QLabel, QTableView
+def test_a_query_eval_run_opens_as_a_bare_record(qapp, tmp_path):
+    """A Behavior-query eval (`query_eval`) run on disk, now that the module is removed.
 
+    It used to build the report here: the per-behavior table, the fold table, the PR curves and
+    the Explore clips window. The run still lists, its page opens on the record with its status
+    and its output folder and no result view, a new one cannot be launched, and it deletes.
+    """
+    from PyQt6.QtWidgets import QLabel, QPushButton, QTableView
+
+    from detail.executor.runners import ANALYSIS_MODULES
+    from detail.gui.launch import LaunchAnalysisDialog
     from detail.gui.pages import AnalysisRunDetailPage
-    from detail.storage import analysis_runs as ar
-    from detail.storage import query_eval_csv as qc
+    from tests.api.test_removed_capability_records import a_query_eval_run_on_disk
 
-    proj = Experiment.create("p", tmp_path)
-    adir = ar.analysis_dir(proj.dir, "an_01")
-    adir.mkdir(parents=True, exist_ok=True)
-    qc.write_metrics_csv(
-        adir / "metrics.csv",
-        [
-            qc.MetricRow(
-                "emb_01", "groom", "state", 1, "min", 0.5, 0.5, 0.5, 1, 0, None, None,
-                3, 4, 3, 1, 0, 0.8, 0.75, 1.0, 0.85, 0.1, n_folds=2, ap_std=0.05,
-            )
-        ],
-    )  # fmt: skip
-    qc.write_folds_csv(
-        adir / "folds.csv",
-        [
-            qc.FoldMetricRow("groom", 0, 3, 4, 3, 1, 0, 0.8, 0.75, 1.0, 0.85, 0.1),
-            qc.FoldMetricRow("groom", 1, 3, 4, 2, 2, 1, 0.7, 0.5, 0.66, 0.6, 0.2),
-        ],
-    )
-    qc.write_predictions_csv(
-        adir / "predictions.csv",
-        [
-            qc.PredictionRow(
-                "groom", "s1", 0, 1, "tp", 0.1, 100, 200, 0.8, None, 90, 210
-            )
-        ],
-    )
-    qc.write_ground_truth_csv(
-        adir / "ground_truth.csv",
-        [
-            qc.GroundTruthRow("groom", "s1", 0, 100, 200, "scored", "matched"),
-            qc.GroundTruthRow("groom", "s1", 0, 500, 600, "exemplar", ""),
-        ],
-    )
-    qc.write_pr_points(adir / "pr" / "groom" / "fold_00.csv", [(0.5, 1.0), (1.0, 0.75)])
-    qc.write_pr_points(adir / "pr" / "groom" / "fold_01.csv", [(0.5, 1.0), (1.0, 0.66)])
-    ar.write_analysis_yaml(
-        adir,
-        {
-            "id": "an_01",
-            "module_id": "query_eval",
-            "recording_ids": ["recording_001"],
-            "status": "complete",
-            "embed_run_id": "emb_01",
-            "track_id": 0,
-            "params": {"fusion": "min", "band_s": 0.5, "iou_threshold": 0.5,
-                       "n_exemplars": 1, "seed": 0, "folds": 2},
-            "behaviors": [
-                {"behavior": "groom", "behavior_type": "state", "n_recordings": 1,
-                 "n_folds": 2, "skipped": None},
-                {"behavior": "rear", "behavior_type": "state", "n_recordings": 0,
-                 "n_folds": 0, "skipped": "no eligible recordings"},
-            ],
-            "artifacts": [
-                {"path": "metrics.csv", "kind": "query_eval_metrics", "label": "metrics"}
-            ],
-        },
-    )  # fmt: skip
+    proj = a_query_eval_run_on_disk(tmp_path)
+    assert "query_eval" not in ANALYSIS_MODULES
+    assert [(r.id, r.module_id) for r in proj.analysis_runs] == [
+        ("an_01", "query_eval")
+    ]
+    assert proj.authored_run("an_01") is None
+
     page = AnalysisRunDetailPage(proj, "an_01")
-    # inline report: the mean±std summary + the per-fold table + the Explore button
-    from PyQt6.QtWidgets import QPushButton
+    assert not page.findChildren(
+        QTableView
+    ), "a result view was built for a removed module"
+    assert "complete" in " ".join(label.text() for label in page.findChildren(QLabel))
+    buttons = [button.text() for button in page.findChildren(QPushButton)]
+    assert "Open output folder" in buttons, "the run's tables are still on disk to open"
+    assert "Explore clips" not in buttons
 
-    text = " ".join(lbl.text() for lbl in page.findChildren(QLabel))
-    assert "±0.050" in text
-    fold_model = next(
-        t.model()
-        for t in page.findChildren(QTableView)
-        if t.model().horizontalHeaderItem(0)
-        and t.model().horizontalHeaderItem(0).text() == "Fold"
-    )
-    assert fold_model.rowCount() == 2
-    assert "Explore clips" in [b.text() for b in page.findChildren(QPushButton)]
+    dialog = LaunchAnalysisDialog(proj)
+    assert (
+        dialog._module_combo.findData("query_eval") < 0
+    ), "a removed module is offered"
 
-    # the real entry point — the report's own "Explore clips" handler (non-blocking
-    # show, not a modal exec) opens the window and keeps it alive on the result widget.
-    from detail.gui.modules.analysis_query_eval import (
-        _QueryEvalExploreDialog,
-        _QueryEvalResult,
-        _SpanStrip,
-    )
-
-    result = page.findChildren(_QueryEvalResult)[0]
-    result._open_explore()
-    assert isinstance(result._explore, _QueryEvalExploreDialog)
-
-    # the explorer window: the scrubbable GT/TP/FP/FN timeline + a clips table (TP + the
-    # held-out query, decode-safe over the fake recording), and selecting a clip plays it.
-    from detail.api.run_preview import QueryEvalPreview
-    from detail.gui.behavior_query import _ClipPlayer
-
-    by_behavior = {
-        m.behavior: m for m in QueryEvalPreview(proj.dir).read_metrics("an_01")
-    }
-    dialog = _QueryEvalExploreDialog(
-        proj, proj.analysis_record("an_01"), by_behavior, "groom"
-    )
-    assert dialog.findChildren(_SpanStrip)  # timeline built
-    assert dialog._masks.isChecked(), "masks open on, as in every player"
-    clips = next(
-        t.model()
-        for t in dialog.findChildren(QTableView)
-        if t.model().horizontalHeaderItem(0)
-        and t.model().horizontalHeaderItem(0).text() == "Rank"
-    )
-    outcomes = {clips.item(r, 1).text() for r in range(clips.rowCount())}
-    assert {
-        "TP",
-        "Query",
-    } <= outcomes  # TP + the held-out query, both listed + playable
-    player = dialog.findChildren(_ClipPlayer)[0]
-    dialog._clips_table.selectRow(0)  # select a clip → scrubs the recording + plays it
-    assert player._clip is not None
-
-    # The same class `f9350f0a` fixed on the two Browse tabs and this branch fixed on the
-    # audit tab, at its fourth site: the clips table and the two pictures share one splitter
-    # row, and a splitter hands every child the whole height. The table drew as many rows as
-    # the dialog was tall and both pictures were centred halfway down panes whose neighbour
-    # starts at the top. Measured through the real dialog, shown and laid out — an unshown
-    # widget has no geometry to be wrong.
-    from tests.gui.layout_checks import assert_player_level_with_its_list
-    from detail.gui.tables import BROWSE_ROWS
-
-    clips_heading = next(
-        lbl for lbl in dialog.findChildren(QLabel) if lbl.text() == "Clips"
-    )
-    dialog.resize(1200, 900)
-    dialog.show()
-    qapp.processEvents()
-    try:
-        assert_player_level_with_its_list(
-            dialog,
-            dialog._clips_table,
-            player._src,
-            above=clips_heading,
-            max_rows=BROWSE_ROWS,
-        )
-    finally:
-        dialog.hide()
+    proj.delete_analysis("an_01")
+    assert proj.analysis_runs == []
 
 
 def test_a_run_of_a_removed_module_opens_as_a_bare_record(qapp, tmp_path):
@@ -1189,103 +1077,6 @@ def test_retry_failure_surfaces_and_re_enables(qapp, tmp_path, monkeypatch):
     assert shown == ["cannot retry run_009 — s2: no video parts"]  # verbatim
     assert button.isEnabled()  # re-enabled so the user can fix and retry
     assert not page._progress.isVisibleTo(page)  # did not go live
-
-
-def test_query_eval_result_shows_each_score_beside_its_null(qapp, tmp_path):
-    """The report's reason for existing: a number with nothing to compare it against
-    can't be read. The per-overlap table renders actual / null / lift."""
-    from PyQt6.QtWidgets import QLabel, QTableView
-
-    from detail.gui.pages import AnalysisRunDetailPage
-    from detail.storage import analysis_runs as ar
-    from detail.storage import query_eval_csv as qc
-
-    proj = Experiment.create("p", tmp_path)
-    adir = ar.analysis_dir(proj.dir, "an_01")
-    adir.mkdir(parents=True, exist_ok=True)
-    qc.write_metrics_csv(
-        adir / "metrics.csv",
-        [
-            qc.MetricRow(
-                "emb_01", "climb", "state", 1, "min", 0.5, 0.5, 0.5, 1, 0, None, None,
-                3, 4, 3, 1, 0, 0.8, 0.75, 1.0, 0.85, 0.1, method="dtw",
-                recall_null=0.15, recall_lift=0.85, ap_null=0.12, ap_lift=0.68,
-            )
-        ],
-    )  # fmt: skip
-    qc.write_folds_csv(adir / "folds.csv", [])
-    qc.write_overlap_csv(
-        adir / "overlap.csv",
-        [
-            qc.OverlapRow("climb", "state", 0.1, 3, 4, 3, 0.9, 0.2, 0.7, 0.75, 0.63, 0.16, 0.47),
-            qc.OverlapRow("climb", "state", 0.25, 3, 4, 3, 0.81, 0.15, 0.66, 0.7, 0.52, 0.12, 0.40),
-            qc.OverlapRow("climb", "state", 0.5, 3, 4, 2, 0.51, 0.11, 0.40, 0.5, 0.21, 0.05, 0.16),
-        ],
-    )  # fmt: skip
-    ar.write_analysis_yaml(
-        adir,
-        {
-            "id": "an_01",
-            "module_id": "query_eval",
-            "status": "complete",
-            "recording_ids": ["recording_001"],
-            "embed_run_id": "emb_01",
-            "track_id": 0,
-            "params": {"method": "dtw", "band_s": 0.5},
-            "behaviors": [
-                {"behavior": "climb", "behavior_type": "state", "n_recordings": 1,
-                 "n_folds": 1, "skipped": None}
-            ],
-        },
-    )  # fmt: skip
-    page = AnalysisRunDetailPage(proj, "an_01")
-    overlap_model = next(
-        t.model()
-        for t in page.findChildren(QTableView)
-        if t.model().horizontalHeaderItem(0)
-        and t.model().horizontalHeaderItem(0).text() == "Overlap"
-    )
-    assert overlap_model.rowCount() == 3
-    strict = [overlap_model.item(2, c).text() for c in range(8)]
-    assert strict[0] == "0.50"
-    assert strict[5] == "0.210" and strict[6] == "0.050"  # AP beside its null
-    # The matcher is named in the header, so a report can't be misattributed.
-    labels = [w.text() for w in page.findChildren(QLabel)]
-    assert any("dtw" in t for t in labels)
-
-
-def test_query_eval_result_survives_a_run_recorded_before_nulls(qapp, tmp_path):
-    """An older run has no overlap.csv; the report must still open."""
-    from detail.gui.pages import AnalysisRunDetailPage
-    from detail.storage import analysis_runs as ar
-    from detail.storage import query_eval_csv as qc
-
-    proj = Experiment.create("p", tmp_path)
-    adir = ar.analysis_dir(proj.dir, "an_01")
-    adir.mkdir(parents=True, exist_ok=True)
-    qc.write_metrics_csv(
-        adir / "metrics.csv",
-        [
-            qc.MetricRow(
-                "emb_01", "groom", "state", 1, "min", 0.5, 0.5, 0.5, 1, 0, None, None,
-                3, 4, 3, 1, 0, 0.8, 0.75, 1.0, 0.85, 0.1,
-            )
-        ],
-    )  # fmt: skip
-    qc.write_folds_csv(adir / "folds.csv", [])
-    ar.write_analysis_yaml(
-        adir,
-        {
-            "id": "an_01", "module_id": "query_eval", "status": "complete",
-            "recording_ids": ["recording_001"], "embed_run_id": "emb_01", "track_id": 0,
-            "params": {},
-            "behaviors": [
-                {"behavior": "groom", "behavior_type": "state", "n_recordings": 1,
-                 "n_folds": 1, "skipped": None}
-            ],
-        },
-    )  # fmt: skip
-    assert AnalysisRunDetailPage(proj, "an_01") is not None  # no overlap.csv, no crash
 
 
 def test_run_detail_states_the_runs_cadence_and_its_lineage(

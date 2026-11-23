@@ -658,7 +658,7 @@ for its background colour), then the run's own progress follows.
   `--canvas-scope` controls how the `*_centered` constructors size their canvas across the selected recordings. `per_recording` (default) sizes the canvas to each recording's own largest mask, so every subject fills the frame and body-size differences between animals are normalized away. `shared` sizes it once to the largest mask over the whole selection, keeping true relative size, but a smaller subject then fills less of the model input.
 
   It is a no-op on a single recording. Runs made at different scopes are **not**
-  interchangeable: a later `query` or `query-eval`
+  interchangeable: a later `query`
   requires every recording to share the scope (a `per_recording` canvas is allowed to
   differ between recordings; a `shared` one is not).
 
@@ -666,7 +666,7 @@ for its background colour), then the run's own progress follows.
   always picks **one** color for all of them, pooled from every selected recording's
   subject, so the background can't become a cue that identifies the recording. Pass every
   `--recording` you mean to compare in one command. Recordings embedded separately can get
-  different colors, and a later `query` or `query-eval` across them refuses them as
+  different colors, and a later `query` across them refuses them as
   not comparable.
 - `process list --experiment <dir>`: the experiment's processing runs.
 - `process status <run_NNN> --experiment <dir>`: its module, status, and the
@@ -1127,79 +1127,6 @@ selection, written to `analysis/<an_NN>/`.
 
   Reopening a run and relabelling it never changes a snapshot.
 
-- `query-eval --experiment <dir> --embed-run <emb_NN> --behavior <label> [--behavior <label> …]
-  [--search <id> …] [--stream <name>] [--band 0.5] [--fusion min|mean] [--method dtw]
-  [--keyframe-select medoid|distinctive|rare] [--n-keyframes 1] [--iou 0.5] [--point-window 0.5]
-  [--n-exemplars 1] [--n-holdout <n>] [--folds 1] [--seed 0] [--split-gap <s>] [--max-results <n>] [--track 0]
-  [--k 20] [--tau 0.07] [--n-negatives 500] [--negative-pool unlabeled|labeled_clean]
-  --out metrics.csv [--pr-out <dir>] [--predictions-out <csv>] [--ground-truth-out <csv>]
-  [--folds-out <csv>] [--overlap-out <csv>]`:
-  **score** how well the behavior query retrieves a
-  labeled behavior against the `behavior` ground-truth streams. Held-out exemplars
-  (`--n-exemplars`, chosen by `--seed`) seed the query; the ranked matches are scored against
-  the remaining ground-truth intervals: **state** behaviors by temporal IoU (`--iou`),
-  **point** behaviors by a `--point-window` tolerance (the type is captured at import).
-  `--stream <name>` picks **which** ground-truth stream to score against. Omit it and a recording
-  carrying exactly one behavior stream uses that one; a recording carrying **several stops the run**
-  and lists their names, rather than silently scoring one of them (say an early hand-scored subset
-  alongside a full ethogram, whose labels would then count as unscored and drop the recording).
-  An unknown name fails with the available names rather than scoring nothing. Writes
-  **one row per `--behavior`** to `--out` (appended, so a shell loop over configs / embedding
-  runs builds a benchmark table): AP, precision, recall, best-F1, and counts.
-  `--negative-pool` decides where `soft_knn` draws its negative class. `unlabeled` (default)
-  samples everything not held out: the target behavior included, because at query time nobody
-  knows which frames those are. `labeled_clean` samples only frames known *not* to be the
-  behavior, which needs the ground truth and so reports a score no user can reproduce; it is kept
-  to re-read runs recorded before this option existed, and a metrics row names which was used.
-  The gap is large: on one real behavior a typical exemplar scores 0.92 clean and 0.50 unlabeled.
-  `--n-holdout` fixes **how many instances leave the scored set**, independent of how many seed
-  the query (default: `--n-exemplars`). Sweeping `--n-exemplars` without it compares runs whose
-  scored sets differ (each extra exemplar removes another instance from the ground truth) so set
-  it to the largest `--n-exemplars` in the sweep and `n_gt` stays constant across the benchmark.
-  Instances held out but not queried are scored neither way; they leave the test set.
-  `--folds` **cross-validates** for a seed-independent accuracy: `1` (default) is a single split;
-  `k` rotates `k` distinct exemplar sets; `0` is leave-one-out (every instance once; requires
-  `--n-exemplars 1`, and incompatible with `--n-holdout`). Each `--out` row then holds the **mean ± std** over folds (`n_folds` +
-  `*_std` columns); `--folds-out` writes the per-fold metrics behind it and `--overlap-out` the
-  per-overlap-level scores with their nulls. `--predictions-out` and
-  `--ground-truth-out` write the **per-clip detail** (each retrieved candidate tagged `tp`/`fp`
-  with its matched GT + IoU; each ground-truth interval `matched`/`fn`, plus the held-out
-  exemplars, all with a `fold` column), the same tables the GUI evaluation report reads. This command
-  is **synchronous and scriptable** (it builds the append-sweep and does not create a recorded
-  run); the recorded, inspectable form is the `query_eval` analysis module run from the GUI (or
-  `Experiment.run_analysis`), which writes those same files into `analysis/<an_NN>/`. A recording is
-  scored for a behavior only if its annotation *covered* it; `--search` defaults to every eligible
-  recording. **Vary the embedding run** to compare embedding configurations (embed model and size,
-  input-image constructor, input size); vary `--band`/`--fusion`/`--method`
-  for engine params.
-
-  `--method` selects the scoring method, in two families. **Windowed matchers** (span-detection
-  AP): `dtw` (default; banded subsequence DTW), `clip_pooled_mean`/`clip_pooled_max` (one pooled
-  descriptor per clip) and `keyframe` (the most query-defining frame; `--keyframe-select` picks it
-  by `medoid`, `distinctive` or `rare`, and `--n-keyframes` sets how many) return matches roughly the
-  **example's length** and are scored by temporal overlap. The **per-frame classifier** (per-frame
-  AP) `soft_knn` scores every frame by a softmax-weighted vote over its `--k` nearest labeled frames
-  (the example frames plus `--n-negatives` sampled background frames, `--tau` sets the softmax
-  temperature), ranks all frames, and integrates a threshold-free per-frame Average Precision, so
-  there is no proposal cutoff; `--band` applies to the windowed matchers only.
-
-  [Behavior-query evaluation](behavior-query-eval.md) covers the matching rule and every metric
-  reported here.
-
-  **Read every number next to its null.** `--overlap-out` writes recall/precision/AP at overlap
-  0.1 / 0.25 / 0.5, each beside a deliberately uninformative version of itself: `recall_null` is
-  the same predictions slid to the wrong places (same count, same lengths, wrong times), `ap_null`
-  the same outcomes in a random order. `*_lift` is actual − null, the part that is real. A matcher
-  that blankets the timeline scores a high recall whatever it retrieves, so a value that doesn't
-  clear its null means nothing. The `--out` row carries the same nulls at `--iou`, plus the
-  `method` that produced it. E.g.
-
-  ```bash
-  for emb in emb_01 emb_02; do
-    detail analysis query-eval --experiment $PROJ --embed-run $emb \
-        --behavior grooming --behavior rearing --out sweep.csv
-  done
-  ```
 - `list --experiment <dir>`: the experiment's analysis runs.
 - `status <an_NN> --experiment <dir>`: its module, status, recordings, **settings**, and
   artifacts. The settings block is what the run was launched with, ready to re-pass:
@@ -2382,12 +2309,12 @@ picks rows with no subject). They are never merged onto one track. In a bundle m
 same choice is `config: {observation: day1, subject: mA}`.
 
 Each behavior is recorded as **point** or **state** (BORIS's *Behavior type* column, else
-inferred from durations) so the evaluation scores it correctly. A BORIS behavior scored both as
+inferred from durations). A BORIS behavior scored both as
 START/STOP bouts and as POINT events is refused, naming the rows of each kind, since one
 behavior cannot be both; and the annotation's **covered
 behaviors** (the scored vocabulary) default to the labels present. Add
-`--covered-behaviors "groom,rear"` to declare behaviors you *scored but never observed*; the
-evaluation treats them as covered (a real absence, not "unscored") rather than skipping the recording.
+`--covered-behaviors "groom,rear"` to declare behaviors you *scored but never observed*; they
+are recorded as covered (a real absence, not "unscored").
 
 **Ground truth vs predictions.** A stream also records where its labels came from. Anything you
 import is ground truth unless you say otherwise; a label file the tool exported (`analysis export-temporal-clustering`,
@@ -2401,9 +2328,8 @@ detail recording add-stream --experiment $PROJ --recording recording_001 \
     --name model_output --importer behavior_csv --data predictions.csv --origin predicted
 ```
 
-A predicted stream is never read as ground truth: it does not make a recording eligible for an
-evaluation, and naming it with `--stream` is refused. Scoring a method against its own output
-produces a good-looking number and measures nothing, so the distinction is enforced rather than
+A predicted stream is never read as ground truth. Scoring a method against its own output
+produces a good-looking number and measures nothing, so the distinction is recorded rather than
 left to you to remember. Streams imported before this existed read as ground truth.
 
 Or in bulk onto many existing recordings from a small manifest (a value may be a filename, or a
@@ -2648,12 +2574,6 @@ in the [GUI](gui.md), not the CLI. A few are gaps, and say so:
   of the cluster at once. The figures are not GUI-only: on a temporal clustering run
   `analysis audit` prints each cluster's clip-review precision and each label's, then the
   earlier one-by-one audit under its own heading.
-- **Behavior-query eval clip review**: `analysis query-eval` writes the metrics and the per-clip
-  detail (`--predictions-out` / `--ground-truth-out`), but *watching* the TP/FP/FN clips and the
-  held-out query (the scrubbable GT/TP/FP/FN timeline and the clip player in the recorded run's
-  **Explore clips…** window) is a GUI surface (the recorded `query_eval` module, run from the GUI
-  or `Experiment.run_analysis`). The CLI produces the numbers and the per-clip tables; the video
-  review lives in the GUI, like the other clip surfaces.
 - **The confidence slider on a detection result**: a prompt-test grid and a Quick segment
   result each carry a slider that re-draws and re-counts the run at a new confidence
   without re-running it: an iterate-until-it-looks-right control, so it lives in the

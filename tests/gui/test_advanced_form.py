@@ -347,8 +347,6 @@ def test_a_row_is_reachable_wherever_it_landed(qapp):
     form.addRow(field_label("detection", "batch_size", "Batch size:"), batch)
     form.finish()
 
-    label = form.label_for(batch)
-    assert isinstance(label, FieldLabel)
     form.set_row_visible(batch, False)
     assert not batch.isVisible()
 

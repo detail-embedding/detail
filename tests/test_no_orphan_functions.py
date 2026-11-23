@@ -116,7 +116,6 @@ _ORPHANS_WITH_REASONS = {
     # readable version would leave the compiled one unverifiable.
     "dtw_distance": "the pure-Python DTW the numba path is checked bit-identical against",
     "cosine_cost": "the readable cost surface `_dtw_numba` states it reproduces",
-    "match_ranked": "the reference ranked matcher the other scorers are described in terms of",
     # --- superseded, kept until someone confirms nothing external calls it ------------- #
     "next_analysis_id": "same, one registry over: superseded by reserve_analysis_id after two "
     "concurrent analysis runs took the same an_NN and the second overwrote the first",
@@ -125,7 +124,6 @@ _ORPHANS_WITH_REASONS = {
     "readiness_signals": "the §1 onboarding readiness entry point, public API",
     "run_recording_checks": "per-recording integrity checks; api/checks.py:62 says they are "
     "'surfaced separately via run_recording_checks', and that surface is not built yet",
-    "query_subsequence": "the single-query case of query_multi, which is what production calls",
     "t_ns_to_seconds": "unit helper on the public core API",
     "experiment_path": "path helper on the public storage API",
     "box_map": "detection-row helper on the public clip-render API",

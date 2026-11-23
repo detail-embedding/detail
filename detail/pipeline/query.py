@@ -1039,9 +1039,9 @@ def _draw_uniform(load, units, behaviors, size: int, seed: int):
 
     A seeded reservoir — give every eligible row a random key and keep the ``size`` largest —
     which is a uniform sample without replacement computed in one pass, with **one trajectory
-    resident at a time**. The same construction `query_eval` uses; materializing every
-    searched subject at once was a memory regression there and would be a worse one here,
-    where a run can span a whole cohort.
+    resident at a time**. The same construction `query_eval` (a module since removed) used;
+    materializing every searched subject at once was a memory regression there and would be a
+    worse one here, where a run can span a whole cohort.
 
     **The exemplar spans are excluded and nothing else is.** That is not a simplification: it
     is what makes the pool one a user could reproduce. With no labels in the tool the

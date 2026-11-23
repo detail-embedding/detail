@@ -37,9 +37,10 @@ _GUI = pathlib.Path(__file__).resolve().parents[2] / "detail" / "gui"
 _PLOT_FACTORIES = {"themed_plot", "PlotWidget", "GraphicsLayoutWidget"}
 
 #: Plot construction sites the scan recognised when the floor was set (14 on 2026-09-29; 7 after
-#: the hidden capabilities' GUIs were removed on 2026-11-10). Set below the count so a plot that
-#: is removed does not fail it, and far above zero so a factory rename does.
-_PLOTS_SEEN_FLOOR = 5
+#: the hidden capabilities' GUIs were removed on 2026-11-10; 4 once query eval's explorer and the
+#: query AUDIT tab's plots went, 2026-11-23). Set at or below the count so a plot that is removed
+#: does not fail it, and far above zero so a factory rename does.
+_PLOTS_SEEN_FLOOR = 3
 
 
 def _target_name(node) -> str | None:

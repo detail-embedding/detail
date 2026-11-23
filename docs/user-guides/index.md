@@ -93,7 +93,6 @@ here.
 | Run an embedding | [Chapter 5](single-animal/embedding.md) |
 | Export where the animal is, as spreadsheets | [Chapter 6](single-animal/location-export.md) |
 | Find a behavior from a few examples | [Chapter 7](single-animal/behavior-scan.md) |
-| Check a scan against hand-scored videos | [Chapter 7](single-animal/behavior-scan.md#if-you-have-hand-scored-videos) |
 | Group behavior into clusters and label them | [Chapter 8](single-animal/clustering.md) |
 | Save a cluster's clips | [Chapter 8, step 4](single-animal/clustering.md#save-the-clips) |
 

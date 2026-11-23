@@ -301,12 +301,11 @@ Human-scored ground truth of which behavior occurs over which frames, imported a
 --importer behavior_csv`) or in bulk (`recording import-labels`).
 
 Each behavior is a **point** (an instant) or a **state** (a duration). The annotation records the
-behaviors it **covered**, the scored vocabulary, so a recording is only judged on behaviors it
-actually scored.
+behaviors it **covered**, the scored vocabulary, so a behavior nobody scored is told apart from
+one that did not happen.
 
 A stream also records its **origin**: `ground_truth` (a person scored it) or `predicted` (a
-method produced it, re-ingested). A predicted stream is never read as ground truth. It does not
-make a recording eligible for an evaluation, and naming it for scoring is refused, because a
+method produced it, re-ingested). A predicted stream is never read as ground truth, because a
 method scored against its own output produces a good-looking number that measures nothing.
 Anything you import is ground truth unless the file says otherwise or you pass `--origin
 predicted`. Every label file DETAIL exports carries an `origin` column, so re-importing a
@@ -392,31 +391,6 @@ one is instant, so you can move it while watching what falls in and out. Precisi
 over recall by design, and it is measured by reviewing every instance the cutoff keeps and
 taking out the wrong ones, which also leaves them out of the run's output. Build it with
 `analysis query` and set cutoffs with `analysis query-calibrate`.
-
-### Behavior-query evaluation { #behavior-query-eval }
-
-Scores how well the query retrieves a labeled behavior against the ground-truth streams.
-Held-out example clips seed the query; the rest of the labeled instances are the answer. Its
-purpose is to compare configurations: vary the embedding run (embed model and size,
-input-image constructor, input size) or the query parameters and read the average precision
-side by side.
-**Folds** cross-validate for a seed-independent number.
-
-The scoring **method** comes in two families:
-
-- **Windowed matchers** (`dtw`, `clip_pooled_mean`/`max`, `keyframe`) return matches about the
-  example's length, scored by temporal overlap as a span-detection average precision. Overlap is
-  IoU for state behaviors and a time window for point behaviors.
-- The **per-frame classifier** `soft_knn` scores every frame into a threshold-free per-frame
-  average precision, voting over the `k` nearest labeled frames (the example frames plus
-  `n_negatives` background frames, with `tau` the temperature).
-
-Every score is reported beside its **null**, the same result with the answer destroyed, so the
-**lift** over the null is the part that is real.
-
-Run it scriptably (`analysis query-eval`, one CSV row per behavior) or as a recorded GUI run
-whose report and **Explore clips** window play the matches. Full detail:
-[Behavior-query evaluation](behavior-query-eval.md).
 
 ### Behavior clustering
 
@@ -610,7 +584,7 @@ Built today, reachable from the API, GUI and CLI:
 | Processing | Detection (SAM 3, trained and imported YOLO), tracking (`anchor_tracker`, `iou_single_tracker`), keypoint detect (`dinov3_match`, a distilled or imported YOLO-pose model) and keypoint track, embedding (DINOv3) |
 | Scene geometry | Field of view, ROIs and POIs, distance calibration |
 | Streams | MED-PC operant events, CSV sensor traces and events, behavior labels |
-| Analysis | Location export, behavior scan (query), behavior-query evaluation, behavior clustering, measures, comparisons |
+| Analysis | Location export, behavior scan (query), behavior clustering, measures, comparisons |
 | Detection and keypoint models | Processing runs, datasets, trained models, the unified **distill** run (a detector, or a keypoint student), promotion to the machine-global catalog |
 | Getting data out | The `export` backbone and an **Export** button on every result screen; experiment bundles that import back |
 | Tools | One-off, experiment-free runs, starting with **Quick segment**. Runs live in a machine-global `tools/` folder (see the [Tools guide](tools.md)) |
