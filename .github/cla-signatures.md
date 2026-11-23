@@ -10,6 +10,6 @@ The three authors below are covered by a separate written authors' agreement
 
 | GitHub username | Full name | Date (YYYY-MM-DD) | CLA version |
 |---|---|---|---|
-| mlurbur | [full name] | [date] | authors' agreement |
+| mlurbur | Moses Lurbur | 2026-11-23 | 1.0 |
 | DrCoffey | [full name] | [date] | authors' agreement |
 | SamAGolden | [full name] | [date] | authors' agreement |
