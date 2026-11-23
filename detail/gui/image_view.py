@@ -191,13 +191,13 @@ class ImageView(QLabel):
         event.accept()
 
     def mousePressEvent(self, event) -> None:
-        self._press = event.pos()
+        self._press = event.position().toPoint()
         self._dragged = False
         self._mark_drag = False
         if (
             self.hit_test is not None
             and event.button() == Qt.MouseButton.LeftButton
-            and self.hit_test(event.pos())
+            and self.hit_test(event.position().toPoint())
         ):
             where = self.image_position(event.position(), clamp=True)
             if where is not None:
@@ -215,10 +215,10 @@ class ImageView(QLabel):
                 self.mark_dragged.emit(*where)
             return
         if self._press is not None and self._zoomable and self._zoom > 1.0:
-            delta = event.pos() - self._press
+            delta = event.position().toPoint() - self._press
             if self._dragged or delta.manhattanLength() > _DRAG_SLOP_PX:
                 self._dragged = True
-                self._press = event.pos()
+                self._press = event.position().toPoint()
                 self._offset += delta
                 self._rescale()
         super().mouseMoveEvent(event)

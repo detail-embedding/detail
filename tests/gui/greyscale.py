@@ -33,9 +33,9 @@ def luminance(image) -> np.ndarray:
         image = image.toImage()
     grey = image.convertToFormat(QImage.Format.Format_Grayscale8)
     width, height, stride = grey.width(), grey.height(), grey.bytesPerLine()
-    bits = grey.constBits()
-    bits.setsize(stride * height)
-    rows = np.frombuffer(bits, np.uint8).reshape(height, stride)
+    # PySide6's `constBits()` is a buffer of the image's own size; no sizing step.
+    rows = np.frombuffer(grey.constBits(), np.uint8)[: stride * height]
+    rows = rows.reshape(height, stride)
     return rows[:, :width].astype(float)
 
 

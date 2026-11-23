@@ -100,13 +100,22 @@ def _imported(tree: ast.AST) -> list[tuple[int, str, bool]]:
     return found
 
 
+#: Methods of sip's pointer type (`sip.voidptr`), which `QImage.bits()` returned under PyQt6. An
+#: import scan cannot see them — the type arrives without being imported — so they are named.
+_SIP_POINTER_METHODS = {"setsize", "asstring"}
+
+
 def _gil_holding_waits(tree: ast.AST) -> list[tuple[int, str]]:
     """``(line, call)`` for every ``.qWait(...)`` and time-limited ``.processEvents(...)``."""
     found = []
     for node in ast.walk(tree):
         if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
             continue
-        if node.func.attr == "qWait":
+        if node.func.attr in _SIP_POINTER_METHODS:
+            found.append(
+                (node.lineno, f"sip's {node.func.attr}() (PyQt6's pointer type)")
+            )
+        elif node.func.attr == "qWait":
             found.append((node.lineno, "qWait"))
         elif (
             node.func.attr == "processEvents"
@@ -156,7 +165,9 @@ def violations(sources: dict[str, str]) -> list[str]:
             )
         for line, call in _gil_holding_waits(ast.parse(source)):
             found.append(
-                f"{path}:{line}: {call} holds the GIL under PySide6 — use detail.gui.qt.qwait"
+                f"{path}:{line}: {call} — not in PySide6"
+                if call.startswith("sip")
+                else f"{path}:{line}: {call} holds the GIL under PySide6 — use detail.gui.qt.qwait"
             )
         seen = set()
         for line, module, is_skip in _imported(ast.parse(source)):
@@ -259,6 +270,14 @@ def test_the_scan_would_catch_a_dict_signal():
     planted = {
         "detail/gui/x.py": "class F(QObject):\n    found = Signal(dict)\n",
         "detail/gui/y.py": "class F(QObject):\n    picked = QtCore.Signal(int, dict)\n",
+    }
+    assert len(violations(planted)) == len(planted)
+
+
+def test_the_scan_would_catch_a_sip_pointer_method():
+    planted = {
+        "tests/gui/x.py": "bits = image.constBits()\nbits.setsize(n)\n",
+        "detail/gui/y.py": "data = image.bits().asstring(n)\n",
     }
     assert len(violations(planted)) == len(planted)
 
