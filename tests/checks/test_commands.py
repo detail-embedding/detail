@@ -112,14 +112,15 @@ def test_invariant_command_parts_match_the_docs():
 
 
 def test_windows_activate_is_extensionless_everywhere_it_is_written():
-    """The Windows activation line is written in three places — the generated script, the
-    install guide, and the README. All three shipped `Activate.ps1`, which only PowerShell
-    runs and which the default execution policy can refuse."""
+    """The Windows activation line is written in two places — the generated script and the
+    install guide. Both shipped `Activate.ps1`, which only PowerShell runs and which the
+    default execution policy can refuse. The README once held a third copy; it now links
+    the install guides instead, so it must not grow one back."""
     written = [
         _GETTING_STARTED.read_text(encoding="utf-8-sig"),
-        _README.read_text(encoding="utf-8-sig"),
         "\n".join(_by_label("Windows").commands),
     ]
     for text in written:
         assert "\\Scripts\\Activate" in text
         assert "Activate.ps1" not in text
+    assert "Activate" not in _README.read_text(encoding="utf-8-sig")
