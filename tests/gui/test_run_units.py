@@ -1338,8 +1338,9 @@ def test_a_done_phase_carries_no_invented_duration():
 
 
 def test_a_phase_word_in_the_note_does_not_move_the_rows():
-    """query-eval's querying messages carry query_tracks' own ``loading <subject>`` in their
-    note; matched anywhere in the message, the page went back to "loading" once per subject.
+    """A runner's note can hold another phase's word: the removed query eval's querying
+    messages carried its search's own ``loading <subject>`` there, and matched anywhere in the
+    message, the page went back to "loading" once per subject.
     """
     from detail.gui.run_units import DONE, QUEUED, RUNNING, analysis_units
 

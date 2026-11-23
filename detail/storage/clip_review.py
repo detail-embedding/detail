@@ -7,6 +7,10 @@ cluster, ``no`` for a clip taken out of the label or moved to another, ``yes`` f
 all in one append (:func:`append_answers`). So a reviewed cluster's precision is a count, not a
 sample.
 
+**A query run writes the same file** (§20 *The audit*): one recording of one behavior is reviewed
+whole at the behavior's cutoff, a clip is a candidate's span, ``label_path`` is the behavior's id
+and ``node`` is empty (:data:`NO_NODE`).
+
 Columns ``recording_id, subject, t_ns, end_t_ns, node, label_path, drawn_at, answer``. A clip is a
 leaf run (``ClipRef``); ``node`` is the labelled cluster it counted toward and ``label_path`` that
 cluster's label path when it was judged. ``answer`` is ``yes`` / ``no``, or ``withdrawn``: the
@@ -48,6 +52,9 @@ REVIEW_COLUMNS = [
 ]
 YES = "yes"
 NO = "no"
+#: ``node`` of a row that counts toward no cluster: a query run's review (§20), where a
+#: recording of a behavior is reviewed whole. Written as an empty cell.
+NO_NODE = -1
 #: Written for a clip put back in its label (``put_back_clips``): supersedes the clip's answer
 #: under that path without being one. The owner's rule (#24): the census said "no" because the
 #: clip was taken out; once it is back, that answer describes a clip that is not there.
@@ -97,14 +104,16 @@ def append_answers(
     run_dir: Path | str,
     answers,
     *,
-    node: int,
+    node: int | None,
     label_path: str,
     drawn_at: str | None = None,
 ) -> list[ReviewRow]:
     """Append one answer per ``(clip, yes)`` in ``answers``, in one durable write.
 
     Every row carries the same ``node``, ``label_path`` and time: a census is one decision about
-    one cluster. Returns the rows written.
+    one cluster, or about one recording of a query behavior. ``node`` is ``None`` there — a query
+    run has no clusters — and is written as an empty cell, read back as ``-1``. Returns the rows
+    written.
     """
     stamp = drawn_at or utc_timestamp()
     rows = []
@@ -116,7 +125,7 @@ def append_answers(
                 subject=ref.subject,
                 t_ns=ref.t_ns,
                 end_t_ns=ref.end_t_ns,
-                node=int(node),
+                node=NO_NODE if node is None else int(node),
                 label_path=str(label_path),
                 drawn_at=stamp,
                 answer=YES if yes else NO,
@@ -137,7 +146,7 @@ def append_rows(run_dir: Path | str, rows: list[ReviewRow]) -> list[ReviewRow]:
                 row.subject,
                 row.t_ns,
                 row.end_t_ns,
-                row.node,
+                "" if row.node == NO_NODE else row.node,
                 row.label_path,
                 row.drawn_at,
                 row.answer,
@@ -160,7 +169,7 @@ def read_review(run_dir: Path | str) -> list[ReviewRow]:
                     subject=int(row.get("subject") or 0),
                     t_ns=int(row["t_ns"]),
                     end_t_ns=int(row["end_t_ns"]),
-                    node=int(row.get("node") or -1),
+                    node=int(row.get("node") or NO_NODE),
                     label_path=row.get("label_path") or "",
                     drawn_at=row.get("drawn_at") or "",
                     answer=(row.get("answer") or "").strip().lower(),
@@ -208,13 +217,20 @@ def answer_for(latest: dict, key: tuple, label_path: str) -> ReviewRow | None:
 
 
 def withdraw(
-    run_dir: Path | str, keys, *, drawn_at: str | None = None
+    run_dir: Path | str,
+    keys,
+    *,
+    label_path: str | None = None,
+    drawn_at: str | None = None,
 ) -> list[ReviewRow]:
     """Withdraw every current answer about the clips ``keys`` (``ClipRef.key``s), under every
-    label path it was given as, in one durable write. Returns the rows written.
+    label path it was given as — or only under ``label_path`` when one is given — in one durable
+    write. Returns the rows written.
 
     What putting a clip back does to its review: the clip reads as not yet reviewed again, so the
-    cluster it is in is not "all reviewed" on an answer about a clip that is no longer out.
+    cluster it is in is not "all reviewed" on an answer about a clip that is no longer out. A
+    query run passes its behavior's id: one span can be a candidate of two behaviors, and putting
+    it back in one says nothing about the other.
     """
     wanted = set(keys)
     stamp = drawn_at or utc_timestamp()
@@ -229,9 +245,9 @@ def withdraw(
             drawn_at=stamp,
             answer=WITHDRAWN,
         )
-        for (key, _path), (_position, row) in latest_by_path(
+        for (key, path), (_position, row) in latest_by_path(
             read_review(run_dir)
         ).items()
-        if key in wanted and row.judged
+        if key in wanted and row.judged and (label_path is None or path == label_path)
     ]
     return append_rows(run_dir, rows)

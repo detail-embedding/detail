@@ -257,3 +257,19 @@ def test_every_tracker_hyperparam_is_documented_and_anchored():
     assert not missing, "tracker knobs with no resolving doc entry: " + ", ".join(
         missing
     )
+
+
+def test_a_run_summary_skips_an_empty_default_and_counts_a_list():
+    """``[]`` for a field that defaults to ``None`` is not a change; a real list reads as a
+    count, since its items would not fit a picker line."""
+    from pydantic import BaseModel, Field
+
+    from detail.configs.describe import NO_CHANGES, summarize_settings
+
+    class Knob(BaseModel):
+        names: list[str] | None = Field(
+            None, description="d", json_schema_extra={"label": "N"}
+        )
+
+    assert summarize_settings(Knob, {"names": []}) == NO_CHANGES
+    assert summarize_settings(Knob, {"names": ["a", "b"]}) == "names=2 item(s)"

@@ -55,8 +55,8 @@ analysis run** dialog:
 2. Click **Select all**.
 3. **Tracking run:** check that the tracking from chapter 3 is ticked. With one tracking, it
    is ticked for you.
-4. Leave **Rows per second** at **every frame** and **Remove thin parts** unticked. *About
-   this step*, below, says when to change them.
+4. Leave **Rows per second** at **every frame**. *About this step*, below, says when to
+   change it.
 5. Click **Run**.
 
 ![The Launch an analysis run dialog for Location export: module Location export, all three recordings ticked, and the tracking run list with the tracking from chapter 3 ticked, highlighted. Numbered markers sit on every control.](../../assets/user-guides/single-animal/location-export/launch-location-export.png)
@@ -74,29 +74,21 @@ analysis run** dialog:
     8. **Cancel**: closes the dialog without starting anything.
     9. **?**: a short explanation of the setting beside it.
 
-The picture was taken before **Rows per second** and **Remove thin parts** were added. They
-sit under **Tracking run**, each with a **?** beside it.
+The picture was taken before **Rows per second** was added. It sits under **Tracking run**,
+with a **?** beside it.
 
-??? info "About this step: rows per second and thin parts"
+??? info "About this step: rows per second"
     - **Rows per second.** Left at **every frame**, the export writes a row for every frame
       the animal was tracked on. Set it to a number, such as 5, and it writes about that many
       rows a second: the tracked frame nearest each tick of a clock. Nothing is filled in
       between, so a stretch where the animal was lost has no rows. A few rows a second is
       enough for distance travelled, speed and body shape, and the export finishes many times
       sooner. On a 30-minute video at 1920 x 1080, 5 rows a second took about half a minute
-      on a desktop computer, and a minute and a half with thin parts removed.
-    - **Remove thin parts.** Ticked, the body is measured without its thin parts: a tail, a
-      limb, an antenna. Tick it for rats and mice. A rat's tail moves the centre of its
-      outline and makes it read far longer than its body is: 260 mm against 180 mm, on one
-      rat seen from above. Leave it unticked for an
-      animal whose thin parts are its body, such as a fish or a snake. Only the `body_`
-      columns change; the `mask_` columns and the region and point files are still the
-      whole outline.
-    - **Thin part scale**, under **Advanced Settings**: how thick a part must be to count as
-      body. It is a share of the animal's own size in the picture, so it does not depend on
-      the distance calibration. The default, 0.12, removes a rat's tail seen from above and
-      from the side. Raise it if a tail survives; lower it if the head or the legs are
-      being cut off.
+      on a desktop computer.
+    - **The body is the whole outline.** Nothing is cut out of it, so a rat's tail counts
+      toward its length and moves its centre: 260 mm against 180 mm, on one rat seen from
+      above. Every body column is a standard measure of the outline that you can recompute
+      in any other tool.
 
 ??? warning "Check which tracking run is ticked"
     When nothing was ticked before, the list ticks the tracking that covers the most of the
@@ -144,9 +136,9 @@ tracked animal (0 with one animal).
 | `bbox_cx`, `bbox_cy` | The centre of that box. |
 | `mask_cx`, `mask_cy` | The centre of the animal's outline, which follows the body more closely than the box. |
 | `bbox_area`, `mask_area` | The size of the box and of the outline. |
-| `body_cx`, `body_cy` | The centre of the body. The same as `mask_cx`, `mask_cy` unless **Remove thin parts** was ticked; then it is the centre without the tail. |
-| `body_area` | The size of the body. |
-| `body_length`, `body_width` | How long and how wide the body is, along and across its long axis. Their ratio says how stretched out or balled up the animal is. |
+| `body_cx`, `body_cy` | The centre of the body: the same as `mask_cx`, `mask_cy`. |
+| `body_area` | The size of the body: the same as `mask_area`. |
+| `body_length`, `body_width` | How long and how wide the outline is: the long and short axes of the ellipse with the same spread (MATLAB's `MajorAxisLength` and `MinorAxisLength`). Their ratio says how stretched out or balled up the animal is. |
 | `body_angle_deg` | Which way the long axis points in the picture, from 0 to 180 degrees: 0 is left to right, 90 is up and down. It does not say which end is the head. |
 
 **`roi_relations.csv`**: the animal and each region, one row per region per frame.
@@ -197,9 +189,6 @@ in. On the demo, box1's `tracks.csv` has 8,854 rows, one for each tracked frame.
     - **Far fewer rows than frames:** the tracking lost the animal for those frames (see
       chapter 3), or **Rows per second** was set, which writes that many rows a second and
       no more.
-    - **"thin parts cannot be removed from these masks":** the outlines are too coarse for
-      the size of part you asked to remove. Raise **Thin part scale**, or untick **Remove
-      thin parts**.
 
 ## 4. Look at the plots
 
@@ -215,11 +204,11 @@ scrolling on the picture zooms.
       layers.
     - **body**: a measure of its body over time: its length, its width, its area, how
       stretched out it is (**elongation**, length ÷ width), or the area of its whole
-      outline, tail and all.
+      outline.
     - **body_hist**: how often the body measured each value of that measure.
-2. **Position:** the point a path follows: the centre of the **body** (without the tail
-   when **Remove thin parts** was ticked), of the whole outline (**mask**), or of its box
-   (**bbox**).
+2. **Position:** the point a path follows: the centre of the **body**, of the whole outline
+   (**mask**), or of its box (**bbox**). The body is the whole outline, tail and all, so
+   **body** and **mask** follow the same point.
 3. **Group by:** leave **(each recording)** for a panel per recording, or choose a column of
    the **Recording information** (chapter 1), such as **drug**, for one panel or line per
    value.

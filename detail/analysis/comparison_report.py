@@ -9,8 +9,8 @@ selected which module's figures to draw. A comparison has no members, so routing
 have meant inventing a fake member module to satisfy a lookup. The `report/` primitives underneath
 are shared exactly as they are.
 
-Domain figures live with the module and never in ``report/`` (§18.4) — the same rule that keeps
-query-eval's PR curves out of the shared package.
+Domain figures live with the module and never in ``report/`` (§18.4) — the same rule that kept
+the PR curves of query eval, a module since removed, out of the shared package.
 
 **matplotlib is imported where a figure is drawn, not at module scope.** Reading `stats.csv`,
 formatting a table and naming a measurement need none of it, and this module is imported by the

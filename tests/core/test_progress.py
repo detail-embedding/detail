@@ -76,7 +76,7 @@ def test_format_duration_units():
 # message_phase: which declared phase a runner's message names (§16, issue #393)
 # --------------------------------------------------------------------------- #
 
-_QUERY_EVAL = ("loading", "querying", "scoring")
+_SCORED_RUN = ("loading", "querying", "scoring")
 _SYLLABLES = (
     "loading embeddings",
     "detecting transitions",
@@ -88,15 +88,16 @@ _SYLLABLES = (
 @pytest.mark.parametrize(
     "message, phases, expected",
     [
-        # query-eval's querying phase forwards query_tracks' own step into its note
-        ("querying · Rearing · fold 1/3 · loading rec_001 · 4 matches", _QUERY_EVAL, 1),
+        # a runner may forward an inner step into its note: the removed query eval's querying
+        # phase carried its search's own `loading <subject>` there
+        ("querying · Rearing · fold 1/3 · loading rec_001 · 4 matches", _SCORED_RUN, 1),
         (
             "querying · Rearing · fold 1/3 · searching rec_001 · 4 matches",
-            _QUERY_EVAL,
+            _SCORED_RUN,
             1,
         ),
         # a user's behavior / recording name is note text too
-        ("scoring · Unloading · aggregating 3 fold(s)", _QUERY_EVAL, 2),
+        ("scoring · Unloading · aggregating 3 fold(s)", _SCORED_RUN, 2),
         ("clustering · recording_loading_bay", ("loading", "clustering"), 1),
         # a count inside the head is still the phase
         ("comparing 4,182 bouts", _SYLLABLES, 2),
@@ -121,12 +122,12 @@ def test_message_phase_needs_every_word_of_a_multi_word_phase():
 def test_message_phase_places_a_done_message_past_every_phase():
     from detail.core.progress import message_phase
 
-    assert message_phase("done", _QUERY_EVAL) == len(_QUERY_EVAL)
-    assert message_phase("done · 2 clip(s) held back", _QUERY_EVAL) == len(_QUERY_EVAL)
+    assert message_phase("done", _SCORED_RUN) == len(_SCORED_RUN)
+    assert message_phase("done · 2 clip(s) held back", _SCORED_RUN) == len(_SCORED_RUN)
 
 
 @pytest.mark.parametrize("message", ["", "starting", "Rearing · loading"])
 def test_message_phase_is_none_for_a_message_naming_no_phase(message):
     from detail.core.progress import message_phase
 
-    assert message_phase(message, _QUERY_EVAL) is None
+    assert message_phase(message, _SCORED_RUN) is None

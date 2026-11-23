@@ -33,17 +33,16 @@ class LocationPlotView(BaseModel):
     )
     source: Literal["body", "mask", "bbox"] = Field(
         "body",
-        description="The animal's position: 'body' (the centre of its body, without the "
-        "parts the export left out, such as a tail; on an export made before the body was "
-        "measured, the mask's centre, which is the same thing), 'mask' (the centre of the "
-        "whole mask) or 'bbox' (the bounding box's centre).",
+        description="The animal's position: 'body' (the centre of its body, which the "
+        "export measures as the whole mask, so the same point as 'mask'), 'mask' (the "
+        "centre of the whole mask) or 'bbox' (the bounding box's centre).",
         json_schema_extra={"label": "Position"},
     )
     body_measure: BodyMeasure = Field(
         "length",
         description="What a body plot shows: the body's length or width (along and across "
         "its long axis), its area, its elongation (length ÷ width), or the area of the whole "
-        "mask, tail and all.",
+        "mask.",
         json_schema_extra={"label": "Body measure"},
     )
     units: Literal["mm", "px", "norm"] | None = Field(

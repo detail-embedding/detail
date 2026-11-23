@@ -93,6 +93,8 @@ NO_SCALAR_FIELDS = {
     "of the file being imported; every one defaults to unset and is read off that file",
     "BorisSelectionConfig": "an optional observation id and subject that pick rows of the "
     "export being imported; both default to unset and are read off that file",
+    "LocationExportConfig": "the selection plus one measurement option, rows per second, "
+    "which defaults to unset (every tracked frame), so there is no seeded value to check",
 }
 
 

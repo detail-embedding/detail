@@ -6,6 +6,7 @@ the GUI's result page draw through. It reads the run's per-recording ``tracks.cs
 plot of the same recordings — another kind, another colour, a turned camera — re-reads nothing.
 """
 
+import dataclasses
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -22,6 +23,13 @@ MODULE_ID = "location_export"
 
 #: The picture formats an export writes.
 FORMATS = ("png", "svg", "pdf")
+
+#: Under the title of a plot of a run exported with thin parts removed: its body columns, and
+#: the path rule's body length, are not the whole mask's (§16 *The body*).
+THIN_PARTS_NOTE = (
+    "Body measured with thin parts removed, which the export no longer does: export again "
+    "to measure the whole mask"
+)
 
 
 class LocationPlots:
@@ -43,6 +51,7 @@ class LocationPlots:
         self._run_dir = experiment.analysis_run_dir(run_id)
         per_recording = record.get("per_recording") or {}
         params = record.get("params") or {}
+        self.thin_parts_removed = bool(params.get("remove_thin_parts"))
         selected = list(params.get("source_recording_ids") or per_recording)
         self._recordings = [
             sid
@@ -160,7 +169,8 @@ class LocationPlots:
         progress: Progress = None,
     ) -> PlotSpec:
         """``view`` of the selected recordings (default: all) as a ``PlotSpec``; a recording
-        left out is named in the spec's note.
+        left out is named in the spec's note, and so is a body measured with thin parts
+        removed.
 
         Raises:
             ValueError: An unknown recording or ``group_by`` column, nothing to plot, or units
@@ -183,6 +193,9 @@ class LocationPlots:
         if progress is not None:
             progress("measuring", 0.0, view.kind)
         spec = plots.build_plot(traces, view, values, notes=notes)
+        if self.thin_parts_removed:
+            note = f"{THIN_PARTS_NOTE}. {spec.note}" if spec.note else THIN_PARTS_NOTE
+            spec = dataclasses.replace(spec, note=note)
         if progress is not None:
             progress("measuring", 1.0, view.kind)
         return spec

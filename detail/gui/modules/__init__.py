@@ -12,9 +12,6 @@ from detail.gui.modules import (  # noqa: F401
     analysis_temporal_clustering as _analysis_temporal_clustering,
 )
 from detail.gui.modules import analysis_query as _analysis_query  # noqa: F401
-from detail.gui.modules import (  # noqa: F401
-    analysis_query_eval as _analysis_query_eval,
-)
 from detail.gui.modules import detection as _detection  # noqa: F401
 from detail.gui.modules import embedding as _embedding  # noqa: F401
 

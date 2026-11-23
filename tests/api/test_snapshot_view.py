@@ -96,10 +96,8 @@ def test_the_view_carries_where_it_came_from(authored_cohort):
 #: names the caller's word rather than the method's. Everything else reports its own name.
 _CALLS = {
     "_edit": (lambda v: v._edit("rename", lambda state: None), "rename"),
-    "_record": (lambda v: v._record("audit_sample", {}), "audit_sample"),
+    "_record": (lambda v: v._record("finish_review", {}), "finish_review"),
     "pin": (lambda v: v.pin(reason="finish"), "pin"),
-    "label_audit": (lambda v: v.label_audit("some-instance", True), "label_audit"),
-    "audit_sample": (lambda v: v.audit_sample(), "audit_sample"),
     # The mixin's own override is this one's guard, so its refusal names the operation rather
     # than the method — the same shape as the two funnels above.
     "_write_state": (lambda v: v._write_state(None), "write its state"),
@@ -202,6 +200,7 @@ _SCANNED = (
     ("detail/api/query.py", "QueryRun"),
     ("detail/api/clip_edits.py", "ClipEditOperations"),
     ("detail/api/clip_review.py", "ClipReviewOperations"),
+    ("detail/api/query_review.py", "QueryReviewOperations"),
 )
 
 #: Writers a view inherits but does not need to refuse, with the reason.

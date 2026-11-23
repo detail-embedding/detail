@@ -285,7 +285,7 @@ def test_a_blank_measure_is_nan_not_an_error(tmp_path):
 
 
 def test_the_body_is_the_mask_on_an_export_from_before_the_body(tmp_path):
-    """Such an export never removed a tail, and with thin parts kept the two are equal."""
+    """The body is the whole mask, and such an export never removed thin parts from it."""
     path = tmp_path / "tracks.csv"
     _write_tracks(path, [_row(0, x=0.3), _row(1, x=0.4)], body=False)
     table = lp.read_tracks(path)

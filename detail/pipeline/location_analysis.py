@@ -45,8 +45,6 @@ class LocationAnalysisJob:
     tracking_run_ids: dict[str, str]
     created_at: str
     sample_fps: float | None
-    remove_thin_parts: bool
-    thin_part_scale: float
 
     def to_dict(self) -> dict:
         return {
@@ -111,6 +109,13 @@ class LocationExportModule(AnalysisModule):
     progress_counts_frames = False
 
     def validate(self, experiment_dir, config: dict) -> dict:
+        if config.get("remove_thin_parts"):
+            # The model ignores a key it does not have, so a config written for the removed
+            # option would otherwise run and measure the tail it asked to leave out.
+            raise ValueError(
+                "location export no longer removes thin parts: the body is always the whole "
+                "mask. Leave remove_thin_parts out of the config."
+            )
         model = LocationExportConfig.model_validate(config)  # bounds/shape only
         recording_ids = list(config.get("source_recording_ids") or [])
         if not recording_ids:
@@ -133,7 +138,7 @@ class LocationExportModule(AnalysisModule):
                     raise ValueError(f"recording {sid!r}: {refusal}")
         config.update(selection)
         # The options this model owns outright, resolved and written back (Tenet 9): the
-        # record then says "every frame" or "the whole mask" where the user left it unset.
+        # record then says "every frame" where the user left it unset.
         # Only these fields: the model does not cover the selection keys beside them.
         config.update({name: getattr(model, name) for name in option_names()})
         return config

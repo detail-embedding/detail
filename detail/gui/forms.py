@@ -452,11 +452,6 @@ class ConfigForm:
                 return layout
         return None
 
-    def label_for(self, widget: QWidget) -> QWidget | None:
-        """The label beside ``widget``, from whichever layout holds its row."""
-        layout = self._layout_of(widget)
-        return layout.labelForField(widget) if layout is not None else None
-
     def set_row_visible(self, widget: QWidget, visible: bool) -> None:
         """Show or hide ``widget``'s whole row — its label and its ``?`` included."""
         layout = self._layout_of(widget)
