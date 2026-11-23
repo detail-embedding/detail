@@ -742,15 +742,11 @@ def prepare_comparison(
         "left_out": list(left_out),
     }
     if cfg.source == "locations":
-        # The shuffles as drawn (Tenet 9), and how the run this read was exported: whether
-        # the body is the whole mask or has its thin parts removed changes every body
-        # measure, and the comparison's own record is the place a reader looks for it.
+        # The shuffles as drawn (Tenet 9), and how the run this read was exported, which the
+        # comparison's own record is the place a reader looks for.
         record["draws"] = max(int(cfg.draws), LOCATION_MIN_DRAWS)
         exported = run_record.get("params") or {}
-        record["location_export"] = {
-            name: exported.get(name)
-            for name in ("sample_fps", "remove_thin_parts", "thin_part_scale")
-        }
+        record["location_export"] = {"sample_fps": exported.get("sample_fps")}
         record["measures"] = (
             list(cfg.measures) if cfg.measures else list(location_measures.MEASURES)
         )

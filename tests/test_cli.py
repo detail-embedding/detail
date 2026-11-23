@@ -5797,42 +5797,35 @@ def test_locations_export_measures_with_the_options_typed(
     out = tmp_path / "out"
     result = _locations_export(
         processed_recording, out,
-        "--sample-fps", "2.5", "--remove-thin-parts", "--thin-part-scale", "0.3",
+        "--sample-fps", "2.5",
     )  # fmt: skip
     assert result.exit_code == 0, result.output
     manifest = _location_manifest(out)
     assert manifest["sample_fps"] == 2.5
-    assert manifest["remove_thin_parts"] is True
-    assert manifest["thin_part_scale"] == 0.3
     assert "body_length_px" in manifest["columns"]["tracks"]
 
 
-def test_locations_export_left_alone_measures_every_frame_of_the_whole_mask(
+def test_locations_export_left_alone_measures_every_frame(
     processed_recording, tmp_path
 ):
     out = tmp_path / "out"
     assert _locations_export(processed_recording, out).exit_code == 0
-    manifest = _location_manifest(out)
-    assert manifest["sample_fps"] is None
-    assert manifest["remove_thin_parts"] is False
-    assert (
-        manifest["thin_part_scale"] == 0.12
-    )  # the config model's, not a second copy here
+    assert _location_manifest(out)["sample_fps"] is None
 
 
 def test_locations_export_refuses_an_option_it_cannot_apply(
     processed_recording, tmp_path
 ):
     out = tmp_path / "out"
-    result = _locations_export(processed_recording, out, "--thin-part-scale", "0.9")
+    result = _locations_export(processed_recording, out, "--sample-fps", "0")
     assert result.exit_code != 0
-    assert "thin_part_scale" in result.output and "Traceback" not in result.output
-    # a 40 x 40 mask has no part thinner than the 1.9 px this asks to remove
-    coarse = _locations_export(
-        processed_recording, out, "--remove-thin-parts", "--thin-part-scale", "0.05"
+    assert "sample_fps" in result.output and "Traceback" not in result.output
+    # thin-part removal was taken out: the flag is unknown, not quietly ignored
+    removed = _locations_export(processed_recording, out, "--remove-thin-parts")
+    assert removed.exit_code != 0
+    assert (
+        "No such option" in removed.output and "--remove-thin-parts" in removed.output
     )
-    assert coarse.exit_code != 0
-    assert "thin parts cannot be removed from these masks" in coarse.output
     assert not out.exists() or not any(out.iterdir())  # nothing half-written
 
 
@@ -5844,13 +5837,11 @@ def test_analysis_run_refuses_location_options_given_to_another_module(tmp_path)
         [
             "analysis", "run", "--experiment", str(tmp_path / "p1"),
             "--recording", "recording_001", "--module", "query",
-            "--tracking", "track_01", "--sample-fps", "5", "--remove-thin-parts",
+            "--tracking", "track_01", "--sample-fps", "5",
         ],
     )  # fmt: skip
     assert result.exit_code != 0
-    assert "--sample-fps, --remove-thin-parts belong to the location_export module" in (
-        result.output
-    )
+    assert "--sample-fps belong to the location_export module" in result.output
 
 
 def test_the_location_options_are_the_config_models_on_both_commands():
