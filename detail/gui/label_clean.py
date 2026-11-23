@@ -121,6 +121,21 @@ def clips_text(n: int) -> str:
     return f"{n:,} clip" if n == 1 else f"{n:,} clips"
 
 
+def no_preview_text(n: int) -> str:
+    """Why Finish is off while ``n`` clips show *no preview*: Finish counts every clip not
+    removed as the label, and a clip whose picture never showed was not seen."""
+    shows = "shows" if n == 1 else "show"
+    return (
+        f"{clips_text(n)} {shows} no preview, and a clip nobody saw cannot be counted. "
+        "Build the previews, then finish."
+    )
+
+
+def waiting_text(n: int) -> str:
+    """Why Finish is off while ``n`` clips' pictures are still on their way."""
+    return f"Waiting for {clips_text(n)} to show."
+
+
 def preview_text(preview) -> str:
     """What the line under the top row says while a run preview is up (``LiveMontage.preview``):
     what letting go, or the Shift-click, will do."""
@@ -404,6 +419,7 @@ class ReviewPane(QWidget):
         self.montage.clip_activated.connect(self._on_activated)
         self.montage.clip_context_requested.connect(self._on_menu)
         self.montage.seen_changed.connect(lambda _n: self._sync())
+        self.montage.pictures_changed.connect(self._sync)
         self.montage.exports.picking_changed.connect(lambda _on: self._sync())
         column.addWidget(self.montage, 1)
 
@@ -626,7 +642,14 @@ class ReviewPane(QWidget):
         elif not total:
             set_available(self.finish, False, "This cluster has no clips.")
         else:
-            set_available(self.finish, self.reached_end(), SCROLL_FIRST)
+            waiting, failed = self.montage.unpictured()
+            if failed:
+                # Scrolling on would not help: say it first.
+                set_available(self.finish, False, no_preview_text(failed))
+            elif not self.reached_end():
+                set_available(self.finish, False, SCROLL_FIRST)
+            else:
+                set_available(self.finish, not waiting, waiting_text(waiting))
             if self.finish.isEnabled():
                 self.finish.setToolTip(
                     f"Save the review: every clip not removed counts as {name}, every removed "

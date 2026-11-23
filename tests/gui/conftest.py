@@ -141,6 +141,27 @@ def export_source(clips=None):
     )
 
 
+class Pictures:
+    """A montage tile source standing in for a built preview cache: a flat grey frame for every
+    clip, or none for the indices in ``missing`` — the ``OSError`` a missing proxy raises, which
+    the montage paints *no preview*.
+
+    For a page test whose run has no videos to build previews from (the fitted fixtures), so a
+    review can be finished at all: Finish refuses while a clip shows no preview
+    (``label_clean.ReviewPane``). Installed through the montage's own ``set_source``, the seam
+    the page uses."""
+
+    def __init__(self, missing=()) -> None:
+        self.missing = set(missing)
+
+    def frame(self, clip_index, offset_ns, tile_px, matching, *, look):
+        import numpy as np
+
+        if clip_index in self.missing:
+            raise OSError(f"no preview for clip {clip_index}")
+        return np.full((tile_px, tile_px, 3), 128, dtype=np.uint8)
+
+
 def drain_busy_calls(qapp, timeout_ms: int = 5_000) -> int:
     """Deliver every pending ``run_busy`` result, and report how many were outstanding.
 
