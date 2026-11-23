@@ -5287,11 +5287,19 @@ vanishes). Group lines take categorical identities in group order.
 — numpy arrays, labels and colour *roles*, no plotting library — and
 `report/plot_render.py` draws it with matplotlib through the house style (`report/figures.py`,
 `report/style.py`): files for an export (PNG, SVG, PDF) and PNG bytes for the GUI, so the
-picture on screen is the one an export writes.
+picture on screen is the one an export writes. `report/plot_html.py` is its twin for **one
+self-contained interactive page** (`html`): plotly, imported inside the renderer only, with
+plotly.js embedded so the page opens offline (about 5 MB). It resolves the same colour roles
+against `core/chart_theme.py`; a 2-D path coloured by time or speed carries its colour on
+markers over a hairline (a plotly 2-D line has one colour), a 3-D path colours its line; a
+heat-map cell with no time is left empty, as the picture leaves it; and since plotly links
+axes but not cameras, a 3-D page carries one small script that copies a turned scene's camera
+to every other, so the panels turn together as the picture's grid shares one camera.
 
 **Surfaces.** API: `Experiment.location_plots(run_id)` → `LocationPlots` (`build(view,
 recording_ids, progress)`, `export(view, stem, recording_ids, formats=, theme=, progress=)`,
-`body_measured()`); it keeps what it read, so a second plot re-reads nothing. CLI: `detail
+`body_measured()`; `formats` png, svg, pdf and html); it keeps what it read, so a second plot
+re-reads nothing. CLI: `detail
 locations plot`. GUI: the run's page has two views, **Plots** (`gui/location_plots.
 LocationPlotsPanel`: the controls, the recording checklist, **Export image…**, the picture in a
 zoomable `ImageView`, the run read on first show behind a progress bar) and **Files** (the CSVs

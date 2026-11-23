@@ -20,8 +20,8 @@ Progress = Callable[[str, float, str], None] | None
 
 MODULE_ID = "location_export"
 
-#: The picture formats an export writes.
-FORMATS = ("png", "svg", "pdf")
+#: The formats an export writes: pictures (matplotlib) and one interactive page (plotly).
+FORMATS = ("png", "svg", "pdf", "html")
 
 
 class LocationPlots:
@@ -197,13 +197,16 @@ class LocationPlots:
         theme: str = "light",
         progress: Progress = None,
     ) -> list[Path]:
-        """Write ``view`` as ``<out_stem>.<fmt>`` for each of ``formats`` (png, svg, pdf).
+        """Write ``view`` as ``<out_stem>.<fmt>`` for each of ``formats``: png, svg and pdf
+        pictures (matplotlib), and ``html``, one self-contained interactive page (plotly) that
+        opens in any browser with no network: hover to read a point, zoom, and turn a 3-D plot,
+        every panel with it.
 
         Raises:
             ValueError: A format that is not one of :data:`FORMATS`, or what :meth:`build`
                 raises.
         """
-        from detail.report import plot_render
+        from detail.report import plot_html, plot_render
 
         unknown = [f for f in formats if f not in FORMATS]
         if unknown or not formats:
@@ -213,7 +216,18 @@ class LocationPlots:
         spec = self.build(view, recording_ids, progress)
         if progress is not None:
             progress("writing", 0.0, ", ".join(formats))
-        paths = plot_render.render(spec, out_stem, formats=tuple(formats), theme=theme)
+        pictures = tuple(f for f in formats if f != "html")
+        paths = (
+            plot_render.render(spec, out_stem, formats=pictures, theme=theme)
+            if pictures
+            else []
+        )
+        if "html" in formats:
+            paths.append(
+                plot_html.render_html(
+                    spec, Path(out_stem).with_suffix(".html"), theme=theme
+                )
+            )
         if progress is not None:
             progress("writing", 1.0, ", ".join(formats))
         return paths

@@ -203,9 +203,20 @@ def test_build_and_export_report_reading_then_drawing_then_writing(proj, tmp_pat
     assert ("writing", 1.0) in stages
 
 
+def test_export_writes_an_interactive_page_beside_the_pictures(proj, tmp_path):
+    finished_run(proj, {"a": {0: _walk()}})
+    paths = proj.location_plots("an_01").export(
+        LocationPlotView(kind="trace3d"), tmp_path / "paths", formats=("png", "html")
+    )
+    assert [p.name for p in paths] == ["paths.png", "paths.html"]
+    page = paths[1].read_text(encoding="utf-8-sig")
+    assert "<title>Path over time</title>" in page
+    assert "<script src=" not in page  # plotly.js is embedded: the page opens offline
+
+
 def test_an_unknown_export_format_is_refused_before_anything_is_read(proj, tmp_path):
     finished_run(proj, {"a": {0: _walk()}})
-    with pytest.raises(ValueError, match="png, svg, pdf; not gif"):
+    with pytest.raises(ValueError, match="png, svg, pdf, html; not gif"):
         proj.location_plots("an_01").export(
             LocationPlotView(), tmp_path / "x", formats=("gif",)
         )

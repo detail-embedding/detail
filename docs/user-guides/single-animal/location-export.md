@@ -236,8 +236,10 @@ map its time is shared out to 1 before the animals of a group are averaged, and 
 body line is the mean across animals, with a band for the standard error. The title gives
 how many animals are in each group.
 
-**Export image…** saves the plot as a picture (PNG) or a drawing that stays sharp at any size
-(SVG or PDF).
+**Export image…** saves the plot as a picture (PNG), a drawing that stays sharp at any size
+(SVG or PDF), or **Interactive HTML**: one page that opens in any web browser, with no
+internet needed. On that page you can hover over a point to read it, zoom, and turn a 3-D
+plot with the mouse; every 3-D panel turns together.
 
 ??? warning "If this doesn't work"
     - **"exported before the body was measured":** the run was made before the export

@@ -385,7 +385,8 @@ time, its speed, and its body's length, width, area or elongation over time or a
 histogram, per recording or grouped by a Recording Information column (each animal counting
 once). Speed is measured on the same smoothed path a comparison measures, broken at the same
 gaps and tracking jumps, so the two agree. Plots show one animal per recording. The app shows
-them on the run's **Plots** view; `locations plot` writes them as PNG, SVG or PDF.
+them on the run's **Plots** view; `locations plot` writes them as PNG, SVG or PDF, or as an
+interactive HTML page to hover, zoom and turn.
 
 ### Behavior scan (query) { #query }
 

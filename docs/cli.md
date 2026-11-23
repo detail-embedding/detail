@@ -786,8 +786,9 @@ shows the rows measured, then the write.
 
 ### `locations plot`
 `--experiment`, `--run an_NN` (a finished location-export run), `--out <path>` (no extension):
-draws the run from its own CSVs and writes `<path>.png`, or one file per `--format png|svg|pdf`
-(repeatable). `--recording <name>` (repeatable) plots only those recordings; `--theme dark`
+draws the run from its own CSVs and writes `<path>.png`, or one file per `--format png|svg|pdf|html`
+(repeatable). `html` is one self-contained interactive page (plotly.js embedded, so it opens
+offline): hover over a point to read it, zoom, and turn a 3-D plot, every panel with it. `--recording <name>` (repeatable) plots only those recordings; `--theme dark`
 draws on a dark surface. No run record; the run is only read.
 
 ```bash

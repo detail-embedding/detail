@@ -70,8 +70,10 @@ EACH_RECORDING = "(each recording)"
 NO_OUTLINE_TEXT = "none"
 #: How long the controls must sit still before a redraw, so a slider sweep draws once.
 REDRAW_DEBOUNCE_MS = 250
-#: Picture formats an export can be saved as, as the save dialog lists them.
-EXPORT_FILTERS = "PNG image (*.png);;SVG image (*.svg);;PDF (*.pdf)"
+#: Formats an export can be saved as, as the save dialog lists them.
+EXPORT_FILTERS = (
+    "PNG image (*.png);;SVG image (*.svg);;PDF (*.pdf);;Interactive HTML (*.html)"
+)
 
 
 class LocationPlotsPanel(QWidget):
