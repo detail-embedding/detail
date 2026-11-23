@@ -89,6 +89,45 @@ def finished_run(
     return ids
 
 
+def write_keypoints(
+    recording_dir, tr: lm.Track, points: dict, *, pixels_per_mm=2.0, frame=None
+) -> None:
+    """A ``keypoints.csv`` beside a hand-built recording's tables, as the export writes it,
+    and the manifest's ``keypoint_names``: one row per frame of ``tr`` per point, ``points``
+    ``{name: (dx_mm, dy_mm, hidden)}`` — the point at the track's position plus that offset,
+    and ``hidden`` a boolean array (or None) of frames it was under the cut-off."""
+    import yaml
+
+    from detail.analysis.locations import KEYPOINT_COLUMNS
+    from detail.storage import location_export
+
+    scale = pixels_per_mm or 1.0
+    width, height = frame or FRAME
+    rows = []
+    for k in range(len(tr.t_ns)):
+        for name, (dx, dy, hidden) in points.items():
+            x_px = (float(tr.x_mm[k]) + dx) * scale
+            y_px = (float(tr.y_mm[k]) + dy) * scale
+            visible = 0 if hidden is not None and hidden[k] else 1
+            rows.append(
+                (
+                    k, int(tr.t_ns[k]), 0, name,
+                    round(x_px / width, 6), round(y_px / height, 6),
+                    round(x_px, 2), round(y_px, 2), "", "", 0.9, visible,
+                )
+            )  # fmt: skip
+    location_export._write_csv(
+        recording_dir / location_export.KEYPOINTS_FILE, KEYPOINT_COLUMNS, rows
+    )
+    manifest = location_export.read_location_manifest(recording_dir)
+    manifest["keypoint_run_id"] = "kt_01"
+    manifest["keypoint_names"] = list(points)
+    with open(
+        recording_dir / location_export.MANIFEST_FILE, "w", encoding="utf-8"
+    ) as f:
+        yaml.dump(manifest, f, sort_keys=False)
+
+
 #: The frame a hand-built run's recordings were filmed at, ``(width, height)`` in pixels.
 FRAME = (640, 480)
 #: How much larger the whole mask is than the body in a hand-built run: the tail.

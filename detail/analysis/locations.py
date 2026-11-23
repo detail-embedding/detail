@@ -88,6 +88,14 @@ POINT_COLUMNS = [
     "point_in_bbox", "point_in_mask",
     "centroid_dist_mm", "mask_centroid_dist_mm",
 ]  # fmt: skip
+#: ``keypoints.csv``: one row per frame, animal and skeleton point, keyed like ``tracks.csv``.
+#: A point the run did not place has blank coordinates; ``visible`` is 0 for it and for a point
+#: under the detect method's cut-off, whose coordinates are kept (§26 *Visibility is a view*).
+KEYPOINT_COLUMNS = [
+    "frame_idx", "t_ns", "object_id", "keypoint",
+    "x_norm", "y_norm", "x_px", "y_px", "x_mm", "y_mm",
+    "score", "visible",
+]  # fmt: skip
 
 
 @dataclass
@@ -103,6 +111,8 @@ class LocationTables:
     roi_relations: tuple[list[str], list[tuple]]
     point_relations: tuple[list[str], list[tuple]]
     source: dict = field(default_factory=dict)
+    #: ``keypoints.csv`` when the export read a keypoint track run; ``None`` when it did not.
+    keypoints: tuple[list[str], list[tuple]] | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -323,6 +333,72 @@ def _r(v, nd):
 # --------------------------------------------------------------------------- #
 # Orchestrator (reads zarrs; the only filesystem-touching code)
 # --------------------------------------------------------------------------- #
+def keypoint_table(
+    recording,
+    keypoint_run_id: str,
+    tracking_run_id: str,
+    frame_wh: tuple[float, float],
+    mm,
+    kept: set[tuple[int, int]] | None = None,
+) -> tuple[tuple[list[str], list[tuple]], dict]:
+    """``keypoints.csv`` for one keypoint track run, and what the manifest records of it.
+
+    Read through ``api.keypoint_export.PointSource`` (the track run, the detect method's display
+    cut-off, coordinates kept under it) so this table and every keypoint export agree. Frames
+    are lifted to recording-global numbering with the offsets ``tracks.csv`` uses, indexed by
+    the part's play position. ``kept`` (the ``(frame, object_id)`` rows a sampled export kept)
+    keeps a sampled export's keypoints on the same rows as its tracks.
+
+    Raises:
+        ValueError: The keypoint track run assigned its poses to another tracking run, whose
+            ``object_id``s are not this export's.
+    """
+    from detail.api.keypoint_export import PointSource
+
+    source = PointSource(recording.dir, keypoint_run_id)
+    if source.tracking_run_id != tracking_run_id:
+        raise ValueError(
+            f"keypoint track run {keypoint_run_id!r} assigned its poses to tracking run "
+            f"{source.tracking_run_id!r}, not {tracking_run_id!r}; its animals are not this "
+            "export's, so its points would land on the wrong animal"
+        )
+    offsets = recording_store.part_frame_offsets(Path(recording.dir)) or [0]
+    stems = source.part_stems()
+    names = list(source.skeleton.names)
+    fw, fh = frame_wh
+    rows: list[tuple] = []
+    for part_id in source.part_ids():
+        index = stems.index(part_id) if part_id in stems else 0
+        offset = offsets[index] if index < len(offsets) else offsets[-1]
+        for object_id, part in source.rows_in(part_id).items():
+            for i in range(len(part.frame_idx)):
+                frame, t = int(part.frame_idx[i]) + offset, int(part.t_ns[i])
+                if kept is not None and (frame, int(object_id)) not in kept:
+                    continue
+                for k, name in enumerate(names):
+                    x, y = float(part.points[i, k, 0]), float(part.points[i, k, 1])
+                    score = float(part.scores[i, k])
+                    if np.isfinite(x) and np.isfinite(y):
+                        place = (
+                            _r(x, 6), _r(y, 6), _r(x * fw, 2), _r(y * fh, 2),
+                            mm(x * fw), mm(y * fh),
+                        )  # fmt: skip
+                    else:
+                        place = ("",) * 6
+                    rows.append((
+                        frame, t, int(object_id), name, *place,
+                        _r(score, 6) if np.isfinite(score) else "",
+                        int(bool(part.visible[i, k])),
+                    ))  # fmt: skip
+    rows.sort(key=lambda row: (row[0], row[2]))  # stable: points stay in skeleton order
+    meta = {
+        "keypoint_run_id": keypoint_run_id,
+        "keypoint_cutoff": source.cutoff,
+        "keypoint_names": names,
+    }
+    return (KEYPOINT_COLUMNS, rows), meta
+
+
 def _spatial_def(recording_dir, kind: str, entry: dict) -> tuple:
     """``(id, name, PolygonKeyframes, active-interval)`` for one ROI/POI, reading
     its keyframes once so the per-frame loop interpolates in memory rather than
@@ -420,8 +496,10 @@ def compute_location_tables(
     tracking_run_id: str,
     on_progress: Callable[[int, int], None] | None = None,
     options: LocationExportConfig | None = None,
+    keypoint_run_id: str | None = None,
 ) -> LocationTables:
-    """Compute the three tables for a completed tracking run of ``recording``.
+    """Compute the three tables for a completed tracking run of ``recording``, and with
+    ``keypoint_run_id`` (a keypoint track run of that tracking run) a fourth, ``keypoints``.
 
     ``options`` carries the choices about the measurement (``sample_fps``,
     ``remove_thin_parts``, ``thin_part_scale``); only those fields are read, and ``None`` is
@@ -625,6 +703,11 @@ def compute_location_tables(
     track_rows.sort(key=lambda row: (row[0], row[2]))
     roi_rows.sort(key=lambda row: (row[0], row[2], row[3]))
     point_rows.sort(key=lambda row: (row[0], row[2], row[3]))
+    keypoints, keypoint_meta = None, {}
+    if keypoint_run_id is not None:
+        keypoints, keypoint_meta = keypoint_table(
+            recording, keypoint_run_id, tracking_run_id, (fw, fh), _mm, kept
+        )
     return LocationTables(
         tracks=(TRACKS_COLUMNS, track_rows),
         roi_relations=(ROI_COLUMNS, roi_rows),
@@ -649,5 +732,7 @@ def compute_location_tables(
             "body_axis": "shape",
             "roi_ids": [d[0] for d in roi_defs],
             "point_ids": [d[0] for d in point_defs],
+            **keypoint_meta,
         },
+        keypoints=keypoints,
     )

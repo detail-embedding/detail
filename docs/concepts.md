@@ -378,7 +378,8 @@ its long axis. The body is the whole mask unless you ask for thin parts (a tail,
 antenna) to be left out, which is recommended for rats and mice and never forced, because for
 some animals the thin part is the body. Length and width are measured along and across the
 body's long axis, found from its shape. A sampling rate writes a few rows a second instead of
-every frame.
+every frame. With a keypoint track run, it also writes `keypoints.csv`: where each skeleton
+point was, on the same rows, refused when the keypoint run's poses went to another tracking run.
 
 A finished run **plots** its own files, with no re-run: the animal's path, where it spent its
 time, its speed, and its body's length, width, area or elongation over time or as a

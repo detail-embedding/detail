@@ -784,6 +784,13 @@ Three options choose what is measured and how often. `analysis run` takes the sa
 `locations.yaml` records all three, and the size of the opening used for each subject. A bar
 shows the rows measured, then the write.
 
+`--keypoints kt_NN` also writes `keypoints.csv`: where each skeleton point was, on the rows
+`tracks.csv` has, with its score and whether it was over the cut-off (`visible`). The keypoint
+track run must have assigned its poses to `--tracking`'s run; one of another tracking run is
+refused, because its animals are not this export's. `analysis run` takes `--keypoints kt_NN` (the
+id in every recording) or `--keypoints-ref RECORDING:kt_NN` (those settings, each recording's
+own run), for the location export only.
+
 ### `locations plot`
 `--experiment`, `--run an_NN` (a finished location-export run), `--out <path>` (no extension):
 draws the run from its own CSVs and writes `<path>.png`, or one file per `--format png|svg|pdf`
@@ -803,8 +810,10 @@ them):
 - `--kind trace|heatmap|speed|trace3d|body|body_hist`: the path, where the animal spent its
   time, speed over time, the path against time in 3-D, a body measure over time, or a
   histogram of it.
-- `--source body|mask|bbox`: the position a path follows. `body` is the body's centre, which
-  leaves out a tail when the export removed thin parts.
+- `--source body|mask|bbox|<keypoint>`: the position a path follows. `body` is the body's
+  centre, which leaves out a tail when the export removed thin parts; a keypoint's name (on a run
+  exported with `--keypoints`) follows that point, a frame it was hidden on a gap.
+- `--point <keypoint>` (repeatable): several points on one `trace` / `trace3d`, a colour each.
 - `--body-measure length|width|area|elongation|mask_area`: what a body plot shows.
 - `--group-by <column>`: one panel (or one line) per value of a Recording Information
   column, each animal counting once.

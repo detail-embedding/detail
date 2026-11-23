@@ -3,7 +3,10 @@
 Config: a tracking-run picker offering tracking **specs** (§6.5) — a run's full-lineage
 kind — found across the selected recordings, annotated with ``N/M`` coverage, several of which
 may be ticked (``PooledSpecPicker``); ``config()`` emits ``tracking_spec`` or
-``tracking_specs`` and the run resolves them to each recording's own tracking run. Below it,
+``tracking_specs`` and the run resolves them to each recording's own tracking run. Then an
+optional keypoint track run (``UpstreamSpecPicker``, first row "(none)"), emitted as
+``keypoint_track_spec``; one whose poses went to another tracking run is refused at launch.
+Below them,
 the measurement options (rows per second, thin parts), each row built from
 ``LocationExportConfig`` so its range, default and help are the model's. Result: two views,
 **Plots** (``gui/location_plots.py``, the run drawn from its own CSVs) and **Files** (the
@@ -26,6 +29,7 @@ from detail.gui._pydantic_form import set_any_field_value
 from detail.gui.forms import ConfigForm
 from detail.gui.help_ui import field_label
 from detail.gui.modules._common import PooledSpecPicker
+from detail.gui.modules._common import UpstreamSpecPicker
 from detail.gui.modules.registry import (
     ConfigWidget,
     ModuleUI,
@@ -35,6 +39,8 @@ from detail.gui.result_views import MultiViewWorkspace
 
 #: What the rows-per-second box reads when it is left unset.
 EVERY_FRAME_TEXT = "every frame"
+#: The keypoint picker's first row: export no keypoints.
+NO_KEYPOINTS_TEXT = "(none)"
 
 
 class _LocationExportConfig(ConfigWidget):
@@ -48,6 +54,16 @@ class _LocationExportConfig(ConfigWidget):
             self._tracking.widget,
         )
         self._tracking.changed.connect(lambda _item: self.coverage_changed.emit())
+        # Optional, and checked at launch rather than greyed here: a keypoint track run whose
+        # poses went to another tracking run than the one ticked is refused by validate(),
+        # naming the recording.
+        self._keypoints = UpstreamSpecPicker(
+            "keypoint_track", auto_label=NO_KEYPOINTS_TEXT
+        )
+        form.addRow(
+            field_label("location_export", "keypoint_run_id", "Keypoint track run:"),
+            self._keypoints.combo,
+        )
         # One row per measurement option, enumerated from the model: an option added to it
         # gets a row, a value in `config()` and a restore in `load_config` without being
         # named here. `_options` rather than `_fields`, because the base `load_config` cannot
@@ -76,11 +92,15 @@ class _LocationExportConfig(ConfigWidget):
         synchronously on every checkbox click. Pinned, so the cache's per-property
         ``stat`` is paid once per recording rather than once per field asked for.
         """
-        return {"groups": self._tracking.resolve(recordings, self._model_names)}
+        return {
+            "groups": self._tracking.resolve(recordings, self._model_names),
+            "keypoint_groups": self._keypoints.resolve(recordings, self._model_names),
+        }
 
     def apply_recordings(self, recordings: list, resolved: dict) -> None:
         """UI thread: install the resolved groups and repopulate. No disk."""
         self._tracking.apply(resolved["groups"], len(recordings))
+        self._keypoints.apply(resolved.get("keypoint_groups") or [], len(recordings))
 
     def on_recordings_changed(self, recordings: list) -> None:
         """Synchronous path for direct callers (the launch dialog uses resolve→apply)."""
@@ -94,7 +114,9 @@ class _LocationExportConfig(ConfigWidget):
             name: any_field_value(LocationExportConfig, name, widget)
             for name, widget in self._options.items()
         }
-        return {**self._tracking.selection(), **options}
+        keypoints = self._keypoints.spec()
+        chosen = {"keypoint_track_spec": keypoints} if keypoints is not None else {}
+        return {**self._tracking.selection(), **chosen, **options}
 
     def load_config(self, config: dict) -> None:
         """Restore the measurement options of a previous run; the tracking selection is

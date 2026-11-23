@@ -6,7 +6,8 @@ and how far it is from each point. Every row carries its time, so the files line
 lever presses or drug infusions.
 
 It needs only the tracking from chapter 3, and the regions and points from chapter 2. It does
-not need keypoints or an embedding, so it can come as soon as tracking is done.
+not need keypoints or an embedding, so it can come as soon as tracking is done; with the
+keypoints from chapter 4 it can write them too.
 
 ## The steps at a glance
 
@@ -19,7 +20,7 @@ the step is in DETAIL.
 2. [Run the export](#2-run-the-export) <span class="where where-app">Experiments › Analysis › New analysis</span> <span class="note">About 2 minutes for the three demo videos, on the processor.</span>
 3. [Open the files](#3-open-the-files) <span class="where where-app">Experiments › Analysis › the run's page › Files</span> <span class="note">Spreadsheets per recording.</span>
 4. [Look at the plots](#4-look-at-the-plots) <span class="where where-app">the run's page › Plots</span> <span class="note">Paths, heat maps, speed and body shape, per recording or by group.</span>
-5. [Optional: export the body points](#5-optional-export-the-body-points) <span class="where where-app">the keypoint track run's page › Export…</span> <span class="note">Where each keypoint is, per frame.</span>
+5. [Optional: the body points](#5-optional-the-body-points) <span class="where where-app">New analysis › Keypoint track run</span> <span class="note">Where each keypoint is, per frame, and its path.</span>
 
 </div>
 
@@ -74,8 +75,9 @@ analysis run** dialog:
     8. **Cancel**: closes the dialog without starting anything.
     9. **?**: a short explanation of the setting beside it.
 
-The picture was taken before **Rows per second** and **Remove thin parts** were added. They
-sit under **Tracking run**, each with a **?** beside it.
+The picture was taken before **Keypoint track run**, **Rows per second** and **Remove thin
+parts** were added. They sit under **Tracking run**, each with a **?** beside it; leave
+**Keypoint track run** at **(none)** for now (step 5).
 
 ??? info "About this step: rows per second and thin parts"
     - **Rows per second.** Left at **every frame**, the export writes a row for every frame
@@ -248,12 +250,31 @@ how many animals are in each group.
     - **"mm needs a distance calibration":** a ticked recording has no calibration. Add one
       (chapter 2, step 3) and run the export again, or set **Units** to **px**.
 
-## 5. Optional: export the body points
+## 5. Optional: the body points
 
-The location export does not include keypoints. To get where each body point is on every
-frame, export them from the keypoint track run instead: open it (**Processing pipeline** ›
-the keypoint track run), click **Export…** at the top right, and tick **Keypoints**. It
-writes one spreadsheet per recording, with a row per frame per body point. [Chapter
+With the keypoints from chapter 4, the export can also write where each body point is. In
+step 2, set **Keypoint track run** to the keypoint tracking of the same tracking run, and run
+it. Each recording's folder then has a fourth file:
+
+**`keypoints.csv`**: one row per frame per body point, on the same frames as `tracks.csv`.
+
+| Column | What it is |
+|---|---|
+| `keypoint` | The body point, such as `nose`. |
+| `x`, `y` | Where it was, in `_norm`, `_px` and `_mm`. Blank on a frame it was not placed. |
+| `score` | How sure the keypoint model was. |
+| `visible` | 1 if the score was over the cut-off, 0 if not; a point under it keeps its place. |
+
+On **Plots**, **Position** then lists the body points: a path follows the nose, say, with a
+gap wherever the nose was hidden. **Keypoints** draws several points on one path, a colour
+each.
+
+A keypoint tracking made from another tracking run is refused when you click **Run**, naming
+the recording: its animals are not this export's.
+
+To get the body points without a location export, export them from the keypoint track run
+instead: open it (**Processing pipeline** › the keypoint track run), click **Export…** at the
+top right, and tick **Keypoints**. [Chapter
 4](keypoints.md#optional-take-the-keypoints-to-deeplabcut-sleap-or-nwb) shows the dialog.
 
 ## Next

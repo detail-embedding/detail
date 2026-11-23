@@ -5167,7 +5167,8 @@ failure on real recordings (detail#75):
   Masks too coarse for the opening asked for are refused, not left untouched.
 - **Length and width are four standard deviations** of the body's area along and across its
   principal axis (`body_axis: shape` in the manifest). A head-to-tail axis from a keypoint
-  track is planned and not built; it needs a second upstream selection per recording.
+  track is planned and not built; the second upstream selection per recording it needs now
+  exists (*Keypoints in the export*, below).
 - **With thin parts kept, `body_*` equals `mask_*`** in the columns they share, to the last
   digit: both come from one function.
 
@@ -5197,6 +5198,39 @@ in `analysis/locations.py`. `Recording.export_locations` / `location_tables` tak
 `progress` callback (`measuring` per tracked row, then `writing`), which `locations export`
 drives with a bar.
 
+#### Keypoints in the export
+
+An export may also read a **keypoint track run** (§26) and write a fourth table,
+`keypoints.csv`: one row per `(frame_idx, object_id)` row of `tracks.csv` per skeleton point,
+keyed and timed as `tracks.csv` is (`frame_idx`, `t_ns`, `object_id`, `keypoint`), with
+`x_norm`/`y_norm`, `_px` and `_mm` (blank uncalibrated), the point's `score` and `visible`. A
+point the run did not place has blank coordinates; one under the detect method's display
+cut-off keeps its coordinates and has `visible` 0 (§26 *Visibility is a view*). It is read
+through `api.keypoint_export.PointSource`, so it agrees with every keypoint export, and with
+`sample_fps` it holds only the rows `tracks.csv` kept. `locations.yaml` records
+`keypoint_run_id`, `keypoint_cutoff` and `keypoint_names`, and lists the file under `files`
+and `columns`; an export without keypoints writes no file.
+
+**The selection.** `keypoint_run_id` (a selection field of `LocationExportConfig`, the id in
+every recording) or `keypoint_track_spec` (settings, resolved in each recording by
+`run_spec.resolve_spec_in_recording`; the launch form's picker and `analysis run
+--keypoints-ref` emit it). `validate` resolves either to a `keypoint_run_ids` map the job
+carries (`job_params` writes it to the record), and **refuses** a recording whose run is
+missing, not complete, or **assigned its poses to another tracking run** than the one the
+export reads there: `object_id` is a position within one tracking run, so its points would land
+on another run's animals. The compute (`analysis/locations.keypoint_table`) refuses the same for
+a direct caller (`Recording.export_locations(..., keypoint_run_id=)`).
+
+**In the plots.** `source` takes a keypoint's name as well as `body` / `mask` / `bbox`: the
+point's positions, a sample it was not placed on or under the cut-off a gap (dropped before the
+path rule, so it neither bridges a break nor poisons the smoothing). `points` (several names)
+draws each point's path on a `trace` / `trace3d` plot, one line per point in its categorical
+colour (identity in the order asked), with a legend; the body outline is drawn once per animal,
+in ink. A keypoint path shares the track's clock and its body, read on the frames the point
+has. A point the run did not export, or any point on a run without keypoints, raises naming
+what there is; a body plot reads the body whatever the position. `LocationPlots.keypoint_names`
+lists the run's points (from the manifests).
+
 #### Location plots (viewing a location export)
 
 A completed location-export run is **drawn on demand from its own CSVs**: nothing image-shaped
@@ -5220,7 +5254,8 @@ field added here reaches both.
 | field | type / default | meaning |
 |---|---|---|
 | `kind` | `trace` \| `heatmap` \| `speed` \| `trace3d` \| `body` \| `body_hist`, `trace` | 2-D path; occupancy heat map; speed over time; path against time in 3-D; a body measure over time; its histogram |
-| `source` | `body` \| `mask` \| `bbox`, `body` | which centre is the position. `body` on an export made before the body was measured reads the mask's centre, which is the same thing there (§16 *The body*: with thin parts kept the two are equal, and such an export never removed any) |
+| `source` | str, `body` | `body`, `mask`, `bbox` or a keypoint name (*Keypoints in the export*) — the position. `body` on an export made before the body was measured reads the mask's centre, which is the same thing there (§16 *The body*: with thin parts kept the two are equal, and such an export never removed any) |
+| `points` | list[str] \| None, None | several keypoints drawn on a path plot, one colour each |
 | `body_measure` | `length` \| `width` \| `area` \| `elongation` \| `mask_area`, `length` | what a body plot shows; `elongation` is length ÷ width, `mask_area` the whole mask, tail and all |
 | `units` | `mm` \| `px` \| `norm` \| None, None | None = `mm` when every plotted recording is calibrated, else `px`; `mm` with an uncalibrated recording raises naming it; a body measure in `norm` raises |
 | `color_by` | `time` \| `speed`, `time` | what colours a path (`trace`, `trace3d`) |

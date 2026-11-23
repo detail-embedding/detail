@@ -54,6 +54,7 @@ class LocationPlots:
             raise ValueError(f"{run_id} has no completed recording to plot")
         self._tables: dict[str, plots.TrackTable] = {}
         self._manifests: dict[str, dict] = {}
+        self._keypoint_tables: dict[str, plots.KeypointTable | None] = {}
         self._lock = threading.Lock()
 
     @property
@@ -98,6 +99,27 @@ class LocationPlots:
             for sid in self._recordings
         )
 
+    @property
+    def keypoint_names(self) -> list[str]:
+        """The keypoints the run exported (its skeleton's points, in order); empty when the
+        export read no keypoint track run. Reads the manifests only."""
+        names: list[str] = []
+        for sid in self._recordings:
+            found = self._manifest(sid).get("keypoint_names") or []
+            names.extend(str(n) for n in found if str(n) not in names)
+        return names
+
+    def _keypoints(self, recording_id: str) -> plots.KeypointTable | None:
+        """One recording's ``keypoints.csv``, read once; ``None`` when the export had none."""
+        with self._lock:
+            if recording_id in self._keypoint_tables:
+                return self._keypoint_tables[recording_id]
+        path = self._run_dir / recording_id / location_export.KEYPOINTS_FILE
+        table = plots.read_keypoints(path) if path.is_file() else None
+        with self._lock:
+            self._keypoint_tables[recording_id] = table
+        return table
+
     def _table(self, recording_id: str) -> plots.TrackTable:
         with self._lock:
             cached = self._tables.get(recording_id)
@@ -116,27 +138,35 @@ class LocationPlots:
         recording_ids: list[str] | None = None,
         progress: Progress = None,
     ) -> tuple[list[plots.Trace], list[str]]:
-        """The animal of each selected recording, and a note per recording left out.
+        """The animal of each selected recording — its centre, or a path per keypoint the
+        view asks for — and a note per path left out.
 
         Raises:
-            ValueError: A recording is not one of the run's completed ones.
+            ValueError: A recording is not one of the run's completed ones, or a keypoint the
+                run did not export.
         """
         chosen = self._chosen(recording_ids)
         names = self.names()
+        uses_points = bool(plots.position_points(view))
         out, notes = [], []
         for index, sid in enumerate(chosen):
             if progress is not None:
                 progress("reading", index / len(chosen), names[sid])
+            manifest = self._manifest(sid)
             frame = plots.read_frame(
-                self._manifest(sid), f"{names[sid]}'s {location_export.MANIFEST_FILE}"
+                manifest, f"{names[sid]}'s {location_export.MANIFEST_FILE}"
             )
-            found, note = plots.trace(
-                self._table(sid), frame, view, recording_id=sid, name=names[sid]
+            found, left_out = plots.recording_traces(
+                self._table(sid),
+                frame,
+                view,
+                recording_id=sid,
+                name=names[sid],
+                keypoints=self._keypoints(sid) if uses_points else None,
+                keypoint_names=[str(n) for n in manifest.get("keypoint_names") or []],
             )
-            if found is not None:
-                out.append(found)
-            if note is not None:
-                notes.append(note)
+            out.extend(found)
+            notes.extend(left_out)
         if progress is not None:
             progress("reading", 1.0, f"{len(chosen)} recordings")
         return out, notes

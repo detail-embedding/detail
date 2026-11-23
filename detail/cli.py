@@ -5137,12 +5137,17 @@ def _given_location_options(**values) -> dict:
         "tracks/roi_relations/point_relations CSVs + locations.yaml."
     ),
 )  # fmt: skip
+@click.option(
+    "--keypoints", "keypoint_run_id", default=None, type=str,
+    help=_LOC["keypoint_run_id"].description,
+)  # fmt: skip
 @_location_options
 def locations_export(
     experiment_dir: Path,
     recording_id: str,
     tracking_run_id: str,
     out_dir: str,
+    keypoint_run_id: str | None,
     sample_fps: float | None,
     remove_thin_parts: bool | None,
     thin_part_scale: float | None,
@@ -5158,7 +5163,13 @@ def locations_export(
     )
     bar = _StageProgress()
     try:
-        out = sess.export_locations(tracking_run_id, out_dir, progress=bar, **options)
+        out = sess.export_locations(
+            tracking_run_id,
+            out_dir,
+            keypoint_run_id=keypoint_run_id,
+            progress=bar,
+            **options,
+        )
     except ValueError as e:
         raise click.ClickException(str(e))
     finally:
@@ -5191,6 +5202,14 @@ def _view_options(model):
     def decorate(fn):
         for doc in reversed(describe_config(model)):
             flag = "--" + doc["name"].replace("_", "-")
+            if doc["type"] == "array":
+                # A list field is a repeatable flag named for one item; none given is the
+                # model's unset (``_view_values`` turns the empty tuple back into None).
+                singular = flag[:-1] if flag.endswith("s") else flag
+                fn = click.option(
+                    singular, doc["name"], multiple=True, help=doc["help"]
+                )(fn)
+                continue
             if doc["type"] == "boolean":
                 fn = click.option(
                     f"{flag}/--no-{flag[2:]}",
@@ -5211,6 +5230,15 @@ def _view_options(model):
         return fn
 
     return decorate
+
+
+def _view_values(fields: dict) -> dict:
+    """``_view_options``' values as the model takes them: a repeatable flag given no times
+    is the field's unset, not an empty list."""
+    return {
+        name: (list(value) or None) if isinstance(value, tuple) else value
+        for name, value in fields.items()
+    }
 
 
 @locations.command("plot")
@@ -5252,7 +5280,7 @@ def locations_plot(
     --group-by."""
     proj = _open_experiment(experiment_dir)
     try:
-        view = LocationPlotView(**view_fields)
+        view = LocationPlotView(**_view_values(view_fields))
         plots = proj.location_plots(run_id)
         recording_ids = (
             [proj.resolve_recording(ref).id for ref in recording_refs]
@@ -5301,6 +5329,15 @@ def analysis() -> None:
     "recording's own match (alternative to --tracking). Repeat it to cover recordings "
     "tracked through different chains: each reads its run of the one named setting it has.",
 )  # fmt: skip
+@click.option(
+    "--keypoints", "keypoint_run_id", default=None, type=str,
+    help="location_export: " + _LOC["keypoint_run_id"].description,
+)  # fmt: skip
+@click.option(
+    "--keypoints-ref", "keypoints_ref", default=None, type=str,
+    help="location_export: RECORDING:kt_NN — derive the keypoint track settings from this "
+    "run and read each recording's own run with them (alternative to --keypoints).",
+)  # fmt: skip
 @_location_options
 def analysis_run(
     experiment_dir: Path,
@@ -5308,6 +5345,8 @@ def analysis_run(
     module_id: str,
     tracking_run_id: str | None,
     tracking_refs: tuple[str, ...],
+    keypoint_run_id: str | None,
+    keypoints_ref: str | None,
     sample_fps: float | None,
     remove_thin_parts: bool | None,
     thin_part_scale: float | None,
@@ -5320,18 +5359,31 @@ def analysis_run(
         remove_thin_parts=remove_thin_parts,
         thin_part_scale=thin_part_scale,
     )
-    if options and module_id != "location_export":
+    keypoint_flags = {
+        "keypoints": keypoint_run_id,
+        "keypoints-ref": keypoints_ref,
+    }
+    given_keypoints = [f"--{flag}" for flag, value in keypoint_flags.items() if value]
+    if (options or given_keypoints) and module_id != "location_export":
         # Applied or refused, never dropped: another module would ignore them in silence.
-        given = ", ".join(f"--{name.replace('_', '-')}" for name in options)
+        given = ", ".join(
+            [f"--{name.replace('_', '-')}" for name in options] + given_keypoints
+        )
         raise click.ClickException(
             f"{given} belong to the location_export module, not to {module_id}"
         )
+    if len(given_keypoints) > 1:
+        raise click.ClickException("pass at most one of --keypoints or --keypoints-ref")
     proj = _open_experiment(experiment_dir)
     config = {"source_recording_ids": list(recording_ids), **options}
     if tracking_refs:
         config.update(_spec_selection(proj, "tracking", tracking_refs))
     else:
         config["tracking_run_id"] = tracking_run_id
+    if keypoints_ref:
+        config.update(_spec_selection(proj, "keypoint_track", (keypoints_ref,)))
+    elif keypoint_run_id:
+        config["keypoint_run_id"] = keypoint_run_id
     try:
         run = proj.run_analysis(module_id, config)
     except ValueError as e:

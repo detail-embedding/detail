@@ -1345,6 +1345,7 @@ class Recording:
         self,
         tracking_run_id: str,
         *,
+        keypoint_run_id: str | None = None,
         progress: Callable[[str, float, str], None] | None = None,
         **options: float | bool | None,
     ):
@@ -1358,6 +1359,8 @@ class Recording:
 
         Args:
             tracking_run_id: A complete tracking run of this recording.
+            keypoint_run_id: A complete keypoint track run whose poses went to that tracking
+                run, read into a fourth table (``keypoints``); ``None`` reads no keypoints.
             progress: ``(stage, fraction, detail)``, called as the tracked rows are
                 measured: a recording's export takes minutes, and without it looks hung.
             **options: The measurement options of ``configs.location_export``:
@@ -1367,7 +1370,8 @@ class Recording:
 
         Raises:
             ValueError: If the tracking run is missing or not complete, an option is not
-                one this export has, or one is outside its bounds.
+                one this export has, or one is outside its bounds; or the keypoint track run
+                is not complete or assigned its poses to another tracking run.
         """
         from detail.analysis import locations as _locations
         from detail.configs import location_export as _config
@@ -1395,8 +1399,21 @@ class Recording:
                 )
 
             on_rows(0, 1)  # the bar moves before the first part is read
+        if keypoint_run_id is not None:
+            entry = {r.get("id"): r for r in self.keypoint_track_runs}.get(
+                keypoint_run_id
+            )
+            if entry is None or entry.get("status") != "complete":
+                state = "missing" if entry is None else repr(entry.get("status"))
+                raise UserInputError(
+                    f"keypoint track run {keypoint_run_id!r} is {state}, not complete"
+                )
         return _locations.compute_location_tables(
-            self, tracking_run_id, on_progress=on_rows, options=resolved
+            self,
+            tracking_run_id,
+            on_progress=on_rows,
+            options=resolved,
+            keypoint_run_id=keypoint_run_id,
         )
 
     def export_locations(
@@ -1404,12 +1421,13 @@ class Recording:
         tracking_run_id: str,
         out_dir: Path | str,
         *,
+        keypoint_run_id: str | None = None,
         progress: Callable[[str, float, str], None] | None = None,
         **options: float | bool | None,
     ) -> Path:
         """Compute + write the three location CSVs (``tracks`` / ``roi_relations`` /
-        ``point_relations``) + a ``locations.yaml`` manifest into a new folder under
-        ``out_dir``; returns that folder. Tables keyed by ``t_ns`` (joins with streams).
+        ``point_relations``, and ``keypoints`` with a ``keypoint_run_id``) + a
+        ``locations.yaml`` manifest into a new folder under ``out_dir``; returns that folder. Tables keyed by ``t_ns`` (joins with streams).
         ``progress`` and ``options`` are :meth:`location_tables`'s; ``progress`` also hears
         the write.
 
@@ -1418,7 +1436,12 @@ class Recording:
         from detail.api import exporters
         from detail.storage import location_export
 
-        tables = self.location_tables(tracking_run_id, progress=progress, **options)
+        tables = self.location_tables(
+            tracking_run_id,
+            keypoint_run_id=keypoint_run_id,
+            progress=progress,
+            **options,
+        )
         dest = exporters.new_export_folder(
             exporters.ExportSubject("recording", self._experiment_dir, self.id),
             out_dir,

@@ -14,6 +14,7 @@ from detail.gui.modules.analysis_location import (
     EVERY_FRAME_TEXT,
     _LocationExportConfig,
 )
+from tests.api.test_keypoint_export import keypoint_runs  # noqa: F401 — a fixture
 
 
 def _options(form) -> dict:
@@ -59,3 +60,36 @@ def test_the_scale_can_be_set_only_while_thin_parts_are_removed(qapp):
     assert not scale.isEnabled()
     # a disabled box still reports its value: the record names the scale either way
     assert form.config()["thin_part_scale"] == LocationExportConfig().thin_part_scale
+
+
+def test_keypoints_are_optional_and_their_settings_are_emitted_when_chosen(
+    qapp, keypoint_runs
+):
+    """The keypoint picker starts on "(none)", which emits nothing (an export with no
+    keypoints); a keypoint track setting chosen is emitted as ``keypoint_track_spec``, which
+    the run resolves to each recording's own run and checks against the tracking run."""
+    from detail.gui.modules.analysis_location import NO_KEYPOINTS_TEXT
+    from detail.storage import recording as recording_store
+
+    _it, recording = keypoint_runs
+    data = recording_store.read_recording(recording.dir)
+    data.setdefault("keypoint_track_runs", []).append(
+        {"id": "kt_01", "status": "complete", "detect_run_id": "kd_01"}
+    )
+    recording_store.write_recording(recording.dir, data)
+    form = _LocationExportConfig()
+    form.on_recordings_changed([recording])
+    combo = form._keypoints.combo
+    assert combo.itemText(0) == NO_KEYPOINTS_TEXT and combo.currentIndex() == 0
+    assert "keypoint_track_spec" not in form.config()
+    assert combo.count() == 2, [combo.itemText(i) for i in range(combo.count())]
+    combo.setCurrentIndex(1)
+    spec = form.config()["keypoint_track_spec"]
+    # The settings, not an id: the run resolves them to this recording's own kt_01.
+    from detail.api import run_spec
+
+    data = recording_store.read_recording(recording.dir)
+    assert (
+        run_spec.resolve_spec_in_recording(data, "keypoint_track", spec, recording.dir)
+        == "kt_01"
+    )
