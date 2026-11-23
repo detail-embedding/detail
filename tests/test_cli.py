@@ -5823,7 +5823,9 @@ def test_locations_export_refuses_an_option_it_cannot_apply(
     # thin-part removal was taken out: the flag is unknown, not quietly ignored
     removed = _locations_export(processed_recording, out, "--remove-thin-parts")
     assert removed.exit_code != 0
-    assert "No such option: --remove-thin-parts" in removed.output
+    assert (
+        "No such option" in removed.output and "--remove-thin-parts" in removed.output
+    )
     assert not out.exists() or not any(out.iterdir())  # nothing half-written
 
 
