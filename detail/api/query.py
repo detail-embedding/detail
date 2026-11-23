@@ -22,6 +22,7 @@ from detail.api.authored_run import (
     SnapshotViewMixin,
 )
 from detail.api.experiment import Experiment
+from detail.api.query_review import QueryReviewOperations
 from detail.core.errors import UserInputError
 from detail.pipeline import query as query_pipeline
 from detail.storage import analysis_runs as analysis_store
@@ -31,10 +32,19 @@ from detail.storage import recording as recording_store
 from detail.storage import snapshots as snapshots_store
 
 
-class QueryRun(AuthoredRun):
+class QueryRun(QueryReviewOperations, AuthoredRun):
     """Handle for a Query run. ``inner`` (the executor handle) is present while the search is
     in flight and ``None`` for a run reached later to calibrate; every calibration operation
     works either way."""
+
+    #: ``AuthoredRun``'s writers and this run's own: the review's removals (through ``_edit``)
+    #: and its census (through ``_record``), each refused on a snapshot view.
+    _WRITE_METHODS = (
+        *AuthoredRun._WRITE_METHODS,
+        "take_out_clips",
+        "put_back_clips",
+        "finish_review",
+    )
 
     def __init__(self, inner, experiment: Experiment, run_id: str):
         super().__init__(inner, experiment, run_id)
@@ -116,6 +126,36 @@ class QueryRun(AuthoredRun):
     def _write_state(self, state) -> None:
         query_runs.write_query_state(self._run_dir(), state)
 
+    def _method(self):
+        """The query method that wrote this run's search.
+
+        Raises:
+            UserInputError: this version no longer has it (``docs/removed_capabilities.md``),
+                naming the method. Its search cannot be read — not calibrated, reviewed or
+                audited — and saying so beats the bare registry error, which reached the CLI as a
+                traceback.
+        """
+        from detail.core.registries import QUERY_METHODS
+        from detail.query_methods import import_query_methods
+
+        method_id = self.state().method
+        import_query_methods()
+        if method_id not in QUERY_METHODS:
+            raise UserInputError(
+                f"query run {self.id!r} was searched with the {method_id!r} method, which this "
+                "version no longer has, so its search cannot be calibrated, reviewed or "
+                "audited. The run record, its behavior output and its output folder are kept"
+            )
+        return query_pipeline.resolve_method(method_id)
+
+    def _edit(self, op: str, mutate, *, reproject: bool = True, progress=None):
+        """``AuthoredRun._edit``, refused first when the run's method is gone: every query edit
+        reprojects through it, and finding that out inside the reprojection left the edit saved
+        over results that were never rebuilt (#24 — a cutoff, a rename, a clip put back).
+        """
+        self._method()
+        return super()._edit(op, mutate, reproject=reproject, progress=progress)
+
     def _log(self, entry: dict) -> None:
         query_pipeline.append_history(self._run_dir(), entry)
 
@@ -181,7 +221,7 @@ class QueryRun(AuthoredRun):
             return self._results[behavior_id]
         state = self.state()
         state.behavior(behavior_id)  # raises, naming the ids that exist
-        method = query_pipeline.resolve_method(state.method)
+        method = self._method()
         recordings = list(state.search_recording_ids)
         loaded: dict[tuple[str, int], object] = {}
         for i, recording_id in enumerate(recordings):
@@ -216,7 +256,7 @@ class QueryRun(AuthoredRun):
         a method is resolved.
         """
         state = self.state()
-        method = query_pipeline.resolve_method(state.method)
+        method = self._method()
         return {
             unit: method.instances_at(result, float(cutoff), state.method_params)
             for unit, result in self.load_results(behavior_id).items()
@@ -287,7 +327,7 @@ class QueryRun(AuthoredRun):
         second behavior, a redraw, a reopened view) costs no disk and no extraction.
         """
         state = self.state()
-        method = query_pipeline.resolve_method(state.method)
+        method = self._method()
         cap = method.candidate_cap(state.method_params)
         results = list(self.load_results(behavior_id, progress=progress).values())
 
@@ -333,7 +373,7 @@ class QueryRun(AuthoredRun):
         from detail.storage import experiment as experiment_store
 
         state = self.state()
-        method = query_pipeline.resolve_method(state.method)
+        method = self._method()
         pool: list = []
         for behavior in state.behaviors:
             if label is not None and behavior.id != label:
@@ -407,13 +447,12 @@ class QueryRun(AuthoredRun):
         """
         return query_runs.example_instance_ids(self.state().behaviors, rows)
 
-    def _audit_edges(self, labels, *, fix_seed: int | None = None) -> dict:
+    def _audit_edges(self, labels) -> dict:
         """``{behavior id: edges}`` — each behavior's audit bins, from its candidates at no cutoff.
 
-        Read from ``audit.yaml`` where the behavior has recorded bins, else derived — the same
-        edges, because they are a pure function of the candidates and the search results never
-        change. ``fix_seed`` (a draw) records the derived ones, so the draw, every estimate and
-        the confidence curve cut the scores in the same places from then on.
+        Read from ``audit.yaml`` where the behavior has recorded bins (the earlier one-by-one
+        audit recorded them at its first draw), else derived — the same edges, because they are
+        a pure function of the candidates and the search results never change.
         """
         from detail.storage import behavior_audit as audit
 
@@ -433,8 +472,6 @@ class QueryRun(AuthoredRun):
             )
             for label in labels
         }
-        if fix_seed is not None and any(label not in stored for label in labels):
-            edges = audit.fix_bins(self._run_dir(), edges, seed=fix_seed)
         return edges
 
     def _audit_rows(self, label: str | None, cutoff: float | None):
@@ -490,10 +527,6 @@ class QueryRun(AuthoredRun):
                 f"cutoff must be a confidence in [0, 1], got {cutoff!r}. Confidence is "
                 "canonical across query methods (§20), so this axis is method-independent."
             )
-        # Before the edit writes anything: a run whose method this version no longer has cannot
-        # be reprojected, and finding that out inside the reprojection left the new cutoff saved
-        # over results cut at the old one (#24).
-        query_pipeline.resolve_method(self.state().method)
 
         def mutate(state: query_runs.QueryState) -> dict:
             behavior = state.behavior(behavior_id)

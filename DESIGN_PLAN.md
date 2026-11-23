@@ -53,7 +53,7 @@ This document is the approved design for the DETAIL infrastructure redesign. Com
 | Annotation Import/Export (§17) | **COCO masks export built** — the `masks` export target on a detection run (`api/export_targets.py`), through the export backbone. Not built: MOTS / MOT for tracked runs, the `with_frames` bundle, and import (Phase 2). |
 | Export and provenance (§18) | **Built** — `report/` (`style.py`, `tables.py`, `figures.py`, `exporter.py`) and `analysis/provenance.py` (`capture` / `drift`); §24's comparison export is the writer. A Query run's §19 artifact carries a captured provenance block; a temporal clustering run's block is empty, and only a saved comparison is checked for drift (`Comparison.drift`). |
 | Behavior Output (§19) | **Built, and produced.** `storage/behavior_output.py` (the three files, writer + tolerant reader + discovery-by-scanning), `storage/frame_view.py` (the per-frame expansion §23 measures against), `storage/behavior_audit.py` (the optional audit), `storage/append_log.py` (the shared append primitive), and the `origin` boundary that keeps a re-ingested prediction from being read as ground truth. **Two producers emit it**: §20's Query and §22's temporal clustering. Each writes the frame view too (#237), so a windowed §23 measure answers on any of them; a producer that skipped it would leave every sub-window question refusing on its runs alone, which is what the parity guard exists to stop. The measures and comparison layers above it are specified in §23 / §24 and built. |
-| Query (§20) | **Built** — `pipeline/query.py`, `api/query.py` (an authored run, §21), `storage/query_runs.py`, the `query_methods/` registry, CLI `analysis query` / `query-calibrate` / `export-query`, and the GUI calibration workspace. It is the first producer of the §19 artifact. One method, **`soft_knn`**, the default — chosen on measured cost, while which kind of method retrieves better stayed unmeasured. Its AUDIT tab (§19 reliability, `gui/audit_tab.py`) is built: blind, randomized, 25 clips a batch, precision with a Wilson interval and a per-recording split. §22's workspace has its own (`gui/label_check.py`); the two share the §19 statistics, not a widget. |
+| Query (§20) | **Built** — `pipeline/query.py`, `api/query.py` (an authored run, §21), `storage/query_runs.py`, the `query_methods/` registry, CLI `analysis query` / `query-calibrate` / `export-query`, and the GUI calibration workspace. It is the first producer of the §19 artifact. One method, **`soft_knn`**, the default — chosen on measured cost, while which kind of method retrieves better stayed unmeasured. Its AUDIT tab (§19 reliability) is built. **Since 2026-11-22** AUDIT reviews every candidate the cutoff keeps, one recording at a time, removing the wrong ones, on §22's review pane (`gui/query_review.py`, §20 *The audit*); the blind draw and `gui/audit_tab.py` are gone. |
 | Authored Runs (§21) | **Built.** `api/authored_run.py` carries the contract — open vs partial, one writer, `finalize()` / `reopen()`, refuse-if-finalized, reproject-on-edit. `mutable` is declared on `AnalysisModule` so the API and CLI know it as well as the GUI; two modules set it (`query`, `temporal_clustering`). Of the shared pieces recorded as extraction targets, the run handle base `AuthoredRun` was extracted; `Experiment.run_authored` and a shared `MutableRunWorkspace` were not (each module keeps its own launch path and workspace). |
 | Behavior Discovery (§22) | **Temporal built** — `pipeline/temporal_clustering.py`, the `cluster_methods/` registry, CLI `analysis temporal-clustering` / `temporal-interpret`, and the INTERPRET workspace; it emits the §19 artifact. The pose half of this section is design, not built: its protocol and an empty method registry (`POSE_CLUSTER_METHODS`) are in the tree, and no pose clustering module is registered. **Node-centric interpretation built** (labels on tree nodes, no granularity, the node cache listing every node's clips with their typicality and a rebuild, the icicle shaded by the cluster-view filters, the label bar, and a live montage of every clip from the preview cache). Labels are stored things with ids (one label across several clusters, the parent rule, rename and merge). AUDIT is a list of labels and clusters beside a review pane, with the figures in INTERPRET's label bar (§19, §22); on a temporal run every clip of a cluster is reviewed, the wrong ones marked (removed or moved, `clip_edits`, faded in place on INTERPRET too) and the finish recorded as a census (`clip_review.csv`, `finish_review`) that gives the cluster's exact precision, built; and BROWSE is the labelled-data browser (filters, ethogram, list). Not yet built from §22's text: the descriptor histograms behind *Measurements that set it apart*, arena-normalized maps, BROWSE's location filter, and re-attaching audit answers after a branch is sub-labelled. |
 | Measures (§23) | **Built, on all three surfaces** — `analysis/measures.py` (eleven measures, each declaring how it meets a window boundary and what unit its value carries) and `analysis/windows.py` (whole / absolute / normalized / sliding, the model in `configs/windows.py`). Pure windowed queries over the §19 artifact; a windowed denominator needs the frame view's observed mask, which every producer now writes. `noise_time` is deliberately absent (see *The measures*). Reachable as `Experiment.measures(run_id)`, as `detail measures export` / `list`, and as the Measures panel on an analysis run's page. |
@@ -5811,8 +5811,10 @@ audit is that a number without one cannot be read.
 **A temporal clustering run's precision comes from `clip_review.csv`**, a census of each cluster:
 every clip of it reviewed and recorded yes or no (§22, *Precision from reviewing every clip*). Its `audit.csv`, from the one-by-one review
 that came before, is never rewritten or merged into the new figure; it stays readable and is shown
-as *Earlier one-by-one audit*. Everything below about `audit.csv` still holds for a query run and
-for the earlier audit.
+as *Earlier one-by-one audit*. A query run's precision comes from the same file, every
+candidate its cutoff keeps reviewed one recording at a time (§20 *The audit*). Nothing writes
+`audit.csv` any more — the draw and the judge (`audit_sample`, `label_audit`) are gone on both
+run kinds — so everything below about it describes how an audit already on disk is read.
 
 When it is done, the estimate is **derived from a stored sample of human decisions**, never stored
 as a number. `audit.csv` holds `{instance_id, score, human_label, drawn_at, answer}` — the
@@ -5849,8 +5851,8 @@ rows read an empty answer.
   (Zobel, SIGIR 1998). So `decision_coverage` reports `n_decisions` / `n_applicable` / `coverage`
   beside every number, and `precision` comes back `None` with a `reason` below
   `MIN_COVERAGE`. **That floor is a policy choice, not a measurement** — the literature supports
-  having one and gives no principled value — and the way back from low coverage is to audit more,
-  which `draw_audit_sample`'s `exclude_instance_ids` already supports. An audit read from a
+  having one and gives no principled value — and the way back from low coverage was to audit
+  more; now it is the review of every clip. An audit read from a
   **snapshot** (§21) is always fully covered, because the decisions were copied beside the artifact
   they were made against.
 - **A nested label is answered at the deepest level that is true.** A clustering run's labels sit
@@ -5868,7 +5870,7 @@ rows read an empty answer.
   label: its yes counts for the ancestors too, its no only for its own label.
 - **The unlabelled remainder is never audited.** A clustering run reports time under no label as
   one `unlabelled` bucket, which makes no claim a reviewer could confirm, so the sample is drawn
-  from labelled instances only (`AuthoredRun.audit_sample`).
+  from labelled instances only.
 - **An edited label says what it set aside.** Its headline counts judgments since its membership
   last changed, and `precision_at_cutoff` returns `n_before`, the judgments that filter dropped, so
   a surface reads "0 judged since, 78 before" rather than "not audited yet" beside a label that was.
@@ -5897,13 +5899,11 @@ rows read an empty answer.
   with nothing after it — and `verdict` reads it as no for the scope and everything under it and
   as no judgment for the labels above. A yes still counts upward. A root-level scope's "not" is
   `NOTHING_CELL`, and a root-level label with no sub-labels keeps the flat yes/no.
-- **A round is 25 clips, of a label or of one cluster.** `audit_sample(path=)` draws a label's
-  round across its clusters in proportion to their size (`draw_sample`, Sainte-Laguë);
-  `audit_sample(path=, node=)` draws from one cluster only, which is how a reviewer looks harder at
-  a cluster that looks doubtful. A round is a sitting, never a count sized to close a gap: "audit 2
-  more" is not a sitting. The CLI's `--goal-width` note says roughly where another round would put
-  the interval, `projected_interval(estimate, 25)` — Wilson at the current share over `n + 25`
-  (the effective n for a label) — never reported as a figure. The GUI shows no projection.
+- **A round was 25 clips, of a label or of one cluster**, drawn across a label's clusters in
+  proportion to their size (Sainte-Laguë), or from one cluster only. The draw is gone with the
+  review of every clip; a test that needs an earlier audit seeds one the way it was drawn
+  (`tests/audit_seed.py`). The CLI's `--goal-width` note says only how wide an earlier audit's
+  interval is against the goal: with no draw, there is no next round to project.
 - **What a figure shows is one rule, in one place** (`storage/audit_figures.py`, read by AUDIT's
   table, INTERPRET's card and `analysis audit`). Below `MIN_N_FOR_ESTIMATE` (8) audited clips the
   estimate is withheld and the interval still shown — it is the honest statement of how little a
@@ -6234,12 +6234,14 @@ Two rules fall out:
 ```
 analysis/an_NN/
   analysis.yaml       lifecycle status (open until finalized)
-  query.yaml          authored state: behaviors, exemplars, method + params, cutoffs, names
+  query.yaml          authored state: behaviors, exemplars, method + params, cutoffs, names,
+                      each behavior's removed clips (§20 The audit)
   history.jsonl       append-only operation history (§21)
   background.npz      the drawn background sample + its draw record, when the method asks for one
   search/<behavior>/<recording>__<subject>[__chunk_KK].<ext>    method-serialized, opaque
-  audit.csv           optional human decisions
-  audit.yaml          each behavior's fixed score bins, from its first audit draw
+  audit.csv           the earlier one-by-one audit's decisions: read, no longer written
+  audit.yaml          each behavior's fixed score bins, recorded at that audit's first draw
+  clip_review.csv     the review's answers, every candidate a cutoff keeps (§20 The audit)
   instances.csv  coverage.csv  behavior_output.yaml            the §19 artifact
   instance_features.csv                                        §19, beside the artifact
   frames/             the §19 frame view (+ frames/PENDING while an edit has left it stale)
@@ -6270,9 +6272,12 @@ Per behavior, one axis — confidence — and everything read against it:
   the answer. **Built per recording**, as instances kept at the cutoff (*Three layout decisions*,
   below); a per-group view is not built.
 - **The audit overlay**, when one exists: precision against confidence, and the product of the two
-  — estimated true instances, which is the number that reaches a figure. **Not built:** the Audit
-  tab lists precision per score bin (`audit_precision_by_score_bin`), but nothing draws it on the
-  curve and the product is not computed.
+  — estimated true instances, which is the number that reaches a figure. **Not built:** nothing
+  draws precision on the curve and the product is not computed. Under the review (*The audit*),
+  precision is a count at every cutoff at or above the behavior's reviewed floor
+  (`review_precision(cutoff=)`) and there is nothing to draw below it.
+  The product must take the count before removals: the exported count already leaves the *no*
+  clips out, and multiplying it by the precision would discount them twice.
 - **The cutoff is the user's**, set by looking at what each setting returns. Nothing is suggested
   or pre-applied in v1 (see *Deferred*).
 - **The stored edge.** Where a method caps what it stores, the cap is recorded and drawn, because a
@@ -6290,9 +6295,115 @@ module.
 
 ### The audit
 
-Optional, and the only quality signal that exists in this module. §19 specifies the mechanism —
-store the labeled sample, derive the metric. What Query adds is the property that keeps it from
-becoming a labeling loop.
+**Built 2026-11-22, the owner's decision** (`api/query_review.py`, `gui/query_review.py`). It
+replaces the blind draw described under *The earlier one-by-one audit* below, which is kept for
+how an `audit.csv` already on disk is read.
+
+Optional, and the only quality signal that exists in this module. It is §22's clip review
+(*Precision from reviewing every clip*) applied to a behavior: **every candidate the cutoff keeps
+is reviewed**, the wrong ones are removed, and finishing writes a census, so the precision is a
+count, not an estimate. The reason is the one the owner gave for clustering: a clip nobody watched
+cannot be removed. On a query run the clips that matter are the ones the cutoff exports.
+
+```
+score 1.0 ───────────────────── 0.42 cutoff ─────────── 0.0
+       [ every candidate reviewed: exact ]│ · · not reviewed · ·
+cutoff raised to 0.50  → [ exact, a subset ]│
+cutoff lowered to 0.35 → [ exact above 0.42 ][ 0.42–0.35 not reviewed ]│
+```
+
+- **The population is the cutoff's.** A behavior's review covers its candidates at or above its
+  committed cutoff. For `soft_knn` these are exactly the artifact's instances, because
+  `instances_at` is a filter of one extraction. A behavior with no cutoff has nothing to review,
+  and AUDIT says *Set a cutoff on CALIBRATE first*. This reverses the earlier audit's founding rule,
+  that it measures the method and not the cutoff: the review measures what the cutoff keeps, which
+  is what is exported.
+- **A recording is reviewed whole**, the way a cluster is. AUDIT lists the behavior's recordings;
+  the reviewer opens one, watches every candidate of it at the cutoff, removes the wrong ones and
+  finishes. The unit is a recording, not the behavior, because a cohort's candidates above a cutoff
+  run to hundreds per behavior (`soft_knn` finds about 583 per 30-minute recording before any
+  cutoff), more than one sitting; and because it makes the per-recording split, the bias
+  *Calibration* names, exact. A recording with no candidate at the cutoff is reviewed with nothing
+  to watch.
+- **A figure is exact at a cutoff when every candidate at or above it has an answer.** Nothing
+  stores how far a review reached: a recording's **reviewed floor** is derived from the log, the
+  lowest cutoff above which every candidate has a current answer. Raising the cutoff keeps the
+  figure exact over the subset. Lowering it below the floor leaves the new candidates unreviewed:
+  the recording reads *reviewed to 0.42 · 12 new below it*, and its figure is shown only with that
+  range (*93% at 0.42 and above*), never as the figure at the current cutoff. The answered clips
+  are the top of the recording's candidates, not a sample of them, and read as a sample they
+  flatter the method. The behavior's figure appears only once every recording is exact at the
+  current cutoff (`audit_figures.complete`), as a label's does once every cluster is. Precision is
+  *yes / (yes + no)* over the reviewed candidates, combined across recordings by
+  `behavior_audit.stratified_estimate`, each recording a stratum of its candidate count; with every
+  stratum exact it is the plain count.
+- **A removal edits the output, never an input.** A removed candidate leaves the behavior's
+  instances at every cutoff, and so the export, the frame view and every measure. The search, the
+  examples and the non-examples are untouched: making it a non-example would let a reviewer's
+  labels build the method they score (the leakage rule), and would need a new search anyway.
+- **Remove, never move.** Each behavior is its own search under its own cutoff, so moving a
+  *rearing* candidate into *grooming* would give grooming an instance its search never found.
+  Right-click offers *Put back* and nothing else.
+- **Still blind, and shuffled.** The review pane never shows a score, on a tile, in a tooltip or in
+  the finished box, and orders a recording's candidates at random, seeded by the behavior and
+  recording so reopening shows the same order. Clustering's *least typical first* is not copied: on
+  a query run any order taken from the search is an order by score, and seeing the rank pulls a
+  judgment toward it. The score is in BROWSE.
+- **The user's own clips are not reviewed.** A candidate overlapping one of its behavior's example
+  or non-example clips (`query_runs.example_instance_ids`) is left out of the grid and every count,
+  and stays in the export marked `is_example`, as before. The recording's row says how many
+  (*+2 on your own examples, not reviewed*).
+- **Finish needs every picture.** Finish is refused while any tile shows *no preview*, saying how
+  many. A census writes *yes* for every clip not removed, so a clip whose picture never rendered
+  would be judged against nothing: the recorded class in `tests/gui/test_frame_source.py`.
+- **Putting a clip back withdraws its answer** (§22, #24). The clip reads as not reviewed, so its
+  recording is not exact at its score or below until it is finished again.
+- **Per behavior, never interleaved.** The workspace's behavior selector scopes AUDIT; a sitting
+  reviews one behavior.
+- **An unreviewed run looks unfinished.** Not blocked: a user may take instances without reviewing
+  any. But an unreviewed count must not render like a reviewed one.
+
+**Storage**, both halves in clustering's shape:
+
+- **Removals**: `Behavior.removed` in `query.yaml`, a list of `{recording_id, subject, t_ns,
+  end_t_ns, at}` (a `ClipRef` and when). Per behavior, because one span can be a candidate of two
+  behaviors and clustering's `clip_edits` keys an edit by the clip alone. One entry per clip;
+  *Put back* deletes it; a state written before the field reads as an empty list.
+- **Answers**: `clip_review.csv` (`storage/clip_review.py`), unchanged. `label_path` is the
+  behavior's id, which `name_behavior` does not change, so a rename keeps every answer; `node` is
+  empty (read as -1); a candidate is its span. `finish_review` writes one row per candidate of the
+  recording in one append, and `withdraw` writes `withdrawn` for a clip put back.
+- **`audited`** (§19's manifest) must count `clip_review.csv` as well as `audit.csv`. Today it
+  reads `audit.csv` alone, which already reports a clustering run reviewed by census as unaudited.
+
+**API**, on `QueryRun`, named as clustering's where they mean the same: `take_out_clips(clips,
+from_label)` (a `to_label` is refused, saying why), `put_back_clips(clips, from_label)`,
+`taken_out(label=None)`, `finish_review(behavior, recording)`, `review_precision(behavior,
+recording=None, cutoff=None)` (the committed cutoff when none is given; carries `reviewed_floor`),
+`review_by_recording(behavior)`. The edits go through `_edit` (the edit lock, the snapshot and
+finalized refusals, a history line, the reprojection); `finish_review` through `refuse_if_stale`
+and `_record`, as clustering's does.
+
+**What left.** The draw and the judge went with the tab that called them: `audit_sample`,
+`label_audit` and `audit_precision_by_score_bin` left `AuthoredRun`, and `gui/audit_tab.py`'s
+one-at-a-time player gave way to the review pane (`label_clean.ReviewPane` over a `LiveMontage`,
+its marks in `gui/review_marks.py`, shared with the clustering AUDIT).
+`audit.csv` is never written again and never merged into the review's figure. It stays readable,
+in the CLI under *Earlier one-by-one audit* and in the tooltip on AUDIT's figure line, so a run audited
+before keeps what it bought; its headline reads *not reviewed* until someone reviews it, which the
+user guide says.
+
+**A method whose candidates depend on the cutoff** (design; none is registered). The review keys
+removals and answers on spans, so a method that re-forms its instances as the cutoff moves would
+strand both. Registering one means deciding how a removal and an answer carry to the pieces; the
+earlier audit's *labels survive refinement* is where to start.
+
+#### The earlier one-by-one audit (replaced by the review above; still read)
+
+How the audit before the review worked, and so how an `audit.csv` already on disk is read: the
+readers below are kept, the draw and the judge are not. §19 specifies the mechanism: store the
+labeled sample, derive the metric. What Query added is the property that kept it from becoming a
+labeling loop.
 
 **The audit measures the method, not the cutoff.** The sample is stratified **uniformly across the
 whole confidence range**, independent of any cutoff, and reviewing it yields precision *as a
@@ -6384,13 +6495,15 @@ instances. Switching behavior keeps the current tab.
 ```
 
 - **Calibrate** — clips *at* the cutoff, to decide where to cut.
-- **Audit** — blind and randomized, to estimate precision.
+- **Audit** — every candidate the cutoff keeps, one recording at a time, to count precision and
+  remove the wrong ones (*The audit*).
 - **Browse** — the accepted instance set, sortable, read-only, to see what you actually got.
 - **Measures** — §23's measures of the live artifact (`pages.MeasuresPanel`); live runs only, so it
   is absent while a snapshot is shown (§21).
 
-**Nothing is a wizard.** Audit before or after choosing a cutoff, browse at any time, move the
-cutoff after auditing — which is the whole point of the audit being cutoff-independent (below).
+**Nothing is a wizard**, with one order the review imposes: it needs a cutoff, because it
+reviews what the cutoff keeps. Browse at any time; move the cutoff after reviewing, and the figure
+stays exact above it or says what is left below (*The audit*).
 **Browse survives Finish**: completing sets the record status, it does not close the workspace, and
 reopening is only needed to *change* something.
 
@@ -6583,12 +6696,14 @@ recording that *was* searched is a real zero and not a gap.
 ### Surfaces
 
 - **API** — `Experiment.run_analysis("query", config)` for the search; a `QueryRun` object
-  (`Experiment.query_run`) for the authored half (`set_cutoff`, `name_behavior`, `audit_sample`,
-  `label_audit`, `finalize` / `reopen`, `export`).
+  (`Experiment.query_run`) for the authored half (`set_cutoff`, `name_behavior`, `review_clips`,
+  `take_out_clips`, `put_back_clips`, `taken_out`, `finish_review`, `review_precision`,
+  `review_by_recording`, `finalize` / `reopen`, `export`).
 - **CLI** — `analysis query` (launch), `analysis status` / `attach`, `analysis query-calibrate`
-  (cutoffs, names, the frequency curve, finalize / reopen), `analysis audit` (reads the audit's
-  precision), `export-query`. Marking clips and judging audit clips are GUI-only, recorded in
-  `docs/cli.md`'s omission ledger like every other deliberate gap.
+  (cutoffs, names, the frequency curve, finalize / reopen), `analysis audit` (the review's
+  figure per behavior and, with `--by-recording`, per recording; an earlier audit's under *Earlier
+  one-by-one audit*), `export-query`. Marking example clips and reviewing and removing clips are
+  GUI-only, recorded in `docs/cli.md`'s omission ledger like every other deliberate gap.
 - **GUI** — one config form (exemplar and non-example marking through the existing
   `ClipExampleDialog`, method in advanced settings), and the four-tab workspace above. Browse is
   reachable after Finish; only changing something requires a reopen.
@@ -6647,7 +6762,17 @@ matches once `L - band` clamps at 1 — filtering matches to the declared durati
 - **A judgment is refused against a frame nobody saw.** The audit shows a clip and records a
   decision, so a cell whose frame did not decode must reject input and name the reason rather than
   accept a decision against a blank pane — the recorded class in `tests/gui/test_frame_source.py`,
-  at its highest-stakes site, since such a decision still lands in the precision estimate.
+  at its highest-stakes site, since such a decision still lands in the precision estimate. Under
+  the review the decision is Finish, which answers *yes* for every clip not removed, so Finish is
+  what is refused while a tile shows *no preview*.
+- **The review's figure is exact only where every candidate is answered**
+  (`tests/api/test_query_review.py`). Finish a
+  recording at one cutoff, then assert: raising the cutoff keeps the figure exact; lowering it
+  reports the reviewed floor and the new candidates, and never shows the old figure as the one at
+  the new cutoff; putting a clip back makes its recording not exact.
+- **A removal changes no input** (`tests/api/test_query_review.py`). A removed candidate leaves
+  `instances.csv` at every
+  cutoff, while the shards, the examples and the non-examples stay byte-identical.
 - **Dragging the cutoff reprojects nothing.** Assert that a drag reads the cached curve and that the
   artifact is rewritten only on commit, off-thread. A test that only checks the number on screen
   passes while the GUI freezes on every pixel.
@@ -6736,8 +6861,9 @@ slow interaction, because a decision a user is expected to iterate on cannot cos
   `core.atomic.replace`; the concurrently-read-file rule). `set_cutoff`, `name_nodes`.
 - **Log append** — one human decision, appended with `flush()` + `fsync()`. Deliberately *not* a
   state edit: the append-vs-rewrite difference is what makes human judgment durable, since a crash
-  loses at most the final row and a torn trailing line is tolerated on read. `label_audit`, and
-  the clip review's `clip_review.csv` (§22).
+  loses at most the final row and a torn trailing line is tolerated on read. The review of every
+  clip's `clip_review.csv` (§20, §22); `audit.csv` was written this way while the one-by-one audit
+  existed.
 - **Compute operation** — a fresh executor job into the **same** run directory, with
   `job_id = run_id`, so re-submitting overwrites only the transient `job.json` while the authored
   state persists. **None is built:** a refit mints a new run (*Snapshots*, below), and adding a
@@ -7054,10 +7180,10 @@ them in a tab widget whose bar is hidden (`gui/result_views.MultiViewWorkspace`)
    Pose clustering      MODULE = INTERPRET   the same — design only; the module is not built (§22)
 ```
 
-- **AUDIT** — the §19 reliability audit: blind, randomized, budget-picked, precision with its
-  interval. The same statistics wherever it appears, because it estimates precision of a *named
-  label* and does not care what produced the label; the layout differs — a query's is scoped by
-  its behavior selector (`gui/audit_tab.py`), a clustering run's is one table of labels and
+- **AUDIT** — the §19 reliability audit: every clip of a scope reviewed, the wrong ones removed,
+  a census its precision. One review pane (`gui/label_clean.ReviewPane`) and one set of marks
+  (`gui/review_marks.py`) wherever it appears; the list beside it differs — a query's lists the
+  selected behavior's recordings (`gui/query_review.py`), a clustering run's its labels and their
   clusters (`gui/label_check.py`).
 - **BROWSE** — the accepted instance set: sort, click to play (a per-recording span timeline was
   specified and is not built). Read-only. On a clustering run it is the **labelled** set (§22,
@@ -7078,8 +7204,9 @@ them in a tab widget whose bar is hidden (`gui/result_views.MultiViewWorkspace`)
 GUI therefore inherits the property the artifact exists to create: **a module added later gets
 Audit, Browse and Measures by emitting the artifact**, not by building three tabs. *As built,
 only Measures is one shared widget (`pages.MeasuresPanel`)*: each module still has its own Audit and
-Browse widgets (a query's `AuditTab` / `_BrowseTab`; a clustering run's `label_check` and BROWSE),
-which share the §19 statistics rather than a widget.
+Browse widgets (a query's `QueryReviewTab` / `_BrowseTab`; a clustering run's `label_check` and
+BROWSE). The two AUDIT pages share the review pane and its marks; the BROWSE pages share the §19
+statistics rather than a widget.
 
 The module tab is where everything genuinely specific lives — a confidence curve, a node tree and
 its cards. That is two things against three whole tabs.
@@ -7706,8 +7833,9 @@ rest on. Whether a figure is good enough is the reader's call — an earlier tab
 *fails* / *~16 more clips* against a target, and that call belongs to the person who knows the
 behavior. On a clustering run it is **one screen** (`gui/label_check.py`, review round 11): a list
 of labels and their clusters on the left, and the **review pane** for one cluster on the right
-(`gui/label_clean.py`). A query run keeps its own layout (`gui/audit_tab.py`), scoped by its
-behavior selector.
+(`gui/label_clean.py`). A query run uses this review pane too (`gui/query_review.py`, §20 *The
+audit*), scoped by its behavior selector: the behavior's recordings where this list has clusters,
+no *Move to*, no score, and a shuffled order in place of *least typical first*.
 
 **Every clip is reviewed** (review round 11, the user's decision: "we force people to review all
 clips"). Before it, AUDIT was a table, a cleaning scroll that fed no figure, and a separate draw of

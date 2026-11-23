@@ -18,9 +18,9 @@ Three things this form does *not* have, each on purpose:
 
 ``result_widget`` returns the **calibration workspace** — a behavior selector over Calibrate and
 Browse. It is a stateful result view that writes, which ``docs/gui_design.md`` §3.2 allows for an
-authored run (§21) and which the removed ``clip_annotation`` established. Audit is the third tab §20
-specifies and is not built yet; §21 makes it generic over the artifact rather than Query's, so it
-arrives as a shared widget rather than as a tab grown here.
+authored run (§21) and which the removed ``clip_annotation`` established. Audit is
+``query_review.QueryReviewTab``: every clip a behavior's cutoff keeps, reviewed one recording at a
+time on the clustering review's pane (§20 *The audit*).
 """
 
 import dataclasses
@@ -71,10 +71,10 @@ from detail.gui.modules.registry import (
 from detail.gui.busy import run_busy, run_progress
 from detail.gui.clip_grid import ConfidenceStrip, score_digits
 from detail.gui.confidence import ConfidenceRow, showing_caption
-from detail.gui.audit_tab import AuditTab
 from detail.gui.cluster_strip import EthogramStrip, ruled
 from detail.gui.collapse import CollapsibleBand
 from detail.gui.measurements import BASELINE_RECORDING, MeasurementsPanel
+from detail.gui.query_review import QueryReviewTab
 from detail.gui.tables import (
     BROWSE_ROWS,
     num_cell,
@@ -500,12 +500,21 @@ def _sparkline_font() -> QFont:
 
 
 def _clip_specs(
-    candidates, recording_id, subject, embed_run_id, timeline, *, name: str
+    candidates,
+    recording_id,
+    subject,
+    embed_run_id,
+    timeline,
+    *,
+    name: str,
+    removed: frozenset = frozenset(),
 ) -> list:
     """``QueryCandidate``s -> ``ClipSpec``s, which every clip surface in the GUI speaks.
 
     ``name`` is the recording's, for the caption (§11: the id is the tool's). Required, so a
-    caller cannot fall back to the id by forgetting it.
+    caller cannot fall back to the id by forgetting it. A clip whose span is in ``removed`` (the
+    behavior's review took it out, §20) says so in its caption: the strip is the method's own
+    ranked list, so a removed clip stays in it, but it is not in the behavior's instances.
 
     The candidate carries trajectory **rows**; a clip surface needs times, so the unit's
     timeline supplies them by direct indexing — the same projection the artifact writer does.
@@ -517,14 +526,18 @@ def _clip_specs(
     for c in candidates:
         if c.start_row >= len(t_ns) or c.end_row >= len(t_ns):
             continue  # a shard from a search whose trajectory has since changed
+        start, end = int(t_ns[c.start_row]), int(t_ns[c.end_row])
+        mark = (
+            " · removed" if (recording_id, int(subject), start, end) in removed else ""
+        )
         out.append(
             ClipSpec(
                 recording_id,
                 int(subject),
                 embed_run_id,
-                int(t_ns[c.start_row]),
-                int(t_ns[c.end_row]),
-                f"{name} {c.confidence:.2f}",
+                start,
+                end,
+                f"{name} {c.confidence:.2f}{mark}",
                 score=float(c.confidence),
             )
         )
@@ -922,8 +935,11 @@ class _CalibrateTab(QWidget):
             if behavior.cutoff is None
             else f"cutoff {behavior.cutoff:.4f}"
         )
+        removed = self._removed_at(cutoff, behavior)
+        # The count is the search's; the behavior's instances leave the removed clips out.
+        gone = f", {removed} of them removed in Audit" if removed else ""
         self._header.setText(
-            f"{behavior.name} ({behavior.id}) — {shown} instance(s) at {cutoff:.4f} · "
+            f"{behavior.name} ({behavior.id}) — {shown} instance(s) at {cutoff:.4f}{gone} · "
             f"{committed}"
         )
         self._confidence.set_caption(showing_caption(shown, total))
@@ -991,8 +1007,10 @@ class _CalibrateTab(QWidget):
         )
 
     def _build_specs(self) -> list:
-        """Every candidate this behavior has, as clips, in confidence order."""
+        """Every candidate this behavior has, as clips, in confidence order; a clip the
+        review removed says so."""
         state = self._run.state()
+        removed = frozenset(state.behavior(self._behavior_id).removed_keys())
         specs: list = []
         for (recording_id, subject), candidates in sorted(
             self._run.candidates_at(self._behavior_id, 0.0).items()
@@ -1010,9 +1028,47 @@ class _CalibrateTab(QWidget):
                     state.embed_run_id,
                     timeline,
                     name=self._name(recording_id),
+                    removed=removed,
                 )
             )
         return specs
+
+    def forget_clips(self) -> None:
+        """Rebuild the strip's captions and the header's count: the review removed or put back
+        a clip, which both say."""
+        self._specs.clear()
+        if self._behavior_id is not None:
+            self._refresh_clips()
+            self._refresh_header(self.cutoff())
+
+    def _removed_at(self, cutoff: float, behavior) -> int:
+        """How many of the clips ``cutoff`` keeps the review removed (§20): counted from the
+        cut candidates and the timelines already read, so a drag stays a slice."""
+        removed = behavior.removed_keys()
+        if not removed:
+            return 0
+        state = self._run.state()
+        count = 0
+        for (recording_id, subject), candidates in self._run.candidates_at(
+            behavior.id, cutoff
+        ).items():
+            timeline = self._timeline(recording_id, state)
+            if timeline is None:
+                continue
+            _frame_idx, t_ns = timeline
+            count += sum(
+                1
+                for c in candidates
+                if c.end_row < len(t_ns)
+                and (
+                    recording_id,
+                    int(subject),
+                    int(t_ns[c.start_row]),
+                    int(t_ns[c.end_row]),
+                )
+                in removed
+            )
+        return count
 
     def _timeline(self, recording_id: str, state):
         """The unit's frame timeline, read once per unit and kept.
@@ -1458,7 +1514,7 @@ class _BrowseTab(QWidget):
 #: The behavior-scan workspace's views, in row order: ``(name, purpose)``. Measures is live-only.
 QUERY_VIEWS = (
     ("Calibrate", "Set each behavior's cutoff against how often it would be found."),
-    ("Audit", "Judge clips above the cutoff, to see how often a find is right."),
+    ("Audit", "Review every clip the cutoff keeps, and remove the wrong ones."),
     ("Browse", "Every find above the cutoff, playing one at a time."),
     ("Measures", "Time, bouts and transitions per behavior."),
 )
@@ -1507,11 +1563,13 @@ class _QueryWorkspace(MultiViewWorkspace):
 
         self._tabs = QTabWidget()
         self._calibrate = _CalibrateTab(self._run, experiment)
-        self._audit = AuditTab(experiment, self._run)
+        self._audit = QueryReviewTab(experiment, self._run)
         self._browse = _BrowseTab(self._run, experiment)
         # The tab is a leaf and does not know this workspace, so it asks rather than reaching
         # for the selector; driving the selector keeps the two in sync in both directions.
-        self._audit.behavior_requested.connect(self._select_behavior)
+        # A removal or a finish rewrites the artifact Browse reads, and Calibrate's marks.
+        self._audit.changed.connect(self._browse.refresh)
+        self._audit.changed.connect(self._calibrate.forget_clips)
         # A commit rewrites the artifact the other two tabs read.
         self._calibrate.committed.connect(self._browse.refresh)
         self._calibrate.committed.connect(self._audit.reload)

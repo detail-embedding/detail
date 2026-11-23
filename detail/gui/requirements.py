@@ -2489,10 +2489,6 @@ _TEXT_CELLS_FROM_STR: dict[str, str] = {
         "the non-number branch of the shared builder: a number goes to `SortCell` on the next "
         "line, so whatever reaches `str()` here is already text"
     ),
-    "audit_tab.py:AuditTab._fill": (
-        "AUDIT's summary tables do not sort (no `enable_sorting`), and their cells are "
-        "sentences such as `0.82  (0.71–0.90, n=40)` or `not audited`, not numbers"
-    ),
 }
 
 

@@ -328,9 +328,18 @@ one wall counted as rearing, stands out in a list.
     12. **Reopen**: opens a finished run again.
 
 **Audit** puts a number on how often the kept matches are really the behavior: the
-**precision**. It plays a random sample of clips one at a time, **without** showing their
-confidence, and you answer **Yes**, **No** or **Unclear** (or press ++s++, ++d++ or ++f++).
-25 clips take a couple of minutes.
+**precision**. You watch **every match the cut-off keeps**, one recording at a time, and take
+out the ones that are not the behavior.
+
+1. Click a recording in the list on the left. Its matches play side by side, in a random
+   order and **without** their confidence.
+2. **Click a match that is not the behavior** to take it out. Drag across several, or hold
+   ++shift++, to take out a run of them. ++ctrl+z++ undoes.
+3. When you have scrolled to the last match, click **✓ Finish review**. The recording then
+   shows its precision, such as **88% · 7 of 8 are rearing · 1 removed**.
+
+Do this for each recording. The behavior's precision appears above the list once every
+recording is reviewed.
 
 ![The Audit view for rearing before any review: 57 instances of rearing, none reviewed yet, and the Start auditing (25 clips) button. Numbered markers sit on every control.](../../assets/user-guides/single-animal/behavior-scan/audit.png)
 
@@ -340,15 +349,15 @@ confidence, and you answer **Yes**, **No** or **Unclear** (or press ++s++, ++d++
     2. **Finish**: says you are done with the run.
     3. **Reopen**: opens a finished run again.
 
-    Once you have answered some clips, the right of the tab shows the precision for each
-    behavior and each recording, written like **0.88 (0.78–0.97, n=35)**: the share that
-    were right, the range it is likely to be in, and how many clips it rests on. Changing
-    the cut-off afterwards re-reads the precision from the clips already answered: you do
-    not answer them again.
+    A match you take out leaves the behavior's matches: **Browse**, the measures and every
+    export leave it out. Raise the cut-off afterwards and the review still stands; lower it
+    and the new matches are not reviewed yet, so the recording says how far down it was
+    reviewed until you review it again.
 
 ??? info "About this step: why audit"
-    The cut-off you chose by eye is a judgment. The audit is what turns it into a figure
-    you can report: "of the matches kept, 88% were rearing". It does not say how many
+    The cut-off you chose by eye is a judgment. The review is what turns it into a figure
+    you can report: "of the matches kept, 88% were rearing", counted over every match rather
+    than estimated from a sample. It does not say how many
     rearing bouts the scan **missed**; that needs the behavior scored by hand through the
     whole video.
 

@@ -478,15 +478,18 @@ def test_finish_and_reopen_swap_which_button_applies(qapp, tmp_path):
 
 
 def test_a_finished_run_freezes_the_cutoff_until_reopened(qapp, tmp_path):
-    """`set_cutoff` and the audit both refuse a finished run, and the controls were frozen for a
-    snapshot only — so on a finished run the line dragged, the box took a number and Start drew
-    a batch, each into an error. Frozen with the reason that names Reopen, and back after it.
+    """`set_cutoff` and the review both refuse a finished run, and the controls were frozen for
+    a snapshot only — so on a finished run the line dragged, the box took a number and a removal
+    was written, each into an error. Frozen with the reason that names Reopen, and back after it.
     """
+    from detail.gui.query_review import FINISHED
+
     exp, run, workspace = _workspace(qapp, tmp_path)
     run.set_cutoff(workspace._behaviors[0].id, 0.0)
     workspace._audit.reload()
     calibrate, audit = workspace._calibrate, workspace._audit
-    assert _drain(qapp, lambda: audit._start.isEnabled()), "the audit never loaded"
+    assert _drain(qapp, lambda: audit._data.get("cutoff") is not None), "never loaded"
+    assert audit._reason() == ""
     assert calibrate._confidence.isEnabled() and calibrate._line.movable
 
     workspace._on_finish()
@@ -495,18 +498,15 @@ def test_a_finished_run_freezes_the_cutoff_until_reopened(qapp, tmp_path):
     assert not calibrate._line.movable
     assert not calibrate._grid.editable()
     assert "Reopen" in calibrate._confidence.toolTip()
-    # Both at once: while "Finishing…" runs the page is disabled, so Start reads as disabled
-    # before the audit's post-finish reload has set its reason. Waiting on the disabled state
-    # alone checked the tooltip inside that window whenever the machine was busy.
-    assert _drain(
-        qapp,
-        lambda: not audit._start.isEnabled() and "Reopen" in audit._start.toolTip(),
-    ), f"Start tooltip: {audit._start.toolTip()!r}"
+    # The review's own post-finish read sets its reason; Finish then says it.
+    assert _drain(qapp, lambda: audit._reason() == FINISHED)
+    assert not audit.pane.finish.isEnabled()
+    assert "Reopen" in audit.pane.finish.toolTip()
 
     workspace._on_reopen()
     assert calibrate._confidence.isEnabled() and calibrate._line.movable
     assert calibrate._grid.editable()
-    assert _drain(qapp, lambda: audit._start.isEnabled())
+    assert _drain(qapp, lambda: audit._reason() == "")
 
 
 # --- the shell ------------------------------------------------------------------------------
@@ -1881,73 +1881,6 @@ def test_dragging_the_clips_band_grows_the_section_not_the_scroll(qapp, tmp_path
         f"the row is still {tab._grid._scroll.height()}px around bigger pictures — it scrolls "
         "rather than growing"
     )
-
-
-def test_the_audit_clip_keeps_its_buttons_beside_it_in_this_workspace(qapp, tmp_path):
-    """Reported twice: "the yes, no, unclear buttons are still too low ... just for the query
-    audit". Fixed for pose and temporal, still broken here.
-
-    **The difference was never the tab — it was that this workspace lays out, then changes
-    width.** The block sizes itself from its own width, and `QWidgetItemV2` caches an item's
-    size hint and invalidates it on `invalidate()`, which nothing calls for a width-only
-    change. So the layout kept answering from the width it last saw: the block reserved 531px
-    around a 390px picture and `top=True` gathered the 71px difference into one gap, directly
-    under the transport where the buttons go.
-
-    This is the reported sequence, not a tidier one, and every step of it earns its place —
-    four shorter versions of this test passed while the bug was on screen. A larger interface
-    font, because every size here is in `sizing.lines` and while the block's ceiling binds a
-    stale hint and a fresh one are the same number. Judged clips and a `reload`, because that
-    is what fills the sidebar and moves the splitter *after* the first layout. A resize before
-    the window is shown, because that is the order a restored window produces.
-    """
-    from PyQt6.QtCore import QPoint
-    from PyQt6.QtGui import QFont
-
-    from detail.gui.sizing import lines
-
-    original = QFont(qapp.font())
-    larger = QFont(original)
-    larger.setPointSize(original.pointSize() + 3)
-    qapp.setFont(larger)
-    try:
-        exp, run, workspace = _workspace(qapp, tmp_path)
-        run.set_cutoff("q01", 0.0)
-        audit = workspace._audit
-        audit.set_behavior("q01")
-        assert _drain(qapp, lambda: bool(audit._headline.text()))
-        for index, row in enumerate(run.audit_sample(label="q01", budget=10)):
-            run.label_audit(row.instance_id, index % 3 != 2)
-        audit.reload()
-        assert _drain(qapp, lambda: bool(audit._judged))
-        workspace.show_view("Audit")
-        workspace.resize(1397, 900)
-        workspace.show()
-        for _ in range(40):
-            qapp.processEvents()
-        audit._start_batch()
-        for _ in range(40):
-            qapp.processEvents()
-
-        width = audit._stack.width()
-        # Both directions. A stale hint can be from a narrower width as easily as a wider one:
-        # on Linux offscreen the reverted fix left the block 30px *short* — the clip squeezed —
-        # and a `<=` check passed it.
-        need = min(audit._picture_height(width), audit._stack.maximumHeight())
-        assert abs(audit._stack.height() - need) <= 2, (
-            f"the block is {audit._stack.height()}px for a clip that needs {need}px at "
-            f"{width}px — it did not re-ask after the width moved under it"
-        )
-        transport = audit._player._scrubber
-        bottom = transport.mapTo(workspace, QPoint(0, transport.height())).y()
-        below = audit._where.mapTo(workspace, QPoint(0, 0)).y()
-        assert below - bottom <= lines(2), (
-            f"{below - bottom}px of nothing between the clip's transport and the line under "
-            f"it — the buttons that judge the clip are that far from it"
-        )
-        workspace.hide()
-    finally:
-        qapp.setFont(original)
 
 
 def test_a_committed_cutoff_puts_the_measurements_out_of_date(qapp, tmp_path):

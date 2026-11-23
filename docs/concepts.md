@@ -388,8 +388,9 @@ cutoff per behavior** and get instances with start and end times, not a frame-by
 
 The search is computed once and never changes; the cutoff is yours, and re-projecting at a new
 one is instant, so you can move it while watching what falls in and out. Precision is favoured
-over recall by design. Build it with `analysis query` and set cutoffs with `analysis
-query-calibrate`.
+over recall by design, and it is measured by reviewing every instance the cutoff keeps and
+taking out the wrong ones, which also leaves them out of the run's output. Build it with
+`analysis query` and set cutoffs with `analysis query-calibrate`.
 
 ### Behavior clustering
 

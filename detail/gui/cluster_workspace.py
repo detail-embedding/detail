@@ -198,8 +198,8 @@ class ClusterWorkspace(MultiViewWorkspace):
     (``gui/label_clean.py``) showing every clip of one cluster, to mark the wrong ones and finish;
     the finish gives the cluster's exact precision. A saved pose-clustering run (the module is
     removed) keeps no clip edits and gets the list with its edits disabled. It gives figures, never
-    verdicts. A query keeps ``gui/audit_tab.py``, whose behaviors are flat and scoped by its own
-    selector. MEASURES is the §23 table for this run's artifact, on live runs.
+    verdicts. A query run reviews on the same pane in ``gui/query_review.py``, one recording of the
+    behavior its selector chose where this has a cluster. MEASURES is the §23 table for this run's artifact, on live runs.
     """
 
     def __init__(self, experiment, run, terms: WorkspaceTerms = POSE_TERMS) -> None:

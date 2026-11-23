@@ -39,6 +39,7 @@ from detail.gui.label_clean import CLICK_HINT, SCROLL_FIRST
 from detail.storage import audit_figures
 from detail.storage import clip_review as review_store
 
+from tests.audit_seed import draw, judge
 from tests.gui.conftest import Pictures
 from tests.gui.conftest import drain_busy_calls
 from tests.gui.test_query_workspace import _drain
@@ -580,8 +581,8 @@ def test_a_finished_cluster_opened_later_shows_its_result_and_reopen_review(
 
 def test_the_earlier_one_by_one_audit_stays_in_the_tooltip(qapp, labelled):
     experiment, handle, _nodes = labelled
-    for row in handle.audit_sample(path="climb", budget=10):
-        handle.label_audit(row.instance_id, True)
+    for row in draw(handle, path="climb", budget=10):
+        judge(handle, row.instance_id, True)
     widget = _tab(qapp, experiment, handle)
     try:
         tip = _rows(widget)[("label", "climb")].toolTip(0)

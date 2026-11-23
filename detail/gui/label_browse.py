@@ -16,7 +16,8 @@ built, and a list mostly made of it buries the dataset this tab exists to show.
 labelled or not (:meth:`LabelBrowseTab.set_cluster_lane`). Click a mark to play that stretch.
 
 A leaf: it imports the player and the shared widgets, and nothing from ``gui.pages`` or
-``gui.modules`` — the rule `audit_tab` documents for the same reason.
+``gui.modules``: importing a hub from a leaf is how this package's import cycles formed
+(``tests/gui/test_import_cycles.py``).
 """
 
 import logging
