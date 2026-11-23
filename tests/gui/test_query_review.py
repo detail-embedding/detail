@@ -171,3 +171,64 @@ def test_calibrate_says_which_of_its_clips_the_review_removed():
         removed=frozenset({("s1", 0, 5_000_000, 7_000_000)}),
     )
     assert [s.label for s in specs] == ["s1 0.90", "s1 0.40 · removed"]
+
+
+def test_moving_the_cutoff_reads_the_open_recording_again(qapp, searched):
+    """A recording finished at one cutoff and the cutoff lowered: the pane showed the old clips
+    under the new count, still *✓ Reviewed* at a figure that is not one at this cutoff. It reads
+    the recording's clips again, goes back to reviewing, and says how far down it was reviewed.
+    """
+    exp, run = searched
+    tab = _tab(qapp, exp, run)
+    _open(qapp, tab)
+    tab.pane.finish.click()
+    assert _drain(qapp, lambda: not tab.writes_pending() and tab.pane.is_finished())
+    drain_busy_calls(qapp)
+
+    run.set_cutoff("q01", _cutoff_keeping(run, 9))
+    tab.reload()
+    assert _drain(
+        qapp, lambda: tab._open is not None and len(tab._open["clips"].rows) == 9
+    ), "the open recording kept the old cutoff's clips"
+    assert not tab.pane.is_finished(), "a review at the old cutoff shown as finished"
+    assert "reviewed to" in tab.pane.was.text()
+    look = tab._look(tab._row("s1"))
+    assert look["line"].startswith("reviewed to") and look["line"].endswith(" new")
+
+
+def test_calibrate_counts_the_clips_the_review_removed(qapp, tmp_path):
+    """CALIBRATE counts the search's matches at a cutoff; a removed clip is still one of them
+    but not one of the behavior's instances, so the header says how many."""
+    from tests.gui.test_query_workspace import _workspace
+
+    _exp, run, workspace = _workspace(qapp, tmp_path)
+    behavior = workspace._behaviors[0].id
+    run.set_cutoff(behavior, 0.0)
+    assert _drain(qapp, lambda: workspace._curves)
+    calibrate = workspace._calibrate
+    calibrate._refresh_header(0.0)
+    assert "removed in Audit" not in calibrate._header.text()
+    rid = run.state().search_recording_ids[0]
+    run.take_out_clips(run.review_clips(behavior, rid)[:2], behavior)
+    calibrate._refresh_header(0.0)  # the clips were removed at cutoff 0.0
+    assert "2 of them removed in Audit" in calibrate._header.text()
+    calibrate._refresh_header(1.0)
+    assert (
+        "removed in Audit" not in calibrate._header.text()
+    ), "counted below the cutoff"
+
+
+def test_an_earlier_one_by_one_audit_stays_in_the_figures_tooltip(qapp, searched):
+    """A run audited one clip at a time before the review keeps that figure on screen, apart
+    from the review's (§20 *What left*); without one the tooltip says nothing."""
+    from tests.audit_seed import draw, judge
+
+    exp, run = searched
+    tab = _tab(qapp, exp, run)
+    assert tab.figure.toolTip() == ""
+    for row in draw(run, label="q01", budget=10):
+        judge(run, row.instance_id, True)
+    tab.reload()
+    assert _drain(
+        qapp, lambda: "Earlier one-by-one audit: precision" in tab.figure.toolTip()
+    )

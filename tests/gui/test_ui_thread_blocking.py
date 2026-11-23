@@ -133,6 +133,9 @@ _SEAMS = (
     "audit_decisions(",
     "audit_labels(",
     "audit_precision(",
+    # A query run's review reads its search the first time: as slow as the shard load.
+    "review_by_recording(",
+    "review_clips(",
     "buildinfo.build_info(",
     "buildinfo.history(",
     "buildinfo.check_for_updates(",

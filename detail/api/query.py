@@ -126,6 +126,36 @@ class QueryRun(QueryReviewOperations, AuthoredRun):
     def _write_state(self, state) -> None:
         query_runs.write_query_state(self._run_dir(), state)
 
+    def _method(self):
+        """The query method that wrote this run's search.
+
+        Raises:
+            UserInputError: this version no longer has it (``docs/removed_capabilities.md``),
+                naming the method. Its search cannot be read — not calibrated, reviewed or
+                audited — and saying so beats the bare registry error, which reached the CLI as a
+                traceback.
+        """
+        from detail.core.registries import QUERY_METHODS
+        from detail.query_methods import import_query_methods
+
+        method_id = self.state().method
+        import_query_methods()
+        if method_id not in QUERY_METHODS:
+            raise UserInputError(
+                f"query run {self.id!r} was searched with the {method_id!r} method, which this "
+                "version no longer has, so its search cannot be calibrated, reviewed or "
+                "audited. The run record, its behavior output and its output folder are kept"
+            )
+        return query_pipeline.resolve_method(method_id)
+
+    def _edit(self, op: str, mutate, *, reproject: bool = True, progress=None):
+        """``AuthoredRun._edit``, refused first when the run's method is gone: every query edit
+        reprojects through it, and finding that out inside the reprojection left the edit saved
+        over results that were never rebuilt (#24 — a cutoff, a rename, a clip put back).
+        """
+        self._method()
+        return super()._edit(op, mutate, reproject=reproject, progress=progress)
+
     def _log(self, entry: dict) -> None:
         query_pipeline.append_history(self._run_dir(), entry)
 
@@ -191,7 +221,7 @@ class QueryRun(QueryReviewOperations, AuthoredRun):
             return self._results[behavior_id]
         state = self.state()
         state.behavior(behavior_id)  # raises, naming the ids that exist
-        method = query_pipeline.resolve_method(state.method)
+        method = self._method()
         recordings = list(state.search_recording_ids)
         loaded: dict[tuple[str, int], object] = {}
         for i, recording_id in enumerate(recordings):
@@ -226,7 +256,7 @@ class QueryRun(QueryReviewOperations, AuthoredRun):
         a method is resolved.
         """
         state = self.state()
-        method = query_pipeline.resolve_method(state.method)
+        method = self._method()
         return {
             unit: method.instances_at(result, float(cutoff), state.method_params)
             for unit, result in self.load_results(behavior_id).items()
@@ -297,7 +327,7 @@ class QueryRun(QueryReviewOperations, AuthoredRun):
         second behavior, a redraw, a reopened view) costs no disk and no extraction.
         """
         state = self.state()
-        method = query_pipeline.resolve_method(state.method)
+        method = self._method()
         cap = method.candidate_cap(state.method_params)
         results = list(self.load_results(behavior_id, progress=progress).values())
 
@@ -343,7 +373,7 @@ class QueryRun(QueryReviewOperations, AuthoredRun):
         from detail.storage import experiment as experiment_store
 
         state = self.state()
-        method = query_pipeline.resolve_method(state.method)
+        method = self._method()
         pool: list = []
         for behavior in state.behaviors:
             if label is not None and behavior.id != label:
@@ -497,10 +527,6 @@ class QueryRun(QueryReviewOperations, AuthoredRun):
                 f"cutoff must be a confidence in [0, 1], got {cutoff!r}. Confidence is "
                 "canonical across query methods (§20), so this axis is method-independent."
             )
-        # Before the edit writes anything: a run whose method this version no longer has cannot
-        # be reprojected, and finding that out inside the reprojection left the new cutoff saved
-        # over results cut at the old one (#24).
-        query_pipeline.resolve_method(self.state().method)
 
         def mutate(state: query_runs.QueryState) -> dict:
             behavior = state.behavior(behavior_id)

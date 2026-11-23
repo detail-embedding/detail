@@ -283,3 +283,48 @@ def test_the_cli_prints_the_review_before_the_earlier_audit(run):
     run.set_cutoff("q01", _cutoff_keeping(run, 9))
     review = _audit_cli(run, "--behavior", "q01").split("Earlier one-by-one audit:")[0]
     assert "reviewed to" in review and "every recording reviewed" not in review
+
+
+def test_a_run_whose_method_is_gone_is_refused_by_name_before_anything_is_written(run):
+    """A run searched with a method this version no longer has (`dtw`, removed): its search
+    cannot be read. Reading the review, and the CLI's `analysis audit`, refuse naming the
+    method rather than raising the bare registry error the CLI printed as a traceback; a rename
+    refuses before the state is written, where it used to save the name and then fail to
+    rebuild. The negative case is the same run with its method back: it reads."""
+    from detail.storage import query_runs as store
+
+    run.set_cutoff("q01", _cutoff_keeping(run, 6))
+    assert run.review_by_recording("q01")  # reads with its own method
+    state = run.state()
+    state.method = "dtw"
+    store.write_query_state(run._run_dir(), state)
+    before = store.query_yaml_path(run._run_dir()).read_bytes()
+
+    with pytest.raises(
+        UserInputError, match="'dtw' method, which this version no longer has"
+    ):
+        type(run)(None, run._experiment, run.id).review_by_recording("q01")
+    fresh = type(run)(None, run._experiment, run.id)
+    with pytest.raises(UserInputError, match="no longer has"):
+        fresh.name_behavior("q01", "climbing")
+    assert (
+        store.query_yaml_path(run._run_dir()).read_bytes() == before
+    ), "written anyway"
+
+    from click.testing import CliRunner
+
+    from detail.cli import main
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "analysis",
+            "audit",
+            "--experiment",
+            str(run._experiment.dir),
+            "--run",
+            run.id,
+        ],
+    )
+    assert result.exit_code == 1 and "Traceback" not in result.output
+    assert "no longer has" in result.output

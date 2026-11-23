@@ -672,9 +672,11 @@ class ReviewPane(QWidget):
             else:
                 set_available(self.finish, not waiting, waiting_text(waiting))
             if self.finish.isEnabled():
+                # "or moved" only where a clip can be moved: a query behavior's cannot.
+                moved = " or moved" if self._targets else ""
                 self.finish.setToolTip(
-                    f"Save the review: every clip not removed counts as {name}, every removed "
-                    f"or moved clip as not. Gives this {self._noun}'s exact precision."
+                    f"Save the review: every clip not removed counts as {name}, every removed"
+                    f"{moved} clip as not. Gives this {self._noun}'s exact precision."
                 )
         # The app's style draws a default button with only a coloured border; filled with the
         # palette's accent once it can be pressed, it reads as the step to take. Accent, not

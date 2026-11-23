@@ -202,8 +202,12 @@ class QueryReviewTab(QWidget):
         )
         out.update(
             {
-                "rows": run.review_by_recording(behavior_id),
+                "rows": run.review_by_recording(behavior_id),  # off-thread (run_busy)
                 "estimate": run.review_precision(behavior_id),
+                # An audit made one clip at a time before the review: kept, never merged.
+                "earlier": run.audit_precision(  # off-thread (run_busy)
+                    label=behavior_id
+                ),
                 "taken": {
                     _key(r): {**r, "from_path": behavior.name, "to_path": None}
                     for r in run.taken_out(behavior_id)
@@ -237,7 +241,13 @@ class QueryReviewTab(QWidget):
         self._fill_list()
         self.pane.set_editable(self._reason())
         if self._open is not None:
-            self._refresh_open()
+            if self._open.get("cutoff") != data.get("cutoff"):
+                # The cutoff moved: the recording's clips are another set, and a review finished
+                # at the old cutoff is not one at this. Read them again rather than show the old
+                # set under the new count.
+                self.open_recording(self._open["rid"])
+            else:
+                self._refresh_open()
 
     def _reason(self) -> str:
         """Why nothing here can be written now, or ``""``."""
@@ -252,6 +262,13 @@ class QueryReviewTab(QWidget):
 
     def _sync_figure(self) -> None:
         data = self._data
+        earlier = data.get("earlier")
+        self.figure.setToolTip(
+            f"Earlier one-by-one audit: {audit_figures.line(earlier)}. Kept as it was, "
+            "never merged into the review's figure."
+            if earlier
+            else ""
+        )
         if data.get("cutoff") is None:
             self.figure.setText(NO_CUTOFF)
             return
@@ -309,10 +326,18 @@ class QueryReviewTab(QWidget):
             state, status = "reviewed", f"{percent(row['estimate'])} · {out:,} removed"
         elif not row["size"]:
             state, status = "reviewed", "no clips at this cutoff"
+        elif row.get("at_floor") is not None:
+            # Reviewed at a higher cutoff: how far down, until it is finished at this one. Short:
+            # the row is narrow, and the full line is its tooltip.
+            state, status = (
+                "reviewing",
+                f"reviewed to {row['reviewed_floor']:.2f} · "
+                f"{row['estimate']['remaining']:,} new",
+            )
         elif is_open:
             state, status = "reviewing", f"reviewing · {out:,} removed"
         else:
-            state, status = "not", audit_figures.query_review_cell(row)
+            state, status = "not", "not reviewed"
         return {
             "kind": "cluster",
             "name": row["name"],
@@ -338,7 +363,7 @@ class QueryReviewTab(QWidget):
         self.pane.set_waiting("reading this recording's clips…")
         run_busy(
             self,
-            lambda: self._run.review_clips(behavior, rid),
+            lambda: self._run.review_clips(behavior, rid),  # off-thread (run_busy)
             lambda clips, r=rid, b=behavior: self._show_open(r, b, clips),
             label="Reading the clips…",
             supersedes="query_review_clips",
@@ -361,6 +386,8 @@ class QueryReviewTab(QWidget):
             "rid": rid,
             "clips": ScopeClips(rows, np.zeros(len(rows)), names),
             "edits": {},
+            # The cutoff these clips are at: a read at another one opens the recording again.
+            "cutoff": self._data.get("cutoff"),
         }
         self.pane.set_waiting("")
         self.pane.set_was("")
@@ -369,6 +396,13 @@ class QueryReviewTab(QWidget):
             self._show_result(row)
         else:
             self.pane.start_review()
+            if row.get("at_floor") is not None:
+                # Reviewed at a higher cutoff: what is known, and what lowering it added.
+                self.pane.set_was(
+                    f"was {percent(row['at_floor'])} reviewed to "
+                    f"{row['reviewed_floor']:.2f} · "
+                    f"{row['estimate']['remaining']:,} new below it"
+                )
         self._refresh_open(new_source=True)
 
     def _refresh_open(self, *, new_source: bool = False) -> None:

@@ -6055,12 +6055,15 @@ def analysis_audit(
         )
     # Chosen by the run's kind, not by which methods it has: both kinds have a
     # `review_precision`, with different arguments and a different population.
+    reviewed_first = True
     if isinstance(run, QueryRun):
         _echo_query_review(run, label, cutoff, by_recording)
         click.echo("Earlier one-by-one audit:")
     elif hasattr(run, "review_precision"):
         _echo_clip_review(run, label)
         click.echo("Earlier one-by-one audit:")
+    else:
+        reviewed_first = False
     if run.nested_labels:
         paths = [label] if label else run.audit_labels()
         scopes = [(path, {"path": path, "own_only": own_only}) for path in paths]
@@ -6077,7 +6080,13 @@ def analysis_audit(
     for scope, address in scopes:
         estimate = run.audit_precision(cutoff=cutoff, **address)
         if estimate is None:
-            click.echo("(not audited — no reliability estimate for this run)")
+            # Under the earlier audit's heading, "no reliability estimate for this run" denied
+            # the review printed just above it.
+            click.echo(
+                "  (none)"
+                if reviewed_first
+                else "(not audited — no reliability estimate for this run)"
+            )
             return
         depth = scope.count(sep) if run.nested_labels else 0
         shown = "  " * depth + scope.rsplit(sep, 1)[-1]

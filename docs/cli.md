@@ -901,7 +901,7 @@ selection, written to `analysis/<an_NN>/`.
   (`; reviewed to 0.50: precision 0.95  (all 300 audited)`). `--cutoff` reads it at another
   cutoff: above the reviewed range it stays exact, below it says what is not reviewed.
   `--by-recording` adds a line per recording: its figure and how many clips were removed, or
-  `reviewed to 0.50 · 6 not reviewed below it`, or `not reviewed`. Clips overlapping the
+  `reviewed to 0.50 · 6 not reviewed below it`, or `not reviewed (34 clips)`. Clips overlapping the
   behavior's own example or non-example clips are not reviewed or counted.
 
   Precision always comes with its 95% confidence interval and its `n`: `1.00` from three clips and `1.00`
@@ -938,8 +938,8 @@ selection, written to `analysis/<an_NN>/`.
   On a **temporal clustering** run, the clip review prints first, cluster by cluster. AUDIT reviews every clip of a cluster, so a reviewed cluster's figure is exact, and a label's figure appears only once every cluster under it (its sub-labels' included) is reviewed; until then its line says how many are, and each reviewed cluster shows its clip count, its share of the label and its precision.
 
   On either run kind, the earlier one-by-one audit follows under *Earlier one-by-one audit*,
-  read as before and never merged into the review. Nothing adds to it any more: the review
-  replaced it.
+  read as before and never merged into the review, or `(none)` for a run never audited that way.
+  Nothing adds to it any more: the review replaced it.
 - `export-query --experiment <dir> --run <an_NN> --out <dir>`: write a calibrated query run's
   behaviors as one behavior-stream CSV per searched recording, into a new folder inside `--out`
   that the command prints, so exporting again at another cutoff keeps the first export. Each row carries

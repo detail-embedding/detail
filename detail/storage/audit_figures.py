@@ -159,4 +159,4 @@ def query_review_cell(row: dict) -> str:
             f"reviewed to {row['reviewed_floor']:.2f} · "
             f"{row['estimate']['remaining']} not reviewed below it{own}"
         )
-    return f"not reviewed{own}"
+    return f"not reviewed ({row['size']:,} clips){own}"

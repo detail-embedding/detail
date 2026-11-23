@@ -1219,11 +1219,16 @@ def test_cli_reports_the_audit_precision(tmp_path):
 
 
 def test_cli_says_not_audited_rather_than_printing_a_number(tmp_path):
+    """A run nobody has checked says so in both sections and prints no figure. The earlier
+    audit's line reads `(none)` under its heading: "no reliability estimate for this run" there
+    denied a review printed above it."""
     exp, _run = _searched(tmp_path)
     out = _cli(
         "analysis", "audit", "--experiment", str(exp.dir), "--run", "an_01",
     )  # fmt: skip
-    assert "not audited" in out
+    review, earlier = out.split("Earlier one-by-one audit:")
+    assert "nothing to review" in review
+    assert earlier.strip() == "(none)"
     assert "precision" not in out, "a run nobody audited must not report one"
 
 

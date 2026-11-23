@@ -935,8 +935,11 @@ class _CalibrateTab(QWidget):
             if behavior.cutoff is None
             else f"cutoff {behavior.cutoff:.4f}"
         )
+        removed = self._removed_at(cutoff, behavior)
+        # The count is the search's; the behavior's instances leave the removed clips out.
+        gone = f", {removed} of them removed in Audit" if removed else ""
         self._header.setText(
-            f"{behavior.name} ({behavior.id}) — {shown} instance(s) at {cutoff:.4f} · "
+            f"{behavior.name} ({behavior.id}) — {shown} instance(s) at {cutoff:.4f}{gone} · "
             f"{committed}"
         )
         self._confidence.set_caption(showing_caption(shown, total))
@@ -1031,11 +1034,41 @@ class _CalibrateTab(QWidget):
         return specs
 
     def forget_clips(self) -> None:
-        """Rebuild the strip's captions on the next showing: the review removed or put back a
-        clip, which a caption says."""
+        """Rebuild the strip's captions and the header's count: the review removed or put back
+        a clip, which both say."""
         self._specs.clear()
         if self._behavior_id is not None:
             self._refresh_clips()
+            self._refresh_header(self.cutoff())
+
+    def _removed_at(self, cutoff: float, behavior) -> int:
+        """How many of the clips ``cutoff`` keeps the review removed (§20): counted from the
+        cut candidates and the timelines already read, so a drag stays a slice."""
+        removed = behavior.removed_keys()
+        if not removed:
+            return 0
+        state = self._run.state()
+        count = 0
+        for (recording_id, subject), candidates in self._run.candidates_at(
+            behavior.id, cutoff
+        ).items():
+            timeline = self._timeline(recording_id, state)
+            if timeline is None:
+                continue
+            _frame_idx, t_ns = timeline
+            count += sum(
+                1
+                for c in candidates
+                if c.end_row < len(t_ns)
+                and (
+                    recording_id,
+                    int(subject),
+                    int(t_ns[c.start_row]),
+                    int(t_ns[c.end_row]),
+                )
+                in removed
+            )
+        return count
 
     def _timeline(self, recording_id: str, state):
         """The unit's frame timeline, read once per unit and kept.

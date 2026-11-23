@@ -6502,7 +6502,7 @@ and `_record`, as clustering's does.
 one-at-a-time player gave way to the review pane (`label_clean.ReviewPane` over a `LiveMontage`,
 its marks in `gui/review_marks.py`, shared with the clustering AUDIT).
 `audit.csv` is never written again and never merged into the review's figure. It stays readable,
-in the CLI under *Earlier one-by-one audit* and in the AUDIT list's tooltip, so a run audited
+in the CLI under *Earlier one-by-one audit* and in the tooltip on AUDIT's figure line, so a run audited
 before keeps what it bought; its headline reads *not reviewed* until someone reviews it, which the
 user guide says.
 
