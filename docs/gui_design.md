@@ -783,7 +783,7 @@ Project rail (only inside a project — open an experiment from Experiments):
   `requirements._NON_MODAL_DIALOGS` with its reason: the clip window (`clip_popup.open_clip_window`
   — one per page, the next double-click shows its clip in the same window), a cluster's pop-out
   window (`cluster_window.ClusterWindows` — one per cluster, labelling through the page's own
-  queue), the enlarged pane, and the query-eval explorer. Each is the opening page's child, so it
+  queue), and the enlarged pane. Each is the opening page's child, so it
   closes with the page; each opener goes through the one function that opens it, so "a second
   open raises the first" is written once (`test_every_opener_goes_through_the_one_non_modal_opener`
   scans for a page building the clip window itself). Review (2026-11-09) turned the clip window

@@ -1841,8 +1841,8 @@ class Recording:
     def streams_by_role(self, role: str) -> list[dict]:
         """Stream manifest entries with the given ``role`` (Section 3).
 
-        The discovery surface a role-consuming module reads through — e.g. the
-        behavior eval finds recordings carrying a ``behavior``-role stream.
+        The discovery surface a role-consuming module reads through — e.g. an
+        evaluation against ground truth finds recordings carrying a ``behavior``-role stream.
         """
         return streams_store.streams_by_role(self.dir, role)
 
@@ -1852,7 +1852,8 @@ class Recording:
 
         Presence of any **ground-truth** ``behavior``-role stream means the recording
         is annotated; per-behavior eligibility uses ``is_annotated_for`` (an ethogram
-        scores only some behaviors). This gates a recording for a behavior-eval run.
+        scores only some behaviors). It is what an evaluation against ground truth gates a
+        recording on.
 
         A stream carrying a method's own re-ingested output (``origin: predicted``)
         does not annotate anything — counting it here would let a run be gated in on
@@ -2011,8 +2012,8 @@ class Recording:
 
         Aggregates every consumer registered for the stream's ``role`` in
         ``STREAM_CONSUMERS``. Empty today — no stage consumes streams yet — but a
-        future consumer (the behavior eval) registers there without editing this
-        method, keeping the deletion strategy (gui_design §1.1) uniform.
+        future consumer registers there without editing this method, keeping the
+        deletion strategy (gui_design §1.1) uniform.
         """
         manifest = next((s for s in self.streams if s.get("name") == name), None)
         if manifest is None:

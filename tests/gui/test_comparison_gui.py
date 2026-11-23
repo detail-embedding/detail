@@ -229,8 +229,9 @@ def test_counting_every_recording_stays_reachable(qapp, tmp_path):
 
 
 def test_subject_is_never_offered_as_an_aggregation_path(qapp, tmp_path):
-    """It is a track index, so "average within subject" would read as "average within animal"
-    and mean "average within track slot" (`core/utils.check_track_is_unambiguous`)."""
+    """It is a track index (assigned in order of first appearance within one tracking run, §13),
+    so "average within subject" would read as "average within animal" and mean "average within
+    track slot"."""
     exp = _cohort(tmp_path, UNBALANCED)
     dialog = ComparisonLaunchDialog(exp)
     _check(dialog._group_by, "drug")

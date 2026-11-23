@@ -19,7 +19,7 @@ This document is the approved design for the DETAIL infrastructure redesign. Com
 
 **Detection Run** — One execution of a detection model over some or all parts of a recording, using a specific prompt and compute configuration. Multiple detection runs may exist per recording (different models, prompts, or confidence thresholds).
 
-**Analysis Run** — One execution of an analysis module (location export, query, query evaluation, temporal clustering — §16) over a specified set of recordings and parameters. Multiple analysis runs may exist per module. Analysis runs live at the experiment level and reference recordings by ID.
+**Analysis Run** — One execution of an analysis module (location export, query, temporal clustering — §16) over a specified set of recordings and parameters. Multiple analysis runs may exist per module. Analysis runs live at the experiment level and reference recordings by ID.
 
 **Grouping Variables** — Recording-level metadata (animal ID, treatment, condition, etc.) used to compare groups during analysis. Defined at the experiment level as a CSV with one row per recording.
 
@@ -49,7 +49,7 @@ This document is the approved design for the DETAIL infrastructure redesign. Com
 | Embedding Generation | Approved |
 | Python API and CLI | Approved |
 | Processing Modules (§6.5) | Approved |
-| Module Families & Analysis Modules (§16) | **Implemented.** Four modules in `ANALYSIS_MODULES`: `location_export`, `query`, `query_eval`, `temporal_clustering`. Both kinds once listed as pending now exist — `query` / `temporal_clustering` / `query_eval` pool across the cohort, and `query_eval` joins a behavior stream (§3). |
+| Module Families & Analysis Modules (§16) | **Implemented.** Three modules in `ANALYSIS_MODULES`: `location_export`, `query`, `temporal_clustering`. `query` / `temporal_clustering` pool across the cohort. A fourth, `query_eval` (retrieval scored against a behavior stream, §3), has since been removed, and with it the only module that joined a stream. |
 | Annotation Import/Export (§17) | **COCO masks export built** — the `masks` export target on a detection run (`api/export_targets.py`), through the export backbone. Not built: MOTS / MOT for tracked runs, the `with_frames` bundle, and import (Phase 2). |
 | Export and provenance (§18) | **Built** — `report/` (`style.py`, `tables.py`, `figures.py`, `exporter.py`) and `analysis/provenance.py` (`capture` / `drift`); §24's comparison export is the writer. A Query run's §19 artifact carries a captured provenance block; a temporal clustering run's block is empty, and only a saved comparison is checked for drift (`Comparison.drift`). |
 | Behavior Output (§19) | **Built, and produced.** `storage/behavior_output.py` (the three files, writer + tolerant reader + discovery-by-scanning), `storage/frame_view.py` (the per-frame expansion §23 measures against), `storage/behavior_audit.py` (the optional audit), `storage/append_log.py` (the shared append primitive), and the `origin` boundary that keeps a re-ingested prediction from being read as ground truth. **Two producers emit it**: §20's Query and §22's temporal clustering. Each writes the frame view too (#237), so a windowed §23 measure answers on any of them; a producer that skipped it would leave every sub-window question refusing on its runs alone, which is what the parity guard exists to stop. The measures and comparison layers above it are specified in §23 / §24 and built. |
@@ -1150,13 +1150,13 @@ is inclusive):
 Overlapping intervals of different labels are first-class (co-occurring behaviors);
 same-label overlaps are left untouched on import.
 
-**Per-behavior metadata (for the eval).** An ethogram scores several behaviors, so the
-stream's `metadata` records two maps the eval consumes: **`covered_behaviors`** — the scored
+**Per-behavior metadata.** An ethogram scores several behaviors, so the
+stream's `metadata` records two maps: **`covered_behaviors`** — the scored
 vocabulary (importers default it to the labels present; `add_stream(covered_behaviors=…)` /
 `--covered-behaviors` / a `{file, covered_behaviors}` manifest entry override it to declare
 behaviors *scored but never observed*, which must be a superset of the labels present) — and
 **`behavior_types`** — each label's `point`/`state` type (BORIS's *Behavior type* column, else
-inferred: all-zero-length → point, else state). A recording is eligible to eval behavior A iff
+inferred: all-zero-length → point, else state). A recording is annotated for behavior A iff
 `A ∈ covered_behaviors` (`Recording.is_annotated_for`), so a "miss" is a real false negative, not
 an unscored behavior; there is **no coverage-window** (an annotation covers a behavior for the
 whole recording or not at all).
@@ -1166,7 +1166,8 @@ Two surfaces, one path: per-recording `Recording.add_stream(..., importer="behav
 manifest — each value a filename or a `{file, covered_behaviors}` map — onto existing recordings,
 each resolved against its own map, one bad file skipped-and-recorded). CLI: `recording add-stream`
 / `recording import-labels`. Legacy streams lacking the metadata fall back to inference. The first
-consumer is the **behavior-query eval** (§16).
+consumer was the behavior-query eval, a module since removed; no analysis module reads these
+streams today.
 
 ### Recording id and name
 
@@ -1756,7 +1757,7 @@ Storage and compute pairings:
 
 Every `ProgressEvent` carries an optional `message: str | None = None` — ephemeral phase text (e.g. `"loading model"`, `"loading detections"`) shown above the CLI bar; `None` on ordinary frame ticks. Runners emit progress per frame (throttled to ~0.5s, since each emit writes `job.json`), not only at part boundaries, so a single-part run still shows a live bar. **This cadence is enforced, not just intended.** Synchronous in-loop runners (the trackers, dataset export, labeling, and the §16 analysis modules) wrap `progress_cb` in the shared `core/progress.py::ThrottledProgress` — one initial (forced) event, throttled in-loop emits at `PROGRESS_INTERVAL_S`, a forced final event — so emitting only at a part/unit boundary (the recurring "no live bar on a single part" bug) is impossible by construction. The multiprocess coordinators (detection, embedding) instead emit by **polling** their worker progress files at the same `PROGRESS_INTERVAL_S` (a `worker.join(timeout)` loop is already incremental). The one exception is **training**, which reports per epoch — its natural unit. A `TRACKERS`-parametrized cadence test (`tests/trackers/test_tracker_progress.py`) plus per-stage cadence tests assert an intermediate `frames_done < frames_total` event on a single-part fixture, so a runner that regresses to coarse-boundary emission fails the suite. Every stage — embedding included — reports a real `frames_done` / `frames_total`, so the CLI keys the bar on frames for a true %/ETA. For embedding `frames_total` is the run-wide count of **unique frames** the selected tracks occupy (detections that share a frame, e.g. `anchor_tracker` secondaries, are OR-merged into one image, so one frame = one model input); it is pre-counted from the assignment + detection zarrs before the model loads so the denominator is stable from the first event. `EmbeddingProgressEvent` additionally carries `units_done` / `units_total` — the run-level (track, part) unit count — which the CLI shows (with the current `track_id`) in the bar postfix.
 
-**Report measured work, not counted steps, and report it from wherever the work actually is.** Two rules, both learned from §20's search on a real recording, where the bar barely moved and the ETA was far off. First, **a fraction built by counting structural steps claims they cost the same, and they do not**: a one-row continuous span beside a long one was reported as half the search, and two exemplars of very different length were reported 50/50. Weigh each step by the work it will do (for a path matcher, `span_rows x usable exemplar rows`), and let a step that does no work count for nothing. Second, **the finest thing to report against is often inside the algorithm rather than at its structural boundaries**: with one exemplar over one continuous stretch every layer above the matcher has exactly one call to make, so the search reported only its terminal `1.0`. `retrieval.subsequence_dtw` therefore reports from its own DP row loop, whose per-iteration cost is uniform, which makes a linear read of it honest rather than nominal. The query runner (`pipeline/query.py`) dropped the nominal `LOAD_SHARE = 0.2` that used to stand in for the missing movement: the trajectory load is a negligible share of a unit, so it claims no share of the fraction and reports through its phase message instead. One copy survives: `analysis/clip_query.query_tracks`, which `query_eval` runs, still weights its bar with `_LOAD_SHARE = 0.2` (the bar only; its ETA comes from the folded fraction).
+**Report measured work, not counted steps, and report it from wherever the work actually is.** Two rules, both learned from §20's search on a real recording, where the bar barely moved and the ETA was far off. First, **a fraction built by counting structural steps claims they cost the same, and they do not**: a one-row continuous span beside a long one was reported as half the search, and two exemplars of very different length were reported 50/50. Weigh each step by the work it will do (for a path matcher, `span_rows x usable exemplar rows`), and let a step that does no work count for nothing. Second, **the finest thing to report against is often inside the algorithm rather than at its structural boundaries**: with one exemplar over one continuous stretch every layer above the matcher has exactly one call to make, so the search reported only its terminal `1.0`. `retrieval.subsequence_dtw` therefore reports from its own DP row loop, whose per-iteration cost is uniform, which makes a linear read of it honest rather than nominal. The query runner (`pipeline/query.py`) dropped the nominal `LOAD_SHARE = 0.2` that used to stand in for the missing movement: the trajectory load is a negligible share of a unit, so it claims no share of the fraction and reports through its phase message instead. The last other copy, `_LOAD_SHARE` in `analysis/clip_query.query_tracks`, left with `query_eval`, a module since removed.
 
 ```python
 class RunProgressWorker(GuiWorker):          # GuiWorker is a QThread (gui/workers.py)
@@ -2035,7 +2036,7 @@ Two runs are interchangeable iff their specs are equal. `api/run_spec.py::freeze
 
 `every_n_frames` is identity on detection, tracking, embedding and keypoint_detect (§4): the same config at a different cadence is a different output. The first three carry `identity_defaults = {"every_n_frames": 1}`, which is how a record written before the field existed reads — without it those runs would false-*split* from equivalent ones written since; embedding's also defaults its alignment fields (`align: "none"` and the rest) for the same reason. keypoint_detect arrived after the field and needs none.
 
-`lineage_ref` is distinct from `upstream`: detection's `upstream` is `"video"` (eligibility) and it has no lineage parent at all. These live as class attributes on `ProcessingModule` (record keys diverge from config-model field names — prompt/weights_source/hyperparams are enriched, not modelled — so they are **not** derived from config metadata). An **analysis** module declares `selects = (upstream_module, config_ref_field)` — explicit, since the ref field is not always `{module}_run_id` (`query`, `query_eval` and `temporal_clustering` select an embedding run by `embed_run_id`); analysis reuses the processing-module spec machinery for whatever it selects.
+`lineage_ref` is distinct from `upstream`: detection's `upstream` is `"video"` (eligibility) and it has no lineage parent at all. These live as class attributes on `ProcessingModule` (record keys diverge from config-model field names — prompt/weights_source/hyperparams are enriched, not modelled — so they are **not** derived from config metadata). An **analysis** module declares `selects = (upstream_module, config_ref_field)` — explicit, since the ref field is not always `{module}_run_id` (`query` and `temporal_clustering` select an embedding run by `embed_run_id`); analysis reuses the processing-module spec machinery for whatever it selects.
 
 **Storage: derived on the fly** — no persisted hash, no migration; specs recompute from records. A **legacy** record (written before the two record additions) recovers the missing field from its `job.json` via `ProcessingModule.recompute_identity_from_job` (detection → `prompt_fingerprint`, tracking → `hyperparams`); unrecoverable → a per-run sentinel that only ever *false-splits* (safe), never false-merges. `freeze_spec`'s **false-merge is the dangerous direction** — when unsure whether a field affects output, include it.
 
@@ -2043,7 +2044,7 @@ Two runs are interchangeable iff their specs are equal. `api/run_spec.py::freeze
 
 *Processing* (per-recording fan-out) uses `ProcessingModule.resolve_upstream_spec` (→ `run_spec.resolve_into_config`), which injects a single resolved local id before `validate` at **(A)** `Recording.run` (coordinator runtime) and **(B)** `run_processing`'s up-front pre-validate loop. For tracking/embedding the config model makes the ref field *required*, so a spec-only config fails `model_validate`. Resolution must precede validate — and every live site does it.
 
-*Analysis* is a **different mechanism** — one experiment-level job, not a fan-out, so `AnalysisModule` has no `resolve_upstream_spec`. **(C)** `Experiment.run_analysis` calls `module.validate`, and the module's validate calls `AnalysisModule.resolve_selection` → `run_spec.resolve_analysis_selection`, driven by the module's `selects = (upstream_module, ref_field)`. It resolves to a `{sid: run_id}` **map** from, in order: `<upstream>_spec` (each recording's own run with those settings); `<upstream>_specs`, a list (each recording's own run of the **one** listed spec it has a complete run of — **refused** when it has none or several, so list order never picks; for recordings whose upstream came through different chains, e.g. two detection models for two strains, which no single spec covers; passing it with `<upstream>_spec` is refused; when the list resolves to more than one spec and the upstream is `embedding`, the pooled runs must also pass `run_preview.validate_comparability`, because equal specs no longer vouch for the recipe and neither clustering module checks it itself; the GUI's `PooledSpecPicker` and a repeated `--embed-ref` / `--tracking-ref` emit it, and one tick or ref still emits `<upstream>_spec`); a single `ref_field` id (that id in every recording, checked present and complete); or neither (the one spec every selected recording has a complete run of, **refused** when there is none — naming the closest spec's missing recordings — or several, Tenet 9). The config is enriched with `<ref_field>s` (the map) and `<ref_field>` (the id when every recording's agrees, else `None`), which `build_job` freezes into the Job (the runner loops recordings internally and keys the map). Because analysis resolves once at launch (no coordinator re-run), the job carries the resolved map, not the spec. Readers go through `core/run_selection.py::run_for_recording`, which answers both the map and a run recorded before it (whose single id meant that id in every recording). Migrated: `location_export` (`tracking_run_ids`) and `temporal_clustering` (`embed_run_ids`, on the job, the state and the record's `params`). `query` and `query_eval` still match the embedding run on its id.
+*Analysis* is a **different mechanism** — one experiment-level job, not a fan-out, so `AnalysisModule` has no `resolve_upstream_spec`. **(C)** `Experiment.run_analysis` calls `module.validate`, and the module's validate calls `AnalysisModule.resolve_selection` → `run_spec.resolve_analysis_selection`, driven by the module's `selects = (upstream_module, ref_field)`. It resolves to a `{sid: run_id}` **map** from, in order: `<upstream>_spec` (each recording's own run with those settings); `<upstream>_specs`, a list (each recording's own run of the **one** listed spec it has a complete run of — **refused** when it has none or several, so list order never picks; for recordings whose upstream came through different chains, e.g. two detection models for two strains, which no single spec covers; passing it with `<upstream>_spec` is refused; when the list resolves to more than one spec and the upstream is `embedding`, the pooled runs must also pass `run_preview.validate_comparability`, because equal specs no longer vouch for the recipe and neither clustering module checks it itself; the GUI's `PooledSpecPicker` and a repeated `--embed-ref` / `--tracking-ref` emit it, and one tick or ref still emits `<upstream>_spec`); a single `ref_field` id (that id in every recording, checked present and complete); or neither (the one spec every selected recording has a complete run of, **refused** when there is none — naming the closest spec's missing recordings — or several, Tenet 9). The config is enriched with `<ref_field>s` (the map) and `<ref_field>` (the id when every recording's agrees, else `None`), which `build_job` freezes into the Job (the runner loops recordings internally and keys the map). Because analysis resolves once at launch (no coordinator re-run), the job carries the resolved map, not the spec. Readers go through `core/run_selection.py::run_for_recording`, which answers both the map and a run recorded before it (whose single id meant that id in every recording). Migrated: `location_export` (`tracking_run_ids`) and `temporal_clustering` (`embed_run_ids`, on the job, the state and the record's `params`). `query` still matches the embedding run on its id.
 
 The explicit-id path (CLI names a run) stays working at all three — spec is additive.
 
@@ -3751,7 +3752,7 @@ Track IDs are integers local to a tracking run (assigned in order of first appea
 
 **`subject_labels`** in `track.yaml` is the slot for this mapping. Every tracker writes it as `null`, and **nothing populates it yet** — neither a manual labelling surface nor a re-identification stage is built. No structural change is required when that workflow is added.
 
-**Not built: selecting a track by animal ID.** `core/utils.py::resolve_track_id` below exists, but no stage calls it: downstream stages take an `int` track ID. Until this lands, `core/utils.py::check_track_is_unambiguous` refuses to pool a multi-track run across recordings by its integer track ID, since the same integer can name a different animal in each recording. The design — a "which track" parameter accepting either an `int` (direct track ID) or a `str` (animal ID resolved through `subject_labels`):
+**Not built: selecting a track by animal ID.** `core/utils.py::resolve_track_id` below exists, but no stage calls it: downstream stages take an `int` track ID. Until this lands, nothing refuses pooling a multi-track run across recordings by its integer track ID, although the same integer can name a different animal in each recording: `query` and `temporal_clustering` pool on the bare `int`. The check that refused it, `check_track_is_unambiguous`, had one caller, `query_eval`, and was removed with that module. The design — a "which track" parameter accepting either an `int` (direct track ID) or a `str` (animal ID resolved through `subject_labels`):
 
 ```python
 def resolve_track_id(track_id: int | str, subject_labels: dict | None) -> int:
@@ -5088,7 +5089,7 @@ The pipeline's extensibility (Tenet 1) is organized into **three module families
 |--------|--------|-------|--------------|----------|
 | **Processing** (§6.5) | derived data (zarr) | per-recording | `Recording.run(module_id, config)` | detection, tracking, embedding, keypoint detect, keypoint track |
 | **Fit / train** (§12) | a reusable **model** | data in (often cross-recording) | `Experiment.train_model`; `Experiment.distill` / `distill_keypoints` (label, then train, in one run) | detection-model training; detector distill; keypoint distill |
-| **Analysis** (this section) | artifacts (CSVs / plots / stats) | experiment (one or many recordings) | `Experiment.run_analysis(module_id, config)` | location export (per-recording); query, query eval, temporal clustering (cohort) |
+| **Analysis** (this section) | artifacts (CSVs / plots / stats) | experiment (one or many recordings) | `Experiment.run_analysis(module_id, config)` | location export (per-recording); query, temporal clustering (cohort) |
 
 A research workflow chains them: **fit** a model → **apply** it per recording (processing) → **analyze** across a recording selection (analysis — iterating per recording, like location export, or pooling across the cohort). "Applying a fitted model" is *not* a fourth family — it is a processing module whose config names the model id. A behavior classifier or pose clusterer therefore decomposes into a fit module (produces the model) and an apply processing module (produces per-frame labels / cluster ids), with an optional analysis module summarizing the cohort.
 
@@ -5137,7 +5138,7 @@ class AnalysisModule(ABC):
 
 **Outputs.** No fixed schema: the module writes figures/tables/reports into its run dir and declares them via the artifacts manifest. Full lineage (recording ids + run ids + params) lives in the run's `job.json` (Tenet 9).
 
-**Location export was the first module; four are registered now.** **Location export** (per-track position relative to a recording's ROIs/POIs, §10) loops the selected recordings and emits a **per-recording** result, which made it the simplest first consumer of this machinery. The cohort-pooling modules followed on the same contract: `query` (§20), `temporal_clustering` (§22) and `query_eval`, which pool across the selection. **Streams** (§3) have a consumer too: `query_eval` reads a behavior stream as its ground truth (`requires=["embedding", "behavior"]`, below). Grouping variables (§11) are built, and `metadata.csv` is what §24's comparisons group by.
+**Location export was the first module; three are registered now.** **Location export** (per-track position relative to a recording's ROIs/POIs, §10) loops the selected recordings and emits a **per-recording** result, which made it the simplest first consumer of this machinery. The cohort-pooling modules followed on the same contract: `query` (§20) and `temporal_clustering` (§22), which pool across the selection. **Streams** (§3) have no consumer among them: `query_eval`, a module since removed, read a behavior stream as its ground truth and was the only one. Grouping variables (§11) are built, and `metadata.csv` is what §24's comparisons group by.
 
 ### Location export (the first analysis module)
 
@@ -5236,11 +5237,14 @@ there.
 ### The clip engine and the clip CSV (shared)
 
 
-The clip engine is backend-agnostic and used by §20's Query, the `query_eval` scorer below and
-§22's temporal clustering: `analysis/retrieval.py` (cosine-cost banded subsequence DTW,
-`match_curve` / `query_multi`) and `analysis/clip_query.py` (trajectory load, continuity
-`segment_runs`, `span_to_rows`, `band_rows`, multi-exemplar fusion, `query_tracks`). Bout
-segmentation helpers live in `analysis/bout_segmentation.py`.
+The clip engine is backend-agnostic and used by §20's Query and §22's temporal clustering:
+`analysis/retrieval.py` (`soft_knn_frame_scores`, Query's per-frame scoring, and the reference
+cosine-cost banded subsequence DTW: `subsequence_dtw` / `match_curve`, and `dtw_distance`, the
+readable form the compiled kernel in `_dtw_numba.py` is checked against) and
+`analysis/clip_query.py` (trajectory continuity: `segment_runs`, `span_to_rows`, `band_rows`,
+`check_span`). The windowed matchers (`query_multi`, multi-exemplar fusion) and `query_tracks`
+left with `query_eval`, a module since removed. Bout segmentation helpers live in
+`analysis/bout_segmentation.py`.
 
 **The clip CSV** (`storage/clip_query_csv.py`, `schema_version` first): one tidy table,
 `query_id`/`query_name` the leading columns, then `kind` (`query` | `match`), `rank`,
@@ -5252,123 +5256,6 @@ results file: a montage's clip-list export writes it (`ClusterMontage.export_cli
 `query` row of one query named after the node), and `detail analysis query --from-csv` reads its
 rows as example clips grouped by `query_name`. No run writes `match` rows any more; the kind stays
 in the schema so an older results CSV still reads. Written atomically.
-
-### Behavior-query eval (retrieval scored against ground truth)
-
-The **first consumer of the behavior stream** (§3): score how well the clip-query engine
-retrieves a labeled behavior, to compare embedding recipes (mask resolution, embed model,
-input-image constructor) and query params. Two surfaces, one compute, both built: the
-**scriptable** CLI `analysis query-eval`, and the recorded `QueryEvalModule` (progress, batch,
-history) with its GUI report (`gui/modules/analysis_query_eval.py`) — see *Output + surface*
-below.
-
-**Compute (pure, no I/O — `analysis/query_eval.py`).** Temporal IoU over `t_ns` spans; a greedy
-one-to-one match of the engine's rank-ordered predictions to ground truth (**state** behaviors
-by IoU ≥ `iou_threshold`, **point** behaviors by a `±point_window` tolerance on the prediction
-midpoint — the type comes from the stream's `behavior_types`); COCO-style all-point **AP** plus
-precision/recall/best-F1. `seeded_order` gives a reproducible **held-out** exemplar draw.
-
-**Two method families (the `method` config Literal).** The **windowed matchers** (`dtw`,
-`clip_pooled_mean`/`max`, `keyframe`) produce variable-position spans scored by the temporal-IoU
-match above (span-detection AP + the nulls below). The **per-frame classifier** `soft_knn` (the set
-is `configs/query_eval.py::_PERFRAME_METHODS`) instead reframes retrieval as classification: score
-**every** trajectory frame, rank the whole set, and integrate a threshold-free **per-frame AP**
-(`analysis/query_eval.py::perframe_metrics`, the vectorized twin of `average_precision` — here the
-ranked list is every frame, not a handful of spans, so the Python per-element loops would dominate a
-leave-one-out run; ties are grouped at distinct scores so the AP is order-independent). A frame is
-positive iff its `t_ns` lies in a scored interval (**state**) or within `±point_window_s` of a
-scored point (**point**) — the same type split as the matcher path (`_interval_mask`). `soft_knn`
-scores a frame by a softmax(cos/`tau`) vote over its `k` nearest **labeled** frames = the held-out
-exemplar frames ∪ `n_negatives` sampled background frames (`retrieval.soft_knn_frame_scores`),
-class-balancing the rare positives. **Leakage-free:** only the held-out exemplar frames are excluded
-from the scored test set (so a positive never matches itself); the sampled negatives are the
-neighbor index but **stay** in the test set — a background frame that is also a negative is a
-legitimate true negative and self-ranks low, and excluding them let a large `n_negatives` fake
-AP=1. There is no proposal cutoff, so `precision`/`recall`/`tp`/`fp`/`fn` in the row are at the
-**best-F1 operating point** (not predict-all), while `ap` stays threshold-free; the per-frame path
-fills **no** `overlap`/null table (those are span-only) and persists the frame score curve
-(`similarity/<behavior>.npz`) plus fold-0 GT + best-F1 per-frame TP/FP runs for the figures
-(visualization only — the AP is threshold-free). The old fixed-proposal-cutoff span method
-(`frame_span` / `top_percent`) is **removed**.
-
-**Every windowed-matcher headline ships with its null (`overlap_metrics`; the per-frame classifiers
-skip it).** A metric with nothing to compare it
-against cannot be read: a permissive matcher that covers a third of the recording scores a high
-recall whatever it retrieves. So each score is computed twice — once for real, once with the
-answer destroyed but the shape kept. The **shifted-time null** slides every predicted span to a
-random offset, wrapping inside *that subject's own* timeline (same count, same lengths, same
-coverage — only the alignment is gone) and is the null for recall; the **shuffled-rank null**
-keeps the spans and outcomes and randomizes the order, and is the null for AP. `lift` is
-actual − null. Both are averaged over `NULL_DRAWS` (20) draws, seeded by the run's `seed`.
-Reported at each of `OVERLAP_LEVELS` (0.1 / 0.25 / 0.5) plus the configured `iou_threshold` —
-module constants, deliberately not config knobs (they are for reading the shape of a result, not
-for tuning). Per-level rows aggregate across folds with the same macro mean as the headline, so a
-level row and the `metrics.csv` row at that level agree. **Point** behaviors get one row, at
-their `point_window_s`. History: a high `recall@any` was once a tiling artifact — no better than its shifted-time null — which is exactly what this makes impossible to miss again.
-
-**Orchestration + scripting entry (`pipeline/query_eval.py::evaluate_query`, the no-executor
-entry both surfaces share).** Per behavior: keep recordings that both scored it (`is_annotated_for`) and embed the
-track; `validate_comparability` over them; pool the ground-truth intervals. Then **cross-validate**
-across `folds` (see below): each fold holds out its `n_exemplars`-subset and, for a **windowed
-matcher**, runs `analysis/clip_query.query_tracks` **permissively** (`threshold=2.0`, high
-`max_results`, so the PR curve comes from one ranked set — exemplars self-exclude) and scores the
-matches vs the *remaining* ground truth (matching per recording, ranked globally); a **per-frame
-method** branches to `_perframe_fold` instead (score every frame, per-frame AP, no `query_tracks`). A behavior with `≤ n_exemplars`
-pooled ground truth, or none resolvable within one continuous trajectory, is skipped. Emits one
-`BehaviorEval` per behavior carrying the **aggregate** metrics + the per-fold list + all folds'
-per-clip detail.
-
-**Cross-validation (`folds`).** `folds=1` (default) is a single seeded split — identical headline
-to the pre-folds behavior. Otherwise the **resolvable** instances are partitioned (seeded) into
-disjoint `n_exemplars`-chunks (standard k-fold): `folds=k` uses the first `k`
-(capped at `⌊N_resolvable / n_exemplars⌋`, logged when it caps — no silent truncation); `folds=0`
-is leave-one-out (every instance once; requires `n_exemplars=1`). Metrics aggregate **macro** —
-mean of AP/precision/recall/best-F1 with their population std (`analysis/query_eval.aggregate_folds`),
-so the accuracy is seed-independent with a spread. A multi-fold run caches each subject's trajectory
-(`_CachingTrajectories`) so it loads once and queries `k` times rather than reloading per fold; a
-single split keeps the lazy, low-memory store.
-
-**Output + surface — two surfaces, one core** (the location-export shape). `storage/query_eval_csv.py`
-writes an aggregate metrics table (**one row per `(embedding run, config, behavior)`** — the point
-estimates are the fold means, plus `n_folds` + `*_std`; the cross-validation columns are optional
-so a pre-folds sweep CSV still reads), a per-fold `folds.csv`, and the per-clip detail —
-`predictions.csv` (each retrieved candidate: rank, score, `tp`/`fp`, the matched GT span + IoU/offset)
-and `ground_truth.csv` (each interval marked `matched`/`fn`, plus the held-out exemplars) — every row
-carrying a `fold` column so all folds are inspectable; plus per-fold PR points. All atomic (tmp +
-`core.atomic.replace`). `evaluate_query` returns each `BehaviorEval` carrying the aggregate + per-fold
-metrics + all folds' detail (from `analysis/query_eval.match_ranked_detailed`), so both surfaces emit it:
-- **Scriptable CLI** — `analysis query-eval` (options single-sourced from `configs/query_eval.py`)
-  is **synchronous**: it prints an AP±std line per behavior and **appends** aggregate metrics rows to
-  `--out` (read + append + atomic rewrite) so a shell sweep accumulates a benchmark table; `--folds-out` /
-  `--pr-out` / `--predictions-out` / `--ground-truth-out` emit the per-fold metrics, curves, and
-  per-clip detail. `--behavior` is repeatable; `--search` defaults to every eligible recording.
-- **Recorded `QueryEvalModule`** (§16 AnalysisModule, `requires=["embedding","behavior"]`,
-  `selects=("embedding","embed_run_id")`) — a durable, progress-bearing run over `analysis/<an_NN>/`
-  that writes `metrics.csv` + `folds.csv` + `overlap.csv` (long format: one row per behavior ×
-  overlap level, each score beside its null — a separate file so `metrics.csv` stays the
-  one-row-per-config sweep table) + `predictions.csv` + `ground_truth.csv` +
-  `pr/<behavior>/fold_NN.csv`, read back through `api/run_preview.QueryEvalPreview` (the GUI seam,
-  Tenet 2). Its `validate` resolves the search set to every requested recording that is annotated for a
-  behavior **and** carries the embed run at the search track, so the pre-written record's
-  `recording_ids` is the real universe. Progress folds the query engine's per-subject `progress_cb`
-  across `(fold × subject)` within each behavior's band, so even a single-behavior single-recording run
-  moves during retrieval, not only at phase boundaries.
-
-The engine's `min_separation` (rows, not seconds) is left at its default rather than exposed.
-
-**Matchers (`method`).** `dtw` (default), `clip_pooled_mean`, `clip_pooled_max` and `keyframe` are
-`curve_fn`s: each maps `(database_norm, query_norm, band, params)` to a per-row cost curve that
-`retrieval.extract_matches` turns into windows of roughly the example's length (`band` is the
-warp/duration tolerance). In the eval, the per-frame classifier `soft_knn` takes the separate
-per-frame path documented above, not a `curve_fn` (it scores every frame, so `band` does not
-apply). It is not eval-only: the same scoring is §20 Query's one registered method, which forms
-instances from the score's peaks (§20, *Reference implementation*). The old `frame_span`
-fixed-proposal-cutoff span method has been removed.
-
-⚠️ **Score direction.** `Match.score` is a **distance** everywhere downstream — `retrieval.extract_matches`,
-the eval's ranked sort and `predictions.csv` all take ascending as best-first. A matcher that ranks
-by a *similarity* (higher is better) must emit `1 - similarity`; inverting this silently reverses
-the ranking and collapses AP with no error, and is pinned by a ranking-direction test.
 
 ---
 
@@ -5823,9 +5710,9 @@ assignment has no confidence), declares `overlap: exclusive`, and its `method` c
 `method_id`, `params`, `granularity` and the method's own fit-summary counts.
 
 **`score.direction` is not optional.** A producer's native score may be a confidence (Query's,
-higher is better) or a **distance** (query eval's `Match.score`, ascending best-first), and §16's
-query eval already carries a warning that inverting it silently reverses
-the ranking and collapses AP with no error. Declaring the direction in the artifact stops the same
+higher is better) or a **distance** (ascending best-first, as the windowed matchers of
+`query_eval`, a module since removed, emitted), and inverting one silently reverses
+the ranking with no error. Declaring the direction in the artifact stops that
 bug recurring one layer up, where a comparison would rank groups backwards just as quietly.
 
 **`label_space` decides whether labels may be pooled across recordings.** A clustering that pools
@@ -6127,11 +6014,11 @@ only labels that ever exist in a Query run are the example clips the user marked
   it is why this module is built around calibrate-then-audit rather than around a score.
 - **The user cannot evaluate the method.** So the method is not a casual dropdown: it lives in
   advanced settings, and each method's documentation states what is and is not known about it.
-- **The research eval is not this.** `query_eval` (§16) draws its exemplars *from ground-truth
-  instances* and scores against the held-out remainder. It is a research instrument for comparing
-  representations and matchers, and it stays one. Its numbers do not transfer directly here,
+- **The research eval was not this.** `query_eval`, a module since removed, drew its exemplars
+  *from ground-truth instances* and scored against the held-out remainder. It was a research
+  instrument for comparing representations and matchers. Its numbers did not transfer directly here,
   because the tool's exemplars are chosen deliberately by a human — and which clip is chosen is the
-  thing that moves the score most, where the research eval draws them at random. A person choosing on purpose is
+  thing that moves the score most, where the research eval drew them at random. A person choosing on purpose is
   neither.
 
 ### The run: two phases, one record
@@ -6241,21 +6128,21 @@ is the pivotal division. A windowed matcher returns windows of roughly the exemp
 per-frame method could threshold its score and run-length-encode, or — as `soft_knn` does — form
 its extents from the score's peaks before any cutoff and let `instances_at` filter them; either
 way its extents follow the behavior. Both are correct definitions of "an instance" for their method, and neither is the module's
-business. **A method documents how it defines extent** (`analysis/query_methods_docs.py` is the
-generated per-method doc registry), because that definition is what a duration measure will report.
+business. **A method documents how it defines extent** (on its module page, whose prose is
+`docs/modules/_intros/<method_id>.md`), because that definition is what a duration measure will report.
 There is no post-hoc boundary-refinement step and no module-level notion of a "true" extent.
 
 **Confidence is canonical: `[0, 1]`, higher is better.** Every method returns it alongside its
 native score. The cutoff axis, the audit stratification, and the artifact's score column are then
-uniform across methods, and the score-direction hazard §16 carries a warning about — a matcher
+uniform across methods, and the score-direction hazard — a matcher
 emitting a similarity where a distance is expected, silently reversing the ranking with no error —
 becomes impossible to express rather than a declaration the module has to trust.
 
 **No parameter carries a label.** `prepare` takes user-chosen exemplars and a module-drawn sample;
 `search` takes a trajectory. There is no argument through which ground truth could enter, which is
 the leakage rule (CLAUDE.md) made structural rather than conventional. In this module there are no
-labels to leak — but the protocol is also what `query_eval` will drive, and there the guarantee is
-load-bearing.
+labels to leak; the guarantee is load-bearing for anything that drives the protocol with ground
+truth at hand, as `query_eval`, a module since removed, was meant to.
 
 ### Sampling
 
@@ -6752,10 +6639,11 @@ matches once `L - band` clamps at 1 — filtering matches to the declared durati
 - **Sample determinism**: the recorded draw reproduces the sample.
 - **Progress cadence** on a single-unit fixture — the inner pair must move, not just the unit count
   (§6) — and phase messages must advance through `loading → preparing → searching → writing`.
-- **Label leakage**: `tests/pipeline/test_label_leakage.py` permutes labels and asserts
-  predictions are byte-identical — over `query_eval`'s `evaluate_query` only. Query is not driven by
-  it, because Query takes no ground truth at all: no parameter of `QueryMethod` carries a label
-  (*The protocol*), so its protection is structural rather than this test.
+- **Label leakage**: Query takes no ground truth at all: no parameter of `QueryMethod` carries a
+  label (*The protocol*), so its protection is structural, and
+  `tests/pipeline/test_query_background.py::test_the_draw_consults_no_behavior_stream` asserts the
+  background draw reads no behavior stream. The permutation guard over `query_eval`'s
+  `evaluate_query` left with that module.
 - **A judgment is refused against a frame nobody saw.** The audit shows a clip and records a
   decision, so a cell whose frame did not decode must reject input and name the reason rather than
   accept a decision against a blank pane — the recorded class in `tests/gui/test_frame_source.py`,
@@ -6795,7 +6683,7 @@ An **authored run** is one whose output depends on human decisions rather than o
 parameters. It is not a fourth module family (§16) — an authored run is still an analysis module —
 but a fourth **lifecycle**, orthogonal to what a module produces.
 
-The distinction is real, not stylistic. A computed run (location export, query-eval) is
+The distinction is real, not stylistic. A computed run (location export) is
 reproducible from its inputs and params, immutable once complete, and "refined" by seeding a *new*
 run. An authored run cannot be re-derived from parameters, because the parameters were not what
 decided it: a person set a cutoff by looking at clips, named a cluster, or judged fifty candidates.
@@ -8816,8 +8704,9 @@ both are authored runs, so §21's two required behaviors apply: the result view 
   back distinguishable. Measures report unlabelled time as `unnamed_time`; `noise_time` is
   deliberately absent until a producer emits noise (§23, *The measures*).
 - **Runs written with a granularity still open**, and their snapshots still read as pinned.
-- **Label leakage** (`tests/pipeline/test_label_leakage.py`): permute the labels, predictions must
-  not move. Discovery is unsupervised, so this must hold trivially, and it is exactly the kind of
+- **Label leakage** (`tests/cluster_methods/test_registry.py::test_no_label_can_reach_a_method`):
+  no method signature has a parameter a label could enter through. Discovery is unsupervised, so
+  this must hold trivially, and it is exactly the kind of
   place a "seed the labels from ground truth" convenience would quietly break it.
 
 ### Deferred
@@ -8896,7 +8785,7 @@ Windows come from four places, and the model is the same for all of them:
 - **Normalized** — fractions of the recording (`first third`), for cohorts whose recordings differ
   in length.
 - **Event-referenced — not built** — relative to an event (`0–60 s after each lever press`). The
-  event lives in a stream (§3), which `query_eval` reads only for its `behavior`-role ground truth;
+  event lives in a stream (§3), which no analysis module reads today;
   this is the shape that would read an event stream. The stream join itself is a follow-on, but
   the window model is designed so it drops in rather than needing a second mechanism. Built kinds
   (`configs/windows.WindowSpec.kind`): `whole`, `absolute`, `normalized`, `sliding`.
@@ -9102,12 +8991,12 @@ these groups?* It filters a set of recordings, groups them by whatever columns o
 figures together.
 
 **Naming.** "Comparison" means this: the scientific comparison across recording metadata. It needs
-no labels and compares animals. Not "evaluations", because that word already names a run scored
-against ground truth: each `analysis query-eval` run *is* an evaluation.
+no labels and compares animals. Not "evaluations", because that word names a run scored
+against ground truth, which is what `query_eval`, a module since removed, produced.
 
 ```
-  analysis/<an_NN>/        an evaluation — one config scored against ground truth
-  comparisons/<cmp_NN>/    a comparison  — this section; groups, no labels
+  analysis/<an_NN>/        an analysis run — one module, one config (§16)
+  comparisons/<cmp_NN>/    a comparison    — this section; groups, no labels
 ```
 
 
@@ -9210,8 +9099,8 @@ The floor is a **permutation**: shuffle the group assignment **among the aggrega
 path's units, per above), recompute the whole ranking, repeat, and report the distribution of the
 top effect. It answers "how big is the biggest difference you would see from nothing?" and is drawn
 on the same axes as the ranking. This is null calibration, not a hypothesis test — the same
-discipline `query_eval` already applies with its shifted-time and shuffled-rank nulls (§16), and
-the same rule as "a headline metric ships with its floor" (Tenet 9).
+discipline `query_eval`, a module since removed, applied with its shifted-time and shuffled-rank
+nulls, and the same rule as "a headline metric ships with its floor" (Tenet 9).
 
 It is computed **in the same pass**, so a ranking cannot be rendered without one — *or* without
 saying why there is none. A permutation the data cannot move produces no floor: with one
@@ -10917,8 +10806,8 @@ Every capability on all three surfaces in the change that adds it (`wire-every-s
 - Schema-edge tests (`schema-edge-tests`) for both stages: a part with no subject frames, a track
   absent from a part, `n_candidates = 1` (no `candidates` column), a stopped run's coverage, a
   skeleton whose K differs from the zarr's attrs, a class-filtered tracking run.
-- Label leakage: not covered. `tests/pipeline/test_label_leakage.py` does not drive the keypoint
-  stages, and the audit whose labels it would permute is not built.
+- Label leakage: not covered. No guard drives the keypoint stages with labels permuted, and the
+  audit whose labels it would permute is not built.
 - Export round-trips: each format opened by its own loader.
 - UI-thread scan seams (`tests/gui/test_ui_thread_blocking.py`): `keypoint_instances(`,
   `sample_example_frames(`, `add_example_frame(`, `set_example_marks(`, `test_keypoints(`.

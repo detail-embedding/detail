@@ -1780,8 +1780,8 @@ def test_the_transport_is_never_cut_off_at_the_default_size(qapp, tmp_path):
 
 
 def test_masks_are_on_by_default_like_every_other_player(qapp, tmp_path):
-    """Mark examples opened with masks off, the one player (with query-eval's explorer, asserted
-    in `test_run_detail.py`) a user found unmasked against the tool's default."""
+    """Mark examples opened with masks off, a player a user found unmasked against the tool's
+    default."""
     proj = _embed_video_experiment(tmp_path)
     dialog = ClipExampleDialog(proj, proj.recordings, "emb_01")
     assert dialog._masks.isChecked()

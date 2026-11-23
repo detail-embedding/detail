@@ -23,7 +23,6 @@ PIPELINE_RUNNERS: tuple[str, ...] = (
     "detail.pipeline.training",
     "detail.pipeline.location_analysis",
     "detail.pipeline.query",
-    "detail.pipeline.query_eval",
     "detail.pipeline.temporal_clustering",
     "detail.trainers.ultralytics_yolo",
     "detail.models.sam3",
