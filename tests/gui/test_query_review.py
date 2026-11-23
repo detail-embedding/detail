@@ -12,7 +12,8 @@ pytest.importorskip("PyQt6")
 
 from PyQt6.QtWidgets import QAbstractButton, QLabel  # noqa: E402
 
-from detail.gui.query_review import FROZEN, NO_CUTOFF, QueryReviewTab  # noqa: E402
+from detail.gui.query_review import FROZEN, QueryReviewTab  # noqa: E402
+from detail.storage import analysis_runs as analysis_store  # noqa: E402
 from tests.api.test_query import _searched  # noqa: E402
 from tests.gui.conftest import Pictures, drain_busy_calls  # noqa: E402
 from tests.gui.test_query_workspace import _drain  # noqa: E402
@@ -143,12 +144,150 @@ def test_a_snapshot_reads_the_review_and_writes_nothing(qapp, searched):
     assert not tab.writes_pending() and not run.taken_out("q01")
 
 
-def test_a_behavior_without_a_cutoff_says_to_set_one(qapp, tmp_path):
-    exp, run = _searched(tmp_path)
+# --- nothing to review: one page, one thing to do -------------------------------------------
+#
+# **The class.** An empty review drawn as a review: a message over an empty list, an empty pane
+# and a greyed *Finish review* — four widgets describing their own absence — and, on a run
+# finished with no cutoff, "set a cutoff" and "reopen it" at once. With no cutoff the page is a
+# headline, a line and one button whose signal the workspace connects, or no button where there
+# is nothing to press (a snapshot). Its button is shown only once that signal has a receiver.
+
+
+@pytest.fixture(scope="module")
+def _uncut_template(tmp_path_factory):
+    """One searched run with no cutoff, built once and copied per test."""
+    exp, _run = _searched(tmp_path_factory.mktemp("uncut"))
+    return exp.dir
+
+
+@pytest.fixture
+def uncut(_uncut_template, tmp_path):
+    import shutil
+
+    from detail.api.experiment import Experiment
+
+    copy = tmp_path / _uncut_template.name
+    shutil.copytree(_uncut_template, copy)
+    exp = Experiment(copy)
+    return exp, exp.query_run("an_01")
+
+
+def _empty_tab(qapp, exp, run, *, wired: bool = True):
+    """The tab on q01, every press it makes recorded — wired the way the workspace wires it."""
     tab = QueryReviewTab(exp, run)
+    pressed: list[str] = []
+    if wired:
+        tab.go_to_calibrate.connect(lambda: pressed.append("calibrate"))
+        tab.reopen_requested.connect(lambda: pressed.append("reopen"))
+    tab.resize(1440, 847)
+    tab.show()
     tab.set_behavior("q01")
-    assert _drain(qapp, lambda: tab.figure.text() == NO_CUTOFF)
-    assert tab._list.topLevelItemCount() == 0
+    assert _drain(
+        qapp, lambda: tab._pages.currentIndex() == tab.PAGE_EMPTY
+    ), "the empty page never showed"
+    qapp.processEvents()
+    return tab, pressed
+
+
+def _buttons(tab) -> list:
+    return [tab._go_to_calibrate, tab._reopen]
+
+
+def _shown(tab):
+    """The one button the empty page offers, or ``None``; every other one is also disabled,
+    which is what a walk over the controls live on a snapshot reads (it skips nothing hidden).
+    """
+    shown = [b for b in _buttons(tab) if not b.isHidden()]
+    assert len(shown) <= 1, [b.text() for b in shown]
+    for button in _buttons(tab):
+        if button not in shown:
+            assert not button.isEnabled(), f"{button.text()!r} hidden but live"
+    return shown[0] if shown else None
+
+
+def _empty_page(tab) -> tuple[str, str, str | None]:
+    """``(headline, line, button text or None)`` as shown."""
+    button = _shown(tab)
+    return (
+        tab._empty_title.text(),
+        tab._empty_body.text(),
+        None if button is None else button.text(),
+    )
+
+
+def test_a_live_run_with_no_cutoff_shows_one_page_and_go_to_calibrate(qapp, uncut):
+    exp, run = uncut
+    tab, pressed = _empty_tab(qapp, exp, run)
+    assert _empty_page(tab) == (
+        "rearing has no cutoff yet",
+        "The review covers every clip the cutoff keeps, so the cutoff comes first.",
+        "Go to Calibrate",
+    )
+    assert not tab.pane.isVisible() and not tab._list.isVisible(), "an empty review"
+    assert _shown(tab).isVisible() and _shown(tab).isEnabled()
+    _shown(tab).click()
+    assert pressed == ["calibrate"]
+
+
+def test_a_finished_run_with_no_cutoff_offers_reopen_and_nothing_else(qapp, uncut):
+    """A run finished before Finish needed a cutoff: one instruction, Reopen."""
+    exp, run = uncut
+    analysis_store.set_analysis_status(run._run_dir(), "complete")
+    tab, pressed = _empty_tab(qapp, exp, run)
+    assert _empty_page(tab) == (
+        "This run is finished, and rearing has no cutoff",
+        "Reopen the run to set a cutoff on Calibrate, then review its clips here.",
+        "Reopen",
+    )
+    assert not tab.pane.isVisible()
+    _shown(tab).click()
+    assert pressed == ["reopen"]
+
+
+def test_a_snapshot_with_no_cutoff_says_so_and_offers_no_button(qapp, uncut):
+    """Wired like the others, so the missing button is the snapshot's, not the wiring's."""
+    exp, run = uncut
+    view = run.view(run.pin(reason="export"))
+    tab, pressed = _empty_tab(qapp, exp, view)
+    assert _empty_page(tab) == (
+        "This is a snapshot, and rearing had no cutoff when it was pinned",
+        "Go back to the live run to set a cutoff, then review its clips there.",
+        None,
+    )
+    assert not tab.pane.isVisible() and pressed == []
+
+
+def test_the_button_shows_only_once_the_workspace_connects_its_signal(qapp, uncut):
+    """A button is a claim that pressing it does something: unconnected, it is not shown."""
+    exp, run = uncut
+    tab, _pressed = _empty_tab(qapp, exp, run, wired=False)
+    assert _empty_page(tab)[2] is None
+    assert tab._empty_title.text() == "rearing has no cutoff yet"
+
+
+def test_setting_a_cutoff_brings_the_review_back_and_clearing_it_the_page(qapp, uncut):
+    exp, run = uncut
+    tab, _pressed = _empty_tab(qapp, exp, run)
+    run.set_cutoff("q01", _cutoff_keeping(run, 6))
+    tab.reload()
+    assert _drain(
+        qapp,
+        lambda: tab._pages.currentIndex() == tab.PAGE_REVIEW
+        and tab._list.topLevelItemCount() == 2,
+    ), "the review never came back"
+    qapp.processEvents()
+    assert tab.pane.isVisible() and tab._list.isVisible()
+    assert not tab._empty_title.isVisible()
+    assert tab.figure.text().startswith("rearing")
+    assert tab._reason() == ""
+    assert not any(
+        b.isEnabled() for b in _buttons(tab)
+    ), "a button live under the review"
+
+    run.set_cutoff("q01", None)
+    tab.reload()
+    assert _drain(qapp, lambda: tab._pages.currentIndex() == tab.PAGE_EMPTY)
+    assert tab._list.topLevelItemCount() == 0 and tab._open is None
 
 
 def test_calibrate_says_which_of_its_clips_the_review_removed():
@@ -232,3 +371,27 @@ def test_an_earlier_one_by_one_audit_stays_in_the_figures_tooltip(qapp, searched
     assert _drain(
         qapp, lambda: "Earlier one-by-one audit: precision" in tab.figure.toolTip()
     )
+
+
+def test_a_reviewed_recordings_precision_is_its_rows_headline(qapp, tmp_path):
+    """The query AUDIT's rows draw as the clustering ones do: a recording reviewed exactly at
+    the cutoff carries its figure as ``figure`` (the delegate's headline), its line says how many
+    were removed; a recording not reviewed carries no figure."""
+    from detail.gui.query_review import QueryReviewTab
+
+    row = {
+        "recording_id": "s1",
+        "name": "s1",
+        "size": 10,
+        "exact": True,
+        "estimate": {"precision": 0.9},
+        "at_floor": None,
+    }
+    tab = QueryReviewTab.__new__(QueryReviewTab)
+    tab._open = None
+    tab._data = {"taken": {}}
+    tab._reopened = set()
+    look = QueryReviewTab._look(tab, row)
+    assert look["figure"] == "90%" and look["line"] == "0 removed"
+    look = QueryReviewTab._look(tab, dict(row, exact=False))
+    assert look["figure"] == ""

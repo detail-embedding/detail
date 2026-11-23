@@ -1365,15 +1365,257 @@ def test_the_dialog_adds_a_behavior_under_the_setup_tables_rule(qapp, tmp_path):
     assert len(dialog.behaviors[2]["examples"]) == 1
 
 
-def test_a_dialog_opened_with_no_behaviors_says_to_add_one(qapp, tmp_path):
+def _shown(widget) -> bool:
+    """On screen once its window is: neither it nor anything between it and the window hidden.
+
+    ``isVisible()`` is False for every child of a dialog nobody showed, so it cannot tell a
+    deliberately hidden note from one that is simply not on screen yet."""
+    return widget.isVisibleTo(widget.window())
+
+
+def _name_in_box(dialog, name: str, *, submit: str = "return") -> None:
+    """Type ``name`` into the marking box's field and submit it, as a user would."""
+    from PyQt6.QtTest import QTest
+
+    QTest.keyClicks(dialog._new_behavior, name)
+    if submit == "return":
+        QTest.keyClick(dialog._new_behavior, Qt.Key.Key_Return)
+    else:
+        dialog._add_named.click()
+
+
+def _click_span(dialog, first: int, last: int) -> None:
+    """Mark a clip with the buttons, which do nothing while they are greyed."""
+    dialog._scrubber.set_frame(first, decode=False)
+    dialog._mark_start.click()
+    dialog._scrubber.set_frame(last, decode=False)
+    dialog._mark_end.click()
+
+
+def _cancel(dialog):
+    from PyQt6.QtWidgets import QDialogButtonBox
+
+    box = dialog.findChild(QDialogButtonBox)
+    return box.button(QDialogButtonBox.StandardButton.Cancel)
+
+
+def test_a_dialog_opened_with_no_behaviors_greys_marking_and_use_with_reasons(
+    qapp, tmp_path
+):
+    """The report (2026-11-23): with no behavior, Mark start / Mark end looked pressable and
+    only wrote a status line, and Use these clips closed the window with nothing marked.
+
+    Read after the track loads, so the missing behavior is the only thing stopping either.
+    """
+    from PyQt6.QtWidgets import QDialog
+
+    from detail.gui.behavior_query import _NAME_FIRST
+
     proj = _embed_video_experiment(tmp_path)
     dialog = _multi_dialog(qapp, proj, behaviors=[])
-    assert dialog._annotating.text() == "Add a behavior to annotate"
+    for button in (dialog._mark_start, dialog._mark_end):
+        assert (
+            not button.isEnabled()
+        ), f"{button.text()!r} is pressable with no behavior"
+        assert button.toolTip() == _NAME_FIRST
+    # In words in the box, not only in a tooltip nobody hovers for.
+    assert _shown(dialog._marking_note) and dialog._marking_note.text() == _NAME_FIRST
+
+    reason = "Mark at least one example first"
+    assert not dialog._use.isEnabled() and dialog._use.toolTip() == reason
+    assert _shown(dialog._accept_note) and dialog._accept_note.text() == reason
+    dialog._use.click()
+    assert dialog.result() != QDialog.DialogCode.Accepted, "closed with nothing marked"
+
+    # The box asks for the name where the heading and the toggle were.
+    assert _shown(dialog._naming_prompt)
+    assert _shown(dialog._new_behavior) and _shown(dialog._add_named)
+    assert not _shown(dialog._annotating) and not _shown(dialog._as_example)
+    assert not _shown(dialog._as_negative)
     # No header row over nothing: a line saying what to do, like the empty clip list.
     assert dialog._behavior_table.isHidden() and not dialog._no_behaviors.isHidden()
     assert not dialog._rename_button.isEnabled() and dialog._rename_button.toolTip()
+    # Behind the greyed buttons, `_mark` still refuses on its own.
     dialog._mark(start=True)
     assert "add a behavior first" in dialog._span_status.text()
+
+    cancel = _cancel(dialog)
+    assert cancel.isEnabled()
+    cancel.click()
+    assert dialog.result() == QDialog.DialogCode.Rejected
+
+
+@pytest.mark.parametrize("submit", ["return", "click"])
+def test_naming_a_behavior_in_the_box_opens_marking(qapp, tmp_path, submit):
+    proj = _embed_video_experiment(tmp_path)
+    dialog = _multi_dialog(qapp, proj, behaviors=[])
+    _name_in_box(dialog, " grooming ", submit=submit)
+
+    assert [b["name"] for b in dialog.behaviors] == ["grooming"]
+    for button in (dialog._mark_start, dialog._mark_end):
+        assert button.isEnabled() and button.toolTip() == ""
+    assert not _shown(dialog._marking_note)
+    # The field goes; the heading and the toggle come back.
+    assert not _shown(dialog._new_behavior) and not _shown(dialog._add_named)
+    assert not _shown(dialog._naming_prompt)
+    assert _shown(dialog._annotating) and dialog._annotating.text() == (
+        "Annotating: grooming"
+    )
+    assert _shown(dialog._as_example) and _shown(dialog._as_negative)
+    # Use these clips still waits, now naming what it waits for.
+    assert not dialog._use.isEnabled()
+    assert dialog._accept_note.text() == "grooming has no examples yet"
+
+    _click_span(dialog, 0, 2)
+    assert len(dialog.behaviors[0]["examples"]) == 1
+
+    # Removing the last behavior closes marking again and brings the field back.
+    dialog._remove_button.click()
+    assert not dialog._mark_start.isEnabled() and _shown(dialog._new_behavior)
+
+
+def test_a_behavior_named_before_the_track_is_read_waits_for_it(qapp, tmp_path):
+    """Two things gate marking. Naming a behavior must not open it ahead of the track's
+    continuity, and once a behavior exists the buttons say they are loading."""
+    from detail.gui.behavior_query import _NAME_FIRST
+
+    proj = _embed_video_experiment(tmp_path)
+    dialog = ClipExampleDialog(
+        proj, proj.recordings, "emb_01", max_gap_ns=10_000, behaviors=[]
+    )
+    # The read's answer is queued for the event loop, which nothing below runs.
+    assert dialog._continuity is None
+    assert dialog._mark_start.toolTip() == _NAME_FIRST  # the reason a user can act on
+    assert dialog._mark_start.text() == "Mark start"
+
+    _name_in_box(dialog, "grooming")
+    assert dialog._continuity is None, "the read landed early; nothing here is ordered"
+    assert not dialog._mark_start.isEnabled()
+    assert dialog._mark_start.text() == "Mark start (loading…)"
+    assert "continuity" in dialog._mark_start.toolTip()
+    assert not _shown(dialog._marking_note)  # the buttons say it
+
+    _wait_continuity(qapp, dialog)
+    assert dialog._mark_start.isEnabled() and dialog._mark_start.text() == "Mark start"
+
+
+@pytest.mark.parametrize("name", ["", "   "])
+def test_the_box_refuses_an_empty_name_where_it_was_typed(qapp, tmp_path, name):
+    from detail.gui.behavior_query import behavior_name_problem
+
+    proj = _embed_video_experiment(tmp_path)
+    dialog = _multi_dialog(qapp, proj, behaviors=[])
+    _name_in_box(dialog, name)
+    assert dialog.behaviors == []
+    assert dialog._span_status.text() == behavior_name_problem("", [])
+    assert _shown(dialog._new_behavior) and not dialog._mark_start.isEnabled()
+
+    _name_in_box(
+        dialog, "grooming"
+    )  # the refusal does not outlive a name that is taken
+    assert dialog._span_status.text() == ""
+
+
+def test_a_name_from_the_box_is_held_to_the_checklists_rule(
+    qapp, tmp_path, monkeypatch
+):
+    """A duplicate cannot be typed into the box: it is there only while no behavior exists.
+    So the duplicate refusal is checked from the other side — the checklist's Add refuses a
+    name the box added, because both add through one path into one list."""
+    from PyQt6.QtWidgets import QInputDialog
+
+    proj = _embed_video_experiment(tmp_path)
+    dialog = _multi_dialog(qapp, proj, behaviors=[])
+    _name_in_box(dialog, "grooming")
+    monkeypatch.setattr(QInputDialog, "getText", lambda *_a, **_k: (" grooming ", True))
+    dialog._add_behavior_button.click()
+    assert [b["name"] for b in dialog.behaviors] == ["grooming"]
+    assert "already listed" in dialog._status.text()
+
+
+def test_use_these_clips_opens_once_any_behavior_has_an_example(qapp, tmp_path):
+    """One behavior with an example is enough: the launch form names any behavior that still
+    lacks one. A non-example is not an example."""
+    from PyQt6.QtWidgets import QDialog
+
+    proj = _embed_video_experiment(tmp_path)
+    dialog = _multi_dialog(qapp, proj)  # attack, sniffing: neither has an example
+    assert not dialog._use.isEnabled()
+    assert dialog._accept_note.text() == "attack has no examples yet"
+    assert dialog._use.toolTip() == "attack has no examples yet"
+
+    dialog._as_negative.click()
+    _click_span(dialog, 0, 2)
+    assert len(dialog.behaviors[0]["negatives"]) == 1
+    assert not dialog._use.isEnabled()
+
+    dialog._as_example.click()
+    _click_span(dialog, 0, 4)
+    assert dialog._use.isEnabled() and dialog._use.toolTip() == ""
+    assert not _shown(dialog._accept_note)
+    assert dialog.behaviors[1]["examples"] == []  # sniffing still has none
+
+    dialog._clip_table.selectRow(0)  # the example: a behavior's examples list first
+    dialog._delete.click()
+    assert dialog.behaviors[0]["examples"] == []
+    assert not dialog._use.isEnabled() and _shown(dialog._accept_note)
+
+    _click_span(dialog, 0, 4)
+    dialog._use.click()
+    assert dialog.result() == QDialog.DialogCode.Accepted
+
+
+def test_the_one_list_mode_is_not_gated_on_a_behavior(qapp, tmp_path):
+    """Clip query and clip annotation pass a plain list and accept an empty one: no naming
+    field, no notes, and Use these examples open with nothing marked, as before."""
+    proj = _embed_video_experiment(tmp_path)
+    dialog = _wait_continuity(qapp, ClipExampleDialog(proj, proj.recordings, "emb_01"))
+    assert dialog._mark_start.isEnabled()
+    assert dialog._use.isEnabled() and dialog._use.text() == "Use these examples"
+    for widget in (
+        dialog._naming_prompt,
+        dialog._new_behavior,
+        dialog._add_named,
+        dialog._marking_note,
+        dialog._accept_note,
+    ):
+        assert not _shown(widget)
+
+
+@pytest.mark.parametrize("named", [False, True], ids=["empty", "named"])
+def test_mark_examples_meets_every_gui_rule_with_and_without_a_behavior(
+    qapp, tmp_path, named
+):
+    """The requirement sweep builds this dialog in its one-list mode, so the Behavior scan
+    mode — the naming field, the greyed pair and their notes — is walked here."""
+    from detail.gui import requirements
+    from tests.gui import subjects
+
+    proj = _embed_video_experiment(tmp_path)
+    dialog = _multi_dialog(qapp, proj, behaviors=[])
+    if named:
+        _name_in_box(dialog, "grooming")
+    dialog.resize(1100, 740)
+    dialog.show()
+    try:
+        for _ in range(5):
+            qapp.processEvents()
+        failures = []
+        found = subjects.walk(dialog, "ClipExampleDialog", "dialog")
+        for subject in found:
+            for rule in requirements.REQUIREMENTS:
+                if not rule.applies_to(subject.kind, subject.container):
+                    continue
+                if subject.label in rule.exempt:
+                    continue
+                try:
+                    rule.check(subject.widget)
+                except AssertionError as exc:
+                    failures.append(f"{subject.label}: {exc}")
+        assert {s.widget for s in found} >= {dialog._add_named, dialog._use}
+        assert not failures, "\n".join(failures)
+    finally:
+        dialog.close()
 
 
 def test_delete_removes_the_selected_clip_by_button_and_by_key(qapp, tmp_path):
@@ -1455,7 +1697,10 @@ def test_non_examples_are_greyed_with_the_reason_and_kept_when_unusable(qapp, tm
 
 def test_mark_buttons_say_they_are_loading(qapp, tmp_path):
     proj = _embed_video_experiment(tmp_path)
-    dialog = ClipExampleDialog(proj, proj.recordings, "emb_01", behaviors=[])
+    # With a behavior: without one, naming it is the reason the buttons give.
+    dialog = ClipExampleDialog(
+        proj, proj.recordings, "emb_01", behaviors=_two_behaviors()
+    )
     assert dialog._mark_start.text() == "Mark start (loading…)"
     assert not dialog._mark_start.isEnabled() and dialog._mark_start.toolTip()
     _wait_continuity(qapp, dialog)

@@ -676,8 +676,8 @@ Project rail (only inside a project — open an experiment from Experiments):
   widget, so activating only the inner layout measures it at its old width. `_body.adjustSize()`
   then `layout.activate()`; both are ~0.3ms. Traced twice in one session — a divider left 40px
   shy of centre, and 300 thumbnail decodes queued in the wrong order because every cell reported
-  `width() == 0`. Guarded by `tests/gui/test_strip_reuse.py` and
-  `tests/gui/test_decode_priority.py`.
+  `width() == 0`. Guarded by `tests/gui/test_decode_priority.py` (the reuse guard,
+  `test_strip_reuse.py`, went with the query confidence strip it measured, 2026-11).
 - **Pages top-justify.** Content packs at the **top** of the content area, with empty
   space falling to the bottom — never spread down the page or floated in the middle. End
   a page's top-level layout with **`addStretch()`** (the standard idiom) so headings,
@@ -1408,7 +1408,7 @@ detail/gui/
 ├── scrubber.py          # FrameScrubber — the shared frame/playback control
 ├── frame_source.py      # why a scrub position produced no pixels, and what to say
 ├── decode_order.py      # which thumbnails to decode first
-├── clip_grid.py         # the grid of clip thumbnails
+├── clip_grid.py         # one thumbnail's pool decode, and how many decimals a score needs
 ├── cluster_strip.py     # the clip strip a cluster/behaviour is recognised from
 ├── quick_preview.py     # the small player a strip puts in a thumbnail's place
 ├── clip_popup.py        # the window a quick preview opens into

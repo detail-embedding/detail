@@ -20,7 +20,7 @@ the step is in DETAIL.
 1. [Start a behavior scan](#1-start-a-behavior-scan) <span class="where where-app">Experiments › Analysis › New analysis</span> <span class="note">Choose the recordings and the embedding.</span>
 2. [Mark example clips](#2-mark-example-clips) <span class="where where-app">Experiments › Analysis › New analysis › Mark examples</span> <span class="note">About 10 minutes: three or four clips per behavior.</span>
 3. [Run the scan](#3-run-the-scan) <span class="where where-app">Experiments › Analysis › New analysis</span> <span class="note">Under a minute, on the processor.</span>
-4. [Choose the cut-off](#4-choose-the-cut-off) <span class="where where-app">Experiments › Analysis › the run › Calibrate</span> <span class="note">Watch the clips near the line, and move it.</span>
+4. [Choose the cut-off](#4-choose-the-cut-off) <span class="where where-app">Experiments › Analysis › the run › Calibrate</span> <span class="note">Watch the clips either side of the line, move it, and keep it.</span>
 5. [Check the matches](#5-check-the-matches) <span class="where where-app">Experiments › Analysis › the run › Browse, Audit</span> <span class="note">Look through what was kept, and measure how often it is right.</span>
 6. [Read the measures](#6-read-the-measures) <span class="where where-app">Experiments › Analysis › the run › Measures</span> <span class="note">Bouts, rate and time, per recording.</span>
 
@@ -95,16 +95,18 @@ In the **Launch an analysis run** dialog:
 
 The **Mark examples** window opens on the first recording. For each behavior:
 
-1. On the right, click **Add**, and type the behavior's name, such as `rearing`. The name
-   appears under **Annotating:** under the video.
+1. Under the video, type the behavior's name, such as `rearing`, and press ++enter++ (or
+   click **Add behavior**). The box then says **Annotating: rearing**. Until a behavior has a
+   name, **Mark start** and **Mark end** are greyed.
 2. Find a clear example in the video: play it, or drag the slider.
 3. At the first frame of the behavior, click **Mark start**. At the last, click **Mark
    end**. The clip appears in the list on the right, and as a coloured mark on the slider.
 4. Mark two or three more, from **other recordings** if you can: choose them in
    **Recording** at the top left.
 
-Then click **Add** again for the next behavior, such as `grooming`, and do the same. When
-every behavior has a tick in **Examples**, click **Use these clips**.
+Then click **Add** on the right for the next behavior, such as `grooming`, and do the same.
+When every behavior has a tick in **Examples**, click **Use these clips**. It stays greyed
+until at least one behavior has an example, and the line above it says what is missing.
 
 ![The Mark examples window: box3 with the mouse outlined, the slider with the clips marked on it, the behaviors rearing with 4 examples and grooming with 3, each ticked, and the list of the seven clips with their times and recordings. Numbered markers sit on every control.](../../assets/user-guides/single-animal/behavior-scan/mark-examples.png)
 
@@ -139,7 +141,8 @@ every behavior has a tick in **Examples**, click **Use these clips**.
         mark the end.
     19. **Mark end**: the clip ends at this frame.
     20. **Delete clip**: removes the chosen clip. The ++delete++ key does the same.
-    21. **Use these clips**: closes the window and fills the **Behaviors** table.
+    21. **Use these clips**: closes the window and fills the **Behaviors** table. Greyed until
+        at least one behavior has an example.
     22. **Cancel**: closes the window and forgets every change made in it.
 
 The scan can only find what your clips show it, so the clips you choose matter more than any
@@ -204,9 +207,9 @@ after choosing the cut-offs.
     6. **Delete analysis**: deletes the run and its files, after asking.
     7. **Start new analysis**: opens **New analysis** again.
 
-Click a card to open it: it fills the window. Along its top are the four views as tabs, to
-switch between them, and under those the behaviors, here **rearing** and **grooming**: click
-one to work on it. To go back to the run's page, click its id, here **an_02**, in the line at
+Click a card to open it: it fills the window. At its top, **Behavior** picks the behavior
+to work on, here **rearing** or **grooming**, and under it are the four views as tabs, to
+switch between them. To go back to the run's page, click its id, here **an_02**, in the line at
 the top of the window.
 
 ## 4. Choose the cut-off
@@ -275,27 +278,38 @@ The **Calibrate** view is where the cut-off is set, one behavior at a time.
         how fast the animal moved during them.
     30. **Measure this run**: works those measures out. It reads every match's tracking,
         which can take a minute on a long run.
-    31. **Finish**: says you are done with the run. It can be reopened.
+    31. **Finish**: says you are done with the run. It can be reopened. Greyed out until
+        every behavior has a cut-off.
     32. **Reopen**: opens a finished run again, to change a cut-off. Greyed out while the
         run is open.
 
+Every match plays at once, in a grid, most confident first. The cut-off is a dashed line
+across the grid, labelled with how many are kept and dropped: the clips above it are kept,
+the ones below it dropped. Scroll past the line and a bar over the grid says the clips in view
+are dropped, with **↑ Back to the cutoff**. The first clips are usually your own examples,
+which the scan finds too; they are tagged *your example*.
+
 To choose the cut-off:
 
-1. Click the clips just **right** of the divider, the least confident ones kept, and watch
-   them. Are they the behavior?
-2. Click the clips just **left** of it, the most confident ones dropped. Are they?
-3. If most kept clips near the line are wrong, press **▶** or drag the divider right. If
-   most dropped clips are right, move it left.
-4. Do the same for each behavior, chosen under the tabs.
+1. Watch the last clips before the line, the least confident ones kept. Are they the
+   behavior?
+2. Watch the first clips after it, the most confident ones dropped. Are they?
+3. If the kept clips near the line are wrong, move the cut-off up: drag the line on the
+   curve, move the slider, or **click the clip** you want to be the last one kept. If the
+   dropped clips are right, move it down. The grid and every count follow as you move it.
+4. Click **Keep clips from 0.5 up**. Moving the cut-off only shows what it would keep;
+   this button saves it. Until you click it, an amber band above the curve says **⚠ Not
+   saved**, and Audit, Browse and Measures say so too, still using the saved cut-off; after
+   it, the band goes and the line reads **✓ rearing: cut-off 0.5 saved**.
+5. Do the same for each behavior, chosen under **Behavior**.
 
-The cut-off is saved as you let go of the divider. There is no Save button.
-
-??? info "About this step: reading the ethograms and locations"
-    These show **where** the kept matches fall, which the clips cannot. A cut-off that
-    keeps a behavior only in the first minute of every video, or only in one corner of one
-    box, is worth a second look. On the demo, the orange note under the locations says all
-    of box1's rearing matches are in the top third of the box: that mouse rears against one
-    wall, which may be true, and is worth checking in the clips.
+??? info "About this step: where the kept matches fall"
+    **Browse** draws an ethogram of where in each video the kept matches fall, and
+    **Measures** draws where in the box each one happened. A cut-off that keeps a behavior
+    only in the first minute of every video, or only in one corner of one box, is worth a
+    second look. On the demo, the note under the locations says all of box1's rearing
+    matches are in the top third of the box: that mouse rears against one wall, which may be
+    true, and is worth checking in the clips.
 
 ??? warning "If this doesn't work"
     - **No cut-off keeps the behavior without also keeping something else:** the examples
@@ -306,9 +320,13 @@ The cut-off is saved as you let go of the divider. There is no Save button.
 
 ## 5. Check the matches
 
-**Browse** lists every match above the cut-off, by recording and time. Click a row to play
-it. Read it in order: a mistake the scan makes again and again, such as a mouse leaning on
-one wall counted as rearing, stands out in a list.
+**Browse** shows every match each behavior's cut-off keeps: an ethogram across the top, one
+row per recording, each behavior in its own colour and pattern, keyed by the swatch beside its
+name under **Behaviors**, and below it the list of matches by recording and time, beside a player
+that opens on the first one. Click a mark on the ethogram, or a row, to play it. Untick
+behaviors, recordings or a metadata group on the left to narrow both. Read the list in order:
+a mistake the scan makes again and again, such as a mouse leaning on one wall counted as
+rearing, stands out in a list.
 
 ![The Browse view for rearing at cut-off 0.5: the list of kept matches, each with its recording, start, end and confidence, and the player beside it playing the first one. Numbered markers sit on every control.](../../assets/user-guides/single-animal/behavior-scan/browse.png)
 
@@ -329,7 +347,8 @@ one wall counted as rearing, stands out in a list.
 
 **Audit** puts a number on how often the kept matches are really the behavior: the
 **precision**. You watch **every match the cut-off keeps**, one recording at a time, and take
-out the ones that are not the behavior.
+out the ones that are not the behavior. Audit needs a cut-off: until a behavior has one,
+Audit shows only *rearing has no cutoff yet* and a **Go to Calibrate** button.
 
 1. Click a recording in the list on the left. Its matches play side by side, in a random
    order and **without** their confidence.
@@ -389,7 +408,8 @@ between bouts.
     2). Raising both cut-offs, adding non-examples, and auditing are how you bring them
     down to what is true. A side camera tells them apart far better.
 
-When every behavior's cut-off is chosen and checked, click **Finish**.
+When every behavior's cut-off is chosen and checked, click **Finish**. It stays greyed out
+while a behavior has no cut-off, and the line beside it names that behavior.
 
 ??? info "About this step: Snapshots"
     After you click **Finish**, export something, or use the run in a comparison, a

@@ -549,13 +549,15 @@ def test_a_finalized_run_refuses_an_edit_and_names_the_way_back(
     """§21: finish is a statement, not a lock, and the refusal has to say how to undo it."""
     proj, run = _fitted_run(experiment_dir, recording_dir, make_embedding_run)
     handle = proj.temporal_clustering_run(run.id)
-    first = _branches(handle)[0]
+    first, second = _branches(handle)
+    # A run finishes only once a cluster is labelled (`AuthoredRun.finish_blocker`).
+    handle.name_nodes({first: "rearing"})
     handle.finalize()
     with pytest.raises(ValueError, match="reopen"):
-        handle.name_nodes({first: "rearing"})
+        handle.name_nodes({second: "grooming"})
     handle.reopen()
-    handle.name_nodes({first: "rearing"})
-    assert handle.state().node_names[str(first)] == "rearing"
+    handle.name_nodes({second: "grooming"})
+    assert handle.state().node_names[str(second)] == "grooming"
 
 
 # --- the subsample, stated -------------------------------------------------------------------

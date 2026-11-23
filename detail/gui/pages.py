@@ -132,7 +132,15 @@ from detail.gui.tools.registry import TOOL_GUIS, import_tool_uis
 from detail.gui import sections as gui_sections
 from detail.gui.busy import run_busy, run_progress
 from detail.gui.snapshots import snapshot_columns, snapshot_rows
-from detail.gui.status_color import ERROR, MUTED, READY, WARN, set_label_color
+from detail.gui.status_color import (
+    ERROR,
+    MUTED,
+    READY,
+    WARN,
+    set_band,
+    set_label_color,
+    warn_ink,
+)
 from detail.gui.workers import (
     BackgroundCall,
     FitProgressWorker,
@@ -8020,21 +8028,8 @@ class AnalysisRunDetailPage(_FitDetailPage):
 
         frame = QFrame()
         frame.setFrameShape(QFrame.Shape.Box)
-        # A band that is plainly not the page. The shade is derived from the current Window colour
-        # rather than hardcoded, so it separates from the background in a light theme and in a dark
-        # one; a fixed grey would vanish into one of them.
-        frame.setAutoFillBackground(True)
-        palette = frame.palette()
-        background = palette.color(QPalette.ColorRole.Window)
-        palette.setColor(
-            QPalette.ColorRole.Window,
-            (
-                background.darker(112)
-                if background.lightness() > 127
-                else background.lighter(145)
-            ),
-        )
-        frame.setPalette(palette)
+        # A band that is plainly not the page, in a shade from the current theme (`set_band`).
+        set_band(frame)
 
         row = QHBoxLayout(frame)
         text = QLabel(
@@ -8048,7 +8043,7 @@ class AnalysisRunDetailPage(_FitDetailPage):
         text.setFont(font)
         # Amber, through the shared status palette: "you are not looking at the live run" is the
         # warning state, not decoration, which is the only thing colour is spent on here.
-        set_label_color(text, WARN)
+        set_label_color(text, warn_ink(frame))
 
         back = QPushButton("Back to live run")
         back.clicked.connect(self._back_to_live)

@@ -17,6 +17,12 @@ back* and nothing else.
 exact at the cutoff; a recording reviewed at a higher cutoff says how far down it was reviewed
 (``storage/audit_figures.query_review_line`` / ``query_review_cell``, the CLI's wording too).
 
+**Nothing to review is one page, not an empty review.** A behavior with no cutoff keeps no clips,
+so the page is a headline, a line and one button (``go_to_calibrate`` on a live run,
+``reopen_requested`` on a finished one, none on a snapshot) in place of the list and the pane. It
+was a message over an empty list, an empty pane and a greyed *Finish review* — and, on a run
+finished with no cutoff, "set a cutoff" and "reopen it" at once.
+
 Every read runs off the UI thread (``run_busy``), and every write through the run's write queue,
 which outlives the page.
 """
@@ -25,8 +31,11 @@ import numpy as np
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QAbstractItemView,
+    QHBoxLayout,
     QLabel,
     QMessageBox,
+    QPushButton,
+    QStackedWidget,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -51,7 +60,7 @@ from detail.gui.label_clean import (
 )
 from detail.gui.live_montage import context_span
 from detail.gui.review_marks import ReviewMarks, apply_change
-from detail.gui.sizing import lines
+from detail.gui.sizing import emphasis_font, lines, set_available
 from detail.storage import audit_figures
 
 #: Where the list's width is kept, apart from the clustering AUDIT's.
@@ -59,17 +68,16 @@ LIST_SPLIT_KEY = "query_review_list"
 #: The ``QSettings`` group the grid's orientation, layers and context are kept under.
 KEYS = "query_review"
 
-#: Why a control that would write is dead, by cause.
+#: Why a control that would write is dead, by cause, while there is a review to show. With no
+#: cutoff there is none, and the page says so instead (``QueryReviewTab._empty_state``).
 FROZEN = (
     "This is a snapshot — the calibration as it was pinned. Go back to the live run to "
     "review its clips."
 )
 FINISHED = "This run is finished. Reopen it to review its clips."
-NO_CUTOFF = (
-    "This behavior has no cutoff yet. Set one on CALIBRATE first: the review covers every "
-    "clip the cutoff keeps."
-)
 EMPTY = "Open a recording in the list to review its clips."
+#: Why the pane is dead before the first read has said whether there is a review.
+NO_BEHAVIOR = "Choose a behavior to review."
 
 
 class QueryReviewTab(QWidget):
@@ -78,6 +86,12 @@ class QueryReviewTab(QWidget):
 
     #: A removal or a finish was written: other tabs reading the artifact read it again.
     changed = pyqtSignal()
+    #: **Go to Calibrate**, on a live run whose behavior has no cutoff: show Calibrate.
+    go_to_calibrate = pyqtSignal()
+    #: **Reopen**, on a finished run whose behavior has no cutoff: reopen the run.
+    reopen_requested = pyqtSignal()
+
+    PAGE_EMPTY, PAGE_REVIEW = range(2)
 
     def __init__(self, experiment, run) -> None:
         super().__init__()
@@ -98,6 +112,55 @@ class QueryReviewTab(QWidget):
         )
 
         root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        # Two modes, as `LabelBrowseTab` has: with no cutoff there is nothing to list, open or
+        # finish, and a message over an empty list, an empty pane and a greyed Finish review
+        # read as a page that failed.
+        self._pages = QStackedWidget()
+        self._pages.addWidget(self._build_empty())
+        self._pages.addWidget(self._build_review())
+        self._pages.setCurrentIndex(self.PAGE_REVIEW)
+        root.addWidget(self._pages)
+        self.pane.set_editable(NO_BEHAVIOR)
+        self._offer(None)
+
+    # -- construction ---------------------------------------------------------------------
+    def _build_empty(self) -> QWidget:
+        """A headline, one line and at most one button, centred: the page when there is no
+        review. Each button is its own widget with an object name, so a walk over the controls
+        live on a snapshot can name it."""
+        page = QWidget()
+        column = QVBoxLayout(page)
+        column.addStretch(1)
+        self._empty_title = QLabel("")
+        # Larger than a panel's heading: it is the whole page, as the mockup draws it.
+        self._empty_title.setFont(emphasis_font(self._empty_title, steps=3))
+        self._empty_body = QLabel("")
+        for label in (self._empty_title, self._empty_body):
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            label.setWordWrap(True)
+            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            column.addWidget(label)
+        column.addSpacing(lines(0.5))
+        row = QHBoxLayout()
+        row.addStretch(1)
+        self._go_to_calibrate = QPushButton("Go to Calibrate")
+        self._go_to_calibrate.setObjectName("audit_go_to_calibrate")
+        self._go_to_calibrate.clicked.connect(self.go_to_calibrate.emit)
+        self._reopen = QPushButton("Reopen")
+        self._reopen.setObjectName("audit_reopen")
+        self._reopen.clicked.connect(self.reopen_requested.emit)
+        for button in (self._go_to_calibrate, self._reopen):
+            row.addWidget(button)
+        row.addStretch(1)
+        column.addLayout(row)
+        column.addStretch(1)
+        return page
+
+    def _build_review(self) -> QWidget:
+        """The behavior's figure, then its recordings beside the review pane."""
+        page = QWidget()
+        root = QVBoxLayout(page)
         root.setContentsMargins(0, 0, 0, 0)
         self.figure = QLabel("")
         self.figure.setContentsMargins(lines(0.4), lines(0.25), lines(0.4), lines(0.25))
@@ -153,7 +216,7 @@ class QueryReviewTab(QWidget):
         if not self._split.remember():
             self._split.setSizes([LIST_PX, lines(80)])
         root.addWidget(self._split, 1)
-        self.pane.set_editable("Choose a behavior to review.")
+        return page
 
     # -- the behavior -------------------------------------------------------------------
     def set_behavior(self, behavior_id: str | None) -> None:
@@ -233,6 +296,12 @@ class QueryReviewTab(QWidget):
             ),
         }
         self._data = data
+        empty = self._empty_state()
+        if empty is not None:
+            self._show_empty(*empty)
+            return
+        self._offer(None)
+        self._pages.setCurrentIndex(self.PAGE_REVIEW)
         if data.get("tracking") is not None:
             self._catalog = clip_tiles.TileCatalog(
                 self._experiment, data["tracking"], data.get("embeds")
@@ -257,8 +326,70 @@ class QueryReviewTab(QWidget):
         if data.get("finished"):
             return FINISHED
         if data.get("cutoff") is None:
-            return NO_CUTOFF
+            empty = self._empty_state()
+            return NO_BEHAVIOR if empty is None else empty[0]
         return ""
+
+    # -- nothing to review ----------------------------------------------------------------
+    def _empty_state(self) -> tuple[str, str, QPushButton | None] | None:
+        """``(headline, line, button)`` for the page shown in place of the review, or ``None``
+        when there is a review to show.
+
+        One per reason the review is empty — a live run, a finished one, a snapshot — each
+        naming the one thing to do. ``button`` is ``None`` where there is nothing to press.
+        """
+        data = self._data
+        if "behavior" not in data or data.get("cutoff") is not None:
+            return None
+        name = data.get("name") or data["behavior"]
+        if not data.get("editable", True):
+            return (
+                f"This is a snapshot, and {name} had no cutoff when it was pinned",
+                "Go back to the live run to set a cutoff, then review its clips there.",
+                None,
+            )
+        if data.get("finished"):
+            return (
+                f"This run is finished, and {name} has no cutoff",
+                "Reopen the run to set a cutoff on Calibrate, then review its clips here.",
+                self._reopen,
+            )
+        return (
+            f"{name} has no cutoff yet",
+            "The review covers every clip the cutoff keeps, so the cutoff comes first.",
+            self._go_to_calibrate,
+        )
+
+    def _show_empty(self, headline: str, line: str, button: QPushButton | None) -> None:
+        self._open = None
+        self._list.clear()
+        self._empty_title.setText(headline)
+        self._empty_body.setText(line)
+        self._offer(button)
+        self._pages.setCurrentIndex(self.PAGE_EMPTY)
+
+    def _offer(self, chosen: QPushButton | None) -> None:
+        """Show and enable ``chosen`` and nothing else; every other empty-page button is hidden
+        and disabled, so none is live on a page it does not belong to (a snapshot's above all).
+
+        A button claims that pressing it does something, so it is offered only once the
+        workspace has connected the signal it emits — read from the wiring, never set beside it.
+        """
+        for button, signal, applies in (
+            (
+                self._go_to_calibrate,
+                self.go_to_calibrate,
+                "Offered when this behavior has no cutoff on a live run.",
+            ),
+            (
+                self._reopen,
+                self.reopen_requested,
+                "Offered when this run is finished and this behavior has no cutoff.",
+            ),
+        ):
+            on = button is chosen and self.receivers(signal) > 0
+            set_available(button, on, applies)
+            button.setVisible(on)
 
     def _sync_figure(self) -> None:
         data = self._data
@@ -269,9 +400,6 @@ class QueryReviewTab(QWidget):
             if earlier
             else ""
         )
-        if data.get("cutoff") is None:
-            self.figure.setText(NO_CUTOFF)
-            return
         text = audit_figures.query_review_line(
             data["name"], data["cutoff"], data.get("estimate"), data.get("rows") or []
         )
@@ -282,6 +410,12 @@ class QueryReviewTab(QWidget):
                 "(detail cache previews build) to review their clips."
             )
         self.figure.setText(text)
+        # The behavior's figure, once every recording is exact at the cutoff, is what the page
+        # is for: large and bold, where a line still counting recordings stays plain.
+        complete = bool((data.get("estimate") or {}).get("exact"))
+        self.figure.setFont(
+            emphasis_font(self.figure, steps=2) if complete else self.font()
+        )
 
     # -- the list -----------------------------------------------------------------------
     def _rows(self) -> list[dict]:
@@ -323,7 +457,7 @@ class QueryReviewTab(QWidget):
             and row["size"]
             and not (is_open and not self.pane.is_finished())
         ):
-            state, status = "reviewed", f"{percent(row['estimate'])} · {out:,} removed"
+            state, status = "reviewed", f"{out:,} removed"
         elif not row["size"]:
             state, status = "reviewed", "no clips at this cutoff"
         elif row.get("at_floor") is not None:
@@ -345,6 +479,12 @@ class QueryReviewTab(QWidget):
             "side": f"{int(row['size']):,} clips",
             "line": status,
             "fraction": 1.0 if state == "reviewed" else 0.0,
+            # A finished review's precision is the row's headline (``ReviewListDelegate``).
+            "figure": (
+                percent(row["estimate"])
+                if state == "reviewed" and row["exact"] and row["size"]
+                else ""
+            ),
         }
 
     def _on_chosen(self, item, _column=0) -> None:

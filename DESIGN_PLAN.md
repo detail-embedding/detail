@@ -6601,18 +6601,24 @@ The authored half is one screen: a behavior selector, and beneath it four tabs
 instances. Switching behavior keeps the current tab.
 
 ```
- [ Rearing ]  [ Grooming ]
+ Behavior [ Rearing ▾ ]   Run an_07 is open.
  ┌──────────┬───────────┬──────────┬──────────┐
  │ CALIBRATE│   AUDIT   │  BROWSE  │ MEASURES │
  └──────────┴───────────┴──────────┴──────────┘
 ```
 
-- **Calibrate** — clips *at* the cutoff, to decide where to cut.
+The behavior picker is one combo box on the line with the run's state, not a tab bar: a bar of one
+tab per behavior was a window-wide strip reading "Rearing" on the common one-behavior run.
+
+- **Calibrate** — every candidate playing, most confident first, split at the cutoff into *Kept* and
+  *Dropped*, to decide where to cut and save it.
 - **Audit** — every candidate the cutoff keeps, one recording at a time, to count precision and
   remove the wrong ones (*The audit*).
-- **Browse** — the accepted instance set, sortable, read-only, to see what you actually got.
-- **Measures** — §23's measures of the live artifact (`pages.MeasuresPanel`); live runs only, so it
-  is absent while a snapshot is shown (§21).
+- **Browse** — the accepted instance set: clustering's BROWSE (`gui/label_browse.LabelBrowseTab`),
+  the ethogram across the top over the instance list and a player, to see what you actually got.
+- **Measures** — §23's measures of the live artifact (`pages.MeasuresPanel`, live runs only), then
+  where the instances land (*Locations*) and how they compare with the recording
+  (*Interpretation*). A snapshot shows the two bands without the table (§21).
 
 **Nothing is a wizard**, with one order the review imposes: it needs a cutoff, because it
 reviews what the cutoff keeps. Browse at any time; move the cutoff after reviewing, and the figure
@@ -6621,7 +6627,8 @@ stays exact above it or says what is left below (*The audit*).
 reopening is only needed to *change* something.
 
 The first three exist because they answer different questions and one surface cannot serve all of them.
-Calibrate shows the *marginal* clips, because the decision is "is what sits at this level real?".
+Calibrate shows every clip in confidence order with the cutoff drawn through them, because the
+decision is "is what sits at this level real?".
 Audit hides the score, because seeing it biases the judgment. Browse shows everything above the
 cutoff sorted however you like, because that is where a systematic error becomes visible — every
 match in one recording being the same wall-lean is invisible in a marginal band and obvious in a
@@ -6656,8 +6663,28 @@ list.
 ```
 
 Not built from this sketch: the precision line and the shuffled floor on the curve (*Calibration*
-above), and **Add behavior…** (*No cutoff exists during search*). The per-recording row and the clip
-strip were built differently, as the decisions below say.
+above), and **Add behavior…** (*No cutoff exists during search*). The per-recording row and the clips
+were built differently, as the decisions below say. As built:
+
+```
+ Behavior [ Rearing ▾ ]   Run an_07 is open.
+ ⚠ Rearing: cutoff not set — 0.5 would keep 85 of 687 clips      [ Keep clips from 0.5 up ]
+ ┌─ curve ─────────────────────────────────┐ Cutoff ━━━━━━●━━━━ [0.5]  showing 85 of 687
+ │ ····                                    │ Kept per recording
+ │     ·····┊                              │  rec_A ████████████   47
+ │          ┊ ········                     │  rec_B ██████████     38
+ └──────────┴──────────────────────────────┘
+ Show ▾  Size ━●━  Export ▾
+ [▶ your example][▶][▶][▶][▶][▶][▶][▶][▶][▶]
+ [▶][▶][▶][▶][▶]
+
+ ╌╌╌╌╌╌╌╌╌╌╌╌ ▲ 85 kept · cutoff 0.5 · 602 dropped ▼ ╌╌╌╌╌╌╌╌╌╌╌╌
+
+ [▶][▶][▶][▶][▶][▶][▶][▶][▶][▶]   below it: dropped, playing like the rest
+
+ scrolled past the line, pinned over the grid:
+ │ Below the cutoff (0.5): these 602 clips are dropped        [ ↑ Back to the cutoff ] │
+```
 
 Three layout decisions, each with a reason:
 
@@ -6672,13 +6699,35 @@ Three layout decisions, each with a reason:
   graphic with no context" and could not say what they were for, so the panel now states the answer
   rather than drawing the raw shape it is derived from. The distribution remains available through
   `QueryRun.score_distribution`.
-- **The clip strip is the ranked list itself, with the cutoff drawn in it.** Scrolling loads clips
-  toward more or less confident matches; the cutoff is a line at its own place in the ordering, and
-  moving *that* is what sets it. This replaces the marginal-band / sampled-above modes, which were
-  two fixed windows onto an ordering the user could not otherwise traverse. The reason is a measured
-  one: the frequency curve is a couple of hundred pixels across the whole confidence axis — about
-  0.005 per pixel — while the range that decides a cutoff is three decimal places wide, so the curve
-  is a readout and the strip is the control. Scrolling never commits; releasing the line does.
+- **The clips are the ranked list itself, with the cutoff a rule across it.** Every candidate
+  plays in one grid (`LiveMontage`, clustering INTERPRET's), most confident first; the dropped
+  clips start on the row after a dashed rule (`LiveMontage.set_rule_headings`) in a band about
+  three lines tall, labelled *▲ N kept · cutoff X · M dropped ▼* — dashed and worded, so it is told
+  from a tile edge by pattern and words rather than colour. **Nothing below it fades**: those
+  clips are still to be watched. Scrolled past it, a bar pinned over the grid says the clips in
+  view are dropped and takes you back. Clicking a clip moves the cutoff to it (it becomes the last
+  one kept) and scrolls so that clip stays at the height it was clicked at, since the rows re-flow
+  when the rule moves. A clip AUDIT removed is faded, tagged *removed* and crossed, as on AUDIT; a
+  clip that sits on the behavior's own example or non-example is tagged *your example* / *your
+  non-example* (`query_runs.told_kind`, the rule AUDIT sets them aside by) — the search finds its
+  own input at the top of the ranking, and untagged it read as its best find. Two earlier builds:
+  *Kept* / *Dropped* headings over faded dropped clips (hard to watch, and the plain heading easy
+  to miss), then a stepped line through one unbroken grid that moved no clip but was easy to miss
+  too. The reason is a measured one: the frequency curve is a couple of hundred pixels
+  across the whole confidence axis — about 0.005 per pixel — while the range that decides a cutoff is
+  three decimal places wide, so the curve is a readout and the clips are the control. It replaces a
+  one-row strip of still frames beside a player that stayed blank until a clip was clicked.
+- **Moving the cutoff previews; one button saves it — and an unsaved one is loud.** The line, the
+  slider, the number and a clicked clip move the *shown* cutoff. **Keep clips from X up** is the only
+  write. While the shown cutoff is not the saved one, the bar over the curve is a band in amber and
+  bold — *⚠ Not saved. You're looking at X …; Audit, Browse and Measures still use Y* — with Keep and
+  **Back to Y**; the line on the curve is dashed and the rule says *(not saved)*. Saved, the bar is
+  the page's own quiet line (*✓ … saved*). The other views show a notice of the same shape while
+  CALIBRATE holds an unsaved cutoff — *Calibrate shows X, not saved. This view uses Y* — with **Keep
+  X** and **Go to Calibrate**: AUDIT is where a previewed cutoff was found to have been read as
+  applied. The cutoff once saved itself when a drag was let go (a page reading "not calibrated"
+  under a slider at 0.5); then Keep was the only write but a quiet one, and an unsaved preview
+  looked done.
 
 ### What the workspace reuses, and the lessons that come with it
 
@@ -6703,15 +6752,17 @@ where it was learned. A new surface that re-solves one of them will re-solve it 
   review tab, kept by `_ClipPlayer` (focusing the player gives the scrubber the arrow keys), and
   counterintuitive enough to be re-broken.
 
-Browse is a sortable instance table beside a `_ClipPlayer` (`_BrowseTab`). The per-recording span
-timeline it was to reuse belonged to the annotation workspace, which was removed; Browse has none.
+Browse is clustering's BROWSE (`gui/label_browse.LabelBrowseTab`), not a copy of it: the filters
+on the left, the ethogram of every behavior's kept instances across the top, the instance list
+beside a player that opens on the first row. The ethogram used to sit under CALIBRATE, where it read
+the *saved* cutoff's artifact while the page showed another cutoff ("0 at the committed cutoff"
+beside 85 clips).
 
-**The clip grid is the one genuinely new widget, and the decode economics shape it.** Playback here
-is a 120 ms timer stepping frame by frame — a slideshow, not decoded video — and every thumbnail is
-a `cv2` seek, so a strip of eight is eight seeks. Therefore: thumbnails **fill progressively**, each
-decoded off-thread with latest-request-wins per cell; moving the cutoff **cancels in-flight decodes**
-for the abandoned band; and each player owns its own preview, since sharing decode cache between two
-players was already found to be a problem.
+**The clips play from the preview cache** (`api/clip_tiles`, §3), as every montage does, so a
+recording without previews says so and names `detail cache previews build` rather than showing an
+empty tile. Moving the cutoff re-sections and re-fades the same tiles (`set_clips(keep_scroll=…)`):
+the order is the confidence ranking, which no cutoff changes, so no clock restarts and no picture is
+asked for again.
 
 **A cell that cannot decode says which reason.** `gui/frame_source.py` keeps *missing* (the video is
 not on this machine) and *undecodable* (this position has no picture) distinct, and a surface that
@@ -6732,9 +6783,9 @@ Four kinds of wait, matching the four cases in the long-operation rule, none of 
 
 Three specifics that are easy to get wrong and are not visible in a screenshot:
 
-- **Dragging the cutoff must not reproject the artifact.** Reprojection is cheap *relative to a
+- **Moving the cutoff must not reproject the artifact.** Reprojection is cheap *relative to a
   refit*, but for a per-frame method it is threshold-plus-run-length-encode over tens of millions of
-  rows per recording. The drag updates the view **from the cached curve**; releasing commits the
+  rows per recording. A move updates the view **from the cached results**; **Keep** saves the
   cutoff and reprojects **off-thread**. Conflating the two freezes the GUI on every pixel of a drag.
 - **The aggregate bar's unit is not "recordings."** A search unit is `(behavior × recording ×
   subject)`, so the bar reads "7 of 12 searches"; labelling it recordings makes a two-behavior run
@@ -7109,6 +7160,15 @@ The cost is explicit: for an authored run, `complete` means *the user said so*, 
 Both events are recorded in `history.jsonl`, so a result can always be traced to the state of the
 run when it was finalized. **`finalize()` also pins a snapshot** (below), which is what lets that
 cost stay acceptable: the statement survives the reopen that is allowed to follow it.
+
+**A run is not finished before the decision its result needs.** `AuthoredRun.finish_blocker()` says
+why a run cannot be finished yet, or `None`; `finalize()` refuses with it after the read-only and
+incomplete-compute refusals, and every surface reads the same sentence before the press — the GUI
+greys **Finish** with it in words beside the button, the CLI prints it as one `Error:` line. A
+behavior scan needs a cutoff on every behavior (an uncut behavior is absent from the artifact and its
+AUDIT has nothing to review); a clustering run needs one labelled node. Each kind answers the hook,
+and `tests/api/test_run_lifecycle_parity.py` holds every authored kind to answering it. A run that
+was finished without one said, on AUDIT, "set it first" and "reopen the run" at once.
 
 ### Snapshots — what leaves is frozen
 
@@ -7998,7 +8058,8 @@ finished:
   muted, *182 clips · 3 of 3 clusters reviewed* (counting every cluster under it, which is what its
   figure combines). A cluster (its own clusters only, under it): *cluster #871* and *62 clips*; then
   a thin bar (how far its scroll has reached, `LiveMontage.seen`) and *reviewing · 2 removed* /
-  *not reviewed* — or, reviewed, **✓ Reviewed** in bold and *97% · 2 removed*, no bar. A
+  *not reviewed* — or, reviewed, its figure as the row's headline (*97%*, bold and two steps up,
+  where *62 clips* was), **✓ Reviewed** in bold and *62 clips · 2 removed*, no bar. A
   cluster's clips are its leaf runs whose deepest labelled node is it — the population of
   `review_by_cluster`. Clicking a label opens its first unreviewed cluster; right-click a cluster
   for **Open in INTERPRET**. The label's tooltip carries *Earlier one-by-one audit: …* when
