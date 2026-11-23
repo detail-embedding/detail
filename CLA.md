@@ -1,10 +1,6 @@
 # DETAIL Individual Contributor License Agreement
 
-> **DRAFT for review by UW CoMotion. Not in effect.** Bracketed text is a placeholder to be
-> settled before this is used. Until this notice is removed, contributions from outside the
-> development team are not accepted.
-
-Version 1.0 (draft)
+Version 1.0
 
 Thank you for contributing to DETAIL. This agreement makes clear what rights you give the
 project when you contribute, so that the project can keep distributing your work, including
@@ -12,7 +8,7 @@ under a different license in the future. You keep the copyright in what you writ
 
 ## 1. Definitions
 
-- **"Project Owner"** means [the University of Washington], which owns or manages the
+- **"Project Owner"** means the University of Washington, which owns or manages the
   copyright in DETAIL.
 - **"You"** means the person submitting a Contribution and agreeing to this agreement.
 - **"Contribution"** means any original work of authorship, including code, documentation,
@@ -81,5 +77,3 @@ request, with Your GitHub username, Your full name, the date, and this agreement
 Adding that line, in a commit made by You, means You agree to this agreement for that and every
 later Contribution. Our automated check confirms the line is there before a pull request can be
 merged.
-
-[Governing law and any further terms: to be supplied by UW CoMotion.]
