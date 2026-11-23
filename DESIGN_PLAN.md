@@ -7769,7 +7769,10 @@ finished:
   small type under it, filled with the palette's accent once it can be pressed (the app's style
   draws a default button with only a coloured border), and pressed by Enter — disabled with *Scroll
   to the last clip first* until the last row of tiles has been on screen (`LiveMontage.seen` — a row
-  counts once half its pictures' height was in view). The order is fixed, least typical first (no
+  counts once half its pictures' height was in view), and while any tile shows *no preview* or a
+  tile's first picture is still on its way (`LiveMontage.unpictured`, *3 clips show no preview…*):
+  Finish answers *yes* for every clip not removed, so a clip whose picture never rendered would be
+  judged against nothing — `tests/gui/test_frame_source.py`'s class. The order is fixed, least typical first (no
   order buttons: every clip is reviewed, so the order only decides which come first), and a clip
   never moves while it is reviewed.
 - **A click removes** (`LiveMontage.set_click_hint` + `clip_clicked(index, shift)`): a plain click
