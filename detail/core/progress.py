@@ -46,9 +46,10 @@ def message_phase(message: str, phases: tuple[str, ...]) -> int | None:
 
     A runner's message is ``"<phase head> · <note>"``, and only the **head** is read. The note is
     the runner's to fill with anything — a user's behavior or recording name, or an inner step
-    such as the ``loading <subject>`` that query-eval's querying phase forwards from
-    ``query_tracks`` — so a phase word appearing there says nothing about the phase. Matching the
-    whole message put every query-eval run back on "loading" once per subject it searched.
+    such as the ``loading <subject>`` that the querying phase of query eval (a module since
+    removed) forwarded from its search — so a phase word appearing there says nothing about the
+    phase. Matching the whole message put every query-eval run back on "loading" once per
+    subject it searched.
 
     The head's first word is the phase's first word, and the phase's other words are in the head
     too, so ``"comparing 4,182 bouts"`` is the phase ``"comparing bouts"`` (the count is the

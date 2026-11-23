@@ -280,7 +280,7 @@ def test_a_launch_form_that_reads_per_recording_resolves_off_the_ui_thread(
     from detail.gui.modules.registry import ANALYSIS_GUI_MODULES, GUI_MODULES
 
     registries = {**GUI_MODULES, **ANALYSIS_GUI_MODULES}
-    assert len(registries) >= 9, f"the sweep lost the registries: {sorted(registries)}"
+    assert len(registries) >= 8, f"the sweep lost the registries: {sorted(registries)}"
 
     unlisted, fixed, worse = [], [], []
     for module_id, ui in sorted(registries.items()):

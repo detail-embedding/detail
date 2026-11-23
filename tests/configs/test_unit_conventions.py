@@ -39,18 +39,13 @@ _NOT_A_DURATION = {
     "fit_share": "a percentage of each recording's frames to sample, not a span of time",
     "batch_size": "frames per forward pass — a memory/throughput knob",
     "val_split": "a fraction of the labeled set",
-    "n_keyframes": "how many defining frames to require, not how far apart",
-    "n_negatives": "how many background frames to sample",
     "k": "how many neighbours vote",
     "feat_stride": "a step in rows of the feature matrix, which is that matrix's own index space",
     "every_n_frames": "a decimation ratio over the source frames; it *defines* a run's cadence "
     "rather than depending on it, and downstream stages compose with it as a multiple",
     "resize": "pixels, not time",
-    "max_results": "a result count",
-    "n_exemplars": "a count of exemplars",
     "min_contour_area": "pixels",
     "max_segments": "a cost bound on the O(bouts^2) comparison",
-    "folds": "cross-validation folds",
     "seed": "an RNG seed",
 }
 

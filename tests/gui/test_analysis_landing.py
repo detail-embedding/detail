@@ -7,7 +7,7 @@ page class for every module: a landing page with a card per view, and a view tha
 window under one row of tabs, a tab per view, with the way back on the shell's path line
 (`<experiment> › <run_id> › <view>`, the run id a link). These tests drive that page through
 its own entry point for each shape of module — several views (clustering, behavior scan) and one
-(query eval, location export) — so a module cannot quietly fall back to the old stacked page.
+(location export) — so a module cannot quietly fall back to the old stacked page.
 """
 
 import pytest
@@ -103,10 +103,10 @@ def test_a_location_export_has_one_results_card(qapp, tmp_path):
     assert page.context_view() == "Results"
 
 
-def test_a_query_eval_run_has_one_results_card_greyed_while_it_runs(qapp, tmp_path):
+def test_a_running_location_export_has_one_results_card_greyed(qapp, tmp_path):
     """Greyed rather than absent: the user sees what the run will offer, and why not yet."""
     experiment = Experiment.create("p", tmp_path)
-    _record(experiment, "an_01", "query_eval", "running")
+    _record(experiment, "an_01", "location_export", "running")
     page = AnalysisRunDetailPage(experiment, "an_01")
     assert list(page._cards) == ["Results"]
     card = page._cards["Results"]

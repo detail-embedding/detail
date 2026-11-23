@@ -497,9 +497,9 @@ def retained(score: float | None, cutoff: float | None, direction: str) -> bool:
     """Whether an instance at ``score`` survives ``cutoff``.
 
     ``direction`` is the artifact's declared ``score.direction``, and reading it rather than
-    assuming is the entire reason §19 makes it non-optional: ``Match.score`` is a *distance*
-    everywhere in this codebase, so "above the cutoff" means ``score <= cutoff``. Assuming the
-    other convention silently inverts precision and reports a confident wrong number.
+    assuming is the entire reason §19 makes it non-optional: a score may be a *distance* (the
+    default convention, where "above the cutoff" means ``score <= cutoff``) or a similarity.
+    Assuming the wrong one silently inverts precision and reports a confident wrong number.
     """
     if cutoff is None or score is None:
         return True

@@ -35,9 +35,10 @@ def _every_method():
 def test_no_label_can_reach_a_method(method_id):
     """The leakage rule made structural rather than conventional (§22).
 
-    `tests/pipeline/test_label_leakage.py` permutes a ground-truth stream and asserts predictions
-    do not move. That shape does not apply here, because there is nothing to permute: a pose method
-    is handed trajectories and config and has no parameter through which ground truth could enter.
+    Query eval's guard, removed with that module, permuted a ground-truth stream and asserted
+    predictions did not move. That shape does not apply here, because there is nothing to permute:
+    a method is handed trajectories and config and has no parameter through which ground truth
+    could enter.
     So the guard is that this stays true — a future method (or a future signature change) that
     accepts a stream, a label array or an annotation would make the leak *expressible*, and the
     rule's whole point is that it should not be.

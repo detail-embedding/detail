@@ -1597,10 +1597,6 @@ _CONFIRMATIONS: dict[str, str] = {
 #: Dialogs deliberately opened non-modally, and why. A run config is modal so the window it
 #: launches from cannot be touched mid-launch; a *report* is not a launch.
 _NON_MODAL_DIALOGS: dict[str, str] = {
-    "modules/analysis_query_eval.py": (
-        "the clips explorer is a report, not a config — non-modal and resizable so it stays "
-        "reachable while the run page behind it is read"
-    ),
     "clip_pane_window.py": (
         "the enlarged Masks / Keypoints pane (`open_pane_window`) is a companion view of the "
         "clip window, not a config: it follows that window's ticks live, so the clip window has "
@@ -2505,9 +2501,9 @@ def _numeric_text_cells(package) -> tuple[list[str], set[str]]:
     - an f-string with a numeric format spec (``f"{x:.3f}"``);
     - ``str()`` around a counting call (``str(len(rows))``);
     - ``str()`` around a bare name or attribute (``str(m.n_folds)``, and ``str(x)`` inside a
-      comprehension over numbers — the query-eval fold table);
+      comprehension over numbers — the fold table of query eval, a module since removed);
     - a conditional expression with ``str()`` in a branch (``"" if rank is None else
-      str(rank)``, the query-eval Rank column).
+      str(rank)``, that module's Rank column).
 
     The last two cannot tell a number from an id held in a variable, so a ``str(<name>)`` cell
     that really is text is declared in :data:`_TEXT_CELLS_FROM_STR` with its reason.
@@ -2601,9 +2597,10 @@ def a_numeric_cell_sorts_on_its_value(package) -> None:
 
     **And the scan had its own gap** (#35): it read only an f-string with a numeric spec and
     `str()` around a counting call, so `str(m.n_folds)`, `str(x)` in a comprehension and
-    `"" if rank is None else str(rank)` all passed it, and the query-eval Rank, Folds and
-    per-fold count columns sorted 1, 10, 11, 2. Those spellings are read now; a `str(<name>)`
-    cell that is really text is declared in :data:`_TEXT_CELLS_FROM_STR`.
+    `"" if rank is None else str(rank)` all passed it, and the Rank, Folds and per-fold count
+    columns of query eval (a module since removed) sorted 1, 10, 11, 2. Those spellings are
+    read now; a `str(<name>)` cell that is really text is declared in
+    :data:`_TEXT_CELLS_FROM_STR`.
     """
     offenders, _excused = _numeric_text_cells(package)
     assert not offenders, (
@@ -2901,8 +2898,9 @@ def a_split_puts_panes_side_by_side(splitter) -> None:
 
     The rule `tests/gui/test_workspace_parity.py` wrote down — "vertical sections are
     `CollapsibleBand` + drag handle; horizontal panes are `QSplitter`" — was swept over two
-    workspaces, and the query-eval explorer kept a vertical `QSplitter` (timeline over the panes)
-    that neither of them could see. Swept here over every page and dialog the corpus builds.
+    workspaces, and the explorer of query eval (a module since removed) kept a vertical
+    `QSplitter` (timeline over the panes) that neither of them could see. Swept here over every
+    page and dialog the corpus builds.
     """
     from PyQt6.QtCore import Qt
 

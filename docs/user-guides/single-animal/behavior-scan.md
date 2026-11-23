@@ -359,8 +359,7 @@ recording is reviewed.
     you can report: "of the matches kept, 88% were rearing", counted over every match rather
     than estimated from a sample. It does not say how many
     rearing bouts the scan **missed**; that needs the behavior scored by hand through the
-    whole video. If you have such videos, see [If you have hand-scored
-    videos](#if-you-have-hand-scored-videos), below.
+    whole video.
 
     The demo run in this guide has not been audited.
 
@@ -408,36 +407,6 @@ When every behavior's cut-off is chosen and checked, click **Finish**.
       as a new cut-off, stopped before it had finished rewriting the results, for example on
       a network drive or when the computer slept. Click **Rebuild results**, under that line.
       A bar shows its progress.
-
-## If you have hand-scored videos
-
-The audit (step 5) says how many kept matches are right. To also know how many bouts a
-search **misses**, you need videos where someone scored the behavior by hand from start to
-end, as with BORIS. **Behavior-query eval** uses them.
-
-It does not check your scan run itself. It takes a few hand-scored bouts as the examples,
-searches the same videos for the rest, and scores what it finds against your scoring: the
-average precision, precision, recall and the best F1, each beside its **null**, what the same
-score is by chance. The **lift**, the score minus its null, is the part that is real. Use it
-to learn how well DETAIL finds a behavior in your videos before you trust a scan's
-counts, and to compare embeddings or settings with a number.
-
-The demo has no hand-scored videos, so this section has no pictures.
-
-1. Bring the scoring in as a stream on each recording: **Behavior labels (interval CSV)** or
-   **Behavior labels (BORIS tabular events export)**, from the recording's page (chapter 2,
-   [step 6](set-up-recordings.md#6-optional-add-streams)), or **Import behavior labels** on
-   the **Recordings** page for many at once. **Labels are:** **Ground truth**.
-2. Click **Analysis** in the list on the left, then **New analysis**. In the **Launch an
-   analysis run** dialog, **Module:** **Behavior-query eval**.
-3. Tick the scored recordings. **Embed run:** the embedding from chapter 5.
-   **Ground-truth stream:** the stream from step 1. **Behaviors:** tick the ones to score.
-4. **Method:** `soft_knn`, the method a behavior scan uses, so the number speaks for your
-   scan. Leave the rest, and click **Run**.
-
-Open the finished run for its report: a table per behavior, precision-recall curves, and
-**Explore clips**, which plays what was found, what was missed and what was wrong. The
-[Behavior-query eval](../../modules/query_eval.md) page explains every setting.
 
 ## Next
 

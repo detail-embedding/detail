@@ -36,7 +36,7 @@ Core terms used across the tool.
 
 **Use every N frames**: how many frames a run steps by. 4 uses frames 0, 4, 8, … Set per run on detection, tracking, embedding and keypoint detect, and shown beside the rate it lands at. Counted in source frames, so a downstream stage can only go coarser by a multiple of it.
 
-**Analysis**: deriving results from tracks and embeddings, an **experiment-level** run over a selection of recordings (location export, behavior scan, behavior-query evaluation, behavior clustering), separate from the per-recording stages.
+**Analysis**: deriving results from tracks and embeddings, an **experiment-level** run over a selection of recordings (location export, behavior scan, behavior clustering), separate from the per-recording stages.
 
 **Location export**: an analysis that writes each subject's per-frame position, body length and width, and spatial features relative to the recording's ROIs/POIs (`tracks.csv` / `roi_relations.csv` / `point_relations.csv`), keyed by `t_ns`.
 
@@ -67,9 +67,7 @@ Core terms used across the tool.
 
 **Stream**: a time-series aligned to video time (e.g. MED-PC operant data), keyed by `t_ns` so it joins the pipeline outputs. Each stream declares a **role** (what it is, e.g. `behavior`) and a **shape** (event / interval / continuous).
 
-**Behavior labels**: human-scored ground truth of which behavior occurs over which frames, imported as a `behavior`-role interval stream (from a plain interval CSV or a BORIS export). Each behavior is a **point** (an instant) or a **state** (a duration), and the annotation records the behaviors it **covered** (the scored vocabulary), so a recording is judged only on behaviors it scored.
-
-**Behavior-query eval**: scores how well the behavior query retrieves a labeled behavior against the ground-truth streams. Held-out example clips seed the query and the matches are scored against the remaining instances, reporting **average precision (AP)** and precision/recall. **Folds** cross-validate for a seed-independent number (rotate exemplar sets, or leave-one-out). Used to compare embedding configurations and query settings, scriptably (`analysis query-eval`) or as a recorded GUI run with an inline report.
+**Behavior labels**: human-scored ground truth of which behavior occurs over which frames, imported as a `behavior`-role interval stream (from a plain interval CSV or a BORIS export). Each behavior is a **point** (an instant) or a **state** (a duration), and the annotation records the behaviors it **covered** (the scored vocabulary), so a behavior nobody scored is told apart from one that did not happen.
 
 **Job**: the executor unit (a subprocess) that carries out a run; distinct from the run record it writes.
 
@@ -77,6 +75,4 @@ Core terms used across the tool.
 
 **Track**: one subject's trajectory (identified by a track id) through a recording.
 
-**Fusion**: in behavior-query evaluation, how several example clips combine into one score: `min` (resemble any one) or `mean` (resemble all).
-
-**Band**: in behavior-query evaluation's windowed matchers, the warp tolerance, in seconds, allowed when matching a clip; `0` is a rigid, exact-length match. Behavior clustering's `dtw_finch` method has its own **DTW band** for comparing bouts.
+**Band**: the **DTW band** of behavior clustering's `dtw_finch` method: the warp tolerance, in seconds, allowed when comparing two bouts; `0` is a rigid match. It is what lets a slow and a fast performance of the same behavior match.

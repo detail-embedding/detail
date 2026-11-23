@@ -189,8 +189,8 @@ def is_predicted(manifest: dict) -> bool:
 def streams_by_role(recording_dir: Path | str, role: str) -> list[dict]:
     """Stream manifest entries with the given ``role`` (Section 3).
 
-    The discovery surface a role-consuming module reads through — e.g. the
-    behavior eval selects recordings with a ``behavior``-role stream.
+    The discovery surface a role-consuming module reads through — e.g. an
+    evaluation against ground truth selects recordings with a ``behavior``-role stream.
     """
     return [s for s in list_streams(recording_dir) if s.get("role") == role]
 

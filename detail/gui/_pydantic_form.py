@@ -103,9 +103,9 @@ def _range(field: dict, minimum, maximum, epsilon) -> tuple:
 
     ``epsilon`` is the **smallest increment the box can represent** (``10**-decimals``), not its
     single step. Using the step assumed the step is small next to the field's values, and
-    ``query_eval.tau`` is where that broke: ``gt=0.0`` with a 0.1 step put the floor at 0.1,
-    above the field's own default of 0.07, so the form clamped and silently shipped a different
-    temperature than the model declares.
+    ``tau`` of query eval (a module since removed) is where that broke: ``gt=0.0`` with a 0.1
+    step put the floor at 0.1, above the field's own default of 0.07, so the form clamped and
+    silently shipped a different temperature than the model declared.
     """
     if minimum is not None:
         lo = minimum

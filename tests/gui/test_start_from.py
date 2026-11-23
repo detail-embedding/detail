@@ -112,7 +112,7 @@ def test_every_analysis_module_offers_start_from(qapp, tmp_path, module_id):
 def test_the_registries_are_populated():
     """A data-driven sweep over an empty registry passes by testing nothing."""
     assert len(surfaced(GUI_MODULES)) >= 4
-    assert len(surfaced(ANALYSIS_GUI_MODULES)) >= 4
+    assert len(surfaced(ANALYSIS_GUI_MODULES)) >= 3
 
 
 def test_the_exemptions_are_not_stale(qapp):
@@ -380,83 +380,12 @@ def test_a_pick_opens_the_advanced_section_holding_it(qapp, tmp_path):
     ), "the section hiding the changed knob stayed folded"
 
 
-# --- what a pick could not restore (#35 findings 2 and 4) --------------------- #
+# --- what a pick could not restore (#35 finding 4; finding 2 left with query eval) --- #
 def _pick(dialog, run_id: str) -> None:
     combo = dialog._start_from.combo
     combo.setCurrentIndex(
         next(i for i in range(combo.count()) if combo.itemText(i).startswith(run_id))
     )
-
-
-def _vocabulary(form, names) -> None:
-    """The recordings' behaviors arriving, as `apply_recordings` delivers them."""
-    form.apply_recordings([], ([], {None: (list(names), {})}, []))  # none ambiguous
-
-
-def _ticked(form) -> list[str]:
-    return form._checked_behaviors()
-
-
-def test_start_from_a_query_eval_run_ticks_exactly_the_behaviors_it_scored(
-    qapp, tmp_path
-):
-    """Finding 2. The run scored `rear` of `groom, rear, dig` (and skipped `dig`). Start from
-    rebuilt the form before any recording was ticked, so the subset met an empty list and was
-    lost — and the record keeps what it scored beside `params`, not in it, so the picker never
-    even carried it. When the recordings' behaviors arrived, the form ticked all three.
-    """
-    from detail.gui.launch import LaunchAnalysisDialog
-
-    proj = _experiment(tmp_path)
-    dialog = LaunchAnalysisDialog(proj)
-    dialog._module_combo.setCurrentIndex(dialog._module_combo.findData("query_eval"))
-    params = {
-        k: v
-        for k, v in dialog._config.config().items()
-        if k not in ("embed_run_id", "behaviors", "track_id")
-    }
-    run_dir = analysis_store.analysis_dir(proj.dir, "an_01")
-    run_dir.mkdir(parents=True)
-    analysis_store.write_analysis_yaml(
-        run_dir,
-        {
-            "id": "an_01",
-            "module_id": "query_eval",
-            "recording_ids": ["recording_001"],
-            "status": "complete",
-            "params": params,
-            "behaviors": [
-                {"behavior": "rear", "skipped": False},
-                {"behavior": "dig", "skipped": True},
-            ],
-        },
-    )
-    dialog = LaunchAnalysisDialog(proj)
-    dialog._module_combo.setCurrentIndex(dialog._module_combo.findData("query_eval"))
-    _pick(dialog, "an_01")
-    _vocabulary(
-        dialog._config, ["dig", "groom", "rear"]
-    )  # the recordings resolve after
-
-    assert _ticked(dialog._config) == ["rear"]
-    # And a recording added later keeps the subset rather than ticking its newcomers.
-    _vocabulary(dialog._config, ["dig", "groom", "rear", "sniff"])
-    assert _ticked(dialog._config) == ["rear"]
-
-
-def test_a_hand_tick_after_start_from_is_the_users_choice(qapp):
-    """The held subset is for the vocabulary arriving, not a lock: once the user ticks a box,
-    their ticks decide, as they did before any Start from."""
-    from detail.gui.modules.analysis_query_eval import _QueryEvalConfig
-
-    form = _QueryEvalConfig()
-    form.load_config({"behaviors": ["rear"]})
-    _vocabulary(form, ["groom", "rear"])
-    from PyQt6.QtCore import Qt
-
-    form._behaviors.item(0).setCheckState(Qt.CheckState.Checked)  # groom, by hand
-    _vocabulary(form, ["groom", "rear", "sniff"])
-    assert _ticked(form) == ["groom", "rear"]
 
 
 def _module_dialog(tmp_path, module_id):
@@ -513,7 +442,7 @@ def test_every_choice_a_form_cannot_take_is_named(qapp, tmp_path):
             ), f"{module_id}.{field['name']} substituted silently"
             assert f"{field['label']}: that run used 'not_in_this_build'" in note.text()
             checked += 1
-    assert checked >= 6, f"only {checked} choice fields reached — the sweep is too thin"
+    assert checked >= 4, f"only {checked} choice fields reached — the sweep is too thin"
 
 
 def test_a_model_this_build_lacks_and_out_of_range_numbers_are_named(qapp, tmp_path):

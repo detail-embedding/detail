@@ -27,12 +27,11 @@ class _SyncStageProgressWorker(StageProgressWorker):
 
 
 class _FakeRecording:
-    def __init__(self, *, video=False, detection=False, annotated=False):
+    def __init__(self, *, video=False, detection=False):
         self.video_parts = [{}] if video else []
         self.detection_runs = [{"status": "complete"}] if detection else []
         self.tracking_runs = []
         self.embedding_runs = []
-        self.is_annotated = annotated
 
 
 def test_eligible_video_upstream():
@@ -43,14 +42,6 @@ def test_eligible_video_upstream():
 def test_eligible_module_upstream():
     assert _eligible(_FakeRecording(detection=True), "detection") is True
     assert _eligible(_FakeRecording(detection=False), "detection") is False
-
-
-def test_eligible_behavior_is_a_stream_not_a_run():
-    # A "behavior" requirement (the query eval's ground truth) is a stream role, not a
-    # {kind}_runs record — it must resolve against is_annotated, else every recording is
-    # wrongly ineligible (no behavior_runs attribute exists).
-    assert _eligible(_FakeRecording(annotated=True), "behavior") is True
-    assert _eligible(_FakeRecording(annotated=False), "behavior") is False
 
 
 def test_common_complete_run_ids_intersection():
@@ -939,6 +930,35 @@ def test_stale_recording_resolution_is_dropped(qapp, tmp_path, monkeypatch):
     assert applied == [("recording_001", "recording_002")]
 
 
+def test_a_failed_recording_resolution_says_so_on_the_form(qapp, tmp_path, monkeypatch):
+    """A resolution that raises off the UI thread leaves the form as it was and says why: an
+    empty form with no reason is what a user cannot act on."""
+    from detail.gui import launch
+    from detail.gui.launch import LaunchRunDialog
+    from detail.gui.modules.registry import ConfigWidget
+
+    monkeypatch.setattr(launch, "BackgroundCall", _SyncBackgroundCall)
+    applied = []
+
+    class _Heavy(ConfigWidget):
+        def resolve_recordings(self, recordings):
+            raise OSError("the disk went away")
+
+        def apply_recordings(self, recordings, resolved):
+            applied.append(resolved)
+
+    dialog = LaunchRunDialog(_experiment_with_mixed_recordings(tmp_path))
+    dialog._module_combo.setCurrentIndex(dialog._module_combo.findData("detection"))
+    dialog._config = _Heavy()
+    dialog._select_all.click()
+
+    assert applied == []
+    assert (
+        dialog._status.text()
+        == "Could not read the selected recordings: the disk went away"
+    )
+
+
 class _DetectedAt4:
     """A recording whose only detection run used every 4th frame of a 30 fps source."""
 
@@ -1247,10 +1267,10 @@ def test_the_analysis_picker_leads_with_the_modules_people_reach_for():
     from detail.gui.launch import _ordered_analysis_ids
 
     ordered = _ordered_analysis_ids(
-        ["query_eval", "cluster_eval", "query", "location_export"]
+        ["zz_unlisted", "cluster_eval", "query", "location_export"]
     )
     assert ordered[:2] == ["location_export", "query"]
-    assert ordered[2:] == ["cluster_eval", "query_eval"]  # the rest, alphabetically
+    assert ordered[2:] == ["cluster_eval", "zz_unlisted"]  # the rest, alphabetically
 
 
 def test_the_analysis_picker_loses_nothing_to_the_ordering():
