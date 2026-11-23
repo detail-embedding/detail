@@ -422,7 +422,7 @@ def test_an_abandoned_overlay_filters_nothing(qapp):
 
     **Asserted on the filter being installed, not on an exception.** The first version only
     resized after `del` and relied on the excepthook guard catching the `AttributeError` — and
-    stayed green against the full pre-fix `BusyOverlay`, because sip keeps a parented wrapper
+    stayed green against the full pre-fix `BusyOverlay`, because the binding keeps a parented wrapper
     alive, so no fresh one is materialized in a test. What the fix changed is *whether the filter
     is installed after `stop`*, and a sent event reaches installed filters synchronously, shown or
     not.

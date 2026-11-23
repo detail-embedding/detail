@@ -22,6 +22,7 @@ window, ``tests/gui/test_cluster_window.py``'s
 ``test_an_order_picked_while_the_window_ranks_draws_nothing_until_the_clips_land``.
 """
 
+import functools
 import math
 
 import numpy as np
@@ -2340,9 +2341,8 @@ def test_returning_while_another_recording_builds_says_it_waits(
 def test_leaving_and_returning_leaves_one_listener(qapp, fitted, monkeypatch, tmp_path):
     """Five leave/return cycles: each of the queue's signals reaches exactly one page — the one
     on screen — and the line it draws is the one the first return drew. A page's connection
-    outlives its page only until that signal next fires (PyQt drops a dead receiver on
-    delivery and frees it at the next event-loop pass), so the listener count is read after a
-    round of every signal and a pump."""
+    outlives its page only until the page is destroyed (Qt disconnects a destroyed receiver), so
+    the listener count is read after a round of every signal and a pump."""
     from detail.api import clip_tiles
     from detail.gui import node_workspace
 
@@ -2358,6 +2358,10 @@ def test_leaving_and_returning_leaves_one_listener(qapp, fitted, monkeypatch, tm
     ):
         real = getattr(node_workspace.NodeInterpretTab, name)
 
+        # `wraps` is load-bearing: PySide6 ties a slot to its receiver — so that destroying the
+        # page disconnects it — only when the function carries the method's own name. A bare
+        # `counted` stays connected to a destroyed page, which the real method never does.
+        @functools.wraps(real)
         def counted(self, *args, _real=real, _name=name):
             reached.append(_name)
             return _real(self, *args)

@@ -62,7 +62,7 @@ When adding a parameter to something shared, decide which of three it is:
 - **A fact about the subject** that decides whether the output is *correct* → a **required keyword**,
   no default. A default spelling "as before" is where a missing fact hides.
 - **A cue** — a pointing hand, a `›`, a "click to open" hint → **derived from the wiring**
-  (`self.receivers(signal) > 0`), never set in parallel with the connection, or the claim and the
+  (`receivers(self, signal) > 0`, from `detail.gui.qt`), never set in parallel with the connection, or the claim and the
   connection live in different files and one is wrong.
 - **A genuine choice** → keeps its default, and is **allowlisted with the reason it is a choice**.
 

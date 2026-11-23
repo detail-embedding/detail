@@ -8057,7 +8057,7 @@ one-picture player every other surface embeds. Both choices are remembered (`cli
 Clicking the Masks or Keypoints pane (`ClipPanes.enlarge_wanted`, `"masks"` / `"keypoints"`) opens
 it in a window of its own (`gui/clip_pane_window.py::ClipPaneWindow`, via
 `AdvancedClipPlayer.open_pane`). The cue (a pointing hand through `ImageView.set_rest_cursor`,
-"Click to enlarge" on hover) is derived from `receivers(enlarge_wanted) > 0`, so a `ClipPanes`
+"Click to enlarge" on hover) is derived from `receivers(self, self.enlarge_wanted) > 0`, so a `ClipPanes`
 nobody wired advertises nothing.
 
 - **Full resolution, no footage.** The window draws `clip_views`' own `masks` / `pose` picture at
