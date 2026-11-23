@@ -200,6 +200,19 @@ def test_a_run_from_before_the_body_was_measured_is_refused_by_name(tmp_path):
         )
 
 
+def test_a_run_that_removed_thin_parts_is_refused_by_name(tmp_path):
+    # the option was taken out: what it measured no other tool can reproduce
+    write_run(
+        tmp_path, {"r1": {0: track(np.arange(60) * 10.0)}}, thin_parts_removed=True
+    )
+    with pytest.raises(
+        lm.LocationSourceError, match="an_04 measured r1's body with its thin parts"
+    ):
+        lm.location_rows(
+            tmp_path, "an_04", ["r1"], settings=SETTINGS, windows_for=WHOLE
+        )
+
+
 def test_a_recording_exported_without_a_calibration_is_refused_by_name(tmp_path):
     write_run(tmp_path, {"r1": {0: track(np.arange(60) * 10.0)}}, pixels_per_mm=None)
     with pytest.raises(lm.LocationSourceError, match="r1 had no distance calibration"):

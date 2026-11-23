@@ -1940,10 +1940,11 @@ class ComparisonDetailPage(QWidget):
             )
         if record.get("source") == "locations":
             exported = record.get("location_export") or {}
-            thin = "removed" if exported.get("remove_thin_parts") else "kept"
+            # Only a comparison made before thin-part removal was taken out says "removed".
+            thin = " (thin parts removed)" if exported.get("remove_thin_parts") else ""
             lines.append(
                 f"movement and body shape from location export "
-                f"{record.get('source_run_id', '')} (thin parts {thin}); each measure "
+                f"{record.get('source_run_id', '')}{thin}; each measure "
                 "tested on its own"
             )
         # A label this comparison scores that a screen over the same column chose (§24): the

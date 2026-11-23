@@ -5101,15 +5101,6 @@ def _location_options(command):
             "--sample-fps", "sample_fps", default=None, type=FINITE_FLOAT,
             help=_LOC["sample_fps"].description,
         ),  # fmt: skip
-        click.option(
-            "--remove-thin-parts/--keep-thin-parts", "remove_thin_parts", default=None,
-            help=_LOC["remove_thin_parts"].description,
-        ),  # fmt: skip
-        click.option(
-            "--thin-part-scale", "thin_part_scale", default=None, type=FINITE_FLOAT,
-            help=_LOC["thin_part_scale"].description
-            + f" Default: {_LOC['thin_part_scale'].default}.",
-        ),  # fmt: skip
     ]
     for option in reversed(options):
         command = option(command)
@@ -5142,18 +5133,12 @@ def locations_export(
     tracking_run_id: str,
     out_dir: str,
     sample_fps: float | None,
-    remove_thin_parts: bool | None,
-    thin_part_scale: float | None,
 ) -> None:
     """Write per-frame, per-track spatial features (position, body shape, and position
     relative to the recording's ROIs/POIs) for a completed tracking run, keyed by t_ns.
     """
     sess = _recording(_open_experiment(experiment_dir), recording_id)
-    options = _given_location_options(
-        sample_fps=sample_fps,
-        remove_thin_parts=remove_thin_parts,
-        thin_part_scale=thin_part_scale,
-    )
+    options = _given_location_options(sample_fps=sample_fps)
     try:
         out = sess.export_locations(tracking_run_id, out_dir, **options)
     except ValueError as e:
@@ -5196,17 +5181,11 @@ def analysis_run(
     tracking_run_id: str | None,
     tracking_refs: tuple[str, ...],
     sample_fps: float | None,
-    remove_thin_parts: bool | None,
-    thin_part_scale: float | None,
 ) -> None:
     """Launch an analysis run over the selected recordings; writes ``an_NN``."""
     if bool(tracking_run_id) == bool(tracking_refs):
         raise click.ClickException("pass exactly one of --tracking or --tracking-ref")
-    options = _given_location_options(
-        sample_fps=sample_fps,
-        remove_thin_parts=remove_thin_parts,
-        thin_part_scale=thin_part_scale,
-    )
+    options = _given_location_options(sample_fps=sample_fps)
     if options and module_id != "location_export":
         # Applied or refused, never dropped: another module would ignore them in silence.
         given = ", ".join(f"--{name.replace('_', '-')}" for name in options)
@@ -8002,9 +7981,10 @@ def comparison_run(
         )
     if record.get("source") == "locations":
         exported = record.get("location_export") or {}
-        thin = "removed" if exported.get("remove_thin_parts") else "kept"
+        # Only a comparison made before thin-part removal was taken out can say "removed".
+        thin = " (thin parts removed)" if exported.get("remove_thin_parts") else ""
         click.echo(
-            f"  locations of {record['source_run_id']} (thin parts {thin}): each measure "
+            f"  locations of {record['source_run_id']}{thin}: each measure "
             f"tested on its own over {record.get('draws')} shuffles"
         )
     if record.get("source_snapshot"):
