@@ -9,6 +9,13 @@ not. Found twice: the model cache on a network share faulted the process, and a 
 temporary video path turned up in a developer's real ``~/.cache/detail/previews/index.json``
 (a page's preview lookup writes the cache index).
 
+**And state no fixture isolated at all.** The experiments root falls back to the real
+``~/Documents/DetailExperiments`` whenever storage.yaml names no root, which the isolated one
+never does. Tests redirected it one at a time; the tool-run case of ``test_id_reuse.py`` did
+not, and every full run since 2026-11-19 left two stub tool runs in a developer's real
+``tools/`` folder (42 by 2026-11-23), on which the app's Quick tools rail raised
+``KeyError: 'tool_id'``. ``_isolate_machine_storage`` now moves it, per test and at the floor.
+
 **The rule.** Every piece of machine-local state has a session-wide floor below its per-test
 isolation (``conftest._machine_state_floor``), so what a stray thread sees after revert is
 still inside the pytest basetemp. QSettings is isolated separately by the ``qapp`` fixture
@@ -40,6 +47,9 @@ def _machine_state_paths() -> dict[str, pathlib.Path]:
         "config dir": locations.CONFIG_DIR,
         "storage.yaml": locations.STORAGE_PATH,
         "credentials": credentials.CREDENTIALS_PATH,
+        # Resolved without creating it: with the floor missing, asking must not make the
+        # real folder.
+        "experiments root": locations._experiments_root_path(),
     }
 
 
@@ -84,6 +94,20 @@ def test_the_check_would_catch_a_missing_floor(monkeypatch, tmp_path_factory):
     monkeypatch.setattr(locations, "read_storage", lambda: {})
     escaped = _escapes(_machine_state_paths(), tmp_path_factory.getbasetemp())
     assert "preview cache" in escaped
+
+
+def test_the_check_would_catch_the_real_experiments_root(monkeypatch, tmp_path_factory):
+    """Negative case through the resolver: with no root in storage.yaml and the real default,
+    the experiments root (and the tools workspace under it) resolves to the developer's
+    ``~/Documents/DetailExperiments``, and the check names it."""
+    monkeypatch.setattr(locations, "read_storage", lambda: {})
+    monkeypatch.setattr(
+        locations,
+        "DEFAULT_ROOT",
+        pathlib.Path.home() / "Documents" / "DetailExperiments",
+    )
+    escaped = _escapes(_machine_state_paths(), tmp_path_factory.getbasetemp())
+    assert "experiments root" in escaped
 
 
 @pytest.mark.parametrize("name", ["DETAIL_MODEL_DIR", "DETAIL_PREVIEW_DIR"])
