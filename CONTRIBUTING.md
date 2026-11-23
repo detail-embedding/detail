@@ -79,6 +79,22 @@ over SSH and in CI as they do on a desktop.
 **Warnings fail the run.** The suite runs with `filterwarnings = error`. If your change makes a
 warning appear, fix its cause rather than silencing it.
 
+## Sign the contributor license agreement
+
+Before your first pull request can be merged, read the
+[DETAIL Contributor License Agreement](CLA.md) and agree to it. You keep the copyright in what
+you write. You give the project the right to distribute your work, including under a different
+license in future versions: DETAIL's first release is AGPL-3.0, and later versions are planned
+under a non-commercial license.
+
+To agree, add a line to [`.github/cla-signatures.md`](.github/cla-signatures.md) in your first
+pull request, in a commit you make yourself: your GitHub username, full name, the date, and the
+CLA version. The **CLA** check on the pull request fails until that line is there, and names the
+username it looked for.
+
+If your employer or school has rights in what you write, make sure it allows you to contribute
+on these terms before you sign.
+
 ## Open a pull request
 
 1. Branch from `main`, and push the branch before your first commit, so that a later `git push`

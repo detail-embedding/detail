@@ -1,0 +1,57 @@
+name: CLA
+
+# Fails a pull request whose author has not agreed to the DETAIL Contributor License Agreement
+# (CLA.md): agreement is a line with the author's GitHub username in .github/cla-signatures.md,
+# added in a commit the author made (CONTRIBUTING.md, "Sign the contributor license agreement").
+#
+# Runs on `pull_request`, not `pull_request_target`: it only reads files from the pull
+# request's own head, needs no secrets, and so runs safely on forks with a read-only token.
+# A maintainer still reads any new signature line in the diff before merging; this check proves
+# the line is there, not who typed it.
+#
+# To make it block merges, add "CLA / check" to main's required status checks (a repository
+# setting the maintainers change, not this file).
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cla-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          sparse-checkout: |
+            .github/cla-signatures.md
+            CLA.md
+          sparse-checkout-cone-mode: false
+      - name: Look for the author's signature
+        env:
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          case "$AUTHOR" in
+            dependabot\[bot\]|github-actions\[bot\]|pre-commit-ci\[bot\])
+              echo "Bot account $AUTHOR: no CLA needed."; exit 0 ;;
+          esac
+          file=.github/cla-signatures.md
+          if [ ! -f "$file" ]; then
+            echo "::error::$file is missing from this branch. Merge main into it and try again."
+            exit 1
+          fi
+          # First column of the table: "| username | name | date | version |".
+          if awk -F'|' 'NF > 2 { gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2 }' "$file" \
+               | grep -Fxq -- "$AUTHOR"; then
+            echo "$AUTHOR has agreed to the CLA."
+          else
+            echo "::error::No CLA signature for GitHub user '$AUTHOR'. Read CLA.md, then add a line for '$AUTHOR' to $file in this pull request (see CONTRIBUTING.md, 'Sign the contributor license agreement')."
+            exit 1
+          fi
