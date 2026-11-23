@@ -12,16 +12,11 @@ removal runs. Its two orders are the last two tests in this file."""
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtCore import Qt  # noqa: E402
-from PyQt6.QtTest import QTest  # noqa: E402
-from PyQt6.QtWidgets import QMessageBox  # noqa: E402
-
-from detail.core.skeleton import Skeleton  # noqa: E402
-from detail.gui import keypoint_labeling as mod  # noqa: E402
-from tests.gui import subjects  # noqa: E402
-from tests.gui.conftest import drain_busy_calls, drain_until  # noqa: E402
+from detail.core.skeleton import Skeleton
+from detail.gui import keypoint_labeling as mod
+from detail.gui.qt import QMessageBox, QTest, Qt
+from tests.gui import subjects
+from tests.gui.conftest import drain_busy_calls, drain_until
 
 SK = Skeleton(names=("nose", "tail_base"), edges=(("nose", "tail_base"),))
 TRACKED = (0, 2, 4)  # the fixture's detections (tests/gui/subjects.py `_FRAMES`)
@@ -253,14 +248,14 @@ def test_the_tool_row_offers_point_alone_and_ok_reads_use_these_frames(qapp, pro
     for reserved in (region, box):
         assert not reserved.isEnabled()
         assert "reserved" in reserved.toolTip()
-    from PyQt6.QtWidgets import QDialogButtonBox
+    from detail.gui.qt import QDialogButtonBox
 
     ok = dialog.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Ok)
     assert ok.text() == "Use these frames"
 
 
 def test_keys_choose_a_point_and_mark_it(qapp, proj):
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QTest
 
     created = proj.create_example_set("rats", SK)
     dialog = _open(qapp, proj, created.id)
@@ -304,8 +299,7 @@ def test_a_placed_point_can_be_dragged_to_move_it(qapp, proj):
 
 
 def test_the_view_turns_a_press_on_a_grabbable_thing_into_a_drag_not_a_click(qapp):
-    from PyQt6.QtCore import QEvent, QPointF
-    from PyQt6.QtGui import QMouseEvent, QPixmap
+    from detail.gui.qt import QEvent, QMouseEvent, QPixmap, QPointF
 
     from detail.gui.image_view import ImageView
 
@@ -447,7 +441,7 @@ def test_marks_saving_when_the_dialog_closes_still_reach_the_disk(
     (``gui/run_writes.py``), which outlives the dialog."""
     import threading
 
-    from PyQt6.QtCore import QEvent
+    from detail.gui.qt import QEvent
 
     created = proj.create_example_set("rats", SK)
     dialog = _open(qapp, proj, created.id)

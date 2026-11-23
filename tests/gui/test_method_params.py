@@ -34,22 +34,20 @@ cannot render, so a new field shape fails at construction instead of silently va
 
 import pytest
 
-pytest.importorskip("PyQt6")
+from click.testing import CliRunner
 
-from click.testing import CliRunner  # noqa: E402
-from PyQt6.QtWidgets import QCheckBox, QComboBox  # noqa: E402
-
-from detail.cli import main  # noqa: E402
-from detail.configs.describe import describe_config  # noqa: E402
-from detail.configs.method_params import resolve_method_params  # noqa: E402
-from detail.gui.modules.analysis_query import (  # noqa: E402
+from detail.cli import main
+from detail.configs.describe import describe_config
+from detail.configs.method_params import resolve_method_params
+from detail.gui.modules.analysis_query import (
     _QueryConfig,
     _query_methods,
 )
-from detail.gui.modules.analysis_temporal_clustering import (  # noqa: E402
+from detail.gui.modules.analysis_temporal_clustering import (
     _TemporalClusteringConfig,
 )
-from detail.pipeline import temporal_clustering  # noqa: E402
+from detail.gui.qt import QCheckBox, QComboBox
+from detail.pipeline import temporal_clustering
 
 #: (surface id, the registry, the launch form, the CLI command path). One row per registry
 #: that carries method parameters — a new one is added here and inherits every test below.

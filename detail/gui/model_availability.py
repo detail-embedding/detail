@@ -19,11 +19,8 @@ selection handler: it moves the selection to something runnable, which fires the
 sync handlers.
 """
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor, QPalette, QStandardItemModel
-from PyQt6.QtWidgets import QLabel
-
 from detail.core.utils import available_backends
+from detail.gui.qt import QColor, QLabel, QPalette, QStandardItemModel, Qt
 from detail.gui.status_color import WARN
 
 # Appended to a row's label. Split on the separator to recover the base label, so re-marking

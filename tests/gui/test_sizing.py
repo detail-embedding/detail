@@ -1,14 +1,8 @@
 """``gui/sizing.py``'s two newest helpers: the opening-size cap that was three copies in #806,
 and the fine-print font the strips use."""
 
-import pytest
-
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtCore import QRect, QSize  # noqa: E402
-from PyQt6.QtWidgets import QLabel  # noqa: E402
-
-from detail.gui.sizing import fit_to_screen, small_font  # noqa: E402
+from detail.gui.qt import QLabel, QRect, QSize
+from detail.gui.sizing import fit_to_screen, small_font
 
 
 class _Screen:

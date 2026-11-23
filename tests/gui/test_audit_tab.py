@@ -33,26 +33,22 @@ produces *plausible output* rather than an error:
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtCore import Qt  # noqa: E402
-from PyQt6.QtWidgets import QDialog, QLabel  # noqa: E402
-
 from tests.gui.layout_checks import assert_top_justified
 
-from detail.gui import audit_tab as audit_tab_module  # noqa: E402
-from detail.gui.sizing import lines  # noqa: E402
-from detail.gui.audit_tab import (  # noqa: E402
+from detail.gui import audit_tab as audit_tab_module
+from detail.gui.qt import QDialog, QLabel, Qt
+from detail.gui.sizing import lines
+from detail.gui.audit_tab import (
     BATCH,
     SCOPES,
     AuditTab,
     format_precision,
 )
-from detail.storage import behavior_audit as audit  # noqa: E402
+from detail.storage import behavior_audit as audit
 
-from tests.api.test_query import _searched  # noqa: E402
-from tests.gui.conftest import drain_busy_calls, drain_thread_pool  # noqa: E402
-from tests.gui.test_query_workspace import _drain  # noqa: E402
+from tests.api.test_query import _searched
+from tests.gui.conftest import drain_busy_calls, drain_thread_pool
+from tests.gui.test_query_workspace import _drain
 
 
 def _tab(qapp, tmp_path, cutoff=0.0, **searched):
@@ -1291,7 +1287,7 @@ def _judging_span(tab) -> int:
     video takes its height from the width it is handed, so a wider pane pushed the buttons
     down as well as out.
     """
-    from PyQt6.QtCore import QPoint
+    from detail.gui.qt import QPoint
 
     nav = tab._back.parentWidget()
     top = tab._stack.mapTo(tab, QPoint(0, 0)).y()
@@ -1378,8 +1374,7 @@ def test_the_clip_fills_the_width_of_its_pane(qapp, tmp_path):
     of the room it has been given reads as a video that could not fill it. So the block is the
     pane, and "centred" is about the judgment row under it, not about the picture.
     """
-    from PyQt6.QtCore import QPoint
-    from PyQt6.QtWidgets import QSplitter
+    from detail.gui.qt import QPoint, QSplitter
 
     _exp, _run, tab = _tab(qapp, tmp_path)
     tab._start_batch()
@@ -1425,7 +1420,7 @@ def test_the_block_reserves_no_more_height_than_its_picture_needs(
     sat on a 71px gap the whole time, and the user reported it a second time. A guard for a
     threshold has to straddle the threshold.
     """
-    from PyQt6.QtCore import QPoint
+    from detail.gui.qt import QPoint
 
     _exp, _run, tab = _tab(qapp, tmp_path)
     tab._start_batch()
@@ -1516,7 +1511,7 @@ def test_the_first_action_is_at_the_top_of_the_tab_not_its_middle(qapp, tmp_path
     absorbs the slack exactly as it should, so no label spreads. The measure is where the
     content *starts*.
     """
-    from PyQt6.QtCore import QPoint
+    from detail.gui.qt import QPoint
 
     _exp, _run, tab = _tab(qapp, tmp_path)
     assert tab._body.currentIndex() == 0, "not on the intro, so this proves nothing"

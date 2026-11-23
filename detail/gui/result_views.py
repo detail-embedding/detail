@@ -9,8 +9,7 @@ a cycle a sibling module does not have.
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import QTabWidget, QWidget
+from detail.gui.qt import QTabWidget, QWidget, Signal
 
 #: What a result widget with no views of its own is called on the run page: one view.
 RESULTS_VIEW = "Results"
@@ -73,7 +72,7 @@ class MultiViewWorkspace(QWidget):
     """
 
     #: The name of the view now in front, whoever moved it.
-    view_changed = pyqtSignal(str)
+    view_changed = Signal(str)
 
     def _init_views(
         self,

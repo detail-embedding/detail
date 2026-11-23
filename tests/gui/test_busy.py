@@ -47,14 +47,14 @@ import types
 
 import pytest
 
-pytest.importorskip("PyQt6")
+from detail.gui.qt import (
+    QWidget,
+    delete,
+)
 
-from PyQt6 import sip  # noqa: E402
-from PyQt6.QtWidgets import QWidget  # noqa: E402
-
-import detail.gui.busy as busy  # noqa: E402
-from detail.gui.busy import BusyOverlay, run_busy, run_progress  # noqa: E402
-from tests.waits import finished, until  # noqa: E402
+import detail.gui.busy as busy
+from detail.gui.busy import BusyOverlay, run_busy, run_progress
+from tests.waits import finished, until
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 
@@ -99,7 +99,7 @@ def test_run_busy_drops_result_when_target_torn_down(qapp):
     called = []
     # A slow-enough fn that we can delete the target before it returns.
     worker = run_busy(host, lambda: (time.sleep(0.1) or "x"), called.append)
-    sip.delete(host)  # tear the target down synchronously while the worker runs
+    delete(host)  # tear the target down synchronously while the worker runs
     _drain(qapp, worker)
     assert called == []  # dropped, and no crash touching the dead widget
 
@@ -170,7 +170,7 @@ def _flat_host(color="#3060a0"):
     """A host whose every pixel is one known colour, so "was anything drawn over it" is
     answerable by comparing images rather than by asking a widget whether it feels visible.
     """
-    from PyQt6.QtGui import QColor, QPalette
+    from detail.gui.qt import QColor, QPalette
 
     host = QWidget()
     host.resize(120, 90)
@@ -429,9 +429,7 @@ def test_an_abandoned_overlay_filters_nothing(qapp):
     """
     import gc
 
-    from PyQt6.QtCore import QEvent, QSize
-    from PyQt6.QtGui import QResizeEvent
-    from PyQt6.QtWidgets import QApplication, QWidget
+    from detail.gui.qt import QApplication, QEvent, QResizeEvent, QSize, QWidget
 
     from detail.gui.busy import BusyOverlay
 
@@ -481,8 +479,7 @@ def test_a_running_overlay_is_the_only_one_filtering(qapp):
     for reasons that have nothing to do with the filter — it reads the same before and after this
     change.
     """
-    from PyQt6.QtCore import QEvent
-    from PyQt6.QtWidgets import QWidget
+    from detail.gui.qt import QEvent, QWidget
 
     from detail.gui.busy import BusyOverlay
 
@@ -507,7 +504,7 @@ def _overlapping(qapp, start, key):
     """Start a slow call, then a fast one, release the slow one; return what was delivered."""
     import threading
 
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QTest
 
     host = QWidget()
     got, failed = [], []
@@ -556,7 +553,7 @@ def test_without_a_name_both_results_land_in_finishing_order(qapp):
 def test_a_superseded_error_is_dropped_too(qapp):
     import threading
 
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QTest
 
     host = QWidget()
     got, failed = [], []
@@ -579,7 +576,7 @@ def test_a_superseded_error_is_dropped_too(qapp):
 
 def test_names_are_per_widget(qapp):
     """Two widgets loading the same kind of thing do not supersede each other."""
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QTest
 
     first, second = QWidget(), QWidget()
     got = []
@@ -629,7 +626,7 @@ def test_cancel_stops_the_work_at_its_next_report(qapp):
 def test_a_run_without_on_cancel_offers_none(qapp):
     host = QWidget()
     worker = run_progress(host, lambda emit: "x", lambda r: None)
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     overlay = host.findChildren(BusyOverlay)[0]
     assert (
@@ -642,7 +639,7 @@ def test_closing_the_window_cancels_its_run(qapp):
     """Closing a dialog by Close or Esc emits `finished`, not a close event; either way the
     work stops, so opening the window again never runs a second copy beside the first.
     """
-    from PyQt6.QtWidgets import QDialog, QVBoxLayout
+    from detail.gui.qt import QDialog, QVBoxLayout
 
     dialog = QDialog()
     body = QWidget()

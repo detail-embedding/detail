@@ -141,20 +141,19 @@ def kinds() -> list[str]:
 # button
 # --------------------------------------------------------------------------- #
 def _a_button_with_an_ampersand():
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     return QPushButton("Validate & save")
 
 
 def _an_unlabelled_button():
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     return QPushButton("")
 
 
 def _a_button_wearing_an_icon():
-    from PyQt6.QtGui import QIcon, QPixmap
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QIcon, QPixmap, QPushButton
 
     button = QPushButton("Install")
     pixmap = QPixmap(16, 16)
@@ -207,7 +206,7 @@ def a_button_carries_no_icon(button) -> None:
 
 
 def _a_disabled_button_with_no_reason():
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     button = QPushButton("Install")
     button.setEnabled(False)
@@ -241,7 +240,7 @@ def a_disabled_button_says_why(button) -> None:
 
 def _row_holding(button):
     """The horizontal layout ``button`` sits in directly, and its index there; ``(None, -1)``."""
-    from PyQt6.QtWidgets import QBoxLayout
+    from detail.gui.qt import QBoxLayout
 
     parent = button.parentWidget()
     if parent is None or parent.layout() is None:
@@ -271,8 +270,7 @@ def _takes_spare_width(layout, index) -> bool:
     """Whether item ``index`` of ``layout`` would take the row's spare width before a button:
     a stretch, or a widget or nested row that expands — and has no width cap to stop at.
     """
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton, Qt
 
     item = layout.itemAt(index)
     widget = item.widget()
@@ -287,7 +285,7 @@ def _takes_spare_width(layout, index) -> bool:
 
 
 def _a_row_of_buttons_with_nothing_to_take_the_spare_width():
-    from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSizePolicy, QWidget
+    from detail.gui.qt import QHBoxLayout, QLabel, QPushButton, QSizePolicy, QWidget
 
     row = QWidget()
     line = QHBoxLayout(row)
@@ -318,7 +316,7 @@ def a_button_in_a_row_keeps_its_own_width(button) -> None:
     stretch would make the row itself greedy in the row it sits in. A button meant to span says
     so with a stretch factor of its own.
     """
-    from PyQt6.QtWidgets import QSizePolicy
+    from detail.gui.qt import QSizePolicy
 
     if not button.isVisibleTo(button.window()) or button.maximumWidth() < _UNCAPPED_PX:
         return
@@ -351,14 +349,13 @@ EDITOR_PROPERTY = "detail_table_is_an_editor"
 
 
 def _an_editable_table():
-    from PyQt6.QtWidgets import QTableView
+    from detail.gui.qt import QTableView
 
     return QTableView()  # Qt's default allows editing on double-click
 
 
 def _a_table_that_opens_nothing_but_looks_like_it_does():
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtWidgets import QTableView
+    from detail.gui.qt import QTableView, Qt
 
     table = QTableView()
     table.viewport().setCursor(Qt.CursorShape.PointingHandCursor)
@@ -366,7 +363,7 @@ def _a_table_that_opens_nothing_but_looks_like_it_does():
 
 
 def _a_navigable_table_with_no_cue():
-    from PyQt6.QtWidgets import QTableView
+    from detail.gui.qt import QTableView
 
     table = QTableView()
     table.doubleClicked.connect(lambda _index: None)
@@ -386,7 +383,7 @@ def _opens_something(table) -> bool:
     opener" made this predicate a proxy rather than the property — it read `MetadataPage`'s
     *editable grid* as a navigable table and demanded a cue that would have been a lie.
     """
-    from PyQt6.QtWidgets import QTableWidget
+    from detail.gui.qt import QTableWidget
 
     if not isinstance(table, QTableWidget):
         return table.receivers(table.doubleClicked) > 0
@@ -413,7 +410,7 @@ def a_table_is_read_only_unless_it_declares_itself_an_editor(table) -> None:
     Two dialogs in this app already shared one name (`ExportDialog`), which silently merged every
     exemption keyed by `__name__` — a recorded class here.
     """
-    from PyQt6.QtWidgets import QAbstractItemView
+    from detail.gui.qt import QAbstractItemView
 
     if table.property(EDITOR_PROPERTY):
         return
@@ -432,7 +429,7 @@ def a_table_whose_rows_open_something_says_so(table) -> None:
     Either alone passes with the rule hardcoded the other way, which is why CLAUDE.md asks for
     the pair to be tested rather than the half in front of you.
     """
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     if not _opens_something(table):
         return
@@ -451,7 +448,7 @@ def a_table_that_opens_nothing_shows_no_cue(table) -> None:
     A selection-only table (a row-select that just enables a button) that shows the pointing
     hand invites a double-click which does nothing.
     """
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     if _opens_something(table):
         return
@@ -466,7 +463,7 @@ def a_table_that_opens_nothing_shows_no_cue(table) -> None:
 # --------------------------------------------------------------------------- #
 def _a_dialog_that_cannot_scroll():
     """A dialog with rows straight in its own layout — the shape this rule exists to reject."""
-    from PyQt6.QtWidgets import QDialog, QLabel, QVBoxLayout
+    from detail.gui.qt import QDialog, QLabel, QVBoxLayout
 
     dialog = QDialog()
     layout = QVBoxLayout(dialog)
@@ -494,7 +491,7 @@ def a_dialog_scrolls_its_content(dialog) -> None:
 
     `gui/dialog.py::Dialog.body` is where the rows go and `set_buttons` is where the box goes.
     """
-    from PyQt6.QtWidgets import QDialogButtonBox
+    from detail.gui.qt import QDialogButtonBox
 
     from detail.gui.scroll import PageScroll
 
@@ -521,7 +518,7 @@ def a_dialog_scrolls_its_content(dialog) -> None:
 def _a_window_whose_first_button_is_remove():
     """A non-modal dialog as Qt leaves it: its push buttons auto-default, the first of them —
     here **Remove** — what Enter clicks."""
-    from PyQt6.QtWidgets import QDialog, QLineEdit, QPushButton, QVBoxLayout
+    from detail.gui.qt import QDialog, QLineEdit, QPushButton, QVBoxLayout
 
     dialog = QDialog()
     layout = QVBoxLayout(dialog)
@@ -548,7 +545,7 @@ def a_non_modal_window_has_no_default_button(dialog) -> None:
     Every dialog the sweep builds is shown non-modally, so this holds the base's policy on all of
     them; a modal one, opened with ``exec()``, keeps Qt's Enter-is-OK.
     """
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     if dialog.isModal():
         return
@@ -568,8 +565,7 @@ def a_non_modal_window_has_no_default_button(dialog) -> None:
 # label
 # --------------------------------------------------------------------------- #
 def _a_label_nobody_can_copy():
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtWidgets import QLabel
+    from detail.gui.qt import QLabel, Qt
 
     label = QLabel("CUDA is unavailable: torch was built without it")
     label.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
@@ -603,7 +599,7 @@ def a_label_can_be_selected_and_copied(label) -> None:
 
     A label holding a pixmap or nothing is skipped: there is no text to select.
     """
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     if not (label.text() or "").strip():
         return
@@ -751,7 +747,7 @@ NAVIGATION_GLYPHS = ("\u203a", "\u2197")
 
 
 def _create_buttons(page) -> list:
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     out = []
     for button in page.findChildren(QPushButton):
@@ -766,7 +762,7 @@ def _create_buttons(page) -> list:
 
 
 def _lists(page) -> list:
-    from PyQt6.QtWidgets import QTableView, QTableWidget
+    from detail.gui.qt import QTableView, QTableWidget
 
     return [
         t for t in page.findChildren((QTableView, QTableWidget)) if t.isVisibleTo(page)
@@ -774,7 +770,7 @@ def _lists(page) -> list:
 
 
 def _a_page_with_its_create_action_below_the_list():
-    from PyQt6.QtWidgets import QPushButton, QTableWidget, QVBoxLayout, QWidget
+    from detail.gui.qt import QPushButton, QTableWidget, QVBoxLayout, QWidget
 
     from detail.gui import tables
 
@@ -1311,7 +1307,8 @@ def a_plot_takes_its_colours_from_the_chart_theme(package) -> None:
 @requirement(
     kinds=("package",),
     counterexample=lambda: _a_package_that(
-        'label.setFont(QFont("Monospace"))', extra="from PyQt6.QtGui import QFont\n\n\n"
+        'label.setFont(QFont("Monospace"))',
+        extra="from detail.gui.qt import QFont\n\n\n",
     ),
     retires="Typography: system defaults, monospace for ids",
 )
@@ -1377,7 +1374,7 @@ def typography_comes_from_the_shared_helpers(package) -> None:
 
 def _an_image_view_that_cannot_be_unzoomed():
     """A zoomable view whose Fit control has been taken away."""
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     from detail.gui.image_view import ImageView
 
@@ -1446,7 +1443,7 @@ def a_zoomable_image_view_offers_a_way_back(view) -> None:
     `tests/gui/test_spatial_map.py` records: a capability added to a shared widget as something
     the embedder wires reaches the surface being worked on and no other. Four hosts today.
     """
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     if not view.zoomable:
         return
@@ -1826,7 +1823,7 @@ def a_dialog_opens_modally(package) -> None:
 
 def _a_scrollbar_with_arrows():
     """A bar under plain Fusion — the style the tool's replaces — which draws both arrows."""
-    from PyQt6.QtWidgets import QScrollBar, QStyleFactory
+    from detail.gui.qt import QScrollBar, QStyleFactory
 
     bar = QScrollBar()
     bar._plain = QStyleFactory.create("Fusion")  # the style is not owned by the bar
@@ -1845,7 +1842,7 @@ def a_scrollbar_has_no_arrow_buttons(bar) -> None:
     tree's and a zoom overview's. A bar given its own style — or an app started without
     `apply_style` — has them back, and fails here.
     """
-    from PyQt6.QtWidgets import QStyle, QStyleOptionSlider
+    from detail.gui.qt import QStyle, QStyleOptionSlider
 
     # From the bar's public state: `initStyleOption` is protected, and most bars in a page are
     # a scroll area's own, created by Qt rather than Python, where PyQt will not call it.
@@ -2283,7 +2280,7 @@ def _picture_drawn_bottom(picture, parent) -> int:
     with nothing drawn yet has no picture to measure; its own bottom is the best signal there
     is.
     """
-    from PyQt6.QtCore import QPoint
+    from detail.gui.qt import QPoint
 
     pixmap = picture.pixmap()
     local_y = (
@@ -2295,8 +2292,7 @@ def _picture_drawn_bottom(picture, parent) -> int:
 
 
 def _a_player_with_its_controls_far_below_its_picture():
-    from PyQt6.QtGui import QPixmap
-    from PyQt6.QtWidgets import QVBoxLayout, QWidget
+    from detail.gui.qt import QPixmap, QVBoxLayout, QWidget
 
     from detail.gui.image_view import ImageView
     from detail.gui.scrubber import FrameScrubber
@@ -2366,8 +2362,7 @@ _MAX_CONTROLS_OVERHANG = 8
 
 
 def _a_player_with_controls_wider_than_its_picture():
-    from PyQt6.QtGui import QPixmap
-    from PyQt6.QtWidgets import QVBoxLayout, QWidget
+    from detail.gui.qt import QPixmap, QVBoxLayout, QWidget
 
     from detail.gui.image_view import ImageView
     from detail.gui.scrubber import FrameScrubber
@@ -2430,7 +2425,7 @@ def a_players_controls_span_its_picture_not_the_window(video) -> None:
 
 
 def _a_player_whose_controls_are_cut_short():
-    from PyQt6.QtWidgets import QWidget
+    from detail.gui.qt import QWidget
 
     from detail.gui.scrubber import FrameScrubber
 
@@ -2666,8 +2661,7 @@ def a_checklist_step_reads_its_state(package) -> None:
 
 
 def _a_table_nobody_sized():
-    from PyQt6.QtGui import QStandardItem, QStandardItemModel
-    from PyQt6.QtWidgets import QTableView
+    from detail.gui.qt import QStandardItem, QStandardItemModel, QTableView
 
     view = QTableView()
     model = QStandardItemModel(40, 1)
@@ -2695,7 +2689,7 @@ def a_table_is_sized_to_its_rows_or_declared_to_fill(table) -> None:
     Was written down and unenforced for a long time — `test_table_height.py` checked the helper,
     not the tables — which is exactly how two pages ended up never calling it.
     """
-    from PyQt6.QtWidgets import QSizePolicy
+    from detail.gui.qt import QSizePolicy
 
     parent = table.parentWidget()
     layout = parent.layout() if parent is not None else None
@@ -2877,8 +2871,7 @@ def _called_name(call) -> str | None:
 
 
 def _a_vertical_splitter():
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtWidgets import QSplitter, QWidget
+    from detail.gui.qt import QSplitter, QWidget, Qt
 
     split = QSplitter(Qt.Orientation.Vertical)
     split.addWidget(QWidget())
@@ -2887,8 +2880,7 @@ def _a_vertical_splitter():
 
 
 def _a_splitter_that_drags_a_pane_to_nothing():
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtWidgets import QSplitter, QWidget
+    from detail.gui.qt import QSplitter, QWidget, Qt
 
     split = QSplitter(Qt.Orientation.Horizontal)
     split.addWidget(QWidget())
@@ -2906,7 +2898,7 @@ def a_split_puts_panes_side_by_side(splitter) -> None:
     `QSplitter` (timeline over the panes) that neither of them could see. Swept here over every
     page and dialog the corpus builds.
     """
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     assert splitter.orientation() == Qt.Orientation.Horizontal, (
         f"a vertical {type(splitter).__name__}: a stack of sections is CollapsibleBands "
@@ -2983,7 +2975,7 @@ def _hides_a_pane(text: str) -> bool:
 
 
 def _a_hide_filters_button():
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     return QPushButton("◂ Hide filters")
 

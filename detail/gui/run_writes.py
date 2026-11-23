@@ -24,10 +24,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, pyqtSignal
-from PyQt6.QtWidgets import QApplication, QMessageBox
-
 from detail.gui.lifetime import alive
+from detail.gui.qt import QApplication, QMessageBox, QObject, Signal
 from detail.gui.workers import BackgroundCall
 
 
@@ -45,7 +43,7 @@ class RunWriteQueue(QObject):
 
     #: Emitted on the UI thread each time the last queued write has landed (or the queue was
     #: dropped after a failure).
-    idle = pyqtSignal()
+    idle = Signal()
 
     def __init__(self, key: str) -> None:
         super().__init__()
@@ -148,7 +146,7 @@ def report_orphan_failure(title: str, exc: Exception) -> None:
 class _Hub(QObject):
     """Emits ``changed`` whenever any run's queue goes idle — what the shell's quit waits on."""
 
-    changed = pyqtSignal()
+    changed = Signal()
 
 
 _HUB: _Hub | None = None

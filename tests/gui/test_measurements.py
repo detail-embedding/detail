@@ -51,11 +51,7 @@ whole pane went on describing a cluster the cut no longer had.
 import numpy as np
 import pytest
 
-pytest.importorskip("PyQt6")
 pytest.importorskip("pyqtgraph")
-
-from PyQt6.QtCore import QPointF, Qt  # noqa: E402
-from PyQt6.QtWidgets import QPushButton  # noqa: E402
 
 from detail.analysis.descriptor_ranking import STRONG  # noqa: E402
 from detail.gui.measurements import (  # noqa: E402
@@ -72,6 +68,7 @@ from detail.gui.plots import (
     fmt_value,
     swarm,
 )  # noqa: E402
+from detail.gui.qt import QPointF, QPushButton, Qt
 
 #: Three real descriptor names, so the panel's registry lookups resolve.
 SEPARATED, MIDDLE, FLAT = "bbox_aspect", "tortuosity", "duration_s"

@@ -15,8 +15,7 @@ its own greying.
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import (
+from detail.gui.qt import (
     QCheckBox,
     QGridLayout,
     QLabel,
@@ -25,6 +24,8 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QWidgetAction,
+    Qt,
+    Signal,
 )
 
 _COLUMNS = 4
@@ -43,7 +44,7 @@ POINTS_TIP = (
 class SkeletonPointsPicker(QWidget):
     """Tick the points to include; ``changed`` fires on every tick."""
 
-    changed = pyqtSignal()
+    changed = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -134,7 +135,7 @@ class SkeletonPointsButton(QPushButton):
     it always says why.
     """
 
-    changed = pyqtSignal()
+    changed = Signal()
 
     def __init__(
         self, text: str = "Trail points", parent: QWidget | None = None

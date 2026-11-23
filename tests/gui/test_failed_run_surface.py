@@ -85,7 +85,7 @@ def test_a_failed_run_does_not_offer_its_results(qapp, failed_run):
         "the interpretation workspace opened on a run whose job failed — and its first act "
         "is to commit a granularity, which re-runs the write that killed it"
     )
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     labels = [b.text() for b in page.findChildren(QPushButton)]
     assert "Open output folder" not in labels
@@ -111,7 +111,7 @@ def test_a_run_whose_results_are_out_of_date_offers_the_rebuild_instead(
     Distinct from the failed case in what it offers — there the run is over and the answer is
     *Delete*; here the fit is intact and one pass over the outputs puts the run right.
     """
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     run_dir = authored_cohort.run_dir()
     _envelope(run_dir, "complete")

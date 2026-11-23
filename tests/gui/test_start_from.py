@@ -28,18 +28,16 @@ nothing — over every module too.
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from detail.api.experiment import Experiment  # noqa: E402
+from detail.api.experiment import Experiment
 from detail.gui import modules as _gui_modules  # noqa: E402,F401 (registers UIs)
-from detail.gui.modules.registry import (  # noqa: E402
+from detail.gui.modules.registry import (
     ANALYSIS_GUI_MODULES,
     GUI_MODULES,
     surfaced,
 )
-from detail.gui.start_from import DEFAULTS_LABEL, NO_SETTINGS  # noqa: E402
-from detail.storage import analysis_runs as analysis_store  # noqa: E402
-from detail.storage import runs as runs_store  # noqa: E402
+from detail.gui.start_from import DEFAULTS_LABEL, NO_SETTINGS
+from detail.storage import analysis_runs as analysis_store
+from detail.storage import runs as runs_store
 
 #: Launch surfaces that offer no **Start from** row, and why. Each entry is a claim, checked by
 #: `test_the_exemptions_are_not_stale`: the named class must still exist and must still have no
@@ -282,7 +280,7 @@ def test_a_run_with_no_recorded_settings_is_offered_disabled(qapp, tmp_path):
     pickable, it silently loads nothing. Shown and disabled with the reason is the only one of
     the three that is true — and it is the house rule ("Grey out, don't hide").
     """
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     from detail.gui.launch import LaunchAnalysisDialog
 

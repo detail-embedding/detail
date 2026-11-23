@@ -122,7 +122,7 @@ def test_the_screen_calls_them_behaviors_not_syllables(qapp, temporal_run):
     after a node is selected so the card is filled, because a walk over a half-built screen is a
     check whose reach depends on scheduling (#554).
     """
-    from PyQt6.QtWidgets import QLabel
+    from detail.gui.qt import QLabel
 
     experiment, run_id = temporal_run
     _handle, workspace = _workspace(qapp, experiment, run_id)
@@ -152,7 +152,7 @@ def test_no_sentence_says_the_same_noun_twice(qapp, temporal_run):
     experiment, run_id = temporal_run
     _handle, workspace = _workspace(qapp, experiment, run_id)
 
-    from PyQt6.QtWidgets import QLabel
+    from detail.gui.qt import QLabel
 
     for label in workspace._interpret.findChildren(QLabel):
         text = label.text()

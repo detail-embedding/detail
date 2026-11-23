@@ -33,27 +33,6 @@ declaration (``_FOLDER``), never from ``childCount()``, which a closed section h
 import contextlib
 import html
 
-from PyQt6.QtCore import QByteArray, QSettings, QSize, Qt, QThreadPool, QTimer
-from PyQt6.QtGui import QCursor, QPalette
-from PyQt6.QtWidgets import (
-    QApplication,
-    QButtonGroup,
-    QDialog,
-    QFrame,
-    QHBoxLayout,
-    QLabel,
-    QMainWindow,
-    QMessageBox,
-    QProgressBar,
-    QPushButton,
-    QStackedWidget,
-    QToolTip,
-    QTreeWidget,
-    QTreeWidgetItem,
-    QVBoxLayout,
-    QWidget,
-)
-
 from detail import help as help_mod
 from detail import surfaces
 from detail.api import active as api_active
@@ -79,6 +58,32 @@ from detail.gui.grip_splitter import GripSplitter
 from detail.gui.help_ui import HelpPopover
 from detail.gui.import_queue import ImportQueue
 from detail.gui.lifetime import alive
+from detail.gui.qt import (
+    QApplication,
+    QButtonGroup,
+    QByteArray,
+    QCursor,
+    QDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QPalette,
+    QProgressBar,
+    QPushButton,
+    QSettings,
+    QSize,
+    QStackedWidget,
+    QThreadPool,
+    QTimer,
+    QToolTip,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+)
 from detail.gui.scroll import PageScroll
 from detail.gui.status_color import ERROR, set_label_color
 from detail.gui.version_history import BuildLabel, VersionHistoryPopover
@@ -1828,7 +1833,7 @@ class MainWindow(QMainWindow):
         a Mac) does the same from anywhere — the keyboard's way to it, since a grip takes no
         focus.
         """
-        from PyQt6.QtGui import QKeySequence, QShortcut
+        from detail.gui.qt import QKeySequence, QShortcut
 
         box = QWidget()
         column = QVBoxLayout(box)

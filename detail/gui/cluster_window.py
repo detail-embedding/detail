@@ -56,9 +56,16 @@ the grid has their height.
 from __future__ import annotations
 
 import numpy as np
-from PyQt6 import sip
-from PyQt6.QtCore import QByteArray, QPoint, QSettings, QSize, Qt
-from PyQt6.QtWidgets import QDialogButtonBox, QLineEdit
+from detail.gui.qt import (
+    QByteArray,
+    QDialogButtonBox,
+    QLineEdit,
+    QPoint,
+    QSettings,
+    QSize,
+    Qt,
+    is_deleted,
+)
 
 from detail.api.clip_tiles import TileLook
 from detail.gui.dialog import Dialog
@@ -587,5 +594,5 @@ class ClusterWindows:
 
     def _prune(self) -> None:
         for node, window in list(self._open.items()):
-            if sip.isdeleted(window):
+            if is_deleted(window):
                 del self._open[node]

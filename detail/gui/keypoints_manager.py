@@ -21,7 +21,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtWidgets import (
+from detail.api import skeletons as library
+from detail.core.skeleton import Skeleton
+from detail.gui.busy import run_busy
+from detail.gui.dialog import Dialog
+from detail.gui.pages import IndexTable, _heading, _index_caption
+from detail.gui.qt import (
     QDialogButtonBox,
     QFileDialog,
     QHBoxLayout,
@@ -32,12 +37,6 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-
-from detail.api import skeletons as library
-from detail.core.skeleton import Skeleton
-from detail.gui.busy import run_busy
-from detail.gui.dialog import Dialog
-from detail.gui.pages import IndexTable, _heading, _index_caption
 from detail.gui.sizing import lines, set_available
 from detail.gui.skeleton_editor import SkeletonEditor
 from detail.gui.tables import row_id

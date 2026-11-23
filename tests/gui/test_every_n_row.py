@@ -5,13 +5,9 @@ thinned, which is when the user least needs telling), and downstream it cannot b
 value the stage above never produced.
 """
 
-import pytest
-
-pytest.importorskip("PyQt6")
-
-from detail.configs.detection import DetectionConfig  # noqa: E402
-from detail.configs.embedding import EmbeddingConfig  # noqa: E402
-from detail.gui.modules._every_n import (  # noqa: E402
+from detail.configs.detection import DetectionConfig
+from detail.configs.embedding import EmbeddingConfig
+from detail.gui.modules._every_n import (
     EveryNRow,
     describe,
     format_rate,

@@ -11,20 +11,18 @@ can, the second is the next test in the file (``loadfile`` keeps a file on one w
 order) and must start with nothing held. With the fixture removed the second one fails.
 """
 
-import pytest
+from tests.gui.conftest import release_held_input
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtCore import Qt  # noqa: E402
-from PyQt6.QtGui import QGuiApplication  # noqa: E402
-from PyQt6.QtGui import QStandardItem  # noqa: E402
-from PyQt6.QtGui import QStandardItemModel  # noqa: E402
-from PyQt6.QtTest import QTest  # noqa: E402
-from PyQt6.QtWidgets import QAbstractItemView  # noqa: E402
-from PyQt6.QtWidgets import QLineEdit  # noqa: E402
-from PyQt6.QtWidgets import QTableView  # noqa: E402
-
-from tests.gui.conftest import release_held_input  # noqa: E402
+from detail.gui.qt import (
+    QAbstractItemView,
+    QGuiApplication,
+    QLineEdit,
+    QStandardItem,
+    QStandardItemModel,
+    QTableView,
+    QTest,
+    Qt,
+)
 
 NONE = Qt.KeyboardModifier.NoModifier
 SHIFT = Qt.KeyboardModifier.ShiftModifier

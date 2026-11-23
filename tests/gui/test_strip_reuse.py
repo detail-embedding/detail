@@ -27,13 +27,9 @@ import tempfile
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtCore import QThreadPool  # noqa: E402
-from PyQt6.QtWidgets import QApplication, QVBoxLayout, QWidget  # noqa: E402
-
-import detail.gui.clip_grid as clip_grid  # noqa: E402
-from detail.gui.behavior_query import ClipSpec  # noqa: E402
+import detail.gui.clip_grid as clip_grid
+from detail.gui.behavior_query import ClipSpec
+from detail.gui.qt import QApplication, QThreadPool, QVBoxLayout, QWidget
 
 N = 400
 

@@ -24,18 +24,14 @@ absorbs extra height — a spacer, a stretch factor, or a widget whose size poli
 
 import pytest
 
-from tests.gui.conftest import drain_busy_calls, drain_thread_pool  # noqa: E402
-
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtCore import Qt  # noqa: E402
-from PyQt6.QtWidgets import QLabel  # noqa: E402
+from tests.gui.conftest import drain_busy_calls, drain_thread_pool
 
 import detail.gui.app  # noqa: E402,F401  (the gui package itself)
-from detail.api.experiment import Experiment  # noqa: E402
-from tests.gui import subjects  # noqa: E402
+from detail.api.experiment import Experiment
+from tests.gui import subjects
 from detail.gui import modules as _gui_modules  # noqa: E402,F401 (registers module UIs)
-from detail.gui.pages import _has_slack  # noqa: E402
+from detail.gui.pages import _has_slack
+from detail.gui.qt import QLabel, Qt
 
 #: Dialogs this fixture cannot build, and why. Each is a claim: a name that no longer resolves to
 #: a dialog fails `test_every_exemption_still_names_a_dialog`.
@@ -202,7 +198,7 @@ def test_the_predicate_accepts_a_spacer_that_is_not_last(qapp):
     """The page guard requires the spacer to be the *last* item. Every correctly-stretched dialog
     in this app puts its status label and button box below the spacer, so that predicate would
     fail all of them — which is why this file has its own."""
-    from PyQt6.QtWidgets import QLabel, QPushButton, QVBoxLayout
+    from detail.gui.qt import QLabel, QPushButton, QVBoxLayout
 
     layout = QVBoxLayout()
     layout.addWidget(QLabel("a row"))
@@ -214,7 +210,7 @@ def test_the_predicate_accepts_a_spacer_that_is_not_last(qapp):
 
 def test_the_predicate_rejects_a_column_of_small_rows(qapp):
     """The negative case: without it the check above passes on everything."""
-    from PyQt6.QtWidgets import QLabel, QPushButton, QVBoxLayout
+    from detail.gui.qt import QLabel, QPushButton, QVBoxLayout
 
     layout = QVBoxLayout()
     layout.addWidget(QLabel("a row"))
@@ -226,7 +222,7 @@ def test_the_predicate_rejects_a_column_of_small_rows(qapp):
 def test_a_filling_child_counts_as_slack(qapp):
     """A dialog whose primary content legitimately expands must NOT get a spacer — that is the
     mirror failure, and `add_body_widget`'s docstring records it for pages."""
-    from PyQt6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
+    from detail.gui.qt import QSizePolicy, QVBoxLayout, QWidget
 
     filling = QWidget()
     filling.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
@@ -246,7 +242,7 @@ def test_content_that_arrives_after_the_show_is_not_pushed_below_the_spacer(qapp
     carried stretch 1. The stretch has to be re-decided once the content it was deciding about
     exists.
     """
-    from PyQt6.QtWidgets import QLabel, QSizePolicy, QWidget
+    from detail.gui.qt import QLabel, QSizePolicy, QWidget
 
     from detail.gui.dialog import Dialog
 
@@ -280,7 +276,7 @@ def test_content_that_arrives_after_the_show_is_not_pushed_below_the_spacer(qapp
 def test_a_body_filled_after_the_show_with_short_rows_keeps_its_spacer(qapp):
     """The mirror, so the fix above cannot be "never stretch": rows that do *not* take the slack
     still need the spacer, and it still has to be last."""
-    from PyQt6.QtWidgets import QLabel
+    from detail.gui.qt import QLabel
 
     from detail.gui.dialog import Dialog
 
@@ -323,7 +319,7 @@ def test_a_dialog_lets_you_select_its_text(cls, qapp, tmp_path):
     do not call that helper, and the check went red across thirteen of them while every one was
     correct on screen. A widget that was never shown is not in the state being asserted about.
     """
-    from PyQt6.QtWidgets import QLabel
+    from detail.gui.qt import QLabel
 
     dialog = _build(cls, tmp_path)
     dialog.show()
@@ -363,7 +359,7 @@ def test_a_dialog_lets_you_select_its_text(cls, qapp, tmp_path):
 
 def test_the_selectable_sweep_would_catch_a_plain_label(qapp):
     """Guard the guard: a bare QLabel must read as unselectable, or the sweep is vacuous."""
-    from PyQt6.QtWidgets import QLabel
+    from detail.gui.qt import QLabel
 
     assert not (
         QLabel("plain").textInteractionFlags()

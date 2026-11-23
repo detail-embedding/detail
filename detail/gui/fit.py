@@ -6,10 +6,18 @@ processing runs). Each dialog validates, calls the experiment API
 ``run_handle`` for the shell to show live progress.
 """
 
-from PyQt6.QtGui import QColor, QPalette
-from PyQt6.QtWidgets import (
+from detail.api._runner_modules import PIPELINE_RUNNERS
+from detail.api.experiment import Experiment
+from detail.api.models import prompt_capable_models
+from detail.configs.distill import DEFAULT_N_FRAMES
+from detail.configs.labeling import LabelingConfig
+from detail.core.dataclasses import LabelingClass
+from detail.gui.compute_target import ComputeTargetRow
+from detail.gui.dialog import Dialog
+from detail.gui.qt import (
     QAbstractItemView,
     QCheckBox,
+    QColor,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -20,20 +28,12 @@ from PyQt6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QPalette,
     QPushButton,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
-
-from detail.api._runner_modules import PIPELINE_RUNNERS
-from detail.api.experiment import Experiment
-from detail.api.models import prompt_capable_models
-from detail.configs.distill import DEFAULT_N_FRAMES
-from detail.configs.labeling import LabelingConfig
-from detail.core.dataclasses import LabelingClass
-from detail.gui.compute_target import ComputeTargetRow
-from detail.gui.dialog import Dialog
 from detail.gui.sizing import set_available
 from detail.gui.status_color import ERROR, MUTED, READY, set_label_color
 from detail.gui.forms import ConfigForm

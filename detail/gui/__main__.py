@@ -4,11 +4,9 @@ import sys
 import traceback
 from importlib.resources import files
 
-from PyQt6.QtGui import QIcon
-from PyQt6.QtWidgets import QApplication, QMessageBox
-
 from detail.gui import ui_thread_gc
 from detail.gui.app import MainWindow
+from detail.gui.qt import QApplication, QIcon, QMessageBox
 from detail.gui.style import apply_style
 
 APP_NAME = "detail"
@@ -48,13 +46,14 @@ def configure_application(app: QApplication) -> None:
 
 
 def install_excepthook() -> None:
-    """Report an exception that escapes a Qt slot instead of killing the app.
+    """Tell the user about an exception that escapes a Qt slot, and keep the app running.
 
-    PyQt6's default hook ends in ``qFatal()`` → SIGABRT, so a *single* unguarded read of
-    something that vanished — a deleted experiment, a video root not registered on this
-    machine — takes the whole window down mid-session, with no dialog and any unsaved
-    edits lost. Nothing in a desktop app justifies that: the user should be told and left
-    holding their work.
+    A *single* unguarded read of something that vanished — a deleted experiment, a video root
+    not registered on this machine — raises inside a slot or a Qt virtual override. The binding
+    decides what happens next, so the app does not leave it to the binding: PyQt6, the binding
+    before #107, aborted the process; PySide6 prints the traceback to a terminal a user who
+    launched from an icon never sees, and carries on as if the action had worked. Neither is
+    right for a desktop app: the user should be told, and left holding their work.
 
     This is an explicit isolation boundary (CLAUDE.md's carve-out for catching broadly).
     It is deliberately installed only by :func:`main`, never at import: under pytest the

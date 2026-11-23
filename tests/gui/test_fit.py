@@ -14,12 +14,10 @@ Generate dataset went to the model's bound; the cap is the field's ``ui_max`` no
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from detail.api.experiment import Experiment  # noqa: E402
-from detail.storage import datasets as datasets_store  # noqa: E402
-from detail.storage import models as models_store  # noqa: E402
-from detail.storage import runs as runs_store  # noqa: E402
+from detail.api.experiment import Experiment
+from detail.storage import datasets as datasets_store
+from detail.storage import models as models_store
+from detail.storage import runs as runs_store
 
 
 def _experiment_with_run(tmp_path):
@@ -414,7 +412,7 @@ def test_model_detail_delete_button_calls_api_and_navigates(
 
 
 def test_model_detail_resume_button_calls_api(qapp, tmp_path, monkeypatch):
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     from detail.gui.pages import ModelDetailPage
 
@@ -447,7 +445,7 @@ def test_a_model_that_stopped_cleanly_offers_no_resume(qapp, tmp_path, status, e
     """Resume on a finalized checkpoint trained a new model on Ultralytics' COCO8 sample
     (#486), so a model whose run *returned* — Stop and keep, or a legacy `partial` — must not
     offer it. A Stop-and-keep model also says it stopped early."""
-    from PyQt6.QtWidgets import QLabel, QPushButton
+    from detail.gui.qt import QLabel, QPushButton
 
     from detail.gui.pages import ModelDetailPage
 
@@ -503,7 +501,7 @@ def test_label_dataset_dialog_backend_defaults_to_best_available(
 
 
 def test_dataset_detail_hides_delete_while_active(qapp, tmp_path):
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     from detail.gui.pages import DatasetDetailPage
     from detail.storage import datasets as datasets_store
@@ -630,7 +628,7 @@ def test_model_detail_promote_calls_promote_model(qapp, tmp_path, monkeypatch):
 
 
 def test_distill_run_detail_opens_trained_model(qapp, tmp_path):
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     from detail.gui.pages import DistillRunDetail
     from detail.storage import distill_runs as distill_store
@@ -664,7 +662,7 @@ def test_distill_run_detail_opens_trained_model(qapp, tmp_path):
 
 
 def test_distill_run_detail_hides_open_model_before_training_completes(qapp, tmp_path):
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     from detail.gui.pages import DistillRunDetail
     from detail.storage import distill_runs as distill_store
@@ -706,8 +704,7 @@ def test_the_sampling_pickers_say_what_none_selected_uses(qapp, tmp_path):
     """#35 finding 5, the GUI half. "Recordings (none = all)" was a promise the API broke on
     the first recording without video. Both pickers grey such a recording, say why, and the
     row label says how many recordings selecting nothing uses."""
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtWidgets import QLabel
+    from detail.gui.qt import QLabel, Qt
 
     from detail.gui.fit import DistillDialog, GenerateLabelingDialog
 

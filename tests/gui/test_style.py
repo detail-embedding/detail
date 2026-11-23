@@ -7,10 +7,7 @@ app and the test `qapp` both install.
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtCore import Qt  # noqa: E402
-from PyQt6.QtWidgets import QScrollBar, QStyle, QStyleOptionSlider  # noqa: E402
+from detail.gui.qt import QScrollBar, QStyle, QStyleOptionSlider, Qt
 
 _BAR = QStyle.ComplexControl.CC_ScrollBar
 _SUB = QStyle.SubControl
@@ -65,7 +62,7 @@ def test_the_handle_reaches_both_ends_of_the_bar(qapp, orientation):
 def test_plain_fusion_still_has_arrows(qapp):
     """The negative case: without the app's style the arrows are there, so the two tests above
     are measuring the style and not a bar that never had them."""
-    from PyQt6.QtWidgets import QStyleFactory
+    from detail.gui.qt import QStyleFactory
 
     bar = _bar(Qt.Orientation.Horizontal, 50)
     plain = QStyleFactory.create("Fusion")

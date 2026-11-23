@@ -405,8 +405,7 @@ def _screen(theme_name: str, out: pathlib.Path) -> pathlib.Path | None:
     where the old white panels failed. ``None`` when Qt cannot start (no display, no PyQt6).
     """
     try:
-        from PyQt6.QtCore import Qt
-        from PyQt6.QtWidgets import QApplication, QGridLayout, QLabel, QWidget
+        from detail.gui.qt import QApplication, QGridLayout, QLabel, QWidget, Qt
     except ImportError:
         return None
     import pyqtgraph as pg

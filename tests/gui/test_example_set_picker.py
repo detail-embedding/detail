@@ -4,16 +4,13 @@ is the one thing stood in for, since it needs a tracked video."""
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtWidgets import QMessageBox  # noqa: E402
-
-from detail.api import skeletons as library  # noqa: E402
-from detail.api.experiment import Experiment  # noqa: E402
-from detail.core.skeleton import Skeleton  # noqa: E402
-from detail.gui import example_set_picker as mod  # noqa: E402
-from detail.gui import keypoint_labeling  # noqa: E402
-from tests.gui.conftest import drain_until  # noqa: E402
+from detail.api import skeletons as library
+from detail.api.experiment import Experiment
+from detail.core.skeleton import Skeleton
+from detail.gui import example_set_picker as mod
+from detail.gui import keypoint_labeling
+from detail.gui.qt import QMessageBox
+from tests.gui.conftest import drain_until
 
 TWO = Skeleton(names=("a", "b"))
 

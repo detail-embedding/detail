@@ -10,8 +10,8 @@ were written with, in exact fractions, never through ``cluster_filter``.
 from fractions import Fraction
 
 import pytest
-from PyQt6.QtCore import QPoint, Qt
-from PyQt6.QtTest import QTest
+
+from detail.gui.qt import QPoint, QTest, Qt
 
 
 def _drain(qapp, predicate, timeout_ms: int = 20_000) -> bool:

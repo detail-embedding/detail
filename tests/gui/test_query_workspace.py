@@ -14,7 +14,6 @@ import math
 
 import numpy as np
 import pytest
-from PyQt6.QtWidgets import QLabel
 
 from detail.gui import frame_source
 from detail.gui.clip_grid import ClipGrid, ClipGridModes, score_digits
@@ -23,6 +22,7 @@ from detail.gui.modules.analysis_query import (
     _CalibrateTab,
     _QueryWorkspace,
 )
+from detail.gui.qt import QEvent, QLabel, QMouseEvent, QPointF, Qt
 
 from tests.api.test_query import N_EMBEDDED, _searched, _two_behaviors
 
@@ -613,7 +613,7 @@ def test_the_clips_are_not_behind_a_page_scroll(qapp, tmp_path):
     They are the evidence the whole decision rests on, so they are a fill element now, not
     something you have to scroll to.
     """
-    from PyQt6.QtWidgets import QScrollArea
+    from detail.gui.qt import QScrollArea
 
     _exp, _run, workspace = _workspace(qapp, tmp_path)
     tab = _shown(qapp, workspace)
@@ -895,7 +895,7 @@ def test_browse_opens_the_row_you_clicked_after_sorting(qapp, tmp_path):
     `self._rows[current.row()]`, which after any sort plays a different instance than the one
     clicked. Silent, and wrong in a way that looks like the player is broken.
     """
-    from PyQt6.QtCore import Qt as _Qt
+    from detail.gui.qt import Qt as _Qt
 
     exp, run, workspace = _workspace(qapp, tmp_path)
     run.set_cutoff("q01", 0.0)
@@ -1413,22 +1413,14 @@ def _click(strip, index: int):
     """Click the cell at ``index`` the way a person does — through the cell, not the strip."""
     cell = strip._cells[index]
     cell.mousePressEvent(
-        __import__("PyQt6.QtGui", fromlist=["QMouseEvent"]).QMouseEvent(
-            __import__(
-                "PyQt6.QtCore", fromlist=["QEvent"]
-            ).QEvent.Type.MouseButtonPress,
-            __import__("PyQt6.QtCore", fromlist=["QPointF"]).QPointF(5.0, 5.0),
-            _Qt().MouseButton.LeftButton,
-            _Qt().MouseButton.LeftButton,
-            _Qt().KeyboardModifier.NoModifier,
+        QMouseEvent(
+            QEvent.Type.MouseButtonPress,
+            QPointF(5.0, 5.0),
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
         )
     )
-
-
-def _Qt():
-    from PyQt6.QtCore import Qt
-
-    return Qt
 
 
 def test_clicking_a_clip_plays_it_and_does_not_move_the_cutoff(qapp, tmp_path):
@@ -1726,8 +1718,7 @@ def test_the_divider_cannot_be_dragged_on_a_scan_snapshot(qapp, tmp_path):
     have left the gesture that replaced them wide open, on a surface whose whole promise is
     that it shows what the snapshot was scanned with.
     """
-    from PyQt6.QtCore import QPoint, Qt
-    from PyQt6.QtGui import QMouseEvent
+    from detail.gui.qt import QMouseEvent, QPoint, Qt
 
     exp, run, workspace = _workspace(qapp, tmp_path)
     behavior = workspace._behaviors[0]
@@ -1843,7 +1834,7 @@ def test_clicking_a_dot_plays_it_beside_the_query_map(qapp, tmp_path):
     """The point of the design: the map answers its own question rather than handing it to a
     strip that may not hold the instance — and Query has no members strip at all, which is why
     borrowing a slot in one could never have reached this page."""
-    from PyQt6.QtWidgets import QApplication
+    from detail.gui.qt import QApplication
 
     _exp, _run, _workspace, calibrate = _mapped(qapp, tmp_path)
     placement = calibrate._placements_by_recording["s1"][0]
@@ -1901,8 +1892,7 @@ def test_the_audit_clip_keeps_its_buttons_beside_it_in_this_workspace(qapp, tmp_
     is what fills the sidebar and moves the splitter *after* the first layout. A resize before
     the window is shown, because that is the order a restored window produces.
     """
-    from PyQt6.QtCore import QPoint
-    from PyQt6.QtGui import QFont
+    from detail.gui.qt import QFont, QPoint
 
     from detail.gui.sizing import lines
 

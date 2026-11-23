@@ -7,9 +7,7 @@ tiles by hand, so every disabled control is checked for saying why.
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from detail.gui.label_clean import (  # noqa: E402
+from detail.gui.label_clean import (
     CLICK_HINT,
     NOTHING_TO_UNDO,
     REVIEWED_READ_ONLY,
@@ -20,7 +18,7 @@ from detail.gui.label_clean import (  # noqa: E402
     note_for,
     tag_for,
 )
-from detail.gui.live_montage import MontageClip  # noqa: E402
+from detail.gui.live_montage import MontageClip
 
 SECOND = 1_000_000_000
 
@@ -75,7 +73,7 @@ def test_the_top_row_names_the_cluster_its_label_and_how_far_the_scroll_reached(
 
 def _clicked(pane, index, shift=False):
     """Through the montage's own click path, so a Shift-click runs from its real anchor."""
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     modifier = Qt.KeyboardModifier.ShiftModifier if shift else None
     pane.montage._clicked(index, modifier)
@@ -166,8 +164,7 @@ def test_right_click_moves_or_puts_back(pane):
 def _press(pane, index, *, double=False):
     """A real press and release on tile ``index`` — ``double``: the second press of a
     double-click, as a pointer sends it (`QTest.mouseDClick` then the release)."""
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QTest, Qt
 
     canvas = pane.montage.canvas
     at = pane.montage.tile_rect(index).center()
@@ -199,8 +196,7 @@ def test_a_double_click_retracts_its_first_press(pane, qapp):
 def test_space_after_a_click_opens_and_retracts_nothing(pane, qapp):
     """Space opens the clip as a double-click does, and arrived inside the double-click
     interval: the pane took the click before it back."""
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QTest, Qt
 
     _apply(pane)
     undone, opened = [], []
@@ -231,8 +227,7 @@ def test_a_click_while_the_review_is_saved_changes_nothing(pane, qapp):
 
 def test_enter_does_not_finish_while_picking_clips(qapp):
     """Pick mode has the grid's clicks; Enter there finished the review behind it."""
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QTest, Qt
 
     from detail.gui.label_clean import PICKING_FINISH
 
@@ -394,7 +389,7 @@ def _drag(pane, qapp, start, end, *, release=True):
 
 
 def _release(pane, qapp, index):
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     from tests.gui.test_live_montage import _mouse
 
@@ -408,13 +403,13 @@ def _release(pane, qapp, index):
 
 
 def test_a_drag_removes_the_run_as_one_step_and_says_so_first(pane, qapp):
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     seen = _apply(pane)
     _drag(pane, qapp, 0, 4, release=False)
     assert pane.undo_text.text() == "Let go to remove 4 clips · Esc cancels"
     assert pane.undo_text.font().bold(), "the preview line is bold"
-    from PyQt6.QtGui import QPalette
+    from detail.gui.qt import QPalette
 
     from detail.gui.status_color import MUTED
 
@@ -442,7 +437,7 @@ def test_a_drag_removes_the_run_as_one_step_and_says_so_first(pane, qapp):
 
 
 def test_holding_shift_says_what_a_shift_click_will_remove(pane, qapp):
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     from tests.gui.test_live_montage import _key
 
@@ -469,7 +464,7 @@ def test_the_preview_line_counts_one_clip_and_an_empty_run():
 
 
 def test_a_reviewed_cluster_offers_no_run(pane, qapp):
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     from tests.gui.test_live_montage import _key
 
@@ -498,8 +493,7 @@ def test_finish_is_the_large_default_button_with_its_counts_under_it(pane, qapp)
 
 
 def test_finish_fills_with_the_accent_only_once_it_can_be_pressed(qapp):
-    from PyQt6.QtGui import QPalette
-    from PyQt6.QtWidgets import QApplication
+    from detail.gui.qt import QApplication, QPalette
 
     view = _pane(qapp, n=120, faded=())
     try:

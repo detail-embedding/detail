@@ -33,8 +33,8 @@ at batch 1, embedding at batch 32, while the model defaults differ).
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import (
+from detail.gui.help_ui import FieldLabel
+from detail.gui.qt import (
     QApplication,
     QCheckBox,
     QComboBox,
@@ -51,9 +51,8 @@ from PyQt6.QtWidgets import (
     QToolButton,
     QVBoxLayout,
     QWidget,
+    Qt,
 )
-
-from detail.gui.help_ui import FieldLabel
 
 ADVANCED = "Advanced Settings"
 

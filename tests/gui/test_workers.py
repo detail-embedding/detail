@@ -37,9 +37,7 @@ from dataclasses import dataclass
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from detail.gui.workers import (  # noqa: E402
+from detail.gui.workers import (
     BackgroundCall,
     fit_progress_fraction,
     import_progress_fraction,
@@ -577,7 +575,7 @@ def test_background_call_runs_off_thread_but_delivers_on_ui_thread(qapp):
     """
     import threading
 
-    from PyQt6.QtCore import QEventLoop, QTimer
+    from detail.gui.qt import QEventLoop, QTimer
 
     main_tid = threading.get_ident()
     seen: dict[str, int] = {}
@@ -801,7 +799,7 @@ def test_pool_work_does_not_cross_a_test_boundary(qapp):
     Bounded on purpose. A hard `waitForDone()` would turn a task that never finishes into a hung
     session, which is the failure this exists to prevent.
     """
-    from PyQt6.QtCore import QRunnable, QThreadPool, QTimer
+    from detail.gui.qt import QRunnable, QThreadPool, QTimer
 
     from tests.gui.conftest import drain_thread_pool
 
@@ -838,7 +836,7 @@ def test_the_pool_drain_gives_up_rather_than_hanging(qapp):
     decode costs a bounded wait at one teardown instead of the whole run."""
     import time
 
-    from PyQt6.QtCore import QRunnable, QThreadPool
+    from detail.gui.qt import QRunnable, QThreadPool
 
     from tests.gui.conftest import drain_thread_pool
 

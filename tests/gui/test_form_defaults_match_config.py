@@ -30,17 +30,14 @@ negative case; a cap the GUI wants is the field's ``ui_max``.
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtWidgets import QComboBox, QFormLayout, QWidget  # noqa: E402
-
-from detail.configs.describe import iter_config_models  # noqa: E402
-from detail.configs.embedding import EmbeddingConfig  # noqa: E402
-from detail.configs.temporal_clustering import TemporalClusteringConfig  # noqa: E402
+from detail.configs.describe import iter_config_models
+from detail.configs.embedding import EmbeddingConfig
+from detail.configs.temporal_clustering import TemporalClusteringConfig
 from detail.gui import modules as _gui_modules  # noqa: E402,F401 (registers UIs)
-from detail.gui.help_ui import FieldLabel  # noqa: E402
-from detail.gui.model_availability import selected_model_id  # noqa: E402
-from tests.gui.test_advanced_form import _registry_forms  # noqa: E402
+from detail.gui.help_ui import FieldLabel
+from detail.gui.model_availability import selected_model_id
+from detail.gui.qt import QComboBox, QFormLayout, QWidget
+from tests.gui.test_advanced_form import _registry_forms
 
 _SUFFIXES = ("  — ", "  (")  # an availability reason, a "(default)" marker
 

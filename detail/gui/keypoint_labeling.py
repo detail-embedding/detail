@@ -39,21 +39,6 @@ from __future__ import annotations
 import threading
 import cv2
 import numpy as np
-from PyQt6.QtCore import QEvent, Qt, QTimer
-from PyQt6.QtWidgets import (
-    QButtonGroup,
-    QComboBox,
-    QDialogButtonBox,
-    QFrame,
-    QHBoxLayout,
-    QLabel,
-    QListWidget,
-    QListWidgetItem,
-    QMessageBox,
-    QPushButton,
-    QVBoxLayout,
-    QWidget,
-)
 
 from detail.core.examples import ExampleMark, ExampleSet
 from detail.core.skeleton import Skeleton
@@ -64,6 +49,23 @@ from detail.gui.dialog import Dialog
 from detail.gui.full_frame import to_pixmap
 from detail.gui.grip_splitter import GripSplitter
 from detail.gui.image_view import ImageView, PictureWithControls
+from detail.gui.qt import (
+    QButtonGroup,
+    QComboBox,
+    QDialogButtonBox,
+    QEvent,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
+    QPushButton,
+    QTimer,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+)
 from detail.gui.scrubber import FrameScrubber
 from detail.gui.sizing import (
     add_fitted_picture,

@@ -17,16 +17,21 @@ the helper existed, and the file that needed it could not reach it: exactly what
 `fit_table_height` before it became `gui/tables.py`.
 """
 
-from PyQt6.QtCore import QSettings, QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QFont, QFontMetrics, QPainter
-from PyQt6.QtWidgets import (
+from detail.gui.qt import (
     QApplication,
     QBoxLayout,
+    QFont,
+    QFontMetrics,
     QFrame,
     QLabel,
+    QPainter,
+    QSettings,
+    QSize,
     QSizePolicy,
     QStyle,
     QStyleOption,
+    Qt,
+    Signal,
 )
 
 #: Qt's "no maximum" sentinel. A widget capped below it cannot absorb extra height however
@@ -239,7 +244,7 @@ def _hbar_height(listwidget) -> int:
 
     Two copies of a shape, which this package tolerates; a third is when it becomes one function.
     """
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     if listwidget.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff:
         return 0
@@ -269,7 +274,7 @@ def fit_list_height(listwidget, *, max_rows: int = 8) -> None:
     still hugs its rows. Safe because the content area scrolls (``gui/scroll.py``) — a floor on a
     page that could not scroll would push the window past the display instead.
     """
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     rows = min(max(listwidget.count(), 1), max_rows)
     row_h = listwidget.sizeHintForRow(0) if listwidget.count() else 18
@@ -382,7 +387,7 @@ class ResizeHandle(QFrame):
     them: a band you can drag beside a band you cannot is the thing that gets reported as a bug.
     """
 
-    dragged = pyqtSignal(int)
+    dragged = Signal(int)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)

@@ -3,14 +3,10 @@ PR 8): it joins the picker once the experiment is set, needs no example set, and
 by its model id. The model catalog's keypoint models join it too (§12 *Keypoint models in the
 catalog*), each labelled by where it comes from."""
 
-import pytest
-
-pytest.importorskip("PyQt6")
-
-from detail.api.experiment import Experiment  # noqa: E402
-from detail.core.skeleton import Skeleton  # noqa: E402
-from detail.gui.modules.registry import GUI_MODULES  # noqa: E402
-from detail.storage import models as models_store  # noqa: E402
+from detail.api.experiment import Experiment
+from detail.core.skeleton import Skeleton
+from detail.gui.modules.registry import GUI_MODULES
+from detail.storage import models as models_store
 
 
 def _student(proj, model_id="model_001", name="rat student"):

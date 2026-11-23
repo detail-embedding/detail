@@ -58,11 +58,9 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from detail.gui import workers  # noqa: E402
-from tests import waits  # noqa: E402
-from tests.gui.test_worker_lifetime import _THE_BASE, _base_names  # noqa: E402
+from detail.gui import workers
+from tests import waits
+from tests.gui.test_worker_lifetime import _THE_BASE, _base_names
 
 _GUI = Path(workers.__file__).parent
 
@@ -73,10 +71,9 @@ import gc
 import sys
 import threading
 
-from PyQt6.QtWidgets import QApplication
-
 from detail.gui import live_montage
 from detail.gui import workers
+from detail.gui.qt import QApplication
 
 case, rounds = sys.argv[1], int(sys.argv[2])
 app = QApplication([])

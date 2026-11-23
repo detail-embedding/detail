@@ -25,9 +25,6 @@ import pytest
 
 from tests.gui.conftest import drain_busy_calls, drain_until
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QLabel, QTableWidget
-
 from detail.analysis.measures import MEASURES
 from detail.configs.comparison import ComparisonConfig
 from detail.gui.comparison import (
@@ -35,8 +32,9 @@ from detail.gui.comparison import (
     ComparisonLaunchDialog,
     ComparisonsPage,
 )
+from detail.gui.qt import QDialog, QDialogButtonBox, QLabel, QTableWidget, Qt
 from tests.api.test_comparison import UNBALANCED, _cohort
-from tests import waits  # noqa: E402
+from tests import waits
 
 #: Four animals, four recordings, nobody twice — nothing to average within.
 #: Two treatment arms, two recordings each — a contrast with something to contrast.
@@ -485,7 +483,7 @@ def test_a_group_of_one_reports_no_spread_rather_than_zero(qapp, tmp_path):
 
 
 def test_deleting_asks_first_and_goes_back(qapp, tmp_path, monkeypatch):
-    from PyQt6.QtWidgets import QMessageBox
+    from detail.gui.qt import QMessageBox
 
     exp = _cohort(tmp_path, UNBALANCED)
     cid = _ran(exp)
@@ -780,7 +778,7 @@ def test_cancel_stops_the_run_rather_than_leaving_it_going(qapp, tmp_path):
 def test_a_cancelled_run_is_not_reported_as_a_failure(qapp, tmp_path, monkeypatch):
     """A cancellation the user asked for is not an error to show back at them — and the dialog
     has to close once the worker is actually done, or Cancel appears to do nothing."""
-    from PyQt6.QtWidgets import QMessageBox
+    from detail.gui.qt import QMessageBox
 
     from detail.api.comparison import ComparisonStopped
 
@@ -799,7 +797,7 @@ def test_a_cancelled_run_is_not_reported_as_a_failure(qapp, tmp_path, monkeypatc
 
 def test_the_results_page_offers_another_comparison(qapp, tmp_path):
     """The end of a comparison is where you decide what to do next."""
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     exp = _cohort(tmp_path, UNBALANCED)
     page = _opened(qapp, exp, _ran(exp), lambda: None, lambda _cid: None)
@@ -823,7 +821,7 @@ def test_the_export_dialog_asks_where_and_in_what_format(qapp, tmp_path):
 
 
 def test_the_export_dialog_refuses_an_empty_destination(qapp, tmp_path, monkeypatch):
-    from PyQt6.QtWidgets import QMessageBox
+    from detail.gui.qt import QMessageBox
 
     from detail.gui.comparison import ComparisonExportDialog
 
@@ -846,7 +844,7 @@ def test_the_export_dialog_refuses_an_empty_destination(qapp, tmp_path, monkeypa
 
 
 def test_the_page_offers_an_export_button(qapp, tmp_path):
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     exp = _cohort(tmp_path, UNBALANCED)
     page = _opened(qapp, exp, _ran(exp), lambda: None, lambda _cid: None)
@@ -950,7 +948,7 @@ def test_three_groups_rank_as_the_largest_gap_between_any_two(qapp, tmp_path):
     is the largest contrast between any two of them (§24 *Designs*): the Overview carries the
     pair per row, the Measures tab holds all three side by side with the change named by its
     pair, and one recording per group says why it has no floor rather than nothing."""
-    from PyQt6.QtWidgets import QLabel
+    from detail.gui.qt import QLabel
 
     plan = {
         "r1": ({"animal": "A", "dose": "0"}, 2),

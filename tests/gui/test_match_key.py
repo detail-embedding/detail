@@ -7,13 +7,10 @@ import math
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtGui import QColor  # noqa: E402
-
-from detail.core.chart_theme import DARK, LIGHT  # noqa: E402
-from detail.gui import match_key as mk  # noqa: E402
-from detail.gui import plot_theme  # noqa: E402
+from detail.core.chart_theme import DARK, LIGHT
+from detail.gui import match_key as mk
+from detail.gui import plot_theme
+from detail.gui.qt import QColor
 
 
 @pytest.fixture

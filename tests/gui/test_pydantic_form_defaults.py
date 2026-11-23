@@ -22,19 +22,17 @@ added — and it asserts the *value the user reads*, not that the widget was bui
 
 import pytest
 
-pytest.importorskip("PyQt6")
+from pydantic_core import PydanticUndefined
 
-from PyQt6.QtWidgets import QCheckBox  # noqa: E402
-from pydantic_core import PydanticUndefined  # noqa: E402
-
-from detail.configs.describe import describe_config, iter_config_models  # noqa: E402
-from detail.configs.windows import WindowSpec  # noqa: E402
-from detail.gui._pydantic_form import (  # noqa: E402
+from detail.configs.describe import describe_config, iter_config_models
+from detail.configs.windows import WindowSpec
+from detail.gui._pydantic_form import (
     any_field_value,
     any_field_widget,
     build_fields,
     field_widget,
 )
+from detail.gui.qt import QCheckBox
 
 
 def _models():

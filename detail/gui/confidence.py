@@ -14,11 +14,9 @@ the three parts below are exactly the ones that were about to be written three t
   pixel.
 """
 
-from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout
-
 from detail.configs.display import ConfidenceView
 from detail.gui._pydantic_form import field_meta, field_slider
+from detail.gui.qt import QFrame, QHBoxLayout, QLabel, QVBoxLayout, Signal
 from detail.gui.status_color import MUTED, set_label_color
 
 HINT = "slide to change"
@@ -35,7 +33,7 @@ class ConfidenceRow(QFrame):
     scrubber's single row.
     """
 
-    threshold_changed = pyqtSignal(float)
+    threshold_changed = Signal(float)
 
     def __init__(
         self,

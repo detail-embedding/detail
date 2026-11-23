@@ -18,8 +18,7 @@ more. So the model is here once:
 wheel uses a `ZoomWindow`, or is listed there with the reason it cannot.
 """
 
-from PyQt6.QtCore import QEvent, QObject, Qt, pyqtSignal
-from PyQt6.QtWidgets import QScrollBar, QSizePolicy
+from detail.gui.qt import QEvent, QObject, QScrollBar, QSizePolicy, Qt, Signal
 
 #: A wheel notch scales the visible part by this.
 WHEEL_STEP = 0.8
@@ -32,7 +31,7 @@ PAN_STEP = 0.1
 class ZoomWindow(QObject):
     """The visible part of a span, as fractions ``(left, right)``; ``(0, 1)`` is all of it."""
 
-    changed = pyqtSignal()
+    changed = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)

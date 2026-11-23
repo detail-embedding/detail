@@ -1,0 +1,185 @@
+"""The Qt binding is named in one file, and only the GUI imports Qt.
+
+**The class: a second spelling of the binding.** The GUI moved from PyQt6 (GPL-3.0) to PySide6
+(LGPL-3.0) so that it can ship under a license that adds terms GPL forbids (#107). One import of
+the old binding left anywhere — a widget, a test helper, a script — keeps the GPL dependency, and
+in an environment that still has both installed it loads a second binding beside the first, where
+the two cannot share a widget. An ``importorskip`` on the old name is worse: once it is
+uninstalled, every test behind it **skips**, and the suite still reads green.
+
+**The rule.** ``detail/gui/qt.py`` is the one module that imports ``PySide6`` or ``shiboken6``;
+every other file imports Qt from it. No file imports ``PyQt5``, ``PyQt6``, ``PySide2`` or ``sip``,
+by statement or by a string handed to ``__import__``, ``importlib.import_module`` or
+``pytest.importorskip``. No test skips on a missing binding: in the GUI tier a missing binding is
+an error. And CLAUDE.md's *No Qt imports outside gui/*: the backend packages import neither the
+binding nor ``detail.gui``.
+
+The predicate is :func:`violations`, a pure function of ``{path: source}``, so the negative cases
+below hand it literal source.
+"""
+
+from __future__ import annotations
+
+import ast
+import pathlib
+
+REPO = pathlib.Path(__file__).resolve().parents[1]
+
+#: The one module allowed to import the binding itself.
+THE_SHIM = "detail/gui/qt.py"
+
+#: Bindings, and their helper modules, that no file may import.
+FORBIDDEN = ("PyQt5", "PyQt6", "PySide2", "sip")
+
+#: The binding this repository uses, importable only by :data:`THE_SHIM`.
+BINDING = ("PySide6", "shiboken6")
+
+#: CLAUDE.md's *No Qt imports outside gui/*: these packages import no Qt at all.
+QT_FREE_PACKAGES = (
+    "detail/core/",
+    "detail/storage/",
+    "detail/pipeline/",
+    "detail/models/",
+    "detail/trackers/",
+    "detail/transforms/",
+    "detail/executor/",
+    "detail/api/",
+)
+
+#: Calls whose first string argument names a module that will be imported (or skipped on).
+_IMPORTING_CALLS = {"__import__", "import_module", "importorskip"}
+
+
+def _top(module: str) -> str:
+    return module.split(".")[0]
+
+
+def _imported(tree: ast.AST) -> list[tuple[int, str, bool]]:
+    """``(line, module, is_skip)`` for every module the source imports or skips on."""
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found += [(node.lineno, alias.name, False) for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            found.append((node.lineno, node.module, False))
+            # `from PyQt6 import sip` names the helper as an attribute, not in the module path.
+            found += [
+                (node.lineno, f"{node.module}.{alias.name}", False)
+                for alias in node.names
+            ]
+        elif isinstance(node, ast.Call):
+            func = node.func
+            name = (
+                func.attr
+                if isinstance(func, ast.Attribute)
+                else getattr(func, "id", "")
+            )
+            if name not in _IMPORTING_CALLS or not node.args:
+                continue
+            first = node.args[0]
+            if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                found.append((node.lineno, first.value, name == "importorskip"))
+    return found
+
+
+def violations(sources: dict[str, str]) -> list[str]:
+    """``path:line: why`` for every import that breaks the rule in the module docstring."""
+    found = []
+    for path, source in sources.items():
+        seen = set()
+        for line, module, is_skip in _imported(ast.parse(source)):
+            parts = module.split(".")
+            where = f"{path}:{line}"
+            if where in seen:
+                continue  # one report per import statement
+            before = len(found)
+            if any(part in FORBIDDEN for part in parts):
+                found.append(f"{where}: imports {module} — use detail.gui.qt")
+            elif _top(module) in BINDING and is_skip:
+                found.append(
+                    f"{where}: skips on {module} — a missing binding must fail"
+                )
+            elif _top(module) in BINDING and path != THE_SHIM:
+                found.append(f"{where}: imports {module} — only {THE_SHIM} may")
+            elif path.startswith(QT_FREE_PACKAGES) and (
+                _top(module) in BINDING
+                or module == "detail.gui"
+                or module.startswith("detail.gui.")
+            ):
+                found.append(f"{where}: imports {module} — no Qt outside detail/gui/")
+            if len(found) > before:
+                seen.add(where)
+    return found
+
+
+def _repository_sources() -> dict[str, str]:
+    sources = {}
+    for root in ("detail", "tests", "scripts"):
+        for path in sorted((REPO / root).rglob("*.py")):
+            sources[path.relative_to(REPO).as_posix()] = path.read_text(
+                encoding="utf-8"
+            )
+    return sources
+
+
+def test_the_binding_is_named_in_one_file():
+    sources = _repository_sources()
+    assert THE_SHIM in sources, "the shim moved; update THE_SHIM"
+    assert len(sources) > 500, "the scan found too few files to mean anything"
+    assert violations(sources) == []
+
+
+def test_the_shim_really_imports_the_binding():
+    """Not vacuous: the one allowed site is where the binding actually comes from."""
+    shim = (REPO / THE_SHIM).read_text(encoding="utf-8")
+    modules = {_top(module) for _, module, _ in _imported(ast.parse(shim))}
+    assert {"PySide6", "shiboken6"} <= modules
+
+
+def test_the_scan_would_catch_the_old_binding():
+    planted = {
+        "detail/gui/pages.py": "from PyQt6.QtWidgets import QLabel\n",
+        "detail/gui/lifetime.py": "from PyQt6 import sip\n",
+        "tests/gui/test_x.py": "import PyQt6.QtCore\n",
+        "scripts/x.py": "import sip\n",
+        "tests/gui/test_y.py": '__import__("PyQt6.QtGui", fromlist=["QColor"])\n',
+        "tests/gui/test_z.py": 'import importlib\nimportlib.import_module("PyQt5.QtCore")\n',
+    }
+    assert len(violations(planted)) == len(planted)
+
+
+def test_the_scan_would_catch_a_direct_binding_import():
+    planted = {
+        "detail/gui/pages.py": "from PySide6.QtWidgets import QLabel\n",
+        "detail/gui/lifetime.py": "import shiboken6\n",
+        "tests/gui/test_x.py": "from PySide6 import QtCore\n",
+    }
+    assert len(violations(planted)) == len(planted)
+
+
+def test_the_scan_would_catch_a_skip_on_a_missing_binding():
+    planted = {
+        "tests/gui/test_x.py": 'import pytest\npytest.importorskip("PyQt6")\n',
+        "tests/gui/test_y.py": 'import pytest\npytest.importorskip("PySide6")\n',
+    }
+    assert len(violations(planted)) == len(planted)
+
+
+def test_the_scan_would_catch_qt_in_a_backend_package():
+    planted = {
+        "detail/core/x.py": "from detail.gui.qt import QColor\n",
+        "detail/api/y.py": "import detail.gui.workers\n",
+        "detail/storage/z.py": "def f():\n    from detail.gui import qt\n",
+    }
+    assert len(violations(planted)) == len(planted)
+
+
+def test_the_scan_leaves_the_allowed_shapes_alone():
+    allowed = {
+        THE_SHIM: "import shiboken6\nfrom PySide6.QtCore import Qt\n",
+        "detail/gui/pages.py": "from detail.gui.qt import QLabel\n",
+        "tests/gui/test_x.py": "from detail.gui.qt import QTest\n",
+        "detail/core/x.py": '"""Mentions PyQt6 and sip in prose only."""\nimport math\n',
+        "detail/cli.py": "def gui():\n    from detail.gui.__main__ import main\n",
+    }
+    assert violations(allowed) == []

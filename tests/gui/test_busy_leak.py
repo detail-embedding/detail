@@ -24,14 +24,11 @@ pending calls are drained at teardown — and this is its guard.
 
 import pytest
 
-pytest.importorskip("PyQt6")
+from detail.gui import busy
+from detail.gui.busy import run_busy
+from detail.gui.qt import QMessageBox, QWidget
 
-from PyQt6.QtWidgets import QMessageBox, QWidget  # noqa: E402
-
-from detail.gui import busy  # noqa: E402
-from detail.gui.busy import run_busy  # noqa: E402
-
-from tests.gui.conftest import drain_busy_calls  # noqa: E402
+from tests.gui.conftest import drain_busy_calls
 
 
 def _leak(widget) -> list:

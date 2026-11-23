@@ -63,22 +63,27 @@ from dataclasses import dataclass
 import time
 
 import numpy as np
-from PyQt6.QtCore import QEvent, QPoint, Qt, pyqtSignal
-from PyQt6.QtGui import QKeySequence, QPalette, QShortcut
-from PyQt6.QtWidgets import (
+
+from detail.gui.live_montage import LiveMontage, MontageClip, context_span
+from detail.gui.qt import (
     QApplication,
+    QEvent,
     QFrame,
     QHBoxLayout,
+    QKeySequence,
     QLabel,
     QMenu,
+    QPalette,
+    QPoint,
     QProgressBar,
     QPushButton,
+    QShortcut,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
+    Qt,
+    Signal,
 )
-
-from detail.gui.live_montage import LiveMontage, MontageClip, context_span
 from detail.gui.sizing import emphasis_font, set_available, small_font
 from detail.gui.status_color import MUTED, READY, set_button_color, set_label_color
 from detail.storage import behavior_audit as audit
@@ -286,13 +291,13 @@ class ReviewPane(QWidget):
 
     #: ``(display indices, to_label)``: remove these from the label, or move them to
     #: ``to_label`` (a label path).
-    take_out_requested = pyqtSignal(list, object)
+    take_out_requested = Signal(list, object)
     #: Display indices to put back.
-    put_back_requested = pyqtSignal(list)
-    undo_requested = pyqtSignal()
-    finish_requested = pyqtSignal()
-    next_requested = pyqtSignal()
-    again_requested = pyqtSignal()
+    put_back_requested = Signal(list)
+    undo_requested = Signal()
+    finish_requested = Signal()
+    next_requested = Signal()
+    again_requested = Signal()
 
     def __init__(self, parent=None, *, export) -> None:
         """``export`` is the page's ``montage_export.ExportSource``: the clips **Export ▾**

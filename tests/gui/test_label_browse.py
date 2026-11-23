@@ -11,7 +11,6 @@ an accident of the fixture; the tab's life inside a real workspace is
 import types
 
 import pytest
-from PyQt6.QtCore import Qt
 
 from detail.gui.label_browse import (
     NO_VALUE,
@@ -22,6 +21,7 @@ from detail.gui.label_browse import (
     labelled_bouts,
     recording_passes,
 )
+from detail.gui.qt import Qt
 from detail.gui.sizing import lines
 from detail.storage import behavior_output as bo
 
@@ -229,7 +229,7 @@ def test_a_band_past_the_row_cap_still_plays(tab, monkeypatch):
 def test_the_export_scope_is_the_selection_and_export_all_is_every_filtered_bout(
     tab, monkeypatch
 ):
-    from PyQt6.QtCore import QItemSelectionModel
+    from detail.gui.qt import QItemSelectionModel
 
     assert tab.export_scope() is None
     assert not tab._export_selected.isEnabled()
@@ -481,7 +481,7 @@ def test_the_ethogram_keeps_every_strip_when_the_cluster_lane_arrives(qapp, tab)
 
 
 def plot_theme_colour():
-    from PyQt6.QtGui import QColor
+    from detail.gui.qt import QColor
 
     return QColor("#1f77b4")
 
@@ -490,7 +490,7 @@ def test_the_lists_last_column_is_whole_beside_the_player(qapp, tab):
     """A fixed 520/460 split cut the audit column to "aud" at 1440x847, behind a horizontal
     scrollbar. The list takes its columns' width first, the player keeps a floor, and the name
     column gives up what is still short — eliding, its whole text on hover."""
-    from PyQt6.QtWidgets import QSplitter
+    from detail.gui.qt import QSplitter
 
     tab.resize(1000, 800)
     tab.show()

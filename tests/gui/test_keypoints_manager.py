@@ -7,21 +7,16 @@ real example sets in a real experiment under the patched experiments root."""
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtCore import QEvent, QPointF, Qt  # noqa: E402
-from PyQt6.QtGui import QMouseEvent  # noqa: E402
-from PyQt6.QtWidgets import QMessageBox  # noqa: E402
-
-from detail.api import skeletons as library  # noqa: E402
-from detail.api.experiment import Experiment  # noqa: E402
-from detail.core.skeleton import PRESETS, Skeleton  # noqa: E402
-from detail.gui import keypoints_manager as mod  # noqa: E402
-from detail.gui import skeleton_editor  # noqa: E402
-from detail.gui.dialog import Dialog  # noqa: E402
-from detail.gui.tables import row_id  # noqa: E402
-from detail.storage import locations  # noqa: E402
-from tests.gui.conftest import drain_until  # noqa: E402
+from detail.api import skeletons as library
+from detail.api.experiment import Experiment
+from detail.core.skeleton import PRESETS, Skeleton
+from detail.gui import keypoints_manager as mod
+from detail.gui import skeleton_editor
+from detail.gui.dialog import Dialog
+from detail.gui.qt import QEvent, QMessageBox, QMouseEvent, QPointF, Qt
+from detail.gui.tables import row_id
+from detail.storage import locations
+from tests.gui.conftest import drain_until
 
 TWO = Skeleton(names=("a", "b"), layout=((0.2, 0.5), (0.8, 0.5)))
 LEFT, RIGHT = Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton

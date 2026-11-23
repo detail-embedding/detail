@@ -11,15 +11,12 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtWidgets import QMessageBox, QPushButton, QWidget  # noqa: E402
-
-import detail  # noqa: E402
-from detail.api.experiment import Experiment  # noqa: E402
-from detail.gui import pages as gui_pages  # noqa: E402
-from detail.gui.editing import confirm_leave  # noqa: E402
-from detail.storage import locations  # noqa: E402
+import detail
+from detail.api.experiment import Experiment
+from detail.gui import pages as gui_pages
+from detail.gui.editing import confirm_leave
+from detail.gui.qt import QMessageBox, QPushButton, QWidget
+from detail.storage import locations
 
 
 class _Page(QWidget):

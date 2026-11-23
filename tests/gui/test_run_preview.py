@@ -11,9 +11,7 @@ subject" strip below still draws unprocessed frames as lost; it is recorded as a
 
 import numpy as np
 import pytest
-from tests import waits  # noqa: E402
-
-pytest.importorskip("PyQt6")
+from tests import waits
 
 
 def test_to_pixmap_dimensions(qapp):
@@ -158,7 +156,7 @@ class _FakeRunRecording:
 def _wait_populated(w, attr="_scrubber", timeout_ms=2000):
     """The run's counts load off-thread, so the strip/timeline/scrubber appear only
     after _populate; spin the event loop until they do."""
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QTest
 
     for _ in range(timeout_ms // 10):
         if hasattr(w, attr):
@@ -168,7 +166,7 @@ def _wait_populated(w, attr="_scrubber", timeout_ms=2000):
 
 
 def test_detection_preview_builds_and_strip_click_jumps(qapp):
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QTest
 
     from detail.gui.run_preview import DetectionRunPreview
 
@@ -185,7 +183,7 @@ def test_detection_preview_builds_and_strip_click_jumps(qapp):
 
 
 def test_tracking_preview_builds_and_timeline_click_jumps(qapp):
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QTest
 
     from detail.gui.run_preview import TrackingRunPreview
 
@@ -217,8 +215,7 @@ def _painted_cursor_x(strip, host) -> int:
     one of them paints somewhere else. Row 0 is clear of both strips' bars (they start two
     pixels down), so the only ink there is the cursor.
     """
-    from PyQt6.QtCore import QPoint
-    from PyQt6.QtGui import QColor
+    from detail.gui.qt import QColor, QPoint
 
     from detail.gui import plot_theme
 
@@ -245,8 +242,7 @@ def test_the_count_strip_and_the_lost_frames_timeline_share_one_axis(qapp, recor
     Both topologies, because the fix is not "delete the gutter": with more than one subject
     the labels are how the rows are told apart, so the strip above moves in to match.
     """
-    from PyQt6.QtCore import QPoint, Qt
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QPoint, QTest, Qt
 
     from detail.gui.run_preview import TrackingRunPreview
 
@@ -296,7 +292,7 @@ def test_the_frame_is_on_the_page_and_its_zoom_survives_the_next_frame(qapp, whi
     and the preview rendered its strips around an empty space. Construction, the smoke corpus
     and the controls-under-picture rule all passed against it; the block measured itself.
     """
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QTest
 
     from detail.gui import run_preview
     from detail.gui.image_view import ImageView
@@ -439,7 +435,7 @@ class _FakeRecording:
 
 
 def test_input_image_scrubber(qapp):
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QTest
 
     from detail.gui.run_preview import InputImageScrubber
 
@@ -498,7 +494,7 @@ class _FakeEmbRecording:
 def test_embedding_run_preview(qapp):
     import types
 
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QTest
 
     pytest.importorskip("pyqtgraph")
     from detail.gui.run_preview import EmbeddingRunPreview
@@ -539,7 +535,7 @@ def test_embedding_preview_puts_scatter_frame_and_input_side_by_side(qapp):
     """Reported: the scatter could be smaller so it, the frame and the model input each take
     a third of the width — and the coverage table under it said nothing worth its room.
     """
-    from PyQt6.QtWidgets import QTableView, QTableWidget
+    from detail.gui.qt import QTableView, QTableWidget
 
     pytest.importorskip("pyqtgraph")
     from detail.gui.run_preview import EmbeddingRunPreview

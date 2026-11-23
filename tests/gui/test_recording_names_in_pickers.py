@@ -15,13 +15,10 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtWidgets import QListWidget  # noqa: E402
-
-import detail  # noqa: E402
-from detail.api.experiment import Experiment  # noqa: E402
-from detail.gui.recording_items import (  # noqa: E402
+import detail
+from detail.api.experiment import Experiment
+from detail.gui.qt import QListWidget
+from detail.gui.recording_items import (
     fill_recording_list,
     selected_recording_ids,
 )
@@ -95,7 +92,7 @@ def test_the_scan_would_catch_one():
 def _capture_question(monkeypatch, answer):
     """Stand in for `QMessageBox.question` (a modal that would block the test), keeping the
     text it was asked to show."""
-    from PyQt6.QtWidgets import QMessageBox
+    from detail.gui.qt import QMessageBox
 
     asked: list[str] = []
 
@@ -110,7 +107,7 @@ def _capture_question(monkeypatch, answer):
 def test_the_delete_confirmation_names_the_recording(
     qapp, named_experiment, monkeypatch
 ):
-    from PyQt6.QtWidgets import QMessageBox
+    from detail.gui.qt import QMessageBox
 
     from detail.gui.pages import RecordingDetailPage
 
@@ -124,7 +121,7 @@ def test_the_delete_confirmation_names_the_recording(
 
 
 def test_the_launch_skip_list_names_the_recordings(qapp, named_experiment, monkeypatch):
-    from PyQt6.QtWidgets import QMessageBox
+    from detail.gui.qt import QMessageBox
 
     from detail.gui.launch import _covered_subset
 
@@ -166,7 +163,7 @@ def test_the_path_line_names_the_recording(qapp, named_experiment, monkeypatch):
     )
     MainWindow._open_recording(shell, "recording_001")
     # A run page needs a run on disk; what is checked here is the line above it.
-    from PyQt6.QtWidgets import QWidget
+    from detail.gui.qt import QWidget
 
     from detail.gui import pages
 

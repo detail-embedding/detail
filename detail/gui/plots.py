@@ -32,10 +32,9 @@ for all the plots"*, which is what an absent axis reads as.
 """
 
 import numpy as np
-from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
 
 from detail.gui import plot_theme
+from detail.gui.qt import QSizePolicy, QVBoxLayout, QWidget, Signal
 
 
 def bound_axes(plot, *, x, y) -> None:
@@ -188,9 +187,7 @@ class DescriptorStrip(QWidget):
     :func:`cluster_lane`, which is its own plot with its own label.
     """
 
-    picked = pyqtSignal(
-        int
-    )  #: index into the member list handed to :meth:`show_values`
+    picked = Signal(int)  #: index into the member list handed to :meth:`show_values`
 
     def __init__(self, label: str, unit: str, parent=None) -> None:
         super().__init__(parent)

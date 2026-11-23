@@ -25,31 +25,6 @@ arrives as a shared widget rather than as a tab grown here.
 
 import dataclasses
 
-from PyQt6.QtWidgets import (
-    QAbstractItemView,
-    QComboBox,
-    QDialog,
-    QHBoxLayout,
-    QHeaderView,
-    QLabel,
-    QMessageBox,
-    QPushButton,
-    QScrollArea,
-    QTabBar,
-    QTableView,
-    QTabWidget,
-    QVBoxLayout,
-    QWidget,
-)
-from PyQt6.QtCore import QTimer, Qt, pyqtSignal
-from PyQt6.QtGui import (
-    QColor,
-    QFont,
-    QPalette,
-    QStandardItem,
-    QStandardItemModel,
-)
-
 from detail.configs.query import DEFAULT_METHOD, QueryConfig
 from detail.core import chart_theme
 from detail.gui.forms import ConfigForm
@@ -75,6 +50,30 @@ from detail.gui.audit_tab import AuditTab
 from detail.gui.cluster_strip import EthogramStrip, ruled
 from detail.gui.collapse import CollapsibleBand
 from detail.gui.measurements import BASELINE_RECORDING, MeasurementsPanel
+from detail.gui.qt import (
+    QAbstractItemView,
+    QColor,
+    QComboBox,
+    QDialog,
+    QFont,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QMessageBox,
+    QPalette,
+    QPushButton,
+    QScrollArea,
+    QStandardItem,
+    QStandardItemModel,
+    QTabBar,
+    QTabWidget,
+    QTableView,
+    QTimer,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+    Signal,
+)
 from detail.gui.tables import (
     BROWSE_ROWS,
     num_cell,
@@ -533,7 +532,7 @@ def _clip_specs(
 
 class _CalibrateTab(QWidget):
     #: A cutoff was written and the artifact reprojected — the other tabs are stale.
-    committed = pyqtSignal()
+    committed = Signal()
 
     """Where the cutoff is chosen: the curve, the per-recording spread, and the clips at it.
 

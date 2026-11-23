@@ -7,10 +7,8 @@ recording — the ones a batch run can reference uniformly across the selection.
 
 import re
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QAbstractItemView, QComboBox, QListWidget, QListWidgetItem
-
 from detail.api import run_spec
+from detail.gui.qt import QAbstractItemView, QComboBox, QListWidget, QListWidgetItem, Qt
 from detail.gui.sizing import fit_list_height
 
 # A derived embedding run (§14) encodes its transform in ``model_variant`` as

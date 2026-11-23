@@ -21,10 +21,18 @@ A leaf: it imports the player and the shared widgets, and nothing from ``gui.pag
 
 import logging
 
-from PyQt6.QtCore import QEvent, Qt
-from PyQt6.QtGui import QStandardItemModel
-from PyQt6.QtWidgets import (
+from detail.core import run_selection
+from detail.core.progress import format_duration
+from detail.gui import plot_theme
+from detail.gui.behavior_query import ClipSpec
+from detail.gui.busy import run_busy
+from detail.gui.cluster_strip import EthogramStrip, cluster_colors, ruled
+from detail.gui.collapse import CollapsibleBand
+from detail.gui.grip_splitter import GripSplitter
+from detail.gui.label_panel import path_rows, root_slots, row_path
+from detail.gui.qt import (
     QComboBox,
+    QEvent,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -35,23 +43,15 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QStackedWidget,
+    QStandardItemModel,
     QTableView,
     QTreeWidget,
     QTreeWidgetItem,
     QTreeWidgetItemIterator,
     QVBoxLayout,
     QWidget,
+    Qt,
 )
-
-from detail.core import run_selection
-from detail.core.progress import format_duration
-from detail.gui import plot_theme
-from detail.gui.behavior_query import ClipSpec
-from detail.gui.busy import run_busy
-from detail.gui.cluster_strip import EthogramStrip, cluster_colors, ruled
-from detail.gui.collapse import CollapsibleBand
-from detail.gui.grip_splitter import GripSplitter
-from detail.gui.label_panel import path_rows, root_slots, row_path
 from detail.gui.sizing import emphasis_font, lines, set_available
 from detail.gui.status_color import MUTED, set_label_color
 from detail.gui.tables import (

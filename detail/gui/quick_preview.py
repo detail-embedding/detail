@@ -16,18 +16,19 @@ a multiple of. Double-clicking is the way out of that compromise — see `double
 host wires to a popup that re-decodes the clip at its real rate.
 """
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QPixmap
-from PyQt6.QtWidgets import (
+from detail.gui.busy import BusyOverlay
+from detail.gui.qt import (
     QHBoxLayout,
     QLabel,
+    QPixmap,
     QPushButton,
     QSlider,
+    QTimer,
     QVBoxLayout,
     QWidget,
+    Qt,
+    Signal,
 )
-
-from detail.gui.busy import BusyOverlay
 from detail.gui.run_preview import _to_pixmap
 
 #: The thumbnail sizes a strip may ask for. Shared so two strips cannot drift apart on them.
@@ -45,7 +46,7 @@ class QuickPreview(QWidget):
 
     #: Double-clicked, with nothing attached — the strip knows which clip is in here, this
     #: widget only knows the frames it was handed.
-    double_clicked = pyqtSignal()
+    double_clicked = Signal()
 
     def __init__(self, size_px: int, parent=None) -> None:
         super().__init__(parent)

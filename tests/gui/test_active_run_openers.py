@@ -20,11 +20,9 @@ check is parity against the table, data-driven, so a seventh kind is covered the
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from detail.api import active  # noqa: E402
-from detail.api.experiment import Experiment  # noqa: E402
-from detail.gui.app import MainWindow  # noqa: E402
+from detail.api import active
+from detail.api.experiment import Experiment
+from detail.gui.app import MainWindow
 
 pytestmark = pytest.mark.guard
 

@@ -30,13 +30,11 @@ a pixmap may only be built on the UI thread.
 from collections.abc import Callable
 
 import numpy as np
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QImage, QPixmap
-from PyQt6.QtWidgets import QDialogButtonBox, QLabel
 
 from detail.gui.busy import run_busy
 from detail.gui.dialog import Dialog
 from detail.gui.image_view import ImageView
+from detail.gui.qt import QDialogButtonBox, QImage, QLabel, QPixmap, Qt
 
 #: What a cell hands back when asked for its frame. Off-thread, so no ``QPixmap``.
 Render = Callable[[], np.ndarray | QImage]

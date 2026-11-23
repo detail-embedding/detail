@@ -45,12 +45,25 @@ from __future__ import annotations
 import time
 from collections.abc import Iterable
 
-from PyQt6.QtCore import QByteArray, QPointF, QRectF, QSettings, QSize, Qt
-from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtGui import QColor, QFontMetrics, QPainter, QPalette, QPen
-from PyQt6.QtWidgets import QApplication, QSplitter, QSplitterHandle, QWidget
-
 from detail.gui import plot_theme
+from detail.gui.qt import (
+    QApplication,
+    QByteArray,
+    QColor,
+    QFontMetrics,
+    QPainter,
+    QPalette,
+    QPen,
+    QPointF,
+    QRectF,
+    QSettings,
+    QSize,
+    QSplitter,
+    QSplitterHandle,
+    QWidget,
+    Qt,
+    Signal,
+)
 
 #: Thick enough to aim at; thin enough not to read as a gutter.
 HANDLE_PX = 9
@@ -98,7 +111,7 @@ def _ints(value) -> list[int]:
 def _legacy_sizes(state) -> list[int]:
     """The pane sizes in a ``QSplitter.saveState`` blob — read directly, because
     ``restoreState`` re-applies the old splitter's collapsible flags along with them."""
-    from PyQt6.QtCore import QDataStream, QIODevice
+    from detail.gui.qt import QDataStream, QIODevice
 
     if not isinstance(state, QByteArray) or state.isEmpty():
         return []
@@ -350,7 +363,7 @@ class GripSplitter(QSplitter):
     """
 
     #: ``(pane, shut)`` whenever a pane folds or opens, by any gesture.
-    fold_changed = pyqtSignal(int, bool)
+    fold_changed = Signal(int, bool)
 
     def __init__(self, orientation: Qt.Orientation, *, key: str, parent=None):
         super().__init__(orientation, parent)

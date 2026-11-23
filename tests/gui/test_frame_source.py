@@ -41,12 +41,8 @@ day it is added.
 import ast
 import pathlib
 
-import pytest
-
-pytest.importorskip("PyQt6")
-
-from detail.api.run_preview import SubjectNotDetectedError  # noqa: E402
-from detail.gui import frame_source  # noqa: E402
+from detail.api.run_preview import SubjectNotDetectedError
+from detail.gui import frame_source
 
 _GUI = pathlib.Path(frame_source.__file__).parent
 

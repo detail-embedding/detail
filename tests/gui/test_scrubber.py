@@ -26,14 +26,9 @@ row through one.
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtCore import QEvent, Qt  # noqa: E402
-from PyQt6.QtGui import QKeyEvent  # noqa: E402
-from PyQt6.QtTest import QTest  # noqa: E402
-
-from detail.gui.scrubber import FrameScrubber, accelerated_step  # noqa: E402
-from tests.gui.conftest import drain_until  # noqa: E402
+from detail.gui.qt import QEvent, QKeyEvent, QTest, Qt
+from detail.gui.scrubber import FrameScrubber, accelerated_step
+from tests.gui.conftest import drain_until
 
 
 def test_scrubbed_signal_fires_on_manual_not_programmatic(qapp):
@@ -242,7 +237,7 @@ def test_a_non_playable_scrubber_has_no_play_control(qapp):
     s = FrameScrubber(playable=False)
     assert s._play_btn is None and s._speed_box is None and s._play_timer is None
     assert not s.is_playing()
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     labels = [b.text() for b in s.findChildren(QPushButton)]
     # Step buttons only, and named rather than arrowed: a "Play" button beside a bare "▶" was
@@ -674,7 +669,7 @@ def test_the_choices_list_does_not_outlive_its_parameters():
 # --------------------------------------------------------------------------- #
 def _elided(scrubber):
     """Every visible control laid out narrower than the text it is trying to show."""
-    from PyQt6.QtWidgets import QAbstractButton
+    from detail.gui.qt import QAbstractButton
 
     return [
         (w.text(), w.width(), w.sizeHint().width())
@@ -698,7 +693,7 @@ def test_the_control_row_wraps_rather_than_eliding_its_labels(qapp, width):
     Parametrized because the failure is a *threshold*: one wide case cannot see it, and one
     narrow case cannot show that a row which fits is still drawn on one line.
     """
-    from PyQt6.QtWidgets import QApplication
+    from detail.gui.qt import QApplication
 
     from detail.gui.image_view import ImageView, PictureWithControls
 
@@ -717,8 +712,7 @@ def test_the_control_row_wraps_rather_than_eliding_its_labels(qapp, width):
 
 def test_the_row_is_one_line_when_it_fits_and_more_when_it_does_not(qapp):
     """The other half — a row that always wrapped would pass the check above and be wrong."""
-    from PyQt6.QtCore import QPoint
-    from PyQt6.QtWidgets import QApplication, QAbstractButton
+    from detail.gui.qt import QAbstractButton, QApplication, QPoint
 
     def lines(width):
         scrubber = FrameScrubber(playable=True)
@@ -772,7 +766,7 @@ def test_the_speed_menu_mirrors_every_forward_speed_backward(qapp):
 
 def test_there_is_one_play_button(qapp):
     """One control starts and stops playback; which way is the speed's business."""
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     s = _playable()
     texts = [b.text() for b in s.findChildren(QPushButton)]
@@ -828,7 +822,7 @@ def test_backward_respects_the_playback_range(qapp):
 
 
 def test_changing_to_a_negative_speed_mid_play_turns_round_on_one_timer(qapp):
-    from PyQt6.QtCore import QTimer
+    from detail.gui.qt import QTimer
 
     s = _playable(total=50)
     s._has_rendered = True
@@ -1157,7 +1151,7 @@ def test_a_compact_transport_keeps_play_and_speed_and_the_added_controls(qapp):
     """The clip montage's transport: every tile loops on its own, so the slider, its time
     labels, the step buttons and the frame readout point at nothing and are hidden; Play,
     the speed menu and a host's own controls stay, and playback is unchanged."""
-    from PyQt6.QtWidgets import QPushButton, QWidget
+    from detail.gui.qt import QPushButton, QWidget
 
     from detail.gui.scrubber import FrameScrubber
 

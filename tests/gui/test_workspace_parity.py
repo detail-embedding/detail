@@ -36,12 +36,9 @@ guarded on the page that has them.
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtWidgets import QSplitter  # noqa: E402
-
-from detail.gui.behavior_query import _ClipPlayer  # noqa: E402
-from detail.gui.collapse import CollapsibleBand  # noqa: E402
+from detail.gui.behavior_query import _ClipPlayer
+from detail.gui.collapse import CollapsibleBand
+from detail.gui.qt import QSplitter
 
 #: What both pages call their three sections. Not "whatever each one happens to be called":
 #: the ethogram band used to title itself from `terms.unit`, so the same section was "Cluster

@@ -40,12 +40,26 @@ import math
 from collections.abc import Sequence
 import html
 
-from PyQt6.QtCore import QEvent, QPointF, QRectF, QSize, Qt
-from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QPalette, QPen, QPolygonF
-from PyQt6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
-
 from detail.core.progress import format_duration
 from detail.gui import plot_theme
+from detail.gui.qt import (
+    QColor,
+    QEvent,
+    QHBoxLayout,
+    QLabel,
+    QLinearGradient,
+    QPainter,
+    QPalette,
+    QPen,
+    QPointF,
+    QPolygonF,
+    QRectF,
+    QSize,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+)
 
 #: The key's caption, over the ramp.
 CAPTION = "Clips that match"
@@ -537,7 +551,7 @@ class LabelSwatches(QWidget):
 
     def texts(self) -> list[str]:
         """What each swatch says, as plain text — for tests and for the page's own checks."""
-        from PyQt6.QtGui import QTextDocument
+        from detail.gui.qt import QTextDocument
 
         out = []
         for label in self._labels:

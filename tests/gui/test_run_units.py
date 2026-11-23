@@ -27,10 +27,7 @@ from __future__ import annotations
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtWidgets import QLabel, QProgressBar
-
+from detail.gui.qt import QLabel, QProgressBar
 from detail.gui.run_units import (
     DONE,
     FAILED,
@@ -120,7 +117,6 @@ def test_a_recording_shows_the_name_a_user_gave_it():
 # --- what a row says ---------------------------------------------------------- #
 def test_a_failed_row_names_the_reason_without_the_exception_class():
     """This row is why the page exists, so it has to read at a glance.
-
 
     "ValueError: no arena defined" is noise plus a fact; the fact is the half someone acts on.
     """
@@ -560,7 +556,7 @@ def test_a_running_run_keeps_its_cancel_button(qapp, tmp_path, monkeypatch):
     Cancel run, the one control a running run needs. Nothing raised; the button was simply not
     there.
     """
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     from detail.gui.pages import RunDetailPage
     from detail.storage import locations
@@ -609,7 +605,7 @@ def test_collapsing_a_group_leaves_no_orphan_rows_on_screen(
     hiding deleted. Expanding a count row and collapsing it again is the shrink that actually
     happens.
     """
-    from PyQt6.QtWidgets import QProgressBar
+    from detail.gui.qt import QProgressBar
 
     from detail.gui.unit_rows import UnitRows
     from detail.gui.run_units import DONE, Unit
@@ -750,7 +746,7 @@ def test_nothing_below_the_panel_moves_as_the_run_updates(qapp, tmp_path, monkey
     specifically, since that is what changes on a run that is otherwise standing still: hours to
     minutes to seconds, each a different string length.
     """
-    from PyQt6.QtWidgets import QLabel, QPlainTextEdit, QPushButton
+    from detail.gui.qt import QLabel, QPlainTextEdit, QPushButton
 
     from detail.core.progress import format_duration
     from detail.gui.pages import RunDetailPage
@@ -798,7 +794,7 @@ def test_the_form_below_a_live_panel_does_not_spread(qapp, tmp_path, monkeypatch
     out 60px apart instead of 21. A spread form is a form that *redistributes* whenever anything
     above it changes, which is how a panel updating twice a second reaches the bottom of a page.
     """
-    from PyQt6.QtWidgets import QLabel
+    from detail.gui.qt import QLabel
 
     from detail.gui.pages import RunDetailPage
     from detail.storage import locations

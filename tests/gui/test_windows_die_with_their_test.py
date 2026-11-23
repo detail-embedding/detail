@@ -14,8 +14,13 @@ touched the window.
 
 from __future__ import annotations
 
-from PyQt6 import sip
-from PyQt6.QtWidgets import QCompleter, QLineEdit, QWidget
+from detail.gui.qt import (
+    QCompleter,
+    QLineEdit,
+    QWidget,
+    address,
+    is_deleted,
+)
 
 from tests.gui.conftest import destroy_new_windows
 
@@ -30,16 +35,16 @@ def test_a_window_a_test_opens(qapp):
 
 def test_is_gone_when_the_next_test_starts(qapp):
     assert _OPENED, "runs after test_a_window_a_test_opens"
-    assert sip.isdeleted(_OPENED[0]), "the previous test's window outlived its test"
+    assert is_deleted(_OPENED[0]), "the previous test's window outlived its test"
 
 
 def test_only_windows_python_owns_are_destroyed(qapp):
-    before = {int(sip.unwrapinstance(w)) for w in qapp.topLevelWidgets()}
+    before = {address(w) for w in qapp.topLevelWidgets()}
     edit = QLineEdit()
     completer = QCompleter(["alpha", "beta"], edit)
     edit.setCompleter(completer)
     popup = completer.popup()  # a top-level the completer owns
     assert popup.isWindow()
     assert destroy_new_windows(qapp, before) == 1
-    assert sip.isdeleted(edit)
+    assert is_deleted(edit)
     del completer, popup, edit

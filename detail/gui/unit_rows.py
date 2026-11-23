@@ -18,17 +18,17 @@ things follow, and both were bugs before they were rules:
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor, QPalette
-from PyQt6.QtWidgets import (
+from detail.gui.qt import (
+    QColor,
     QGridLayout,
     QLabel,
+    QPalette,
     QProgressBar,
     QSizePolicy,
     QToolButton,
     QWidget,
+    Qt,
 )
-
 from detail.gui.run_units import DONE, FAILED, QUEUED, Unit, group_units
 from detail.gui.sizing import lines, mono_font
 from detail.gui.status_color import ERROR, set_label_color
@@ -71,7 +71,7 @@ STATUS_CHARS = 32
 
 
 def _column_px(chars: int) -> int:
-    from PyQt6.QtGui import QFontMetrics
+    from detail.gui.qt import QFontMetrics
 
     return QFontMetrics(mono_font()).horizontalAdvance("0" * chars)
 
@@ -82,7 +82,7 @@ def _elided(label, text: str) -> None:
     A fixed-width label still reports the full string through `sizeHint`, and a grid will happily
     hand it more than the minimum — so the text itself is shortened to what fits.
     """
-    from PyQt6.QtGui import QFontMetrics
+    from detail.gui.qt import QFontMetrics
 
     metrics = QFontMetrics(label.font())
     label.setText(

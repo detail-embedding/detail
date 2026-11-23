@@ -6,8 +6,6 @@ anywhere — the grid, dialog construction, and validation."""
 import numpy as np
 import pytest
 
-pytest.importorskip("PyQt6")
-
 
 class _FakeRecording:
     id = "recording_001"
@@ -145,7 +143,7 @@ def test_prompt_test_dialog(qapp):
 
 
 def test_prompt_test_dialog_closed_set(qapp):
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     from detail.core.dataclasses import ComputeTarget
     from detail.gui.preview import PromptTestDialog

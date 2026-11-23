@@ -49,17 +49,6 @@ import time
 from typing import NamedTuple
 
 import numpy as np
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QFont
-from PyQt6.QtWidgets import (
-    QHBoxLayout,
-    QLabel,
-    QMessageBox,
-    QPushButton,
-    QSizePolicy,
-    QVBoxLayout,
-    QWidget,
-)
 
 from detail.analysis.descriptor_ranking import (
     STRONG,
@@ -79,6 +68,18 @@ from detail.gui.plots import (
     MIN_ROW_PX,
     cluster_lane,
     fmt_value,
+)
+from detail.gui.qt import (
+    QFont,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+    Signal,
 )
 from detail.gui.sizing import lines, remember_size, remembered_size
 from detail.gui.tables import give_slack_to, row_id
@@ -144,7 +145,7 @@ def _label(
 
 def _name_column_px() -> int:
     """Wide enough for the longest measurement name in the interface font, plus air."""
-    from PyQt6.QtGui import QFontMetrics
+    from detail.gui.qt import QFontMetrics
 
     metrics = QFontMetrics(QLabel().font())
     longest = max(
@@ -174,7 +175,7 @@ class MeasurementsPanel(QWidget):
     button to measure again, rather than drawing the old rows under the new ids.
     """
 
-    instance_picked = pyqtSignal(object)
+    instance_picked = Signal(object)
 
     def __init__(
         self, experiment, member_noun: str, unit_noun: str, *, key: str, baseline: str

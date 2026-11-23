@@ -1,17 +1,11 @@
 """Experiment + Distill overview dashboards (§3.1) and the navigable-table click cue."""
 
-import pytest
-
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtCore import Qt  # noqa: E402
-from PyQt6.QtWidgets import QApplication, QLabel, QPushButton  # noqa: E402
-
-from detail.api.experiment import Experiment  # noqa: E402
+from detail.api.experiment import Experiment
 from detail.gui import sections as gui_sections
-from detail.gui import pages  # noqa: E402
-from detail.storage import locations  # noqa: E402
-from detail.storage import runs as runs_store  # noqa: E402
+from detail.gui import pages
+from detail.gui.qt import QApplication, QLabel, QPushButton, Qt
+from detail.storage import locations
+from detail.storage import runs as runs_store
 
 
 def _seed_run(experiment, run_id, status):
@@ -240,7 +234,7 @@ def test_experiments_page_fills_instead_of_top_justifying(qapp, tmp_path, monkey
     # expands instead of packing under a trailing stretch. The Experiments list scrolls,
     # so its scroll area must take the slack — with a trailing stretch instead, the cards
     # would bunch at the top and the list would stop scrolling at the window edge.
-    from PyQt6.QtWidgets import QScrollArea
+    from detail.gui.qt import QScrollArea
 
     from detail.storage import locations
 

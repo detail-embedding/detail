@@ -23,11 +23,8 @@ the CLI prints, from the same check (``boris._check_columns``).
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtWidgets import QScrollArea  # noqa: E402
-
-from detail.api.experiment import Experiment  # noqa: E402
+from detail.api.experiment import Experiment
+from detail.gui.qt import QScrollArea
 
 DATA_TXT = """\
 Start Date: 02/16/26
@@ -239,7 +236,7 @@ def test_alignment_buttons_gated_on_the_selected_streams_clock(qapp, tmp_path):
 def _wait(cond, timeout_ms=2000):
     """Spin the event loop until ``cond()`` — the stream dialogs read off-thread now,
     so their anchor picker / strip / scrubber appear only after the async populate."""
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QTest
 
     for _ in range(timeout_ms // 10):
         if cond():
@@ -342,7 +339,7 @@ def _pose_csv(tmp_path, name="pose_001.csv"):
 
 
 def _tick(band, column):
-    from PyQt6.QtWidgets import QCheckBox
+    from detail.gui.qt import QCheckBox
 
     for row in range(band._table.rowCount()):
         if band._table.item(row, 1).text() == column:
@@ -712,7 +709,7 @@ def test_a_setup_chosen_before_a_file_applies_once_one_arrives(qapp, tmp_path):
 
 
 def test_saving_a_setup_from_the_dialog(qapp, tmp_path, monkeypatch):
-    from PyQt6.QtWidgets import QInputDialog
+    from detail.gui.qt import QInputDialog
 
     from detail.gui.streams import AddStreamDialog
 
@@ -739,7 +736,7 @@ def test_the_save_prompt_states_the_name_rule_and_what_the_name_becomes(
     because it is the reason the rule cannot simply be relaxed: this name becomes the
     stream's name, and a stream name is a directory name.
     """
-    from PyQt6.QtWidgets import QInputDialog
+    from detail.gui.qt import QInputDialog
 
     from detail.gui.streams import AddStreamDialog
 
@@ -1124,8 +1121,7 @@ def test_a_sorted_streams_table_acts_on_the_stream_the_row_shows(
     """Sort the Streams table by Name, select the top row, Delete: the stream that row
     shows is the one deleted (#26). Before the fix the handler read the row's position
     into the build-order name list, so row 0 (apple) deleted zebra."""
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtWidgets import QMessageBox
+    from detail.gui.qt import QMessageBox, Qt
 
     from detail.gui.pages import RecordingDetailPage
     from detail.gui.tables import row_id

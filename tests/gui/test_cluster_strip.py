@@ -18,25 +18,22 @@ a cluster is one thing, and every check here is about what is on it:
 import numpy as np
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtWidgets import QFrame  # noqa: E402
-
-from detail.gui.behavior_query import ClipSpec  # noqa: E402
-from detail.gui.cluster_strip import (  # noqa: E402
+from detail.gui.behavior_query import ClipSpec
+from detail.gui.cluster_strip import (
     ClusterClipStrip,
     EthogramStrip,
     _Thumb,
 )
-from detail.gui.cluster_strip import cluster_colors  # noqa: E402
-from detail.gui.sizing import lines  # noqa: E402
+from detail.gui.cluster_strip import cluster_colors
+from detail.gui.qt import QFrame
+from detail.gui.sizing import lines
 
 
 def _at(strip, fraction: float, row: int = 0, *, lane: bool = False):
     """The point ``fraction`` along ``row``'s bar (or lane), read off the strip's own geometry
     rather than a pixel copied from it — a test that hard-codes the layout tests the layout.
     """
-    from PyQt6.QtCore import QPointF
+    from detail.gui.qt import QPointF
 
     if lane:
         y = strip._lane_top(row) + strip.LANE_PX / 2
@@ -46,8 +43,7 @@ def _at(strip, fraction: float, row: int = 0, *, lane: bool = False):
 
 
 def _mouse(strip, kind, point, buttons=None):
-    from PyQt6.QtCore import QEvent, Qt
-    from PyQt6.QtGui import QMouseEvent
+    from detail.gui.qt import QEvent, QMouseEvent, Qt
 
     left = Qt.MouseButton.LeftButton
     event = QMouseEvent(
@@ -136,7 +132,7 @@ def test_the_strip_shrinks_back_for_a_smaller_cluster(qapp, experiment):
 
 def test_the_strip_scrolls_horizontally_and_stays_one_row(qapp, experiment):
     """A row, not a pane: the members read left to right and the page keeps its height."""
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     strip = ClusterClipStrip(experiment, size_px=64)
     assert (
@@ -429,7 +425,7 @@ def test_a_stale_decode_never_reaches_the_cell(qapp, experiment):
 def test_the_playing_cell_has_a_play_button_and_a_scrub_bar_and_nothing_else(qapp):
     """Two controls, deliberately. The cell is a member of a set being compared against its
     neighbours, and every control added to it is width taken from the comparison."""
-    from PyQt6.QtWidgets import QPushButton, QSlider
+    from detail.gui.qt import QPushButton, QSlider
 
     from detail.gui.quick_preview import QuickPreview
 
@@ -570,8 +566,7 @@ def test_a_decode_that_really_comes_back_empty_still_says_so(qapp, experiment):
 def test_clicking_a_band_selects_its_cluster(qapp):
     """The same destination a scatter click takes: both are pictures of the vocabulary, and the
     thing a person does on seeing an interesting stretch is point at it."""
-    from PyQt6.QtCore import QEvent, QPointF, Qt
-    from PyQt6.QtGui import QMouseEvent
+    from detail.gui.qt import QEvent, QMouseEvent, QPointF, Qt
 
     strip = EthogramStrip()
     strip.set_rows(
@@ -591,7 +586,7 @@ def test_clicking_a_band_selects_its_cluster(qapp):
 
 
 def test_the_hit_test_finds_the_band_under_the_point(qapp):
-    from PyQt6.QtCore import QPointF
+    from detail.gui.qt import QPointF
 
     strip = EthogramStrip()
     strip.set_rows(
@@ -608,7 +603,7 @@ def test_the_hit_test_finds_the_band_under_the_point(qapp):
 def test_clicking_blank_time_selects_nothing(qapp):
     """The gaps are where the subject was not observed or the vocabulary accounts for nothing;
     snapping to a neighbour would claim a band covers time it does not."""
-    from PyQt6.QtCore import QPointF
+    from detail.gui.qt import QPointF
 
     strip = EthogramStrip()
     strip.set_rows(
@@ -622,7 +617,7 @@ def test_clicking_blank_time_selects_nothing(qapp):
 
 
 def test_clicking_off_the_bars_selects_nothing(qapp):
-    from PyQt6.QtCore import QPointF
+    from detail.gui.qt import QPointF
 
     strip = EthogramStrip()
     strip.set_rows(
@@ -641,7 +636,7 @@ def test_clicking_off_the_bars_selects_nothing(qapp):
 
 def test_the_hit_test_knows_which_row_it_is_in(qapp):
     """Two recordings, two rows: a click in the second must not read the first one's bands."""
-    from PyQt6.QtCore import QPointF
+    from detail.gui.qt import QPointF
 
     strip = EthogramStrip()
     strip.set_rows(
@@ -805,7 +800,7 @@ def test_a_redraw_of_the_rows_keeps_the_lane(qapp):
 def test_bars_and_lane_marks_are_hit_at_the_laned_row_pitch(qapp):
     """Every row's offset comes from one pitch. A copy still stepping by the lane-less pitch would
     put row two's bar where row one's lane is."""
-    from PyQt6.QtCore import QPointF
+    from detail.gui.qt import QPointF
 
     strip = _laned(qapp)
     assert strip.row_px() == strip.BAR_PX + strip.GAP_PX + strip.LANE_PX + 2
@@ -822,8 +817,7 @@ def test_bars_and_lane_marks_are_hit_at_the_laned_row_pitch(qapp):
 
 
 def test_clicking_a_lane_mark_says_which(qapp):
-    from PyQt6.QtCore import QEvent, QPointF, Qt
-    from PyQt6.QtGui import QMouseEvent
+    from detail.gui.qt import QEvent, QMouseEvent, QPointF, Qt
 
     strip = _laned(qapp)
     got = []
@@ -841,7 +835,7 @@ def test_marking_a_row_outlines_it_for_a_moment(qapp):
 
 
 def test_a_long_name_is_elided_in_the_gutter_and_whole_on_hover(qapp):
-    from PyQt6.QtCore import QPointF
+    from detail.gui.qt import QPointF
 
     long = "subject_03_treatment_25_" * 6
     strip = EthogramStrip()
@@ -875,8 +869,7 @@ def _two_lengths(qapp):
 
 
 def _wheel(strip, x, notches, *, shift=False):
-    from PyQt6.QtCore import QPoint, QPointF, Qt
-    from PyQt6.QtGui import QWheelEvent
+    from detail.gui.qt import QPoint, QPointF, QWheelEvent, Qt
 
     modifiers = (
         Qt.KeyboardModifier.ShiftModifier if shift else Qt.KeyboardModifier.NoModifier
@@ -909,7 +902,7 @@ def test_rows_share_one_time_axis_and_a_shorter_recording_ends_early(qapp):
 
 
 def QPointF_at(strip, x, row):  # noqa: N802 — reads as the constructor it wraps
-    from PyQt6.QtCore import QPointF
+    from detail.gui.qt import QPointF
 
     return QPointF(float(x), float(strip._bar_top(row) + strip.BAR_PX / 2))
 
@@ -954,7 +947,7 @@ def test_a_drag_pans_and_does_not_click(qapp):
     strip.cluster_picked.connect(picked.append)
     start = _at(strip, 0.55, 1)
     _mouse(strip, "MouseButtonPress", start)
-    from PyQt6.QtCore import QPointF, Qt
+    from detail.gui.qt import QPointF, Qt
 
     _mouse(
         strip,
@@ -979,8 +972,7 @@ def test_a_click_on_a_zoomed_strip_picks_what_is_drawn_there(qapp):
 
 
 def test_esc_and_a_double_click_on_blank_time_show_the_whole_span(qapp):
-    from PyQt6.QtCore import QEvent, Qt
-    from PyQt6.QtGui import QKeyEvent
+    from detail.gui.qt import QEvent, QKeyEvent, Qt
 
     strip = _two_lengths(qapp)
     strip.set_view(0.2, 0.3)
@@ -998,7 +990,7 @@ def test_esc_and_a_double_click_on_blank_time_show_the_whole_span(qapp):
 
 
 def test_shift_wheel_moves_through_the_recordings_not_the_time(qapp):
-    from PyQt6.QtWidgets import QScrollArea
+    from detail.gui.qt import QScrollArea
 
     strip = EthogramStrip()
     strip.set_rows(
@@ -1039,7 +1031,7 @@ def test_a_new_axis_resets_the_zoom_and_the_same_axis_keeps_it(qapp):
 def test_the_header_swaps_its_hint_for_whole_and_the_overview_while_zoomed(qapp):
     """One row, one height: the hint names the gestures until you use them, then gives its place
     to **Whole** and the overview — a real scrollbar bound to the strip's zoom."""
-    from PyQt6.QtWidgets import QScrollBar
+    from detail.gui.qt import QScrollBar
 
     from detail.gui.cluster_strip import ZOOM_HINT, ruled
 
@@ -1078,9 +1070,15 @@ def test_the_wheel_zooms_anywhere_in_the_plot_area_not_only_on_a_row(qapp):
     """10/5: with two recordings, most of the band is blank under the rows, and a wheel there
     did nothing while the rows just above zoomed. The blank area and the ruler zoom too, at the
     time under the pointer; Shift+wheel there still moves through the recordings."""
-    from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt
-    from PyQt6.QtGui import QWheelEvent
-    from PyQt6.QtWidgets import QApplication, QScrollArea
+    from detail.gui.qt import (
+        QApplication,
+        QEvent,
+        QPoint,
+        QPointF,
+        QScrollArea,
+        QWheelEvent,
+        Qt,
+    )
 
     from detail.gui.cluster_strip import ruled
 

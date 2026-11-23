@@ -31,9 +31,9 @@ parameter reference read, so a widget cannot show a different range than the doc
 
 from pydantic import BaseModel
 from pydantic_core import PydanticUndefined
-from PyQt6.QtWidgets import QCheckBox, QComboBox, QWidget
 
 from detail.configs.describe import describe_config
+from detail.gui.qt import QCheckBox, QComboBox, QWidget
 from detail.gui.spin import (
     COUNT,
     FRACTION,

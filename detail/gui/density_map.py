@@ -15,12 +15,23 @@ from __future__ import annotations
 import math
 
 import numpy as np
-from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QPainter, QPen
-from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from detail.analysis.node_cache import POSITION_BINS
 from detail.gui import plot_theme
+from detail.gui.qt import (
+    QColor,
+    QHBoxLayout,
+    QLabel,
+    QPainter,
+    QPen,
+    QPointF,
+    QPushButton,
+    QRectF,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+    Signal,
+)
 from detail.gui.sizing import set_available
 from detail.gui.throttle import Throttle
 
@@ -157,7 +168,7 @@ class DensityMap(QWidget):
 
     #: The region the user asked for: the current one with the clicked cell toggled, or the box
     #: being drawn, moved or resized.
-    region_picked = pyqtSignal(object)
+    region_picked = Signal(object)
 
     def __init__(
         self, width: int, caption: str = "", aspect: float = 1.0, parent=None
@@ -455,7 +466,7 @@ class RegionPicker(QWidget):
     read as clutter once learned (user, review round 8).
     """
 
-    region_changed = pyqtSignal(object)
+    region_changed = Signal(object)
 
     def __init__(
         self,

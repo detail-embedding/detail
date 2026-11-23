@@ -92,26 +92,6 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 import datetime as dt
 
-from PyQt6.QtCore import QEvent, QObject, QRectF, QSettings, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QPainter, QPalette, QPen
-from PyQt6.QtWidgets import (
-    QApplication,
-    QFrame,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QListWidget,
-    QListWidgetItem,
-    QPushButton,
-    QScrollArea,
-    QSlider,
-    QStackedWidget,
-    QTabBar,
-    QToolTip,
-    QVBoxLayout,
-    QWidget,
-)
-
 from detail.analysis.compare import FLOOR_ALPHA, STATISTIC_T, STRICTNESS_LEVELS
 from detail.api.cluster_filter import CLUSTERS, LOCATION, SESSION, VIDEO, Selection
 from detail.gui import plot_theme
@@ -122,6 +102,34 @@ from detail.gui.match_key import (
     effect_position,
     one_sided,
     statistic_value_text,
+)
+from detail.gui.qt import (
+    QApplication,
+    QColor,
+    QEvent,
+    QFont,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QObject,
+    QPainter,
+    QPalette,
+    QPen,
+    QPushButton,
+    QRectF,
+    QScrollArea,
+    QSettings,
+    QSlider,
+    QStackedWidget,
+    QTabBar,
+    QToolTip,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+    Signal,
 )
 from detail.gui.selectable import make_text_selectable
 from detail.gui.sizing import (
@@ -682,7 +690,7 @@ class Checklist(QWidget):
     one widget, not 200.
     """
 
-    changed = pyqtSignal(object)
+    changed = Signal(object)
 
     def __init__(
         self,
@@ -906,7 +914,7 @@ class RangeHistogram(Histogram):
     with 8px squares read as too small to grab (user, 2026-11-09).
     """
 
-    span_changed = pyqtSignal(object)
+    span_changed = Signal(object)
 
     #: The grip's half-width at the bottom of a handle, in pixels.
     GRIP_PX = 4
@@ -1149,7 +1157,7 @@ class _RangeSection(QWidget):
     ``changed`` carries ``(lo, hi)`` inclusive, or ``None`` for the full span.
     """
 
-    changed = pyqtSignal(object)
+    changed = Signal(object)
 
     def __init__(
         self,
@@ -1338,7 +1346,7 @@ class SessionRange(QWidget):
     is the page's (:meth:`set_count`), since only it has the clips.
     """
 
-    changed = pyqtSignal(object)
+    changed = Signal(object)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -1486,7 +1494,7 @@ class _FieldHead(QWidget):
     line is outlined in the palette's highlight colour.
     """
 
-    toggled = pyqtSignal()
+    toggled = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -1561,7 +1569,7 @@ class FieldRow(QWidget):
     selection.
     """
 
-    left = pyqtSignal()
+    left = Signal()
 
     def __init__(self, name: str, section: QWidget, parent=None) -> None:
         super().__init__(parent)
@@ -1711,9 +1719,9 @@ class ScreenList(QWidget):
     screen's own floor. Hidden for a screen with no floor, which has no levels to read at.
     """
 
-    changed = pyqtSignal(object)
-    alpha_changed = pyqtSignal(object)
-    run_requested = pyqtSignal()
+    changed = Signal(object)
+    alpha_changed = Signal(object)
+    run_requested = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -2092,12 +2100,12 @@ class FilterBar(QObject):
     (a dock section, a field's Reset, Reset all, or :meth:`set_selection`).
     """
 
-    selection_changed = pyqtSignal(object)
+    selection_changed = Signal(object)
     #: **New screen…** on the Differences tab: the page opens the launch dialog.
-    screen_requested = pyqtSignal()
+    screen_requested = Signal()
     #: The open tab changed (:data:`DIFFERENCES_TAB` or :data:`FILTERS_TAB`): the page
     #: recolours the tree, whose colour means what the open tab is about.
-    tab_changed = pyqtSignal(str)
+    tab_changed = Signal(str)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)

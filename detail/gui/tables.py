@@ -11,15 +11,20 @@ reach it rather than being restated at each call site. Same move, same reason, a
 ``gui/status_color.py``.
 """
 
-from PyQt6.QtCore import QEvent, QModelIndex, QObject, QSize, Qt
-from PyQt6.QtGui import QStandardItem, QStandardItem
-from PyQt6.QtWidgets import (
+from detail.gui.qt import (
     QAbstractItemView,
+    QEvent,
     QHeaderView,
+    QModelIndex,
+    QObject,
+    QSize,
     QSizePolicy,
+    QStandardItem,
+    QStandardItem,
     QTableView,
     QVBoxLayout,
     QWidget,
+    Qt,
 )
 
 #: The trailing glyph marking a row that opens something. Text, not an icon set.
@@ -300,7 +305,7 @@ def max_visible_rows(row_height: int) -> int:
     rows, a desktop monitor ~40, and either way the table keeps its header and scrolls its own
     content past that.
     """
-    from PyQt6.QtWidgets import QApplication
+    from detail.gui.qt import QApplication
 
     screen = QApplication.primaryScreen()
     available = screen.availableGeometry().height() if screen is not None else 900
@@ -335,7 +340,7 @@ def _horizontal_scrollbar_height(table) -> int:
     while the table is being built: the bar has not been laid out yet and reports hidden, which
     is the answer that produces the bug.
     """
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     if table.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff:
         return 0

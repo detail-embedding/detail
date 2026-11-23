@@ -14,8 +14,14 @@ A proxy style rather than a stylesheet: stylesheets are banned here (`requiremen
 parts sit changes, so the handle, groove and both themes are Fusion's untouched.
 """
 
-from PyQt6.QtCore import QRect, Qt
-from PyQt6.QtWidgets import QApplication, QProxyStyle, QStyle, QStyleOptionSlider
+from detail.gui.qt import (
+    QApplication,
+    QProxyStyle,
+    QRect,
+    QStyle,
+    QStyleOptionSlider,
+    Qt,
+)
 
 _SCROLLBAR = QStyle.ComplexControl.CC_ScrollBar
 _ARROWS = (QStyle.SubControl.SC_ScrollBarAddLine, QStyle.SubControl.SC_ScrollBarSubLine)

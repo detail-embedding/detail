@@ -26,9 +26,6 @@ states.
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QSize, Qt
-from PyQt6.QtWidgets import QCheckBox, QDialogButtonBox, QLabel, QPushButton
-
 from detail.api import clip_views
 from detail.api.animation import GIF, MP4
 from detail.gui import frame_source
@@ -42,6 +39,7 @@ from detail.gui.animation_export import (
 from detail.gui.busy import decode_overlay
 from detail.gui.dialog import Dialog
 from detail.gui.image_view import ImageView, PictureWithControls
+from detail.gui.qt import QCheckBox, QDialogButtonBox, QLabel, QPushButton, QSize, Qt
 from detail.gui.run_preview import _to_pixmap
 from detail.gui.scrubber import FrameScrubber
 from detail.gui.sizing import fit_to_screen, lines

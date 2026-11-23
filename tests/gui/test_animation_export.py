@@ -20,10 +20,10 @@ import re
 from pathlib import Path
 
 import pytest
-from PyQt6.QtWidgets import QFileDialog, QMessageBox
 
 from detail.api.animation import GIF
 from detail.gui import animation_export as ax
+from detail.gui.qt import QFileDialog, QMessageBox
 
 _APPENDED_SUFFIX = re.compile(r"\.with_name\(\s*f[\"']\{[^}]*\.name\}\.")
 

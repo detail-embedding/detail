@@ -65,25 +65,6 @@ import math
 import time
 
 import numpy as np
-from PyQt6.QtCore import QEvent, QPoint, QSettings, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QKeySequence, QShortcut
-from PyQt6.QtWidgets import (
-    QCompleter,
-    QDialog,
-    QFrame,
-    QHBoxLayout,
-    QInputDialog,
-    QLabel,
-    QLineEdit,
-    QMenu,
-    QMessageBox,
-    QProgressBar,
-    QPushButton,
-    QScrollArea,
-    QSizePolicy,
-    QVBoxLayout,
-    QWidget,
-)
 
 from detail.api import cluster_filter
 from detail.core.progress import remaining_seconds
@@ -127,6 +108,32 @@ from detail.gui.match_key import TreeKeyRow
 from detail.gui.match_key import one_sided
 from detail.gui.node_audit import NodeAuditBlock
 from detail.gui.node_icicle import TreePane, format_time, row_px
+from detail.gui.qt import (
+    QColor,
+    QCompleter,
+    QDialog,
+    QEvent,
+    QFrame,
+    QHBoxLayout,
+    QInputDialog,
+    QKeySequence,
+    QLabel,
+    QLineEdit,
+    QMenu,
+    QMessageBox,
+    QPoint,
+    QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QSettings,
+    QShortcut,
+    QSizePolicy,
+    QTimer,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+    Signal,
+)
 from detail.gui.sizing import ResizeHandle, lines, set_available
 from detail.gui.workers import BackgroundCall
 from detail.storage.behavior_output import PATH_SEPARATOR
@@ -367,7 +374,7 @@ class InlineLabelEditor(QFrame):
     """A one-line label editor that opens where the user double-clicked. Enter saves; Esc and
     clicking away cancel."""
 
-    submitted = pyqtSignal(str)
+    submitted = Signal(str)
 
     def __init__(self, current: str, known: list[str], unit: str, parent=None) -> None:
         super().__init__(parent, Qt.WindowType.Popup)
@@ -543,12 +550,12 @@ class NodeInterpretTab(QWidget):
     """The INTERPRET tab for a pose or temporal clustering run."""
 
     #: A label landed in the output: AUDIT and BROWSE re-read it.
-    changed = pyqtSignal()
+    changed = Signal()
     #: Finish or Reopen landed.
-    status_changed = pyqtSignal()
+    status_changed = Signal()
     #: The selected cluster for BROWSE's ethogram lane: ``(view, node, name, colour)``, or
     #: ``None`` for the root (all of the time, so a lane would say nothing).
-    lane_changed = pyqtSignal(object)
+    lane_changed = Signal(object)
 
     def __init__(self, run, experiment, terms) -> None:
         super().__init__()

@@ -7,15 +7,9 @@ directly, not through a fit.
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtCore import QPoint, Qt  # noqa: E402
-from PyQt6.QtGui import QColor  # noqa: E402
-from PyQt6.QtTest import QTest  # noqa: E402
-from PyQt6.QtWidgets import QMenu  # noqa: E402
-
-from detail.gui.cluster_workspace import POSE_TERMS  # noqa: E402
-from detail.gui.label_panel import LabelField  # noqa: E402
+from detail.gui.cluster_workspace import POSE_TERMS
+from detail.gui.label_panel import LabelField
+from detail.gui.qt import QColor, QMenu, QPoint, QTest, Qt
 
 N = 30
 
@@ -197,7 +191,7 @@ def test_a_choice_from_the_labels_button_leaves_the_cursor_in_the_field(qapp, fi
     """Through the real button: the menu runs modally and hands focus back to the button as it
     closes, so Enter after a choice would do nothing unless the field takes the focus back.
     """
-    from PyQt6.QtCore import QTimer
+    from detail.gui.qt import QTimer
 
     _shown(qapp, field)
     chosen: list = []
@@ -231,8 +225,7 @@ def test_opening_labels_menu_leaves_no_menu_behind(field, qapp):
     """Review: every click on **Labels ▾** built a menu parented to the field and never deleted
     it, so a session of labelling grew one menu (and ~30 submenus) per click. Opened by a real
     click on the button; each time the menu closes on Esc, as a person dismisses it."""
-    from PyQt6.QtCore import QCoreApplication, QEvent, QTimer
-    from PyQt6.QtWidgets import QApplication
+    from detail.gui.qt import QApplication, QCoreApplication, QEvent, QTimer
 
     field.show()
     qapp.processEvents()

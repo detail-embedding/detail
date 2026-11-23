@@ -7,10 +7,10 @@ the block it rings.
 """
 
 import pytest
-from PyQt6.QtGui import QColor
 
 from detail.gui import plot_theme
 from detail.gui.cluster_find import FindClustersBar, common_cluster, parse_entry
+from detail.gui.qt import QColor
 
 
 class _View:

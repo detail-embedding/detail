@@ -15,16 +15,6 @@ A model's own kind drives the rest: a prompted model (SAM 3) shows the prompt ro
 closed-set one (trained / imported) shows its class list instead.
 """
 
-from PyQt6.QtWidgets import (
-    QComboBox,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QMessageBox,
-    QPushButton,
-    QWidget,
-)
-
 from detail.api import models as api_models
 from detail.api._runner_modules import PIPELINE_RUNNERS
 from detail.configs.detection import (
@@ -47,6 +37,15 @@ from detail.gui.model_availability import (
 from detail.gui.modules._every_n import EveryNRow
 from detail.gui._pydantic_form import field_meta, field_widget
 from detail.gui.modules.registry import ConfigWidget, ModuleUI, register_module_ui
+from detail.gui.qt import (
+    QComboBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QWidget,
+)
 
 # NOT imported at module scope: gui.preview reaches back into gui.modules (for the
 # pydantic form helpers and the confidence row), so a top-level import here closes a

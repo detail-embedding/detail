@@ -34,24 +34,6 @@ hand rather than through ``pages._table`` — importing a hub from a leaf is how
 package's shipped import cycles formed (``tests/gui/test_import_cycles.py``).
 """
 
-from PyQt6.QtCore import QSize, Qt, pyqtSignal
-from PyQt6.QtGui import (
-    QKeySequence,
-    QShortcut,
-    QStandardItem,
-    QStandardItemModel,
-)
-from PyQt6.QtWidgets import (
-    QHBoxLayout,
-    QLabel,
-    QProgressBar,
-    QPushButton,
-    QRadioButton,
-    QStackedWidget,
-    QVBoxLayout,
-    QWidget,
-)
-
 import numpy as np
 import pyqtgraph as pg
 
@@ -61,6 +43,23 @@ from detail.gui.busy import run_busy
 from detail.gui import plot_theme
 from detail.gui.grip_splitter import GripSplitter
 from detail.gui.plots import bound_axes
+from detail.gui.qt import (
+    QHBoxLayout,
+    QKeySequence,
+    QLabel,
+    QProgressBar,
+    QPushButton,
+    QRadioButton,
+    QShortcut,
+    QSize,
+    QStackedWidget,
+    QStandardItem,
+    QStandardItemModel,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+    Signal,
+)
 from detail.gui.sizing import emphasis_font, lines
 from detail.gui.status_color import MUTED, set_label_color
 from detail.gui.tables import (
@@ -235,10 +234,10 @@ class _VideoBlock(QStackedWidget):
 class AuditTab(QWidget):
     """Review on the left, what the reviewing bought on the right."""
 
-    changed = pyqtSignal()
+    changed = Signal()
     #: A row clicked in the by-label table. The tab is a leaf and does not know the workspace,
     #: so it asks rather than reaching for the behavior selector itself.
-    behavior_requested = pyqtSignal(str)
+    behavior_requested = Signal(str)
 
     def __init__(self, experiment, run) -> None:
         super().__init__()

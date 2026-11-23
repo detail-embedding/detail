@@ -24,14 +24,11 @@ thread.
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtWidgets import QDialogButtonBox  # noqa: E402
-
-from detail.api import exporters  # noqa: E402
-from detail.api.exporters import ExportScope, ExportSubject  # noqa: E402
-from detail.gui import export as gui_export  # noqa: E402
-from tests import waits  # noqa: E402
+from detail.api import exporters
+from detail.api.exporters import ExportScope, ExportSubject
+from detail.gui import export as gui_export
+from detail.gui.qt import QDialogButtonBox
+from tests import waits
 
 
 @pytest.fixture

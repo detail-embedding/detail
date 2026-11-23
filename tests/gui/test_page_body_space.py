@@ -16,9 +16,8 @@ which had neither rule nor guard. `pages.add_body_widget` is the mechanism; this
 including the negative case, since a rule that cannot fail passes vacuously forever.
 """
 
-from PyQt6.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
-
 from detail.gui.pages import add_body_widget
+from detail.gui.qt import QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 
 def _expanding() -> QWidget:
@@ -78,7 +77,7 @@ def test_a_widget_that_ignores_its_hint_counts_as_wanting_the_space(qapp):
     the first one that did — the video pane, which must not take its size from the pixmap it was
     handed — was read as a label spreading down its pane, and two unrelated guards failed.
     """
-    from PyQt6.QtWidgets import QSizePolicy, QWidget
+    from detail.gui.qt import QSizePolicy, QWidget
 
     from detail.gui.sizing import expands_vertically
 

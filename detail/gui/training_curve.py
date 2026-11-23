@@ -21,12 +21,10 @@ state that could disagree with the file.
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QSize
-from PyQt6.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
-
 from detail.gui import plot_theme
 from detail.gui.collapse import CollapsibleBand
 from detail.gui.plots import bound_axes
+from detail.gui.qt import QLabel, QSize, QSizePolicy, QVBoxLayout, QWidget
 from detail.gui.sizing import lines
 
 #: How tall the plot is, in lines of the application font (`gui/sizing.py`'s `em`).

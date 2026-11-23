@@ -27,22 +27,13 @@ the two changes must not be separated.
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtWidgets import (  # noqa: E402
-    QApplication,
-    QPushButton,
-    QSizePolicy,
-    QVBoxLayout,
-    QWidget,
-)
-
-from detail.gui.pages import IndexTable, _heading, _table, add_body_widget  # noqa: E402
-from detail.gui.tables import (  # noqa: E402
+from detail.gui.pages import IndexTable, _heading, _table, add_body_widget
+from detail.gui.qt import QApplication, QPushButton, QSizePolicy, QVBoxLayout, QWidget
+from detail.gui.tables import (
     MIN_VISIBLE_ROWS,
     fit_table_height,
     max_visible_rows,
-)  # noqa: E402
+)
 
 VIEWPORT = 739  # the measured content-area height of a 13" MacBook
 
@@ -255,7 +246,7 @@ def _log_list(qapp, n_rows: int, width: int = 900, squeeze: int = 0):
     is true of nothing at all. The failure needs a layout handing the list less than it asked
     for — a page whose other content has taken the room — so the parent is the fixture.
     """
-    from PyQt6.QtWidgets import QListWidget, QVBoxLayout, QWidget
+    from detail.gui.qt import QListWidget, QVBoxLayout, QWidget
 
     from detail.gui.sizing import fit_list_height, mono_font
 

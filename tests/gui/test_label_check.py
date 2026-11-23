@@ -134,7 +134,7 @@ def test_the_list_drags_wider_or_narrower_and_keeps_its_width(qapp, labelled):
     stops at `LIST_MIN_PX`, and the width left is the one the next AUDIT opens with — read back
     through the real `QSettings`, which `qapp` points at this test process's own INI store, so
     the developer's settings are never read or written."""
-    from PyQt6.QtCore import QSettings
+    from detail.gui.qt import QSettings
 
     experiment, handle, _nodes = labelled
     first = _tab(qapp, experiment, handle)
@@ -233,7 +233,7 @@ def test_clicking_a_label_opens_its_first_unreviewed_cluster(qapp, tab, labelled
 
 
 def test_open_in_interpret_is_offered_on_a_cluster(qapp, tab, labelled, monkeypatch):
-    from PyQt6.QtWidgets import QMenu
+    from detail.gui.qt import QMenu
 
     _experiment, _handle, nodes = labelled
     menus = []
@@ -254,7 +254,7 @@ def test_open_in_interpret_is_offered_on_a_cluster(qapp, tab, labelled, monkeypa
 
 def _click(tab, index, shift=False):
     """Through the montage's own click path, so a Shift-click runs from its real anchor."""
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     modifier = Qt.KeyboardModifier.ShiftModifier if shift else None
     tab.pane.montage._clicked(index, modifier)
@@ -359,8 +359,7 @@ def test_a_double_click_opens_the_clip_and_removes_nothing(qapp, tab, monkeypatc
         "open_clip_window",
         lambda opener, experiment, clip, *, index=0, **_kw: opened.append(index),
     )
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QTest, Qt
 
     canvas = tab.pane.montage.canvas
     at = tab.pane.montage.tile_rect(2).center()
@@ -382,8 +381,7 @@ def test_space_right_after_a_click_opens_the_clip_and_keeps_the_removal(
 ):
     """Space opens the clip too, and the pane read any open inside the double-click interval
     as a double-click: a click then Space took the removal back."""
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QTest, Qt
 
     from detail.gui import clip_popup
 
@@ -627,8 +625,7 @@ def test_with_nothing_left_to_audit_the_share_is_exact():
 def _row_bar_run(qapp, look) -> int:
     """The longest horizontal run of the bar's colours on the second line of a cluster row drawn
     with ``look`` — a bar is a long run, a glyph's edge is not."""
-    from PyQt6.QtGui import QColor
-    from PyQt6.QtWidgets import QTreeWidget, QTreeWidgetItem
+    from detail.gui.qt import QColor, QTreeWidget, QTreeWidgetItem
 
     from detail.gui import plot_theme
     from detail.gui.label_check import ReviewListDelegate
@@ -674,7 +671,7 @@ def test_a_reviewed_cluster_row_has_no_bar(qapp):
 
 
 def _widest_row(tab) -> int:
-    from PyQt6.QtWidgets import QStyleOptionViewItem
+    from detail.gui.qt import QStyleOptionViewItem
 
     lst = tab._list
     option = QStyleOptionViewItem()
@@ -730,8 +727,7 @@ def test_a_long_label_opens_the_list_no_wider_than_its_cap(qapp, tab):
 
 def _tap(qapp, tab, index) -> None:
     """A real left click on tile ``index`` of the grid."""
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QTest, Qt
 
     montage = tab.pane.montage
     QTest.mouseClick(
@@ -745,8 +741,7 @@ def _tap(qapp, tab, index) -> None:
 
 def _click_row(qapp, tab, key) -> None:
     """A real left click on the list's row ``key``."""
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QTest, Qt
 
     item = _rows(tab)[key]
     tab._list.scrollToItem(item)
@@ -794,8 +789,7 @@ def test_a_reopened_review_left_and_returned_to_keeps_its_removals_and_old_figur
 ):
     """After Reopen review the old figure stood as current, in the box and the list, and
     coming back showed the cluster finished with its new removals unseen."""
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QTest, Qt
 
     _experiment, _handle, nodes = labelled
     climb = ("cluster", "climb", nodes["climb"])
@@ -898,8 +892,7 @@ def test_an_edit_made_under_another_label_is_not_a_removal_here(
 def test_the_arrow_keys_move_through_the_list_past_a_label(qapp, tab, labelled):
     """A label row redirected the current row to its first cluster, so Up from that cluster
     landed back on it: the arrows could never pass a label."""
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QTest, Qt
 
     _experiment, _handle, nodes = labelled
     order = [tuple(i.data(0, KEY_ROLE)) for i in tab._items()]
@@ -922,8 +915,7 @@ def test_the_arrow_keys_move_through_the_list_past_a_label(qapp, tab, labelled):
 def test_a_label_row_clicked_or_entered_opens_its_first_unreviewed_cluster(
     qapp, tab, labelled
 ):
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QTest, Qt
 
     _experiment, _handle, nodes = labelled
     _click_row(qapp, tab, ("label", "rear"))
@@ -1000,7 +992,7 @@ def test_a_reload_in_a_hidden_tab_takes_no_focus(qapp, labelled):
     """INTERPRET's label writes reload AUDIT while it is hidden; opening its cluster took the
     keyboard into the hidden grid, and INTERPRET's keys stopped working until a click.
     """
-    from PyQt6.QtWidgets import QLineEdit, QTabWidget
+    from detail.gui.qt import QLineEdit, QTabWidget
 
     experiment, handle, _nodes = labelled
     tabs = QTabWidget()
@@ -1034,7 +1026,7 @@ def test_marks_queued_when_the_page_is_left_still_reach_the_run(
     first in flight was lost without a word when the shell tore the page down. The queue now
     belongs to the run (``gui/run_writes.py``) and finishes after the page has gone.
     """
-    from PyQt6.QtCore import QEvent
+    from detail.gui.qt import QEvent
 
     experiment, handle, _nodes = labelled
     gate = threading.Event()

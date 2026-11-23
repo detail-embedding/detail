@@ -31,32 +31,30 @@ from __future__ import annotations
 import math
 
 import numpy as np
-from PyQt6.QtCore import (
-    QObject,
-    QRunnable,
-    QSettings,
-    Qt,
-    QThreadPool,
-    QTimer,
-    pyqtSignal,
-)
-from PyQt6.QtGui import QPixmap
-from PyQt6.QtWidgets import (
+
+from detail.gui import decode_order
+from detail.gui import frame_source
+from detail.gui.lifetime import discard
+from detail.gui.qt import (
     QComboBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QObject,
+    QPixmap,
     QPushButton,
     QRadioButton,
+    QRunnable,
     QScrollArea,
+    QSettings,
+    QThreadPool,
+    QTimer,
     QVBoxLayout,
     QWidget,
+    Qt,
+    Signal,
 )
-
-from detail.gui import decode_order
-from detail.gui import frame_source
-from detail.gui.lifetime import discard
 from detail.gui.run_preview import _to_pixmap
 from detail.gui.sizing import lines, remember_size, remembered_size
 
@@ -67,7 +65,7 @@ THUMB_PX = 150
 
 class _CellSignals(QObject):
     # (generation, index, rgb | None, reason | None) — delivered on the UI thread.
-    done = pyqtSignal(int, int, object, object)
+    done = Signal(int, int, object, object)
 
 
 class _CellTask(QRunnable):
@@ -236,7 +234,7 @@ class ClipGrid(QWidget):
     One row by default; ``columns`` wraps them into a block.
     """
 
-    clip_clicked = pyqtSignal(object)  # the ClipSpec whose cell was clicked
+    clip_clicked = Signal(object)  # the ClipSpec whose cell was clicked
 
     def __init__(
         self, experiment, n_cells: int = 8, columns: int | None = None, parent=None
@@ -346,7 +344,7 @@ class ClipGridModes(QWidget):
     rather than the default: a strip of obvious hits tells you nothing about where to cut.
     """
 
-    mode_changed = pyqtSignal(str)
+    mode_changed = Signal(str)
 
     NEAR = "near"
     ABOVE = "above"
@@ -469,9 +467,9 @@ class ConfidenceStrip(QWidget):
     browse cannot rewrite the run's artifact.
     """
 
-    clip_clicked = pyqtSignal(object)
-    cutoff_moved = pyqtSignal(float)  # dragged: update the view only
-    cutoff_released = pyqtSignal(float)  # let go: commit
+    clip_clicked = Signal(object)
+    cutoff_moved = Signal(float)  # dragged: update the view only
+    cutoff_released = Signal(float)  # let go: commit
 
     def __init__(self, experiment, columns: int = 3, parent=None) -> None:
         super().__init__(parent)

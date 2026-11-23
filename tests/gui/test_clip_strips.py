@@ -7,13 +7,10 @@ guard for that last part; these are the behaviour.
 import numpy as np
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtWidgets import QApplication, QVBoxLayout, QWidget  # noqa: E402
-
-from detail.api.clip_curves import ClipCurves, Curve  # noqa: E402
-from detail.gui.clip_strips import ClipStrips  # noqa: E402
-from detail.gui.scrubber import FrameScrubber  # noqa: E402
+from detail.api.clip_curves import ClipCurves, Curve
+from detail.gui.clip_strips import ClipStrips
+from detail.gui.qt import QApplication, QVBoxLayout, QWidget
+from detail.gui.scrubber import FrameScrubber
 
 #: A strip is a line of fine print, not the 30px row it replaced.
 _ROW_MAX = 20

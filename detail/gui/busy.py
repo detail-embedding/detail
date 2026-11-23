@@ -25,19 +25,23 @@ from collections.abc import Callable
 import time
 import weakref
 
-from PyQt6.QtCore import QEvent, QObject, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QPainter, QPalette
-from PyQt6.QtWidgets import (
+from detail.gui.lifetime import alive
+from detail.gui.qt import (
+    QEvent,
     QHBoxLayout,
     QLabel,
     QMessageBox,
+    QObject,
+    QPainter,
+    QPalette,
     QProgressBar,
     QPushButton,
+    QTimer,
     QVBoxLayout,
     QWidget,
+    Qt,
+    Signal,
 )
-
-from detail.gui.lifetime import alive
 from detail.gui.workers import BackgroundCall, StageProgressWorker
 
 SHOW_DELAY_MS = 150  # don't flash an indicator for an op that finishes in a blink
@@ -381,7 +385,7 @@ def _cancel_with_window(target: QWidget, worker: StageProgressWorker) -> None:
     emits ``finished`` and no close event, so that is the signal for a dialog; ``destroyed``
     covers everything else. ``alive`` because the worker may already be gone when either fires.
     """
-    from PyQt6.QtWidgets import QDialog
+    from detail.gui.qt import QDialog
 
     def cancel(*_args) -> None:
         if alive(worker):

@@ -9,14 +9,6 @@ rebuilt when the tracker changes, so each tracker's own knobs are editable and `
 only emits keys it accepts.
 """
 
-from PyQt6.QtGui import QColor, QPalette
-from PyQt6.QtWidgets import (
-    QCheckBox,
-    QComboBox,
-    QLabel,
-    QWidget,
-)
-
 from detail.api._runner_modules import PIPELINE_RUNNERS
 from detail.configs.tracker_params import tracker_param, tracker_param_label
 from detail.configs.tracking import DEFAULT_TRACKER, TrackingConfig
@@ -42,6 +34,7 @@ from detail.gui.modules.registry import (
     register_module_ui,
     surfaced,
 )
+from detail.gui.qt import QCheckBox, QColor, QComboBox, QLabel, QPalette, QWidget
 from detail.gui.spin import FRACTION, FloatSpin, IntSpin
 from detail.gui.status_color import WARN
 from detail.storage import read_cache

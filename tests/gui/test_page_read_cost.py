@@ -24,17 +24,14 @@ from unittest.mock import patch
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtTest import QTest  # noqa: E402
-
-from detail.api.experiment import Experiment  # noqa: E402
-from detail.gui import pages as gui_pages  # noqa: E402
-from detail.storage import locations  # noqa: E402
-from detail.storage import read_cache  # noqa: E402
-from detail.storage import recording as recording_store  # noqa: E402
-from tests.gui.conftest import drain_busy_calls, drain_thread_pool  # noqa: E402
-from tests.round_trips import counting  # noqa: E402
+from detail.api.experiment import Experiment
+from detail.gui import pages as gui_pages
+from detail.gui.qt import QTest
+from detail.storage import locations
+from detail.storage import read_cache
+from detail.storage import recording as recording_store
+from tests.gui.conftest import drain_busy_calls, drain_thread_pool
+from tests.round_trips import counting
 
 #: The two sizes the slope is taken between. Small enough to stay fast, far enough apart that
 #: a per-recording cost cannot hide in the constant.

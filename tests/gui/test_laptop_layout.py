@@ -26,11 +26,17 @@ pointed at another page the day one needs it.
 """
 
 import pytest
-from PyQt6.QtCore import QPoint, QSettings
-from PyQt6.QtGui import QColor
-from PyQt6.QtWidgets import QAbstractScrollArea, QLabel, QPushButton, QWidget
 
 from detail.gui.cluster_workspace import ClusterWorkspace
+from detail.gui.qt import (
+    QAbstractScrollArea,
+    QColor,
+    QLabel,
+    QPoint,
+    QPushButton,
+    QSettings,
+    QWidget,
+)
 
 LAPTOP = (1440, 847)
 
@@ -424,8 +430,7 @@ def test_the_tree_at_a_laptops_size_keeps_its_words_apart_and_its_buttons_natura
     """The tree's rows as a laptop window fits them: no block's name and share overlap
     (`node_icicle.cell_text`), and "−", "+", "Whole tree" are as wide as their text, at the
     row's right end — they were ~420px each, filling it."""
-    from PyQt6.QtCore import QRectF
-    from PyQt6.QtGui import QFont, QFontMetricsF
+    from detail.gui.qt import QFont, QFontMetricsF, QRectF
 
     from detail.gui.node_icicle import cell_text
 

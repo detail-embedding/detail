@@ -2,13 +2,11 @@
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from detail.api.experiment import Experiment  # noqa: E402
-from detail.core.registries import TRACKERS  # noqa: E402
-from detail.gui.launch import _eligible  # noqa: E402
-from detail.gui.workers import BackgroundCall, StageProgressWorker  # noqa: E402
-from detail.storage import recording as recording_store  # noqa: E402
+from detail.api.experiment import Experiment
+from detail.core.registries import TRACKERS
+from detail.gui.launch import _eligible
+from detail.gui.workers import BackgroundCall, StageProgressWorker
+from detail.storage import recording as recording_store
 
 
 class _SyncBackgroundCall(BackgroundCall):
@@ -605,7 +603,7 @@ def test_launch_narrows_to_covered_recordings(qapp, tmp_path, monkeypatch):
     """A spec that only some selected recordings have narrows the run to those, after
     confirming the reduced set; declining aborts; full coverage runs untouched (§6.5).
     """
-    from PyQt6.QtWidgets import QMessageBox
+    from detail.gui.qt import QMessageBox
 
     from detail.gui.launch import LaunchRunDialog
 
@@ -634,7 +632,7 @@ def test_launch_narrows_to_covered_recordings(qapp, tmp_path, monkeypatch):
 def test_launch_analysis_narrows_source_recording_ids(qapp, tmp_path, monkeypatch):
     """LaunchAnalysisDialog runs over only the recordings covered by the chosen spec —
     the narrowed set flows into `source_recording_ids` (§6.5)."""
-    from PyQt6.QtWidgets import QMessageBox
+    from detail.gui.qt import QMessageBox
 
     from detail.gui import launch
     from detail.gui.launch import LaunchAnalysisDialog
@@ -742,7 +740,7 @@ def test_launch_run_spawns_off_thread(qapp, tmp_path, monkeypatch):
 def test_launch_run_error_surfaces_and_reenables(qapp, tmp_path, monkeypatch):
     """A validation error raised by run_processing (off-thread) surfaces via a critical
     dialog and re-enables the form — it must not accept or leave the form frozen."""
-    from PyQt6.QtWidgets import QMessageBox
+    from detail.gui.qt import QMessageBox
 
     from detail.gui import launch
     from detail.gui.launch import LaunchRunDialog
@@ -1041,7 +1039,7 @@ def test_every_model_form_offers_its_declared_default_variant(qapp, monkeypatch)
 def test_tracking_form_calls_the_polygon_a_field_of_view(qapp):
     """The concept is the field of view everywhere else — concepts, the glossary, the
     editor. This form was the last place still saying "Arena"."""
-    from PyQt6.QtWidgets import QFormLayout, QLabel
+    from detail.gui.qt import QFormLayout, QLabel
 
     from detail.gui.modules.tracking import _TrackingConfig
 
@@ -1134,7 +1132,7 @@ def _experiment_with_divergent_detections(tmp_path):
 
 
 def _row(dialog, recording_id):
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     for i in range(dialog._recordings.count()):
         if dialog._recording_ids[i] == recording_id:
@@ -1149,7 +1147,7 @@ def test_a_recording_you_have_not_checked_is_never_greyed(qapp, tmp_path, monkey
     one recording greyed every other as "not in the selected run" (they had the same run),
     and unchecking one after *Select all* greyed it for good, since a greyed row cannot be
     checked again. Both recordings here share the 0.5 detection run."""
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     from detail.gui import launch
     from detail.gui.launch import LaunchRunDialog
@@ -1176,7 +1174,7 @@ def test_a_recording_without_the_chosen_upstream_run_is_greyed_out(
 ):
     """It used to stay checked and enabled, and you found out at submit — as a prompt, or
     (launching another way) as a ValueError from run_processing after pressing Run."""
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     from detail.gui import launch
     from detail.gui.launch import LaunchRunDialog
@@ -1206,7 +1204,7 @@ def test_a_recording_without_the_chosen_upstream_run_is_greyed_out(
 def test_switching_back_restores_the_recording(qapp, tmp_path, monkeypatch):
     """The first cut unchecked uncovered rows — which shrank the set the spec groups are
     computed from, so a row could never come back. It must recover."""
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     from detail.gui import launch
     from detail.gui.launch import LaunchRunDialog
@@ -1238,7 +1236,7 @@ def test_switching_back_restores_the_recording(qapp, tmp_path, monkeypatch):
 def test_coverage_marking_leaves_ineligible_rows_alone(qapp, tmp_path):
     """A recording with no detection run at all is disabled for *eligibility*. Coverage
     must not resurrect it — two different reasons, one flag."""
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     from detail.gui.launch import LaunchRunDialog
 

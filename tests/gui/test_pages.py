@@ -11,18 +11,14 @@ import asks the file what it holds (`Recording.import_scene_csv`).
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtCore import Qt  # noqa: E402
-from PyQt6.QtGui import QStandardItem, QStandardItemModel  # noqa: E402
-
-from detail.api.experiment import Experiment  # noqa: E402
-from detail.core.dataclasses import ModelReadiness  # noqa: E402
-from detail.gui.pages import RunResults  # noqa: E402
-from detail.gui.tables import stamp_row_id  # noqa: E402
-from detail.storage import runs as runs_store  # noqa: E402
-from detail.storage import recording as recording_store  # noqa: E402
-from tests.gui.conftest import drain_until  # noqa: E402
+from detail.api.experiment import Experiment
+from detail.core.dataclasses import ModelReadiness
+from detail.gui.pages import RunResults
+from detail.gui.qt import QStandardItem, QStandardItemModel, Qt
+from detail.gui.tables import stamp_row_id
+from detail.storage import runs as runs_store
+from detail.storage import recording as recording_store
+from tests.gui.conftest import drain_until
 
 #: `QModelIndex` holds a raw pointer into its model's C++ side; a model built and
 #: dropped inside `_row()` gets collected the moment that function returns (nothing else
@@ -80,7 +76,7 @@ def test_recording_run_history_opens_experiment_run(qapp, tmp_path):
 def test_recording_run_history_is_pinned_to_the_bottom(qapp, tmp_path):
     # Run history moved below the ANALYSIS band (it only matters once runs exist).
     # Reverting the move puts it back above ANALYSIS and this ordering check fails.
-    from PyQt6.QtWidgets import QLabel
+    from detail.gui.qt import QLabel
 
     from detail.gui.pages import RecordingDetailPage
 
@@ -389,7 +385,7 @@ def test_create_dialog_tags_metadata_at_import(qapp, tmp_path):
 
 
 def test_experiment_data_page_deletes_experiment(qapp, tmp_path, monkeypatch):
-    from PyQt6.QtWidgets import QMessageBox
+    from detail.gui.qt import QMessageBox
 
     from detail.gui.pages import ExperimentOverviewPage
 
@@ -408,7 +404,7 @@ def test_experiment_data_page_deletes_experiment(qapp, tmp_path, monkeypatch):
 
 
 def test_recording_detail_deletes_recording(qapp, tmp_path, monkeypatch):
-    from PyQt6.QtWidgets import QMessageBox
+    from detail.gui.qt import QMessageBox
 
     from detail.gui.pages import RecordingDetailPage
 
@@ -431,7 +427,7 @@ def test_recording_detail_refuses_to_delete_a_recording_a_run_is_using(
 ):
     """Issue #28, finding 6: the refusal reaches the user as a warning naming the run, and
     the page stays — an uncaught ``ValueError`` in a Qt slot would abort the app."""
-    from PyQt6.QtWidgets import QMessageBox
+    from detail.gui.qt import QMessageBox
 
     from detail.gui.pages import RecordingDetailPage
     from detail.storage import runs as runs_store
@@ -476,7 +472,7 @@ def _ticked(dialog):
 
 
 def _row_for_name(dialog, name):
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     for row in range(dialog._items.count()):
         i = dialog._items.item(row).data(Qt.ItemDataRole.UserRole)
@@ -490,7 +486,7 @@ def _square_kf():
 
 
 def _scene_button_texts(page):
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     texts = []
     for w in page._spatial_widgets:
@@ -501,7 +497,7 @@ def _scene_button_texts(page):
 
 
 def _scene_label_texts(page):
-    from PyQt6.QtWidgets import QLabel
+    from detail.gui.qt import QLabel
 
     texts = []
     for w in page._spatial_widgets:
@@ -644,7 +640,7 @@ def test_recording_detail_spatial_workspace_needs_a_video(qapp, tmp_path):
     video at all, which is the whole reason a setup can be copied onto a recording before
     its footage is imported.
     """
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     from detail.gui.pages import RecordingDetailPage
 
@@ -665,7 +661,7 @@ def test_recording_detail_button_rows_share_a_left_edge(qapp, tmp_path):
     # "Edit scene geometry…" is deliberately not in this set: it now sits centered under
     # the geometry preview rather than on the left edge with these — see
     # `test_recording_detail_edit_scene_geometry_centered_under_preview`.
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     from detail.gui.pages import RecordingDetailPage
 
@@ -686,7 +682,7 @@ def test_recording_detail_edit_scene_geometry_centered_under_preview(qapp, tmp_p
     """The button moved off the shared left edge on purpose: it now sits centered
     beneath the geometry preview, not on the row `Add video part` / `Add stream` share.
     """
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     from detail.gui.arena import GeometryPreview
     from detail.gui.pages import RecordingDetailPage
@@ -710,7 +706,7 @@ def test_recording_detail_preview_follows_an_added_video_part(qapp, tmp_path):
     imported" placeholder and the editor button enables."""
     from unittest import mock
 
-    from PyQt6.QtWidgets import QDialog, QPushButton
+    from detail.gui.qt import QDialog, QPushButton
 
     from detail.gui import pages
     from detail.gui.arena import GeometryPreview
@@ -995,7 +991,7 @@ def test_copy_dialog_lists_this_recordings_definitions(qapp, tmp_path):
 
 
 def test_copy_dialog_lists_other_recordings_checked_by_default(qapp, tmp_path):
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     from detail.gui.pages import CopyToRecordingsDialog
 
@@ -1019,7 +1015,7 @@ def test_copy_dialog_lists_other_recordings_checked_by_default(qapp, tmp_path):
 
 
 def test_copy_dialog_uncheck_all_clears_every_target(qapp, tmp_path):
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     from detail.gui.pages import CopyToRecordingsDialog
 
@@ -1399,7 +1395,7 @@ def test_the_results_list_scrolls_past_five_rows(qapp, tmp_path, monkeypatch):
 
 
 def test_model_detail_page_shows_recorded_error(qapp, tmp_path):
-    from PyQt6.QtWidgets import QLabel
+    from detail.gui.qt import QLabel
 
     from detail.gui.pages import ModelDetailPage
     from detail.storage import models as mstore
@@ -1636,7 +1632,7 @@ def test_scene_geometry_export_names_the_experiment_and_recording(
     qapp, tmp_path, monkeypatch
 ):
     """`Experiment` has no `.id`; reading one was an AttributeError on every export."""
-    from PyQt6.QtWidgets import QFileDialog
+    from detail.gui.qt import QFileDialog
 
     from detail.gui.arena import SceneGeometryDialog
 
@@ -1788,7 +1784,7 @@ def test_the_measures_table_fills_its_tab(qapp):
     """The table is the tab's whole content: with more rows than fit, it reaches the bottom of
     the tab rather than stopping at the display's row budget — 118px of empty tab under it at
     1440x847."""
-    from PyQt6.QtWidgets import QApplication
+    from detail.gui.qt import QApplication
 
     from detail.gui.pages import MeasuresPanel
     from detail.gui.tables import top_of_pane
@@ -1829,7 +1825,7 @@ def _calibration_rigs(tmp_path):
 def test_copy_dialog_greys_out_a_recording_from_another_rig(qapp, tmp_path):
     """A calibration belongs to its rig: a recording whose video is another shape is
     greyed out before the click, with the reason, not refused after it."""
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     from detail.gui.pages import CopyToRecordingsDialog
 

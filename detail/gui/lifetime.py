@@ -11,14 +11,16 @@ Kept in its own module, importing nothing but PyQt6, so both the widgets
 importing the other.
 """
 
-from PyQt6 import sip
-from PyQt6.QtCore import QObject
-from PyQt6.QtWidgets import QWidget
+from detail.gui.qt import (
+    QObject,
+    QWidget,
+    is_deleted,
+)
 
 
 def alive(obj: QObject | None) -> bool:
     """Whether ``obj`` is a Qt object that still exists (C++ side not destroyed)."""
-    return obj is not None and not sip.isdeleted(obj)
+    return obj is not None and not is_deleted(obj)
 
 
 def discard(widget: QWidget | None) -> None:

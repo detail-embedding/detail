@@ -37,16 +37,14 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from detail.api import active  # noqa: E402
-from detail.api.experiment import Experiment  # noqa: E402
-from detail.gui.active_processes import (  # noqa: E402
+from detail.api import active
+from detail.api.experiment import Experiment
+from detail.gui.active_processes import (
     _IMPORT_COLUMNS,
     ActiveProcessesPage,
 )
-from detail.gui.app import _quit_message  # noqa: E402
-from detail.storage import recording as recording_store  # noqa: E402
+from detail.gui.app import _quit_message
+from detail.storage import recording as recording_store
 
 
 def _row(kind, run_id, status="running", label="thing", experiment_dir=None, name="p"):
@@ -132,7 +130,7 @@ def test_the_leave_running_button_is_not_offered_when_nothing_would_keep_running
 
 def _quit_dialog_buttons(monkeypatch, active) -> tuple[str, list[str]]:
     """The title and button labels the quit dialog actually shows, with ``exec`` stubbed out."""
-    from PyQt6.QtWidgets import QMessageBox, QWidget
+    from detail.gui.qt import QMessageBox, QWidget
 
     from detail.gui.app import MainWindow
 

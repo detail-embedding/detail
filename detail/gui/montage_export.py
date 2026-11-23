@@ -44,19 +44,25 @@ from dataclasses import dataclass
 import time
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, QPoint, Qt, pyqtSignal
-from PyQt6.QtGui import QAction, QColor, QKeySequence, QPalette, QShortcut
-from PyQt6.QtWidgets import (
+from detail.gui.qt import (
+    QAction,
     QApplication,
+    QColor,
     QFileDialog,
     QFrame,
     QHBoxLayout,
+    QKeySequence,
     QLabel,
     QMenu,
+    QObject,
+    QPalette,
+    QPoint,
     QPushButton,
+    QShortcut,
     QSizePolicy,
+    Qt,
+    Signal,
 )
-
 from detail.gui.sizing import emphasis_font, set_available
 
 #: ``(kind, menu text)`` — what **Export ▾** writes, in menu order; ``{n}`` is the clip count.
@@ -168,9 +174,9 @@ class ExportMenu(QPushButton):
     """
 
     #: A writer was chosen: ``"video"``, ``"gif"``, ``"files"`` or ``"list"``.
-    requested = pyqtSignal(str)
+    requested = Signal(str)
     #: **Pick clips to export…** was chosen.
-    pick_wanted = pyqtSignal()
+    pick_wanted = Signal()
 
     def __init__(self, *, offers_pick: bool, parent=None) -> None:
         super().__init__("Export ▾", parent)
@@ -252,7 +258,7 @@ class PickBar(QFrame):
         self._tint()
 
     def changeEvent(self, event) -> None:  # noqa: N802 — Qt's name
-        from PyQt6.QtCore import QEvent
+        from detail.gui.qt import QEvent
 
         if event.type() == QEvent.Type.PaletteChange and not getattr(
             self, "_tinting", False
@@ -285,7 +291,7 @@ class MontageExport(QObject):
     """A montage's **Export ▾**, its pick mode and its writers (module docstring)."""
 
     #: Pick mode was entered (``True``) or left.
-    picking_changed = pyqtSignal(bool)
+    picking_changed = Signal(bool)
 
     def __init__(self, montage, source: ExportSource) -> None:
         super().__init__(montage)

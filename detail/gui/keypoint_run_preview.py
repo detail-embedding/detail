@@ -17,10 +17,10 @@ Kept out of ``gui/run_preview.py`` so the keypoint work owns a whole file (§26 
 from __future__ import annotations
 
 import numpy as np
-from PyQt6.QtWidgets import QLabel
 
 from detail.core.visualize import draw_keypoints
 from detail.gui import frame_source
+from detail.gui.qt import QLabel
 from detail.gui.run_preview import (
     DetectionRunPreview,
     TrackingRunPreview,

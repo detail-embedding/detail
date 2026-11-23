@@ -12,18 +12,15 @@ its own entry point for each shape of module — several views (clustering, beha
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtWidgets import QLabel, QPushButton  # noqa: E402
-
-from detail.api.experiment import Experiment  # noqa: E402
-from detail.gui.cluster_workspace import ClusterWorkspace  # noqa: E402
-from detail.gui.modules.registry import ANALYSIS_GUI_MODULES  # noqa: E402
-from detail.gui.pages import (  # noqa: E402
+from detail.api.experiment import Experiment
+from detail.gui.cluster_workspace import ClusterWorkspace
+from detail.gui.modules.registry import ANALYSIS_GUI_MODULES
+from detail.gui.pages import (
     VIEW_WAITS_FOR_RUN,
     AnalysisRunDetailPage,
 )
-from detail.storage import analysis_runs as analysis_store  # noqa: E402
+from detail.gui.qt import QLabel, QPushButton
+from detail.storage import analysis_runs as analysis_store
 
 CLUSTER_VIEWS = ["Interpret", "Audit", "Browse", "Measures"]
 
@@ -318,8 +315,7 @@ def test_a_card_is_a_bold_headline_over_plain_lines_and_still_a_button(qapp, tmp
     """Round 2: the view's name reads as a headline (bold, a size up) with its purpose and
     status in normal weight under it, drawn with fonts, not a stylesheet — and the card is
     still one button: a click anywhere on it, or Space with focus, opens the view."""
-    from PyQt6.QtCore import QPoint, Qt
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QPoint, QTest, Qt
 
     experiment, run_id = _location_run(tmp_path)
     page = AnalysisRunDetailPage(experiment, run_id)
@@ -420,7 +416,7 @@ def test_the_path_line_names_the_open_view_and_links_back_to_the_run(
     """The way back from a view is the run id on the shell's path line, not a button in the
     view row (user, review round 15: `‹ an_32` read as a fifth view). The line follows every
     switch — a tab, a hand-off inside the workspace, the link itself."""
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     from detail.gui.app import MainWindow
     from detail.storage import locations
@@ -469,7 +465,7 @@ def test_the_interpret_docks_tabs_start_where_the_view_tabs_above_them_do(
     tabs (Interpret, Audit, …), and their left edges are one line. INTERPRET's own layout
     margin put the dock's a few pixels to the right (user screenshot, 2026-11-17). Measured
     through the real page, shown and laid out: both rows only exist together here."""
-    from PyQt6.QtCore import QPoint
+    from detail.gui.qt import QPoint
 
     experiment, run_id = fitted_temporal
     page = AnalysisRunDetailPage(experiment, run_id)

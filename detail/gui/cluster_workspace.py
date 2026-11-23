@@ -17,16 +17,10 @@ every write (``editable`` is false), so the controls grey out and say why.
 
 from dataclasses import dataclass
 
-from PyQt6.QtCore import QSize
-from PyQt6.QtWidgets import (
-    QSizePolicy,
-    QTabWidget,
-    QVBoxLayout,
-)
-
 from detail.core.progress import format_duration
 from detail.gui.label_check import LabelCheckTab
 from detail.gui.label_browse import LabelBrowseTab
+from detail.gui.qt import QSize, QSizePolicy, QTabWidget, QVBoxLayout
 from detail.gui.result_views import MultiViewWorkspace
 from detail.gui.node_workspace import NodeInterpretTab
 from detail.gui.tables import top_of_pane

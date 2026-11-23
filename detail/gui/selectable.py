@@ -32,8 +32,7 @@ So this is a plain function, called at the seams where something is put on scree
 conformance grid (`detail/gui/requirements.py`) is what makes sure the seams call it.
 """
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QLabel, QWidget
+from detail.gui.qt import QLabel, QWidget, Qt
 
 
 def make_text_selectable(widget: QWidget) -> None:

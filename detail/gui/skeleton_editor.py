@@ -13,21 +13,27 @@ a skeleton belongs to no recording, so no video frame is drawn behind it.
 from __future__ import annotations
 
 import numpy as np
-from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
-from PyQt6.QtGui import QBrush, QColor, QPainter, QPen
-from PyQt6.QtWidgets import (
-    QComboBox,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QPushButton,
-    QVBoxLayout,
-    QWidget,
-)
 
 from detail.core.skeleton import Skeleton, default_layout
 from detail.core.visualize import KEYPOINT_COLORS, keypoint_roles
 from detail.gui.arena import ArenaCanvas
+from detail.gui.qt import (
+    QBrush,
+    QColor,
+    QComboBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPainter,
+    QPen,
+    QPointF,
+    QPushButton,
+    QRectF,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+    Signal,
+)
 from detail.gui.sizing import lines, set_available
 
 _NONE = "(none)"
@@ -52,13 +58,13 @@ class SkeletonCanvas(ArenaCanvas):
     """
 
     #: A new point was appended at this index (already selected).
-    point_added = pyqtSignal(int)
+    point_added = Signal(int)
     #: A right click asked for this point to go.
-    remove_requested = pyqtSignal(int)
+    remove_requested = Signal(int)
     #: The selected point changed (-1: none).
-    selection_changed = pyqtSignal(int)
+    selection_changed = Signal(int)
     #: Shift+click: join these two, or unjoin them if already joined.
-    edge_toggled = pyqtSignal(int, int)
+    edge_toggled = Signal(int, int)
 
     def __init__(self) -> None:
         super().__init__(BLANK, points=[], max_points=None)
@@ -202,7 +208,7 @@ class SkeletonEditor(QWidget):
     where, is the owner's business.
     """
 
-    edited = pyqtSignal()
+    edited = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)

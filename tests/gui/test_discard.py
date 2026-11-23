@@ -17,16 +17,17 @@ version, and only two of them unparented first. ``tests/gui/conftest.py::drain_u
 delivers deferred deletes on each pump, for anything that still ``deleteLater``-s directly.
 """
 
-import pytest
+from detail.gui.qt import (
+    QEvent,
+    QLabel,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+    is_deleted,
+)
 
-pytest.importorskip("PyQt6")
-
-from PyQt6 import sip  # noqa: E402
-from PyQt6.QtCore import QEvent  # noqa: E402
-from PyQt6.QtWidgets import QLabel, QPushButton, QVBoxLayout, QWidget  # noqa: E402
-
-from detail.api.experiment import Experiment  # noqa: E402
-from detail.gui.lifetime import discard  # noqa: E402
+from detail.api.experiment import Experiment
+from detail.gui.lifetime import discard
 
 
 def test_a_discarded_widget_is_off_the_page_before_the_loop_turns(qapp):
@@ -43,7 +44,7 @@ def test_a_discarded_widget_is_off_the_page_before_the_loop_turns(qapp):
     assert layout.count() == 0
     assert not old.isVisible()
     qapp.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-    assert sip.isdeleted(old)
+    assert is_deleted(old)
 
 
 def test_discarding_nothing_or_a_deleted_widget_is_a_no_op(qapp):

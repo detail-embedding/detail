@@ -12,7 +12,10 @@ level up.
 
 import re
 
-from PyQt6.QtWidgets import (
+from detail.configs.stream_csv import CsvStreamConfig
+from detail.gui._pydantic_form import choice_combo
+from detail.gui.importers.registry import ConfigBand, register_importer_ui
+from detail.gui.qt import (
     QCheckBox,
     QComboBox,
     QFormLayout,
@@ -24,10 +27,6 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-
-from detail.configs.stream_csv import CsvStreamConfig
-from detail.gui._pydantic_form import choice_combo
-from detail.gui.importers.registry import ConfigBand, register_importer_ui
 from detail.gui.sizing import lines, mono_font
 from detail.gui.tables import (
     enable_sorting,

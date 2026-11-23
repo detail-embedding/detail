@@ -19,10 +19,8 @@ were drawn with until their widget redraws; the two palettes differ by one categ
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QEvent, Qt
-from PyQt6.QtGui import QColor, QGuiApplication, QPalette
-
 from detail.core.chart_theme import DARK, LIGHT, SCREEN_MARKS, ChartTheme
+from detail.gui.qt import QColor, QEvent, QGuiApplication, QPalette, Qt
 
 #: A plot's marks, in screen pixels: line widths, marker sizes, tick length.
 MARKS = SCREEN_MARKS

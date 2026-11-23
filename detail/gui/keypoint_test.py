@@ -24,8 +24,14 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import (
+
+from detail.core.visualize import draw_keypoints
+from detail.gui.busy import run_progress
+from detail.gui.confidence import ConfidenceRow
+from detail.gui.dialog import Dialog
+from detail.gui.full_frame import EnlargeableThumb, to_pixmap
+from detail.gui.lifetime import discard
+from detail.gui.qt import (
     QComboBox,
     QDialogButtonBox,
     QFormLayout,
@@ -35,14 +41,8 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QWidget,
+    Qt,
 )
-
-from detail.core.visualize import draw_keypoints
-from detail.gui.busy import run_progress
-from detail.gui.confidence import ConfidenceRow
-from detail.gui.dialog import Dialog
-from detail.gui.full_frame import EnlargeableThumb, to_pixmap
-from detail.gui.lifetime import discard
 from detail.gui.sizing import lines, set_available
 from detail.gui.spin import IntSpin
 from detail.gui.status_color import MUTED, set_label_color

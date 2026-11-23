@@ -11,10 +11,8 @@ import cv2
 import numpy as np
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from tests.gui.conftest import drain_thread_pool  # noqa: E402
-from tests.gui.conftest import drain_until  # noqa: E402
+from tests.gui.conftest import drain_thread_pool
+from tests.gui.conftest import drain_until
 
 
 def _video_recording(tmp_path, n_frames=6, w=64, h=48, fps=30.0):
@@ -72,7 +70,7 @@ def _row_for(dialog, index: int) -> int:
     the view and its identity in ``_regions`` are two different numbers — which is the whole
     reason the index is carried in the item's data.
     """
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     for row in range(dialog._list.count()):
         if dialog._list.item(row).data(Qt.ItemDataRole.UserRole) == index:
@@ -86,8 +84,7 @@ def _select(dialog, index: int) -> None:
 
 
 def _click(canvas, x, y):
-    from PyQt6.QtCore import QPointF, Qt
-    from PyQt6.QtGui import QMouseEvent
+    from detail.gui.qt import QMouseEvent, QPointF, Qt
 
     canvas.mousePressEvent(
         QMouseEvent(
@@ -103,8 +100,7 @@ def _click(canvas, x, y):
 
 def _release(canvas, x, y, button=None):
     """A release as Qt sends one: ``button`` is the one that went up."""
-    from PyQt6.QtCore import QPointF, Qt
-    from PyQt6.QtGui import QMouseEvent
+    from detail.gui.qt import QMouseEvent, QPointF, Qt
 
     button = Qt.MouseButton.LeftButton if button is None else button
     canvas.mouseReleaseEvent(
@@ -119,8 +115,7 @@ def _release(canvas, x, y, button=None):
 
 
 def _right_press(canvas, x, y):
-    from PyQt6.QtCore import QPointF, Qt
-    from PyQt6.QtGui import QMouseEvent
+    from detail.gui.qt import QMouseEvent, QPointF, Qt
 
     canvas.mousePressEvent(
         QMouseEvent(
@@ -134,8 +129,7 @@ def _right_press(canvas, x, y):
 
 
 def _right_move(canvas, x, y):
-    from PyQt6.QtCore import QPointF, Qt
-    from PyQt6.QtGui import QMouseEvent
+    from detail.gui.qt import QMouseEvent, QPointF, Qt
 
     canvas.mouseMoveEvent(
         QMouseEvent(
@@ -150,7 +144,7 @@ def _right_move(canvas, x, y):
 
 def _right_click(canvas, x, y):
     """A right press-release with no movement — deletes the vertex under it, if any."""
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     _right_press(canvas, x, y)
     _release(canvas, x, y, Qt.MouseButton.RightButton)
@@ -160,7 +154,7 @@ def _right_drag(canvas, x0, y0, x1, y1):
     """A right-button press-drag-release — the way a pan is actually driven, and the
     click-vs-drag distinction that keeps it from also deleting whatever vertex sat under
     the press."""
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     _right_press(canvas, x0, y0)
     _right_move(canvas, x1, y1)
@@ -168,8 +162,7 @@ def _right_drag(canvas, x0, y0, x1, y1):
 
 
 def _wheel(canvas, x, y, angle_delta_y):
-    from PyQt6.QtCore import QPoint, QPointF, Qt
-    from PyQt6.QtGui import QWheelEvent
+    from detail.gui.qt import QPoint, QPointF, QWheelEvent, Qt
 
     canvas.wheelEvent(
         QWheelEvent(
@@ -221,7 +214,7 @@ def test_arena_canvas_loads_initial_points(qapp):
 
 
 def test_arena_canvas_vertex_hit_test(qapp):
-    from PyQt6.QtCore import QPointF
+    from detail.gui.qt import QPointF
 
     from detail.gui.arena import ArenaCanvas
 
@@ -370,7 +363,7 @@ def test_zoom_button_keeps_the_widget_center_fixed(qapp):
     """Zoom in/out is anchored on the *widget* center, so the point in the middle of the
     canvas is the same image point before and after — the frame grows/shrinks around what
     you were already looking at, not around some other corner."""
-    from PyQt6.QtCore import QPointF
+    from detail.gui.qt import QPointF
 
     from detail.gui.arena import ArenaCanvas
 
@@ -388,7 +381,7 @@ def test_wheel_zooms_toward_the_cursor(qapp):
     """Scrolling over a point keeps that point under the cursor — the anchor a vertex sits
     at has to stay put or zooming in to place one just pushes it out from under the mouse.
     """
-    from PyQt6.QtCore import QPointF
+    from detail.gui.qt import QPointF
 
     from detail.gui.arena import ArenaCanvas
 
@@ -481,8 +474,7 @@ def test_a_left_release_during_a_right_press_deletes_nothing(qapp):
     """Only the right button's own release can finish a right click. A left press and
     release while the right button is still held is a different gesture, and the vertex
     under the right press has to survive it."""
-    from PyQt6.QtCore import QPointF, Qt
-    from PyQt6.QtGui import QMouseEvent
+    from detail.gui.qt import QMouseEvent, QPointF, Qt
 
     from detail.gui.arena import ArenaCanvas
 
@@ -590,8 +582,7 @@ def test_canvas_claims_the_wheel(qapp):
 def test_alt_wheel_is_the_escape_hatch_back_to_the_page(qapp):
     """Alt+wheel is `gui/scroll.py`'s documented way to reach the page even over a widget
     that owns the wheel — matching `ImageView`'s own convention."""
-    from PyQt6.QtCore import QPoint, QPointF, Qt
-    from PyQt6.QtGui import QWheelEvent
+    from detail.gui.qt import QPoint, QPointF, QWheelEvent, Qt
 
     from detail.gui.arena import ArenaCanvas
 
@@ -672,7 +663,7 @@ def test_spatial_workspace_decodes_frame_zero_off_thread(qapp, tmp_path):
 # --- the workspace: the definition list ------------------------------------- #
 def test_workspace_lists_every_kind_under_its_own_heading(qapp, tmp_path):
     """One heading per kind, always — an empty kind still says it is empty."""
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     from detail.gui.arena import SPATIAL_KINDS, SceneGeometryDialog
 
@@ -843,7 +834,7 @@ def test_workspace_locked_definition_is_shown_but_not_editable(
     The run recorded that polygon, so every edit path has to be closed at once — not just
     the canvas: a greyed canvas beside a live Delete still loses the run's record.
     """
-    from PyQt6.QtWidgets import QMessageBox
+    from detail.gui.qt import QMessageBox
 
     from detail.gui.arena import SceneGeometryDialog
 
@@ -1021,7 +1012,7 @@ def test_workspace_selected_definition_keeps_its_siblings_as_context(qapp, tmp_p
 
 def test_workspace_unchecking_a_definition_hides_it(qapp, tmp_path):
     """The checkbox is how you get a definition out of the way while drawing another."""
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     from detail.gui.arena import SceneGeometryDialog
 
@@ -1100,7 +1091,7 @@ def test_workspace_seeds_an_existing_calibration(qapp, tmp_path):
 
 def test_workspace_calibration_is_a_singleton(qapp, tmp_path, monkeypatch):
     """There is one scale for the frame, so a second calibration is refused, not stacked."""
-    from PyQt6.QtWidgets import QMessageBox
+    from detail.gui.qt import QMessageBox
 
     from detail.gui.arena import SceneGeometryDialog
 
@@ -1124,7 +1115,7 @@ def test_workspace_untouched_calibration_is_never_rewritten(
     a canvas — so validating it like a fresh two-point pick would refuse the whole save, and
     treating its empty canvas as a deletion would drop it. Untouched means untouched.
     """
-    from PyQt6.QtWidgets import QMessageBox
+    from detail.gui.qt import QMessageBox
 
     from detail.gui.arena import SceneGeometryDialog
 
@@ -1143,7 +1134,7 @@ def test_workspace_untouched_calibration_is_never_rewritten(
 
 # --- the workspace: refusing a save it cannot make ---------------------------- #
 def test_workspace_refuses_a_calibration_with_one_point(qapp, tmp_path, monkeypatch):
-    from PyQt6.QtWidgets import QDialog, QMessageBox
+    from detail.gui.qt import QDialog, QMessageBox
 
     from detail.gui.arena import SceneGeometryDialog
 
@@ -1164,7 +1155,7 @@ def test_workspace_refuses_a_calibration_with_one_point(qapp, tmp_path, monkeypa
 
 def test_workspace_refuses_a_region_below_its_minimum(qapp, tmp_path, monkeypatch):
     """A polygon of two points is a line; the refusal names the definition and the count."""
-    from PyQt6.QtWidgets import QDialog, QMessageBox
+    from detail.gui.qt import QDialog, QMessageBox
 
     from detail.gui.arena import SceneGeometryDialog
 
@@ -1204,7 +1195,7 @@ def test_workspace_deletes_a_definition(qapp, tmp_path):
 # --- the recording page's one way in ------------------------------------------ #
 def test_recording_page_needs_a_video_to_open_the_workspace(qapp, tmp_path):
     """Every definition is drawn on a frame, so with no video there is nothing to draw on."""
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     from detail.api.experiment import Experiment
     from detail.gui.pages import RecordingDetailPage
@@ -1221,7 +1212,7 @@ def test_recording_page_needs_a_video_to_open_the_workspace(qapp, tmp_path):
 
 def test_recording_page_opens_the_spatial_workspace(qapp, tmp_path, monkeypatch):
     """One surface for all four kinds — the page's button opens the workspace itself."""
-    from PyQt6.QtWidgets import QDialog, QPushButton
+    from detail.gui.qt import QDialog, QPushButton
 
     from detail.gui import arena as arena_module
     from detail.gui.pages import RecordingDetailPage
@@ -1246,7 +1237,7 @@ def test_recording_page_opens_the_spatial_workspace(qapp, tmp_path, monkeypatch)
 
 
 def test_recording_detail_pipeline_and_analysis_bands(qapp, tmp_path):
-    from PyQt6.QtWidgets import QLabel
+    from detail.gui.qt import QLabel
 
     from detail.gui.pages import RecordingDetailPage
 
@@ -1263,7 +1254,7 @@ def test_recording_page_summarizes_every_spatial_kind(qapp, tmp_path):
     Every kind gets a line whether or not it is set — a kind that disappears when empty is a
     capability the user cannot find.
     """
-    from PyQt6.QtWidgets import QLabel
+    from detail.gui.qt import QLabel
 
     from detail.gui.arena import SPATIAL_KINDS
     from detail.gui.pages import RecordingDetailPage
@@ -1382,9 +1373,16 @@ def test_the_wheel_over_the_page_preview_scrolls_the_page_not_the_picture(
     widgets) rather than by sending to the canvas directly, which would skip exactly the
     step under test.
     """
-    from PyQt6.QtCore import QPoint, QPointF, Qt
-    from PyQt6.QtGui import QWheelEvent
-    from PyQt6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
+    from detail.gui.qt import (
+        QApplication,
+        QLabel,
+        QPoint,
+        QPointF,
+        QVBoxLayout,
+        QWheelEvent,
+        QWidget,
+        Qt,
+    )
 
     from detail.gui.arena import GeometryPreview
     from detail.gui.scroll import PageScroll
@@ -1436,9 +1434,7 @@ def test_the_wheel_over_the_page_preview_scrolls_the_page_not_the_picture(
 def test_geometry_preview_click_opens_full_size_dialog(qapp, tmp_path, monkeypatch):
     """Not interactive on its own terms — a click hands off to the full-size read-only
     dialog rather than doing anything itself."""
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtTest import QTest
-    from PyQt6.QtWidgets import QDialog
+    from detail.gui.qt import QDialog, QTest, Qt
 
     from detail.gui import arena as arena_module
 
@@ -1463,8 +1459,7 @@ def test_geometry_preview_click_does_nothing_without_a_picture(
     """The hint, the pointing hand and the click read one flag. The click used to check
     only for a placeholder, so while frame 0 was still decoding — no placeholder yet,
     hint hidden — it opened the enlarged dialog on a blank frame."""
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QTest, Qt
 
     from detail.api.experiment import Experiment
     from detail.gui import arena as arena_module

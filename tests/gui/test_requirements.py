@@ -25,13 +25,11 @@ import pathlib
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from detail.gui import comparison as gui_comparison  # noqa: E402
-from detail.gui import pages as gui_pages  # noqa: E402
-from detail.gui import requirements as reqs  # noqa: E402
-from detail.storage import locations  # noqa: E402
-from tests.gui import subjects as subj  # noqa: E402
+from detail.gui import comparison as gui_comparison
+from detail.gui import pages as gui_pages
+from detail.gui import requirements as reqs
+from detail.storage import locations
+from tests.gui import subjects as subj
 
 PAGE_BUILDERS = subj.page_builders(gui_pages, gui_comparison)
 DIALOGS = subj.buildable_dialogs()

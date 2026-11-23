@@ -283,7 +283,7 @@ def test_a_finished_track_run_offers_embedding_seeded_with_this_run(
     §14), which `_next_stages` did not count. The button opens the embedding form on this
     run's recordings with its keypoint picker on this run's settings; Align is left alone
     (rotate or mirror depends on the camera, Tenet 9)."""
-    from PyQt6.QtWidgets import QDialog, QPushButton
+    from detail.gui.qt import QDialog, QPushButton
 
     from detail.api import run_spec
     from detail.gui import launch
@@ -358,7 +358,7 @@ def test_an_aligned_embedding_runs_page_loads_and_shows_its_heading_loss(
     'PartZarrReader' is not defined)". Only `align != "none"` reaches the heading-loss read,
     and no test built that page on an aligned run, so the branch shipped unrun. Built here on
     a real aligned run over the real keypoint track run."""
-    from PyQt6.QtWidgets import QLabel
+    from detail.gui.qt import QLabel
 
     from detail.gui.run_preview import EmbeddingRunPreview
     from tests.pipeline.test_embedding import _registered_embedder

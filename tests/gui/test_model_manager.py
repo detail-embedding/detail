@@ -14,17 +14,14 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtWidgets import QLabel  # noqa: E402
-
-from detail.api import models as api_models  # noqa: E402
-from detail.core.registries import TRAINED_LOADERS  # noqa: E402
-from detail.gui import pages  # noqa: E402
-from detail.storage import locations  # noqa: E402
+from detail.api import models as api_models
+from detail.core.registries import TRAINED_LOADERS
+from detail.gui import pages
+from detail.gui.qt import QLabel
+from detail.storage import locations
 
 # Reuse the imported-catalog stub loader (introspect reads no real checkpoint).
-from tests.models.test_imported import _StubLoader  # noqa: E402
+from tests.models.test_imported import _StubLoader
 
 
 def _import_stub_model(tmp_path, monkeypatch, name="operant_v2", **meta):
@@ -88,7 +85,7 @@ def test_a_models_preview_opens_full_size(qapp, tmp_path, monkeypatch):
     constructed an `EnlargeableThumb` itself would prove nothing about this page having one.
     """
     import numpy as np
-    from PyQt6.QtGui import QImage
+    from detail.gui.qt import QImage
 
     from detail.gui.full_frame import EnlargeableThumb
 
@@ -190,7 +187,7 @@ def test_the_kind_column_tells_detectors_from_keypoint_models(
 def test_restore_from_zip_brings_a_keypoint_model_back_and_names_its_skeleton(
     qapp, tmp_path, monkeypatch
 ):
-    from PyQt6.QtWidgets import QFileDialog, QPushButton
+    from detail.gui.qt import QFileDialog, QPushButton
 
     from detail.storage import skeleton_library
     from tests.gui.conftest import drain_until
@@ -584,7 +581,7 @@ def test_hugging_face_lists_suggested_then_installed_then_the_rest(qapp):
 
 
 def _rail_children(window, kind):
-    from PyQt6.QtWidgets import QApplication
+    from detail.gui.qt import QApplication
 
     from detail.gui.app import _ROLE
     from tests.gui.conftest import drain_until
@@ -623,7 +620,7 @@ def test_the_install_scan_landing_keeps_the_users_selection_and_sort(qapp, monke
     the table: a row picked or a column sorted in that window was dropped, and Check access /
     Install greyed out again under the user's hand (#35). The rebuild still moves installed
     rows up (the documented order), and now keeps what the user chose."""
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     # Hold the scan back, so the user's clicks land before it, as on a real first open.
     monkeypatch.setattr(pages.GlobalModelsPage, "_scan_installed", lambda self: None)

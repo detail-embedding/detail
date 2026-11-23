@@ -6,10 +6,10 @@ draws and summarises is a run's actual rows, not a stub.
 """
 
 import pytest
-from PyQt6.QtCore import Qt
 
 from detail.core.registries import KEYPOINT_MODELS
 from detail.gui.modules.registry import GUI_MODULES
+from detail.gui.qt import Qt
 from detail.storage import recording as recording_store
 from tests.gui.conftest import drain_until
 from tests.pipeline.test_keypoint_detect import (
@@ -283,7 +283,7 @@ def _ready_form(qapp, patch_teacher):
 
 
 def test_test_keypoints_is_the_last_row_and_says_why_until_it_can_run(qapp, tracked):
-    from PyQt6.QtWidgets import QFormLayout
+    from detail.gui.qt import QFormLayout
 
     form = GUI_MODULES["keypoint_detect"].config_widget()
     rows = [

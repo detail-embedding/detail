@@ -27,12 +27,10 @@ import re
 
 import pytest
 
-pytest.importorskip("PyQt6")
 pytest.importorskip("pyqtgraph")
 
-from PyQt6.QtWidgets import QApplication  # noqa: E402
-
 from detail.gui.plots import bound_axes  # noqa: E402
+from detail.gui.qt import QApplication
 
 _GUI = pathlib.Path(__file__).resolve().parents[2] / "detail" / "gui"
 

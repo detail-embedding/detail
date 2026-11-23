@@ -13,14 +13,10 @@ base class is a failure here before it is a regression anywhere else. Rule R11 i
 
 import inspect
 
-import pytest
-
-pytest.importorskip("PyQt6")
-
-from detail.api.clip_views import ClipViewSettings  # noqa: E402
-from detail.gui.advanced_player import AdvancedClipPlayer  # noqa: E402
-from detail.gui.behavior_query import ClipSpec, _ClipPlayer  # noqa: E402
-from tests.clip_fixtures import WALKER, walking  # noqa: E402
+from detail.api.clip_views import ClipViewSettings
+from detail.gui.advanced_player import AdvancedClipPlayer
+from detail.gui.behavior_query import ClipSpec, _ClipPlayer
+from tests.clip_fixtures import WALKER, walking
 
 #: The seams the plain player opens, each with its own behaviour as the default.
 HOOKS = (

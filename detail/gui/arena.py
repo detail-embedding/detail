@@ -13,42 +13,43 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
-from PyQt6.QtCore import Qt, QPointF, QRectF, pyqtSignal
-from PyQt6.QtGui import (
+
+from detail.core.dataclasses import PolygonKeyframes
+from detail.core.utils import polygon_at_frame
+from detail.core.chart_theme import HUE_NAMES, LIGHT
+from detail.gui.dialog import Dialog
+from detail.gui.qt import (
     QBrush,
-    QColor,
-    QIcon,
-    QImage,
-    QPainter,
-    QPen,
-    QPixmap,
-    QPolygonF,
-)
-from PyQt6.QtWidgets import (
     QCheckBox,
+    QColor,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
+    QIcon,
+    QImage,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMenu,
     QMessageBox,
+    QPainter,
+    QPen,
+    QPixmap,
+    QPointF,
+    QPolygonF,
     QPushButton,
+    QRectF,
     QSizePolicy,
     QToolButton,
     QVBoxLayout,
     QWidget,
+    Qt,
+    Signal,
 )
-
-from detail.core.dataclasses import PolygonKeyframes
-from detail.core.utils import polygon_at_frame
-from detail.core.chart_theme import HUE_NAMES, LIGHT
-from detail.gui.dialog import Dialog
 from detail.gui.spin import FloatSpin
 from detail.gui import frame_source
 from detail.gui.busy import decode_overlay, run_busy
@@ -147,19 +148,19 @@ class ArenaCanvas(QWidget):
 
     # emitted (normalized x, y) when the frame is clicked with nothing editable — the
     # manager's "click the image to start a region" affordance.
-    request_new = pyqtSignal(float, float)
+    request_new = Signal(float, float)
 
     # Emitted whenever a drag, a click or an undo changes the shape being edited. Without
     # it the dialog only learns of an edit when something *else* makes it re-read the
     # canvas — scrubbing, or picking another definition — so Save stayed greyed out after
     # a change and lit up when you moved the frame, which reads as the opposite of what
     # happened.
-    edited = pyqtSignal()
+    edited = Signal()
 
     # Emitted whenever the zoom level changes, so the dialog's "100%" readout and the
     # in/out buttons' enabled state stay in step with the canvas rather than a second copy
     # of the same number.
-    zoom_changed = pyqtSignal(float)
+    zoom_changed = Signal(float)
 
     def __init__(
         self,

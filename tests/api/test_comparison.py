@@ -704,7 +704,6 @@ def test_the_declared_stages_are_the_ones_the_run_emits():
 
 def test_the_gui_folds_the_runners_stages_rather_than_its_own():
     """The other half: one declaration, not two that happen to agree today."""
-    pytest.importorskip("PyQt6")
 
     from detail.api.comparison import STAGES
     from detail.gui.comparison import _stages

@@ -50,16 +50,19 @@ import pathlib
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtCore import QPoint, Qt  # noqa: E402
-from PyQt6.QtGui import QStandardItem, QStandardItemModel  # noqa: E402
-from PyQt6.QtTest import QTest  # noqa: E402
-from PyQt6.QtWidgets import QHeaderView, QTableView, QTableWidget  # noqa: E402
-
-from detail.api.experiment import Experiment  # noqa: E402
-from detail.gui.pages import MetadataPage, _table  # noqa: E402
-from detail.gui.tables import (  # noqa: E402
+from detail.api.experiment import Experiment
+from detail.gui.pages import MetadataPage, _table
+from detail.gui.qt import (
+    QHeaderView,
+    QPoint,
+    QStandardItem,
+    QStandardItemModel,
+    QTableView,
+    QTableWidget,
+    QTest,
+    Qt,
+)
+from detail.gui.tables import (
     enable_sorting,
     give_slack_to,
     make_columns_resizable,
@@ -67,14 +70,14 @@ from detail.gui.tables import (  # noqa: E402
     row_id,
     stamp_row_id,
 )
-from tests.gui.layout_checks import (  # noqa: E402
+from tests.gui.layout_checks import (
     assert_border_follows_the_drag,
     column_edges,
     drag_column_border,
     locked_columns,
 )
-from tests.gui.test_dialog_space import BUILDABLE, _build  # noqa: E402
-from tests.gui.test_smoke_construct import PAGES, _experiment  # noqa: E402
+from tests.gui.test_dialog_space import BUILDABLE, _build
+from tests.gui.test_smoke_construct import PAGES, _experiment
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 
@@ -890,7 +893,7 @@ def test_the_only_editable_table_declares_itself_one(qapp, tmp_path):
 def test_an_editable_table_is_read_only_until_edit_mode(qapp, tmp_path):
     """Half of the pair. A table you can type into without asking is one you edit by accident —
     and on this page a stray keystroke rewrites a recording's metadata."""
-    from PyQt6.QtWidgets import QAbstractItemView
+    from detail.gui.qt import QAbstractItemView
 
     experiment = Experiment.create("p", tmp_path)
     experiment.add_recording("alpha")
@@ -913,7 +916,7 @@ def test_an_editable_table_goes_back_to_read_only_when_the_edit_ends(qapp, tmp_p
     Both directions, because a test that only enters passes against a `_leave_edit` that does
     nothing at all. That single-direction shape is a recorded class here.
     """
-    from PyQt6.QtWidgets import QAbstractItemView
+    from detail.gui.qt import QAbstractItemView
 
     experiment = Experiment.create("p", tmp_path)
     experiment.add_recording("alpha")

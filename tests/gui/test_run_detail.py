@@ -20,30 +20,28 @@ import cv2
 import numpy as np
 import pytest
 
-from tests.gui.conftest import drain_busy_calls, drain_thread_pool  # noqa: E402
+from tests.gui.conftest import drain_busy_calls, drain_thread_pool
 import yaml
 
-pytest.importorskip("PyQt6")
-
-from detail.api.experiment import Experiment  # noqa: E402
-from detail.core.dataclasses import TrackingJob  # noqa: E402
+from detail.api.experiment import Experiment
+from detail.core.dataclasses import TrackingJob
 from detail.gui import modules as _gui_modules  # noqa: E402,F401 (registers UIs)
-from detail.gui.pages import RunDetailPage  # noqa: E402
-from detail.gui.tables import row_id  # noqa: E402
-from detail.gui.workers import StageProgressWorker  # noqa: E402
-from detail.gui.run_preview import (  # noqa: E402
+from detail.gui.pages import RunDetailPage
+from detail.gui.tables import row_id
+from detail.gui.workers import StageProgressWorker
+from detail.gui.run_preview import (
     DetectionRunPreview,
     EmbeddingRunPreview,
     TrackingRunPreview,
 )
-from detail.storage import runs as runs_store  # noqa: E402
-from detail.storage import recording as recording_store  # noqa: E402
-from detail.storage.zarr_io import (  # noqa: E402
+from detail.storage import runs as runs_store
+from detail.storage import recording as recording_store
+from detail.storage.zarr_io import (
     DetectionPartWriter,
     EmbeddingPartWriter,
 )
-from tests.gui import subjects  # noqa: E402
-from tests import waits  # noqa: E402
+from tests.gui import subjects
+from tests import waits
 
 
 @pytest.fixture
@@ -76,7 +74,7 @@ def test_run_detail_builds_result_widget(qapp, completed_runs_experiment, module
 
 
 def test_run_detail_shows_next_stage_button(qapp, completed_runs_experiment):
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     proj = completed_runs_experiment
 
@@ -124,7 +122,7 @@ def test_run_detail_shows_the_model_name_and_recording_names(
     fails its result-widget load off-thread and pops a modal error, which then breaks
     whatever spins the event loop next.
     """
-    from PyQt6.QtWidgets import QLabel, QTableView
+    from detail.gui.qt import QLabel, QTableView
 
     from detail.gui.pages import RunDetailPage
     from detail.storage import models as models_store
@@ -179,7 +177,7 @@ def test_the_results_list_names_its_recordings_and_opens_one(
     the results they were choosing between. Picking a row shows that recording's results; the
     row still carries the id it is about, so what opens is not decided by where the row sits.
     """
-    from PyQt6.QtWidgets import QComboBox
+    from detail.gui.qt import QComboBox
 
     from detail.gui.pages import RunResults
 
@@ -254,7 +252,7 @@ def test_a_run_with_no_per_recording_results_says_so(qapp, tmp_path):
     `test_empty_states.py` exempts this list from its sweep of collection pages — a run's
     recordings are not a collection you fill — and points here for the empty state instead.
     """
-    from PyQt6.QtWidgets import QLabel
+    from detail.gui.qt import QLabel
 
     from detail.gui.pages import RunResults
 
@@ -281,7 +279,7 @@ def test_a_run_with_no_per_recording_results_says_so(qapp, tmp_path):
 def test_analysis_run_detail_builds_result_widget(qapp, tmp_path):
     # AnalysisRunDetailPage._build → the module's result_widget on a completed
     # analysis.yaml record (the §16 analogue of the processing run-detail net).
-    from PyQt6.QtWidgets import QTableView
+    from detail.gui.qt import QTableView
 
     from detail.gui.pages import AnalysisRunDetailPage
     from detail.storage import analysis_runs as ar
@@ -302,7 +300,7 @@ def test_analysis_run_detail_builds_result_widget(qapp, tmp_path):
     )
     page = AnalysisRunDetailPage(proj, "an_01")
     assert page.findChildren(QTableView)  # the artifacts result table is present
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     labels = [b.text() for b in page.findChildren(QPushButton)]
     assert "Open output folder" in labels  # reveals analysis/<id>/ in the file manager
@@ -421,8 +419,7 @@ def test_analysis_run_detail_shows_measures_for_a_run_with_an_artifact(
     `run_busy` is driven on this thread — a real QThread here segfaults the GUI suite
     (`test_clusterers.py::_sync_busy` is the same stand-in, for the same reason).
     """
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtWidgets import QTableView
+    from detail.gui.qt import QTableView, Qt
 
     from detail.gui import pages as gui_pages
     from detail.gui.pages import AnalysisRunDetailPage
@@ -473,7 +470,7 @@ def test_a_clip_query_run_opens_as_a_bare_record(qapp, tmp_path):
     It used to build a matches table here. The record still lists and its page still opens,
     with its status and output folder and no result view.
     """
-    from PyQt6.QtWidgets import QLabel, QPushButton, QTableView
+    from detail.gui.qt import QLabel, QPushButton, QTableView
 
     from detail.executor.runners import ANALYSIS_MODULES
 
@@ -526,7 +523,7 @@ def test_analysis_run_detail_builds_query_result_widget(qapp, tmp_path):
     deciding against, so a workspace that appeared only at `complete` would arrive after the
     decision it exists to support.
     """
-    from PyQt6.QtWidgets import QLabel, QTabBar
+    from detail.gui.qt import QLabel, QTabBar
 
     from detail.gui.pages import AnalysisRunDetailPage
     from detail.storage import analysis_runs as ar
@@ -582,7 +579,7 @@ def test_a_syllable_discovery_run_opens_as_a_bare_record(qapp, tmp_path):
     It used to build the syllables and members tables here. The record still lists and its page
     still opens, with its status and no result view.
     """
-    from PyQt6.QtWidgets import QLabel, QTableView
+    from detail.gui.qt import QLabel, QTableView
 
     from detail.executor.runners import ANALYSIS_MODULES
 
@@ -717,7 +714,7 @@ def test_a_cluster_eval_run_opens_as_a_bare_record(qapp, tmp_path):
     page still opens with its status and no result view. The fitted clusterer it scored lives
     under `clusterers/`, which nothing lists any more; the run does not need it to open.
     """
-    from PyQt6.QtWidgets import QLabel, QTableView
+    from detail.gui.qt import QLabel, QTableView
 
     from detail.executor.runners import ANALYSIS_MODULES
     from detail.gui.pages import AnalysisRunDetailPage
@@ -736,8 +733,7 @@ def test_a_cluster_eval_run_opens_as_a_bare_record(qapp, tmp_path):
 
 def _table_cells(page) -> set[str]:
     """Every cell of every ``pages._table`` on a page (a QTableView + QStandardItemModel)."""
-    from PyQt6.QtGui import QStandardItemModel
-    from PyQt6.QtWidgets import QTableView
+    from detail.gui.qt import QStandardItemModel, QTableView
 
     cells = set()
     for table in page.findChildren(QTableView):
@@ -759,7 +755,7 @@ def test_a_query_eval_run_opens_as_a_bare_record(qapp, tmp_path):
     the Explore clips window. The run still lists, its page opens on the record with its status
     and its output folder and no result view, a new one cannot be launched, and it deletes.
     """
-    from PyQt6.QtWidgets import QLabel, QPushButton, QTableView
+    from detail.gui.qt import QLabel, QPushButton, QTableView
 
     from detail.executor.runners import ANALYSIS_MODULES
     from detail.gui.launch import LaunchAnalysisDialog
@@ -800,7 +796,7 @@ def test_a_run_of_a_removed_module_opens_as_a_bare_record(qapp, tmp_path):
     any more. The page has to take a module id it cannot resolve and a status nothing else
     uses, and show the record rather than raise.
     """
-    from PyQt6.QtWidgets import QLabel, QTabWidget
+    from detail.gui.qt import QLabel, QTabWidget
 
     from detail.executor.runners import ANALYSIS_MODULES
     from detail.gui.pages import AnalysisRunDetailPage
@@ -859,7 +855,7 @@ def test_recording_run_detail_builds_result(
 def test_analysis_run_detail_shows_output_for_partial(qapp, tmp_path):
     # A "partial" run (some recordings failed) wrote CSVs for the ones that finished —
     # its detail page must show those artifacts + Open output folder, not only Delete.
-    from PyQt6.QtWidgets import QPushButton, QTableView
+    from detail.gui.qt import QPushButton, QTableView
 
     from detail.gui.pages import AnalysisRunDetailPage
     from detail.storage import analysis_runs as ar
@@ -896,7 +892,7 @@ def test_recording_run_detail_shows_failure_reason(qapp, tmp_path):
     import json
 
     import detail.pipeline.detection  # noqa: F401 — registers the module
-    from PyQt6.QtWidgets import QLabel
+    from detail.gui.qt import QLabel
 
     from detail.executor.runners import PROCESSING_MODULES
     from detail.gui.pages import RecordingRunDetailPage
@@ -921,7 +917,7 @@ def test_recording_run_detail_shows_failure_reason(qapp, tmp_path):
 
 
 def test_recording_run_detail_missing_run(qapp, tmp_path):
-    from PyQt6.QtWidgets import QLabel
+    from detail.gui.qt import QLabel
 
     from detail.gui.pages import RecordingRunDetailPage
 
@@ -965,7 +961,7 @@ def _retry_record(proj, run_id="run_009", status="failed", per_recording=None):
 
 
 def _buttons(page):
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     return [b.text() for b in page.findChildren(QPushButton)]
 
@@ -1010,7 +1006,7 @@ def test_retry_runs_off_thread_and_goes_live(qapp, tmp_path, monkeypatch):
     """Retry validates every incomplete recording + spawns — O(recordings) disk work that
     must not run on the UI thread (unlike _resume, which calls its API inline)."""
     from detail.gui import pages as gui_pages
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     spawned, captured = [], {}
 
@@ -1054,7 +1050,7 @@ def test_retry_runs_off_thread_and_goes_live(qapp, tmp_path, monkeypatch):
 
 def test_retry_failure_surfaces_and_re_enables(qapp, tmp_path, monkeypatch):
     from detail.gui import pages as gui_pages
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     shown = []
     monkeypatch.setattr(gui_pages, "StageProgressWorker", _SyncStageProgressWorker)
@@ -1085,7 +1081,7 @@ def test_run_detail_states_the_runs_cadence_and_its_lineage(
     """A finished run has to say what it looked at. The rate alone is meaningless without
     the source, and the lineage carries each ancestor's cadence so where the thinning
     happened is visible without opening three pages."""
-    from PyQt6.QtWidgets import QLabel
+    from detail.gui.qt import QLabel
 
     proj = completed_runs_experiment
     run = next(r for r in proj.processing_runs if r["module_id"] == "tracking")
@@ -1329,7 +1325,7 @@ def test_reopening_a_running_fit_page_shows_its_progress_bar(
 def test_distill_stage_rows_track_the_run_not_the_launch(qapp, tmp_path):
     """The stage rows are built once and (in the base) rebuilt only on terminal status, so
     a 90-minute distill showed "Label: pending · dataset —" for its whole duration."""
-    from PyQt6.QtWidgets import QLabel
+    from detail.gui.qt import QLabel
 
     from detail.gui.pages import DistillRunDetail
     from detail.storage import distill_runs as distill_store
@@ -1420,7 +1416,7 @@ def test_an_analysis_run_offers_starting_another(qapp, tmp_path):
     dialog only offers modules this build surfaces — where Refine does, because it pre-loads
     one specific module by id.
     """
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     from detail.gui.pages import AnalysisRunDetailPage
 
@@ -1439,7 +1435,7 @@ def test_an_analysis_run_offers_starting_another(qapp, tmp_path):
 def test_the_new_analysis_button_is_absent_without_a_handler(qapp, tmp_path):
     """Guard the guard: the button is gated on the callback, so a page built without one
     must not show a dead control — the failure `clip_clicked` already shipped once."""
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     from detail.gui.pages import AnalysisRunDetailPage
 
@@ -1456,7 +1452,7 @@ def test_a_query_run_made_with_a_removed_method_opens_as_a_bare_record(qapp, tmp
     still exports, and it can still be deleted; calibrating it is refused by name. The workspace resolves the
     method to read the stored search, so building it on such a run would raise.
     """
-    from PyQt6.QtWidgets import QLabel
+    from detail.gui.qt import QLabel
 
     from detail.core.registries import QUERY_METHODS
     from detail.gui.pages import AnalysisRunDetailPage
@@ -1496,7 +1492,7 @@ def test_a_pose_clustering_run_opens_as_a_bare_record(qapp, tmp_path):
     import error it would raise is never reached), the page opens with its status and no
     workspace, and the run deletes.
     """
-    from PyQt6.QtWidgets import QLabel, QTabWidget
+    from detail.gui.qt import QLabel, QTabWidget
 
     from detail.executor.runners import ANALYSIS_MODULES
     from detail.gui.pages import AnalysisRunDetailPage

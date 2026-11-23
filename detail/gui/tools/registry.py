@@ -13,9 +13,8 @@ lives here, never on the core ``Tool`` protocol — that would pull Qt into ``co
 import importlib
 from abc import ABC, abstractmethod
 
-from PyQt6.QtWidgets import QWidget
-
 from detail.gui.modules.registry import ConfigWidget
+from detail.gui.qt import QWidget
 
 TOOL_UI_MODULES: tuple[str, ...] = ("detail.gui.tools.quick_segment",)
 

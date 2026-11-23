@@ -27,21 +27,21 @@ see.
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtCore import QPoint, QPointF, QSize, Qt  # noqa: E402
-from PyQt6.QtGui import QWheelEvent  # noqa: E402
-from PyQt6.QtWidgets import (  # noqa: E402
+from detail.gui.qt import (
     QApplication,
     QLabel,
+    QPoint,
+    QPointF,
+    QSize,
     QSizePolicy,
     QSplitter,
     QStackedWidget,
     QVBoxLayout,
+    QWheelEvent,
     QWidget,
+    Qt,
 )
-
-from detail.gui.scroll import OWNS_WHEEL, PageScroll  # noqa: E402
+from detail.gui.scroll import OWNS_WHEEL, PageScroll
 
 VIEWPORT = 739  # the measured content-area height of a 13" MacBook
 

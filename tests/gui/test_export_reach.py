@@ -22,14 +22,11 @@ believes is worse than no allowlist.
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtWidgets import QTableView, QTableWidget  # noqa: E402
-
 from detail.api import export_targets  # noqa: F401,E402  (registers the catalogue)
-from detail.api import exporters  # noqa: E402
-from detail.api.exporters import ExportSubject  # noqa: E402
-from detail.gui import export as gui_export  # noqa: E402
+from detail.api import exporters
+from detail.api.exporters import ExportSubject
+from detail.gui import export as gui_export
+from detail.gui.qt import QTableView, QTableWidget
 
 pytestmark = pytest.mark.guard
 

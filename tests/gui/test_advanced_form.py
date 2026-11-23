@@ -12,29 +12,26 @@ or the surface does more harm than the wall of spin boxes it replaces:
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtWidgets import QFormLayout, QWidget  # noqa: E402
-
-from detail.api._runner_modules import PIPELINE_RUNNERS  # noqa: E402
-from detail.api.experiment import Experiment  # noqa: E402
-from detail.configs.temporal_dtw_finch import TemporalDtwFinchConfig  # noqa: E402
-from detail.configs.describe import describe_config, iter_config_models  # noqa: E402
-from detail.configs.detection import DetectionConfig  # noqa: E402
-from detail.executor.runners import import_runner_modules  # noqa: E402
+from detail.api._runner_modules import PIPELINE_RUNNERS
+from detail.api.experiment import Experiment
+from detail.configs.temporal_dtw_finch import TemporalDtwFinchConfig
+from detail.configs.describe import describe_config, iter_config_models
+from detail.configs.detection import DetectionConfig
+from detail.executor.runners import import_runner_modules
 from detail.gui import modules as _gui_modules  # noqa: E402,F401 (registers UIs)
-from detail.gui.forms import AdvancedSection, ConfigForm  # noqa: E402
-from detail.gui.help_ui import FieldLabel, field_label  # noqa: E402
-from detail.gui._pydantic_form import (  # noqa: E402
+from detail.gui.forms import AdvancedSection, ConfigForm
+from detail.gui.help_ui import FieldLabel, field_label
+from detail.gui._pydantic_form import (
     field_widget,
     optional_spin,
 )
-from detail.gui.modules.registry import (  # noqa: E402
+from detail.gui.modules.registry import (
     ANALYSIS_GUI_MODULES,
     GUI_MODULES,
 )
-from detail.gui.spin import IntSpin  # noqa: E402
-from detail.gui.tools.registry import TOOL_GUIS, import_tool_uis  # noqa: E402
+from detail.gui.qt import QFormLayout, QWidget
+from detail.gui.spin import IntSpin
+from detail.gui.tools.registry import TOOL_GUIS, import_tool_uis
 
 
 def _spin(value: int) -> IntSpin:
@@ -62,7 +59,7 @@ def test_a_section_starts_collapsed_and_counts_what_it_hides(qapp):
 
 def test_the_header_spans_the_panel(qapp):
     """The toggle is the width of what it opens, not a word tucked into the left margin."""
-    from PyQt6.QtWidgets import QSizePolicy
+    from detail.gui.qt import QSizePolicy
 
     host = QWidget()
     form = ConfigForm(host)
@@ -87,8 +84,7 @@ def test_the_header_is_set_in_the_same_type_as_the_parameter_labels(qapp):
     So the condition is created here rather than waited for: register a small class font,
     build the section, and require the header to have kept the label's size.
     """
-    from PyQt6.QtGui import QFont
-    from PyQt6.QtWidgets import QApplication, QLabel, QPushButton
+    from detail.gui.qt import QApplication, QFont, QLabel, QPushButton
 
     reference = QApplication.font("QLabel")
     originals = {cls: QApplication.font(cls) for cls in ("QToolButton", "QPushButton")}

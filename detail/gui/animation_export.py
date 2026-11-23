@@ -16,15 +16,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from PyQt6.QtWidgets import (
-    QDialogButtonBox,
-    QFileDialog,
-    QFormLayout,
-    QLabel,
-    QMessageBox,
-    QWidget,
-)
-
 from detail.api.animation import (
     GIF_DEFAULT_FPS,
     GIF_DEFAULT_WIDTH,
@@ -33,6 +24,14 @@ from detail.api.animation import (
     MP4,
 )
 from detail.gui.dialog import Dialog
+from detail.gui.qt import (
+    QDialogButtonBox,
+    QFileDialog,
+    QFormLayout,
+    QLabel,
+    QMessageBox,
+    QWidget,
+)
 from detail.gui.spin import FloatSpin, IntSpin
 
 

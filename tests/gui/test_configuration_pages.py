@@ -1,15 +1,9 @@
 """GPU / CUDA + Hugging Face Configuration pages (§1)."""
 
-import pytest
-
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtGui import QGuiApplication  # noqa: E402
-from PyQt6.QtWidgets import QLabel, QPushButton  # noqa: E402
-
-from detail.gui import cuda_doctor, pages  # noqa: E402
-from detail.gui.cuda_doctor import ProbeResult  # noqa: E402
-from detail.gui.workers import BackgroundCall  # noqa: E402
+from detail.gui import cuda_doctor, pages
+from detail.gui.cuda_doctor import ProbeResult
+from detail.gui.qt import QGuiApplication, QLabel, QPushButton
+from detail.gui.workers import BackgroundCall
 
 
 class _SyncBackgroundCall(BackgroundCall):
@@ -137,7 +131,7 @@ def test_gpu_page_keeps_fix_actionable_when_torch_missing(qapp):
 
 
 def test_gpu_page_diagnostic_labels_are_selectable(qapp):
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     page = pages.GpuCudaPage()
     page._render(_probe(cuda=True, cuda_devices=["RTX 4070"], torch_cuda_build="12.8"))

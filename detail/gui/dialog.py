@@ -67,18 +67,24 @@ wait for it, or say why it cannot be stopped — and the dialog closes once the 
 actually happened. Enforced by ``requirements.a_dialog_that_runs_work_owns_its_close``.
 """
 
-from PyQt6.QtCore import QEvent, QSize, Qt, QTimer
-from PyQt6.QtGui import QColor, QPaintEvent, QPainter, QPalette, QShowEvent
-from PyQt6.QtWidgets import (
+from detail.gui.lifetime import alive
+from detail.gui.qt import (
     QApplication,
+    QColor,
     QDialog,
     QDialogButtonBox,
+    QEvent,
+    QPaintEvent,
+    QPainter,
+    QPalette,
     QPushButton,
+    QShowEvent,
+    QSize,
+    QTimer,
     QVBoxLayout,
     QWidget,
+    Qt,
 )
-
-from detail.gui.lifetime import alive
 from detail.gui.scroll import PageScroll
 from detail.gui.selectable import make_text_selectable
 

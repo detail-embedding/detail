@@ -19,12 +19,10 @@ entries. The run is the session's temporal fit with ``climb`` and ``rear`` on it
 """
 
 import pytest
-from PyQt6.QtCore import Qt
-from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QCheckBox, QComboBox, QLabel, QPushButton, QSlider
 
 from detail.gui.cluster_workspace import ClusterWorkspace
 from detail.gui.montage_export import NOTHING_PICKED, ExportMenu
+from detail.gui.qt import QCheckBox, QComboBox, QLabel, QPushButton, QSlider, QTest, Qt
 from detail.gui.show_menu import ShowButton
 
 from tests.gui.conftest import drain_busy_calls, drain_until
@@ -232,7 +230,7 @@ def test_the_show_menus_context_widens_the_export_and_the_tiles(qapp, workspace)
         job.clips[0].start_t_ns,
         job.clips[0].end_t_ns,
     ), "the tiles play what the export writes"
-    from PyQt6.QtCore import QSettings
+    from detail.gui.qt import QSettings
 
     from detail.gui.node_workspace import CONTEXT_KEY
 
@@ -558,7 +556,7 @@ def test_one_file_per_clip_asks_before_replacing_gifs_already_in_the_folder(
     """A folder picker never asks about the files inside it, so a second export into one
     folder replaced the first one's GIFs unasked (#29). Counted and named before it starts.
     """
-    from PyQt6.QtWidgets import QMessageBox
+    from detail.gui.qt import QMessageBox
 
     asked: list[str] = []
     monkeypatch.setattr(

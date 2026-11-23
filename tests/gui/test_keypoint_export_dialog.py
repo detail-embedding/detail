@@ -3,10 +3,8 @@ keypoint format shares — source, cut-off, blanking, the video's overlay."""
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from detail.api import exporters  # noqa: E402
-from detail.api.exporters import ExportSubject  # noqa: E402
+from detail.api import exporters
+from detail.api.exporters import ExportSubject
 from tests.api.test_keypoint_export import (  # noqa: E402,F401  (the fixture)
     DETECT_RUN,
     FIVE,

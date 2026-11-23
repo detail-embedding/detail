@@ -15,8 +15,7 @@ once it has closed. A menu built once and kept (a button's ``setMenu``, **Show â
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QPoint
-from PyQt6.QtWidgets import QMenu
+from detail.gui.qt import QMenu, QPoint
 
 
 def open_once(menu: QMenu, where: QPoint, *, wait: bool) -> None:

@@ -22,6 +22,10 @@ import sys
 
 import pytest
 
+# The GUI tier needs the binding. Imported here, a missing one is an error for every GUI test,
+# never a skip that leaves the tier reading green (#107).
+import detail.gui.qt  # noqa: F401
+
 
 @pytest.fixture(autouse=True)
 def _checks_run_in_process(monkeypatch):
@@ -74,8 +78,7 @@ def drain_until(
     rebuild ``deleteLater``-ed is otherwise still a findable child when the predicate is
     checked, and a lookup by text found an old disabled button beside its replacement.
     """
-    from PyQt6.QtCore import QEvent
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QEvent, QTest
 
     waited = 0
     while waited < timeout_ms:
@@ -112,8 +115,7 @@ def pump_for(qapp, ms: int) -> None:
     to be spelled ``drain_until(qapp, lambda: False, ms)``: a wait for something that never
     happens, whose timeout was the point.
     """
-    from PyQt6.QtCore import QEvent
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QEvent, QTest
 
     waited = 0
     while waited < ms:
@@ -147,7 +149,7 @@ def drain_busy_calls(qapp, timeout_ms: int = 5_000) -> int:
     Exposed so the guard can call it directly; ``_no_leaked_busy_calls`` is what makes every
     GUI test use it.
     """
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QTest
 
     from detail.gui import busy
     from detail.gui import workers
@@ -186,8 +188,7 @@ def drain_thread_pool(qapp, timeout_ms: int = 5_000) -> int:
     a queued signal, so without ``processEvents`` the work would finish and the *delivery* would
     still cross into the next test.
     """
-    from PyQt6.QtCore import QThreadPool
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QTest, QThreadPool
 
     pool = QThreadPool.globalInstance()
 
@@ -252,8 +253,7 @@ def destroy_new_windows(qapp, before: set[int]) -> int:
     Exposed so the guard can call it directly; ``_windows_die_with_their_test`` is what makes
     every GUI test use it.
     """
-    from PyQt6 import sip
-    from PyQt6.QtCore import QEvent
+    from detail.gui.qt import QEvent, address, owned_by_python
 
     # Only windows Python owns — ones a test made. A top-level that something else owns (a
     # completer's popup, a menu a button keeps) is that owner's to delete, and deleting it here
@@ -261,7 +261,7 @@ def destroy_new_windows(qapp, before: set[int]) -> int:
     doomed = [
         w
         for w in qapp.topLevelWidgets()
-        if sip.ispyowned(w) and int(sip.unwrapinstance(w)) not in before
+        if owned_by_python(w) and address(w) not in before
     ]
     for widget in doomed:
         widget.deleteLater()
@@ -297,9 +297,9 @@ def _windows_die_with_their_test(qapp):
     already gone, which it can clear without anything calling back. Windows that existed before
     the test (a module- or session-scoped fixture's) are left alone.
     """
-    from PyQt6 import sip
+    from detail.gui.qt import address
 
-    before = {int(sip.unwrapinstance(w)) for w in qapp.topLevelWidgets()}
+    before = {address(w) for w in qapp.topLevelWidgets()}
     yield
     destroy_new_windows(qapp, before)
 
@@ -329,7 +329,7 @@ def _windows_die_with_their_test(qapp):
 # gave 96, 28 and 134 of 1,609; measuring Qt thread liveness from the UI thread of the process under
 # test perturbs what it measures, so that half was removed rather than shipped. #533 has the detail.
 def _outstanding_now() -> tuple[int, int]:
-    from PyQt6.QtCore import QThreadPool
+    from detail.gui.qt import QThreadPool
 
     from detail.gui import busy, workers
 
@@ -382,7 +382,7 @@ def _no_leaked_busy_calls(request, qapp, monkeypatch):
     The stubs are still in place during that drain: this fixture asks for ``monkeypatch``, so
     it is torn down before ``monkeypatch`` undoes anything.
     """
-    from PyQt6.QtWidgets import QMessageBox
+    from detail.gui.qt import QMessageBox
 
     monkeypatch.setattr(
         QMessageBox,
@@ -450,10 +450,8 @@ def capable_machine(monkeypatch, request):
 @pytest.fixture(scope="session")
 def qapp(tmp_path_factory):
     """A headless QApplication for widget tests (skips if PyQt6 is absent)."""
-    pytest.importorskip("PyQt6")
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PyQt6.QtCore import QCoreApplication, QSettings, QStandardPaths
-    from PyQt6.QtWidgets import QApplication
+    from detail.gui.qt import QApplication, QCoreApplication, QSettings, QStandardPaths
 
     # Isolate QSettings (the guided-layer dismissal store) so tests never read or clobber the
     # developer's real settings.
@@ -511,7 +509,7 @@ def app_theme(request, qapp):
     ``plot_theme.current`` falls back to the palette's lightness. The yielded theme is asserted,
     so a "dark" run that silently drew light fails here rather than passing as a light test.
     """
-    from PyQt6.QtGui import QColor, QPalette
+    from detail.gui.qt import QColor, QPalette
 
     from detail.gui import plot_theme
 
@@ -568,9 +566,7 @@ def release_held_input(qapp) -> None:
     Exposed so the guard can call it directly; ``_no_input_held_from_an_earlier_test`` is what
     makes every GUI test start from it.
     """
-    from PyQt6.QtCore import QEvent, Qt
-    from PyQt6.QtTest import QTest
-    from PyQt6.QtWidgets import QWidget
+    from detail.gui.qt import QEvent, QTest, QWidget, Qt
 
     # A release with no modifiers is the one simulated event that clears both halves (a key
     # release clears modifiers only, a move neither). The target is never shown and nothing
@@ -621,7 +617,7 @@ def _forget_view_preferences():
     *Blind* ticks). Each test process has its own store (see ``qapp``). Window geometry is left alone: ``test_window_state.py`` owns those keys and
     clears them itself, and clearing them here would silently disarm it.
     """
-    from PyQt6.QtCore import QSettings
+    from detail.gui.qt import QSettings
 
     def clear():
         settings = QSettings()

@@ -23,15 +23,10 @@ import threading
 
 import pytest
 
-pytest.importorskip("PyQt6")
+from detail.gui import run_writes
+from detail.gui.qt import QCloseEvent, QEvent, QWidget
 
-from PyQt6.QtCore import QEvent  # noqa: E402
-from PyQt6.QtGui import QCloseEvent  # noqa: E402
-from PyQt6.QtWidgets import QWidget  # noqa: E402
-
-from detail.gui import run_writes  # noqa: E402
-
-from tests.gui.conftest import drain_until  # noqa: E402
+from tests.gui.conftest import drain_until
 
 
 class _Run:

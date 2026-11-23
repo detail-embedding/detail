@@ -291,10 +291,17 @@ def _foreign_imports(source: str) -> set[str]:
     found = set()
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Import):
-            found |= {a.name.split(".")[0] for a in node.names}
+            found |= {_package(a.name) for a in node.names}
         elif isinstance(node, ast.ImportFrom) and node.module:
-            found.add(node.module.split(".")[0])
+            found.add(_package(node.module))
     return found - _ALLOWED_IMPORTS
+
+
+def _package(module: str) -> str:
+    """The top-level package, except that the GUI (where Qt comes from) counts on its own."""
+    if module == "detail.gui" or module.startswith("detail.gui."):
+        return "detail.gui"
+    return module.split(".")[0]
 
 
 @pytest.mark.parametrize("module", [chart_theme, color_checks])
@@ -306,6 +313,7 @@ def test_the_design_language_imports_no_drawing_library(module) -> None:
 
 def test_the_import_scan_would_catch_a_drawing_library() -> None:
     planted = (
-        "import math\nfrom PyQt6.QtGui import QColor\nimport matplotlib.pyplot as plt\n"
+        "import math\nfrom detail.gui.qt import QColor\nimport matplotlib.pyplot as plt\n"
+        "from PySide6.QtGui import QPen\n"
     )
-    assert _foreign_imports(planted) == {"PyQt6", "matplotlib"}
+    assert _foreign_imports(planted) == {"detail.gui", "matplotlib", "PySide6"}

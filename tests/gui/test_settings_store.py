@@ -14,7 +14,7 @@ from pathlib import Path
 
 
 def test_the_settings_store_is_inside_this_processs_basetemp(qapp, tmp_path_factory):
-    from PyQt6.QtCore import QSettings
+    from detail.gui.qt import QSettings
 
     store = Path(QSettings().fileName()).resolve()
     assert store.is_relative_to(tmp_path_factory.getbasetemp().resolve()), (
@@ -25,7 +25,7 @@ def test_the_settings_store_is_inside_this_processs_basetemp(qapp, tmp_path_fact
 
 def test_renaming_the_app_does_not_move_the_store_out(qapp, tmp_path_factory):
     """``configure_application`` renames the app mid-test; the store must stay private."""
-    from PyQt6.QtCore import QSettings
+    from detail.gui.qt import QSettings
 
     before = qapp.applicationName()
     try:

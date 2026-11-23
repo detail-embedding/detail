@@ -14,12 +14,8 @@ run's own log, so the last line carries a clock and there is nothing after it.
 
 from __future__ import annotations
 
-import pytest
-
-pytest.importorskip("PyQt6")
-
-from detail.gui.run_activity import LiveRunPanel  # noqa: E402
-from detail.storage import activity  # noqa: E402
+from detail.gui.run_activity import LiveRunPanel
+from detail.storage import activity
 
 
 def _log(path, rows):

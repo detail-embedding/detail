@@ -10,39 +10,44 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt  # noqa: E402
-from PyQt6.QtGui import QFocusEvent, QValidator, QWheelEvent  # noqa: E402
-from PyQt6.QtWidgets import QAbstractSpinBox, QDoubleSpinBox  # noqa: E402
-
-import detail  # noqa: E402
-from detail.api._runner_modules import PIPELINE_RUNNERS  # noqa: E402
-from detail.configs.detection import DetectionConfig  # noqa: E402
-from detail.configs.labeling import LabelingConfig  # noqa: E402
-from detail.configs.query import QueryConfig  # noqa: E402
-from detail.configs.temporal_dtw_finch import TemporalDtwFinchConfig  # noqa: E402
-from detail.executor.runners import import_runner_modules  # noqa: E402
+import detail
+from detail.api._runner_modules import PIPELINE_RUNNERS
+from detail.configs.detection import DetectionConfig
+from detail.configs.labeling import LabelingConfig
+from detail.configs.query import QueryConfig
+from detail.configs.temporal_dtw_finch import TemporalDtwFinchConfig
+from detail.executor.runners import import_runner_modules
 from detail.gui import modules as _gui_modules  # noqa: E402,F401 (registers UIs)
-from detail.gui._pydantic_form import (  # noqa: E402
+from detail.gui._pydantic_form import (
     field_slider,
     field_widget,
     optional_spin,
     optional_value,
     set_optional_value,
 )
-from detail.gui.modules.registry import (  # noqa: E402
+from detail.gui.modules.registry import (
     ANALYSIS_GUI_MODULES,
     GUI_MODULES,
 )
-from detail.gui.spin import (  # noqa: E402
+from detail.gui.qt import (
+    QAbstractSpinBox,
+    QDoubleSpinBox,
+    QEvent,
+    QFocusEvent,
+    QPoint,
+    QPointF,
+    QValidator,
+    QWheelEvent,
+    Qt,
+)
+from detail.gui.spin import (
     FRACTION,
     SECONDS,
     FloatSpin,
     IntSpin,
     ThresholdSlider,
 )
-from detail.gui.tools.registry import TOOL_GUIS, import_tool_uis  # noqa: E402
+from detail.gui.tools.registry import TOOL_GUIS, import_tool_uis
 
 
 def _fraction_box() -> FloatSpin:
@@ -389,7 +394,7 @@ def test_the_confidence_row_says_what_it_thresholds_and_that_it_slides(qapp):
     """Every surface that shows this also carries a FrameScrubber, itself a horizontal
     slider. An unnamed track next to another unnamed track reads as the same control, so
     the heading has to name the thing being thresholded, not describe the effect."""
-    from PyQt6.QtWidgets import QFrame
+    from detail.gui.qt import QFrame
 
     from detail.configs.display import ConfidenceView
     from detail.gui.confidence import HINT, ConfidenceRow

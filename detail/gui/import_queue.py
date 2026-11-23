@@ -17,23 +17,22 @@ import contextlib
 import threading
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, pyqtSignal
-
 from detail.api.imports import (
     ImportProgressFold,
     RecordingImportSpec,
     create_shells,
     import_pending,
 )
+from detail.gui.qt import QObject, Signal
 from detail.gui.workers import GuiWorker
 from detail.storage import recording as recording_store
 
 
 class _ImportWorker(GuiWorker):
-    item_started = pyqtSignal(str)  # recording_id
-    item_progress = pyqtSignal(str, float, str)  # recording_id, fraction, phase
-    item_done = pyqtSignal(str, bool, str)  # recording_id, ok, error
-    batch_finished = pyqtSignal()
+    item_started = Signal(str)  # recording_id
+    item_progress = Signal(str, float, str)  # recording_id, fraction, phase
+    item_done = Signal(str, bool, str)  # recording_id, ok, error
+    batch_finished = Signal()
 
     def __init__(
         self, experiment, specs, part_kwargs, cancel: threading.Event, *, receiver
@@ -64,11 +63,11 @@ class _ImportWorker(GuiWorker):
 class ImportQueue(QObject):
     """Owned by the shell (per open experiment). ``submit`` creates shells + enqueues."""
 
-    item_started = pyqtSignal(str)
+    item_started = Signal(str)
     #: The whole queue, folded (``api.imports.ImportProgress``) — what a bar is drawn from.
-    progress = pyqtSignal(object)
-    item_done = pyqtSignal(str, bool, str)  # a recording finished (rebuild the tree)
-    idle = pyqtSignal()  # the queue drained (no pending, no running worker)
+    progress = Signal(object)
+    item_done = Signal(str, bool, str)  # a recording finished (rebuild the tree)
+    idle = Signal()  # the queue drained (no pending, no running worker)
 
     def __init__(self, experiment) -> None:
         super().__init__()

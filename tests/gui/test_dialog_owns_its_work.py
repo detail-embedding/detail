@@ -25,15 +25,10 @@ import threading
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtCore import Qt  # noqa: E402
-from PyQt6.QtTest import QTest  # noqa: E402
-from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QMessageBox  # noqa: E402
-
-from detail.api.experiment import Experiment  # noqa: E402
-from tests import waits  # noqa: E402
-from tests.gui.test_launch import _experiment_with_mixed_recordings  # noqa: E402
+from detail.api.experiment import Experiment
+from detail.gui.qt import QDialog, QDialogButtonBox, QMessageBox, QTest, Qt
+from tests import waits
+from tests.gui.test_launch import _experiment_with_mixed_recordings
 
 #: Every way a user closes a dialog that is not its OK button.
 _CLOSES = ("escape", "window close", "cancel button")

@@ -4,13 +4,11 @@ carries the alignment settings and refuses an incomplete one before the run woul
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from detail.api.experiment import Experiment  # noqa: E402
+from detail.api.experiment import Experiment
 from detail.gui.modules._heading import (
     HeadingDefinitionDialog,
     HeadingPicker,
-)  # noqa: E402
+)
 
 
 @pytest.fixture
@@ -52,7 +50,7 @@ def test_define_saves_through_the_experiment_and_refuses_a_bad_set(qapp, experim
     for widget, picks in ((dialog._front_list, {"nose"}), (dialog._back_list, {"hip"})):
         for i in range(widget.count()):
             item = widget.item(i)
-            from PyQt6.QtCore import Qt
+            from detail.gui.qt import Qt
 
             item.setCheckState(
                 Qt.CheckState.Checked

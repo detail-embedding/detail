@@ -7,13 +7,9 @@ and ``_COMPLETION_COLUMNS`` below are the page's own constants, imported rather 
 hard-coded, so a column added to either group doesn't silently desync these tests.
 """
 
-import pytest
-
-pytest.importorskip("PyQt6")
-
-from detail.api.experiment import Experiment  # noqa: E402
-from detail.gui.pages import _COMPLETION_COLUMNS, MetadataPage  # noqa: E402
-from detail.storage import recording as recording_store  # noqa: E402
+from detail.api.experiment import Experiment
+from detail.gui.pages import _COMPLETION_COLUMNS, MetadataPage
+from detail.storage import recording as recording_store
 
 #: recording_id + file — every user column starts after these two.
 _FIXED_COLS = MetadataPage._USER_COL_START
@@ -21,7 +17,7 @@ _N_COMPLETION = len(_COMPLETION_COLUMNS)
 
 
 def test_metadata_page_edit_then_save_writes_through(qapp, tmp_path):
-    from PyQt6.QtWidgets import QAbstractItemView
+    from detail.gui.qt import QAbstractItemView
 
     experiment = Experiment.create("p", tmp_path)
     experiment.create_recording("recording_001", metadata={"animal_id": "M001"})
@@ -61,7 +57,7 @@ def test_metadata_page_cancel_discards_edits(qapp, tmp_path):
 
 
 def test_metadata_page_copy_paste(qapp, tmp_path):
-    from PyQt6.QtGui import QGuiApplication
+    from detail.gui.qt import QGuiApplication
 
     experiment = Experiment.create("p", tmp_path)
     experiment.create_recording("recording_001", metadata={"animal_id": "M001"})
@@ -118,7 +114,7 @@ def test_metadata_page_export_csv(qapp, tmp_path, monkeypatch):
     monkeypatch.setattr(pages.QMessageBox, "information", lambda *a, **k: None)
     page = MetadataPage(experiment)
     page._export_csv()  # writes off-thread now (run_busy)
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QTest
 
     from detail.gui import busy
 
@@ -423,7 +419,7 @@ def test_metadata_page_import_cancelled_at_the_column_prompt_applies_nothing(
 # The file column and the completion columns (§ "Recording information")
 # --------------------------------------------------------------------------- #
 def test_metadata_page_file_column_shows_base_name_full_path_in_tooltip(qapp, tmp_path):
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     experiment = Experiment.create("p", tmp_path)
     recording = experiment.create_recording("r1")
@@ -458,7 +454,7 @@ def test_metadata_page_completion_columns_are_unchecked_for_a_fresh_recording(
     experiment = Experiment.create("p", tmp_path)
     experiment.create_recording("r1")
     page = MetadataPage(experiment)
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     start = page._completion_start()
     assert [c[0] for c in _COMPLETION_COLUMNS] == [
@@ -478,7 +474,7 @@ def test_metadata_page_completion_columns_are_unchecked_for_a_fresh_recording(
 
 
 def test_metadata_page_fov_and_spatial_completion_checks_once_defined(qapp, tmp_path):
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     experiment = Experiment.create("p", tmp_path)
     recording = experiment.create_recording("r1")
@@ -502,7 +498,7 @@ def test_metadata_page_fov_and_spatial_completion_checks_once_defined(qapp, tmp_
 
 
 def test_metadata_page_run_completion_requires_a_complete_run(qapp, tmp_path):
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     experiment = Experiment.create("p", tmp_path)
     recording = experiment.create_recording("r1")
@@ -540,7 +536,7 @@ def test_metadata_page_completion_checkbox_cannot_be_toggled(qapp, tmp_path):
     was satisfied by the revert, so it could not tell an inert cell from a live one being
     corrected.
     """
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     experiment = Experiment.create("p", tmp_path)
     experiment.create_recording("r1")
@@ -556,8 +552,7 @@ def test_metadata_page_completion_checkbox_cannot_be_toggled(qapp, tmp_path):
 
 
 def test_metadata_page_completion_columns_are_never_pasted_into(qapp, tmp_path):
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtGui import QGuiApplication
+    from detail.gui.qt import QGuiApplication, Qt
 
     experiment = Experiment.create("p", tmp_path)
     experiment.create_recording("r1")
@@ -615,7 +610,7 @@ def test_metadata_page_double_click_is_a_no_op_without_on_open(qapp, tmp_path):
 def test_metadata_page_shows_the_pointing_hand_cursor_only_when_openable(
     qapp, tmp_path
 ):
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     experiment = Experiment.create("p", tmp_path)
     experiment.create_recording("recording_001")

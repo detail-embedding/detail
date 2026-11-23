@@ -8,9 +8,8 @@ says *reviewed* on INTERPRET's tree.
 ring says a cluster has been reviewed, never how well it scored.
 """
 
-from PyQt6.QtGui import QColor
-
 from detail.gui import plot_theme
+from detail.gui.qt import QColor
 
 
 def audited_colour(theme=None) -> QColor:

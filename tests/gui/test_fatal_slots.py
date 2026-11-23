@@ -1,15 +1,24 @@
-"""One bad read must not kill the app.
+"""One bad read must not kill the app, and must not pass unseen.
 
-PyQt6's default excepthook ends in ``qFatal()`` → SIGABRT, so *any* exception escaping a Qt
-slot takes the whole window down mid-session — no dialog, unsaved edits lost. Two layers are
-tested here:
+An exception escaping a Qt slot — or a Python override of a Qt virtual, such as ``paintEvent`` —
+cannot cross back through C++. What the binding does with it decides what a user sees:
+
+- **PyQt6** (the binding before #107) passed it to ``sys.excepthook``, whose default ended in
+  ``qFatal()`` → SIGABRT: the window went down mid-session, unsaved edits lost.
+- **PySide6** passes it to ``sys.excepthook`` and carries on. Nothing dies — and nothing tells the
+  user either: the traceback goes to a terminal that a user who launched the app from an icon
+  never sees, and the action they asked for silently did not happen.
+
+So the app installs its own hook (``detail.gui.__main__.install_excepthook``) rather than relying
+on the binding's default: the process survives **and** the user is told. Two layers are tested
+here:
 
 - the specific accessor that was raising where it documents a graceful answer
   (``Recording.video_available`` on a video root not registered on this machine), and
-- the class-level guarantee that an escaping exception is reported rather than fatal.
+- the class-level guarantee that an escaping exception is reported to the user and is not fatal.
 
-The second needs a subprocess: an abort cannot be caught in-process, so the only honest
-assertion is on the exit code of a real interpreter.
+The second needs a subprocess: an abort cannot be caught in-process, so the honest assertion is on
+the exit code and output of a real interpreter running a real event loop.
 """
 
 import subprocess
@@ -18,11 +27,9 @@ import textwrap
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from detail.api.experiment import Experiment  # noqa: E402
-from detail.storage import locations, recording as recording_store  # noqa: E402
-from detail.storage import video_roots  # noqa: E402
+from detail.api.experiment import Experiment
+from detail.storage import locations, recording as recording_store
+from detail.storage import video_roots
 
 
 @pytest.fixture
@@ -125,12 +132,27 @@ def test_keyboard_interrupt_is_not_swallowed(monkeypatch):
 _SLOT_RAISES = """
 import os, sys
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
-from PyQt6.QtWidgets import QApplication, QPushButton
+from detail.gui.qt import QApplication, QMessageBox, QPushButton, QTimer, QWidget
 app = QApplication([])
+# The dialog the hook raises, recorded instead of shown: nothing can click it here.
+QMessageBox.critical = staticmethod(lambda *a, **k: print("DIALOG", a[2], flush=True))
 {install}
+
+
+class Painted(QWidget):
+    def paintEvent(self, event):
+        raise ValueError("paint went wrong")
+
+
 b = QPushButton("go")
 b.clicked.connect(lambda: (_ for _ in ()).throw(ValueError("boom")))
-b.click()
+w = Painted()
+w.resize(40, 40)
+# From the running event loop, as a user's click and a repaint reach them in the app.
+QTimer.singleShot(0, b.click)
+QTimer.singleShot(0, w.show)
+QTimer.singleShot(300, app.quit)
+app.exec()
 print("ALIVE")
 """
 
@@ -144,24 +166,29 @@ def _run(install: str) -> subprocess.CompletedProcess:
     )
 
 
-def test_a_raising_slot_does_not_abort_the_process():
-    """The real assertion: exit code of a real interpreter, since an abort can't be caught
-    in-process."""
-    done = _run(
-        "from detail.gui.__main__ import install_excepthook\ninstall_excepthook()\n"
-        "from PyQt6.QtWidgets import QMessageBox\n"
-        "QMessageBox.critical = staticmethod(lambda *a, **k: None)"
-    )
+_INSTALL = "from detail.gui.__main__ import install_excepthook\ninstall_excepthook()\n"
+
+
+def test_a_raising_slot_is_reported_and_the_app_carries_on():
+    """The real assertion: a real interpreter, a real event loop, a slot and an override that
+    raise. The process lives, the user is shown each error, and the traceback still reaches a
+    developer's terminal."""
+    done = _run(_INSTALL)
     assert done.returncode == 0, done.stderr[-800:]
     assert "ALIVE" in done.stdout
-    assert "boom" in done.stderr  # ...and the traceback still reaches a developer
+    dialogs = [line for line in done.stdout.splitlines() if line.startswith("DIALOG")]
+    assert any("boom" in line for line in dialogs), done.stdout
+    assert any("paint went wrong" in line for line in dialogs), done.stdout
+    assert "boom" in done.stderr and "paint went wrong" in done.stderr
 
 
-def test_without_the_hook_it_really_does_abort():
-    """Guard the guard: if PyQt stopped aborting, the test above would pass vacuously."""
+def test_without_the_hook_the_user_is_never_told():
+    """Guard the guard: the binding's own default shows the user nothing, so the dialogs above
+    are the hook's doing. If the binding ever started reporting on its own — or aborting again —
+    this fails and the test above needs re-deriving."""
     done = _run("")
-    assert done.returncode != 0, (
-        "PyQt no longer aborts on an escaping slot exception, so the hook test above no "
-        "longer proves anything — re-derive it."
+    assert "DIALOG" not in done.stdout
+    assert done.returncode == 0 and "ALIVE" in done.stdout, (
+        "the binding no longer carries on after an escaping exception; re-derive what the "
+        "hook has to guarantee"
     )
-    assert "ALIVE" not in done.stdout

@@ -22,11 +22,17 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from PyQt6.QtCore import QPoint, QSettings, pyqtSignal
-from PyQt6.QtGui import QAction, QActionGroup
-from PyQt6.QtWidgets import QMenu, QPushButton, QSizePolicy
-
 from detail.api.clip_tiles import TileLook
+from detail.gui.qt import (
+    QAction,
+    QActionGroup,
+    QMenu,
+    QPoint,
+    QPushButton,
+    QSettings,
+    QSizePolicy,
+    Signal,
+)
 
 #: ``(TileLook field, label, tooltip)`` — every layer a tile can draw, in menu order.
 LAYERS: tuple[tuple[str, str, str], ...] = (
@@ -139,11 +145,11 @@ class ShowButton(QPushButton):
     """
 
     #: ``(field, on)``: a layer ticked or unticked.
-    layer_toggled = pyqtSignal(str, bool)
+    layer_toggled = Signal(str, bool)
     #: The orientation chosen: whether **Aligned**.
-    aligned_wanted = pyqtSignal(bool)
+    aligned_wanted = Signal(bool)
     #: The context chosen, in seconds either side of each clip.
-    context_wanted = pyqtSignal(float)
+    context_wanted = Signal(float)
 
     def __init__(self, parent=None) -> None:
         super().__init__("Show ▾", parent)

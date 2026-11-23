@@ -9,12 +9,6 @@ the measurement options (rows per second), each row built from
 per-recording CSV artifacts the run produced, read from its ``analysis.yaml`` manifest.
 """
 
-from PyQt6.QtWidgets import (
-    QLabel,
-    QVBoxLayout,
-    QWidget,
-)
-
 from detail.configs.location_export import LocationExportConfig
 from detail.configs.location_export import option_names
 from detail.gui._pydantic_form import any_field_value
@@ -29,6 +23,7 @@ from detail.gui.modules.registry import (
     ModuleUI,
     register_analysis_module_ui,
 )
+from detail.gui.qt import QLabel, QVBoxLayout, QWidget
 
 #: What the rows-per-second box reads when it is left unset.
 EVERY_FRAME_TEXT = "every frame"

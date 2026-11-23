@@ -28,7 +28,7 @@ from __future__ import annotations
 import gc
 import time
 
-from PyQt6.QtCore import QObject, QTimer
+from detail.gui.qt import QObject, QTimer
 
 #: How often the UI thread checks whether a collection is due. The automatic collector checks on
 #: every allocation; half a second is far below any interval at which garbage costs memory.

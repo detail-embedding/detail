@@ -24,19 +24,14 @@ the real navigation, filters, Audit list and query Audit columns.
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtCore import QPoint, QSettings, Qt  # noqa: E402
-from PyQt6.QtTest import QTest  # noqa: E402
-from PyQt6.QtWidgets import QApplication, QLabel  # noqa: E402
-
-from detail.gui.grip_splitter import (  # noqa: E402
+from detail.gui.grip_splitter import (
     EXPAND_LEFT_PANEL,
     EXPAND_RIGHT_PANEL,
     HANDLE_PX,
     STRIP_PX,
     GripSplitter,
 )
+from detail.gui.qt import QApplication, QLabel, QPoint, QSettings, QTest, Qt
 
 LIST_MIN = 150
 
@@ -380,7 +375,7 @@ def test_an_old_saved_split_with_a_pane_at_zero_comes_back_shut(qapp):
     """The bug the user hit, as it sits in an existing settings file: a plain QSplitter's state
     with the navigation dragged to nothing. It migrates to a shut strip, not to zero width.
     """
-    from PyQt6.QtWidgets import QSplitter
+    from detail.gui.qt import QSplitter
 
     old = QSplitter(Qt.Orientation.Horizontal)
     old.addWidget(QLabel("nav"))
@@ -436,7 +431,7 @@ def test_the_strips_own_mark_is_allowed_and_the_same_mark_on_a_button_is_not(
     handle, not a push button — not because the text check was loosened. The strip's mark on a
     `QPushButton` is still refused, and the handle is not a kind the button rule walks.
     """
-    from PyQt6.QtWidgets import QAbstractButton, QPushButton
+    from detail.gui.qt import QAbstractButton, QPushButton
 
     from detail.gui import requirements
 
@@ -572,7 +567,7 @@ def test_the_query_audits_clips_and_summary_open_by_pull_and_click(qapp, tmp_pat
 def _typing_split(qapp, key):
     """[field in a side panel | field in the main pane], shown and active, the side field
     focused."""
-    from PyQt6.QtWidgets import QLineEdit
+    from detail.gui.qt import QLineEdit
 
     split = GripSplitter(Qt.Orientation.Horizontal, key=key)
     side, main = QLineEdit("side"), QLineEdit("main")

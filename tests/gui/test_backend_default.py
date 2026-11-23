@@ -2,11 +2,9 @@
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from detail.api.experiment import Experiment  # noqa: E402
+from detail.api.experiment import Experiment
 from detail.gui import modules as _gui_modules  # noqa: E402,F401 (registers UIs)
-from detail.gui.modules.registry import GUI_MODULES  # noqa: E402
+from detail.gui.modules.registry import GUI_MODULES
 
 
 # Detection's backend now tracks the selected model's supported_backends (its default

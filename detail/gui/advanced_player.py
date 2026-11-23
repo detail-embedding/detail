@@ -16,11 +16,9 @@ over the window on the bar, read off the UI thread; a later window supersedes a 
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import QCheckBox, QHBoxLayout, QSizePolicy, QWidget
-
 from detail.api.clip_views import ClipViewSettings
 from detail.gui.behavior_query import ClipSpec, _ClipPlayer
+from detail.gui.qt import QCheckBox, QHBoxLayout, QSizePolicy, QWidget, Qt, Signal
 from detail.gui.run_preview import _to_pixmap
 
 #: The clip popup's Keypoints toggle, while there are keypoints to draw.
@@ -47,9 +45,9 @@ class AdvancedClipPlayer(_ClipPlayer):
 
     #: A view tick changed (Masks, Keypoints, Trail, Trail points, Mask trail, Align pose):
     #: what `view_settings` returns is different now. An enlarged pane follows it.
-    view_changed = pyqtSignal()
+    view_changed = Signal()
     #: `set_clip` showed another clip.
-    clip_changed = pyqtSignal()
+    clip_changed = Signal()
 
     # -- the hooks ------------------------------------------------------------- #
     def _add_view_controls(self, _row) -> None:

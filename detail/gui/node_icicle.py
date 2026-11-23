@@ -32,19 +32,29 @@ tree, not a plot of a quantity, so it wants no axes.
 """
 
 import numpy as np
-from PyQt6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt, pyqtSignal
-from PyQt6.QtGui import QBrush, QColor, QFont, QFontMetricsF, QPainter, QPen
-from PyQt6.QtWidgets import (
+
+from detail.gui import plot_theme
+from detail.gui.qt import (
+    QBrush,
+    QColor,
+    QEvent,
+    QFont,
+    QFontMetricsF,
     QHBoxLayout,
     QMenu,
+    QPainter,
+    QPen,
+    QPoint,
+    QPointF,
+    QRectF,
     QScrollBar,
     QSizePolicy,
     QToolTip,
     QVBoxLayout,
     QWidget,
+    Qt,
+    Signal,
 )
-
-from detail.gui import plot_theme
 from detail.gui.scroll import OWNS_WHEEL
 from detail.gui.sizing import lines
 from detail.gui.zoom import DRAG_PX, OverviewBar, ZoomWindow, zoom_pinch, zoom_wheel
@@ -187,16 +197,16 @@ class NodeIcicle(QWidget):
     :data:`STRIP_PX` strip along its top — the label is still there, the shade says the filter.
     """
 
-    node_picked = pyqtSignal(int)
-    zoomed = pyqtSignal(int)
+    node_picked = Signal(int)
+    zoomed = Signal(int)
     #: Label this node, with an editor at this global position (double-click, or the menu).
-    label_wanted = pyqtSignal(int, object)
+    label_wanted = Signal(int, object)
     #: Remove this node's own label (the menu).
-    unlabel_wanted = pyqtSignal(int)
+    unlabel_wanted = Signal(int)
     #: Open this node's clips in a window of their own (the menu).
-    window_wanted = pyqtSignal(int)
+    window_wanted = Signal(int)
     #: The content height, the scroll offset or the viewport changed: a scrollbar re-reads them.
-    extent_changed = pyqtSignal()
+    extent_changed = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -1200,6 +1210,6 @@ def _block_of(slot: QRectF) -> QRectF:
 
 
 def _offset(dx: float, dy: float):
-    from PyQt6.QtCore import QPointF
+    from detail.gui.qt import QPointF
 
     return QPointF(dx, dy)

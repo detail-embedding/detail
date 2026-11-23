@@ -26,13 +26,21 @@ import math
 
 import numpy as np
 import pytest
-from PyQt6.QtCore import QEvent, QSettings, Qt
-from PyQt6.QtGui import QKeyEvent
-from PyQt6.QtWidgets import QLabel, QMessageBox, QPushButton, QVBoxLayout, QWidget
 
 from detail.gui.cluster_strip import cluster_colors
 from detail.gui.cluster_workspace import TEMPORAL_TERMS, ClusterWorkspace
 from detail.gui.label_panel import label_rows
+from detail.gui.qt import (
+    QEvent,
+    QKeyEvent,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QSettings,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+)
 from tests.gui.conftest import pump_for
 
 
@@ -45,7 +53,7 @@ def _drain(qapp, predicate, timeout_ms: int = 10_000) -> bool:
 
 def _settled(qapp, measure, quiet_ms: int = 300, timeout_ms: int = 5_000) -> bool:
     """Pump until ``measure()`` has not changed for ``quiet_ms``; False if it never stops."""
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QTest
 
     last, still, waited = measure(), 0, 0
     while waited < timeout_ms:
@@ -154,8 +162,7 @@ def test_every_block_the_tree_draws_is_a_target_that_selects_its_node(qapp, fitt
     out at a real size, then click the centre of **every** block it drew and assert that block's
     node is the one selected. Asserted as a pairing, never as "something was drawn".
     """
-    from PyQt6.QtCore import QPoint
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QPoint, QTest
 
     _experiment, _handle, workspace = _workspace(qapp, fitted)
     interpret = workspace._interpret
@@ -577,7 +584,7 @@ def test_colors_stay_distinct_past_the_palette(qapp):
 
 
 def test_the_workspace_asks_for_the_space_it_needs(qapp, fitted):
-    from PyQt6.QtWidgets import QSizePolicy
+    from detail.gui.qt import QSizePolicy
 
     _experiment, _handle, workspace = _workspace(qapp, fitted)
     assert workspace.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Expanding
@@ -820,7 +827,7 @@ _LIVE_ON_A_SNAPSHOT = {
 
 
 def _enabled_controls(widget):
-    from PyQt6.QtWidgets import (
+    from detail.gui.qt import (
         QAbstractSpinBox,
         QCheckBox,
         QLineEdit,
@@ -1151,7 +1158,7 @@ def test_key_one_labels_with_the_first_recent_label_but_not_while_typing(qapp, f
     """Real keys to whatever holds the focus. It was flaky: the label write's AUDIT reload,
     landing while the test ran, opened a cluster in the hidden AUDIT tab and took the focus
     there, so the field the test had focused no longer had it."""
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QTest
 
     _experiment, handle, workspace = _workspace(qapp, fitted)
     interpret = workspace._interpret
@@ -1190,7 +1197,7 @@ def test_key_one_labels_with_the_first_recent_label_but_not_while_typing(qapp, f
 def test_a_labelling_key_with_a_modifier_labels_nothing(qapp, fitted, modifier):
     """Review: the page's 1–9 / U / L ignored modifiers, so ⌘3 labelled; as in a cluster window
     they take none (the keypad's excepted). Sent as real keys to the focused tree."""
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QTest
 
     _experiment, handle, workspace = _workspace(qapp, fitted)
     interpret = workspace._interpret
@@ -1223,7 +1230,7 @@ def test_a_label_written_on_interpret_leaves_the_keyboard_on_interpret(qapp, fit
     """A label write emits ``changed``, which reloads the hidden AUDIT tab; its reload opened a
     cluster and called ``setFocus`` on AUDIT's grid. Keys 1–9, the arrows, L and U then went
     nowhere on INTERPRET until a click. The focus stays where the user left it."""
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QTest
 
     _experiment, handle, workspace = _workspace(qapp, fitted)
     interpret = workspace._interpret
@@ -1299,7 +1306,7 @@ def test_rename_and_merge_from_the_labels_panel_reach_the_run(
 ):
     """From the label list: Rename… renames every cluster under it, Merge into another… moves
     them all — both written through the run's label operations."""
-    from PyQt6.QtWidgets import QInputDialog
+    from detail.gui.qt import QInputDialog
 
     _experiment, handle, workspace = _workspace(qapp, fitted)
     interpret = workspace._interpret
@@ -1325,7 +1332,7 @@ def test_rename_and_merge_from_the_labels_panel_reach_the_run(
 
 
 def test_double_clicking_a_block_opens_a_label_editor_there(qapp, fitted):
-    from PyQt6.QtCore import QPoint
+    from detail.gui.qt import QPoint
 
     _experiment, _handle, workspace = _workspace(qapp, fitted)
     interpret = workspace._interpret
@@ -1607,7 +1614,7 @@ def _stub_review(monkeypatch, rows: list[dict]) -> list[dict]:
 
 
 def test_the_ring_is_painted_inside_the_block(qapp, fitted):
-    from PyQt6.QtGui import QColor
+    from detail.gui.qt import QColor
 
     _e, _h, workspace = _workspace(qapp, fitted)
     icicle = workspace._interpret._icicle
@@ -1737,7 +1744,7 @@ def test_audit_fits_a_laptop_window_inside_the_run_page(qapp, fitted, size):
     """The reported bug: on a laptop the check ran past the bottom of the run page, which
     scrolled. The review pane is held to the window: the page does not scroll and the montage's
     grid ends on screen."""
-    from PyQt6.QtCore import QPoint
+    from detail.gui.qt import QPoint
 
     from detail.gui.pages import AnalysisRunDetailPage
     from detail.gui.scroll import PageScroll
@@ -1773,7 +1780,7 @@ def test_audit_shows_every_row_after_labelling_on_interpret(qapp, fitted):
     """The reported bug, on the table this list replaced: label clusters on INTERPRET, open AUDIT,
     and rows hid behind a scrollbar in a page with room to spare. The list fills the page's
     height, so every label and cluster row is on screen."""
-    from PyQt6.QtWidgets import QLabel, QVBoxLayout, QWidget
+    from detail.gui.qt import QLabel, QVBoxLayout, QWidget
 
     from detail.gui.label_check import LIST_PX
     from detail.gui.scroll import PageScroll
@@ -2018,7 +2025,7 @@ def test_the_filters_dock_beside_the_tree_and_fold_away_remembered(qapp, fitted)
     """The filters are a column left of the tree, never a pop-up; the grip folds it to a strip
     reading "Filters · n active", and both its width and whether it is shut outlive the page.
     """
-    from PyQt6.QtWidgets import QSplitter
+    from detail.gui.qt import QSplitter
 
     from detail.api.cluster_filter import Selection
 
@@ -2134,12 +2141,12 @@ class _Queue:
     """The preview queue's surface the page uses, with signals a test fires."""
 
     def __init__(self, experiment):
-        from PyQt6.QtCore import QObject, pyqtSignal
+        from detail.gui.qt import QObject, Signal
 
         class _Signals(QObject):
-            progress = pyqtSignal(int, str)
-            recording_done = pyqtSignal(str)
-            failed = pyqtSignal(str, object)
+            progress = Signal(int, str)
+            recording_done = Signal(str)
+            failed = Signal(str, object)
 
         self._signals = _Signals()
         self.progress = self._signals.progress
@@ -2256,7 +2263,7 @@ def _open_interpret(qapp, window, fitted):
 def _leave_and_return(qapp, window, fitted):
     """Back to the run's landing through the path line, into INTERPRET again, then away to
     another page (which destroys this one) and back through the run's card."""
-    from PyQt6.QtWidgets import QLabel
+    from detail.gui.qt import QLabel
 
     window._context.linkActivated.emit("landing")
     page = window._content.currentWidget()
@@ -2694,8 +2701,7 @@ def test_interpret_rings_and_reads_a_cluster_only_once_every_clip_is_reviewed(
 
 
 def test_right_click_put_back_reaches_the_run(qapp, fitted_temporal, monkeypatch):
-    from PyQt6.QtCore import QPoint
-    from PyQt6.QtWidgets import QMenu
+    from detail.gui.qt import QMenu, QPoint
 
     handle, workspace, first = _temporal_workspace(qapp, fitted_temporal)
     interpret = workspace._interpret
@@ -3001,7 +3007,7 @@ def test_run_a_new_screen_opens_the_launch_dialog_seeded_and_ticks_what_it_saved
 ):
     import detail.api.comparison as comparison_api
     import detail.gui.comparison as comparison_gui
-    from PyQt6.QtWidgets import QDialog
+    from detail.gui.qt import QDialog
 
     _experiment, _handle, workspace = _workspace(qapp, fitted)
     interpret = workspace._interpret

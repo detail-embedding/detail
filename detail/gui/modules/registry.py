@@ -10,15 +10,13 @@ file here + one ``register_module_ui`` call — no shell change.
 
 from abc import ABC, abstractmethod
 
-from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import QWidget
-
 from detail.configs.describe import describe_config, module_display_name
 from detail.gui._pydantic_form import set_any_field_value
 
 # The result-view protocol is part of this registry's contract and is re-exported from here; it
 # lives in its own module only because a workspace module imports it while this package is still
 # importing the module UIs that import that workspace.
+from detail.gui.qt import QWidget, Signal
 from detail.gui.result_views import (  # noqa: F401 — re-exported
     DEFAULT_PURPOSE,
     RESULTS_VIEW,
@@ -35,7 +33,7 @@ class ConfigWidget(QWidget):
     # Emitted when the form's choice of *upstream run* changes, so the launch dialog can
     # re-mark which recordings that upstream actually covers. A form whose config has no
     # upstream picker never emits it.
-    coverage_changed = pyqtSignal()
+    coverage_changed = Signal()
 
     def config(self) -> dict:
         raise NotImplementedError
