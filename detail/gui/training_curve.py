@@ -102,7 +102,7 @@ class TrainingCurve(QWidget):
         # below the fold.
         #
         # The **minimum** is the floor it may be squeezed to; the **hint** is what it draws at
-        # (assigned on the instance, which is what PyQt's virtual dispatch reads); `Preferred`
+        # (assigned on the instance, which is what the binding's virtual dispatch reads); `Preferred`
         # stops it competing with the page's trailing stretch. No maximum, and no
         # `setFixedHeight`: one number acting as floor and ceiling crops the x-axis, and the
         # bottom of a plot is its axis.

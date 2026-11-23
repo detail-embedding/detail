@@ -28,6 +28,7 @@ from detail.gui.qt import (
     QWidget,
     Qt,
     Signal,
+    receivers,
 )
 from detail.gui.run_preview import _to_pixmap
 
@@ -154,12 +155,12 @@ class QuickPreview(QWidget):
     def _refresh_open_hint(self) -> None:
         """Say the double-click is there, but only where a host has wired it.
 
-        `self.receivers(...)` rather than a flag a caller sets: the claim and the connection
+        `receivers(self, ...)` rather than a flag a caller sets: the claim and the connection
         would otherwise live in two files, and one of them would be wrong.
         """
         self.setToolTip(
             "Double-click to open this clip"
-            if self.receivers(self.double_clicked) > 0
+            if receivers(self, self.double_clicked) > 0
             else ""
         )
 

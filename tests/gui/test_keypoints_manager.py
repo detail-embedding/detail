@@ -13,10 +13,11 @@ from detail.core.skeleton import PRESETS, Skeleton
 from detail.gui import keypoints_manager as mod
 from detail.gui import skeleton_editor
 from detail.gui.dialog import Dialog
-from detail.gui.qt import QEvent, QMessageBox, QMouseEvent, QPointF, Qt
+from detail.gui.qt import QEvent, QMessageBox, QPointF, Qt
 from detail.gui.tables import row_id
 from detail.storage import locations
 from tests.gui.conftest import drain_until
+from tests.gui.mouse import mouse_event
 
 TWO = Skeleton(names=("a", "b"), layout=((0.2, 0.5), (0.8, 0.5)))
 LEFT, RIGHT = Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton
@@ -57,7 +58,7 @@ def _at(canvas, u, v):
 
 
 def _mouse(canvas, kind, pos, button, modifiers=NONE, held=None):
-    event = QMouseEvent(
+    event = mouse_event(
         kind, pos, button, held if held is not None else button, modifiers
     )
     {

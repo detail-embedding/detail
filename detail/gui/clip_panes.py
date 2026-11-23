@@ -26,7 +26,15 @@ from __future__ import annotations
 import numpy as np
 
 from detail.gui.image_view import ImageView
-from detail.gui.qt import QLabel, QRect, QSize, QWidget, Qt, Signal
+from detail.gui.qt import (
+    QLabel,
+    QRect,
+    QSize,
+    QWidget,
+    Qt,
+    Signal,
+    receivers,
+)
 from detail.gui.run_preview import _to_pixmap
 
 #: Pixels between the footage and the side column, and between the two side panes.
@@ -82,7 +90,7 @@ class ClipPanes(QWidget):
     # -- enlarging ------------------------------------------------------------ #
     def enlargeable(self) -> bool:
         """Whether a click on a side pane opens anything: something is listening."""
-        return self.receivers(self.enlarge_wanted) > 0
+        return receivers(self, self.enlarge_wanted) > 0
 
     def _enlarge(self, pane: str) -> None:
         if self.enlargeable():

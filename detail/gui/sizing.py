@@ -154,7 +154,7 @@ _WANTS_MORE_THAN_ITS_HINT = (
 def expands_vertically(widget) -> bool:
     """Whether ``widget``'s size policy asks for more vertical space than its hint.
 
-    ``.value`` on both sides: PyQt6 refuses to ``&`` a ``Policy`` with a ``PolicyFlag``
+    ``.value`` on both sides: the binding refuses to ``&`` a ``Policy`` with a ``PolicyFlag``
     directly, and the flags are what carry the intent across ``Expanding``,
     ``MinimumExpanding`` and ``Ignored`` alike — enumerating those three by name would miss the
     next one.

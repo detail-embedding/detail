@@ -30,6 +30,7 @@ from detail.gui.qt import (
     Qt,
 )
 from detail.gui.scroll import OWNS_WHEEL
+from tests.gui.mouse import mouse_event
 
 
 def _shown(view, qapp, size=(400, 300)):
@@ -153,7 +154,6 @@ def test_pan_is_plain_left_drag(qapp):
     """Not middle-drag, not Ctrl+left-drag. Both are unreachable on a MacBook trackpad — the
     recorded `test_scatter_navigation` class, where the capability existed and could not be used.
     """
-    from detail.gui.qt import QMouseEvent
 
     view = _shown(ImageView(zoomable=True), qapp)
     view.set_frame(_patterned())
@@ -161,7 +161,7 @@ def test_pan_is_plain_left_drag(qapp):
     qapp.processEvents()
 
     def mouse(kind, pos):
-        return QMouseEvent(
+        return mouse_event(
             kind,
             QPointF(*pos),
             Qt.MouseButton.LeftButton,
@@ -185,7 +185,7 @@ def test_pan_is_plain_left_drag(qapp):
 def test_a_drag_is_not_a_click(qapp):
     """`clicked` drives play/pause on three surfaces. A pan that also toggled playback would
     make the picture jump every time somebody moved it."""
-    from detail.gui.qt import QEvent, QMouseEvent
+    from detail.gui.qt import QEvent
 
     view = _shown(ImageView(zoomable=True), qapp)
     view.set_frame(_patterned())
@@ -194,7 +194,7 @@ def test_a_drag_is_not_a_click(qapp):
     view.clicked.connect(lambda: clicks.append(1))
 
     def mouse(kind, pos):
-        return QMouseEvent(
+        return mouse_event(
             kind,
             QPointF(*pos),
             Qt.MouseButton.LeftButton,
@@ -213,10 +213,10 @@ def test_a_drag_is_not_a_click(qapp):
 
 
 def _release(view, pos):
-    from detail.gui.qt import QEvent, QMouseEvent
+    from detail.gui.qt import QEvent
 
     def mouse(kind):
-        return QMouseEvent(
+        return mouse_event(
             kind,
             QPointF(*pos),
             Qt.MouseButton.LeftButton,

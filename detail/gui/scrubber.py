@@ -1097,7 +1097,7 @@ class FrameScrubber(QWidget):
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
         # The C++ slider can outlive this Python object: the filter stays installed while the
         # scrubber's attributes are already gone, so an event arriving in that window raises
-        # `AttributeError: no attribute '_slider'` out of a slot. PyQt reports it and carries
+        # `AttributeError: no attribute '_slider'` out of a slot. Qt reports it and carries
         # on, which in the app is a dialog nobody can act on and in the suite was invisible
         # until `tests/gui/conftest.py` started failing on a swallowed slot exception.
         if getattr(self, "_slider", None) is None:

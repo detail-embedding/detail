@@ -487,7 +487,7 @@ Project rail (only inside a project — open an experiment from Experiments):
   to vertical `Expanding`, so a table with a few rows stretches and shows blank space below
   its rows; and its `sizeHint` is a constant 192px ≈ 5 rows *whatever* it holds, so a cap
   alone is a height it never reaches. **Three numbers, three jobs**: `fit_table_height` assigns
-  the **hint** (on the instance — what PyQt's virtual dispatch reads) as the display height, the
+  the **hint** (on the instance — what the binding's virtual dispatch reads) as the display height, the
   **minimum** as `MIN_VISIBLE_ROWS` = 4, how far it may be squeezed, and the **maximum** as the
   content height. The row budget is `max_visible_rows(row_height)` — what fits on *this* screen
   — which replaced a constant 16 that could never have been right on a display it was not picked
@@ -912,7 +912,7 @@ def result_views(widget, purpose="") -> list[ResultView]
     # widget.views() if it declares them, else one "Results" view with the module's purpose
 
 class MultiViewWorkspace(QWidget):           # a result widget with several views
-    view_changed = pyqtSignal(str)          # a hand-off inside it moves the page's row
+    view_changed = Signal(str)               # a hand-off inside it moves the page's row
     def views(self) -> list[ResultView]: ...
     def show_view(self, name: str) -> None: ...
     def current_view(self) -> str: ...

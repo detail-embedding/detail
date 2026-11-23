@@ -32,6 +32,7 @@ from detail.gui.qt import (
     QVBoxLayout,
     QWidget,
     Qt,
+    receivers,
 )
 from detail.gui.quick_preview import QuickPreview
 from detail.gui.sizing import lines
@@ -166,7 +167,7 @@ def test_both_strips_wire_the_double_click(qapp):
     a third strip cannot quietly ship without it.
     """
     strip = _shown(ClusterClipStrip(_Experiment()), qapp)
-    assert strip._cell.receivers(strip._cell.double_clicked) > 0
+    assert receivers(strip._cell, strip._cell.double_clicked) > 0
 
     grid = _shown(clip_grid.ClipGrid(_Experiment()), qapp)
     grid.show_clips(_clips(3))

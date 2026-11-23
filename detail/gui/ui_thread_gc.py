@@ -12,7 +12,7 @@ with the collection.
 Measured on the test suite, 2026-11-10: ``Fatal Python error: Segmentation fault`` with the main
 thread in ``busy.py``'s ``cancel`` at ``line ???`` (the closure ``run_progress`` connects to a
 window's ``destroyed``), ``EXC_BAD_ACCESS at 0x18`` inside ``_PyEval_EvalFrameDefault`` called from
-``PyQtSlotProxy::unislot`` ← ``QObject::destroyed`` ← ``QWidget::~QWidget`` ← ``DeferredDelete`` in
+the binding of the time's (PyQt6) ``PyQtSlotProxy::unislot`` ← ``QObject::destroyed`` ← ``QWidget::~QWidget`` ← ``DeferredDelete`` in
 four macOS crash reports, and ``'LiveMontage' object has no attribute 'canvas'`` from an event
 filter whose ``__dict__`` had been cleared. On a subset of the suite that crashed a worker
 in half its runs, collecting on the UI thread only gave no crashes, at no measurable cost.

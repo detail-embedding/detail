@@ -22,8 +22,6 @@ it hid so well:
 pending calls are drained at teardown — and this is its guard.
 """
 
-import pytest
-
 from detail.gui import busy
 from detail.gui.busy import run_busy
 from detail.gui.qt import QMessageBox, QWidget

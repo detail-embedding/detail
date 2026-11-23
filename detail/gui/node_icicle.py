@@ -54,6 +54,7 @@ from detail.gui.qt import (
     QWidget,
     Qt,
     Signal,
+    receivers,
 )
 from detail.gui.scroll import OWNS_WHEEL
 from detail.gui.sizing import lines
@@ -1114,7 +1115,7 @@ class NodeIcicle(QWidget):
             dead or ("" if self._names.get(node) else "This has no label of its own.")
         )
         menu.addSeparator()
-        if self.receivers(self.window_wanted) > 0:
+        if receivers(self, self.window_wanted) > 0:
             menu.addAction("Open in window", lambda: self.window_wanted.emit(node))
         menu.addAction("Zoom to this", lambda: self.zoom_to(node))
         return menu

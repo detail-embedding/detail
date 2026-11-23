@@ -28,6 +28,7 @@ from detail.gui.qt import (
     QToolButton,
     QWidget,
     Qt,
+    disconnect_if_connected,
 )
 from detail.gui.run_units import DONE, FAILED, QUEUED, Unit, group_units
 from detail.gui.sizing import lines, mono_font
@@ -245,10 +246,7 @@ class UnitRows(QWidget):
         if unit.is_group:
             open_ = unit.name in self._expanded
             row.button.setText(("▾ " if open_ else "▸ ") + unit.name)
-            try:
-                row.button.clicked.disconnect()
-            except TypeError:
-                pass  # never connected
+            disconnect_if_connected(row.button.clicked)  # a row built just now has none
             row.button.clicked.connect(
                 lambda _=False, name=unit.name: self._toggle(name)
             )

@@ -26,7 +26,7 @@ row through one.
 
 import pytest
 
-from detail.gui.qt import QEvent, QKeyEvent, QTest, Qt
+from detail.gui.qt import QEvent, QKeyEvent, Qt, qwait
 from detail.gui.scrubber import FrameScrubber, accelerated_step
 from tests.gui.conftest import drain_until
 
@@ -111,7 +111,7 @@ def test_decode_is_background_and_latest_only(qapp):
     s.set_frame(0)  # dispatches; the next two pile into _pending while it runs
     s.set_frame(5)
     s.set_frame(9)
-    QTest.qWait(300)  # let the worker drain
+    qwait(300)  # let the worker drain
 
     assert calls == [0, 9]  # 5 was coalesced away — only the latest is decoded
     assert rendered == [0, 9]  # delivered on the UI thread, ending on the latest

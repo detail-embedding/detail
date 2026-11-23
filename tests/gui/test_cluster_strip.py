@@ -27,6 +27,7 @@ from detail.gui.cluster_strip import (
 from detail.gui.cluster_strip import cluster_colors
 from detail.gui.qt import QFrame
 from detail.gui.sizing import lines
+from tests.gui.mouse import mouse_event
 
 
 def _at(strip, fraction: float, row: int = 0, *, lane: bool = False):
@@ -43,10 +44,10 @@ def _at(strip, fraction: float, row: int = 0, *, lane: bool = False):
 
 
 def _mouse(strip, kind, point, buttons=None):
-    from detail.gui.qt import QEvent, QMouseEvent, Qt
+    from detail.gui.qt import QEvent, Qt
 
     left = Qt.MouseButton.LeftButton
-    event = QMouseEvent(
+    event = mouse_event(
         getattr(QEvent.Type, kind),
         point,
         left,
@@ -566,7 +567,7 @@ def test_a_decode_that_really_comes_back_empty_still_says_so(qapp, experiment):
 def test_clicking_a_band_selects_its_cluster(qapp):
     """The same destination a scatter click takes: both are pictures of the vocabulary, and the
     thing a person does on seeing an interesting stretch is point at it."""
-    from detail.gui.qt import QEvent, QMouseEvent, QPointF, Qt
+    from detail.gui.qt import QEvent, QPointF, Qt
 
     strip = EthogramStrip()
     strip.set_rows(
@@ -817,7 +818,7 @@ def test_bars_and_lane_marks_are_hit_at_the_laned_row_pitch(qapp):
 
 
 def test_clicking_a_lane_mark_says_which(qapp):
-    from detail.gui.qt import QEvent, QMouseEvent, QPointF, Qt
+    from detail.gui.qt import QEvent, QPointF, Qt
 
     strip = _laned(qapp)
     got = []

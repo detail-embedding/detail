@@ -40,6 +40,7 @@ from detail.gui.qt import (
     QVBoxLayout,
     QWidget,
     Qt,
+    receivers,
 )
 from tests.gui.conftest import pump_for
 
@@ -53,12 +54,12 @@ def _drain(qapp, predicate, timeout_ms: int = 10_000) -> bool:
 
 def _settled(qapp, measure, quiet_ms: int = 300, timeout_ms: int = 5_000) -> bool:
     """Pump until ``measure()`` has not changed for ``quiet_ms``; False if it never stops."""
-    from detail.gui.qt import QTest
+    from detail.gui.qt import qwait
 
     last, still, waited = measure(), 0, 0
     while waited < timeout_ms:
         qapp.processEvents()
-        QTest.qWait(10)
+        qwait(10)
         waited += 10
         now = measure()
         still = still + 10 if now == last else 0
@@ -2374,9 +2375,9 @@ def test_leaving_and_returning_leaves_one_listener(qapp, fitted, monkeypatch, tm
         one_round()
         pump_for(qapp, 100)
         return (
-            signals.receivers(queue.progress),
-            signals.receivers(queue.recording_done),
-            signals.receivers(queue.failed),
+            receivers(signals, queue.progress),
+            receivers(signals, queue.recording_done),
+            receivers(signals, queue.failed),
         )
 
     try:

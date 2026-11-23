@@ -398,7 +398,7 @@ def test_help_popover_opens_full_docs_when_built(qapp, monkeypatch):
 def test_open_full_docs_shows_progress_while_rebuilding(qapp, monkeypatch):
     # "Open full docs" when the site must rebuild is a several-second mkdocs build; it
     # now runs behind a progress bar over the window instead of a silent wait.
-    from detail.gui.qt import QTest, QWidget
+    from detail.gui.qt import QWidget, qwait
 
     from detail import help as help_mod
     from detail.gui import help_ui
@@ -430,7 +430,7 @@ def test_open_full_docs_shows_progress_while_rebuilding(qapp, monkeypatch):
         qapp.processEvents()
         if opened:
             break
-        QTest.qWait(10)
+        qwait(10)
     assert opened.get("url") == "http://x/b"
 
 

@@ -83,6 +83,7 @@ from detail.gui.qt import (
     QVBoxLayout,
     QWidget,
     Qt,
+    disconnect_if_connected,
 )
 from detail.gui.scroll import PageScroll
 from detail.gui.status_color import ERROR, set_label_color
@@ -1767,10 +1768,7 @@ class MainWindow(QMainWindow):
         old = self._notes_box
         if old is not None and alive(old):
             for signal in (old.saved, old.open_changed):
-                try:
-                    signal.disconnect(self._sync_notes_button)
-                except TypeError:
-                    pass
+                disconnect_if_connected(signal, self._sync_notes_button)
         self._notes_box = box
         if box is not None:
             box.saved.connect(self._sync_notes_button)

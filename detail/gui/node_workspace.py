@@ -133,6 +133,7 @@ from detail.gui.qt import (
     QWidget,
     Qt,
     Signal,
+    disconnect_if_connected,
 )
 from detail.gui.sizing import ResizeHandle, lines, set_available
 from detail.gui.workers import BackgroundCall
@@ -2307,10 +2308,9 @@ class NodeInterpretTab(QWidget):
                 (wait.queue.recording_done, self._on_preview_done),
                 (wait.queue.failed, self._on_preview_failed),
             ):
-                try:
-                    signal.disconnect(slot)
-                except TypeError:
-                    pass  # never connected, or already gone
+                disconnect_if_connected(
+                    signal, slot
+                )  # never connected, or already gone
         self._montage.clear_blocked()
 
     # --- cluster windows -------------------------------------------------------------------

@@ -46,7 +46,7 @@ The guards below are in three layers, because no one of them is enough:
   down. **The trap here is real and cost the reporter an afternoon:** ``processEvents()``
   does *not* deliver ``DeferredDelete``, so a test that only pumps leaves the page alive,
   the delivery succeeds, and the test passes against the unfixed code. Hence the explicit
-  ``sip.isdeleted`` assertions before anything is pumped;
+  ``is_deleted`` assertions before anything is pumped;
 - two source scans, so a site added tomorrow is covered rather than remembered — every
   worker in ``detail/gui/`` descends from the base, and every construction names a receiver.
   The scans are what covered the ``analysis_clip_annotation`` sibling (since removed) and

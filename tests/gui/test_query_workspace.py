@@ -22,9 +22,10 @@ from detail.gui.modules.analysis_query import (
     _CalibrateTab,
     _QueryWorkspace,
 )
-from detail.gui.qt import QEvent, QLabel, QMouseEvent, QPointF, Qt
+from detail.gui.qt import QEvent, QLabel, QPointF, Qt
 
 from tests.api.test_query import N_EMBEDDED, _searched, _two_behaviors
+from tests.gui.mouse import mouse_event
 
 PERIOD = 1_000_000  # the fixture's step between embedded frames
 
@@ -1413,7 +1414,7 @@ def _click(strip, index: int):
     """Click the cell at ``index`` the way a person does — through the cell, not the strip."""
     cell = strip._cells[index]
     cell.mousePressEvent(
-        QMouseEvent(
+        mouse_event(
             QEvent.Type.MouseButtonPress,
             QPointF(5.0, 5.0),
             Qt.MouseButton.LeftButton,
@@ -1736,7 +1737,7 @@ def test_the_divider_cannot_be_dragged_on_a_scan_snapshot(qapp, tmp_path):
 
     def drag(kind, x):
         handle.event(
-            QMouseEvent(
+            mouse_event(
                 kind,
                 QPoint(x, 10).toPointF(),
                 Qt.MouseButton.LeftButton,

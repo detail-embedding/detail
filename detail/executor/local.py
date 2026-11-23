@@ -237,7 +237,7 @@ def _drop_exited_coordinators() -> None:
     form — ``list.remove(proc)`` after a snapshot — asserts that the caller is the only one
     cleaning up, and the second of two readers reaping the same finished run raised
     ``ValueError: list.remove(x): x not in list`` out of ``AttachedRun.progress`` on the GUI's
-    worker thread, which PyQt turns into a process abort.
+    worker thread, which aborted the whole app under the Qt binding of the time.
     """
     _SPAWNED_COORDINATORS[:] = [p for p in _SPAWNED_COORDINATORS if p.poll() is None]
 

@@ -581,11 +581,7 @@ def _typing_split(qapp, key):
     split.resize(800, 300)
     split.show()
     split.activateWindow()
-    (
-        QApplication.setActiveWindow(split)
-        if hasattr(QApplication, "setActiveWindow")
-        else None
-    )
+    QTest.qWaitForWindowActive(split, 2000)
     side.setFocus()
     qapp.processEvents()
     assert side.hasFocus(), "the stand-in field must start with the focus"

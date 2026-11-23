@@ -20,8 +20,8 @@ one suite run in two:
           EXC_BAD_ACCESS ... (possible pointer authentication failure)
 
 An application filter is offered *every* object's events, including posted ones bound for an
-object that has since been destroyed, and sip must build a Python wrapper for that pointer before
-any of the filter's own code runs. No guard inside the filter can help, because the crash happens
+object that has since been destroyed, and the binding must build a Python wrapper for that pointer
+before any of the filter's own code runs (the stack above is the binding of the time's, PyQt6). No guard inside the filter can help, because the crash happens
 upstream of its first line. **A dialog applying a policy to itself has none of that exposure**:
 the only object involved is the one being shown, which is alive by definition.
 

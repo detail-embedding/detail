@@ -38,7 +38,10 @@ import pytest
 
 from detail.gui.behavior_query import _ClipPlayer
 from detail.gui.collapse import CollapsibleBand
-from detail.gui.qt import QSplitter
+from detail.gui.qt import (
+    QSplitter,
+    receivers,
+)
 
 #: What both pages call their three sections. Not "whatever each one happens to be called":
 #: the ethogram band used to title itself from `terms.unit`, so the same section was "Cluster
@@ -101,7 +104,7 @@ def test_the_clustering_page_is_its_tree_and_montage_not_the_bands(surfaces):
     assert not bands, f"the tree must not fold; bands: {list(bands)}"
     handle = main._tree_handle
     assert isinstance(handle, ResizeHandle), "the tree must drag"
-    assert handle.receivers(handle.dragged) > 0, "the handle resizes nothing"
+    assert receivers(handle, handle.dragged) > 0, "the handle resizes nothing"
     assert main.findChildren(LiveMontage)
 
 

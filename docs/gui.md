@@ -9,7 +9,7 @@ The desktop app does everything the [CLI](cli.md) does, plus tools that need a m
 ## Install & launch
 
 ```bash
-uv pip install -e ".[gui]"      # GUI deps (PyQt6, pyqtgraph); add a backend, e.g. ".[gui,yolo]"
+uv pip install -e ".[gui]"      # GUI deps (PySide6, pyqtgraph); add a backend, e.g. ".[gui,yolo]"
 ```
 
 Launch with `detail-gui` (equivalently `python -m detail.gui`). There is no `detail gui` subcommand. On a machine that already has the tool installed, see [Launch it again later](getting-started.md#launch-it-again-later).

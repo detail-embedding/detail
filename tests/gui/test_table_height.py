@@ -146,7 +146,7 @@ def test_the_display_height_and_the_squeeze_floor_are_different_numbers(qapp):
 
     ``QTableView.sizeHint()`` is a constant 192px — about five rows — whatever the table holds,
     so the display height has to be stated somewhere. It lives on the **hint** (assigned on the
-    instance, which is what PyQt's virtual dispatch reads, and which works the same on the
+    instance, which is what the binding's virtual dispatch reads, and which works the same on the
     ``QTableWidget``s `comparison` and `MetadataPage` pass in).
 
     It used to live on the *minimum*, and that was one number doing two jobs: "how tall this

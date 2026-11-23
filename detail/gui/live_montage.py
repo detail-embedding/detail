@@ -175,6 +175,7 @@ from detail.gui.qt import (
     QWidget,
     Qt,
     Signal,
+    receivers,
 )
 from detail.gui.sizing import emphasis_font, small_font
 from detail.gui.workers import GuiWorker
@@ -1003,7 +1004,7 @@ class LiveMontage(QWidget):
         """
         if self._layer is not None:
             return True
-        return self._click_hint is not None and self.receivers(self.clip_clicked) > 0
+        return self._click_hint is not None and receivers(self, self.clip_clicked) > 0
 
     def click_hint(self, index: int) -> str:
         if not self.is_clickable() or not 0 <= index < len(self._clips):

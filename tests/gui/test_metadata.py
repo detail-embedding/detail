@@ -114,7 +114,7 @@ def test_metadata_page_export_csv(qapp, tmp_path, monkeypatch):
     monkeypatch.setattr(pages.QMessageBox, "information", lambda *a, **k: None)
     page = MetadataPage(experiment)
     page._export_csv()  # writes off-thread now (run_busy)
-    from detail.gui.qt import QTest
+    from detail.gui.qt import qwait
 
     from detail.gui import busy
 
@@ -126,7 +126,7 @@ def test_metadata_page_export_csv(qapp, tmp_path, monkeypatch):
     for _ in range(200):
         if out.exists() and not busy._active:
             break
-        QTest.qWait(10)
+        qwait(10)
     # The template carries the name and the video file name so the person filling it in
     # can tell the rows apart — an id alone says nothing. Both are keys on the way back,
     # never values (#330). The completion columns are never part of the CSV — they aren't

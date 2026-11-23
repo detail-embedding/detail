@@ -13,6 +13,7 @@ import pytest
 
 from tests.gui.conftest import drain_thread_pool
 from tests.gui.conftest import drain_until
+from tests.gui.mouse import mouse_event
 
 
 def _video_recording(tmp_path, n_frames=6, w=64, h=48, fps=30.0):
@@ -87,7 +88,7 @@ def _click(canvas, x, y):
     from detail.gui.qt import QMouseEvent, QPointF, Qt
 
     canvas.mousePressEvent(
-        QMouseEvent(
+        mouse_event(
             QMouseEvent.Type.MouseButtonPress,
             QPointF(x, y),
             Qt.MouseButton.LeftButton,
@@ -104,7 +105,7 @@ def _release(canvas, x, y, button=None):
 
     button = Qt.MouseButton.LeftButton if button is None else button
     canvas.mouseReleaseEvent(
-        QMouseEvent(
+        mouse_event(
             QMouseEvent.Type.MouseButtonRelease,
             QPointF(x, y),
             button,
@@ -118,7 +119,7 @@ def _right_press(canvas, x, y):
     from detail.gui.qt import QMouseEvent, QPointF, Qt
 
     canvas.mousePressEvent(
-        QMouseEvent(
+        mouse_event(
             QMouseEvent.Type.MouseButtonPress,
             QPointF(x, y),
             Qt.MouseButton.RightButton,
@@ -132,7 +133,7 @@ def _right_move(canvas, x, y):
     from detail.gui.qt import QMouseEvent, QPointF, Qt
 
     canvas.mouseMoveEvent(
-        QMouseEvent(
+        mouse_event(
             QMouseEvent.Type.MouseMove,
             QPointF(x, y),
             Qt.MouseButton.NoButton,
@@ -485,7 +486,7 @@ def test_a_left_release_during_a_right_press_deletes_nothing(qapp):
 
     _right_press(canvas, rect.x(), rect.y())  # held on the (0, 0) vertex
     canvas.mousePressEvent(
-        QMouseEvent(
+        mouse_event(
             QMouseEvent.Type.MouseButtonPress,
             QPointF(240, 180),
             Qt.MouseButton.LeftButton,

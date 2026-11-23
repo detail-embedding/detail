@@ -156,17 +156,17 @@ class _FakeRunRecording:
 def _wait_populated(w, attr="_scrubber", timeout_ms=2000):
     """The run's counts load off-thread, so the strip/timeline/scrubber appear only
     after _populate; spin the event loop until they do."""
-    from detail.gui.qt import QTest
+    from detail.gui.qt import qwait
 
     for _ in range(timeout_ms // 10):
         if hasattr(w, attr):
             return
-        QTest.qWait(10)
+        qwait(10)
     raise AssertionError(f"run preview did not populate ({attr}) off-thread")
 
 
 def test_detection_preview_builds_and_strip_click_jumps(qapp):
-    from detail.gui.qt import QTest
+    from detail.gui.qt import qwait
 
     from detail.gui.run_preview import DetectionRunPreview
 
@@ -178,19 +178,19 @@ def test_detection_preview_builds_and_strip_click_jumps(qapp):
     # would have gone unnoticed, since nothing asserted it.
     assert w._summary.text() == "5 detections · 4/5 frames with ≥1 · up to 2/frame"
     w._strip.clicked.emit(2)  # strip click → scrubber.set_frame
-    QTest.qWait(60)
+    qwait(60)
     assert w._frame == 2
 
 
 def test_tracking_preview_builds_and_timeline_click_jumps(qapp):
-    from detail.gui.qt import QTest
+    from detail.gui.qt import qwait
 
     from detail.gui.run_preview import TrackingRunPreview
 
     w = TrackingRunPreview(_FakeRunRecording(), "track_01")  # builds the track timeline
     _wait_populated(w, "_timeline")
     w._timeline.clicked.emit(3)  # the click that used to crash on the removed _go
-    QTest.qWait(60)
+    qwait(60)
     assert w._frame == 3
 
 
@@ -292,7 +292,7 @@ def test_the_frame_is_on_the_page_and_its_zoom_survives_the_next_frame(qapp, whi
     and the preview rendered its strips around an empty space. Construction, the smoke corpus
     and the controls-under-picture rule all passed against it; the block measured itself.
     """
-    from detail.gui.qt import QTest
+    from detail.gui.qt import qwait
 
     from detail.gui import run_preview
     from detail.gui.image_view import ImageView
@@ -315,7 +315,7 @@ def test_the_frame_is_on_the_page_and_its_zoom_survives_the_next_frame(qapp, whi
     assert zoomed > 1.0
     w._scrubber.set_frame(3)
     waits.until(qapp, lambda: w._frame == 3, "the scrub")
-    QTest.qWait(50)
+    qwait(50)
     assert w._image.zoom == zoomed, "a new frame reset the zoom, so scrubbing loses it"
 
 
@@ -435,7 +435,7 @@ class _FakeRecording:
 
 
 def test_input_image_scrubber(qapp):
-    from detail.gui.qt import QTest
+    from detail.gui.qt import qwait
 
     from detail.gui.run_preview import InputImageScrubber
 
@@ -445,7 +445,7 @@ def test_input_image_scrubber(qapp):
     for _ in range(200):  # the constructor-spec resolve + preview open runs off-thread
         if scrubber._total:
             break
-        QTest.qWait(10)
+        qwait(10)
     assert scrubber._total == 3  # scrubber spans every source frame
     assert scrubber._scrubber._slider.maximum() == 2
     scrubber._display(0, scrubber._compute(0))  # frame with a detection -> both panes
@@ -493,8 +493,6 @@ class _FakeEmbRecording:
 
 def test_embedding_run_preview(qapp):
     import types
-
-    from detail.gui.qt import QTest
 
     pytest.importorskip("pyqtgraph")
     from detail.gui.run_preview import EmbeddingRunPreview

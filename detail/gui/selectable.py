@@ -24,8 +24,9 @@ about the Python is wrong:
           EXC_BAD_ACCESS ... (possible pointer authentication failure)
 
 An application filter is offered *every* object's events, including posted ones bound for an
-object that has since been destroyed. Before any of the filter's own code runs, sip must build a
-Python wrapper for that pointer — and that is where it dies. No guard inside ``eventFilter`` can
+object that has since been destroyed. Before any of the filter's own code runs, the binding must
+build a Python wrapper for that pointer — and that is where it died (the stack above is from the
+binding of the time, PyQt6). No guard inside ``eventFilter`` can
 help, because the crash happens upstream of its first line. The reach is the defect.
 
 So this is a plain function, called at the seams where something is put on screen, and the

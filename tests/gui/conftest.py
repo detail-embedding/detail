@@ -2,7 +2,7 @@
 
 **The class: an exception escaping a Qt slot is reported and swallowed**, so a widget still
 constructs and every test passes over the part that never ran. Qt cannot propagate an exception out
-of a slot across the C++ boundary, so PyQt routes it to ``sys.excepthook`` and carries on. The app's
+of a slot across the C++ boundary, so the binding routes it to ``sys.excepthook`` and carries on. The app's
 own excepthook is **right** to do that — a stray error in one handler should not kill a session
 someone has work open in — but a test suite that inherits it reports green for a construction that
 half-happened.
@@ -78,7 +78,7 @@ def drain_until(
     rebuild ``deleteLater``-ed is otherwise still a findable child when the predicate is
     checked, and a lookup by text found an old disabled button beside its replacement.
     """
-    from detail.gui.qt import QEvent, QTest
+    from detail.gui.qt import QEvent, qwait
 
     waited = 0
     while waited < timeout_ms:
@@ -86,7 +86,7 @@ def drain_until(
         qapp.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         if predicate():
             return True
-        QTest.qWait(10)
+        qwait(10)
         waited += 10
     if predicate():
         return True
@@ -115,13 +115,13 @@ def pump_for(qapp, ms: int) -> None:
     to be spelled ``drain_until(qapp, lambda: False, ms)``: a wait for something that never
     happens, whose timeout was the point.
     """
-    from detail.gui.qt import QEvent, QTest
+    from detail.gui.qt import QEvent, qwait
 
     waited = 0
     while waited < ms:
         qapp.processEvents()
         qapp.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-        QTest.qWait(10)
+        qwait(10)
         waited += 10
     qapp.processEvents()
     qapp.sendPostedEvents(None, QEvent.Type.DeferredDelete)
@@ -149,7 +149,7 @@ def drain_busy_calls(qapp, timeout_ms: int = 5_000) -> int:
     Exposed so the guard can call it directly; ``_no_leaked_busy_calls`` is what makes every
     GUI test use it.
     """
-    from detail.gui.qt import QTest
+    from detail.gui.qt import qwait
 
     from detail.gui import busy
     from detail.gui import workers
@@ -167,7 +167,7 @@ def drain_busy_calls(qapp, timeout_ms: int = 5_000) -> int:
     waited = 0
     while pending() and waited < timeout_ms:
         qapp.processEvents()
-        QTest.qWait(10)
+        qwait(10)
         waited += 10
     qapp.processEvents()
     return outstanding
@@ -188,12 +188,12 @@ def drain_thread_pool(qapp, timeout_ms: int = 5_000) -> int:
     a queued signal, so without ``processEvents`` the work would finish and the *delivery* would
     still cross into the next test.
     """
-    from detail.gui.qt import QTest, QThreadPool
+    from detail.gui.qt import QThreadPool, qwait
 
     pool = QThreadPool.globalInstance()
 
     def busy_count() -> int:
-        #  only; this PyQt6 has no . A queued-but-unstarted
+        # Active threads only: the pool reports no count of queued tasks. A queued-but-unstarted
         # task is covered anyway: the pool starts it while this loop pumps, and the loop only
         # exits once nothing is active.
         return pool.activeThreadCount()
@@ -202,7 +202,7 @@ def drain_thread_pool(qapp, timeout_ms: int = 5_000) -> int:
     waited = 0
     while busy_count() and waited < timeout_ms:
         qapp.processEvents()
-        QTest.qWait(10)
+        qwait(10)
         waited += 10
     qapp.processEvents()
     return outstanding
@@ -218,7 +218,7 @@ def _slot_exceptions_are_failures(request, monkeypatch):
     """An exception escaping a Qt slot fails the test that caused it.
 
     The class: **a slot that raises is reported and swallowed, so the suite cannot see it.**
-    PyQt6 routes an exception escaping a slot to ``sys.excepthook`` and then carries on, and
+    The binding routes an exception escaping a slot to ``sys.excepthook`` and then carries on, and
     the app installs a hook that reports rather than dying (``test_fatal_slots.py``) — which is
     right for a user mid-session and blinding for a test. The widget still constructs, the
     assertions still pass, and the only evidence is a traceback on stderr that a green run
@@ -253,15 +253,19 @@ def destroy_new_windows(qapp, before: set[int]) -> int:
     Exposed so the guard can call it directly; ``_windows_die_with_their_test`` is what makes
     every GUI test use it.
     """
-    from detail.gui.qt import QEvent, address, owned_by_python
+    from detail.gui.qt import QEvent, address, created_by_python
 
-    # Only windows Python owns — ones a test made. A top-level that something else owns (a
-    # completer's popup, a menu a button keeps) is that owner's to delete, and deleting it here
-    # is a double free when the owner goes: measured, a segfault in `~QCompleter`.
+    # Only windows Python made — ones a test built. A top-level Qt made for something else (a
+    # completer's popup) is that owner's to delete, and deleting it here is a double free when
+    # the owner goes: measured, a segfault in `~QCompleter`.
+    #
+    # *Made*, not *owned*: PySide6 hands a widget to C++ when some reads return it —
+    # `QSplitterHandle.splitter()` does — so every `GripSplitter` a test showed stopped counting
+    # as Python's, outlived its test, and broke later tests from the collector (#107).
     doomed = [
         w
         for w in qapp.topLevelWidgets()
-        if owned_by_python(w) and address(w) not in before
+        if created_by_python(w) and address(w) not in before
     ]
     for widget in doomed:
         widget.deleteLater()
@@ -285,7 +289,7 @@ def _windows_die_with_their_test(qapp):
     into Python objects that no longer have their attributes, and functions that no longer have
     their globals. Measured 2026-11-10: ``Fatal Python error: Segmentation fault`` in
     ``busy.py``'s ``cancel`` at ``line ???`` (the closure ``run_progress`` connects to a window's
-    ``destroyed``), ``EXC_BAD_ACCESS at 0x18`` under ``PyQtSlotProxy::unislot`` ←
+    ``destroyed``), ``EXC_BAD_ACCESS at 0x18`` under the earlier binding's ``PyQtSlotProxy::unislot`` ←
     ``QObject::destroyed`` in four macOS crash reports, and ``'LiveMontage' object has no attribute
     'canvas'`` / ``'ClipPaneWindow' object has no attribute '_body_widget'`` raised from an event
     filter — each in a test that never touched that window. The segfault killed an xdist worker,
@@ -449,7 +453,7 @@ def capable_machine(monkeypatch, request):
 
 @pytest.fixture(scope="session")
 def qapp(tmp_path_factory):
-    """A headless QApplication for widget tests (skips if PyQt6 is absent)."""
+    """A headless QApplication for widget tests; a missing binding is an error, not a skip."""
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from detail.gui.qt import QApplication, QCoreApplication, QSettings, QStandardPaths
 

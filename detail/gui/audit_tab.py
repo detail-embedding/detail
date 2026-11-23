@@ -443,7 +443,7 @@ class AuditTab(QWidget):
             column.addWidget(button)
             self._scopes[scope] = button
         # Guarded: `toggled` fires synchronously, and `_on_scope` reaches for the list and
-        # the player — neither of which is built yet. PyQt reports an exception escaping a
+        # the player — neither of which is built yet. Qt reports an exception escaping a
         # slot and carries on, so without this the tab still *constructs*, with a sidebar
         # that was never filled and a traceback nobody reads.
         self._syncing = True
@@ -472,9 +472,8 @@ class AuditTab(QWidget):
         # the scope radios above the list, so the stretch goes at the end of that column rather
         # than into a wrapper around the table.
         #
-        # Fitted **here**, on the empty table, as well as on every refill: the hint is a method
-        # assigned on the instance and sip stops looking for a Python override once C++ has
-        # asked, so a table first sized after it has been laid out never takes the size.
+        # Fitted **here**, on the empty table, as well as on every refill, so the table's first
+        # layout already has its size (`tables.fit_table_height` says why the order mattered).
         fit_table_height(self._list, max_rows=BROWSE_ROWS, min_rows=0)
         column.addWidget(self._list)
         column.addStretch(1)
@@ -534,9 +533,8 @@ class AuditTab(QWidget):
         # So: the height the picture needs at the width this block actually has, capped. Height
         # from width is not a feedback loop — a vertical layout takes the width from the parent
         # and never from this hint — which is the same reasoning `PictureWithControls._reflow`
-        # already runs on. Assigned before the stack is ever laid out: sip stops looking for a
-        # Python override of a C++ virtual once C++ has asked and found none, so a hint set
-        # later is invisible to the layout (`tables.fit_table_height` records the same).
+        # already runs on. Assigned before the stack is ever laid out, so its first layout
+        # already reads it (`tables.fit_table_height` records why the order once mattered).
         column.addWidget(self._stack)
         self._where = QLabel()
         self._where.setAlignment(Qt.AlignmentFlag.AlignCenter)

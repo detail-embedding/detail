@@ -26,7 +26,7 @@ import pytest
 
 from detail.api.experiment import Experiment
 from detail.gui import pages as gui_pages
-from detail.gui.qt import QTest
+from detail.gui.qt import qwait
 from detail.storage import locations
 from detail.storage import read_cache
 from detail.storage import recording as recording_store
@@ -56,7 +56,7 @@ def _round_trips(qapp, root, build, settle):
         waited = 0
         while waited < 10_000 and not settle():
             qapp.processEvents()
-            QTest.qWait(10)
+            qwait(10)
             waited += 10
         qapp.processEvents()
     return sum(seen.values())
@@ -202,7 +202,7 @@ def test_the_recordings_table_reads_nothing_on_the_ui_thread(qapp, tmp_path):
         waited = 0
         while waited < 10_000 and page._table.view.model().rowCount() != SIZES[1]:
             qapp.processEvents()
-            QTest.qWait(10)
+            qwait(10)
             waited += 10
 
     assert (

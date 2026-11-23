@@ -504,7 +504,7 @@ def _overlapping(qapp, start, key):
     """Start a slow call, then a fast one, release the slow one; return what was delivered."""
     import threading
 
-    from detail.gui.qt import QTest
+    from detail.gui.qt import qwait
 
     host = QWidget()
     got, failed = [], []
@@ -514,12 +514,12 @@ def _overlapping(qapp, start, key):
     finished(newer, "the newer read")
     for _ in range(20):
         qapp.processEvents()
-        QTest.qWait(5)
+        qwait(5)
     gate.set()  # the older read finishes last
     finished(older, "the older read")
     for _ in range(20):
         qapp.processEvents()
-        QTest.qWait(5)
+        qwait(5)
     assert busy._active == set(), "a superseded call was not released"
     assert host.findChildren(BusyOverlay) == [], "a superseded call left its overlay up"
     return got, failed
@@ -553,7 +553,7 @@ def test_without_a_name_both_results_land_in_finishing_order(qapp):
 def test_a_superseded_error_is_dropped_too(qapp):
     import threading
 
-    from detail.gui.qt import QTest
+    from detail.gui.qt import qwait
 
     host = QWidget()
     got, failed = [], []
@@ -569,14 +569,14 @@ def test_a_superseded_error_is_dropped_too(qapp):
     finished(older, "the stale read")
     for _ in range(40):
         qapp.processEvents()
-        QTest.qWait(5)
+        qwait(5)
     assert got == ["fresh"]
     assert failed == [], "an error from a read nobody is waiting for any more was shown"
 
 
 def test_names_are_per_widget(qapp):
     """Two widgets loading the same kind of thing do not supersede each other."""
-    from detail.gui.qt import QTest
+    from detail.gui.qt import qwait
 
     first, second = QWidget(), QWidget()
     got = []
@@ -586,7 +586,7 @@ def test_names_are_per_widget(qapp):
     finished(b, "the second widget's read")
     for _ in range(20):
         qapp.processEvents()
-        QTest.qWait(5)
+        qwait(5)
     assert sorted(got) == ["first", "second"]
 
 

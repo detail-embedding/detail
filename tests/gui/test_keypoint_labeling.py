@@ -17,6 +17,7 @@ from detail.gui import keypoint_labeling as mod
 from detail.gui.qt import QMessageBox, QTest, Qt
 from tests.gui import subjects
 from tests.gui.conftest import drain_busy_calls, drain_until
+from tests.gui.mouse import mouse_event
 
 SK = Skeleton(names=("nose", "tail_base"), edges=(("nose", "tail_base"),))
 TRACKED = (0, 2, 4)  # the fixture's detections (tests/gui/subjects.py `_FRAMES`)
@@ -299,7 +300,7 @@ def test_a_placed_point_can_be_dragged_to_move_it(qapp, proj):
 
 
 def test_the_view_turns_a_press_on_a_grabbable_thing_into_a_drag_not_a_click(qapp):
-    from detail.gui.qt import QEvent, QMouseEvent, QPixmap, QPointF
+    from detail.gui.qt import QEvent, QPixmap, QPointF
 
     from detail.gui.image_view import ImageView
 
@@ -321,7 +322,7 @@ def test_the_view_turns_a_press_on_a_grabbable_thing_into_a_drag_not_a_click(qap
             if kind != QEvent.Type.MouseMove
             else Qt.MouseButton.NoButton
         )
-        event = QMouseEvent(
+        event = mouse_event(
             kind,
             QPointF(x, y),
             button,

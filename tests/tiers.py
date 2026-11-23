@@ -241,8 +241,8 @@ GUARD_FILES = frozenset(
         "tests/test_encoding_guard.py",
         # A Qt method restored by hand no longer binds; the next caller in the process fails.
         "tests/test_no_hand_patched_qt.py",
-        # The Qt binding is named only in `detail/gui/qt.py`; no PyQt6, no sip, no skip on a
-        # missing binding, and no Qt in the backend packages (#107).
+        # The Qt binding is named only in `detail/gui/qt.py`; no other binding, no skip on a
+        # missing one, and no Qt in the backend packages (#107).
         "tests/test_qt_binding.py",
         # Every piece of machine-local state has a session floor, so a thread that outlives
         # its test cannot write the real preview cache, model cache or config.
@@ -574,14 +574,14 @@ def touches_qt(source: str) -> bool:
     ``detail/gui/`` and friends. So a file tiered ``gui`` with no connection to Qt is a
     file skipped on most PRs for no reason, and that is what this answers. The reverse is
     deliberately fine — a ``unit``-tier file may import ``detail.gui.workers`` for a
-    progress helper, because the ``unit`` job installs PyQt6 and always runs.
+    progress helper, because the ``unit`` job installs the ``gui`` extra and always runs.
 
     Three signals, because the dependency is usually indirect. A Qt import or the ``qapp``
     / ``qtbot`` fixture is the obvious half; the load-bearing half is an import of any
-    ``detail.gui.*`` module, which pulls in PyQt6 whether or not the test ever spells Qt
+    ``detail.gui.*`` module, which pulls in the binding whether or not the test ever spells Qt
     out. Without that, a file that imports its widget *inside* the test body and takes ``qapp``
     reads as Qt-free (the clusterer-parity and benchmark-widget files did, before they were
-    removed) — and a check written as a grep for ``"PyQt6"`` would move it into a tier with
+    removed) — and a check written as a grep for the binding's name would move it into a tier with
     no ``QApplication`` to build it in.
 
     Imports are read off the AST (a name in a docstring is not an import); the fixtures

@@ -14,6 +14,12 @@ by statement or by a string handed to ``__import__``, ``importlib.import_module`
 an error. And CLAUDE.md's *No Qt imports outside gui/*: the backend packages import neither the
 binding nor ``detail.gui``.
 
+**And no wait that holds the GIL.** PySide6 keeps the GIL through ``QTest.qWait`` and through a
+time-limited ``processEvents(flags, ms)``; PyQt6 released it. Every Python thread is frozen for
+the length of such a wait, so a test waiting on a worker waits for a worker that cannot run: in
+the first GUI-tier run after the switch, a decode thread finished only after the wait meant to
+see it had ended. ``detail.gui.qt.qwait`` is the replacement.
+
 The predicate is :func:`violations`, a pure function of ``{path: source}``, so the negative cases
 below hand it literal source.
 """
@@ -82,10 +88,30 @@ def _imported(tree: ast.AST) -> list[tuple[int, str, bool]]:
     return found
 
 
+def _gil_holding_waits(tree: ast.AST) -> list[tuple[int, str]]:
+    """``(line, call)`` for every ``.qWait(...)`` and time-limited ``.processEvents(...)``."""
+    found = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+            continue
+        if node.func.attr == "qWait":
+            found.append((node.lineno, "qWait"))
+        elif (
+            node.func.attr == "processEvents"
+            and len(node.args) + len(node.keywords) >= 2
+        ):
+            found.append((node.lineno, "processEvents with a time limit"))
+    return found
+
+
 def violations(sources: dict[str, str]) -> list[str]:
-    """``path:line: why`` for every import that breaks the rule in the module docstring."""
+    """``path:line: why`` for every import or wait that breaks the rule in the module docstring."""
     found = []
     for path, source in sources.items():
+        for line, call in _gil_holding_waits(ast.parse(source)):
+            found.append(
+                f"{path}:{line}: {call} holds the GIL under PySide6 — use detail.gui.qt.qwait"
+            )
         seen = set()
         for line, module, is_skip in _imported(ast.parse(source)):
             parts = module.split(".")
@@ -174,6 +200,15 @@ def test_the_scan_would_catch_qt_in_a_backend_package():
     assert len(violations(planted)) == len(planted)
 
 
+def test_the_scan_would_catch_a_wait_that_holds_the_gil():
+    planted = {
+        "tests/gui/test_x.py": "from detail.gui.qt import QTest\nQTest.qWait(100)\n",
+        "tests/gui/test_y.py": "def f(qapp, flags):\n    qapp.processEvents(flags, 50)\n",
+        "detail/gui/z.py": "def f(app):\n    app.processEvents(maxtime=50, flags=0)\n",
+    }
+    assert len(violations(planted)) == len(planted)
+
+
 def test_the_scan_leaves_the_allowed_shapes_alone():
     allowed = {
         THE_SHIM: "import shiboken6\nfrom PySide6.QtCore import Qt\n",
@@ -181,5 +216,7 @@ def test_the_scan_leaves_the_allowed_shapes_alone():
         "tests/gui/test_x.py": "from detail.gui.qt import QTest\n",
         "detail/core/x.py": '"""Mentions PyQt6 and sip in prose only."""\nimport math\n',
         "detail/cli.py": "def gui():\n    from detail.gui.__main__ import main\n",
+        "tests/gui/test_w.py": "from detail.gui.qt import qwait\nqwait(100)\n",
+        "tests/gui/test_v.py": "def f(qapp):\n    qapp.processEvents()\n",
     }
     assert violations(allowed) == []

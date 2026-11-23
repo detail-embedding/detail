@@ -127,12 +127,12 @@ def _embed_video_experiment(tmp_path):
 def _wait_continuity(qapp, dialog, timeout_ms=3000):
     """Block until the dialog's off-thread continuity read lands (marking is greyed out
     until it does, so a test that marks straight away would race it)."""
-    from detail.gui.qt import QTest
+    from detail.gui.qt import qwait
 
     waited = 0
     while dialog._continuity is None and waited < timeout_ms:
         qapp.processEvents()
-        QTest.qWait(10)
+        qwait(10)
         waited += 10
     assert dialog._continuity is not None, "continuity never loaded"
     return dialog
@@ -331,11 +331,11 @@ def test_example_dialog_flags_preloaded_clips_that_no_longer_resolve(qapp, tmp_p
             proj, proj.recordings, "emb_01", initial=stale, max_gap_ns=1000
         ),
     )
-    from detail.gui.qt import QTest
+    from detail.gui.qt import qwait
 
     for _ in range(100):  # the initial check is its own background call
         qapp.processEvents()
-        QTest.qWait(10)
+        qwait(10)
         if "⚠" in _clip_note(dialog, 0):
             break
     assert "⚠" in _clip_note(dialog, 0)
@@ -1408,7 +1408,7 @@ def test_selecting_a_clip_seeks_the_player_to_it(qapp, tmp_path):
 
 
 def test_selecting_a_clip_on_another_track_switches_to_it_then_seeks(qapp, tmp_path):
-    from detail.gui.qt import QTest
+    from detail.gui.qt import qwait
 
     proj = _embed_video_experiment(tmp_path)
     dialog = _multi_dialog(qapp, proj, behaviors=[_behavior_at_frame_2(proj)])
@@ -1416,13 +1416,13 @@ def test_selecting_a_clip_on_another_track_switches_to_it_then_seeks(qapp, tmp_p
     dialog._reload()
     for _ in range(300):  # the other track's read lands (it has no rows, so it fails)
         qapp.processEvents()
-        QTest.qWait(10)
+        qwait(10)
         if "loading" not in dialog._mark_start.text():
             break
     dialog._clip_table.selectRow(0)
     for _ in range(300):
         qapp.processEvents()
-        QTest.qWait(10)
+        qwait(10)
         if dialog._continuity is not None and dialog._pending_seek is None:
             break
     assert dialog._track.value() == 0

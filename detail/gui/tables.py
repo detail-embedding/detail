@@ -20,7 +20,6 @@ from detail.gui.qt import (
     QSize,
     QSizePolicy,
     QStandardItem,
-    QStandardItem,
     QTableView,
     QVBoxLayout,
     QWidget,
@@ -391,12 +390,13 @@ def fit_table_height(
     content height and competes for nothing.
 
     **Call it once before the table is first laid out** — on the empty table, where it is
-    built — and again whenever its rows change. The hint is a method assigned on the instance,
-    and sip looks for a Python override of a C++ virtual only until the first time C++ asks:
-    finding none, it caches that answer for the instance, and every later assignment is
-    invisible to the layout. Measured on Browse, whose lists were first sized after they had been
-    shown: ``sizeHint()`` read 618px from Python and 192 from the layout, and thirty instances
-    showed as five rows.
+    built — and again whenever its rows change. The hint is a method assigned on the instance.
+    The Qt binding before #107 looked for a Python override of a C++ virtual only until the first
+    time C++ asked, cached "none" for the instance, and ignored every later assignment: measured
+    on Browse, whose lists were first sized after they had been shown, ``sizeHint()`` read 618px
+    from Python and 192 from the layout, and thirty instances showed as five rows. PySide6 reads
+    the instance every time (measured 2026-11-23), so the order is no longer what makes it work;
+    fitting before the first layout still spares that layout a wrong first size.
     """
     model = table.model()
     rows = model.rowCount() if model is not None else 0
@@ -413,7 +413,7 @@ def fit_table_height(
     # The **preferred** height, which is the whole point and cannot be expressed any other way:
     # `QTableView.sizeHint()` is a constant 192px — about five rows — whatever the table holds,
     # so a `Preferred` widget is handed five rows however many it has. Assigning the hint on the
-    # instance is what PyQt's virtual dispatch reads, and it works the same on the `QTableView`s
+    # instance is what the binding's virtual dispatch reads, and it works the same on the `QTableView`s
     # and the `QTableWidget`s this is called on (checked on both).
     #
     # Carried here rather than on the minimum, which is where it started: the minimum is how far

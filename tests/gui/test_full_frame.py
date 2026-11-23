@@ -24,8 +24,9 @@ from detail.gui.full_frame import (
     open_full_frame,
 )
 from detail.gui.image_view import ImageView
-from detail.gui.qt import QEvent, QImage, QMouseEvent, QPointF, Qt
+from detail.gui.qt import QEvent, QImage, QPointF, Qt
 from tests import waits
+from tests.gui.mouse import mouse_event
 
 
 def _frame(value=90, width=160, height=90):
@@ -47,7 +48,7 @@ def _double_click(widget):
         QEvent.Type.MouseButtonDblClick,
     ):
         widget.event(
-            QMouseEvent(
+            mouse_event(
                 kind,
                 centre,
                 Qt.MouseButton.LeftButton,

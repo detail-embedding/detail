@@ -116,8 +116,11 @@ tail-assignment (there is no `Array.append`), resume from `arr.shape[0]`. Variab
 use `dtype="str"`, never `object`/`object_codec` or `dtype="bytes"`. Follow "Zarr write idiom
 (v3)" in `DESIGN_PLAN.md` §9 exactly. Guard: `tests/storage/test_zarr_seam.py`.
 
-**No Qt imports outside `gui/`.** `from PyQt6 import ...` is prohibited in `detail/core/`,
-`storage/`, `pipeline/`, `models/`, `trackers/`, `transforms/`, `executor/` and `api/`.
+**No Qt imports outside `gui/`.** The GUI's Qt binding is PySide6 (LGPL-3.0), and
+`detail/gui/qt.py` is the one module that imports it: every other file imports Qt names from
+there, so the binding is named in one place. `detail/core/`, `storage/`, `pipeline/`, `models/`,
+`trackers/`, `transforms/`, `executor/` and `api/` import neither Qt nor `detail.gui`. No file imports
+another binding, and no test skips on a missing one. Guard: `tests/test_qt_binding.py`.
 
 **No credentials in experiment files.** HF tokens, API keys and other credentials live in
 `~/.config/detail/credentials.yaml` or environment variables only.
@@ -334,7 +337,7 @@ never `slow`. If a run ends in a stack dump from the per-test hang watchdog
 
 ### CI runs Linux + CPU — don't assume the dev box
 
-The CI workflow targets Linux with CPU-only torch and headless PyQt6; development is often on
+The CI workflow targets Linux with CPU-only torch and headless PySide6; development is often on
 macOS with a GPU. Fix the root cause of a platform difference, not the symptom:
 - **No accelerator.** CPU-reachable code must not require CUDA/MPS. `pin_memory=True` warns on a
   host that cannot pin; that warning is harmless, so it has one of `pyproject.toml`'s narrow

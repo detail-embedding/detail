@@ -383,12 +383,12 @@ def _opens_something(table) -> bool:
     opener" made this predicate a proxy rather than the property — it read `MetadataPage`'s
     *editable grid* as a navigable table and demanded a cue that would have been a lie.
     """
-    from detail.gui.qt import QTableWidget
+    from detail.gui.qt import QTableWidget, receivers
 
     if not isinstance(table, QTableWidget):
-        return table.receivers(table.doubleClicked) > 0
-    own = table.receivers(table.doubleClicked) - 1  # less Qt's itemDoubleClicked relay
-    return own + table.receivers(table.itemDoubleClicked) > 0
+        return receivers(table, table.doubleClicked) > 0
+    own = receivers(table, table.doubleClicked) - 1  # less Qt's itemDoubleClicked relay
+    return own + receivers(table, table.itemDoubleClicked) > 0
 
 
 @requirement(kinds=("table",), counterexample=_an_editable_table)
@@ -592,8 +592,8 @@ def a_label_can_be_selected_and_copied(label) -> None:
       has since been deleted, every caller having moved to `Dialog.set_buttons`.
     - An application-wide event filter reached everything and **segfaulted**, about one suite run
       in two. `gui/selectable.py` carries the stack; the short version is that an application
-      filter is offered posted events bound for destroyed objects, and sip dies building the
-      Python wrapper upstream of the filter's own first line.
+      filter is offered posted events bound for destroyed objects, and the binding died building
+      the Python wrapper upstream of the filter's own first line.
     - `gui/dialog.py::Dialog` — a base whose `showEvent` applies the policy to *itself*. A dialog
       is alive when it is being shown, so none of the filter's exposure exists.
 
@@ -1845,7 +1845,7 @@ def a_scrollbar_has_no_arrow_buttons(bar) -> None:
     from detail.gui.qt import QStyle, QStyleOptionSlider
 
     # From the bar's public state: `initStyleOption` is protected, and most bars in a page are
-    # a scroll area's own, created by Qt rather than Python, where PyQt will not call it.
+    # a scroll area's own, created by Qt rather than Python, where no Python override runs.
     option = QStyleOptionSlider()
     option.initFrom(bar)
     option.orientation = bar.orientation()

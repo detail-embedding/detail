@@ -16,6 +16,8 @@ the *opposite* question to the one most callers ask (:func:`is_deleted`).
 from __future__ import annotations
 
 import sys
+import warnings
+from collections.abc import Callable
 
 # A second binding already loaded means a library (pyqtgraph picks whichever binding it finds
 # first) bound itself to it, and two bindings in one process cannot share a single widget.
@@ -35,6 +37,7 @@ from PySide6.QtCore import QEvent
 from PySide6.QtCore import QEventLoop
 from PySide6.QtCore import QIODevice
 from PySide6.QtCore import QItemSelectionModel
+from PySide6.QtCore import QMetaMethod
 from PySide6.QtCore import QModelIndex
 from PySide6.QtCore import QObject
 from PySide6.QtCore import QPoint
@@ -49,8 +52,10 @@ from PySide6.QtCore import QThread
 from PySide6.QtCore import QThreadPool
 from PySide6.QtCore import QTimer
 from PySide6.QtCore import QUrl
+from PySide6.QtCore import SIGNAL
 from PySide6.QtCore import Qt
 from PySide6.QtCore import Signal
+from PySide6.QtCore import SignalInstance
 from PySide6.QtGui import QAction
 from PySide6.QtGui import QActionGroup
 from PySide6.QtGui import QBrush
@@ -152,6 +157,22 @@ from PySide6.QtWidgets import QWidget
 from PySide6.QtWidgets import QWidgetAction
 
 
+def qwait(ms: int) -> None:
+    """Process events for ``ms`` milliseconds, as ``QTest.qWait`` does, with the GIL released.
+
+    PySide6 holds the GIL through ``QTest.qWait`` (and through ``processEvents`` with a time
+    limit); PyQt6 released it. Holding it freezes every Python thread for the whole wait — a
+    worker a test is waiting on cannot run a line of Python until the wait is over, so the wait
+    can never see the result (measured 2026-11-23: a worker counting in a loop advanced 1 step
+    in 300ms of ``qWait``, 267 in 300ms of ``QEventLoop.exec``). ``QEventLoop.exec`` releases
+    it, so this runs one, then delivers the deferred deletes ``qWait`` would have.
+    """
+    loop = QEventLoop()
+    QTimer.singleShot(max(int(ms), 0), loop.quit)
+    loop.exec()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
 def is_deleted(obj: QObject) -> bool:
     """Whether the C++ object behind ``obj`` has been destroyed.
 
@@ -165,6 +186,43 @@ def is_deleted(obj: QObject) -> bool:
 def delete(obj: QObject) -> None:
     """Destroy the C++ object behind ``obj`` now, synchronously (not ``deleteLater``)."""
     shiboken6.delete(obj)
+
+
+def receivers(obj: QObject, signal: SignalInstance) -> int:
+    """How many slots ``signal``, a signal of ``obj``, is connected to.
+
+    What a cue derived from the wiring reads (``receivers(self, self.clicked) > 0``). PySide6's
+    ``QObject.receivers`` takes the signal's signature, not the bound signal, so this finds it.
+    """
+    signature = QMetaMethod.fromSignal(signal).methodSignature().data().decode()
+    return obj.receivers(SIGNAL(signature))
+
+
+def disconnect_if_connected(
+    signal: SignalInstance, slot: Callable[..., object] | None = None
+) -> bool:
+    """Disconnect ``slot`` (every slot, if None) from ``signal``; whether anything was.
+
+    Disconnecting what is not connected is routine — a window closed twice, a row rebuilt before
+    it was ever wired — and PySide6 answers it with a ``RuntimeWarning`` rather than an
+    exception, which the test suite turns into an error. That one warning is the expected
+    answer here, so it is the one silenced.
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore", message="libpyside: Failed to disconnect", category=RuntimeWarning
+        )
+        return signal.disconnect() if slot is None else signal.disconnect(slot)
+
+
+def created_by_python(obj: QObject) -> bool:
+    """Whether Python constructed ``obj`` — as opposed to Qt making it (a completer's popup).
+
+    Not the same question as :func:`owned_by_python`, and the difference is the binding's: a
+    read can move ownership to C++ (``QSplitterHandle.splitter()`` does, in PySide6 6.12), so a
+    window a test built can stop being "owned by Python" without anything taking it over.
+    """
+    return shiboken6.createdByPython(obj)
 
 
 def owned_by_python(obj: QObject) -> bool:
@@ -301,7 +359,11 @@ __all__ = [
     "Qt",
     "Signal",
     "address",
+    "created_by_python",
+    "disconnect_if_connected",
     "delete",
     "is_deleted",
     "owned_by_python",
+    "qwait",
+    "receivers",
 ]

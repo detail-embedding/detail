@@ -236,12 +236,12 @@ def test_alignment_buttons_gated_on_the_selected_streams_clock(qapp, tmp_path):
 def _wait(cond, timeout_ms=2000):
     """Spin the event loop until ``cond()`` — the stream dialogs read off-thread now,
     so their anchor picker / strip / scrubber appear only after the async populate."""
-    from detail.gui.qt import QTest
+    from detail.gui.qt import qwait
 
     for _ in range(timeout_ms // 10):
         if cond():
             return
-        QTest.qWait(10)
+        qwait(10)
     raise AssertionError("stream dialog did not populate off-thread")
 
 

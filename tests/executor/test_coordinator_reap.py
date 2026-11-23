@@ -7,7 +7,7 @@ one caller; the function has as many callers as a run has readers, and the GUI s
 thread per *opening* of a run page and stops none of them. Two pollers of one run see the same
 terminal write in the same 0.25 s poll, both snapshot the handle, both return from ``wait``,
 and the second ``remove`` raises ``ValueError: list.remove(x): x not in list`` — out of
-``AttachedRun.progress``, on a ``QThread``, which PyQt turns into a process abort. The
+``AttachedRun.progress``, on a ``QThread``, which aborted the app under the earlier Qt binding. The
 sibling ``LocalExecutor._reap`` says "Idempotent" in its first line and is; this one claimed
 to be its twin and inherited the wait but not the idempotence.
 
