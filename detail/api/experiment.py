@@ -103,6 +103,7 @@ from detail.trainers import import_trainers
 
 if TYPE_CHECKING:
     from detail.api import previews
+    from detail.api.location_plots import LocationPlots
 
 
 class _RecordingSteps:
@@ -4766,7 +4767,7 @@ class Experiment:
         — for opening it in a file manager."""
         return analysis_store.analysis_dir(self._dir, run_id)
 
-    def location_plots(self, run_id: str):
+    def location_plots(self, run_id: str) -> "LocationPlots":
         """Plots of a completed location-export run (DESIGN_PLAN §16 "Location plots"): its
         animals' paths, occupancy, speed and body, drawn from the run's own CSVs.
 
