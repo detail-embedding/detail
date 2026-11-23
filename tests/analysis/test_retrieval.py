@@ -6,8 +6,6 @@ column. It is the true banded-subsequence-DTW optimum, so ``end_cost`` must matc
 every database column (the earlier prototype's per-cell DP is a greedy approximation and does *not*).
 """
 
-import logging
-
 import numpy as np
 import pytest
 
@@ -126,116 +124,6 @@ def test_cosine_cost_is_float32():
     cost = retrieval.cosine_cost(np.ones((2, 4)), np.ones((3, 4)))
     assert cost.dtype == np.float32
     np.testing.assert_allclose(cost, 0.0, atol=1e-6)  # identical direction → 0
-
-
-def _planted_database(rng, pattern, at, total):
-    """A random database of unit rows with ``pattern`` copied in starting at ``at``."""
-    d = pattern.shape[1]
-    db = rng.standard_normal((total, d)).astype(np.float32)
-    db[at : at + len(pattern)] = pattern
-    return db
-
-
-def test_query_finds_planted_repeat():
-    rng = np.random.default_rng(3)
-    pattern = rng.standard_normal((6, 8)).astype(np.float32)
-    db = _planted_database(rng, pattern, at=40, total=100)
-    matches = retrieval.query_subsequence(
-        db, pattern, band=2, threshold=0.05, min_separation=6
-    )
-    assert matches, "planted pattern should be found"
-    best = min(matches, key=lambda m: m.score)
-    assert best.start_row == 40
-    assert best.score < 1e-4
-
-
-def test_exclude_span_drops_self_match():
-    rng = np.random.default_rng(4)
-    pattern = rng.standard_normal((5, 8)).astype(np.float32)
-    db = _planted_database(rng, pattern, at=10, total=60)
-    matches = retrieval.query_subsequence(
-        db, pattern, band=1, threshold=0.05, min_separation=5, exclude=(10, 14)
-    )
-    assert all(not (m.start_row <= 14 and m.end_row >= 10) for m in matches)
-
-
-def test_threshold_filters_and_orders():
-    rng = np.random.default_rng(5)
-    pattern = rng.standard_normal((5, 8)).astype(np.float32)
-    db = _planted_database(rng, pattern, at=20, total=80)
-    tight = retrieval.query_subsequence(
-        db, pattern, band=1, threshold=0.01, min_separation=5
-    )
-    loose = retrieval.query_subsequence(
-        db, pattern, band=1, threshold=1.5, min_separation=5
-    )
-    assert len(loose) >= len(tight)
-    scores = [m.score for m in loose]
-    assert scores == sorted(scores)  # best (lowest) first
-    assert all(m.score <= 1.5 for m in loose)
-
-
-def test_min_separation_suppresses_adjacent_hits():
-    rng = np.random.default_rng(6)
-    pattern = rng.standard_normal((4, 8)).astype(np.float32)
-    db = _planted_database(rng, pattern, at=30, total=80)
-    matches = retrieval.query_subsequence(
-        db, pattern, band=1, threshold=2.0, min_separation=10
-    )
-    starts = sorted(m.start_row for m in matches)
-    assert all(b - a > 10 for a, b in zip(starts, starts[1:]))
-
-
-def test_fusion_mean_requires_all_examples_min_requires_any():
-    # Two examples that each match a different, far-apart region. mean (consensus)
-    # finds neither well; min (any) finds both.
-    rng = np.random.default_rng(7)
-    pat_a = rng.standard_normal((5, 8)).astype(np.float32)
-    pat_b = rng.standard_normal((5, 8)).astype(np.float32)
-    db = rng.standard_normal((100, 8)).astype(np.float32)
-    db[20:25] = pat_a
-    db[70:75] = pat_b
-    min_matches = retrieval.query_multi(
-        db, [pat_a, pat_b], fusion="min", band=1, threshold=0.05, min_separation=5
-    )
-    starts = {m.start_row for m in min_matches}
-    assert 20 in starts and 70 in starts
-    mean_matches = retrieval.query_multi(
-        db, [pat_a, pat_b], fusion="mean", band=1, threshold=0.05, min_separation=5
-    )
-    # consensus: neither region resembles BOTH examples, so nothing passes a tight bar.
-    assert mean_matches == []
-
-
-def test_bad_fusion_raises():
-    with pytest.raises(ValueError, match="fusion must be"):
-        retrieval.query_multi(
-            np.zeros((5, 3)),
-            [np.zeros((2, 3))],
-            fusion="median",
-            band=1,
-            threshold=0.5,
-            min_separation=1,
-        )
-
-
-def test_empty_queries_raises():
-    with pytest.raises(ValueError, match="queries is empty"):
-        retrieval.query_multi(
-            np.zeros((5, 3)), [], band=1, threshold=0.5, min_separation=1
-        )
-
-
-def test_max_results_caps_and_logs(caplog):
-    rng = np.random.default_rng(8)
-    pattern = rng.standard_normal((3, 8)).astype(np.float32)
-    db = _planted_database(rng, pattern, at=10, total=120)
-    with caplog.at_level(logging.WARNING, logger="detail.analysis.retrieval"):
-        matches = retrieval.query_subsequence(
-            db, pattern, band=1, threshold=2.0, min_separation=1, max_results=3
-        )
-    assert len(matches) == 3
-    assert any("max_results" in r.message for r in caplog.records)
 
 
 # --- dtw_distance (fixed-endpoint whole-to-whole DTW, the clustering distance) -----

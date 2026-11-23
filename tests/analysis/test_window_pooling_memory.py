@@ -17,8 +17,9 @@ preallocated output. Each window reduces independently, so the output is **bit-i
 whole-block stack — no stored fit, label or pinned value moves. The first test holds that; the
 second holds the bound, and fails against the whole-block stack.
 
-Swept for the same shape (#581): ``retrieval._sliding_reduce`` reduces a ``sliding_window_view``,
-which is a strided view and never copies, and its mean path is already a cumsum — not an instance.
+Swept for the same shape (#581): ``retrieval._sliding_reduce``, since removed with the windowed
+matchers, reduced a ``sliding_window_view``, which is a strided view and never copies, and its mean
+path was already a cumsum — not an instance.
 """
 
 import tracemalloc

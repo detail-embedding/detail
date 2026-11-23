@@ -56,7 +56,7 @@ def _counts_a_fraction(source: str) -> bool:
 
 
 def test_the_registries_are_populated():
-    assert len(PROCESSING_MODULES) >= 5 and len(ANALYSIS_MODULES) >= 4
+    assert len(PROCESSING_MODULES) >= 5 and len(ANALYSIS_MODULES) >= 3
 
 
 @pytest.mark.parametrize("module_id", sorted(_MODULES))

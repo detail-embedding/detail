@@ -313,7 +313,7 @@ def test_the_source_scans_reach_the_real_package():
 
 
 def test_dropping_the_declared_exception_fails_the_modal_rule(monkeypatch):
-    """And the sharper half: the rule must fail on the real package when its one exception goes.
+    """And the sharper half: the rule must fail on the real package when its exceptions go.
 
     A counterexample proves a rule can reject *something* — a synthesized one-file package. This
     proves it rejects something **in this app**, which is the claim that matters and the one a
@@ -322,10 +322,10 @@ def test_dropping_the_declared_exception_fails_the_modal_rule(monkeypatch):
     """
     package = pathlib.Path(reqs.__file__).parent
     rule = next(r for r in reqs.REQUIREMENTS if r.name == "a_dialog_opens_modally")
-    rule.check(package)  # green with the exception declared
+    rule.check(package)  # green with the exceptions declared
 
     monkeypatch.setattr(reqs, "_NON_MODAL_DIALOGS", {})
-    with pytest.raises(AssertionError, match="analysis_query_eval"):
+    with pytest.raises(AssertionError, match="clip_popup"):
         rule.check(package)
 
 
@@ -612,7 +612,7 @@ def test_the_split_rule_passes_a_split_that_remembers_itself(tmp_path, body):
 @pytest.mark.parametrize(
     "body",
     [
-        # the query-eval Rank column
+        # a Rank column (the removed query-eval explorer's spelling)
         'def build(rank):\n    return QStandardItem("" if rank is None else str(rank))\n',
         # the per-fold counts: `str(x)` inside a comprehension over numbers
         "def build(f):\n"

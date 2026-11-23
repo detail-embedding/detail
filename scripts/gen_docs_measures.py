@@ -2,8 +2,8 @@
 
 Every column comes off ``MeasureSpec``, which already carries a ``label``, a ``description``, a
 ``unit``, a ``rule`` and its ``requires`` — so there is no second source to drift from the first,
-the way ``metrics_docs`` needs one for ``EvalMetrics`` fields that have no text of their own. A
-measure registered later appears here with no edit.
+the way query eval's ``metrics_docs`` (removed with that module) needed one for ``EvalMetrics``
+fields that had no text of their own. A measure registered later appears here with no edit.
 
 The hand-written prose is ``measures-intro.md`` (before the table).
 """
