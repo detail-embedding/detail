@@ -22,7 +22,6 @@ Advanced and Blind mode.
 import pathlib
 import tempfile
 
-import detail.gui.clip_grid as clip_grid
 from detail.gui.behavior_query import ClipSpec
 from detail.gui.cluster_strip import ClusterClipStrip
 from detail.gui.qt import (
@@ -123,56 +122,15 @@ def test_the_clustering_strip_opens_nothing_when_nothing_is_playing(qapp, monkey
     assert opened == []
 
 
-def test_a_query_cell_marks_on_one_click_and_opens_on_two(qapp):
-    """A single click marks and opens nothing; a second one opens, exactly once.
+def test_the_cluster_strip_wires_the_double_click(qapp):
+    """The double-click that opens a clip in its window is wired, not merely drawn.
 
-    Marking *also* happens on the way to a double-click, and that is Qt rather than a bug: the
-    first half of a double-click is a click, and it lands on the clip you were pointing at
-    anyway. An earlier version of this docstring claimed the opposite and the assertion below
-    could not have caught it either way — which is why the property asserted is the one that can
-    actually go wrong: a single click must not open a window, and a double must not open two.
-    """
-    cell = clip_grid._Cell(96)
-    clip = _clips(1)[0]
-    marked, opened = [], []
-    cell.set_clip(clip, marked.append, on_double_click=opened.append)
-
-    _shown(cell, qapp)
-
-    QTest.mouseClick(cell, Qt.MouseButton.LeftButton)
-    assert marked == [clip], "a click has to mark — `Cut here` acts on what is marked"
-    assert opened == [], "a single click must not open a window"
-
-    QTest.mouseDClick(cell, Qt.MouseButton.LeftButton)
-    assert opened == [clip], "a double-click opens the clip once, not twice"
-
-
-def test_a_query_cell_with_no_clip_opens_nothing(qapp):
-    """An empty slot at the end of a short row is not a clip anybody can open."""
-    cell = clip_grid._Cell(96)
-    opened = []
-    cell.set_clip(None, lambda _c: None, on_double_click=opened.append)
-    _shown(cell, qapp)
-
-    QTest.mouseDClick(cell, Qt.MouseButton.LeftButton)
-
-    assert opened == []
-
-
-def test_both_strips_wire_the_double_click(qapp):
-    """Guard the guard for the split this closes.
-
-    The two strips are edited at different times by whoever is looking at one of them, which is
-    how the capability landed on one page four times before. Asserting the wiring over both means
-    a third strip cannot quietly ship without it.
+    It was asserted over two strips while the query CALIBRATE had its own; that strip went with
+    the move to the shared montage (2026-11), whose double-click is ``clip_activated``
+    (``tests/gui/test_live_montage.py``).
     """
     strip = _shown(ClusterClipStrip(_Experiment()), qapp)
     assert receivers(strip._cell, strip._cell.double_clicked) > 0
-
-    grid = _shown(clip_grid.ClipGrid(_Experiment()), qapp)
-    grid.show_clips(_clips(3))
-    QApplication.processEvents()
-    assert grid._cells[0]._on_double_click is not None
 
 
 def test_the_preview_says_it_opens_only_where_a_host_wired_it(qapp):
@@ -191,21 +149,6 @@ def test_the_preview_says_it_opens_only_where_a_host_wired_it(qapp):
     wired.double_clicked.connect(lambda: None)
     wired.set_frames([_frame()], 40)
     assert "Double-click" in wired.toolTip()
-
-
-def test_a_query_cell_says_it_opens_only_where_a_strip_wired_it(qapp):
-    """The same pair on the other strip, since the two are edited at different times."""
-    cell = clip_grid._Cell(96)
-    clip = _clips(1)[0]
-
-    cell.set_clip(clip, lambda _c: None)
-    assert cell.toolTip() == ""
-
-    cell.set_clip(clip, lambda _c: None, on_double_click=lambda _c: None)
-    assert "Double-click" in cell.toolTip()
-
-    cell.set_clip(None, lambda _c: None, on_double_click=lambda _c: None)
-    assert cell.toolTip() == "", "an empty slot is not a clip anybody can open"
 
 
 def test_a_popup_with_a_sequence_steps_through_it(qapp, monkeypatch):

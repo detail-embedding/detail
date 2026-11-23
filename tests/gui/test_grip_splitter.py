@@ -540,20 +540,19 @@ def test_the_navigation_filters_and_audit_list_open_by_pull_and_click(qapp, fitt
         window.close()
 
 
-def test_the_query_audits_clips_and_summary_open_by_pull_and_click(qapp, tmp_path):
-    """A left panel and a right one on one page: the query Audit's clip list and its summary
-    column."""
-    from tests.gui.test_audit_tab import _tab
+def test_the_query_audits_recordings_open_by_pull_and_click(qapp, tmp_path):
+    """The query Audit's recording list beside its review pane."""
+    from detail.gui.query_review import LIST_SPLIT_KEY, QueryReviewTab
+    from tests.api.test_query import _searched
 
-    _exp, _run, tab = _tab(qapp, tmp_path)
-    tab._body.setCurrentIndex(1)
+    exp, run = _searched(tmp_path)
+    tab = QueryReviewTab(exp, run)
     tab.resize(1440, 847)
     tab.show()
     qapp.processEvents()
     split = tab.findChildren(GripSplitter)[0]
-    assert split.key == "query_audit"
-    _reopens_by_pull_and_by_click(qapp, split, 0, "Clips")
-    _reopens_by_pull_and_by_click(qapp, split, 2, "Summary")
+    assert split.key == LIST_SPLIT_KEY
+    _reopens_by_pull_and_by_click(qapp, split, 0, "Recordings")
 
 
 # --- the keyboard ------------------------------------------------------------------------------

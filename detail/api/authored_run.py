@@ -21,6 +21,7 @@ from typing import Self
 
 from detail.analysis import provenance
 from detail.api.experiment import AnalysisRun, Experiment
+from detail.core import run_selection
 from detail.core.dataclasses import reconciled_status
 from detail.core.errors import UserInputError
 from detail.core.progress import OperationCancelled
@@ -1202,6 +1203,37 @@ class AuthoredRun(AnalysisRun):
         """Rebuild the frame views an edit deferred; the producer's ``project_frames``."""
         raise NotImplementedError
 
+    def _recording_ids(self, state) -> list[str]:
+        """The recordings this run reads, from its own state: a clustering run's fit selection,
+        a query's searched recordings. The one per-kind fact :meth:`data_sources` needs.
+        """
+        raise NotImplementedError
+
+    # — what it read ---------------------------------------------------------------------
+
+    def data_sources(self) -> dict:
+        """``{recording_ids, embed_run_ids, embed_run_id, track_id, method}`` — the same keys
+        for every kind of authored run.
+
+        ``embed_run_ids`` is each recording's own embedding run, which is what a reader must
+        use; ``embed_run_id`` is set only when every recording's agrees.
+
+        Here, once, rather than per kind: a clustering run names its recordings
+        ``source_recording_ids`` and a query ``search_recording_ids``, and a surface shared by
+        both (BROWSE) that asked the state by one of those names loaded nothing for the other.
+        A kind answers only which recordings it read (:meth:`_recording_ids`);
+        ``core.run_selection`` reads either shape of the embedding map.
+        """
+        state = self.state()
+        recording_ids = list(self._recording_ids(state))
+        return {
+            "recording_ids": recording_ids,
+            "embed_run_ids": run_selection.runs_by_recording(state, recording_ids),
+            "embed_run_id": state.embed_run_id,
+            "track_id": state.track_id,
+            "method": state.method,
+        }
+
     # — lifecycle ------------------------------------------------------------------------
 
     def _run_dir(self) -> Path:
@@ -1263,6 +1295,20 @@ class AuthoredRun(AnalysisRun):
         if self._inner is not None:
             self._inner.cancel()
 
+    def finish_blocker(self) -> str | None:
+        """Why this run cannot be finished yet, naming the fix, or ``None`` when it can.
+
+        Finishing says the authoring is done, so a run whose result still lacks the decision it
+        is made of — a behavior scan's cutoff, a clustering run's first label — refuses. Finished
+        anyway, its AUDIT told the user to make that decision and to reopen the run, at once.
+
+        The one wording of each kind's rule: :meth:`finalize` raises it, the CLI prints it, and
+        a surface greys its **Finish** with it in words before it is pressed. A kind overrides
+        this; ``tests/api/test_run_lifecycle_parity.py`` holds every kind to having decided.
+        Cheap — one read of the run's state — because a surface asks it on the UI thread.
+        """
+        return None
+
     def finalize(self, *, progress=None):
         """Mark the run finished — the user's statement that they are done, and pin the artifact.
 
@@ -1273,9 +1319,18 @@ class AuthoredRun(AnalysisRun):
 
         Long when edits have deferred frame views (see :meth:`pin`), so it reports through
         ``progress(stage, fraction, detail)``.
+
+        Raises:
+            ReadOnlyRunError: on a snapshot view, before anything else is asked.
+            ValueError: if the compute did not finish (``_refuse_if_incomplete``) — the deeper
+                cause, which no authoring fixes, so it is asked before the decisions are.
+            UserInputError: :meth:`finish_blocker`'s reason, before anything is pinned.
         """
         self._refuse_if_read_only("finalize")
         self._refuse_if_incomplete("be finalized")
+        blocker = self.finish_blocker()
+        if blocker is not None:
+            raise UserInputError(blocker)
         self.pin(reason="finish", progress=progress)
         analysis_store.set_analysis_status(self._run_dir(), "complete")
         self._log({"op": "finalize"})
@@ -1645,8 +1700,6 @@ class AuthoredRun(AnalysisRun):
         "reopen",
         "wait",
         "_record",
-        "audit_sample",
-        "label_audit",
         "cancel",
         "_write_state",
         "_set_stale",
@@ -1662,9 +1715,9 @@ class AuthoredRun(AnalysisRun):
         ``0.50 (n=6)`` after three more clips were judged on the live run — a number that was never
         true of anything.
 
-        Writes are deliberately **not** routed through here. ``audit_sample`` and ``label_audit``
-        keep addressing ``_run_dir()`` and keep being refused on a view; a snapshot's audit is
-        evidence to read, never to add to.
+        Writes are deliberately **not** routed through here. A review's writes
+        (``finish_review``, the removals) keep addressing ``_run_dir()`` and keep being refused on
+        a view; a snapshot's audit is evidence to read, never to add to.
         """
         return self._run_dir()
 
@@ -1704,11 +1757,11 @@ class AuthoredRun(AnalysisRun):
         """
         return set()
 
-    def _audit_edges(self, labels, *, fix_seed: int | None = None) -> dict | None:
+    def _audit_edges(self, labels) -> dict | None:
         """``{source_label: edges}`` — where each label's scores are cut into audit bins.
 
         ``None`` here: a clustering run's instances carry no score, so there is nothing to bin.
-        ``QueryRun`` overrides it, and with ``fix_seed`` records them at a label's first draw.
+        ``QueryRun`` overrides it.
         """
         return None
 
@@ -1726,140 +1779,6 @@ class AuthoredRun(AnalysisRun):
             if label is None or row.source_label == label
         ]
         return rows, cutoff
-
-    def audit_sample(
-        self,
-        *,
-        label: str | None = None,
-        path: str | None = None,
-        budget: int | None = None,
-        seed: int = 0,
-        own_only: bool = False,
-        node: int | None = None,
-    ) -> list:
-        """Draw a batch to review and record it as drawn, returning the instances.
-
-        ``budget`` is a **batch**, not a cap: more is always one more call away. ``label``
-        scopes to one behavior — §19 reviews one at a time, because alternating "is this
-        rearing?" with "is this grooming?" corrupts the estimate quietly — and ``None`` spans
-        the artifact, which is what a clustering vocabulary wants.
-
-        **Pending first, then a fresh draw.** A batch is recorded as drawn before it is judged
-        (``human_label`` is tri-state precisely so "drawn, not yet judged" is a state), so
-        anyone who walks away mid-batch leaves rows behind. Excluding *every* logged row from
-        the next draw — which is what this used to do — made those rows unreachable for the
-        life of the run: they were never judged and never offered again, so the sample was
-        quietly smaller than the pool could have given and nothing failed. Offering them back
-        first also makes leaving a batch free, which is what lets the surface switch behavior
-        mid-review without a confirmation dialog: nothing is lost, so there is nothing to warn
-        about.
-
-        ``path`` scopes a nested vocabulary to one label **and everything under it** — "rearing"
-        draws from its own instances and from "rearing/supported" — which is what lets a single
-        batch score both levels (:func:`~detail.storage.behavior_audit.verdict`). An instance
-        with no label is never drawn: the unlabelled remainder makes no claim to confirm.
-        """
-        from detail.storage import behavior_audit as audit
-        from detail.storage import behavior_output as bo
-
-        budget = audit.DEFAULT_BUDGET if budget is None else budget
-        # A batch drawn from results known to be out of date would be judged against instances
-        # the rebuild is about to replace (#24).
-        analysis_store.refuse_if_stale(self._run_dir())
-        # Before any write. `_record` carries the finalize check, so drawing first would append
-        # rows to a finalized run and *then* refuse — the check has to gate the operation, not
-        # report on it.
-        self._record(
-            "audit_sample",
-            {
-                "label": label,
-                "path": path,
-                "budget": budget,
-                "seed": seed,
-                "own_only": own_only,
-                "node": node,
-            },
-        )
-        pool = self._audit_pool(label)
-        if self.nested_labels:
-            pool = self._audit_scope(pool, path, own_only=own_only)
-        # The user's own clips are never offered: they told the method what the behavior is,
-        # so judging them scores the answer key (§19).
-        examples = self._audit_examples(pool)
-        pool = [row for row in pool if row.instance_id not in examples]
-        clusters = self._audit_clusters(pool)
-        if node is not None:
-            # One cluster on its own: what a reviewer asks for by choosing a cluster's row.
-            pool = [r for r in pool if (clusters or {}).get(r.instance_id) == node]
-        # `decided`, not `human_label is not None`: an **unclear** is a decision that carries
-        # no evidence either way, so a metric drops it — but offering it again as though it had
-        # never been seen means an ambiguous clip comes back forever.
-        # A label edited after its audit counts only judgments since (`audit_precision`), so the
-        # clips judged before are drawable again — set aside and never re-offered, a fully audited
-        # label could not be audited further. One cluster on its own keeps every judgment, as its
-        # figure does.
-        since = None if node is not None else self._label_changed_at(path)
-        decided = {
-            row.instance_id
-            for row in audit.latest_decisions(self._run_dir())
-            if row.decided and (since is None or (row.drawn_at or "") >= since)
-        }
-        offered = {
-            row.instance_id
-            for row in audit.read_audit(self._run_dir())
-            if since is None or (row.drawn_at or "") >= since
-        }
-        # Drawn but never judged, and still in this label's pool. Ordered by the pool so a
-        # resumed batch reads the way the first one did.
-        pending = [
-            row
-            for row in bo.bouts(pool)
-            if row.instance_id in offered and row.instance_id not in decided
-        ]
-        drawn = pending[:budget]
-        if len(drawn) < budget:
-            fresh = audit.draw_sample(
-                pool,
-                stratum_of=clusters,
-                budget=budget - len(drawn),
-                seed=seed,
-                exclude_instance_ids=decided | offered,
-                edges=self._audit_edges(
-                    {str(row.source_label) for row in pool}, fix_seed=seed
-                ),
-            )
-            for row in fresh:
-                audit.append_audit(self._run_dir(), row.instance_id, score=row.score)
-            drawn = [*drawn, *fresh]
-        return drawn
-
-    def label_audit(
-        self, instance_id: str, is_match: bool | None, *, answer: str = ""
-    ) -> Self:
-        """Record one human decision. Appends — an earlier decision is superseded, not erased.
-
-        ``is_match`` is whether the instance is its own (deepest) label; ``None`` is unclear.
-        ``answer`` is the level that *is* true when the label nests — ``"rearing"`` for
-        "rearing, not supported", or :data:`~detail.storage.behavior_audit.NOTHING_CELL` for
-        "none of these". :func:`~detail.storage.behavior_audit.answer_options` lists the
-        ``(text, answer, is_match)`` triples a check of one label offers, and
-        :func:`~detail.storage.behavior_audit.human_label_for` derives ``is_match`` from an
-        answer and the clip's own path, so a caller never has to derive the pair by hand.
-        """
-        from detail.storage import behavior_audit as audit
-
-        self._record(
-            "label_audit",
-            {"instance_id": instance_id, "label": is_match, "answer": answer},
-        )
-        audit.append_audit(
-            self._run_dir(),
-            instance_id,
-            human_label=is_match,
-            decided=True,
-            answer=answer,
-        )
-        return self
 
     @staticmethod
     def _audit_scope(rows, path: str | None, *, own_only: bool = False) -> list:
@@ -1906,10 +1825,9 @@ class AuthoredRun(AnalysisRun):
     ) -> dict | None:
         """The precision the audit supports, with its interval, its ``n`` and its coverage.
 
-        The **read half** of the audit. Everything above records a judgment; without this
-        nothing could read what the judging bought, so the number existed only inside the GUI,
-        which reached past the API into storage to get it. A script could spend an afternoon
-        auditing and not retrieve the figure that afternoon produced.
+        The reader of the earlier one-by-one audit (``audit.csv``), which nothing writes any
+        more: the review of every clip replaced it (``review_precision``). Kept so a run audited
+        before keeps the figure that audit bought.
 
         ``None`` when nothing has been audited — the caller says "no reliability estimate" and
         never substitutes one. A returned ``precision`` of ``None`` with a ``reason`` is the
@@ -1958,8 +1876,8 @@ class AuthoredRun(AnalysisRun):
     def _audit_left(self, rows, since: str | None) -> dict:
         """``{"size", "remaining"}``: the scope's instances, and how many are still unjudged.
 
-        A judgment from before ``since`` is set aside here exactly as the draw sets it aside, so
-        "nothing left" means what :meth:`audit_sample` will find.
+        A judgment from before ``since`` is set aside here exactly as the draw set it aside, so
+        "nothing left" meant what the next draw would find.
         """
         from detail.storage import behavior_audit as audit
 
@@ -2106,38 +2024,6 @@ class AuthoredRun(AnalysisRun):
             edges=self._audit_edges({str(row.source_label) for row in rows}),
         )
 
-    def audit_precision_by_score_bin(
-        self, *, label: str, cutoff: float | None = None
-    ) -> list[dict] | None:
-        """One behavior's precision in each of its audit's score bins — the confidence curve.
-
-        Over the instances ``cutoff`` keeps (the behavior's own when ``None``), in the bins its
-        audit was drawn in, so a point is the share of exactly the clips that bin's draw gave it.
-        ``None`` when nothing is audited, or when the run's instances carry no score to bin.
-        """
-        from detail.storage import behavior_audit as audit
-
-        artifact = self.artifact()
-        rows, storage_cutoff = self._audit_rows(label, cutoff)
-        examples = self._audit_examples(rows)
-        direction = audit.score_direction(artifact.manifest)
-        rows = [
-            row
-            for row in rows
-            if row.instance_id not in examples
-            and audit.retained(row.score, storage_cutoff, direction)
-        ]
-        edges = (self._audit_edges({label}) or {}).get(label)
-        if edges is None:
-            return None
-        return audit.precision_by_score_bin(
-            self._audit_dir(),
-            rows,
-            manifest=artifact.manifest,
-            universe=self._audit_pool(None),
-            edges=edges,
-        )
-
     def audit_decisions(self) -> list:
         """Every standing decision — one row per instance, the most recent judgment about it.
 
@@ -2151,12 +2037,13 @@ class AuthoredRun(AnalysisRun):
     def _record(self, op: str, entry: dict) -> None:
         """Refuse if finalized, then log — for an operation that writes no state.
 
-        The audit writes to ``audit.csv``, not to the run's state, and reprojects nothing: a
-        decision is evidence *about* the instances rather than a change to them. So it cannot
-        go through ``_edit``, which rewrites state and reprojects. It still has to make the
-        same finalize check, and this is the one place that policy lives for those operations.
+        A review's census (``finish_review``) writes to ``clip_review.csv``, not to the run's
+        state, and reprojects nothing: an answer is evidence *about* the instances rather than a
+        change to them. So it cannot go through ``_edit``, which rewrites state and reprojects. It
+        still has to make the same finalize check, and this is the one place that policy lives
+        for those operations.
 
-        **Auditing a finalized run is refused today**, and that is a decision rather than an
+        **Finishing a review on a finalized run is refused today**, and that is a decision rather than an
         inevitability: nothing about the instances, the cutoff or the export moves when someone
         labels a clip, so a case exists for allowing it. It is refused because precision is a
         number a reader sees, and a finalized run whose reported precision shifts underneath

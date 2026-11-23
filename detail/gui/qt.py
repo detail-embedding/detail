@@ -37,6 +37,7 @@ from PySide6.QtCore import QEvent
 from PySide6.QtCore import QEventLoop
 from PySide6.QtCore import QIODevice
 from PySide6.QtCore import QItemSelectionModel
+from PySide6.QtCore import QLineF
 from PySide6.QtCore import QMetaMethod
 from PySide6.QtCore import QModelIndex
 from PySide6.QtCore import QObject
@@ -84,6 +85,7 @@ from PySide6.QtGui import QPalette
 from PySide6.QtGui import QPen
 from PySide6.QtGui import QPixmap
 from PySide6.QtGui import QPolygonF
+from PySide6.QtGui import QRegion
 from PySide6.QtGui import QResizeEvent
 from PySide6.QtGui import QShortcut
 from PySide6.QtGui import QShowEvent
@@ -286,6 +288,7 @@ __all__ = [
     "QLabel",
     "QLayout",
     "QLineEdit",
+    "QLineF",
     "QLinearGradient",
     "QListWidget",
     "QListWidgetItem",
@@ -311,6 +314,7 @@ __all__ = [
     "QRadioButton",
     "QRect",
     "QRectF",
+    "QRegion",
     "QResizeEvent",
     "QRunnable",
     "QScrollArea",

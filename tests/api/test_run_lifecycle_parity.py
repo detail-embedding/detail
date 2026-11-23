@@ -10,8 +10,16 @@ one". These are two places it wasn't followed:
 - `reconcile_runs` / `reconcile_analysis_runs` ran on experiment open while dataset,
   model and clusterer runs had no equivalent — so a SIGKILLed worker left a record reading
   `running` forever, which every delete method then refuses.
+- **A run finished before the decision its result needs was made.** A behavior scan learned
+  it (a behavior with no cutoff) and a clustering run did not: finished with no cluster
+  labelled, its AUDIT said "label a node on INTERPRET" while INTERPRET said "this run is
+  finished, reopen it". Nothing fails at the line that finishes, because finishing works; what
+  is wrong is a later screen. `AuthoredRun.finish_blocker` is the one hook: `finalize` raises
+  it, the CLI prints it and each workspace greys **Finish** with it in words. The guard here is
+  that every authored-run kind has decided what finishing needs; the behaviour is
+  `tests/api/test_query_review.py` and `tests/api/test_clustering_finish.py`.
 
-Both guards are registry-driven, so a fifth run kind or a second batch module inherits them.
+The guards are registry-driven, so a fifth run kind or a second batch module inherits them.
 """
 
 import json
@@ -463,3 +471,53 @@ def test_the_roll_up_scan_would_catch_a_second_copy():
     assert _complete_rollups('ok = all(s == "complete" for s in statuses)\n') == [1]
     assert _complete_rollups("ok = all(s == JobStatus.COMPLETE.value for s in xs)\n")
     assert _complete_rollups("ok = all(s == 'failed' for s in xs)\n") == []
+
+
+# --------------------------------------------------------------------------- #
+# every authored-run kind says what finishing needs
+# --------------------------------------------------------------------------- #
+def _decides_what_finishing_needs(run_class) -> bool:
+    """Whether ``run_class`` has its own ``finish_blocker`` rather than the base's ``None``."""
+    from detail.api.authored_run import AuthoredRun
+
+    return run_class.finish_blocker is not AuthoredRun.finish_blocker
+
+
+def test_the_authored_run_registry_is_populated():
+    """Guard the guard: the parametrized test below is vacuous if this is empty."""
+    assert len(Experiment._AUTHORED_RUN_ACCESSORS) >= 2
+
+
+@pytest.mark.parametrize("module_id", sorted(Experiment._AUTHORED_RUN_ACCESSORS))
+def test_every_authored_run_kind_says_what_finishing_needs(tmp_path, module_id):
+    """Registry-parity: a kind added tomorrow has to decide the day it is added.
+
+    The handle comes from `Experiment.authored_run`, the one every surface opens a run through,
+    so the class checked is the class a user's **Finish** reaches. A kind whose run can be
+    finished from the first moment says so by overriding the hook to return ``None``, with the
+    reason in its docstring — the inherited default is what this refuses.
+    """
+    from detail.storage import analysis_runs
+
+    proj = Experiment.create("p", tmp_path)
+    run_dir = analysis_runs.analysis_dir(proj.dir, "an_01")
+    run_dir.mkdir(parents=True)
+    analysis_runs.write_analysis_yaml(
+        run_dir, {"id": "an_01", "module_id": module_id, "status": "open"}
+    )
+    handle = proj.authored_run("an_01")
+    assert handle is not None, f"{module_id} opened no authored handle"
+    assert _decides_what_finishing_needs(type(handle)), (
+        f"{type(handle).__name__} inherits AuthoredRun.finish_blocker: a {module_id} run can "
+        "be finished before anything is authored. Say what its result needs."
+    )
+
+
+def test_the_finishing_sweep_would_catch_a_kind_that_inherits_the_default():
+    from detail.api.authored_run import AuthoredRun
+    from detail.api.query import QueryRun
+    from detail.api.temporal_clustering import TemporalClusteringRun
+
+    assert not _decides_what_finishing_needs(AuthoredRun)
+    assert _decides_what_finishing_needs(QueryRun)
+    assert _decides_what_finishing_needs(TemporalClusteringRun)

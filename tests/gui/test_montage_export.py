@@ -25,7 +25,7 @@ from detail.gui.montage_export import NOTHING_PICKED, ExportMenu
 from detail.gui.qt import QCheckBox, QComboBox, QLabel, QPushButton, QSlider, QTest, Qt
 from detail.gui.show_menu import ShowButton
 
-from tests.gui.conftest import drain_busy_calls, drain_until
+from tests.gui.conftest import Pictures, drain_busy_calls, drain_until
 
 NO_MODIFIER = Qt.KeyboardModifier.NoModifier
 
@@ -376,10 +376,15 @@ def test_pick_mode_on_audit_picks_for_the_export_and_never_removes(qapp, workspa
 def test_a_reviewed_audit_cluster_can_still_be_picked_and_exported(qapp, workspace):
     audit = _audit(qapp, workspace)
     pane, montage = audit.pane, audit.pane.montage
+    # The fixture has no previews; Finish refuses clips that show none, so pictures stand in.
+    montage.set_source(Pictures(), keep_pictures=True)
     bar = montage.grid.verticalScrollBar()
-    bar.setValue(bar.maximum())
-    for _ in range(3):
-        qapp.processEvents()
+
+    def at_end() -> bool:
+        bar.setValue(bar.maximum())
+        return pane.reached_end() and montage.unpictured() == (0, 0)
+
+    assert _drain(qapp, at_end)
     pane.finish.click()
     assert _drain(qapp, lambda: not audit.writes_pending() and pane.is_finished())
     drain_busy_calls(qapp)

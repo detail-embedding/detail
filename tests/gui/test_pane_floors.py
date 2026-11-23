@@ -35,9 +35,10 @@ _GUI = pathlib.Path(__file__).resolve().parents[2] / "detail" / "gui"
 _PLOT_FACTORIES = {"themed_plot", "PlotWidget", "GraphicsLayoutWidget"}
 
 #: Plot construction sites the scan recognised when the floor was set (14 on 2026-09-29; 7 after
-#: the hidden capabilities' GUIs were removed on 2026-11-10). Set below the count so a plot that
-#: is removed does not fail it, and far above zero so a factory rename does.
-_PLOTS_SEEN_FLOOR = 5
+#: the hidden capabilities' GUIs were removed on 2026-11-10; 4 once query eval's explorer and the
+#: query AUDIT tab's plots went, 2026-11-23). Set at or below the count so a plot that is removed
+#: does not fail it, and far above zero so a factory rename does.
+_PLOTS_SEEN_FLOOR = 3
 
 
 def _target_name(node) -> str | None:
@@ -160,12 +161,13 @@ def test_the_scan_leaves_a_fixed_height_non_plot_alone():
 # --- the behaviour the scan stands in for ------------------------------------------- #
 
 
-def test_the_query_dial_column_fits_the_pane_it_is_given(qapp, monkeypatch):
+def test_the_query_curve_band_fits_the_pane_it_is_given(qapp, monkeypatch):
     """The reported bug, as a number: 444px of column in a 334px viewport.
 
     Asserted on the floor rather than on a screenshot, because "is the axis visible" is what a
-    person checks and "does the column's minimum exceed its pane" is the same question in the
-    form that fails loudly.
+    person checks and "does the band's minimum exceed its height" is the same question in the
+    form that fails loudly. The dial column it was first written against became the band across
+    the top of CALIBRATE (the curve beside its controls, 2026-11); the class is the same.
     """
     import detail.gui.busy as busy
     import detail.gui.modules.analysis_query as aq
@@ -197,12 +199,14 @@ def test_the_query_dial_column_fits_the_pane_it_is_given(qapp, monkeypatch):
     tab.resize(1400, 620)
     QApplication.processEvents()
 
-    column = tab._dial_scroll.widget()
-    viewport = tab._dial_scroll.viewport().height()
-    assert column.minimumSizeHint().height() <= viewport, (
-        f"the dial column's floor is {column.minimumSizeHint().height()}px in a {viewport}px "
-        "pane, so its scroll area crops the graph — which takes the x-axis with it"
+    band = tab._band
+    assert band.minimumSizeHint().height() <= band.height(), (
+        f"the curve band's floor is {band.minimumSizeHint().height()}px in {band.height()}px, "
+        "so the page crops the graph — which takes the x-axis with it"
     )
+    assert (
+        tab._plot.height() >= tab._plot.minimumHeight()
+    ), f"the curve is {tab._plot.height()}px, under its {tab._plot.minimumHeight()}px floor"
 
 
 def test_a_plot_squeezed_below_its_preferred_height_shrinks_rather_than_cropping(qapp):

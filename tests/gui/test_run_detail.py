@@ -523,7 +523,7 @@ def test_analysis_run_detail_builds_query_result_widget(qapp, tmp_path):
     deciding against, so a workspace that appeared only at `complete` would arrive after the
     decision it exists to support.
     """
-    from detail.gui.qt import QLabel, QTabBar
+    from detail.gui.qt import QComboBox, QLabel
 
     from detail.gui.pages import AnalysisRunDetailPage
     from detail.storage import analysis_runs as ar
@@ -561,12 +561,12 @@ def test_analysis_run_detail_builds_query_result_widget(qapp, tmp_path):
         },
     )
     page = AnalysisRunDetailPage(proj, "an_01")
-    # The behavior is the selector's tab, not a label: switching behavior keeps the current
+    # The behavior is the selector's entry, not a label: switching behavior keeps the current
     # tab (§20), so the selector lives outside the tab widget rather than inside a summary.
     selectors = [
-        bar
-        for bar in page.findChildren(QTabBar)
-        if [bar.tabText(i) for i in range(bar.count())] == ["rearing"]
+        box
+        for box in page.findChildren(QComboBox)
+        if [box.itemText(i) for i in range(box.count())] == ["rearing"]
     ]
     assert selectors, "the workspace has no behavior selector"
     text = " ".join(label.text() for label in page.findChildren(QLabel))

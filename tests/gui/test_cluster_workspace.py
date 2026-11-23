@@ -43,6 +43,7 @@ from detail.gui.qt import (
     Qt,
     receivers,
 )
+from tests.audit_seed import draw
 from tests.gui.conftest import pump_for
 
 
@@ -435,6 +436,9 @@ def test_finish_then_reopen_gives_the_label_controls_back(qapp, fitted):
     _experiment, handle, workspace = _workspace(qapp, fitted)
     interpret = workspace._interpret
     assert all(_edit_controls_live(interpret).values())
+    # A run finishes only once a cluster is labelled (`AuthoredRun.finish_blocker`).
+    first = interpret._view.children(interpret._view.root)[0]
+    _label(qapp, interpret, first, "rear", handle)
     interpret._finish_run()
     assert _drain(qapp, lambda: interpret._reopen.isEnabled())
     assert handle.status == "complete"
@@ -444,6 +448,45 @@ def test_finish_then_reopen_gives_the_label_controls_back(qapp, fitted):
     interpret._reopen_run()
     assert handle.status == "open"
     assert all(_edit_controls_live(interpret).values())
+
+
+def test_finish_waits_for_a_label_and_says_so_beside_it(qapp, fitted):
+    """A run finished with nothing labelled had an AUDIT saying "label a node on INTERPRET" over
+    an INTERPRET saying "this run is finished, reopen it". Finish is greyed until a cluster is
+    labelled, with the API's own sentence beside it (not only in a tooltip), and follows the
+    label: given, it comes back once the write lands; taken off again, it greys again.
+    """
+    _experiment, handle, workspace = _workspace(qapp, fitted)
+    interpret = workspace._interpret
+    workspace.resize(1440, 847)
+    workspace.show()
+    qapp.processEvents()
+    reason = handle.finish_blocker()
+    assert reason is not None, "the fixture must start with nothing labelled"
+    assert not interpret._finish.isEnabled()
+    assert interpret._finish_note.text() == reason
+    assert interpret._finish.toolTip() == reason
+    assert interpret._finish_note.isVisible(), "on screen, not only on hover"
+    assert all(_edit_controls_live(interpret).values()), "labelling itself stays live"
+    interpret._finish_run()
+    assert handle.status == "open", "a greyed Finish finished the run"
+
+    node = interpret._view.children(interpret._view.root)[0]
+    interpret.select(node)
+    interpret._label(node, "rear")
+    # The label is on screen while its write is in flight, so the sentence saying there is none
+    # is not left standing beside it; the finish would wait for the write anyway.
+    assert interpret.writes_pending()
+    assert interpret._finish_note.text() == ""
+    assert _drain(qapp, lambda: not interpret.writes_pending())
+    assert _drain(qapp, lambda: interpret._finish.isEnabled())
+    assert interpret._finish_note.text() == ""
+    assert interpret._finish.toolTip() == ""
+
+    interpret._label(node, "")
+    assert _drain(qapp, lambda: not interpret.writes_pending())
+    assert _drain(qapp, lambda: not interpret._finish.isEnabled())
+    assert interpret._finish_note.text() == handle.finish_blocker()
 
 
 def test_the_run_page_opens_the_workspace_while_the_run_is_open(qapp, fitted):
@@ -610,7 +653,7 @@ def _snapshot_workspace(qapp, fitted):
     view = handle.node_view()
     first, second = view.children(view.root)
     handle.name_nodes({first: "pinned"})
-    handle.audit_sample(budget=2)
+    draw(handle, budget=2)
     snapshot_id = handle.pin(reason="finish")
     assert snapshot_id
     handle.name_nodes({first: "", second: "live"})
@@ -679,6 +722,11 @@ _LIVE_ON_A_SNAPSHOT = {
         "QPushButton",
         "Next cluster",
     ): "opening another cluster's clips is looking at them",
+    # The query run's review pane: the same button, a recording where this one has a cluster.
+    (
+        "QPushButton",
+        "Next recording",
+    ): "opening another recording's clips is looking at them",
     # A cluster's window plays its clips beside the page; its label row is greyed on a
     # snapshot with the page's reason (`test_cluster_window.py`).
     ("QPushButton", "Open in window"): "opening a cluster's clips is looking at them",
@@ -774,6 +822,16 @@ _LIVE_ON_A_SNAPSHOT = {
     (
         "QPushButton",
         "▼  Ethogram — labelled time, click a bout to play it",
+    ): "folding a band is looking, not editing",
+    # CALIBRATE's bar over the grid, below the cutoff: it scrolls back to the line, nothing more.
+    (
+        "QPushButton",
+        "calibrate_back_to_cutoff",
+    ): "scrolling back to the cutoff is looking at it",
+    # The same band on a behavior scan's BROWSE, which is this BROWSE in the scan's words.
+    (
+        "QPushButton",
+        "▼  Ethogram — kept time, click a match to play it",
     ): "folding a band is looking, not editing",
     (
         "QLineEdit",

@@ -136,6 +136,7 @@ from detail.gui.qt import (
     disconnect_if_connected,
 )
 from detail.gui.sizing import ResizeHandle, lines, set_available
+from detail.gui.status_color import MUTED, set_label_color
 from detail.gui.workers import BackgroundCall
 from detail.storage.behavior_output import PATH_SEPARATOR
 
@@ -575,6 +576,9 @@ class NodeInterpretTab(QWidget):
         #: the finalize waits for the writes still queued (``_finalize_when_saved``).
         self._finishing = False
         self._finalizing = False
+        #: Why the run cannot be finished yet (``AuthoredRun.finish_blocker``: nothing is
+        #: labelled), as last read from disk, or ``None``. Re-read when the label writes land.
+        self._finish_blocker: str | None = None
         self._inline_editor = None
         #: AUDIT's per-cluster rows, by node — which clusters the tree rings as audited.
         self._audited: dict[int, dict] = {}
@@ -854,7 +858,16 @@ class NodeInterpretTab(QWidget):
         self._sync_zoom_buttons()
 
         bottom = QHBoxLayout()
-        bottom.addStretch()
+        # Why Finish is greyed, in words beside it rather than only in a tooltip: a run finished
+        # with nothing labelled had an AUDIT saying "label a node" over an INTERPRET saying
+        # "reopen it". The behavior scan's workspace does the same with its own rule.
+        self._finish_note = QLabel("")
+        self._finish_note.setWordWrap(True)
+        self._finish_note.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        set_label_color(self._finish_note, MUTED)
+        bottom.addWidget(self._finish_note, 1)
         self._finish = QPushButton("Finish")
         self._finish.clicked.connect(self._finish_run)
         bottom.addWidget(self._finish)
@@ -862,6 +875,9 @@ class NodeInterpretTab(QWidget):
         self._reopen.clicked.connect(self._reopen_run)
         bottom.addWidget(self._reopen)
         layout.addLayout(bottom)
+        # Every label write funnels through `_submit`, and `changed` fires once they have all
+        # landed: the moment the run on disk says again whether it can be finished.
+        self.changed.connect(self._recheck_finish)
 
         # Hidden until loaded: shown under the loading overlay, the empty tree and montage
         # read as a broken page for the second the load takes.
@@ -909,6 +925,7 @@ class NodeInterpretTab(QWidget):
             note = getattr(run, "subsample_note", None)
             loaded = {
                 "state": state,
+                "blocker": run.finish_blocker() if run.editable else None,
                 "view": view,
                 "labels": labels,
                 "metadata": metadata,
@@ -1032,6 +1049,7 @@ class NodeInterpretTab(QWidget):
         self._subsample.setText(subsample or "")
         self._subsample.setVisible(bool(subsample))
         self._state = loaded["state"]
+        self._finish_blocker = loaded["blocker"]
         view = loaded["view"]
         self._view = view
         self._names = dict(
@@ -2645,6 +2663,7 @@ class NodeInterpretTab(QWidget):
         self._writes.submit(
             write, owner=self, done=done, failed=failed, title="Label not saved"
         )
+        self._sync_finish()
 
     # --- rebuilding, and the lifecycle -----------------------------------------------------
 
@@ -2715,11 +2734,7 @@ class NodeInterpretTab(QWidget):
         finished = loaded and self._run.status == "complete"
         self._can_edit = loaded and editable and not finished and not self._finishing
         why = self._edit_reason()
-        set_available(
-            self._finish,
-            self._can_edit,
-            why or "The run is still loading.",
-        )
+        self._sync_finish()
         set_available(
             self._reopen,
             loaded and editable and finished,
@@ -2750,12 +2765,46 @@ class NodeInterpretTab(QWidget):
         )
         self._windows.refresh()
 
+    def _sync_finish(self) -> None:
+        """**Finish**, and the reason beside it when the run cannot be finished yet.
+
+        The reason is the API's (``AuthoredRun.finish_blocker``), so the button, ``finalize`` and
+        the CLI give one sentence. It is the run **on disk**, so while a label write is still in
+        flight it is not held against the button: that write is what decides it, the finish
+        waits for it (``_finalize_when_saved``), and ``finalize`` refuses with the same sentence
+        if it did not help. Holding it would grey Finish beside "no behavior is labelled" while
+        the label just given is on screen.
+        """
+        blocker = self._held_blocker()
+        set_available(
+            self._finish,
+            self._can_edit and blocker is None,
+            blocker or self._edit_reason() or "The run is still loading.",
+        )
+        self._finish_note.setText(blocker or "")
+
+    def _held_blocker(self) -> str | None:
+        """The run's reason it cannot be finished, where that decides Finish now."""
+        if not self._can_edit or self.writes_pending():
+            return None
+        return self._finish_blocker
+
+    def _recheck_finish(self) -> None:
+        """Ask the run again whether it can be finished: the label writes have all landed.
+
+        On the UI thread, as the behavior scan's workspace asks: one read of the state file.
+        """
+        if self._state is None or not self._run.editable:
+            return
+        self._finish_blocker = self._run.finish_blocker()
+        self._sync_finish()
+
     def _finish_run(self) -> None:
         """**Finish**: from the click, nothing labels — here, in a window, by key or by ⌘Z —
         and the finalize starts once the label writes still queued have landed. Run beside the
         queue, it read frame views a write had just made out of date and failed, leaving the
         run open."""
-        if not self._can_edit:
+        if not self._can_edit or self._held_blocker() is not None:
             return
         self._finishing = True
         self._apply_editability()

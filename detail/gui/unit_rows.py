@@ -8,7 +8,7 @@ things follow, and both were bugs before they were rules:
 
 - A row is **updated in place** when only its numbers changed. Tearing down sixty widgets and
   building sixty more twice a second is the cost this package has already measured once
-  (`test_strip_reuse.py`), and it throws away the expander
+  (on the query confidence strip, since removed), and it throws away the expander
   state every time besides.
 - When the shape *does* change, the old widgets are **hidden before** `deleteLater`. Deletion is
   deferred to the event loop, so a row removed from the layout is still drawn at its old

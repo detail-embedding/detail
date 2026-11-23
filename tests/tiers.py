@@ -350,7 +350,8 @@ GUARD_FILES = frozenset(
         "tests/gui/test_collapse.py",
         "tests/gui/test_window_state.py",
         "tests/gui/test_decode_priority.py",
-        "tests/gui/test_strip_reuse.py",
+        # An identity (a label, a behavior) is never told apart by hue alone.
+        "tests/gui/test_identity_marks.py",
         "tests/gui/test_audit_playback.py",
         "tests/gui/test_worker_lifetime.py",
         # A bounded wait raises naming what never happened, or its answer is used.

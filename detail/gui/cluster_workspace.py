@@ -27,6 +27,32 @@ from detail.gui.tables import top_of_pane
 
 
 @dataclass(frozen=True)
+class BrowseWords:
+    """BROWSE's words: what the run's output is, and what to say before there is any.
+
+    BROWSE serves a clustering run and a behavior scan alike, and the two outputs are not the
+    same thing: a clustering run's is the time somebody *labelled*, a scan's the matches each
+    behavior's cutoff *kept*. Before there is any, the page has to say what is true for the run
+    in front of it — labelling a node in INTERPRET means nothing on a scan — so where the output
+    comes from is a word here, never a branch on the run's type.
+    """
+
+    kept: str = "labelled"  # "12 of 40 labelled bouts", "labelled time"
+    label: str = "label"  # one row of the filter
+    labels: str = "labels"
+    instance: str = "bout"  # one band on the ethogram
+    instances: str = "bouts"  # the filter's count column
+    empty: str = "Nothing labelled yet"
+    empty_hint: str = (
+        "Label a node in INTERPRET and its instances appear here, to filter, watch and "
+        "export."
+    )
+    #: The list's score column heading, or "" for none: a scan's matches are chosen by their
+    #: confidence, so its list shows and sorts by it; clustering's list has never had one.
+    score: str = ""
+
+
+@dataclass(frozen=True)
 class WorkspaceTerms:
     """What this module's clusters are called, on screen.
 
@@ -51,6 +77,7 @@ class WorkspaceTerms:
     # from flickers; bouts leave the time between them unlabelled on purpose, and a line reading
     # "in a behavior" against that would read as a shortfall.
     inside: str = "in a posture"
+    browse: BrowseWords = BrowseWords()
 
 
 POSE_TERMS = WorkspaceTerms(
@@ -65,6 +92,31 @@ TEMPORAL_TERMS = WorkspaceTerms(
     member="bouts",
     share="% bouts",
     inside="in a bout",
+)
+
+
+#: A behavior scan's (§20) words, for the BROWSE it shares with clustering. An instance is a
+#: match the search found and a behavior's cutoff kept — not a bout of a cluster somebody named.
+QUERY_TERMS = WorkspaceTerms(
+    unit="behavior",
+    units="behaviors",
+    subject="behavior",
+    member="matches",
+    share="% matches",
+    inside="in a match",
+    browse=BrowseWords(
+        kept="kept",
+        label="behavior",
+        labels="behaviors",
+        instance="match",
+        instances="matches",
+        empty="No behavior has a cutoff yet",
+        empty_hint=(
+            "Set one on Calibrate and the matches it keeps appear here, to filter, watch "
+            "and export."
+        ),
+        score="confidence",
+    ),
 )
 
 
@@ -109,7 +161,7 @@ def _labels_status(run) -> str:
 
 
 def _recordings_status(run) -> str:
-    recordings = run.data_sources().get("source_recording_ids") or []
+    recordings = run.data_sources()["recording_ids"]
     return _count(len(recordings), "recording", "recordings")
 
 
@@ -192,8 +244,8 @@ class ClusterWorkspace(MultiViewWorkspace):
     (``gui/label_clean.py``) showing every clip of one cluster, to mark the wrong ones and finish;
     the finish gives the cluster's exact precision. A saved pose-clustering run (the module is
     removed) keeps no clip edits and gets the list with its edits disabled. It gives figures, never
-    verdicts. A query keeps ``gui/audit_tab.py``, whose behaviors are flat and scoped by its own
-    selector. MEASURES is the §23 table for this run's artifact, on live runs.
+    verdicts. A query run reviews on the same pane in ``gui/query_review.py``, one recording of the
+    behavior its selector chose where this has a cluster. MEASURES is the §23 table for this run's artifact, on live runs.
     """
 
     def __init__(self, experiment, run, terms: WorkspaceTerms = POSE_TERMS) -> None:

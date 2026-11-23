@@ -5864,7 +5864,8 @@ def analysis_query(
 @click.option(
     "--finalize", is_flag=True, default=False,
     help="Mark the run complete — your statement that you are done calibrating. Refused, "
-    "naming the recordings, while the search has not reached every one.",
+    "naming the recordings, while the search has not reached every one, and naming the "
+    "behaviors while any has no cutoff (set them with --cutoff in the same command).",
 )  # fmt: skip
 @click.option(
     "--reopen", is_flag=True, default=False,
@@ -5944,7 +5945,9 @@ def analysis_query_calibrate(
     if finalize:
         try:
             _with_stage_progress(lambda bar: run.finalize(progress=bar))
-        except ValueError as e:  # a search that did not reach every recording
+        except ValueError as e:
+            # A search that did not reach every recording, or a behavior with no cutoff
+            # (`QueryRun.finish_blocker`, a UserInputError): either way one line, no traceback.
             raise click.ClickException(str(e))
         click.echo(f"finalized {run_id}")
 
@@ -6003,9 +6006,9 @@ def _echo_query_state(run) -> None:
 )  # fmt: skip
 @click.option(
     "--goal-width", type=FINITE_FLOAT, default=None,
-    help="Say whether each 95% confidence interval is this narrow yet (the GUI's default is "
-    "0.20, i.e. ±0.10), and roughly where another round of 25 would put it — a sample-size "
-    "goal, not a judgment of the label. Nothing is said about width without it.",
+    help="Say whether each 95% confidence interval of the earlier one-by-one audit is this "
+    "narrow (the GUI's default is 0.20, i.e. ±0.10) — a sample-size goal, not a judgment of "
+    "the label. Nothing is said about width without it.",
 )  # fmt: skip
 @click.option(
     "--own-only", is_flag=True, default=False,
@@ -6037,9 +6040,12 @@ def analysis_audit(
 
     A temporal clustering run's precision comes from its clip review (`clip_review.csv`: every
     clip of a cluster reviewed, written by `finish_review`), printed first with each cluster's
-    figure; the earlier one-by-one audit (`audit.csv`) follows under its own heading, read as it
-    always was.
+    figure; a query run's from its review of every clip its cutoff keeps, one recording at a
+    time (§20). The earlier one-by-one audit (`audit.csv`) follows under its own heading, read as
+    it always was.
     """
+    from detail.api.query import QueryRun
+
     proj = _open_experiment(experiment_dir)
     run = proj.authored_run(run_id)
     if run is None:
@@ -6047,9 +6053,17 @@ def analysis_audit(
             f"{run_id} is not an authored run (a query or clustering run), so it has no "
             "reliability audit. `detail analysis list` shows each run's module."
         )
-    if hasattr(run, "review_precision"):
+    # Chosen by the run's kind, not by which methods it has: both kinds have a
+    # `review_precision`, with different arguments and a different population.
+    reviewed_first = True
+    if isinstance(run, QueryRun):
+        _echo_query_review(run, label, cutoff, by_recording)
+        click.echo("Earlier one-by-one audit:")
+    elif hasattr(run, "review_precision"):
         _echo_clip_review(run, label)
         click.echo("Earlier one-by-one audit:")
+    else:
+        reviewed_first = False
     if run.nested_labels:
         paths = [label] if label else run.audit_labels()
         scopes = [(path, {"path": path, "own_only": own_only}) for path in paths]
@@ -6066,7 +6080,13 @@ def analysis_audit(
     for scope, address in scopes:
         estimate = run.audit_precision(cutoff=cutoff, **address)
         if estimate is None:
-            click.echo("(not audited — no reliability estimate for this run)")
+            # Under the earlier audit's heading, "no reliability estimate for this run" denied
+            # the review printed just above it.
+            click.echo(
+                "  (none)"
+                if reviewed_first
+                else "(not audited — no reliability estimate for this run)"
+            )
             return
         depth = scope.count(sep) if run.nested_labels else 0
         shown = "  " * depth + scope.rsplit(sep, 1)[-1]
@@ -6160,23 +6180,44 @@ def _echo_clip_review(run, label: str | None) -> None:
             )
 
 
-def _width_note(estimate: dict, goal: float) -> str:
-    """How wide the interval is against the goal width, and roughly where another round would
-    put it — sample-size facts, not a verdict."""
+def _echo_query_review(
+    run, label: str | None, cutoff: float | None, by_recording: bool
+) -> None:
+    """A query run's review, behavior by behavior and, with ``by_recording``, recording by
+    recording (§20), in ``storage/audit_figures``'s wording — the one AUDIT shows.
+
+    Everything is read before anything is printed, so a run whose candidates cannot be read
+    prints only the error.
+    """
     from detail.storage import audit_figures
-    from detail.storage import behavior_audit
+
+    behaviors = [b for b in run.behaviors() if label is None or label in (b.id, b.name)]
+    lines = []
+    for b in behaviors:
+        at = b.cutoff if cutoff is None else cutoff
+        if at is None:
+            lines.append(f"  {b.name}: no cutoff yet, nothing to review")
+            continue
+        rows = run.review_by_recording(b.id, cutoff=at)
+        estimate = run.review_precision(b.id, cutoff=at)
+        lines.append("  " + audit_figures.query_review_line(b.name, at, estimate, rows))
+        if by_recording:
+            lines.extend(
+                f"    {row['name']:<24} {audit_figures.query_review_cell(row)}"
+                for row in rows
+            )
+    click.echo("Review (every clip the cutoff keeps):")
+    for text in lines or ["  (no behavior matches)"]:
+        click.echo(text)
+
+
+def _width_note(estimate: dict, goal: float) -> str:
+    """How wide the interval is against the goal width — a sample-size fact, not a verdict."""
+    from detail.storage import audit_figures
 
     width = audit_figures.width(estimate)
-    if audit_figures.goal_reached(estimate, goal):
-        return f"CI width {width:.2f}, goal {goal:.2f} reached"
-    after = behavior_audit.projected_interval(estimate, behavior_audit.DEFAULT_BUDGET)
-    projection = (
-        f"; {behavior_audit.DEFAULT_BUDGET} more would give about "
-        f"{after[0]:.2f}–{after[1]:.2f}"
-        if after
-        else ""
-    )
-    return f"CI width {width:.2f}, goal {goal:.2f}{projection}"
+    reached = " reached" if audit_figures.goal_reached(estimate, goal) else ""
+    return f"CI width {width:.2f}, goal {goal:.2f}{reached}"
 
 
 @analysis.command("export-query")
@@ -6352,7 +6393,9 @@ def _interpret_options(kind: str):
                 "--finalize",
                 is_flag=True,
                 default=False,
-                help="Mark the run complete, your statement that you are done interpreting.",
+                help="Mark the run complete, your statement that you are done interpreting. "
+                "Refused while nothing is labelled (label a node with --name-node in the same "
+                "command).",
             ),
             click.option(
                 "--reopen",
@@ -6438,6 +6481,8 @@ def _interpret(
         for source, into in merge_pairs:
             click.echo(f"merged {source!r} into {into!r}")
         if finalize:
+            # Refused while nothing is labelled (`finish_blocker`, a UserInputError): one
+            # `Error:` line through the handler below, never a traceback.
             _with_stage_progress(lambda bar: run.finalize(progress=bar))
             click.echo("run finalized")
         if reopen:

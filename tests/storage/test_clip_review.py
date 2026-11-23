@@ -73,3 +73,37 @@ def test_a_torn_final_row_is_dropped_and_the_rest_kept(tmp_path):
     with open(cr.review_path(tmp_path), "a", encoding="utf-8") as f:
         f.write("recording_001,0,5")
     assert [r.answer for r in cr.read_review(tmp_path)] == ["yes"]
+
+
+def test_a_query_census_writes_no_cluster_and_reads_back_as_none(tmp_path):
+    """A query run's review has no clusters (§20): ``node=None`` is an empty cell, read as
+    ``NO_NODE``, and a withdrawal of such a row keeps it empty."""
+    cr.append_answers(tmp_path, [(CLIP, False)], node=None, label_path="q01")
+    text = cr.review_path(tmp_path).read_text(encoding="utf-8-sig").splitlines()
+    assert text[1].split(",")[4] == "", "no cluster is an empty cell, not -1"
+    (row,) = cr.read_review(tmp_path)
+    assert row.node == cr.NO_NODE
+    cr.withdraw(tmp_path, [CLIP.key])
+    assert (
+        cr.review_path(tmp_path)
+        .read_text(encoding="utf-8-sig")
+        .splitlines()[2]
+        .split(",")[4]
+        == ""
+    )
+
+
+def test_withdrawing_under_one_label_path_leaves_the_others(tmp_path):
+    """One span can be a candidate of two query behaviors: putting it back in one withdraws
+    that behavior's answer only. Without ``label_path`` every path's answer goes, as a
+    clustering put-back needs."""
+    cr.append_answers(tmp_path, [(CLIP, False)], node=None, label_path="q01")
+    cr.append_answers(tmp_path, [(CLIP, False)], node=None, label_path="q02")
+    cr.withdraw(tmp_path, [CLIP.key], label_path="q01")
+    latest = cr.latest_by_path(cr.read_review(tmp_path))
+    assert cr.answer_for(latest, CLIP.key, "q01") is None
+    assert cr.answer_for(latest, CLIP.key, "q02").yes is False
+
+    cr.withdraw(tmp_path, [CLIP.key])
+    latest = cr.latest_by_path(cr.read_review(tmp_path))
+    assert cr.answer_for(latest, CLIP.key, "q02") is None

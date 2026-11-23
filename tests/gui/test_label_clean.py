@@ -13,6 +13,7 @@ from detail.gui.label_clean import (
     REVIEWED_READ_ONLY,
     SCROLL_FIRST,
     ReviewPane,
+    no_preview_text,
     crossed_for,
     day_of,
     note_for,
@@ -513,3 +514,37 @@ def test_finish_fills_with_the_accent_only_once_it_can_be_pressed(qapp):
     finally:
         view.montage._worker.stop()
         view.deleteLater()
+
+
+def test_finish_refuses_while_a_clip_shows_no_preview(qapp):
+    """Guard (``tests/gui/test_frame_source.py``'s class): Finish counts every clip not removed
+    as the label, so a clip whose picture could not be made — *no preview*, a missing proxy — would
+    be counted by a reviewer who never saw it. Finish stays off and says why; with every picture
+    in, the same pane finishes (the negative case: the refusal is about the missing picture).
+    """
+    from tests.gui.conftest import Pictures
+    from tests.gui.test_query_workspace import _drain
+
+    view = _pane(qapp, n=6, faded=())
+    try:
+        view.montage.set_source(Pictures(missing={3}))
+        bar = view.montage.grid.verticalScrollBar()
+
+        def settled(failed: int) -> bool:
+            bar.setValue(bar.maximum())
+            return view.reached_end() and view.montage.unpictured() == (0, failed)
+
+        assert _drain(qapp, lambda: settled(1))
+        assert not view.finish.isEnabled()
+        assert view.finish.toolTip() == no_preview_text(1)
+        fired = []
+        view.finish_requested.connect(lambda: fired.append(True))
+        keys = {k.key().toString(): k for k in view._keys}
+        keys["Return"].activated.emit()
+        assert fired == [], "Enter finished a review with a clip nobody saw"
+
+        view.montage.set_source(Pictures())
+        assert _drain(qapp, lambda: settled(0))
+        assert view.finish.isEnabled()
+    finally:
+        view.montage._worker.stop()

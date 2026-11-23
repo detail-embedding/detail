@@ -20,7 +20,7 @@ orange-red error, grey transient. There is no stylesheet anywhere in the GUI, so
 on through the widget's palette.
 """
 
-from detail.gui.qt import QAbstractButton, QColor, QLabel, QPalette
+from detail.gui.qt import QAbstractButton, QColor, QLabel, QPalette, QWidget
 
 READY = QColor(40, 140, 40)  # green — ready
 WARN = QColor(170, 110, 0)  # amber — warning / setup incomplete
@@ -52,3 +52,41 @@ def set_button_color(button: QAbstractButton, color: QColor | None) -> None:
     palette.setColor(QPalette.ColorRole.ButtonText, QColor("white"))
     button.setPalette(palette)
     button.setAutoFillBackground(True)
+
+
+def set_band(widget: QWidget, on: bool = True) -> None:
+    """Shade ``widget`` as a band that is plainly not the page — or, ``on=False``, back to the page.
+
+    The shade is derived from the current Window colour rather than hardcoded, so it separates
+    from the background in a light theme and in a dark one; a fixed grey would vanish into one of
+    them. One shape for every "you are looking at something that is not the saved state" band:
+    the snapshot banner, CALIBRATE's *not saved* bar and the notice the other views show for it.
+    """
+    widget.setAutoFillBackground(on)
+    palette = widget.palette()
+    background = (
+        widget.parentWidget().palette().color(QPalette.ColorRole.Window)
+        if (widget.parentWidget() is not None)
+        else palette.color(QPalette.ColorRole.Window)
+    )
+    palette.setColor(
+        QPalette.ColorRole.Window,
+        (
+            (
+                background.darker(112)
+                if background.lightness() > 127
+                else background.lighter(165)
+            )
+            if on
+            else background
+        ),
+    )
+    widget.setPalette(palette)
+
+
+def warn_ink(widget: QWidget) -> QColor:
+    """The warning amber that reads on ``widget``'s own background: ``WARN`` on a light one,
+    lightened on a dark one, where the status amber is too dark to read against a dark band.
+    """
+    background = widget.palette().color(QPalette.ColorRole.Window)
+    return WARN if background.lightness() > 127 else WARN.lighter(170)

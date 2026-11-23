@@ -881,7 +881,9 @@ selection, written to `analysis/<an_NN>/`.
   different claim from "nobody has chosen a threshold yet". `--cutoff q01=none` clears one and
   removes it again. `--name` renames a behavior; its id never moves, so recorded judgments stay
   attached to what they were made about. `--finalize` is your statement that you are done, not
-  a lock: a later edit is refused and told to `--reopen` first.
+  a lock: a later edit is refused and told to `--reopen` first. It is refused while any behavior
+  has no cutoff, naming each one; set them in the same command (`--cutoff q01=0.8 --cutoff
+  q02=0.7 --finalize`).
 
   A search that did not reach every recording (you cancelled it, so it is `partial`, or one
   behavior's search failed on a recording) can still be calibrated, and its behavior output
@@ -889,9 +891,20 @@ selection, written to `analysis/<an_NN>/`.
   is left out, not counted as a zero. `--finalize` and `export-query` refuse such a run and name
   the recordings it is missing; re-run the search to cover them.
 - `audit --experiment <dir> --run <an_NN> [--behavior <id or label>] [--cutoff <confidence>]
-  [--by-recording] [--by-cluster] [--goal-width <width>] [--own-only]`: read the precision an authored run's reliability audit supports, for a
-  behavior scan or a clustering run. Reads only: the judging is a blind review of video clips and
-  lives in the GUI (see *Not in the CLI*), but the number it buys is reachable from a script.
+  [--by-recording] [--by-cluster] [--goal-width <width>] [--own-only]`: read the precision an authored run's review supports, for a
+  behavior scan or a clustering run. Reads only: the review is watching video clips and lives in
+  the GUI (see *Not in the CLI*), but the number it buys is reachable from a script.
+
+  On a **behavior scan**, the review prints first, behavior by behavior. AUDIT reviews every clip
+  a behavior's cutoff keeps, one recording at a time, so a reviewed recording's figure is exact,
+  and a behavior's figure appears only once every recording is reviewed at the cutoff
+  (`rearing: precision 0.93  (all 412 audited), every recording reviewed at 0.42 (8)`); until
+  then the line says how many are, and the exact figure over the range that was reviewed
+  (`; reviewed to 0.50: precision 0.95  (all 300 audited)`). `--cutoff` reads it at another
+  cutoff: above the reviewed range it stays exact, below it says what is not reviewed.
+  `--by-recording` adds a line per recording: its figure and how many clips were removed, or
+  `reviewed to 0.50 · 6 not reviewed below it`, or `not reviewed (34 clips)`. Clips overlapping the
+  behavior's own example or non-example clips are not reviewed or counted.
 
   Precision always comes with its 95% confidence interval and its `n`: `1.00` from three clips and `1.00`
   from fifty are the same figure and different claims. Below 8 audited clips the precision
@@ -902,10 +915,9 @@ selection, written to `analysis/<an_NN>/`.
   `--by-recording` splits it per video, which is where one cutoff behaving differently in
   different animals becomes visible.
 
-  On a behavior scan the precision is weighted by confidence bin, because the review draws about
-  the same number of clips from every bin however many candidates each holds; it is the same
-  figure the GUI's Audit tab shows. Clips overlapping the behavior's own example or non-example
-  clips are never drawn or counted.
+  An earlier one-by-one audit of a behavior scan, made before the review, is weighted by
+  confidence bin, because it drew about the same number of clips from every bin however many
+  candidates each held.
 
   On a clustering run, labels nest, so `--behavior` takes a label path (`rearing/supported`), and without it every label prints, a parent above its sub-labels, each with its precision, its 95% confidence interval and the number of clips audited.
 
@@ -916,9 +928,8 @@ selection, written to `analysis/<an_NN>/`.
   the label, and its precision with its 95% confidence interval. With `--behavior` naming a
   parent, its sub-labels' clusters are listed too. It reports; whether a cluster is
   pure enough is yours to say. `--goal-width <width>` adds each interval's width against that
-  goal (0.20, for example, is ±0.10) and says when it is reached, or roughly where
-  another 25 clips would put the interval, which is a statement about how many clips were
-  audited, not about the label. Without it nothing is said about width. Clusters need the run's
+  goal (0.20, for example, is ±0.10) and says when it is reached, which is a statement about how
+  many clips were audited, not about the label. Without it nothing is said about width. Clusters need the run's
   node cache. The label's own precision weights each cluster by its share, and says
   *provisional: 40% of the label not yet audited* while some cluster has nothing audited. After
   you change which clusters a label holds, its precision counts only clips audited since, and the
@@ -928,8 +939,9 @@ selection, written to `analysis/<an_NN>/`.
 
   On a **temporal clustering** run, the clip review prints first, cluster by cluster. AUDIT reviews every clip of a cluster, so a reviewed cluster's figure is exact, and a label's figure appears only once every cluster under it (its sub-labels' included) is reviewed; until then its line says how many are, and each reviewed cluster shows its clip count, its share of the label and its precision.
 
-  The earlier one-by-one audit follows under its own heading, read as before and never merged
-  into the clip review.
+  On either run kind, the earlier one-by-one audit follows under *Earlier one-by-one audit*,
+  read as before and never merged into the review, or `(none)` for a run never audited that way.
+  Nothing adds to it any more: the review replaced it.
 - `export-query --experiment <dir> --run <an_NN> --out <dir>`: write a calibrated query run's
   behaviors as one behavior-stream CSV per searched recording, into a new folder inside `--out`
   that the command prints, so exporting again at another cutoff keeps the first export. Each row carries
@@ -1055,6 +1067,10 @@ selection, written to `analysis/<an_NN>/`.
   (such a run still opens; its clips just have no typicality order until it is rebuilt). It does
   not change any label and is allowed on a finished run. `--min-cluster-s` is gone: there is no
   size floor, and a run saved with one ignores it.
+
+  `--finalize` marks the run complete, your statement that you are done; `--reopen` undoes it.
+  `--finalize` is refused while nothing is labelled, with one `Error:` line naming the command
+  that labels a node. `--name-node` and `--finalize` in one command label first, then finish.
 
 - `export-temporal-clustering --experiment <dir> --run <an_NN> --out <dir>`: write one
   behavior-stream CSV per fitted recording, into a new folder inside `--out` that the command
@@ -2528,11 +2544,13 @@ in the [GUI](gui.md), not the CLI. A few are gaps, and say so:
 - **Query cutoff-by-eye and clip review**: `analysis query-calibrate` gives you the frequency
   curve as numbers and sets a cutoff, which is everything the CLI can honestly offer. Choosing
   a cutoff by *looking at the clips it returns*, scrubbing the matches at a candidate setting,
-  watching them appear and disappear as you drag it, and auditing a blind sample to put a
-  precision figure on the one you picked, is an iterate-until-it-looks-right loop with a video
-  frame in it, so it is a GUI surface (see the guide). The **judging** is GUI-only; the number
-  it buys is not, `analysis audit` reports the precision, its interval and its `n`, and
-  `AuthoredRun.audit_precision()` returns the same in a script.
+  watching them appear and disappear as you drag it, and reviewing every clip the cutoff keeps
+  to put a precision figure on the one you picked, is an iterate-until-it-looks-right loop with
+  a video frame in it, so it is a GUI surface (see the guide). Taking a clip out and finishing a
+  recording's review start from watching the clips, so they are GUI-only too; the API is
+  `QueryRun.take_out_clips`, `put_back_clips`, `taken_out` and `finish_review(behavior,
+  recording)`. The number the review buys is not GUI-only: `analysis audit` prints it, and
+  `QueryRun.review_precision()` / `review_by_recording()` return it in a script.
 - **Cluster review**: `analysis
   temporal-interpret` prints the tree and set the labels. The **reliability audit** on a
   clustering vocabulary is the third choice a run records, and it is GUI-only for the same

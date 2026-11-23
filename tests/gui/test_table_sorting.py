@@ -5,8 +5,8 @@ with sortable headers for multi-column lists since before this file existed. Of 
 across `detail/gui/`, two called `setSortingEnabled(True)` by hand and none offered resizable
 columns — `QHeaderView.ResizeMode.Interactive` (the mode that lets a user drag a column border)
 appeared nowhere in the package. `gui/tables.py`'s `make_columns_resizable` / `enable_sorting`
-fix this once, in the two shared table builders (`pages._table` / `tables.list_table`) plus every
-raw `QTableWidget`/`QTableView` construction, so this file's job is to make sure it *stays* fixed
+fix this once, in the shared table builder (`pages._table`) plus every raw
+`QTableWidget`/`QTableView` construction, so this file's job is to make sure it *stays* fixed
 — for tables that exist today and any built tomorrow, since both sweeps below are **discovered**
 (the same registries `test_smoke_construct.PAGES` and `test_dialog_space._dialogs()` already use),
 not hand-listed.
