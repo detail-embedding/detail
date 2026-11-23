@@ -222,7 +222,14 @@ def test_a_failing_source_marks_the_tile_and_the_rest_still_draw(montage, qapp):
 
     montage.set_source(Broken())
     montage.set_clips(_clips(3))
-    assert _drain(qapp, lambda: montage._failed == {1} and len(montage._images) == 2)
+    assert _drain(
+        qapp, lambda: montage.unpictured() == (0, 1) and len(montage._images) == 2
+    )
+    changes = []
+    montage.pictures_changed.connect(lambda: changes.append(True))
+    montage.set_source(FakeSource())
+    assert changes, "resetting the pictures said nothing"
+    assert _drain(qapp, lambda: montage.unpictured() == (0, 0))
 
 
 def test_tile_size_and_order_controls_emit(montage, qapp):

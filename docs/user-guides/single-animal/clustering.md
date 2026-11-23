@@ -316,7 +316,8 @@ tab.
        has, and whether it has been reviewed and how many clips were taken out. Click a
        cluster to review it. Right-click one to open it on the Interpret view.
     2. **✓ Finish review**: says you have looked at every clip of the cluster. Greyed out
-       until the last clip has been on screen.
+       until the last clip has been on screen, and while any clip shows *no preview*: a clip
+       you could not see cannot be counted, so build the previews first.
     3. **Undo (⌘Z)**: puts back the last clip you took out (++ctrl+z++).
     4. **Show ▾**: what the clips show.
     5. **Export ▾**: saves the clips.

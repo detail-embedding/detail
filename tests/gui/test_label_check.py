@@ -39,6 +39,7 @@ from detail.gui.label_clean import CLICK_HINT, SCROLL_FIRST
 from detail.storage import audit_figures
 from detail.storage import clip_review as review_store
 
+from tests.gui.conftest import Pictures
 from tests.gui.conftest import drain_busy_calls
 from tests.gui.test_query_workspace import _drain
 
@@ -108,12 +109,18 @@ def _open(qapp, tab, path, node):
 
 def _to_end(qapp, tab) -> None:
     """Scroll to the bottom until the pane says so: under load the grid's maximum can still
-    grow after a fixed number of pumps, leaving the bar short of the real end."""
-    bar = tab.pane.montage.grid.verticalScrollBar()
+    grow after a fixed number of pumps, leaving the bar short of the real end.
+
+    The fitted fixture has no videos, so no previews: every tile would show *no preview* and
+    Finish would refuse. ``Pictures`` stands in for a built preview cache, and the wait includes
+    the pictures in view arriving."""
+    montage = tab.pane.montage
+    montage.set_source(Pictures(), keep_pictures=True)
+    bar = montage.grid.verticalScrollBar()
 
     def scrolled() -> bool:
         bar.setValue(bar.maximum())
-        return tab.pane.reached_end()
+        return tab.pane.reached_end() and montage.unpictured() == (0, 0)
 
     assert _drain(qapp, scrolled)
 
@@ -444,8 +451,9 @@ def test_finish_waits_for_the_end_of_the_scroll(qapp, tab):
     # The clips rank off the UI thread; until they arrive the grid is empty and "reached the
     # end" says nothing. A fixed five pumps lost that race in a loaded full run.
     _ranked(qapp, tab)
-    for _ in range(5):
-        qapp.processEvents()
+    # Pictures, as a built preview cache gives them: without them Finish says so first.
+    montage.set_source(Pictures(), keep_pictures=True)
+    assert _drain(qapp, lambda: montage.unpictured() == (0, 0))
     if tab.pane.reached_end():
         pytest.skip("this fit's cluster fits on one screen")
     assert not tab.pane.finish.isEnabled()

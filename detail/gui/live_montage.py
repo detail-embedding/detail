@@ -698,6 +698,9 @@ class LiveMontage(QWidget):
     context_changed = pyqtSignal(float)
     #: The tiles were replaced or re-marked (:meth:`set_clips`).
     clips_changed = pyqtSignal()
+    #: A tile got its first picture, or its picture could not be made, or the pictures were
+    #: reset (:meth:`unpictured`).
+    pictures_changed = pyqtSignal()
 
     def __init__(
         self,
@@ -915,6 +918,7 @@ class LiveMontage(QWidget):
             self._failed.clear()
             self._coming.clear()
             self._request_visible()
+            self.pictures_changed.emit()
         else:
             self._reset_pictures()
 
@@ -1711,6 +1715,7 @@ class LiveMontage(QWidget):
         self._failed.clear()
         self._coming.clear()
         self._request_visible()
+        self.pictures_changed.emit()
 
     def _scrolled(self, value: int) -> None:
         if value != self._scroll_at:
@@ -1767,12 +1772,29 @@ class LiveMontage(QWidget):
         if generation != self._generation or index >= len(self._clips):
             return
         self._coming.discard(index)
+        before = (index in self._images, index in self._failed)
         if image is None:
             self._failed.add(index)
         else:
             self._failed.discard(index)
             self._images[index] = image
         self.canvas.update(self.tile_rect(index))
+        if (index in self._images, index in self._failed) != before:
+            self.pictures_changed.emit()
+
+    def unpictured(self) -> tuple[int, int]:
+        """``(waiting, failed)``: tiles whose first picture is asked for and not yet here, and
+        tiles whose picture could not be made — they paint *no preview*. A surface that takes a
+        decision about every clip (a review's Finish) waits for both to be zero: a clip whose
+        picture never showed was not seen, and a decision about it is a decision against nothing
+        (``tests/gui/test_frame_source.py``'s class).
+
+        A tile never asked for — scrolled past in one jump — is in neither: how far the grid was
+        looked through is :meth:`seen`'s question, not this one."""
+        total = len(self._clips)
+        waiting = sum(1 for index in self._coming if index < total)
+        failed = sum(1 for index in self._failed if index < total)
+        return waiting, failed
 
     # -- painting ----------------------------------------------------------- #
     def _paint(self, canvas: QWidget, dirty: QRect) -> None:
