@@ -22,6 +22,7 @@ from detail.api.authored_run import (
     SnapshotViewMixin,
 )
 from detail.api.experiment import Experiment
+from detail.api.query_review import QueryReviewOperations
 from detail.core.errors import UserInputError
 from detail.pipeline import query as query_pipeline
 from detail.storage import analysis_runs as analysis_store
@@ -31,10 +32,19 @@ from detail.storage import recording as recording_store
 from detail.storage import snapshots as snapshots_store
 
 
-class QueryRun(AuthoredRun):
+class QueryRun(QueryReviewOperations, AuthoredRun):
     """Handle for a Query run. ``inner`` (the executor handle) is present while the search is
     in flight and ``None`` for a run reached later to calibrate; every calibration operation
     works either way."""
+
+    #: ``AuthoredRun``'s writers and this run's own: the review's removals (through ``_edit``)
+    #: and its census (through ``_record``), each refused on a snapshot view.
+    _WRITE_METHODS = (
+        *AuthoredRun._WRITE_METHODS,
+        "take_out_clips",
+        "put_back_clips",
+        "finish_review",
+    )
 
     def __init__(self, inner, experiment: Experiment, run_id: str):
         super().__init__(inner, experiment, run_id)

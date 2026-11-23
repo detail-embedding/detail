@@ -40,6 +40,7 @@ import yaml
 
 from detail.core import atomic
 from detail.core.ids import sorted_by_id
+from detail.storage import clip_review
 from detail.storage import dirscan
 from detail.storage import experiment as experiment_store
 
@@ -48,7 +49,8 @@ SCHEMA_VERSION = 1
 INSTANCES_FILENAME = "instances.csv"
 COVERAGE_FILENAME = "coverage.csv"
 MANIFEST_FILENAME = "behavior_output.yaml"
-# Written by ``storage/behavior_audit.py``; its presence is what ``audited`` reports.
+# Written by ``storage/behavior_audit.py``; its presence, or ``clip_review.csv``'s, is what
+# ``audited`` reports.
 AUDIT_FILENAME = "audit.csv"
 # The score-bin edges each label's audit is drawn and weighted by, recorded at its first draw
 # (``behavior_audit.fix_bins``).
@@ -358,15 +360,19 @@ def _names_map(manifest: dict, key: str = "names") -> dict[str, list[str]]:
 def _resolved_manifest(run_dir: Path, manifest: dict) -> dict:
     """The manifest as it will be stored: normalized, with the derived fields filled in.
 
-    ``audited`` is **derived** from whether ``audit.csv`` sits beside the artifact, never
-    accepted from the producer — the same discipline as the derived ``params`` rule. A stored
-    copy of a fact that is checkable from the store is a second writer on one fact.
+    ``audited`` is **derived** from whether a review sits beside the artifact — ``audit.csv``
+    (the one-by-one audit) or ``clip_review.csv`` (the review of every clip, §19/§20/§22) — never
+    accepted from the producer, the same discipline as the derived ``params`` rule. A stored
+    copy of a fact that is checkable from the store is a second writer on one fact. Reading
+    ``audit.csv`` alone reported a run reviewed clip by clip as never audited.
     """
     resolved = {k: v for k, v in manifest.items() if k != "schema_version"}
     space = resolved.get("label_space")
     if isinstance(space, str):
         resolved["label_space"] = _LABEL_SPACE_SYNONYMS.get(space, space)
-    resolved["audited"] = (run_dir / AUDIT_FILENAME).is_file()
+    resolved["audited"] = (
+        run_dir / AUDIT_FILENAME
+    ).is_file() or clip_review.review_path(run_dir).is_file()
     return resolved
 
 

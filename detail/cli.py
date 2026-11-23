@@ -6040,9 +6040,12 @@ def analysis_audit(
 
     A temporal clustering run's precision comes from its clip review (`clip_review.csv`: every
     clip of a cluster reviewed, written by `finish_review`), printed first with each cluster's
-    figure; the earlier one-by-one audit (`audit.csv`) follows under its own heading, read as it
-    always was.
+    figure; a query run's from its review of every clip its cutoff keeps, one recording at a
+    time (§20). The earlier one-by-one audit (`audit.csv`) follows under its own heading, read as
+    it always was.
     """
+    from detail.api.query import QueryRun
+
     proj = _open_experiment(experiment_dir)
     run = proj.authored_run(run_id)
     if run is None:
@@ -6050,7 +6053,12 @@ def analysis_audit(
             f"{run_id} is not an authored run (a query or clustering run), so it has no "
             "reliability audit. `detail analysis list` shows each run's module."
         )
-    if hasattr(run, "review_precision"):
+    # Chosen by the run's kind, not by which methods it has: both kinds have a
+    # `review_precision`, with different arguments and a different population.
+    if isinstance(run, QueryRun):
+        _echo_query_review(run, label, cutoff, by_recording)
+        click.echo("Earlier one-by-one audit:")
+    elif hasattr(run, "review_precision"):
         _echo_clip_review(run, label)
         click.echo("Earlier one-by-one audit:")
     if run.nested_labels:
@@ -6161,6 +6169,76 @@ def _echo_clip_review(run, label: str | None) -> None:
                 f"  {'  ' * (depth + 1)}#{row['node']:<6} {row['size']} clips, "
                 f"{row['share']:.0%} of the label  {figure}"
             )
+
+
+def _echo_query_review(
+    run, label: str | None, cutoff: float | None, by_recording: bool
+) -> None:
+    """A query run's review, behavior by behavior and, with ``by_recording``, recording by
+    recording (§20).
+
+    A recording is reviewed whole at the behavior's cutoff (every clip watched,
+    `finish_review`), so a reviewed recording's figure is exact. A behavior's figure is printed
+    only once every recording is exact at the cutoff; until then the line says how many are, and
+    the exact figure over the range that was reviewed, never a figure at the cutoff — the answered
+    clips are the top of the candidates, not a sample of them.
+
+    Everything is read before anything is printed, so a run whose candidates cannot be read
+    prints only the error.
+    """
+    from detail.storage import audit_figures
+
+    behaviors = [b for b in run.behaviors() if label is None or label in (b.id, b.name)]
+    lines = []
+    for b in behaviors:
+        at = b.cutoff if cutoff is None else cutoff
+        if at is None:
+            lines.append(f"  {b.name}: no cutoff yet, nothing to review")
+            continue
+        rows = run.review_by_recording(b.id, cutoff=at)
+        estimate = run.review_precision(b.id, cutoff=at)
+        done = sum(1 for row in rows if row["exact"])
+        if estimate is not None and estimate["exact"]:
+            lines.append(
+                f"  {b.name}: {audit_figures.line(estimate)}, every recording reviewed at "
+                f"{at:.2f} ({len(rows)})"
+            )
+        else:
+            reached = ""
+            if estimate is not None and estimate["at_floor"] is not None:
+                reached = (
+                    f"; reviewed to {estimate['reviewed_floor']:.2f}: "
+                    f"{audit_figures.line(estimate['at_floor'])}"
+                )
+            lines.append(
+                f"  {b.name}: {done} of {len(rows)} recordings reviewed at {at:.2f}{reached}"
+            )
+        if by_recording:
+            lines.extend(f"    {row['name']:<24} {_review_cell(row)}" for row in rows)
+    click.echo("Review (every clip the cutoff keeps):")
+    for text in lines or ["  (no behavior matches)"]:
+        click.echo(text)
+
+
+def _review_cell(row: dict) -> str:
+    """One recording's review, as ``analysis audit --by-recording`` prints it."""
+    from detail.storage import audit_figures
+
+    own = (
+        f" · {row['examples']} on your own examples, not reviewed"
+        if row["examples"]
+        else ""
+    )
+    if not row["size"]:
+        return f"no clips at this cutoff{own}"
+    if row["exact"]:
+        return f"{audit_figures.line(row['estimate'])} · {row['removed']} removed{own}"
+    if row["at_floor"] is not None:
+        return (
+            f"reviewed to {row['reviewed_floor']:.2f} · "
+            f"{row['estimate']['remaining']} not reviewed below it{own}"
+        )
+    return f"not reviewed{own}"
 
 
 def _width_note(estimate: dict, goal: float) -> str:

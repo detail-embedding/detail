@@ -329,6 +329,12 @@ def project_artifact(
     named behavior never looked at cannot be a real zero for any of them. With nothing
     calibrated the vocabulary is empty, and every behavior must have searched the unit.
 
+    **A clip a reviewer removed is left out at every cutoff** (§20 *The audit*): a candidate whose
+    span is in its behavior's ``removed`` is not an instance, so ``instances.csv``, the instance
+    features and the frame view all leave it out. It is an edit to the output only; the search
+    results, and every reader of the method's own candidates (the frequency curve, the audit
+    pool), still see it.
+
     With no behavior calibrated the artifact is still written, with real coverage and an empty
     vocabulary — the honest statement that these units were analyzed and nothing is named yet.
     §21 requires it: an ``open`` run *has* an artifact, because the statistics are what the
@@ -348,6 +354,7 @@ def project_artifact(
     method = resolve_method(state.method)
     gap_ns = (record.get("params") or {}).get("trajectory_split_gap_ns")
     calibrated = [b for b in state.behaviors if b.cutoff is not None]
+    removed = {b.id: b.removed_keys() for b in calibrated}
     cached = results or {}
 
     def report(stage: str, fraction: float, detail: str = "") -> None:
@@ -388,7 +395,8 @@ def project_artifact(
                     )
                 )
             instances.extend(
-                instances_from(
+                instance
+                for instance in instances_from(
                     method.instances_at(result, behavior.cutoff, state.method_params),
                     recording_id=recording_id,
                     subject=state.track_id,
@@ -396,6 +404,7 @@ def project_artifact(
                     t_ns=t_ns,
                     frame_idx=frame_idx,
                 )
+                if query_runs.clip_key(instance) not in removed[behavior.id]
             )
 
     report("writing", 0.0, "behavior output")

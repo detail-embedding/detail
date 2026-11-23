@@ -142,6 +142,12 @@ class Behavior:
     same as zero. A run whose cutoff is unset has been searched but not calibrated, and its
     artifact says so by carrying no instances for that behavior rather than every candidate the
     method could find.
+
+    ``removed`` is the clips a reviewer took out of this behavior (§20 *The audit*): one
+    ``{recording_id, subject, t_ns, end_t_ns, at}`` per clip, ``at`` ISO-8601 UTC. It edits the
+    output, never an input: the search, the examples and the non-examples are untouched, and the
+    artifact leaves these candidates out at every cutoff. Kept per behavior because one span can be
+    a candidate of two behaviors. A state written before the field reads as an empty list.
     """
 
     id: str
@@ -149,6 +155,7 @@ class Behavior:
     examples: list[dict] = field(default_factory=list)
     negatives: list[dict] = field(default_factory=list)
     cutoff: float | None = None
+    removed: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -157,6 +164,7 @@ class Behavior:
             "examples": [dict(e) for e in self.examples],
             "negatives": [dict(n) for n in self.negatives],
             "cutoff": self.cutoff,
+            "removed": [dict(r) for r in self.removed],
         }
 
     @classmethod
@@ -167,7 +175,22 @@ class Behavior:
             examples=[dict(e) for e in (data.get("examples") or [])],
             negatives=[dict(n) for n in (data.get("negatives") or [])],
             cutoff=(None if data.get("cutoff") is None else float(data["cutoff"])),
+            removed=[dict(r) for r in (data.get("removed") or [])],
         )
+
+    def removed_keys(self) -> set[tuple[str, int, int, int]]:
+        """``(recording_id, subject, t_ns, end_t_ns)`` of every removed clip — ``ClipRef.key``."""
+        return {removal_key(r) for r in self.removed}
+
+
+def removal_key(entry: dict) -> tuple[str, int, int, int]:
+    """The ``ClipRef.key`` of one stored removal (``Behavior.removed``)."""
+    return (
+        str(entry["recording_id"]),
+        int(entry.get("subject") or 0),
+        int(entry["t_ns"]),
+        int(entry["end_t_ns"]),
+    )
 
 
 @dataclass
@@ -215,6 +238,18 @@ class QueryState:
             behaviors=[Behavior.from_dict(b) for b in (data.get("behaviors") or [])],
             search_recording_ids=list(data.get("search_recording_ids") or []),
         )
+
+
+def clip_key(row) -> tuple[str, int, int, int]:
+    """``(recording_id, subject, t_ns, end_t_ns)`` of an instance row — the ``ClipRef.key`` a
+    removal (``Behavior.removed``) and a review answer (``clip_review.csv``) are keyed by.
+    """
+    return (
+        str(row.recording_id),
+        int(row.subject or 0),
+        int(row.t_ns),
+        int(row.end_t_ns),
+    )
 
 
 def example_instance_ids(behaviors, instances) -> set[str]:
