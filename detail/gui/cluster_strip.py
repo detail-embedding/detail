@@ -33,28 +33,37 @@ each other, and the two want opposite things from a cell.
 
 import colorsys
 
-from PyQt6.QtCore import QEvent, QPoint, QPointF, QRectF, QTimer, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QPainter, QPen, QPixmap
-from PyQt6.QtCore import QObject, QRunnable
-from PyQt6.QtWidgets import (
-    QAbstractScrollArea,
-    QFrame,
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QScrollArea,
-    QSizePolicy,
-    QSlider,
-    QToolTip,
-    QVBoxLayout,
-    QWidget,
-)
-
 from detail.core.chart_theme import rgb
 from detail.gui import frame_source
 from detail.gui import decode_order
 from detail.gui import plot_theme
 from detail.gui.clip_grid import _CellSignals, _CellTask
+from detail.gui.qt import (
+    QAbstractScrollArea,
+    QColor,
+    QEvent,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QObject,
+    QPainter,
+    QPen,
+    QPixmap,
+    QPoint,
+    QPointF,
+    QPushButton,
+    QRectF,
+    QRunnable,
+    QScrollArea,
+    QSizePolicy,
+    QSlider,
+    QTimer,
+    QToolTip,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+    Signal,
+)
 from detail.gui.quick_preview import (
     MAX_THUMB_PX,
     MIN_THUMB_PX,
@@ -75,14 +84,14 @@ MAX_PLAY_FRAMES = 120
 
 def _pool():
     """Qt's global thread pool — the one every thumbnail decode in the app shares."""
-    from PyQt6.QtCore import QThreadPool
+    from detail.gui.qt import QThreadPool
 
     return QThreadPool.globalInstance()
 
 
 class _ClipSignals(QObject):
     # (generation, frames | None) — delivered on the UI thread.
-    done = pyqtSignal(int, object)
+    done = Signal(int, object)
 
 
 class _ClipTask(QRunnable):
@@ -114,7 +123,7 @@ class _Thumb(QLabel):
     is a rectangular frame around them with empty space" was describing.
     """
 
-    clicked = pyqtSignal(object)
+    clicked = Signal(object)
 
     def __init__(self, size_px: int = THUMB_PX) -> None:
         super().__init__()
@@ -598,14 +607,14 @@ class EthogramStrip(QWidget):
     #: The widest a name may make the gutter, in lines; a longer name is elided, whole on hover.
     GUTTER_LINES = 12
 
-    cluster_picked = pyqtSignal(int)
+    cluster_picked = Signal(int)
     #: The band under a click, as ``(row, index into that row's bands)``: what an embedder that
     #: knows what each band *is* (a labelled bout, say) acts on. Emitted beside ``cluster_picked``.
-    band_activated = pyqtSignal(int, int)
+    band_activated = Signal(int, int)
     #: A mark in the lane was clicked, as ``(row, index into that row's lane marks)``.
-    lane_activated = pyqtSignal(int, int)
+    lane_activated = Signal(int, int)
     #: The visible window moved: a zoom, a pan, or back to the whole span.
-    view_changed = pyqtSignal()
+    view_changed = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)

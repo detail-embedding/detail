@@ -47,11 +47,9 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from detail.api.experiment import Experiment  # noqa: E402
-from detail.gui import app as gui_app  # noqa: E402
-from detail.gui import sections as gui_sections  # noqa: E402
+from detail.api.experiment import Experiment
+from detail.gui import app as gui_app
+from detail.gui import sections as gui_sections
 
 pytestmark = pytest.mark.guard
 

@@ -7,9 +7,7 @@ is handed and assume none of its own.
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from detail.gui.skeleton_points import (  # noqa: E402
+from detail.gui.skeleton_points import (
     POINTS_TIP,
     SkeletonPointsButton,
     SkeletonPointsPicker,

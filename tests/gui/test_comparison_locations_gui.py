@@ -27,13 +27,11 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest  # noqa: E402
-from PyQt6.QtWidgets import QLabel, QTableWidget  # noqa: E402
-
-from PyQt6.QtCore import Qt  # noqa: E402
 
 from detail.analysis import cohort as cohort_lib  # noqa: E402
 from detail.analysis import location_measures  # noqa: E402
 from detail.configs.comparison import ComparisonConfig  # noqa: E402
+from detail.gui.qt import QLabel, QTableWidget, Qt
 from detail.storage import analysis_runs  # noqa: E402
 from detail.storage import metadata as md  # noqa: E402
 from detail.gui.comparison import (  # noqa: E402

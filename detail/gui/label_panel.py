@@ -23,33 +23,36 @@ join (:func:`label_choices`) and which a label may merge into (:func:`merge_targ
 computed from the node cache in memory, so it follows a label the instant it is typed.
 """
 
-from PyQt6.QtCore import QEvent, QObject, QPoint, QRectF, QSize, Qt, pyqtSignal
-from PyQt6.QtGui import (
+from detail.core.progress import format_duration
+from detail.gui import plot_theme
+from detail.gui.qt import (
+    QApplication,
     QColor,
+    QCompleter,
+    QEvent,
     QFontMetrics,
+    QFrame,
+    QHBoxLayout,
     QIcon,
     QKeySequence,
+    QLabel,
+    QLineEdit,
+    QMenu,
+    QObject,
     QPainter,
     QPalette,
     QPen,
     QPixmap,
-)
-from PyQt6.QtWidgets import (
-    QApplication,
-    QCompleter,
-    QFrame,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QMenu,
+    QPoint,
     QPushButton,
+    QRectF,
+    QSize,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
+    Qt,
+    Signal,
 )
-
-from detail.core.progress import format_duration
-from detail.gui import plot_theme
 from detail.gui.sizing import (
     ElidedLabel,
     emphasis_font,
@@ -271,12 +274,12 @@ class LabelField(QWidget):
     """
 
     #: ``(node, name)``: label ``node``; ``""`` removes its own label.
-    label_requested = pyqtSignal(int, str)
+    label_requested = Signal(int, str)
     #: A label's name, from its entry in the list.
-    rename_wanted = pyqtSignal(str)
-    merge_wanted = pyqtSignal(str)
+    rename_wanted = Signal(str)
+    merge_wanted = Signal(str)
     #: Go to a label: its root name (the page selects its widest cluster).
-    label_picked = pyqtSignal(str)
+    label_picked = Signal(str)
 
     def __init__(self, terms, parent=None, *, tip=None, caption_tip: str = "") -> None:
         """``tip(name, key)``: a live button's tooltip, where the buttons do something other
@@ -628,7 +631,7 @@ class QuickLabels(QObject):
     """
 
     #: ``(node, name)``: put ``node`` under the label ``name``.
-    label_requested = pyqtSignal(int, str)
+    label_requested = Signal(int, str)
 
     def __init__(self, terms, parent=None, *, tip=None) -> None:
         """``tip(name, key)``: a live entry's tooltip, where the entries do something other
@@ -753,7 +756,7 @@ class LabelBar(QFrame):
     """
 
     #: The status line's text, each time it changes: a cluster window shows the same line.
-    status_changed = pyqtSignal(str)
+    status_changed = Signal(str)
 
     def __init__(self, terms, parent=None) -> None:
         super().__init__(parent)

@@ -16,18 +16,20 @@ a multiple of. Double-clicking is the way out of that compromise — see `double
 host wires to a popup that re-decodes the clip at its real rate.
 """
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QPixmap
-from PyQt6.QtWidgets import (
+from detail.gui.busy import BusyOverlay
+from detail.gui.qt import (
     QHBoxLayout,
     QLabel,
+    QPixmap,
     QPushButton,
     QSlider,
+    QTimer,
     QVBoxLayout,
     QWidget,
+    Qt,
+    Signal,
+    receivers,
 )
-
-from detail.gui.busy import BusyOverlay
 from detail.gui.run_preview import _to_pixmap
 
 #: The thumbnail sizes a strip may ask for. Shared so two strips cannot drift apart on them.
@@ -45,7 +47,7 @@ class QuickPreview(QWidget):
 
     #: Double-clicked, with nothing attached — the strip knows which clip is in here, this
     #: widget only knows the frames it was handed.
-    double_clicked = pyqtSignal()
+    double_clicked = Signal()
 
     def __init__(self, size_px: int, parent=None) -> None:
         super().__init__(parent)
@@ -153,12 +155,12 @@ class QuickPreview(QWidget):
     def _refresh_open_hint(self) -> None:
         """Say the double-click is there, but only where a host has wired it.
 
-        `self.receivers(...)` rather than a flag a caller sets: the claim and the connection
+        `receivers(self, ...)` rather than a flag a caller sets: the claim and the connection
         would otherwise live in two files, and one of them would be wrong.
         """
         self.setToolTip(
             "Double-click to open this clip"
-            if self.receivers(self.double_clicked) > 0
+            if receivers(self, self.double_clicked) > 0
             else ""
         )
 

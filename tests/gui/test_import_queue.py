@@ -13,15 +13,12 @@ import threading
 
 import cv2
 import numpy as np
-import pytest
 
-pytest.importorskip("PyQt6")
-
-from detail.api.imports import (  # noqa: E402
+from detail.api.imports import (
     RecordingImportSpec,
     create_shells,
 )
-from detail.api.experiment import Experiment  # noqa: E402
+from detail.api.experiment import Experiment
 
 
 def _video(path, n=4, w=32, h=24):
@@ -79,7 +76,7 @@ def test_queue_folds_every_batch_into_one_count(qapp, tmp_path, monkeypatch):
     """Through the real worker thread: the bar appears at submit, moves inside a recording,
     and a bout queued while another imports grows the same "N of M" rather than restarting it.
     """
-    from PyQt6.QtCore import QEventLoop, QTimer
+    from detail.gui.qt import QEventLoop, QTimer
 
     from detail.core import progress as progress_mod
     from detail.gui.import_queue import ImportQueue
@@ -125,7 +122,7 @@ def test_cancel_with_nothing_running_does_not_cancel_the_next_import(qapp, tmp_p
     rather than from the queue. `cancel()` set its event regardless; nothing cleared it while
     idle, and the next `submit` handed it to a new worker, which marked the batch `cancelled`
     at once: the video never copied, and nothing said so."""
-    from PyQt6.QtCore import QEventLoop, QTimer
+    from detail.gui.qt import QEventLoop, QTimer
 
     from detail.gui.import_queue import ImportQueue
 
@@ -152,7 +149,7 @@ def test_a_recording_added_after_a_cancel_still_imports(qapp, tmp_path, monkeypa
     when it was asked; what comes after it imports."""
     import threading
 
-    from PyQt6.QtCore import QEventLoop, QTimer
+    from detail.gui.qt import QEventLoop, QTimer
 
     from detail.gui import import_queue as module
     from detail.gui.import_queue import ImportQueue

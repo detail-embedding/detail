@@ -14,11 +14,7 @@ Twelve splitters and ten tab bodies had never been looked at. Two were spreading
 — it reads as generous spacing — which is why it needs measuring rather than looking.
 """
 
-import pytest
-
-pytest.importorskip("PyQt6")
-
-from tests.gui.layout_checks import assert_panes_top_justify, owns_a_pane  # noqa: E402
+from tests.gui.layout_checks import assert_panes_top_justify, owns_a_pane
 
 # The cluster workspace's panes are asserted in `test_cluster_workspace.py`, where the fit
 # fixture that builds one lives; `quick_segment`'s sampled grid in `test_tools.py`
@@ -28,7 +24,7 @@ from tests.gui.layout_checks import assert_panes_top_justify, owns_a_pane  # noq
 
 
 def _grid(qapp, *, beside_a_tall_cell: bool):
-    from PyQt6.QtWidgets import QGridLayout, QLabel, QSizePolicy, QWidget
+    from detail.gui.qt import QGridLayout, QLabel, QSizePolicy, QWidget
 
     host = QWidget()
     grid = QGridLayout(host)

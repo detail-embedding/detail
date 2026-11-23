@@ -241,6 +241,12 @@ GUARD_FILES = frozenset(
         "tests/test_encoding_guard.py",
         # A Qt method restored by hand no longer binds; the next caller in the process fails.
         "tests/test_no_hand_patched_qt.py",
+        # The Qt binding is named only in `detail/gui/qt.py`; no other binding, no skip on a
+        # missing one, and no Qt in the backend packages (#107).
+        "tests/test_qt_binding.py",
+        # A nanosecond time or a byte count never travels in a 32-bit `Signal(int)` argument:
+        # PySide6 overflowed a montage offset 2.1 s in and crashed the app.
+        "tests/gui/test_signal_widths.py",
         # Every piece of machine-local state has a session floor, so a thread that outlives
         # its test cannot write the real preview cache, model cache or config.
         "tests/test_machine_state_isolation.py",
@@ -424,7 +430,9 @@ _HEAVY_CALLS = {
 
 #: Modules whose *import* means the file pays a heavier cost than ``unit`` promises.
 _HEAVY_IMPORTS = {
-    "PyQt6": "needs a QApplication",
+    # Qt is imported through the shim (`detail/gui/qt.py`), the one module that names the binding.
+    "detail.gui.qt": "needs a QApplication",
+    "PySide6": "needs a QApplication",
     "torch": "imports torch",
     "sklearn": "imports scikit-learn",
     "numba": "imports numba (JIT compile)",
@@ -530,18 +538,29 @@ def heavy_signatures(source: str) -> dict[str, str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                root = alias.name.split(".")[0]
+                root = _heavy_root(alias.name)
                 if root in _HEAVY_IMPORTS:
                     found[root] = _HEAVY_IMPORTS[root]
         elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-            root = node.module.split(".")[0]
+            root = _heavy_root(node.module)
             if root in _HEAVY_IMPORTS:
                 found[root] = _HEAVY_IMPORTS[root]
+            elif node.module == "detail.gui" and any(
+                a.name == "qt" for a in node.names
+            ):
+                found["detail.gui.qt"] = _HEAVY_IMPORTS["detail.gui.qt"]
         elif isinstance(node, ast.Call):
             name = _call_name(node.func)
             if name in _HEAVY_CALLS:
                 found[name] = _HEAVY_CALLS[name]
     return found
+
+
+def _heavy_root(module: str) -> str:
+    """The ``_HEAVY_IMPORTS`` key a module falls under: the Qt shim by name, else its package."""
+    if module == "detail.gui.qt" or module.startswith("detail.gui.qt."):
+        return "detail.gui.qt"
+    return module.split(".")[0]
 
 
 def _call_name(func: ast.expr) -> str | None:
@@ -559,14 +578,14 @@ def touches_qt(source: str) -> bool:
     ``detail/gui/`` and friends. So a file tiered ``gui`` with no connection to Qt is a
     file skipped on most PRs for no reason, and that is what this answers. The reverse is
     deliberately fine — a ``unit``-tier file may import ``detail.gui.workers`` for a
-    progress helper, because the ``unit`` job installs PyQt6 and always runs.
+    progress helper, because the ``unit`` job installs the ``gui`` extra and always runs.
 
     Three signals, because the dependency is usually indirect. A Qt import or the ``qapp``
     / ``qtbot`` fixture is the obvious half; the load-bearing half is an import of any
-    ``detail.gui.*`` module, which pulls in PyQt6 whether or not the test ever spells Qt
+    ``detail.gui.*`` module, which pulls in the binding whether or not the test ever spells Qt
     out. Without that, a file that imports its widget *inside* the test body and takes ``qapp``
     reads as Qt-free (the clusterer-parity and benchmark-widget files did, before they were
-    removed) — and a check written as a grep for ``"PyQt6"`` would move it into a tier with
+    removed) — and a check written as a grep for the binding's name would move it into a tier with
     no ``QApplication`` to build it in.
 
     Imports are read off the AST (a name in a docstring is not an import); the fixtures
@@ -586,7 +605,7 @@ def touches_qt(source: str) -> bool:
         else:
             continue
         for name in names:
-            if name == "PyQt6" or name.startswith("PyQt6."):
+            if name == "PySide6" or name.startswith("PySide6."):
                 return True
             if name == "detail.gui" or name.startswith("detail.gui."):
                 return True

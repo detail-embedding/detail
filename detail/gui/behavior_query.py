@@ -15,46 +15,48 @@ from dataclasses import dataclass
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtCore import QEvent, QRect, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import (
-    QBrush,
-    QColor,
-    QFont,
-    QKeySequence,
-    QPainter,
-    QPalette,
-    QShortcut,
-    QStandardItem,
-    QStandardItemModel,
-)
-from PyQt6.QtWidgets import (
-    QCheckBox,
-    QAbstractItemView,
-    QButtonGroup,
-    QComboBox,
-    QDialog,
-    QDialogButtonBox,
-    QFrame,
-    QHBoxLayout,
-    QHeaderView,
-    QInputDialog,
-    QLabel,
-    QLineEdit,
-    QMessageBox,
-    QProgressBar,
-    QPushButton,
-    QRadioButton,
-    QSizePolicy,
-    QTabBar,
-    QTableView,
-    QVBoxLayout,
-    QWidget,
-)
 
 from detail.analysis import clip_query
 from detail.api.run_preview import DEFAULT_PREVIEW_FPS, ClipQueryPreview
 from detail.core.chart_theme import LIGHT, rgb
 from detail.gui.dialog import Dialog
+from detail.gui.qt import (
+    QAbstractItemView,
+    QBrush,
+    QButtonGroup,
+    QCheckBox,
+    QColor,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QEvent,
+    QFont,
+    QFrame,
+    QHBoxLayout,
+    QHeaderView,
+    QInputDialog,
+    QKeySequence,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPainter,
+    QPalette,
+    QProgressBar,
+    QPushButton,
+    QRadioButton,
+    QRect,
+    QShortcut,
+    QSizePolicy,
+    QStandardItem,
+    QStandardItemModel,
+    QTabBar,
+    QTableView,
+    QTimer,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+    Signal,
+)
 from detail.gui.spin import SECONDS, FloatSpin, IntSpin
 from detail.gui import example_spread
 from detail.gui import frame_source
@@ -118,8 +120,8 @@ class _CoverageBar(QWidget):
     # Emitted while an edge is being dragged, and once more on release. The receiver
     # persists on ``span_committed`` only — a write per mouse-move would append a label row
     # per pixel.
-    span_dragged = pyqtSignal(int, int)
-    span_committed = pyqtSignal(int, int)
+    span_dragged = Signal(int, int)
+    span_committed = Signal(int, int)
 
     _CAP_W = 3  # width of the drawn grab handle at each end of the span
     _GRAB_PX = (
@@ -405,7 +407,7 @@ class _ClipPlayer(QWidget):
 
     # The window the scrubber spans moved or changed size (a pan, a context change), so anything
     # drawn against it must be repainted.
-    window_changed = pyqtSignal()
+    window_changed = Signal()
 
     def __init__(
         self,

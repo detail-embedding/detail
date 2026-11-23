@@ -10,14 +10,9 @@ written back) and a discarded `QDesktopServices.openUrl` return value both shipp
 
 from pathlib import Path
 
-import pytest
-
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtWidgets import QLabel, QPushButton  # noqa: E402
-
 from detail.api import export_targets  # noqa: E402,F401  (registers the catalogue)
-from detail.gui import pages as gui_pages  # noqa: E402
+from detail.gui import pages as gui_pages
+from detail.gui.qt import QLabel, QPushButton
 
 
 def _run(cohort, targets, out, **kwargs):
@@ -89,7 +84,7 @@ def test_open_folder_warns_instead_of_silently_doing_nothing(
     (a headless/minimal Linux desktop, a misconfigured `xdg-open`) — the exact shape of "I
     clicked it and nothing happened." The click must say so rather than swallow it.
     """
-    from PyQt6.QtWidgets import QMessageBox
+    from detail.gui.qt import QMessageBox
 
     out = tmp_path / "out"
     handle = _run(authored_cohort, ["instances"], out)

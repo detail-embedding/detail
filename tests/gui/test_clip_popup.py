@@ -22,24 +22,20 @@ Advanced and Blind mode.
 import pathlib
 import tempfile
 
-import pytest
-
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtCore import Qt  # noqa: E402
-from PyQt6.QtTest import QTest  # noqa: E402
-from PyQt6.QtWidgets import (  # noqa: E402
+from detail.gui.behavior_query import ClipSpec
+from detail.gui.cluster_strip import ClusterClipStrip
+from detail.gui.qt import (
     QApplication,
     QDialogButtonBox,
+    QTest,
     QVBoxLayout,
     QWidget,
+    Qt,
+    receivers,
 )
-
-from detail.gui.behavior_query import ClipSpec  # noqa: E402
-from detail.gui.cluster_strip import ClusterClipStrip  # noqa: E402
-from detail.gui.quick_preview import QuickPreview  # noqa: E402
-from detail.gui.sizing import lines  # noqa: E402
-from tests.clip_fixtures import (  # noqa: E402
+from detail.gui.quick_preview import QuickPreview
+from detail.gui.sizing import lines
+from tests.clip_fixtures import (
     WALKER,
     two_animals,
     walking,
@@ -134,7 +130,7 @@ def test_the_cluster_strip_wires_the_double_click(qapp):
     (``tests/gui/test_live_montage.py``).
     """
     strip = _shown(ClusterClipStrip(_Experiment()), qapp)
-    assert strip._cell.receivers(strip._cell.double_clicked) > 0
+    assert receivers(strip._cell, strip._cell.double_clicked) > 0
 
 
 def test_the_preview_says_it_opens_only_where_a_host_wired_it(qapp):
@@ -584,7 +580,7 @@ def test_the_window_opens_nearly_screen_wide_and_capped_in_height():
     """A viewer on a laptop is short of width: it opens at 98% of the screen's free width (the
     Advanced controls fit one line there) and 92% of its height, then trims the height.
     """
-    from PyQt6.QtCore import QRect
+    from detail.gui.qt import QRect
 
     from detail.gui.clip_popup import _TALL, _WIDE, opening_size
 
@@ -625,9 +621,9 @@ def test_the_clip_window_is_non_modal_and_one_per_page_reused(qapp, tmp_path):
     fresh.close()
     elsewhere.deleteLater()
     from tests.gui.conftest import drain_until
-    from PyQt6 import sip
+    from detail.gui.qt import is_deleted
 
-    assert drain_until(qapp, lambda: sip.isdeleted(other)), "closes with its page"
+    assert drain_until(qapp, lambda: is_deleted(other)), "closes with its page"
 
 
 def test_every_opener_goes_through_the_one_non_modal_opener():

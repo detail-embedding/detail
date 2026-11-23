@@ -23,7 +23,7 @@ rediscovering the bug.
 
 from typing import Protocol, runtime_checkable
 
-from PyQt6.QtWidgets import QMessageBox
+from detail.gui.qt import QMessageBox
 
 
 @runtime_checkable

@@ -41,14 +41,14 @@ def until(qapp, predicate, what: str, timeout_ms: int = WORKER_TIMEOUT_MS) -> No
     bare pumps can burn through in microseconds while the worker is still running — green on an
     idle box and flaky inside a loaded suite.
     """
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import qwait
 
     waited = 0
     while waited < timeout_ms:
         qapp.processEvents()
         if predicate():
             return
-        QTest.qWait(10)
+        qwait(10)
         waited += 10
     qapp.processEvents()
     assert (

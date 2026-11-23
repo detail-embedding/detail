@@ -11,7 +11,6 @@ the column *rendered* would pass against an empty column forever.
 """
 
 import numpy as np
-import pytest
 
 from detail.api.comparison import run_comparison
 from detail.api.experiment import Experiment
@@ -294,7 +293,7 @@ def _live(page, cls):
 
 
 def _snapshot_table(page):
-    from PyQt6.QtWidgets import QTableView
+    from detail.gui.qt import QTableView
 
     for table in _live(page, QTableView):
         model = table.model()
@@ -307,7 +306,7 @@ def _snapshot_table(page):
 
 
 def _banner_text(page) -> str:
-    from PyQt6.QtWidgets import QLabel
+    from detail.gui.qt import QLabel
 
     return " ".join(
         label.text() for label in _live(page, QLabel) if "Viewing snap" in label.text()
@@ -397,7 +396,7 @@ def test_the_row_being_read_is_marked_in_the_list(qapp, tmp_path):
 def test_the_live_runs_actions_are_greyed_while_a_snapshot_is_read(qapp, tmp_path):
     """Greyed, not removed: they are capabilities that do not apply in this mode. Deleting the run
     from under the snapshot you are reading is the one that matters."""
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     exp = _cohort(tmp_path)
     _run(exp).pin(reason="export")
@@ -415,13 +414,13 @@ def test_the_live_runs_actions_are_greyed_while_a_snapshot_is_read(qapp, tmp_pat
 def test_the_live_measures_panel_is_not_shown_under_a_snapshot_banner(qapp, tmp_path):
     """Hidden rather than greyed, because its numbers describe the live run — live numbers under a
     snapshot banner are the exact confusion this feature exists to prevent."""
-    from PyQt6.QtWidgets import QLabel
+    from detail.gui.qt import QLabel
 
     exp = _cohort(tmp_path)
     _run(exp).pin(reason="export")
     page = _page(exp)
 
-    from PyQt6.QtWidgets import QTabWidget
+    from detail.gui.qt import QTabWidget
 
     def shown():
         """Measures as a page heading or as a workspace tab — wherever this run puts it."""
@@ -475,9 +474,7 @@ def test_the_banner_is_centred_and_stands_off_the_page(qapp, tmp_path):
     only thing colour is spent on here (`gui/status_color.py`). Through the palette, never a
     stylesheet — the GUI has no QSS anywhere.
     """
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtGui import QPalette
-    from PyQt6.QtWidgets import QFrame, QLabel
+    from detail.gui.qt import QFrame, QLabel, QPalette, Qt
 
     from detail.gui.status_color import WARN
 
@@ -544,7 +541,7 @@ def test_a_module_that_cannot_render_a_snapshot_gets_no_cue(
         for c in range(table.model().columnCount())
     ]
     assert headers[-1] != "", "no trailing chevron column"
-    from PyQt6.QtWidgets import QLabel
+    from detail.gui.qt import QLabel
 
     # The snapshot section's own phrase, not the workspace's "Double-click a row to name it".
     blurb = " ".join(label.text() for label in _live(page, QLabel))

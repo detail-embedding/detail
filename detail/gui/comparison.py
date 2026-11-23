@@ -23,9 +23,9 @@ Two things differ from the removed `gui/benchmark.py`, which this otherwise mirr
 from dataclasses import dataclass
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QPixmap
-from PyQt6.QtWidgets import (
+from detail.analysis import cohort, compare, comparison_report, node_measures
+from detail.analysis import location_measures
+from detail.gui.qt import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
@@ -40,6 +40,7 @@ from PyQt6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QPixmap,
     QProgressBar,
     QPushButton,
     QRadioButton,
@@ -50,10 +51,8 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
+    Qt,
 )
-
-from detail.analysis import cohort, compare, comparison_report, node_measures
-from detail.analysis import location_measures
 from detail.storage import location_export
 from detail.analysis.measures import MEASURES
 from detail.configs.comparison import ComparisonConfig

@@ -59,20 +59,23 @@ Cancel. The plain player's own **Export video…** is hidden here: it wrote the 
 overlaid, and two exports in one window that wrote different pictures would be a guess.
 """
 
-from PyQt6.QtCore import QEvent, QSettings, QSize, Qt, QTimer
-from PyQt6.QtWidgets import (
+from detail.gui.dialog import Dialog
+from detail.gui.qt import (
     QCheckBox,
     QComboBox,
     QDialogButtonBox,
+    QEvent,
     QHBoxLayout,
     QLabel,
     QMenu,
     QPushButton,
+    QSettings,
+    QSize,
     QSizePolicy,
+    QTimer,
     QVBoxLayout,
+    Qt,
 )
-
-from detail.gui.dialog import Dialog
 from detail.gui.sizing import lines, set_available, text_width
 
 #: Opening size, in lines rather than pixels, so it follows a user who has asked for larger text.
@@ -617,10 +620,10 @@ def open_clip_window(
 
     ``context_s`` and ``advanced`` are the opener's, as for :class:`ClipPopup`; a reused window
     keeps the context and view its viewer last chose."""
-    from PyQt6 import sip
+    from detail.gui.qt import is_deleted
 
     existing = getattr(opener, "_clip_window", None)
-    if existing is not None and not sip.isdeleted(existing) and existing.isVisible():
+    if existing is not None and not is_deleted(existing) and existing.isVisible():
         existing.show_clip(clip, sequence=sequence, index=index, order_note=order_note)
         existing.raise_()
         existing.activateWindow()

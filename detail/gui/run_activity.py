@@ -26,18 +26,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import (
+from detail.core.progress import format_duration
+from detail.gui.collapse import CollapsibleBand
+from detail.gui.qt import (
     QLabel,
     QListWidget,
     QProgressBar,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
+    Qt,
 )
-
-from detail.core.progress import format_duration
-from detail.gui.collapse import CollapsibleBand
 from detail.gui.sizing import fit_list_height, lines, mono_font
 from detail.gui.unit_rows import UnitRows
 from detail.storage import activity

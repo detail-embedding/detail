@@ -22,21 +22,6 @@ from __future__ import annotations
 
 from collections import Counter
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QPalette
-from PyQt6.QtWidgets import (
-    QCheckBox,
-    QComboBox,
-    QHBoxLayout,
-    QLabel,
-    QListWidget,
-    QListWidgetItem,
-    QMessageBox,
-    QPushButton,
-    QVBoxLayout,
-    QWidget,
-)
-
 from detail.api._runner_modules import PIPELINE_RUNNERS
 from detail.api.keypoint_distill import DEFAULT_POSE_BASE
 from detail.configs.distill import DEFAULT_N_FRAMES
@@ -55,6 +40,21 @@ from detail.gui.model_availability import (
     fill_variants,
     unavailable_reason,
     variant_available,
+)
+from detail.gui.qt import (
+    QCheckBox,
+    QComboBox,
+    QHBoxLayout,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
+    QPalette,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+    Signal,
 )
 from detail.gui.sizing import set_available
 from detail.gui.status_color import ERROR, READY
@@ -166,7 +166,7 @@ class KeypointDistillForm(QWidget):
     when that may have changed); :meth:`launch` starts ``Experiment.distill_keypoints``.
     """
 
-    readiness_changed = pyqtSignal()
+    readiness_changed = Signal()
 
     def __init__(self, experiment=None, parent=None):
         super().__init__(parent)

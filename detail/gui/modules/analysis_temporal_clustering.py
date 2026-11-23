@@ -11,8 +11,6 @@ representatives and naming several clusters at once is the same job whether a cl
 or a behavior, so it lives once rather than once per module.
 """
 
-from PyQt6.QtWidgets import QComboBox, QLabel, QWidget
-
 from detail.configs.temporal_clustering import TemporalClusteringConfig
 from detail.configs.temporal_codebook import TemporalCodebookConfig
 from detail.configs.temporal_dtw_finch import TemporalDtwFinchConfig
@@ -35,6 +33,7 @@ from detail.gui.modules.registry import (
     ModuleUI,
     register_analysis_module_ui,
 )
+from detail.gui.qt import QComboBox, QLabel, QWidget
 
 # The knobs each method surfaces, in the order they read. Keyed by method id, because the two
 # methods have *disjoint* knob sets: one segments and compares bouts, the other builds a codebook

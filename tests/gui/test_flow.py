@@ -16,13 +16,8 @@ a geometry has placed nothing, and an unshown widget's children all report zero 
 state in which every one of these assertions would pass against a broken layout.
 """
 
-import pytest
-
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtWidgets import QApplication, QLabel, QPushButton, QWidget  # noqa: E402
-
-from detail.gui.flow import FlowLayout  # noqa: E402
+from detail.gui.flow import FlowLayout
+from detail.gui.qt import QApplication, QLabel, QPushButton, QWidget
 
 
 def _row(qapp, width, *, labels=("alpha", "bravo", "charlie", "delta"), trailing=None):

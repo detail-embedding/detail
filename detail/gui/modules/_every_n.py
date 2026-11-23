@@ -15,10 +15,8 @@ The source rate is the container's advertised rate off the (mtime-cached)
 the step itself is an exact integer count either way (Tenet 8).
 """
 
-from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import QHBoxLayout, QLabel, QWidget
-
 from detail.gui._pydantic_form import field_meta
+from detail.gui.qt import QHBoxLayout, QLabel, QWidget, Signal
 from detail.gui.spin import IntSpin
 
 _MAX = 10_000
@@ -106,7 +104,7 @@ class EveryNRow(QWidget):
     depends on it (tracking's frames-counted tolerance).
     """
 
-    changed = pyqtSignal()
+    changed = Signal()
 
     def __init__(self, model, *, upstream_noun: str = "", parent=None) -> None:
         super().__init__(parent)

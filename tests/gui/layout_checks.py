@@ -23,9 +23,7 @@ clean, one label at 15 -> 25 px (a row centred beside a taller sibling). The aud
 17 -> 324.
 """
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QApplication, QBoxLayout, QGridLayout, QLabel
-
+from detail.gui.qt import QApplication, QBoxLayout, QGridLayout, QLabel, Qt
 from detail.gui.sizing import expands_vertically
 
 #: Whether a widget asked for the space, rather than having it forced on it.
@@ -168,7 +166,7 @@ def assert_one_content_column(widget, *, size=(1400, 900)) -> None:
 
 def owns_a_pane(widget) -> bool:
     """Whether ``widget`` holds a splitter or a tab widget — i.e. panes of its own."""
-    from PyQt6.QtWidgets import QSplitter, QTabWidget
+    from detail.gui.qt import QSplitter, QTabWidget
 
     return bool(widget.findChildren(QSplitter) or widget.findChildren(QTabWidget))
 
@@ -186,7 +184,7 @@ def assert_panes_top_justify(widget, *, size=(1400, 1000)) -> None:
     A tab body only lays out once its tab is current, so this switches to each in turn — a
     surface checked on tab 0 alone leaves the others exactly as unmeasured as before.
     """
-    from PyQt6.QtWidgets import QTabWidget
+    from detail.gui.qt import QTabWidget
 
     widget.resize(*size)
     widget.show()
@@ -216,7 +214,7 @@ def locked_columns(table) -> list[int]:
     sweep and the per-surface regression tests run. That proof used to restate the comprehension
     inline, which kept passing whatever the sweep itself was weakened to.
     """
-    from PyQt6.QtWidgets import QHeaderView
+    from detail.gui.qt import QHeaderView
 
     header = table.horizontalHeader()
     return [
@@ -246,8 +244,7 @@ def drag_column_border(table, column: int, dx: int) -> None:
     this exists for is in what Qt does *around* a user's drag (a stretched neighbour giving the
     width back), and ``resizeSection`` is not a drag. ``table`` must be shown and laid out.
     """
-    from PyQt6.QtCore import QEvent, QPointF
-    from PyQt6.QtGui import QMouseEvent
+    from detail.gui.qt import QEvent, QMouseEvent, QPointF
 
     header = table.horizontalHeader()
     y = header.height() / 2
@@ -305,7 +302,7 @@ def assert_player_level_with_its_list(
     Measured after layout, in ``host``'s coordinates: the thing a user sees, not the policy
     that should produce it.
     """
-    from PyQt6.QtCore import QPoint
+    from detail.gui.qt import QPoint
 
     from detail.gui.sizing import lines
 

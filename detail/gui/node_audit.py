@@ -18,8 +18,7 @@ Hidden on a cluster nobody has audited. The edits are disabled, with the reason,
 the run cannot change (a snapshot, a finished run).
 """
 
-from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import (
+from detail.gui.qt import (
     QHBoxLayout,
     QLabel,
     QMenu,
@@ -27,8 +26,8 @@ from PyQt6.QtWidgets import (
     QToolButton,
     QVBoxLayout,
     QWidget,
+    Signal,
 )
-
 from detail.storage import audit_figures
 from detail.storage import behavior_audit as audit
 
@@ -36,9 +35,9 @@ from detail.storage import behavior_audit as audit
 class NodeAuditBlock(QWidget):
     """The selected cluster's audited precision, with Move to… / Remove / Look at its halves."""
 
-    move_wanted = pyqtSignal(int, str)  # node, label name
-    remove_wanted = pyqtSignal(int)
-    halves_wanted = pyqtSignal(int)
+    move_wanted = Signal(int, str)  # node, label name
+    remove_wanted = Signal(int)
+    halves_wanted = Signal(int)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)

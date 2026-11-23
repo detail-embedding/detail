@@ -26,17 +26,13 @@ constructed palettes rather than the live one, and asserts a floor rather than d
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtGui import QColor, QPalette, QPixmap  # noqa: E402
-from PyQt6.QtWidgets import QDialogButtonBox, QLabel  # noqa: E402
-
-from detail.gui.dialog import (  # noqa: E402
+from detail.gui.dialog import (
     MIN_BORDER_CONTRAST,
     Dialog,
     border_color,
 )
-from tests.gui.test_dialog_space import BUILDABLE, _build  # noqa: E402
+from detail.gui.qt import QColor, QDialogButtonBox, QLabel, QPalette, QPixmap
+from tests.gui.test_dialog_space import BUILDABLE, _build
 
 
 def _rgb(color) -> tuple[int, int, int]:

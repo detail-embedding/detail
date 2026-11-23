@@ -20,11 +20,9 @@ test that the helper works passes; a test that some dialog calls it passes. So t
 
 import pytest
 
-pytest.importorskip("PyQt6")
+from detail.gui.scroll import PageScroll
 
-from detail.gui.scroll import PageScroll  # noqa: E402
-
-from tests.gui import subjects  # noqa: E402
+from tests.gui import subjects
 
 pytestmark = pytest.mark.guard
 
@@ -89,7 +87,7 @@ def test_the_cap_would_be_missed_without_it(qapp, tmp_path):
     Without this the two tests pass on a build where the helper silently stopped working — the
     number they assert is only meaningful if the unfixed shape is known to breach it.
     """
-    from PyQt6.QtWidgets import QListWidget
+    from detail.gui.qt import QListWidget
 
     listing = QListWidget()
     listing.addItem("one recording")

@@ -12,11 +12,10 @@ and the band contributes no config, so the import is exactly what it was before 
 The choice is about this file, so a saved preset leaves it out (``preset_config``).
 """
 
-from PyQt6.QtWidgets import QComboBox, QFormLayout, QLabel, QVBoxLayout
-
 from detail.configs.stream_select import BorisSelectionConfig, MedpcSessionConfig
 from detail.gui._pydantic_form import field_meta
 from detail.gui.importers.registry import ConfigBand, register_importer_ui
+from detail.gui.qt import QComboBox, QFormLayout, QLabel, QVBoxLayout
 from detail.gui.status_color import MUTED, set_label_color
 from detail.importers import boris, medpc
 

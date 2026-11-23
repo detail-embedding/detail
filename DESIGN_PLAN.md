@@ -82,7 +82,7 @@ Every major component — detection models, trainers, trackers, embedding models
 The GUI, CLI, and research scripts all call `Experiment` and `Recording` methods. Nothing outside the Python API reads or writes `recording.yaml`, mutates zarr stores, constructs job dataclasses, or resolves paths. If a GUI widget is manipulating a path string directly, that logic belongs in the API layer.
 
 **3. Core has zero Qt dependency.**
-Pipeline logic, executors, protocols, and the Python API import nothing from PyQt/PySide. `LocalExecutor` runs jobs as subprocesses. The GUI's thin progress workers (`gui/workers.py`: `RunProgressWorker`, `FitProgressWorker`) read a run handle's `ProgressEvent`s off the UI thread and forward them as Qt signals. A violation is any `from PyQt6 import ...` outside `gui/`.
+Pipeline logic, executors, protocols, and the Python API import nothing from Qt. `LocalExecutor` runs jobs as subprocesses. The GUI's thin progress workers (`gui/workers.py`: `RunProgressWorker`, `FitProgressWorker`) read a run handle's `ProgressEvent`s off the UI thread and forward them as Qt signals. Qt is imported only through `detail/gui/qt.py`, the one module that names the binding (PySide6); a violation is any import of it, or of `detail.gui`, outside `gui/` (guard: `tests/test_qt_binding.py`).
 
 **4. Jobs are serializable data structures, not function calls.**
 A job is a plain dataclass expressible as JSON. Everything needed to reconstruct and run it — model ID, hyperparams, compute target, input references — is in the job. No lambdas, no closures, no runtime state. This enables cloud submission, re-running a failed or stopped job from its record, and exact reproduction of any run.
@@ -1761,9 +1761,9 @@ Every `ProgressEvent` carries an optional `message: str | None = None` — ephem
 
 ```python
 class RunProgressWorker(GuiWorker):          # GuiWorker is a QThread (gui/workers.py)
-    tick = pyqtSignal(int, str)              # permille (0..1000), status text
-    progress = pyqtSignal(object)            # the aggregate ProcessingProgress itself
-    finished_run = pyqtSignal()
+    tick = Signal(int, str)                  # permille (0..1000), status text
+    progress = Signal(object)                # the aggregate ProcessingProgress itself
+    finished_run = Signal()
 
     def run(self) -> None:
         for event in self._handle.progress():
@@ -4894,9 +4894,9 @@ The GUI launches through the same API (`Experiment.run_processing`, from `gui/la
 
 ```python
 class RunProgressWorker(GuiWorker):
-    tick = pyqtSignal(int, str)          # permille (0..1000), status text
-    progress = pyqtSignal(object)        # the ProcessingProgress event itself
-    finished_run = pyqtSignal()
+    tick = Signal(int, str)              # permille (0..1000), status text
+    progress = Signal(object)            # the ProcessingProgress event itself
+    finished_run = Signal()
 
     def run(self) -> None:
         for event in self._handle.progress():          # an AttachedRun
@@ -8249,7 +8249,7 @@ one-picture player every other surface embeds. Both choices are remembered (`cli
 Clicking the Masks or Keypoints pane (`ClipPanes.enlarge_wanted`, `"masks"` / `"keypoints"`) opens
 it in a window of its own (`gui/clip_pane_window.py::ClipPaneWindow`, via
 `AdvancedClipPlayer.open_pane`). The cue (a pointing hand through `ImageView.set_rest_cursor`,
-"Click to enlarge" on hover) is derived from `receivers(enlarge_wanted) > 0`, so a `ClipPanes`
+"Click to enlarge" on hover) is derived from `receivers(self, self.enlarge_wanted) > 0`, so a `ClipPanes`
 nobody wired advertises nothing.
 
 - **Full resolution, no footage.** The window draws `clip_views`' own `masks` / `pose` picture at

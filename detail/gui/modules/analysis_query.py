@@ -23,29 +23,6 @@ authored run (§21) and which the removed ``clip_annotation`` established. Audit
 time on the clustering review's pane (§20 *The audit*).
 """
 
-from PyQt6.QtWidgets import (
-    QAbstractItemView,
-    QComboBox,
-    QDialog,
-    QFrame,
-    QHBoxLayout,
-    QLabel,
-    QMessageBox,
-    QPushButton,
-    QScrollArea,
-    QTableView,
-    QTabWidget,
-    QVBoxLayout,
-    QWidget,
-)
-from PyQt6.QtCore import QEvent, QTimer, Qt, pyqtSignal
-from PyQt6.QtGui import (
-    QFont,
-    QPalette,
-    QStandardItem,
-    QStandardItemModel,
-)
-
 from detail.configs.query import DEFAULT_METHOD, QueryConfig
 from detail.core import chart_theme
 from detail.gui.forms import ConfigForm
@@ -71,6 +48,29 @@ from detail.gui.live_montage import LiveMontage, MontageClip, context_span
 from detail.gui.measurements import BASELINE_RECORDING, MeasurementsPanel
 from detail.gui.cluster_workspace import QUERY_TERMS
 from detail.gui.label_browse import LabelBrowseTab
+from detail.gui.qt import (
+    QAbstractItemView,
+    QComboBox,
+    QDialog,
+    QEvent,
+    QFont,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPalette,
+    QPushButton,
+    QScrollArea,
+    QStandardItem,
+    QStandardItemModel,
+    QTabWidget,
+    QTableView,
+    QTimer,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+    Signal,
+)
 from detail.gui.query_review import QueryReviewTab
 from detail.gui.tables import (
     num_cell,
@@ -148,7 +148,9 @@ class _QueryConfig(ConfigWidget):
         form = ConfigForm(self, QueryConfig)
 
         self._embed = QComboBox()
-        self._embed.currentIndexChanged.connect(self.coverage_changed.emit)
+        self._embed.currentIndexChanged.connect(
+            lambda _index: self.coverage_changed.emit()
+        )
         form.addRow(label_with("Embed run:", help_button("embedding-run")), self._embed)
         self._track = field_widget(QueryConfig, "track_id")
         form.addRow(field_label("query", "track_id", "Subject:"), self._track)
@@ -614,7 +616,7 @@ class _BelowCutoffBar(QFrame):
     """The bar pinned over CALIBRATE's grid while everything in view is below the cutoff."""
 
     #: **↑ Back to the cutoff** was pressed.
-    back_requested = pyqtSignal()
+    back_requested = Signal()
 
     def __init__(self, parent) -> None:
         super().__init__(parent)
@@ -667,9 +669,9 @@ class _CalibrateTab(QWidget):
     """
 
     #: A cutoff was written and the artifact reprojected — the other tabs are stale.
-    committed = pyqtSignal()
+    committed = Signal()
     #: The cutoff on screen, or the saved one, changed: whether it is saved may have too.
-    shown_changed = pyqtSignal()
+    shown_changed = Signal()
 
     def __init__(self, run, experiment) -> None:
         super().__init__()

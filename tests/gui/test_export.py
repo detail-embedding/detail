@@ -8,14 +8,11 @@ runs behind `run_progress`, a bar with a Cancel.
 
 import cv2
 import numpy as np
-import pytest
 
-pytest.importorskip("PyQt6")
-
-from detail.api.experiment import Experiment  # noqa: E402
-from detail.gui import pages  # noqa: E402
-from detail.storage import export as export_store  # noqa: E402
-from detail.storage import locations  # noqa: E402
+from detail.api.experiment import Experiment
+from detail.gui import pages
+from detail.storage import export as export_store
+from detail.storage import locations
 
 
 def _video(path, n=4, w=16, h=16):
@@ -320,7 +317,7 @@ def test_a_refused_export_gives_every_tick_box_back_the_state_it_had(
     it is enabled now" — which read the greying itself, so after a refused submit no box
     could be ticked again although the error said the form was left usable. A target that
     cannot run here stays greyed; every other box comes back."""
-    from PyQt6.QtWidgets import QMessageBox
+    from detail.gui.qt import QMessageBox
 
     from detail.api import exporters
     from detail.api.exporters import ExportSubject

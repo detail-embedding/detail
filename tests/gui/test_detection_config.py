@@ -2,12 +2,10 @@
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from detail.api.experiment import Experiment  # noqa: E402
-from detail.core.registries import MODELS  # noqa: E402
+from detail.api.experiment import Experiment
+from detail.core.registries import MODELS
 from detail.gui import modules as _gui_modules  # noqa: E402,F401 (registers UIs)
-from detail.gui.modules.registry import GUI_MODULES  # noqa: E402
+from detail.gui.modules.registry import GUI_MODULES
 
 
 @pytest.fixture

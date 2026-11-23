@@ -20,8 +20,7 @@ The band lives here, never on the core ``StreamImporter`` protocol — that woul
 import importlib
 from abc import ABC, abstractmethod
 
-from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import QWidget
+from detail.gui.qt import QWidget, Signal
 
 IMPORTER_UI_MODULES: tuple[str, ...] = (
     "detail.gui.importers.csv_columns",
@@ -37,7 +36,7 @@ class ConfigBand(QWidget):
     ``problem()`` is the one sentence to show and to refuse the import with, or ``None``.
     """
 
-    changed = pyqtSignal()
+    changed = Signal()
 
     def set_source(self, path: str) -> None:
         """Called when the user picks a data file. Read it here, not in ``__init__``."""

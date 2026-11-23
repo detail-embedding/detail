@@ -20,13 +20,9 @@ import time
 import numpy as np
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtCore import QPoint, Qt  # noqa: E402
-from PyQt6.QtWidgets import QProgressBar, QPushButton  # noqa: E402
-
-from detail.gui import live_montage as lm  # noqa: E402
-from detail.gui.live_montage import LiveMontage, MontageClip  # noqa: E402
+from detail.gui import live_montage as lm
+from detail.gui.live_montage import LiveMontage, MontageClip
+from detail.gui.qt import QPoint, QProgressBar, QPushButton, Qt
 
 
 def _montage(**keys) -> LiveMontage:
@@ -121,8 +117,7 @@ def test_hovering_a_tile_pauses_every_other_one(montage):
 
 def test_mouse_over_a_tile_is_the_hover(montage, qapp):
     """Sent to the canvas directly: a synthesized cursor move is dropped under a loaded box."""
-    from PyQt6.QtCore import QEvent, QPointF
-    from PyQt6.QtGui import QMouseEvent
+    from detail.gui.qt import QEvent, QMouseEvent, QPointF
 
     montage.set_clips(_clips(6))
     centre = QPointF(montage.tile_rect(1).center())
@@ -141,7 +136,7 @@ def test_mouse_over_a_tile_is_the_hover(montage, qapp):
 
 
 def test_one_timer_drives_every_tile_at_fifteen_frames_a_second(montage, qapp):
-    from PyQt6.QtCore import QTimer
+    from detail.gui.qt import QTimer
 
     montage.set_clips(_clips(8))
     assert montage._clock.isActive() and montage._clock.interval() == lm.TICK_MS
@@ -390,7 +385,7 @@ def test_the_loop_line_fills_from_the_left_as_playback_advances_and_stays_off_th
     On a black foot the near-black fill vanished and the unplayed remainder read as the bar,
     shrinking from the right — "the bar goes backwards". The line sits under the picture now,
     on a track whose colours the theme picks."""
-    from PyQt6.QtGui import QColor
+    from detail.gui.qt import QColor
 
     from detail.gui import plot_theme
 
@@ -440,7 +435,7 @@ def test_only_the_hovered_tile_draws_its_loop_line_and_hovering_moves_nothing(
 ):
     """Thirty moving bars pulled the eye off the footage: the line belongs to the one tile still
     playing. Its band is reserved on every tile, so the grid does not shift on hover."""
-    from PyQt6.QtGui import QColor
+    from detail.gui.qt import QColor
 
     from detail.gui import plot_theme
 
@@ -535,8 +530,7 @@ def _click(
 ):
     """A press and release on the centre of tile ``index`` — and, ``double``, the second press
     of a double-click as Qt delivers it."""
-    from PyQt6.QtCore import QEvent, QPointF
-    from PyQt6.QtGui import QMouseEvent
+    from detail.gui.qt import QEvent, QMouseEvent, QPointF
 
     centre = QPointF(montage.tile_rect(index).center())
     kinds = [QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease]
@@ -555,8 +549,7 @@ def _click(
 
 
 def _key(montage, qapp, key, modifiers=Qt.KeyboardModifier.NoModifier):
-    from PyQt6.QtCore import QEvent
-    from PyQt6.QtGui import QKeyEvent
+    from detail.gui.qt import QEvent, QKeyEvent
 
     qapp.sendEvent(montage.canvas, QKeyEvent(QEvent.Type.KeyPress, key, modifiers))
 
@@ -641,8 +634,7 @@ def _cross_colours(montage, index) -> set:
 def test_hovering_a_clickable_tile_shows_the_hand_a_faint_cross_and_the_hint(
     montage, qapp
 ):
-    from PyQt6.QtCore import QEvent, QPointF
-    from PyQt6.QtGui import QMouseEvent
+    from detail.gui.qt import QEvent, QMouseEvent, QPointF
 
     montage.set_source(BlackSource())
     montage.set_clips(_clips(3))
@@ -811,7 +803,7 @@ def replace_faded(clip):
 
 
 def test_right_click_asks_for_a_menu_for_that_clip(montage, qapp):
-    from PyQt6.QtGui import QContextMenuEvent
+    from detail.gui.qt import QContextMenuEvent
 
     seen = []
     montage.clip_context_requested.connect(lambda i, pos: seen.append(i))
@@ -832,8 +824,7 @@ def test_right_click_asks_for_a_menu_for_that_clip(montage, qapp):
 def _mouse(
     montage, qapp, kind, point, buttons, modifiers=Qt.KeyboardModifier.NoModifier
 ):
-    from PyQt6.QtCore import QEvent, QPointF
-    from PyQt6.QtGui import QMouseEvent
+    from detail.gui.qt import QEvent, QMouseEvent, QPointF
 
     kinds = {
         "press": QEvent.Type.MouseButtonPress,
@@ -931,7 +922,7 @@ def test_a_rule_heading_is_a_dashed_line_in_a_wider_gap(montage, qapp):
     grid in the theme's handle colour, with the title on it, in a band about three lines tall —
     more room between the two sections than a heading's one line. CALIBRATE's cutoff, which a
     stepped line through the gaps made too easy to miss."""
-    from PyQt6.QtGui import QColor, QFontMetrics
+    from detail.gui.qt import QColor, QFontMetrics
 
     from detail.gui import plot_theme
     from detail.gui.sizing import emphasis_font
@@ -1035,7 +1026,7 @@ def test_esc_cancels_a_drag(montage, qapp):
 
 
 def test_a_shaky_click_is_still_a_click(montage, qapp):
-    from PyQt6.QtWidgets import QApplication
+    from detail.gui.qt import QApplication
 
     runs, clicked = _marking(montage)
     centre = montage.tile_rect(2).center()
@@ -1067,7 +1058,7 @@ def test_holding_shift_previews_the_run_a_shift_click_removes(montage, qapp):
     assert montage.preview() is None, "letting go of Shift clears it"
     _key(montage, qapp, Qt.Key.Key_Shift)
     assert montage.preview() == lm.RunPreview("shift", False, (1, 2, 3, 5, 6))
-    from PyQt6.QtCore import QEvent
+    from detail.gui.qt import QEvent
 
     qapp.sendEvent(montage.canvas, QEvent(QEvent.Type.Leave))
     assert montage.preview() is None, "leaving the grid clears it"
@@ -1105,7 +1096,7 @@ def test_turning_clicks_off_mid_drag_drops_the_preview(montage, qapp):
 
 def _tint_share(montage, index, colour) -> float:
     """The share of a picture's pixels within a few steps of ``colour`` over black."""
-    from PyQt6.QtGui import QColor
+    from detail.gui.qt import QColor
 
     image = montage.canvas.grab().toImage()
     rect = montage.tile_rect(index)
@@ -1127,7 +1118,7 @@ def _tint_share(montage, index, colour) -> float:
 def test_the_preview_tints_exactly_its_run_in_the_colour_of_what_it_does(montage, qapp):
     """Painted over black footage: a previewed tile carries the tint, one outside the run does
     not, and a put-back run is the other colour."""
-    from PyQt6.QtGui import QColor
+    from detail.gui.qt import QColor
 
     montage.set_source(BlackSource())
     _marking(montage, faded={7})
@@ -1377,7 +1368,7 @@ def test_show_menu_draws_every_layer_and_keeps_them_for_the_page(montage, qapp):
 
 
 def test_a_page_with_no_look_of_its_own_reads_the_old_show_masks_once(qapp):
-    from PyQt6.QtCore import QSettings
+    from detail.gui.qt import QSettings
 
     from detail.gui.live_montage import MASKS_KEY
 
@@ -1585,7 +1576,7 @@ def test_a_montage_destroyed_closes_the_source_it_was_using(qapp):
     widget.set_clips(_clips(4))
     widget.set_source(second)
     assert _drain(qapp, lambda: first.closed_on), "a replaced source is closed"
-    from PyQt6.QtCore import QCoreApplication, QEvent
+    from detail.gui.qt import QCoreApplication, QEvent
 
     widget.close()
     widget.deleteLater()

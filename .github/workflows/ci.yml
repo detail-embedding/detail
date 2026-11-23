@@ -126,8 +126,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
-      # Serial on purpose: the GUI suite has a known intermittent abort under headless
-      # PyQt6. Do not add -n here
+      # Serial on purpose: the GUI suite had a known intermittent abort under headless
+      # Qt (measured under the earlier binding, not yet re-measured). Do not add -n here
       # until that is pinned — parallel workers would make a wandering crash harder to
       # attribute, not easier.
       - run: pytest -m "gui and not guard" -q

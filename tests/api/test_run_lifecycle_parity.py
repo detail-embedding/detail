@@ -5,7 +5,7 @@ one". These are two places it wasn't followed:
 
 - `BatchProcessingModule` swept `output_path` in with the per-recording *job* seams it
   disables, so deleting a `derive` run raised `NotImplementedError` out of a Qt slot and
-  PyQt aborted the whole app. `output_path` is not a job seam: it says where a recording's
+  the Qt binding of the time aborted the whole app. `output_path` is not a job seam: it says where a recording's
   output lives, and a batch module writes one per recording.
 - `reconcile_runs` / `reconcile_analysis_runs` ran on experiment open while dataset,
   model and clusterer runs had no equivalent — so a SIGKILLed worker left a record reading

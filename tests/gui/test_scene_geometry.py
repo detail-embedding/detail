@@ -51,15 +51,10 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtCore import Qt  # noqa: E402
-
-from PyQt6.QtWidgets import QDialog  # noqa: E402
-
-from detail.api.experiment import Experiment  # noqa: E402
-from detail.gui.arena import SPATIAL_KINDS, _BLANK_FRAME as _BLANK  # noqa: E402
-from detail.storage import recording as recording_store  # noqa: E402
+from detail.api.experiment import Experiment
+from detail.gui.arena import SPATIAL_KINDS, _BLANK_FRAME as _BLANK
+from detail.gui.qt import QDialog, Qt
+from detail.storage import recording as recording_store
 
 
 def _square(dx=0.0):
@@ -162,7 +157,7 @@ def test_a_scalar_calibration_survives_a_save_about_something_else(
     about a region; treating its empty canvas as a deletion drops a calibration nobody
     touched. Untouched means untouched.
     """
-    from PyQt6.QtWidgets import QMessageBox
+    from detail.gui.qt import QMessageBox
 
     _exp, rec = _recording(tmp_path)
     rec.set_pixels_per_mm(4.0)
@@ -314,7 +309,7 @@ def test_a_second_definition_never_borrows_another_kinds_colour(qapp, tmp_path):
 def test_an_invalid_definition_refuses_before_anything_is_written(qapp, tmp_path):
     """Validate every kind, then commit — a partial save leaves the recording in a state
     neither the user nor the dialog describes."""
-    from PyQt6.QtWidgets import QMessageBox
+    from detail.gui.qt import QMessageBox
 
     _exp, rec = _recording(tmp_path)
     rec.define_roi("nest", _kf())
@@ -445,7 +440,7 @@ def test_save_keeps_the_window_open_and_tracks_pending_edits(qapp, tmp_path):
 
 
 def test_closing_with_pending_edits_asks_first(qapp, tmp_path, monkeypatch):
-    from PyQt6.QtWidgets import QMessageBox
+    from detail.gui.qt import QMessageBox
 
     _exp, rec = _recording(tmp_path)
     rec.define_roi("nest", _kf())
@@ -758,8 +753,7 @@ def test_a_definition_started_on_a_later_frame_can_be_drawn_there(
     read-only; **Set keyframe here** then made two keyframes, which locks the point count,
     so clicks still did nothing. Clicked here with the mouse, on a shown canvas.
     """
-    from PyQt6.QtCore import QPoint
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QPoint, QTest
 
     _exp, rec = _recording(tmp_path)
     dialog = _workspace(rec)
@@ -830,7 +824,7 @@ def test_a_name_used_twice_is_refused_before_anything_is_written(
     then `set_rois` refused — the comment promised one transaction. Asserted on what is
     stored: the edited field of view must be unchanged on disk.
     """
-    from PyQt6.QtWidgets import QMessageBox
+    from detail.gui.qt import QMessageBox
 
     _exp, rec = _recording(tmp_path)
     _two_named(rec, kind)
@@ -861,7 +855,7 @@ def test_a_calibration_the_write_would_refuse_is_refused_first(
 ):
     """The calibration is written last, so its refusal (two points on one spot) used to
     arrive after the field of view and every region were already stored."""
-    from PyQt6.QtWidgets import QMessageBox
+    from detail.gui.qt import QMessageBox
 
     _exp, rec = _recording(tmp_path)
     rec.define_arena("cage", _kf())

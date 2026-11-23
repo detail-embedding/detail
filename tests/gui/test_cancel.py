@@ -6,26 +6,20 @@ while a run is active and routes to the (kill-capable, reopen-safe) API, and tha
 the close prompt's three choices dispatch correctly.
 """
 
-import pytest
-
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtGui import QCloseEvent  # noqa: E402
-from PyQt6.QtWidgets import QMessageBox, QPushButton  # noqa: E402
-
-from detail.api.experiment import Experiment  # noqa: E402
-from detail.gui import pages  # noqa: E402
-from detail.gui.app import MainWindow  # noqa: E402
-from detail.gui.pages import (  # noqa: E402
+from detail.api.experiment import Experiment
+from detail.gui import pages
+from detail.gui.app import MainWindow
+from detail.gui.pages import (
     DatasetDetailPage,
     ModelDetailPage,
     RunDetailPage,
 )
-from detail.gui.workers import BackgroundCall  # noqa: E402
-from detail.storage import datasets as datasets_store  # noqa: E402
-from detail.storage import locations  # noqa: E402
-from detail.storage import models as models_store  # noqa: E402
-from detail.storage import runs as runs_store  # noqa: E402
+from detail.gui.qt import QCloseEvent, QMessageBox, QPushButton
+from detail.gui.workers import BackgroundCall
+from detail.storage import datasets as datasets_store
+from detail.storage import locations
+from detail.storage import models as models_store
+from detail.storage import runs as runs_store
 
 
 class _SyncBackgroundCall(BackgroundCall):

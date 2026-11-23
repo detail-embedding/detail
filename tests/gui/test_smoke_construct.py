@@ -18,22 +18,20 @@ import threading
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from detail.api.experiment import Experiment  # noqa: E402
+from detail.api.experiment import Experiment
 from detail.gui import modules as _gui_modules  # noqa: E402,F401 (registers UIs)
 from detail.gui import sections as gui_sections
-from detail.gui import comparison as gui_comparison  # noqa: E402
-from detail.gui import example_set_picker as gui_example_set_picker  # noqa: E402
-from detail.gui import keypoints_manager as gui_keypoints_manager  # noqa: E402
-from detail.gui import pages as gui_pages  # noqa: E402
-from detail.gui.modules.registry import (  # noqa: E402
+from detail.gui import comparison as gui_comparison
+from detail.gui import example_set_picker as gui_example_set_picker
+from detail.gui import keypoints_manager as gui_keypoints_manager
+from detail.gui import pages as gui_pages
+from detail.gui.modules.registry import (
     ANALYSIS_GUI_MODULES,
     GUI_MODULES,
 )
-from detail.storage import locations  # noqa: E402
-from tests.gui.conftest import drain_until  # noqa: E402
-from tests.gui.layout_checks import (  # noqa: E402
+from detail.storage import locations
+from tests.gui.conftest import drain_until
+from tests.gui.layout_checks import (
     assert_one_content_column,
     assert_top_justified,
 )
@@ -238,8 +236,7 @@ def test_pages_share_one_left_margin(qapp, tmp_path, monkeypatch, name):
 def test_the_margin_check_would_catch_an_indented_row(qapp):
     """Guard the guard. The check passes on all of `PAGES` today, so without this it would
     be indistinguishable from one whose measurement had quietly stopped working."""
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtWidgets import QLabel, QVBoxLayout, QWidget
+    from detail.gui.qt import QLabel, QVBoxLayout, QWidget, Qt
 
     from tests.gui.layout_checks import off_the_content_column
 
@@ -351,7 +348,7 @@ def test_help_button_pops_a_panel_with_the_topic_prose(qapp):
 def test_detection_form_prompt_help_opens_its_popover(qapp):
     # Verify through the real entry point: the detection config form's ? pops the
     # text-prompt definition (not a widget built in isolation).
-    from PyQt6.QtWidgets import QToolButton
+    from detail.gui.qt import QToolButton
 
     form = GUI_MODULES["detection"].config_widget()
     info = [b for b in form.findChildren(QToolButton) if b.text() == "?"]
@@ -401,8 +398,7 @@ def test_help_popover_opens_full_docs_when_built(qapp, monkeypatch):
 def test_open_full_docs_shows_progress_while_rebuilding(qapp, monkeypatch):
     # "Open full docs" when the site must rebuild is a several-second mkdocs build; it
     # now runs behind a progress bar over the window instead of a silent wait.
-    from PyQt6.QtTest import QTest
-    from PyQt6.QtWidgets import QWidget
+    from detail.gui.qt import QWidget, qwait
 
     from detail import help as help_mod
     from detail.gui import help_ui
@@ -434,7 +430,7 @@ def test_open_full_docs_shows_progress_while_rebuilding(qapp, monkeypatch):
         qapp.processEvents()
         if opened:
             break
-        QTest.qWait(10)
+        qwait(10)
     assert opened.get("url") == "http://x/b"
 
 
@@ -500,7 +496,7 @@ def test_version_history_shows_the_running_build_and_opens_its_history(
     # left of Info; both are always visible — neither is tied to a page. Git is stubbed here
     # (tests/core/test_buildinfo.py runs the real reads); what this checks is that the real
     # button reaches all of it.
-    from PyQt6.QtWidgets import QLabel
+    from detail.gui.qt import QLabel
 
     from detail.core import buildinfo
     from detail.gui.app import MainWindow
@@ -658,8 +654,7 @@ def test_home_row_opens_experiment(qapp, tmp_path, monkeypatch):
     home = window._content.currentWidget()
     assert isinstance(home, gui_pages.HomePage)
     row = next(i for i, e in enumerate(home._experiments) if e.name == "p2")
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QTest, Qt
 
     # The real path: double-click the experiment's card.
     QTest.mouseDClick(home._cards[row], Qt.MouseButton.LeftButton)
@@ -819,7 +814,7 @@ def test_a_closed_section_still_shows_it_can_be_opened(qapp, tmp_path, monkeypat
     row that looked like a leaf. Found by rendering the rail and looking at it; every
     behavioural assertion here (child counts, expansion, threads) passed with it missing.
     """
-    from PyQt6.QtWidgets import QTreeWidgetItem
+    from detail.gui.qt import QTreeWidgetItem
 
     from detail.gui.app import MainWindow
 
@@ -1070,7 +1065,7 @@ def test_experiment_card_shows_recordings_and_completed_runs(
 ):
     # The card answers "how far has this one got" - from the experiment's own run records,
     # counting only completed ones. A failed run is not progress.
-    from PyQt6.QtWidgets import QLabel
+    from detail.gui.qt import QLabel
 
     from detail.storage import runs as runs_store
 
@@ -1109,7 +1104,7 @@ def test_experiment_card_shows_recordings_and_completed_runs(
 
 
 def test_experiment_card_without_runs_or_video_says_so(qapp, tmp_path, monkeypatch):
-    from PyQt6.QtWidgets import QLabel
+    from detail.gui.qt import QLabel
 
     monkeypatch.setattr(locations, "experiments_root", lambda: tmp_path)
     proj = _experiment(tmp_path)
@@ -1220,8 +1215,7 @@ def test_experiment_card_is_visually_separated_from_the_page(
 ):
     # StyledPanel renders as a hairline under Fusion, which left the rows looking like
     # page background with text floating on it. A card needs a real edge and its own fill.
-    from PyQt6.QtGui import QPalette
-    from PyQt6.QtWidgets import QFrame
+    from detail.gui.qt import QFrame, QPalette
 
     monkeypatch.setattr(locations, "experiments_root", lambda: tmp_path)
     card = gui_pages._ExperimentCard(_experiment(tmp_path), lambda _e: None)
@@ -1239,9 +1233,7 @@ def test_double_click_opens_from_anywhere_on_the_card(qapp, tmp_path, monkeypatc
     # Reported: double-clicking an experiment with no video just selected text. Page text
     # is selectable (MainWindow._show), and a selectable QLabel swallows mouse events, so
     # a card that is mostly text had no live area at all.
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtTest import QTest
-    from PyQt6.QtWidgets import QLabel
+    from detail.gui.qt import QLabel, QTest, Qt
 
     monkeypatch.setattr(locations, "experiments_root", lambda: tmp_path)
     proj = _experiment(tmp_path)  # no video: the card is name + counts + placeholder

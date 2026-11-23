@@ -16,8 +16,6 @@ typed into this file. Every knob is identity for the run (§26 "Identity").
 
 from __future__ import annotations
 
-from PyQt6.QtWidgets import QComboBox, QWidget
-
 from detail.api._runner_modules import PIPELINE_RUNNERS
 from detail.configs.describe import describe_config
 from detail.configs.keypoint_track import METHOD_CONFIGS, KeypointTrackConfig
@@ -38,6 +36,7 @@ from detail.gui.modules.registry import (
     register_module_ui,
     surfaced,
 )
+from detail.gui.qt import QComboBox, QWidget
 from detail.storage import read_cache
 
 _MODULE = "keypoint_track"

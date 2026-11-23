@@ -24,10 +24,17 @@ connected to ``enlarge_wanted``, so a host that does not open the window never a
 from __future__ import annotations
 
 import numpy as np
-from PyQt6.QtCore import QRect, QSize, Qt, pyqtSignal
-from PyQt6.QtWidgets import QLabel, QWidget
 
 from detail.gui.image_view import ImageView
+from detail.gui.qt import (
+    QLabel,
+    QRect,
+    QSize,
+    QWidget,
+    Qt,
+    Signal,
+    receivers,
+)
 from detail.gui.run_preview import _to_pixmap
 
 #: Pixels between the footage and the side column, and between the two side panes.
@@ -46,7 +53,7 @@ class ClipPanes(QWidget):
     """
 
     #: A side pane was clicked: ``"masks"`` or ``"keypoints"``.
-    enlarge_wanted = pyqtSignal(str)
+    enlarge_wanted = Signal(str)
 
     def __init__(self, frame: ImageView, parent=None) -> None:
         super().__init__(parent)
@@ -83,7 +90,7 @@ class ClipPanes(QWidget):
     # -- enlarging ------------------------------------------------------------ #
     def enlargeable(self) -> bool:
         """Whether a click on a side pane opens anything: something is listening."""
-        return self.receivers(self.enlarge_wanted) > 0
+        return receivers(self, self.enlarge_wanted) > 0
 
     def _enlarge(self, pane: str) -> None:
         if self.enlargeable():

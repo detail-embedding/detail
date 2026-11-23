@@ -29,12 +29,17 @@ from dataclasses import dataclass
 
 import cv2
 import numpy as np
-import pytest
 import yaml
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtWidgets import (  # noqa: E402
+import detail.gui.app  # noqa: E402,F401  (imports the package's pages and dialogs)
+import detail.gui.arena  # noqa: E402,F401
+import detail.gui.behavior_query  # noqa: E402,F401
+import detail.gui.comparison  # noqa: E402,F401
+import detail.gui.fit  # noqa: E402,F401
+import detail.gui.launch  # noqa: E402,F401
+import detail.gui.pages  # noqa: E402,F401
+import detail.gui.preview  # noqa: E402,F401
+from detail.gui.qt import (
     QAbstractSpinBox,
     QComboBox,
     QDialog,
@@ -47,31 +52,22 @@ from PyQt6.QtWidgets import (  # noqa: E402
     QTableWidget,
     QWidget,
 )
-
-import detail.gui.app  # noqa: E402,F401  (imports the package's pages and dialogs)
-import detail.gui.arena  # noqa: E402,F401
-import detail.gui.behavior_query  # noqa: E402,F401
-import detail.gui.comparison  # noqa: E402,F401
-import detail.gui.fit  # noqa: E402,F401
-import detail.gui.launch  # noqa: E402,F401
-import detail.gui.pages  # noqa: E402,F401
-import detail.gui.preview  # noqa: E402,F401
 import detail.gui.streams  # noqa: E402,F401
 from detail.api.experiment import Experiment
-from detail.gui.image_view import ImageView  # noqa: E402
-from detail.gui.scrubber import FrameScrubber  # noqa: E402
-from detail.core.dataclasses import ComputeTarget, TrackingJob  # noqa: E402
-from detail.core.registries import MODELS  # noqa: E402
-from detail.transforms.constructors import CONSTRUCTORS  # noqa: E402
-from detail.storage import analysis_runs as analysis_runs_store  # noqa: E402
-from detail.gui import lifetime  # noqa: E402
-from detail.storage import recording as recording_store  # noqa: E402
-from detail.storage import runs as runs_store  # noqa: E402
-from detail.storage.zarr_io import (  # noqa: E402
+from detail.gui.image_view import ImageView
+from detail.gui.scrubber import FrameScrubber
+from detail.core.dataclasses import ComputeTarget, TrackingJob
+from detail.core.registries import MODELS
+from detail.transforms.constructors import CONSTRUCTORS
+from detail.storage import analysis_runs as analysis_runs_store
+from detail.gui import lifetime
+from detail.storage import recording as recording_store
+from detail.storage import runs as runs_store
+from detail.storage.zarr_io import (
     DetectionPartWriter,
     EmbeddingPartWriter,
 )
-from detail.trackers.anchor_tracker import AnchorTracker  # noqa: E402
+from detail.trackers.anchor_tracker import AnchorTracker
 
 # --------------------------------------------------------------------------- #
 # kinds — what a walked widget is, for the purpose of a requirement
@@ -734,8 +730,7 @@ def _an_interpret_page_with_nothing_loaded(experiment):
     """What a cluster window reads of INTERPRET, before the page has loaded its run."""
     from types import SimpleNamespace
 
-    from PyQt6.QtCore import QObject
-    from PyQt6.QtGui import QColor
+    from detail.gui.qt import QColor, QObject
 
     from detail.gui.cluster_workspace import POSE_TERMS
     from detail.gui.label_panel import LabelBar

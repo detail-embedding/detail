@@ -11,9 +11,15 @@ import time
 import traceback
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QPixmap
-from PyQt6.QtWidgets import (
+from detail.api import run_spec
+from detail.core.dataclasses import Detection, Prompt, PromptTarget, TextCue
+from detail.core.utils import decode_mask
+from detail.core.visualize import assign_colors, draw_detections
+from detail.gui.confidence import ConfidenceRow, showing_caption
+from detail.gui.dialog import Dialog
+from detail.gui.full_frame import EnlargeableThumb
+from detail.gui.qt import (
+    QColor,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -24,20 +30,15 @@ from PyQt6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QPixmap,
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
+    Qt,
+    Signal,
 )
-
-from detail.api import run_spec
-from detail.core.dataclasses import Detection, Prompt, PromptTarget, TextCue
-from detail.core.utils import decode_mask
-from detail.core.visualize import assign_colors, draw_detections
-from detail.gui.confidence import ConfidenceRow, showing_caption
-from detail.gui.dialog import Dialog
-from detail.gui.full_frame import EnlargeableThumb
 from detail.gui.run_preview import _to_pixmap
 from detail.gui.spin import IntSpin
 from detail.gui.workers import GuiWorker
@@ -51,8 +52,8 @@ def _save_name(prefix: str) -> str:
 class _PreviewWorker(GuiWorker):
     """Runs a no-arg callable returning the output directory, off the UI thread."""
 
-    finished_dir = pyqtSignal(object)
-    failed = pyqtSignal(str)
+    finished_dir = Signal(object)
+    failed = Signal(str)
 
     def __init__(self, fn, *, receiver):
         super().__init__(receiver=receiver)

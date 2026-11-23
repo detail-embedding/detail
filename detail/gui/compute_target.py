@@ -12,11 +12,10 @@ form's own label column. Build it, ``add_to`` a form, then read ``compute_target
 
 from __future__ import annotations
 
-from PyQt6.QtWidgets import QComboBox, QFormLayout
-
 from detail.core.dataclasses import ComputeTarget
 from detail.core.utils import available_backends, best_supported_backend
 from detail.gui.help_ui import help_button, label_with
+from detail.gui.qt import QComboBox, QFormLayout
 from detail.gui.spin import IntSpin
 
 _ALL_BACKENDS = ["cuda", "mps", "cpu"]

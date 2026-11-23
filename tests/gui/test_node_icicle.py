@@ -15,11 +15,10 @@ fixture's fit happens to look like.
 
 import numpy as np
 import pytest
-from PyQt6.QtCore import QPointF
-from PyQt6.QtGui import QColor
 
 from detail.gui import node_icicle
 from detail.gui.node_icicle import NodeIcicle, TreePane, row_px
+from detail.gui.qt import QColor, QPointF
 
 
 class _Summary:
@@ -138,7 +137,7 @@ def test_a_thin_block_is_shaded_by_its_own_share_without_zooming(qapp):
     that picked out a small cluster showed nothing until the user zoomed onto it. Each thin
     block is now a column of its own ``fill_of``: the share's shade while a filter is on, the
     label colour while it is off."""
-    from PyQt6.QtGui import QColor
+    from detail.gui.qt import QColor
 
     from detail.gui import plot_theme
 
@@ -244,8 +243,7 @@ def test_a_taller_pane_shows_more_levels_not_taller_rows(qapp):
 
 
 def test_a_deep_tree_scrolls_down_its_levels(qapp):
-    from PyQt6.QtCore import QPoint, QPointF, Qt
-    from PyQt6.QtGui import QWheelEvent
+    from detail.gui.qt import QPoint, QPointF, QWheelEvent, Qt
 
     widget = _deep(qapp, 150)
     assert widget.scroll_range() > 0, "the fixture must be deeper than the pane"
@@ -345,9 +343,7 @@ def test_zoom_keeps_the_point_under_the_pointer(icicle):
 
 
 def test_a_drag_pans_and_selects_nothing_a_click_selects(icicle, qapp):
-    from PyQt6.QtCore import QPoint
-    from PyQt6.QtTest import QTest
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import QPoint, QTest, Qt
 
     picked = []
     icicle.node_picked.connect(picked.append)
@@ -364,8 +360,7 @@ def test_a_drag_pans_and_selects_nothing_a_click_selects(icicle, qapp):
 
 
 def test_escape_and_fit_show_the_whole_tree(icicle):
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QTest, Qt
 
     icicle.zoom_by(0.2, anchor_x=100)
     icicle.zoom_to(6)
@@ -428,7 +423,7 @@ def test_colour_means_one_thing_at_a_time_labels_then_a_shade_or_a_screen(icicle
     difference screen frames what it kept, colour is theirs and a label is an ink strip and
     its name: the label's hue once rode the top of a shaded block, a blue strip on a yellow
     one, two meanings of colour in one picture (§22)."""
-    from PyQt6.QtGui import QColor
+    from detail.gui.qt import QColor
 
     from detail.gui import plot_theme
 
@@ -628,8 +623,7 @@ def test_a_blocks_two_lines_never_overlap_at_any_row_height(icicle):
     rows are fitted shorter, "#1397" and "74.9%" printed on top of each other. Every height a
     row can take, from the shortest fitted row to a full one and past it, is checked here.
     """
-    from PyQt6.QtCore import QRectF
-    from PyQt6.QtGui import QFont, QFontMetricsF
+    from detail.gui.qt import QFont, QFontMetricsF, QRectF
 
     from detail.gui.node_icicle import cell_text, min_row_px
 
@@ -670,7 +664,7 @@ def test_the_tree_paints_its_words_where_cell_text_puts_them(icicle, monkeypatch
 def test_a_diverging_shade_colours_by_sign_and_says_the_screens_words(qapp):
     """The effect mode: the fill is the diverging scale (zero and NaN neutral), and the hover
     carries the screen's sentence for the block rather than a share."""
-    from PyQt6.QtGui import QColor
+    from detail.gui.qt import QColor
 
     from detail.gui import plot_theme
     from detail.gui.node_icicle import NodeIcicle
@@ -822,7 +816,7 @@ def test_a_one_sided_shade_has_a_ramp_of_its_own_with_no_hue(qapp):
     """A profile's difference is a size with no side. Its blocks take ``size_colour`` —
     the neutral middle to ink — and never the diverging scale's "more" half, which made one
     colour mean *more* on a two-value screen and *differs either way* on this one."""
-    from PyQt6.QtGui import QColor
+    from detail.gui.qt import QColor
 
     from detail.gui import plot_theme
     from detail.gui.node_icicle import NodeIcicle

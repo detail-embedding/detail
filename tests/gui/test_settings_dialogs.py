@@ -18,19 +18,11 @@ builder can make, so a settings dialog added tomorrow fails here until it says `
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtWidgets import (  # noqa: E402
-    QComboBox,
-    QLabel,
-    QListWidget,
-    QPushButton,
-)
-
-from detail import surfaces  # noqa: E402
+from detail import surfaces
 from detail.gui import modules as _gui_modules  # noqa: E402,F401 (registers module UIs)
-from detail.gui.modules import registry  # noqa: E402
-from tests.gui import subjects  # noqa: E402
+from detail.gui.modules import registry
+from detail.gui.qt import QComboBox, QLabel, QListWidget, QPushButton
+from tests.gui import subjects
 
 pytestmark = pytest.mark.guard
 

@@ -7,18 +7,6 @@ only, via the shared ``FrameScrubber``), so the UI never stalls on an hour-long 
 """
 
 import numpy as np
-from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtGui import QColor, QImage, QPainter, QPixmap
-from PyQt6.QtWidgets import (
-    QCheckBox,
-    QComboBox,
-    QDialog,
-    QDialogButtonBox,
-    QHBoxLayout,
-    QLabel,
-    QVBoxLayout,
-    QWidget,
-)
 
 from detail.api.run_preview import track_coverage
 from detail.core.chart_theme import LIGHT, rgb
@@ -33,6 +21,21 @@ from detail.gui.dialog import Dialog
 from detail.gui.image_view import ImageView, PictureWithControls
 from detail.gui import plot_theme
 from detail.gui.plots import bound_axes
+from detail.gui.qt import (
+    QCheckBox,
+    QColor,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QHBoxLayout,
+    QImage,
+    QLabel,
+    QPainter,
+    QPixmap,
+    QVBoxLayout,
+    QWidget,
+    Signal,
+)
 from detail.gui.scrubber import FrameScrubber
 from detail.gui.sizing import lines
 
@@ -87,7 +90,7 @@ class _CountStrip(QWidget):
     label gutter (:attr:`_TrackTimeline.gutter`).
     """
 
-    clicked = pyqtSignal(int)
+    clicked = Signal(int)
 
     def __init__(self, counts: np.ndarray):
         super().__init__()
@@ -161,7 +164,7 @@ class _TrackTimeline(QWidget):
     loss rather than presence.
     """
 
-    clicked = pyqtSignal(int)
+    clicked = Signal(int)
     #: Rows in lines of the interface font, not pixels — `sizing.lines` is this package's
     #: `em`. Called where the widget is built, never at import: `lines()` reads the
     #: application font and there is no application at import time.

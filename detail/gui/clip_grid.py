@@ -21,14 +21,13 @@ from __future__ import annotations
 
 import math
 
-from PyQt6.QtCore import QObject, QRunnable, pyqtSignal
-
 from detail.gui import frame_source
+from detail.gui.qt import QObject, QRunnable, Signal
 
 
 class _CellSignals(QObject):
     # (generation, index, rgb | None, reason | None) — delivered on the UI thread.
-    done = pyqtSignal(int, int, object, object)
+    done = Signal(int, int, object, object)
 
 
 class _CellTask(QRunnable):

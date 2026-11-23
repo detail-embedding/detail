@@ -51,25 +51,6 @@ from datetime import datetime
 from datetime import timezone
 
 import numpy as np
-from PyQt6.QtCore import QEvent, QRect, QSize, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QFontMetrics, QPalette
-from PyQt6.QtWidgets import (
-    QAbstractItemView,
-    QApplication,
-    QHBoxLayout,
-    QLabel,
-    QMenu,
-    QMessageBox,
-    QStackedWidget,
-    QStyle,
-    QStyledItemDelegate,
-    QStyleOptionViewItem,
-    QTreeWidget,
-    QTreeWidgetItem,
-    QTreeWidgetItemIterator,
-    QVBoxLayout,
-    QWidget,
-)
 
 from detail.gui import plot_theme
 from detail.gui.busy import run_busy
@@ -85,6 +66,32 @@ from detail.gui.label_clean import (
     tiles_for,
 )
 from detail.gui.live_montage import ALIGN_CHECKING, context_span
+from detail.gui.qt import (
+    QAbstractItemView,
+    QApplication,
+    QColor,
+    QEvent,
+    QFontMetrics,
+    QHBoxLayout,
+    QLabel,
+    QMenu,
+    QMessageBox,
+    QPalette,
+    QRect,
+    QSize,
+    QStackedWidget,
+    QStyle,
+    QStyleOptionViewItem,
+    QStyledItemDelegate,
+    QTimer,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QTreeWidgetItemIterator,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+    Signal,
+)
 from detail.gui.review_marks import ReviewMarks, apply_change
 from detail.gui.sizing import emphasis_font, lines
 from detail.gui.workers import BackgroundCall
@@ -339,9 +346,9 @@ class ReviewListDelegate(QStyledItemDelegate):
 class LabelCheckTab(QWidget):
     """The label-centred audit of a clustering run: the list, and one cluster's review."""
 
-    changed = pyqtSignal()
+    changed = Signal()
     #: "Open in INTERPRET" for a cluster: the workspace switches tabs and selects the node.
-    node_requested = pyqtSignal(int)
+    node_requested = Signal(int)
 
     PAGE_EMPTY, PAGE_REVIEW = range(2)
 

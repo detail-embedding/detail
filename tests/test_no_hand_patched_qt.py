@@ -1,11 +1,16 @@
 """A test patches a Qt class through ``monkeypatch``, never by assigning to it.
 
-**The class.** ``real = QMenu.popup; QMenu.popup = fake; ...; QMenu.popup = real`` does not put
-the method back. Reading a method off a PyQt class returns a plain built-in function, not the
-``sip.methoddescriptor`` in the class's ``__dict__``; assigned back, it no longer binds, so every
-later ``menu.popup(point)`` passes the point as ``self`` and raises *"first argument of unbound
-method must have type 'QMenu'"*. ``monkeypatch.setattr`` saves and restores the ``__dict__``
-entry, so it restores the real descriptor.
+**The class: a patch on a Qt class that outlives its test.** ``real = QMenu.popup; QMenu.popup =
+fake; ...; QMenu.popup = real`` puts the method back only if the line that restores it runs, and
+only if what it reads back is the method. A test that fails between the two leaves ``fake`` on the
+class for every later test in the same process. ``monkeypatch.setattr`` restores at teardown
+whether or not the test got that far.
+
+Under the Qt binding before #107 the round trip was broken even when it ran: reading a method off
+the class returned a plain built-in function rather than the method descriptor in its
+``__dict__``, so the restored method no longer bound, and every later ``menu.popup(point)`` passed
+the point as ``self``. PySide6 restores a working method (measured 2026-11-23), so that half of
+the class is gone with the old binding; the half that remains is the restore that does not run.
 
 **How it hid.** The test that does it passes, and so does every test in its own file. The
 breakage lands on whichever test next calls the method *in the same process*: three

@@ -24,13 +24,13 @@ import numpy as np
 import pytest
 from PIL import Image
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtCore import Qt  # noqa: E402
-
-from detail.gui.behavior_query import ClipSpec  # noqa: E402
-from tests.clip_fixtures import H, W, count_decodes, walking  # noqa: E402
-from tests.gui.conftest import drain_until  # noqa: E402
+from detail.gui.behavior_query import ClipSpec
+from detail.gui.qt import (
+    Qt,
+    receivers,
+)
+from tests.clip_fixtures import H, W, count_decodes, walking
+from tests.gui.conftest import drain_until
 
 
 class _ExperimentAt:
@@ -97,7 +97,7 @@ def test_the_clip_windows_panes_say_click_to_enlarge(qapp, tmp_path):
 
 
 def test_a_click_on_a_pane_opens_it_full_size(qapp, tmp_path):
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QTest
 
     from detail.gui.clip_pane_window import ClipPaneWindow
 
@@ -135,15 +135,15 @@ def test_closing_the_window_stops_its_playback_and_unhooks_it(
     qapp, tmp_path, monkeypatch
 ):
     popup, player = _popup(qapp, tmp_path)
-    before = player.receivers(player.view_changed)
+    before = receivers(player, player.view_changed)
     window = _window(qapp, player, "masks")
-    assert player.receivers(player.view_changed) == before + 1
+    assert receivers(player, player.view_changed) == before + 1
     paused = []
     monkeypatch.setattr(window.scrubber(), "pause", lambda: paused.append(1))
     window.close()
     assert paused, "Close pauses the loop that would otherwise decode forever"
     assert drain_until(qapp, lambda: _gone(window))
-    assert player.receivers(player.view_changed) == before, "unhooked from the player"
+    assert receivers(player, player.view_changed) == before, "unhooked from the player"
     assert "masks" not in player.pane_windows
     player._mask_trail.setChecked(True)  # reaches no dead window
     popup.close()

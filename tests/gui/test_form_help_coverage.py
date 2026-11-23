@@ -11,18 +11,15 @@ exempted with a reason.
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtWidgets import QFormLayout, QLabel, QToolButton  # noqa: E402
-
-from detail.api._runner_modules import PIPELINE_RUNNERS  # noqa: E402
-from detail.executor.runners import import_runner_modules  # noqa: E402
+from detail.api._runner_modules import PIPELINE_RUNNERS
+from detail.executor.runners import import_runner_modules
 from detail.gui import modules as _gui_modules  # noqa: E402,F401 (registers UIs)
-from detail.gui.modules.registry import (  # noqa: E402
+from detail.gui.modules.registry import (
     ANALYSIS_GUI_MODULES,
     GUI_MODULES,
 )
-from detail.gui.tools.registry import TOOL_GUIS, import_tool_uis  # noqa: E402
+from detail.gui.qt import QFormLayout, QLabel, QToolButton
+from detail.gui.tools.registry import TOOL_GUIS, import_tool_uis
 
 # (form_id, label_text) rows that legitimately carry no ``?``. Each needs a reason.
 EXEMPT: set[tuple[str, str]] = {

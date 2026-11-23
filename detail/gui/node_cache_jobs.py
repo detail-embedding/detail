@@ -16,18 +16,17 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, pyqtSignal
-
 from detail.core.progress import remaining_seconds
+from detail.gui.qt import QObject, Signal
 from detail.gui.workers import StageProgressWorker, _with_eta
 
 
 class NodeCacheJob(QObject):
     """One build in flight: its last progress, and signals any number of pages can follow."""
 
-    progress = pyqtSignal(int, str)  # permille 0..1000, status
-    finished = pyqtSignal()
-    failed = pyqtSignal(object)  # the exception
+    progress = Signal(int, str)  # permille 0..1000, status
+    finished = Signal()
+    failed = Signal(object)  # the exception
 
     def __init__(self, key: str) -> None:
         super().__init__()

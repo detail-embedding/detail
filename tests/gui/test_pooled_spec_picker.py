@@ -10,12 +10,12 @@ dialog does; the resolution itself is guarded in ``tests/api/test_analysis_selec
 from types import SimpleNamespace
 
 import pytest
-from PyQt6.QtCore import Qt
 
 import detail.gui.modules.analysis_location  # noqa: F401 — registers its form
 import detail.gui.modules.analysis_temporal_clustering  # noqa: F401 — registers its form
 from detail.gui.modules._common import PooledSpecPicker
 from detail.gui.modules.registry import ANALYSIS_GUI_MODULES
+from detail.gui.qt import Qt
 
 
 def _spec(n: int) -> dict:

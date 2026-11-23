@@ -38,10 +38,8 @@ import pathlib
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from tests.gui.conftest import drain_until  # noqa: E402
-from tests.gui.conftest import pump_for  # noqa: E402
+from tests.gui.conftest import drain_until
+from tests.gui.conftest import pump_for
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 
@@ -210,7 +208,7 @@ def test_the_opt_out_answers_instead(qapp):
 
 
 def test_pump_for_runs_the_loop_and_waits_on_nothing(qapp):
-    from PyQt6.QtCore import QTimer
+    from detail.gui.qt import QTimer
 
     fired = []
     QTimer.singleShot(0, lambda: fired.append(1))

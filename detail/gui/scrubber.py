@@ -32,33 +32,36 @@ from collections import deque
 from collections.abc import Callable, Sequence
 
 import numpy as np
-from PyQt6.QtCore import (
-    QPointF,
-    QRectF,
-    Qt,
-    QEvent,
-    QObject,
-    QRunnable,
-    QThreadPool,
-    QTimer,
-    pyqtSignal,
-)
-from PyQt6.QtGui import QColor, QIntValidator, QPainter, QPalette, QPen, QPolygonF
-from PyQt6.QtWidgets import (
-    QComboBox,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QPushButton,
-    QSlider,
-    QStyle,
-    QStyleOptionSlider,
-    QVBoxLayout,
-    QWidget,
-)
 
 from detail.gui import plot_theme
 from detail.gui.flow import FlowLayout
+from detail.gui.qt import (
+    QColor,
+    QComboBox,
+    QEvent,
+    QHBoxLayout,
+    QIntValidator,
+    QLabel,
+    QLineEdit,
+    QObject,
+    QPainter,
+    QPalette,
+    QPen,
+    QPointF,
+    QPolygonF,
+    QPushButton,
+    QRectF,
+    QRunnable,
+    QSlider,
+    QStyle,
+    QStyleOptionSlider,
+    QThreadPool,
+    QTimer,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+    Signal,
+)
 from detail.gui.sizing import text_width
 from detail.gui.timefmt import TIME_WIDEST, format_time
 
@@ -133,7 +136,7 @@ class _DecodeFailed:
 
 
 class _DecodeSignals(QObject):
-    done = pyqtSignal(int, object)  # (frame, payload) — delivered on the UI thread
+    done = Signal(int, object)  # (frame, payload) — delivered on the UI thread
 
 
 class _DecodeTask(QRunnable):
@@ -380,12 +383,12 @@ class FrameScrubber(QWidget):
     then says the rate actually achieved rather than claiming the nominal one.
     """
 
-    frame_changed = pyqtSignal(int)  # immediate, every change — cheap UI updates
-    rendered = pyqtSignal(int, object)  # UI thread; the worker payload to display
+    frame_changed = Signal(int)  # immediate, every change — cheap UI updates
+    rendered = Signal(int, object)  # UI thread; the worker payload to display
     scrubbed = (
-        pyqtSignal()
+        Signal()
     )  # a *manual* frame move (button/slider/key/typed) — not autoplay
-    busy_changed = pyqtSignal(bool)  # a decode is in flight (True) / caught up (False);
+    busy_changed = Signal(bool)  # a decode is in flight (True) / caught up (False);
     # hosts drive a "Decoding frame…" overlay off it, so first-load and slow scrubs
     # aren't a blank pane. Stays True across a scrub burst (re-dispatch), one False at rest.
 
@@ -1094,7 +1097,7 @@ class FrameScrubber(QWidget):
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
         # The C++ slider can outlive this Python object: the filter stays installed while the
         # scrubber's attributes are already gone, so an event arriving in that window raises
-        # `AttributeError: no attribute '_slider'` out of a slot. PyQt reports it and carries
+        # `AttributeError: no attribute '_slider'` out of a slot. Qt reports it and carries
         # on, which in the app is a dialog nobody can act on and in the suite was invisible
         # until `tests/gui/conftest.py` started failing on a swallowed slot exception.
         if getattr(self, "_slider", None) is None:

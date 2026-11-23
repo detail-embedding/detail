@@ -14,7 +14,8 @@ that ignored that would call one identity two.
 """
 
 import numpy as np
-from PyQt6.QtGui import QImage
+
+from detail.gui.qt import QImage
 
 #: How far, out of 255, a pixel must sit from its mark's mean lightness to be part of a texture —
 #: above the edge noise antialiasing leaves, below the weakest stroke a pattern draws (white on
@@ -32,9 +33,9 @@ def luminance(image) -> np.ndarray:
         image = image.toImage()
     grey = image.convertToFormat(QImage.Format.Format_Grayscale8)
     width, height, stride = grey.width(), grey.height(), grey.bytesPerLine()
-    bits = grey.constBits()
-    bits.setsize(stride * height)
-    rows = np.frombuffer(bits, np.uint8).reshape(height, stride)
+    # PySide6's `constBits()` is a buffer of the image's own size; no sizing step.
+    rows = np.frombuffer(grey.constBits(), np.uint8)[: stride * height]
+    rows = rows.reshape(height, stride)
     return rows[:, :width].astype(float)
 
 

@@ -46,7 +46,7 @@ The guards below are in three layers, because no one of them is enough:
   down. **The trap here is real and cost the reporter an afternoon:** ``processEvents()``
   does *not* deliver ``DeferredDelete``, so a test that only pumps leaves the page alive,
   the delivery succeeds, and the test passes against the unfixed code. Hence the explicit
-  ``sip.isdeleted`` assertions before anything is pumped;
+  ``is_deleted`` assertions before anything is pumped;
 - two source scans, so a site added tomorrow is covered rather than remembered — every
   worker in ``detail/gui/`` descends from the base, and every construction names a receiver.
   The scans are what covered the ``analysis_clip_annotation`` sibling (since removed) and
@@ -57,21 +57,21 @@ import ast
 import threading
 from pathlib import Path
 
-import pytest
+from detail.gui.qt import (
+    QCoreApplication,
+    QEvent,
+    QPixmap,
+    QWidget,
+    delete,
+    is_deleted,
+)
 
-pytest.importorskip("PyQt6")
-
-from PyQt6 import sip  # noqa: E402
-from PyQt6.QtCore import QCoreApplication, QEvent  # noqa: E402
-from PyQt6.QtGui import QPixmap  # noqa: E402
-from PyQt6.QtWidgets import QWidget  # noqa: E402
-
-from detail.api.experiment import Experiment  # noqa: E402
-from detail.gui import pages  # noqa: E402
-from detail.gui.workers import BackgroundCall  # noqa: E402
-from detail.storage import locations  # noqa: E402
-from tests.gui.conftest import drain_busy_calls  # noqa: E402
-from tests import waits  # noqa: E402
+from detail.api.experiment import Experiment
+from detail.gui import pages
+from detail.gui.workers import BackgroundCall
+from detail.storage import locations
+from tests.gui.conftest import drain_busy_calls
+from tests import waits
 
 _GUI = Path(__file__).resolve().parents[2] / "detail" / "gui"
 
@@ -106,7 +106,7 @@ def test_a_result_delivered_after_its_receiver_is_destroyed_is_dropped(qapp):
     call.done.connect(lambda result: delivered.append(result))
     call.start()
 
-    sip.delete(host)  # the page swap, synchronously
+    delete(host)  # the page swap, synchronously
     release.set()
     waits.finished(call, "the worker")
     drain_busy_calls(qapp)
@@ -141,7 +141,7 @@ def test_a_failure_delivered_after_its_receiver_is_destroyed_is_dropped(qapp):
     call = BackgroundCall(boom, receiver=host)
     call.failed.connect(lambda exc: seen.append(exc))
     call.start()
-    sip.delete(host)
+    delete(host)
     release.set()
     waits.finished(call, "the worker")
     drain_busy_calls(qapp)
@@ -187,8 +187,8 @@ def test_navigating_away_from_home_mid_preview_touches_no_deleted_widget(
     # `processEvents()` does NOT deliver DeferredDelete. Without this the page is never
     # destroyed, the delivery succeeds, and this test passes against the unfixed code.
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-    assert sip.isdeleted(page), "the page was not destroyed — this test proves nothing"
-    assert sip.isdeleted(card), "the cards outlived the page they belong to"
+    assert is_deleted(page), "the page was not destroyed — this test proves nothing"
+    assert is_deleted(card), "the cards outlived the page they belong to"
 
     release.set()
     waits.finished(worker, "the worker")

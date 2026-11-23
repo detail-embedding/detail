@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import pytest
 
-pytest.importorskip("PyQt6")
 pytest.importorskip("pyqtgraph")
 
 
@@ -256,7 +255,7 @@ def test_the_page_puts_the_stop_button_where_it_can_be_seen(
     which put *Stop and keep* 455px below the fold on a 900px window. Assert the rendered
     geometry, not that both widgets exist — they always did.
     """
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     from detail.gui.app import MainWindow
     from detail.gui.pages import ModelDetailPage
@@ -329,7 +328,7 @@ def test_the_distill_page_reaches_the_model_while_it_is_training(
     where there are no epochs to look at. Either half alone passes with the condition wrong the
     other way.
     """
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     from detail.gui.pages import DistillRunDetail
     from detail.storage import locations
@@ -378,7 +377,7 @@ def test_the_distill_page_shows_the_curve_while_training(qapp, tmp_path, monkeyp
 def test_the_distill_page_offers_stop_and_keep_while_training(
     qapp, tmp_path, monkeypatch
 ):
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     from detail.gui.pages import DistillRunDetail
     from detail.storage import locations
@@ -401,7 +400,7 @@ def test_the_distill_page_hides_stop_and_keep_once_training_is_done(
 ):
     """The curve stays (how the score got where it did); the control to stop it does not, since
     a finished model has nothing left to stop."""
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     from detail.gui.pages import DistillRunDetail
     from detail.gui.training_curve import TrainingCurveBand
@@ -425,7 +424,7 @@ def test_stopping_training_from_the_distill_page_calls_stop_model(
 ):
     """Wired to the real `Experiment.stop_model` — the same call `ModelDetailPage._stop` makes,
     not a reimplementation that could drift from it."""
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     from detail.api import experiment as experiment_module
     from detail.gui.pages import DistillRunDetail
@@ -487,7 +486,7 @@ def test_stop_and_keep_appears_when_the_stage_write_trails_the_phase(
     ``pending``, drew the resumed training as a failed row under a moving bar (seen in the app).
     Every test above writes the record before the page opens; this one writes it after.
     """
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     from detail.core.dataclasses import DistillProgress
     from detail.gui.pages import DistillRunDetail

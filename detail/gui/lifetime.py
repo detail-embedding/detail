@@ -1,24 +1,26 @@
 """Whether a Qt object is still there to be talked to.
 
-A PyQt wrapper outlives the C++ object behind it: the Python side of a destroyed
+A Python wrapper outlives the C++ object behind it: the Python side of a destroyed
 ``QLabel`` is an ordinary, readable object, and every attribute access that reaches
-Qt raises ``RuntimeError: wrapped C/C++ object of type QLabel has been deleted``.
+Qt raises ``RuntimeError: Internal C++ object (QLabel) already deleted.``
 Anything that runs *later* than the code that started it — a queued signal, a timer,
 a thread's result — has to ask before it touches a widget.
 
-Kept in its own module, importing nothing but PyQt6, so both the widgets
+Kept in its own module, importing nothing but the Qt shim, so both the widgets
 (``busy.py``) and the threads (``workers.py``) can share one answer without either
 importing the other.
 """
 
-from PyQt6 import sip
-from PyQt6.QtCore import QObject
-from PyQt6.QtWidgets import QWidget
+from detail.gui.qt import (
+    QObject,
+    QWidget,
+    is_deleted,
+)
 
 
 def alive(obj: QObject | None) -> bool:
     """Whether ``obj`` is a Qt object that still exists (C++ side not destroyed)."""
-    return obj is not None and not sip.isdeleted(obj)
+    return obj is not None and not is_deleted(obj)
 
 
 def discard(widget: QWidget | None) -> None:

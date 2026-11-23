@@ -24,21 +24,28 @@ under it.
 """
 
 import numpy as np
-from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
-from PyQt6.QtGui import QBrush, QColor, QPainter, QPen, QPolygonF
-from PyQt6.QtWidgets import (
-    QHBoxLayout,
-    QLabel,
-    QScrollArea,
-    QSizePolicy,
-    QVBoxLayout,
-    QWidget,
-)
 
 from detail.gui import plot_theme
 from detail.gui.behavior_query import ClipSpec, _ClipPlayer
 from detail.gui.grip_splitter import GripSplitter
 from detail.gui.plots import bound_axes
+from detail.gui.qt import (
+    QBrush,
+    QColor,
+    QHBoxLayout,
+    QLabel,
+    QPainter,
+    QPen,
+    QPointF,
+    QPolygonF,
+    QRectF,
+    QScrollArea,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+    Signal,
+)
 from detail.gui.scroll import OWNS_WHEEL
 from detail.gui.sizing import lines, remember_size, remembered_size
 from detail.gui.status_color import MUTED, WARN, set_label_color
@@ -100,7 +107,7 @@ def _clock(t_ns: int) -> str:
 class _Square(QWidget):
     #: Clicked, with the click's position normalized into the field of view. The panel turns
     #: that into the nearest instance, which is the one it plays.
-    clicked = pyqtSignal(float, float)
+    clicked = Signal(float, float)
 
     """One recording's field of view, with its instances plotted in it."""
 
@@ -310,7 +317,7 @@ def concentration_note(by_recording: dict) -> str:
 class SpatialMap(QWidget):
     #: An instance was clicked, as its placement dict. The panel has already played it; the
     #: signal is for a host that wants to react (select the row, say), not for playback.
-    instance_picked = pyqtSignal(object)
+    instance_picked = Signal(object)
 
     """The panel: one square per recording, a caption, and a concentration warning.
 

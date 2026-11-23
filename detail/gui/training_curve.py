@@ -21,12 +21,10 @@ state that could disagree with the file.
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QSize
-from PyQt6.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
-
 from detail.gui import plot_theme
 from detail.gui.collapse import CollapsibleBand
 from detail.gui.plots import bound_axes
+from detail.gui.qt import QLabel, QSize, QSizePolicy, QVBoxLayout, QWidget
 from detail.gui.sizing import lines
 
 #: How tall the plot is, in lines of the application font (`gui/sizing.py`'s `em`).
@@ -104,7 +102,7 @@ class TrainingCurve(QWidget):
         # below the fold.
         #
         # The **minimum** is the floor it may be squeezed to; the **hint** is what it draws at
-        # (assigned on the instance, which is what PyQt's virtual dispatch reads); `Preferred`
+        # (assigned on the instance, which is what the binding's virtual dispatch reads); `Preferred`
         # stops it competing with the page's trailing stretch. No maximum, and no
         # `setFixedHeight`: one number acting as floor and ceiling crops the x-axis, and the
         # bottom of a plot is its axis.

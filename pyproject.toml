@@ -74,7 +74,12 @@ analysis = ["umap-learn", "hdbscan", "scikit-learn", "numba>=0.60"]
 # targets say what to install.
 keypoints_export = ["h5py", "pandas", "tables", "pynwb", "ndx-pose"]
 gui = [
-    "PyQt6",
+    # PySide6 (LGPL-3.0), the Qt Company's binding; named in code only by `detail/gui/qt.py`.
+    # The Essentials wheel holds every Qt module the GUI and pyqtgraph use. The `PySide6`
+    # meta-package would add `PySide6-Addons`, which bundles Qt modules (Charts, Data
+    # Visualization, ...) that are GPL-only in their open-source edition. Pinned to a minor
+    # series: a new Qt minor is a change to test, not one to pick up unannounced.
+    "PySide6-Essentials~=6.12.0",
     "pyqtgraph",
     "PyOpenGL",
     "PyOpenGL_accelerate",
@@ -135,7 +140,7 @@ testpaths = ["tests"]
 # (`scripts/select_tests.py`, table in `tests/impact.py`) — not a gate, by design.
 markers = [
     "unit: in-process, no Qt, no real workload — the tier that runs on every change",
-    "gui: needs a QApplication (headless PyQt6 in CI)",
+    "gui: needs a QApplication (headless PySide6 in CI)",
     "slow: spawns real worker subprocesses, drives a real pipeline end to end, encodes video, or pays for a heavy numeric backend",
     "guard: a source scan, registry-parity sweep, or structural/anti-drift check — runs at every stage of the gate, never skipped",
     "allow_slot_exceptions: this test's subject IS an exception escaping a Qt slot, so the conftest guard that fails on one stands down",

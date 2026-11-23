@@ -21,12 +21,12 @@ import csv
 import shutil
 
 import pytest
-from PyQt6.QtCore import QItemSelectionModel, Qt
 
 from detail.api.experiment import Experiment
 from detail.core.progress import format_duration
 from detail.gui.cluster_workspace import QUERY_TERMS, TEMPORAL_TERMS
 from detail.gui.label_browse import LabelBrowseTab
+from detail.gui.qt import QItemSelectionModel, Qt
 from detail.storage import behavior_output as bo
 
 from tests.api.test_query import _searched, _two_behaviors

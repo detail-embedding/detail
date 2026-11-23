@@ -17,20 +17,16 @@ Two properties are worth more than "a dialog opens":
 """
 
 import numpy as np
-import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtCore import QEvent, QPointF, Qt  # noqa: E402
-from PyQt6.QtGui import QImage, QMouseEvent  # noqa: E402
-
-from detail.gui.full_frame import (  # noqa: E402
+from detail.gui.full_frame import (
     EnlargeableThumb,
     FullFrameDialog,
     open_full_frame,
 )
-from detail.gui.image_view import ImageView  # noqa: E402
-from tests import waits  # noqa: E402
+from detail.gui.image_view import ImageView
+from detail.gui.qt import QEvent, QImage, QPointF, Qt
+from tests import waits
+from tests.gui.mouse import mouse_event
 
 
 def _frame(value=90, width=160, height=90):
@@ -52,7 +48,7 @@ def _double_click(widget):
         QEvent.Type.MouseButtonDblClick,
     ):
         widget.event(
-            QMouseEvent(
+            mouse_event(
                 kind,
                 centre,
                 Qt.MouseButton.LeftButton,

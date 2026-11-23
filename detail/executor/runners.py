@@ -269,7 +269,8 @@ class BatchProcessingModule(ProcessingModule):
     # The per-recording *job* seams are dead for a batch module — calling one is a wiring
     # bug. `output_path` is deliberately NOT among them: it says where a recording's output
     # lives, and a batch module still writes one output per recording. Sweeping it in here made Experiment.delete_run raise
-    # NotImplementedError out of a Qt slot, which PyQt turns into a process abort — so a
+    # NotImplementedError out of a Qt slot, which aborted the app under the Qt binding of the
+    # time — so a
     # batch module declares its own, exactly like a per-recording one.
     def _no_per_recording(self, *_a, **_k):
         raise NotImplementedError(

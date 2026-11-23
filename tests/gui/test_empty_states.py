@@ -21,14 +21,10 @@ so a page added later is covered the day it appears in `_PAGES`.
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtWidgets import QLabel, QPushButton  # noqa: E402
-
-from detail.api.experiment import Experiment  # noqa: E402
-from detail.gui.comparison import ComparisonsPage  # noqa: E402
-from detail.gui.active_processes import ActiveProcessesPage  # noqa: E402
-from detail.gui.pages import (  # noqa: E402
+from detail.api.experiment import Experiment
+from detail.gui.comparison import ComparisonsPage
+from detail.gui.active_processes import ActiveProcessesPage
+from detail.gui.pages import (
     DatasetsPage,
     ExperimentAnalysisPage,
     ExperimentRecordingsPage,
@@ -38,6 +34,7 @@ from detail.gui.pages import (  # noqa: E402
     ModelsPage,
     _index_caption,
 )
+from detail.gui.qt import QLabel, QPushButton
 
 
 def _settled_active_processes():
@@ -50,7 +47,7 @@ def _settled_active_processes():
     """
     import time
 
-    from PyQt6.QtWidgets import QApplication
+    from detail.gui.qt import QApplication
 
     page = ActiveProcessesPage(on_open=lambda _r: None)
     # The constructor's own scan must land first: delivered after the empty result, it replaced
@@ -158,7 +155,7 @@ def _build(name, exp):
 
 
 def _settle(page) -> None:
-    from PyQt6.QtWidgets import QApplication
+    from detail.gui.qt import QApplication
 
     from tests.gui.conftest import drain_until
 

@@ -22,12 +22,13 @@ plugins should use QgsScrollArea in place of QScrollArea"*), rather than patchin
 Same here: one class, used everywhere, with the rule baked in.
 """
 
-from PyQt6.QtCore import QEvent, Qt
-from PyQt6.QtWidgets import (
+from detail.gui.qt import (
     QAbstractScrollArea,
     QApplication,
+    QEvent,
     QScrollArea,
     QWidget,
+    Qt,
 )
 
 #: Marks a widget that genuinely needs the wheel for itself — set with

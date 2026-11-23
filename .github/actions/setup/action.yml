@@ -1,6 +1,6 @@
 name: "Set up the test environment"
 description: >
-  Python 3.12, the system libs headless PyQt6 needs, CPU-only torch, and the project
+  Python 3.12, the system libs headless PySide6 needs, CPU-only torch, and the project
   with its dev/gui/analysis dependencies — cached. Every test job uses this, so the
   install is written down once instead of copied per job.
 
@@ -13,7 +13,7 @@ runs:
         cache: pip
         cache-dependency-path: pyproject.toml
 
-    # System libs PyQt6 needs even under the offscreen platform plugin, and libGL for
+    # System libs PySide6 (Qt) needs even under the offscreen platform plugin, and libGL for
     # opencv. Cheap enough to install unconditionally; the GUI job is not the only one
     # that imports detail.gui indirectly.
     - shell: bash

@@ -10,27 +10,24 @@ import numpy as np
 import pytest
 import yaml
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtCore import Qt  # noqa: E402
-
-from detail.api.experiment import Experiment  # noqa: E402
-from detail.core.dataclasses import TrackingJob  # noqa: E402
-from detail.gui import frame_source  # noqa: E402
-from detail.gui.behavior_query import (  # noqa: E402
+from detail.api.experiment import Experiment
+from detail.core.dataclasses import TrackingJob
+from detail.gui import frame_source
+from detail.gui.behavior_query import (
     _CoverageBar,
     ClipExampleDialog,
     ClipSpec,
     _ClipPlayer,
 )
-from detail.storage import recording as recording_store  # noqa: E402
-from detail.storage.zarr_io import (  # noqa: E402
+from detail.gui.qt import Qt
+from detail.storage import recording as recording_store
+from detail.storage.zarr_io import (
     DetectionPartWriter,
     EmbeddingPartWriter,
 )
-from detail.trackers.anchor_tracker import AnchorTracker  # noqa: E402
-from tests import waits  # noqa: E402
-from tests.gui.conftest import drain_thread_pool  # noqa: E402
+from detail.trackers.anchor_tracker import AnchorTracker
+from tests import waits
+from tests.gui.conftest import drain_thread_pool
 
 _FRAMES = (0, 2, 4)  # frames with a detection (the 6-frame video)
 
@@ -130,12 +127,12 @@ def _embed_video_experiment(tmp_path):
 def _wait_continuity(qapp, dialog, timeout_ms=3000):
     """Block until the dialog's off-thread continuity read lands (marking is greyed out
     until it does, so a test that marks straight away would race it)."""
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import qwait
 
     waited = 0
     while dialog._continuity is None and waited < timeout_ms:
         qapp.processEvents()
-        QTest.qWait(10)
+        qwait(10)
         waited += 10
     assert dialog._continuity is not None, "continuity never loaded"
     return dialog
@@ -164,7 +161,7 @@ def test_example_dialog_marks_clips(qapp, tmp_path):
 
 def _lit(button) -> bool:
     """Whether a button is filled with the status green — what it *shows*, not a flag."""
-    from PyQt6.QtGui import QPalette
+    from detail.gui.qt import QPalette
 
     from detail.gui.status_color import READY
 
@@ -234,7 +231,7 @@ def test_the_example_dialog_shows_time_from_the_player_not_its_own_label(
     qapp, tmp_path
 ):
     """Its private readout sat mid-row; the player owns the time now, beside the frame number."""
-    from PyQt6.QtWidgets import QLabel
+    from detail.gui.qt import QLabel
 
     from detail.gui.timefmt import format_time
 
@@ -334,11 +331,11 @@ def test_example_dialog_flags_preloaded_clips_that_no_longer_resolve(qapp, tmp_p
             proj, proj.recordings, "emb_01", initial=stale, max_gap_ns=1000
         ),
     )
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import qwait
 
     for _ in range(100):  # the initial check is its own background call
         qapp.processEvents()
-        QTest.qWait(10)
+        qwait(10)
         if "⚠" in _clip_note(dialog, 0):
             break
     assert "⚠" in _clip_note(dialog, 0)
@@ -440,7 +437,7 @@ def test_a_removed_modules_run_can_be_read_but_not_relaunched(qapp, tmp_path):
     that enforces it rather than deleting with the button: the failure it prevents is a form for
     one module opened carrying another module's config.
     """
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     from detail.gui.launch import LaunchAnalysisDialog
     from detail.gui.pages import AnalysisRunDetailPage
@@ -1375,7 +1372,7 @@ def _shown(widget) -> bool:
 
 def _name_in_box(dialog, name: str, *, submit: str = "return") -> None:
     """Type ``name`` into the marking box's field and submit it, as a user would."""
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QTest
 
     QTest.keyClicks(dialog._new_behavior, name)
     if submit == "return":
@@ -1393,7 +1390,7 @@ def _click_span(dialog, first: int, last: int) -> None:
 
 
 def _cancel(dialog):
-    from PyQt6.QtWidgets import QDialogButtonBox
+    from detail.gui.qt import QDialogButtonBox
 
     box = dialog.findChild(QDialogButtonBox)
     return box.button(QDialogButtonBox.StandardButton.Cancel)
@@ -1407,7 +1404,7 @@ def test_a_dialog_opened_with_no_behaviors_greys_marking_and_use_with_reasons(
 
     Read after the track loads, so the missing behavior is the only thing stopping either.
     """
-    from PyQt6.QtWidgets import QDialog
+    from detail.gui.qt import QDialog
 
     from detail.gui.behavior_query import _NAME_FIRST
 
@@ -1522,7 +1519,7 @@ def test_a_name_from_the_box_is_held_to_the_checklists_rule(
     """A duplicate cannot be typed into the box: it is there only while no behavior exists.
     So the duplicate refusal is checked from the other side — the checklist's Add refuses a
     name the box added, because both add through one path into one list."""
-    from PyQt6.QtWidgets import QInputDialog
+    from detail.gui.qt import QInputDialog
 
     proj = _embed_video_experiment(tmp_path)
     dialog = _multi_dialog(qapp, proj, behaviors=[])
@@ -1536,7 +1533,7 @@ def test_a_name_from_the_box_is_held_to_the_checklists_rule(
 def test_use_these_clips_opens_once_any_behavior_has_an_example(qapp, tmp_path):
     """One behavior with an example is enough: the launch form names any behavior that still
     lacks one. A non-example is not an example."""
-    from PyQt6.QtWidgets import QDialog
+    from detail.gui.qt import QDialog
 
     proj = _embed_video_experiment(tmp_path)
     dialog = _multi_dialog(qapp, proj)  # attack, sniffing: neither has an example
@@ -1619,7 +1616,7 @@ def test_mark_examples_meets_every_gui_rule_with_and_without_a_behavior(
 
 
 def test_delete_removes_the_selected_clip_by_button_and_by_key(qapp, tmp_path):
-    from PyQt6.QtGui import QShortcut
+    from detail.gui.qt import QShortcut
 
     proj = _embed_video_experiment(tmp_path)
     dialog = _multi_dialog(qapp, proj)
@@ -1653,7 +1650,7 @@ def test_selecting_a_clip_seeks_the_player_to_it(qapp, tmp_path):
 
 
 def test_selecting_a_clip_on_another_track_switches_to_it_then_seeks(qapp, tmp_path):
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import qwait
 
     proj = _embed_video_experiment(tmp_path)
     dialog = _multi_dialog(qapp, proj, behaviors=[_behavior_at_frame_2(proj)])
@@ -1661,13 +1658,13 @@ def test_selecting_a_clip_on_another_track_switches_to_it_then_seeks(qapp, tmp_p
     dialog._reload()
     for _ in range(300):  # the other track's read lands (it has no rows, so it fails)
         qapp.processEvents()
-        QTest.qWait(10)
+        qwait(10)
         if "loading" not in dialog._mark_start.text():
             break
     dialog._clip_table.selectRow(0)
     for _ in range(300):
         qapp.processEvents()
-        QTest.qWait(10)
+        qwait(10)
         if dialog._continuity is not None and dialog._pending_seek is None:
             break
     assert dialog._track.value() == 0
@@ -1767,7 +1764,7 @@ def test_mark_examples_opens_every_behavior_and_takes_back_the_result(
     """The setup table's one button: a "Start from" config reopens every behavior's examples
     and non-examples, and what the dialog returns — names added there included — replaces
     the table's behaviors."""
-    from PyQt6.QtWidgets import QDialog
+    from detail.gui.qt import QDialog
 
     from detail.gui.modules.registry import ANALYSIS_GUI_MODULES
 
@@ -1909,7 +1906,7 @@ def test_clips_draw_on_the_timeline_in_their_behaviors_colour(qapp, tmp_path):
 
 
 def test_the_setup_table_is_a_summary_with_one_way_in(qapp):
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     from detail.gui.modules.registry import ANALYSIS_GUI_MODULES
 
@@ -1938,7 +1935,7 @@ def test_the_video_top_is_level_with_the_checklist(qapp, tmp_path):
     """Pinned, not centred: a video whose shape leaves slack above it floated below the
     checklist beside it — and the slack goes under the Mark pair, not between it and the
     transport."""
-    from PyQt6.QtCore import QPoint
+    from detail.gui.qt import QPoint
 
     proj = _embed_video_experiment(tmp_path)
     dialog = _multi_dialog(qapp, proj)
@@ -2041,7 +2038,7 @@ def test_the_clip_tables_time_column_sorts_on_one_unit(qapp, tmp_path):
     In this fixture an embedded frame's `t_ns` is the frame number times 1000, so the
     frame-only clip at frame 4 is *later* than the marked clip at 2000 ns, and keyed on its
     frame number (4) it would sort first."""
-    from PyQt6.QtCore import Qt as _Qt
+    from detail.gui.qt import Qt as _Qt
 
     from tests.gui.conftest import drain_until
 

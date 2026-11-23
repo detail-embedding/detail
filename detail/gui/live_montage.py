@@ -141,45 +141,42 @@ import time
 from typing import Protocol
 
 import numpy as np
-from PyQt6.QtCore import (
-    QEvent,
-    QPoint,
-    QRect,
-    QRectF,
-    QSettings,
-    QSize,
-    Qt,
-    QTimer,
-    pyqtSignal,
-)
-from PyQt6.QtGui import (
-    QAction,
-    QActionGroup,
-    QColor,
-    QFontMetrics,
-    QImage,
-    QPainter,
-    QPen,
-)
-from PyQt6.QtWidgets import (
-    QApplication,
-    QHBoxLayout,
-    QLabel,
-    QMenu,
-    QPushButton,
-    QScrollArea,
-    QSizePolicy,
-    QSlider,
-    QToolTip,
-    QVBoxLayout,
-    QWidget,
-)
 
 from detail.api.clip_tiles import TileLook
 from detail.core.progress import format_duration
 from detail.gui import plot_theme
 from detail.gui.busy import BusyOverlay
 from detail.gui.lifetime import alive
+from detail.gui.qt import (
+    QAction,
+    QActionGroup,
+    QApplication,
+    QColor,
+    QEvent,
+    QFontMetrics,
+    QHBoxLayout,
+    QImage,
+    QLabel,
+    QMenu,
+    QPainter,
+    QPen,
+    QPoint,
+    QPushButton,
+    QRect,
+    QRectF,
+    QScrollArea,
+    QSettings,
+    QSize,
+    QSizePolicy,
+    QSlider,
+    QTimer,
+    QToolTip,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+    Signal,
+    receivers,
+)
 from detail.gui.sizing import emphasis_font, small_font
 from detail.gui.workers import GuiWorker
 
@@ -419,9 +416,10 @@ class _PictureWorker(GuiWorker):
     window left its open clips and drawn tiles to the garbage collector.
     """
 
-    delivered = pyqtSignal(
-        int, int, int, object
-    )  # generation, index, offset_ns, QImage|None
+    #: ``(generation, index, offset_ns, QImage | None)``. ``offset_ns`` is ``object``: a Qt
+    #: ``int`` is 32 bits and passes 2**31 ns 2.1 s into a clip
+    #: (``tests/gui/test_signal_widths.py``).
+    delivered = Signal(int, int, object, object)
 
     def __init__(self, *, receiver) -> None:
         super().__init__(receiver=receiver)
@@ -676,33 +674,33 @@ class LiveMontage(QWidget):
     """The montage: a header (order switch, masks, tile size) over a grid of playing tiles."""
 
     #: The order switch was moved: ``"typical"``, ``"atypical"`` or ``"random"``.
-    order_changed = pyqtSignal(str)
+    order_changed = Signal(str)
     #: The tile-size control was moved, in pixels.
-    tile_px_changed = pyqtSignal(int)
+    tile_px_changed = Signal(int)
     #: A tile asked to be opened at full size — a double-click, or Space: its display index.
-    clip_activated = pyqtSignal(int)
+    clip_activated = Signal(int)
     #: With a click hint set (:meth:`set_click_hint`): a tile was clicked — its display index,
     #: and whether Shift was held.
-    clip_clicked = pyqtSignal(int, bool)
+    clip_clicked = Signal(int, bool)
     #: How many tiles from the top have been on screen, when that grows (:meth:`seen`).
-    seen_changed = pyqtSignal(int)
+    seen_changed = Signal(int)
     #: A tile was right-clicked: its display index and the global position, for a menu.
-    clip_context_requested = pyqtSignal(int, QPoint)
+    clip_context_requested = Signal(int, QPoint)
     #: A drag was let go, or a Shift-click made from an anchor: the display indices to mark
     #: (only those it changes) and whether they are put back rather than removed.
-    run_marked = pyqtSignal(list, bool)
+    run_marked = Signal(list, bool)
     #: The run preview (:meth:`preview`) appeared, changed or went.
-    preview_changed = pyqtSignal()
+    preview_changed = Signal()
 
     #: The orientation switch was moved: whether tiles are drawn **Aligned**.
-    aligned_changed = pyqtSignal(bool)
+    aligned_changed = Signal(bool)
     #: **Show ▾**'s context was changed: seconds either side of each clip.
-    context_changed = pyqtSignal(float)
+    context_changed = Signal(float)
     #: The tiles were replaced or re-marked (:meth:`set_clips`).
-    clips_changed = pyqtSignal()
+    clips_changed = Signal()
     #: A tile got its first picture, or its picture could not be made, or the pictures were
     #: reset (:meth:`unpictured`).
-    pictures_changed = pyqtSignal()
+    pictures_changed = Signal()
 
     def __init__(
         self,
@@ -1041,7 +1039,7 @@ class LiveMontage(QWidget):
         """
         if self._layer is not None:
             return True
-        return self._click_hint is not None and self.receivers(self.clip_clicked) > 0
+        return self._click_hint is not None and receivers(self, self.clip_clicked) > 0
 
     def click_hint(self, index: int) -> str:
         if not self.is_clickable() or not 0 <= index < len(self._clips):

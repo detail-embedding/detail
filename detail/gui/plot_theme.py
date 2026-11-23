@@ -21,19 +21,23 @@ from __future__ import annotations
 
 import math
 
-from PyQt6.QtCore import QEvent, QLineF, QPointF, QRectF, Qt
-from PyQt6.QtGui import (
+from detail.core.chart_theme import DARK, LIGHT, SCREEN_MARKS, ChartTheme
+from detail.gui.qt import (
+    QApplication,
     QColor,
+    QEvent,
     QGuiApplication,
+    QLineF,
     QPainter,
     QPalette,
     QPen,
     QPixmap,
+    QPointF,
+    QRectF,
     QRegion,
+    QStyle,
+    Qt,
 )
-from PyQt6.QtWidgets import QApplication, QStyle
-
-from detail.core.chart_theme import DARK, LIGHT, SCREEN_MARKS, ChartTheme
 
 #: A plot's marks, in screen pixels: line widths, marker sizes, tick length.
 MARKS = SCREEN_MARKS

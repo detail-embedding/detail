@@ -29,11 +29,18 @@ inconsistent about them. The widget reads nothing itself.
 from __future__ import annotations
 
 import numpy as np
-from PyQt6.QtCore import QPointF, QRect, Qt
-from PyQt6.QtGui import QPainter, QPainterPath, QPalette, QPen
-from PyQt6.QtWidgets import QWidget
 
 from detail.gui import plot_theme, status_color
+from detail.gui.qt import (
+    QPainter,
+    QPainterPath,
+    QPalette,
+    QPen,
+    QPointF,
+    QRect,
+    QWidget,
+    Qt,
+)
 from detail.gui.sizing import small_font
 
 #: Row heights in pixels, at least: a curve row, the untracked row. A row with words in it (a

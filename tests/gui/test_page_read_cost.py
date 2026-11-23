@@ -24,17 +24,14 @@ from unittest.mock import patch
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtTest import QTest  # noqa: E402
-
-from detail.api.experiment import Experiment  # noqa: E402
-from detail.gui import pages as gui_pages  # noqa: E402
-from detail.storage import locations  # noqa: E402
-from detail.storage import read_cache  # noqa: E402
-from detail.storage import recording as recording_store  # noqa: E402
-from tests.gui.conftest import drain_busy_calls, drain_thread_pool  # noqa: E402
-from tests.round_trips import counting  # noqa: E402
+from detail.api.experiment import Experiment
+from detail.gui import pages as gui_pages
+from detail.gui.qt import qwait
+from detail.storage import locations
+from detail.storage import read_cache
+from detail.storage import recording as recording_store
+from tests.gui.conftest import drain_busy_calls, drain_thread_pool
+from tests.round_trips import counting
 
 #: The two sizes the slope is taken between. Small enough to stay fast, far enough apart that
 #: a per-recording cost cannot hide in the constant.
@@ -59,7 +56,7 @@ def _round_trips(qapp, root, build, settle):
         waited = 0
         while waited < 10_000 and not settle():
             qapp.processEvents()
-            QTest.qWait(10)
+            qwait(10)
             waited += 10
         qapp.processEvents()
     return sum(seen.values())
@@ -205,7 +202,7 @@ def test_the_recordings_table_reads_nothing_on_the_ui_thread(qapp, tmp_path):
         waited = 0
         while waited < 10_000 and page._table.view.model().rowCount() != SIZES[1]:
             qapp.processEvents()
-            QTest.qWait(10)
+            qwait(10)
             waited += 10
 
     assert (

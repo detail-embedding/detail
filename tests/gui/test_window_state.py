@@ -25,10 +25,7 @@ import pathlib
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtCore import QByteArray, QSettings  # noqa: E402
-from PyQt6.QtWidgets import QApplication  # noqa: E402
+from detail.gui.qt import QApplication, QByteArray, QSettings
 
 _APP = pathlib.Path(__file__).resolve().parents[2] / "detail" / "gui" / "app.py"
 
@@ -174,7 +171,7 @@ def test_the_layout_is_saved_on_the_way_out(qapp, tmp_path, monkeypatch):
     """Saved in ``closeEvent``, before the in-flight-runs prompt rather than after it: two of
     the three ways out of that prompt quit, and a layout that only persisted on the quietest of
     them is one a user would find had reverted at random."""
-    from PyQt6.QtGui import QCloseEvent
+    from detail.gui.qt import QCloseEvent
 
     window = _window(tmp_path, monkeypatch)
     window.show()
@@ -190,9 +187,7 @@ def test_the_navigation_folds_to_its_strip_and_stays_folded(tmp_path, monkeypatc
     double-clicked or dragged past its minimum, shuts it to a strip reading "Navigation";
     remembered across sessions; Ctrl+\\ toggles it from anywhere. There is no hide button.
     """
-    from PyQt6.QtCore import QPoint, Qt
-    from PyQt6.QtGui import QKeySequence, QShortcut
-    from PyQt6.QtTest import QTest
+    from detail.gui.qt import QKeySequence, QPoint, QShortcut, QTest, Qt
 
     width, height = _a_size_this_screen_can_hold()
     window = _window(tmp_path, monkeypatch)

@@ -286,7 +286,11 @@ def test_the_tier_scan_would_catch_a_spawn_in_the_unit_tier():
 
 
 def test_the_tier_scan_would_catch_a_qt_import_in_the_unit_tier():
-    assert "PyQt6" in tiers.heavy_signatures("from PyQt6.QtWidgets import QLabel\n")
+    assert "detail.gui.qt" in tiers.heavy_signatures(
+        "from detail.gui.qt import QLabel\n"
+    )
+    assert "detail.gui.qt" in tiers.heavy_signatures("from detail.gui import qt\n")
+    assert "PySide6" in tiers.heavy_signatures("from PySide6.QtWidgets import QLabel\n")
     assert "numba" in tiers.heavy_signatures("import numba\n")
     assert "cv2.VideoWriter" in tiers.heavy_signatures(
         "import cv2\ndef test_x():\n    w = cv2.VideoWriter('a.mp4', 0, 1, (2, 2))\n"
@@ -294,16 +298,17 @@ def test_the_tier_scan_would_catch_a_qt_import_in_the_unit_tier():
 
 
 def test_the_qt_check_sees_an_indirect_dependency():
-    """Guard the guard: a grep for "PyQt6" reads the two parity files as Qt-free, because
+    """Guard the guard: a grep for the binding reads the two parity files as Qt-free, because
     they import their widget inside the test body and take the `qapp` fixture."""
-    assert tiers.touches_qt("from PyQt6.QtWidgets import QLabel\n")
+    assert tiers.touches_qt("from detail.gui.qt import QLabel\n")
+    assert tiers.touches_qt("from PySide6.QtWidgets import QLabel\n")
     assert tiers.touches_qt("def test_x(qapp):\n    pass\n")
     assert tiers.touches_qt(
         "def test_x(qapp):\n    from detail.gui.clusterers import ClusterFitForm\n"
     )
     assert tiers.touches_qt("def test_x():\n    import detail.gui.pages as mod\n")
     assert not tiers.touches_qt(
-        '"""A docstring naming PyQt6 and detail.gui."""\nimport subprocess\n'
+        '"""A docstring naming PySide6 and detail.gui."""\nimport subprocess\n'
     )
 
 
@@ -313,8 +318,8 @@ def test_the_scan_reads_the_ast_not_the_text():
     assert not tiers.heavy_signatures(
         "def test_x(monkeypatch):\n"
         "    monkeypatch.setattr('detail.cli.subprocess.run', lambda *a, **k: None)\n"
-        "    # torch and PyQt6 named only in a comment and a docstring\n"
-        '    """mentions torch, sklearn, PyQt6"""\n'
+        "    # torch and PySide6 named only in a comment and a docstring\n"
+        '    """mentions torch, sklearn, PySide6"""\n'
     )
 
 

@@ -20,8 +20,8 @@ one suite run in two:
           EXC_BAD_ACCESS ... (possible pointer authentication failure)
 
 An application filter is offered *every* object's events, including posted ones bound for an
-object that has since been destroyed, and sip must build a Python wrapper for that pointer before
-any of the filter's own code runs. No guard inside the filter can help, because the crash happens
+object that has since been destroyed, and the binding must build a Python wrapper for that pointer
+before any of the filter's own code runs (the stack above is the binding of the time's, PyQt6). No guard inside the filter can help, because the crash happens
 upstream of its first line. **A dialog applying a policy to itself has none of that exposure**:
 the only object involved is the one being shown, which is alive by definition.
 
@@ -67,18 +67,24 @@ wait for it, or say why it cannot be stopped — and the dialog closes once the 
 actually happened. Enforced by ``requirements.a_dialog_that_runs_work_owns_its_close``.
 """
 
-from PyQt6.QtCore import QEvent, QSize, Qt, QTimer
-from PyQt6.QtGui import QColor, QPaintEvent, QPainter, QPalette, QShowEvent
-from PyQt6.QtWidgets import (
+from detail.gui.lifetime import alive
+from detail.gui.qt import (
     QApplication,
+    QColor,
     QDialog,
     QDialogButtonBox,
+    QEvent,
+    QPaintEvent,
+    QPainter,
+    QPalette,
     QPushButton,
+    QShowEvent,
+    QSize,
+    QTimer,
     QVBoxLayout,
     QWidget,
+    Qt,
 )
-
-from detail.gui.lifetime import alive
 from detail.gui.scroll import PageScroll
 from detail.gui.selectable import make_text_selectable
 

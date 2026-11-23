@@ -4,13 +4,12 @@ the Models page and the Model manager reach it through one button; the run page 
 third stage."""
 
 import pytest
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QDialog, QLabel, QPushButton
 
 from detail.api.experiment import Experiment
 from detail.gui import fit as fit_gui
 from detail.gui import keypoint_distill as kd_gui  # noqa: F401 — sync_busy patches it
 from detail.gui import run_units
+from detail.gui.qt import QDialog, QLabel, QPushButton, Qt
 from detail.gui.run_units import DONE, QUEUED, RUNNING
 from detail.storage import distill_runs as distill_store
 from tests.pipeline.test_keypoint_dataset import (  # noqa: F401 — fixtures

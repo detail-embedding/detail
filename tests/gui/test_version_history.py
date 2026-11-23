@@ -21,7 +21,7 @@ _INFO = buildinfo.BuildInfo(
 
 @pytest.fixture
 def anchor(qapp):
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     button = QPushButton("Version History")
     button.show()

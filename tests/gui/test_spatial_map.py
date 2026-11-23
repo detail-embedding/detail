@@ -306,7 +306,7 @@ def test_the_boundary_has_canvas_around_it_not_background(qapp, app_theme):
     chart themes: the canvas is the theme's surface and the boundary its axis ink, so the
     property is "padding is surface, and the edge stands off it", not "white, and dark".
     """
-    from PyQt6.QtGui import QColor
+    from detail.gui.qt import QColor
 
     widget = SpatialMap(_FakeExperiment())
     widget.setAutoFillBackground(True)
@@ -524,7 +524,7 @@ def test_the_row_scrolls_sideways_and_leaves_the_page_its_wheel(qapp):
     it asks the *vertical* bar's range, so a row that scrolls horizontally must keep its
     vertical bar off or the page can no longer be scrolled through the map.
     """
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     widget = _shown(qapp, {f"rec_{i:03d}": _uniform(5, seed=i) for i in range(100)})
 

@@ -110,7 +110,7 @@ change. Then the two mechanisms, because a cue and a fact fail differently:
   rendering, plausibly and wrongly, and no test fails.
 - **A cue is derived from the wiring, never set beside it.** A pointing hand, a `›`, a "click to
   open" hint is a *claim*; compute it from whether the signal has a receiver
-  (`self.receivers(self.some_signal) > 0`) so a surface cannot advertise what it has not connected.
+  (`receivers(self, self.some_signal) > 0`, from `detail.gui.qt`) so a surface cannot advertise what it has not connected.
 
 A genuine *choice* (a tint, a prefix, one row's `advanced=True`) keeps its default and is listed in
 the widget's test allowlist **with the reason it is a choice**. Guarded by

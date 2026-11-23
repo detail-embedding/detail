@@ -12,24 +12,6 @@ lives only here (hard rule).
 from pathlib import Path
 
 import numpy as np
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QImage, QPainter, QPixmap
-from PyQt6.QtWidgets import (
-    QComboBox,
-    QDialog,
-    QDialogButtonBox,
-    QFileDialog,
-    QFormLayout,
-    QHBoxLayout,
-    QInputDialog,
-    QLabel,
-    QLineEdit,
-    QMessageBox,
-    QPushButton,
-    QScrollArea,
-    QVBoxLayout,
-    QWidget,
-)
 
 from detail.core.registries import STREAM_IMPORTERS
 from detail.gui import sizing
@@ -43,6 +25,28 @@ from detail.gui.importers.registry import (
     import_importer_uis,
 )
 from detail.gui.lifetime import discard
+from detail.gui.qt import (
+    QColor,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QFormLayout,
+    QHBoxLayout,
+    QImage,
+    QInputDialog,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPainter,
+    QPixmap,
+    QPushButton,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+    Signal,
+)
 from detail.gui.scrubber import FrameScrubber
 from detail.gui.sizing import lines
 from detail.gui.spin import FloatSpin
@@ -78,7 +82,7 @@ class _FilePicker(QWidget):
     it, reading its header) rather than waiting for submit.
     """
 
-    chosen = pyqtSignal(str)
+    chosen = Signal(str)
 
     def __init__(self, caption: str, file_filter: str, parent=None):
         super().__init__(parent)
@@ -958,7 +962,9 @@ class _EventStrip(QWidget):
     playhead. Click to jump (emits the clicked ``t_ns``). The ``video_range``
     band (if given) shades where the video covers the timeline."""
 
-    clicked = pyqtSignal(int)  # t_ns at the click position
+    #: ``t_ns`` at the click position. ``object``, not ``int``: a Qt ``int`` is 32 bits and
+    #: passes 2**31 ns 2.1 s in (``tests/gui/test_signal_widths.py``).
+    clicked = Signal(object)
     _ROW_H = 16
     _LABEL_W = 150
 

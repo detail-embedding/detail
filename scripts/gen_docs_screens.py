@@ -33,27 +33,6 @@ import tempfile
 import time
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QPoint, QRect, QSettings, QSize, QThreadPool
-from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QPixmap, QStandardItemModel
-from PyQt6.QtWidgets import (
-    QAbstractButton,
-    QAbstractItemView,
-    QAbstractSlider,
-    QAbstractSpinBox,
-    QApplication,
-    QCheckBox,
-    QComboBox,
-    QDialog,
-    QHeaderView,
-    QLabel,
-    QLineEdit,
-    QPlainTextEdit,
-    QPushButton,
-    QScrollArea,
-    QTableView,
-    QWidget,
-)
-
 from detail.api import checks as api_checks
 from detail.api import models as api_models
 from detail.api import previews
@@ -66,6 +45,36 @@ from detail.gui import arena
 from detail.gui import cuda_doctor, pages, streams
 from detail.gui.__main__ import configure_application
 from detail.gui.app import MainWindow
+from detail.gui.qt import (
+    QAbstractButton,
+    QAbstractItemView,
+    QAbstractSlider,
+    QAbstractSpinBox,
+    QApplication,
+    QCheckBox,
+    QColor,
+    QComboBox,
+    QDialog,
+    QFont,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QPainter,
+    QPen,
+    QPixmap,
+    QPlainTextEdit,
+    QPoint,
+    QPushButton,
+    QRect,
+    QScrollArea,
+    QSettings,
+    QSize,
+    QStandardItemModel,
+    QTableView,
+    QThreadPool,
+    QWidget,
+    Qt,
+)
 from detail.storage import locations
 
 _ROOT = Path(__file__).resolve().parent.parent

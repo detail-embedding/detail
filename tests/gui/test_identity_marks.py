@@ -29,15 +29,11 @@ each with why.
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtCore import QRectF  # noqa: E402
-from PyQt6.QtGui import QColor, QImage, QPainter  # noqa: E402
-
-from detail.core.chart_theme import DARK, LIGHT  # noqa: E402
-from detail.gui import plot_theme  # noqa: E402
-from detail.gui.cluster_strip import EthogramStrip, cluster_colors  # noqa: E402
-from tests.gui import greyscale  # noqa: E402
+from detail.core.chart_theme import DARK, LIGHT
+from detail.gui import plot_theme
+from detail.gui.cluster_strip import EthogramStrip, cluster_colors
+from detail.gui.qt import QColor, QImage, QPainter, QRectF
+from tests.gui import greyscale
 
 #: Every slot with a colour of its own.
 SLOTS = range(len(LIGHT.label_identities()))

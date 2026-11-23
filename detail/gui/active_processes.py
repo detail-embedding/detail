@@ -34,9 +34,8 @@ number that makes it tempting to do inline.
 
 from __future__ import annotations
 
-from PyQt6.QtWidgets import QVBoxLayout, QWidget
-
 from detail.gui.pages import IndexTable, _heading, _instructions
+from detail.gui.qt import QVBoxLayout, QWidget
 from detail.gui.tables import fit_table_height, give_slack_to, row_id
 from detail.gui.workers import BackgroundCall
 

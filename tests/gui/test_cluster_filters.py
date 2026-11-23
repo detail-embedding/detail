@@ -35,14 +35,8 @@ from __future__ import annotations
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtCore import QPoint, Qt  # noqa: E402
-from PyQt6.QtTest import QTest  # noqa: E402
-from PyQt6.QtWidgets import QAbstractButton, QLabel, QPushButton, QWidget  # noqa: E402
-
-from detail.gui import cluster_filters as cf  # noqa: E402
-from detail.gui.cluster_filters import (  # noqa: E402
+from detail.gui import cluster_filters as cf
+from detail.gui.cluster_filters import (
     CATEGORY,
     DATE,
     LOCATION,
@@ -53,6 +47,15 @@ from detail.gui.cluster_filters import (  # noqa: E402
     Column,
     RecordingChoice,
     Selection,
+)
+from detail.gui.qt import (
+    QAbstractButton,
+    QLabel,
+    QPoint,
+    QPushButton,
+    QTest,
+    QWidget,
+    Qt,
 )
 
 #: More than ``MAX_TICK_VALUES`` distinct values each, so these two are ranges.
@@ -839,8 +842,7 @@ def test_a_field_line_is_reachable_from_the_keyboard(closed_bar, qapp):
 
 
 def test_a_field_line_tints_under_the_pointer(closed_bar, qapp):
-    from PyQt6.QtGui import QEnterEvent
-    from PyQt6.QtCore import QEvent, QPointF
+    from detail.gui.qt import QEnterEvent, QEvent, QPointF
 
     row = closed_bar.field_row("treatment")
     head = row.head
@@ -1017,7 +1019,7 @@ def test_a_one_value_line_is_greyed_under_a_palette_that_leaves_disabled_text_br
     """The dark render's bug: a selectable label paints with the Text role, and a palette that
     sets Text for every group (a dark palette built role by role) left these lines as bright as a
     live field. They take the colour a plain disabled label uses."""
-    from PyQt6.QtGui import QColor, QPalette
+    from detail.gui.qt import QColor, QPalette
 
     from detail.gui.selectable import make_text_selectable
 
@@ -1339,7 +1341,7 @@ def test_the_session_slider_is_big_enough_to_grab(qapp):
     """User, 2026-11-09: the bar-less slider read too small — a 3px track and 8px squares. The
     track is at least 6px and each handle about a line of text tall, measured off the picture.
     """
-    from PyQt6.QtGui import QColor, QPalette
+    from detail.gui.qt import QColor, QPalette
 
     from detail.gui import plot_theme
 

@@ -22,9 +22,11 @@ import dataclasses
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QPalette
-from PyQt6.QtWidgets import (
+from detail.api import clip_render, exporters
+from detail.api.exporters import ExportScope, ExportSubject
+from detail.api.experiment import Experiment
+from detail.gui.dialog import Dialog
+from detail.gui.qt import (
     QCheckBox,
     QComboBox,
     QDialog,
@@ -38,15 +40,14 @@ from PyQt6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QPalette,
     QPushButton,
+    QTimer,
     QVBoxLayout,
     QWidget,
+    Qt,
+    Signal,
 )
-
-from detail.api import clip_render, exporters
-from detail.api.exporters import ExportScope, ExportSubject
-from detail.api.experiment import Experiment
-from detail.gui.dialog import Dialog
 from detail.gui.workers import BackgroundCall
 from detail.gui.spin import FloatSpin, IntSpin
 from detail.gui.sizing import mono_font, set_available
@@ -135,7 +136,7 @@ class ExportButton(QPushButton):
     #: The export run the dialog just submitted. The shell opens its page — the button has no
     #: business knowing what a run page is, and the same signal shape is what
     #: `_on_run_launched` / `_on_analysis_launched` already receive from the launch dialogs.
-    launched = pyqtSignal(object)
+    launched = Signal(object)
 
     def __init__(self, parent=None) -> None:
         super().__init__("Export…", parent)
@@ -193,7 +194,7 @@ class ExportNotice(QFrame):
 
     #: Clicked "Show Active processes". The shell switches mode — the notice has no business
     #: knowing what a mode is, the same split `ExportButton.launched` already uses.
-    show_processes = pyqtSignal()
+    show_processes = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -979,7 +980,7 @@ class ExportDialog(Dialog):
 
 def _mono():
     """The package's monospace font, for a path (GUI style: alignment matters)."""
-    from PyQt6.QtGui import QFont
+    from detail.gui.qt import QFont
 
     return mono_font()
 

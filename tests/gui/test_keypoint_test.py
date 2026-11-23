@@ -7,13 +7,11 @@ detect tests use."""
 import dataclasses
 
 import pytest
-from PyQt6.QtCore import Qt
-from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QDialog, QLabel, QPushButton
 
 from detail.gui import fit as fit_gui
 from detail.gui import keypoint_distill as kd_gui
 from detail.gui import keypoint_test as test_gui
+from detail.gui.qt import QDialog, QLabel, QPushButton, QTest, Qt
 from tests.pipeline.test_keypoint_dataset import (  # noqa: F401 — fixtures
     patch_teacher,
     taught,

@@ -1,17 +1,12 @@
 """Tests for the pydantic→Qt form helper (detail/gui/_pydantic_form.py)."""
 
-import pytest
-
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtWidgets import QSpinBox  # noqa: E402
-
-from detail.configs.detection import DetectionConfig  # noqa: E402
-from detail.configs.embedding import EmbeddingConfig  # noqa: E402
-from detail.gui._pydantic_form import (  # noqa: E402
+from detail.configs.detection import DetectionConfig
+from detail.configs.embedding import EmbeddingConfig
+from detail.gui._pydantic_form import (
     build_fields,
     field_meta,
 )
+from detail.gui.qt import QSpinBox
 
 
 def test_build_fields_generates_scalar_from_model(qapp):

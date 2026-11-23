@@ -36,13 +36,9 @@ import tempfile
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtCore import QThreadPool  # noqa: E402
-from PyQt6.QtWidgets import QApplication, QVBoxLayout, QWidget  # noqa: E402
-
-from detail.gui import decode_order  # noqa: E402
-from detail.gui.behavior_query import ClipSpec  # noqa: E402
+from detail.gui import decode_order
+from detail.gui.behavior_query import ClipSpec
+from detail.gui.qt import QApplication, QThreadPool, QVBoxLayout, QWidget
 
 CLIPS = 300
 ON_SCREEN = 8  # what a 1500px-wide strip actually shows at this cell size

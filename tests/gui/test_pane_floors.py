@@ -26,8 +26,6 @@ import pathlib
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
 _GUI = pathlib.Path(__file__).resolve().parents[2] / "detail" / "gui"
 
 #: How a plot is spelled in this package. Since #492 every plot is built by
@@ -192,7 +190,7 @@ def test_the_query_curve_band_fits_the_pane_it_is_given(qapp, monkeypatch):
         def __getattr__(self, name):
             raise RuntimeError("stub")
 
-    from PyQt6.QtWidgets import QApplication
+    from detail.gui.qt import QApplication
 
     tab = aq._CalibrateTab(_Run(), _Experiment())
     tab.resize(1400, 620)
@@ -215,7 +213,7 @@ def test_a_plot_squeezed_below_its_preferred_height_shrinks_rather_than_cropping
     """The property that makes a range a fix: the widget gets smaller, so its axis stays inside
     it. A fixed-height plot in the same host keeps its height and is clipped by the parent.
     """
-    from PyQt6.QtWidgets import QApplication, QVBoxLayout, QWidget
+    from detail.gui.qt import QApplication, QVBoxLayout, QWidget
 
     pg = pytest.importorskip("pyqtgraph")
     from detail.gui.sizing import lines

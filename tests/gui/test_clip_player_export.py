@@ -24,10 +24,8 @@ import pathlib
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from detail.api.exporters import ExportScope  # noqa: E402
-from detail.gui.behavior_query import ClipSpec, _ClipPlayer  # noqa: E402
+from detail.api.exporters import ExportScope
+from detail.gui.behavior_query import ClipSpec, _ClipPlayer
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 GUI = REPO / "detail" / "gui"

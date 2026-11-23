@@ -8,15 +8,12 @@ import dataclasses
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtWidgets import QAbstractButton, QLabel  # noqa: E402
-
-from detail.gui.query_review import FROZEN, QueryReviewTab  # noqa: E402
-from detail.storage import analysis_runs as analysis_store  # noqa: E402
-from tests.api.test_query import _searched  # noqa: E402
-from tests.gui.conftest import Pictures, drain_busy_calls  # noqa: E402
-from tests.gui.test_query_workspace import _drain  # noqa: E402
+from detail.gui.qt import QAbstractButton, QLabel
+from detail.gui.query_review import FROZEN, QueryReviewTab
+from detail.storage import analysis_runs as analysis_store
+from tests.api.test_query import _searched
+from tests.gui.conftest import Pictures, drain_busy_calls
+from tests.gui.test_query_workspace import _drain
 
 
 def _cutoff_keeping(run, k: int) -> float:

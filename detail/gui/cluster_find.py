@@ -37,18 +37,18 @@ so they are tested without a widget.
 import html
 import re
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor
-from PyQt6.QtWidgets import (
+from detail.gui import plot_theme
+from detail.gui.flow import FlowLayout
+from detail.gui.qt import (
+    QColor,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
     QWidget,
+    Qt,
+    Signal,
 )
-
-from detail.gui import plot_theme
-from detail.gui.flow import FlowLayout
 from detail.gui.sizing import set_available, text_width
 
 #: Object names, so a walk over a page's controls can tell these from the label field's
@@ -124,7 +124,7 @@ class FindChip(QWidget):
     An entry the run does not have says so and selects nothing.
     """
 
-    picked = pyqtSignal(int)
+    picked = Signal(int)
 
     def __init__(
         self,
@@ -189,9 +189,9 @@ class FindClustersBar(QWidget):
     words for a cluster (``WorkspaceTerms``).
     """
 
-    found_changed = pyqtSignal(dict)
-    rings_changed = pyqtSignal(dict)
-    picked = pyqtSignal(int)
+    found_changed = Signal(object)  # dict[int, QColor]
+    rings_changed = Signal(object)  # dict[int, QColor]
+    picked = Signal(int)
 
     def __init__(self, *, unit: str, units: str, parent=None) -> None:
         super().__init__(parent)

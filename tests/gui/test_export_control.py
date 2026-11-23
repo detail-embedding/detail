@@ -17,14 +17,11 @@ The drift half — *a result page grew a panel whose data no export reaches* —
 
 import pytest
 
-from tests.gui.conftest import drain_until  # noqa: E402
+from tests.gui.conftest import drain_until
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtWidgets import QLabel, QVBoxLayout, QWidget  # noqa: E402
-
-from detail.api.exporters import ExportScope, ExportSubject  # noqa: E402
-from detail.gui import export as gui_export  # noqa: E402
+from detail.api.exporters import ExportScope, ExportSubject
+from detail.gui import export as gui_export
+from detail.gui.qt import QLabel, QVBoxLayout, QWidget
 
 pytestmark = pytest.mark.guard
 
@@ -159,7 +156,7 @@ def test_the_dialog_shows_the_folder_it_will_create(qapp, authored_cohort):
 def test_an_untickable_export_is_refused_rather_than_writing_nothing(
     qapp, authored_cohort, monkeypatch
 ):
-    from PyQt6.QtWidgets import QMessageBox
+    from detail.gui.qt import QMessageBox
 
     dialog = _dialog(authored_cohort)
     dialog._out.setText("/tmp/somewhere")
@@ -294,7 +291,7 @@ def test_referenced_video_says_the_files_are_already_yours(qapp, authored_cohort
 
 
 def test_the_save_row_is_labelled_save_to(qapp, authored_cohort):
-    from PyQt6.QtWidgets import QFormLayout
+    from detail.gui.qt import QFormLayout
 
     dialog = _recording_dialog(authored_cohort.experiment)
     form = dialog.findChild(QFormLayout)
@@ -582,7 +579,7 @@ def test_starting_an_export_does_not_take_the_screen_away(qapp, authored_cohort)
     middle of *using* — a cluster you were naming, a plot you were reading — and swapping that
     screen for a progress bar costs more than the bar is worth.
     """
-    from PyQt6.QtWidgets import QLabel
+    from detail.gui.qt import QLabel
 
     window = _shell(qapp, authored_cohort.experiment)
     mine = QLabel("the screen I was on")
@@ -608,7 +605,7 @@ def test_an_experiment_export_goes_to_its_bar(qapp, authored_cohort):
     """Exporting the whole experiment is not an errand off a screen in use. It is minutes, and a
     user who started one had to find it in Active processes and then open it (#916) — so the
     shell goes to the run's page, where the bar is."""
-    from PyQt6.QtWidgets import QLabel
+    from detail.gui.qt import QLabel
 
     window = _shell(qapp, authored_cohort.experiment)
     window._show(QLabel("the overview"), "overview")
@@ -728,7 +725,7 @@ def test_the_notice_clears_on_the_next_navigation(qapp, authored_cohort):
     """It belongs to the screen it was raised on. Once you have gone to look at something, it
     has said its piece — and a stale "export started" strip riding along every page is the kind
     of chrome people learn to stop reading."""
-    from PyQt6.QtWidgets import QLabel
+    from detail.gui.qt import QLabel
 
     window = _shell(qapp, authored_cohort.experiment)
     _an_export_record(authored_cohort.experiment)

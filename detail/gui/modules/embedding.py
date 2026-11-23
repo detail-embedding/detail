@@ -7,17 +7,6 @@ view (EmbeddingRunPreview) shows coverage + a PCA point cloud. Runs need a model
 backend (DINOv3) — install it with `pip install -e '.[torch]'`.
 """
 
-from PyQt6.QtWidgets import (
-    QCheckBox,
-    QComboBox,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QMessageBox,
-    QPushButton,
-    QWidget,
-)
-
 from detail.api import run_spec
 from detail.api._runner_modules import PIPELINE_RUNNERS
 from detail.configs.embedding import EmbeddingConfig
@@ -53,6 +42,16 @@ from detail.gui._pydantic_form import (
 )
 from detail.gui.modules.registry import ConfigWidget, ModuleUI, register_module_ui
 from detail.gui.modules.registry import surfaced
+from detail.gui.qt import (
+    QCheckBox,
+    QComboBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QWidget,
+)
 from detail.gui.run_preview import InputImageScrubber
 from detail.transforms.constructors import CONSTRUCTORS, DEFAULT_CONSTRUCTOR
 from detail.transforms.constructors import surfaced_constructors

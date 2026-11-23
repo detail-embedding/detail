@@ -20,16 +20,13 @@ import pytest
 
 from tests import waits
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtWidgets import QLabel, QPushButton  # noqa: E402
-
-from detail.api import tools as api_tools  # noqa: E402
-from detail.core.registries import register_model  # noqa: E402
-from detail.gui import pages  # noqa: E402
-from detail.gui.tools.registry import TOOL_GUIS, import_tool_uis  # noqa: E402
-from detail.storage import locations  # noqa: E402
-from tests.tools.test_quick_segment import (  # noqa: E402
+from detail.api import tools as api_tools
+from detail.core.registries import register_model
+from detail.gui import pages
+from detail.gui.qt import QLabel, QPushButton
+from detail.gui.tools.registry import TOOL_GUIS, import_tool_uis
+from detail.storage import locations
+from tests.tools.test_quick_segment import (
     _StubDetector,
     _VariedConfidenceDetector,
     _config,
@@ -423,7 +420,7 @@ def test_quick_tools_mode_navigates_to_tool_and_run(qapp, complete_run):
 
 
 def test_run_page_lists_saved_runs(qapp, complete_run):
-    from PyQt6.QtWidgets import QTableView
+    from detail.gui.qt import QTableView
 
     _root, record = complete_run
     import_tool_uis()

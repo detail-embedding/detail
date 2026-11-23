@@ -28,19 +28,6 @@ which outlives the page.
 """
 
 import numpy as np
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtWidgets import (
-    QAbstractItemView,
-    QHBoxLayout,
-    QLabel,
-    QMessageBox,
-    QPushButton,
-    QStackedWidget,
-    QTreeWidget,
-    QTreeWidgetItem,
-    QVBoxLayout,
-    QWidget,
-)
 
 from detail.gui.busy import run_busy
 from detail.gui.grip_splitter import GripSplitter
@@ -59,6 +46,22 @@ from detail.gui.label_clean import (
     tiles_for,
 )
 from detail.gui.live_montage import context_span
+from detail.gui.qt import (
+    QAbstractItemView,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QStackedWidget,
+    QTimer,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+    Signal,
+    receivers,
+)
 from detail.gui.review_marks import ReviewMarks, apply_change
 from detail.gui.sizing import emphasis_font, lines, set_available
 from detail.storage import audit_figures
@@ -85,11 +88,11 @@ class QueryReviewTab(QWidget):
     clips in the review pane on the right."""
 
     #: A removal or a finish was written: other tabs reading the artifact read it again.
-    changed = pyqtSignal()
+    changed = Signal()
     #: **Go to Calibrate**, on a live run whose behavior has no cutoff: show Calibrate.
-    go_to_calibrate = pyqtSignal()
+    go_to_calibrate = Signal()
     #: **Reopen**, on a finished run whose behavior has no cutoff: reopen the run.
-    reopen_requested = pyqtSignal()
+    reopen_requested = Signal()
 
     PAGE_EMPTY, PAGE_REVIEW = range(2)
 
@@ -387,7 +390,7 @@ class QueryReviewTab(QWidget):
                 "Offered when this run is finished and this behavior has no cutoff.",
             ),
         ):
-            on = button is chosen and self.receivers(signal) > 0
+            on = button is chosen and receivers(self, signal) > 0
             set_available(button, on, applies)
             button.setVisible(on)
 

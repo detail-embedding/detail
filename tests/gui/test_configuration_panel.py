@@ -1,20 +1,10 @@
 """Configuration landing page + its setup-readiness panel (§1)."""
 
-import pytest
-
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtGui import QGuiApplication  # noqa: E402
-from PyQt6.QtWidgets import (  # noqa: E402
-    QLabel,
-    QPlainTextEdit,
-    QPushButton,
-)
-
-from detail.api.readiness import ReadinessSignals  # noqa: E402
-from detail.core.dataclasses import CheckResult, CheckStatus  # noqa: E402
-from detail.gui import pages  # noqa: E402
-from detail.storage import locations  # noqa: E402
+from detail.api.readiness import ReadinessSignals
+from detail.core.dataclasses import CheckResult, CheckStatus
+from detail.gui import pages
+from detail.gui.qt import QGuiApplication, QLabel, QPlainTextEdit, QPushButton
+from detail.storage import locations
 
 
 def _panel(on_navigate):
@@ -143,7 +133,7 @@ def test_go_to_node_navigates_and_selects(qapp, tmp_path, monkeypatch):
 
 
 def test_page_labels_are_selectable_after_navigation(qapp, tmp_path, monkeypatch):
-    from PyQt6.QtCore import Qt
+    from detail.gui.qt import Qt
 
     from detail.gui.app import MainWindow
 

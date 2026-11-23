@@ -13,10 +13,14 @@ kinematics fit (``fitted``).
 """
 
 import pytest
-from PyQt6 import sip
-from PyQt6.QtCore import QEvent, Qt
-from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QInputDialog, QMessageBox
+from detail.gui.qt import (
+    QEvent,
+    QInputDialog,
+    QMessageBox,
+    QTest,
+    Qt,
+    is_deleted,
+)
 
 from detail.gui.cluster_workspace import ClusterWorkspace
 from tests.gui.conftest import drain_until
@@ -96,7 +100,7 @@ def test_one_window_per_cluster_and_a_second_open_raises_the_first(qapp, fitted)
     again = _window(qapp, interpret, a)
     assert again is not first, "a closed window is opened afresh"
     workspace.deleteLater()
-    assert _drain(qapp, lambda: sip.isdeleted(other)), "closes with the page"
+    assert _drain(qapp, lambda: is_deleted(other)), "closes with the page"
 
 
 def test_the_montage_header_and_the_tree_menu_open_the_window(qapp, fitted):
@@ -152,7 +156,7 @@ def test_a_labels_menu_choice_in_a_window_fills_its_field_and_enter_writes(
     """The window's bar is the page's (``build_label_bar``): a click on the field types, a
     Labels ▾ choice only fills the field — nothing reaches the run — and Enter writes it.
     """
-    from PyQt6.QtCore import QPoint
+    from detail.gui.qt import QPoint
 
     _e, handle, _workspace, interpret = _interpret(qapp, fitted)
     a, b = _two_clusters(interpret._view)
@@ -235,7 +239,7 @@ def test_every_way_a_window_closes_lets_it_go(qapp, fitted, how):
     event, so a window closed by Esc kept its mark on the tree, its place in the page's list
     (and with it its montage and tile cache) and never saved where it was. Esc is sent as a
     real key to the grid, where the focus sits."""
-    from PyQt6.QtCore import QByteArray, QSettings
+    from detail.gui.qt import QByteArray, QSettings
 
     from detail.gui.cluster_window import GEOMETRY_KEY
 
@@ -249,7 +253,7 @@ def test_every_way_a_window_closes_lets_it_go(qapp, fitted, how):
         first.montage.canvas.setFocus()
         QTest.keyClick(first.montage.canvas, Qt.Key.Key_Escape)
     elif how == "close button":
-        from PyQt6.QtWidgets import QDialogButtonBox
+        from detail.gui.qt import QDialogButtonBox
 
         box = first.findChild(QDialogButtonBox)
         box.button(QDialogButtonBox.StandardButton.Close).click()
@@ -526,7 +530,7 @@ def test_a_refit_closes_every_window_and_says_so(qapp, fitted):
     interpret.reload()
     assert _drain(qapp, lambda: interpret._view is not None)
     qapp.processEvents()
-    assert all(sip.isdeleted(w) or not w.isVisible() for w in (first, second))
+    assert all(is_deleted(w) or not w.isVisible() for w in (first, second))
     assert interpret.windows().windows() == []
     assert interpret._written.text() == (
         "Closed 2 cluster windows: the run was re-fitted."
@@ -681,7 +685,7 @@ def _nothing_opens(monkeypatch):
     """Record a menu or a save dialog Enter opens instead of blocking on it: before the fix,
     Enter with Remove greyed clicked **Labels ▾** — the next default — and its menu waited.
     """
-    from PyQt6.QtWidgets import QMenu
+    from detail.gui.qt import QMenu
 
     from detail.gui import animation_export
 
@@ -747,7 +751,7 @@ def test_enter_anywhere_else_in_the_window_clicks_nothing(
 
 
 def test_no_button_in_the_window_is_default_or_auto_default(qapp, fitted):
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     _e, _h, _workspace, interpret = _interpret(qapp, fitted)
     a, _b = _two_clusters(interpret._view)
@@ -808,7 +812,7 @@ def test_rename_merge_and_a_refused_name_ask_over_the_window_that_asked(
 
 # --- one ⌘Z history for the page and its windows ------------------------------------------ #
 def _undo_key(target):
-    from PyQt6.QtGui import QKeySequence
+    from detail.gui.qt import QKeySequence
 
     seq = QKeySequence(QKeySequence.StandardKey.Undo)[0]
     QTest.keyClick(target, seq.key(), seq.keyboardModifiers())
@@ -833,7 +837,7 @@ def test_undo_in_a_window_puts_back_the_label_it_wrote(qapp, fitted):
 def test_undo_on_the_page_undoes_the_windows_change_and_redo_makes_it_again(
     qapp, fitted
 ):
-    from PyQt6.QtGui import QKeySequence
+    from detail.gui.qt import QKeySequence
 
     _e, handle, _workspace, interpret = _interpret(qapp, fitted)
     a, b = _two_clusters(interpret._view)
@@ -989,7 +993,7 @@ def test_marks_changed_sees_a_fade_and_ignores_the_filter_match():
 def _control(widget) -> str:
     """A bar's control as what it is: its class, and a button's words (digits dropped, so
     "Export ▾" and "Undo (⌘Z)" compare and a count does not)."""
-    from PyQt6.QtWidgets import QAbstractButton
+    from detail.gui.qt import QAbstractButton
 
     name = type(widget).__name__
     if isinstance(widget, QAbstractButton):
@@ -1001,7 +1005,7 @@ def bar_rows(bar, *, skip=()) -> list[list[str]]:
     """``bar``'s lines, top to bottom, each its controls left to right — every widget not
     deliberately hidden, through nested layouts and the montage's toolbar. ``skip``: widgets
     (and layouts) left out by identity."""
-    from PyQt6.QtWidgets import QWidget
+    from detail.gui.qt import QWidget
 
     def leaves(item) -> list:
         layout = item.layout() if hasattr(item, "layout") else None
@@ -1031,8 +1035,7 @@ def widgets_between(bar, grid) -> list[str]:
     """Visible widgets laid out between ``bar``'s bottom and ``grid``'s top, in their common
     window — a row someone put over the clips. Ancestors of the grid (the montage, the scroll
     area) and anything inside the bar are not rows."""
-    from PyQt6.QtCore import QPoint
-    from PyQt6.QtWidgets import QWidget
+    from detail.gui.qt import QPoint, QWidget
 
     window = bar.window()
     low = bar.mapTo(window, QPoint(0, bar.height())).y()
@@ -1054,7 +1057,7 @@ def widgets_between(bar, grid) -> list[str]:
 
 
 def test_the_windows_top_is_interprets_label_bar_row_for_row(qapp, fitted):
-    from PyQt6.QtWidgets import QLabel, QPushButton
+    from detail.gui.qt import QLabel, QPushButton
 
     from detail.gui.label_panel import LabelBar
 

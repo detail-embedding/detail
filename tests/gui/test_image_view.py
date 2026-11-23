@@ -18,14 +18,19 @@
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtCore import QPoint, QPointF, Qt  # noqa: E402
-from PyQt6.QtGui import QPixmap  # noqa: E402
-from PyQt6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget  # noqa: E402
-
-from detail.gui.image_view import ImageView  # noqa: E402
-from detail.gui.scroll import OWNS_WHEEL  # noqa: E402
+from detail.gui.image_view import ImageView
+from detail.gui.qt import (
+    QApplication,
+    QLabel,
+    QPixmap,
+    QPoint,
+    QPointF,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+)
+from detail.gui.scroll import OWNS_WHEEL
+from tests.gui.mouse import mouse_event
 
 
 def _shown(view, qapp, size=(400, 300)):
@@ -43,7 +48,7 @@ def _patterned(width=640, height=480):
     working one. The recorded "a fixture that never diverges cannot tell a working freeze from a
     broken one" class, in its simplest possible form.
     """
-    from PyQt6.QtGui import QColor, QPainter
+    from detail.gui.qt import QColor, QPainter
 
     pixmap = QPixmap(width, height)
     pixmap.fill(QColor(20, 20, 20))
@@ -56,7 +61,7 @@ def _patterned(width=640, height=480):
 
 def _wheel(view, notches=1, modifiers=Qt.KeyboardModifier.NoModifier):
     """A wheel event over the middle of the view."""
-    from PyQt6.QtGui import QWheelEvent
+    from detail.gui.qt import QWheelEvent
 
     centre = QPointF(view.width() / 2, view.height() / 2)
     return QWheelEvent(
@@ -121,7 +126,7 @@ def test_a_zoomed_view_offers_fit_and_an_unzoomed_one_does_not(qapp):
     that is already fitted is a control that does nothing."""
     view = _shown(ImageView(zoomable=True), qapp)
     view.set_frame(_patterned())
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     fit = view.findChild(QPushButton)
     assert fit is not None, "a zoomable view ships no Fit control"
@@ -137,7 +142,7 @@ def test_a_zoomed_view_offers_fit_and_an_unzoomed_one_does_not(qapp):
 
 
 def test_a_plain_view_has_no_fit_control(qapp):
-    from PyQt6.QtWidgets import QPushButton
+    from detail.gui.qt import QPushButton
 
     assert ImageView(zoomable=False).findChild(QPushButton) is None
 
@@ -149,7 +154,6 @@ def test_pan_is_plain_left_drag(qapp):
     """Not middle-drag, not Ctrl+left-drag. Both are unreachable on a MacBook trackpad — the
     recorded `test_scatter_navigation` class, where the capability existed and could not be used.
     """
-    from PyQt6.QtGui import QMouseEvent
 
     view = _shown(ImageView(zoomable=True), qapp)
     view.set_frame(_patterned())
@@ -157,7 +161,7 @@ def test_pan_is_plain_left_drag(qapp):
     qapp.processEvents()
 
     def mouse(kind, pos):
-        return QMouseEvent(
+        return mouse_event(
             kind,
             QPointF(*pos),
             Qt.MouseButton.LeftButton,
@@ -165,7 +169,7 @@ def test_pan_is_plain_left_drag(qapp):
             Qt.KeyboardModifier.NoModifier,
         )
 
-    from PyQt6.QtCore import QEvent
+    from detail.gui.qt import QEvent
 
     before = view.pixmap().toImage()
     view.mousePressEvent(mouse(QEvent.Type.MouseButtonPress, (200, 150)))
@@ -181,8 +185,7 @@ def test_pan_is_plain_left_drag(qapp):
 def test_a_drag_is_not_a_click(qapp):
     """`clicked` drives play/pause on three surfaces. A pan that also toggled playback would
     make the picture jump every time somebody moved it."""
-    from PyQt6.QtCore import QEvent
-    from PyQt6.QtGui import QMouseEvent
+    from detail.gui.qt import QEvent
 
     view = _shown(ImageView(zoomable=True), qapp)
     view.set_frame(_patterned())
@@ -191,7 +194,7 @@ def test_a_drag_is_not_a_click(qapp):
     view.clicked.connect(lambda: clicks.append(1))
 
     def mouse(kind, pos):
-        return QMouseEvent(
+        return mouse_event(
             kind,
             QPointF(*pos),
             Qt.MouseButton.LeftButton,
@@ -210,11 +213,10 @@ def test_a_drag_is_not_a_click(qapp):
 
 
 def _release(view, pos):
-    from PyQt6.QtCore import QEvent
-    from PyQt6.QtGui import QMouseEvent
+    from detail.gui.qt import QEvent
 
     def mouse(kind):
-        return QMouseEvent(
+        return mouse_event(
             kind,
             QPointF(*pos),
             Qt.MouseButton.LeftButton,
@@ -348,7 +350,7 @@ def test_the_picture_block_will_not_be_squeezed_below_its_controls(qapp):
     stream preview shipped exactly that: a 15px band of video and no transport, because a
     sibling took a fixed 320px inside a scrolling dialog body.
     """
-    from PyQt6.QtWidgets import QVBoxLayout, QWidget
+    from detail.gui.qt import QVBoxLayout, QWidget
 
     from detail.gui.image_view import PictureWithControls
 
@@ -435,7 +437,7 @@ def test_the_controls_span_the_picture_not_the_widened_window(qapp):
     controls used to take the window's whole width and run past both edges of the frame (#628,
     Mark examples widened); now they are as wide as the picture draws, centred under it — and
     never narrower than their own one-line width."""
-    from PyQt6.QtGui import QPixmap
+    from detail.gui.qt import QPixmap
 
     from detail.gui.image_view import PictureWithControls
     from detail.gui.requirements import (
@@ -465,8 +467,7 @@ def test_the_block_regrows_its_controls_when_a_strip_appears_later(qapp):
     """The player's "tracked" strip appears after the first layout, once a track's breaks are
     known. The block places its children by hand, so it used to keep the transport at its old
     height — the button row clipped (Mark examples at 1100x740, #628 follow-up)."""
-    from PyQt6.QtGui import QPixmap
-    from PyQt6.QtWidgets import QLabel
+    from detail.gui.qt import QLabel, QPixmap
 
     from detail.gui.image_view import PictureWithControls
     from detail.gui.requirements import a_players_controls_get_the_height_they_need

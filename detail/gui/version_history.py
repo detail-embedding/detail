@@ -8,20 +8,21 @@ is the list of what changed. "Check for updates" is the one network call, made o
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QPoint, QSize, Qt
-from PyQt6.QtGui import QGuiApplication
-from PyQt6.QtWidgets import (
-    QFrame,
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QScrollArea,
-    QVBoxLayout,
-    QWidget,
-)
-
 from detail.core import buildinfo
 from detail.gui.busy import run_busy
+from detail.gui.qt import (
+    QFrame,
+    QGuiApplication,
+    QHBoxLayout,
+    QLabel,
+    QPoint,
+    QPushButton,
+    QScrollArea,
+    QSize,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+)
 
 _POPOVER_WIDTH = 520
 _POPOVER_MAX_HEIGHT = 420

@@ -41,17 +41,19 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from PyQt6.QtCore import QEvent, QObject, QTimer, pyqtSignal
-from PyQt6.QtWidgets import (
+from detail.gui.lifetime import alive
+from detail.gui.qt import (
+    QEvent,
     QHBoxLayout,
     QLabel,
+    QObject,
     QPlainTextEdit,
     QSizePolicy,
+    QTimer,
     QVBoxLayout,
     QWidget,
+    Signal,
 )
-
-from detail.gui.lifetime import alive
 from detail.gui.sizing import emphasis_font, lines
 from detail.gui.status_color import ERROR, MUTED, set_label_color
 
@@ -78,7 +80,7 @@ class _Hub(QObject):
     """Announces every Notes box as it is built, so the shell can bind its button to a box a
     page builds after it was shown (a run page's body arrives off the UI thread)."""
 
-    created = pyqtSignal(object)
+    created = Signal(object)
 
 
 _HUB: _Hub | None = None
@@ -102,9 +104,9 @@ class NotesBox(QWidget):
     """An editable note on one entry, read from and autosaved to its ``notes.md``."""
 
     #: A save landed: whether a note exists may have changed (the ``●``).
-    saved = pyqtSignal()
+    saved = Signal()
     #: Opened or folded — by the shell's button, or by moving to a place where it is the other.
-    open_changed = pyqtSignal(bool)
+    open_changed = Signal(bool)
 
     def __init__(self, experiment, kind: str, entry_id: str = "") -> None:
         """Folded; the shell's Notes button opens it, for the place it is in (:meth:`set_place`)."""

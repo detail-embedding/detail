@@ -20,8 +20,7 @@ orange-red error, grey transient. There is no stylesheet anywhere in the GUI, so
 on through the widget's palette.
 """
 
-from PyQt6.QtGui import QColor, QPalette
-from PyQt6.QtWidgets import QAbstractButton, QLabel, QWidget
+from detail.gui.qt import QAbstractButton, QColor, QLabel, QPalette, QWidget
 
 READY = QColor(40, 140, 40)  # green — ready
 WARN = QColor(170, 110, 0)  # amber — warning / setup incomplete

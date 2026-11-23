@@ -6,8 +6,18 @@ must be satisfied), fill the module's own config form, and launch via
 ``run_handle`` for the shell to show live progress.
 """
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import (
+from detail.api._runner_modules import PIPELINE_RUNNERS
+from detail.core.protocols import ModelNotReadyError
+from detail.executor.runners import (
+    ANALYSIS_MODULES,
+    PROCESSING_MODULES,
+    import_runner_modules,
+)
+from detail.gui import modules as _gui_modules  # noqa: F401 — registers UIs
+from detail.gui.dialog import Dialog
+from detail.gui.forms import AdvancedSection
+from detail.gui.modules import registry
+from detail.gui.qt import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -21,19 +31,8 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QVBoxLayout,
     QWidget,
+    Qt,
 )
-
-from detail.api._runner_modules import PIPELINE_RUNNERS
-from detail.core.protocols import ModelNotReadyError
-from detail.executor.runners import (
-    ANALYSIS_MODULES,
-    PROCESSING_MODULES,
-    import_runner_modules,
-)
-from detail.gui import modules as _gui_modules  # noqa: F401 — registers UIs
-from detail.gui.dialog import Dialog
-from detail.gui.forms import AdvancedSection
-from detail.gui.modules import registry
 from detail.gui.start_from import (
     StartFromRow,
     analysis_runs_for,

@@ -2,9 +2,7 @@
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from detail.gui.zoom import OverviewBar, ZoomWindow, zoom_wheel  # noqa: E402
+from detail.gui.zoom import OverviewBar, ZoomWindow, zoom_wheel
 
 
 def test_the_window_stays_inside_the_span_and_snaps_to_whole():
@@ -58,7 +56,7 @@ def test_changed_fires_only_on_a_change():
 
 
 def test_the_overview_is_the_window_both_ways(qapp):
-    from PyQt6.QtWidgets import QVBoxLayout, QWidget
+    from detail.gui.qt import QVBoxLayout, QWidget
 
     window = ZoomWindow()
     host = QWidget()
@@ -82,7 +80,7 @@ def test_the_overview_is_the_window_both_ways(qapp):
 def test_the_overview_is_a_real_scrollbar_with_the_apps_style(qapp):
     """The point of the class: the same control as every other scrollbar, so it looks the
     same — not a picture of one."""
-    from PyQt6.QtWidgets import QScrollBar
+    from detail.gui.qt import QScrollBar
 
     from detail.gui.style import DetailStyle
 
@@ -92,8 +90,7 @@ def test_the_overview_is_a_real_scrollbar_with_the_apps_style(qapp):
 
 
 def _wheel(dx, dy):
-    from PyQt6.QtCore import QPoint, QPointF, Qt
-    from PyQt6.QtGui import QWheelEvent
+    from detail.gui.qt import QPoint, QPointF, QWheelEvent, Qt
 
     return QWheelEvent(
         QPointF(10, 10),

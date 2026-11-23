@@ -402,11 +402,10 @@ def _screen(theme_name: str, out: pathlib.Path) -> pathlib.Path | None:
 
     Built through ``gui/plot_theme.py`` the way a page builds them, inside a window drawn with
     Fusion's real palette for that scheme — so what is judged is a plot *on its page*, which is
-    where the old white panels failed. ``None`` when Qt cannot start (no display, no PyQt6).
+    where the old white panels failed. ``None`` when Qt cannot start (no display, no PySide6).
     """
     try:
-        from PyQt6.QtCore import Qt
-        from PyQt6.QtWidgets import QApplication, QGridLayout, QLabel, QWidget
+        from detail.gui.qt import QApplication, QGridLayout, QLabel, QWidget, Qt
     except ImportError:
         return None
     import pyqtgraph as pg

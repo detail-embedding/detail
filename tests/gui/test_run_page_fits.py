@@ -29,17 +29,14 @@ the same on a machine whose fonts are bigger.
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtWidgets import QWidget  # noqa: E402
-
 from detail.gui import modules as _gui_modules  # noqa: E402,F401 (registers module UIs)
-from detail.gui.app import MainWindow  # noqa: E402
-from detail.gui.pages import RunDetailPage, RunResults  # noqa: E402
-from detail.gui.scroll import PageScroll  # noqa: E402
-from detail.storage import locations  # noqa: E402
-from tests import waits  # noqa: E402
-from tests.gui import subjects  # noqa: E402
+from detail.gui.app import MainWindow
+from detail.gui.pages import RunDetailPage, RunResults
+from detail.gui.qt import QWidget
+from detail.gui.scroll import PageScroll
+from detail.storage import locations
+from tests import waits
+from tests.gui import subjects
 
 pytestmark = pytest.mark.guard
 
@@ -154,7 +151,7 @@ def test_the_run_details_start_folded(qapp, shell, experiment):
     assert not band.is_open()
     band.set_open(True)  # and they are still there, one click away
     qapp.processEvents()
-    from PyQt6.QtWidgets import QLabel
+    from detail.gui.qt import QLabel
 
     shown = [label.text() for label in band.findChildren(QLabel) if label.isVisible()]
     assert any("Config" in text for text in shown), shown

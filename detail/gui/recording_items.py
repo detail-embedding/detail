@@ -12,8 +12,7 @@ the id in ``UserRole`` separates them, so "read the id back" stops meaning "read
 pattern, shared, so the next picker inherits it.
 """
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QListWidget, QListWidgetItem
+from detail.gui.qt import QListWidget, QListWidgetItem, Qt
 
 _ID_ROLE = Qt.ItemDataRole.UserRole
 #: The name the row was filled with, so a note added after it can be taken off again.

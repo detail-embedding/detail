@@ -7,10 +7,9 @@ call, emitting progress as Qt signals.
 
 from collections.abc import Callable
 
-from PyQt6.QtCore import QObject, QThread, pyqtSignal
-
 from detail.core.progress import format_duration, remaining_seconds
 from detail.gui.lifetime import alive
+from detail.gui.qt import QObject, QThread, Signal
 
 
 def _with_eta(status: str, eta_s: float | None) -> str:
@@ -105,7 +104,7 @@ class GuiWorker(QThread):
     #: ``(bound signal, args)`` — the hop that puts the liveness check on the UI thread.
     #: Emitted from the worker thread; ``self`` lives on the UI thread, so Qt queues it
     #: there and ``_deliver`` re-emits the real signal from the thread widgets live on.
-    _delivery = pyqtSignal(object, tuple)
+    _delivery = Signal(object, tuple)
 
     def __init__(self, *, receiver: QObject | None) -> None:
         super().__init__()
@@ -144,8 +143,8 @@ class BackgroundCall(GuiWorker):
     naming a receiver is what keeps it from arriving at a widget that no longer exists.
     """
 
-    done = pyqtSignal(object)  # the callable's return value
-    failed = pyqtSignal(object)  # the raised exception
+    done = Signal(object)  # the callable's return value
+    failed = Signal(object)  # the raised exception
 
     def __init__(self, fn: Callable[[], object], *, receiver: QObject | None) -> None:
         super().__init__(receiver=receiver)
@@ -175,9 +174,9 @@ class StageProgressWorker(GuiWorker):
     The synchronous-callback twin of ``RunProgressWorker`` (which polls a run handle's
     ``ProcessingProgress``); a tool runs in-process, so there is no handle to poll."""
 
-    tick = pyqtSignal(int, str)  # permille 0..1000, status
-    done = pyqtSignal(object)
-    failed = pyqtSignal(object)
+    tick = Signal(int, str)  # permille 0..1000, status
+    done = Signal(object)
+    failed = Signal(object)
 
     def __init__(
         self,
@@ -320,14 +319,14 @@ class FitProgressWorker(GuiWorker):
     is still polling its run. A late tick cannot reach the dead page either: Qt disconnects a
     receiver automatically when it is destroyed."""
 
-    tick = pyqtSignal(int, str)  # permille (0..1000), status text
+    tick = Signal(int, str)  # permille (0..1000), status text
     #: The raw event itself, for a surface that shows the run's *parts* rather than only the
     #: folded bar — the ``RunProgressWorker.progress`` signal's sibling, and the same reason:
     #: `tick` is a rendering (a fraction and a sentence), and a distill's two stages each need
     #: their own fraction, which is on the event and thrown away by `fit_progress_fraction`
     #: before it reaches the page.
-    progress = pyqtSignal(object)
-    finished_run = pyqtSignal(str)  # the run's error message, "" if it succeeded
+    progress = Signal(object)
+    finished_run = Signal(str)  # the run's error message, "" if it succeeded
 
     def __init__(self, handle, *, receiver: QObject | None) -> None:
         super().__init__(receiver=receiver)
@@ -428,7 +427,7 @@ class RunProgressWorker(GuiWorker):
     recording's inner per-stage progress (``processing_progress_fraction``) so the bar
     moves within a recording, not only at recording boundaries."""
 
-    tick = pyqtSignal(int, str)  # permille (0..1000), status text
+    tick = Signal(int, str)  # permille (0..1000), status text
     #: The aggregate event itself, for a surface that shows the run's *parts*.
     #:
     #: `tick` is a rendering — a fraction and a sentence — and for a long time it was all the UI
@@ -437,8 +436,8 @@ class RunProgressWorker(GuiWorker):
     #: far into it, what is still queued) existed in the worker and was flattened before it got
     #: out. Both signals, because the two answer different questions and the bar's rendering is
     #: pinned by tests that read its string.
-    progress = pyqtSignal(object)  # ProcessingProgress
-    finished_run = pyqtSignal()
+    progress = Signal(object)  # ProcessingProgress
+    finished_run = Signal()
 
     def __init__(self, handle, *, receiver: QObject | None) -> None:
         super().__init__(receiver=receiver)
@@ -456,10 +455,10 @@ class InstallModelWorker(GuiWorker):
     """Download a model's weights off the UI thread (§5), forwarding the byte-level
     ``InstallProgress`` stream as a Qt signal so the Models tab can show a bar."""
 
-    progress = pyqtSignal(
-        int, int, str
-    )  # bytes_done, bytes_total (-1 if unknown), file
-    finished_install = pyqtSignal(str)  # "" on success, else the error message
+    #: ``(bytes_done, bytes_total or -1, file)``. The byte counts are ``object``: a Qt ``int``
+    #: is 32 bits and a weight file passes 2 GB (``tests/gui/test_signal_widths.py``).
+    progress = Signal(object, object, str)
+    finished_install = Signal(str)  # "" on success, else the error message
 
     def __init__(
         self,

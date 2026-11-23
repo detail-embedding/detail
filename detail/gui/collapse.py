@@ -24,15 +24,15 @@ that opens without them is a screen that has hidden the evidence; the page scrol
 rather than the bands starting shut.
 """
 
-from PyQt6.QtCore import QSettings, pyqtSignal
-from PyQt6.QtWidgets import (
+from detail.gui.qt import (
     QApplication,
     QPushButton,
+    QSettings,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
+    Signal,
 )
-
 from detail.gui.sizing import ResizeHandle
 
 #: Where a band's open/shut state is kept, per band key.
@@ -53,7 +53,7 @@ class CollapsibleBand(QWidget):
     a base class with two subclasses that have nothing in common but a triangle.
     """
 
-    toggled = pyqtSignal(bool)
+    toggled = Signal(bool)
 
     def __init__(
         self,

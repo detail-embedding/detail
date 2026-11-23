@@ -11,8 +11,8 @@ fit the run's skeleton greyed with the reason. Leading underscore: not a module 
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import (
+from detail.gui.dialog import Dialog
+from detail.gui.qt import (
     QComboBox,
     QDialogButtonBox,
     QFormLayout,
@@ -24,9 +24,9 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QWidget,
+    Qt,
+    Signal,
 )
-
-from detail.gui.dialog import Dialog
 from detail.storage import heading_definitions
 
 NONE_TEXT = "(choose a heading definition)"
@@ -127,7 +127,7 @@ class HeadingPicker(QWidget):
     (re)reads the saved list. ``changed`` fires when the chosen name changes.
     """
 
-    changed = pyqtSignal()
+    changed = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)

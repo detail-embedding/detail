@@ -23,21 +23,16 @@ The last one only became visible once the content area started sizing pages to t
 import pathlib
 import tempfile
 
-import pytest
-
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtGui import QPixmap  # noqa: E402
-from PyQt6.QtWidgets import (  # noqa: E402
+from detail.gui.behavior_query import ClipSpec, _ClipPlayer
+from detail.gui.image_view import ImageView
+from detail.gui.qt import (
     QApplication,
     QLabel,
+    QPixmap,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
-
-from detail.gui.behavior_query import ClipSpec, _ClipPlayer  # noqa: E402
-from detail.gui.image_view import ImageView  # noqa: E402
 
 
 class _Experiment:

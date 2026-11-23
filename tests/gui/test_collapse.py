@@ -28,12 +28,8 @@ what makes the fold reversible without a menu item somewhere else.
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtCore import QSettings  # noqa: E402
-from PyQt6.QtWidgets import QApplication, QLabel, QWidget  # noqa: E402
-
-from detail.gui.collapse import CollapsibleBand  # noqa: E402
+from detail.gui.collapse import CollapsibleBand
+from detail.gui.qt import QApplication, QLabel, QSettings, QWidget
 
 
 @pytest.fixture(autouse=True)
@@ -201,7 +197,7 @@ def test_the_bar_draws_a_grip_rather_than_a_plain_rule(qapp):
     (`gui/style.py`); under the platform default `CE_Splitter` paints one flat colour, and this
     test once read "no grip" against a handle that has one everywhere the user will ever see it.
     """
-    from PyQt6.QtWidgets import QApplication
+    from detail.gui.qt import QApplication
 
     band = _hosted(
         CollapsibleBand("Clips", _tall(200), key="t/c", on_resize=lambda _d: None)
@@ -244,7 +240,7 @@ def test_the_grip_lies_flat_rather_than_standing_on_end(qapp):
     stacks down its 6px height, so the number of distinct columns carrying ink is what tells
     them apart. Asserting "the flag is unset" would restate the implementation.
     """
-    from PyQt6.QtWidgets import QApplication
+    from detail.gui.qt import QApplication
 
     band = _hosted(
         CollapsibleBand("Clips", _tall(200), key="t/c", on_resize=lambda _d: None)

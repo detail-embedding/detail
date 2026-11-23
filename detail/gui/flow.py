@@ -28,8 +28,7 @@ would start a line holding nothing else, the last control before it goes down wi
 lines either way, and the second one reads as a row.
 """
 
-from PyQt6.QtCore import QPoint, QRect, QSize, Qt
-from PyQt6.QtWidgets import QLayout, QSizePolicy, QWidget
+from detail.gui.qt import QLayout, QPoint, QRect, QSize, QSizePolicy, QWidget, Qt
 
 
 class FlowLayout(QLayout):
@@ -63,7 +62,7 @@ class FlowLayout(QLayout):
 
     def addStretch(self, _stretch: int = 0) -> None:  # noqa: N802
         """Mark the start of the trailing, right-aligned group. See the module docstring."""
-        from PyQt6.QtWidgets import QSpacerItem
+        from detail.gui.qt import QSpacerItem
 
         self.addItem(
             QSpacerItem(0, 0, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)

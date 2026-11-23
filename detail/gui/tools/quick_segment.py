@@ -11,26 +11,6 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtWidgets import (
-    QButtonGroup,
-    QCheckBox,
-    QComboBox,
-    QFileDialog,
-    QGridLayout,
-    QHBoxLayout,
-    QInputDialog,
-    QLabel,
-    QListWidget,
-    QMessageBox,
-    QProgressBar,
-    QPushButton,
-    QRadioButton,
-    QScrollArea,
-    QTabWidget,
-    QVBoxLayout,
-    QWidget,
-)
 
 from detail.api import models as api_models
 from detail.api._runner_modules import PIPELINE_RUNNERS
@@ -51,6 +31,27 @@ from detail.gui.model_availability import (
 from detail.gui.help_ui import field_label, help_button, label_with
 from detail.gui._pydantic_form import field_meta, field_widget
 from detail.gui.modules.registry import ConfigWidget
+from detail.gui.qt import (
+    QButtonGroup,
+    QCheckBox,
+    QComboBox,
+    QFileDialog,
+    QGridLayout,
+    QHBoxLayout,
+    QInputDialog,
+    QLabel,
+    QListWidget,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QRadioButton,
+    QScrollArea,
+    QTabWidget,
+    QTimer,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+)
 from detail.gui.status_color import MUTED, WARN, set_label_color
 from detail.gui.run_preview import _to_pixmap
 from detail.gui.scrubber import FrameScrubber

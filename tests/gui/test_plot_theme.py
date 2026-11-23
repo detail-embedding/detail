@@ -13,13 +13,11 @@ test platform ignores a colour-scheme request.
 
 import pytest
 
-pytest.importorskip("PyQt6")
 pytest.importorskip("pyqtgraph")
-
-from PyQt6.QtGui import QColor, QPalette  # noqa: E402
 
 from detail.core.chart_theme import DARK, LIGHT, SCREEN_MARKS  # noqa: E402
 from detail.gui import plot_theme  # noqa: E402
+from detail.gui.qt import QColor, QPalette
 
 
 def _shown(qapp, plot):

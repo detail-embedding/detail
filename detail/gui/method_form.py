@@ -28,8 +28,6 @@ helper that lived inside a package whose ``__init__`` imports the world
 (``tests/gui/test_import_cycles.py``).
 """
 
-from PyQt6.QtWidgets import QWidget
-
 from detail.configs.describe import describe_config
 from detail.gui._pydantic_form import (
     any_field_value,
@@ -38,6 +36,7 @@ from detail.gui._pydantic_form import (
     field_advanced,
 )
 from detail.gui.help_ui import field_label
+from detail.gui.qt import QWidget
 
 
 class MethodFields:

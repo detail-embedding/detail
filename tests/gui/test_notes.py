@@ -14,22 +14,17 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtCore import QSettings  # noqa: E402
-from PyQt6.QtGui import QPalette  # noqa: E402
-from PyQt6.QtWidgets import QLabel, QPushButton  # noqa: E402
-
-from detail.api.experiment import Experiment  # noqa: E402
-from detail.gui import app as gui_app  # noqa: E402
-from detail.gui import comparison as gui_comparison  # noqa: E402
-from detail.gui import pages  # noqa: E402
-from detail.gui.collapse import CollapsibleBand  # noqa: E402
-from detail.gui import notes as gui_notes  # noqa: E402
-from detail.gui.notes import NotesBox  # noqa: E402
-from detail.storage import datasets as datasets_store  # noqa: E402
-from detail.storage import notes as notes_store  # noqa: E402
-from detail.storage import runs as runs_store  # noqa: E402
+from detail.api.experiment import Experiment
+from detail.gui import app as gui_app
+from detail.gui import comparison as gui_comparison
+from detail.gui import pages
+from detail.gui.collapse import CollapsibleBand
+from detail.gui import notes as gui_notes
+from detail.gui.notes import NotesBox
+from detail.gui.qt import QLabel, QPalette, QPushButton, QSettings
+from detail.storage import datasets as datasets_store
+from detail.storage import notes as notes_store
+from detail.storage import runs as runs_store
 
 #: The page that shows each entry kind.
 PAGE_FOR_KIND = {
@@ -226,7 +221,7 @@ def test_the_shell_button_binds_a_box_built_after_the_page_was_shown(
     qapp, tmp_path, shell
 ):
     """A body that loads off the UI thread places its box after `_show` ran."""
-    from PyQt6.QtWidgets import QVBoxLayout, QWidget
+    from detail.gui.qt import QVBoxLayout, QWidget
 
     experiment = _experiment_with_run(tmp_path)
     page = QWidget()

@@ -26,15 +26,13 @@ is a sentence, not an id.
 
 import math
 
-from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import QComboBox, QWidget
-
 from detail.configs.baselines import baselines_for
 from detail.configs.describe import (
     describe_config,
     iter_config_models,
     summarize_settings,
 )
+from detail.gui.qt import QComboBox, QWidget, Signal
 
 #: What the first item says, and what a form opens on.
 DEFAULTS_LABEL = "Defaults"
@@ -52,11 +50,11 @@ class StartFromRow(QWidget):
     the item list rather than drive a signal to learn what is offered.
     """
 
-    picked = pyqtSignal(dict)
+    picked = Signal(object)  # dict
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        from PyQt6.QtWidgets import QVBoxLayout
+        from detail.gui.qt import QVBoxLayout
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -104,7 +102,7 @@ class StartFromRow(QWidget):
         self._disable_last()
 
     def _disable_last(self) -> None:
-        from PyQt6.QtCore import Qt
+        from detail.gui.qt import Qt
 
         index = self.combo.count() - 1
         model = self.combo.model()

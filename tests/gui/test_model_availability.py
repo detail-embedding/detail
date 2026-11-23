@@ -11,16 +11,12 @@ suite-wide "everything installed, every backend present" default in ``conftest``
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtWidgets import QComboBox  # noqa: E402
-
-from detail.api._runner_modules import PIPELINE_RUNNERS  # noqa: E402
-from detail.core.utils import available_backends  # noqa: E402
-from detail.executor.runners import import_runner_modules  # noqa: E402
+from detail.api._runner_modules import PIPELINE_RUNNERS
+from detail.core.utils import available_backends
+from detail.executor.runners import import_runner_modules
 from detail.gui import modules as _gui_modules  # noqa: E402,F401 (registers UIs)
-from detail.gui.compute_target import ComputeTargetRow  # noqa: E402
-from detail.gui.model_availability import (  # noqa: E402
+from detail.gui.compute_target import ComputeTargetRow
+from detail.gui.model_availability import (
     apply_availability,
     fill_variants,
     first_available_index,
@@ -30,8 +26,9 @@ from detail.gui.model_availability import (  # noqa: E402
     unavailable_reason,
     variant_available,
 )
-from detail.gui.modules.registry import GUI_MODULES  # noqa: E402
-from detail.gui.tools.registry import TOOL_GUIS, import_tool_uis  # noqa: E402
+from detail.gui.modules.registry import GUI_MODULES
+from detail.gui.qt import QComboBox
+from detail.gui.tools.registry import TOOL_GUIS, import_tool_uis
 
 
 @pytest.fixture

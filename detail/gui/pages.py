@@ -13,63 +13,6 @@ from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtCore import (
-    QEvent,
-    QObject,
-    QRunnable,
-    QSize,
-    Qt,
-    QThreadPool,
-    QUrl,
-    pyqtSignal,
-)
-from PyQt6.QtGui import (
-    QColor,
-    QDesktopServices,
-    QFont,
-    QGuiApplication,
-    QImage,
-    QKeySequence,
-    QPalette,
-    QPixmap,
-    QShortcut,
-    QStandardItem,
-    QStandardItemModel,
-)
-from PyQt6.QtWidgets import (
-    QBoxLayout,
-    QAbstractItemView,
-    QButtonGroup,
-    QCheckBox,
-    QComboBox,
-    QDialog,
-    QDialogButtonBox,
-    QFileDialog,
-    QFormLayout,
-    QFrame,
-    QGridLayout,
-    QHBoxLayout,
-    QInputDialog,
-    QLabel,
-    QLineEdit,
-    QListWidget,
-    QListWidgetItem,
-    QMessageBox,
-    QPlainTextEdit,
-    QProgressBar,
-    QPushButton,
-    QSizePolicy,
-    QScrollArea,
-    QRadioButton,
-    QStackedWidget,
-    QTabBar,
-    QTableView,
-    QTableWidget,
-    QTableWidgetItem,
-    QVBoxLayout,
-    QWidget,
-)
-
 from detail import docs_access
 from detail import surfaces
 from detail.gui import sizing
@@ -77,6 +20,58 @@ from detail.gui.dialog import Dialog
 from detail.gui.full_frame import EnlargeableThumb
 from detail.gui.collapse import CollapsibleBand
 from detail.gui.lifetime import alive, discard
+from detail.gui.qt import (
+    QAbstractItemView,
+    QBoxLayout,
+    QButtonGroup,
+    QCheckBox,
+    QColor,
+    QComboBox,
+    QDesktopServices,
+    QDialog,
+    QDialogButtonBox,
+    QEvent,
+    QFileDialog,
+    QFont,
+    QFormLayout,
+    QFrame,
+    QGridLayout,
+    QGuiApplication,
+    QHBoxLayout,
+    QImage,
+    QInputDialog,
+    QKeySequence,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
+    QObject,
+    QPalette,
+    QPixmap,
+    QPlainTextEdit,
+    QProgressBar,
+    QPushButton,
+    QRadioButton,
+    QRunnable,
+    QScrollArea,
+    QShortcut,
+    QSize,
+    QSizePolicy,
+    QStackedWidget,
+    QStandardItem,
+    QStandardItemModel,
+    QTabBar,
+    QTableView,
+    QTableWidget,
+    QTableWidgetItem,
+    QThreadPool,
+    QUrl,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+    Signal,
+)
 from detail.gui.sizing import (
     emphasis_font,
     clamp_width,
@@ -2349,7 +2344,7 @@ class _ReferenceControls(QWidget):
     folder automatically, so the user picks a *video*, never a location. ``reference_params()``
     returns the ``add_video_part`` kwargs (``storage``) or ``None`` when off."""
 
-    toggled = pyqtSignal(bool)
+    toggled = Signal(bool)
 
     def __init__(self):
         super().__init__()
@@ -3802,8 +3797,8 @@ class ExperimentRunsPage(QWidget):
 
 
 class _CallSignals(QObject):
-    done = pyqtSignal(object)  # the callable's return value — on the UI thread
-    failed = pyqtSignal(object)  # the exception it raised — same thread
+    done = Signal(object)  # the callable's return value — on the UI thread
+    failed = Signal(object)  # the exception it raised — same thread
 
 
 class _CallTask(QRunnable):
@@ -7811,7 +7806,7 @@ class AnalysisRunDetailPage(_FitDetailPage):
 
     #: The open view changed, or the page went back to its landing page: the shell redraws its
     #: path line from `context_view`.
-    context_view_changed = pyqtSignal()
+    context_view_changed = Signal()
 
     #: The link's tooltip on the shell's path line while a view is open.
     BACK_TIP = "Back to this run's page: its details, notes and the list of views."

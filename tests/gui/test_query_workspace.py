@@ -20,7 +20,6 @@ import re
 
 import numpy as np
 import pytest
-from PyQt6.QtWidgets import QLabel
 
 from detail.gui import frame_source
 from detail.gui.clip_grid import score_digits
@@ -29,8 +28,10 @@ from detail.gui.modules.analysis_query import (
     _CalibrateTab,
     _QueryWorkspace,
 )
+from detail.gui.qt import QEvent, QLabel, QPointF, Qt
 
 from tests.api.test_query import N_EMBEDDED, _searched, _two_behaviors
+from tests.gui.mouse import mouse_event
 
 PERIOD = 1_000_000  # the fixture's step between embedded frames
 
@@ -342,7 +343,7 @@ def test_an_unsaved_cutoff_is_loud_on_calibrate_and_quiet_once_kept(qapp, tmp_pa
         )
 
     def dashed() -> bool:
-        from PyQt6.QtCore import Qt
+        from detail.gui.qt import Qt
 
         return calibrate._line.pen.style() == Qt.PenStyle.DashLine
 
@@ -430,8 +431,8 @@ def test_the_below_cutoff_bar_is_centred_and_stands_out(qapp, tmp_path):
     over the tiles in a dark theme. Its words and button are centred together, and it is a
     framed band in a shade the page is not, its words in an amber that reads on that band.
     """
-    from PyQt6.QtGui import QPalette
-    from PyQt6.QtWidgets import QFrame
+    from detail.gui.qt import QPalette
+    from detail.gui.qt import QFrame
 
     from detail.gui.status_color import warn_ink
 
@@ -462,8 +463,8 @@ def test_the_below_cutoff_bar_is_centred_and_stands_out(qapp, tmp_path):
 def test_the_warning_amber_reads_on_a_dark_band(qapp):
     """``WARN`` is a dark amber: on a light band it reads, on a dark one it does not, so a band
     lightens it there."""
-    from PyQt6.QtGui import QColor, QPalette
-    from PyQt6.QtWidgets import QWidget
+    from detail.gui.qt import QColor, QPalette
+    from detail.gui.qt import QWidget
 
     from detail.gui.status_color import WARN, warn_ink
 
@@ -827,8 +828,19 @@ def test_browse_sorts_by_value_not_by_text(qapp, tmp_path):
     """
     from detail.gui.tables import SortCell
 
+    from detail.gui.qt import QStandardItemModel, Qt
+
     assert SortCell("9.00 s", 9_000_000_000) > SortCell("10.00 s", 10_000)
     assert SortCell("0.9", 0.9) > SortCell("0.10", 0.10)
+
+    # What a header click does: Qt sorts the model through each cell's `operator<`.
+    model = QStandardItemModel()
+    for text, key in [("10.00 s", 10_000), ("9.00 s", 9_000_000_000), ("0.5 s", 500)]:
+        model.appendRow([SortCell(text, key)])
+    model.sort(0, Qt.SortOrder.DescendingOrder)
+    assert [model.item(r, 0).text() for r in range(3)] == ["9.00 s", "10.00 s", "0.5 s"]
+    model.sort(0, Qt.SortOrder.AscendingOrder)
+    assert [model.item(r, 0).text() for r in range(3)] == ["0.5 s", "10.00 s", "9.00 s"]
 
 
 def test_browse_opens_the_row_you_clicked_after_sorting(qapp, tmp_path):
@@ -838,7 +850,7 @@ def test_browse_opens_the_row_you_clicked_after_sorting(qapp, tmp_path):
     read `self._rows[current.row()]` plays, after any sort, a different instance than the one
     clicked. Silent, and wrong in a way that looks like the player is broken.
     """
-    from PyQt6.QtCore import Qt as _Qt
+    from detail.gui.qt import Qt as _Qt
 
     exp, run, workspace = _workspace(qapp, tmp_path)
     run.set_cutoff("q01", 0.0)
@@ -1027,22 +1039,14 @@ def _click(strip, index: int):
     """Click the cell at ``index`` the way a person does — through the cell, not the strip."""
     cell = strip._cells[index]
     cell.mousePressEvent(
-        __import__("PyQt6.QtGui", fromlist=["QMouseEvent"]).QMouseEvent(
-            __import__(
-                "PyQt6.QtCore", fromlist=["QEvent"]
-            ).QEvent.Type.MouseButtonPress,
-            __import__("PyQt6.QtCore", fromlist=["QPointF"]).QPointF(5.0, 5.0),
-            _Qt().MouseButton.LeftButton,
-            _Qt().MouseButton.LeftButton,
-            _Qt().KeyboardModifier.NoModifier,
+        mouse_event(
+            QEvent.Type.MouseButtonPress,
+            QPointF(5.0, 5.0),
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
         )
     )
-
-
-def _Qt():
-    from PyQt6.QtCore import Qt
-
-    return Qt
 
 
 def test_no_control_that_changes_a_scan_snapshot_is_live(qapp, tmp_path):
@@ -1154,7 +1158,7 @@ def test_clicking_a_dot_plays_it_beside_the_query_map(qapp, tmp_path):
     """The point of the design: the map answers its own question rather than handing it to a
     strip that may not hold the instance — and Query has no members strip at all, which is why
     borrowing a slot in one could never have reached this page."""
-    from PyQt6.QtWidgets import QApplication
+    from detail.gui.qt import QApplication
 
     _exp, _run, _workspace, measures = _mapped(qapp, tmp_path)
     placement = measures._placements_by_recording["s1"][0]

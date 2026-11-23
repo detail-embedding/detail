@@ -15,8 +15,6 @@ mints), so *Start from* never restores them; the method and its settings are.
 
 from __future__ import annotations
 
-from PyQt6.QtWidgets import QComboBox, QPushButton, QWidget
-
 from detail.api._runner_modules import PIPELINE_RUNNERS
 from detail.configs.keypoint_detect import (
     DEFAULT_CROP_PX,
@@ -48,6 +46,7 @@ from detail.gui.model_availability import (
 from detail.gui.example_set_picker import ExampleSetPicker
 from detail.gui.modules._common import UpstreamSpecPicker, spec_runs
 from detail.gui.modules._every_n import EveryNRow, source_rate
+from detail.gui.qt import QComboBox, QPushButton, QWidget
 from detail.gui.sizing import set_available
 from detail.gui.modules.registry import (
     ConfigWidget,

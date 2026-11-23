@@ -15,13 +15,15 @@ can talk about all four in one vocabulary.
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtWidgets import (
+from detail.gui.qt import (
     QDoubleSpinBox,
     QHBoxLayout,
     QSlider,
     QSpinBox,
+    QTimer,
     QWidget,
+    Qt,
+    Signal,
 )
 
 FRACTION = "fraction"  # a 0-1 ratio: confidence, IoU, a split
@@ -155,7 +157,7 @@ class ThresholdSlider(QWidget):
       are kept in step through ``step``-sized notches with signals blocked on the way back.
     """
 
-    threshold_changed = pyqtSignal(float)
+    threshold_changed = Signal(float)
 
     def __init__(
         self,

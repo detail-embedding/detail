@@ -18,21 +18,20 @@ from __future__ import annotations
 
 import time
 
-from PyQt6.QtCore import QObject, pyqtSignal
-
 from detail.core.progress import OperationCancelled, remaining_seconds
+from detail.gui.qt import QObject, Signal
 from detail.gui.workers import StageProgressWorker, _with_eta
 
 
 class PreviewQueue(QObject):
     """One experiment's preview builds: what is waiting, what is running, and its progress."""
 
-    progress = pyqtSignal(int, str)  # permille of the build in hand, status line
-    recording_done = pyqtSignal(str)  # a recording's previews are built
-    failed = pyqtSignal(
+    progress = Signal(int, str)  # permille of the build in hand, status line
+    recording_done = Signal(str)  # a recording's previews are built
+    failed = Signal(
         str, str
     )  # recording id, what failed and why (one per failed build)
-    idle = pyqtSignal()
+    idle = Signal()
 
     def __init__(self, experiment) -> None:
         super().__init__()

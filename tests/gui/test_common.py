@@ -1,10 +1,6 @@
 """Run-label + common-run helpers for upstream selectors."""
 
-import pytest
-
-pytest.importorskip("PyQt6")
-
-from detail.gui.modules._common import (  # noqa: E402
+from detail.gui.modules._common import (
     common_complete_run_items,
     derived_descriptor,
     run_label,

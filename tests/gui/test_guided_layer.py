@@ -1,15 +1,10 @@
 """The active guided layer (§1): sidebar next-step marker, dismissal, page banners."""
 
-import pytest
-
-pytest.importorskip("PyQt6")
-
-from PyQt6.QtCore import QSettings  # noqa: E402
-
-from detail.api.readiness import ReadinessSignals  # noqa: E402
-from detail.gui import pages  # noqa: E402
-from detail.storage import locations  # noqa: E402
-from tests.gui.test_configuration_pages import _SyncBackgroundCall  # noqa: E402
+from detail.api.readiness import ReadinessSignals
+from detail.gui import pages
+from detail.gui.qt import QSettings
+from detail.storage import locations
+from tests.gui.test_configuration_pages import _SyncBackgroundCall
 
 
 def _s(**kw):

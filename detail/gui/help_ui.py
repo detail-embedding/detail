@@ -8,22 +8,24 @@ launch dialog, where a main-window dock would be unreachable.
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QPoint, Qt, QUrl
-from PyQt6.QtGui import QDesktopServices, QGuiApplication
-from PyQt6.QtWidgets import (
-    QFrame,
-    QHBoxLayout,
-    QLabel,
-    QMessageBox,
-    QPushButton,
-    QToolButton,
-    QVBoxLayout,
-    QWidget,
-)
-
 from detail import docs_access
 from detail import help as help_mod
 from detail.gui.busy import run_progress
+from detail.gui.qt import (
+    QDesktopServices,
+    QFrame,
+    QGuiApplication,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPoint,
+    QPushButton,
+    QToolButton,
+    QUrl,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+)
 
 _POPOVER_WIDTH = 380
 

@@ -17,8 +17,10 @@ hidden. Everything is read off the UI thread.
 
 from __future__ import annotations
 
-from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import (
+from detail.api import skeletons as library
+from detail.core.examples import ExampleSet
+from detail.gui.dialog import Dialog
+from detail.gui.qt import (
     QComboBox,
     QDialogButtonBox,
     QFormLayout,
@@ -28,11 +30,8 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QWidget,
+    Signal,
 )
-
-from detail.api import skeletons as library
-from detail.core.examples import ExampleSet
-from detail.gui.dialog import Dialog
 from detail.gui.sizing import lines, set_available
 from detail.gui.workers import BackgroundCall
 
@@ -126,7 +125,7 @@ class ExampleSetPicker(QWidget):
     chosen set.
     """
 
-    changed = pyqtSignal()
+    changed = Signal()
 
     def __init__(self, experiment=None, *, parent=None) -> None:
         super().__init__(parent)

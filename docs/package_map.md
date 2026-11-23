@@ -334,7 +334,8 @@ detail/
 │                         # (click's own accept nan and inf)
 ├── cli_skeletons.py      # §26: the machine-wide `skeleton` command group (the library)
 ├── __main__.py           # `python -m detail` dispatcher
-└── gui/                  # PyQt6 GUI (docs/gui_design.md): app.py is the shell (mode banner,
+└── gui/                  # Qt GUI (docs/gui_design.md): qt.py is the one module that imports
+    │                     # the binding (PySide6); app.py is the shell (mode banner,
     │                     # both rails, navigation); pages.py the content-area pages + `_table`;
     │                     # launch.py the one launch dialog; preview.py (prompt-test /
     │                     # render-preview); arena.py (scene geometry); streams.py (add-stream);
