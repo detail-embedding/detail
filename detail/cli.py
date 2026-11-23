@@ -5864,7 +5864,8 @@ def analysis_query(
 @click.option(
     "--finalize", is_flag=True, default=False,
     help="Mark the run complete — your statement that you are done calibrating. Refused, "
-    "naming the recordings, while the search has not reached every one.",
+    "naming the recordings, while the search has not reached every one, and naming the "
+    "behaviors while any has no cutoff (set them with --cutoff in the same command).",
 )  # fmt: skip
 @click.option(
     "--reopen", is_flag=True, default=False,
@@ -5944,7 +5945,9 @@ def analysis_query_calibrate(
     if finalize:
         try:
             _with_stage_progress(lambda bar: run.finalize(progress=bar))
-        except ValueError as e:  # a search that did not reach every recording
+        except ValueError as e:
+            # A search that did not reach every recording, or a behavior with no cutoff
+            # (`QueryRun.finish_blocker`, a UserInputError): either way one line, no traceback.
             raise click.ClickException(str(e))
         click.echo(f"finalized {run_id}")
 
@@ -6390,7 +6393,9 @@ def _interpret_options(kind: str):
                 "--finalize",
                 is_flag=True,
                 default=False,
-                help="Mark the run complete, your statement that you are done interpreting.",
+                help="Mark the run complete, your statement that you are done interpreting. "
+                "Refused while nothing is labelled (label a node with --name-node in the same "
+                "command).",
             ),
             click.option(
                 "--reopen",
@@ -6476,6 +6481,8 @@ def _interpret(
         for source, into in merge_pairs:
             click.echo(f"merged {source!r} into {into!r}")
         if finalize:
+            # Refused while nothing is labelled (`finish_blocker`, a UserInputError): one
+            # `Error:` line through the handler below, never a traceback.
             _with_stage_progress(lambda bar: run.finalize(progress=bar))
             click.echo("run finalized")
         if reopen:

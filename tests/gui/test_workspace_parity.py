@@ -30,8 +30,12 @@ sweep of these two pages could not see (2026-11-09).
 table of clusters at a cut; the clustering page now has a tree, a node card and a labels panel
 instead, by decision rather than by drift. What is still held to parity is what both pages still
 share: a BROWSE you can watch, the no-vertical-splitter rule, and a sweep that sees both pages.
-The behavior-scan page keeps its four sections, so their order and their fold-and-drag stay
-guarded on the page that has them.
+
+**And re-converged when the behavior scan's CALIBRATE was rebuilt on INTERPRET's shape** (2026-11):
+the map across the top (the tree there, the frequency curve here) and every clip playing in one
+montage below it, with no stacked sections on either page. The scan page's Ethograms band went to
+BROWSE, as clustering's did; its Locations and Interpretation bands went to MEASURES, so their order
+and their fold-and-drag stay guarded on the view that has them.
 """
 
 import pytest
@@ -43,11 +47,10 @@ from PyQt6.QtWidgets import QSplitter  # noqa: E402
 from detail.gui.behavior_query import _ClipPlayer  # noqa: E402
 from detail.gui.collapse import CollapsibleBand  # noqa: E402
 
-#: What both pages call their three sections. Not "whatever each one happens to be called":
-#: the ethogram band used to title itself from `terms.unit`, so the same section was "Cluster
-#: ethograms" on one run and "Behavior ethograms" on another and matched neither page's
-#: neighbour.
-SECTIONS = ("Clips", "Ethograms", "Locations", "Interpretation")
+#: The behavior scan's MEASURES sections, by name and in order. Named rather than "whatever each
+#: one happens to be called": the ethogram band used to title itself from `terms.unit`, so the
+#: same section was "Cluster ethograms" on one run and "Behavior ethograms" on another.
+SECTIONS = ("Locations", "Interpretation")
 
 
 def _bands(widget) -> dict:
@@ -68,6 +71,11 @@ def _query(qapp, tmp_path):
     return workspace, workspace._calibrate, workspace._browse
 
 
+def _measures(surfaces):
+    workspace, _main, _browse = surfaces["behavior scan"]
+    return workspace._measures
+
+
 @pytest.fixture
 def surfaces(qapp, fitted, tmp_path):
     """Both workspaces, built for real. Named rather than parametrised because they need
@@ -78,10 +86,26 @@ def surfaces(qapp, fitted, tmp_path):
     }
 
 
-def test_the_scan_page_keeps_its_four_sections(surfaces):
-    """The page that still stacks sections stacks these, by these names."""
-    _workspace, main, _browse = surfaces["behavior scan"]
-    assert set(_bands(main)) == set(SECTIONS), sorted(_bands(main))
+def test_the_scan_pages_measures_keep_their_sections(surfaces):
+    """The view that still stacks sections stacks these, by these names."""
+    measures = _measures(surfaces)
+    assert set(_bands(measures)) == set(SECTIONS), sorted(_bands(measures))
+
+
+def test_both_pages_play_every_clip_under_their_map(surfaces):
+    """The shape both pages now share: no stacked sections on the page where a cut is chosen,
+    and the clips playing in one montage. The scan page's CALIBRATE was a player beside the curve
+    over a one-row strip of still frames and four folding sections, built apart from INTERPRET
+    and reported as dead space, a blank player and a single line of clips."""
+    from detail.gui.live_montage import LiveMontage
+
+    for name, (_workspace, main, _browse) in surfaces.items():
+        assert not _bands(
+            main
+        ), f"{name}'s main page stacks sections: {list(_bands(main))}"
+        assert main.findChildren(
+            LiveMontage
+        ), f"{name}'s clips do not play in the montage"
 
 
 def test_the_clustering_page_is_its_tree_and_montage_not_the_bands(surfaces):
@@ -115,15 +139,14 @@ def test_the_scan_pages_sections_keep_their_order(surfaces):
 
     ``findChildren`` walks in construction order, which for these is layout order.
     """
-    _workspace, main, _browse = surfaces["behavior scan"]
-    assert list(_bands(main)) == list(SECTIONS), list(_bands(main))
+    measures = _measures(surfaces)
+    assert list(_bands(measures)) == list(SECTIONS), list(_bands(measures))
 
 
 def test_every_section_folds_and_drags(surfaces):
     """Both, on every band. Two of six had a drag bar, and which two was an accident of who
     was editing what."""
-    _workspace, main, _browse = surfaces["behavior scan"]
-    for title, band in _bands(main).items():
+    for title, band in _bands(_measures(surfaces)).items():
         assert band._handle is not None, f"{title} cannot be dragged"
         band.set_open(False)
         assert band._handle.isHidden(), f"{title} keeps a bar when folded"

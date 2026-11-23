@@ -230,6 +230,9 @@ def test_a_snapshot_reads_its_own_review_and_refuses_to_add_to_it(run):
 
 def test_a_finalized_or_stale_run_refuses_to_finish(run):
     run.set_cutoff("q01", _cutoff_keeping(run, 6))
+    run.set_cutoff(
+        "q02", _cutoff_keeping(run, 6, "q02")
+    )  # finishing needs every cutoff
     run._set_stale(True)
     with pytest.raises(analysis_store.ResultsOutOfDateError):
         run.finish_review("q01", "s1")
@@ -328,3 +331,100 @@ def test_a_run_whose_method_is_gone_is_refused_by_name_before_anything_is_writte
     )
     assert result.exit_code == 1 and "Traceback" not in result.output
     assert "no longer has" in result.output
+
+
+# --- finishing needs a cutoff for every behavior ------------------------------------------
+#
+# **The class.** A run marked finished while a decision it needs was never made. A query
+# behavior with no cutoff is absent from the artifact and keeps no clips, so "finished" said
+# done about a behavior nobody calibrated — and its Audit then said "set a cutoff on Calibrate"
+# and "reopen the run" at once. `QueryRun.finish_blocker` is the one wording of the rule:
+# `finalize` raises it, and the workspace greys Finish with it before it is pressed.
+
+
+def _history_ops(run) -> list[str]:
+    import yaml
+
+    path = run._run_dir() / query_runs.HISTORY_FILENAME
+    return [
+        yaml.safe_load(line)["op"]
+        for line in path.read_text(encoding="utf-8-sig").splitlines()
+    ]
+
+
+def test_finalize_is_refused_while_a_behavior_has_no_cutoff_naming_it(run):
+    with pytest.raises(UserInputError) as neither:
+        run.finalize()
+    assert str(neither.value).startswith(
+        "rearing and grooming have no cutoff yet, so this run cannot be finished."
+    )
+    assert "--cutoff q01=CONFIDENCE --cutoff q02=CONFIDENCE" in str(neither.value)
+
+    run.set_cutoff("q01", _cutoff_keeping(run, 6))
+    with pytest.raises(UserInputError) as one:
+        run.finalize()
+    message = str(one.value)
+    assert message.startswith(
+        "grooming has no cutoff yet, so this run cannot be finished."
+    )
+    assert "Set a cutoff for grooming on Calibrate" in message
+    assert "rearing" not in message and "q01" not in message, "named a calibrated one"
+
+    assert run.status == "open"
+    assert not run.snapshots(), "pinned a snapshot on the way to refusing"
+    assert "finalize" not in _history_ops(run)
+
+
+def test_finalize_succeeds_once_every_behavior_has_a_cutoff(run):
+    run.set_cutoff("q01", _cutoff_keeping(run, 6))
+    run.set_cutoff("q02", _cutoff_keeping(run, 6, "q02"))
+    assert run.finish_blocker() is None
+    run.finalize()
+    assert Experiment(run._experiment.dir).query_run(run.id).status == "complete"
+
+
+def test_finish_blocker_is_the_reason_finalize_gives(run):
+    """The read a surface greys Finish with and the refusal are one sentence, not two copies."""
+    for cut in ((), ("q01",)):
+        for behavior in cut:
+            run.set_cutoff(behavior, _cutoff_keeping(run, 6, behavior))
+        reason = run.finish_blocker()
+        assert reason is not None
+        with pytest.raises(UserInputError) as refused:
+            run.finalize()
+        assert str(refused.value) == reason
+
+
+def test_a_snapshot_refuses_to_finalize_as_read_only_before_asking_about_cutoffs(run):
+    """A view of a run with an uncalibrated behavior: the refusal is the snapshot's own, which
+    names the way back (the live run), not "set a cutoff", which it cannot do."""
+    run.set_cutoff("q01", _cutoff_keeping(run, 6))
+    view = run.view(run.pin(reason="export"))
+    assert view.finish_blocker() is not None
+    with pytest.raises(ReadOnlyRunError, match="will not finalize"):
+        view.finalize()
+
+
+def test_the_cli_refuses_to_finish_naming_the_behavior_without_a_traceback(run):
+    from click.testing import CliRunner
+
+    from detail.cli import main
+
+    base = ["analysis", "query-calibrate", "--experiment", str(run._experiment.dir)]
+    result = CliRunner().invoke(
+        main, base + ["--run", run.id, "--cutoff", "q01=0.5", "--finalize"]
+    )
+    assert result.exit_code == 1, result.output
+    assert "Traceback" not in result.output
+    assert not isinstance(result.exception, ValueError), "escaped as an exception"
+    assert "Error: grooming has no cutoff yet, so this run cannot be finished." in (
+        result.output
+    )
+    assert "finalized" not in result.output
+    assert Experiment(run._experiment.dir).query_run(run.id).status == "open"
+
+    done = CliRunner().invoke(
+        main, base + ["--run", run.id, "--cutoff", "q02=0.5", "--finalize"]
+    )
+    assert done.exit_code == 0, done.output
+    assert f"finalized {run.id}" in done.output

@@ -1,9 +1,16 @@
-"""BROWSE on a clustering run: the labelled dataset, as it stands (§21/§22).
+"""BROWSE on an authored run: the labelled dataset, as it stands (§20/§21/§22).
 
 INTERPRET is where a label is decided, one node at a time, from a cached sample. This is the
 other half: every instance the labels yield, exactly as the run writes them, filtered down to
 the slice someone wants to look at — a label, some recordings, a metadata group — with a
 clickable ethogram over it and a sortable list beside the player.
+
+**One page for both kinds of authored run.** A behavior scan's output is the same §19 artifact,
+its rows named by behavior, so its Browse is this page with a scan's words
+(``cluster_workspace.QUERY_TERMS``): every behavior with a saved cutoff, the matches it kept.
+What differs between the two is wording, carried by ``WorkspaceTerms.browse``, and which
+recordings and embedding runs the run read, asked of the run (``AuthoredRun.data_sources``) —
+never a branch on the run's type here.
 
 **Filters here, charts there.** The dimensions are the node card's (which videos, which group),
 but INTERPRET *reads* them as charts about one node and this *narrows* by them across the whole
@@ -14,6 +21,7 @@ built, and a list mostly made of it buries the dataset this tab exists to show.
 
 **The cluster selected on INTERPRET** is a thin lane under each recording's strip — its time,
 labelled or not (:meth:`LabelBrowseTab.set_cluster_lane`). Click a mark to play that stretch.
+A scan has no INTERPRET, so nothing calls it and the lane stays off.
 
 A leaf: it imports the player and the shared widgets, and nothing from ``gui.pages`` or
 ``gui.modules``: importing a hub from a leaf is how this package's import cycles formed
@@ -44,11 +52,11 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from detail.core import run_selection
 from detail.core.progress import format_duration
 from detail.gui import plot_theme
 from detail.gui.behavior_query import ClipSpec
 from detail.gui.busy import run_busy
+from detail.gui.clip_grid import score_digits
 from detail.gui.cluster_strip import EthogramStrip, cluster_colors, ruled
 from detail.gui.collapse import CollapsibleBand
 from detail.gui.grip_splitter import GripSplitter
@@ -230,6 +238,8 @@ class LabelBrowseTab(QWidget):
         self._terms = terms
         #: Everything `_load` read, off the UI thread.
         self._all: list = []
+        #: The names the artifact's vocabulary holds, whether or not any instance carries one.
+        self._vocabulary: list[str] = []
         self._periods: dict[str, int] = {}
         self._spans: dict[str, tuple[int, int]] = {}
         self._names: dict[str, str] = {}
@@ -278,16 +288,16 @@ class LabelBrowseTab(QWidget):
 
     # -- construction --------------------------------------------------------- #
     def _build_empty(self) -> QWidget:
+        """What the page says before the run has output: the run's own words for where that
+        output comes from — a label on INTERPRET, a cutoff on Calibrate (``BrowseWords``).
+        """
         page = QWidget()
         column = QVBoxLayout(page)
-        headline = QLabel("Nothing labelled yet")
-        headline.setFont(emphasis_font(headline))
-        headline.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        column.addWidget(headline)
-        self._empty_body = QLabel(
-            "Label a node in INTERPRET and its instances appear here, to filter, "
-            "watch and export."
-        )
+        self._empty_headline = QLabel(self._terms.browse.empty)
+        self._empty_headline.setFont(emphasis_font(self._empty_headline))
+        self._empty_headline.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        column.addWidget(self._empty_headline)
+        self._empty_body = QLabel(self._terms.browse.empty_hint)
         self._empty_body.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._empty_body.setWordWrap(True)
         column.addWidget(self._empty_body)
@@ -332,9 +342,10 @@ class LabelBrowseTab(QWidget):
         column = QVBoxLayout(rail)
         column.setContentsMargins(0, 0, 0, 0)
 
-        column.addWidget(self._heading("Labels"))
+        words = self._terms.browse
+        column.addWidget(self._heading(words.labels.capitalize()))
         self._labels = QTreeWidget()
-        self._labels.setHeaderLabels(["label", "bouts", "time"])
+        self._labels.setHeaderLabels([words.label, words.instances, "time"])
         self._labels.setRootIsDecorated(True)
         # The name takes the slack; the two numbers hug their contents. Left to the default, the
         # last column stretched and the names elided to "re…", with a sub-label's text gone.
@@ -443,8 +454,9 @@ class LabelBrowseTab(QWidget):
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
         self._ethogram_scroll.setWidget(self._ethogram)
+        words = self._terms.browse
         self._ethogram_band = CollapsibleBand(
-            "Ethogram — labelled time, click a bout to play it",
+            f"Ethogram — {words.kept} time, click a {words.instance} to play it",
             ruled(self._ethogram, self._ethogram_scroll),
             key="label_browse/ethogram",
             on_resize=self._resize_ethogram,
@@ -495,7 +507,7 @@ class LabelBrowseTab(QWidget):
         self._export_all.clicked.connect(lambda: self._export(selected=False))
         # Nothing is shown until the load lands, and a snapshot's stay off after it does.
         set_available(self._export_selected, False, "Select rows in the list first.")
-        set_available(self._export_all, False, "Nothing is labelled yet.")
+        set_available(self._export_all, False, f"Nothing is {words.kept} yet.")
         buttons.addWidget(self._export_all)
         column.addLayout(buttons)
         self._results.addWidget(data)
@@ -589,17 +601,22 @@ class LabelBrowseTab(QWidget):
             self,
             self._load,
             self._show,
-            label="Reading the labelled data…",
+            label=f"Reading the {self._terms.browse.kept} data…",
             supersedes="labels",
         )
 
     def _load(self) -> dict:
-        """The artifact, the names, the metadata and the audit, in one off-thread read."""
+        """The artifact, the names, the metadata and the audit, in one off-thread read.
+
+        Each recording's embedding run (what the player decodes through) is asked of the run,
+        not read off its state: a clustering state names its recordings one way and a query's
+        another, and asking by one name loaded nothing for the other kind.
+        """
         try:
             artifact = self._run.artifact()  # off-thread: `run_busy`
         except FileNotFoundError:
             artifact = None
-        state = self._run.state()
+        sources = self._run.data_sources()  # off-thread: `run_busy`
         decisions = {  # off-thread: `run_busy`
             row.instance_id: row
             for row in self._run.audit_decisions()  # off-thread: `run_busy`
@@ -608,11 +625,16 @@ class LabelBrowseTab(QWidget):
         rows = labelled_bouts(artifact.instances) if artifact is not None else []
         return {
             "rows": rows,
+            "vocabulary": (
+                list(artifact.manifest.get("vocabulary") or [])
+                if artifact is not None
+                else []
+            ),
             "coverage": list(artifact.coverage) if artifact is not None else [],
             "names": self._experiment.recording_names(),
             "metadata": self._experiment.recording_metadata,
             "columns": self._experiment.metadata_columns,
-            "embed": run_selection.runs_by_recording(state, state.source_recording_ids),
+            "embed": dict(sources["embed_run_ids"]),
             "answers": {
                 row.instance_id: audit.answer_text(
                     decisions[row.instance_id], path_of(row)
@@ -624,6 +646,7 @@ class LabelBrowseTab(QWidget):
 
     def _show(self, payload: dict) -> None:
         self._all = payload["rows"]
+        self._vocabulary = payload["vocabulary"]
         self._periods = bo.period_by_recording(payload["coverage"])
         self._spans = recording_spans(payload["coverage"])
         self._names = payload["names"]
@@ -654,10 +677,11 @@ class LabelBrowseTab(QWidget):
                     [text, f"{bouts:,}", format_duration(time_ns / 1e9)]
                 )
                 item.setData(0, Qt.ItemDataRole.UserRole, path)
+                # The key to the ethogram: the colour and the pattern its bands wear.
                 item.setData(
                     0,
                     Qt.ItemDataRole.DecorationRole,
-                    plot_theme.label_identity(self._slots.get(root, 0)),
+                    plot_theme.label_swatch(self._slots.get(root, 0)),
                 )
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                 if depth == 0:
@@ -787,7 +811,8 @@ class LabelBrowseTab(QWidget):
         words = []
         if filters["paths"] is not None:
             words.append(
-                ", ".join(_display(p) for p in sorted(filters["paths"])) or "no labels"
+                ", ".join(_display(p) for p in sorted(filters["paths"]))
+                or f"no {self._terms.browse.labels}"
             )
         if filters["recordings"] is not None:
             words.append(f"{len(filters['recordings'])} recording(s)")
@@ -837,10 +862,11 @@ class LabelBrowseTab(QWidget):
         filters = self._filters()
         self._shown = filter_bouts(self._all, **filters)
         self._rows = self._shown[:ROW_CAP]
+        words = self._terms.browse
         set_available(
             self._clear,
             bool(self._filter_words(filters)),
-            "Every label and recording is shown already.",
+            f"Every {words.label} and recording is shown already.",
         )
         self._summarise(filters)
         self._draw_ethogram(filters)
@@ -852,10 +878,11 @@ class LabelBrowseTab(QWidget):
             (
                 "This is a snapshot — export from the run itself."
                 if not self._run.editable
-                else "Nothing is labelled, or the filters leave nothing."
+                else f"Nothing is {words.kept}, or the filters leave nothing."
             ),
         )
         self._sync_export()
+        self._say_empty()
         self._pages.setCurrentIndex(1 if self._all else 0)
         self._results.setCurrentIndex(0 if self._shown else 1)
         # The no-match page carries its own, under the sentence that explains it.
@@ -878,8 +905,36 @@ class LabelBrowseTab(QWidget):
         self._autoplay_next = False
         self._play(self._rows[0])
 
+    def _unit(self) -> str:
+        """What the summary counts: the run's ``member``, except a posture's "rows"."""
+        return self._terms.member if self._terms.member != "rows" else "instances"
+
+    def _say_empty(self) -> None:
+        """The empty page's sentence, true for the run in front of it.
+
+        Before anything is named, the run's own words for where its output comes from. Once
+        something is — a behavior with a cutoff, a label — and it still holds nothing (a cutoff
+        above every match, every kept clip taken out in Audit, a label on clusters with no time),
+        "no behavior has a cutoff yet" would be false, so the page names what holds nothing.
+        """
+        words = self._terms.browse
+        if not self._vocabulary:
+            headline, body = words.empty, words.empty_hint
+        else:
+            names = list(self._vocabulary)
+            listed = (
+                names[0]
+                if len(names) == 1
+                else f"{', '.join(names[:-1])} and {names[-1]}"
+            )
+            verb = "has" if len(names) == 1 else "have"
+            headline = f"No {words.kept} {self._unit()}"
+            body = f"{listed} {verb} no {words.kept} {self._unit()}."
+        self._empty_headline.setText(headline)
+        self._empty_body.setText(body)
+
     def _summarise(self, filters: dict) -> None:
-        unit = self._terms.member if self._terms.member != "rows" else "instances"
+        unit = self._unit()
         if not self._all:
             self._summary.setText("")
             return
@@ -887,7 +942,7 @@ class LabelBrowseTab(QWidget):
         shown_ns = sum(bo.instance_ns(r, self._periods) for r in self._shown)
         words = self._filter_words(filters)
         text = (
-            f"{len(self._shown):,} of {len(self._all):,} labelled {unit} · "
+            f"{len(self._shown):,} of {len(self._all):,} {self._terms.browse.kept} {unit} · "
             f"{format_duration(shown_ns / 1e9)} of {format_duration(total_ns / 1e9)}"
         )
         if words:
@@ -1061,20 +1116,27 @@ class LabelBrowseTab(QWidget):
     def _fill_table(self) -> None:
         subjects = {row.subject for row in self._all}
         self._with_subject = len(subjects) > 1
+        score = self._terms.browse.score
         headers = [self._terms.unit, "recording"]
         if self._with_subject:
             headers.append("subject")
-        headers += ["start", "duration", "audit"]
+        headers += ["start", "duration"]
+        if score:
+            headers.append(score)
+            digits = score_digits(row.score for row in self._rows)
+        headers.append("audit")
         self._model.clear()
         self._model.setHorizontalHeaderLabels(headers)
+        # One per label, not per row: the list holds up to `ROW_CAP` of them.
+        swatches = {
+            slot: plot_theme.label_swatch(slot) for slot in {0, *self._slots.values()}
+        }
         for index, row in enumerate(self._rows):
             path = path_of(row)
             seconds = bo.instance_ns(row, self._periods) / 1e9
             label = SortCell(_display(path), path)
             label.setData(
-                plot_theme.label_identity(
-                    self._slots.get(path.split(bo.PATH_SEPARATOR)[0], 0)
-                ),
+                swatches[self._slots.get(path.split(bo.PATH_SEPARATOR)[0], 0)],
                 Qt.ItemDataRole.DecorationRole,
             )
             # The row's identity travels with it: the view re-sorts the model, so a row number
@@ -1093,8 +1155,15 @@ class LabelBrowseTab(QWidget):
             cells += [
                 SortCell(_clock(row.t_ns), int(row.t_ns)),
                 num_cell(seconds, f"{seconds:.2f} s"),
-                SortCell(answer or "—", answer),
             ]
+            if score:
+                cells.append(
+                    num_cell(
+                        row.score,
+                        "—" if row.score is None else f"{row.score:.{digits}f}",
+                    )
+                )
+            cells.append(SortCell(answer or "—", answer))
             self._model.appendRow(cells)
         self._table.resizeColumnsToContents()
         give_slack_to(self._table, 0)

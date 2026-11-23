@@ -881,7 +881,9 @@ selection, written to `analysis/<an_NN>/`.
   different claim from "nobody has chosen a threshold yet". `--cutoff q01=none` clears one and
   removes it again. `--name` renames a behavior; its id never moves, so recorded judgments stay
   attached to what they were made about. `--finalize` is your statement that you are done, not
-  a lock: a later edit is refused and told to `--reopen` first.
+  a lock: a later edit is refused and told to `--reopen` first. It is refused while any behavior
+  has no cutoff, naming each one; set them in the same command (`--cutoff q01=0.8 --cutoff
+  q02=0.7 --finalize`).
 
   A search that did not reach every recording (you cancelled it, so it is `partial`, or one
   behavior's search failed on a recording) can still be calibrated, and its behavior output
@@ -1065,6 +1067,10 @@ selection, written to `analysis/<an_NN>/`.
   (such a run still opens; its clips just have no typicality order until it is rebuilt). It does
   not change any label and is allowed on a finished run. `--min-cluster-s` is gone: there is no
   size floor, and a run saved with one ignores it.
+
+  `--finalize` marks the run complete, your statement that you are done; `--reopen` undoes it.
+  `--finalize` is refused while nothing is labelled, with one `Error:` line naming the command
+  that labels a node. `--name-node` and `--finalize` in one command label first, then finish.
 
 - `export-temporal-clustering --experiment <dir> --run <an_NN> --out <dir>`: write one
   behavior-stream CSV per fitted recording, into a new folder inside `--out` that the command

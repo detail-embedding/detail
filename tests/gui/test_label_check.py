@@ -490,7 +490,9 @@ def test_finish_writes_one_census_and_shows_the_exact_precision(
     assert tab.pane.result.text() == f"{size - 2:,} of {size:,} are climb · 2 removed"
     assert tab.pane.when.text().startswith("· "), "the day it was reviewed"
     look = _look(tab, ("cluster", "climb", nodes["climb"]))
-    assert look["line"] == f"{expected}% · 2 removed" and look["fraction"] == 1.0
+    assert look["line"] == "2 removed" and look["fraction"] == 1.0
+    # The finished figure is the row's headline, drawn large where "62 clips" was.
+    assert look["figure"] == f"{expected}%"
     assert look["state"] == "reviewed"
     assert not tab.pane.undo.isEnabled(), "Finish clears the history"
     assert tab.pane.again.isVisible() and not tab.pane.finish.isVisible()
@@ -675,7 +677,9 @@ def test_a_reviewed_cluster_row_has_no_bar(qapp):
         "fraction": 0.5,
     }
     reviewing = dict(look, state="reviewing", line="reviewing · 2 removed")
-    reviewed = dict(look, state="reviewed", line="97% · 2 removed", fraction=1.0)
+    reviewed = dict(
+        look, state="reviewed", line="2 removed", fraction=1.0, figure="97%"
+    )
     assert _row_bar_run(qapp, reviewing) > 40
     assert (
         _row_bar_run(qapp, reviewed) < 8
@@ -826,7 +830,8 @@ def test_a_reopened_review_left_and_returned_to_keeps_its_removals_and_old_figur
     _finish(qapp, tab)
     assert tab.pane.result.text() == f"{total - 2:,} of {total:,} are climb · 2 removed"
     assert tab.pane.was.isHidden()
-    assert _look(tab, climb)["line"] == f"{tab.pane.precision.text()} · 2 removed"
+    assert _look(tab, climb)["line"] == "2 removed"
+    assert _look(tab, climb)["figure"] == tab.pane.precision.text()
 
 
 def test_a_read_landing_mid_queue_keeps_the_marks_still_being_written(
@@ -1069,3 +1074,46 @@ def test_marks_queued_when_the_page_is_left_still_reach_the_run(
     assert _drain(
         qapp, lambda: len(handle.taken_out("climb")) == 3, 20_000
     ), f"only {len(handle.taken_out('climb'))} of 3 marks reached the run"
+
+
+def test_a_finished_reviews_figure_is_the_rows_headline(qapp):
+    """Reported: a finished review's precision read as small print at the end of the second
+    line. With a ``figure``, the row draws it bold and two steps up on the first line, where the
+    clip count was, and moves the count beside "removed" — measured on the font the delegate
+    paints with, and on the width it asks for. The negative half: a row still in review draws
+    no figure, and keeps its count on the first line."""
+    from PyQt6.QtGui import QFontMetrics
+    from PyQt6.QtWidgets import QListWidget, QListWidgetItem, QStyleOptionViewItem
+
+    from detail.gui import label_check
+
+    font = label_check._figure_font(None)
+    assert font.bold()
+    assert (
+        font.pointSizeF() > QListWidget().font().pointSizeF()
+    ), "no larger than the list"
+
+    lst = QListWidget()
+    delegate = label_check.ReviewListDelegate(lst)
+    option = QStyleOptionViewItem()
+    option.initFrom(lst)
+    reviewed = {
+        "kind": "cluster",
+        "name": "cluster #871",
+        "side": "62 clips",
+        "state": "reviewed",
+        "line": "2 removed",
+        "fraction": 1.0,
+        "figure": "97%",
+    }
+    item = QListWidgetItem()
+    item.setData(label_check.ROW_ROLE, reviewed)
+    lst.addItem(item)
+    index = lst.model().index(0, 0)
+    wide = delegate.row_width(option, index)
+    item.setData(label_check.ROW_ROLE, dict(reviewed, figure=""))
+    plain = delegate.row_width(option, index)
+    assert wide != plain, "the figure changed nothing the row is sized from"
+    assert QFontMetrics(font).horizontalAdvance("97%") > QFontMetrics(
+        lst.font()
+    ).horizontalAdvance("97%")

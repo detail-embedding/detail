@@ -196,12 +196,20 @@ def reviewed(estimate: dict | None) -> bool:
     return audit_figures.complete(estimate)
 
 
+def _figure_font(widget):
+    """A finished review's figure in the list: bold, two steps up from the list's font."""
+    return emphasis_font(widget or QApplication.instance(), steps=2)
+
+
 class ReviewListDelegate(QStyledItemDelegate):
     """How a list row draws, on two lines (review round 12, 4A). A label: swatch, bold name and —
     once every cluster under it is reviewed — its figure on the right; then, muted, "62 clips · 1
     of 1 clusters reviewed". A cluster: its name and "62 clips" on the right; then a thin bar (how
     far its scroll reached) and "reviewing · 2 removed" / "not reviewed" — once reviewed, "✓
-    Reviewed" in bold and "100% · 0 removed", with no bar (round 14)."""
+    Reviewed" in bold and no bar (round 14), and its **figure** (``row["figure"]``, "96%") is the
+    row's headline: large and bold where "62 clips" was, which moves to the second line beside
+    "3 removed". A finished review's precision is what the list is for, and it read as small print.
+    """
 
     def sizeHint(self, option, index) -> QSize:  # noqa: N802 - Qt virtual
         return QSize(max(LIST_PX, self.row_width(option, index)), lines(2.7))
@@ -213,9 +221,15 @@ class ReviewListDelegate(QStyledItemDelegate):
         row = index.data(ROW_ROLE) or {}
         widget = option.widget
         metrics = option.fontMetrics
+        figure = row.get("figure", "")
         side = row.get("side", "")
-        side_w = metrics.horizontalAdvance(side) + 6 if side else 0
         line = row.get("line", "")
+        if figure:
+            big = QFontMetrics(_figure_font(widget))
+            side_w = big.horizontalAdvance(figure) + 6
+            line = f"{side} · {line}" if side else line
+        else:
+            side_w = metrics.horizontalAdvance(side) + 6 if side else 0
         if row.get("kind") == "label":
             bold = QFontMetrics(
                 emphasis_font(widget or QApplication.instance(), steps=0)
@@ -250,8 +264,14 @@ class ReviewListDelegate(QStyledItemDelegate):
         right = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         left = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         painter.save()
+        figure = row.get("figure", "")
         side = row.get("side", "")
-        side_w = painter.fontMetrics().horizontalAdvance(side) + 6 if side else 0
+        if figure:
+            painter.setFont(_figure_font(opt.widget))
+            side_w = painter.fontMetrics().horizontalAdvance(figure) + 6
+            painter.setFont(opt.font)
+        else:
+            side_w = painter.fontMetrics().horizontalAdvance(side) + 6 if side else 0
         indent = 0
         if row.get("kind") == "label":
             swatch = QRect(first.x(), first.center().y() - 5, 10, 10)
@@ -270,8 +290,14 @@ class ReviewListDelegate(QStyledItemDelegate):
             ),
         )
         painter.setFont(opt.font)
-        painter.drawText(first, right, side)
         line = row.get("line", "")
+        if figure:
+            painter.setFont(_figure_font(opt.widget))
+            painter.drawText(first, right, figure)
+            painter.setFont(opt.font)
+            line = f"{side} · {line}" if side else line
+        else:
+            painter.drawText(first, right, side)
         if row.get("kind") == "label":
             painter.setPen(muted)
             room = second.adjusted(indent, 0, 0, 0)
@@ -726,7 +752,7 @@ class LabelCheckTab(QWidget):
             status = f"was {percent(estimate)} · {out:,} removed"
         elif reviewed(estimate) and not (is_open and not self.pane.is_finished()):
             state, fraction = "reviewed", 1.0
-            status = f"{percent(estimate)} · {out:,} removed"
+            status = f"{out:,} removed"
         elif node in self._progress:
             state, fraction = "reviewing", self._progress[node]
             status = f"reviewing · {out:,} removed"
@@ -739,6 +765,8 @@ class LabelCheckTab(QWidget):
             "side": f"{int(cluster.get('size') or 0):,} clips",
             "line": status,
             "fraction": fraction,
+            # The finished figure is the row's headline (``ReviewListDelegate``).
+            "figure": percent(estimate) if state == "reviewed" else "",
         }
 
     @staticmethod

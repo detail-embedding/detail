@@ -24,6 +24,11 @@ The second half of this file is that class's sibling: **an eligibility test aske
 that is not on screen yet**, where the answer is not merely wrong but empty. See the section
 comment there — it is the whole of #395, and it was reported as "only the clip you click
 renders".
+
+**One strip left.** The class was found on the query CALIBRATE's confidence strip and its
+ordering moved into ``gui/decode_order.py`` so the clustering strip shared it. The confidence
+strip was deleted when CALIBRATE moved to the shared montage (2026-11), whose picture worker has
+its own visible-first rule (``tests/gui/test_live_montage.py``); its three tests here went with it.
 """
 
 import pathlib
@@ -36,7 +41,6 @@ pytest.importorskip("PyQt6")
 from PyQt6.QtCore import QThreadPool  # noqa: E402
 from PyQt6.QtWidgets import QApplication, QVBoxLayout, QWidget  # noqa: E402
 
-import detail.gui.clip_grid as clip_grid  # noqa: E402
 from detail.gui import decode_order  # noqa: E402
 from detail.gui.behavior_query import ClipSpec  # noqa: E402
 
@@ -56,20 +60,6 @@ def queued(monkeypatch):
     return seen
 
 
-def _strip(qapp):
-    class _Experiment:
-        dir = pathlib.Path(tempfile.mkdtemp())
-
-    strip = clip_grid.ConfidenceStrip(_Experiment())
-    host = QWidget()
-    QVBoxLayout(host).addWidget(strip)
-    host.resize(1500, 260)
-    host.show()
-    QApplication.processEvents()
-    strip._host = host  # keep it alive
-    return strip
-
-
 def _clips(n: int = CLIPS) -> list:
     return [
         ClipSpec(
@@ -83,64 +73,6 @@ def _clips(n: int = CLIPS) -> list:
         )
         for i in range(n)
     ]
-
-
-def test_the_first_paint_does_not_queue_the_whole_window(qapp, queued):
-    """300 decodes for 8 visible cells is not a slow decode, it is the wrong ones."""
-    strip = _strip(qapp)
-    strip.show_clips(_clips(), 0.5)
-    QApplication.processEvents()
-
-    assert (
-        queued
-    ), "nothing was queued at all — this would pass on a strip that never decodes"
-    assert len(queued) < CLIPS // 2, (
-        f"{len(queued)} decodes queued for a window of {CLIPS} with about {ON_SCREEN} on "
-        "screen — the pass is unbounded again"
-    )
-
-
-def test_the_frames_at_the_cutoff_are_decoded_first(qapp, queued):
-    """The cutoff is where the view is centred and where the decision is made, so it is what
-    the eight pool threads should be working on — not index 0, a hundred and fifty cells away.
-    """
-    strip = _strip(qapp)
-    strip.show_clips(_clips(), 0.5)
-    QApplication.processEvents()
-    boundary = strip._boundary_index()
-
-    head = queued[:ON_SCREEN]
-    assert all(abs(index - boundary) <= ON_SCREEN * 2 for index in head), (
-        f"the first {ON_SCREEN} decodes were {head}, and the cutoff is at {boundary} — the "
-        "visible cells are queued behind the rest of the window"
-    )
-
-
-def test_a_cached_frame_is_never_decoded_twice(qapp, queued):
-    """The property the ordering must not cost: moving the cutoff re-points the same clips, and
-    a picture already decoded is already correct."""
-    strip = _strip(qapp)
-    strip.show_clips(_clips(), 0.5)
-    QApplication.processEvents()
-    first = list(queued)
-    assert first
-
-    # Pretend everything queued came back, then nudge the cutoff by one cell.
-    import numpy as np
-
-    frame = np.zeros(
-        (4, 4, 3), dtype=np.uint8
-    )  # a real picture: `set_image` reads its shape
-    for index in first:
-        strip._decoded[strip._key_for(strip._all[index])] = frame
-    strip._pending.clear()
-    queued.clear()
-    strip.set_cutoff(0.5 + 1.0 / CLIPS)
-    QApplication.processEvents()
-
-    assert not set(queued) & set(
-        first
-    ), "a cutoff nudge re-queued frames that were already decoded"
 
 
 # --- the same two properties, on the other strip ----------------------------------------- #
@@ -253,16 +185,7 @@ def _hidden_cluster_strip(qapp):
     )
 
 
-def _hidden_confidence_strip(qapp):
-    strip = _strip(qapp)
-    return strip, lambda: strip.show_clips(_clips(FITS_ON_SCREEN), 0.5)
-
-
-@pytest.mark.parametrize(
-    "build",
-    [_hidden_cluster_strip, _hidden_confidence_strip],
-    ids=["cluster", "confidence"],
-)
+@pytest.mark.parametrize("build", [_hidden_cluster_strip], ids=["cluster"])
 def test_a_strip_filled_off_screen_decodes_when_it_is_shown(qapp, queued, build):
     """Becoming visible is what asks for the pictures — on a short row, nothing else does.
 

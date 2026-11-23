@@ -539,6 +539,7 @@ def test_a_finalized_run_refuses_an_edit_and_names_the_way_back(tmp_path):
     overwritten is not a statement, so the error is what makes reopening discoverable.
     """
     exp, run = _searched(tmp_path)
+    run.set_cutoff("q01", 0.9)  # a run finishes only once every behavior has a cutoff
     run.finalize()
 
     with pytest.raises(ValueError, match="reopen"):

@@ -414,7 +414,7 @@ detail/
     ├── review_marks.py   # AUDIT's ordered writes, marks not yet read back, undo (both run kinds)
     ├── behavior_query.py # §16/§20 clip surfaces shared across the GUI: the example-clip picker
     │                     # and the clip player (_ClipPlayer)
-    ├── clip_grid.py      # a strip of clip thumbnails that fills progressively (§20)
+    ├── clip_grid.py      # one thumbnail's pool decode (cluster_strip's) and score_digits
     ├── quick_preview.py  # the small player a strip puts in a thumbnail's place
     ├── example_spread.py # how a behavior's example clips spread over the cohort (beside Mark examples)
     ├── measurements.py   # what a cluster or a behavior *is*, as numbers — one band for both result pages

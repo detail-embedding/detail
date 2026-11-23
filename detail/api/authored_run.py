@@ -21,6 +21,7 @@ from typing import Self
 
 from detail.analysis import provenance
 from detail.api.experiment import AnalysisRun, Experiment
+from detail.core import run_selection
 from detail.core.dataclasses import reconciled_status
 from detail.core.errors import UserInputError
 from detail.core.progress import OperationCancelled
@@ -1202,6 +1203,37 @@ class AuthoredRun(AnalysisRun):
         """Rebuild the frame views an edit deferred; the producer's ``project_frames``."""
         raise NotImplementedError
 
+    def _recording_ids(self, state) -> list[str]:
+        """The recordings this run reads, from its own state: a clustering run's fit selection,
+        a query's searched recordings. The one per-kind fact :meth:`data_sources` needs.
+        """
+        raise NotImplementedError
+
+    # — what it read ---------------------------------------------------------------------
+
+    def data_sources(self) -> dict:
+        """``{recording_ids, embed_run_ids, embed_run_id, track_id, method}`` — the same keys
+        for every kind of authored run.
+
+        ``embed_run_ids`` is each recording's own embedding run, which is what a reader must
+        use; ``embed_run_id`` is set only when every recording's agrees.
+
+        Here, once, rather than per kind: a clustering run names its recordings
+        ``source_recording_ids`` and a query ``search_recording_ids``, and a surface shared by
+        both (BROWSE) that asked the state by one of those names loaded nothing for the other.
+        A kind answers only which recordings it read (:meth:`_recording_ids`);
+        ``core.run_selection`` reads either shape of the embedding map.
+        """
+        state = self.state()
+        recording_ids = list(self._recording_ids(state))
+        return {
+            "recording_ids": recording_ids,
+            "embed_run_ids": run_selection.runs_by_recording(state, recording_ids),
+            "embed_run_id": state.embed_run_id,
+            "track_id": state.track_id,
+            "method": state.method,
+        }
+
     # — lifecycle ------------------------------------------------------------------------
 
     def _run_dir(self) -> Path:
@@ -1263,6 +1295,20 @@ class AuthoredRun(AnalysisRun):
         if self._inner is not None:
             self._inner.cancel()
 
+    def finish_blocker(self) -> str | None:
+        """Why this run cannot be finished yet, naming the fix, or ``None`` when it can.
+
+        Finishing says the authoring is done, so a run whose result still lacks the decision it
+        is made of — a behavior scan's cutoff, a clustering run's first label — refuses. Finished
+        anyway, its AUDIT told the user to make that decision and to reopen the run, at once.
+
+        The one wording of each kind's rule: :meth:`finalize` raises it, the CLI prints it, and
+        a surface greys its **Finish** with it in words before it is pressed. A kind overrides
+        this; ``tests/api/test_run_lifecycle_parity.py`` holds every kind to having decided.
+        Cheap — one read of the run's state — because a surface asks it on the UI thread.
+        """
+        return None
+
     def finalize(self, *, progress=None):
         """Mark the run finished — the user's statement that they are done, and pin the artifact.
 
@@ -1273,9 +1319,18 @@ class AuthoredRun(AnalysisRun):
 
         Long when edits have deferred frame views (see :meth:`pin`), so it reports through
         ``progress(stage, fraction, detail)``.
+
+        Raises:
+            ReadOnlyRunError: on a snapshot view, before anything else is asked.
+            ValueError: if the compute did not finish (``_refuse_if_incomplete``) — the deeper
+                cause, which no authoring fixes, so it is asked before the decisions are.
+            UserInputError: :meth:`finish_blocker`'s reason, before anything is pinned.
         """
         self._refuse_if_read_only("finalize")
         self._refuse_if_incomplete("be finalized")
+        blocker = self.finish_blocker()
+        if blocker is not None:
+            raise UserInputError(blocker)
         self.pin(reason="finish", progress=progress)
         analysis_store.set_analysis_status(self._run_dir(), "complete")
         self._log({"op": "finalize"})

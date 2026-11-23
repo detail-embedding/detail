@@ -120,6 +120,29 @@ class QueryRun(QueryReviewOperations, AuthoredRun):
             "re-run the search to cover the rest."
         )
 
+    def finish_blocker(self) -> str | None:
+        """Why this run cannot be finished yet, naming each behavior with no cutoff, or ``None``.
+
+        ``AuthoredRun.finish_blocker`` for a behavior scan. Finishing says the calibration is
+        done, and a behavior with no cutoff has none: it is absent from the artifact and its
+        review has no clips to cover. A run finished that way showed an Audit telling the user
+        to set a cutoff on Calibrate and to reopen the run, at once. ``AuthoredRun.finalize``
+        raises it after the read-only and incomplete-search refusals. One read of ``query.yaml``.
+        """
+        uncut = [b for b in self.state().behaviors if b.cutoff is None]
+        if not uncut:
+            return None
+        names = [b.name for b in uncut]
+        listed = (
+            names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+        )
+        flags = " ".join(f"--cutoff {b.id}=CONFIDENCE" for b in uncut)
+        return (
+            f"{listed} {'has' if len(uncut) == 1 else 'have'} no cutoff yet, so this run "
+            f"cannot be finished. Set a cutoff for {listed} on Calibrate (in the CLI, "
+            f"`detail analysis query-calibrate --run {self.id} {flags}`), then finish it"
+        )
+
     def _read_state(self) -> query_runs.QueryState:
         return query_runs.read_query_state(self._run_dir())
 
@@ -191,15 +214,9 @@ class QueryRun(QueryReviewOperations, AuthoredRun):
         """The run's behaviors, each with its id, name, example clips and cutoff."""
         return self.state().behaviors
 
-    def data_sources(self) -> dict:
-        """``{search_recording_ids, embed_run_id, track_id, method}`` for this run."""
-        state = self.state()
-        return {
-            "search_recording_ids": list(state.search_recording_ids),
-            "embed_run_id": state.embed_run_id,
-            "track_id": state.track_id,
-            "method": state.method,
-        }
+    def _recording_ids(self, state) -> list[str]:
+        """The recordings the search ran over (``AuthoredRun.data_sources``)."""
+        return list(state.search_recording_ids)
 
     def load_results(self, behavior_id: str, progress=None) -> dict:
         """Load this behavior's search results and extract their candidates, once.
