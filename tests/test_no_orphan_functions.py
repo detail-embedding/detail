@@ -83,13 +83,6 @@ _ORPHANS_WITH_REASONS = {
     "can use it: a surface asks targets_for(subject), which drops what has no inputs on "
     "disk — and the sweep has to check the *declarations* of targets whose subject does not "
     "exist yet",
-    "fit_table_width": "one half of `gui_design` §3's table rule — a table fills its pane or "
-    "hugs its content — and the half `tests/gui/test_table_width.py` lets a table declare "
-    "itself by. Its one caller was the audit tab's two summaries, which turned out to want the "
-    "other half: capped to ~200px of content they left the rest of a 400px column blank beside "
-    "them. Kept rather than deleted because the rule is still two-sided and this is the only "
-    "way to express one side; if a second release passes with no caller, delete it and say so "
-    "in that guard",
     # --- diagnostic accessors on the deploy toggle (§25) ------------------------------ #
     "hidden_names": "the parity guard's enumeration seam (tests/test_surfaces.py). No runtime "
     "caller by design: surfaces ask is_surfaced() about one name, and only a guard needs the "
