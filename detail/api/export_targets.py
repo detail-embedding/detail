@@ -1336,11 +1336,10 @@ def _run_tracks(subject, dest, scope, progress, **options):
     the comparison-figures class, where a second implementation of "the same" export answers
     differently and both files look right.
 
-    It takes none of the location export's measurement options (rows per second, thin-part
-    removal), deliberately: this door is a re-encoding of the tracking run, every tracked
-    frame with the whole mask as the body, which is what those options' defaults give. A
-    measurement that is sampled or made on the body without its tail is an analysis run,
-    whose record says so.
+    It takes none of the location export's measurement options (rows per second),
+    deliberately: this door is a re-encoding of the tracking run, every tracked frame, which
+    is what those options' defaults give. A sampled measurement is an analysis run, whose
+    record says so.
     """
     from detail.analysis.locations import compute_location_tables
     from detail.api.recording import Recording

@@ -374,10 +374,10 @@ millimetres (`_mm`) when the recording has a distance calibration. Run it big (`
 many recordings) or quick (`locations export`, one recording).
 
 `tracks.csv` also measures the **body**: its centre, area, length, width and the direction of
-its long axis. The body is the whole mask unless you ask for thin parts (a tail, a limb, an
-antenna) to be left out, which is recommended for rats and mice and never forced, because for
-some animals the thin part is the body. Length and width are measured along and across the
-body's long axis, found from its shape. A sampling rate writes a few rows a second instead of
+its long axis. The body is the whole mask, with nothing taken out, so a tail counts toward it:
+what counts as the animal is decided by the tracking that drew the mask. Each body column is a
+standard measure you can recompute from the mask in any tool: length and width are the major
+and minor axes of the ellipse with the same second moments (MATLAB `regionprops`). A sampling rate writes a few rows a second instead of
 every frame.
 
 ### Behavior scan (query) { #query }

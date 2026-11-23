@@ -5146,37 +5146,39 @@ class AnalysisModule(ABC):
 **spatial features relative to a recording's ROIs/POIs** — three tidy CSVs
 (`tracks` / `roi_relations` / `point_relations`) keyed by `t_ns` (so they join the
 streams CSV, §3). Its config is the selection, `{source_recording_ids, tracking_run_id}`,
-and three measurement options, `{sample_fps, remove_thin_parts, thin_part_scale}`
-(`configs/location_export.py`, the one place their bounds and defaults are written).
+and one measurement option, `{sample_fps}`
+(`configs/location_export.py`, the one place its bounds and default are written).
 `validate` resolves the selection to each recording's own complete tracking run
 (`selects = ("tracking", "tracking_run_id")`), writing back the `tracking_run_ids`
 map the job carries; `tracking_run_id` stays set only when every recording's agrees.
 It writes the resolved options back too, the job carries them by name, and the record's
-`params` and each recording's `locations.yaml` name them (Tenet 9).
+`params` and each recording's `locations.yaml` name them (Tenet 9). A config that asks for
+`remove_thin_parts` is refused by `validate`, not silently measured whole (below).
 
 **The body.** `tracks` carries, after every column an older export has, the body's centre,
-area, length, width and long-axis direction (`body_*`). The body is the track's mask, or
-with `remove_thin_parts` the largest piece left by a morphological opening, which removes a
-tail, a limb or an antenna. The option is off by default and never forced: the tool is
-species-agnostic, and for some animals the thin part is the body. Three rules, each from a
-failure on real recordings (detail#75):
+area, length, width and long-axis direction (`body_*`). **The body is the track's mask, with
+nothing taken out of it.** Every body column is a standard measure a user can recompute from
+the mask in any tool; a measure defined by a parameter of this tool's own is not offered.
+What counts as the animal (a rat without its tail) is decided where the mask is made, by
+detection or tracking, so the edit is visible in the overlay and recorded as its own run.
+An earlier `remove_thin_parts` option cut thin parts out with a morphological opening sized
+by `thin_part_scale`; it was removed for that reason, and a comparison refuses a run made
+with it (§24).
 
-- **The opening is sized from the animal, never from the calibration**: its diameter is
-  `thin_part_scale` × √(the track's median mask area), so a wrong `pixels_per_mm` cannot change
-  a body's shape. One opening per track per recording, from masks spread over the recording.
-  Masks too coarse for the opening asked for are refused, not left untouched.
-- **Length and width are four standard deviations** of the body's area along and across its
-  principal axis (`body_axis: shape` in the manifest). A head-to-tail axis from a keypoint
-  track is planned and not built; it needs a second upstream selection per recording.
-- **With thin parts kept, `body_*` equals `mask_*`** in the columns they share, to the last
-  digit: both come from one function.
+- **Length and width are the second-moment ellipse axes**: four standard deviations of the
+  mask's area along and across its principal axis, each cell adding its own `side² / 12`
+  (`body_axis: shape` in the manifest), which is MATLAB `regionprops`'s `MajorAxisLength` /
+  `MinorAxisLength`. A head-to-tail axis from a keypoint track is planned and not built; it
+  needs a second upstream selection per recording.
+- **`body_*` equals `mask_*`** in the columns they share, to the last digit: both come from
+  one function.
 
 **Sampling.** `sample_fps` keeps, for each track, the tracked frame nearest each tick of a
 clock running from the recording's start; unset, every tracked frame. Nothing is interpolated,
 so a gap in tracking stays a gap, and all three tables hold the same frames. Progress counts
 the rows kept.
 
-The region and point tables are measured on the whole mask whatever the options.
+The region and point tables are measured on the whole mask too.
 The runner loops the recordings,
 calling the pure compute `analysis/locations.compute_location_tables` →
 `storage/location_export.write_location_tables` into
@@ -9438,11 +9440,12 @@ failure on real recordings (detail#70):
   distance over adjacent windows sums to the distance over their union.
 
 **What it needs of the run.** The body columns (§16 *The body*): a run from before them is
-refused, naming the run to make again. A distance calibration on every recording compared:
+refused, naming the run to make again. A run exported with `remove_thin_parts` is refused the
+same way: its body measures no other tool can reproduce. A distance calibration on every
+recording compared:
 one exported without is refused, rather than measured in pixels beside recordings measured in
 millimetres. A snapshot is refused, as it is over nodes; a finished run is never rewritten, and
-the record's `location_export` says how it was exported (`sample_fps`, `remove_thin_parts`,
-`thin_part_scale`), because whether the body has its tail changes every body measure. Drift
+the record's `location_export` says how it was exported (`sample_fps`). Drift
 reads each compared recording's manifest and the size of its table.
 
 ### The verdict

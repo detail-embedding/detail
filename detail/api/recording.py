@@ -1353,9 +1353,8 @@ class Recording:
         Args:
             tracking_run_id: A complete tracking run of this recording.
             **options: The measurement options of ``configs.location_export``:
-                ``sample_fps`` (rows per second per subject; unset is every tracked frame),
-                ``remove_thin_parts`` (measure the body without a tail or limb) and
-                ``thin_part_scale``.
+                ``sample_fps`` (rows per second per subject; unset is every tracked
+                frame).
 
         Raises:
             ValueError: If the tracking run is missing or not complete, an option is not

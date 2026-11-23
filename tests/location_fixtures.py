@@ -35,9 +35,12 @@ def track(x, y=None, *, hz=5.0, t0=0.0, t=None, length=180.0, width=75.0) -> lm.
     )
 
 
-def write_run(run_dir, recordings: dict, *, pixels_per_mm=2.0, body=True) -> None:
+def write_run(
+    run_dir, recordings: dict, *, pixels_per_mm=2.0, body=True, thin_parts_removed=False
+) -> None:
     """A location-export run's files for ``{recording_id: {object_id: Track}}``, through the
-    export's own writer. ``body=False`` is a run from before the body was measured."""
+    export's own writer. ``body=False`` is a run from before the body was measured;
+    ``thin_parts_removed`` one made while the export could still remove thin parts."""
     columns = TRACKS_COLUMNS if body else TRACKS_COLUMNS[: -len(BODY_COLUMNS)]
     at = {name: i for i, name in enumerate(columns)}
     for recording_id, tracks in recordings.items():
@@ -66,8 +69,11 @@ def write_run(run_dir, recordings: dict, *, pixels_per_mm=2.0, body=True) -> Non
                     "schema_version": 1,
                     "pixels_per_mm": pixels_per_mm,
                     "sample_fps": 5.0,
-                    "remove_thin_parts": True,
-                    "thin_part_scale": 0.12,
+                    **(
+                        {"remove_thin_parts": True, "thin_part_scale": 0.12}
+                        if thin_parts_removed
+                        else {}
+                    ),
                 },
             ),
         )

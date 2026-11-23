@@ -7,8 +7,6 @@ round-trip guard cannot see it: that guard perturbs what the form *emits*, and a
 emits nothing for a field has nothing to perturb. This one starts from the model's fields.
 """
 
-from PyQt6.QtWidgets import QCheckBox
-
 from detail.configs.location_export import LocationExportConfig, option_names
 from detail.gui.modules.analysis_location import (
     EVERY_FRAME_TEXT,
@@ -32,13 +30,13 @@ def test_the_form_offers_every_option_of_the_config_at_its_default(qapp):
 
 def test_the_form_gives_back_every_option_it_is_handed(qapp):
     form = _LocationExportConfig()
-    wanted = {"sample_fps": 5.0, "remove_thin_parts": True, "thin_part_scale": 0.2}
+    wanted = {"sample_fps": 5.0}
     assert set(wanted) == set(option_names()), "a new option needs a value in this test"
     form.load_config(wanted)
     assert _options(form) == wanted
     # and back to unset: None is a value the form must be able to show, not skip
-    form.load_config({"sample_fps": None, "remove_thin_parts": False})
-    assert _options(form) == {**wanted, "sample_fps": None, "remove_thin_parts": False}
+    form.load_config({"sample_fps": None})
+    assert _options(form) == {"sample_fps": None}
 
 
 def test_an_unset_rate_reads_as_every_frame(qapp):
@@ -48,14 +46,11 @@ def test_an_unset_rate_reads_as_every_frame(qapp):
     assert form._options["sample_fps"].text() != EVERY_FRAME_TEXT
 
 
-def test_the_scale_can_be_set_only_while_thin_parts_are_removed(qapp):
+def test_a_config_from_before_thin_parts_were_removed_restores_without_them(qapp):
+    # an older run's record still carries the removed options; the form shows what it has
     form = _LocationExportConfig()
-    thin, scale = form._options["remove_thin_parts"], form._options["thin_part_scale"]
-    assert isinstance(thin, QCheckBox)
-    assert not thin.isChecked() and not scale.isEnabled()
-    thin.setChecked(True)
-    assert scale.isEnabled()
-    thin.setChecked(False)
-    assert not scale.isEnabled()
-    # a disabled box still reports its value: the record names the scale either way
-    assert form.config()["thin_part_scale"] == LocationExportConfig().thin_part_scale
+    form.load_config(
+        {"sample_fps": 2.0, "remove_thin_parts": True, "thin_part_scale": 0.2}
+    )
+    assert _options(form) == {"sample_fps": 2.0}
+    assert "remove_thin_parts" not in form.config()

@@ -4,7 +4,7 @@ Config: a tracking-run picker offering tracking **specs** (§6.5) — a run's fu
 kind — found across the selected recordings, annotated with ``N/M`` coverage, several of which
 may be ticked (``PooledSpecPicker``); ``config()`` emits ``tracking_spec`` or
 ``tracking_specs`` and the run resolves them to each recording's own tracking run. Below it,
-the measurement options (rows per second, thin parts), each row built from
+the measurement options (rows per second), each row built from
 ``LocationExportConfig`` so its range, default and help are the model's. Result: the
 per-recording CSV artifacts the run produced, read from its ``analysis.yaml`` manifest.
 """
@@ -56,10 +56,6 @@ class _LocationExportConfig(ConfigWidget):
             form.addRow(field_label("location_export", name, f"{label}:"), widget)
             self._options[name] = widget
         self._options["sample_fps"].setSpecialValueText(EVERY_FRAME_TEXT)
-        # The scale means something only while thin parts are being removed.
-        thin = self._options["remove_thin_parts"]
-        thin.toggled.connect(self._options["thin_part_scale"].setEnabled)
-        self._options["thin_part_scale"].setEnabled(thin.isChecked())
         form.finish()
 
     def on_experiment_set(self, experiment) -> None:

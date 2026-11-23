@@ -177,7 +177,7 @@ def test_the_detail_page_says_each_measure_is_tested_on_its_own(location_page):
     assert "Each measure is tested on its own" in text
     assert "Floor (95th percentile" not in text and "No permutation floor" not in text
     assert "movement and body shape from location export an_01" in text
-    assert "thin parts removed" in text
+    assert "thin parts" not in text
     # ordered by evidence, and the page says so rather than "ranked on the effect"
     assert "ordered by each measure's own test" in text
     assert "ranked on the effect" not in text
