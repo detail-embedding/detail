@@ -27,6 +27,7 @@ from detail.storage import analysis_runs as analysis_store
 from detail.storage import behavior_output, frame_view, query_runs
 from detail.storage import recording as recording_store
 
+from tests.audit_seed import draw, judge
 from tests.pipeline.test_query_module import (
     DIM,
     PERIOD,
@@ -1128,24 +1129,8 @@ def test_an_authored_module_declares_itself_mutable():
 
 
 # --------------------------------------------------------------------------- #
-# the reliability audit (§19)
+# an earlier one-by-one audit (§19), seeded with `tests/audit_seed.py`
 # --------------------------------------------------------------------------- #
-def test_the_audit_samples_at_no_cutoff_so_moving_one_costs_no_labels(tmp_path):
-    """The property the whole audit rests on. `instances.csv` holds only what the current
-    cutoff kept, so sampling *it* would make the evidence a function of a decision the user is
-    still making — set-cutoff, audit, re-set, re-audit. Enumerating at zero instead means one
-    audit serves every cutoff."""
-    exp, run = _searched(tmp_path)
-    run.set_cutoff("q01", 0.99)  # a strict cutoff: the artifact is nearly empty
-    kept = len(run.artifact().instances)
-
-    drawn = run.audit_sample(label="q01", budget=10)
-    assert len(drawn) > kept, (
-        f"the sample ({len(drawn)}) came from the artifact ({kept} instances), not from the "
-        "cutoff-free candidate set"
-    )
-
-
 def test_a_decision_survives_the_cutoff_moving(tmp_path):
     """`instance_id` is a content hash of the span, so a label recorded at one cutoff still
     attaches to its instance after the artifact is rebuilt at another."""
@@ -1153,9 +1138,9 @@ def test_a_decision_survives_the_cutoff_moving(tmp_path):
 
     exp, run = _searched(tmp_path)
     run.set_cutoff("q01", 0.0)
-    drawn = run.audit_sample(label="q01", budget=5)
+    drawn = draw(run, label="q01", budget=5)
     for row in drawn:
-        run.label_audit(row.instance_id, True)
+        judge(run, row.instance_id, True)
 
     run.set_cutoff("q01", 0.5)
     decisions = {r.instance_id for r in audit.latest_decisions(run._run_dir())}
@@ -1166,109 +1151,19 @@ def test_a_decision_survives_the_cutoff_moving(tmp_path):
     assert got is not None and got["n"] >= 1
 
 
-def test_an_unjudged_batch_is_offered_again_rather_than_burned(tmp_path):
-    """The defect this replaced: a batch is recorded as drawn *before* it is judged, and the
-    next draw used to exclude every logged row. Walk away mid-batch and those clips became
-    unreachable for the life of the run — never judged, never offered again, the sample quietly
-    smaller than the pool could give, and nothing failing anywhere.
-
-    Offering them back is also what makes leaving a batch free, which is what lets the surface
-    switch behavior mid-review without asking whether you meant to lose 18 clips.
-    """
-    exp, run = _searched(tmp_path)
-    run.set_cutoff("q01", 0.0)
-    first = run.audit_sample(label="q01", budget=5)
-    run.label_audit(first[0].instance_id, True)  # judge one, abandon four
-
-    second = {r.instance_id for r in run.audit_sample(label="q01", budget=5)}
-    abandoned = {r.instance_id for r in first[1:]}
-    assert abandoned <= second, (
-        f"{len(abandoned - second)} unjudged clips were never offered again; they are "
-        "unreachable for the life of the run"
-    )
-    assert first[0].instance_id not in second, "a judged clip was offered again"
-
-
-def test_a_clip_judged_unclear_is_not_handed_back_as_though_unseen(tmp_path):
-    """An unclear **is** a decision, and for a long time the log could not say so: it wrote
-    the same empty cell as a clip merely drawn. Nothing failed — every metric drops an unclear
-    anyway, because it carries no evidence either way — but this draw offers undecided rows
-    back first, so the one clip a reviewer could not call came round again, and again.
-    """
-    exp, run = _searched(tmp_path)
-    run.set_cutoff("q01", 0.0)
-    first = run.audit_sample(label="q01", budget=5)
-    for row in first:
-        run.label_audit(row.instance_id, None if row is first[0] else True)
-
-    second = {r.instance_id for r in run.audit_sample(label="q01", budget=5)}
-    assert first[0].instance_id not in second, "the unclear was offered again as unseen"
-    assert second, "and the draw still advances"
-
-
-def test_a_batch_with_nothing_left_pending_draws_new_clips(tmp_path):
-    """The other half: resume must not mean "never advance"."""
-    exp, run = _searched(tmp_path)
-    run.set_cutoff("q01", 0.0)
-    first = run.audit_sample(label="q01", budget=5)
-    for row in first:
-        run.label_audit(row.instance_id, True)
-
-    second = {r.instance_id for r in run.audit_sample(label="q01", budget=5)}
-    assert second and not (second & {r.instance_id for r in first})
-
-
-def test_a_partly_judged_batch_is_topped_up_to_the_budget(tmp_path):
-    """Resume first, then fill — so a batch is always the size that was asked for."""
-    exp, run = _searched(tmp_path)
-    run.set_cutoff("q01", 0.0)
-    first = run.audit_sample(label="q01", budget=5)
-    for row in first[:3]:
-        run.label_audit(row.instance_id, True)
-
-    second = run.audit_sample(label="q01", budget=5)
-    assert len(second) == 5
-    assert {r.instance_id for r in first[3:]} <= {r.instance_id for r in second}
-
-
-def test_auditing_a_finalized_run_is_refused_and_names_the_way_back(tmp_path):
-    """Decided rather than inevitable: labelling a clip moves neither the instances, the cutoff
-    nor the export. It is refused because precision is a number a reader sees, and a finalized
-    run whose precision shifts underneath them is what `_refuse_if_finalized` exists to stop.
-    `reopen()` is one call, and `AuthoredRun._record` is the only place that trade lives.
-    """
-    exp, run = _searched(tmp_path)
-    run.set_cutoff("q01", 0.0)
-    run.finalize()
-
-    with pytest.raises(ValueError, match="reopen"):
-        run.audit_sample(label="q01", budget=5)
-    with pytest.raises(ValueError, match="reopen"):
-        run.label_audit("whatever", True)
-
-    run.reopen()
-    assert run.audit_sample(label="q01", budget=5), "reopening must actually restore it"
-
-
-def test_the_budget_is_a_batch_not_a_cap(tmp_path):
-    exp, run = _searched(tmp_path)
-    run.set_cutoff("q01", 0.0)
-    assert len(run.audit_sample(label="q01", budget=3)) == 3
-    assert len(run.audit_sample(label="q01", budget=7)) == 7
-
-
 # --------------------------------------------------------------------------- #
 # the audit's read half
 # --------------------------------------------------------------------------- #
 def test_a_script_can_read_the_number_its_judging_bought(tmp_path):
-    """The parity gap this closes: `audit_sample` and `label_audit` are the write half, and
-    for a while there was no other. A script could spend an afternoon auditing and not
-    retrieve the figure that afternoon produced — the number existed only inside the GUI,
-    which reached past the API into storage for it."""
+    """The parity gap this closed: the one-by-one draw and judge were the write half, and for
+    a while there was no other. A script could spend an afternoon auditing and not retrieve
+    the figure that afternoon produced — the number existed only inside the GUI, which reached
+    past the API into storage for it. The write half is gone; the read half stays for a run
+    audited before."""
     exp, run = _searched(tmp_path)
     run.set_cutoff("q01", 0.0)
-    for row in run.audit_sample(label="q01", budget=10):
-        run.label_audit(row.instance_id, True)
+    for row in draw(run, label="q01", budget=10):
+        judge(run, row.instance_id, True)
 
     estimate = run.audit_precision(label="q01", cutoff=0.0)
     assert estimate["n"] == 10
@@ -1297,8 +1192,8 @@ def test_the_read_half_survives_the_cutoff_moving(tmp_path):
     re-deriving coverage from whatever slice it happens to ask about."""
     exp, run = _searched(tmp_path)
     run.set_cutoff("q01", 0.0)
-    for row in run.audit_sample(label="q01", budget=10):
-        run.label_audit(row.instance_id, True)
+    for row in draw(run, label="q01", budget=10):
+        judge(run, row.instance_id, True)
 
     run.set_cutoff("q01", 0.9)
     moved = run.audit_precision(label="q01", cutoff=0.9)
@@ -1310,8 +1205,8 @@ def test_cli_reports_the_audit_precision(tmp_path):
     """Surface parity for the read half: the GUI is not the only place the number lives."""
     exp, run = _searched(tmp_path)
     run.set_cutoff("q01", 0.0)
-    for row in run.audit_sample(label="q01", budget=10):
-        run.label_audit(row.instance_id, True)
+    for row in draw(run, label="q01", budget=10):
+        judge(run, row.instance_id, True)
 
     out = _cli(
         "analysis", "audit",
@@ -1335,8 +1230,8 @@ def test_cli_says_not_audited_rather_than_printing_a_number(tmp_path):
 def test_cli_splits_the_estimate_per_recording(tmp_path):
     exp, run = _searched(tmp_path)
     run.set_cutoff("q01", 0.0)
-    for row in run.audit_sample(label="q01", budget=10):
-        run.label_audit(row.instance_id, True)
+    for row in draw(run, label="q01", budget=10):
+        judge(run, row.instance_id, True)
 
     out = _cli(
         "analysis", "audit",
@@ -1430,7 +1325,7 @@ def test_placements_survive_a_behavior_id_that_is_not_a_number(tmp_path):
 # top of one is the method finding its own input, and it is near-certain to be judged a yes, so
 # drawing it scores the answer key and nothing about the figure looks wrong. §19 always said such
 # an instance is ineligible; the draw took no exclusions and the estimate counted every judgment.
-def test_an_example_clip_is_never_drawn_and_never_counted(tmp_path):
+def test_a_judgment_of_an_example_clip_is_never_counted(tmp_path):
     exp, run = _searched(tmp_path)
     run.set_cutoff("q01", 0.0)
     pool = run._audit_pool("q01")
@@ -1439,16 +1334,12 @@ def test_an_example_clip_is_never_drawn_and_never_counted(tmp_path):
         examples
     ), "no candidate overlaps the fixture's example clip; this guards nothing"
 
-    drawn = run.audit_sample(label="q01", budget=len(pool))
-    assert (
-        not {row.instance_id for row in drawn} & examples
-    ), "an example clip was drawn"
-
+    drawn = draw(run, label="q01", budget=len(pool))
     for row in drawn:
-        run.label_audit(row.instance_id, True)
+        judge(run, row.instance_id, True)
     # A judgment of an example clip, as an audit made before the exclusion could hold.
     for instance_id in examples:
-        run.label_audit(instance_id, False)
+        judge(run, instance_id, False)
 
     figure = run.audit_precision(label="q01", cutoff=0.0)
     assert figure["n"] == len(behavior_output.bouts(drawn))
@@ -1490,33 +1381,14 @@ def test_an_example_clip_stays_in_the_artifact_marked_is_example(tmp_path):
     assert flagged == examples
 
 
-def test_a_draw_records_the_bins_it_was_drawn_in(tmp_path):
-    """The draw, every estimate and the confidence curve read one set of edges, recorded at the
-    first draw, so a judgment is weighted by the bin it was drawn from."""
-    import numpy as np
-
-    from detail.storage import behavior_audit as audit
-
-    exp, run = _searched(tmp_path)
-    run.set_cutoff("q01", 0.0)
-    assert audit.read_bins(run._run_dir()) == {}
-    run.audit_sample(label="q01", budget=5)
-    stored = audit.read_bins(run._run_dir())
-    assert set(stored) == {"q01"}
-    scores = [r.score for r in behavior_output.bouts(run._audit_pool("q01"))]
-    assert np.array_equal(stored["q01"], audit.bin_edges(scores))
-    curve = run.audit_precision_by_score_bin(label="q01")
-    assert [b["score_low"] for b in curve] == [float(e) for e in stored["q01"][:-1]]
-
-
 def test_a_cutoff_below_the_committed_one_is_estimated_over_its_own_instances(tmp_path):
     """The estimate is over the candidates the asked-for cutoff keeps, not the artifact, which
     holds only what the committed cutoff kept — so asking about a lower cutoff counts the
     judgments below the committed one instead of silently dropping them."""
     exp, run = _searched(tmp_path)
     run.set_cutoff("q01", 0.0)
-    for row in run.audit_sample(label="q01", budget=20):
-        run.label_audit(row.instance_id, True)
+    for row in draw(run, label="q01", budget=20):
+        judge(run, row.instance_id, True)
     everywhere = run.audit_precision(label="q01", cutoff=0.0)
 
     run.set_cutoff("q01", 0.99)
@@ -1529,8 +1401,8 @@ def test_a_cutoff_below_the_committed_one_is_estimated_over_its_own_instances(tm
 def _audited(tmp_path):
     exp, run = _searched(tmp_path, n_rows=600)
     run.set_cutoff("q01", 0.0)
-    for row in run.audit_sample(label="q01", budget=3):
-        run.label_audit(row.instance_id, True)
+    for row in draw(run, label="q01", budget=3):
+        judge(run, row.instance_id, True)
     return exp
 
 

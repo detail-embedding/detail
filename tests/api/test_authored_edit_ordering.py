@@ -34,8 +34,8 @@ saved, and INTERPRET titled it "Label not saved" over a label that was on disk.
 **The rule.** Every reader of a run's output refuses through one check,
 ``analysis_runs.refuse_if_stale``, reached through ``AuthoredRun.bring_frame_views_current`` (which
 a pin — and so finalize, both exports and a comparison — and measures already call first), and
-called directly by the two readers that do not read frame views: a new audit batch and a
-clip-review census. The edit's own failure is a ``RebuildFailedError`` that says the change was
+called directly by the reader that does not read frame views: a clip-review census (a new
+one-by-one audit batch was the other, until that audit was removed). The edit's own failure is a ``RebuildFailedError`` that says the change was
 saved, names the rebuild, and keeps the real failure as its cause. The refusal tests below
 assert that nothing was written (no snapshot, no export, no census), not only that the call
 raised.
@@ -233,7 +233,7 @@ def test_rebuilding_keeps_nothing(authored_cohort, monkeypatch):
 #
 # The mark went down and stayed down, and nothing but the next edit, `analysis status` and the run
 # page read it. Every reader of the run's output — a pin, and so finalize and both exports and a
-# comparison; measures; a new audit sample or a clip-review census — took the stale artifact as
+# comparison; measures; a clip-review census — took the stale artifact as
 # current: an export pinned a snapshot recording cutoff 0.6 over instances cut at 0.5. Each reader
 # below must refuse, naming the command that rebuilds.
 
@@ -310,12 +310,6 @@ def test_a_comparison_of_a_stale_run_refuses(authored_cohort, monkeypatch):
     _refuses(
         lambda: comparison._resolve_artifact(cohort.experiment, run.id, None), run.id
     )
-
-
-def test_a_new_audit_sample_of_a_stale_run_refuses(authored_cohort, monkeypatch):
-    cohort = authored_cohort
-    run = _left_stale(cohort, monkeypatch)
-    _refuses(lambda: run.audit_sample(), run.id)
 
 
 def test_exporting_a_stale_query_run_refuses(tmp_path):

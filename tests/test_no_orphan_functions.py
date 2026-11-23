@@ -58,12 +58,13 @@ _ORPHANS_WITH_REASONS = {
     "hook a first consumer will register through",
     # --- the earlier one-by-one audit's answer vocabulary ------------------------------ #
     # AUDIT's one-by-one check was replaced by clip review (every clip of a cluster); its
-    # `audit.csv` stays readable and `label_audit(answer=)` still takes these answers, so what an
-    # answer means stays defined and tested (tests/storage/test_behavior_audit.py).
-    "answer_options": "the one-by-one audit's answers for a scope; no GUI asks them since clip "
-    "review replaced the check, and label_audit(answer=) still takes them",
-    "human_label_for": "what a one-by-one audit answer says about the clip's own label; read "
-    "for audit.csv rows and label_audit(answer=), no GUI since clip review",
+    # `audit.csv` stays readable, so what a stored answer means stays defined and tested
+    # (tests/storage/test_behavior_audit.py); nothing writes one since the review of every clip
+    # replaced the one-by-one draw and judge on both run kinds.
+    "answer_options": "the answers the earlier one-by-one audit offered for a scope — what a "
+    "stored audit.csv answer can be; nothing asks them since the review of every clip",
+    "human_label_for": "what an earlier one-by-one audit answer says about the clip's own "
+    "label; tests seed an earlier audit with it, nothing writes one since the review",
     # --- built and tested, no surface reaches it yet ---------------------------------- #
     "resolve_track_id": "DESIGN_PLAN §13's animal-id selector; every config types track_id as "
     "int, so the str branch is unreachable. Real gap, tracked in docs/clustering_experiments.md",
@@ -109,11 +110,6 @@ _ORPHANS_WITH_REASONS = {
     # The §19 reliability audit. Auditing is an optional step a user drives from the AUDIT tab
     # of §20's calibration workspace. The workspace shipped (#218/#222); that tab did not, so
     # these have their storage layer and their tests and no caller until it does.
-    # `append_audit` came off this list when `AuthoredRun.audit_sample` / `label_audit` wired
-    # it — which is the second test below doing its job, not a coincidence worth trusting.
-    "draw_audit_sample": "the fixed per-bin draw, superseded by `draw_sample`'s budget for "
-    "every caller; kept because runs audited before the budget existed were drawn with it, "
-    "and its bin semantics are what those samples mean",
     # --- a reference implementation the fast path is checked against ------------------ #
     # Kept deliberately: `_dtw_numba` documents itself as "the compiled form of the loop in
     # retrieval.dtw_distance (bit-identical)", and the tests compare the two. Deleting the

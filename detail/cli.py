@@ -6006,9 +6006,9 @@ def _echo_query_state(run) -> None:
 )  # fmt: skip
 @click.option(
     "--goal-width", type=FINITE_FLOAT, default=None,
-    help="Say whether each 95% confidence interval is this narrow yet (the GUI's default is "
-    "0.20, i.e. ±0.10), and roughly where another round of 25 would put it — a sample-size "
-    "goal, not a judgment of the label. Nothing is said about width without it.",
+    help="Say whether each 95% confidence interval of the earlier one-by-one audit is this "
+    "narrow (the GUI's default is 0.20, i.e. ±0.10) — a sample-size goal, not a judgment of "
+    "the label. Nothing is said about width without it.",
 )  # fmt: skip
 @click.option(
     "--own-only", is_flag=True, default=False,
@@ -6175,13 +6175,7 @@ def _echo_query_review(
     run, label: str | None, cutoff: float | None, by_recording: bool
 ) -> None:
     """A query run's review, behavior by behavior and, with ``by_recording``, recording by
-    recording (§20).
-
-    A recording is reviewed whole at the behavior's cutoff (every clip watched,
-    `finish_review`), so a reviewed recording's figure is exact. A behavior's figure is printed
-    only once every recording is exact at the cutoff; until then the line says how many are, and
-    the exact figure over the range that was reviewed, never a figure at the cutoff — the answered
-    clips are the top of the candidates, not a sample of them.
+    recording (§20), in ``storage/audit_figures``'s wording — the one AUDIT shows.
 
     Everything is read before anything is printed, so a run whose candidates cannot be read
     prints only the error.
@@ -6197,67 +6191,24 @@ def _echo_query_review(
             continue
         rows = run.review_by_recording(b.id, cutoff=at)
         estimate = run.review_precision(b.id, cutoff=at)
-        done = sum(1 for row in rows if row["exact"])
-        if estimate is not None and estimate["exact"]:
-            lines.append(
-                f"  {b.name}: {audit_figures.line(estimate)}, every recording reviewed at "
-                f"{at:.2f} ({len(rows)})"
-            )
-        else:
-            reached = ""
-            if estimate is not None and estimate["at_floor"] is not None:
-                reached = (
-                    f"; reviewed to {estimate['reviewed_floor']:.2f}: "
-                    f"{audit_figures.line(estimate['at_floor'])}"
-                )
-            lines.append(
-                f"  {b.name}: {done} of {len(rows)} recordings reviewed at {at:.2f}{reached}"
-            )
+        lines.append("  " + audit_figures.query_review_line(b.name, at, estimate, rows))
         if by_recording:
-            lines.extend(f"    {row['name']:<24} {_review_cell(row)}" for row in rows)
+            lines.extend(
+                f"    {row['name']:<24} {audit_figures.query_review_cell(row)}"
+                for row in rows
+            )
     click.echo("Review (every clip the cutoff keeps):")
     for text in lines or ["  (no behavior matches)"]:
         click.echo(text)
 
 
-def _review_cell(row: dict) -> str:
-    """One recording's review, as ``analysis audit --by-recording`` prints it."""
-    from detail.storage import audit_figures
-
-    own = (
-        f" · {row['examples']} on your own examples, not reviewed"
-        if row["examples"]
-        else ""
-    )
-    if not row["size"]:
-        return f"no clips at this cutoff{own}"
-    if row["exact"]:
-        return f"{audit_figures.line(row['estimate'])} · {row['removed']} removed{own}"
-    if row["at_floor"] is not None:
-        return (
-            f"reviewed to {row['reviewed_floor']:.2f} · "
-            f"{row['estimate']['remaining']} not reviewed below it{own}"
-        )
-    return f"not reviewed{own}"
-
-
 def _width_note(estimate: dict, goal: float) -> str:
-    """How wide the interval is against the goal width, and roughly where another round would
-    put it — sample-size facts, not a verdict."""
+    """How wide the interval is against the goal width — a sample-size fact, not a verdict."""
     from detail.storage import audit_figures
-    from detail.storage import behavior_audit
 
     width = audit_figures.width(estimate)
-    if audit_figures.goal_reached(estimate, goal):
-        return f"CI width {width:.2f}, goal {goal:.2f} reached"
-    after = behavior_audit.projected_interval(estimate, behavior_audit.DEFAULT_BUDGET)
-    projection = (
-        f"; {behavior_audit.DEFAULT_BUDGET} more would give about "
-        f"{after[0]:.2f}–{after[1]:.2f}"
-        if after
-        else ""
-    )
-    return f"CI width {width:.2f}, goal {goal:.2f}{projection}"
+    reached = " reached" if audit_figures.goal_reached(estimate, goal) else ""
+    return f"CI width {width:.2f}, goal {goal:.2f}{reached}"
 
 
 @analysis.command("export-query")

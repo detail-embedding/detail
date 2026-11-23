@@ -417,13 +417,12 @@ class QueryRun(QueryReviewOperations, AuthoredRun):
         """
         return query_runs.example_instance_ids(self.state().behaviors, rows)
 
-    def _audit_edges(self, labels, *, fix_seed: int | None = None) -> dict:
+    def _audit_edges(self, labels) -> dict:
         """``{behavior id: edges}`` — each behavior's audit bins, from its candidates at no cutoff.
 
-        Read from ``audit.yaml`` where the behavior has recorded bins, else derived — the same
-        edges, because they are a pure function of the candidates and the search results never
-        change. ``fix_seed`` (a draw) records the derived ones, so the draw, every estimate and
-        the confidence curve cut the scores in the same places from then on.
+        Read from ``audit.yaml`` where the behavior has recorded bins (the earlier one-by-one
+        audit recorded them at its first draw), else derived — the same edges, because they are
+        a pure function of the candidates and the search results never change.
         """
         from detail.storage import behavior_audit as audit
 
@@ -443,8 +442,6 @@ class QueryRun(QueryReviewOperations, AuthoredRun):
             )
             for label in labels
         }
-        if fix_seed is not None and any(label not in stored for label in labels):
-            edges = audit.fix_bins(self._run_dir(), edges, seed=fix_seed)
         return edges
 
     def _audit_rows(self, label: str | None, cutoff: float | None):

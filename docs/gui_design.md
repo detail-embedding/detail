@@ -507,7 +507,7 @@ Project rail (only inside a project — open an experiment from Experiments):
   true anywhere — `gui/tables.py`'s `make_columns_resizable`
   (drag a column border; starting widths still fit content) and `enable_sorting`
   (click a header to sort) are the two calls, wired into both shared builders
-  (`pages._table` / `tables.list_table`, on by default) so a new table gets both for free.
+  (`pages._table`, on by default) so a new table gets both for free.
   A caller opts a specific table out of sorting only with a documented reason — a bounded
   top-N panel, a table whose row order *is* its claim (registry order, a fixed reference
   position), or one where sorting cannot be made safe (a `QTableWidget`'s vertical header
@@ -665,8 +665,9 @@ Project rail (only inside a project — open an experiment from Experiments):
   axes. That reads as a page that failed to load. Distinct from `IndexTable`'s empty notice,
   which is the same rule for a collection: there the table *is* the page, so the notice replaces
   it in place. Key the switch on "has this ever had data", never on the current filter — an empty
-  scope after an audit is an empty view, not an empty tab. Guarded by
-  `tests/gui/test_audit_tab.py`.
+  scope after an audit is an empty view, not an empty tab. The query AUDIT tab this was written
+  for, and its guard, went with the one-by-one audit (2026-11-22); the rule stands for the next
+  surface that has a pre-data state.
 - **Geometry is measured after the layout has run, and a scrolled row has two layouts.** A
   widget's `x()` and `width()` are its *previous* values until Qt lays it out, and it has no
   reason to do so before the next paint — so anything that reads geometry to position something
@@ -1462,7 +1463,8 @@ detail/gui/
 ├── fit.py               # §12 distill: dataset + train dialogs
 ├── training_curve.py    # the distill training curve
 ├── snapshots.py         # §21 pinned artifacts on screen
-├── audit_tab.py         # §19 reliability audit, a query run's
+├── query_review.py      # §19/§20 AUDIT on a query run: every clip a cutoff keeps
+├── review_marks.py      # AUDIT's ordered writes and undo, shared by both run kinds
 ├── label_check.py       # §19/§22 clustering AUDIT: the list of labels/clusters + the page
 ├── label_clean.py       # label_check's review pane: every clip of a cluster, click to remove, Finish
 ├── audit_table.py       # the one colour INTERPRET rings a reviewed cluster in

@@ -638,7 +638,7 @@ def _forget_view_preferences():
     Scoped to the keys that are *view state* a test might set (``bands/`` folds, ``query/``
     thumbnail size, ``panes/`` every split's widths and open/shut panels (and ``splitters/``, the
     keys they migrate from), ``interpret/`` the tree's height and the montage's masks,
-    ``label_check/`` AUDIT's goal width, ``clip_window/`` the clip window's *Advanced* and
+    ``label_check/`` and ``query_review/`` AUDIT's grids, ``clip_window/`` the clip window's *Advanced* and
     *Blind* ticks). Each test process has its own store (see ``qapp``). Window geometry is left alone: ``test_window_state.py`` owns those keys and
     clears them itself, and clearing them here would silently disarm it.
     """
@@ -653,6 +653,7 @@ def _forget_view_preferences():
             "splitters",
             "interpret",
             "label_check",
+            "query_review",
             "clip_window",
         ):
             settings.beginGroup(group)

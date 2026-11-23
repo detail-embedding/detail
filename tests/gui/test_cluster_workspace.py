@@ -33,6 +33,7 @@ from PyQt6.QtWidgets import QLabel, QMessageBox, QPushButton, QVBoxLayout, QWidg
 from detail.gui.cluster_strip import cluster_colors
 from detail.gui.cluster_workspace import TEMPORAL_TERMS, ClusterWorkspace
 from detail.gui.label_panel import label_rows
+from tests.audit_seed import draw
 from tests.gui.conftest import pump_for
 
 
@@ -601,7 +602,7 @@ def _snapshot_workspace(qapp, fitted):
     view = handle.node_view()
     first, second = view.children(view.root)
     handle.name_nodes({first: "pinned"})
-    handle.audit_sample(budget=2)
+    draw(handle, budget=2)
     snapshot_id = handle.pin(reason="finish")
     assert snapshot_id
     handle.name_nodes({first: "", second: "live"})
@@ -670,6 +671,11 @@ _LIVE_ON_A_SNAPSHOT = {
         "QPushButton",
         "Next cluster",
     ): "opening another cluster's clips is looking at them",
+    # The query run's review pane: the same button, a recording where this one has a cluster.
+    (
+        "QPushButton",
+        "Next recording",
+    ): "opening another recording's clips is looking at them",
     # A cluster's window plays its clips beside the page; its label row is greyed on a
     # snapshot with the page's reason (`test_cluster_window.py`).
     ("QPushButton", "Open in window"): "opening a cluster's clips is looking at them",

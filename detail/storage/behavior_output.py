@@ -52,8 +52,8 @@ MANIFEST_FILENAME = "behavior_output.yaml"
 # Written by ``storage/behavior_audit.py``; its presence, or ``clip_review.csv``'s, is what
 # ``audited`` reports.
 AUDIT_FILENAME = "audit.csv"
-# The score-bin edges each label's audit is drawn and weighted by, recorded at its first draw
-# (``behavior_audit.fix_bins``).
+# The score-bin edges each label's earlier one-by-one audit was drawn and is weighted by,
+# recorded at its first draw (``behavior_audit.read_bins`` reads them).
 AUDIT_BINS_FILENAME = "audit.yaml"
 # Written by ``storage/frame_view.py`` — one zarr group per (recording_id, subject).
 FRAMES_DIRNAME = "frames"

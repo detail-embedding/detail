@@ -120,3 +120,43 @@ def line(estimate: dict | None) -> str:
     value, _interval = cells(estimate)
     low, high = estimate["interval"]
     return f"precision {value}  (95% CI {low:.2f}-{high:.2f}, n={estimate['n']})"
+
+
+def query_review_line(name: str, cutoff: float, estimate: dict | None, rows) -> str:
+    """One behavior's review on a query run (§20): its figure once every recording is exact at
+    ``cutoff``, else how many are — and the exact figure over the range that was reviewed, never
+    a figure at the cutoff (the answered clips are the top of the candidates, not a sample).
+    """
+    rows = list(rows)
+    if estimate is not None and estimate.get("exact"):
+        return (
+            f"{name}: {line(estimate)}, every recording reviewed at {cutoff:.2f} "
+            f"({len(rows)})"
+        )
+    done = sum(1 for row in rows if row["exact"])
+    reached = ""
+    if estimate is not None and estimate.get("at_floor") is not None:
+        reached = (
+            f"; reviewed to {estimate['reviewed_floor']:.2f}: "
+            f"{line(estimate['at_floor'])}"
+        )
+    return f"{name}: {done} of {len(rows)} recordings reviewed at {cutoff:.2f}{reached}"
+
+
+def query_review_cell(row: dict) -> str:
+    """One recording's review of a behavior (``QueryRun.review_by_recording``'s row)."""
+    own = (
+        f" · {row['examples']} on your own examples, not reviewed"
+        if row["examples"]
+        else ""
+    )
+    if not row["size"]:
+        return f"no clips at this cutoff{own}"
+    if row["exact"]:
+        return f"{line(row['estimate'])} · {row['removed']} removed{own}"
+    if row["at_floor"] is not None:
+        return (
+            f"reviewed to {row['reviewed_floor']:.2f} · "
+            f"{row['estimate']['remaining']} not reviewed below it{own}"
+        )
+    return f"not reviewed{own}"

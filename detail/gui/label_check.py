@@ -22,7 +22,8 @@ label's figures (the backend's ``membership_changed_at`` rule).
 Every removal and every finish is written in order and off the UI thread (``_write``) by the run's
 write queue (``gui/run_writes.py``), which outlives the page, so leaving the page loses nothing. **One copy of what is removed**: ``self._data["taken"]``, the run's take-outs as
 last read, updated by each mark the moment it is made, with every mark still in the write queue laid
-back over a read that lands before it (``_pending``) — so leaving a cluster and coming back, or a
+back over a read that lands before it (``ReviewMarks.overlay``, ``gui/review_marks.py``, shared
+with the query run's review) — so leaving a cluster and coming back, or a
 reload from INTERPRET mid-queue, shows exactly what Finish will record. A clip's edit counts as a
 removal here only when it was made from the cluster's label or one above it, the backend's rule
 (``api.clip_review._not_its_label``): an edit from before a relabel is not shown as one.
@@ -38,11 +39,12 @@ label row opens its first unreviewed cluster on a click or Enter, not when the a
 
 A method that ranks on demand (a medoid order, ``NodeView.ranks_on_demand``) ranks a cluster's clips
 off the UI thread with ``run.clips``, as INTERPRET does, and the pane says "ranking this cluster's
-clips…" until they arrive. Each change goes on this review's undo history (``_history``) with every clip's
+clips…" until they arrive. Each change goes on this review's undo history (``ReviewMarks``) with every clip's
 mark before it; ⌘Z restores those marks through the same writes. The earlier one-by-one audit (``audit.csv``) stays readable and is never merged
 into these figures: a label's tooltip gives it under "Earlier one-by-one audit".
 
-A query run keeps ``audit_tab.AuditTab``: its behaviors are flat and its selector scopes it.
+A query run reviews in ``query_review.QueryReviewTab`` on the same pane and the same
+``ReviewMarks``: one recording of a behavior where this page has a cluster.
 """
 
 from datetime import datetime
@@ -69,7 +71,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from detail.gui import plot_theme, run_writes
+from detail.gui import plot_theme
 from detail.gui.busy import run_busy
 from detail.gui.grip_splitter import GripSplitter
 from detail.gui.label_clean import (
@@ -83,6 +85,7 @@ from detail.gui.label_clean import (
     tiles_for,
 )
 from detail.gui.live_montage import ALIGN_CHECKING, context_span
+from detail.gui.review_marks import ReviewMarks, apply_change
 from detail.gui.sizing import emphasis_font, lines
 from detail.gui.workers import BackgroundCall
 from detail.storage import audit_figures
@@ -330,18 +333,13 @@ class LabelCheckTab(QWidget):
         self._progress: dict[int, float] = {}
         #: The cluster whose finish is being written; its result shows once it is read back.
         self._finishing: int | None = None
-        #: This review's changes, oldest first — what ⌘Z steps back through. Cleared on Finish
-        #: and when another cluster opens.
-        self._history: list[dict] = []
-        #: The run's write queue: shared with INTERPRET and kept by the app, so a mark queued
-        #: here lands after the page is gone (``run_writes``).
-        self._writes = run_writes.queue_for(run)
-        #: Marks made and not yet seen by a read: ``(write number, {clip key: edit or None})``,
-        #: oldest first — laid over every read that lands before they do (`_render`).
-        self._pending: list[tuple[int, dict]] = []
-        #: The number of the last write queued, and of the last one done.
-        self._queued = 0
-        self._landed = 0
+        #: This review's ordered writes (the run's queue, shared with INTERPRET and kept by the
+        #: app, so a mark queued here lands after the page is gone), the marks they carry until
+        #: a read has them, and the undo history — cleared on Finish and when another cluster
+        #: opens.
+        self._marks = ReviewMarks(
+            run, self, on_written=self.changed.emit, on_failed=self._write_failed
+        )
         #: Reviewed clusters reopened and not finished again: their old figure is out of date.
         self._reopened: set[int] = set()
         #: Bumped by each cluster opened: a ranking that lands for an earlier one is dropped.
@@ -359,8 +357,8 @@ class LabelCheckTab(QWidget):
         self.reload()
         # Marks queued on a page since left are still landing: read the run again once they
         # have, or this page shows it without them.
-        if self._writes.busy():
-            self._writes.when_idle(self.reload, owner=self)
+        if self._marks.busy():
+            self._marks.when_idle(self.reload)
 
     # -- construction ----------------------------------------------------------------------
     def _build_empty(self) -> QWidget:
@@ -448,7 +446,7 @@ class LabelCheckTab(QWidget):
 
     # -- reading (off the UI thread) ------------------------------------------------------
     def reload(self) -> None:
-        landed = self._landed
+        landed = self._marks.landed
         run_busy(
             self,
             self._compute,
@@ -583,13 +581,11 @@ class LabelCheckTab(QWidget):
     def _render(self, data: dict, *, landed_before: int | None = None) -> None:
         from detail.api import clip_tiles
 
-        if landed_before is not None:
-            # Marks whose write was done before this read began are in it; the rest go back
-            # over it, oldest first, so a read never takes back a mark still in the queue.
-            self._pending = [p for p in self._pending if p[0] > landed_before]
-        taken = dict(data.get("taken") or {})
-        for _n, change in self._pending:
-            _apply_change(taken, change)
+        # Marks whose write was done before this read began are in it; the rest go back over
+        # it, oldest first, so a read never takes back a mark still in the queue.
+        taken = self._marks.overlay(
+            dict(data.get("taken") or {}), landed_before=landed_before
+        )
         data = {**data, "taken": taken}
         self._data = data
         self._finished = bool(data.get("finished"))
@@ -1257,12 +1253,8 @@ class LabelCheckTab(QWidget):
     def _remember(self, rows: list[dict], text: str) -> None:
         """Push a change onto this review's undo history: each clip's mark before it."""
         edits = self._open["edits"]
-        self._history.append(
-            {
-                "text": text,
-                "rows": list(rows),
-                "before": {self._key_of(r): edits.get(self._key_of(r)) for r in rows},
-            }
+        self._marks.remember(
+            text, rows, {self._key_of(r): edits.get(self._key_of(r)) for r in rows}
         )
         self.pane.set_undo(text)
 
@@ -1277,7 +1269,7 @@ class LabelCheckTab(QWidget):
             for row in rows
         }
         # The one copy first; what the pane shows is read from it.
-        _apply_change(self._data.setdefault("taken", {}), change)
+        apply_change(self._data.setdefault("taken", {}), change)
         opened["edits"] = self._edits_for(path, opened["clips"])
         self._show_tiles()
         self._paint_rows()
@@ -1299,9 +1291,9 @@ class LabelCheckTab(QWidget):
         """Reverse the last change of this review: every clip back to the mark it had, through
         the same ordered writes."""
         opened = self._open
-        if opened is None or not self._editable() or not self._history:
+        if opened is None or not self._editable() or self._marks.last_text() is None:
             return
-        change = self._history.pop()
+        change = self._marks.pop()
         unmarked, by_target = [], {}
         for row in change["rows"]:
             before = change["before"][self._key_of(row)]
@@ -1313,10 +1305,10 @@ class LabelCheckTab(QWidget):
             self._set_marks(unmarked, None, back=True)
         for target, rows in by_target.items():
             self._set_marks(rows, target)
-        self.pane.set_undo(self._history[-1]["text"] if self._history else None)
+        self.pane.set_undo(self._marks.last_text())
 
     def _forget_history(self) -> None:
-        self._history = []
+        self._marks.forget()
         self.pane.set_undo(None)
 
     def _finish(self) -> None:
@@ -1380,45 +1372,23 @@ class LabelCheckTab(QWidget):
         """Queue one write. Writes run one at a time, in the order made, so a put-back always
         lands after the take-out it undoes and a finish after every mark before it. ``change``:
         the marks it writes, laid over any read that lands before it does."""
-        self._queued += 1
-        number = self._queued
-        if change:
-            self._pending.append((number, change))
+        self._marks.write(write, what, change)
 
-        def done(_result) -> None:
-            self._landed = number
-            if not self._writes.busy():
-                self.changed.emit()
-
-        def failed(exc) -> None:
-            # Nothing queued will be written: the next read is the run as it stands.
-            self._pending.clear()
-            self._finishing = None
-            QMessageBox.critical(self, what, str(exc))
-            self._open = None
-            self.reload()
-
-        # The run's queue, not this page's: a queue held here lost every write after the one in
-        # flight when the page was left (#24).
-        self._writes.submit(write, owner=self, done=done, failed=failed, title=what)
+    def _write_failed(self, what: str, exc) -> None:
+        # Nothing queued will be written: the next read is the run as it stands.
+        self._finishing = None
+        QMessageBox.critical(self, what, str(exc))
+        self._open = None
+        self.reload()
 
     def _when_written(self, then) -> None:
         """Run ``then`` once every queued write is done — at once if none are waiting."""
-        self._writes.when_idle(then, owner=self)
+        self._marks.when_idle(then)
 
     def writes_pending(self) -> bool:
         """Whether a change made on this run — here or on a page since left — is not yet on
         disk."""
-        return self._writes.busy()
-
-
-def _apply_change(taken: dict, change: dict) -> None:
-    """Lay ``{clip key: edit or None}`` over ``taken``: ``None`` puts the clip back."""
-    for key, edit in change.items():
-        if edit is None:
-            taken.pop(key, None)
-        else:
-            taken[key] = edit
+        return self._marks.busy()
 
 
 def _edit(key: tuple, path: str, to_label) -> dict:

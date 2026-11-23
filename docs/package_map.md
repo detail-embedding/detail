@@ -411,7 +411,8 @@ detail/
     ├── training_curve.py # mAP50 per epoch, and the best score so far
     ├── snapshots.py      # §21 pinned artifacts on screen
     ├── comparison.py     # §24: the comparisons list page, launch dialog and saved result
-    ├── audit_tab.py      # §19 reliability audit on screen: blind review, and its precision
+    ├── query_review.py   # a query run's AUDIT: every clip a cutoff keeps, one recording at a time
+    ├── review_marks.py   # AUDIT's ordered writes, marks not yet read back, undo (both run kinds)
     ├── behavior_query.py # §16/§20 clip surfaces shared across the GUI: the example-clip picker
     │                     # and the clip player (_ClipPlayer)
     ├── clip_grid.py      # a strip of clip thumbnails that fills progressively (§20)
