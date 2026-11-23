@@ -9,10 +9,13 @@ them (a failed recording, a deleted one, a blank or unknown group column, anothe
 import numpy as np
 import pytest
 
+from detail.api import location_plots as location_plots_api
 from detail.api.experiment import Experiment
 from detail.configs.location_plots import LocationPlotView
 from detail.storage import location_export
-from tests.location_fixtures import finished_run, track
+from tests.location_fixtures import MASK_OVER_BODY
+from tests.location_fixtures import finished_run
+from tests.location_fixtures import track
 
 KINDS = ("trace", "heatmap", "speed", "trace3d", "body", "body_hist")
 
@@ -105,10 +108,35 @@ def test_body_plots_read_the_run_s_body(proj):
     plots = proj.location_plots("an_01")
     spec = plots.build(LocationPlotView(kind="body", body_measure="elongation"))
     assert np.nanmedian(spec.panels[0].lines[0].y) == pytest.approx(3.0)
+    # The body is the whole mask (§16 *The body*), so their areas are one number.
     spec = plots.build(LocationPlotView(kind="body", body_measure="mask_area"))
     assert np.nanmedian(spec.panels[0].lines[0].y) == pytest.approx(
-        180.0 * 60.0 * 0.8 * 1.25, rel=1e-3
+        180.0 * 60.0 * 0.8, rel=1e-3
     )
+    assert not plots.thin_parts_removed
+    assert "thin parts" not in spec.note
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_a_run_exported_with_thin_parts_removed_is_drawn_as_measured_and_says_so(
+    proj, kind
+):
+    """The export no longer removes thin parts, and a comparison refuses a run that did. A
+    plot draws such a run as it was measured — a run's output is never invalidated — but the
+    Position and Body measure help now describe the whole mask, so the figure itself says its
+    body is not that, on every kind (a path's breaks use the body's length too)."""
+    finished_run(
+        proj, {"a": {0: _walk(length=180.0, width=60.0)}}, thin_parts_removed=True
+    )
+    plots = proj.location_plots("an_01")
+    assert plots.thin_parts_removed
+    spec = plots.build(LocationPlotView(kind=kind))
+    assert spec.note.startswith(location_plots_api.THIN_PARTS_NOTE)
+    if kind == "body":
+        mask = plots.build(LocationPlotView(kind="body", body_measure="mask_area"))
+        assert np.nanmedian(mask.panels[0].lines[0].y) == pytest.approx(
+            180.0 * 60.0 * 0.8 * MASK_OVER_BODY, rel=1e-3
+        )
 
 
 def test_a_run_made_before_the_body_plots_its_path_but_not_its_body(proj):

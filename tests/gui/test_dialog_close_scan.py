@@ -17,10 +17,10 @@ included: ``QDialog.closeEvent`` calls ``reject``). The behaviour is pinned thro
 ``tests/gui/test_cluster_window.py::test_every_way_a_window_closes_lets_it_go``.
 
 The sweep that found it (2026-11-09): ``cluster_window.ClusterWindow`` was the one dialog with a
-``closeEvent``; ``clip_pane_window`` already let go on ``finished``; ``clip_popup``'s window and
-the query-eval explorer clean up on ``destroyed`` under ``WA_DeleteOnClose``, which ``done()``
-honours; the ``reject`` overrides (``benchmark``, ``behavior_query``, ``comparison``,
-``keypoints_manager``) run for Esc, Cancel and the title bar alike.
+``closeEvent``; ``clip_pane_window`` already let go on ``finished``; ``clip_popup``'s window
+cleans up on ``destroyed`` under ``WA_DeleteOnClose``, which ``done()`` honours, as the query-eval
+explorer (since removed) did; the ``reject`` overrides (``benchmark``, ``behavior_query``,
+``comparison``, ``keypoints_manager``) run for Esc, Cancel and the title bar alike.
 """
 
 from __future__ import annotations

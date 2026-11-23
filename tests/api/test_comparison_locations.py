@@ -30,7 +30,7 @@ from detail.storage import analysis_runs
 from detail.storage import metadata as md
 from tests.location_fixtures import track, write_run
 
-EXPORTED = {"sample_fps": 5.0, "remove_thin_parts": True, "thin_part_scale": 0.12}
+EXPORTED = {"sample_fps": 5.0}
 
 
 def cohort(

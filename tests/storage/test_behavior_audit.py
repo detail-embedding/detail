@@ -19,6 +19,9 @@ draw is read back with its strata's weights", seeded over thirty audits of one r
 
 from detail.storage import behavior_audit as audit
 from detail.storage import behavior_output as bo
+from detail.storage import state_yaml
+
+from tests.audit_seed import draw_sample
 
 
 def _instance(score, ident, **kw):
@@ -89,79 +92,11 @@ def test_has_audit_reflects_the_file(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# sampling: stratified, not top-N
-# --------------------------------------------------------------------------- #
-def test_the_sample_is_not_the_best_ranked_instances(tmp_path):
-    """The optimism guard.
-
-    Reviewing the top of the ranking reviews the easiest instances, and precision comes out
-    flattering. A stratified draw has to reach the worst scores too.
-    """
-    instances = _instances([i / 100 for i in range(100)])
-    drawn = audit.draw_audit_sample(instances, per_bin=2, n_bins=10, seed=0)
-    # Not a subset check: `per_bin=2, n_bins=10` draws 20 ids and the top slice holds 10, so
-    # a 20-element set can never be a subset of it — the assertion was true against a literal
-    # top-N draw. Assert the spread instead, which is the property.
-    edges = audit.bin_edges([row.score for row in instances], 10)
-    covered = {audit._bin_of(row.score, edges) for row in drawn}
-    assert covered == set(
-        range(10)
-    ), f"the draw missed bins {sorted(set(range(10)) - covered)}"
-    assert max(row.score for row in drawn) > 0.8
-    assert min(row.score for row in drawn) < 0.2
-
-
-def test_each_bin_contributes_at_most_per_bin(tmp_path):
-    instances = _instances([i / 100 for i in range(100)])
-    drawn = audit.draw_audit_sample(instances, per_bin=3, n_bins=10, seed=0)
-    edges = audit.bin_edges([r.score for r in instances], 10)
-    counts: dict[int, int] = {}
-    for row in drawn:
-        counts[audit._bin_of(row.score, edges)] = (
-            counts.get(audit._bin_of(row.score, edges), 0) + 1
-        )
-    assert counts and max(counts.values()) <= 3
-
-
-def test_a_sparse_bin_contributes_everything_it_has(tmp_path):
-    instances = _instances([0.0, 0.05, 0.95])
-    drawn = audit.draw_audit_sample(instances, per_bin=5, n_bins=10, seed=0)
-    assert len(drawn) == 3
-
-
-def test_the_draw_is_deterministic_for_a_seed(tmp_path):
-    instances = _instances([i / 100 for i in range(100)])
-    first = audit.draw_audit_sample(instances, per_bin=2, seed=7)
-    second = audit.draw_audit_sample(instances, per_bin=2, seed=7)
-    assert [r.instance_id for r in first] == [r.instance_id for r in second]
-
-
-def test_an_excluded_instance_is_never_drawn(tmp_path):
-    """A confirmed match that became an exemplar built the method; it cannot also score it.
-
-    The two label sets are kept separate so the constraint is checkable rather than
-    remembered — this is the check.
-    """
-    instances = _instances([i / 100 for i in range(100)])
-    excluded = {row.instance_id for row in instances[::3]}
-    drawn = audit.draw_audit_sample(
-        instances, per_bin=10, n_bins=5, seed=0, exclude_instance_ids=excluded
-    )
-    assert drawn and not {row.instance_id for row in drawn} & excluded
-
-
-def test_scoreless_instances_are_not_sampled(tmp_path):
-    # There is no bin for them; including them would not be stratified by score.
-    assert audit.draw_audit_sample(_instances([None, None]), per_bin=5) == []
-
-
-# --------------------------------------------------------------------------- #
 # absence reads as absence
 # --------------------------------------------------------------------------- #
 def test_no_audit_yields_none_everywhere(tmp_path):
     instances = _instances([0.1, 0.2])
     assert audit.precision_at_cutoff(tmp_path, instances, cutoff=0.5) is None
-    assert audit.precision_by_score_bin(tmp_path, instances) is None
 
 
 def test_a_cutoff_that_retains_nothing_judged_reports_n_zero_not_a_rate(tmp_path):
@@ -171,14 +106,6 @@ def test_a_cutoff_that_retains_nothing_judged_reports_n_zero_not_a_rate(tmp_path
         tmp_path, instances, cutoff=0.1, manifest=_manifest()
     )
     assert out["n"] == 0 and out["precision"] is None  # never a fabricated 0.0
-
-
-def test_an_unjudged_bin_reports_no_precision(tmp_path):
-    instances = _instances([0.0, 0.9])
-    audit.append_audit(tmp_path, instances[0].instance_id, score=0.0, human_label=True)
-    bins = audit.precision_by_score_bin(tmp_path, instances, n_bins=2)
-    assert bins[0]["precision"] == 1.0 and bins[0]["n"] == 1
-    assert bins[-1]["precision"] is None and bins[-1]["n"] == 0
 
 
 # --------------------------------------------------------------------------- #
@@ -270,8 +197,8 @@ def test_the_manifest_reports_audited_once_the_file_exists(tmp_path):
 # that decision twice, which is the exact failure §19 introduced `instance_id` to prevent, and
 # nothing about the arithmetic looks wrong while it happens.
 #
-# Driven over the four entry points rather than written four times, so a fifth consumer is
-# covered the day it is added. The sibling one file over (`frame_view`) solved this and said
+# The per-score-bin curve and the one-by-one draw were the other consumers guarded here; both
+# went with the one-by-one audit. The sibling one file over (`frame_view`) solved this and said
 # why; this module is the one that missed it.
 def _twice_named(tmp_path):
     """Two bouts, one of them named twice, with one human decision each.
@@ -298,26 +225,8 @@ def test_precision_at_cutoff_counts_a_twice_named_bout_once(tmp_path):
     assert out["precision"] == 0.5
 
 
-def test_precision_by_score_bin_counts_a_twice_named_bout_once(tmp_path):
-    rows = _twice_named(tmp_path)
-    bins = audit.precision_by_score_bin(tmp_path, rows, n_bins=2)
-    assert sum(b["n_instances"] for b in bins) == 2
-    assert sum(b["n"] for b in bins) == 2
-    low = next(b for b in bins if b["n_confirmed"])
-    assert low["n_instances"] == 1 and low["n"] == 1 and low["precision"] == 1.0
-
-
-def test_the_audit_sample_never_shows_one_bout_twice(tmp_path):
-    # The reviewer-facing half: a duplicated row spends a bin's budget showing the same clip
-    # again, so the sample is smaller than it looks and other bouts go unreviewed.
-    rows = _twice_named(tmp_path)
-    drawn = audit.draw_audit_sample(rows, per_bin=5, n_bins=2, seed=0)
-    ids = [row.instance_id for row in drawn]
-    assert len(ids) == len(set(ids)) == 2
-
-
 # --------------------------------------------------------------------------- #
-# the interval, the per-recording split, and the two draw strategies
+# the interval and the per-recording split
 # --------------------------------------------------------------------------- #
 def _inst(i, label, *, score=None, recording="r1"):
     return bo.BehaviorInstance(
@@ -330,72 +239,6 @@ def _inst(i, label, *, score=None, recording="r1"):
         source_label=label,
         score=score,
     )
-
-
-def test_a_clustering_artifact_yields_a_sample_rather_than_nothing():
-    """The regression test for the defect this work exists to fix.
-
-    A clustering run writes no score (`pipeline/temporal_clustering.py` builds its instances
-    without one), and the score-bin draw skips scoreless bouts by design. So an audit of a
-    clustering artifact returned an **empty list** — not an error, not a warning, just no clips to
-    review, while the spec claimed a module "gets Audit by emitting the artifact".
-    """
-    unscored = [_inst(i, f"cluster_{i % 10}") for i in range(100)]
-    assert (
-        audit.draw_audit_sample(unscored) == []
-    ), "the scored path used to be the only path"
-
-    drawn = audit.draw_sample(unscored, budget=25)
-    assert len(drawn) == 25
-    assert (
-        len({row.source_label for row in drawn}) == 10
-    ), "every cluster is represented"
-
-
-def test_the_strategy_is_chosen_by_the_artifact_not_the_caller():
-    scored = [_inst(i, "rear", score=i / 100.0) for i in range(100)]
-    unscored = [_inst(i, f"cluster_{i % 4}") for i in range(100)]
-    assert audit._strata(scored)[0] == "score_bin"
-    assert audit._strata(unscored)[0] == "label"
-
-
-def test_the_budget_is_what_is_asked_for():
-    scored = [_inst(i, "rear", score=i / 100.0) for i in range(100)]
-    for budget in (1, 7, 25, 50):
-        assert len(audit.draw_sample(scored, budget=budget)) == budget
-    assert audit.draw_sample(scored, budget=0) == []
-
-
-def test_a_budget_larger_than_the_pool_returns_the_pool():
-    """No topping up from nowhere, and no infinite loop looking for it."""
-    scored = [_inst(i, "rear", score=i / 10.0) for i in range(6)]
-    assert len(audit.draw_sample(scored, budget=25)) == 6
-
-
-def test_a_second_batch_draws_new_instances_and_the_thinnest_stratum_first():
-    """ "Review 25 more" has to be additive. Serving the thinnest stratum first is what makes
-    the second batch buy resolution where the first left it thin."""
-    scored = [_inst(i, "rear", score=i / 100.0) for i in range(100)]
-    first = audit.draw_sample(scored, budget=25)
-    second = audit.draw_sample(
-        scored, budget=25, exclude_instance_ids=[r.instance_id for r in first]
-    )
-    assert not ({r.instance_id for r in first} & {r.instance_id for r in second})
-    edges = audit.bin_edges([r.score for r in scored])
-    counts: dict = {}
-    for row in [*first, *second]:
-        counts[audit._bin_of(row.score, edges)] = (
-            counts.get(audit._bin_of(row.score, edges), 0) + 1
-        )
-    assert max(counts.values()) - min(counts.values()) <= 1, f"uneven strata: {counts}"
-
-
-def test_the_draw_is_deterministic_for_a_seed():
-    scored = [_inst(i, "rear", score=i / 100.0) for i in range(100)]
-    a = [r.instance_id for r in audit.draw_sample(scored, budget=25, seed=3)]
-    b = [r.instance_id for r in audit.draw_sample(scored, budget=25, seed=3)]
-    assert a == b
-    assert a != [r.instance_id for r in audit.draw_sample(scored, budget=25, seed=4)]
 
 
 def test_precision_ships_with_a_wilson_interval_that_widens_as_n_shrinks(tmp_path):
@@ -466,8 +309,8 @@ def test_no_audit_means_no_per_recording_estimate(tmp_path):
 # was right, because a metric drops both: an unclear carries no evidence either way, so it is
 # excluded from precision exactly like an unjudged clip.
 #
-# What it cost was everything that asks *has a person looked at this*. `audit_sample` offers
-# undecided rows back before drawing fresh, so an unclear came round again as though it had
+# What it cost was everything that asks *has a person looked at this*. The one-by-one draw
+# offered undecided rows back before drawing fresh, so an unclear came round again as though it had
 # never been seen — an ambiguous clip could be handed to the same reviewer forever — and no
 # surface could list a reviewer's unclears for them to resolve, which is the one re-review
 # that measurably tightens the interval.
@@ -610,11 +453,14 @@ def test_every_estimate_carries_its_coverage(tmp_path):
     recut = rows[:2] + [_instance(0.5, 90), _instance(0.6, 91)]
 
     at = audit.precision_at_cutoff(tmp_path, recut, cutoff=1.0, manifest=_manifest())
-    bins = audit.precision_by_score_bin(tmp_path, recut, manifest=_manifest())
+    split = audit.precision_by_recording(
+        tmp_path, recut, cutoff=1.0, manifest=_manifest()
+    )
 
     assert at["coverage"] == 0.5
     assert at["reason"]
-    assert all(row["coverage"] == 0.5 and row["precision"] is None for row in bins)
+    assert split, "no per-recording rows to check"
+    assert all(row["coverage"] == 0.5 and row["precision"] is None for row in split)
 
 
 def test_an_unjudged_row_does_not_count_toward_coverage(tmp_path):
@@ -892,7 +738,7 @@ def test_a_label_does_not_claim_a_sibling_that_shares_its_prefix(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# cluster verdicts: a stratified estimate, an adaptive draw
+# cluster verdicts: a stratified estimate
 # --------------------------------------------------------------------------- #
 def _yes_no(yes: int, no: int) -> list:
     return [True] * yes + [False] * no
@@ -931,37 +777,6 @@ def test_a_cluster_judged_all_yes_does_not_claim_certainty():
     )
     low, high = strat["interval"]
     assert low < 1.0 and high == 1.0
-
-
-def test_the_projection_narrows_as_clips_are_added():
-    """What a button shows before a round: the interval at the same share over more clips."""
-    now = audit.estimate(_yes_no(22, 3))
-    after = audit.projected_interval(now, 25)
-    assert after == audit.wilson_interval(44, 50)
-    assert audit.ci_width({"interval": after}) < audit.ci_width(now)
-    assert audit.projected_interval(audit.estimate([]), 25) is None
-
-
-def test_a_stratified_projection_uses_the_effective_n():
-    groups = {"a": (300, _yes_no(9, 1)), "b": (30, _yes_no(5, 5))}
-    figure = audit.stratified_estimate(groups)
-    assert figure["n_effective"] != figure["n"]
-    low, high = audit.projected_interval(figure, 0)
-    assert (round(low, 9), round(high, 9)) == tuple(
-        round(v, 9) for v in figure["interval"]
-    )
-
-
-def _cluster_instances(sizes: dict) -> tuple[list, dict]:
-    rows, stratum_of = [], {}
-    i = 0
-    for cluster, size in sizes.items():
-        for _ in range(size):
-            row = _nested(i, "climb")
-            rows.append(row)
-            stratum_of[row.instance_id] = cluster
-            i += 1
-    return rows, stratum_of
 
 
 def test_precision_since_counts_only_fresh_judgments(tmp_path):
@@ -1068,19 +883,6 @@ def test_naming_a_sibling_is_a_miss_for_the_clip_and_a_hit_for_the_parent():
     assert audit.verdict(row, own, "climb and rear") is True
 
 
-def test_a_labels_round_draws_in_proportion_to_cluster_size():
-    rows, stratum_of = _cluster_instances({"big": 300, "small": 30, "mid": 70})
-    drawn = audit.draw_sample(rows, budget=20, stratum_of=stratum_of)
-    counts = {}
-    for row in drawn:
-        counts[stratum_of[row.instance_id]] = (
-            counts.get(stratum_of[row.instance_id], 0) + 1
-        )
-    for key, size in {"big": 300, "small": 30, "mid": 70}.items():
-        quota = 20 * size / 400
-        assert abs(counts.get(key, 0) - quota) <= 1, (key, counts, quota)
-
-
 # --------------------------------------------------------------------------- #
 # class guard: a stratified draw is read back with its strata's weights
 # --------------------------------------------------------------------------- #
@@ -1111,7 +913,7 @@ def _audit_two_rounds(run_dir, rows, truth_of: dict, seed: int) -> None:
     """Two batches of 25 the way a reviewer takes them, every clip judged truthfully."""
     done: set = set()
     for batch in range(2):
-        for row in audit.draw_sample(
+        for row in draw_sample(
             rows, budget=25, seed=seed * 7 + batch, exclude_instance_ids=done
         ):
             audit.append_audit(
@@ -1178,37 +980,44 @@ def test_the_per_recording_split_is_weighted_the_same_way(tmp_path):
     assert split["interval"] == head["interval"]
 
 
-def test_a_draw_over_several_behaviors_bins_each_on_its_own_scores():
-    """Pooled edges put a behavior whose scores sit in 0-0.1 into one bin of a range that runs to
-    1.0, so a draw "across ten bins" drew from one of its."""
-    low = [_instance(0.001 * i, i, source_label="q01") for i in range(100)]
-    high = [
-        _instance(0.5 + 0.005 * i, 1000 + i, source_label="q02") for i in range(100)
-    ]
-    drawn = audit.draw_sample(low + high, budget=40)
-    for label, rows in (("q01", low), ("q02", high)):
-        edges = audit.bin_edges([r.score for r in rows])
-        bins = {audit._bin_of(r.score, edges) for r in drawn if r.source_label == label}
-        assert bins == set(range(10)), (label, sorted(bins))
+def _record_bins(run_dir, edges: dict, fixed_at: str) -> None:
+    """``audit.yaml`` as the one-by-one draw left it: each label's score-bin edges, recorded at
+    its first draw. Nothing writes it any more; every estimate still reads it."""
+    state_yaml.write_state_yaml(
+        run_dir / bo.AUDIT_BINS_FILENAME,
+        {
+            "stratified_by": "score_bin",
+            "bins": {
+                label: {
+                    "edges": [float(e) for e in label_edges],
+                    "seed": 0,
+                    "fixed_at": fixed_at,
+                }
+                for label, label_edges in edges.items()
+            },
+        },
+    )
 
 
-def test_bins_are_recorded_at_the_first_draw_and_never_move(tmp_path):
+def test_recorded_bins_are_read_back_per_label(tmp_path):
+    """What a query run's estimate cuts its scores at (`QueryRun._audit_edges`): the recorded
+    edges, per label, and when each was recorded; nothing at all where none were."""
     import numpy as np
 
-    first = audit.fix_bins(tmp_path, {"q01": np.linspace(0.0, 1.0, 11)}, seed=3)
-    text = (tmp_path / bo.AUDIT_BINS_FILENAME).read_text(encoding="utf-8-sig")
-    assert text.startswith("schema_version: 1\n")
-
-    again = audit.fix_bins(
+    assert audit.read_bins(tmp_path) == {} and audit.bins_fixed_at(tmp_path) == {}
+    _record_bins(
         tmp_path,
-        {"q01": np.linspace(0.0, 2.0, 11), "q02": np.linspace(0.5, 0.9, 11)},
-        seed=4,
+        {"q01": np.linspace(0.0, 1.0, 11), "q02": np.linspace(0.5, 0.9, 11)},
+        "2021-01-01T00:00:00Z",
     )
-    assert np.array_equal(again["q01"], first["q01"]), "a recorded label's bins moved"
-    assert np.array_equal(again["q02"], np.linspace(0.5, 0.9, 11))
     stored = audit.read_bins(tmp_path)
     assert set(stored) == {"q01", "q02"}
-    assert np.array_equal(stored["q01"], first["q01"])
+    assert np.array_equal(stored["q01"], np.linspace(0.0, 1.0, 11))
+    assert np.array_equal(stored["q02"], np.linspace(0.5, 0.9, 11))
+    assert audit.bins_fixed_at(tmp_path) == {
+        "q01": "2021-01-01T00:00:00Z",
+        "q02": "2021-01-01T00:00:00Z",
+    }
 
 
 def test_the_estimate_cuts_where_the_recorded_bins_cut(tmp_path):
@@ -1263,7 +1072,7 @@ def test_clips_drawn_before_the_bins_were_recorded_are_counted_and_said(tmp_path
         before["n_drawn_before_bins"] == 2
     ), "no bins recorded: every clip predates them"
 
-    audit.fix_bins(tmp_path, {"q01": np.linspace(0.1, 0.9, 11)}, seed=0)
+    _record_bins(tmp_path, {"q01": np.linspace(0.1, 0.9, 11)}, "2021-01-01T00:00:00Z")
     audit.append_audit(tmp_path, rows[3].instance_id, score=0.9, human_label=False)
     after = audit.precision_at_cutoff(tmp_path, rows, cutoff=None, manifest=manifest)
     assert after["n_drawn_before_bins"] == 2

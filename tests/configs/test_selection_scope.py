@@ -49,7 +49,7 @@ _MODEL_OR_TRAINED = (
 )
 _TRACK = (
     "names a track inside a tracking run, and a single-subject run is always track 0. One "
-    "classification for all three modules: behavior clustering's form restores it through "
+    "classification for both modules: behavior clustering's form restores it through "
     "the base `load_config`, so `selection` would stop Start from carrying it there"
 )
 _TRACKER = "a registered tracker, the same code in every experiment"
@@ -62,7 +62,6 @@ NOT_AN_ARTIFACT: dict[tuple[str, str], str] = {
     ("detection", "model_id"): _MODEL_OR_TRAINED,
     ("keypoint_detect", "model_id"): _MODEL_OR_TRAINED,
     ("query", "track_id"): _TRACK,
-    ("query_eval", "track_id"): _TRACK,
     ("temporal_clustering", "track_id"): _TRACK,
 }
 
@@ -194,7 +193,7 @@ def test_the_sweep_would_catch_a_run_id_declared_a_setting():
 def test_the_sweep_reaches_the_fields_it_guards():
     """A walk over nothing passes. The fields the review found are among those swept."""
     swept = {f"{module_id}.{field['name']}" for module_id, field in _artifact_fields()}
-    assert len(swept) >= 18, sorted(swept)
+    assert len(swept) >= 16, sorted(swept)
     assert {
         "embedding.tracking_run_id",
         "tracking.detection_run_id",

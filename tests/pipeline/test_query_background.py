@@ -167,11 +167,11 @@ def test_a_resumed_run_reuses_the_stored_draw_rather_than_redrawing(tmp_path):
 # the leakage guard, in the shape §20 needs
 # --------------------------------------------------------------------------- #
 def test_the_draw_consults_no_behavior_stream(tmp_path, monkeypatch):
-    """`tests/pipeline/test_label_leakage.py` permutes a stream and compares predictions, but
-    its method list is hand-written over the *eval* ids, so a §20 registry method is not
-    covered by it. The §20 module needs a different form of the same question anyway: it never
-    receives labels at all — exemplars arrive as user-chosen clip spans — so what has to hold
-    is that the draw reads no label source whatsoever.
+    """Query eval's guard permuted a ground-truth stream and compared predictions; it went
+    with that module, and it never covered a §20 registry method. The §20 module needs a
+    different form of the same question anyway: it never receives labels at all — exemplars
+    arrive as user-chosen clip spans — so what has to hold is that the draw reads no label
+    source whatsoever.
 
     Asserted by making every stream read raise. A draw that touched one would fail loudly
     instead of quietly returning a pool a user could not reproduce.

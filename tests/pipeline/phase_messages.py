@@ -6,11 +6,11 @@ run just emitted to :func:`assert_messages_name_their_phases`, so a declaration 
 describes cannot drift apart without that module's test failing.
 
 The class this guards: a message the page reads as the wrong phase, or as none. The first
-version matched a phase's words anywhere in a message, and query-eval's querying messages carry
-``loading <subject>`` in their note — every run showed "loading" again once per subject, and
-eight hand-rolled per-module checks each asked only whether a phase's words appeared *somewhere*,
-which that message passes. Asking "which phase does the page draw for this message" is the
-question that fails on it.
+version matched a phase's words anywhere in a message, and the querying messages of query eval
+(a module since removed) carried ``loading <subject>`` in their note — every run showed "loading"
+again once per subject, and eight hand-rolled per-module checks each asked only whether a phase's
+words appeared *somewhere*, which that message passes. Asking "which phase does the page draw for
+this message" is the question that fails on it.
 """
 
 from detail.core.progress import message_phase

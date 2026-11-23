@@ -18,32 +18,28 @@ Three things this form does *not* have, each on purpose:
 
 ``result_widget`` returns the **calibration workspace** — a behavior selector over Calibrate and
 Browse. It is a stateful result view that writes, which ``docs/gui_design.md`` §3.2 allows for an
-authored run (§21) and which the removed ``clip_annotation`` established. Audit is the third tab §20
-specifies and is not built yet; §21 makes it generic over the artifact rather than Query's, so it
-arrives as a shared widget rather than as a tab grown here.
+authored run (§21) and which the removed ``clip_annotation`` established. Audit is
+``query_review.QueryReviewTab``: every clip a behavior's cutoff keeps, reviewed one recording at a
+time on the clustering review's pane (§20 *The audit*).
 """
-
-import dataclasses
 
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QDialog,
+    QFrame,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QMessageBox,
     QPushButton,
     QScrollArea,
-    QTabBar,
     QTableView,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
-from PyQt6.QtCore import QTimer, Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import (
-    QColor,
     QFont,
     QPalette,
     QStandardItem,
@@ -53,7 +49,6 @@ from PyQt6.QtGui import (
 from detail.configs.query import DEFAULT_METHOD, QueryConfig
 from detail.core import chart_theme
 from detail.gui.forms import ConfigForm
-from detail.gui.grip_splitter import GripSplitter
 from detail.gui.help_ui import field_label, help_button, label_with
 from detail.gui.modules._common import common_complete_run_items, repopulate_combo
 from detail.gui._pydantic_form import (
@@ -69,24 +64,23 @@ from detail.gui.modules.registry import (
     register_analysis_module_ui,
 )
 from detail.gui.busy import run_busy, run_progress
-from detail.gui.clip_grid import ConfidenceStrip, score_digits
+from detail.gui.clip_grid import score_digits
 from detail.gui.confidence import ConfidenceRow, showing_caption
-from detail.gui.audit_tab import AuditTab
-from detail.gui.cluster_strip import EthogramStrip, ruled
 from detail.gui.collapse import CollapsibleBand
+from detail.gui.live_montage import LiveMontage, MontageClip, context_span
 from detail.gui.measurements import BASELINE_RECORDING, MeasurementsPanel
+from detail.gui.cluster_workspace import QUERY_TERMS
+from detail.gui.label_browse import LabelBrowseTab
+from detail.gui.query_review import QueryReviewTab
 from detail.gui.tables import (
-    BROWSE_ROWS,
     num_cell,
-    SortCell,
     enable_sorting,
-    fit_table_height,
     make_columns_resizable,
     row_id,
-    top_of_pane,
     stamp_row_id,
 )
-from detail.gui.sizing import lines, remember_size, remembered_size
+from detail.gui.sizing import emphasis_font, lines, set_available
+from detail.gui.timefmt import format_time
 from detail.gui.spatial_map import SpatialMap, frame_aspect
 from detail.gui.method_form import MethodFields
 from detail.gui.example_spread import spread_text
@@ -95,7 +89,14 @@ from detail.gui.plots import bound_axes
 from detail.gui.sizing import lines
 from detail.gui.tables import fill_width
 from detail.pipeline.query import QueryModule, resolve_method
-from detail.gui.status_color import WARN
+from detail.storage import query_runs
+from detail.gui.status_color import (
+    MUTED,
+    WARN,
+    set_band,
+    set_label_color,
+    warn_ink,
+)
 from detail.gui.sizing import mono_font
 
 # §20's exemplar guardrails, as warnings rather than refusals: a user who knows their behavior
@@ -460,38 +461,18 @@ class _QueryConfig(ConfigWidget):
         return None
 
 
-# How wide a band of confidence the "near cutoff" strip draws from, as a fraction of the axis.
 # Points on the frequency curve. Enough that the shape is legible, few enough that building it
 # stays one pass over the cached extraction.
 _CURVE_STEPS = 41
-# Layout A: the dial on the left at a fixed width, the evidence filling the right. Fixed
-# rather than proportional so nothing on the right can resize the graph.
-_DIAL_PX = 380
-#: The curve's height, as a **range**: it may be squeezed to `_PLOT_MIN_PX` on a short window and
-#: never grows past `_PLOT_MAX_PX`. In lines of the interface font, so a user who scales their text
-#: gets a taller graph rather than the same box with bigger axis labels (`sizing.lines`).
+#: The curve's height floor, in lines of the interface font (`sizing.lines`), so a user who
+#: scales their text gets a taller graph rather than the same box with bigger axis labels.
 #:
 #: The floor is what a curve is still readable at. pyqtgraph's axis chrome is a *constant* ~40px
 #: whatever the widget's height, so a 130px plot still spends 90px on data — measured across
 #: 240/160/120/90px, the data area is 200/120/80/50. Below about eight lines the chrome is most of
-#: it and the shape stops being legible.
-#: Line *counts*, resolved at construction: `sizing.lines` reads the application font and
-#: there is no application at import time.
+#: it and the shape stops being legible. Its ceiling is the band's (`_BAND_MAX_LINES`).
+#: A line *count*, resolved at construction: there is no application at import time.
 _PLOT_MIN_LINES = 8
-_PLOT_MAX_LINES = 17
-#: Heights, for the vertical split. Distinct from `_PLAYER_PX` / `_DIAL_PX`, which are the
-#: *widths* of the two panes inside the top row — reusing one number for both put 460px of
-#: preferred height on the top row, pushed the sum past the window, and Qt scaled everything
-#: down proportionally until the clip row was 168px and the divider's buttons were clipped.
-_TOP_PX = 430
-_STRIP_PX = 190
-#: What a clip row cannot go below: a thumbnail, its caption, and the divider's steppers. A
-#: preferred size is negotiable under pressure; this is not.
-_STRIP_MIN_PX = 175
-_PLAYER_PX = 460
-#: The ethogram band under the clip row. Short: it answers "where did these land", which is a
-#: shape, not a value anyone reads off.
-_ETHOGRAM_PX = 150
 
 
 def _sparkline_font() -> QFont:
@@ -500,12 +481,21 @@ def _sparkline_font() -> QFont:
 
 
 def _clip_specs(
-    candidates, recording_id, subject, embed_run_id, timeline, *, name: str
+    candidates,
+    recording_id,
+    subject,
+    embed_run_id,
+    timeline,
+    *,
+    name: str,
+    removed: frozenset = frozenset(),
 ) -> list:
     """``QueryCandidate``s -> ``ClipSpec``s, which every clip surface in the GUI speaks.
 
     ``name`` is the recording's, for the caption (§11: the id is the tool's). Required, so a
-    caller cannot fall back to the id by forgetting it.
+    caller cannot fall back to the id by forgetting it. A clip whose span is in ``removed`` (the
+    behavior's review took it out, §20) says so in its caption: the strip is the method's own
+    ranked list, so a removed clip stays in it, but it is not in the behavior's instances.
 
     The candidate carries trajectory **rows**; a clip surface needs times, so the unit's
     timeline supplies them by direct indexing — the same projection the artifact writer does.
@@ -517,100 +507,230 @@ def _clip_specs(
     for c in candidates:
         if c.start_row >= len(t_ns) or c.end_row >= len(t_ns):
             continue  # a shard from a search whose trajectory has since changed
+        start, end = int(t_ns[c.start_row]), int(t_ns[c.end_row])
+        mark = (
+            " · removed" if (recording_id, int(subject), start, end) in removed else ""
+        )
         out.append(
             ClipSpec(
                 recording_id,
                 int(subject),
                 embed_run_id,
-                int(t_ns[c.start_row]),
-                int(t_ns[c.end_row]),
-                f"{name} {c.confidence:.2f}",
+                start,
+                end,
+                f"{name} {c.confidence:.2f}{mark}",
                 score=float(c.confidence),
             )
         )
     return out
 
 
+#: Where Calibrate's grid keeps its orientation, layers and context — under ``query/``, apart
+#: from AUDIT's (``query_review``) and clustering's.
+CALIBRATE_ALIGNED_KEY = "query/calibrate_aligned"
+CALIBRATE_LOOK_KEY = "query/calibrate_look"
+CALIBRATE_CONTEXT_KEY = "query/calibrate_context"
+#: The band over the grid — the curve beside the cutoff controls — as a height range in lines.
+#: Its floor is the curve's legibility floor plus a line; its ceiling keeps the grid the page's
+#: largest thing, which is the point of the layout (the clips are what the cutoff is judged on).
+_BAND_MAX_LINES = 14
+#: The cutoff controls' width beside the curve.
+_CONTROLS_PX = 440
+#: A tile loops at least this long, so a one-frame match is still watchable.
+_MIN_LOOP_NS = 400_000_000
+
+
+def _cutoff_text(value: float) -> str:
+    """A cutoff as a person reads it: up to four decimals, without trailing zeros."""
+    text = f"{float(value):.4f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def not_saved_text(name: str, shown: float, saved: float | None, keeps: str) -> str:
+    """CALIBRATE's *not saved* bar: what is shown, and what every other view still uses."""
+    here = _cutoff_text(shown)
+    if saved is None:
+        return (
+            f"⚠ Not saved. You're looking at {here}, which would keep {keeps}; {name} has no "
+            "cutoff yet, so Audit, Browse and Measures have nothing to show."
+        )
+    return (
+        f"⚠ Not saved. You're looking at {here}, which would keep {keeps}; Audit, Browse and "
+        f"Measures still use {_cutoff_text(saved)}."
+    )
+
+
+def unsaved_notice_text(name: str, shown: float, saved: float | None) -> str:
+    """The notice the other views show while CALIBRATE holds an unsaved cutoff."""
+    here = _cutoff_text(shown)
+    if saved is None:
+        return (
+            f"⚠ Calibrate shows {name} at {here}, not saved, and {name} has no cutoff yet: "
+            "this view has nothing from it."
+        )
+    return (
+        f"⚠ Calibrate shows {name} at {here}, not saved. This view uses the saved "
+        f"{_cutoff_text(saved)}."
+    )
+
+
+class _AttentionBar(QFrame):
+    """A band that is plainly not the page (`status_color.set_band`), words in amber and bold,
+    and the buttons that resolve it. Shared by CALIBRATE's *not saved* bar and the other views'
+    notice, so the two look and read as one thing."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setFrameShape(QFrame.Shape.Box)
+        row = self._row = QHBoxLayout(self)
+        self.text = QLabel("")
+        self.text.setWordWrap(True)
+        row.addWidget(self.text, 1)
+        self.set_loud(True)
+
+    def add_button(self, button: QPushButton) -> None:
+        self._row.addWidget(button)
+
+    def set_loud(self, loud: bool) -> None:
+        """Loud: banded, amber, bold — something is not saved. Quiet: the page's own line."""
+        self.setFrameShape(QFrame.Shape.Box if loud else QFrame.Shape.NoFrame)
+        set_band(self, loud)
+        font = self.text.font()
+        font.setBold(loud)
+        self.text.setFont(font)
+        if loud:
+            set_label_color(self.text, warn_ink(self))
+        else:
+            self.text.setPalette(self.palette())
+
+
+def _clock(t_ns: int) -> str:
+    """``m:ss`` of a recording time, for a tile's caption."""
+    seconds = int(t_ns) // 1_000_000_000
+    return f"{seconds // 60}:{seconds % 60:02d}"
+
+
+class _BelowCutoffBar(QFrame):
+    """The bar pinned over CALIBRATE's grid while everything in view is below the cutoff."""
+
+    #: **↑ Back to the cutoff** was pressed.
+    back_requested = pyqtSignal()
+
+    def __init__(self, parent) -> None:
+        super().__init__(parent)
+        # A band that is plainly not the page (`set_band`), framed, its words bold and amber: the
+        # first build used the page's own colour and vanished over the tiles in a dark theme.
+        self.setFrameShape(QFrame.Shape.Box)
+        set_band(self)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(lines(0.5), 4, lines(0.5), 4)
+        self._text = QLabel("")
+        self._text.setFont(emphasis_font(self._text, steps=0))
+        set_label_color(self._text, warn_ink(self))
+        self.back = QPushButton("↑ Back to the cutoff")
+        self.back.setObjectName("calibrate_back_to_cutoff")
+        self.back.clicked.connect(self.back_requested.emit)
+        # Centred together, the button beside the words it acts on.
+        row.addStretch(1)
+        row.addWidget(self._text)
+        row.addSpacing(lines(1))
+        row.addWidget(self.back)
+        row.addStretch(1)
+
+    def set_text(self, text: str, *, back: bool) -> None:
+        self._text.setText(text)
+        self.back.setVisible(back)
+
+    def text(self) -> str:
+        return self._text.text()
+
+
 class _CalibrateTab(QWidget):
+    """Where a behavior's cutoff is chosen: the curve and its controls over every clip, playing.
+
+    Laid out like clustering's INTERPRET — the map across the top (there the tree, here the
+    frequency curve) and every clip playing in a grid below it (``LiveMontage``), most confident
+    first. The cutoff is a dashed rule across that grid (``LiveMontage.set_rule_headings``),
+    labelled "▲ N kept · cutoff X · M dropped ▼", with the dropped clips starting on the row
+    after it; nothing is faded. Scrolled past it, a bar pinned over the grid says so and goes
+    back. Clicking a clip moves the cutoff to it and keeps that clip where it was on screen; a
+    double-click opens it in the clip window. A clip the search found on top of the behavior's own
+    example or non-example is tagged so (``query_runs.told_kind``).
+
+    **Moving the cutoff previews; one button saves it** (§20). The line, the slider, the number
+    and a clicked clip all move the *shown* cutoff, which re-sections the grid and recounts — a
+    slice of results already loaded. **Keep clips from X up** is the only write: it saves the
+    cutoff and reprojects the artifact, off the UI thread. A cutoff that saved itself on release
+    left the page reading "not calibrated" under a slider sitting at 0.50, and the one button that
+    looked like the save (*Cut here*) was grey until a clip was clicked — so a user could not
+    tell how to set the thing AUDIT asked for.
+    """
+
     #: A cutoff was written and the artifact reprojected — the other tabs are stale.
     committed = pyqtSignal()
-
-    """Where the cutoff is chosen: the curve, the per-recording spread, and the clips at it.
-
-    §20's rule for this surface is that **dragging must not reproject**. The drag reads the
-    cached curve and re-points the clip strip; releasing commits, off the UI thread. Conflating
-    them freezes the GUI on every pixel of a drag, and the reprojection it would run per pixel
-    rewrites a frame-view zarr per searched unit.
-    """
+    #: The cutoff on screen, or the saved one, changed: whether it is saved may have too.
+    shown_changed = pyqtSignal()
 
     def __init__(self, run, experiment) -> None:
         super().__init__()
         import pyqtgraph as pg
 
+        from detail.gui.montage_export import ExportSource
+
         self._run = run
         self._experiment = experiment
         self._behavior_id = None
-        #: Each recording's field of view, normalized — read once with the ethograms, off the
-        #: UI thread. Without it a square is a bare rectangle and a dot is a coordinate rather
-        #: than a place.
-        self._outlines_by_recording: dict = {}
-        #: Where each kept instance happened **and which instance it was**, so a clicked dot
-        #: can be turned back into the clip it stands for.
-        self._placements_by_recording: dict | None = {}
-        #: Cached at load: `state()` is a disk read, and a clicked dot must not pay for one on
-        #: the UI thread (`cluster_workspace` caches it for the same reason).
-        self._embed_run_id: str = ""
-        self._frame_aspects: dict = {}
-        #: Built clip lists and unit timelines, per behavior / per unit. Neither changes while
-        #: the run is open, and rebuilding them on every tab click was the whole of the switch
-        #: lag.
+        self._editable = True
+        self._read_only_reason = ""
+        #: Built clip lists (most confident first) and unit timelines, per behavior / per unit.
+        #: Neither changes while the run is open; the cutoff decides what the grid *marks*.
         self._specs: dict[str, list] = {}
         self._timelines: dict[tuple, object] = {}
         self._curve: list = []
         #: ``{recording_id: name}``, read off the UI thread with the results (`set_names`).
-        #: The kept panel and the clip captions name recordings by it (§11).
         self._names: dict[str, str] = {}
-        self._syncing = False  # two controls drive one cutoff; do not let them echo
-
-        from detail.gui.behavior_query import (
-            _ClipPlayer,
-        )  # local: avoids an import cycle
+        #: The preview cache's readers, opened once per page (``clip_tiles.TileCatalog``), and the
+        #: recordings that have no preview here yet — read off the UI thread on first show.
+        self._catalog = None
+        self._missing: list[str] = []
+        self._tiles_read = False
+        #: Which behavior's clips the grid's tile source was built for.
+        self._source_for: str | None = None
+        self._syncing = False  # several controls drive one cutoff; do not let them echo
 
         outer = QVBoxLayout(self)
-        self._header = QLabel("")
-        self._header.setWordWrap(True)
-        outer.addWidget(self._header)
+        outer.setContentsMargins(0, 0, 0, 0)
 
-        # Vertical: what you are looking at on top, the ordering you are cutting in the
-        # middle, where it lands underneath. The clip row gets the full width because walking
-        # it is the decision this screen exists for; before, it had a third of the window and
-        # the dial and player had the rest.
-        # Neither side folds: the clip and the count are judged together, both in view.
-        top = self._top = GripSplitter(Qt.Orientation.Horizontal, key="query_calibrate")
+        # -- the line that says where you are, and the one write -------------------------- #
+        # Loud — banded, amber, bold — while the cutoff on screen is not the saved one: a
+        # previewed cutoff read as applied, and AUDIT then reviewed the saved one.
+        self._save_bar = _AttentionBar()
+        self._header = self._save_bar.text
+        self._keep = QPushButton("Keep clips from 0.5 up")
+        self._keep.setDefault(True)
+        self._keep.clicked.connect(self._on_keep)
+        self._back = QPushButton("Back to the saved cutoff")
+        self._back.setObjectName("calibrate_back_to_saved")
+        self._back.clicked.connect(self._back_to_saved)
+        self._save_bar.add_button(self._keep)
+        self._save_bar.add_button(self._back)
+        outer.addWidget(self._save_bar)
 
-        # -- left: the dial ------------------------------------------------------------- #
-        # Its own scroll, so a cohort with many recordings cannot push the pane's contents
-        # into the pane that holds the clips. The two used to share one column, and the plot
-        # was its only vertically-Expanding child: every clip the strip gained or lost was
-        # absorbed by the graph, which is why it moved on essentially every drag (measured at
-        # 663px -> 480px across a cutoff sweep).
-        dial_scroll = self._dial_scroll = QScrollArea()
-        dial_scroll.setWidgetResizable(True)
-        dial = QWidget()
-        root = QVBoxLayout(dial)
-
+        # -- the band: the curve beside its controls -------------------------------------- #
+        band = self._band = QWidget()
+        row = QHBoxLayout(band)
+        row.setContentsMargins(0, 0, 0, 0)
         self._plot = plot_theme.themed_plot()
-        # A **range**, not a fixed height. `setFixedHeight` is a floor and a ceiling at once, so a
-        # pane shorter than the number can only crop: the widget keeps its height and Qt clips it
-        # at the parent boundary, taking the x-axis and its labels with it. Measured on this pane
-        # at a laptop size — a 444px dial column in a 334px viewport, cropped by 110px, of which
-        # 304 was this line plus the caption's — which is the "the plots are cut off" report.
-        # The pane split above is what holds the height *still* while the clips resize; this only
-        # has to stop the graph inflating the column it lives in.
+        # A range, not a fixed height (see `_PLOT_MIN_LINES`): a fixed height crops the axis on
+        # a short window rather than letting the band give way.
         self._plot.setMinimumHeight(lines(_PLOT_MIN_LINES))
-        self._plot.setMaximumHeight(lines(_PLOT_MAX_LINES))
         self._plot.setLabel("bottom", "confidence cutoff")
         self._plot.setLabel("left", "instances kept")
+        self._plot.setToolTip(
+            "Each point is how many instances that cutoff returns. Left is loose, right is "
+            "strict. ✕ marks a point where the method stopped storing candidates — the curve "
+            "flattens there for that reason, not the animal's."
+        )
         bound_axes(self._plot, x=(0.0, 1.0), y=(0.0, None))
         theme = plot_theme.current()
         self._line = pg.InfiniteLine(
@@ -620,202 +740,95 @@ class _CalibrateTab(QWidget):
             pen=plot_theme.pen(theme.handle, width=2),
             hoverPen=plot_theme.pen(theme.handle, width=4),
         )
-        # The line's position is committed to run state, and `api.query.set_cutoff` refuses a
-        # value outside [0, 1] — so an unbounded drag turns a gesture into an error dialog.
-        # The API check stays as the backstop; this stops the gesture reaching it.
+        # `api.query.set_cutoff` refuses a value outside [0, 1]; this stops a drag reaching it.
         self._line.setBounds([0.0, 1.0])
-        # Two signals, deliberately different jobs. `sigPositionChanged` fires on a drag *and*
-        # on a programmatic move, so it is the view update; `sigPositionChangeFinished` fires
-        # only when a real drag is released (pyqtgraph emits it inside `mouseDragEvent` on
-        # `ev.isFinish()`), so it is the commit. That asymmetry is what lets the numeric box
-        # below move the line without committing on every keystroke.
+        # A drag previews. Nothing here writes: the release used to, and that is the save this
+        # page now asks for by name (the class docstring).
         self._line.sigPositionChanged.connect(self._on_line_moved)
-        self._line.sigPositionChangeFinished.connect(self._on_line_released)
         self._plot.addItem(self._line)
-        root.addWidget(self._plot)
+        row.addWidget(self._plot, 1)
 
-        # What the curve is, in words, because the axes alone did not say. It used to be pinned
-        # to a fixed height so a rewrap could not move the graph — but a word-wrapped label is
-        # exactly the widget whose height depends on the width it is given, so pinning it makes
-        # the *text* disappear at a narrow width instead of the label growing. 64px of it was a
-        # quarter of the pane's 444px floor. It wraps; the plot's ceiling above is what stops the
-        # column growing.
-        legend = QLabel(
-            "Each point is how many instances that cutoff returns. Left is loose, right is "
-            "strict. ✕ marks a point where the method stopped storing candidates — the curve "
-            "flattens there for that reason, not the animal's."
-        )
-        legend.setWordWrap(True)
-        root.addWidget(legend)
-
+        controls = QWidget()
+        column = QVBoxLayout(controls)
+        column.setContentsMargins(0, 0, 0, 0)
         self._confidence = ConfidenceRow(
-            heading="Match confidence cutoff",
+            heading="Cutoff",
             help_text=(
                 "How confident a match must be to count as an instance. There is no ground "
                 "truth to optimize against, so this is chosen by looking at what each "
-                "setting returns — the curve above and the clips beside it."
+                "setting returns — the curve beside it and the clips below. Moving it only "
+                "shows what it would keep; Keep saves it."
             ),
         )
         self._confidence.threshold_changed.connect(self._on_confidence_typed)
-        root.addWidget(self._confidence)
-
-        root.addWidget(QLabel("Kept per recording, at this cutoff"))
+        column.addWidget(self._confidence)
+        column.addWidget(QLabel("Kept per recording, at this cutoff"))
         self._spread = QLabel("")
         self._spread.setFont(_sparkline_font())
-        self._spread.setWordWrap(True)
-        root.addWidget(self._spread)
-        root.addStretch()
-        dial_scroll.setWidget(dial)
-
-        # -- right: the evidence -------------------------------------------------------- #
-        # The clips are what the decision is made on, so they open visible rather than five
-        # widgets down a scrolling column ("I didn't realize the matches were shown").
-        self._grid = ConfidenceStrip(experiment)
-        self._grid.clip_clicked.connect(self._on_clip_clicked)
-        self._grid.cutoff_moved.connect(self._on_strip_cutoff_moved)
-        self._grid.cutoff_released.connect(self._on_strip_cutoff_released)
-        self._grid.setMinimumHeight(_STRIP_MIN_PX)
-
-        # The scrubber spans the **clip**, and nothing either side of it. Trim mode pads the
-        # window by ±3s, which is what the annotation loop needs — there you drag a match's
-        # bounds outward, so you have to see past them. Here you are only deciding whether the
-        # clip is the behavior, and the padding puts the playhead a third of the way along a
-        # strip that is mostly not the match, which reads as starting in the middle.
-        self._player = _ClipPlayer(experiment, autoplay=True, context_s=0)
-        self._player.setMinimumWidth(_PLAYER_PX)
-
-        # Top row: the clip you are judging beside the count you are judging it against. Both
-        # have to be visible *while* dragging — the count is the thing the drag changes, and a
-        # plot below the clip row is below the fold on a laptop.
-        top.addWidget(self._player)
-        top.addWidget(dial_scroll)
-        dial_scroll.setMinimumWidth(_DIAL_PX)
-        if not top.remember():
-            top.setSizes([_PLAYER_PX, _DIAL_PX])
-
-        # Where the kept instances actually land, one row per searched recording. Redrawn on
-        # **commit**, not on drag: the artifact holds only what the cutoff kept, so there is
-        # nothing to draw for a cutoff nobody has committed yet.
-        ethograms = QWidget()
-        ethogram_column = QVBoxLayout(ethograms)
-        ethogram_column.setContentsMargins(0, 0, 0, 0)
-        self._ethogram_title = QLabel("Kept instances, per recording")
-        ethogram_column.addWidget(self._ethogram_title)
-        self._ethograms = EthogramStrip()
-        ethogram_column.addWidget(self._ethograms)
-        ethogram_column.addStretch()
-        # `EthogramStrip` is `setFixedHeight(rows * row_px())`, so a hundred recordings is
-        # ~2,000px the page cannot squeeze — the band scrolls its rows and the drag says how
-        # much you want.
-        self._ethogram_scroll = QScrollArea()
-        self._ethogram_scroll.setWidgetResizable(True)
-        self._ethogram_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        self._ethogram_scroll.setHorizontalScrollBarPolicy(
+        self._spread.setAlignment(
+            Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
+        )
+        # Its own scroll: a cohort of many recordings must not push the band into the grid.
+        spread_scroll = QScrollArea()
+        spread_scroll.setWidgetResizable(True)
+        spread_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        spread_scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
-        self._ethogram_scroll.setWidget(ethograms)
-        self._ethogram_px = remembered_size("query/ethograms", lines(8))
-        self._ethogram_scroll.setFixedHeight(self._ethogram_px)
+        spread_scroll.setWidget(self._spread)
+        column.addWidget(spread_scroll, 1)
+        controls.setFixedWidth(_CONTROLS_PX)
+        row.addWidget(controls)
+        band.setMaximumHeight(lines(_BAND_MAX_LINES))
+        outer.addWidget(band)
 
-        # Where those instances land, beside when they land — the same question the clustering
-        # workspace's band answers, the same widget, and now the same three bands in the same
-        # order. A cutoff that keeps a behavior only in one corner is a spatial bias nothing
-        # else on this screen shows.
-        self._map = SpatialMap(experiment)
-
-        # **Vertical sections are bands; horizontal panes are splitters.** The player beside the
-        # dials is genuinely side by side and stays a splitter; everything stacked below it folds
-        # and drags, exactly as it does on the clustering page. This screen used three splitter
-        # panes and no bands, which is why a comment on one page never reached the other.
-        # Stretch 1, and no trailing stretch below: the top row is this page's primary content
-        # (the clip you are judging beside the count you are judging it against), so it takes
-        # the slack the way a fill element does. Packed at stretch 0 it was handed 302px for
-        # 452px of dial and clipped the *Kept per recording* heading — the same symptom the
-        # measure-and-claw-back workaround existed for, which this replaces.
-        outer.addWidget(top, 1)
-        self._grid_band = CollapsibleBand(
-            "Clips", self._grid, key="query/clips", on_resize=self._grid.resize_by
+        # -- every clip, playing ---------------------------------------------------------- #
+        self._grid_note = QLabel("")
+        self._grid_note.setWordWrap(True)
+        self._grid_note.setVisible(False)
+        outer.addWidget(self._grid_note)
+        self._montage = LiveMontage(
+            aligned_key=CALIBRATE_ALIGNED_KEY,
+            look_key=CALIBRATE_LOOK_KEY,
+            context_key=CALIBRATE_CONTEXT_KEY,
+            export=ExportSource(
+                clips=self.export_clips,
+                experiment_dir=lambda: self._experiment.dir,
+                origin=lambda: None,
+                name=self._export_stem,
+                empty=lambda: "No clip is kept at this cutoff",
+            ),
         )
-        outer.addWidget(self._grid_band)
-        self._ethogram_band = CollapsibleBand(
-            "Ethograms",
-            ruled(self._ethograms, self._ethogram_scroll),
-            key="query/ethograms",
-            on_resize=self._resize_ethograms,
+        # Confidence is the order, so the montage's own order switch has nothing to offer.
+        self._montage.order_button.setVisible(False)
+        self._montage.setMinimumHeight(self._montage.height_for_rows(1))
+        self._montage.set_click_hint(self._click_hint, runs=False)
+        self._montage.set_rule_headings(True)
+        self._montage.clip_clicked.connect(self._on_tile_clicked)
+        # The caption is short; the tooltip has the whole score and the recording's whole name.
+        self._montage.set_hover_text(self._hover_text)
+        self._montage.clip_activated.connect(
+            lambda i: QTimer.singleShot(0, lambda: self._play_clip(i))
         )
-        outer.addWidget(self._ethogram_band)
-        self._map_band = CollapsibleBand(
-            "Locations", self._map, key="query/locations", on_resize=self._map.resize_by
+        self._montage.context_changed.connect(
+            lambda _s: self._show_tiles(new_source=True)
         )
-        outer.addWidget(self._map_band)
-        # The same band the clustering workspace carries, on the same artifact: a behavior scan's
-        # matches are bouts with a speed, a duration and a path shape too, and "is this cluster
-        # unusually slow" is the same question here as "is this behavior". A section on one
-        # result page and not the other is what `test_workspace_parity` exists to catch.
-        # Against the **recording**, not against the other behaviors: a query's matches are a
-        # selection from the footage rather than a partition of it, and four of five real query
-        # runs have a single behavior — so "the other behaviors" is nothing at all, and the band
-        # drew nothing at all. "Faster than most of what this animal does" is the question anyway.
-        self._measurements = MeasurementsPanel(
-            experiment,
-            "matches",
-            "behavior",
-            key="query/measurements",
-            baseline=BASELINE_RECORDING,
+        outer.addWidget(self._montage, 1)
+        #: How many clips the shown cutoff keeps — the line sits after them.
+        self._kept_count = 0
+        # Over the grid's top edge, not above it in the layout: appearing must not push the
+        # tiles down under the pointer.
+        self._below_bar = _BelowCutoffBar(self._montage.grid.viewport())
+        self._below_bar.back_requested.connect(
+            lambda: self._scroll_to_cutoff(self._kept_count)
         )
-        # A commit rewrites the matches the band partitions, and leaves the behavior selected.
-        self.committed.connect(self._measurements.recheck)
-        self._measurement_band = CollapsibleBand(
-            "Interpretation",
-            self._measurements,
-            key="query/measurements",
-            on_resize=self._measurements.resize_by,
+        self._below_bar.hide()
+        self._montage.grid.verticalScrollBar().valueChanged.connect(
+            self._sync_below_bar
         )
-        outer.addWidget(self._measurement_band)
+        self._montage.grid.viewport().installEventFilter(self)
 
-    def showEvent(self, event) -> None:  # noqa: N802 — Qt's name
-        super().showEvent(event)
-        # One turn later: at `showEvent` the dial's children exist and have not been laid out,
-        # so its hint is still short and measuring here reads "nothing to do".
-        QTimer.singleShot(0, self._floor_the_dial)
-
-    def _floor_the_dial(self) -> None:
-        """Let the dial declare the height its own contents need.
-
-        It replaces a method that measured the dial and clawed pane height back off a vertical
-        splitter. The splitter is gone — the sections below are bands — so the honest form is a
-        *minimum*: the page scrolls when the sum does not fit (`PageScroll`), where a scroll area
-        with no floor simply clipped the *Kept per recording* heading and called it laid out.
-        """
-        inner = self._dial_scroll.widget()
-        needed = inner.sizeHint().height() + 2 * self._dial_scroll.frameWidth()
-        if needed > self._dial_scroll.minimumHeight():
-            self._dial_scroll.setMinimumHeight(needed)
-
-    def _resize_ethograms(self, delta: int) -> None:
-        """How many recordings' timelines are on screen at once."""
-        self._ethogram_px = max(lines(3), min(self._ethogram_px + delta, lines(40)))
-        self._ethogram_scroll.setFixedHeight(self._ethogram_px)
-        remember_size("query/ethograms", self._ethogram_px)
-
-    def _on_strip_cutoff_moved(self, value: float) -> None:
-        """The line moved in the strip: mirror it onto the graph and the box, view only."""
-        if self._syncing:
-            return
-        self._set_cutoff_widgets(value)
-        self._refresh_header(value)
-
-    def _on_strip_cutoff_released(self, value: float) -> None:
-        """The line was let go: commit, off the UI thread, exactly as a graph drag does."""
-        self._commit(value)
-
-    def _on_clip_clicked(self, clip) -> None:
-        """Play the clicked clip. The cell shows a pointing-hand cursor, so a click has to do
-        something; this signal used to be connected to nothing at all."""
-        # The strip marks its own selected cell (it owns the mapping from clip to cell), so
-        # this only has to play it.
-        self._player.set_clip(clip)
-
+    # -- what the workspace drives ---------------------------------------------------- #
     def set_behavior(self, behavior_id: str, curve: list) -> None:
         """Point the tab at a behavior whose results are already warmed."""
         self._behavior_id = behavior_id
@@ -824,26 +837,51 @@ class _CalibrateTab(QWidget):
         start = 0.5 if behavior.cutoff is None else float(behavior.cutoff)
         self._draw_curve()
         self._set_cutoff_widgets(start)
-        self._refresh_clips()  # the whole ranked list, once per behavior
-        self._refresh_view(start)
-        # Measured against the recording, so "slower than most" means something. This follows the
-        # behavior rather than the slider; a committed cutoff changes the matches, and reaches the
-        # band through `committed`.
-        self._measurements.select(self._run, behavior_id)
-        # ...and on opening, not only after a commit. Hanging the ethograms off `_on_committed`
-        # alone left the pane holding a heading and nothing under it until somebody happened to
-        # move the cutoff — on a behavior already calibrated, that is a blank panel reporting a
-        # result that exists.
-        self._refresh_ethograms()
+        self._refresh_header(start)
+        if self._tiles_read:
+            self._show_tiles(new_source=True, scroll=True)
+        else:
+            self._read_tiles()
 
     def cutoff(self) -> float:
+        """The cutoff the page shows — saved or not."""
         return float(self._line.value())
 
-    # -- drawing ------------------------------------------------------------------------ #
+    def set_editable(self, editable: bool, *, reason: str) -> None:
+        """Freeze every way of moving the cutoff when the run will refuse one.
 
+        There are four: the line, the number, a clicked clip, and Keep. ``reason`` is required:
+        a snapshot is undone by going back to the live run, a finished run by Reopen.
+        """
+        self._editable = editable
+        self._read_only_reason = "" if editable else reason
+        self._line.setMovable(editable)
+        self._confidence.setEnabled(editable)
+        self._confidence.setToolTip("" if editable else reason)
+        self._montage.set_click_hint(self._click_hint if editable else None, runs=False)
+        if self._behavior_id is not None:
+            self._refresh_header(self.cutoff())
+
+    def set_names(self, names: dict[str, str]) -> None:
+        """The recordings' names, read off the UI thread by the workspace's load."""
+        if names != self._names:
+            self._names = dict(names)
+            self._specs.clear()  # their captions carry the name
+
+    def forget_clips(self) -> None:
+        """The review removed or put back a clip: rebuild the tiles' marks and the count."""
+        self._specs.clear()
+        if self._behavior_id is not None:
+            self._show_tiles()
+            self._refresh_header(self.cutoff())
+
+    def _name(self, recording_id: str) -> str:
+        """The recording's name, or its id if it has none left (deleted since the run)."""
+        return self._names.get(recording_id, recording_id)
+
+    # -- the curve -------------------------------------------------------------------- #
     def _draw_curve(self) -> None:
         import numpy as np
-        import pyqtgraph as pg
 
         self._plot.clear()
         self._plot.addItem(self._line)
@@ -851,18 +889,15 @@ class _CalibrateTab(QWidget):
             return
         x = np.array([p["cutoff"] for p in self._curve], dtype=float)
         y = np.array([p["n_instances"] for p in self._curve], dtype=float)
-        # Pin both axes. The cutoff marker is a plot item, so with auto-range on, *dragging it*
-        # nudged the x range — the graph moving under the hand that moved the line, which is the
-        # second half of "the graph resizes as I move the confidence bar". The domain is the
-        # confidence axis, [0, 1], and it is known before the data.
+        # Both axes pinned: with auto-range on, dragging the line nudged the x range — the graph
+        # moving under the hand that moved it. The domain is [0, 1], known before the data.
         self._plot.setXRange(0.0, 1.0, padding=0.02)
         self._plot.setYRange(0.0, float(max(y.max(), 1.0)), padding=0.05)
         self._plot.disableAutoRange()
         theme = plot_theme.current()
         self._plot.plot(x, y, pen=plot_theme.pen(self._curve_colour()))
         # A curve that flattens because the method stopped storing candidates looks exactly
-        # like one that flattens because the animal stopped, so the points a cap bound are
-        # marked rather than left to be misread (§20).
+        # like one that flattens because the animal stopped, so those points are marked (§20).
         capped_x = [p["cutoff"] for p in self._curve if p["capped"]]
         if capped_x:
             capped_y = [p["n_instances"] for p in self._curve if p["capped"]]
@@ -877,28 +912,19 @@ class _CalibrateTab(QWidget):
                 symbolSize=plot_theme.MARKS.marker_size + 2,
             )
 
-    def set_names(self, names: dict[str, str]) -> None:
-        """The recordings' names, read off the UI thread by the workspace's load."""
-        if names != self._names:
-            self._names = dict(names)
-            self._specs.clear()  # their captions carry the name
-        self._grid.set_names(names)
+    def _curve_colour(self) -> str:
+        """The one colour this run's behavior is drawn in. A query artifact is one behavior, so
+        it is identity 0, named by role rather than picked out of a palette by index."""
+        return plot_theme.current().identity(0)
 
-    def _name(self, recording_id: str) -> str:
-        """The recording's name, or its id if it has none left (deleted since the run)."""
-        return self._names.get(recording_id, recording_id)
-
+    # -- counts ----------------------------------------------------------------------- #
     def _kept_at(self, cutoff: float) -> dict[str, int]:
-        """``{recording_id: instances}`` a commit at ``cutoff`` would keep, every searched
-        recording included (a recording that matched nothing keeps 0, not absence).
+        """``{recording_id: instances}`` saving ``cutoff`` would keep, every searched recording
+        included (one that matched nothing keeps 0, not absence).
 
-        Exact, not read off the curve: the header used to print the nearest of the curve's
-        41 points beside the exact cutoff, so between points it stated a neighbour's count
-        (284 at 0.037 where a commit keeps 251) while this panel, counting at the cutoff,
-        said another number on the same screen (#35). ``candidates_at`` is the method's own
-        ``instances_at``, the call the commit projects through, so this holds for a method
-        that re-forms extents as the cutoff moves too. It is a slice of the results the
-        workspace already loaded, cheap enough per drag (the curve calls it 41 times).
+        Exact, through the method's own ``instances_at`` (``candidates_at``) — the call the save
+        projects through — not read off the curve's nearest point (#35). A slice of the results
+        the workspace already loaded, cheap enough per drag.
         """
         kept = {rid: 0 for rid in self._run.state().search_recording_ids}
         for (recording_id, _subject), candidates in self._run.candidates_at(
@@ -907,92 +933,123 @@ class _CalibrateTab(QWidget):
             kept[recording_id] = kept.get(recording_id, 0) + len(candidates)
         return kept
 
-    def _refresh_view(self, cutoff: float) -> None:
-        """Everything a cutoff change touches. The strip keeps its list; only its line moves."""
-        self._refresh_header(cutoff)
-        self._grid.set_cutoff(cutoff)
-
     def _refresh_header(self, cutoff: float) -> None:
+        """Where the cutoff stands — not set, saved, or shown and not saved — and the count."""
         behavior = self._run.state().behavior(self._behavior_id)
         total = self._curve[0]["n_instances"] if self._curve else 0
-        kept = self._kept_at(cutoff)  # once, for the header and the panel below it
+        kept = self._kept_at(cutoff)
         shown = sum(kept.values())
-        committed = (
-            "not calibrated"
-            if behavior.cutoff is None
-            else f"cutoff {behavior.cutoff:.4f}"
+        removed = self._removed_at(cutoff, behavior)
+        gone = f", {removed:,} of them removed in Audit" if removed else ""
+        here = _cutoff_text(cutoff)
+        count = f"{shown:,} of {total:,} clips{gone}"
+        saved = behavior.cutoff
+        is_saved = saved is not None and abs(float(saved) - cutoff) < 1e-9
+        # The symbol and the words carry the state as well as the band does (a colour-blind
+        # reader), and the band is loud only while something is not saved.
+        if is_saved:
+            text = f"✓ {behavior.name}: cutoff {here} saved — keeps {count}"
+        else:
+            text = not_saved_text(behavior.name, cutoff, saved, count)
+        self._header.setText(text)
+        self._save_bar.set_loud(not is_saved)
+        # Dashed on the curve while not saved, solid once it is: the line says it too.
+        theme = plot_theme.current()
+        self._line.setPen(plot_theme.pen(theme.handle, width=2, dashed=not is_saved))
+        self._back.setText(
+            "Back to the saved cutoff"
+            if saved is None
+            else f"Back to {_cutoff_text(saved)}"
         )
-        self._header.setText(
-            f"{behavior.name} ({behavior.id}) — {shown} instance(s) at {cutoff:.4f} · "
-            f"{committed}"
+        self._back.setVisible(saved is not None and not is_saved)
+        set_available(
+            self._back,
+            self._editable and saved is not None and not is_saved,
+            self._read_only_reason or "This is the saved cutoff.",
         )
+        self._keep.setText(f"Keep clips from {here} up")
+        if not self._editable:
+            set_available(self._keep, False, self._read_only_reason)
+        elif is_saved:
+            set_available(self._keep, False, "This is the saved cutoff.")
+        else:
+            set_available(self._keep, True, "")
         self._confidence.set_caption(showing_caption(shown, total))
-        self._draw_spread(cutoff, kept)
+        self._draw_spread(kept)
+        self.shown_changed.emit()
 
-    def _draw_spread(self, cutoff: float, kept: dict[str, int] | None = None) -> None:
+    def unsaved(self) -> tuple[float, float | None] | None:
+        """``(shown, saved)`` while the cutoff on screen is not the saved one, else ``None``."""
+        if self._behavior_id is None or not self._editable:
+            return None
+        saved = self._run.state().behavior(self._behavior_id).cutoff
+        shown = self.cutoff()
+        if saved is not None and abs(float(saved) - shown) < 1e-9:
+            return None
+        return shown, saved
+
+    def behavior_name(self) -> str:
+        if self._behavior_id is None:
+            return ""
+        return self._run.state().behavior(self._behavior_id).name
+
+    def _back_to_saved(self) -> None:
+        """Put the shown cutoff back to the saved one. Writes nothing."""
+        saved = self._run.state().behavior(self._behavior_id).cutoff
+        if saved is None:
+            return
+        self._set_cutoff_widgets(float(saved))
+        self._preview(float(saved), scroll=True)
+
+    def _draw_spread(self, counts: dict[str, int]) -> None:
         """How many instances each recording keeps at this cutoff (§20).
 
-        The panel exists to catch a cutoff that keeps most of one animal's behavior and little
-        of another's — which would bias the very comparison the run is for, along the axis
-        being compared, and the pooled curve cannot show it.
-
-        It used to draw each recording's score *distribution* as block characters. That is the
-        raw shape rather than the answer: users read it as "a pixelated graphic with no
-        context" and could not tell what it was for. A kept count says the thing directly, and
-        the outlier marker names the case the panel was built to catch.
+        It catches a cutoff that keeps most of one animal's behavior and little of another's —
+        a bias along the very axis being compared, which the pooled curve cannot show.
         """
-        # Every *searched* recording, not just the ones with candidates (`_kept_at`). A
-        # recording that matched nothing has a real answer — zero — and leaving its row out
-        # reads as "not searched", which is exactly the distinction coverage exists to
-        # preserve (§20).
-        counts = kept if kept is not None else self._kept_at(cutoff)
         if not counts:
             self._spread.setText("(no recordings searched)")
             return
         peak = max(counts.values())
         typical = sorted(counts.values())[len(counts) // 2]
-        lines = []
-        # By name, which is how the user knows the animal (§11): the ids read
-        # `recording_000…` here while the Browse tab beside it showed names.
+        out = []
+        # By name, which is how the user knows the animal (§11).
         rows = sorted((self._name(rid), n) for rid, n in counts.items())
-        width = max(22, max(len(name) for name, _n in rows))
+        width = max(len(name) for name, _n in rows)
         for name, kept in rows:
-            bar = "█" * (int(round(20 * kept / peak)) if peak else 0)
-            line = f"{name:<{width}} {bar:<20} {kept:>4}"
+            bar = "█" * (int(round(12 * kept / peak)) if peak else 0)
+            line = f"{name:<{width}} {bar:<12} {kept:>5,}"
             # Named rather than left to the eye: an animal contributing a fraction of the
-            # others is the finding this panel is for.
+            # others is the finding this panel is for. Short, to fit the column.
             if typical and kept * 4 <= typical:
-                line += "  ← far fewer than the rest"
-            lines.append(line)
-        self._spread.setText("\n".join(lines))
+                line += " ← far fewer"
+            out.append(line)
+        self._spread.setText("\n".join(out))
 
-    def _refresh_clips(self) -> None:
-        """Hand the strip the behavior's whole ranked list, opening at the cutoff.
+    def _removed_at(self, cutoff: float, behavior) -> int:
+        """How many of the clips ``cutoff`` keeps the review removed (§20)."""
+        removed = behavior.removed_keys()
+        if not removed:
+            return 0
+        return sum(
+            1
+            for spec in self._behavior_specs()
+            if spec.score >= cutoff
+            and (spec.recording_id, int(spec.track_id), spec.start_t_ns, spec.end_t_ns)
+            in removed
+        )
 
-        The strip is the ordering, so there is no band to choose and no near/above mode: you
-        scroll to wherever you want to look.
-
-        The list is **built once per behavior and kept**. It was described here as cheap and is
-        not: it reads a `unit_timeline` off disk for every searched unit and rebuilds every spec
-        from them, on the UI thread, every time a behavior is shown. None of it changes while
-        the run is open — the cutoff decides what the strip *marks*, not what is in it.
-        """
-        cutoff = self.cutoff()
+    # -- the clips -------------------------------------------------------------------- #
+    def _behavior_specs(self) -> list:
+        """Every candidate of the behavior as a clip, most confident first; built once."""
         specs = self._specs.get(self._behavior_id)
         if specs is None:
             specs = self._specs[self._behavior_id] = self._build_specs()
-        self._grid.show_clips(
-            specs,
-            cutoff,
-            empty_text=(
-                f"No instances at {cutoff:.4f}. That is a result — this behavior returns "
-                "nothing at this setting."
-            ),
-        )
+        return specs
 
     def _build_specs(self) -> list:
-        """Every candidate this behavior has, as clips, in confidence order."""
         state = self._run.state()
+        removed = frozenset(state.behavior(self._behavior_id).removed_keys())
         specs: list = []
         for (recording_id, subject), candidates in sorted(
             self._run.candidates_at(self._behavior_id, 0.0).items()
@@ -1010,16 +1067,15 @@ class _CalibrateTab(QWidget):
                     state.embed_run_id,
                     timeline,
                     name=self._name(recording_id),
+                    removed=removed,
                 )
             )
+        # Most confident first, and stable between equal scores, so the grid is the ranking.
+        specs.sort(key=lambda s: (-float(s.score), s.recording_id, s.start_t_ns))
         return specs
 
     def _timeline(self, recording_id: str, state):
-        """The unit's frame timeline, read once per unit and kept.
-
-        A completed embedding run's timeline does not change, and this is called once per
-        searched unit every time a behavior is shown.
-        """
+        """The unit's frame timeline, read once per unit and kept."""
         from detail.pipeline.query import unit_timeline
 
         key = (recording_id, state.embed_run_id, state.track_id)
@@ -1033,13 +1089,294 @@ class _CalibrateTab(QWidget):
                 state.track_id,
             )
         except (FileNotFoundError, ValueError):
-            # This unit's embedding is gone; its clips simply do not show. Cached too, so the
-            # miss is not re-attempted on every switch.
+            # This unit's embedding is gone; its clips simply do not show. Cached too.
             self._timelines[key] = None
         return self._timelines[key]
 
-    # -- the cutoff, from either control ------------------------------------------------ #
+    def _read_tiles(self) -> None:
+        """Open the preview cache for the searched recordings, off the UI thread, once."""
+        run = self._run
+        experiment = self._experiment
 
+        def read() -> dict:
+            from detail.api import clip_tiles
+
+            state = run.state()
+            rids = list(state.search_recording_ids)
+            embeds = {rid: state.embed_run_id for rid in rids}
+            tracking = clip_tiles.tracking_runs(  # off-thread (run_busy)
+                experiment.dir, embeds
+            )
+            return {
+                "embeds": embeds,
+                "tracking": tracking,
+                "missing": clip_tiles.missing(  # off-thread (run_busy)
+                    experiment, tracking, rids
+                )["proxy"],
+            }
+
+        run_busy(
+            self,
+            read,
+            self._on_tiles_read,
+            label="Opening the clips' previews…",
+            supersedes="calibrate_tiles",
+        )
+
+    def _on_tiles_read(self, data: dict) -> None:
+        from detail.api import clip_tiles
+
+        self._catalog = clip_tiles.TileCatalog(
+            self._experiment, data["tracking"], data["embeds"]
+        )
+        self._missing = list(data["missing"])
+        self._tiles_read = True
+        if self._behavior_id is not None:
+            self._show_tiles(new_source=True, scroll=True)
+
+    def _show_tiles(self, *, new_source: bool = False, scroll: bool = False) -> None:
+        """Hand the grid every clip, split at the shown cutoff by a labelled dashed rule.
+
+        Most confident first, the dropped clips from the row after the rule. A stepped line
+        through one unbroken grid moved no tile but was too easy to miss; the rule is straight,
+        in its own band, and says in words which side is which. Nothing below it is faded: those
+        clips are still to be watched. A clip AUDIT removed is faded and crossed as it is there,
+        and a clip on the behavior's own example or non-example says so.
+        """
+        from detail.api import clip_tiles
+
+        if self._behavior_id is None or not self._tiles_read:
+            return
+        specs = self._behavior_specs()
+        cutoff = self.cutoff()
+        behavior = self._run.state().behavior(self._behavior_id)
+        removed = frozenset(behavior.removed_keys())
+        told = query_runs.told_kinds([behavior])
+        context = self._montage.context_s()
+        # Enough digits to tell neighbours apart, but never more than three: the caption is
+        # 150px, and the recording's name after the score is what a long score cut off.
+        digits = min(score_digits([s.score for s in specs]), 3) if specs else 2
+        tiles = []
+        n_kept = 0
+        for rank, spec in enumerate(specs, start=1):
+            n_kept += float(spec.score) >= cutoff
+            gone = (
+                spec.recording_id,
+                int(spec.track_id),
+                spec.start_t_ns,
+                spec.end_t_ns,
+            ) in removed
+            # What the user told the method, found again: the search scores its own input at
+            # the top, and a reader judging the cutoff should know those are not finds.
+            kind = query_runs.told_kind(
+                told,
+                behavior.id,
+                spec.recording_id,
+                spec.track_id,
+                spec.start_t_ns,
+                spec.end_t_ns,
+            )
+            low, high = context_span(spec.start_t_ns, spec.end_t_ns, context)
+            tiles.append(
+                MontageClip(
+                    max(high - low, _MIN_LOOP_NS),
+                    rank,
+                    # Score, time, then name: a caption cut short loses the end of the name,
+                    # which the tooltip still has, rather than the time.
+                    f"{spec.score:.{digits}f} · {_clock(spec.start_t_ns)} · "
+                    f"{self._name(spec.recording_id)}",
+                    tag="removed" if gone else (f"your {kind}" if kind else None),
+                    faded=gone,
+                    note=(
+                        "Removed in Audit: not in this behavior's instances."
+                        if gone
+                        else (
+                            f"This is your {kind} clip, which the search was given — it "
+                            "finds it, so it is not a find."
+                            if kind
+                            else ""
+                        )
+                    ),
+                    crossed=gone,
+                )
+            )
+        here = _cutoff_text(cutoff)
+        dropped = len(specs) - n_kept
+        saved = behavior.cutoff
+        unsaved = saved is None or abs(float(saved) - cutoff) >= 1e-9
+        rule = (
+            f"▲ {n_kept:,} kept   ·   cutoff {here}{' (not saved)' if unsaved else ''}   ·   "
+            f"{dropped:,} dropped ▼"
+        )
+        if n_kept and dropped:
+            sections = [("", n_kept), (rule, dropped)]
+        elif dropped:
+            sections = [(rule, dropped)]  # nothing kept: the rule heads the whole grid
+        else:
+            sections = None  # everything kept: there is no line to draw
+        same = self._source_for == self._behavior_id and not new_source
+        self._montage.set_clips(tiles, keep_scroll=same, sections=sections)
+        self._kept_count = n_kept
+        if not same and self._catalog is not None:
+            self._montage.set_source(
+                clip_tiles.ClipTiles(
+                    self._catalog,
+                    [
+                        clip_tiles.TileClip(
+                            spec.recording_id,
+                            int(spec.track_id),
+                            *context_span(spec.start_t_ns, spec.end_t_ns, context),
+                        )
+                        for spec in specs
+                    ],
+                )
+            )
+            self._source_for = self._behavior_id
+        self._sync_grid_note(specs)
+        if scroll:
+            self._scroll_to_cutoff(n_kept)
+        self._sync_below_bar()
+
+    def _sync_grid_note(self, specs: list) -> None:
+        missing = [self._name(rid) for rid in self._missing]
+        if not specs:
+            text = "This behavior's search found nothing to show."
+        elif missing:
+            text = (
+                f"No preview yet for {', '.join(missing)}: their clips cannot play until the "
+                "previews are built (detail cache previews build)."
+            )
+        else:
+            text = ""
+        self._grid_note.setText(text)
+        self._grid_note.setVisible(bool(text))
+
+    def _sync_below_bar(self, *_args) -> None:
+        """Pin a bar to the top of the grid while every clip in view is below the cutoff.
+
+        The line is easy to scroll past in a long ranking, and below it the clips look like any
+        other; the bar says where you are and takes you back. With nothing kept, the whole grid is
+        below the cutoff and the bar says so, with no line to go back to.
+        """
+        bar = self._below_bar
+        specs = self._behavior_specs() if self._behavior_id is not None else []
+        kept = self._kept_count
+        dropped = len(specs) - kept
+        viewport = self._montage.grid.viewport()
+        here = _cutoff_text(self.cutoff())
+        show = False
+        if specs and kept == 0:
+            show = True
+            bar.set_text(
+                f"Nothing is kept at {here}: every clip here is below the cutoff",
+                back=False,
+            )
+        elif dropped > 0:
+            headings = self._montage.heading_rects()
+            if headings:
+                lowest = headings[-1][1].bottom()
+                top = self._montage.grid.verticalScrollBar().value()
+                show = top > lowest
+                bar.set_text(
+                    f"Below the cutoff ({here}): these {dropped:,} clips are dropped",
+                    back=True,
+                )
+        bar.setVisible(show)
+        if show:
+            bar.setGeometry(0, 0, viewport.width(), bar.sizeHint().height())
+            bar.raise_()
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802 — Qt's name
+        if (
+            watched is self._montage.grid.viewport()
+            and event.type() == QEvent.Type.Resize
+        ):
+            self._sync_below_bar()
+        return super().eventFilter(watched, event)
+
+    def _scroll_to_cutoff(self, n_kept: int) -> None:
+        """Bring the cutoff into view: the last kept row a third of the way down the grid."""
+        if not self._montage.clips():
+            return
+        rect = self._montage.tile_rect(max(n_kept - 1, 0))
+        bar = self._montage.grid.verticalScrollBar()
+        bar.setValue(max(rect.top() - self._montage.grid.viewport().height() // 3, 0))
+
+    def _hover_text(self, index: int) -> str:
+        specs = self._behavior_specs() if self._behavior_id is not None else []
+        if not 0 <= index < len(specs):
+            return ""
+        spec = specs[index]
+        return (
+            f"{self._name(spec.recording_id)} · {format_time(spec.start_t_ns)} · "
+            f"confidence {float(spec.score):.5f}"
+        )
+
+    def _click_hint(self, index: int) -> str:
+        specs = self._behavior_specs() if self._behavior_id is not None else []
+        if not 0 <= index < len(specs):
+            return ""
+        return f"Click to show the cutoff at this clip ({_cutoff_text(specs[index].score)})"
+
+    def _on_tile_clicked(self, index: int, _shift: bool) -> None:
+        """A clip clicked: show the cutoff at it, so it is the last one kept. Not saved."""
+        specs = self._behavior_specs()
+        if not self._editable or not 0 <= index < len(specs):
+            return
+        value = float(specs[index].score)
+        # The rows re-flow when the rule moves; keep the clicked clip at the height it was
+        # clicked at, so what is under the pointer is still the clip just chosen.
+        scroll = self._montage.grid.verticalScrollBar()
+        at = self._montage.tile_rect(index).top() - scroll.value()
+        self._set_cutoff_widgets(value)
+        self._preview(value, scroll=False)
+        scroll.setValue(max(self._montage.tile_rect(index).top() - at, 0))
+
+    def _play_clip(self, index: int) -> None:
+        """A tile double-clicked (or Space): the clip in the clip window, in grid order."""
+        from detail.gui import clip_popup
+
+        specs = self._behavior_specs() if self._behavior_id is not None else []
+        if not 0 <= index < len(specs):
+            return
+        clip_popup.open_clip_window(
+            self,
+            self._experiment,
+            specs[index],
+            sequence=specs,
+            index=index,
+            context_s=1,
+            order_note="Most confident first",
+        )
+
+    def export_clips(self) -> list:
+        """The clips the shown cutoff keeps, in grid order, for **Export ▾**."""
+        from detail.api import clip_montage as montage_api
+
+        if self._behavior_id is None:
+            return []
+        cutoff = self.cutoff()
+        return [
+            montage_api.MontageClip(
+                rank=rank,
+                recording_id=spec.recording_id,
+                recording_name=self._name(spec.recording_id),
+                subject=int(spec.track_id),
+                embed_run_id=spec.embed_run_id,
+                start_t_ns=spec.start_t_ns,
+                end_t_ns=spec.end_t_ns,
+            )
+            for rank, spec in enumerate(self._behavior_specs(), start=1)
+            if float(spec.score) >= cutoff
+        ]
+
+    def _export_stem(self) -> str:
+        if self._behavior_id is None:
+            return "behavior"
+        name = self._run.state().behavior(self._behavior_id).name
+        return f"{name}_from_{_cutoff_text(self.cutoff())}"
+
+    # -- the cutoff, from any control ------------------------------------------------- #
     def _set_cutoff_widgets(self, value: float) -> None:
         self._syncing = True
         try:
@@ -1047,6 +1384,13 @@ class _CalibrateTab(QWidget):
             self._confidence.set_value(float(value))
         finally:
             self._syncing = False
+
+    def _preview(self, value: float, *, scroll: bool) -> None:
+        """Show what ``value`` would keep. Writes nothing."""
+        if self._behavior_id is None:
+            return
+        self._refresh_header(value)
+        self._show_tiles(scroll=scroll)
 
     def _on_line_moved(self) -> None:
         if self._syncing:
@@ -1057,10 +1401,7 @@ class _CalibrateTab(QWidget):
             self._confidence.set_value(value)
         finally:
             self._syncing = False
-        self._refresh_view(value)
-
-    def _on_line_released(self) -> None:
-        self._commit(self.cutoff())
+        self._preview(value, scroll=True)
 
     def _on_confidence_typed(self, value: float) -> None:
         if self._syncing:
@@ -1070,31 +1411,14 @@ class _CalibrateTab(QWidget):
             self._line.setValue(float(value))
         finally:
             self._syncing = False
-        self._refresh_view(float(value))
-        # The numeric box needs its own commit: `sigPositionChangeFinished` fires only for a
-        # real drag, so moving the line programmatically above will never reach `_commit`.
-        self._commit(float(value))
+        self._preview(float(value), scroll=True)
 
-    def set_editable(self, editable: bool, *, reason: str) -> None:
-        """Freeze the cutoff controls when the run will refuse a cutoff — a snapshot, or finished.
-
-        There are **three** ways to move a cutoff, not two: the curve's line, the number box, and
-        the strip's own ▲/▼ stepping. Freezing the first two left the third live — the write was
-        still refused, but the screen showed a cutoff belonging to neither the snapshot nor the run,
-        on the one screen whose purpose is "which cutoff did I ship?".
-
-        ``reason`` is required because there are two reasons and they are undone differently:
-        a snapshot by going back to the live run, a finished run by Reopen.
-        """
-        self._editable = editable
-        self._line.setMovable(editable)
-        self._confidence.setEnabled(editable)
-        self._grid.set_editable(editable)
-        self._confidence.setToolTip("" if editable else reason)
+    def _on_keep(self) -> None:
+        self._commit(self.cutoff())
 
     def _commit(self, value: float) -> None:
-        """Write the cutoff and reproject — off the UI thread, on release only."""
-        if not getattr(self, "_editable", True):
+        """Save the cutoff and reproject — off the UI thread, and only from **Keep**."""
+        if not self._editable or self._behavior_id is None:
             return
         behavior_id = self._behavior_id
         run = self._run
@@ -1106,80 +1430,112 @@ class _CalibrateTab(QWidget):
             self,
             work,
             lambda _r: self._on_committed(value),
-            label="Applying cutoff…",
+            label="Saving the cutoff…",
         )
 
     def _on_committed(self, value: float) -> None:
-        self._refresh_view(value)
-        # The other tabs read the artifact this just rewrote. `_BrowseTab.refresh`'s own
-        # docstring said it ran "after every commit" and nothing connected it, so a committed
-        # cutoff left Browse listing the previous one's instances until you switched behaviors.
-        # The clustering workspace has wired `changed -> reload` all along.
+        self._refresh_header(value)
+        # The rule's "(not saved)" is part of the grid, so the grid hears it too.
+        self._show_tiles()
+        # The other tabs read the artifact this just rewrote.
         self.committed.emit()
-        self._refresh_ethograms()
 
-    def _refresh_ethograms(self) -> None:
-        """Where the kept instances land, one row per searched recording.
 
-        Read from the **artifact**, which is why this runs on commit and not on drag: the
-        artifact holds only what the committed cutoff kept, so during a drag there is nothing
-        to draw that corresponds to the line's current position. The title says so rather than
-        leaving a reader to wonder why the bands did not move.
-        """
+class _MeasuresView(QWidget):
+    """MEASURES on a query run: the §23 table, then where a behavior's instances land and how
+    they compare with the recording.
+
+    The map and the comparison used to be bands under CALIBRATE, reading the saved cutoff's
+    artifact under a page about choosing one. They answer "what did this behavior turn out to
+    be", which is this view's question, so they are here; CALIBRATE is the curve and the clips.
+    The §23 table reads the live artifact, so a snapshot shows the two bands without it.
+    """
+
+    def __init__(self, run, experiment) -> None:
+        super().__init__()
+        self._run = run
+        self._experiment = experiment
+        self._behavior_id: str | None = None
+        self._outlines_by_recording: dict = {}
+        self._frame_aspects: dict = {}
+        self._embed_run_id = ""
+        #: What the map last drew: ``{recording_id: [placement, ...]}``; ``None`` for a run that
+        #: never recorded positions.
+        self._placements_by_recording: dict | None = {}
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        if run.editable:
+            from detail.gui.pages import (
+                MeasuresPanel,
+            )  # local: pages imports this module
+
+            layout.addWidget(MeasuresPanel(experiment, run.id))
+        # Where those instances land — a cutoff that keeps a behavior only in one corner is a
+        # spatial bias no count shows.
+        self._map = SpatialMap(experiment)
+        self._map_band = CollapsibleBand(
+            "Locations", self._map, key="query/locations", on_resize=self._map.resize_by
+        )
+        layout.addWidget(self._map_band)
+        # Against the **recording**, not the other behaviors: a query's matches are a selection
+        # from the footage rather than a partition of it, and most query runs have one behavior.
+        self._measurements = MeasurementsPanel(
+            experiment,
+            "matches",
+            "behavior",
+            key="query/measurements",
+            baseline=BASELINE_RECORDING,
+        )
+        self._measurement_band = CollapsibleBand(
+            "Interpretation",
+            self._measurements,
+            key="query/measurements",
+            on_resize=self._measurements.resize_by,
+        )
+        layout.addWidget(self._measurement_band)
+        layout.addStretch(1)
+
+    def set_behavior(self, behavior_id: str) -> None:
+        self._behavior_id = behavior_id
+        self._measurements.select(self._run, behavior_id)
+        self.refresh()
+
+    def recheck(self) -> None:
+        """A cutoff was saved or a clip removed: the matches changed under both bands."""
+        self._measurements.recheck()
+        self.refresh()
+
+    def refresh(self) -> None:
         run_busy(
             self,
-            self._ethogram_rows,
-            self._show_ethograms,
+            self._placements,
+            self._show_placements,
             label="Reading instances…",
-            supersedes="ethograms",
+            supersedes="query_measures",
         )
 
-    def _ethogram_rows(self) -> tuple:
-        """Off-thread: the ethogram rows **and** where those instances happened.
+    def _placements(self) -> dict | None:
+        """Off-thread: where each kept instance happened, with each recording's field of view.
 
-        Both come off one artifact read. Two reads would be two disk trips for one answer,
-        and — worse — could disagree if a commit landed between them, leaving the map
-        showing a cutoff the strip beside it has already moved past.
+        ``None`` means the run never recorded positions (fixable); ``{}`` means it did and none
+        landed. Carried apart so the map can say which.
         """
         from detail.storage import behavior_output as bo
 
         try:
-            artifact = self._run.artifact()  # off-thread
-            instances = list(artifact.instances)
-            coverage = list(artifact.coverage)
-            # `None` means the run never recorded positions (fixable); `{}` means it did
-            # and none landed. Carried separately so the surface can say which.
-            features = artifact.features
+            artifact = self._run.artifact()  # off-thread (run_busy)
         except FileNotFoundError:
-            return ([], {})
-        # The span each recording covers, so a band can be a fraction of it — `EthogramStrip`
-        # takes fractions precisely so it need not know how long a recording is.
-        span: dict = {}
-        for row in coverage:
-            lo, hi = span.get(row.recording_id, (None, None))
-            start, end = int(row.start_t_ns), int(row.end_t_ns)
-            span[row.recording_id] = (
-                start if lo is None else min(lo, start),
-                end if hi is None else max(hi, end),
-            )
-        rows = []
-        for recording_id in sorted(span):
-            lo, hi = span[recording_id]
-            width = max(hi - lo, 1)
-            bands = [
-                ((int(i.t_ns) - lo) / width, (int(i.end_t_ns) - lo) / width, 0)
-                for i in bo.bouts(instances)
-                if i.recording_id == recording_id
-                and (self._behavior_id is None or i.source_label == self._behavior_id)
-            ]
-            rows.append((recording_id, bands, width))
+            return {}
+        instances = [
+            row
+            for row in bo.bouts(artifact.instances)
+            if self._behavior_id is None or row.source_label == self._behavior_id
+        ]
         outlines: dict = {}
         aspects: dict = {}
-        for recording_id, _bands, _width in rows:
+        for recording_id in sorted({row.recording_id for row in instances}):
             try:
                 recording = self._experiment.get_recording(recording_id)
-                # The frame's shape, off the same read: `cx` and `cy` are fractions of width and
-                # height, so a box drawn square stretches a 16:9 arena and moves every dot in it.
                 aspects[recording_id] = frame_aspect(recording)
                 arenas = recording.arenas
                 if not arenas:
@@ -1191,17 +1547,14 @@ class _CalibrateTab(QWidget):
                 outlines[recording_id] = keyframes[0][1]
         self._outlines_by_recording = outlines
         self._frame_aspects = aspects
-        # Off the UI thread with the rest of the load, like the outlines above it.
         self._embed_run_id = self._run.state().embed_run_id
+        features = artifact.features
         if features is None:
-            return (rows, None)
-        # Placements, not bare coordinates. Every identity field is already in hand here, and
-        # a dot that reports only where it was cannot be turned back into the clip it stands
-        # for — which is the whole of clicking one.
+            return None
+        # Placements, not bare coordinates: a dot that reports only where it was cannot be
+        # turned back into the clip it stands for, which is the whole of clicking one.
         placements: dict = {}
-        for row in bo.bouts(instances):
-            if self._behavior_id is not None and row.source_label != self._behavior_id:
-                continue
+        for row in instances:
             found = features.get(row.instance_id)
             if found is None or found[0] is None or found[1] is None:
                 continue
@@ -1215,44 +1568,10 @@ class _CalibrateTab(QWidget):
                     "end_t_ns": int(row.end_t_ns),
                 }
             )
-        return (rows, placements)
+        return placements
 
-    def _curve_colour(self) -> str:
-        """The one colour this run's behavior is drawn in — curve, map and ethogram alike.
-
-        A query artifact is one behavior, so it is identity 0. Named by role rather than picked
-        out of a palette by index: two sites used to take ``PALETTE_OKABE_ITO[3]`` as "the same
-        blue the confidence curve is drawn in" while the curve spelled ``(0, 114, 178)`` itself,
-        and reordering the palette would have made them three colours without failing anything.
-        """
-        return plot_theme.current().identity(0)
-
-    def _map_colour(self):
-        """The curve's colour as an ``(r, g, b)`` triple, for the spatial map."""
-        return chart_theme.rgb(self._curve_colour())
-
-    def _show_ethograms(self, payload) -> None:
-        rows, placements = payload
+    def _show_placements(self, placements) -> None:
         self._placements_by_recording = placements
-        kept = sum(len(bands) for _rid, bands, _width in rows)
-        self._ethogram_title.setText(
-            f"Kept instances, per recording — {kept} at the committed cutoff"
-        )
-        # `EthogramStrip` takes 0-1 floats with alpha; the shared palette is 0-255 ints. One
-        # colour, because a query artifact is one behavior — the strip's cluster index is
-        # always 0 here.
-        r, g, b = self._map_colour()
-        self._ethograms.set_rows(
-            # The row's label is display only (the strip's signals carry row indices), so
-            # it is the recording's name.
-            [(self._name(rid), bands) for rid, bands, _width in rows],
-            [(r / 255, g / 255, b / 255, 1.0)],
-            selected=None,
-            lengths_ns=[width for _rid, _bands, width in rows],
-        )
-        # A run that never recorded positions is a fixable state and says so; a run that has
-        # them where none landed here is an absence, and an empty box beside a full ethogram
-        # would read as the claim "it happens nowhere".
         if placements is None:
             self._map_band.setVisible(True)
             self._map.show_unavailable(
@@ -1260,207 +1579,29 @@ class _CalibrateTab(QWidget):
                 "Run `detail recording backfill-kinematics` and re-open the run to fill it in."
             )
             return
+        # An absence is not the claim "it happens nowhere": no box when nothing landed.
         self._map_band.setVisible(bool(placements))
         if placements:
             self._map.show_instances(
-                {rid: placements.get(rid, []) for rid, _bands, _width in rows},
+                placements,
                 outlines=self._outlines_by_recording,
                 aspects=self._frame_aspects,
-                embed_run_ids={rid: self._embed_run_id for rid, _bands, _width in rows},
-                colour=self._map_colour(),
+                embed_run_ids={rid: self._embed_run_id for rid in placements},
+                colour=chart_theme.rgb(plot_theme.current().identity(0)),
             )
 
 
-class _BrowseTab(QWidget):
-    """The accepted instance set: what you actually got, read-only (§20).
-
-    Calibrate shows the *marginal* clips because the decision is about the edge; this shows
-    everything above the cutoff, because that is where a systematic error becomes visible —
-    every match in one recording being the same wall-lean is invisible in a marginal band and
-    obvious in a list.
-    """
-
-    def __init__(self, run, experiment) -> None:
-        super().__init__()
-        from detail.gui.behavior_query import (
-            _ClipPlayer,
-        )  # local: avoids an import cycle
-
-        self._run = run
-        self._experiment = experiment
-        self._behavior_id = None
-        self._rows: list = []
-        self._names: dict[str, str] = {}  # {recording_id: name}, read with the artifact
-
-        root = QVBoxLayout(self)
-        self._summary = QLabel("")
-        self._summary.setWordWrap(True)
-        root.addWidget(self._summary)
-
-        # The list folds by its grip to a strip reading "Instances"; the player does not.
-        splitter = GripSplitter(Qt.Orientation.Horizontal, key="query_browse")
-        self._model = QStandardItemModel()
-        self._table = QTableView()
-        fill_width(self._table)
-        self._table.setModel(self._model)
-        self._table.setEditTriggers(QTableView.EditTrigger.NoEditTriggers)
-        self._table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
-        self._table.verticalHeader().setVisible(False)
-        make_columns_resizable(self._table)
-        # Sortable headers, the GUI's convention for a multi-column list. The default order is
-        # by recording then time; any column can be flipped without picking one for the user.
-        # `enable_sorting`, not a bare `setSortingEnabled` — the latter immediately re-sorts by
-        # column 0 descending (Qt's undocumented-until-you-hit-it default indicator), which
-        # would have silently replaced "by recording then time" with exactly that.
-        enable_sorting(self._table)
-        # Now, while it is empty, and not only once rows arrive — see `fit_table_height`.
-        fit_table_height(self._table, max_rows=BROWSE_ROWS, min_rows=0)
-        splitter.addWidget(top_of_pane(self._table))
-        # The clip and nothing either side — see Calibrate's player. Browse watches accepted
-        # instances and never edits their bounds, so it has no use for the padding either.
-        # (`context_s=0` is not a whole-recording scrubber: it spans exactly the clip.)
-        # At the top, beside the list's first rows — see the cluster workspace's Browse.
-        self._player = _ClipPlayer(experiment, autoplay=True, context_s=0, top=True)
-        splitter.addWidget(self._player)
-        splitter.set_foldable(0, "Instances")
-        if not splitter.remember():
-            splitter.setSizes([420, 460])
-        root.addWidget(splitter, 1)
-
-        self._table.selectionModel().currentRowChanged.connect(self._show_row)
-
-    def set_behavior(self, behavior_id: str) -> None:
-        self._behavior_id = behavior_id
-        self.refresh()
-
-    def refresh(self) -> None:
-        """Re-read the artifact and rebuild the table.
-
-        The read is off the UI thread: ``instances.csv`` grows with the cohort, and this runs
-        on every tab switch and after every commit.
-        """
-        state = self._run.state()
-        behavior = state.behavior(self._behavior_id)
-        # Cached here, once per refresh, rather than read again for every row someone clicks.
-        self._embed_run_id = state.embed_run_id
-        self._model.clear()
-        self._model.setHorizontalHeaderLabels(
-            ["Recording", "Start", "End", "Confidence"]
-        )
-        self._rows = []
-        fit_table_height(self._table, max_rows=BROWSE_ROWS, min_rows=0)
-        if behavior.cutoff is None:
-            self._summary.setText(
-                f"{behavior.name} has no cutoff yet, so it has no instances. Set one on "
-                "Calibrate."
-            )
-            return
-        run = self._run
-        experiment = self._experiment
-
-        def read():
-            # The names come with the artifact: one read per recording, off the UI thread.
-            try:
-                return run.artifact(), experiment.recording_names()  # off-thread
-            except FileNotFoundError:
-                return None, {}
-
-        run_busy(
-            self, read, self._fill, label="Loading instances…", supersedes="instances"
-        )
-
-    def _name(self, recording_id: str) -> str:
-        """The recording's name, or its id if it has none left (deleted since the run)."""
-        return self._names.get(recording_id, recording_id)
-
-    def _fill(self, payload) -> None:
-        output, self._names = payload
-        behavior = self._run.state().behavior(self._behavior_id)
-        if output is None:
-            self._summary.setText("(this run has no behavior output yet)")
-            return
-        rows = [r for r in output.instances if r.source_label == behavior.id]
-        digits = score_digits([r.score for r in rows])
-        for row in sorted(rows, key=lambda r: (r.recording_id, r.t_ns)):
-            index = len(self._rows)
-            self._rows.append(row)
-            # Sorting by **Recording** reproduces the default order exactly, because that
-            # column's key carries the time as its tiebreak. Chronology within an animal is
-            # what makes a systematic error visible — every match being the same wall-lean —
-            # so restoring it has to be one click, not a reload.
-            name = self._name(row.recording_id)
-            first = SortCell(name, (name, int(row.t_ns)))
-            # The view reorders the model, so a row's identity cannot be its position.
-            first.setData(index, Qt.ItemDataRole.UserRole)
-            self._model.appendRow(
-                [
-                    first,
-                    SortCell(f"{row.t_ns / 1e9:.2f} s", int(row.t_ns)),
-                    SortCell(f"{row.end_t_ns / 1e9:.2f} s", int(row.end_t_ns)),
-                    SortCell(
-                        "—" if row.score is None else f"{row.score:.{digits}f}",
-                        -1.0 if row.score is None else float(row.score),
-                    ),
-                ]
-            )
-        # No floor: the list sits beside the player in a splitter, which decides the share.
-        fit_table_height(self._table, max_rows=BROWSE_ROWS, min_rows=0)
-        covered = len(output.coverage)
-        self._summary.setText(
-            f"{behavior.name} at cutoff {behavior.cutoff:.2f}: {len(rows)} instance(s) "
-            f"over {covered} searched unit(s)."
-            + ("  This behavior returns nothing at this cutoff." if not rows else "")
-        )
-
-    def export_scope(self):
-        """The instances picked in the list, for the shell's Export control.
-
-        The row's identity travels in UserRole, not in its position: the view re-sorts the
-        model, so a row number stops meaning what it meant.
-        """
-        from detail.api.exporters import ExportScope
-
-        picked = []
-        for index in self._table.selectionModel().selectedRows():
-            item = self._model.item(index.row(), 0)
-            row_index = None if item is None else item.data(Qt.ItemDataRole.UserRole)
-            if row_index is not None and 0 <= int(row_index) < len(self._rows):
-                picked.append(self._rows[int(row_index)].instance_id)
-        return ExportScope(instance_ids=tuple(picked)) if picked else None
-
-    def _show_row(self, current, _previous) -> None:
-        """Play the selected instance.
-
-        `embed_run_id` comes off the cached load rather than `state()`: that is a disk read, and
-        a row someone clicks must not pay for one on the UI thread.
-        """
-        from detail.gui.behavior_query import ClipSpec
-
-        if not current.isValid():
-            return
-        index = self._model.item(current.row(), 0).data(Qt.ItemDataRole.UserRole)
-        if index is None or int(index) >= len(self._rows):
-            return
-        row = self._rows[int(index)]
-        self._player.set_clip(
-            ClipSpec(
-                row.recording_id,
-                int(row.subject or 0),
-                self._embed_run_id,
-                int(row.t_ns),
-                int(row.end_t_ns),
-                f"{self._name(row.recording_id)} {row.t_ns / 1e9:.2f}s",
-                score=row.score,
-            )
-        )
-
-
-#: The behavior-scan workspace's views, in row order: ``(name, purpose)``. Measures is live-only.
 QUERY_VIEWS = (
-    ("Calibrate", "Set each behavior's cutoff against how often it would be found."),
-    ("Audit", "Judge clips above the cutoff, to see how often a find is right."),
+    (
+        "Calibrate",
+        "Set each behavior's cutoff: watch the clips it keeps and drops, then keep it.",
+    ),
+    ("Audit", "Review every clip the cutoff keeps, and remove the wrong ones."),
     ("Browse", "Every find above the cutoff, playing one at a time."),
-    ("Measures", "Time, bouts and transitions per behavior."),
+    (
+        "Measures",
+        "Time, bouts and transitions per behavior, where they happen and how they move.",
+    ),
 )
 
 
@@ -1494,40 +1635,68 @@ class _QueryWorkspace(MultiViewWorkspace):
         self._curves: dict[str, list] = {}
 
         root = QVBoxLayout(self)
-        self._status = QLabel("Loading search results…")
-        self._status.setWordWrap(True)
-        root.addWidget(self._status)
-
-        self._selector = QTabBar()
+        # One line: which behavior, and the run's state. The picker used to be a tab bar the
+        # width of the window holding one tab per behavior — a 40px bar reading "rear" across
+        # 2,000px on the common one-behavior run, and a second row of tabs under the views'.
+        top = QHBoxLayout()
+        top.addWidget(QLabel("Behavior"))
+        self._selector = QComboBox()
+        self._selector.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         self._behaviors = list(self._run.behaviors())
         for behavior in self._behaviors:
-            self._selector.addTab(behavior.name)
-        self._selector.currentChanged.connect(self._on_behavior_changed)
-        root.addWidget(self._selector)
+            self._selector.addItem(behavior.name, behavior.id)
+        self._selector.currentIndexChanged.connect(self._on_behavior_changed)
+        top.addWidget(self._selector)
+        top.addSpacing(lines(1))
+        self._status = QLabel("Loading search results…")
+        self._status.setWordWrap(True)
+        top.addWidget(self._status, 1)
+        root.addLayout(top)
+
+        # Over every view but CALIBRATE, while CALIBRATE holds a cutoff that is not saved: where
+        # the previewed cutoff was being mistaken for the applied one, with the one-click fix.
+        self._unsaved_notice = _AttentionBar()
+        self._notice_keep = QPushButton("Keep")
+        self._notice_keep.setObjectName("unsaved_notice_keep")
+        self._notice_to_calibrate = QPushButton("Go to Calibrate")
+        self._notice_to_calibrate.setObjectName("unsaved_notice_to_calibrate")
+        self._unsaved_notice.add_button(self._notice_keep)
+        self._unsaved_notice.add_button(self._notice_to_calibrate)
+        self._unsaved_notice.hide()
+        root.addWidget(self._unsaved_notice)
 
         self._tabs = QTabWidget()
         self._calibrate = _CalibrateTab(self._run, experiment)
-        self._audit = AuditTab(experiment, self._run)
-        self._browse = _BrowseTab(self._run, experiment)
+        self._audit = QueryReviewTab(experiment, self._run)
+        # Clustering's BROWSE, not a copy of it: every behavior with a saved cutoff at once,
+        # the ethogram across the top, the list beside a player (§20).
+        self._browse = LabelBrowseTab(self._run, experiment, QUERY_TERMS)
+        # Where the matches land and how they move: MEASURES, not CALIBRATE (`_MeasuresView`).
+        self._measures = _MeasuresView(self._run, experiment)
         # The tab is a leaf and does not know this workspace, so it asks rather than reaching
         # for the selector; driving the selector keeps the two in sync in both directions.
-        self._audit.behavior_requested.connect(self._select_behavior)
-        # A commit rewrites the artifact the other two tabs read.
-        self._calibrate.committed.connect(self._browse.refresh)
+        # A removal or a finish rewrites the artifact Browse reads, and Calibrate's marks.
+        self._audit.changed.connect(self._browse.reload)
+        self._audit.changed.connect(self._calibrate.forget_clips)
+        self._audit.changed.connect(self._measures.recheck)
+        # A saved cutoff rewrites the artifact the other tabs read.
+        self._calibrate.committed.connect(self._browse.reload)
         self._calibrate.committed.connect(self._audit.reload)
+        self._calibrate.committed.connect(self._measures.recheck)
+        # A saved cutoff can be the last one Finish was waiting for.
+        self._calibrate.committed.connect(self._sync_status)
+        self._calibrate.shown_changed.connect(self._sync_unsaved_notice)
+        self._tabs.currentChanged.connect(lambda _i: self._sync_unsaved_notice())
+        self._notice_keep.clicked.connect(self._calibrate._on_keep)
+        self._notice_to_calibrate.clicked.connect(lambda: self.show_view("Calibrate"))
+        # AUDIT with nothing to review offers the one step that would give it something.
+        self._audit.go_to_calibrate.connect(lambda: self.show_view("Calibrate"))
+        self._audit.reopen_requested.connect(self._on_reopen)
         self._tabs.addTab(self._calibrate, "Calibrate")
         self._tabs.addTab(self._audit, "Audit")
         self._tabs.addTab(self._browse, "Browse")
         # The §23 numbers as a tab, not a section under every tab (see `ClusterWorkspace`).
-        # Live runs only: they read the live artifact.
-        if self._run.editable:
-            from detail.gui.pages import (
-                MeasuresPanel,
-            )  # local: pages imports this module
-
-            self._tabs.addTab(
-                top_of_pane(MeasuresPanel(experiment, self._run.id)), "Measures"
-            )
+        self._tabs.addTab(self._measures, "Measures")
         statuses = (lambda: _behaviors_status(self._run), None, None, None)
         self._init_views(
             self._tabs,
@@ -1547,12 +1716,31 @@ class _QueryWorkspace(MultiViewWorkspace):
         self._reopen.clicked.connect(self._on_reopen)
         actions.addWidget(self._finish)
         actions.addWidget(self._reopen)
-        actions.addStretch()
+        # Why Finish is greyed, in words beside it rather than only in a tooltip: a run finished
+        # with a behavior uncut was the dead end AUDIT then described twice at once.
+        self._finish_note = QLabel("")
+        self._finish_note.setWordWrap(True)
+        set_label_color(self._finish_note, MUTED)
+        actions.addWidget(self._finish_note, 1)
         root.addLayout(actions)
 
         self._sync_status()
+        self._sync_unsaved_notice()
         if self._behaviors:
             self._load_behavior(self._behaviors[0].id)
+
+    def _sync_unsaved_notice(self) -> None:
+        """Show the notice over a view other than CALIBRATE while CALIBRATE's cutoff is not saved."""
+        unsaved = self._calibrate.unsaved()
+        show = unsaved is not None and self._tabs.currentWidget() is not self._calibrate
+        if show:
+            shown, saved = unsaved
+            name = self._calibrate.behavior_name()
+            self._unsaved_notice.text.setText(unsaved_notice_text(name, shown, saved))
+            self._notice_keep.setText(f"Keep {_cutoff_text(shown)}")
+        for button in (self._notice_keep, self._notice_to_calibrate):
+            set_available(button, show, "Nothing on Calibrate is waiting to be saved.")
+        self._unsaved_notice.setVisible(show)
 
     def export_scope(self):
         """What the shell's Export control should offer — asked of the view in front.
@@ -1597,7 +1785,7 @@ class _QueryWorkspace(MultiViewWorkspace):
     def _show_behavior(self, behavior_id: str) -> None:
         self._calibrate.set_behavior(behavior_id, self._curves.get(behavior_id, []))
         self._audit.set_behavior(behavior_id)
-        self._browse.set_behavior(behavior_id)
+        self._measures.set_behavior(behavior_id)
         self._sync_status()
 
     def _select_behavior(self, behavior_id: str) -> None:
@@ -1629,10 +1817,24 @@ class _QueryWorkspace(MultiViewWorkspace):
             "This is a snapshot. Go back to the live run to change the calibration."
         )
         finished = status == "complete"
-        self._finish.setEnabled(editable and not finished)
-        self._reopen.setEnabled(editable and finished)
-        for button in (self._finish, self._reopen):
-            button.setToolTip("" if editable else frozen)
+        # The API's own refusal, read before the press (`QueryRun.finish_blocker`): one rule and
+        # one wording for the button, `finalize` and the CLI.
+        blocker = self._run.finish_blocker() if editable and not finished else None
+        set_available(
+            self._finish,
+            editable and not finished and blocker is None,
+            frozen if not editable else (blocker or ""),
+        )
+        set_available(
+            self._reopen,
+            editable and finished,
+            (
+                "The run is open; Reopen applies once it is finished."
+                if editable
+                else frozen
+            ),
+        )
+        self._finish_note.setText(blocker or "")
         # Finished as well as frozen: `set_cutoff` refuses both, and freezing only the snapshot
         # left a finished run's cutoff draggable into an error.
         self._calibrate.set_editable(

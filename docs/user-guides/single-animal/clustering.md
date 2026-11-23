@@ -149,7 +149,8 @@ first. Hover over a clip to pause the others; double-click it to open it at full
         ++ctrl+z++.
     14. **Open in window**: opens the chosen cluster in a window of its own (step 4).
     15. **Scrollbar**: scrolls the clips.
-    16. **Finish**: says you are done labelling. It can be reopened.
+    16. **Finish**: says you are done labelling. Greyed out, with the reason beside it,
+        until a behavior is labelled. It can be reopened.
     17. **Reopen**: opens a finished run again, to change its labels. Greyed out while the
         run is open.
 
@@ -316,7 +317,8 @@ tab.
        has, and whether it has been reviewed and how many clips were taken out. Click a
        cluster to review it. Right-click one to open it on the Interpret view.
     2. **✓ Finish review**: says you have looked at every clip of the cluster. Greyed out
-       until the last clip has been on screen.
+       until the last clip has been on screen, and while any clip shows *no preview*: a clip
+       you could not see cannot be counted, so build the previews first.
     3. **Undo (⌘Z)**: puts back the last clip you took out (++ctrl+z++).
     4. **Show ▾**: what the clips show.
     5. **Export ▾**: saves the clips.
@@ -352,12 +354,12 @@ or look at the cluster's two halves, when the review found the cluster is two be
 **Browse** lists every labelled bout, by recording and time, with an ethogram of each
 recording: where in the video each label falls.
 
-![The Browse view: 47 labelled bouts; on the left the labels with their bouts and time, the recordings and a metadata filter; on the right the ethogram of box1, box2 and box3 in the labels' colours, the list of bouts with behavior, recording, start, duration and audit, and the player playing the first one. Numbered markers sit on every control.](../../assets/user-guides/single-animal/clustering/browse.png)
+![The Browse view: 47 labelled bouts; on the left the labels with their bouts and time, the recordings and a metadata filter; on the right the ethogram of box1, box2 and box3 in the labels' colours and patterns, the list of bouts with behavior, recording, start, duration and audit, and the player playing the first one. Numbered markers sit on every control.](../../assets/user-guides/single-animal/clustering/browse.png)
 
 ??? info "What everything on this screen does"
     1. **Clear filters**: ticks every label and recording again.
     2. **Ethogram**: folds the ethogram away or opens it. Each row is a recording, coloured
-       by label along the video. Click a bout to play it. Scroll over it to zoom.
+       and patterned by label along the video; the swatch beside each label is the key. Click a bout to play it. Scroll over it to zoom.
     3. **Labels**: each label with its bouts and time. Untick a label to leave it out.
     4. **Search recordings**: shows only recordings whose name contains what you type.
     5. **Recordings**: untick a recording to leave it out.

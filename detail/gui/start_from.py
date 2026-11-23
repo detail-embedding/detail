@@ -134,42 +134,10 @@ class StartFromRow(QWidget):
         self.picked.emit(dict(settings or {}))
 
 
-def behavior_names(value) -> list[str] | None:
-    """A ``behaviors`` value as the names a form ticks, or None when it is not a behavior list.
-
-    A form's ``config()`` emits names. A query-eval run *record* stores what it scored as one
-    dict per behavior (``behavior``, ``skipped``, counts), at the record's top level rather than
-    in ``params``. Turned into names here, where a record is read, so ``load_config`` takes one
-    shape — the one ``config()`` returns — and the two stay inverses (#35). A behavior the run
-    skipped was not scored, so it is not ticked.
-    """
-    if not isinstance(value, list):
-        return None
-    names = []
-    for entry in value:
-        if isinstance(entry, str):
-            names.append(entry)
-        elif isinstance(entry, dict) and "behavior" in entry:
-            if not entry.get("skipped"):
-                names.append(entry["behavior"])
-        else:
-            return None
-    return names
-
-
 def record_settings(record: dict) -> dict:
-    """The settings a previous run was launched with, as its form's ``config()`` shapes them.
-
-    ``params`` (an analysis run) or ``config`` (a processing run), plus the behaviors a run
-    scored when the record lists them beside ``params`` rather than in it: Start from on a
-    query-eval run that scored ``rear`` of ``groom, rear, dig`` used to tick all three.
-    """
-    settings = dict(record.get("params") or record.get("config") or {})
-    if settings and "behaviors" not in settings:
-        scored = behavior_names(record.get("behaviors"))
-        if scored:
-            settings["behaviors"] = scored
-    return settings
+    """The settings a previous run was launched with, as its form's ``config()`` shapes them:
+    ``params`` (an analysis run) or ``config`` (a processing run)."""
+    return dict(record.get("params") or record.get("config") or {})
 
 
 def _run_item(module_id: str, record: dict) -> tuple[str, dict | None]:

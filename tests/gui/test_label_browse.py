@@ -134,9 +134,10 @@ def _run(output, *, editable=True):
         id="an_01",
         editable=editable,
         artifact=lambda: output,
-        state=lambda: types.SimpleNamespace(
-            source_recording_ids=list(_RECORDINGS), data_sources={}
-        ),
+        data_sources=lambda: {
+            "recording_ids": list(_RECORDINGS),
+            "embed_run_ids": {rid: "emb_01" for rid in _RECORDINGS},
+        },
         _audit_dir=lambda: "/nonexistent-audit-dir",
     )
     run.audit_decisions = lambda: audit.latest_decisions(run._audit_dir())
@@ -144,11 +145,9 @@ def _run(output, *, editable=True):
 
 
 @pytest.fixture
-def tab(qapp, tmp_path, monkeypatch):
-    from detail.core import run_selection
+def tab(qapp, tmp_path):
     from detail.gui.cluster_workspace import TEMPORAL_TERMS
 
-    monkeypatch.setattr(run_selection, "runs_by_recording", lambda *_a: {})
     experiment = types.SimpleNamespace(
         dir=tmp_path,
         recording_names=lambda: {"recording_001": "Tank A", "recording_002": "Tank B"},
@@ -255,13 +254,11 @@ def test_the_export_scope_is_the_selection_and_export_all_is_every_filtered_bout
     assert set(scope.instance_ids) == {row.instance_id for row in tab._shown}
 
 
-def test_the_audit_column_says_what_the_reviewer_answered(qapp, tmp_path, monkeypatch):
+def test_the_audit_column_says_what_the_reviewer_answered(qapp, tmp_path):
     """A judged instance shows the level the reviewer picked, in the words they picked it by."""
-    from detail.core import run_selection
     from detail.gui.cluster_workspace import TEMPORAL_TERMS
     from detail.storage import behavior_audit as audit
 
-    monkeypatch.setattr(run_selection, "runs_by_recording", lambda *_a: {})
     output = labelled_output("recording_001", 3)
     supported = next(r for r in output.instances if r.label_path == "rearing/supported")
     audit.append_audit(
@@ -287,11 +284,9 @@ def test_the_audit_column_says_what_the_reviewer_answered(qapp, tmp_path, monkey
     assert widget._no_metadata.isVisibleTo(widget)
 
 
-def test_nothing_labelled_says_where_labels_come_from(qapp, tmp_path, monkeypatch):
-    from detail.core import run_selection
+def test_nothing_labelled_says_where_labels_come_from(qapp, tmp_path):
     from detail.gui.cluster_workspace import TEMPORAL_TERMS
 
-    monkeypatch.setattr(run_selection, "runs_by_recording", lambda *_a: {})
     output = labelled_output("recording_001", 0)
     experiment = types.SimpleNamespace(
         dir=tmp_path,
@@ -307,11 +302,9 @@ def test_nothing_labelled_says_where_labels_come_from(qapp, tmp_path, monkeypatc
     assert "INTERPRET" in widget._empty_body.text()
 
 
-def test_a_snapshot_reads_and_filters_but_does_not_export(qapp, tmp_path, monkeypatch):
-    from detail.core import run_selection
+def test_a_snapshot_reads_and_filters_but_does_not_export(qapp, tmp_path):
     from detail.gui.cluster_workspace import TEMPORAL_TERMS
 
-    monkeypatch.setattr(run_selection, "runs_by_recording", lambda *_a: {})
     experiment = types.SimpleNamespace(
         dir=tmp_path,
         recording_names=lambda: {},
@@ -349,15 +342,10 @@ def test_filters_that_leave_nothing_replace_the_results_with_one_sentence(tab):
     }, "the player kept a clip the filters had taken away"
 
 
-def test_the_ethogram_handle_shows_only_when_some_strips_are_hidden(
-    qapp, tmp_path, monkeypatch
-):
+def test_the_ethogram_handle_shows_only_when_some_strips_are_hidden(qapp, tmp_path):
     """A drag bar that moves nothing reads as broken: with every strip on screen there is
     nothing to drag toward."""
-    from detail.core import run_selection
     from detail.gui.cluster_workspace import TEMPORAL_TERMS
-
-    monkeypatch.setattr(run_selection, "runs_by_recording", lambda *_a: {})
 
     def build(n_recordings):
         recordings = [f"recording_{i:03d}" for i in range(n_recordings)]
@@ -561,3 +549,51 @@ def test_the_cluster_lane_is_read_only_once_browse_is_shown_and_off_the_ui_threa
         assert tab._lane is None and tab._ethogram._lane is None
     finally:
         tab.hide()
+
+
+def test_the_key_and_the_bands_tell_the_labels_apart_without_their_hue(qapp, tab):
+    """A colour-blind reader must be able to tell "grooming" from "rearing" on BROWSE: the
+    rail's swatch, the list's swatch and the ethogram's bands each carry the label's pattern as
+    well as its colour, and the list keys a row with exactly the rail's swatch for its label
+    (`tests/gui/test_identity_marks.py` is the class; this is the page)."""
+    import numpy as np
+    from PyQt6.QtGui import QPixmap
+
+    from tests.gui import greyscale
+
+    rail = {}
+    for i in range(tab._labels.topLevelItemCount()):
+        item = tab._labels.topLevelItem(i)
+        swatch = item.data(0, Qt.ItemDataRole.DecorationRole)
+        assert isinstance(swatch, QPixmap), f"{item.text(0)}'s key is {swatch!r}"
+        rail[item.text(0)] = greyscale.luminance(swatch)
+    assert set(rail) == {"grooming", "rearing"}
+    assert greyscale.apart(rail["grooming"], rail["rearing"])
+
+    for view_row in range(tab._model.rowCount()):
+        root = tab._row_at(view_row).label_path.split("/")[0]
+        listed = tab._model.item(view_row, 0).data(Qt.ItemDataRole.DecorationRole)
+        assert np.array_equal(greyscale.luminance(listed), rail[root])
+
+    tab.resize(1440, 847)
+    tab.show()
+    qapp.processEvents()
+    try:
+        strip = tab._ethogram
+        strip.set_view(0.0, 0.25)  # room for a pattern: a whole-span bout is ~20px
+        qapp.processEvents()
+        image = strip.grab().toImage()
+        bands = {}
+        for row, owners in enumerate(tab._band_rows):
+            for index, bout in enumerate(owners):
+                root = bout.label_path.split("/")[0]
+                start, end, _slot = strip._rows[row][1][index]
+                x0, x1 = strip._x(start, row) + 2, strip._x(end, row) - 2
+                if root not in bands and x1 - x0 >= 32 and x0 >= strip.track()[0]:
+                    bands[root] = greyscale.luminance(
+                        image.copy(x0, strip._bar_top(row), x1 - x0, strip.BAR_PX)
+                    )
+    finally:
+        tab.hide()
+    assert sorted(bands) == ["grooming", "rearing"], "no wide band of each was drawn"
+    assert greyscale.apart(bands["grooming"], bands["rearing"], shift=8)

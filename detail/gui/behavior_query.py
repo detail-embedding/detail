@@ -39,6 +39,7 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -1003,6 +1004,11 @@ class _ClipPlayer(QWidget):
 _KINDS = (("examples", "example"), ("negatives", "non-example"))
 _KIND_WORD = dict(_KINDS)
 
+#: Why Mark start / Mark end are greyed while no behavior exists: a clip marked then would have
+#: no list to join. Said in the marking box as well as the tooltip, because a pressed button that
+#: only wrote a status line looked like nothing was wrong (2026-11-23).
+_NAME_FIRST = "Name a behavior first; then mark where it starts and ends."
+
 
 def behavior_name_problem(name: str, existing) -> str | None:
     """Why ``name`` cannot name a behavior beside ``existing``, or None if it can.
@@ -1079,7 +1085,9 @@ class ClipExampleDialog(Dialog):
     - **Every behavior at once** (``behaviors=[{name, examples, negatives}]``, Behavior Scan).
       A behavior table and an example / non-example toggle beside the player decide which
       list Mark start / Mark end adds to, so every behavior's examples and non-examples are
-      marked in one pass over the video. The edited list comes back in ``.behaviors``.
+      marked in one pass over the video. The edited list comes back in ``.behaviors``. With
+      no behavior yet, the marking box asks for one by name, and Mark start / Mark end and
+      **Use these clips** stay greyed, each saying why in words beside it.
     - **One list** (``initial=[...]``, the hidden clip query and clip annotation modules). No
       behavior table or toggle; the marked clips come back in ``.examples``.
 
@@ -1158,6 +1166,11 @@ class ClipExampleDialog(Dialog):
         self._continuity: dict | None = None  # current subject's timeline + runs
         self._continuity_call: BackgroundCall | None = None
         self._continuity_gen = 0  # drop a load the user has already scrolled past
+        # What the track says about marking, apart from whether a behavior exists: why it is
+        # blocked (None once the continuity is read and usable), and whether that is the read
+        # still running. `_apply_marking` combines it with the behavior list.
+        self._track_blocks: str | None = None
+        self._track_loading = False
 
         layout = self.body()
 
@@ -1300,12 +1313,22 @@ class ClipExampleDialog(Dialog):
         self._side.addWidget(self._delete, alignment=Qt.AlignmentFlag.AlignLeft)
         self._side.addStretch()
 
+        # Why Use these clips is greyed, in words: the body's last row, right-aligned, so it sits
+        # directly above the button. Not inside the button box — Qt hides any widget it did not
+        # place there the next time it lays out its buttons — and not beside the box in the
+        # dialog's own layout, which holds only the scroll and the box
+        # (`requirements.a_dialog_scrolls_its_content`).
+        self._accept_note = QLabel("")
+        self._accept_note.setWordWrap(True)
+        self._accept_note.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self._accept_note.setVisible(False)
+        layout.addWidget(self._accept_note)
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText(
-            "Use these clips" if self._multi else "Use these examples"
-        )
+        self._use = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        self._use.setText("Use these clips" if self._multi else "Use these examples")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         self.set_buttons(buttons)
@@ -1325,7 +1348,12 @@ class ClipExampleDialog(Dialog):
         self._verify_initial()
 
     def _build_annotate_box(self) -> QWidget:
-        """Under the playback row: what is being annotated, as what, and the Mark pair."""
+        """Under the playback row: what is being annotated, as what, and the Mark pair.
+
+        With no behavior yet, the heading and the kind toggle give way to a field naming one
+        (`_refresh_target`). The checklist's Add was the only way in, across the dialog from
+        the box the user was looking at, while the Mark pair sat here pressable (2026-11-23).
+        """
         box = QFrame()
         box.setFrameShape(QFrame.Shape.StyledPanel)
         column = QVBoxLayout(box)
@@ -1333,6 +1361,20 @@ class ClipExampleDialog(Dialog):
         self._annotating.setFont(emphasis_font(self._annotating, steps=3))
         self._annotating.setAlignment(Qt.AlignmentFlag.AlignCenter)
         column.addWidget(self._annotating)
+
+        self._naming_prompt = QLabel("What behavior are you marking?")
+        self._naming_prompt.setFont(emphasis_font(self._naming_prompt, steps=3))
+        self._naming_prompt.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        column.addWidget(self._naming_prompt)
+        naming = QHBoxLayout()
+        self._new_behavior = QLineEdit()
+        self._new_behavior.setPlaceholderText("Behavior name, such as grooming")
+        self._new_behavior.returnPressed.connect(self._add_behavior_from_field)
+        self._add_named = QPushButton("Add behavior")
+        self._add_named.clicked.connect(self._add_behavior_from_field)
+        naming.addWidget(self._new_behavior, 1)
+        naming.addWidget(self._add_named)
+        column.addLayout(naming)
 
         kinds = QHBoxLayout()
         kinds.addStretch()
@@ -1355,6 +1397,13 @@ class ClipExampleDialog(Dialog):
         kinds.addStretch()
         column.addLayout(kinds)
 
+        # Why the Mark pair is greyed, in words: a tooltip alone needs a hover nobody makes.
+        self._marking_note = QLabel("")
+        self._marking_note.setWordWrap(True)
+        self._marking_note.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._marking_note.setVisible(False)
+        column.addWidget(self._marking_note)
+
         marks = QHBoxLayout()  # start left, end right (natural reading order)
         self._mark_start = QPushButton("Mark start")
         self._mark_start.clicked.connect(lambda: self._mark(start=True))
@@ -1366,9 +1415,6 @@ class ClipExampleDialog(Dialog):
         marks.addWidget(self._mark_start, 1)
         marks.addWidget(self._mark_end, 1)
         column.addLayout(marks)
-
-        for widget in (self._annotating, self._as_example, self._as_negative):
-            widget.setVisible(self._multi)
         return box
 
     def _build_checklist(self) -> QWidget:
@@ -1519,6 +1565,26 @@ class ClipExampleDialog(Dialog):
         set_available(self._rename_button, has_one, "Add a behavior first")
         set_available(self._remove_button, has_one, "Add a behavior first")
         self._refresh_target()
+        self._refresh_accept()
+
+    def _refresh_accept(self) -> None:
+        """Use these clips waits for one example, and says so beside itself.
+
+        Closing on a list with none handed the launch form nothing to search for, and nothing
+        in the dialog said so (2026-11-23). One behavior with an example is enough here: the
+        launch form names any other behavior that still lacks one. The one-list mode is left
+        as it was: its button is never greyed here.
+        """
+        if not self._multi:
+            return
+        reason = None
+        if not self.behaviors:
+            reason = "Mark at least one example first"
+        elif not any(behavior["examples"] for behavior in self.behaviors):
+            reason = f"{self.behaviors[0]['name']} has no examples yet"
+        set_available(self._use, reason is None, reason or "")
+        self._accept_note.setText(reason or "")
+        self._accept_note.setVisible(reason is not None)
 
     @staticmethod
     def _progress_bar(count: int) -> QProgressBar:
@@ -1535,12 +1601,20 @@ class ClipExampleDialog(Dialog):
         return bar
 
     def _refresh_target(self) -> None:
+        """The marking box's top: what the next clip joins — or, with no behavior yet, a field
+        naming one, since until then there is nothing for a clip to join."""
+        naming = self._multi and not self.behaviors
+        for widget in (self._annotating, self._as_example, self._as_negative):
+            widget.setVisible(self._multi and not naming)
+        for widget in (self._naming_prompt, self._new_behavior, self._add_named):
+            widget.setVisible(naming)
         if not self.behaviors:
-            self._annotating.setText("Add a behavior to annotate")
+            self._annotating.setText("")
         else:
             name = self.behaviors[self._active]["name"]
             suffix = " — non-examples" if self._kind == "negatives" else ""
             self._annotating.setText(f"Annotating: {name}{suffix}")
+        self._apply_marking()  # a behavior added or removed opens or closes the Mark pair
         self._refresh_hint()
 
     def _refresh_hint(self, *_a) -> None:
@@ -1574,12 +1648,30 @@ class ClipExampleDialog(Dialog):
         if ok:
             self._add_behavior_named(name)
 
-    def _add_behavior_named(self, name: str) -> str | None:
-        """Add ``name`` and make it the one being annotated; return why not if refused."""
+    def _add_behavior_from_field(self) -> None:
+        """The marking box's Add behavior (or Return in its field): the checklist's path, with
+        a refusal said on the line under the box, where the name was typed."""
+        if self._add_behavior_named(
+            self._new_behavior.text(), report=self._span_status
+        ):
+            self._new_behavior.selectAll()
+            return
+        self._new_behavior.clear()
+        self._span_status.setText("")  # a refusal from the last try no longer applies
+
+    def _add_behavior_named(
+        self, name: str, *, report: QLabel | None = None
+    ) -> str | None:
+        """Add ``name`` and make it the one being annotated; return why not if refused.
+
+        The one add path: the checklist's Add and the marking box's field both come here, so a
+        name one refuses the other refuses too. The refusal goes on ``report``, a label beside
+        where the name was typed — the status line when none is given.
+        """
         name = name.strip()
         problem = behavior_name_problem(name, [b["name"] for b in self.behaviors])
         if problem is not None:
-            self._status.setText(problem)
+            (self._status if report is None else report).setText(problem)
             return problem
         self.behaviors.append({"name": name, "examples": [], "negatives": []})
         self._active = len(self.behaviors) - 1
@@ -1819,13 +1911,11 @@ class ClipExampleDialog(Dialog):
             return int(spec["start_t_ns"])
         return self._start_t_ns.get(id(spec))
 
-    def _set_marking(self, reason: str | None) -> None:
-        # `set_available`, not `setEnabled`: a greyed button with no tooltip reads as broken
-        # rather than as not-yet.
-        set_available(self._mark_start, reason is None, reason or "")
-        set_available(self._mark_end, reason is None, reason or "")
-        self._mark_start.setText("Mark start")
-        self._mark_end.setText("Mark end")
+    def _set_marking(self, reason: str | None, *, loading: bool = False) -> None:
+        """What the track says about marking: why it is blocked, or None once it is usable."""
+        self._track_blocks = reason
+        self._track_loading = loading
+        self._apply_marking()
 
     def _set_marking_loading(self) -> None:
         """Greyed while the track's continuity is read — and the buttons *say* so.
@@ -1835,10 +1925,32 @@ class ClipExampleDialog(Dialog):
         including each keystroke in the Track box.
         """
         self._set_marking(
-            "Reading this track's continuity, which is what judges the span"
+            "Reading this track's continuity, which is what judges the span",
+            loading=True,
         )
-        self._mark_start.setText("Mark start (loading…)")
-        self._mark_end.setText("Mark end (loading…)")
+
+    def _apply_marking(self) -> None:
+        """Grey the Mark pair with the one reason that applies, and say it in the box.
+
+        Two things gate marking: a behavior for the clip to join (the one-list mode always has
+        its list) and the track, whose continuity judges the span. A missing behavior is the
+        reason shown while both apply, because it is the one the user has to act on; the read
+        finishes by itself, and once a behavior exists the buttons say "(loading…)" until it
+        has. Recomputed from both whenever either changes, so naming a behavior opens marking
+        only if the track is ready, and the track landing opens it only if a behavior exists.
+        """
+        nameless = self._multi and not self.behaviors
+        reason = _NAME_FIRST if nameless else self._track_blocks
+        loading = self._track_loading and not nameless
+        for button, edge in ((self._mark_start, "start"), (self._mark_end, "end")):
+            # `set_available`, not `setEnabled`: a greyed button with no tooltip reads as
+            # broken rather than as not-yet.
+            set_available(button, reason is None, reason or "")
+            button.setText(f"Mark {edge} (loading…)" if loading else f"Mark {edge}")
+        # The read says itself on the buttons; the note is for a reason that lasts.
+        note = reason if self._multi and reason is not None and not loading else ""
+        self._marking_note.setText(note)
+        self._marking_note.setVisible(bool(note))
 
     def _schedule_reload(self, *_a) -> None:
         self._reload_timer.start()

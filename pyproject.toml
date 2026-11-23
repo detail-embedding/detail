@@ -111,7 +111,6 @@ docs = [
     "mkdocstrings[python]",
     "mkdocs-click",
     "mkdocs-gen-files",
-    "matplotlib",  # scripts/gen_docs_querying_methods.py renders the figure at build time
     "mike",
 ]
 

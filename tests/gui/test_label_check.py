@@ -39,6 +39,8 @@ from detail.gui.label_clean import CLICK_HINT, SCROLL_FIRST
 from detail.storage import audit_figures
 from detail.storage import clip_review as review_store
 
+from tests.audit_seed import draw, judge
+from tests.gui.conftest import Pictures
 from tests.gui.conftest import drain_busy_calls
 from tests.gui.test_query_workspace import _drain
 
@@ -108,12 +110,18 @@ def _open(qapp, tab, path, node):
 
 def _to_end(qapp, tab) -> None:
     """Scroll to the bottom until the pane says so: under load the grid's maximum can still
-    grow after a fixed number of pumps, leaving the bar short of the real end."""
-    bar = tab.pane.montage.grid.verticalScrollBar()
+    grow after a fixed number of pumps, leaving the bar short of the real end.
+
+    The fitted fixture has no videos, so no previews: every tile would show *no preview* and
+    Finish would refuse. ``Pictures`` stands in for a built preview cache, and the wait includes
+    the pictures in view arriving."""
+    montage = tab.pane.montage
+    montage.set_source(Pictures(), keep_pictures=True)
+    bar = montage.grid.verticalScrollBar()
 
     def scrolled() -> bool:
         bar.setValue(bar.maximum())
-        return tab.pane.reached_end()
+        return tab.pane.reached_end() and montage.unpictured() == (0, 0)
 
     assert _drain(qapp, scrolled)
 
@@ -444,8 +452,9 @@ def test_finish_waits_for_the_end_of_the_scroll(qapp, tab):
     # The clips rank off the UI thread; until they arrive the grid is empty and "reached the
     # end" says nothing. A fixed five pumps lost that race in a loaded full run.
     _ranked(qapp, tab)
-    for _ in range(5):
-        qapp.processEvents()
+    # Pictures, as a built preview cache gives them: without them Finish says so first.
+    montage.set_source(Pictures(), keep_pictures=True)
+    assert _drain(qapp, lambda: montage.unpictured() == (0, 0))
     if tab.pane.reached_end():
         pytest.skip("this fit's cluster fits on one screen")
     assert not tab.pane.finish.isEnabled()
@@ -481,7 +490,9 @@ def test_finish_writes_one_census_and_shows_the_exact_precision(
     assert tab.pane.result.text() == f"{size - 2:,} of {size:,} are climb · 2 removed"
     assert tab.pane.when.text().startswith("· "), "the day it was reviewed"
     look = _look(tab, ("cluster", "climb", nodes["climb"]))
-    assert look["line"] == f"{expected}% · 2 removed" and look["fraction"] == 1.0
+    assert look["line"] == "2 removed" and look["fraction"] == 1.0
+    # The finished figure is the row's headline, drawn large where "62 clips" was.
+    assert look["figure"] == f"{expected}%"
     assert look["state"] == "reviewed"
     assert not tab.pane.undo.isEnabled(), "Finish clears the history"
     assert tab.pane.again.isVisible() and not tab.pane.finish.isVisible()
@@ -572,8 +583,8 @@ def test_a_finished_cluster_opened_later_shows_its_result_and_reopen_review(
 
 def test_the_earlier_one_by_one_audit_stays_in_the_tooltip(qapp, labelled):
     experiment, handle, _nodes = labelled
-    for row in handle.audit_sample(path="climb", budget=10):
-        handle.label_audit(row.instance_id, True)
+    for row in draw(handle, path="climb", budget=10):
+        judge(handle, row.instance_id, True)
     widget = _tab(qapp, experiment, handle)
     try:
         tip = _rows(widget)[("label", "climb")].toolTip(0)
@@ -666,7 +677,9 @@ def test_a_reviewed_cluster_row_has_no_bar(qapp):
         "fraction": 0.5,
     }
     reviewing = dict(look, state="reviewing", line="reviewing · 2 removed")
-    reviewed = dict(look, state="reviewed", line="97% · 2 removed", fraction=1.0)
+    reviewed = dict(
+        look, state="reviewed", line="2 removed", fraction=1.0, figure="97%"
+    )
     assert _row_bar_run(qapp, reviewing) > 40
     assert (
         _row_bar_run(qapp, reviewed) < 8
@@ -817,7 +830,8 @@ def test_a_reopened_review_left_and_returned_to_keeps_its_removals_and_old_figur
     _finish(qapp, tab)
     assert tab.pane.result.text() == f"{total - 2:,} of {total:,} are climb · 2 removed"
     assert tab.pane.was.isHidden()
-    assert _look(tab, climb)["line"] == f"{tab.pane.precision.text()} · 2 removed"
+    assert _look(tab, climb)["line"] == "2 removed"
+    assert _look(tab, climb)["figure"] == tab.pane.precision.text()
 
 
 def test_a_read_landing_mid_queue_keeps_the_marks_still_being_written(
@@ -1060,3 +1074,46 @@ def test_marks_queued_when_the_page_is_left_still_reach_the_run(
     assert _drain(
         qapp, lambda: len(handle.taken_out("climb")) == 3, 20_000
     ), f"only {len(handle.taken_out('climb'))} of 3 marks reached the run"
+
+
+def test_a_finished_reviews_figure_is_the_rows_headline(qapp):
+    """Reported: a finished review's precision read as small print at the end of the second
+    line. With a ``figure``, the row draws it bold and two steps up on the first line, where the
+    clip count was, and moves the count beside "removed" — measured on the font the delegate
+    paints with, and on the width it asks for. The negative half: a row still in review draws
+    no figure, and keeps its count on the first line."""
+    from PyQt6.QtGui import QFontMetrics
+    from PyQt6.QtWidgets import QListWidget, QListWidgetItem, QStyleOptionViewItem
+
+    from detail.gui import label_check
+
+    font = label_check._figure_font(None)
+    assert font.bold()
+    assert (
+        font.pointSizeF() > QListWidget().font().pointSizeF()
+    ), "no larger than the list"
+
+    lst = QListWidget()
+    delegate = label_check.ReviewListDelegate(lst)
+    option = QStyleOptionViewItem()
+    option.initFrom(lst)
+    reviewed = {
+        "kind": "cluster",
+        "name": "cluster #871",
+        "side": "62 clips",
+        "state": "reviewed",
+        "line": "2 removed",
+        "fraction": 1.0,
+        "figure": "97%",
+    }
+    item = QListWidgetItem()
+    item.setData(label_check.ROW_ROLE, reviewed)
+    lst.addItem(item)
+    index = lst.model().index(0, 0)
+    wide = delegate.row_width(option, index)
+    item.setData(label_check.ROW_ROLE, dict(reviewed, figure=""))
+    plain = delegate.row_width(option, index)
+    assert wide != plain, "the figure changed nothing the row is sized from"
+    assert QFontMetrics(font).horizontalAdvance("97%") > QFontMetrics(
+        lst.font()
+    ).horizontalAdvance("97%")
