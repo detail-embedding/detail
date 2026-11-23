@@ -14,10 +14,10 @@ under a different license in the future. You keep the copyright in what you writ
 - **"Contribution"** means any original work of authorship, including code, documentation,
   tests, data and images, and any modification of existing material, that You submit to the
   Project Owner for inclusion in DETAIL. Submission includes a pull request, a patch, an issue
-  attachment, or any other written communication sent to the project's repositories or
+  attachment, or any other written communication sent to the DETAIL repository or its
   maintainers. Anything You clearly mark as "Not a Contribution" when You submit it is excluded.
-- **"DETAIL"** means the software and documentation maintained in the repositories of the
-  `detail-embedding` organization on GitHub, and any later versions of it.
+- **"DETAIL"** means the software and documentation maintained in the
+  `detail-embedding/detail` repository on GitHub, and any later versions of it.
 
 ## 2. Copyright license
 
