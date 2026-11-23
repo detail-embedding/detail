@@ -146,7 +146,9 @@ class _QueryConfig(ConfigWidget):
         form = ConfigForm(self, QueryConfig)
 
         self._embed = QComboBox()
-        self._embed.currentIndexChanged.connect(self.coverage_changed.emit)
+        self._embed.currentIndexChanged.connect(
+            lambda _index: self.coverage_changed.emit()
+        )
         form.addRow(label_with("Embed run:", help_button("embedding-run")), self._embed)
         self._track = field_widget(QueryConfig, "track_id")
         form.addRow(field_label("query", "track_id", "Subject:"), self._track)

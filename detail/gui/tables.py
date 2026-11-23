@@ -545,6 +545,18 @@ class SortCell(QStandardItem):
             # the reader sees anyway.
             return str(mine) < str(theirs)
 
+    def __gt__(self, other) -> bool:
+        # Qt sorts through `operator<` alone (`__lt__`). Python's `a > b` falls back to
+        # `b < a` only if `>` is left undefined, and PySide6's `QStandardItem` defines it to
+        # raise instead — so it is spelled out here.
+        if isinstance(other, SortCell):
+            return other.__lt__(self)
+        mine, theirs = self._key, other
+        try:
+            return mine > theirs
+        except TypeError:
+            return str(mine) > str(theirs)
+
 
 def num_cell(value, text: str | None = None) -> SortCell:
     """A numeric cell: shows ``text`` (or ``str(value)``), sorts on ``value``.

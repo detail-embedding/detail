@@ -50,7 +50,7 @@ class StartFromRow(QWidget):
     the item list rather than drive a signal to learn what is offered.
     """
 
-    picked = Signal(dict)
+    picked = Signal(object)  # dict
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)

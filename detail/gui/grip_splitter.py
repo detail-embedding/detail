@@ -139,6 +139,12 @@ class _GripHandle(QSplitterHandle):
 
     def __init__(self, orientation: Qt.Orientation, parent: "GripSplitter") -> None:
         super().__init__(orientation, parent)
+        #: The splitter, held here rather than asked for. In PySide6 6.12,
+        #: `QSplitterHandle.splitter()` releases the reference that keeps the splitter's Python
+        #: side alive: the collector then frees it while the C++ splitter is still on screen, a
+        #: later lookup returns a wrapper with none of its attributes (`no attribute '_names'`),
+        #: and an override Qt calls on the freed object crashes the process (#107).
+        self._owner = parent
         #: Where in the handle the press landed, along the split; ``None`` when no button is down.
         self._press: int | None = None
         #: Where in the splitter the press landed, for telling a click from a drag.
@@ -156,7 +162,7 @@ class _GripHandle(QSplitterHandle):
 
     def _shut_pane(self) -> int | None:
         """The pane this handle is the strip of while it is shut, else ``None``."""
-        splitter = self.splitter()
+        splitter = self._owner
         pane = splitter.governed_pane(splitter.indexOf(self))
         return pane if pane is not None and splitter.is_folded(pane) else None
 
@@ -164,7 +170,7 @@ class _GripHandle(QSplitterHandle):
         hint = super().sizeHint()
         if self._shut_pane() is None:
             return hint
-        strip = self.splitter().strip_width()
+        strip = self._owner.strip_width()
         if self.orientation() == Qt.Orientation.Horizontal:
             return QSize(strip, hint.height())
         return QSize(hint.width(), strip)
@@ -188,7 +194,7 @@ class _GripHandle(QSplitterHandle):
             if abs(along - self._press_at) < QApplication.startDragDistance():
                 return
             self._dragging = True
-        splitter = self.splitter()
+        splitter = self._owner
         # The strip is wider than the grip it opens into: centre the grip under the pointer
         # rather than carry an offset into the strip that the open grip does not have.
         offset = splitter.handleWidth() // 2 if self._opening else self._press
@@ -205,10 +211,10 @@ class _GripHandle(QSplitterHandle):
         pane = self._shut_pane()
         if pane is not None:
             self._clicked_open_at = time.monotonic()
-            self.splitter().set_folded(pane, False)
+            self._owner.set_folded(pane, False)
 
     def keyPressEvent(self, event) -> None:  # noqa: N802 — Qt's name
-        splitter = self.splitter()
+        splitter = self._owner
         pane = splitter.governed_pane(splitter.indexOf(self))
         if pane is None or event.key() not in TOGGLE_KEYS:
             super().keyPressEvent(event)
@@ -235,7 +241,7 @@ class _GripHandle(QSplitterHandle):
             <= QApplication.doubleClickInterval()
         ):
             return
-        splitter = self.splitter()
+        splitter = self._owner
         pane = splitter.governed_pane(splitter.indexOf(self))
         if pane is not None:
             splitter.toggle(pane)
@@ -324,7 +330,7 @@ class _GripHandle(QSplitterHandle):
             painter.setFont(self._mark_font())
             painter.drawText(self._mark_origin()[0], mark)
             painter.setFont(self.font())
-            self._paint_name(painter, self.splitter().pane_name(shut), theme)
+            self._paint_name(painter, self._owner.pane_name(shut), theme)
         if self.hasFocus():
             # The focus ring: where Enter or Space would act. Inset so the handle's own bounds
             # hold all of it, on an open grip as thin as `HANDLE_PX`.

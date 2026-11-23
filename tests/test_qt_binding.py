@@ -20,6 +20,18 @@ the length of such a wait, so a test waiting on a worker waits for a worker that
 the first GUI-tier run after the switch, a decode thread finished only after the wait meant to
 see it had ended. ``detail.gui.qt.qwait`` is the replacement.
 
+**And no ``Signal(dict)``.** PySide6 converts a ``dict`` payload to Qt's string-keyed map; a dict
+with int keys arrives as ``{}``, with one line on stderr and nothing raised. The Find bar's rings
+(``{cluster id: colour}``) vanished that way. ``Signal(object)`` passes the dict through, as
+PyQt6's ``pyqtSignal(dict)`` did.
+
+**And no ``QSplitterHandle.splitter()`` in the app.** In PySide6 6.12 that read releases the
+reference that keeps the splitter's Python side alive: the collector frees it while the C++
+splitter is still on screen, a later lookup returns a wrapper with none of its attributes, and an
+override Qt then calls on the freed object crashes the process — two GUI-tier workers died that
+way. A handle keeps the splitter it was built for (``grip_splitter._GripHandle._owner``). Tests
+may call it: one does, on purpose, to move ownership.
+
 The predicate is :func:`violations`, a pure function of ``{path: source}``, so the negative cases
 below hand it literal source.
 """
@@ -104,10 +116,44 @@ def _gil_holding_waits(tree: ast.AST) -> list[tuple[int, str]]:
     return found
 
 
+def _lossy_signals(tree: ast.AST) -> list[int]:
+    """Lines declaring a ``Signal`` with a ``dict`` argument."""
+    return [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", getattr(node.func, "attr", None)) == "Signal"
+        and any(isinstance(a, ast.Name) and a.id == "dict" for a in node.args)
+    ]
+
+
+def _splitter_reads(tree: ast.AST) -> list[int]:
+    """Lines calling ``.splitter()`` with no arguments — ``QSplitterHandle.splitter``."""
+    return [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "splitter"
+        and not node.args
+        and not node.keywords
+    ]
+
+
 def violations(sources: dict[str, str]) -> list[str]:
     """``path:line: why`` for every import or wait that breaks the rule in the module docstring."""
     found = []
     for path, source in sources.items():
+        if path.startswith("detail/"):
+            for line in _splitter_reads(ast.parse(source)):
+                found.append(
+                    f"{path}:{line}: QSplitterHandle.splitter() frees the splitter's Python "
+                    "side in PySide6 — keep a reference instead"
+                )
+        for line in _lossy_signals(ast.parse(source)):
+            found.append(
+                f"{path}:{line}: Signal(dict) drops non-string keys in PySide6 — use object"
+            )
         for line, call in _gil_holding_waits(ast.parse(source)):
             found.append(
                 f"{path}:{line}: {call} holds the GIL under PySide6 — use detail.gui.qt.qwait"
@@ -209,6 +255,22 @@ def test_the_scan_would_catch_a_wait_that_holds_the_gil():
     assert len(violations(planted)) == len(planted)
 
 
+def test_the_scan_would_catch_a_dict_signal():
+    planted = {
+        "detail/gui/x.py": "class F(QObject):\n    found = Signal(dict)\n",
+        "detail/gui/y.py": "class F(QObject):\n    picked = QtCore.Signal(int, dict)\n",
+    }
+    assert len(violations(planted)) == len(planted)
+
+
+def test_the_scan_would_catch_a_splitter_read():
+    planted = {
+        "detail/gui/x.py": "def sizeHint(self):\n    return self.splitter().strip_width()\n",
+        "detail/gui/y.py": "def f(handle):\n    s = handle.splitter()\n",
+    }
+    assert len(violations(planted)) == len(planted)
+
+
 def test_the_scan_leaves_the_allowed_shapes_alone():
     allowed = {
         THE_SHIM: "import shiboken6\nfrom PySide6.QtCore import Qt\n",
@@ -218,5 +280,7 @@ def test_the_scan_leaves_the_allowed_shapes_alone():
         "detail/cli.py": "def gui():\n    from detail.gui.__main__ import main\n",
         "tests/gui/test_w.py": "from detail.gui.qt import qwait\nqwait(100)\n",
         "tests/gui/test_v.py": "def f(qapp):\n    qapp.processEvents()\n",
+        "detail/gui/w.py": "class F(QObject):\n    found = Signal(object)\n",
+        "tests/gui/test_u.py": "def f(split):\n    split.handle(1).splitter()\n",
     }
     assert violations(allowed) == []

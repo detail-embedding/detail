@@ -189,8 +189,8 @@ class FindClustersBar(QWidget):
     words for a cluster (``WorkspaceTerms``).
     """
 
-    found_changed = Signal(dict)
-    rings_changed = Signal(dict)
+    found_changed = Signal(object)  # dict[int, QColor]
+    rings_changed = Signal(object)  # dict[int, QColor]
     picked = Signal(int)
 
     def __init__(self, *, unit: str, units: str, parent=None) -> None:

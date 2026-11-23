@@ -707,6 +707,8 @@ _ICON_EXEMPT: dict[str, str] = {
     "arena.py": "draws a generated colour swatch beside each arena (CLAUDE.md, Icons)",
     "label_panel.py": "draws each label's generated colour swatch in the label list — the "
     "colour that label has on the tree, which its name alone cannot say",
+    "qt.py": "re-exports `QIcon` for `__main__.py`'s application icon; exporting a name is not "
+    "using it, and every file that uses it is scanned",
 }
 
 #: Qt's animation and effect machinery, by name. "No animations" and "no shadows" are two of the
@@ -762,11 +764,11 @@ def _create_buttons(page) -> list:
 
 
 def _lists(page) -> list:
-    from detail.gui.qt import QTableView, QTableWidget
+    from detail.gui.qt import QTableView
 
-    return [
-        t for t in page.findChildren((QTableView, QTableWidget)) if t.isVisibleTo(page)
-    ]
+    # One type, not a tuple: PySide6's `findChildren` takes a single class (PyQt6 took a
+    # tuple). `QTableWidget` is a `QTableView`, so this is the same set.
+    return [t for t in page.findChildren(QTableView) if t.isVisibleTo(page)]
 
 
 def _a_page_with_its_create_action_below_the_list():

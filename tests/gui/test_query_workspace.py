@@ -885,8 +885,19 @@ def test_browse_sorts_by_value_not_by_text(qapp, tmp_path):
     """
     from detail.gui.tables import SortCell
 
+    from detail.gui.qt import QStandardItemModel, Qt
+
     assert SortCell("9.00 s", 9_000_000_000) > SortCell("10.00 s", 10_000)
     assert SortCell("0.9", 0.9) > SortCell("0.10", 0.10)
+
+    # What a header click does: Qt sorts the model through each cell's `operator<`.
+    model = QStandardItemModel()
+    for text, key in [("10.00 s", 10_000), ("9.00 s", 9_000_000_000), ("0.5 s", 500)]:
+        model.appendRow([SortCell(text, key)])
+    model.sort(0, Qt.SortOrder.DescendingOrder)
+    assert [model.item(r, 0).text() for r in range(3)] == ["9.00 s", "10.00 s", "0.5 s"]
+    model.sort(0, Qt.SortOrder.AscendingOrder)
+    assert [model.item(r, 0).text() for r in range(3)] == ["0.5 s", "10.00 s", "9.00 s"]
 
 
 def test_browse_opens_the_row_you_clicked_after_sorting(qapp, tmp_path):
