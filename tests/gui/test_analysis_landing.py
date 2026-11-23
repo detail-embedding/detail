@@ -90,17 +90,21 @@ def test_a_behavior_scan_has_a_card_per_view(qapp, tmp_path):
     assert page._cards["Calibrate"].text().splitlines()[-1] == "1 behavior"
 
 
-def test_a_location_export_has_one_results_card(qapp, tmp_path):
+def test_a_location_export_has_a_plots_card_and_a_files_card(qapp, tmp_path):
+    from detail.gui.modules.analysis_location import FILES_VIEW, PLOTS_VIEW
+
     experiment, run_id = _location_run(tmp_path)
     page = AnalysisRunDetailPage(experiment, run_id)
-    assert list(page._cards) == ["Results"]
-    purpose = ANALYSIS_GUI_MODULES["location_export"].purpose
-    assert page._cards["Results"].text().splitlines()[1] == purpose
-    page._cards["Results"].click()
-    assert page.open_view() == "Results"
-    # One view: no tab to switch to, so no row of them (the path line names the view).
-    assert page._view_tabs is None
-    assert page.context_view() == "Results"
+    assert list(page._cards) == ["Plots", "Files"]
+    assert page._cards["Plots"].text().splitlines()[1] == PLOTS_VIEW[1]
+    assert page._cards["Files"].text().splitlines()[1] == FILES_VIEW[1]
+    assert page._cards["Files"].text().splitlines()[-1] == "1 files"
+    page._cards["Files"].click()
+    assert page.open_view() == "Files" and page.context_view() == "Files"
+    # Two views: one row of tabs, the page's, and none inside the view.
+    assert page._view_tabs is not None
+    planned = ANALYSIS_GUI_MODULES["location_export"].planned_views()
+    assert [name for name, _purpose in planned] == list(page._cards)
 
 
 def test_a_query_eval_run_has_one_results_card_greyed_while_it_runs(qapp, tmp_path):
@@ -326,10 +330,10 @@ def test_a_card_is_a_bold_headline_over_plain_lines_and_still_a_button(qapp, tmp
     page.resize(1200, 800)
     page.show()
     qapp.processEvents()
-    card = page._cards["Results"]
+    card = page._cards["Files"]
     assert not card.styleSheet() and not page.styleSheet()
     head, purpose = card.headline, card.purpose
-    assert head.text() == "Results ›" and head.font().bold()
+    assert head.text() == "Files ›" and head.font().bold()
     assert not purpose.font().bold() and not card.status.font().bold()
     assert head.font().pointSizeF() > purpose.font().pointSizeF()
     assert card.height() >= head.height() + purpose.height(), "the card holds its lines"
@@ -337,13 +341,13 @@ def test_a_card_is_a_bold_headline_over_plain_lines_and_still_a_button(qapp, tmp
     QTest.mouseClick(
         card, Qt.MouseButton.LeftButton, pos=purpose.geometry().center() + QPoint(0, 0)
     )
-    assert page.open_view() == "Results"
+    assert page.open_view() == "Files"
     page._show_landing()
     qapp.processEvents()
-    card = page._cards["Results"]
+    card = page._cards["Files"]
     card.setFocus()
     QTest.keyClick(card, Qt.Key.Key_Space)
-    assert page.open_view() == "Results"
+    assert page.open_view() == "Files"
 
 
 def test_the_shell_notes_button_shows_the_notes_inside_an_open_view(

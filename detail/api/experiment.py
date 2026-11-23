@@ -4766,6 +4766,21 @@ class Experiment:
         — for opening it in a file manager."""
         return analysis_store.analysis_dir(self._dir, run_id)
 
+    def location_plots(self, run_id: str):
+        """Plots of a completed location-export run (DESIGN_PLAN §16 "Location plots"): its
+        animals' paths, occupancy, speed and body, drawn from the run's own CSVs.
+
+        Returns:
+            A ``LocationPlots``: ``build(view)`` for a ``PlotSpec``, ``export(view, stem)``
+            for files.
+
+        Raises:
+            ValueError: The run is not a location export, or has no completed recording.
+        """
+        from detail.api.location_plots import LocationPlots
+
+        return LocationPlots(self, run_id)
+
     def run_analysis(self, module_id: str, config: dict) -> AnalysisRun:
         """Launch an experiment-scoped analysis run (§16): one module over a selection
         of recordings, producing artifacts in ``analysis/<run_id>/``. A single

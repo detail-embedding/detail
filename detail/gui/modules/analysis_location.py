@@ -5,12 +5,14 @@ kind — found across the selected recordings, annotated with ``N/M`` coverage, 
 may be ticked (``PooledSpecPicker``); ``config()`` emits ``tracking_spec`` or
 ``tracking_specs`` and the run resolves them to each recording's own tracking run. Below it,
 the measurement options (rows per second, thin parts), each row built from
-``LocationExportConfig`` so its range, default and help are the model's. Result: the
-per-recording CSV artifacts the run produced, read from its ``analysis.yaml`` manifest.
+``LocationExportConfig`` so its range, default and help are the model's. Result: two views,
+**Plots** (``gui/location_plots.py``, the run drawn from its own CSVs) and **Files** (the
+per-recording CSV artifacts the run produced, read from its ``analysis.yaml`` manifest).
 """
 
 from PyQt6.QtWidgets import (
     QLabel,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -29,6 +31,7 @@ from detail.gui.modules.registry import (
     ModuleUI,
     register_analysis_module_ui,
 )
+from detail.gui.result_views import MultiViewWorkspace
 
 #: What the rows-per-second box reads when it is left unset.
 EVERY_FRAME_TEXT = "every frame"
@@ -106,30 +109,73 @@ class _LocationExportConfig(ConfigWidget):
         return self._tracking.validation_error()
 
 
+#: The run page's two views of a location export, and what each is for.
+PLOTS_VIEW = (
+    "Plots",
+    "The animal's path, where it spent its time, its speed and its body.",
+)
+FILES_VIEW = ("Files", "The location tables this run wrote, per recording.")
+
+
+def _files_widget(run_record: dict) -> QWidget:
+    widget = QWidget()
+    layout = QVBoxLayout(widget)
+    run_id = run_record.get("id", "")
+    layout.addWidget(
+        QLabel(
+            f"Per-track ROI/POI spatial features, written under "
+            f"analysis/{run_id}/<recording>/:"
+        )
+    )
+    artifacts = run_record.get("artifacts", [])
+    if not artifacts:
+        layout.addWidget(QLabel("(no output files recorded)"))
+        return widget
+    from detail.gui.pages import _table  # local: avoid an import cycle
+
+    rows = [(a.get("path", ""), a.get("kind", "")) for a in artifacts]
+    layout.addWidget(_table(["File", "Kind"], rows))
+    return widget
+
+
+class LocationResults(MultiViewWorkspace):
+    """A location export's result: its Plots, drawn from the run's own CSVs, and its Files.
+
+    Both views always, so the cards a running export shows are the views it ends with: a run
+    that wrote no tables says so on its Plots view when opened."""
+
+    def __init__(self, experiment, run_record: dict) -> None:
+        super().__init__()
+        from detail.gui.location_plots import LocationPlotsPanel
+
+        tabs = QTabWidget()
+        per_recording = run_record.get("per_recording") or {}
+        complete = sum(
+            1 for state in per_recording.values() if state.get("status") == "complete"
+        )
+        self.plots = LocationPlotsPanel(experiment, run_record.get("id", ""))
+        tabs.addTab(self.plots, PLOTS_VIEW[0])
+        specs = [(*PLOTS_VIEW, self.plots, lambda: f"{complete} recordings to plot")]
+        files = _files_widget(run_record)
+        tabs.addTab(files, FILES_VIEW[0])
+        n_files = len(run_record.get("artifacts") or [])
+        specs.append((*FILES_VIEW, files, lambda: f"{n_files} files"))
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(tabs)
+        self._init_views(tabs, specs)
+
+
 @register_analysis_module_ui
 class LocationExportModuleUI(ModuleUI):
     module_id = "location_export"
-    purpose = "The location tables this run wrote, per recording."
+    purpose = FILES_VIEW[1]
 
     def config_widget(self) -> ConfigWidget:
         return _LocationExportConfig()
 
-    def result_widget(self, experiment, run_record: dict) -> QWidget:
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        run_id = run_record.get("id", "")
-        layout.addWidget(
-            QLabel(
-                f"Per-track ROI/POI spatial features, written under "
-                f"analysis/{run_id}/<recording>/:"
-            )
-        )
-        artifacts = run_record.get("artifacts", [])
-        if not artifacts:
-            layout.addWidget(QLabel("(no output files recorded)"))
-            return widget
-        from detail.gui.pages import _table  # local: avoid an import cycle
+    def planned_views(self) -> list[tuple[str, str]]:
+        return [PLOTS_VIEW, FILES_VIEW]
 
-        rows = [(a.get("path", ""), a.get("kind", "")) for a in artifacts]
-        layout.addWidget(_table(["File", "Kind"], rows))
-        return widget
+    def result_widget(self, experiment, run_record: dict) -> QWidget:
+        return LocationResults(experiment, run_record)

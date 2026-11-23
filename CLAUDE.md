@@ -167,8 +167,7 @@ reporting*.
   `event → render` mapping (CLI and GUI are deliberately separate); a second one is the bug.
 - A synchronous API method that does real work takes a `progress` callback, and **every caller
   drives it**. A new long path, or a flag that makes a quick one long, ships with progress and a
-  test that it is wired. `Recording.export_locations` is an outstanding violation.
-  Guard: `tests/test_progress_callers.py`.
+  test that it is wired. Guard: `tests/test_progress_callers.py`.
 - GUI interactive loads (a preview, a frame decode, a one-shot export) run off the UI thread
   through `gui/busy.py` (`run_busy` / `run_progress`), never as a raw slow call in a widget
   `__init__` or slot. Guard: `tests/gui/test_ui_thread_blocking.py`.

@@ -1,0 +1,219 @@
+"""Plots of a completed location-export run (DESIGN_PLAN §16 "Location plots").
+
+``Experiment.location_plots(run_id)`` returns a ``LocationPlots``: the read boundary the CLI and
+the GUI's result page draw through. It reads the run's per-recording ``tracks.csv`` /
+``locations.yaml`` on demand (nothing is written by the run) and keeps what it read, so a second
+plot of the same recordings — another kind, another colour, a turned camera — re-reads nothing.
+"""
+
+import threading
+from collections.abc import Callable
+from pathlib import Path
+
+from detail.analysis import location_plots as plots
+from detail.configs.location_plots import LocationPlotView
+from detail.report.plot_spec import PlotSpec
+from detail.storage import location_export
+
+#: ``(stage, fraction, detail)`` — the synchronous-API progress shape (CLAUDE.md).
+Progress = Callable[[str, float, str], None] | None
+
+MODULE_ID = "location_export"
+
+#: The picture formats an export writes.
+FORMATS = ("png", "svg", "pdf")
+
+
+class LocationPlots:
+    """Draw a location-export run's paths, occupancy, speed and body.
+
+    Raises:
+        ValueError: (at construction) the run is not a location export, or has no completed
+            recording to plot.
+    """
+
+    def __init__(self, experiment, run_id: str) -> None:
+        record = experiment.analysis_record(run_id)
+        if record.get("module_id") != MODULE_ID:
+            raise ValueError(
+                f"{run_id} is a {record.get('module_id')!r} run, not a location export"
+            )
+        self._experiment = experiment
+        self.run_id = run_id
+        self._run_dir = experiment.analysis_run_dir(run_id)
+        per_recording = record.get("per_recording") or {}
+        params = record.get("params") or {}
+        selected = list(params.get("source_recording_ids") or per_recording)
+        self._recordings = [
+            sid
+            for sid in selected
+            if (per_recording.get(sid) or {}).get("status") == "complete"
+            and (self._run_dir / sid / location_export.TRACKS_FILE).exists()
+        ]
+        if not self._recordings:
+            raise ValueError(f"{run_id} has no completed recording to plot")
+        self._tables: dict[str, plots.TrackTable] = {}
+        self._manifests: dict[str, dict] = {}
+        self._lock = threading.Lock()
+
+    @property
+    def recording_ids(self) -> list[str]:
+        """The run's completed recordings, in run order — what a plot can draw."""
+        return list(self._recordings)
+
+    @property
+    def group_columns(self) -> list[str]:
+        """The Recording Information columns a plot can group by."""
+        return list(self._experiment.metadata_columns)
+
+    def names(self) -> dict[str, str]:
+        """``{recording_id: name}`` for the run's recordings (a deleted one shows its id)."""
+        known = self._experiment.recording_names()
+        return {sid: known.get(sid, sid) for sid in self._recordings}
+
+    def _manifest(self, recording_id: str) -> dict:
+        """One recording's ``locations.yaml``, read once (a small YAML, no rows)."""
+        with self._lock:
+            cached = self._manifests.get(recording_id)
+        if cached is not None:
+            return cached
+        manifest = location_export.read_location_manifest(self._run_dir / recording_id)
+        if manifest is None:
+            raise ValueError(
+                f"{self.names()[recording_id]} has no {location_export.MANIFEST_FILE} in "
+                f"{self.run_id}"
+            )
+        with self._lock:
+            self._manifests[recording_id] = manifest
+        return manifest
+
+    def body_measured(self) -> bool:
+        """Whether the export measured the body of any of its recordings (``body`` plots need
+        it). Reads the manifests only: each lists the columns its ``tracks.csv`` has."""
+        return any(
+            all(
+                name in ((self._manifest(sid).get("columns") or {}).get("tracks") or [])
+                for name in plots.BODY_COLUMNS
+            )
+            for sid in self._recordings
+        )
+
+    def _table(self, recording_id: str) -> plots.TrackTable:
+        with self._lock:
+            cached = self._tables.get(recording_id)
+        if cached is not None:
+            return cached
+        table = plots.read_tracks(
+            self._run_dir / recording_id / location_export.TRACKS_FILE
+        )
+        with self._lock:
+            self._tables[recording_id] = table
+        return table
+
+    def traces(
+        self,
+        view: LocationPlotView,
+        recording_ids: list[str] | None = None,
+        progress: Progress = None,
+    ) -> tuple[list[plots.Trace], list[str]]:
+        """The animal of each selected recording, and a note per recording left out.
+
+        Raises:
+            ValueError: A recording is not one of the run's completed ones.
+        """
+        chosen = self._chosen(recording_ids)
+        names = self.names()
+        out, notes = [], []
+        for index, sid in enumerate(chosen):
+            if progress is not None:
+                progress("reading", index / len(chosen), names[sid])
+            frame = plots.read_frame(
+                self._manifest(sid), f"{names[sid]}'s {location_export.MANIFEST_FILE}"
+            )
+            found, note = plots.trace(
+                self._table(sid), frame, view, recording_id=sid, name=names[sid]
+            )
+            if found is not None:
+                out.append(found)
+            if note is not None:
+                notes.append(note)
+        if progress is not None:
+            progress("reading", 1.0, f"{len(chosen)} recordings")
+        return out, notes
+
+    def _chosen(self, recording_ids: list[str] | None) -> list[str]:
+        if recording_ids is None:
+            return self.recording_ids
+        unknown = [r for r in recording_ids if r not in self._recordings]
+        if unknown:
+            raise ValueError(
+                f"not a completed recording of {self.run_id}: {', '.join(unknown)}"
+            )
+        if not recording_ids:
+            raise ValueError("nothing to plot: no recordings selected")
+        return list(recording_ids)
+
+    def build(
+        self,
+        view: LocationPlotView,
+        recording_ids: list[str] | None = None,
+        progress: Progress = None,
+    ) -> PlotSpec:
+        """``view`` of the selected recordings (default: all) as a ``PlotSpec``; a recording
+        left out is named in the spec's note.
+
+        Raises:
+            ValueError: An unknown recording or ``group_by`` column, nothing to plot, or units
+                the plot cannot be given in.
+        """
+        values = None
+        if view.group_by is not None:
+            columns = self.group_columns
+            if view.group_by not in columns:
+                have = ", ".join(columns) or "none"
+                raise ValueError(
+                    f"no Recording Information column {view.group_by!r} (columns: {have})"
+                )
+            metadata = self._experiment.recording_metadata
+            values = {
+                sid: (metadata.get(sid) or {}).get(view.group_by, "")
+                for sid in self._recordings
+            }
+        traces, notes = self.traces(view, recording_ids, progress)
+        if progress is not None:
+            progress("drawing", 0.0, view.kind)
+        spec = plots.build_plot(traces, view, values, notes=notes)
+        if progress is not None:
+            progress("drawing", 1.0, view.kind)
+        return spec
+
+    def export(
+        self,
+        view: LocationPlotView,
+        out_stem: Path | str,
+        recording_ids: list[str] | None = None,
+        *,
+        formats: tuple[str, ...] = ("png",),
+        theme: str = "light",
+        progress: Progress = None,
+    ) -> list[Path]:
+        """Write ``view`` as ``<out_stem>.<fmt>`` for each of ``formats`` (png, svg, pdf).
+
+        Raises:
+            ValueError: A format that is not one of :data:`FORMATS`, or what :meth:`build`
+                raises.
+        """
+        from detail.report import plot_render
+
+        unknown = [f for f in formats if f not in FORMATS]
+        if unknown or not formats:
+            raise ValueError(
+                f"export formats are {', '.join(FORMATS)}; not {', '.join(unknown) or 'none'}"
+            )
+        spec = self.build(view, recording_ids, progress)
+        if progress is not None:
+            progress("writing", 0.0, ", ".join(formats))
+        paths = plot_render.render(spec, out_stem, formats=tuple(formats), theme=theme)
+        if progress is not None:
+            progress("writing", 1.0, ", ".join(formats))
+        return paths

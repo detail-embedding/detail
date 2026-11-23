@@ -1341,7 +1341,13 @@ class Recording:
             )
         return rec
 
-    def location_tables(self, tracking_run_id: str, **options: float | bool | None):
+    def location_tables(
+        self,
+        tracking_run_id: str,
+        *,
+        progress: Callable[[str, float, str], None] | None = None,
+        **options: float | bool | None,
+    ):
         """Per-frame, per-track spatial features for a completed tracking run —
         bbox/centroids/areas, the body's centre, area, length and width, and position
         relative to this recording's ROIs/POIs.
@@ -1352,6 +1358,8 @@ class Recording:
 
         Args:
             tracking_run_id: A complete tracking run of this recording.
+            progress: ``(stage, fraction, detail)``, called as the tracked rows are
+                measured: a recording's export takes minutes, and without it looks hung.
             **options: The measurement options of ``configs.location_export``:
                 ``sample_fps`` (rows per second per subject; unset is every tracked frame),
                 ``remove_thin_parts`` (measure the body without a tail or limb) and
@@ -1363,6 +1371,7 @@ class Recording:
         """
         from detail.analysis import locations as _locations
         from detail.configs import location_export as _config
+        from detail.core.progress import ThrottledProgress
 
         self._require_complete_tracking(tracking_run_id)
         unknown = sorted(set(options) - set(_config.option_names()))
@@ -1371,33 +1380,56 @@ class Recording:
                 f"location export has no option {', '.join(unknown)}; it has "
                 f"{', '.join(_config.option_names())}"
             )
+        resolved = _config.options_from(options)
+        on_rows = None
+        if progress is not None:
+            # The compute reports per tracked row, hundreds of thousands of them, so the
+            # throttle keeps the callback off its loop.
+            emit = ThrottledProgress(lambda event: progress(*event))
+
+            def on_rows(done: int, total: int) -> None:
+                fraction = done / total if total else 1.0
+                emit(
+                    ("measuring", fraction, f"{done:,} of {total:,} rows"),
+                    force=done >= total,
+                )
+
+            on_rows(0, 1)  # the bar moves before the first part is read
         return _locations.compute_location_tables(
-            self, tracking_run_id, options=_config.options_from(options)
+            self, tracking_run_id, on_progress=on_rows, options=resolved
         )
 
     def export_locations(
         self,
         tracking_run_id: str,
         out_dir: Path | str,
+        *,
+        progress: Callable[[str, float, str], None] | None = None,
         **options: float | bool | None,
     ) -> Path:
         """Compute + write the three location CSVs (``tracks`` / ``roi_relations`` /
         ``point_relations``) + a ``locations.yaml`` manifest into a new folder under
         ``out_dir``; returns that folder. Tables keyed by ``t_ns`` (joins with streams).
-        ``options`` are :meth:`location_tables`'s.
+        ``progress`` and ``options`` are :meth:`location_tables`'s; ``progress`` also hears
+        the write.
 
         The names are fixed, so each export gets its own folder: writing them straight into
         ``out_dir`` replaced one recording's files with the next one's (#29)."""
         from detail.api import exporters
         from detail.storage import location_export
 
-        tables = self.location_tables(tracking_run_id, **options)
+        tables = self.location_tables(tracking_run_id, progress=progress, **options)
         dest = exporters.new_export_folder(
             exporters.ExportSubject("recording", self._experiment_dir, self.id),
             out_dir,
             what=f"{tracking_run_id}_locations",
         )
-        return location_export.write_location_tables(dest, tables)
+        if progress is not None:
+            progress("writing", 0.0, dest.name)
+        written = location_export.write_location_tables(dest, tables)
+        if progress is not None:
+            progress("writing", 1.0, dest.name)
+        return written
 
     def backfill_kinematics(
         self, embed_run_id: str, *, progress=None, overwrite: bool = False

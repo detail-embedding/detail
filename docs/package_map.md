@@ -79,6 +79,8 @@ detail/
 │   │   quick_segment.py, location_export.py, query.py, query_eval.py, comparison.py,
 │   │   temporal_clustering.py         # a module's (or tool's) run config
 │   ├── keypoint_detect.py, keypoint_track.py  # §26 (+ the flat method models)
+│   ├── location_plots.py # LocationPlotView: how a location export is drawn (a view model, like
+│   │                     # display.py; its fields are the Plots view's controls and the CLI's flags)
 │   ├── keypoint_dataset.py  # the label stage of a keypoint distill (§12 *Distill keypoints*)
 │   ├── query_soft_knn.py, temporal_codebook.py, temporal_dtw_finch.py  # a registry method's own
 │   │                     # parameters (the method's half of the config)
@@ -211,6 +213,9 @@ detail/
 │                         # bout_segmentation.py (detector params, segment_recording, pool_recordings,
 │                         # bout_medoid_distance — the bout steps temporal clustering uses);
 │                         # locations.py (compute_location_tables — per-track ROI/POI features);
+│                         # location_measures.py (a comparison's locations source, and the one
+│                         # path rule: smoothed_segments / path_breaks); location_plots.py (a
+│                         # location export's paths, occupancy, speed and body as a PlotSpec);
 │                         # metrics_docs.py / query_methods_docs.py (single sources for two doc pages)
 ├── cluster_methods/      # TemporalClusterMethod implementations: dtw_finch, codebook_viterbi;
 │                         # _common.py the steps they share (kmeans_level, blas_safe_openmp).
@@ -220,7 +225,9 @@ detail/
 ├── report/               # figure + table rendering shared by the analysis reports; style.py is
 │                         # the matplotlib adapter for core/chart_theme.py, figures.py the primitives,
 │                         # tables.py the CSV writers, behavior_figures.py a §19 artifact's figures,
-│                         # exporter.py what a re-export may delete (only what it wrote last time)
+│                         # exporter.py what a re-export may delete (only what it wrote last time),
+│                         # plot_spec.py a figure as plain data and plot_render.py its matplotlib
+│                         # renderer (the location plots draw through both)
 ├── models/
 │   ├── hf_access.py      # HFHubModel mixin + cache-first readiness
 │   ├── _ultralytics.py   # the sole seam allowed to import ultralytics (YOLO_OFFLINE lives here);
@@ -266,6 +273,8 @@ detail/
 │   ├── keypoint_export.py   # §26: PointSource (one reader of a keypoint run for export: cut-off,
 │   │                     # source, blanking) + the long-CSV, DeepLabCut, SLEAP and NWB writers
 │   ├── keypoints_video.py   # §26 (#689): the footage with the points drawn on, one sequential pass per part
+│   ├── location_plots.py    # §16: LocationPlots, Experiment.location_plots(run_id) — the read boundary
+│   │                     # the CLI's `locations plot` and the GUI's Plots view draw through
 │   ├── run_preview.py    # Detection/Tracking/InputImage/Embedding/Stream/ClipQuery/QueryEval
 │   │                     # preview accessors + pca_project_2d
 │   ├── previews.py       # §3 preview build (proxy + masks), missing checks, PreviewReader (tiles)
@@ -481,7 +490,8 @@ detail/
     │                     # (registry.py: ImporterUI + ConfigBand; csv_columns.py; selection.py)
     ├── modules/          # per-module config + result UIs, keyed by module_id: detection.py,
     │                     # tracking.py, embedding.py, keypoint_detect.py and keypoint_track.py
-    │                     # (§26), analysis_location.py, analysis_query.py, analysis_query_eval.py,
+    │                     # (§26), analysis_location.py (+ ../location_plots.py, its Plots view),
+    │                     # analysis_query.py, analysis_query_eval.py,
     │                     # analysis_temporal_clustering.py; registry.py also re-exports the
     │                     # result-view protocol; _common.py the upstream-run pickers, _every_n.py
     │                     # the "Use every N frames" row, _heading.py the one heading picker (§14 —

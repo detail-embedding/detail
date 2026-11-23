@@ -781,7 +781,40 @@ Three options choose what is measured and how often. `analysis run` takes the sa
 - `--thin-part-scale <x>`: how thick a part must be to count as body, as a share of the
   square root of the subject's own mask area. Default 0.12.
 
-`locations.yaml` records all three, and the size of the opening used for each subject.
+`locations.yaml` records all three, and the size of the opening used for each subject. A bar
+shows the rows measured, then the write.
+
+### `locations plot`
+`--experiment`, `--run an_NN` (a finished location-export run), `--out <path>` (no extension):
+draws the run from its own CSVs and writes `<path>.png`, or one file per `--format png|svg|pdf`
+(repeatable). `--recording <name>` (repeatable) plots only those recordings; `--theme dark`
+draws on a dark surface. No run record; the run is only read.
+
+```bash
+detail locations plot --experiment ./study --run an_03 --out figs/paths
+detail locations plot --experiment ./study --run an_03 --out figs/heat --kind heatmap --group-by genotype --format png --format pdf
+detail locations plot --experiment ./study --run an_03 --out figs/length --kind body --body-measure length --group-by genotype
+```
+
+Every other flag is one of the plot's settings, with its choices, bounds, default and help read
+from the same model the app's **Plots** view is built from (`detail locations plot --help` lists
+them):
+
+- `--kind trace|heatmap|speed|trace3d|body|body_hist`: the path, where the animal spent its
+  time, speed over time, the path against time in 3-D, a body measure over time, or a
+  histogram of it.
+- `--source body|mask|bbox`: the position a path follows. `body` is the body's centre, which
+  leaves out a tail when the export removed thin parts.
+- `--body-measure length|width|area|elongation|mask_area`: what a body plot shows.
+- `--group-by <column>`: one panel (or one line) per value of a Recording Information
+  column, each animal counting once.
+- `--posture-every-s <s>`: on a `trace`, the body's outline every that many seconds.
+- `--units mm|px|norm`: by default mm when every plotted recording is calibrated, otherwise px.
+- `--smooth-s`, `--jump-speed`: the path's smoothing and the jump that breaks it, read from a
+  comparison's own defaults so a speed plot and a comparison measure one path.
+
+Plots show one animal per recording; a recording whose tracking followed several is named under
+the title, not plotted.
 
 ### `export`
 Get data out of DETAIL in open formats. `export list` shows what a subject can produce;

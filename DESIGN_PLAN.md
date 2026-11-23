@@ -5193,7 +5193,109 @@ GUI Analysis tab) is the surface that adds progress, batch, history, and
 navigate-away safety. Feature details (the column schemas, the OR-merge, the
 normalized/pixel/mm units — the `_mm` columns come from the recording's distance
 calibration, blank when uncalibrated — the part-frame-offset lift) live with the compute
-in `analysis/locations.py`.
+in `analysis/locations.py`. `Recording.export_locations` / `location_tables` take a
+`progress` callback (`measuring` per tracked row, then `writing`), which `locations export`
+drives with a bar.
+
+#### Location plots (viewing a location export)
+
+A completed location-export run is **drawn on demand from its own CSVs**: nothing image-shaped
+is written by the run, and a run made before plots existed gets them with no re-run. The plots
+read `tracks.csv` (through `storage/location_export.read_location_csv`, by column name) and
+`locations.yaml` (`video_resolution`, `pixels_per_mm`): a position is read once, as the
+normalized centre, and converted — `px = norm × width|height`, `mm = px / pixels_per_mm`, the
+conversion the export writes into the `_px` / `_mm` columns.
+
+**One animal per recording.** Every tracker this tool has follows one animal, so a recording's
+path is its one `object_id`. A `tracks.csv` with several (an imported multi-animal tracking) is
+not guessed at: the recording is named in the plot's note (`box 3: 2 animals (tracks 0, 3);
+location plots show one animal per recording`) and the rest are drawn.
+
+**View parameters, not run config.** `configs/location_plots.LocationPlotView` (pydantic, the
+`configs/display.py` kind — absent from the run record and from the parameter reference) is the
+one source for each knob's choices, bounds, default and help. The GUI's controls are built from
+it and the CLI's `locations plot` flags are enumerated from it (`cli._view_options`), so a
+field added here reaches both.
+
+| field | type / default | meaning |
+|---|---|---|
+| `kind` | `trace` \| `heatmap` \| `speed` \| `trace3d` \| `body` \| `body_hist`, `trace` | 2-D path; occupancy heat map; speed over time; path against time in 3-D; a body measure over time; its histogram |
+| `source` | `body` \| `mask` \| `bbox`, `body` | which centre is the position. `body` on an export made before the body was measured reads the mask's centre, which is the same thing there (§16 *The body*: with thin parts kept the two are equal, and such an export never removed any) |
+| `body_measure` | `length` \| `width` \| `area` \| `elongation` \| `mask_area`, `length` | what a body plot shows; `elongation` is length ÷ width, `mask_area` the whole mask, tail and all |
+| `units` | `mm` \| `px` \| `norm` \| None, None | None = `mm` when every plotted recording is calibrated, else `px`; `mm` with an uncalibrated recording raises naming it; a body measure in `norm` raises |
+| `color_by` | `time` \| `speed`, `time` | what colours a path (`trace`, `trace3d`) |
+| `group_by` | str \| None, None | a Recording Information (`metadata.csv`) column |
+| `posture_every_s` | float > 0 \| None, None | on a `trace`, the body's outline every this many seconds |
+| `bins` | int 40, 5–200 | heat-map cells along the frame's longer side (square cells) |
+| `hist_bins` | int 40, 5–200 | body-histogram bins, from the smallest value plotted to the largest |
+| `time_bin_s` | float 1.0, 0.04–600 | bin width of a speed or body plot over time |
+| `smooth_s`, `jump_speed` | float, a comparison's `location_smooth_s` / `location_jump_speed` defaults | the path rule below, read from `configs/comparison.py` rather than written again |
+| `speed_clip_pct` | float 95, 50–100 | top of a speed colour scale, as a percentile of every plotted speed |
+| `elev`, `azim` | float 22 (−90–90), −60 (−180–180) | the one camera every 3-D panel shares |
+| `max_points` | int 20000, 500–1,000,000 | drawn samples per path, evenly subsampled; speeds and histograms use every sample |
+
+**One path rule** (`analysis/location_measures.smoothed_segments` / `path_breaks`, §24 *The
+locations source*). A path breaks at a gap in tracking (consecutive samples more than 1.5
+median sample intervals apart) and at a raw step faster than `jump_speed` of the animal's median
+body lengths a second. A break is drawn as a break (NaN), so neither a dropout nor a tracking
+jump is drawn as a line across the arena. Speed is measured on each unbroken stretch's running
+mean over `smooth_s`: a speed plot's steps are, step for step, the steps a comparison measures
+distance and speed on. The rule runs in pixels, where a body length means one thing in both
+directions; a running mean is linear, so the stretches are scaled per axis to the plot's units
+after. An export made before the body was measured has no body length, so its path breaks at
+gaps only. `t_s` runs from the animal's first tracked sample. y runs **down** on every 2-D and
+3-D plot, so a plot reads the same way up as the video.
+
+**The body.** `body` plots the run's per-frame `body_*` columns as measured: the mean per
+`time_bin_s` bin over time (a bin with no sample is a gap), or, for `body_hist`, the share of
+the animal's samples in each bin (each animal's bars sum to 1), drawn as a step line. Length and
+width are in `px` or `mm`, areas in their squares. `posture_every_s` draws, on a `trace`, the
+body's outline at the samples a clock at `1 / posture_every_s` keeps by the export's own
+sampling rule (`analysis/locations.sampled_indices`): an ellipse with the body's length and
+width along `body_angle_deg`, at the body's centre, computed in pixels and converted point by
+point, so it keeps the body's shape whatever the plot's units, and coloured as the path is at
+that moment. `body_angle_deg` is an axis (0–180°) with no head or tail, so an outline has no
+arrow. A recording exported before the body was measured is named in the note (`exported
+before the body was measured; export it again`), on body plots and outlines alike.
+
+**Per recording.** Without `group_by`, one panel per recording, sharing axis ranges and one
+colour scale.
+
+**By group.** Each animal counts once:
+
+- `trace` / `trace3d` — one panel per group, every animal overlaid, in `norm` units (the only
+  frame shared across videos).
+- `heatmap` — one panel per group: **each animal's occupancy is normalized to sum to 1, then
+  the group's grids are averaged**, so an animal tracked longer does not outweigh its
+  group-mates. Cells are square when every recording in the plot shares one aspect ratio.
+- `speed`, `body`, `body_hist` — one axes, one line per group: the mean across animals per bin
+  with a ± SEM band where the group has ≥ 2. A scalar, so `units` follows the auto rule.
+
+A panel title's `n` counts animals. A recording with no value in the `group_by` column is its
+own group, `(no value)` — never dropped. An unknown column raises, naming the columns there are.
+
+**What is left out is said.** A recording with no tracked rows, several animals, or (on a body
+plot) no body is named in the spec's `note`, drawn under the title. With nothing left to plot,
+`build` raises with the same list.
+
+A heat-map cell holds the **fraction of the animal's samples** that fell in it. Colour is the
+theme's one-hue sequential ramp, low end near the surface so an empty cell reads as nothing; a
+path's time or speed colour is the same ramp less its two palest steps (a thin line in them
+vanishes). Group lines take categorical identities in group order.
+
+**A figure is data.** `analysis/location_plots.build_plot` returns a `report/plot_spec.PlotSpec`
+— numpy arrays, labels and colour *roles*, no plotting library — and
+`report/plot_render.py` draws it with matplotlib through the house style (`report/figures.py`,
+`report/style.py`): files for an export (PNG, SVG, PDF) and PNG bytes for the GUI, so the
+picture on screen is the one an export writes.
+
+**Surfaces.** API: `Experiment.location_plots(run_id)` → `LocationPlots` (`build(view,
+recording_ids, progress)`, `export(view, stem, recording_ids, formats=, theme=, progress=)`,
+`body_measured()`); it keeps what it read, so a second plot re-reads nothing. CLI: `detail
+locations plot`. GUI: the run's page has two views, **Plots** (`gui/location_plots.
+LocationPlotsPanel`: the controls, the recording checklist, **Export image…**, the picture in a
+zoomable `ImageView`, the run read on first show behind a progress bar) and **Files** (the CSVs
+the run wrote).
 
 ### The analysis run page
 
