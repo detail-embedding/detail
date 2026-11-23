@@ -181,10 +181,10 @@ class LocationPlots:
             }
         traces, notes = self.traces(view, recording_ids, progress)
         if progress is not None:
-            progress("drawing", 0.0, view.kind)
+            progress("measuring", 0.0, view.kind)
         spec = plots.build_plot(traces, view, values, notes=notes)
         if progress is not None:
-            progress("drawing", 1.0, view.kind)
+            progress("measuring", 1.0, view.kind)
         return spec
 
     def export(
@@ -211,9 +211,6 @@ class LocationPlots:
                 f"export formats are {', '.join(FORMATS)}; not {', '.join(unknown) or 'none'}"
             )
         spec = self.build(view, recording_ids, progress)
-        if progress is not None:
-            progress("writing", 0.0, ", ".join(formats))
-        paths = plot_render.render(spec, out_stem, formats=tuple(formats), theme=theme)
-        if progress is not None:
-            progress("writing", 1.0, ", ".join(formats))
-        return paths
+        return plot_render.render(
+            spec, out_stem, formats=tuple(formats), theme=theme, progress=progress
+        )
