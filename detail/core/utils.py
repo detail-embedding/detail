@@ -507,18 +507,52 @@ def bbox_iou(
     return inter / union if union > 0 else 0.0
 
 
-def decode_mask(counts: str, size: tuple[int, int]) -> np.ndarray:
-    """Decode an ASCII COCO-RLE mask (§9) to a ``(h, w)`` bool array.
-
-    ``counts`` is the RLE string stored in the detection zarr's ``mask_rle``
-    column; ``size`` is ``(height, width)``. Empty ``counts`` → an all-False mask.
+def _require_rle_size(counts: str, size: tuple[int, int]) -> None:
+    """Raise unless ``counts`` is a mask of ``size``: its runs cover exactly ``h * w``
+    pixels. Read from the run lengths (``core.rle``), a few percent of a decode at 720p.
     """
+    from detail.core import rle
+
+    height, width = (int(v) for v in size)
+    covered = int(rle.rle_counts(counts).sum())
+    if covered != height * width:
+        raise ValueError(
+            f"a mask that covers {covered:,} pixels was decoded at {height}x{width} "
+            f"({height * width:,}): a mask decodes at the size its detection run encoded "
+            "it at (the run's mask_resolution), and is resized to a frame with out="
+        )
+
+
+def decode_mask(
+    counts: str, size: tuple[int, int], *, out: tuple[int, int] | None = None
+) -> np.ndarray:
+    """Decode an ASCII COCO-RLE mask (§9) to a bool array.
+
+    ``counts`` is the RLE string stored in the detection zarr's ``mask_rle`` column. ``size``
+    is the ``(height, width)`` it was **encoded** at — its detection run's mask resolution
+    (``rundir.mask_resolution``) — never the size of whatever it is about to be drawn on.
+    ``out`` is that other size when there is one: the mask is decoded at its own size, then
+    resized to ``out``, nearest-neighbour. Empty ``counts`` → an all-False mask.
+
+    Raises:
+        ValueError: ``counts`` is not a mask of ``size`` (its runs cover another number of
+            pixels). Decoded anyway, it would come out as stripes.
+    """
+    shape = tuple(int(v) for v in (out if out is not None else size))
     if not counts:
-        return np.zeros(tuple(size), dtype=bool)
+        return np.zeros(shape, dtype=bool)
     from pycocotools import mask as mask_utils
 
-    return mask_utils.decode(
-        {"counts": counts.encode("ascii"), "size": list(size)}
+    _require_rle_size(counts, size)
+    mask = mask_utils.decode(
+        {"counts": counts.encode("ascii"), "size": [int(v) for v in size]}
+    ).astype(bool)
+    if mask.shape == shape:
+        return mask
+    import cv2
+
+    return cv2.resize(
+        mask.view(np.uint8), (shape[1], shape[0]), interpolation=cv2.INTER_NEAREST
     ).astype(bool)
 
 
@@ -526,13 +560,20 @@ def mask_boxes(counts, size: tuple[int, int]) -> np.ndarray:
     """``(n, 4)`` float ``[x, y, w, h]`` pixel boxes tight to each ASCII COCO-RLE mask.
 
     Read from the runs without decoding a mask, so it is cheap over a whole part. An empty
-    ``counts`` (no mask) is the all-zero box.
+    ``counts`` (no mask) is the all-zero box. ``size`` is the masks' encoded size, as for
+    :func:`decode_mask`; every mask of one call shares it, so the first is checked.
+
+    Raises:
+        ValueError: The first mask is not a mask of ``size``.
     """
     from pycocotools import mask as mask_utils
 
     rles = [{"counts": str(c).encode("ascii"), "size": list(size)} for c in counts]
     if not rles:
         return np.zeros((0, 4), dtype=np.float64)
+    first = next((str(c) for c in counts if str(c)), "")
+    if first:
+        _require_rle_size(first, size)
     return np.asarray(mask_utils.toBbox(rles), dtype=np.float64).reshape(-1, 4)
 
 

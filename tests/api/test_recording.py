@@ -2025,6 +2025,42 @@ def test_add_video_part_reports_progress_stages(tmp_path):
     assert stages[-1][1] == 1.0  # copy finishes at fraction 1.0
 
 
+def _write_video_shaped(path, n_frames, *, size, fps):
+    vw = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), fps, size)
+    for i in range(n_frames):
+        vw.write(np.full((size[1], size[0], 3), i * 17, dtype=np.uint8))
+    vw.release()
+
+
+def test_a_part_of_another_shape_is_refused_before_anything_is_written(tmp_path):
+    """Every part of a recording shares one picture size and one frame rate (§3): its boxes,
+    masks and calibration are in those pixels, and a detection run decodes every part's masks
+    at one size. A bundle import checked both and the user guide says a differing part is
+    refused; adding a part checked neither, so a second part at another size had its masks
+    decoded at the first part's (``tests/core/test_mask_decode_size.py``). One rule now,
+    ``video_integrity.another_parts_shape``, for both ways in."""
+    from detail.core.errors import UserInputError
+
+    recording = _make_recording(tmp_path)
+    a, big, slow = tmp_path / "a.mp4", tmp_path / "big.mp4", tmp_path / "slow.mp4"
+    _write_video(a, n_frames=5)
+    _write_video_shaped(big, 4, size=(W * 2, H * 2), fps=30.0)
+    _write_video_shaped(slow, 4, size=(W, H), fps=15.0)
+    recording.add_video_part(a)
+    before = recording_store.read_recording(recording.dir)["video"]
+
+    with pytest.raises(UserInputError, match=rf"{W * 2}×{H * 2}.*{W}×{H}"):
+        recording.add_video_part(big)
+    with pytest.raises(UserInputError, match=r"15 frames a second.*30"):
+        recording.add_video_part(slow)
+
+    assert recording_store.read_recording(recording.dir)["video"] == before
+    assert not (recording.dir / "video" / "part_002.mp4").exists()
+    _write_video(tmp_path / "c.mp4", n_frames=3)
+    recording.add_video_part(tmp_path / "c.mp4")  # the same shape is still welcome
+    assert len(recording.video_parts) == 2
+
+
 def test_add_video_part_multipart_global_timestamps(tmp_path):
     recording = _make_recording(tmp_path)
     a, b = tmp_path / "a.mp4", tmp_path / "b.mp4"

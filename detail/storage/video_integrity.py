@@ -91,6 +91,29 @@ def raise_on_video_issues(issues: list[VideoIssue]) -> None:
         raise ValueError(f"video input is not usable:\n  {detail}")
 
 
+def another_parts_shape(first: dict, probe: dict) -> str | None:
+    """What keeps a video from being another part of a recording whose first part probed as
+    ``first``, or ``None`` when it can be one.
+
+    Every part of a recording shares one resolution and one frame rate (§3): boxes, masks and
+    calibrations are in the first part's pixels, a detection run decodes every part's masks at
+    one size, and one rate is what a part's frames are counted in. The rate is compared to the
+    millisecond-frame (three decimals), so a container's rounding never refuses a part. Both
+    ``first`` and ``probe`` are ``video.probe_video`` results (``resolution`` is ``[w, h]``);
+    the one rule a bundle import and adding a part share.
+    """
+    if list(probe["resolution"]) != list(first["resolution"]):
+        w, h = probe["resolution"]
+        fw, fh = first["resolution"]
+        return f"it is {w}×{h}, and the recording's video is {fw}×{fh}"
+    if round(float(probe["fps"]), 3) != round(float(first["fps"]), 3):
+        return (
+            f"it runs at {float(probe['fps']):g} frames a second, and the recording's "
+            f"video at {float(first['fps']):g}"
+        )
+    return None
+
+
 def part_video_mismatch(
     recorded_t_ns,
     t_ns,

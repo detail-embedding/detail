@@ -545,10 +545,16 @@ def _build_part(
     For a caller that needs one part (a preview's mask build): building every part resolved
     every part's video, so one part whose video is not on this machine failed a build of
     another, and re-parsed every part's timestamp CSV per call. ``timestamps`` is the part's
-    map when the caller already holds it (``load_active_timestamps_cached``)."""
+    map when the caller already holds it (``load_active_timestamps_cached``).
+
+    ``mask_hw`` is the size the part's mask RLEs were encoded at, which every decode of them
+    passes as their size; the footage a mask is drawn on can decode at another (§9)."""
+    from detail.executor import rundir
+
     file = recording_store.video_files(data)[part_index]
     stem = recording_store.part_stem(file)
-    zarr_path = recording_dir / "detections" / detection_run_id / f"{stem}.zarr"
+    detection_dir = recording_dir / "detections" / detection_run_id
+    zarr_path = detection_dir / f"{stem}.zarr"
     reader = DetectionPartReader(zarr_path) if zarr_path.exists() else None
     frame_idx = (
         reader.column("frame_idx")[:]
@@ -575,6 +581,7 @@ def _build_part(
         "timestamps": timestamps,
         "assignment": assignment,
         "every_n_frames": max(1, int(every_n_frames or 1)),
+        "mask_hw": rundir.mask_resolution(detection_dir, stem),
     }
 
 
@@ -766,7 +773,11 @@ class DetectionPreview:
             detections.append(
                 Detection(
                     mask=(
-                        decode_mask(str(mask_rle[j]), mask_size)
+                        decode_mask(
+                            str(mask_rle[j]),
+                            part.get("mask_hw") or mask_size,
+                            out=mask_size,
+                        )
                         if mask_size is not None
                         else None
                     ),
@@ -810,7 +821,7 @@ class DetectionPreview:
             counts = str(rows["mask_rle"][j])
             if not counts:
                 continue
-            mask = decode_mask(counts, size)
+            mask = decode_mask(counts, part.get("mask_hw") or size, out=size)
             union[frame] = (union[frame] | mask) if frame in union else mask
         return union
 

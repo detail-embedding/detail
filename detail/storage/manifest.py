@@ -37,6 +37,7 @@ from detail.core.registries import STREAM_IMPORTERS
 from detail.importers import import_stream_importers
 from detail.storage import metadata as metadata_store
 from detail.storage import video as video_store
+from detail.storage import video_integrity
 from detail.storage.user_yaml import read_user_yaml
 
 MANIFEST_NAMES = ("manifest.yaml", "manifest.yml")
@@ -310,10 +311,7 @@ def _validate_video(bundle, recording, where, sources, errors, warnings) -> None
         except Exception as exc:  # noqa: BLE001 — report, don't crash validation
             errors.append(f"{where}: cannot open video {part}: {exc}")
     if len(probes) > 1:  # parts of one recording must share fps + resolution
-        res0, fps0 = probes[0]["resolution"], round(probes[0]["fps"], 3)
-        if any(
-            pr["resolution"] != res0 or round(pr["fps"], 3) != fps0 for pr in probes[1:]
-        ):
+        if any(video_integrity.another_parts_shape(probes[0], pr) for pr in probes[1:]):
             errors.append(f"{where}: video parts must share fps + resolution")
 
 
