@@ -5296,6 +5296,13 @@ heat-map cell with no time is left empty, as the picture leaves it; and since pl
 axes but not cameras, a 3-D page carries one small script that copies a turned scene's camera
 to every other, so the panels turn together as the picture's grid shares one camera.
 
+A coloured path is drawn as one polyline per run of consecutive segments in one of `COLOUR_STEPS` (64) colour steps, in the path's order
+(`plot_render.colour_steps`): every segment the per-segment rule drew, what came later on top,
+at a few dozen drawn paths per time-coloured path rather than one per segment. Progress is
+`reading` per recording, `measuring` (the spec), `drawing` per panel and, for files, `writing`;
+the GUI's draw is a `run_progress` call with `supersedes`, so a control changed mid-draw stops
+that draw at its next panel (`gui/busy.py`).
+
 **Surfaces.** API: `Experiment.location_plots(run_id)` → `LocationPlots` (`build(view,
 recording_ids, progress)`, `export(view, stem, recording_ids, formats=, theme=, progress=)`,
 `body_measured()`; `formats` png, svg, pdf and html); it keeps what it read, so a second plot

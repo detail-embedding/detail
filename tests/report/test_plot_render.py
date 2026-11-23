@@ -196,6 +196,77 @@ def test_an_animal_in_several_panels_is_named_once_in_the_legend():
     assert "Not plotted: c · intruder" in fig._suptitle.get_text()
 
 
+def _drawn_segments(polylines, centres):
+    """``[(start, end, colour value)]`` in the order a collection of ``polylines`` draws them."""
+    out = []
+    for poly, value in zip(polylines, centres):
+        for a, b in zip(poly[:-1], poly[1:]):
+            out.append((tuple(a), tuple(b), value))
+    return out
+
+
+@pytest.mark.parametrize("dims", [2, 3])
+def test_a_coloured_line_draws_each_segment_once_in_its_own_order(dims):
+    """Drawn as runs of one colour step, a line is still every segment the per-segment rule
+    drew — a non-finite end or value leaves one out — in the line's order, so what lies on
+    top where a path crosses itself is what came later, each within half a step of its value.
+    """
+    rng = np.random.default_rng(3)
+    n = 600
+    points = np.cumsum(rng.normal(size=(n, dims)), axis=0)
+    points[100:104] = np.nan  # a gap in the path
+    values = rng.uniform(0.0, 50.0, n)  # a speed: a different step nearly every sample
+    values[300] = np.nan
+    values[400:420] = 80.0  # above the scale: the top step, as the colour map clips it
+    polylines, centres = plot_render.colour_steps(points, values, 0.0, 64.0)
+    mid = (values[:-1] + values[1:]) / 2.0
+    expected = [
+        (tuple(points[i]), tuple(points[i + 1]), min(mid[i], 64.0))
+        for i in range(n - 1)
+        if np.isfinite(points[i : i + 2]).all() and np.isfinite(mid[i])
+    ]
+    drawn = _drawn_segments(polylines, centres)
+    assert [(a, b) for a, b, _ in drawn] == [(a, b) for a, b, _ in expected]
+    half_step = 64.0 / plot_render.COLOUR_STEPS / 2.0
+    assert max(abs(d[2] - e[2]) for d, e in zip(drawn, expected)) <= half_step + 1e-9
+
+
+def test_a_time_coloured_path_is_a_few_polylines_not_one_per_segment():
+    """The redraw cost: one drawn path per segment made a group panel of 25 half-hour paths
+    225,000 paths, and a change of *Group by* took seconds to show."""
+    t = np.linspace(0.0, 1800.0, 9000)
+    points = np.column_stack([np.cos(t), np.sin(t)])
+    points[4000:4010] = np.nan
+    polylines, _ = plot_render.colour_steps(points, t, 0.0, 1800.0)
+    assert len(polylines) <= plot_render.COLOUR_STEPS + 1  # a step split by the gap
+    assert sum(len(p) for p in polylines) < len(t) * 1.02
+
+
+def test_a_figure_reports_each_panel_and_a_render_its_write(tmp_path):
+    """Each report is where a newer draw stops this one (`gui/busy.run_progress`), so a grid
+    reports between panels rather than once at the end."""
+    heard = []
+    plot_render.render(
+        _path_spec(4),
+        tmp_path / "fig",
+        formats=("png", "svg"),
+        progress=lambda stage, fraction, detail: heard.append((stage, fraction)),
+    )
+    assert heard == [
+        ("drawing", 0.0),
+        ("drawing", 0.25),
+        ("drawing", 0.5),
+        ("drawing", 0.75),
+        ("writing", 0.0),
+        ("writing", 1.0),
+    ]
+    heard.clear()
+    plot_render.render_png(
+        _path_spec(2), progress=lambda s, f, d: heard.append((s, f, d))
+    )
+    assert heard == [("drawing", 0.0, "r0"), ("drawing", 0.5, "r1")]
+
+
 def test_render_writes_each_format_and_png_bytes_are_a_png(tmp_path):
     paths = plot_render.render(
         _path_spec(), tmp_path / "a" / "fig", formats=("png", "pdf")

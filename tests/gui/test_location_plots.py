@@ -150,6 +150,45 @@ def test_a_refused_view_is_shown_on_the_panel_not_raised(qapp, page):
     assert drain_until(qapp, lambda: "px or mm" in panel._status.text())
 
 
+def test_a_newer_draw_stops_the_one_it_replaces(qapp, page, monkeypatch):
+    """A control change mid-draw stops that draw at its next panel, not after its last.
+
+    Left to finish, every superseded draw ran to its end: on a 50-recording run each was 2–8 s,
+    so ticking recordings off or stepping through *Group by* queued a whole draw per change and
+    the picture answered seconds after the last one (``tests/gui/test_busy.py``, class 4).
+    The draw reports per panel (``plot_render.figure``), and the newer draw stops it there.
+    """
+    import threading
+    import time
+
+    from detail.report import plot_render
+
+    panel = _panel(page)
+    _open(page)
+    assert _drawn(qapp, panel)
+    real = plot_render._draw_panel
+    drawn = []
+    started = threading.Event()
+
+    def slow_panel(*args):
+        drawn.append(args[2].title)
+        started.set()
+        time.sleep(0.2)
+        real(*args)
+
+    monkeypatch.setattr(plot_render, "_draw_panel", slow_panel)
+    panel._draw()
+    assert started.wait(10), "the first draw never reached a panel"
+    panel._draw()  # a control changed while the first was drawing
+    drain_busy_calls(qapp)
+    assert drain_until(qapp, lambda: len(drawn) >= 3)
+    assert (
+        3 < len(drawn) < 6
+    ), f"{len(drawn)} panels drawn for two draws of 3: the replaced draw " + (
+        "ran to its end" if len(drawn) >= 6 else "never started"
+    )
+
+
 def test_unticking_every_recording_says_what_to_do(qapp, page):
     from PyQt6.QtCore import Qt
 

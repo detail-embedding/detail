@@ -233,8 +233,10 @@ position jumped further than the animal could move. A jump is drawn as a break i
 
 With **Group by** set, each animal counts the same, however long it was tracked: on a heat
 map its time is shared out to 1 before the animals of a group are averaged, and a speed or
-body line is the mean across animals, with a band for the standard error. The title gives
-how many animals are in each group.
+body line is the mean across animals, with a band for the standard error. A **trace** or
+**trace3d** has no average: paths of different animals cannot be averaged into one, so a
+group's panel draws every animal's path over the others. For where a group spent its time,
+use **heatmap**. The title gives how many animals are in each group.
 
 **Export image…** saves the plot as a picture (PNG), a drawing that stays sharp at any size
 (SVG or PDF), or **Interactive HTML**: one page that opens in any web browser, with no

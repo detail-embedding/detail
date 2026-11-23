@@ -9,6 +9,7 @@ one view of every recording, not several views that happen to sit side by side.
 import io
 import math
 import textwrap
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -32,14 +33,66 @@ MAX_COLUMNS = 10
 #: redraw while a camera slider moves.
 SCREEN_DPI = 110
 
+#: Steps a coloured line's colour is drawn in. A run of consecutive segments in one step is one
+#: polyline, so a time-coloured path costs a few dozen drawn paths rather than one per segment: a
+#: group panel of 25 half-hour paths was 225,000 segment paths, and drawing them was most of every
+#: redraw. Neighbouring steps of a 64-step sequential ramp are closer together than the eye tells
+#: apart.
+COLOUR_STEPS = 64
+
+#: ``(stage, fraction, detail)`` — the synchronous-API progress shape (CLAUDE.md).
+Progress = Callable[[str, float, str], None] | None
+
 
 def columns_for(n: int) -> int:
     """Panels per row for ``n`` panels: about square, never more than ``MAX_COLUMNS``."""
     return max(1, min(MAX_COLUMNS, math.ceil(math.sqrt(n))))
 
 
-def figure(spec: PlotSpec, style: FigureStyle = DEFAULT_STYLE):
-    """Build the matplotlib figure for ``spec``. The caller saves or closes it."""
+def colour_steps(
+    points: np.ndarray, values: np.ndarray, vmin: float, vmax: float
+) -> tuple[list[np.ndarray], np.ndarray]:
+    """A coloured line as ``(polylines, step values)``: one polyline per run of consecutive
+    segments in one colour step, in the line's own order.
+
+    Each segment takes the mean of its two ends' ``values``, binned into ``COLOUR_STEPS`` steps
+    over ``vmin``–``vmax`` (a value outside is the end step, as a colour map clips it); a
+    segment with a non-finite end or value is not drawn. The runs keep the line's order, so
+    where a path crosses itself what lies on top is what came later, as when every segment
+    was drawn on its own. Grouped by step instead, the top step was drawn last everywhere, and
+    a speed-coloured panel read faster than it was. ``points`` is ``(n, 2)`` or ``(n, 3)``;
+    each step's value is its centre.
+    """
+    values = np.asarray(values, dtype=np.float64)
+    mid = (values[:-1] + values[1:]) / 2.0
+    finite = np.isfinite(points)
+    drawn = finite[:-1].all(axis=1) & finite[1:].all(axis=1) & np.isfinite(mid)
+    segment = np.flatnonzero(drawn)
+    if not len(segment):
+        return [], np.zeros(0)
+    span = (vmax - vmin) or 1.0
+    step = np.clip(
+        ((mid[segment] - vmin) / span * COLOUR_STEPS).astype(np.int64),
+        0,
+        COLOUR_STEPS - 1,
+    )
+    starts = np.flatnonzero(np.r_[True, (np.diff(segment) != 1) | (np.diff(step) != 0)])
+    ends = np.r_[starts[1:], len(segment)] - 1
+    polylines = [
+        points[segment[first] : segment[last] + 2] for first, last in zip(starts, ends)
+    ]
+    centres = vmin + (step[starts] + 0.5) / COLOUR_STEPS * span
+    return polylines, centres
+
+
+def figure(
+    spec: PlotSpec, style: FigureStyle = DEFAULT_STYLE, progress: Progress = None
+):
+    """Build the matplotlib figure for ``spec``. The caller saves or closes it.
+
+    ``progress`` is told ``("drawing", fraction, panel title)`` before each panel, so a long
+    grid reports as it goes and a caller can stop it between panels.
+    """
     n = len(spec.panels)
     cols = columns_for(n)
     rows = -(-n // cols)
@@ -52,7 +105,9 @@ def figure(spec: PlotSpec, style: FigureStyle = DEFAULT_STYLE):
         ]
         has_heat = any(p.heat is not None for p in spec.panels)
         cmap = sequential_cmap(style) if has_heat else _line_cmap(style)
-        for ax, panel in zip(axes, spec.panels):
+        for index, (ax, panel) in enumerate(zip(axes, spec.panels)):
+            if progress is not None:
+                progress("drawing", index / n, panel.title or spec.title)
             _draw_panel(ax, spec, panel, style, cmap)
         if spec.color is not None:
             mappable = plt.cm.ScalarMappable(
@@ -201,25 +256,24 @@ def _draw_line(ax, spec: PlotSpec, line: Line, style: FigureStyle, cmap) -> None
         return
     # A path is drawn at the thin weight: it is dense, and a group panel overlays several.
     width = style.marks.thin_line_width
-    norm = plt.Normalize(spec.color.vmin, spec.color.vmax)
-    mid = (np.asarray(line.values[:-1]) + np.asarray(line.values[1:])) / 2.0
+    vmin, vmax = spec.color.vmin, spec.color.vmax
+    axes = [line.x, line.y] + ([line.z] if line.z is not None else [])
+    points = np.column_stack([np.asarray(a, dtype=np.float64) for a in axes])
+    polylines, centres = colour_steps(points, line.values, vmin, vmax)
+    if not polylines:
+        return
+    norm = plt.Normalize(vmin, vmax)
     if line.z is None:
         from matplotlib.collections import LineCollection
 
-        pts = np.column_stack([line.x, line.y])
-        segs = np.stack([pts[:-1], pts[1:]], axis=1)
-        keep = np.isfinite(segs).all(axis=(1, 2)) & np.isfinite(mid)
-        coll = LineCollection(segs[keep], cmap=cmap, norm=norm, linewidths=width)
-        coll.set_array(mid[keep])
+        coll = LineCollection(polylines, cmap=cmap, norm=norm, linewidths=width)
+        coll.set_array(centres)
         ax.add_collection(coll)
     else:
         from mpl_toolkits.mplot3d.art3d import Line3DCollection
 
-        pts = np.column_stack([line.x, line.y, line.z])
-        segs = np.stack([pts[:-1], pts[1:]], axis=1)
-        keep = np.isfinite(segs).all(axis=(1, 2)) & np.isfinite(mid)
-        coll = Line3DCollection(segs[keep], cmap=cmap, norm=norm, linewidths=width)
-        coll.set_array(mid[keep])
+        coll = Line3DCollection(polylines, cmap=cmap, norm=norm, linewidths=width)
+        coll.set_array(centres)
         ax.add_collection3d(coll)
 
 
@@ -250,17 +304,35 @@ def render(
     *,
     formats: tuple[str, ...] = ("png",),
     theme: str = "light",
+    progress: Progress = None,
 ) -> list[Path]:
-    """Write ``spec`` as ``<out_stem>.<fmt>`` for each format; returns the paths."""
+    """Write ``spec`` as ``<out_stem>.<fmt>`` for each format; returns the paths.
+
+    ``progress`` hears ``drawing`` per panel (:func:`figure`), then ``writing``.
+    """
     style = DEFAULT_STYLE.with_theme(theme)
     Path(out_stem).parent.mkdir(parents=True, exist_ok=True)
-    return save_figure(figure(spec, style), out_stem, formats)
+    fig = figure(spec, style, progress)
+    listed = ", ".join(formats)
+    if progress is not None:
+        progress("writing", 0.0, listed)
+    paths = save_figure(fig, out_stem, formats)
+    if progress is not None:
+        progress("writing", 1.0, listed)
+    return paths
 
 
-def render_png(spec: PlotSpec, *, theme: str = "light", dpi: int = SCREEN_DPI) -> bytes:
-    """``spec`` as PNG bytes at screen resolution — the GUI's picture."""
+def render_png(
+    spec: PlotSpec,
+    *,
+    theme: str = "light",
+    dpi: int = SCREEN_DPI,
+    progress: Progress = None,
+) -> bytes:
+    """``spec`` as PNG bytes at screen resolution — the GUI's picture. ``progress`` hears
+    ``drawing`` per panel (:func:`figure`)."""
     style = DEFAULT_STYLE.with_theme(theme)
-    fig = figure(spec, style)
+    fig = figure(spec, style, progress)
     buffer = io.BytesIO()
     fig.savefig(buffer, format="png", dpi=dpi, facecolor=fig.get_facecolor())
     plt.close(fig)

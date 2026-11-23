@@ -181,10 +181,10 @@ class LocationPlots:
             }
         traces, notes = self.traces(view, recording_ids, progress)
         if progress is not None:
-            progress("drawing", 0.0, view.kind)
+            progress("measuring", 0.0, view.kind)
         spec = plots.build_plot(traces, view, values, notes=notes)
         if progress is not None:
-            progress("drawing", 1.0, view.kind)
+            progress("measuring", 1.0, view.kind)
         return spec
 
     def export(
@@ -214,20 +214,22 @@ class LocationPlots:
                 f"export formats are {', '.join(FORMATS)}; not {', '.join(unknown) or 'none'}"
             )
         spec = self.build(view, recording_ids, progress)
-        if progress is not None:
-            progress("writing", 0.0, ", ".join(formats))
         pictures = tuple(f for f in formats if f != "html")
         paths = (
-            plot_render.render(spec, out_stem, formats=pictures, theme=theme)
+            plot_render.render(
+                spec, out_stem, formats=pictures, theme=theme, progress=progress
+            )
             if pictures
             else []
         )
         if "html" in formats:
+            if progress is not None:
+                progress("writing", 0.0, "html")
             paths.append(
                 plot_html.render_html(
                     spec, Path(out_stem).with_suffix(".html"), theme=theme
                 )
             )
-        if progress is not None:
-            progress("writing", 1.0, ", ".join(formats))
+            if progress is not None:
+                progress("writing", 1.0, "html")
         return paths
