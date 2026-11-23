@@ -81,8 +81,11 @@ def finished_run(
             "params": {
                 "source_recording_ids": list(ids.values()),
                 "sample_fps": 5.0,
-                "remove_thin_parts": True,
-                "thin_part_scale": 0.12,
+                **(
+                    {"remove_thin_parts": True, "thin_part_scale": 0.12}
+                    if write_options.get("thin_parts_removed")
+                    else {}
+                ),
             },
         },
     )
@@ -130,26 +133,36 @@ def write_keypoints(
 
 #: The frame a hand-built run's recordings were filmed at, ``(width, height)`` in pixels.
 FRAME = (640, 480)
-#: How much larger the whole mask is than the body in a hand-built run: the tail.
+#: How much larger the whole mask is than the body in a hand-built run made while the export
+#: could remove thin parts: the tail. In a run made since, the body is the mask.
 MASK_OVER_BODY = 1.25
 
 
 def write_run(
-    run_dir, recordings: dict, *, pixels_per_mm=2.0, body=True, frame=FRAME
+    run_dir,
+    recordings: dict,
+    *,
+    pixels_per_mm=2.0,
+    body=True,
+    frame=FRAME,
+    thin_parts_removed=False,
 ) -> None:
     """A location-export run's files for ``{recording_id: {object_id: Track}}``, through the
-    export's own writer. ``body=False`` is a run from before the body was measured.
+    export's own writer. ``body=False`` is a run from before the body was measured;
+    ``thin_parts_removed`` one made while the export could still remove thin parts.
 
     A track's positions and sizes are in millimetres; every other column is filled from them
     as the export fills it — pixels at ``pixels_per_mm``, normalized by ``frame`` — with the
-    mask's and the box's centres at the body's, the long axis along x, and the whole mask
-    ``MASK_OVER_BODY`` times the body's area. ``pixels_per_mm=None`` is an uncalibrated run:
-    its millimetre columns are blank, and the track's numbers are read as pixels.
+    mask's and the box's centres at the body's, the long axis along x, and the whole mask's
+    area the body's (``MASK_OVER_BODY`` times it when ``thin_parts_removed``).
+    ``pixels_per_mm=None`` is an uncalibrated run: its millimetre columns are blank, and the
+    track's numbers are read as pixels.
     """
     columns = TRACKS_COLUMNS if body else TRACKS_COLUMNS[: -len(BODY_COLUMNS)]
     at = {name: i for i, name in enumerate(columns)}
     scale = pixels_per_mm or 1.0
     width, height = frame
+    mask_over_body = MASK_OVER_BODY if thin_parts_removed else 1.0
 
     def mm(value: float) -> str | float:
         return round(value, 3) if pixels_per_mm else ""
@@ -171,9 +184,9 @@ def write_run(
                     row[at[f"{src}_cy_px"]] = round(y_px, 2)
                     row[at[f"{src}_cx_mm"]] = mm(float(tr.x_mm[k]))
                     row[at[f"{src}_cy_mm"]] = mm(float(tr.y_mm[k]))
-                row[at["mask_area_px"]] = round(area_px * MASK_OVER_BODY, 2)
+                row[at["mask_area_px"]] = round(area_px * mask_over_body, 2)
                 row[at["mask_area_norm"]] = round(
-                    area_px * MASK_OVER_BODY / (width * height), 8
+                    area_px * mask_over_body / (width * height), 8
                 )
                 if body:
                     for name, value in (
@@ -202,8 +215,11 @@ def write_run(
                     "video_resolution": [width, height],
                     "pixels_per_mm": pixels_per_mm,
                     "sample_fps": 5.0,
-                    "remove_thin_parts": True,
-                    "thin_part_scale": 0.12,
+                    **(
+                        {"remove_thin_parts": True, "thin_part_scale": 0.12}
+                        if thin_parts_removed
+                        else {}
+                    ),
                 },
             ),
         )

@@ -39,24 +39,6 @@ class LocationExportConfig(BaseModel):
         "times faster than every frame.",
         json_schema_extra={"label": "Rows per second", "ui_max": 240.0},
     )
-    remove_thin_parts: bool = Field(
-        False,
-        description="Leave thin parts (a tail, a limb, an antenna) out of the body before "
-        "its centre, area, length and width are measured. Recommended for rats and mice, "
-        "whose tail otherwise moves the centre and dominates the length. Leave off for an "
-        "animal whose thin parts are its body, such as a fish or a snake.",
-        json_schema_extra={"label": "Remove thin parts"},
-    )
-    thin_part_scale: float = Field(
-        0.12,
-        gt=0.0,
-        le=0.5,
-        description="How thick a part must be to count as body when thin parts are "
-        "removed: the smallest thickness kept, as a share of the square root of the "
-        "subject's own typical mask area. Sized from the animal, so it does not depend on "
-        "the distance calibration. 0.12 removes a rat's tail in top-down and side views.",
-        json_schema_extra={"advanced": True, "label": "Thin part scale"},
-    )
 
 
 def option_names() -> tuple[str, ...]:

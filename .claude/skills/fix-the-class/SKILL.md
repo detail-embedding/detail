@@ -9,8 +9,8 @@ A fix that removes the symptom in front of you and leaves its siblings in place 
 bug is an instance of something — name that something, then go looking for the rest.
 
 **The repo's own history is the argument.** `query_eval` learned three lessons (a derived `params`,
-a resolved default written back, a headline metric shipped beside its floor) and `cluster_eval`,
-a module since removed, re-broke all three. A PR fixed an ETA that fed nominal stage weights into a time extrapolation, and
+a resolved default written back, a headline metric shipped beside its floor) and `cluster_eval`
+re-broke all three; both modules have since been removed. A PR fixed an ETA that fed nominal stage weights into a time extrapolation, and
 shipped while two identical instances sat in `cli.py`. Two more PRs gave analysis runs a reattach
 that processing runs had had all along. Every one was found by a user months later, and every one
 was a `grep` away at the time of the original fix.

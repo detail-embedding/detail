@@ -142,6 +142,12 @@ class Behavior:
     same as zero. A run whose cutoff is unset has been searched but not calibrated, and its
     artifact says so by carrying no instances for that behavior rather than every candidate the
     method could find.
+
+    ``removed`` is the clips a reviewer took out of this behavior (§20 *The audit*): one
+    ``{recording_id, subject, t_ns, end_t_ns, at}`` per clip, ``at`` ISO-8601 UTC. It edits the
+    output, never an input: the search, the examples and the non-examples are untouched, and the
+    artifact leaves these candidates out at every cutoff. Kept per behavior because one span can be
+    a candidate of two behaviors. A state written before the field reads as an empty list.
     """
 
     id: str
@@ -149,6 +155,7 @@ class Behavior:
     examples: list[dict] = field(default_factory=list)
     negatives: list[dict] = field(default_factory=list)
     cutoff: float | None = None
+    removed: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -157,6 +164,7 @@ class Behavior:
             "examples": [dict(e) for e in self.examples],
             "negatives": [dict(n) for n in self.negatives],
             "cutoff": self.cutoff,
+            "removed": [dict(r) for r in self.removed],
         }
 
     @classmethod
@@ -167,7 +175,22 @@ class Behavior:
             examples=[dict(e) for e in (data.get("examples") or [])],
             negatives=[dict(n) for n in (data.get("negatives") or [])],
             cutoff=(None if data.get("cutoff") is None else float(data["cutoff"])),
+            removed=[dict(r) for r in (data.get("removed") or [])],
         )
+
+    def removed_keys(self) -> set[tuple[str, int, int, int]]:
+        """``(recording_id, subject, t_ns, end_t_ns)`` of every removed clip — ``ClipRef.key``."""
+        return {removal_key(r) for r in self.removed}
+
+
+def removal_key(entry: dict) -> tuple[str, int, int, int]:
+    """The ``ClipRef.key`` of one stored removal (``Behavior.removed``)."""
+    return (
+        str(entry["recording_id"]),
+        int(entry.get("subject") or 0),
+        int(entry["t_ns"]),
+        int(entry["end_t_ns"]),
+    )
 
 
 @dataclass
@@ -217,41 +240,92 @@ class QueryState:
         )
 
 
+def clip_key(row) -> tuple[str, int, int, int]:
+    """``(recording_id, subject, t_ns, end_t_ns)`` of an instance row — the ``ClipRef.key`` a
+    removal (``Behavior.removed``) and a review answer (``clip_review.csv``) are keyed by.
+    """
+    return (
+        str(row.recording_id),
+        int(row.subject or 0),
+        int(row.t_ns),
+        int(row.end_t_ns),
+    )
+
+
+#: What a user told the method a clip is — the two kinds a candidate can sit on top of.
+EXAMPLE, NON_EXAMPLE = "example", "non-example"
+
+
+def told_kinds(behaviors) -> dict[tuple[str, str, int], list[tuple[int, int, str]]]:
+    """Every behavior's example and non-example clips, ``{(behavior id, recording, subject):
+    [(start_t_ns, end_t_ns, kind), ...]}`` — what :func:`told_kind` looks a candidate up in.
+    """
+    clips: dict[tuple[str, str, int], list[tuple[int, int, str]]] = {}
+    for behavior in behaviors:
+        for kind, specs in (
+            (EXAMPLE, behavior.examples),
+            (NON_EXAMPLE, behavior.negatives),
+        ):
+            for spec in specs:
+                key = (
+                    str(behavior.id),
+                    str(spec["recording_id"]),
+                    int(spec.get("track_id", 0)),
+                )
+                clips.setdefault(key, []).append(
+                    (int(spec["start_t_ns"]), int(spec["end_t_ns"]), kind)
+                )
+    return clips
+
+
+def told_kind(
+    clips, behavior_id: str, recording_id: str, subject, t_ns: int, end_t_ns: int
+) -> str | None:
+    """Whether a span sits on one of its own behavior's clips — ``EXAMPLE``, ``NON_EXAMPLE``
+    (an example wins where both overlap) — or ``None``.
+
+    The one rule for "the method finding its own input": a candidate is matched against **its
+    own** behavior's clips (``clips`` from :func:`told_kinds`), on the same recording and
+    subject, by any shared time (:func:`~detail.storage.behavior_output.spans_overlap`).
+    """
+    from detail.storage import behavior_output
+
+    subject = 0 if subject is None else int(subject)
+    kinds = {
+        kind
+        for start, end, kind in clips.get(
+            (str(behavior_id), str(recording_id), subject), ()
+        )
+        if behavior_output.spans_overlap((int(t_ns), int(end_t_ns)), (start, end))
+    }
+    if EXAMPLE in kinds:
+        return EXAMPLE
+    return NON_EXAMPLE if kinds else None
+
+
 def example_instance_ids(behaviors, instances) -> set[str]:
     """The ``instance_id``s of ``instances`` that overlap one of their own behavior's clips.
 
     A behavior's example and non-example clips are what the user *told* the method; a candidate
     on top of one is the method finding its own input. §19 makes such an instance ineligible
-    for the audit — judging it scores the answer key — and this is the one place that decides
-    which instances those are, for the draw, every estimate and the ``is_example`` column alike.
-
-    An instance is matched against **its own** behavior's clips (``source_label`` is the
-    behavior id), on the same recording and subject, by any shared time
-    (:func:`~detail.storage.behavior_output.spans_overlap`).
+    for the audit — judging it scores the answer key — and :func:`told_kind` is the one place
+    that decides which instances those are, for the draw, every estimate, the ``is_example``
+    column and CALIBRATE's *example* / *non-example* tags alike.
     """
-    from detail.storage import behavior_output
-
-    clips: dict[tuple[str, str, int], list[tuple[int, int]]] = {}
-    for behavior in behaviors:
-        for spec in [*behavior.examples, *behavior.negatives]:
-            key = (
-                str(behavior.id),
-                str(spec["recording_id"]),
-                int(spec.get("track_id", 0)),
-            )
-            clips.setdefault(key, []).append(
-                (int(spec["start_t_ns"]), int(spec["end_t_ns"]))
-            )
-    out: set[str] = set()
-    for row in instances:
-        subject = 0 if row.subject is None else int(row.subject)
-        spans = clips.get((str(row.source_label), str(row.recording_id), subject), ())
-        if any(
-            behavior_output.spans_overlap((row.t_ns, row.end_t_ns), span)
-            for span in spans
-        ):
-            out.add(row.instance_id)
-    return out
+    clips = told_kinds(behaviors)
+    return {
+        row.instance_id
+        for row in instances
+        if told_kind(
+            clips,
+            row.source_label,
+            row.recording_id,
+            row.subject,
+            row.t_ns,
+            row.end_t_ns,
+        )
+        is not None
+    }
 
 
 def write_query_state(run_dir: Path | str, state: QueryState) -> Path:

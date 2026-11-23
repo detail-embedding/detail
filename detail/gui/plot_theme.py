@@ -19,8 +19,19 @@ were drawn with until their widget redraws; the two palettes differ by one categ
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QEvent, Qt
-from PyQt6.QtGui import QColor, QGuiApplication, QPalette
+import math
+
+from PyQt6.QtCore import QEvent, QLineF, QPointF, QRectF, Qt
+from PyQt6.QtGui import (
+    QColor,
+    QGuiApplication,
+    QPainter,
+    QPalette,
+    QPen,
+    QPixmap,
+    QRegion,
+)
+from PyQt6.QtWidgets import QApplication, QStyle
 
 from detail.core.chart_theme import DARK, LIGHT, SCREEN_MARKS, ChartTheme
 
@@ -63,6 +74,241 @@ def label_identity(index: int, theme: ChartTheme | None = None) -> QColor:
     """The colour for a behavior label's slot ``index`` (see ``ChartTheme.label_identity``):
     never one of the two the diverging scale keeps for less and more."""
     return QColor((theme or current()).label_identity(index))
+
+
+#: A label's **second channel**: the fill drawn over its colour, by slot. Two labels must never
+#: differ by hue alone — a reader who cannot tell the slot-0 green from the slot-1 pink (the
+#: user who asked for this, 2026-11-23) had nothing else to tell "groom" from "hi" by on BROWSE's
+#: ethogram and in its key. Slot 0 is solid, so a one-behavior run looks as it always did.
+#:
+#: Nothing here has a vertical stroke: a band one or two pixels wide can sit entirely on a
+#: vertical line, and would then read as the surface — a gap — rather than as a label.
+#:
+#: **One pattern per label colour**, so the pair wraps with the colour, at the limit
+#: ``ChartTheme.label_identity`` already documents: every slot with a colour of its own has a
+#: pattern of its own, and all twelve are distinct in greyscale whatever their colours
+#: (``tests/gui/test_identity_marks.py``). Eight shapes are stroked in the theme's surface colour;
+#: the last four repeat the boldest of them in its ink (``inked …``), the opposite lightness.
+LABEL_PATTERNS: tuple[str, ...] = (
+    "solid",
+    "diagonal",
+    "dots",
+    "horizontal",
+    "crosshatch",
+    "back diagonal",
+    "zigzag",
+    "plus",
+    "inked diagonal",
+    "inked dots",
+    "inked horizontal",
+    "inked crosshatch",
+)
+
+#: The prefix that strokes a pattern in the theme's ink rather than its surface.
+_INKED = "inked "
+
+#: A dot's side. Square, and drawn without antialiasing: at three pixels a square reads as a
+#: dot, and antialiased round points cost 12 ms of a 33 ms ethogram paint (six rows, 1,865
+#: bands, offscreen).
+_DOT = 3.0
+
+#: The distance between a pattern's rows of marks, and a stroke's thickness, in pixels: two or
+#: three rows across the smallest thing one is drawn on, a 16px swatch or band. Thin enough that
+#: a pattern covers about a quarter of the fill, so the colour still reads as the colour.
+_PERIOD = 6.0
+_STROKE = 1.5
+#: The zigzag's stroke and swing above and below its row. Bolder than the rest: its strokes are
+#: steep, so antialiasing spreads them thin, and at the common stroke it was the one pattern a
+#: greyscale reader could lose on a light colour (slot 6's teal, against solid slot 0).
+_ZIGZAG = 2.0
+
+
+def label_mark(index: int, theme: ChartTheme | None = None) -> tuple[QColor, str]:
+    """A behavior label's slot ``index`` as it is drawn: ``(colour, pattern)``.
+
+    One mapping, so a band, a list swatch and the key beside them cannot disagree about which
+    label is which — the colour from :func:`label_identity`, the pattern from
+    :data:`LABEL_PATTERNS`, both from the same slot.
+    """
+    return label_identity(index, theme), LABEL_PATTERNS[index % len(LABEL_PATTERNS)]
+
+
+def _grid(rect, period_x: float, period_y: float, *, stagger: bool):
+    """``(x, y)`` of every cell of a grid anchored at the painter's origin that can touch
+    ``rect`` — anchored there rather than at ``rect``, so neighbouring fills join up."""
+    row = math.floor(rect.top() / period_y) - 1
+    while row * period_y <= rect.bottom() + period_y:
+        shift = period_x / 2 if stagger and row % 2 else 0.0
+        col = math.floor((rect.left() - shift) / period_x) - 1
+        while col * period_x + shift <= rect.right() + period_x:
+            yield col * period_x + shift, row * period_y
+            col += 1
+        row += 1
+
+
+def _diagonals(rect, *, rising: bool, period: float) -> list[QLineF]:
+    """Lines at 45°, one every ``period`` along the x axis, anchored at the origin."""
+    top, bottom = rect.top(), rect.bottom()
+    lines = []
+    if rising:  # x + y = c, smallest at the top-left corner
+        c = math.floor((rect.left() + top) / period) * period
+        while c <= rect.right() + bottom:
+            lines.append(QLineF(c - bottom, bottom, c - top, top))
+            c += period
+    else:  # x - y = c, smallest at the bottom-left corner
+        c = math.floor((rect.left() - bottom) / period) * period
+        while c <= rect.right() - top:
+            lines.append(QLineF(c + top, top, c + bottom, bottom))
+            c += period
+    return lines
+
+
+def _rows(rect, period: float):
+    """``y`` of every row of marks, anchored at the origin, that can touch ``rect``: once each,
+    since a line drawn twice over a dimmed band doubles its alpha."""
+    row = math.floor(rect.top() / period) - 1
+    while row * period <= rect.bottom() + period:
+        yield row * period
+        row += 1
+
+
+def _horizontals(rect) -> list[QLineF]:
+    left, right = rect.left() - 1, rect.right() + 1
+    return [QLineF(left, y, right, y) for y in _rows(rect, _PERIOD)]
+
+
+def _zigzags(rect) -> list[QLineF]:
+    half = _PERIOD / 2
+    lines = []
+    for y in _rows(rect, _PERIOD * 1.25):
+        x = math.floor(rect.left() / _PERIOD) * _PERIOD - _PERIOD
+        while x <= rect.right() + _PERIOD:
+            lines.append(QLineF(x, y - _ZIGZAG, x + half, y + _ZIGZAG))
+            lines.append(QLineF(x + half, y + _ZIGZAG, x + _PERIOD, y - _ZIGZAG))
+            x += _PERIOD
+    return lines
+
+
+def _dots(rect) -> list[QRectF]:
+    half = _DOT / 2
+    return [
+        QRectF(x - half, y - half, _DOT, _DOT)
+        for x, y in _grid(rect, _PERIOD * 1.2, _PERIOD, stagger=True)
+    ]
+
+
+def _pluses(rect) -> list[QLineF]:
+    arm = _PERIOD * 0.45
+    lines = []
+    for x, y in _grid(rect, _PERIOD * 1.4, _PERIOD * 1.1, stagger=True):
+        lines.append(QLineF(x - arm, y, x + arm, y))
+        lines.append(QLineF(x, y - arm, x, y + arm))
+    return lines
+
+
+#: Each pattern's marks over a rectangle: lines (``QLineF``) or dots (``QRectF``), returned
+#: rather than drawn, so a pattern is one ``drawLines`` / ``drawRects`` call — drawn mark by
+#: mark, the dots alone were 6,400 calls into Qt per ethogram paint.
+_PATTERN_MARKS = {
+    "diagonal": lambda r: _diagonals(r, rising=True, period=_PERIOD * 1.25),
+    "back diagonal": lambda r: _diagonals(r, rising=False, period=_PERIOD * 1.25),
+    "crosshatch": lambda r: (
+        _diagonals(r, rising=True, period=_PERIOD * 1.6)
+        + _diagonals(r, rising=False, period=_PERIOD * 1.6)
+    ),
+    "horizontal": _horizontals,
+    "zigzag": _zigzags,
+    "dots": _dots,
+    "plus": _pluses,
+}
+
+
+def _paint_pattern(painter, rect, pattern: str, ink: QColor) -> None:
+    shape = pattern.removeprefix(_INKED)
+    marks = _PATTERN_MARKS[shape](rect)
+    if marks and isinstance(marks[0], QRectF):
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(ink)
+        painter.drawRects(marks)
+    else:
+        pen = QPen(ink)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        pen.setWidthF(_ZIGZAG if shape == "zigzag" else _STROKE)
+        pen.setCapStyle(Qt.PenCapStyle.FlatCap)
+        painter.setPen(pen)
+        painter.drawLines(marks)
+
+
+def paint_label_mark(
+    painter,
+    rects,
+    index: int,
+    *,
+    color: QColor | None = None,
+    theme: ChartTheme | None = None,
+) -> None:
+    """Fill ``rects`` — one ``QRectF``, or several — with label slot ``index``'s mark: its
+    colour, its pattern over it.
+
+    The pattern is drawn in the theme's surface colour, so it reads as the page showing through
+    the label's colour rather than as a third colour — or, for an ``inked`` one, in its text
+    colour, the other end of the lightness scale. It carries the colour's own alpha, so a dimmed
+    band dims its pattern with it. ``color`` stands in for the slot's colour (a dimmed one, or the
+    canonical step a caller already holds); the pattern is always the slot's.
+
+    **Several at once is how a strip draws**: the pattern is stroked once across all of them,
+    clipped to their union, instead of once per rectangle. A recording holds hundreds of bouts,
+    and per band the pattern tripled the ethogram's paint time; once per identity a row, it adds
+    about 6 ms to 16 (six rows, 1,865 bands, offscreen).
+    """
+    if isinstance(rects, QRectF):
+        rects = [rects]
+    rects = [r for r in rects if r.width() > 0 and r.height() > 0]
+    if not rects:
+        return
+    theme = theme or current()
+    own, pattern = label_mark(index, theme)
+    fill = QColor(own if color is None else color)
+    for rect in rects:
+        painter.fillRect(rect, fill)
+    if pattern == "solid":
+        return
+    outline = QRegion()
+    for rect in rects:
+        outline = outline.united(rect.toAlignedRect())
+    inked = pattern.startswith(_INKED)
+    ink = QColor(theme.text if inked else theme.surface)
+    ink.setAlphaF(fill.alphaF() * (0.8 if inked else 1.0))
+    painter.save()
+    painter.setClipRegion(outline, Qt.ClipOperation.IntersectClip)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    _paint_pattern(painter, QRectF(outline.boundingRect()), pattern, ink)
+    painter.restore()
+
+
+def label_swatch(index: int, theme: ChartTheme | None = None) -> QPixmap:
+    """The key for label slot ``index`` in a list: its colour **and** its pattern.
+
+    For ``DecorationRole``, where a view draws a pixmap at its own size. Never a bare ``QColor``
+    there — that draws the hue and nothing else
+    (``requirements.an_identity_swatch_is_never_colour_alone``). A one-pixel rim of the colour
+    keeps a pattern's surface-coloured strokes from merging with the row behind it. Drawn at the
+    application's pixel ratio, so its strokes stay crisp on a high-density screen.
+    """
+    app = QApplication.instance()
+    side = app.style().pixelMetric(QStyle.PixelMetric.PM_SmallIconSize) if app else 16
+    ratio = app.devicePixelRatio() if app else 1.0
+    pixmap = QPixmap(round(side * ratio), round(side * ratio))
+    pixmap.setDevicePixelRatio(ratio)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    theme = theme or current()
+    color, _pattern = label_mark(index, theme)
+    painter.fillRect(QRectF(0, 0, side, side), color)
+    paint_label_mark(painter, QRectF(1, 1, side - 2, side - 2), index, theme=theme)
+    painter.end()
+    return pixmap
 
 
 def pen(color: str | QColor, *, width: float | None = None, dashed: bool = False):

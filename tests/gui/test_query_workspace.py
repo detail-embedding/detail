@@ -1,9 +1,14 @@
 """The §20 calibration workspace — the surface where a cutoff is actually chosen.
 
 What is checked here is what a construction smoke test would pass straight through: that
-dragging the cutoff **rewrites nothing**, that a stale thumbnail decode never paints over a
-newer band, that a cell which cannot decode says *which* failure it is, and that a behavior
-returning nothing at a cutoff says so as a result rather than showing an empty strip.
+moving the cutoff **rewrites nothing** and only **Keep** saves it, that the page says whether
+the cutoff is set, that the grid splits every clip at the cutoff in words as well as fades, and
+that the counts on screen are the ones a save writes.
+
+The old CALIBRATE — a one-row strip of still frames beside a player, saved by letting go of a
+drag — had its own guards here (decode, recentring, the divider, *Cut here*, the ethogram band).
+They went with it, and so did the strip's widget (`clip_grid.ConfidenceStrip`) and its own
+guards; what it shared with the cluster strip is still guarded in `test_decode_priority.py`.
 
 The run is real — the fixture runs the actual search over synthetic embeddings with a planted
 motif, reusing `tests/api/test_query.py`'s helper. Frame decode is not: this fixture has no
@@ -11,15 +16,16 @@ video, which is what makes the decode-failure guard natural rather than contrive
 """
 
 import math
+import re
 
 import numpy as np
 import pytest
 from PyQt6.QtWidgets import QLabel
 
 from detail.gui import frame_source
-from detail.gui.clip_grid import ClipGrid, ClipGridModes, score_digits
+from detail.gui.clip_grid import score_digits
+from detail.gui.modules import analysis_query
 from detail.gui.modules.analysis_query import (
-    _BrowseTab,
     _CalibrateTab,
     _QueryWorkspace,
 )
@@ -46,47 +52,36 @@ def _workspace(qapp, tmp_path, behaviors=None, **searched):
 # --- the rule the surface rests on --------------------------------------------------------
 
 
-def test_dragging_the_cutoff_rewrites_nothing(qapp, tmp_path):
-    """§20's own guard. Reprojection rewrites a frame-view zarr per searched unit, so doing it
-    per pixel of a drag freezes the GUI — and a test that only checks the number on screen
-    passes while it does."""
+def test_moving_the_cutoff_rewrites_nothing(qapp, tmp_path):
+    """§20's own guard, for every way the cutoff moves: the line, the number and a clicked clip.
+
+    Reprojection rewrites a frame-view zarr per searched unit, so doing it per pixel of a drag
+    freezes the GUI — and now a move is a *preview*: Keep is the only write. The state is checked
+    as well as the file: `set_cutoff` writes `query.yaml` before it reprojects, so a move that
+    saved would show there even while its reprojection was still running.
+    """
     exp, run, workspace = _workspace(qapp, tmp_path)
     run.set_cutoff("q01", 0.5)
-    calibrate = workspace._calibrate
+    calibrate = _tiled(qapp, workspace)
     before = (run._run_dir() / "instances.csv").read_text(encoding="utf-8-sig")
 
     for value in (0.6, 0.7, 0.8, 0.9):
         calibrate._line.setValue(value)  # fires sigPositionChanged, as a drag does
         qapp.processEvents()
-    for _ in range(50):  # give an errant commit every chance to land
+    calibrate._on_confidence_typed(0.85)
+    calibrate._montage.clip_clicked.emit(2, False)
+    for _ in range(50):  # give an errant write every chance to land
         qapp.processEvents()
 
-    # The **state**, not only the file: `set_cutoff` writes `query.yaml` before it reprojects,
-    # so a drag that committed would show here even while its reprojection was still running.
-    # Asserting on `instances.csv` alone passes whenever the commit is merely slow.
     assert run.state().behavior("q01").cutoff == 0.5
     assert (run._run_dir() / "instances.csv").read_text(encoding="utf-8-sig") == before
     # ...and the view did move, so this is not passing because nothing happened at all
-    assert "0.90" in calibrate._header.text()
-
-
-def test_releasing_the_drag_commits(qapp, tmp_path):
-    """The other half: the commit has to actually happen on release, or the drag guard above
-    would pass on a surface that never writes at all."""
-    exp, run, workspace = _workspace(qapp, tmp_path)
-    run.set_cutoff("q01", 0.5)
-    calibrate = workspace._calibrate
-    calibrate._line.setValue(0.95)
-    calibrate._on_line_released()
-    assert _drain(qapp, lambda: run.state().behavior("q01").cutoff == 0.95)
-
-
-def test_the_numeric_box_commits_too(qapp, tmp_path):
-    """It needs its own path: `sigPositionChangeFinished` fires only for a real mouse drag, so
-    moving the line programmatically from the box would otherwise never commit."""
-    exp, run, workspace = _workspace(qapp, tmp_path)
-    workspace._calibrate._on_confidence_typed(0.75)
-    assert _drain(qapp, lambda: run.state().behavior("q01").cutoff == 0.75)
+    shown = calibrate.cutoff()
+    assert shown != 0.5
+    assert (
+        f"You're looking at {analysis_query._cutoff_text(shown)}"
+        in calibrate._header.text()
+    )
 
 
 def test_seeding_both_controls_commits_nothing(qapp, tmp_path):
@@ -105,57 +100,385 @@ def test_typing_a_cutoff_refreshes_the_view_once(qapp, tmp_path):
     """The echo the re-entrancy flag actually prevents.
 
     Typing moves the line, which fires `sigPositionChanged`, which is the view update — so
-    without the guard one keystroke refreshes twice. A refresh re-points the clip strip, so a
-    doubled one is a doubled decode fan-out on every keystroke, not merely wasted work.
+    without the guard one keystroke refreshes twice, and each refresh re-sections the grid and
+    recounts every recording.
     """
     exp, run, workspace = _workspace(qapp, tmp_path)
     calibrate = workspace._calibrate
     calls = []
-    original = calibrate._refresh_view
-    calibrate._refresh_view = lambda value: (calls.append(value), original(value))[1]
+    original = calibrate._preview
+    calibrate._preview = lambda value, **k: (calls.append(value), original(value, **k))[
+        1
+    ]
 
     calibrate._on_confidence_typed(0.66)
     assert len(calls) == 1, f"one keystroke refreshed {len(calls)} times"
 
 
-# --- what the view says -------------------------------------------------------------------
+# --- CALIBRATE: every clip, split at the cutoff, and one button that saves it ----------------
 
 
-def test_zero_matches_is_stated_not_shown_as_an_empty_strip(qapp, tmp_path):
-    """A behavior that returns nothing is a *result*. An empty row of frames reads as a
-    surface that failed to load, which is the failure the backlog already records against
-    the annotation module.
+def _tiled(qapp, workspace):
+    """Calibrate with its grid filled: the preview-cache read is off the UI thread."""
+    calibrate = workspace._calibrate
+    assert _drain(
+        qapp, lambda: calibrate._tiles_read and calibrate._montage.clips()
+    ), "the grid never filled"
+    return calibrate
 
-    Driven through the grid rather than by moving the cutoff to 1.0: the planted motif scores
-    exactly 1.0, and the marginal band reaches *below* the line, so the strip legitimately
-    still has clips there. Asserting on that would have been asserting the fixture.
+
+def test_an_unset_cutoff_says_so_and_offers_keep(qapp, tmp_path):
+    """The reported dead end: AUDIT asked for a cutoff, CALIBRATE showed a slider at 0.5 and a
+    line reading "not calibrated", and the one button that looked like setting it was grey.
+
+    Now the page says the cutoff is not set and offers the save by name; after it, the page
+    says it is saved and the button has nothing left to do. The negative half: a saved cutoff
+    must not read as unset.
     """
     exp, run, workspace = _workspace(qapp, tmp_path)
-    grid = workspace._calibrate._grid
+    calibrate = _tiled(qapp, workspace)
+    assert run.state().behavior("q01").cutoff is None
+    assert calibrate._header.text().startswith("⚠ ")
+    assert "Not saved" in calibrate._header.text()
+    assert "has no cutoff yet" in calibrate._header.text()
+    assert calibrate._keep.isEnabled()
+    assert calibrate._keep.text() == "Keep clips from 0.5 up"
 
-    grid.show_clips([], 0.5, empty_text="No instances at 0.99. That is a result.")
-    assert "result" in grid._empty.text()
-    # `isVisibleTo`, not `isVisible`: the grid has no shown ancestor in a test, so
-    # `isVisible()` is False either way and the assertion would pass on a strip that never
-    # hides anything.
-    assert not grid._cells, "an empty strip still built cells"
+    calibrate._keep.click()
+    assert _drain(qapp, lambda: run.state().behavior("q01").cutoff == 0.5)
+    assert _drain(qapp, lambda: calibrate._header.text().startswith("✓ "))
+    assert "saved" in calibrate._header.text()
+    assert not calibrate._keep.isEnabled()
+    assert calibrate._keep.toolTip() == "This is the saved cutoff."
 
-    # ...and the tab supplies such a text rather than an empty string, which is the half a
-    # grid-only test would miss.
-    workspace._calibrate._line.setValue(0.5)
+
+def test_keep_saves_the_shown_cutoff_once(qapp, tmp_path):
+    """A preview, then Keep: one write, of the cutoff on screen, and every other tab told."""
+    exp, run, workspace = _workspace(qapp, tmp_path)
+    run.set_cutoff("q01", 0.5)
+    calibrate = _tiled(qapp, workspace)
+    heard = []
+    calibrate.committed.connect(lambda: heard.append(True))
+    writes = []
+    real = workspace._run.set_cutoff
+    workspace._run.set_cutoff = lambda *a, **k: (writes.append(a), real(*a, **k))[1]
+
+    calibrate._on_confidence_typed(0.72)
     qapp.processEvents()
-    grid.show_clips([], 0.5)
-    assert grid._empty.text() == ""  # the default is silent; the caller words it
+    assert writes == [], "a typed cutoff saved itself"
+    assert "still use 0.5" in calibrate._header.text()
+    assert calibrate._keep.text() == "Keep clips from 0.72 up"
+
+    calibrate._keep.click()
+    assert _drain(qapp, lambda: heard), "the other tabs were never told"
+    assert [a[1] for a in writes] == [pytest.approx(0.72)]
+    assert run.state().behavior("q01").cutoff == pytest.approx(0.72)
 
 
-def test_the_calibrate_tab_words_its_own_empty_state(qapp, tmp_path):
-    """The strip's silence is the caller's to word, and Calibrate has to actually do it."""
-    import inspect
+def test_a_labelled_rule_sits_at_the_cutoff_and_nothing_below_it_fades(qapp, tmp_path):
+    """Every candidate, most confident first; a dashed rule after the last clip kept says, in
+    words, how many are kept and dropped and at what cutoff. Nothing below it is faded: those
+    clips are still to be watched (they were faded and tagged *dropped*, and could not be).
+    """
+    exp, run, workspace = _workspace(qapp, tmp_path)
+    calibrate = _tiled(qapp, workspace)
+    calibrate._on_confidence_typed(0.4)
+    specs = calibrate._behavior_specs()
+    scores = [float(s.score) for s in specs]
+    assert scores == sorted(scores, reverse=True), "the grid is not the ranking"
+    kept = sum(1 for v in scores if v >= 0.4)
+    assert 0 < kept < len(specs), "the fixture must put clips on both sides of 0.4"
 
-    from detail.gui.modules import analysis_query
+    montage = calibrate._montage
+    assert montage._rule_headings, "the cutoff is not drawn as a rule"
+    (untitled, first), (rule, rest) = montage.sections()
+    assert untitled == "" and (first, rest) == (kept, len(specs) - kept)
+    assert f"{kept:,} kept" in rule and "cutoff 0.4" in rule
+    assert f"{len(specs) - kept:,} dropped" in rule
+    tiles = montage.clips()
+    assert len(tiles) == len(specs)
+    assert not any(t.faded for t in tiles)
+    assert {t.tag for t in tiles} <= {None, "your example", "your non-example"}
 
-    source = inspect.getsource(analysis_query._CalibrateTab._refresh_clips)
-    assert "empty_text" in source and "result" in source
+
+def test_a_clicked_clip_stays_where_it_was_clicked(qapp, tmp_path):
+    """The rows re-flow when the rule moves, so a click scrolls the grid to keep the clip it
+    chose at the height it was clicked at — what is under the pointer is still that clip
+    (reported as clunky: the click re-flowed the rows and another clip took its place).
+    """
+    exp, run, workspace = _workspace(qapp, tmp_path)
+    workspace.resize(1400, 700)
+    workspace.show()
+    calibrate = _tiled(qapp, workspace)
+    montage = calibrate._montage
+    specs = calibrate._behavior_specs()
+    calibrate._on_confidence_typed(float(specs[2].score))
+    qapp.processEvents()
+    # A dropped clip a few rows past the rule, so the grid has room above it to hold it still.
+    index = montage.sections()[0][1] + 3 * montage._columns() + 2
+    assert index < len(specs), "the fixture has too few clips past the rule"
+    scroll = montage.grid.verticalScrollBar()
+    scroll.setValue(max(montage.tile_rect(index).top() - 100, 0))
+    qapp.processEvents()
+    on_screen = montage.tile_rect(index).top() - scroll.value()
+
+    calibrate._on_tile_clicked(index, False)
+    qapp.processEvents()
+    assert (
+        montage.sections()[0][1] == index + 1
+    ), "the clicked clip is not the last kept"
+    assert (
+        montage.tile_rect(index).top() - scroll.value() == on_screen
+    ), "the clicked clip moved on screen"
+    workspace.hide()
+
+
+def test_your_own_example_is_tagged_where_it_is_found(qapp, tmp_path):
+    """The search finds the clips it was given, at the top of the ranking. Unmarked, they read as
+    its most confident finds; they are tagged *your example* (or *your non-example*), by the one
+    rule AUDIT uses to set them aside (`query_runs.told_kind`)."""
+    from detail.storage import query_runs
+
+    exp, run, workspace = _workspace(qapp, tmp_path)
+    calibrate = _tiled(qapp, workspace)
+    behavior = run.state().behavior("q01")
+    told = query_runs.told_kinds([behavior])
+    expected = [
+        query_runs.told_kind(
+            told, "q01", s.recording_id, s.track_id, s.start_t_ns, s.end_t_ns
+        )
+        for s in calibrate._behavior_specs()
+    ]
+    assert (
+        query_runs.EXAMPLE in expected
+    ), "no candidate sits on an example — proves nothing"
+    tags = [t.tag for t in calibrate._montage.clips()]
+    assert tags == [None if k is None else f"your {k}" for k in expected]
+
+
+def test_scrolled_below_the_line_a_bar_says_so_and_goes_back(qapp, tmp_path):
+    """Below the line the clips look like any other, so a bar pinned over the grid says they are
+    dropped, and its button scrolls back to the line."""
+    exp, run, workspace = _workspace(qapp, tmp_path)
+    workspace.resize(1400, 700)
+    workspace.show()
+    calibrate = _tiled(qapp, workspace)
+    montage = calibrate._montage
+    specs = calibrate._behavior_specs()
+    # A cutoff near the top of the ranking, so most of the grid lies below the line.
+    calibrate._on_confidence_typed(float(specs[min(3, len(specs) - 2)].score))
+    qapp.processEvents()
+    bar = calibrate._below_bar
+    scroll = montage.grid.verticalScrollBar()
+    scroll.setValue(0)
+    qapp.processEvents()
+    assert not bar.isVisible(), "the bar shows while the line is in view"
+
+    scroll.setValue(scroll.maximum())
+    qapp.processEvents()
+    assert scroll.maximum() > 0, "the grid does not scroll, so this proves nothing"
+    assert bar.isVisible(), "scrolled past the line and nothing says so"
+    assert "Below the cutoff" in bar.text() and "dropped" in bar.text()
+    assert bar.y() == 0 and bar.parent() is montage.grid.viewport()
+
+    bar.back.click()
+    qapp.processEvents()
+    lowest = montage.heading_rects()[-1][1].bottom()
+    top = scroll.value()
+    assert (
+        top <= lowest <= top + montage.grid.viewport().height()
+    ), "the line is not in view"
+    assert not bar.isVisible()
+    workspace.hide()
+
+
+def test_a_clicked_clip_becomes_the_last_one_kept(qapp, tmp_path):
+    """Clicking a clip shows the cutoff at it — previewed, not saved."""
+    exp, run, workspace = _workspace(qapp, tmp_path)
+    calibrate = _tiled(qapp, workspace)
+    specs = calibrate._behavior_specs()
+    index = min(6, len(specs) - 1)
+
+    calibrate._montage.clip_clicked.emit(index, False)
+    qapp.processEvents()
+    assert calibrate.cutoff() == pytest.approx(float(specs[index].score), abs=1e-6)
+    kept = calibrate._montage.sections()[0][1]
+    assert kept >= index + 1, "the clicked clip is not kept"
+    assert run.state().behavior("q01").cutoff is None, "a click saved the cutoff"
+
+
+def test_a_clip_removed_in_audit_is_tagged_on_calibrate(qapp, tmp_path):
+    """The review's removals show where the cutoff is chosen: the clip stays in the ranking
+    (it is the method's), tagged *removed* and crossed, and the header counts it."""
+    exp, run, workspace = _workspace(qapp, tmp_path)
+    run.set_cutoff("q01", 0.0)
+    clip = run.review_clips("q01", "s1")[0]
+    run.take_out_clips([clip], from_label="q01")
+    workspace._calibrate.forget_clips()
+    calibrate = _tiled(qapp, workspace)
+    calibrate._refresh_header(0.0)
+    calibrate._show_tiles()
+
+    marked = [t for t in calibrate._montage.clips() if t.tag == "removed"]
+    assert len(marked) == 1 and marked[0].crossed and marked[0].faded
+    assert "1 of them removed in Audit" in calibrate._header.text()
+
+
+def test_an_unsaved_cutoff_is_loud_on_calibrate_and_quiet_once_kept(qapp, tmp_path):
+    """Reported: a previewed cutoff read as applied, and AUDIT then reviewed the saved one. While
+    the cutoff on screen is not the saved one the bar is banded, bold and amber with *Not saved*
+    in words, the line on the curve is dashed and the rule says *(not saved)*; once kept, all
+    three go quiet. The negative half is the saved state, so the loud one is not just the look.
+    """
+    exp, run, workspace = _workspace(qapp, tmp_path)
+    run.set_cutoff("q01", 0.5)
+    workspace._calibrate.set_behavior("q01", workspace._curves["q01"])
+    calibrate = _tiled(qapp, workspace)
+    bar = calibrate._save_bar
+
+    def loud() -> bool:
+        return (
+            bar.autoFillBackground() and bar._row is not None and bar.text.font().bold()
+        )
+
+    def dashed() -> bool:
+        from PyQt6.QtCore import Qt
+
+        return calibrate._line.pen.style() == Qt.PenStyle.DashLine
+
+    def rule() -> str:
+        headings = calibrate._montage.heading_rects()
+        return headings[-1][0] if headings else ""
+
+    assert (
+        not loud() and not dashed() and "not saved" not in rule()
+    ), "the saved state is loud"
+    assert calibrate._header.text().startswith("✓ ")
+    assert not calibrate._back.isVisible() and not calibrate._back.isEnabled()
+
+    calibrate._on_confidence_typed(0.8)
+    qapp.processEvents()
+    assert loud() and dashed() and "(not saved)" in rule()
+    assert calibrate._header.text().startswith("⚠ Not saved")
+    assert calibrate._back.isEnabled() and calibrate._back.text() == "Back to 0.5"
+
+    calibrate._keep.click()
+    assert _drain(qapp, lambda: run.state().behavior("q01").cutoff == 0.8)
+    assert _drain(qapp, lambda: not loud())
+    assert not dashed() and "not saved" not in rule()
+
+
+def test_back_to_the_saved_cutoff_writes_nothing(qapp, tmp_path):
+    exp, run, workspace = _workspace(qapp, tmp_path)
+    run.set_cutoff("q01", 0.5)
+    workspace._calibrate.set_behavior("q01", workspace._curves["q01"])
+    calibrate = _tiled(qapp, workspace)
+    calibrate._on_confidence_typed(0.8)
+    qapp.processEvents()
+    before = (run._run_dir() / "query.yaml").read_text(encoding="utf-8-sig")
+
+    calibrate._back.click()
+    qapp.processEvents()
+    assert calibrate.cutoff() == pytest.approx(0.5)
+    assert calibrate.unsaved() is None
+    assert (run._run_dir() / "query.yaml").read_text(encoding="utf-8-sig") == before
+
+
+def test_the_other_views_say_calibrate_holds_an_unsaved_cutoff(qapp, tmp_path):
+    """Where the mistake was found: on AUDIT, reviewing the saved cutoff while CALIBRATE showed
+    another. The notice names both and offers Keep; Keep from it saves and the notice goes. Not on
+    CALIBRATE itself, which has its own bar, and not while nothing is unsaved."""
+    exp, run, workspace = _workspace(qapp, tmp_path)
+    run.set_cutoff("q01", 0.5)
+    workspace._calibrate.set_behavior("q01", workspace._curves["q01"])
+    calibrate = _tiled(qapp, workspace)
+    notice = workspace._unsaved_notice
+
+    for view in ("Audit", "Browse"):
+        workspace.show_view(view)
+        qapp.processEvents()
+        assert notice.isHidden(), f"{view} warns with nothing unsaved"
+
+    workspace.show_view("Calibrate")
+    calibrate._on_confidence_typed(0.8)
+    qapp.processEvents()
+    assert (
+        notice.isHidden()
+    ), "CALIBRATE has its own bar; the notice is for the other views"
+    for view in ("Audit", "Browse"):
+        workspace.show_view(view)
+        qapp.processEvents()
+        assert not notice.isHidden(), f"{view} says nothing about the unsaved cutoff"
+        assert "not saved" in notice.text.text() and "0.8" in notice.text.text()
+        assert "0.5" in notice.text.text()
+
+    workspace._notice_keep.click()
+    assert _drain(qapp, lambda: run.state().behavior("q01").cutoff == 0.8)
+    assert _drain(qapp, lambda: notice.isHidden())
+
+    calibrate._on_confidence_typed(0.6)
+    qapp.processEvents()
+    workspace.show_view("Audit")
+    qapp.processEvents()
+    workspace._notice_to_calibrate.click()
+    qapp.processEvents()
+    assert workspace.current_view() == "Calibrate"
+
+
+def test_the_below_cutoff_bar_is_centred_and_stands_out(qapp, tmp_path):
+    """Reported: the button sat at the far right and the bar was the page's own colour, lost
+    over the tiles in a dark theme. Its words and button are centred together, and it is a
+    framed band in a shade the page is not, its words in an amber that reads on that band.
+    """
+    from PyQt6.QtGui import QPalette
+    from PyQt6.QtWidgets import QFrame
+
+    from detail.gui.status_color import warn_ink
+
+    exp, run, workspace = _workspace(qapp, tmp_path)
+    workspace.resize(1400, 700)
+    workspace.show()
+    calibrate = _tiled(qapp, workspace)
+    specs = calibrate._behavior_specs()
+    calibrate._on_confidence_typed(float(specs[min(3, len(specs) - 2)].score))
+    scroll = calibrate._montage.grid.verticalScrollBar()
+    scroll.setValue(scroll.maximum())
+    qapp.processEvents()
+    bar = calibrate._below_bar
+    assert bar.isVisible()
+
+    left = bar._text.geometry().left()
+    right = bar.width() - bar.back.geometry().right()
+    assert abs(left - right) <= 4, f"not centred: {left}px left, {right}px right"
+    assert bar.frameShape() == QFrame.Shape.Box and bar.autoFillBackground()
+    page = bar.parentWidget().palette().color(QPalette.ColorRole.Window)
+    assert (
+        bar.palette().color(QPalette.ColorRole.Window) != page
+    ), "the page's own colour"
+    assert bar._text.palette().color(QPalette.ColorRole.WindowText) == warn_ink(bar)
+    workspace.hide()
+
+
+def test_the_warning_amber_reads_on_a_dark_band(qapp):
+    """``WARN`` is a dark amber: on a light band it reads, on a dark one it does not, so a band
+    lightens it there."""
+    from PyQt6.QtGui import QColor, QPalette
+    from PyQt6.QtWidgets import QWidget
+
+    from detail.gui.status_color import WARN, warn_ink
+
+    widget = QWidget()
+    palette = widget.palette()
+    palette.setColor(QPalette.ColorRole.Window, QColor("#eeeeee"))
+    widget.setPalette(palette)
+    assert warn_ink(widget) == WARN
+    palette.setColor(QPalette.ColorRole.Window, QColor("#3a3a3a"))
+    widget.setPalette(palette)
+    dark = warn_ink(widget)
+    assert dark.lightness() > WARN.lightness() + 30, "no lighter on a dark band"
+
+
+# --- what the view says -------------------------------------------------------------------
 
 
 def test_every_searched_recording_appears_in_the_kept_panel(qapp, tmp_path):
@@ -183,7 +506,7 @@ def test_every_searched_recording_appears_in_the_kept_panel(qapp, tmp_path):
 
     held.state = lambda: _WithAQuietRecording()
 
-    calibrate._draw_spread(0.5)
+    calibrate._refresh_header(0.5)
     text = calibrate._spread.text()
     assert "s1" in text and "s2" in text
     assert (
@@ -219,9 +542,9 @@ def test_a_capped_point_is_marked_on_the_curve(qapp, tmp_path, monkeypatch):
 
 
 def _header_count(calibrate) -> int:
-    """The instance count the header states, e.g. `rearing (q01) — 228 instance(s) at …`."""
+    """The count the header states, e.g. `⚠ rearing: cutoff not set — 0.5 would keep 228 of …`."""
     text = calibrate._header.text()
-    return int(text.split(" — ", 1)[1].split(" instance(s)", 1)[0])
+    return int(re.search(r"keeps? ([\d,]+) of", text).group(1).replace(",", ""))
 
 
 def test_the_header_counts_at_the_cutoff_not_a_stored_total(qapp, tmp_path):
@@ -251,7 +574,7 @@ def test_the_header_states_the_count_a_commit_at_that_cutoff_writes(qapp, tmp_pa
         calibrate._refresh_header(cutoff)
         shown = _header_count(calibrate)
         panel = sum(
-            int(line.split("  ←")[0].split()[-1])
+            int(line.split(" ←")[0].split()[-1].replace(",", ""))
             for line in calibrate._spread.text().splitlines()
         )
         assert shown == panel, f"at {cutoff}: header {shown}, panel {panel}"
@@ -269,21 +592,6 @@ def test_the_header_states_the_count_a_commit_at_that_cutoff_writes(qapp, tmp_pa
 
 
 # --- the clip grid -------------------------------------------------------------------------
-
-
-def test_a_cell_that_cannot_decode_names_the_reason(qapp, tmp_path):
-    """*missing* and *undecodable* are different problems with different fixes, and a pane
-    that shows neither reports neither. The thumbnail template this follows gets it wrong —
-    a failed cell there reads "rendering…" forever."""
-    exp, _run, workspace = _workspace(qapp, tmp_path)
-    grid = workspace._calibrate._grid
-    cell = next(iter(grid._cells.values()))
-
-    cell.set_image(None, frame_source.MISSING)
-    assert cell._image.text() == frame_source.unavailable_text(frame_source.MISSING)
-    cell.set_image(None, frame_source.UNDECODABLE)
-    assert cell._image.text() == frame_source.unavailable_text(frame_source.UNDECODABLE)
-    assert cell._image.text() != ""
 
 
 def test_an_unexpected_decode_error_still_names_the_cell(qapp, tmp_path):
@@ -304,169 +612,89 @@ def test_an_unexpected_decode_error_still_names_the_cell(qapp, tmp_path):
     assert seen == [(None, frame_source.UNDECODABLE)]
 
 
-def test_a_stale_decode_never_paints(qapp, tmp_path):
-    """A scroll or a cutoff move retargets the strip faster than a decode returns, so a result
-    for a view the user has left must be dropped — otherwise an older, slower render lands last
-    and the strip disagrees with what it says it is showing."""
-    from detail.gui.behavior_query import ClipSpec
-
-    _exp, _run, workspace = _workspace(qapp, tmp_path)
-    grid = workspace._calibrate._grid
-
-    clips = [
-        ClipSpec("s1", 0, "emb_01", i * 1000, i * 1000 + 500, "x", score=0.9 - i / 100)
-        for i in range(4)
-    ]
-    grid.show_clips(clips, 0.5)
-    index, cell = next(iter(grid._cells.items()))
-    stale = grid._generation - 1  # a generation the strip has already moved past
-
-    grid._on_decoded(stale, index, np.zeros((4, 4, 3), dtype=np.uint8), None)
-    assert cell._image.pixmap().isNull(), "a superseded decode painted"
-
-
-def test_the_grid_shows_no_more_cells_than_it_has(qapp, tmp_path):
-    from detail.gui.behavior_query import ClipSpec
-
-    exp, _run, workspace = _workspace(qapp, tmp_path)
-    grid = ClipGrid(exp, n_cells=3)
-    grid.show_clips(
-        [
-            ClipSpec("s1", 0, "emb_01", i * 1000, i * 1000 + 500, "x", score=0.5)
-            for i in range(9)
-        ]
-    )
-    assert sum(1 for cell in grid._cells if cell.isVisible()) <= 3
-
-
-def test_the_strip_defaults_to_the_marginal_band(qapp, tmp_path):
-    """§20: the clips *at* the cutoff, because the decision is "is what sits at this level
-    real?". Sampled-above is the second mode, not the default — a strip of obvious hits tells
-    you nothing about where to cut."""
-    modes = ClipGridModes()
-    assert modes.mode() == ClipGridModes.NEAR
-
-
 # --- browse ---------------------------------------------------------------------------------
 
 
-def test_browse_says_so_when_nothing_is_calibrated(qapp, tmp_path):
+def _browsed(qapp, workspace):
+    """The workspace's BROWSE once its off-thread read has landed with rows in it."""
+    browse = workspace._browse
+    browse.reload()
+    assert _drain(
+        qapp, lambda: browse._loaded and browse._model.rowCount() > 0
+    ), "BROWSE listed nothing"
+    return browse
+
+
+def test_browse_is_clustering_browse(qapp, tmp_path):
+    """One BROWSE for both run kinds (§20): the query page's own table went, and with it a
+    second implementation of filters, ethogram, list and player."""
+    from detail.gui.cluster_workspace import QUERY_TERMS
+    from detail.gui.label_browse import LabelBrowseTab
+
     exp, run, workspace = _workspace(qapp, tmp_path)
-    workspace._browse.set_behavior("q01")
-    qapp.processEvents()
-    assert "no cutoff" in workspace._browse._summary.text()
+    assert type(workspace._browse) is LabelBrowseTab
+    assert workspace._browse._terms is QUERY_TERMS
 
 
 def test_browse_lists_the_accepted_instances(qapp, tmp_path):
     exp, run, workspace = _workspace(qapp, tmp_path)
     run.set_cutoff("q01", 0.9)
-    workspace._browse.set_behavior("q01")
-    assert _drain(qapp, lambda: workspace._browse._model.rowCount() > 0)
-    assert workspace._browse._model.rowCount() == len(workspace._browse._rows)
+    browse = _browsed(qapp, workspace)
+    assert browse._model.rowCount() == len(browse._rows)
 
 
-def _instances(behavior_id: str, recording_id: str, n: int) -> list:
-    """``n`` accepted instances of one behavior, one second apart — more than a list shows."""
-    import types
-
-    return [
-        types.SimpleNamespace(
-            instance_id=f"i{i:03d}",
-            source_label=behavior_id,
-            recording_id=recording_id,
-            subject=0,
-            t_ns=i * 1_000_000_000,
-            end_t_ns=i * 1_000_000_000 + 500_000_000,
-            score=0.9 + i / 1000,
-        )
-        for i in range(n)
-    ]
-
-
-def test_browse_shows_twenty_rows_with_the_player_level_beside_them(
-    qapp, tmp_path, monkeypatch
-):
-    """Reported: the list was "too big" and the video "centered to the table so is off the
-    screen". Thirty instances, so the twenty-row cap is something a list can overrun."""
-    import types
-
-    from detail.gui.tables import BROWSE_ROWS
-    from tests.gui.layout_checks import assert_player_level_with_its_list
-
-    exp, run, workspace = _workspace(qapp, tmp_path)
-    run.set_cutoff("q01", 0.9)
-    browse = workspace._browse
-    recording_id = exp.recordings[0].id
-    monkeypatch.setattr(
-        browse._run,
-        "artifact",
-        lambda: types.SimpleNamespace(
-            instances=_instances("q01", recording_id, 30), coverage=[]
-        ),
-    )
-    workspace.show_view("Browse")
-    workspace.resize(1400, 1200)
-    workspace.show()
-    try:
-        browse.set_behavior("q01")
-        assert _drain(qapp, lambda: browse._model.rowCount() == 30)
-        qapp.processEvents()
-        assert_player_level_with_its_list(
-            browse,
-            browse._table,
-            browse._player._src,
-            above=browse._summary,
-            max_rows=BROWSE_ROWS,
-        )
-        assert browse._table.verticalScrollBar().maximum() > 0, "the rest must scroll"
-    finally:
-        workspace.hide()
-
-
-def test_browse_lists_recordings_by_name(qapp, tmp_path, monkeypatch):
+def test_browse_lists_recordings_by_name(qapp, tmp_path):
     """§11: the id is the tool's, the name is the user's — in the list, not only in pickers."""
-    import types
-
     exp, run, workspace = _workspace(qapp, tmp_path)
-    run.set_cutoff("q01", 0.9)
-    recording = exp.recordings[0]
-    recording.set_name("Fish tank A")
-    browse = workspace._browse
-    monkeypatch.setattr(
-        browse._run,
-        "artifact",
-        lambda: types.SimpleNamespace(
-            instances=_instances("q01", recording.id, 3), coverage=[]
-        ),
-    )
-    browse.set_behavior("q01")
-    assert _drain(qapp, lambda: browse._model.rowCount() == 3)
-    shown = {browse._model.item(r, 0).text() for r in range(3)}
-    assert shown == {"Fish tank A"}, shown
+    run.set_cutoff("q01", 0.0)
+    for recording, name in zip(exp.recordings, ("Fish tank A", "Fish tank B")):
+        recording.set_name(name)
+    browse = _browsed(qapp, workspace)
+    shown = {browse._model.item(r, 1).text() for r in range(browse._model.rowCount())}
+    assert shown <= {"Fish tank A", "Fish tank B"} and shown, shown
 
 
 def test_browse_survives_finish(qapp, tmp_path):
-    """§20:5773 — finishing sets the record status, it does not close the workspace.
+    """§20 — finishing sets the record status, it does not close the workspace.
     Reopening is only needed to *change* something."""
     exp, run, workspace = _workspace(qapp, tmp_path)
     run.set_cutoff("q01", 0.9)
-    workspace._browse.set_behavior("q01")
-    assert _drain(qapp, lambda: workspace._browse._model.rowCount() > 0)
-    listed = workspace._browse._model.rowCount()
+    workspace._sync_status()
+    browse = _browsed(qapp, workspace)
+    listed = browse._model.rowCount()
 
     workspace._on_finish()
     # Off-thread: finishing pins, and a pin first rebuilds the frame views a cutoff deferred.
     assert _drain(qapp, lambda: run.status == "complete")
 
     # No re-populate: the rows have to *survive* finishing, not be rebuilt by the assertion.
-    assert run.status == "complete"
-    assert workspace._browse._model.rowCount() == listed
-    assert workspace._browse.isEnabled()
-    assert workspace._browse.grab() is not None  # and it still paints
+    assert browse._model.rowCount() == listed
+    assert browse.isEnabled()
+    assert browse.grab() is not None  # and it still paints
+
+
+def test_finish_waits_for_every_cutoff_and_says_so(qapp, tmp_path):
+    """Finish is greyed, with the reason in words beside it, until every behavior has a saved
+    cutoff — the API's own refusal (`QueryRun.finish_blocker`), read before the press. A run
+    finished uncut was the dead end AUDIT then described twice at once. Saving through Keep is
+    what lifts it, with no other refresh."""
+    exp, run, workspace = _workspace(qapp, tmp_path)
+    calibrate = _tiled(qapp, workspace)
+    assert not workspace._finish.isEnabled()
+    assert "no cutoff yet" in workspace._finish.toolTip()
+    assert workspace._behaviors[0].name in workspace._finish_note.text()
+
+    calibrate._keep.click()
+    assert _drain(
+        qapp, lambda: workspace._finish.isEnabled()
+    ), "Keep left Finish greyed"
+    assert workspace._finish_note.text() == ""
 
 
 def test_finish_and_reopen_swap_which_button_applies(qapp, tmp_path):
     exp, run, workspace = _workspace(qapp, tmp_path)
+    run.set_cutoff(workspace._behaviors[0].id, 0.9)  # finishing needs every cutoff
+    workspace._sync_status()  # saved behind the page's back, so it is told
     assert workspace._finish.isEnabled() and not workspace._reopen.isEnabled()
     workspace._on_finish()
     assert _drain(
@@ -478,35 +706,37 @@ def test_finish_and_reopen_swap_which_button_applies(qapp, tmp_path):
 
 
 def test_a_finished_run_freezes_the_cutoff_until_reopened(qapp, tmp_path):
-    """`set_cutoff` and the audit both refuse a finished run, and the controls were frozen for a
-    snapshot only — so on a finished run the line dragged, the box took a number and Start drew
-    a batch, each into an error. Frozen with the reason that names Reopen, and back after it.
+    """`set_cutoff` and the review both refuse a finished run, and the controls were frozen for
+    a snapshot only — so on a finished run the line dragged, the box took a number and a removal
+    was written, each into an error. Frozen with the reason that names Reopen, and back after it.
     """
+    from detail.gui.query_review import FINISHED
+
     exp, run, workspace = _workspace(qapp, tmp_path)
     run.set_cutoff(workspace._behaviors[0].id, 0.0)
     workspace._audit.reload()
     calibrate, audit = workspace._calibrate, workspace._audit
-    assert _drain(qapp, lambda: audit._start.isEnabled()), "the audit never loaded"
+    assert _drain(qapp, lambda: audit._data.get("cutoff") is not None), "never loaded"
+    assert audit._reason() == ""
     assert calibrate._confidence.isEnabled() and calibrate._line.movable
 
     workspace._on_finish()
     assert _drain(qapp, lambda: workspace._reopen.isEnabled())
     assert not calibrate._confidence.isEnabled()
     assert not calibrate._line.movable
-    assert not calibrate._grid.editable()
+    assert not calibrate._montage.is_clickable(), "a clicked clip would still move it"
+    assert not calibrate._keep.isEnabled()
     assert "Reopen" in calibrate._confidence.toolTip()
-    # Both at once: while "Finishing…" runs the page is disabled, so Start reads as disabled
-    # before the audit's post-finish reload has set its reason. Waiting on the disabled state
-    # alone checked the tooltip inside that window whenever the machine was busy.
-    assert _drain(
-        qapp,
-        lambda: not audit._start.isEnabled() and "Reopen" in audit._start.toolTip(),
-    ), f"Start tooltip: {audit._start.toolTip()!r}"
+    assert "Reopen" in calibrate._keep.toolTip()
+    # The review's own post-finish read sets its reason; Finish then says it.
+    assert _drain(qapp, lambda: audit._reason() == FINISHED)
+    assert not audit.pane.finish.isEnabled()
+    assert "Reopen" in audit.pane.finish.toolTip()
 
     workspace._on_reopen()
     assert calibrate._confidence.isEnabled() and calibrate._line.movable
-    assert calibrate._grid.editable()
-    assert _drain(qapp, lambda: audit._start.isEnabled())
+    assert calibrate._montage.is_clickable()
+    assert _drain(qapp, lambda: audit._reason() == "")
 
 
 # --- the shell ------------------------------------------------------------------------------
@@ -578,7 +808,7 @@ def test_the_plot_does_not_resize_when_the_cutoff_moves(qapp, tmp_path):
     ranges = set()
     for cutoff in (0.05, 0.35, 0.6, 0.85, 0.99):
         tab._set_cutoff_widgets(cutoff)
-        tab._refresh_view(cutoff)
+        tab._preview(cutoff, scroll=True)
         qapp.processEvents()
         heights.add(tab._plot.height())
         ranges.add(tuple(tuple(axis) for axis in tab._plot.viewRange()))
@@ -587,293 +817,6 @@ def test_the_plot_does_not_resize_when_the_cutoff_moves(qapp, tmp_path):
     assert (
         len(ranges) == 1
     ), f"the plot's view range moved as the cutoff moved: {ranges}"
-
-
-def test_clicking_a_clip_plays_it(qapp, tmp_path):
-    """The cell shows a pointing-hand cursor, so a click has to do something.
-
-    `ClipGrid.clip_clicked` was emitted and connected to nothing — the strip advertised a
-    click that went nowhere, which is what "I can't figure out how to get them to play" was.
-    """
-    from detail.gui.behavior_query import ClipSpec
-
-    _exp, _run, workspace = _workspace(qapp, tmp_path)
-    tab = _shown(qapp, workspace)
-
-    clip = ClipSpec("s1", 0, "emb_01", 1_000, 2_000, "probe", score=0.5)
-    tab._grid.clip_clicked.emit(clip)
-    qapp.processEvents()
-    assert tab._player._clip == clip
-
-
-def test_the_clips_are_not_behind_a_page_scroll(qapp, tmp_path):
-    """ "I didn't realize the matches were shown because they are hidden in the scrollable pane."
-
-    The clips were the fifth widget in one column inside a QScrollArea, under a 220px plot.
-    They are the evidence the whole decision rests on, so they are a fill element now, not
-    something you have to scroll to.
-    """
-    from PyQt6.QtWidgets import QScrollArea
-
-    _exp, _run, workspace = _workspace(qapp, tmp_path)
-    tab = _shown(qapp, workspace)
-
-    # The grid may sit inside its own scroll for overflow, but must not be buried under one
-    # that also holds the plot — that is the arrangement that hid it.
-    for scroll in tab.findChildren(QScrollArea):
-        holds_both = scroll.isAncestorOf(tab._plot) and scroll.isAncestorOf(tab._grid)
-        assert not holds_both, "the plot and the clips share a scroll area again"
-    assert tab._grid.isVisibleTo(tab)
-
-
-def test_the_strip_is_bounded_and_stays_full(qapp, tmp_path):
-    """The band is the N nearest the cutoff, not a fixed ±0.04 width.
-
-    A fixed width returns forty clips where the curve is dense and none where it is sparse —
-    the strip either floods or reads as a surface that failed to load. The count is what the
-    strip can actually show, so it is full wherever there are clips at all.
-    """
-    from detail.gui.clip_grid import _WINDOW
-
-    _exp, _run, workspace = _workspace(qapp, tmp_path)
-    tab = _shown(qapp, workspace)
-
-    for cutoff in (0.1, 0.5, 0.9):
-        tab._set_cutoff_widgets(cutoff)
-        tab._refresh_view(cutoff)
-        qapp.processEvents()
-        shown = list(tab._grid._cells.values())
-        assert len(shown) <= 2 * _WINDOW
-
-    # ...and on a ranking big enough for the bound to bite. This fixture has 30 candidates, so
-    # an unbounded row would satisfy the check above — and unbounded is exactly the failure:
-    # `soft_knn` caps nothing, so a long pooled search yields hundreds of thousands of
-    # cells — past what Qt will paint at all, and seconds and hundreds of MB well before.
-    many = list(tab._grid._all) * 60  # ~1,800 candidates
-    tab._grid.show_clips(many, 0.5)
-    qapp.processEvents()
-    assert len(many) > 2 * _WINDOW, "the synthetic ranking is too small to bound"
-    assert len(tab._grid._cells) <= 2 * _WINDOW, (
-        f"{len(tab._grid._cells)} cells for {len(many)} candidates — the row is the ranking, "
-        "not a neighbourhood of the cutoff"
-    )
-
-
-def test_the_strip_separates_dropped_from_kept(qapp, tmp_path):
-    """K1: the clips above the cutoff and the ones below are not one undifferentiated block.
-
-    The row is ordered by confidence and straddles the cutoff, so without a break you cannot
-    see which clips you are choosing to throw away — the one question the cutoff answers. The
-    handle *is* the break, and it carries both counts.
-    """
-    from detail.gui.clip_grid import _CutoffHandle
-
-    _exp, _run, workspace = _workspace(qapp, tmp_path)
-    tab = _shown(qapp, workspace)
-    # A cutoff from the data, so the set genuinely splits: at a fixed 0.5 this fixture keeps
-    # everything and there is nothing dropped to find.
-    scores = sorted((c.score or 0.0) for c in tab._grid._all)
-    tab._grid.set_cutoff(scores[len(scores) // 2])
-    # `_rebuild` retires the old widgets with `deleteLater`, which is deferred.
-    qapp.processEvents()
-
-    handles = tab._grid.findChildren(_CutoffHandle)
-    assert len(handles) == 1, "the row needs exactly one divider"
-    # The counts sit beside the row rather than inside the band: five stacked lines did not fit
-    # a row sized for one frame and "kept" was clipped away. The band keeps the value and the
-    # steppers, which are the parts that have to be *at* the divider.
-    assert f"{tab._grid.cutoff():.4f}" in " ".join(
-        w.text() for w in handles[0].findChildren(QLabel)
-    )
-    assert "dropped" in tab._grid._counts.text()
-    assert "kept" in tab._grid._counts.text()
-
-    # ...and the divider stands *between* them: every dropped cell left of it, every kept
-    # cell right. That ordering is the row's whole claim, and it is what makes the divider
-    # here and the marker on the curve above two views of one number.
-    # The direction, stated directly. Keying off `_boundary_index` alone cannot see an order
-    # flip: reverse the sort and the boundary reverses with it, so every cell lands on the
-    # side the assertion expects and the row silently runs against the curve above it.
-    by_x = sorted(tab._grid._cells.values(), key=lambda c: c.x())
-    scores = [c._clip.score for c in by_x if c._clip is not None]
-    assert scores == sorted(scores), "the row does not ascend left to right"
-
-    boundary = tab._grid._boundary_index()
-    handle_x = handles[0].x()
-    for index, cell in tab._grid._cells.items():
-        if index < boundary:
-            assert cell.x() < handle_x, f"dropped clip {index} is right of the divider"
-        else:
-            assert cell.x() > handle_x, f"kept clip {index} is left of the divider"
-
-
-def test_a_clip_names_its_recording_and_a_distinguishing_score(qapp, tmp_path):
-    """Pooling interleaves animals, so a cell has to say whose clip it is.
-
-    And the score needs enough decimals to be a *different* score: two places is what a cutoff
-    reads like, and matches either side of one agree to two places, so every cell printed the
-    same number and the strip looked like it was not updating.
-
-    A shorter search than the default: captions stop at five decimals by design, and the
-    default's few hundred noise peaks include pairs closer than that.
-    """
-    _exp, _run, workspace = _workspace(qapp, tmp_path, n_rows=600)
-    tab = _shown(qapp, workspace)
-    captions = [c._caption.text() for c in tab._grid._cells.values()]
-    assert captions
-
-    assert all(any(ch.isalpha() for ch in text) for text in captions), captions
-    # Distinct *scores* must render distinctly. Two clips can genuinely tie — this fixture has
-    # two at 1.0000 — and no number of decimals separates those; the failure being guarded is
-    # neighbours that differ being printed the same, which is what made the row look static.
-    # A tie is a tie at float32's resolution, not bit for bit: the planted motif scores the
-    # same in both recordings, but how BLAS splits the sums across threads can leave the two a
-    # unit in the last place apart. 1e-6 is ten of those units and a tenth of what five
-    # decimals can show, so neighbours that differ in the caption's digits still fail here.
-    rendered = {}
-    for cell in tab._grid._cells.values():
-        score = cell._clip.score
-        if score is None:
-            continue
-        shown = cell._caption.text().splitlines()[-1]
-        assert math.isclose(rendered.setdefault(shown, score), score, rel_tol=1e-6), (
-            f"{shown!r} is printed for two different scores — "
-            f"{rendered[shown]} and {score}"
-        )
-
-
-def test_no_section_can_be_squeezed_out_of_existence(qapp, tmp_path):
-    """The reported regression, guarded as a property rather than a pixel budget.
-
-    Stacking the player under the strip put it in a splitter pane whose sibling's minimum
-    exceeded a short window, so Qt gave the player **zero** — a handle with nothing under it,
-    and no way to watch a clip while its neighbours were on screen, which is the entire job of
-    the surface.
-
-    The vertical splitter is gone: the sections below the top row are `CollapsibleBand`s now, so
-    a section is either open at its content's own floor or deliberately folded. There is no
-    third state where Qt quietly hands one nothing. What remains a splitter is the top row,
-    where the player sits *beside* the dial — genuinely side by side, which is the one case the
-    rule keeps as a splitter — and that one still has to refuse to collapse.
-    """
-    _exp, _run, workspace = _workspace(qapp, tmp_path)
-    workspace.resize(1900, 520)  # wide and short — the shape that broke it
-    workspace.show()
-    qapp.processEvents()
-    tab = workspace._calibrate
-
-    assert tab._top.count() == 2, "the top row was re-stacked"
-    for index in range(2):
-        assert not tab._top.isCollapsible(
-            index
-        ), f"top pane {index} can be collapsed away"
-    assert tab._player.minimumWidth() > 0
-    assert tab._plot.width() > 0 and tab._player.width() > 0
-
-    for band in (tab._grid_band, tab._ethogram_band, tab._map_band):
-        assert band.is_open(), f"{band._title} did not open"
-        assert band._content.height() > 0, f"{band._title} was given nothing"
-
-
-def test_a_cell_is_the_shape_of_the_frame_it_holds(qapp, tmp_path):
-    """The white space that made a row of full frames look wasteful at any size.
-
-    A square image label was right when these were crops around the subject. A whole frame is
-    ~16:9, so a 180-wide picture is 101 tall and a square label left 79px of empty label under
-    every one of them — you could not fix that by choosing a different size, which is why the
-    size picker is gone rather than defaulted.
-    """
-    from detail.gui.clip_grid import STRIP_FRAME_PX
-
-    _exp, _run, workspace = _workspace(qapp, tmp_path)
-    tab = _shown(qapp, workspace)
-    cell = next(iter(tab._grid._cells.values()))
-
-    assert cell._image.width() == STRIP_FRAME_PX
-    assert cell._image.height() == round(STRIP_FRAME_PX * 9 / 16)
-    # And the cell hugs it: picture plus caption, not picture plus a square's worth of gap.
-    assert (
-        cell.height() < STRIP_FRAME_PX
-    ), f"a {cell.height()}px cell around a {cell._image.height()}px picture"
-
-
-def test_a_wider_pane_shows_more_clips(qapp, tmp_path):
-    """The row does not reflow — cells keep their size and the pane fits more of them, which
-    is what keeps a given scroll distance meaning a fixed number of clips."""
-    _exp, _run, workspace = _workspace(qapp, tmp_path)
-    tab = _shown(qapp, workspace)
-    workspace.resize(1100, 800)
-    workspace.show()
-    qapp.processEvents()
-    narrow = tab._grid.visible_cells()
-
-    workspace.resize(1700, 800)
-    qapp.processEvents()
-    assert tab._grid.visible_cells() > narrow, "widening the pane showed no more clips"
-    workspace.hide()
-
-
-def test_a_cell_does_not_stretch_past_its_picture(qapp, tmp_path):
-    """Four thumbnails filled a window with room for a dozen.
-
-    The grid stretched its columns to fill the pane, so each cell was ~360px of mostly empty
-    frame around a 150px picture. The image is a fixed size and a trailing stretch takes the
-    slack instead — now the row's, since the grid is gone.
-    """
-    _exp, _run, workspace = _workspace(qapp, tmp_path)
-    tab = _shown(qapp, workspace)
-    workspace.resize(1400, 900)
-    workspace.show()
-    qapp.processEvents()
-
-    cell = next(iter(tab._grid._cells.values()))
-    assert (
-        cell.width() < tab._grid.width() / 2
-    ), f"a cell is {cell.width()}px in a {tab._grid.width()}px pane — the column stretched"
-
-
-def test_the_player_scrubs_the_clip_and_nothing_either_side(qapp, tmp_path):
-    """No padding: the strip is the match, so the playhead starts at its start.
-
-    Trim mode pads the window by ±3s. The annotation loop needs that — there you drag a
-    match's bounds outward and must see past them. Here you are only deciding whether the clip
-    is the behavior, and the padding put the playhead a third of the way along a strip that is
-    mostly *not* the match, which reads as the video starting in the middle.
-
-    The preview is stubbed because the fixture has no video: with a real one absent, trim's
-    expansion raises and *falls back* to the clip span, so a fixture-only assertion passes
-    whichever way the flag is set — which is exactly what the first version of this test did.
-    """
-    from detail.gui.behavior_query import ClipSpec, _ClipPlayer
-
-    class _Stub:
-        def t_ns_to_frame(self, _rec, _emb, t_ns):
-            return max(int(t_ns) // PERIOD, 0)
-
-        def recording_frame_count(self, _rec, _emb):
-            return 100_000
-
-        def frame_rate(self, _rec, _emb):
-            return 30.0
-
-    exp, _run, workspace = _workspace(qapp, tmp_path)
-    tab = _shown(qapp, workspace)
-    clip = ClipSpec("s1", 0, "emb_01", 20_000 * PERIOD, 20_040 * PERIOD, "p", score=0.9)
-
-    padded = _ClipPlayer(exp, context_s=2, walk_edges=True)
-    padded._preview = _Stub()
-    padded.set_clip(clip)
-    assert (
-        padded.bounds() != padded.clip_span()
-    ), "the stub never reached the padding path"
-
-    tab._player._preview = _Stub()
-    tab._player.set_clip(clip)
-    qapp.processEvents()
-    assert tab._player.bounds() == tab._player.clip_span(), "the window was padded"
-    assert (
-        tab._player._scrubber.frame() == 0
-    ), "playback did not start at the clip's start"
 
 
 def test_browse_sorts_by_value_not_by_text(qapp, tmp_path):
@@ -891,24 +834,28 @@ def test_browse_sorts_by_value_not_by_text(qapp, tmp_path):
 def test_browse_opens_the_row_you_clicked_after_sorting(qapp, tmp_path):
     """The bug sorting would otherwise introduce.
 
-    The view reorders the model, so a row's identity cannot be its position — `_show_row` read
-    `self._rows[current.row()]`, which after any sort plays a different instance than the one
+    The view reorders the model, so a row's identity cannot be its position — a `_show_row` that
+    read `self._rows[current.row()]` plays, after any sort, a different instance than the one
     clicked. Silent, and wrong in a way that looks like the player is broken.
     """
     from PyQt6.QtCore import Qt as _Qt
 
     exp, run, workspace = _workspace(qapp, tmp_path)
     run.set_cutoff("q01", 0.0)
-    browse = workspace._browse
-    browse.set_behavior("q01")
-    assert _drain(qapp, lambda: browse._model.rowCount() > 1)
+    browse = _browsed(qapp, workspace)
+    assert browse._model.rowCount() > 1
 
-    browse._table.sortByColumn(3, _Qt.SortOrder.AscendingOrder)  # by confidence
+    headers = [
+        browse._model.horizontalHeaderItem(c).text()
+        for c in range(browse._model.columnCount())
+    ]
+    browse._table.sortByColumn(
+        headers.index("confidence"), _Qt.SortOrder.AscendingOrder
+    )
     qapp.processEvents()
 
     for view_row in range(min(browse._model.rowCount(), 3)):
-        index = browse._model.item(view_row, 0).data(_Qt.ItemDataRole.UserRole)
-        expected = browse._rows[int(index)]
+        expected = browse._row_at(view_row)
         browse._table.selectRow(view_row)
         qapp.processEvents()
         assert browse._player._clip is not None
@@ -954,28 +901,25 @@ def test_score_digits_gives_up_at_the_cap_rather_than_growing_without_bound():
 
 
 def test_browse_scores_are_distinguishable(qapp, tmp_path):
-    """Same rule as the strip: a fixed 2dp makes every row in a tight band read alike.
+    """Same rule as every score caption: a fixed 2dp makes every row in a tight band read alike.
 
     Pinned against `score_digits`, which is the contract, rather than against unconditional
-    distinctness, which is not: it caps at 5 decimals so a caption stays a caption, so two
-    matches agreeing to 1e-5 are *allowed* to read alike. Asserting they could not made this
-    flaky — roughly one full-tier run in five — because the fixture draws fresh embeddings
-    and whether any pair lands inside the cap is a property of that run's scores, not of the
-    rendering. `test_score_digits_*` covers the 2dp claim on fixed values instead.
+    distinctness, which is not: it caps at 5 decimals so a caption stays a caption.
     """
     exp, run, workspace = _workspace(qapp, tmp_path)
     run.set_cutoff("q01", 0.0)
-    browse = workspace._browse
-    browse.set_behavior("q01")
-    assert _drain(qapp, lambda: browse._model.rowCount() > 1)
-
-    shown = [browse._model.item(r, 3).text() for r in range(browse._model.rowCount())]
+    browse = _browsed(qapp, workspace)
+    headers = [
+        browse._model.horizontalHeaderItem(c).text()
+        for c in range(browse._model.columnCount())
+    ]
+    column = headers.index("confidence")
+    shown = [
+        browse._model.item(r, column).text() for r in range(browse._model.rowCount())
+    ]
     values = [r.score for r in browse._rows]
-    # Equal scores rendering alike is correct — the planted motif matches itself at exactly
-    # 1.0 in more than one recording — so this counts renderings, not rows.
     at_cap = {"—" if v is None else f"{v:.5f}" for v in values}
     assert len(set(shown)) == len(at_cap), f"confidences collide: {sorted(shown)}"
-    # ...and the column went through `score_digits` rather than a hardcoded format.
     digits = score_digits(values)
     assert all(
         len(text.split(".")[-1]) == digits for text in shown if text != "—"
@@ -1021,13 +965,15 @@ def test_a_scan_snapshot_refuses_every_edit(qapp, tmp_path):
     assert not frozen._reopen.isEnabled()
     assert not frozen._calibrate._confidence.isEnabled()
     assert not frozen._calibrate._line.movable
-    # The third way to move a cutoff, after the curve's line and the number box. Freezing two of
-    # three left the strip's own stepping live: the write was refused, but the screen showed a
-    # cutoff belonging to neither the snapshot nor the run.
-    assert not frozen._calibrate._grid.editable()
-    before = frozen._calibrate._grid.cutoff()
-    frozen._calibrate._grid.step_cutoff(down=True)
-    assert frozen._calibrate._grid.cutoff() == before, "the strip must not step"
+    # The other two ways, after the curve's line and the number box: a clicked clip and Keep.
+    # Freezing two of the ways once left a third live — the write was refused, but the screen
+    # showed a cutoff belonging to neither the snapshot nor the run.
+    calibrate = _tiled(qapp, frozen)
+    assert not calibrate._montage.is_clickable()
+    assert not calibrate._keep.isEnabled() and "snapshot" in calibrate._keep.toolTip()
+    before = calibrate.cutoff()
+    calibrate._on_tile_clicked(0, False)
+    assert calibrate.cutoff() == before, "a clicked clip moved a snapshot's cutoff"
     assert "snapshot" in frozen._finish.toolTip()
 
     # Even reaching past the widgets does not write.
@@ -1074,338 +1020,6 @@ def test_a_scan_snapshot_row_reports_behaviors_not_clusters(qapp, tmp_path):
 # --------------------------------------------------------------------------- #
 # the row: three gestures on one surface
 # --------------------------------------------------------------------------- #
-def _laid_out(qapp, tmp_path):
-    _exp, run, workspace = _workspace(qapp, tmp_path)
-    tab = _shown(qapp, workspace)
-    workspace.resize(1400, 900)
-    workspace.show()
-    qapp.processEvents()
-    return run, workspace, tab
-
-
-def test_dragging_the_divider_does_not_reproject(qapp, tmp_path):
-    """§20's rule for this surface. A drag reads the cached curve and re-points the row;
-    only the release commits. Conflating them rewrites a frame-view zarr per searched unit,
-    per pixel of a drag."""
-    _run, workspace, tab = _laid_out(qapp, tmp_path)
-    # On the signal, not on `run.set_cutoff`: the commit path goes through `run_progress`, so
-    # the write happens on a worker and an assertion right after the drag runs before it would
-    # have been called either way — it passed with the commit wired into every drag.
-    moved, released = [], []
-    tab._grid.cutoff_moved.connect(moved.append)
-    tab._grid.cutoff_released.connect(released.append)
-
-    scores = sorted(c.score or 0.0 for c in tab._grid._all)
-    tab._grid.move_cutoff(scores[len(scores) // 2], commit=False)
-    tab._grid.move_cutoff(scores[len(scores) // 3], commit=False)
-    qapp.processEvents()
-    assert len(moved) == 2, "the drag did not re-point the view"
-    assert released == [], "a drag committed"
-    workspace.hide()
-
-
-def test_a_stepper_and_a_drag_commit_the_same_way(qapp, tmp_path):
-    """Two ways to move one line must reproject the same number of times, or the same
-    decision costs differently depending on how it was made."""
-    run, workspace, tab = _laid_out(qapp, tmp_path)
-    released = []
-    tab._grid.cutoff_released.connect(released.append)
-
-    scores = sorted(c.score or 0.0 for c in tab._grid._all)
-    tab._grid.move_cutoff(scores[len(scores) // 2], commit=True)
-    assert len(released) == 1, "a released drag did not commit exactly once"
-    tab._grid.step_cutoff(down=True)
-    assert len(released) == 2, "a stepper did not commit exactly once"
-    workspace.hide()
-
-
-def test_clicking_a_clip_plays_it_and_leaves_the_cutoff_alone(qapp, tmp_path):
-    """The three gestures are kept apart by *where* they are, not by a mode — so a click on a
-    cell must not be read as a click near the divider."""
-    _run, workspace, tab = _laid_out(qapp, tmp_path)
-    before = tab._grid.cutoff()
-    clip = tab._grid._all[len(tab._grid._all) // 2]
-    tab._on_clip_clicked(clip)
-    qapp.processEvents()
-
-    assert tab._grid.cutoff() == before, "playing a clip moved the cutoff"
-    assert tab._player._clip is not None
-    workspace.hide()
-
-
-def test_the_cells_are_whole_frames_not_crops(qapp, tmp_path):
-    """The question at this size is whether the *stretch* is the behavior, which a crop around
-    the animal cannot answer — it shows the subject and nothing it is doing it against.
-    """
-    import inspect
-
-    from detail.gui import clip_grid
-
-    source = inspect.getsource(clip_grid._producer)
-    assert "frame_masked" in source
-    assert "source_crop" not in source, "the cells went back to crops"
-
-
-def test_the_ethogram_has_one_row_per_searched_recording(qapp, tmp_path):
-    """Where the kept instances land. Read from the artifact, so it answers for the committed
-    cutoff — which is why it redraws on commit and not under the drag."""
-    run, workspace, tab = _laid_out(qapp, tmp_path)
-    # Commit a cutoff first. The artifact holds only what a *committed* cutoff kept, so on a
-    # run nobody has calibrated every row is empty — and a test over empty rows cannot tell a
-    # correct split from one that hands every recording all the instances.
-    scores = sorted(c.score or 0.0 for c in tab._grid._all)
-    run.set_cutoff(tab._behavior_id, scores[0])
-    rows, _positions = tab._ethogram_rows()
-    assert (
-        sum(len(bands) for _rid, bands, _width in rows) > 0
-    ), "no bands, so this proves nothing"
-
-    recordings = {c.recording_id for c in tab._grid._all}
-    assert {rid for rid, _bands, _width in rows} == recordings
-
-    # Each row's bands must be *that recording's*. Asserting only the row set and the
-    # fraction range cannot see a row given every recording's instances — the set is
-    # unchanged and the fractions are still fractions.
-    from detail.storage import behavior_output as bo
-
-    by_recording: dict = {}
-    for inst in bo.bouts(list(run.artifact().instances)):
-        by_recording.setdefault(inst.recording_id, 0)
-        by_recording[inst.recording_id] += 1
-    for rid, bands, width in rows:
-        assert width > 0, f"{rid} has no length for the time axis"
-        assert len(bands) == by_recording.get(
-            rid, 0
-        ), f"{rid} shows another's instances"
-        for start, end, _cluster in bands:
-            assert 0.0 <= start <= 1.0 and 0.0 <= end <= 1.0, (start, end)
-            assert start <= end
-    workspace.hide()
-
-
-def test_the_calibrate_panes_pack_at_the_top(qapp, tmp_path):
-    """Four stacked panes now, and `gui_design` §3 applies to a pane, not only a page."""
-    from tests.gui.layout_checks import assert_panes_top_justify, owns_a_pane
-
-    _exp, _run, workspace = _workspace(qapp, tmp_path)
-    _shown(qapp, workspace)
-    assert owns_a_pane(workspace)
-    assert_panes_top_justify(workspace)
-
-
-def test_scrolling_to_an_edge_loads_nothing_and_moves_nothing(qapp, tmp_path):
-    """The fix for the two things paging did wrong, asserted as the absence of paging.
-
-    The row used to load more at its ends and re-anchor the scroll afterwards. That yanked the
-    scrollbar handle out from under a dragging mouse, and a drag that kept arriving at the end
-    kept firing the load. The window is a fixed neighbourhood of the cutoff now: scrolling only
-    decodes, so there is nothing to shift and nothing to re-trigger.
-    """
-    _run, workspace, tab = _laid_out(qapp, tmp_path)
-    strip = tab._grid
-    workspace.resize(520, 900)
-    qapp.processEvents()
-    bar = strip._scroll.horizontalScrollBar()
-    assert bar.maximum() > 0, "the row does not scroll, so this proves nothing"
-
-    before = (strip._lo, strip._hi, {i: c._clip for i, c in strip._cells.items()})
-    for value in (bar.maximum(), 0, bar.maximum(), 0):
-        bar.setValue(value)
-        qapp.processEvents()
-        qapp.processEvents()
-        assert (strip._lo, strip._hi) == before[:2], "an edge moved the window"
-    assert {i: c._clip for i, c in strip._cells.items()} == before[2]
-    assert bar.value() == 0, "the scroll was moved out from under the caller"
-    workspace.hide()
-
-
-def test_the_window_recentres_when_the_cutoff_moves(qapp, tmp_path):
-    """The only thing that moves the neighbourhood is the cutoff, which is the gesture the
-    screen is for — and the way to see past the window's edge."""
-    _run, workspace, tab = _laid_out(qapp, tmp_path)
-    strip = tab._grid
-    strip.set_cutoff(0.0)
-    qapp.processEvents()
-    low = strip._boundary_index()
-    strip.set_cutoff(1.0)
-    qapp.processEvents()
-
-    assert strip._boundary_index() != low, "the boundary did not move"
-    # Centred on the boundary: everything below it in the window is dropped, everything from
-    # it is kept, and the divider is scrolled to the middle rather than left at an edge.
-    assert strip._lo <= strip._boundary_index() <= strip._hi
-    workspace.hide()
-
-
-def test_the_ends_say_whether_there_is_more(qapp, tmp_path):
-    """Pushing against a limit reads the same as a stall unless the edge says which it is."""
-    _run, workspace, tab = _laid_out(qapp, tmp_path)
-    strip = tab._grid
-    # Both ends, separately. Joining them and asking for one word passes with either half
-    # blank — and a blank end is exactly the case a reader cannot distinguish from a stall.
-    assert "confident" in strip._left_edge.text(), strip._left_edge.text()
-    assert "confident" in strip._right_edge.text(), strip._right_edge.text()
-    workspace.hide()
-
-
-def test_moving_the_cutoff_does_not_re_decode_frames_it_already_has(qapp, tmp_path):
-    """The lag when nudging the line on the graph.
-
-    A cutoff move changes which side of the divider a clip falls on — never the picture — but
-    every rebuild queued a fresh decode for every visible cell, so each nudge re-decoded a
-    screenful of full frames. The cache is keyed on clip identity, so a rebuild pays for
-    nothing it has already shown.
-    """
-    from detail.gui import clip_grid
-
-    _run, workspace, tab = _laid_out(qapp, tmp_path)
-    strip = tab._grid
-    for _ in range(40):
-        qapp.processEvents()
-
-    # Seeded directly: this fixture's clips have no decodable video, so a real decode never
-    # populates the cache and a test that waited for one would pass on an empty set.
-    seeded = {strip._key_for(clip) for clip in strip._all}
-    import numpy as np
-
-    frame = np.zeros((101, 180, 3), dtype=np.uint8)
-    strip._decoded.update(dict.fromkeys(seeded, frame))
-
-    decodes = []
-    original = clip_grid._producer
-
-    def counting(preview, clip, size_px):
-        decodes.append(strip._key_for(clip))
-        return original(preview, clip, size_px)
-
-    clip_grid._producer = counting
-    try:
-        scores = sorted(c.score or 0.0 for c in strip._all)
-        for score in scores[: len(scores) // 2]:
-            strip.set_cutoff(score)
-            qapp.processEvents()
-        assert not (
-            set(decodes) & seeded
-        ), f"{len(set(decodes) & seeded)} frames were decoded again from cache"
-    finally:
-        clip_grid._producer = original
-    workspace.hide()
-
-
-def test_the_recentre_button_works_whenever_the_row_can_scroll(qapp, tmp_path):
-    """It asked "is the divider *visible*" and greyed itself out when it was — but visible is
-    not centred, so resizing the window left the line off-centre with the only control that
-    would fix it disabled."""
-    _run, workspace, tab = _laid_out(qapp, tmp_path)
-    strip = tab._grid
-    workspace.resize(520, 900)
-    qapp.processEvents()
-    assert strip._scroll.horizontalScrollBar().maximum() > 0
-    assert strip._recentre.isEnabled(), "greyed out with a row that can scroll"
-
-    bar = strip._scroll.horizontalScrollBar()
-    bar.setValue(bar.maximum())
-    qapp.processEvents()
-    strip.back_to_cutoff()
-    qapp.processEvents()
-    _assert_divider_centred(strip)
-    workspace.hide()
-
-
-def _assert_divider_centred(strip) -> None:
-    """Against the divider's **laid-out** position, in pixels.
-
-    The first version of this check predicted where the divider ought to be as
-    ``cells × (frame + gap)``. That agreed with the production code because the production code
-    made the same prediction — and the same error: the pitch was a couple of pixels out, which
-    over the 150 cells of a window accumulated to ~300px, so a divider left a cell and a half
-    off centre passed a guard whose tolerance was one cell. What the user sees is where the
-    widget ended up, so that is what is measured.
-    """
-    handle = strip._handle
-    assert handle is not None
-    bar = strip._scroll.horizontalScrollBar()
-    # A row that has not been laid out reports every position as 0, and a scrollbar reset by a
-    # rebuild reports 0 too — so "centred" was satisfied by two zeros agreeing, which is how
-    # this passed against a cut that never scrolled anywhere. The divider is only at 0 when it
-    # is the row's first widget.
-    if strip._boundary_index() > strip._lo:
-        assert handle.x() > 0, "the row is not laid out — nothing here can be measured"
-    middle = handle.x() + handle.width() // 2
-    # The exact value, clamped the way the scrollbar clamps it. Written first as "off centre by
-    # at most 2px, unless the bar is against an end", this waved through every failure it
-    # existed for: a centring that never ran leaves the bar at 0, which is an end.
-    want = max(0, min(bar.maximum(), middle - strip._scroll.viewport().width() // 2))
-    assert (
-        bar.value() == want
-    ), f"the divider is not centred: scroll {bar.value()}, want {want}"
-
-
-def test_the_divider_centres_over_a_ranking_big_enough_to_scroll(qapp, tmp_path):
-    """Open centred, and come back to centred — on a row that is genuinely longer than the pane.
-
-    The workspace fixture's ranking fits on screen at any sane window size, so its divider is
-    trivially "centred" wherever the scrollbar happens to sit and every centring bug passes.
-    Repeating the clips gives the window its full 150 cells either side, which is the shape
-    every one of those bugs needed: a stale pitch estimate that drifted ~300px over that
-    distance, a rebuild that replaced the divider with a fresh widget at x=0, and a read taken
-    before Qt had laid the row out at all.
-    """
-    _run, workspace, tab = _laid_out(qapp, tmp_path)
-    workspace.resize(1700, 900)
-    qapp.processEvents()
-    strip = tab._grid
-
-    many = list(strip._all) * 20
-    scores = sorted(c.score or 0.0 for c in many)
-    strip.show_clips(many, scores[len(scores) // 2])
-    for _ in range(30):
-        qapp.processEvents()
-
-    bar = strip._scroll.horizontalScrollBar()
-    assert bar.maximum() > 0, "the row still fits on screen — this proves nothing"
-    _assert_divider_centred(strip)
-
-    bar.setValue(bar.maximum())
-    qapp.processEvents()
-    assert bar.value() != 0, "scrolling away did nothing"
-    strip.back_to_cutoff()
-    for _ in range(10):
-        qapp.processEvents()
-    _assert_divider_centred(strip)
-    workspace.hide()
-
-
-def test_nudging_the_cutoff_inside_the_window_still_centres(qapp, tmp_path):
-    """The rebuild with nothing to wait for.
-
-    Stepping the cutoff one clip rebuilds the row at the same width, so every position changes
-    and the scroll range does not — there is no ``rangeChanged`` to hang the centring on, and a
-    version that waited only for one left the divider wherever the last scroll had put it.
-    """
-    _run, workspace, tab = _laid_out(qapp, tmp_path)
-    workspace.resize(1700, 900)
-    qapp.processEvents()
-    strip = tab._grid
-
-    many = list(strip._all) * 20
-    scores = sorted(c.score or 0.0 for c in many)
-    middle = len(scores) // 2
-    strip.show_clips(many, scores[middle])
-    for _ in range(30):
-        qapp.processEvents()
-    before = strip._scroll.horizontalScrollBar().maximum()
-
-    strip.set_cutoff(scores[middle + 1])
-    for _ in range(10):
-        qapp.processEvents()
-    assert (
-        strip._scroll.horizontalScrollBar().maximum() == before
-    ), "the row changed width — this is not the case being guarded"
-    _assert_divider_centred(strip)
-    workspace.hide()
-
-
 # --------------------------------------------------------------------------- #
 # setting the cutoff from a clip you scrolled to
 # --------------------------------------------------------------------------- #
@@ -1429,266 +1043,6 @@ def _Qt():
     from PyQt6.QtCore import Qt
 
     return Qt
-
-
-def test_clicking_a_clip_plays_it_and_does_not_move_the_cutoff(qapp, tmp_path):
-    """The whole reason the cut is a button and not a click in the row.
-
-    A cell that both played and cut would have to be told apart by *where* inside it you
-    clicked, on the one surface people browse by clicking. So the click keeps its one meaning
-    and the second gesture lives outside the row.
-    """
-    _run, workspace, tab = _laid_out(qapp, tmp_path)
-    strip = tab._grid
-    before = strip.cutoff()
-    target = max(strip._cells)
-    # The rendered cell, not a property of it. `frameShadow() != frameShadow()` was the first
-    # version and it passed on a mark nobody could see: a `Sunken` bevel on a `StyledPanel`
-    # drew the marked cell and its neighbours as the same picture. The cell's content does not
-    # change when it is clicked, so any difference in the image *is* the mark.
-    unmarked = strip._cells[target].grab().toImage()
-
-    _click(strip, target)
-    qapp.processEvents()
-
-    assert strip.cutoff() == before, "clicking a clip moved the cutoff"
-    assert strip.marked_index() == target
-    assert (
-        strip._cells[target].grab().toImage() != unmarked
-    ), "the clicked cell renders identically to the way it did unclicked"
-
-    # ...and it is still marked after the row is rebuilt, which every cutoff move does. The
-    # mark lived on the cell at first, and `_rebuild` throws every cell away — so nudging the
-    # line cleared the highlight off the clip still playing in the pane above, and the cut
-    # button went on naming it.
-    strip.set_cutoff(strip.cutoff() + 1e-6)
-    qapp.processEvents()
-    assert strip.marked_index() == target
-    assert (
-        strip._cells[target].grab().toImage() != unmarked
-    ), "the mark did not survive a rebuild"
-    workspace.hide()
-
-
-def test_the_cut_button_names_the_clip_and_what_keeping_from_it_costs(qapp, tmp_path):
-    """The readback that makes a one-press commit safe.
-
-    Pressing it reprojects, and the clip is somewhere you scrolled to rather than under the
-    divider you can see. A button reading only *Cut here* would be asking you to remember which
-    clip you last clicked, and to work out for yourself which side of it survives.
-    """
-    _run, workspace, tab = _laid_out(qapp, tmp_path)
-    strip = tab._grid
-    assert not strip._cut.isEnabled(), "offered a cut before anything was marked"
-    assert strip._cut.text() == "Cut here"
-
-    # The highest built clip scoring clearly below the current cut, so the promise differs from
-    # today's count by construction. Not `max(strip._cells)`: the top two clips scored
-    # 0.99943244 and 0.99943214 on macOS and tied on Linux CPU, so marking the last one there
-    # promised the count already shown and the precondition below failed.
-    cut_score = strip._all[strip._boundary_index()].score or 0.0
-    target = max(
-        i for i in strip._cells if (strip._all[i].score or 0.0) < cut_score - 0.01
-    )
-    _click(strip, target)
-    qapp.processEvents()
-
-    import re
-
-    label = strip._cut.text()
-    score = strip._all[target].score or 0.0
-    assert f"{score:.{strip._digits}f}" in label, label
-
-    promised = int(re.search(r"\((\d+) kept\)", label).group(1))
-    assert (
-        promised != len(strip._all) - strip._boundary_index()
-    ), "this fixture cannot tell the prospective count from the current one"
-
-    # The promise, checked by keeping it — not by recomputing it the way the button did, which
-    # would pass on any arithmetic the two agreed on. Scores tie, so "everything from the marked
-    # clip rightward" is not the answer: two clips at 1.0000 are one cutoff and both survive it.
-    strip._cut.click()
-    for _ in range(20):
-        qapp.processEvents()
-    assert (
-        f"{promised} kept" in strip._counts.text()
-    ), f"the button promised {promised} kept and the row shows {strip._counts.text()!r}"
-    workspace.hide()
-
-
-def test_cutting_at_the_marked_clip_moves_the_line_there_and_commits_once(
-    qapp, tmp_path
-):
-    """One press, one commit — the same contract as the steppers, not the drag's.
-
-    A drag emits a view-only move on every pixel and commits on release. This is discrete, so
-    it does both at once; emitting two commits would reproject twice for one decision.
-    """
-    _run, workspace, tab = _laid_out(qapp, tmp_path)
-    strip = tab._grid
-    commits = []
-    strip.cutoff_released.connect(commits.append)
-
-    target = max(strip._cells)
-    marked = strip._all[target]
-    _click(strip, target)
-    qapp.processEvents()
-    strip._cut.click()
-    for _ in range(20):
-        qapp.processEvents()
-
-    assert commits == [pytest.approx(marked.score)], commits
-    # The marked clip is now the least confident one kept — the button's promise, checked
-    # against the ordering rather than against the number it was set from.
-    assert strip._all[strip._boundary_index()].score == pytest.approx(marked.score)
-    # ...and the button stops offering a cut that would do nothing.
-    assert not strip._cut.isEnabled()
-    assert strip._cut.text() == "Cut here"
-    workspace.hide()
-
-
-def test_the_row_recentres_on_the_line_after_a_cut(qapp, tmp_path):
-    """The clip you cut at was off-screen by definition — you scrolled to it.
-
-    Leaving the view where it was would put the line you just set outside the pane, which is
-    the state the centre button exists to rescue you from.
-    """
-    _run, workspace, tab = _laid_out(qapp, tmp_path)
-    workspace.resize(1700, 900)
-    qapp.processEvents()
-    strip = tab._grid
-    many = list(strip._all) * 20
-    scores = sorted(c.score or 0.0 for c in many)
-    strip.show_clips(many, scores[len(scores) // 2])
-    for _ in range(30):
-        qapp.processEvents()
-    assert strip._scroll.horizontalScrollBar().maximum() > 0, "the row does not scroll"
-    # The strip on its own. Wired to the tab, a commit round-trips back through `set_cutoff`,
-    # which re-centres for its own reasons — so a strip that never re-centred itself still
-    # ended up centred, and this passed against the bug it exists for.
-    strip.cutoff_released.disconnect()
-    strip.cutoff_moved.disconnect()
-
-    target = max(strip._cells)
-    _click(strip, target)
-    qapp.processEvents()
-    strip._cut.click()
-    for _ in range(20):
-        qapp.processEvents()
-
-    _assert_divider_centred(strip)
-    workspace.hide()
-
-
-def test_the_cut_button_is_frozen_on_a_scan_snapshot(qapp, tmp_path):
-    """The fifth way to move a cutoff, and the fifth place to forget to freeze it.
-
-    The curve's line, the number box, the steppers and the drag are all frozen on a snapshot.
-    A button that moves the same value is the same hole, and it is the one a control walk finds
-    only if it is enabled — so it is checked directly, marked or not.
-    """
-    exp, run, _workspace_widget = _workspace(qapp, tmp_path)
-    behavior = run.state().behaviors[0]
-    run.set_cutoff(behavior.id, 0.6)
-    frozen = _QueryWorkspace(exp, run.view(run.pin(reason="finish")))
-    assert _drain(qapp, lambda: frozen._curves)
-    frozen.resize(1400, 900)
-    frozen.show()
-    qapp.processEvents()
-
-    strip = frozen._calibrate._grid
-    target = max(strip._cells)
-    _click(strip, target)
-    qapp.processEvents()
-    assert (
-        strip.marked_index() == target
-    ), "the clip did not even play — wrong thing frozen"
-    assert (
-        not strip._cut.isEnabled()
-    ), "a snapshot's cutoff can be moved from the clip row"
-    before = strip.cutoff()
-    strip.cut_at_marked()
-    qapp.processEvents()
-    assert strip.cutoff() == before, "calling it directly moved a snapshot's cutoff"
-    frozen.hide()
-
-
-def test_the_ethograms_are_drawn_on_opening_not_only_after_a_commit(qapp, tmp_path):
-    """The pane held a heading and nothing under it until somebody moved the cutoff.
-
-    They were hung off `_on_committed` alone, which is a reasonable-looking place — the bands
-    come from the artifact, and the artifact only changes on a commit. But opening a behavior
-    that is *already* calibrated is the common case, and there the pane reported a blank where
-    a result exists. Nothing failed; the panel simply said nothing.
-    """
-    _run, workspace, tab = _laid_out(qapp, tmp_path)
-    assert _drain(qapp, lambda: "committed cutoff" in tab._ethogram_title.text()), (
-        "the ethogram pane never reported a count, so it was never filled: "
-        f"{tab._ethogram_title.text()!r}"
-    )
-    # One row per searched recording, not merely a non-empty draw.
-    rows = [name for name, _bands in tab._ethograms._rows]
-    assert rows and rows == sorted(rows), rows
-    workspace.hide()
-
-
-def test_a_hundred_recordings_scroll_in_the_ethogram_band_rather_than_growing_it(
-    qapp, tmp_path
-):
-    """`EthogramStrip` is `setFixedHeight(rows * row_px())`, so a hundred recordings is ~2,000px —
-    the scale the tool is *for*. The band holds the strip in a scroll area so the page does not
-    have to find that height; nothing tested it, and taking the scroll area out left every
-    test green.
-    """
-    _run, workspace, tab = _laid_out(qapp, tmp_path)
-    band = tab._ethogram_band
-    floor_before = band.minimumSizeHint().height()
-    rows = [(f"recording_{i:03d}", [(0.1, 0.2, 0)]) for i in range(100)]
-    tab._ethograms.set_rows(
-        rows,
-        [(0.2, 0.4, 0.8, 1.0)],
-        selected=None,
-        lengths_ns=[1_000_000_000] * len(rows),
-    )
-    qapp.processEvents()
-
-    strip = tab._ethograms
-    assert (
-        strip.height() >= 100 * strip.row_px() > 1500
-    ), "the fixture must reach the scale, or this is vacuous"
-    # The band's own floor, not the page's: this page already scrolls, so it absorbs a band
-    # that demands 3,458px without its floor moving — measured, with the scroll area removed.
-    grew = band.minimumSizeHint().height() - floor_before
-    assert grew < 100, (
-        f"a hundred ethogram rows raised the band's floor by {grew}px — it grew to hold them "
-        "instead of scrolling them"
-    )
-    workspace.hide()
-
-
-def test_the_dial_is_not_clipped_at_a_normal_window_height(qapp, tmp_path):
-    """The top pane was a constant 26px shorter than the dial, at every window height.
-
-    The clip row took all the vertical slack by design, so the top pane never grew: the
-    *Kept per recording* heading was sliced in half on a 950px window and still sliced on a
-    1400px one. That is why a constant that is merely a bit small reads as a constant that is
-    wrong — no amount of screen fixed it.
-
-    The workaround that measured the dial and clawed height back went with the vertical
-    splitter: the top row is packed directly now, so it simply gets the height it asks for.
-    This is the assertion that says so.
-    """
-    _run, workspace, tab = _laid_out(qapp, tmp_path)
-    workspace.resize(1500, 1050)
-    for _ in range(60):
-        qapp.processEvents()
-    bar = tab._dial_scroll.verticalScrollBar()
-    assert bar.maximum() == 0, (
-        f"the dial is clipped by {bar.maximum()}px at a 1050px window — its content is "
-        f"{tab._dial_scroll.widget().sizeHint().height()}px and its row is "
-        f"{tab._top.height()}px"
-    )
-    workspace.hide()
 
 
 def test_no_control_that_changes_a_scan_snapshot_is_live(qapp, tmp_path):
@@ -1718,66 +1072,21 @@ def test_no_control_that_changes_a_scan_snapshot_is_live(qapp, tmp_path):
     )
 
 
-def test_the_divider_cannot_be_dragged_on_a_scan_snapshot(qapp, tmp_path):
-    """The one way to move the cutoff that no control walk can see.
-
-    The walk above finds buttons, sliders and spin boxes. Dragging the divider is none of
-    those — it is a mouse press on a frame — so freezing the steppers and stopping there would
-    have left the gesture that replaced them wide open, on a surface whose whole promise is
-    that it shows what the snapshot was scanned with.
-    """
-    from PyQt6.QtCore import QPoint, Qt
-    from PyQt6.QtGui import QMouseEvent
-
-    exp, run, workspace = _workspace(qapp, tmp_path)
-    behavior = workspace._behaviors[0]
-    run.set_cutoff(behavior.id, 0.6)
-    frozen = _QueryWorkspace(exp, run.view(run.pin(reason="finish")))
-    assert _drain(qapp, lambda: frozen._curves)
-    frozen.resize(1400, 900)
-    frozen.show()
-    qapp.processEvents()
-
-    strip = frozen._calibrate._grid
-    handle = strip._handle
-    assert handle is not None, "no divider to drag — this proves nothing"
-    before = strip.cutoff()
-
-    def drag(kind, x):
-        handle.event(
-            QMouseEvent(
-                kind,
-                QPoint(x, 10).toPointF(),
-                Qt.MouseButton.LeftButton,
-                Qt.MouseButton.LeftButton,
-                Qt.KeyboardModifier.NoModifier,
-            )
-        )
-
-    drag(QMouseEvent.Type.MouseButtonPress, 5)
-    drag(QMouseEvent.Type.MouseMove, 600)
-    drag(QMouseEvent.Type.MouseButtonRelease, 600)
-    qapp.processEvents()
-
-    assert strip.cutoff() == before, "dragging moved a snapshot's cutoff"
-    frozen.hide()
-
-
 def test_a_behavior_shown_twice_reads_its_timelines_once(qapp, tmp_path, monkeypatch):
     """The switch does not re-read the disk for a behavior it has already drawn.
 
     The class: **work repeated on the UI thread because nothing said it was finished.** Showing
     a behavior read a `unit_timeline` off disk for every searched unit and rebuilt every clip
-    spec from them — a large share of the frozen switch, growing with the cohort. None of
-    it changes while the run is open.
+    spec from them — a large share of the frozen switch, growing with the cohort. None of it
+    changes while the run is open, and a cutoff move only re-sections the same clips.
 
-    Counted rather than timed. A wall-clock assertion on a machine that also runs the suite is
-    a flake, and the thing that was wrong is not "slow" but "done again": if the reads come back,
-    this fails on a number whatever the machine.
+    Counted rather than timed: if the reads come back, this fails on a number whatever the
+    machine.
     """
     from detail.pipeline import query as query_pipeline
 
-    _run, _workspace, tab = _laid_out(qapp, tmp_path)
+    _exp, _run, workspace = _workspace(qapp, tmp_path)
+    tab = _tiled(qapp, workspace)
     reads: list = []
     real = query_pipeline.unit_timeline
     monkeypatch.setattr(
@@ -1790,12 +1099,13 @@ def test_a_behavior_shown_twice_reads_its_timelines_once(qapp, tmp_path, monkeyp
 
     tab._specs.clear()
     tab._timelines.clear()
-    tab._refresh_clips()
+    tab._show_tiles(new_source=True)
     first = len(reads)
     assert first, "the fixture reads no timelines at all — this would pass on anything"
 
-    tab._refresh_clips()
-    tab._refresh_clips()
+    tab._preview(0.3, scroll=True)
+    tab.set_behavior(behavior, tab._curve)
+    tab._show_tiles()
     assert len(reads) == first, (
         f"showing the same behavior again re-read {len(reads) - first} timelines off disk; "
         "the specs and the timelines are both fixed for the life of the run"
@@ -1806,12 +1116,12 @@ def test_a_behavior_shown_twice_reads_its_timelines_once(qapp, tmp_path, monkeyp
 
 
 def _mapped(qapp, tmp_path):
-    """A Query workspace whose run actually has positions.
+    """A Query workspace whose run actually has positions, opened on MEASURES.
 
-    `_searched` defaults to no kinematics, so every test in this file until now drew a map that
-    said "not measured" — a legible screen and no coverage: a band that never has data cannot
-    fail when the thing that fills it breaks. That is how the map reached this page missing an
-    outline, an aspect ratio and a working click, three times over.
+    `_searched` defaults to no kinematics, so a map test on it draws a map that says "not
+    measured" — a legible screen and no coverage: a band that never has data cannot fail when
+    the thing that fills it breaks. That is how the map reached this page missing an outline, an
+    aspect ratio and a working click, three times over.
     """
     import numpy as np
 
@@ -1822,21 +1132,22 @@ def _mapped(qapp, tmp_path):
     workspace = _QueryWorkspace(exp, exp.query_run(run.id))
     workspace.resize(1300, 900)
     workspace.show()
-    calibrate = workspace._calibrate
+    measures = workspace._measures
+    workspace.show_view("Measures")
     assert _drain(
-        qapp, lambda: bool(calibrate._placements_by_recording)
+        qapp, lambda: bool(measures._placements_by_recording)
     ), "the fixture produced no placements, so nothing below tests the map"
-    assert _drain(qapp, lambda: len(calibrate._map._panels) > 0), "no square was drawn"
-    return exp, run, workspace, calibrate
+    assert _drain(qapp, lambda: len(measures._map._panels) > 0), "no square was drawn"
+    return exp, run, workspace, measures
 
 
 def test_the_query_map_draws_a_dot_per_kept_instance(qapp, tmp_path):
     """The check that the fixture reaches the code — everything below is vacuous without it."""
-    _exp, _run, _workspace, calibrate = _mapped(qapp, tmp_path)
+    _exp, _run, _workspace, measures = _mapped(qapp, tmp_path)
 
-    _holder, square, _label = calibrate._map._panels[0]
+    _holder, square, _label = measures._map._panels[0]
     assert len(square._points), "the square is empty"
-    assert "not measured" not in calibrate._map._caption.text()
+    assert "not measured" not in measures._map._caption.text()
 
 
 def test_clicking_a_dot_plays_it_beside_the_query_map(qapp, tmp_path):
@@ -1845,109 +1156,17 @@ def test_clicking_a_dot_plays_it_beside_the_query_map(qapp, tmp_path):
     borrowing a slot in one could never have reached this page."""
     from PyQt6.QtWidgets import QApplication
 
-    _exp, _run, _workspace, calibrate = _mapped(qapp, tmp_path)
-    placement = calibrate._placements_by_recording["s1"][0]
+    _exp, _run, _workspace, measures = _mapped(qapp, tmp_path)
+    placement = measures._placements_by_recording["s1"][0]
 
-    calibrate._map._panels[0][1].clicked.emit(placement["cx"], placement["cy"])
+    measures._map._panels[0][1].clicked.emit(placement["cx"], placement["cy"])
     QApplication.processEvents()
 
-    played = calibrate._map._player._clip
+    played = measures._map._player._clip
     assert played is not None, "the click played nothing"
     assert played.recording_id == "s1"
     assert int(played.start_t_ns) == int(placement["t_ns"])
     assert played.embed_run_id, "the clip names no embedding run, so it plays nothing"
-
-
-def test_dragging_the_clips_band_grows_the_section_not_the_scroll(qapp, tmp_path):
-    """Reported: "it scrolls the videos and doesn't actually expand the section".
-
-    The row's scroll area kept whatever height the layout gave it, so a drag made the pictures
-    bigger *inside a fixed viewport* — more of each clip and less of the row, which is the
-    opposite of what the gesture means. `ClusterClipStrip` has sized its own scroll area from
-    the cell size since it was written; this row never did, because until now its cells could
-    not change size at all.
-
-    Asserted on the scroll area's height, not the cell's: a cell that grew while its container
-    did not is exactly the bug.
-    """
-    _exp, _run, workspace = _workspace(qapp, tmp_path)
-    tab = _shown(qapp, workspace)
-    before = tab._grid._scroll.height()
-
-    tab._grid.resize_by(60)
-    qapp.processEvents()
-
-    assert tab._grid._scroll.height() > before, (
-        f"the row is still {tab._grid._scroll.height()}px around bigger pictures — it scrolls "
-        "rather than growing"
-    )
-
-
-def test_the_audit_clip_keeps_its_buttons_beside_it_in_this_workspace(qapp, tmp_path):
-    """Reported twice: "the yes, no, unclear buttons are still too low ... just for the query
-    audit". Fixed for pose and temporal, still broken here.
-
-    **The difference was never the tab — it was that this workspace lays out, then changes
-    width.** The block sizes itself from its own width, and `QWidgetItemV2` caches an item's
-    size hint and invalidates it on `invalidate()`, which nothing calls for a width-only
-    change. So the layout kept answering from the width it last saw: the block reserved 531px
-    around a 390px picture and `top=True` gathered the 71px difference into one gap, directly
-    under the transport where the buttons go.
-
-    This is the reported sequence, not a tidier one, and every step of it earns its place —
-    four shorter versions of this test passed while the bug was on screen. A larger interface
-    font, because every size here is in `sizing.lines` and while the block's ceiling binds a
-    stale hint and a fresh one are the same number. Judged clips and a `reload`, because that
-    is what fills the sidebar and moves the splitter *after* the first layout. A resize before
-    the window is shown, because that is the order a restored window produces.
-    """
-    from PyQt6.QtCore import QPoint
-    from PyQt6.QtGui import QFont
-
-    from detail.gui.sizing import lines
-
-    original = QFont(qapp.font())
-    larger = QFont(original)
-    larger.setPointSize(original.pointSize() + 3)
-    qapp.setFont(larger)
-    try:
-        exp, run, workspace = _workspace(qapp, tmp_path)
-        run.set_cutoff("q01", 0.0)
-        audit = workspace._audit
-        audit.set_behavior("q01")
-        assert _drain(qapp, lambda: bool(audit._headline.text()))
-        for index, row in enumerate(run.audit_sample(label="q01", budget=10)):
-            run.label_audit(row.instance_id, index % 3 != 2)
-        audit.reload()
-        assert _drain(qapp, lambda: bool(audit._judged))
-        workspace.show_view("Audit")
-        workspace.resize(1397, 900)
-        workspace.show()
-        for _ in range(40):
-            qapp.processEvents()
-        audit._start_batch()
-        for _ in range(40):
-            qapp.processEvents()
-
-        width = audit._stack.width()
-        # Both directions. A stale hint can be from a narrower width as easily as a wider one:
-        # on Linux offscreen the reverted fix left the block 30px *short* — the clip squeezed —
-        # and a `<=` check passed it.
-        need = min(audit._picture_height(width), audit._stack.maximumHeight())
-        assert abs(audit._stack.height() - need) <= 2, (
-            f"the block is {audit._stack.height()}px for a clip that needs {need}px at "
-            f"{width}px — it did not re-ask after the width moved under it"
-        )
-        transport = audit._player._scrubber
-        bottom = transport.mapTo(workspace, QPoint(0, transport.height())).y()
-        below = audit._where.mapTo(workspace, QPoint(0, 0)).y()
-        assert below - bottom <= lines(2), (
-            f"{below - bottom}px of nothing between the clip's transport and the line under "
-            f"it — the buttons that judge the clip are that far from it"
-        )
-        workspace.hide()
-    finally:
-        qapp.setFont(original)
 
 
 def test_a_committed_cutoff_puts_the_measurements_out_of_date(qapp, tmp_path):
@@ -1960,7 +1179,7 @@ def test_a_committed_cutoff_puts_the_measurements_out_of_date(qapp, tmp_path):
 
     exp, run, workspace = _workspace(qapp, tmp_path)
     calibrate = workspace._calibrate
-    panel = calibrate._measurements
+    panel = workspace._measures._measurements
     behavior_id = calibrate._behavior_id
     assert _drain(qapp, lambda: panel._measure_button.text() == MEASURE)
     panel._measure_button.click()
@@ -1986,28 +1205,21 @@ def test_a_committed_cutoff_puts_the_measurements_out_of_date(qapp, tmp_path):
 
 
 def test_the_calibrate_tab_names_recordings_not_ids(qapp, tmp_path):
-    """§11: the id is the tool's, the name is the user's. The kept panel, the clip captions and
-    the ethogram rows printed `recording_id` while the Browse tab beside them showed names
-    (#35). The names are read off the UI thread with the search results."""
+    """§11: the id is the tool's, the name is the user's. The kept panel and the clip captions
+    printed `recording_id` while the Browse tab beside them showed names (#35). The names are
+    read off the UI thread with the search results."""
     exp, _run, _unused = _workspace(qapp, tmp_path)
     for recording, name in zip(exp.recordings, ("m27 day3", "m31 day1")):
         recording.set_name(name)
     workspace = _QueryWorkspace(exp, exp.query_run(_run.id))
     assert _drain(qapp, lambda: workspace._curves), "the search results never loaded"
-    calibrate = workspace._calibrate
+    calibrate = _tiled(qapp, workspace)
     calibrate._refresh_header(0.5)
 
     panel = calibrate._spread.text()
     assert "m27 day3" in panel and "m31 day1" in panel, panel
     assert "s1" not in panel.split() and "s2" not in panel.split(), panel
-    captions = [spec.label for spec in calibrate._build_specs()]
-    assert captions and all(c.startswith(("m27 day3 ", "m31 day1 ")) for c in captions)
-    calibrate._refresh_clips()  # the strip under the curve, as drawn
-    cells = [cell._caption.text() for cell in calibrate._grid._cells.values()]
-    assert cells and all(
-        c.startswith(("m27 day3\n", "m31 day1\n")) for c in cells
-    ), cells
-    calibrate._show_ethograms((
-        [("s1", [], 1), ("s2", [], 1)], None,
-    ))  # fmt: skip
-    assert [row[0] for row in calibrate._ethograms._rows] == ["m27 day3", "m31 day1"]
+    captions = [clip.caption for clip in calibrate._montage.clips()]
+    assert captions and all(
+        c.endswith((" · m27 day3", " · m31 day1")) for c in captions
+    ), captions

@@ -1,35 +1,30 @@
-"""Clip-query orchestration (§16) — retrieval over loaded pose-embedding trajectories,
-on top of the banded-DTW matcher in ``retrieval.py``.
+"""Trajectory continuity for clip work (§16) — the helpers every clip consumer shares.
 
-Given in-memory ``(embedding, frame_idx, t_ns)`` arrays per **subject** (a detail
-``(recording_id, track_id)`` — the earlier prototype's "recording") and a set of example clips, this
-enforces temporal continuity, fuses the examples, searches each requested subject, and
-globally ranks the matches.
+These work on one **subject**'s in-memory ``(embedding, frame_idx, t_ns)`` arrays (a subject
+is a ``(recording_id, track_id)``).
 
 **Continuity.** Embedding rows exist only where the subject was detected + tracked, so a
-coast, a miss, or a part boundary leaves a hole. Matching a query trajectory across such
-a hole is meaningless (the path premise breaks), so each subject's trajectory is first
-split into **continuous runs** wherever consecutive ``t_ns`` jump by more than
-``trajectory_split_gap_ns`` (default a small multiple of the subject's own frame
-period). A query
-example must lie inside one run; the DTW searches each run independently, so a match can
-never straddle a gap. ``check_span`` returns that same rule as a **verdict** rather than an
-exception, so a surface that picks examples can say what is wrong at the point of picking;
-``run_frame_ranges`` gives it the continuity to draw.
+coast, a miss, or a part boundary leaves a hole. Matching or pooling a trajectory across such
+a hole is meaningless (the path premise breaks), so a subject's trajectory is split into
+**continuous runs** wherever consecutive ``t_ns`` jump by more than
+``trajectory_split_gap_ns`` (default a small multiple of the subject's own frame period):
+``segment_runs`` makes the split, and ``span_to_rows`` / ``frame_span_to_t_ns`` /
+``band_rows`` convert between a span's time, frame and row spellings. ``check_span`` returns
+"does this clip lie inside one run" as a **verdict** rather than an exception, so a surface
+that picks examples can say what is wrong at the point of picking; ``run_frame_ranges`` gives
+it the continuity to draw.
+
+The cross-subject search that sat on top of these (``query_tracks``, over the windowed
+matchers ``retrieval.py`` then held) was removed with query eval, its last caller.
 
 Pure over arrays (Tenet 2/3 — no zarr, no CSV, no paths); the module and the CLI/GUI own
 the I/O.
 """
 
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
-
-from detail.analysis import retrieval
-
-# A subject key: (recording_id, track_id). One continuous-run search unit per (subject, run).
-Subject = tuple[str, int]
 
 # max_gap default = this many nominal frame periods (a 1-2 frame miss stays in one run;
 # a real gap splits). Tunable per call via ``trajectory_split_gap_ns``.
@@ -92,37 +87,6 @@ class SpanCheck:
         wants to describe them would otherwise grow a second, drifting copy of this text.
         """
         return _gap_reason(self.gaps) if self.gaps else None
-
-
-@dataclass(frozen=True)
-class Example:
-    """A resolved query example: its subject + inclusive row span + frame/t_ns span."""
-
-    recording_id: str
-    track_id: int
-    start_row: int
-    end_row: int
-    start_frame: int
-    end_frame: int
-    start_t_ns: int
-    end_t_ns: int
-
-
-@dataclass(frozen=True)
-class RankedMatch:
-    """A retrieved stretch: subject + inclusive row span + frame/t_ns span + score + the
-    index of the example clip it best matches (0 for a single-example query)."""
-
-    recording_id: str
-    track_id: int
-    start_row: int
-    end_row: int
-    start_frame: int
-    end_frame: int
-    start_t_ns: int
-    end_t_ns: int
-    score: float
-    example_idx: int = 0
 
 
 def nominal_period_ns(t_ns: np.ndarray) -> int:
@@ -320,204 +284,3 @@ def check_span(
         end_frame=int(frame_idx[hi]),
         gaps=gaps,
     )
-
-
-def _resolve_example(
-    databases: dict[Subject, tuple[np.ndarray, np.ndarray, np.ndarray]],
-    spec: dict,
-    max_gap_ns: int | None,
-) -> tuple[Example, np.ndarray]:
-    """Resolve one ``{recording_id, track_id, start_t_ns, end_t_ns}`` spec to an
-    ``Example`` (with its embeddings), validating it lies within one continuous run."""
-    subject = (spec["recording_id"], int(spec["track_id"]))
-    if subject not in databases:
-        raise KeyError(f"query subject {subject!r} not loaded")
-    emb, frame_idx, t_ns = databases[subject]
-    start_t_ns, end_t_ns = int(spec["start_t_ns"]), int(spec["end_t_ns"])
-    check = check_span(frame_idx, t_ns, start_t_ns, end_t_ns, max_gap_ns)
-    if not check.ok:
-        raise ValueError(
-            f"example clip {subject[0]!r} track {subject[1]} "
-            f"{start_t_ns / 1e9:.2f}–{end_t_ns / 1e9:.2f} s {check.reason}; pick an "
-            "example within one continuous stretch"
-        )
-    lo, hi = check.start_row, check.end_row
-    example = Example(
-        recording_id=subject[0],
-        track_id=subject[1],
-        start_row=lo,
-        end_row=hi,
-        start_frame=int(frame_idx[lo]),
-        end_frame=int(frame_idx[hi]),
-        start_t_ns=int(t_ns[lo]),
-        end_t_ns=int(t_ns[hi]),
-    )
-    return example, emb[lo : hi + 1]
-
-
-# Nominal share of one subject's work spent loading its trajectory before any DTW runs.
-# A bar may use nominal phase weights (§6); an ETA may not, which is why this scales the
-# bar only and the runner derives its ETA from the folded fraction.
-_LOAD_SHARE = 0.2
-
-
-def query_tracks(
-    databases: dict[Subject, tuple[np.ndarray, np.ndarray, np.ndarray]],
-    queries: Sequence[dict],
-    search: Sequence[Subject],
-    *,
-    fusion: str = "mean",
-    band_ns: int,
-    threshold: float,
-    min_separation: int | None = None,
-    trajectory_split_gap_ns: int | None = None,
-    max_results: int | None = None,
-    overlap_ns: int | None = None,
-    method: str = "dtw",
-    method_params: dict | None = None,
-    labeled: Sequence[dict] | None = None,
-    progress_cb: Callable[[int, int, int], None] | None = None,
-    stop_check: Callable[[], bool] | None = None,
-) -> tuple[list[Example], list[RankedMatch]]:
-    """Stretches across ``search`` subjects within ``threshold`` of the fused example
-    ``queries``, continuity-segmented and globally ranked.
-
-    Args
-    databases: (recording_id, track_id) -> (emb (M, D), frame_idx (M,), t_ns (M,)); must
-        include every subject referenced by ``search`` and ``queries``
-    queries: example clips ``[{recording_id, track_id, start_t_ns, end_t_ns}, ...]``
-    search: the subjects to search over (an example may come from a subject not searched)
-    fusion: ``"mean"`` (consensus) or ``"min"`` (any) — see ``retrieval.query_multi``
-    band_ns: warp / duration tolerance in **nanoseconds** (0 = rigid fixed-length),
-        converted to rows per subject (Tenet 8 — time is the reference)
-    threshold: keep matches whose fused normalized cosine distance is <= this
-    min_separation: min row gap between matches; ``None`` = the longest example length
-        (ignored when ``overlap_ns`` is set — see ``retrieval.query_multi``)
-    trajectory_split_gap_ns: a break in tracking longer than this SPLITS the recording
-        into separate stretches to search; ``None`` = from the subject's own frame rate
-    max_results: optional global safety cap on the pooled result (logged if it truncates)
-    overlap_ns: if set (nanoseconds, converted to rows per subject), matches and excluded
-        spans may overlap by up to this much instead of being kept fully apart — the
-        annotation loop's tolerance (``None`` = clip-query's strict non-overlap)
-    labeled: already-labeled spans ``[{recording_id, track_id, start_t_ns, end_t_ns}, ...]``
-        to exclude from results (the annotation loop; merged into each subject's excludes)
-    progress_cb: called ``(done, subjects_total, matches_so_far, phase)``. ``done`` is
-        **fractional** — the whole part is subjects finished, the remainder is progress
-        inside the running subject — and ``phase`` names what it is doing right now
-        (``loading <recording>`` / ``searching <recording> · stretch i/n``). A subject is
-        a lazy trajectory read plus a DTW pass per continuous stretch, both slow; emitting
-        only at the subject boundary leaves a one-recording search pinned at 0 for the
-        whole run and then jumping to 100.
-    stop_check: polled before each subject; a truthy return ends the search early
-
-    Returns
-    examples: each query's resolved subject + spans (for the CSV query rows)
-    matches: RankedMatch, best (lowest score) first
-    """
-    if not queries:
-        raise ValueError("queries is empty")
-    if not search:
-        raise ValueError("no subjects to search")
-
-    examples: list[Example] = []
-    query_embs: list[np.ndarray] = []
-    for spec in queries:
-        example, emb = _resolve_example(databases, spec, trajectory_split_gap_ns)
-        examples.append(example)
-        query_embs.append(emb)
-
-    longest = max(len(q) for q in query_embs)
-    min_sep = int(min_separation) if min_separation is not None else longest
-
-    pooled: list[RankedMatch] = []
-    total = len(search)
-
-    def report(done: float, phase: str) -> None:
-        if progress_cb is not None:
-            progress_cb(done, total, len(pooled), phase)
-
-    for done, subject in enumerate(search, start=1):
-        if stop_check is not None and stop_check():
-            break
-        if subject not in databases:
-            raise KeyError(f"search subject {subject!r} not loaded")
-        # The trajectory read is lazy (one subject at a time) and is the slow half on a
-        # long recording, so it is named before it starts rather than after it ends, and
-        # holds a nominal share of the subject — otherwise a subject with one continuous
-        # stretch has only two states and the bar still jumps.
-        report(done - 1, f"loading {subject[0]}")
-        emb, frame_idx, t_ns = databases[subject]
-        runs = segment_runs(t_ns, _gap_for(t_ns, trajectory_split_gap_ns))
-        subject_band = band_rows(t_ns, band_ns)  # ± ns → rows at this subject's cadence
-        # None = clip-query's strict non-overlap; a value (rows) = the annotation tolerance.
-        subject_overlap = None if overlap_ns is None else band_rows(t_ns, overlap_ns)
-        subject_excludes = [
-            (e.start_row, e.end_row)
-            for e in examples
-            if (e.recording_id, e.track_id) == subject
-        ]
-        if labeled is not None:
-            for lab in labeled:
-                if (lab["recording_id"], int(lab["track_id"])) != subject:
-                    continue
-                lo, hi = span_to_rows(
-                    t_ns, int(lab["start_t_ns"]), int(lab["end_t_ns"])
-                )
-                subject_excludes.append((lo, hi))
-        n_runs = max(len(runs), 1)
-        for run_i, (run_start, run_end) in enumerate(runs):
-            # Within-subject progress: the DTW pass over each stretch is the other slow
-            # half, and there can be hundreds of them on one recording.
-            report(
-                done - 1 + _LOAD_SHARE + (1 - _LOAD_SHARE) * (run_i / n_runs),
-                f"searching {subject[0]} · stretch {run_i + 1}/{n_runs}",
-            )
-            if run_end - run_start < longest:  # too short for a full-query match
-                continue
-            excludes = [
-                (max(a, run_start) - run_start, min(b, run_end - 1) - run_start)
-                for a, b in subject_excludes
-                if b >= run_start and a < run_end
-            ]
-            matches = retrieval.query_multi(
-                emb[run_start:run_end],
-                query_embs,
-                fusion=fusion,
-                band=subject_band,
-                threshold=threshold,
-                min_separation=min_sep,
-                excludes=excludes,
-                overlap=subject_overlap,
-                method=method,
-                method_params=method_params,
-            )
-            for m in matches:
-                g0, g1 = m.start_row + run_start, m.end_row + run_start
-                pooled.append(
-                    RankedMatch(
-                        recording_id=subject[0],
-                        track_id=subject[1],
-                        start_row=g0,
-                        end_row=g1,
-                        start_frame=int(frame_idx[g0]),
-                        end_frame=int(frame_idx[g1]),
-                        start_t_ns=int(t_ns[g0]),
-                        end_t_ns=int(t_ns[g1]),
-                        score=m.score,
-                        example_idx=m.example_idx,
-                    )
-                )
-        # A `done` head closes this subject's pass through the phases (core.progress.message_phase).
-        report(done, f"done · {subject[0]}")
-
-    pooled.sort(key=lambda m: m.score)
-    if max_results is not None and len(pooled) > max_results:
-        retrieval._log.warning(
-            "clip query pooled %d matches over threshold=%g; returning the top "
-            "max_results=%d — raise max_results or lower the threshold to see the rest",
-            len(pooled),
-            threshold,
-            max_results,
-        )
-        pooled = pooled[:max_results]
-    return examples, pooled

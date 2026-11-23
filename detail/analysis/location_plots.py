@@ -18,8 +18,10 @@ where a body length means one thing in both directions, and the result converted
 units.
 
 **The body** (§16 *The body*) is the run's per-frame centre, length, width, long axis and area,
-without the parts the export left out. A body plot reads those columns as they were measured; a
-run made before them has none, and is named as not plotted rather than measured some other way.
+all measures of the whole mask. A body plot reads those columns as they were measured: a run
+exported with thin parts removed, an option the export no longer has, is drawn as it measured
+them and says so under the title (``api/location_plots``), and a run made before them has none,
+and is named as not plotted rather than measured some other way.
 """
 
 from dataclasses import dataclass
@@ -380,9 +382,9 @@ def trace(
     ``(None, note)`` when there is none to plot.
 
     ``body`` reads the body's centre, and on an export made before the body was measured the
-    mask's centre, which is the same thing there (§16: with thin parts kept the two are equal,
-    and such an export never removed any). A keypoint path shares the track's clock and its
-    body, read on the frames the keypoint has (``keypoints.csv`` is keyed as ``tracks.csv``).
+    mask's centre, which is the same point: the body is the whole mask (§16), and such an
+    export never removed thin parts. A keypoint path shares the track's clock and its body,
+    read on the frames the keypoint has (``keypoints.csv`` is keyed as ``tracks.csv``).
     """
     oid, note = tracked_animal(table, name)
     if oid is None:

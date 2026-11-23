@@ -6,8 +6,9 @@ workspace's own tab bar over the view — tree plus clips got 57% of the window.
 page class for every module: a landing page with a card per view, and a view that fills the
 window under one row of tabs, a tab per view, with the way back on the shell's path line
 (`<experiment> › <run_id> › <view>`, the run id a link). These tests drive that page through
-its own entry point for each shape of module — several views (clustering, behavior scan) and one
-(query eval, location export) — so a module cannot quietly fall back to the old stacked page.
+its own entry point for each shape of module — several views (clustering, behavior scan,
+location export) and one (``ModuleUI``'s default, which no analysis module uses today and any new
+one gets) — so a module cannot quietly fall back to the old stacked page.
 """
 
 import pytest
@@ -19,6 +20,7 @@ from PyQt6.QtWidgets import QLabel, QPushButton  # noqa: E402
 from detail.api.experiment import Experiment  # noqa: E402
 from detail.gui.cluster_workspace import ClusterWorkspace  # noqa: E402
 from detail.gui.modules.registry import ANALYSIS_GUI_MODULES  # noqa: E402
+from detail.gui.modules.registry import ModuleUI  # noqa: E402
 from detail.gui.pages import (  # noqa: E402
     VIEW_WAITS_FOR_RUN,
     AnalysisRunDetailPage,
@@ -107,10 +109,26 @@ def test_a_location_export_has_a_plots_card_and_a_files_card(qapp, tmp_path):
     assert [name for name, _purpose in planned] == list(page._cards)
 
 
-def test_a_query_eval_run_has_one_results_card_greyed_while_it_runs(qapp, tmp_path):
+def test_a_running_location_export_greys_its_plots_and_files_cards(qapp, tmp_path):
     """Greyed rather than absent: the user sees what the run will offer, and why not yet."""
     experiment = Experiment.create("p", tmp_path)
-    _record(experiment, "an_01", "query_eval", "running")
+    _record(experiment, "an_01", "location_export", "running")
+    page = AnalysisRunDetailPage(experiment, "an_01")
+    assert list(page._cards) == ["Plots", "Files"]
+    for card in page._cards.values():
+        assert not card.isEnabled() and card.toolTip() == VIEW_WAITS_FOR_RUN
+
+
+def test_a_running_module_with_one_view_has_one_results_card_greyed(
+    qapp, tmp_path, monkeypatch
+):
+    """``ModuleUI``'s own ``planned_views``: one "Results" card. No analysis module has one view
+    since the location export gained Plots, so a module is put back to the default here; a new
+    module whose result is one widget gets exactly this."""
+    ui = ANALYSIS_GUI_MODULES["location_export"]
+    monkeypatch.setattr(type(ui), "planned_views", ModuleUI.planned_views)
+    experiment = Experiment.create("p", tmp_path)
+    _record(experiment, "an_01", "location_export", "running")
     page = AnalysisRunDetailPage(experiment, "an_01")
     assert list(page._cards) == ["Results"]
     card = page._cards["Results"]

@@ -137,10 +137,9 @@ def test_location_analysis_end_to_end(tmp_path):
     assert rec["tracking_run_ids"] == {"recording_001": "track_01"}
     assert rec["artifacts"][0]["path"] == "recording_001/tracks.csv"  # relative path
     # options nobody set are still written down, resolved (Tenet 9): the record says every
-    # frame and the whole mask rather than saying nothing
+    # frame rather than saying nothing
     assert rec["params"]["sample_fps"] is None
-    assert rec["params"]["remove_thin_parts"] is False
-    assert rec["params"]["thin_part_scale"] == 0.12
+    assert "remove_thin_parts" not in rec["params"]
 
 
 def test_location_analysis_accepts_tracking_spec(tmp_path):
@@ -186,23 +185,16 @@ def test_location_job_from_dict_legacy_single_id_shim():
         "s1": "track_01",
         "s2": "track_01",
     }
-    # a job from before the measurement options existed measured every frame of the whole
-    # mask, which is what the config model's defaults say
-    old = LocationAnalysisJob.from_dict(legacy)
-    assert (old.sample_fps, old.remove_thin_parts, old.thin_part_scale) == (
-        None,
-        False,
-        0.12,
-    )
+    # a job from before the measurement options existed measured every frame, which is
+    # what the config model's defaults say
+    assert LocationAnalysisJob.from_dict(legacy).sample_fps is None
     new = LocationAnalysisJob(
-        "an_02", ["s1", "s2"], {"s1": "track_02", "s2": "track_01"}, "t", 5.0, True, 0.2
+        "an_02", ["s1", "s2"], {"s1": "track_02", "s2": "track_01"}, "t", 5.0
     )
-    back = LocationAnalysisJob.from_dict(new.to_dict())
-    assert (back.sample_fps, back.remove_thin_parts, back.thin_part_scale) == (
-        5.0,
-        True,
-        0.2,
-    )
+    assert LocationAnalysisJob.from_dict(new.to_dict()).sample_fps == 5.0
+    # a job written while thin-part removal existed still reads; the keys are ignored
+    older = {**new.to_dict(), "remove_thin_parts": False, "thin_part_scale": 0.12}
+    assert LocationAnalysisJob.from_dict(older).sample_fps == 5.0
     assert LocationAnalysisJob.from_dict(new.to_dict()).tracking_run_ids == {
         "s1": "track_02",
         "s2": "track_01",
@@ -421,11 +413,7 @@ def test_the_runner_measures_with_the_options_the_job_carries(tmp_path):
     proj = Experiment.create("p", tmp_path)
     _add_tracked_recording(proj, "recording_001")
     module = ANALYSIS_MODULES["location_export"]
-    config = {
-        **_config("recording_001"),
-        "remove_thin_parts": True,
-        "thin_part_scale": 0.3,
-    }
+    config = {**_config("recording_001"), "sample_fps": 5.0}
     job = type(module.build_job("an_01", config)).from_dict(
         module.build_job("an_01", config).to_dict()
     )
@@ -437,13 +425,10 @@ def test_the_runner_measures_with_the_options_the_job_carries(tmp_path):
     manifest = yaml.safe_load(
         (run_dir / "recording_001" / "locations.yaml").read_text(encoding="utf-8-sig")
     )
-    assert manifest["remove_thin_parts"] is True
-    assert manifest["thin_part_scale"] == 0.3
+    assert manifest["sample_fps"] == 5.0
     record = ar.read_analysis_yaml(run_dir)
     assert record["status"] == "complete"
-    assert record["params"]["remove_thin_parts"] is True
-    assert record["params"]["thin_part_scale"] == 0.3
-    assert record["params"]["sample_fps"] is None
+    assert record["params"]["sample_fps"] == 5.0
 
 
 def test_validate_refuses_an_option_outside_its_bounds(tmp_path):
@@ -455,5 +440,17 @@ def test_validate_refuses_an_option_outside_its_bounds(tmp_path):
     # and a good config comes back with every option resolved, set or not
     resolved = module.validate(proj.dir, {**_config("recording_001"), "sample_fps": 5})
     assert resolved["sample_fps"] == 5.0
-    assert resolved["remove_thin_parts"] is False
-    assert resolved["thin_part_scale"] == 0.12
+    assert "remove_thin_parts" not in resolved
+
+
+def test_validate_refuses_a_config_asking_for_thin_parts_removed(tmp_path):
+    # the model ignores a key it does not have; this one would silently measure the tail
+    proj = Experiment.create("p", tmp_path)
+    _add_tracked_recording(proj, "recording_001")
+    module = ANALYSIS_MODULES["location_export"]
+    with pytest.raises(ValueError, match="no longer removes thin parts"):
+        module.validate(
+            proj.dir, {**_config("recording_001"), "remove_thin_parts": True}
+        )
+    # an older record's explicit "off" is what it measures anyway, so it still runs
+    module.validate(proj.dir, {**_config("recording_001"), "remove_thin_parts": False})

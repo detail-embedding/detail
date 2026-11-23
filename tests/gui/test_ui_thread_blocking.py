@@ -125,15 +125,17 @@ _SEAMS = (
     # `core/buildinfo` shells out to `git` — several processes for the build, a `fetch` over
     # the network for the update check. Module-qualified to skip the popover's
     # `def _check_for_updates(` slot and any other `history(`.
-    # §19 audit reads and writes. Each reads the run's artifact and its audit log, and
-    # `label_audit` appends to that log — a file that may sit on a network share. AUDIT wrote
-    # an answer inline on every key press until the review that added these.
+    # §19 audit reads. Each reads the run's artifact and its audit log — a file that may sit on
+    # a network share. The one-by-one audit's draw and judge were here too, until that audit
+    # was removed; it wrote an answer inline on every key press until the review that added
+    # these.
     "audit_by_cluster(",
     "audit_decisions(",
     "audit_labels(",
     "audit_precision(",
-    "audit_sample(",
-    "label_audit(",
+    # A query run's review reads its search the first time: as slow as the shard load.
+    "review_by_recording(",
+    "review_clips(",
     "buildinfo.build_info(",
     "buildinfo.history(",
     "buildinfo.check_for_updates(",
@@ -220,8 +222,6 @@ ALLOWED: set[tuple[str, str]] = {
     ("start_from.py", ".processing_runs"),
     # A query run's AUDIT tab draws and writes inline: its batches are small and it predates
     # the audit seams. Clustering's AUDIT (`label_check.py`) does both off the UI thread.
-    ("audit_tab.py", "audit_sample("),
-    ("audit_tab.py", "label_audit("),
 }
 
 

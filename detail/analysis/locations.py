@@ -6,22 +6,15 @@ relative to the recording's ROIs and points of interest, as three tidy tables ke
 by ``t_ns`` (so they join with streams, §3).
 
 **The body.** Beside the whole mask's centre and area, ``tracks`` carries the *body*: its
-centre, area, length, width and the direction of its long axis. The body is the mask, or,
-with ``remove_thin_parts``, the largest piece of it left after a morphological opening that
-removes a tail, a limb or an antenna. Length and width are four standard deviations of the
-body's area along and across its principal axis: the full axes of an ellipse with the same
-spread, which a ragged outline does not move the way it moves a bounding box.
+centre, area, length, width and the direction of its long axis. The body is the mask, with
+nothing taken out of it: what counts as the animal is decided where the mask is made, not here,
+so every body column is a standard measure of the mask a user can reproduce in any tool. Length
+and width are the major and minor axis lengths of the ellipse with the same second moments as
+the mask (MATLAB ``regionprops``'s definition): four standard deviations of its area along and
+across its principal axis, which a ragged outline does not move the way it moves a bounding box.
 
-Three things that are decided here because each went wrong once on real recordings
-(detail#75):
-
-- **The opening is sized from the animal, never from the calibration**: its diameter is
-  ``thin_part_scale`` times the square root of the subject's own median mask area. A wrong
-  millimetre calibration then cannot change a body's shape.
-- **One opening per subject per recording**, from masks spread over the whole recording, so a
-  body is measured the same way from its first frame to its last.
-- **Sampling never invents a row.** ``sample_fps`` keeps the tracked frame nearest each tick of
-  a clock; a tick with no tracked frame near it has no row, in any of the three tables.
+**Sampling never invents a row.** ``sample_fps`` keeps the tracked frame nearest each tick of a
+clock; a tick with no tracked frame near it has no row, in any of the three tables (detail#75).
 
 This is **not** a §16 ``AnalysisModule`` (those are experiment-scoped, cross-recording)
 — it is the per-recording substrate such a module would aggregate, exposed as a
@@ -60,8 +53,6 @@ BODY_COLUMNS = [
     "body_length_mm", "body_width_mm",
 ]  # fmt: skip
 NS_PER_S = 1_000_000_000
-#: Masks read per subject to size its opening, spread evenly over its tracked frames.
-OPENING_PROBE_FRAMES = 40
 
 TRACKS_COLUMNS = [
     "frame_idx", "t_ns", "object_id",
@@ -165,58 +156,6 @@ def sampled_indices(t_ns: np.ndarray, sample_fps: float) -> np.ndarray:
     ticks = tick[order]
     first = np.r_[True, ticks[1:] != ticks[:-1]] if len(ticks) else np.zeros(0, bool)
     return np.sort(order[first])
-
-
-def thin_part_kernel(
-    median_area_px: float, scale: float, cell_w_px: float, cell_h_px: float
-) -> tuple[np.ndarray, float]:
-    """The opening that removes a subject's thin parts, and its diameter in video pixels.
-
-    The diameter is ``scale`` times the square root of the subject's median mask area, so it
-    follows the animal's size in the image and not the distance calibration. The kernel is an
-    ellipse on the mask grid, wider or taller in cells where the grid is finer than the video
-    in that direction.
-
-    Raises:
-        ValueError: The masks are too coarse for an opening that small: it would span less
-            than one and a half cells both ways, and would remove nothing.
-    """
-    diameter_px = float(scale) * float(np.sqrt(max(median_area_px, 0.0)))
-    cells = (diameter_px / cell_w_px, diameter_px / cell_h_px)
-    if max(cells) < 1.5:
-        raise ValueError(
-            f"thin parts cannot be removed from these masks: the opening would be "
-            f"{diameter_px:.1f} px across, less than one and a half mask cells "
-            f"({cell_w_px:.1f} x {cell_h_px:.1f} px each). Raise thin_part_scale, or leave "
-            "remove_thin_parts off."
-        )
-    kx, ky = (max(1, int(round(c)) | 1) for c in cells)
-    return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kx, ky)), diameter_px
-
-
-def body_window(
-    mask: np.ndarray, extent: tuple[int, int, int, int], kernel: np.ndarray
-) -> tuple[np.ndarray, int, int]:
-    """The body without its thin parts, as ``(window, x0, y0)``: the largest connected piece
-    of ``mask`` left by an opening with ``kernel``, cut out of the grid at ``(x0, y0)``.
-
-    ``extent`` is the mask's own (:func:`geometry.mask_extent`). The opening runs on that
-    window grown by the kernel's size, taken from the grid itself: where the animal touches
-    the edge of the frame the window stops there too, and the edge does not erode it. A mask
-    the opening removes entirely (a sliver) comes back whole.
-    """
-    y0, y1, x0, x1 = extent
-    ky, kx = kernel.shape
-    top, left = max(y0 - ky, 0), max(x0 - kx, 0)
-    grown = mask[top : min(y1 + ky, mask.shape[0]), left : min(x1 + kx, mask.shape[1])]
-    opened = cv2.morphologyEx(
-        np.ascontiguousarray(grown, dtype=np.uint8), cv2.MORPH_OPEN, kernel
-    )
-    count, labels, stats, _ = cv2.connectedComponentsWithStats(opened, connectivity=8)
-    if count <= 1:
-        return mask[y0:y1, x0:x1], x0, y0
-    largest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
-    return labels == largest, left, top
 
 
 def body_axes(body: np.ndarray, cell_w_px: float, cell_h_px: float) -> dict:
@@ -456,41 +395,6 @@ def _group_mask(mask_rle, rows: list[int], shape: tuple[int, int]) -> np.ndarray
     return mask
 
 
-def _track_openings(
-    planned: list[tuple],
-    kept: set[tuple[int, int]] | None,
-    shape: tuple[int, int],
-    cell_px: tuple[float, float],
-    scale: float,
-) -> dict[int, tuple[np.ndarray, float]]:
-    """``{track: (kernel, diameter in px)}``: one opening per track for the whole recording,
-    sized from the median area of masks spread evenly over the frames it will be measured on.
-    """
-    where: dict[int, list[tuple[int, int, int]]] = defaultdict(list)
-    for index, (_part, groups, _times) in enumerate(planned):
-        for frame, oid in groups:
-            if kept is None or (frame, oid) in kept:
-                where[oid].append((frame, index, oid))
-    openings = {}
-    for oid, frames in where.items():
-        frames.sort()
-        step = max(1, len(frames) // OPENING_PROBE_FRAMES)
-        probe = frames[::step][:OPENING_PROBE_FRAMES]
-        columns: dict[int, object] = {}
-        areas = []
-        for frame, index, _oid in probe:
-            det_part, groups, _times = planned[index]
-            if index not in columns:
-                columns[index] = PartZarrReader(det_part).column("mask_rle")
-            rows = groups[(frame, oid)]
-            lo, hi = min(rows), max(rows) + 1
-            block = np.asarray(columns[index][lo:hi])
-            mask = _group_mask(block, [r - lo for r in rows], shape)
-            areas.append(float(mask.sum()) * cell_px[0] * cell_px[1])
-        openings[oid] = thin_part_kernel(float(np.median(areas)), scale, *cell_px)
-    return openings
-
-
 def compute_location_tables(
     recording,
     tracking_run_id: str,
@@ -501,9 +405,8 @@ def compute_location_tables(
     """Compute the three tables for a completed tracking run of ``recording``, and with
     ``keypoint_run_id`` (a keypoint track run of that tracking run) a fourth, ``keypoints``.
 
-    ``options`` carries the choices about the measurement (``sample_fps``,
-    ``remove_thin_parts``, ``thin_part_scale``); only those fields are read, and ``None`` is
-    the model's defaults: every tracked frame, the whole mask as the body.
+    ``options`` carries the choices about the measurement (``sample_fps``); only those fields
+    are read, and ``None`` is the model's defaults: every tracked frame.
 
     Reads the tracking assignments + its detection zarr + the recording's ROIs/POIs;
     OR-merges each track's detections per frame (bbox + mask, like embedding §14);
@@ -566,13 +469,6 @@ def compute_location_tables(
     )
     # A mask cell's size in video pixels: the mask grid need not have the video's shape.
     cell_px = (fw / mask_w, fh / mask_h)
-    openings = (
-        _track_openings(
-            planned, kept, (mask_h, mask_w), cell_px, options.thin_part_scale
-        )
-        if options.remove_thin_parts
-        else {}
-    )
     # The denominator must match what rows_done accrues: only assigned rows
     # (object_id >= 0) become groups, and with sampling only the groups kept, so
     # counting every detection row would leave the bar short.
@@ -635,19 +531,10 @@ def compute_location_tables(
             mf = _mask_features(
                 window, x0, y0, mask_w, mask_h, fw, fh, (bf["cx_norm"], bf["cy_norm"])
             )
-            # The body: the mask itself, or what an opening leaves of it. Measured by the
-            # same function as the mask, so with thin parts kept the two centres and areas
-            # are the same numbers by construction.
-            opening = openings.get(oid)
-            if opening is not None and extent is not None:
-                body, bx0, by0 = body_window(mask, extent, opening[0])
-                bd = _mask_features(
-                    body, bx0, by0, mask_w, mask_h, fw, fh,
-                    (mf["cx_norm"], mf["cy_norm"]),
-                )  # fmt: skip
-            else:
-                body, bd = window, mf
-            axes = body_axes(body, *cell_px)
+            # The body is the mask itself, so its centre and area are the mask's by
+            # construction; only the axes are measured beyond them.
+            bd = mf
+            axes = body_axes(window, *cell_px)
             feat = {
                 **bf,
                 "mcx_norm": mf["cx_norm"], "mcy_norm": mf["cy_norm"],
@@ -721,14 +608,8 @@ def compute_location_tables(
             "video_resolution": list(res) if res else None,
             "pixels_per_mm": ppm,
             # What the body columns were measured from, so a reader can tell a run that has
-            # them from one that does not, and how the tail was treated, without parsing rows.
+            # them from one that does not without parsing rows.
             "sample_fps": options.sample_fps,
-            "remove_thin_parts": bool(options.remove_thin_parts),
-            "thin_part_scale": float(options.thin_part_scale),
-            "thin_part_opening_px": {
-                str(oid): round(diameter, 2)
-                for oid, (_kernel, diameter) in sorted(openings.items())
-            },
             "body_axis": "shape",
             "roi_ids": [d[0] for d in roi_defs],
             "point_ids": [d[0] for d in point_defs],
