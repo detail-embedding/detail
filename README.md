@@ -1,115 +1,89 @@
 # DETAIL
 
-> **Under active development.** Please submit bugs and issues on the [issue page](https://github.com/detail-embedding/detail/issues).
+[![Tests](https://github.com/detail-embedding/detail/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/detail-embedding/detail/actions/workflows/ci.yml)
+[![Docs](https://github.com/detail-embedding/detail/actions/workflows/docs.yml/badge.svg?branch=main)](https://detail-embedding.github.io/detail/)
+![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)
+<!-- TODO(release): add when each exists.
+[![Version](https://img.shields.io/github/v/release/detail-embedding/detail)](https://github.com/detail-embedding/detail/releases)
+[![License](https://img.shields.io/github/license/detail-embedding/detail)](LICENSE)
+[![Preprint](https://img.shields.io/badge/bioRxiv-preprint-b31b1b)](PREPRINT_URL)
+-->
 
-A species-agnostic tool for behavioral analysis. Powered by open-source segmentation, tracking, and image embedding models.
+**[Install](https://detail-embedding.github.io/detail/getting-started.html) · [Documentation](https://detail-embedding.github.io/detail/) · [User guides](https://detail-embedding.github.io/detail/user-guides/index.html)**
 
-**Documentation.** The docs site, [detail-embedding.github.io/detail](https://detail-embedding.github.io/detail/), is the authoritative resource. The app also opens a copy that matches your install, offline: the Docs page, or `detail docs`.
+> **Under active development.** Please report bugs and issues on the
+> [issue page](https://github.com/detail-embedding/detail/issues).
 
-- [User guides](docs/user-guides/index.md): step by step, from installing DETAIL to analyzed behavior, with every screen explained (start here)
-- [Getting started](docs/getting-started.md): install, GPU/CUDA, SAM3, and Hugging Face setup
-- [Concepts](docs/concepts.md): tool design and data organization
-- [CLI guide](docs/cli.md): headless operation via CLI
-- [GUI guide](docs/gui.md): desktop app (Experiments, Active processes, Configuration, Model manager, Keypoints manager, Quick tools, Docs)
-- [Tools](docs/tools.md): one-off runs like Quick segment, no experiment needed
+DETAIL is a video analysis tool for species-agnostic, setting-agnostic analysis of animal
+behavior. It detects and tracks animals with text-promptable foundation vision models (SAM 3,
+DINOv3), with no manually labeled training data. Each frame becomes a pose embedding, a
+high-dimensional representation of posture used in place of keypoints for behavior clustering,
+querying, and comparison.
 
-## Quick start
+<!-- TODO(release): link the preprint in the paragraph above. -->
 
-Requires Python ≥ 3.12. We recommend a virtual environment ([uv](https://docs.astral.sh/uv/) in these examples).
+![SAM 3 segments a crab, a rat and a fish from a text prompt; keypoints marked on one frame are placed on others by patch matching; each frame becomes an egocentric pose image and a pose embedding, where rearing, spinning and hunching fall in separate regions](docs/assets/readme/method.png)
 
-**Windows:** install uv, then close and reopen PowerShell so it finds `uv`.
+## How it works
 
-```
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-```
+The pipeline turns a video into pose embeddings in four steps:
 
-Clone DETAIL
-```
-git clone https://github.com/detail-embedding/detail.git
-cd detail
-uv venv --seed
-```
+1. **Segment** the animal from a text prompt such as "rat" (SAM 3).
+2. **Track** it across frames.
+3. **Detect keypoints** by patch matching from as little as one marked frame (DINOv3), to align
+   the animal egocentrically.
+4. **Embed** the aligned pose image (DINOv3).
 
-Activate the environment.
+SAM 3 and patch matching can be distilled into small YOLO models that run faster than real time
+on a consumer GPU. Two analysis modules use the embeddings: **temporal clustering** finds
+behaviors without labels, and **behavior querying** finds a behavior from one or more examples.
+Results can be audited for precision, compared between groups, and exported.
 
-**macOS / Linux**
+![The DETAIL pipeline: masks, keypoints, tracking, embedding, then behavior clustering and behavior query](docs/assets/readme/pipeline.png)
 
-```
-source .venv/bin/activate
-```
+## In the app
 
-**Windows**
+The desktop app covers the whole workflow, from installation and model management through
+processing, analysis, and export. A command line and a Python API cover the same steps on
+servers and in scripts.
 
-Windows blocks PowerShell scripts by default, and activation is a script. Allow them for your user account. You do this once, and it needs no administrator:
+![The DETAIL desktop app in twelve steps: set up, create an experiment, distill a mask model and a keypoint model, embed each frame, then find behaviors by clustering or from examples](docs/assets/readme/gui.png)
 
-```
-Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
-```
+## Install
 
-```
-.venv\Scripts\Activate
-```
+DETAIL needs Python 3.12 or newer. SAM 3 needs an NVIDIA GPU; everything else also runs on
+Apple Silicon or a CPU. The docs hold the install steps, so that there is one copy to keep
+current:
 
-`-Scope Process -ExecutionPolicy Bypass` also works but lasts only for that PowerShell window. Only `-Scope LocalMachine` needs **Run as administrator**.
+- [Install on Windows](https://detail-embedding.github.io/detail/user-guides/install-windows.html): every step, with screenshots
+- [Install on Linux](https://detail-embedding.github.io/detail/user-guides/install-linux.html): every step, with screenshots
+- [Getting started](https://detail-embedding.github.io/detail/getting-started.html): the short install for someone at ease in a terminal, on any system, with GPU, SAM 3 and Hugging Face setup
 
-If you have an NVIDIA GPU, update the [NVIDIA driver](https://www.nvidia.com/download/index.aspx) first. The driver caps which CUDA build of PyTorch can run ([GPU and CUDA](docs/getting-started.md#gpu-and-cuda)).
+Already installed? See
+[Launch it again later](https://detail-embedding.github.io/detail/getting-started.html#launch-it-again-later).
 
-Then install:
+## Learn
 
-```
-uv pip install -e ".[yolo,torch,gui,analysis,sam3]"
-```
+The [documentation site](https://detail-embedding.github.io/detail/) is the authoritative
+resource. The app also opens a copy that matches your install, offline: the Docs page, or
+`detail docs`.
 
-The `yolo` extra installs Ultralytics 8.4.x (`ultralytics>=8.4,<8.5`), the series the detector and keypoint trainers are tested against. Each trained model records the exact version it used.
+- [User guides](https://detail-embedding.github.io/detail/user-guides/index.html): step by step, from a new experiment to analyzed behavior (start here)
+- [Concepts](https://detail-embedding.github.io/detail/concepts.html): how the tool and its data are organized
+- [GUI](https://detail-embedding.github.io/detail/gui.html) and [CLI](https://detail-embedding.github.io/detail/cli.html): what every screen and every command does
+- [Tools](https://detail-embedding.github.io/detail/tools.html): one-off runs like Quick segment, no experiment needed
+- [Python API](https://detail-embedding.github.io/detail/reference/api.html): the reference for scripts and agentic tools
+- [Known issues](https://detail-embedding.github.io/detail/known-issues.html): current limits and the workaround for each
 
-Launch the desktop app:
+## Citing DETAIL
 
-```
-detail-gui
-```
+A paper describing DETAIL is in preparation.
 
-Or use the CLI:
-
-```
-detail --help
-```
-
-## Launching it again later
-
-Already installed? Go to the repo, activate the environment, launch.
-
-**macOS / Linux**
-
-```
-cd path/to/detail
-source .venv/bin/activate
-detail-gui
-```
-
-**Windows**
-
-```
-cd path\to\detail
-.venv\Scripts\Activate
-detail-gui
-```
-
-To pick up the latest changes, `git pull` before activating, then reinstall with the `uv pip install -e` command above. `detail version --check` (or **Version History** in the GUI) tells you how far behind your copy is.
-
-Browse the full docs locally as a rendered site (the tooling installs with the package):
-
-```
-mkdocs serve   # then open http://127.0.0.1:8000
-```
-
-The SAM3 backend, GPU/CUDA builds, and Hugging Face gated-model access have their own steps. See [Getting started](docs/getting-started.md).
+<!-- TODO(release): replace the line above with the preprint link and its BibTeX entry. -->
 
 ## Contributing
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for setting up, running the tests, and opening a pull
-request. In short:
+request.
 
-- Install with `uv pip install -e ".[torch,gui,analysis,dev]"`, then run `pre-commit install`
-  once. Commits then get formatted and checked.
-- Work on a feature branch and open a pull request. Don't commit to `main` directly.
-- Run `pytest -q -n auto --dist loadfile` before opening a pull request.
+<!-- TODO(release): add a License section once the license file exists, and a Funding section. -->
