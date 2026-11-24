@@ -1,11 +1,13 @@
 [build-system]
-requires = ["setuptools>=61", "wheel"]
+requires = ["setuptools>=77", "wheel"]  # 77: `license` as an SPDX expression (PEP 639)
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "detail"
 version = "0.1.0"
 description = "Segmentation, tracking, and embedding pipeline for behavioral video."
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"  # zarr>=3.2 requires 3.12; uv resolves the full range
 dependencies = [
     "numpy>=2",      # vlen-str columns use numpy StringDType (numpy 2.0+)
