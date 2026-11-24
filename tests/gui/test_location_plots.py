@@ -240,3 +240,14 @@ def test_export_writes_the_current_plot(qapp, page, tmp_path):
     panel.export_to(str(tmp_path / "body.svg"))
     assert drain_until(qapp, lambda: (tmp_path / "body.svg").is_file())
     assert drain_until(qapp, lambda: panel._status.text().startswith("Wrote "))
+
+
+def test_export_writes_an_interactive_page(qapp, page, tmp_path):
+    from detail.gui.location_plots import EXPORT_FILTERS
+
+    assert "Interactive HTML (*.html)" in EXPORT_FILTERS
+    panel = _panel(page)
+    _open(page)
+    assert _drawn(qapp, panel)
+    panel.export_to(str(tmp_path / "paths.html"))
+    assert drain_until(qapp, lambda: (tmp_path / "paths.html").is_file())

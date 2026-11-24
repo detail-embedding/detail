@@ -225,8 +225,9 @@ detail/
 │                         # the matplotlib adapter for core/chart_theme.py, figures.py the primitives,
 │                         # tables.py the CSV writers, behavior_figures.py a §19 artifact's figures,
 │                         # exporter.py what a re-export may delete (only what it wrote last time),
-│                         # plot_spec.py a figure as plain data and plot_render.py its matplotlib
-│                         # renderer (the location plots draw through both)
+│                         # plot_spec.py a figure as plain data, plot_render.py its matplotlib
+│                         # renderer and plot_html.py its plotly (interactive HTML) twin — the
+│                         # location plots draw through all three
 ├── models/
 │   ├── hf_access.py      # HFHubModel mixin + cache-first readiness
 │   ├── _ultralytics.py   # the sole seam allowed to import ultralytics (YOLO_OFFLINE lives here);
