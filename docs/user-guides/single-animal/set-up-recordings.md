@@ -1,6 +1,6 @@
 # 2. Set up each recording
 
-Each recording has its own page. On it, the **scene geometry** tells DETAIL about the picture:
+Each recording has its own page. On it, the **scene geometry** tells Detail about the picture:
 where in it the animal can be (the **field of view**), and how big things are (the **distance
 calibration**). You can also mark zones and spots you want to measure the animal against.
 
@@ -9,7 +9,7 @@ You do this once per camera position. The example sets up box1 of the top-down e
 ## The steps at a glance
 
 Each box is one step on this page. Click a box to go to that step. The tag says where the
-step is in DETAIL: the button along the top, then the page in the list on the left, then
+step is in Detail: the button along the top, then the page in the list on the left, then
 what you click on it.
 
 <div class="guide-flow" markdown>
@@ -62,7 +62,7 @@ Click **Recordings** in the list on the left, then double-click a recording's ro
 
 ## 2. Draw the field of view
 
-The field of view is the part of the picture where the animal can be. DETAIL ignores
+The field of view is the part of the picture where the animal can be. Detail ignores
 anything it finds outside it: a hand above the box, a reflection, a second cage at the edge
 of the picture.
 
@@ -121,23 +121,23 @@ Draw the field of view:
 ![The editor with a field of view drawn as an orange rectangle around the box floor, the field of view selected in the definitions list, and Save highlighted.](../../assets/user-guides/single-animal/set-up/editor-field-of-view.png)
 
 ??? info "About this step"
-    DETAIL names it **field of view 1**. Chapter 3 picks it by that name. You can type
+    Detail names it **field of view 1**. Chapter 3 picks it by that name. You can type
     another in **Name**.
 
-    The field of view affects detection and tracking: DETAIL keeps only what it finds inside
+    The field of view affects detection and tracking: Detail keeps only what it finds inside
     it. Draw it generously. An animal that leaves it, by climbing or rearing past its edge,
     is lost for that time.
 
     Every frame of the recording uses the same field of view. If your camera moves during a
     recording, go to a frame where the arena has moved, drag the corners to where it is now,
-    and click **Set keyframe here**. DETAIL moves the shape smoothly between keyframes.
+    and click **Set keyframe here**. Detail moves the shape smoothly between keyframes.
 
     Once a tracking run has used a field of view, it is locked: the run recorded it. To
     change it, delete that run first.
 
 ## 3. Calibrate distance
 
-The distance calibration tells DETAIL how many pixels make a millimetre, so speeds and
+The distance calibration tells Detail how many pixels make a millimetre, so speeds and
 distances come out in millimetres rather than pixels. You need two points in the picture
 whose real distance apart you know.
 
@@ -162,12 +162,12 @@ whose real distance apart you know.
     The calibration is for this video's size. It can be copied only to recordings whose
     videos are the same size (step 5).
 
-    The calibration is optional. Without it, everything DETAIL measures is in pixels, which
+    The calibration is optional. Without it, everything Detail measures is in pixels, which
     cannot be compared between cameras.
 
 ## 4. Optional: mark regions and points
 
-Regions and points are only for analysis: they do not change what DETAIL detects. Mark them
+Regions and points are only for analysis: they do not change what Detail detects. Mark them
 if you want to measure where the animal goes, such as the time it spends near a lever or in
 a corner.
 
@@ -236,7 +236,7 @@ fill in too, so you can see at a glance which recordings still need setting up.
 
 A **stream** is data that something other than the camera recorded during the session: an
 operant box's events, a sensor log, a controller that switched a light, or behavior you
-scored by hand. DETAIL keeps it with the recording and lines it up with the video, so each
+scored by hand. Detail keeps it with the recording and lines it up with the video, so each
 event sits on the frame it happened.
 
 No analysis reads a stream yet: today a stream is kept with the recording and shown against
@@ -250,7 +250,7 @@ the video in **Preview**.
 
 1. On the recording's page, under **Streams**, click **Add stream**. The **Add stream** dialog
    opens.
-2. **Data file:** click **Browse** and choose the file. DETAIL reads it and picks the
+2. **Data file:** click **Browse** and choose the file. Detail reads it and picks the
    **Importer**; the line under **Reuse a mapping** says what it read the file as.
 3. **Name:** a name for the stream, such as `box_events`.
 4. **Alignment (s):** how many seconds after the video started the stream's own clock
@@ -263,7 +263,7 @@ the video in **Preview**.
 ??? info "What everything on this screen does"
     1. **Data file**: the file to bring in.
     2. **Browse**: chooses the file.
-    3. **Importer**: what kind of file it is (see *Which importer*, below). DETAIL picks it from
+    3. **Importer**: what kind of file it is (see *Which importer*, below). Detail picks it from
        the file; change it if it picked wrong.
     4. **Reuse a mapping**: fills the form with a mapping you saved from an earlier import,
        for the next recording's file of the same kind.
@@ -308,7 +308,7 @@ the video in **Preview**.
 
 A device's clock starts when the device starts, which is rarely the moment the camera did.
 **Sync to video…** lets you find the difference by eye: you pick an event in the stream that
-you can see in the video, go to the frame where it happens, and DETAIL works out the
+you can see in the video, go to the frame where it happens, and Detail works out the
 alignment.
 
 1. In the **Add stream** dialog, click **Sync to video…**. The **Sync stream to video** window
@@ -384,7 +384,7 @@ on the video, change the alignment with **Sync to video**.
 ### A CSV with its own column names
 
 A sensor log or another program's export usually has its own column names, such as
-`Time (s)`. DETAIL does not recognise one, so it sets it up as **Time-series CSV (sensor
+`Time (s)`. Detail does not recognise one, so it sets it up as **Time-series CSV (sensor
 data)** and shows the file's own columns, for you to say what each one is:
 
 1. **Time column:** the column that holds the time.
@@ -403,7 +403,7 @@ data)** and shows the file's own columns, for you to say what each one is:
 ??? info "What everything on this screen does"
     1. **Data file**: the file to bring in.
     2. **Browse**: chooses the file.
-    3. **Importer**: here **Time-series CSV (sensor data)**, which DETAIL chose because no
+    3. **Importer**: here **Time-series CSV (sensor data)**, which Detail chose because no
        importer recognised the file.
     4. **Reuse a mapping**: fills the time column, what it holds and the ticked columns from
        a mapping you saved, for the next recording's file. It says so if the file is missing
@@ -413,7 +413,7 @@ data)** and shows the file's own columns, for you to say what each one is:
     6. **Time column**: the column that holds the time.
     7. **Time is**: what the time column counts.
     8. **The columns**: every other column, with its first value. Tick a column to bring it
-       in; **Channel** is its name in DETAIL, letters, numbers, `-` and `_` only.
+       in; **Channel** is its name in Detail, letters, numbers, `-` and `_` only.
     9. **Name**: the stream's name on this recording.
     10. **Labels are**: for behavior labels only. Greyed out here.
     11. **Alignment (s)**: seconds to add to the stream's times to put them on the video's

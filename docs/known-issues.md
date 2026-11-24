@@ -5,7 +5,7 @@ run still completes normally in every case below.
 
 ## Older results on recordings with several video files keep wrong frame numbers
 
-A query or clustering run made on a recording of several video files, before DETAIL numbered
+A query or clustering run made on a recording of several video files, before Detail numbered
 frames across the whole recording, stored frame numbers that restart at 0 in each file. Its times
 are right. Exporting such a run (clips, `instances.csv`, `clips.csv`, the
 ethogram CSV) uses the stored numbers, so a bout in a later file is listed and cut as if it were in

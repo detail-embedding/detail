@@ -5,8 +5,8 @@ describes its posture. Two frames where the animal is posed alike get vectors th
 together; two different poses get vectors far apart. The behavior scan (chapter 7) and
 clustering (chapter 8) both work by comparing these vectors.
 
-DETAIL makes the vector with **DINOv3**, an image model you downloaded in [Configure
-DETAIL](../configure.md). It does not look at the whole video frame. For each frame, it cuts
+Detail makes the vector with **DINOv3**, an image model you downloaded in [Configure
+Detail](../configure.md). It does not look at the whole video frame. For each frame, it cuts
 out the tracked animal by its outline, centres it, and turns it so its head points right,
 using the keypoints from chapter 4. Every animal is then seen the same way round, so a
 mouse grooming facing the door and one grooming facing the wall give the same vector.
@@ -14,7 +14,7 @@ mouse grooming facing the door and one grooming facing the wall give the same ve
 ## The steps at a glance
 
 Each box is one step on this page. Click a box to go to that step. The first tag says where
-the step is in DETAIL. A **GPU** tag means the step's work runs on your computer's GPU.
+the step is in Detail. A **GPU** tag means the step's work runs on your computer's GPU.
 
 <div class="guide-flow" markdown>
 
@@ -53,7 +53,7 @@ that run already chosen.) In the **Launch a processing run** dialog:
     8. **All tracks**: embed every track instead.
     9. **Model**: the image model that makes the vectors. **dinov3_vit** is the one to use.
     10. **Size / variant**: the model's size. **vit_large** is the most accurate, and the
-        one downloaded in Configure DETAIL.
+        one downloaded in Configure Detail.
     11. **Input image**: what the model is shown for each frame. See **Input image: the
         choices** below.
     12. **Egocentric alignment**: turn every animal the same way before the model sees it.
@@ -73,7 +73,7 @@ that run already chosen.) In the **Launch a processing run** dialog:
     21. **?**: a short explanation of the setting beside it.
 
 ??? info "Input image: the choices"
-    **Input image** decides what DETAIL shows DINOv3 for each frame. The cut-out choices are
+    **Input image** decides what Detail shows DINOv3 for each frame. The cut-out choices are
     turned so the head points right; **Full frame** cannot be turned, because it is not cut
     to the animal.
 
@@ -179,7 +179,7 @@ image the model was shown, beside the cloud.
 - The heading line says most frames were covered, about 90% or more.
 
 ??? info "About this step: the orange warning"
-    DETAIL warns when the heading was known on fewer than 95% of the tracked frames, or was
+    Detail warns when the heading was known on fewer than 95% of the tracked frames, or was
     lost for more than 2 seconds at a time. On the demo, box1 was covered on 96% of its
     frames, and its longest gap was 3.3 seconds, so the warning shows. Those frames are left
     out rather than embedded the wrong way round.
@@ -190,7 +190,7 @@ image the model was shown, beside the cloud.
 
 ??? warning "If this doesn't work"
     - **The run stops saying the model is not installed:** download **dinov3_vit
-      vit_large** in the **Model manager** (see [Configure DETAIL](../configure.md)).
+      vit_large** in the **Model manager** (see [Configure Detail](../configure.md)).
     - **The head points left or up in Model input on many frames:** the heading's front and
       back points are swapped, or the keypoints put the nose at the tail. Check the
       keypoints on the video (chapter 4, step 5).

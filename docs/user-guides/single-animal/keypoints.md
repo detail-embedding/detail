@@ -5,7 +5,7 @@ on. Tracking (chapter 3) says where the animal is; keypoints say how it is posed
 faces, and what its head and tail are doing. The embedding (chapter 5) uses them to turn
 every animal the same way before comparing postures.
 
-DETAIL makes a keypoint model the same way it made the fast detector in chapter 3: by
+Detail makes a keypoint model the same way it made the fast detector in chapter 3: by
 distilling. You mark the points by hand on about ten frames, an **example set**. A slow,
 careful **teacher** uses those to place the points on a few hundred more frames. A small fast
 **student** model then trains on the teacher's frames, and the student places keypoints on
@@ -19,7 +19,7 @@ isometric recordings](#side-view-and-isometric-recordings) at the end of the cha
 In SLEAP or DeepLabCut, you mark the points by hand on hundreds of frames, and a network
 trains on your marks. A new camera or setup usually needs more frames marked.
 
-In DETAIL, from top-down or side-view recordings, you mark about ten (although more examples
+In Detail, from top-down or side-view recordings, you mark about ten (although more examples
 do generally improve outcomes slightly). Isometric recordings, or recordings with many
 occlusions, may need upwards of 50 examples. The teacher, **dinov3_match**, a large image
 model that has already learned what images look like, needs no training: on a new frame it
@@ -28,25 +28,25 @@ hundred frames, and the student trains on those, so the hundreds of frames are m
 you. If all you want is the nose, back and tail base from top-down recordings without
 occlusions, 5 frames is typically enough.
 
-| | SLEAP or DeepLabCut | DETAIL |
+| | SLEAP or DeepLabCut | Detail |
 |---|---|---|
 | Frames you mark | Hundreds | About ten; 5 for nose, back and tail base from above; 50 or more for isometric or heavily occluded views |
 | What trains on them | A network, on your marks | Nothing: the teacher matches them, and the student trains on the teacher's frames |
 | Your time | Hours of marking | About 20 minutes |
 | Points | As precise as your marking and training | Close, not exact |
 
-DETAIL uses keypoints mainly to find which way the animal faces, for its egocentric
+Detail uses keypoints mainly to find which way the animal faces, for its egocentric
 alignment (chapter 5), where close is enough. If you need exact positions, for joint angles
 say, check them against frames you marked yourself, as step 3 does. True pose estimation will
 generally give more accurate keypoints, so choose your approach based on what your experiment
-needs. DETAIL's points can be taken into SLEAP, DeepLabCut and the tools that read their
+needs. Detail's points can be taken into SLEAP, DeepLabCut and the tools that read their
 files: see [Take the keypoints to DeepLabCut, SLEAP or
 NWB](#optional-take-the-keypoints-to-deeplabcut-sleap-or-nwb), at the end of step 5.
 
 ## The steps at a glance
 
 Each box is one step on this page. Click a box to go to that step. The first tag says where
-the step is in DETAIL. A **GPU** tag means the step's work runs on your computer's GPU.
+the step is in Detail. A **GPU** tag means the step's work runs on your computer's GPU.
 
 <div class="guide-flow" markdown>
 
@@ -101,7 +101,7 @@ In the **Distill new model** dialog:
        have instead.
     5. **Method**: the patch method. **dinov3_match** is the one to use.
     6. **Size**: the method's size. **vit_large** is the most accurate, and the one
-       downloaded in Configure DETAIL.
+       downloaded in Configure Detail.
     7. **Skeleton**: the points to mark and the lines joining them. **Quadruped overhead view
        (12 points)** is made for a four-legged animal seen from above. Your own skeletons are
        listed too ([Make your own skeleton](#make-your-own-skeleton)).
@@ -150,7 +150,7 @@ skeleton**.
     2. **Import…**: adds a skeleton from a `.yaml` file, for example one a colleague
        exported.
     3. **The skeletons**: every skeleton, with how many points it has and what uses it.
-       **preset** ones come with DETAIL and cannot be changed; editing one saves a copy.
+       **preset** ones come with Detail and cannot be changed; editing one saves a copy.
        Double-click a row to open it.
     4. **Edit…**: opens the chosen skeleton. A skeleton something uses keeps its points:
        an edit is saved as a new skeleton.
@@ -191,7 +191,7 @@ In the **New skeleton** window:
     7. **Cancel**: closes the window. With unsaved changes, it asks first.
 
 ??? info "About this step: which points to choose"
-    - **Pairs matter.** Marking the ears as a pair is how DETAIL keeps the left ear and
+    - **Pairs matter.** Marking the ears as a pair is how Detail keeps the left ear and
       the right ear apart, rather than letting them swap.
     - **Choose points you can see.** A point hidden on most frames, such as a paw from
       above, gives the teacher little to match. For the nose, back and tail base from above,
@@ -231,7 +231,7 @@ The marking window opens on the first recording. To fill the set:
 5. When all 12 are done, press ++d++ to go to the next example frame, and do the same.
 
 Every click saves by itself, in the background. Closing the window while clicks are still
-being saved loses nothing: they finish behind it. Quitting DETAIL first asks you to wait for
+being saved loses nothing: they finish behind it. Quitting Detail first asks you to wait for
 them. Points are coloured by side: blue for left, orange for right,
 green for the middle of the body. **Left and right are the animal's own**, not the
 picture's: from above, with the nose pointing up the screen, the animal's left ear is on the
@@ -502,10 +502,10 @@ moves, and the nose stays at the front.
 
 ### Optional: take the keypoints to DeepLabCut, SLEAP or NWB
 
-DETAIL can write its keypoints in the formats other pose tools read. Open the keypoint track
+Detail can write its keypoints in the formats other pose tools read. Open the keypoint track
 run's page and click **Export…**, at the top right.
 
-1. **Save to:** click **Choose** and pick a folder. DETAIL makes a new folder inside it for
+1. **Save to:** click **Choose** and pick a folder. Detail makes a new folder inside it for
    this export, named under **Creates**.
 2. Tick the format you want.
 3. **Recordings:** the recording selected on the run's page is ticked. Click **All** for
@@ -519,7 +519,7 @@ run's page and click **Export…**, at the top right.
     2. **Choose**: picks that folder.
     3. **The greyed-out rows**: what other kinds of run write, such as tracks. Each says
        which run it comes from.
-    4. **Keypoints**: DETAIL's own table, one spreadsheet per recording: a row per frame per
+    4. **Keypoints**: Detail's own table, one spreadsheet per recording: a row per frame per
        point, with its position, its score, and whether it is visible.
     5. **Keypoints for DeepLabCut**: DeepLabCut's table, one spreadsheet per video. It is
        also what keypoint-MoSeq, VAME, B-SOiD, SimBA and movement read.
@@ -555,8 +555,8 @@ it is done.
 ??? warning "If this doesn't work"
     **Keypoints for SLEAP** or **Keypoints as NWB** is greyed out, and says *needs h5py* or
     *needs pynwb*: the install pages leave out the libraries those two formats need. Close
-    DETAIL. In the terminal you installed DETAIL from (**PowerShell** on Windows,
-    **Terminal** on Linux), go to the DETAIL folder and switch on its environment, the first
+    Detail. In the terminal you installed Detail from (**PowerShell** on Windows,
+    **Terminal** on Linux), go to the Detail folder and switch on its environment, the first
     two commands under *Launch it again later* on your install page
     ([Windows](../install-windows.md#launch-it-again-later),
     [Linux](../install-linux.md#launch-it-again-later)). Then run:
@@ -565,7 +565,7 @@ it is done.
     uv pip install -e ".[keypoints_export]"
     ```
 
-    Launch DETAIL again. The same libraries also make **Keypoints for DeepLabCut** write
+    Launch Detail again. The same libraries also make **Keypoints for DeepLabCut** write
     each table as an `.h5` file beside the spreadsheet, as DeepLabCut does itself.
 
 ## Side-view and isometric recordings

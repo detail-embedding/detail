@@ -1,4 +1,4 @@
-# DETAIL
+# Detail
 
 [![Tests](https://github.com/detail-embedding/detail/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/detail-embedding/detail/actions/workflows/ci.yml)
 [![Docs](https://github.com/detail-embedding/detail/actions/workflows/docs.yml/badge.svg?branch=main)](https://detail-embedding.github.io/detail/)
@@ -14,7 +14,7 @@
 > **Under active development.** Please report bugs and issues on the
 > [issue page](https://github.com/detail-embedding/detail/issues).
 
-DETAIL is a video analysis tool for species-agnostic, setting-agnostic analysis of animal
+Detail is a video analysis tool for species-agnostic, setting-agnostic analysis of animal
 behavior. It detects and tracks animals with text-promptable foundation vision models (SAM 3,
 DINOv3), with no manually labeled training data. Each frame becomes a pose embedding, a
 high-dimensional representation of posture used in place of keypoints for behavior clustering,
@@ -39,7 +39,7 @@ on a consumer GPU. Two analysis modules use the embeddings: **temporal clusterin
 behaviors without labels, and **behavior querying** finds a behavior from one or more examples.
 Results can be audited for precision, compared between groups, and exported.
 
-![The DETAIL pipeline: masks, keypoints, tracking, embedding, then behavior clustering and behavior query](docs/assets/readme/pipeline.png)
+![The Detail pipeline: masks, keypoints, tracking, embedding, then behavior clustering and behavior query](docs/assets/readme/pipeline.png)
 
 ## In the app
 
@@ -47,11 +47,11 @@ The desktop app covers the whole workflow, from installation and model managemen
 processing, analysis, and export. A command line and a Python API cover the same steps on
 servers and in scripts.
 
-![The DETAIL desktop app in twelve steps: set up, create an experiment, distill a mask model and a keypoint model, embed each frame, then find behaviors by clustering or from examples](docs/assets/readme/gui.png)
+![The Detail desktop app in twelve steps: set up, create an experiment, distill a mask model and a keypoint model, embed each frame, then find behaviors by clustering or from examples](docs/assets/readme/gui.png)
 
 ## Install
 
-DETAIL needs Python 3.12 or newer. SAM 3 needs an NVIDIA GPU; everything else also runs on
+Detail needs Python 3.12 or newer. SAM 3 needs an NVIDIA GPU; everything else also runs on
 Apple Silicon or a CPU. The docs hold the install steps, so that there is one copy to keep
 current:
 
@@ -75,9 +75,9 @@ resource. The app also opens a copy that matches your install, offline: the Docs
 - [Python API](https://detail-embedding.github.io/detail/reference/api.html): the reference for scripts and agentic tools
 - [Known issues](https://detail-embedding.github.io/detail/known-issues.html): current limits and the workaround for each
 
-## Citing DETAIL
+## Citing Detail
 
-If you use DETAIL in your research, please cite our preprint (bioRxiv link coming soon):
+If you use Detail in your research, please cite our preprint (bioRxiv link coming soon):
 
 > Lurbur M, Iyer V, Just R, Coffey KR, Golden SA. Introducing Detail: species-agnostic,
 > generalizable animal behavior analysis using foundation model embedding spaces. *bioRxiv*
@@ -103,11 +103,11 @@ request.
 
 ## License
 
-DETAIL is free software under the [GNU Affero General Public License v3.0](LICENSE)
+Detail is free software under the [GNU Affero General Public License v3.0](LICENSE)
 (AGPL-3.0-only). You may use, change and share it. If you share a changed version, or let
 others use one over a network, you must offer them its source code under the same license.
 
-The SAM 3 and DINOv3 model weights are not part of DETAIL. DETAIL downloads them from Hugging
+The SAM 3 and DINOv3 model weights are not part of Detail. Detail downloads them from Hugging
 Face, where Meta publishes each under its own license, which you accept when you request access
 there. Those licenses include restrictions of their own, such as on military use.
 
