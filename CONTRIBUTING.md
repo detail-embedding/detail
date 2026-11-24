@@ -82,7 +82,7 @@ warning appear, fix its cause rather than silencing it.
 ## Sign the contributor license agreement
 
 Before your first pull request can be merged, read the
-[DETAIL Contributor License Agreement](CLA.md) and agree to it. You keep the copyright in what
+[Detail Contributor License Agreement](CLA.md) and agree to it. You keep the copyright in what
 you write. You give the project the right to distribute your work, including under a different
 license in future versions.
 

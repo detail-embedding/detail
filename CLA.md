@@ -1,44 +1,44 @@
-# DETAIL Individual Contributor License Agreement
+# Detail Individual Contributor License Agreement
 
 Version 1.0
 
-Thank you for contributing to DETAIL. This agreement makes clear what rights you give the
+Thank you for contributing to Detail. This agreement makes clear what rights you give the
 project when you contribute, so that the project can keep distributing your work, including
 under a different license in the future. You keep the copyright in what you write.
 
 ## 1. Definitions
 
 - **"Project Owner"** means the University of Washington, which owns or manages the
-  copyright in DETAIL.
+  copyright in Detail.
 - **"You"** means the person submitting a Contribution and agreeing to this agreement.
 - **"Contribution"** means any original work of authorship, including code, documentation,
   tests, data and images, and any modification of existing material, that You submit to the
-  Project Owner for inclusion in DETAIL. Submission includes a pull request, a patch, an issue
-  attachment, or any other written communication sent to the DETAIL repository or its
+  Project Owner for inclusion in Detail. Submission includes a pull request, a patch, an issue
+  attachment, or any other written communication sent to the Detail repository or its
   maintainers. Anything You clearly mark as "Not a Contribution" when You submit it is excluded.
-- **"DETAIL"** means the software and documentation maintained in the
+- **"Detail"** means the software and documentation maintained in the
   `detail-embedding/detail` repository on GitHub, and any later versions of it.
 
 ## 2. Copyright license
 
-You grant the Project Owner, and those who receive DETAIL from it, a perpetual, worldwide,
+You grant the Project Owner, and those who receive Detail from it, a perpetual, worldwide,
 non-exclusive, no-charge, royalty-free, irrevocable license to reproduce, prepare derivative
 works of, publicly display, publicly perform, sublicense and distribute Your Contributions and
 derivative works of them.
 
 **This includes the right to license Your Contributions under any terms the Project Owner
 chooses, now or in the future, including terms that are not open source** (for example, a
-license limited to non-commercial use). The Project Owner will also make each version of DETAIL
+license limited to non-commercial use). The Project Owner will also make each version of Detail
 that contains Your Contribution available under the license that version is published under.
 
 ## 3. Patent license
 
-You grant the Project Owner, and those who receive DETAIL from it, a perpetual, worldwide,
+You grant the Project Owner, and those who receive Detail from it, a perpetual, worldwide,
 non-exclusive, no-charge, royalty-free, irrevocable patent license to make, have made, use,
 offer to sell, sell, import and otherwise transfer Your Contributions. This covers only the
 patent claims You can license that are necessarily infringed by Your Contribution, alone or
-combined with DETAIL as it was when You submitted it. If anyone sues claiming that a
-Contribution or DETAIL infringes a patent, the patent licenses that person received under this
+combined with Detail as it was when You submitted it. If anyone sues claiming that a
+Contribution or Detail infringes a patent, the patent licenses that person received under this
 agreement end on the date the suit is filed.
 
 ## 4. What You keep
