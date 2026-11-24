@@ -18,14 +18,25 @@ is resolved: the module imports, and the name is an attribute of it or a submodu
 ``alias.NAME`` read, where ``alias`` is a ``detail`` module bound by an import (``from detail.x
 import module [as alias]`` or ``import detail.x.module as alias``), names an attribute or
 submodule of it — whether the import is deferred or at module level.
+
+**Scopes are lexical.** An alias is checked in the function, lambda or class whose body imports
+it and in the scopes nested inside, and dropped wherever a scope rebinds the name (a parameter,
+an assignment, a ``def``). A scope's own bindings never leak into its siblings: one function's
+``ax`` parameter does not hide a module-level ``ax`` alias from the others, and two functions
+that bind ``m`` to different modules are each checked against their own. A ``from detail.x
+import submodule`` binding imports the submodule rather than relying on something else having
+loaded it first, so the verdict does not depend on which files the sweep read before.
 """
 
 import ast
 import importlib
 import pathlib
+import sys
 import types
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
+
+_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
 
 
 def _resolves(module: types.ModuleType, name: str) -> bool:
@@ -38,14 +49,38 @@ def _resolves(module: types.ModuleType, name: str) -> bool:
     return True
 
 
+def _as_module(parent: types.ModuleType, name: str) -> types.ModuleType | None:
+    """``parent.name`` if it is a module, importing it when it is a submodule not yet loaded."""
+    if hasattr(parent, name):
+        value = getattr(parent, name)
+        return value if isinstance(value, types.ModuleType) else None
+    try:
+        return importlib.import_module(f"{parent.__name__}.{name}")
+    except ImportError:
+        return None
+
+
 def _is_detail(module_name: str | None) -> bool:
     return bool(module_name) and module_name.split(".")[0] == "detail"
 
 
-def _module_bindings(scope: ast.AST) -> dict[str, types.ModuleType]:
-    """Names bound to a ``detail`` module by the imports directly in ``scope``'s body."""
+def _own_nodes(scope: ast.AST) -> list[ast.AST]:
+    """The nodes of ``scope``'s own body: a nested function, lambda or class is listed, not
+    entered, since what it binds is its own."""
+    own = []
+    stack = list(ast.iter_child_nodes(scope))
+    while stack:
+        node = stack.pop()
+        own.append(node)
+        if not isinstance(node, _SCOPES):
+            stack.extend(ast.iter_child_nodes(node))
+    return own
+
+
+def _module_bindings(own: list[ast.AST]) -> dict[str, types.ModuleType]:
+    """Names the imports in ``own`` bind to a ``detail`` module."""
     bound = {}
-    for node in ast.walk(scope):
+    for node in own:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.asname and _is_detail(alias.name):
@@ -53,22 +88,55 @@ def _module_bindings(scope: ast.AST) -> dict[str, types.ModuleType]:
         elif isinstance(node, ast.ImportFrom) and not node.level:
             if not _is_detail(node.module):
                 continue
+            parent = importlib.import_module(node.module)
             for alias in node.names:
-                value = getattr(importlib.import_module(node.module), alias.name, None)
-                if isinstance(value, types.ModuleType):
-                    bound[alias.asname or alias.name] = value
+                module = _as_module(parent, alias.name)
+                if module is not None:
+                    bound[alias.asname or alias.name] = module
     return bound
 
 
-def _rebound(scope: ast.AST, name: str) -> bool:
-    """Whether ``scope`` also binds ``name`` to something other than an import."""
-    for node in ast.walk(scope):
-        if isinstance(node, ast.Name) and node.id == name:
-            if isinstance(node.ctx, ast.Store):
-                return True
-        elif isinstance(node, ast.arg) and node.arg == name:
-            return True
-    return False
+def _rebinds(own: list[ast.AST]) -> set[str]:
+    """Names ``own`` binds to something other than an import."""
+    names = set()
+    for node in own:
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            names.add(node.id)
+        elif isinstance(node, ast.arg):
+            names.add(node.arg)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            names.add(node.name)
+    return names
+
+
+def _unresolved_reads(
+    scope: ast.AST, visible: dict[str, types.ModuleType], where: str
+) -> list[str]:
+    """``alias.NAME`` reads in ``scope`` and the scopes inside it that do not resolve."""
+    own = _own_nodes(scope)
+    here = {**visible, **_module_bindings(own)}
+    for name in _rebinds(own):
+        here.pop(name, None)
+    # A class body's names are not visible to its methods.
+    inherited = visible if isinstance(scope, ast.ClassDef) else here
+    missing = []
+    for node in own:
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id in here
+            and isinstance(node.ctx, ast.Load)
+            and not _resolves(here[node.value.id], node.attr)
+        ):
+            module = here[node.value.id]
+            missing.append(
+                f"{where}:{node.lineno}: {module.__name__} has no {node.attr}"
+            )
+        if isinstance(node, _SCOPES):
+            missing += _unresolved_reads(node, inherited, where)
+    return missing
 
 
 def _unresolved(source: str, where: str) -> list[str]:
@@ -90,26 +158,7 @@ def _unresolved(source: str, where: str) -> list[str]:
                     missing.append(
                         f"{where}:{node.lineno}: {node.module} has no {alias.name}"
                     )
-    scopes = [tree] + [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    ]
-    for scope in scopes:
-        for name, module in _module_bindings(scope).items():
-            if _rebound(scope, name):
-                continue
-            for node in ast.walk(scope):
-                if (
-                    isinstance(node, ast.Attribute)
-                    and isinstance(node.value, ast.Name)
-                    and node.value.id == name
-                    and isinstance(node.ctx, ast.Load)
-                    and not _resolves(module, node.attr)
-                ):
-                    missing.append(
-                        f"{where}:{node.lineno}: {module.__name__} has no {node.attr}"
-                    )
+    missing += _unresolved_reads(tree, {}, where)
     return sorted(set(missing))
 
 
@@ -153,12 +202,53 @@ def test_the_scan_rejects_an_attribute_off_a_top_level_module_import():
     ]
 
 
+def test_the_scan_rejects_a_top_level_submodule_import_nothing_loaded_yet(monkeypatch):
+    # Unload the submodule, as if no file the sweep read earlier had imported it: the
+    # ``from detail.gui import animation_export`` binding must import it, not skip it.
+    package = importlib.import_module("detail.gui")
+    monkeypatch.delitem(sys.modules, "detail.gui.animation_export", raising=False)
+    monkeypatch.delattr(package, "animation_export", raising=False)
+    source = (
+        "from detail.gui import animation_export as ax\n"
+        "def export():\n"
+        "    return ax.GIF\n"
+    )
+    assert _unresolved(source, "x.py") == [
+        "x.py:3: detail.gui.animation_export has no GIF"
+    ]
+
+
+def test_the_scan_rejects_a_top_level_alias_another_function_shadows():
+    source = (
+        "import detail.gui.animation_export as ax\n"
+        "def plot(ax):\n"
+        "    ax.plot()\n"
+        "def export():\n"
+        "    return ax.GIF\n"
+    )
+    assert _unresolved(source, "x.py") == [
+        "x.py:5: detail.gui.animation_export has no GIF"
+    ]
+
+
 def test_the_scan_accepts_a_submodule_and_ignores_top_level_imports():
     source = (
         "from detail.gui.animation_export import GIF\n"
         "def f():\n"
         "    from detail.api import animation\n"
         "    return animation.GIF\n"
+    )
+    assert _unresolved(source, "x.py") == []
+
+
+def test_the_scan_checks_each_function_against_its_own_alias():
+    source = (
+        "def a():\n"
+        "    from detail.api import animation as m\n"
+        "    return m.GIF\n"
+        "def b():\n"
+        "    from detail.gui import animation_export as m\n"
+        "    return m.ask_save_path\n"
     )
     assert _unresolved(source, "x.py") == []
 
