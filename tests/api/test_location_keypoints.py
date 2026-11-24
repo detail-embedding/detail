@@ -221,6 +221,31 @@ def test_several_points_are_one_panel_per_recording_coloured_by_point(proj):
     assert spec.legend and spec.color is None
 
 
+@pytest.mark.parametrize(
+    "view, drawn",
+    [
+        (
+            LocationPlotView(points=["tail_base", "nose"], posture_every_s=10.0),
+            ['"name":"tail_base"', '"name":"nose"', '"name":"body outline"'],
+        ),
+        (LocationPlotView(kind="trace3d", source="nose"), ['"type":"scatter3d"']),
+    ],
+    ids=["points", "nose-3d"],
+)
+def test_keypoint_plots_export_as_an_interactive_page_too(proj, tmp_path, view, drawn):
+    """The interactive page (#99) and the keypoint plots (#100) were built on two branches,
+    each against plots without the other: a keypoint plot's lines, legend and outline are
+    drawn by the page as by the pictures."""
+    _with_points(proj)
+    plots = proj.location_plots("an_01")
+    paths = plots.export(view, tmp_path / "kp", formats=("png", "html"))
+    assert [p.name for p in paths] == ["kp.png", "kp.html"]
+    # Spaces dropped from both: plotly's JSON spacing is not this test's business.
+    page = (tmp_path / "kp.html").read_text(encoding="utf-8").replace(" ", "")
+    missing = [mark for mark in drawn if mark.replace(" ", "") not in page]
+    assert not missing
+
+
 def test_an_unknown_keypoint_or_a_run_without_keypoints_says_so(proj, tmp_path):
     _with_points(proj)
     with pytest.raises(

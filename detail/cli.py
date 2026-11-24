@@ -5241,7 +5241,8 @@ def _view_values(fields: dict) -> dict:
 @click.option(
     "--format", "formats", multiple=True,
     type=click.Choice(list(LOCATION_PLOT_FORMATS)), default=("png",), show_default=True,
-    help="Picture format (repeatable).",
+    help="png / svg / pdf picture, or html: one self-contained interactive page you can "
+    "hover, zoom and (3-D) turn (repeatable).",
 )  # fmt: skip
 @click.option(
     "--theme", type=click.Choice(["light", "dark"]), default="light", show_default=True,

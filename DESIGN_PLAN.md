@@ -651,7 +651,7 @@ recordings:
     metadata: {animal_id: M002}
 ```
 
-**Validation is upfront + exhaustive** (Tenet 10 — `storage/manifest.py::validate_manifest`): structure + `schema_version`; each id path-safe, unique-in-file, not colliding with an existing recording; each video path resolves under the bundle, opens (probe), and all of a recording's parts share fps + resolution; each stream's importer is registered, name path-safe + unique-in-recording, `raw` + every required `aux` key present with the right extension; `config` valid against that importer's `config_model` (and absent for an importer that declares none); `offset_ns` an int. All problems are reported together; on any error, **nothing is imported**. Warnings (a reused source path) don't block. The CLI (`detail recording import --bundle <dir> [--dry-run]`) and the GUI ("Import bundle…") share `load_manifest` + `validate_manifest` + `api.imports.build_specs`; deep parse/decode failures surface per recording at import time (that recording goes `failed`, the batch continues).
+**Validation is upfront + exhaustive** (Tenet 10 — `storage/manifest.py::validate_manifest`): structure + `schema_version`; each id path-safe, unique-in-file, not colliding with an existing recording; each video path resolves under the bundle, opens (probe), and all of a recording's parts share a resolution and, within 1% (`video_integrity.PART_FPS_TOLERANCE`), a frame rate — the rule adding a part and every other import share (`video_integrity.another_parts_shape`), checked for every part before the first is copied; each stream's importer is registered, name path-safe + unique-in-recording, `raw` + every required `aux` key present with the right extension; `config` valid against that importer's `config_model` (and absent for an importer that declares none); `offset_ns` an int. All problems are reported together; on any error, **nothing is imported**. Warnings (a reused source path) don't block. The CLI (`detail recording import --bundle <dir> [--dry-run]`) and the GUI ("Import bundle…") share `load_manifest` + `validate_manifest` + `api.imports.build_specs`; deep parse/decode failures surface per recording at import time (that recording goes `failed`, the batch continues).
 
 Using integer nanoseconds rather than float seconds avoids floating point drift at high sample rates (e.g., 30kHz neural signals over a 1-hour recording). Integer comparison is exact; any two samples with the same `t_ns` value are provably simultaneous.
 
@@ -5331,8 +5331,16 @@ vanishes). Group lines take categorical identities in group order.
 — numpy arrays, labels and colour *roles*, no plotting library — and
 `report/plot_render.py` draws it with matplotlib through the house style (`report/figures.py`,
 `report/style.py`): files for an export (PNG, SVG, PDF) and PNG bytes for the GUI, so the
-picture on screen is the one an export writes. A coloured path is drawn as one polyline per run
-of consecutive segments in one of `COLOUR_STEPS` (64) colour steps, in the path's order
+picture on screen is the one an export writes. `report/plot_html.py` is its twin for **one
+self-contained interactive page** (`html`): plotly, imported inside the renderer only, with
+plotly.js embedded so the page opens offline (about 5 MB). It resolves the same colour roles
+against `core/chart_theme.py`; a 2-D path coloured by time or speed carries its colour on
+markers over a hairline (a plotly 2-D line has one colour), a 3-D path colours its line; a
+heat-map cell with no time is left empty, as the picture leaves it; and since plotly links
+axes but not cameras, a 3-D page carries one small script that copies a turned scene's camera
+to every other, so the panels turn together as the picture's grid shares one camera.
+
+A coloured path is drawn as one polyline per run of consecutive segments in one of `COLOUR_STEPS` (64) colour steps, in the path's order
 (`plot_render.colour_steps`): every segment the per-segment rule drew, what came later on top,
 at a few dozen drawn paths per time-coloured path rather than one per segment. Progress is
 `reading` per recording, `measuring` (the spec), `drawing` per panel and, for files, `writing`;
@@ -5341,7 +5349,8 @@ that draw at its next panel (`gui/busy.py`).
 
 **Surfaces.** API: `Experiment.location_plots(run_id)` → `LocationPlots` (`build(view,
 recording_ids, progress)`, `export(view, stem, recording_ids, formats=, theme=, progress=)`,
-`body_measured()`); it keeps what it read, so a second plot re-reads nothing. CLI: `detail
+`body_measured()`; `formats` png, svg, pdf and html); it keeps what it read, so a second plot
+re-reads nothing. CLI: `detail
 locations plot`. GUI: the run's page has two views, **Plots** (`gui/location_plots.
 LocationPlotsPanel`: the controls, the recording checklist, **Export image…**, the picture in a
 zoomable `ImageView`, the run read on first show behind a progress bar) and **Files** (the CSVs

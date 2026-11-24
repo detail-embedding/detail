@@ -217,7 +217,8 @@ table, see the [Parameters reference](reference/parameters.md).
 - `add-video --experiment <dir> --recording <id> --video <file>`: import a video as
   the next part. Repeat to add more parts. The video is imported at its original rate
   and resolution: a stage that wants fewer frames sets `--every-n-frames` on the run, which
-  needs no second copy. Add `--reference` to **reference the video in place**: the file is not
+  needs no second copy. Every part of a recording has one picture size and one frame rate,
+  so a video of another size, or a frame rate more than 1% away, is refused, naming both. Add `--reference` to **reference the video in place**: the file is not
   copied; the recording stores its location plus a content fingerprint so a moved or
   changed file is detected. The location (the file's folder) is remembered
   automatically; `--video-root <alias>` pins a specific registered [video
@@ -790,8 +791,9 @@ own run), for the location export only.
 
 ### `locations plot`
 `--experiment`, `--run an_NN` (a finished location-export run), `--out <path>` (no extension):
-draws the run from its own CSVs and writes `<path>.png`, or one file per `--format png|svg|pdf`
-(repeatable). `--recording <name>` (repeatable) plots only those recordings; `--theme dark`
+draws the run from its own CSVs and writes `<path>.png`, or one file per `--format png|svg|pdf|html`
+(repeatable). `html` is one self-contained interactive page (plotly.js embedded, so it opens
+offline): hover over a point to read it, zoom, and turn a 3-D plot, every panel with it. `--recording <name>` (repeatable) plots only those recordings; `--theme dark`
 draws on a dark surface. No run record; the run is only read.
 
 ```bash

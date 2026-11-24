@@ -279,3 +279,14 @@ def test_keypoint_rows_appear_only_when_the_run_has_keypoints(qapp, page, tmp_pa
     finally:
         other.close()
         drain_busy_calls(qapp)
+
+
+def test_export_writes_an_interactive_page(qapp, page, tmp_path):
+    from detail.gui.location_plots import EXPORT_FILTERS
+
+    assert "Interactive HTML (*.html)" in EXPORT_FILTERS
+    panel = _panel(page)
+    _open(page)
+    assert _drawn(qapp, panel)
+    panel.export_to(str(tmp_path / "paths.html"))
+    assert drain_until(qapp, lambda: (tmp_path / "paths.html").is_file())

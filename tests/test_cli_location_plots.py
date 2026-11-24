@@ -65,6 +65,18 @@ def test_plot_writes_each_format(tmp_path):
     assert f"wrote: {out.with_suffix('.png')}" in result.output
 
 
+def test_plot_writes_an_interactive_page(tmp_path):
+    proj = _experiment(tmp_path)
+    out = tmp_path / "speed"
+    result = CliRunner().invoke(
+        main,
+        ["locations", "plot", "--experiment", str(proj.dir), "--run", "an_01",
+         "--out", str(out), "--kind", "speed", "--format", "html"],
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    assert out.with_suffix(".html").is_file() and not out.with_suffix(".png").exists()
+
+
 def test_a_body_plot_by_group_for_chosen_recordings(tmp_path):
     proj = _experiment(tmp_path)
     out = tmp_path / "body"

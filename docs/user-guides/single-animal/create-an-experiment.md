@@ -252,7 +252,9 @@ were filmed, and the heading counts them, such as **Video parts (2)**. If two ar
 
 ??? info "About this step"
     Every part of a recording must have the same picture size and the same frame rate, which
-    is the case for files one camera saved in one session. DETAIL refuses a part that differs.
+    is the case for files one camera saved in one session. DETAIL refuses a part that differs,
+    before it copies anything. A frame rate within 1% counts as the same: a phone or webcam
+    saves each file at a slightly different average rate.
 
     Set the order before you go on. Once the recording has a run, such as a detection run in
     chapter 3, the order is fixed, because the run's results are tied to it.
