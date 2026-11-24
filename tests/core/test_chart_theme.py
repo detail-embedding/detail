@@ -160,6 +160,34 @@ def test_the_diverging_poles_differ_by_more_than_hue(theme) -> None:
 
 
 @BOTH
+def test_the_colormap_reads_as_a_ramp_whose_hue_moves(theme) -> None:
+    """The location plots' colormap: monotone lightness and visible steps like any ramp, but
+    hue moves by design, so the one-hue rule is off. A grey ramp on a busy picture of paths
+    read as black and white."""
+    assert check_ramp(theme.colormap, one_hue=False) == []
+    assert theme.colormap != theme.sequential
+
+
+@BOTH
+def test_the_colormap_s_low_end_fades_into_the_surface(theme) -> None:
+    """A cell an animal barely visited reads as almost nothing, and a hotspot stands out:
+    the low end is near the surface and the high end the farthest from it. Viridis on white
+    put its strongest colour on the least-visited cells and framed the arena's edges."""
+    contrasts = [contrast(c, theme.surface) for c in theme.colormap]
+    assert contrasts[0] < 1.5
+    assert contrasts[-1] == max(contrasts)
+
+
+def test_dark_is_inferno_and_light_is_inferno_reversed() -> None:
+    import matplotlib
+    from matplotlib.colors import to_hex
+
+    inferno = tuple(to_hex(matplotlib.colormaps["inferno"](i / 8)) for i in range(9))
+    assert DARK.colormap == inferno
+    assert LIGHT.colormap == inferno[::-1]
+
+
+@BOTH
 def test_zero_on_the_sequential_scale_sits_near_the_surface(theme) -> None:
     """Low magnitude reads as "nothing": the low end is the ramp stop closest to the surface."""
     distances = [delta_e(c, theme.surface) for c in theme.sequential]

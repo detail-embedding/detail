@@ -3,6 +3,7 @@ matplotlib renderer's twin — same panels, ranges, colour roles, legend and not
 that stays one view."""
 
 import numpy as np
+import pytest
 
 from detail.core import chart_theme
 from detail.report import plot_html
@@ -53,10 +54,15 @@ def test_a_path_plot_keeps_the_ranges_scale_and_y_down():
     assert None in first.x  # the gap is a break, not a jump
 
 
-def test_a_path_skips_the_palest_steps_and_a_heat_map_keeps_them():
-    fig = plot_html.figure(_path_spec(1))
-    low = fig.layout.coloraxis.colorscale[0][1]
-    assert low.lower() == chart_theme.LIGHT.sequential[2].lower()
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_the_page_wears_the_picture_s_colormap(theme):
+    """The page's colours are the picture's (``report/style.line_stops`` for a path, the whole
+    ``colormap`` for a heat map), so a page and a PNG of one plot agree."""
+    from detail.report.style import line_stops
+
+    chart = chart_theme.LIGHT if theme == "light" else chart_theme.DARK
+    scale = plot_html.figure(_path_spec(1), theme).layout.coloraxis.colorscale
+    assert [step[1].lower() for step in scale] == list(line_stops(chart))
     heat = PlotSpec(
         kind="heatmap",
         title="Occupancy",
@@ -70,13 +76,11 @@ def test_a_path_skips_the_palest_steps_and_a_heat_map_keeps_them():
         y=Axis("y"),
         color=ColorScale("share", 0.0, 0.5),
     )
-    fig = plot_html.figure(heat)
+    fig = plot_html.figure(heat, theme)
     assert fig.data[0].type == "heatmap" and fig.data[0].coloraxis == "coloraxis"
-    assert (
-        fig.layout.coloraxis.colorscale[0][1].lower() == chart_theme.LIGHT.sequential[0]
-    )
-    # A cell the animal never entered is left empty, as the picture leaves it: the ramp's
-    # palest step is a grey, and a frame of it read as a floor the animal had covered.
+    scale = fig.layout.coloraxis.colorscale
+    assert [step[1].lower() for step in scale] == list(chart.colormap)
+    # A cell the animal never entered is left empty, as the picture leaves it.
     assert [list(row) for row in fig.data[0].z] == [[0.5, None], [None, 0.5]]
 
 

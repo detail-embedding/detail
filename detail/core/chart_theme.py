@@ -169,6 +169,17 @@ class ChartTheme:
     #: diverging scale's blue ("less") as a frame on the clusters a difference screen kept —
     #: a blue frame on a blue fill did not read, and blue meant two things (2026-11-16).
     sequential: tuple[str, ...]
+    #: The location plots' colours, low → high: a path coloured by time or speed, an occupancy
+    #: heat map. Inferno on dark (black to pale yellow), inferno reversed on light (pale
+    #: yellow to black): hue *and* lightness move, monotonically, and the low end fades into
+    #: the surface in both, so a cell an animal barely visited reads as almost nothing and a
+    #: hotspot stands out. The grey ``sequential`` ramp read as black and white on a busy
+    #: picture of paths. Viridis on light was tried: it put its strongest colour, a dark
+    #: purple, on the least-visited cells and framed the arena's edges. An empty cell is
+    #: masked, never drawn in the low end; a line skips the steps too close to the surface
+    #: (``report/style.line_stops``). Not for a share where zero must read as nothing on the
+    #: cluster tree: that stays ``sequential``.
+    colormap: tuple[str, ...]
     #: Signed difference, negative pole → neutral middle → positive pole (blue ↔ yellow).
     #: The poles differ in lightness as well as hue: blue against yellow is the contrast a
     #: red-green colour-blind reader keeps, and the earlier blue ↔ vermillion pair sat at one
@@ -223,6 +234,20 @@ class ChartTheme:
             ) from None
 
 
+#: inferno, nine even stops (``matplotlib.colormaps["inferno"](i / 8)``): the dark theme's
+#: ``colormap``, and reversed the light theme's.
+_INFERNO = (
+    "#000004",
+    "#210c4a",
+    "#57106e",
+    "#8a226a",
+    "#bc3754",
+    "#e45a31",
+    "#f98e09",
+    "#f9cb35",
+    "#fcffa4",
+)
+
 LIGHT = ChartTheme(
     name="light",
     surface="#ffffff",
@@ -237,6 +262,7 @@ LIGHT = ChartTheme(
     handle="#D55E00",
     categorical=_OKABE_ITO_LIGHT,
     extended=_EXTENDED_LIGHT,
+    colormap=_INFERNO[::-1],
     sequential=(
         "#dedede",
         "#c4c4c4",
@@ -275,6 +301,7 @@ DARK = ChartTheme(
     handle="#D55E00",
     categorical=_OKABE_ITO_DARK,
     extended=_EXTENDED_DARK,
+    colormap=_INFERNO,
     sequential=(
         "#333333",
         "#484848",

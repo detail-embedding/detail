@@ -221,6 +221,42 @@ def rc_params(style: FigureStyle = DEFAULT_STYLE) -> dict:
     }
 
 
+#: The least contrast a coloured line keeps against the surface (WCAG ratio). The grey line ramp
+#: skipped exactly its two palest steps, 1.35:1 and 1.74:1 on white, and kept 2.3:1 up; this is
+#: that rule stated for any ramp: inferno drops its four darkest steps on the dark surface,
+#: and reversed its two palest yellows on white.
+LINE_MIN_CONTRAST = 2.0
+
+
+def line_stops(chart: ChartTheme) -> tuple[str, ...]:
+    """The theme's ``colormap`` without the low steps a thin line would vanish into: every
+    step from the low end below ``LINE_MIN_CONTRAST`` against the surface. The low end is the
+    one near the surface in both themes (``tests/core/test_chart_theme.py``), so it is the
+    only end trimmed."""
+    from detail.core.color_checks import contrast
+
+    stops = list(chart.colormap)
+    while stops and contrast(stops[0], chart.surface) < LINE_MIN_CONTRAST:
+        stops.pop(0)
+    return tuple(stops)
+
+
+def plot_stops(chart: ChartTheme, *, heat: bool) -> tuple[str, ...]:
+    """The location plots' colours: the whole ``colormap`` for a heat map (an empty cell is
+    masked, never drawn in its low end), :func:`line_stops` for a coloured path."""
+    return chart.colormap if heat else line_stops(chart)
+
+
+def plot_cmap(style: FigureStyle = DEFAULT_STYLE, *, heat: bool):
+    """:func:`plot_stops` as a matplotlib colormap."""
+    from matplotlib.colors import LinearSegmentedColormap
+
+    return LinearSegmentedColormap.from_list(
+        f"detail_{'heat' if heat else 'path'}_{style.theme}",
+        list(plot_stops(style.chart, heat=heat)),
+    )
+
+
 def sequential_cmap(style: FigureStyle = DEFAULT_STYLE):
     """A magnitude colormap from the theme's one-hue ramp (low end near the surface)."""
     from matplotlib.colors import LinearSegmentedColormap
