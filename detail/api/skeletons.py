@@ -2,7 +2,7 @@
 experiment, behind the top bar's **Keypoints manager** and the ``detail skeleton`` CLI group.
 
 A **skeleton** is the points, the edges that join them, the left/right pairs and where they
-were drawn (``core.skeleton.Skeleton``). The library holds the four built-in **presets**
+were drawn (``core.skeleton.Skeleton``). The library holds the two built-in **presets**
 (read-only entries whose ids are the preset keys) and the user's own skeletons (``sk_NN``,
 ``storage/skeleton_library.py``).
 

@@ -10,6 +10,7 @@ from click.testing import CliRunner
 from detail.cli import main
 from detail.core.skeleton import PRESETS
 from tests import experiments
+from tests.skeletons import SIDE_5
 
 N_FRAMES = 5
 
@@ -55,20 +56,20 @@ def test_create_edit_duplicate_export_and_import(tmp_path):
     proj = Experiment.create("p", tmp_path)
     exp = ["--experiment", str(proj.dir)]
     assert "created example set: ex_01" in _ok(
-        "examples", "create", "rats", "--skeleton", "quadruped_side_5", *exp
+        "examples", "create", "rats", "--skeleton", "midline_2", *exp
     )
     assert "updated example set: ex_01" in _ok(
         "examples", "edit", "ex_01", "--name", "side rats", *exp
     )
     es = proj.example_set("ex_01")
-    assert es.name == "side rats" and es.skeleton == PRESETS["quadruped_side_5"][1]
-    assert es.skeleton_ref["id"] == "quadruped_side_5"
+    assert es.name == "side rats" and es.skeleton == PRESETS["midline_2"][1]
+    assert es.skeleton_ref["id"] == "midline_2"
     assert "nothing to change" in _fails("examples", "edit", "ex_01", *exp)
     assert "updated example set: ex_01" in _ok(
         "examples", "edit", "ex_01", "--skeleton", "midline_3", *exp
     )
     assert proj.example_set("ex_01").skeleton == PRESETS["midline_3"][1]
-    _ok("examples", "edit", "ex_01", "--skeleton", "quadruped_side_5", *exp)
+    _ok("examples", "edit", "ex_01", "--skeleton", "midline_2", *exp)
     assert "No such option '--rename'" in _fails(
         "examples", "edit", "ex_01", "--name", "x", "--rename", "a=b", *exp
     )
@@ -102,11 +103,13 @@ def test_create_edit_duplicate_export_and_import(tmp_path):
 
 
 # --- examples --------------------------------------------------------------------- #
-def test_examples_create_sample_show_and_delete(tracked):
+def test_examples_create_sample_show_and_delete(tracked, tmp_path):
     exp = tracked.exp
+    side = tmp_path / "side.yaml"
+    side.write_text(yaml.dump(SIDE_5.to_dict()), encoding="utf-8")
     assert "no example sets" in _ok("examples", "list", *exp)
     assert "created example set: ex_01" in _ok(
-        "examples", "create", "rats", "--skeleton", "quadruped_side_5", *exp
+        "examples", "create", "rats", "--skeleton", str(side), *exp
     )
     assert "ex_01  rats  example  0 frames, 0 marked  skeleton 5 points" in _ok(
         "examples", "list", *exp
@@ -142,7 +145,7 @@ def test_examples_create_sample_show_and_delete(tracked):
 
 def test_examples_add_frame_and_its_refusals(tracked):
     exp = tracked.exp
-    _ok("examples", "create", "rats", "--skeleton", "quadruped_side_5", *exp)
+    _ok("examples", "create", "rats", "--skeleton", "midline_2", *exp)
     frame = [
         "--recording",
         "recording_002",
@@ -167,7 +170,7 @@ def test_examples_add_frame_and_its_refusals(tracked):
 
 def test_examples_sample_errors_are_clean(tracked):
     exp = tracked.exp
-    _ok("examples", "create", "rats", "--skeleton", "quadruped_side_5", *exp)
+    _ok("examples", "create", "rats", "--skeleton", "midline_2", *exp)
     assert "no example set 'ex_09'" in _fails(
         "examples", "sample", "ex_09", "--recording", "recording_002", *exp
     )
@@ -189,7 +192,7 @@ def test_examples_sample_errors_are_clean(tracked):
 def test_examples_import_a_prepared_yaml(tracked, tmp_path):
     exp = tracked.exp
     proj = tracked.experiment
-    _ok("examples", "create", "rats", "--skeleton", "quadruped_side_5", *exp)
+    _ok("examples", "create", "rats", "--skeleton", "midline_2", *exp)
     _ok(
         "examples",
         "sample",
@@ -415,7 +418,7 @@ def test_an_audit_set_left_on_disk_still_lists_and_deletes(tmp_path):
     proj = Experiment.create("p", tmp_path)
     exp = ["--experiment", str(proj.dir)]
     audit = example_sets.create_set(
-        proj.dir, "rats audit", PRESETS["quadruped_side_5"][1], purpose="audit"
+        proj.dir, "rats audit", PRESETS["midline_2"][1], purpose="audit"
     )
 
     assert audit.id not in _ok("examples", "list", *exp)

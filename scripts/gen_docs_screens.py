@@ -1601,7 +1601,7 @@ def _render_keypoints(demo_dir: Path) -> None:
 
 def _render_new_skeleton(demo_dir: Path) -> None:
     """Chapter 4's *Make your own skeleton*: the Keypoints manager and a 6-point skeleton
-    drawn in the editor, plus the side-view preset. Nothing is saved.
+    drawn in the editor, plus a 5-point side-view skeleton. Nothing is saved.
 
     The library is shown with its presets only, so this machine's own skeletons stay out of
     the picture.
@@ -1663,8 +1663,25 @@ def _render_new_skeleton(demo_dir: Path) -> None:
     # Closed past its own reject, which would ask about the unsaved skeleton in a modal box.
     QDialog.reject(dialog)
 
-    side = next(e for e in presets if e["id"] == "quadruped_side_5")
-    dialog = SkeletonEditorDialog(side, [], {e["name"] for e in presets}, parent=window)
+    dialog = SkeletonEditorDialog(None, [], {e["name"] for e in presets}, parent=window)
+    dialog._name.setText("mouse side")
+    # Seen from the side, the nose to the left.
+    dialog.editor().load(
+        Skeleton(
+            names=("nose", "left_ear", "right_ear", "mid_back", "tail_base"),
+            edges=(
+                ("nose", "left_ear"),
+                ("nose", "right_ear"),
+                ("nose", "mid_back"),
+                ("mid_back", "tail_base"),
+            ),
+            pairs=(("left_ear", "right_ear"),),
+            layout=((0.12, 0.5), (0.3, 0.3), (0.36, 0.38), (0.56, 0.36), (0.88, 0.5)),
+        )
+    )
+    dialog.editor()._selected = 0  # the nose: no pair, so Side is greyed out
+    dialog.editor()._show()
+    dialog._sync()
     dialog.resize(760, 820)
     dialog.show()
     _settle()

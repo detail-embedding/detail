@@ -90,7 +90,7 @@ In the **Distill new model** dialog:
    and labels three times faster.
 6. **Examples:** the example set, which you make next (step 2).
 
-![The Distill new model dialog for keypoints: model type Keypoints, the name mouse keypoints, the teacher Patch method + example set with dinov3_match at vit_large, the skeleton Quadruped overhead view, the example set mouse overhead with 11 of 11 frames, the tracking from chapter 3, 300 frames to label, the score cut-off still to set, the student yolo11s-pose.pt, and Distill greyed out with its reason at the bottom. Numbered markers sit on every control.](../../assets/user-guides/single-animal/keypoints/distill-keypoints.png)
+![The Distill new model dialog for keypoints: model type Keypoints, the name mouse keypoints, the teacher Patch method + example set with dinov3_match at vit_large, the skeleton mouse overhead, the example set mouse overhead with 11 of 11 frames, the tracking from chapter 3, 300 frames to label, the score cut-off still to set, the student yolo11s-pose.pt, and Distill greyed out with its reason at the bottom. Numbered markers sit on every control.](../../assets/user-guides/single-animal/keypoints/distill-keypoints.png)
 
 ??? info "What everything on this screen does"
     1. **Model type**: **Keypoints** makes a keypoint model.
@@ -102,9 +102,10 @@ In the **Distill new model** dialog:
     5. **Method**: the patch method. **dinov3_match** is the one to use.
     6. **Size**: the method's size. **vit_large** is the most accurate, and the one
        downloaded in Configure Detail.
-    7. **Skeleton**: the points to mark and the lines joining them. **Quadruped overhead view
-       (12 points)** is made for a four-legged animal seen from above. Your own skeletons are
-       listed too ([Make your own skeleton](#make-your-own-skeleton)).
+    7. **Skeleton**: the points to mark and the lines joining them. The demo uses
+       **mouse overhead**, 12 points made for a four-legged animal seen from above. Your own
+       skeletons are listed here ([Make your own skeleton](#make-your-own-skeleton)), after
+       the two presets, **Midline (3 points)** and **Midline (2 points)**.
     8. **Example set**: which example set the teacher learns from. The count beside it says
        how many of its frames are fully marked.
     9. **New example set…**: makes an empty example set and opens it for marking (step 2).
@@ -132,14 +133,18 @@ Leave the dialog open: steps 2 and 3 work from it.
 ### Make your own skeleton
 
 A **skeleton** is the list of points to mark, the lines joining them, and which points are a
-left/right pair. The demo uses the preset **Quadruped overhead view (12 points)**. If you
-want fewer points, or different ones, make a skeleton before you make the example set. This
-example makes a 6-point skeleton: nose, left ear, right ear, neck, back and tail base.
+left/right pair. Detail comes with two presets: **Midline (3 points)** (head, midpoint and
+tail) and **Midline (2 points)** (head and tail). For anything more, such as ears or a tail
+tip, make a skeleton before you make the example set. The demo's skeleton, **mouse
+overhead**, has 12 points: the nose, both ears, the base of the neck, both shoulders, the
+middle of the back, both hips, and the base, middle and tip of the tail. This example makes
+a smaller one the same way, with 6 points: nose, left ear, right ear, neck, back and tail
+base.
 
 Click **Keypoints manager** in the bar along the top of the window, then **+ New
 skeleton**.
 
-![The Keypoints manager: the + New skeleton button highlighted, and the table of skeletons with the four presets. Numbered markers sit on every control.](../../assets/user-guides/single-animal/keypoints/keypoints-manager.png)
+![The Keypoints manager: the + New skeleton button highlighted, and the table of skeletons with the two presets. Numbered markers sit on every control.](../../assets/user-guides/single-animal/keypoints/keypoints-manager.png)
 
 ??? info "What everything on this screen does"
     Skeletons are shared by every experiment on your computer. An example set, a keypoint
@@ -201,12 +206,12 @@ In the **New skeleton** window:
       `tail_base` as the back.
 
 Your skeleton is now in the **Skeleton** list of the Distill dialog and of **New example
-set…**. Choose it there instead of the preset.
+set…**. Choose it there.
 
 ### Make the example set
 
 In the **Distill new model** dialog, click **New example set…**. Give the set a name, such
-as `mouse overhead`, leave the **Skeleton** as it is (or choose your own), and click
+as `mouse overhead`, choose your skeleton in **Skeleton**, and click
 **Create and mark frames**.
 
 ![The New example set dialog: the name mouse overhead and the skeleton. Numbered markers sit on every control.](../../assets/user-guides/single-animal/keypoints/new-example-set.png)
@@ -575,25 +580,26 @@ in this chapter are the same, with three differences. The same goes for an **iso
 recording, filmed from above at an angle. There the differences matter even more: from an
 angle the animal is seen in many more orientations, so the example set has to cover them all.
 
-**1. Choose the skeleton.** In **New example set…**, choose **Quadruped side view (5
-points)**: nose, left ear, right ear, middle of the back and tail base, with the ears as a
-left/right pair. Or [make your own](#make-your-own-skeleton): an isometric view often sees
-more of the body than a side view, such as the paws.
+**1. Choose the skeleton.** [Make one](#make-your-own-skeleton) for the view. From the side,
+5 points is a good start: nose, left ear, right ear, middle of the back and tail base, with
+the ears as a left/right pair. An isometric view often sees more of the body than a side
+view, such as the paws. If only the body's line matters, the preset **Midline (3 points)**
+needs no skeleton of your own.
 
-![The skeleton editor showing the Quadruped side view (5 points) preset: the nose at the left, joined to the left ear, the right ear and the middle of the back, which is joined to the tail base. Numbered markers sit on every control.](../../assets/user-guides/single-animal/keypoints/side-skeleton.png)
+![The skeleton editor showing a 5-point side-view skeleton, mouse side: the nose at the left, joined to the left ear, the right ear and the middle of the back, which is joined to the tail base. Numbered markers sit on every control.](../../assets/user-guides/single-animal/keypoints/side-skeleton.png)
 
 ??? info "What everything on this screen does"
-    The editor opens this way from the **Keypoints manager**: choose the preset and click
-    **Edit…**. A preset cannot be changed, so an edit saves a copy.
+    The **New skeleton** window from [Make your own skeleton](#make-your-own-skeleton),
+    with the five points drawn from the side: the nose at the left, the tail base at the
+    right.
 
-    1. **Name**: the skeleton's name.
+    1. **Name**: the skeleton's name, here `mouse side`.
     2. **Point**: the chosen point's name.
     3. **Pair with**: the chosen point's partner on the other side of the body.
        **(none)** for the nose, which is on the middle of the body.
     4. **Side**: the side of the body, for a paired point. Greyed out for the nose.
-    5. **Remove point**: removes the chosen point, in the copy.
-    6. **Save as new**: saves your changes as a new skeleton, leaving the preset as it is.
-       Greyed out until something has changed.
+    5. **Remove point**: removes the chosen point.
+    6. **Save**: saves the skeleton.
     7. **Cancel**: closes the window.
 
     From the side, one ear is usually hidden behind the head. Mark it **Not visible** (++n++)

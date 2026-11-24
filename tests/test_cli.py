@@ -4037,7 +4037,7 @@ def test_cli_model_import_a_pose_checkpoint_with_a_skeleton(pose_pt):
     "args, message",
     [
         ([], "pass the skeleton its points follow"),
-        (["--skeleton", "quadruped_side_5"], "places 3 points but the skeleton has 5"),
+        (["--skeleton", "midline_2"], "places 3 points but the skeleton has 2"),
         (["--skeleton", "no_such_skeleton"], "no skeleton preset"),
     ],
     ids=["no skeleton", "wrong point count", "unknown skeleton"],

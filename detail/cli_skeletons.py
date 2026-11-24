@@ -37,7 +37,7 @@ def _summary(entry: dict) -> str:
 @click.group("skeleton")
 def skeleton() -> None:
     """Skeletons (§26): the points a keypoint model finds, the edges between them and the
-    left/right pairs. One library per machine, shared by every experiment; the four presets
+    left/right pairs. One library per machine, shared by every experiment; the two presets
     are read-only. Whatever uses a skeleton keeps its own copy."""
 
 

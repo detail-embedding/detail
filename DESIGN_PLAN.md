@@ -10233,9 +10233,13 @@ order; which *image* side that falls on is learned from the clicks, per pair (*P
 two existing, different points and no point is in two pairs; an edge names existing points and is
 not a self-loop; no duplicate edge in either direction.
 
-**Presets.** Four built-in skeletons (`quadruped_overhead_12` 12 points, `quadruped_side_5` 5,
-`quadruped_overhead_8` 8, `midline_3` 3 — the two research skeletons and Quick pose's two, roles removed),
-each with a layout, shown as **read-only rows** of the skeleton library (below). **Renamed
+**Presets.** Two built-in skeletons (`midline_3`: head, midpoint, tail; `midline_2`: head, tail),
+each with a layout, shown as **read-only rows** of the skeleton library (below). **Trimmed
+2026-11-22** (the user's choice) from four: `quadruped_overhead_12`, `quadruped_side_5` and
+`quadruped_overhead_8` were removed and `midline_2` added. As with the rename below, the removed ids
+no longer resolve; a set, run or model made from one holds its own copy and keeps working, and
+shows in the example-set picker under *(no library skeleton)* until its skeleton is added to the
+library. Before the trim: **Renamed
 2026-10-09** (the user's review: named for the body plan and view, not a species) from
 `rodent_overhead` / `rodent_side` / `rodent_simple` / `elongate`; labelled *Quadruped overhead
 view (12 points)*, *Quadruped overhead view (8 points)*, *Quadruped side view (5 points)*, *Midline

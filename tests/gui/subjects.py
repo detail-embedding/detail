@@ -438,7 +438,7 @@ def an_example_set(experiment) -> str:
     existing = experiment.example_sets()
     if existing:
         return existing[0].id
-    return experiment.create_example_set("examples", "quadruped_side_5").id
+    return experiment.create_example_set("examples", "midline_2").id
 
 
 def an_imported_stream(recording) -> str:
@@ -718,7 +718,7 @@ def _providers(experiment, recording) -> dict:
         "recording_names": lambda: {recording.id: recording.name},
         # The New example set window (§26): the library, the picker's skeleton, a name.
         "skeleton_entries": lambda: _skeleton_entries(),
-        "chosen_skeleton_id": lambda: "quadruped_side_5",
+        "chosen_skeleton_id": lambda: "midline_2",
         "default_set_name": lambda: "example set 1",
         # A cluster's pop-out window (`cluster_window.ClusterWindow`) is opened by INTERPRET and
         # reads its labels and write queue. A page with no run loaded: the window opens on its
@@ -787,7 +787,7 @@ def _skeleton_entries() -> list[dict]:
 def _a_skeleton_entry() -> dict:
     from detail.api import skeletons
 
-    return skeletons.skeleton("quadruped_side_5")
+    return skeletons.skeleton("midline_2")
 
 
 #: Dialogs :func:`build_dialog` cannot construct, and what each is missing. An entry is a
