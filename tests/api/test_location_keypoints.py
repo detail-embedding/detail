@@ -241,7 +241,7 @@ def test_keypoint_plots_export_as_an_interactive_page_too(proj, tmp_path, view, 
     paths = plots.export(view, tmp_path / "kp", formats=("png", "html"))
     assert [p.name for p in paths] == ["kp.png", "kp.html"]
     # Spaces dropped from both: plotly's JSON spacing is not this test's business.
-    page = (tmp_path / "kp.html").read_text(encoding="utf-8").replace(" ", "")
+    page = (tmp_path / "kp.html").read_text(encoding="utf-8-sig").replace(" ", "")
     missing = [mark for mark in drawn if mark.replace(" ", "") not in page]
     assert not missing
 
