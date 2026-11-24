@@ -1,0 +1,46 @@
+cff-version: 1.2.0
+message: "If you use DETAIL, please cite the preprint below."
+title: DETAIL
+type: software
+abstract: >-
+  DETAIL is a video analysis tool for species-agnostic, setting-agnostic analysis of
+  animal behavior, built on foundation vision models (SAM 3, DINOv3) and pose embeddings.
+authors:
+  - given-names: Moses
+    family-names: Lurbur
+  - given-names: Vikram
+    family-names: Iyer
+  - given-names: René
+    family-names: Just
+  - given-names: Kevin R.
+    family-names: Coffey
+  - given-names: Sam A.
+    family-names: Golden
+license: AGPL-3.0-only
+repository-code: "https://github.com/detail-embedding/detail"
+url: "https://detail-embedding.github.io/detail/"
+keywords:
+  - animal behavior
+  - computer vision
+  - foundation models
+  - image embeddings
+preferred-citation:
+  type: article
+  title: >-
+    Introducing Detail: species-agnostic, generalizable animal behavior analysis using
+    foundation model embedding spaces
+  authors:
+    - given-names: Moses
+      family-names: Lurbur
+    - given-names: Vikram
+      family-names: Iyer
+    - given-names: René
+      family-names: Just
+    - given-names: Kevin R.
+      family-names: Coffey
+    - given-names: Sam A.
+      family-names: Golden
+  journal: bioRxiv
+  year: 2026
+  status: preprint
+  # TODO(release): add `doi:` and `url:` once bioRxiv assigns them.
