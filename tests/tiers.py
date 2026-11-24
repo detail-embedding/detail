@@ -140,6 +140,7 @@ FILE_TIER = {
     "tests/analysis/test_comparison_paper_figures.py": "slow",
     "tests/report/test_comparison_figures.py": "slow",
     "tests/report/test_figures.py": "slow",
+    "tests/report/test_plot_render.py": "slow",
     "tests/report/test_behavior_figures.py": "slow",
     # --- a real backend model, fetched and run --------------------------------------- #
     "tests/models/test_trained_yolo.py": "slow",

@@ -1039,14 +1039,24 @@ def an_experiment_with_completed_runs(tmp_path):
     # the not-found path. Which state a page is walked in matters: the empty and populated
     # screens are different screens, and the rules about how a table cues a clickable row have
     # nothing to run over when the table has no rows.
+    # Its tables are real, so its Plots view draws a plot rather than an error.
+    from tests.location_fixtures import track, write_run
+
+    run_dir = analysis_runs_store.analysis_dir(proj.dir, "an_01")
+    write_run(
+        run_dir,
+        {"recording_001": {0: track(10.0 + np.arange(50) * 4.0, np.full(50, 60.0))}},
+    )
     analysis_runs_store.write_analysis_yaml(
-        analysis_runs_store.analysis_dir(proj.dir, "an_01"),
+        run_dir,
         {
             "id": "an_01",
             "module_id": "location_export",
             "recording_ids": ["recording_001"],
             "tracking_run_id": "track_01",
             "status": "complete",
+            "per_recording": {"recording_001": {"status": "complete"}},
+            "params": {"source_recording_ids": ["recording_001"]},
             "artifacts": [
                 {"path": "recording_001/tracks.csv", "kind": "tracks", "label": "x"}
             ],
