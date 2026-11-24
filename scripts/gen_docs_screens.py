@@ -1507,7 +1507,7 @@ def _render_keypoints(demo_dir: Path) -> None:
 
     picker = ExampleSetPicker(demo)
     new_set = NewExampleSetDialog(
-        picker._entries, picker.skeleton_id(), "mouse overhead", parent=window
+        picker._entries, picker.skeleton_id(), "mouse midline", parent=window
     )
     new_set.show()
     _settle()
@@ -1765,8 +1765,8 @@ def _render_embedding(demo_dir: Path) -> None:
     heading = HeadingDefinitionDialog(demo, skeleton_names=names, parent=launch)
     heading._name.setText("body_axis")
     for widget, ticked in (
-        (heading._front_list, ("nose", "neck_base")),
-        (heading._back_list, ("tail_base",)),
+        (heading._front_list, ("head",)),
+        (heading._back_list, ("midpoint", "tail")),
     ):
         if widget is None:
             continue

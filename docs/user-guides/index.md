@@ -36,7 +36,7 @@ the chapter's heavy work runs on your computer's GPU, and takes a while.
 1. [Create an experiment and add recordings](single-animal/create-an-experiment.md) <span class="where where-app">Experiments › Recordings</span> <span class="note">Bring your videos in and describe each recording.</span>
 2. [Set up each recording](single-animal/set-up-recordings.md) <span class="where where-app">Experiments › Recordings › a recording</span> <span class="note">Draw where the animal can be, and how big things are.</span>
 3. [Detect and track](single-animal/detect-and-track.md) <span class="where where-app">Experiments › Models</span> <span class="where where-app">Experiments › Processing pipeline</span> <span class="where where-gpu">GPU</span> <span class="note">Find the animal in every frame, and follow it.</span>
-4. [Keypoints](single-animal/keypoints.md) <span class="where where-app">Experiments › Models</span> <span class="where where-app">Experiments › Processing pipeline</span> <span class="where where-gpu">GPU</span> <span class="note">Place body points on the animal: nose, paws, tail base.</span>
+4. [Keypoints](single-animal/keypoints.md) <span class="where where-app">Experiments › Models</span> <span class="where where-app">Experiments › Processing pipeline</span> <span class="where where-gpu">GPU</span> <span class="note">Place body points on the animal: head, middle of the back, base of the tail.</span>
 5. [Embedding](single-animal/embedding.md) <span class="where where-app">Experiments › Processing pipeline</span> <span class="where where-gpu">GPU</span> <span class="note">Describe what the animal looks like in each frame, for the analyses.</span>
 6. [Location export](single-animal/location-export.md) <span class="where where-app">Experiments › Analysis</span> <span class="note">Where the animal is on every frame, against your regions and points, as spreadsheets.</span>
 7. [Behavior scan](single-animal/behavior-scan.md) <span class="where where-app">Experiments › Analysis</span> <span class="note">Find a behavior you can name, from a few examples.</span>
@@ -86,7 +86,7 @@ here.
 | Train a fast detector | [Chapter 3, step 2](single-animal/detect-and-track.md#2-distill-a-fast-detector) |
 | Detect and track the animal | [Chapter 3, steps 3 and 4](single-animal/detect-and-track.md#3-detect-every-frame) |
 | Save the tracks as files | [Chapter 3, step 4](single-animal/detect-and-track.md#optional-save-the-tracks) |
-| Make your own skeleton | [Chapter 4, step 2](single-animal/keypoints.md#make-your-own-skeleton) |
+| Make your own skeleton | [Chapter 4](single-animal/keypoints.md#optional-your-own-skeleton) |
 | Place and track keypoints | [Chapter 4, steps 4 and 5](single-animal/keypoints.md#4-place-keypoints-on-every-frame) |
 | Take keypoints to DeepLabCut, SLEAP or NWB | [Chapter 4, step 5](single-animal/keypoints.md#optional-take-the-keypoints-to-deeplabcut-sleap-or-nwb) |
 | Work with a side-view recording | [Chapter 4](single-animal/keypoints.md#side-view-and-isometric-recordings) |
@@ -192,8 +192,9 @@ recordings need space of their own on top of this.
     recordings](single-animal/keypoints.md#side-view-and-isometric-recordings), in chapter 4, says what changes for a
     camera beside the animal:
 
-    - **The keypoints.** A view from above and a side view see different body points, so they
-      use different skeletons (chapter 4).
+    - **The keypoints.** The same three midline points work from above and from the side,
+      but from the side the example set needs frames of the animal facing every way
+      (chapter 4).
     - **Turning the animal.** Before describing each frame, Detail turns the animal to face one
       way: from above it turns the head to point right, from the side it flips the animal to
       face right (chapter 5).

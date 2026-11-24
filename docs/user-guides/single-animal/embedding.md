@@ -130,11 +130,11 @@ embedding run can choose the same heading.
 Next to **Heading**, click **Define…**. In the **Define a heading** dialog:
 
 1. **Name:** `body_axis`. Use letters, digits, `-` and `_` only.
-2. **Front points:** tick **nose** and **neck_base**.
-3. **Back points:** tick **tail_base**.
+2. **Front points:** tick **head**.
+3. **Back points:** tick **midpoint** and **tail**.
 4. Click **Save**.
 
-![The Define a heading dialog: the name body_axis, nose and neck_base ticked as front points, and tail_base ticked as the back point. Numbered markers sit on every control.](../../assets/user-guides/single-animal/embedding/define-heading.png)
+![The Define a heading dialog: the name body_axis, head ticked as the front point, and midpoint and tail ticked as back points. Numbered markers sit on every control.](../../assets/user-guides/single-animal/embedding/define-heading.png)
 
 ??? info "What everything on this screen does"
     1. **Name**: the heading's name, as the **Heading** list shows it.
@@ -145,11 +145,10 @@ Next to **Heading**, click **Define…**. In the **Define a heading** dialog:
 
 ??? info "About this step: why these points"
     The heading runs from the middle of the back points to the middle of the front points.
-    Using two front points rather than one means that when the nose is hidden for a frame,
-    the neck still gives a heading. The tail tip and tail middle are left out because the
-    tail swings on its own; the base of the tail stays in line with the body.
+    Using two back points rather than one means that when the tail is hidden for a frame,
+    the midpoint still gives a heading.
 
-The dialog closes, and **Heading** shows **body_axis (nose, neck_base ← tail_base)**.
+The dialog closes, and **Heading** shows **body_axis (head ← midpoint, tail)**.
 
 ## 3. Run and check the embedding
 
@@ -185,14 +184,14 @@ image the model was shown, beside the cloud.
     out rather than embedded the wrong way round.
 
     A short gap like that is fine to carry on with. Much less coverage means the keypoints
-    are often unsure of the nose or tail: mark a few more example frames, especially of the
+    are often unsure of the head or tail: mark a few more example frames, especially of the
     poses where the heading was lost, and distill the keypoint model again (chapter 4).
 
 ??? warning "If this doesn't work"
     - **The run stops saying the model is not installed:** download **dinov3_vit
       vit_large** in the **Model manager** (see [Configure Detail](../configure.md)).
     - **The head points left or up in Model input on many frames:** the heading's front and
-      back points are swapped, or the keypoints put the nose at the tail. Check the
+      back points are swapped, or the keypoints put the head at the tail. Check the
       keypoints on the video (chapter 4, step 5).
     - **Very few frames are embedded:** the **Keypoint track run** does not match the
       **Tracking run**. Choose the keypoint track run made from this tracking.

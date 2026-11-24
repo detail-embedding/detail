@@ -253,13 +253,13 @@ it. Each recording's folder then has a fourth file:
 
 | Column | What it is |
 |---|---|
-| `keypoint` | The body point, such as `nose`. |
+| `keypoint` | The body point, such as `head`. |
 | `x`, `y` | Where it was, in `_norm`, `_px` and `_mm`. Blank on a frame it was not placed. |
 | `score` | How sure the keypoint model was. |
 | `visible` | 1 if the score was over the cut-off, 0 if not; a point under it keeps its place. |
 
-On **Plots**, **Position** then lists the body points: a path follows the nose, say, with a
-gap wherever the nose was hidden. **Keypoints** draws several points on one path, a colour
+On **Plots**, **Position** then lists the body points: a path follows the head, say, with a
+gap wherever the head was hidden. **Keypoints** draws several points on one path, a colour
 each.
 
 A keypoint tracking made from another tracking run is refused when you click **Run**, naming
