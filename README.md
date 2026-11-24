@@ -3,9 +3,9 @@
 [![Tests](https://github.com/detail-embedding/detail/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/detail-embedding/detail/actions/workflows/ci.yml)
 [![Docs](https://github.com/detail-embedding/detail/actions/workflows/docs.yml/badge.svg?branch=main)](https://detail-embedding.github.io/detail/)
 ![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)
+[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
 <!-- TODO(release): add when each exists.
 [![Version](https://img.shields.io/github/v/release/detail-embedding/detail)](https://github.com/detail-embedding/detail/releases)
-[![License](https://img.shields.io/github/license/detail-embedding/detail)](LICENSE)
 [![Preprint](https://img.shields.io/badge/bioRxiv-preprint-b31b1b)](PREPRINT_URL)
 -->
 
@@ -86,4 +86,17 @@ A paper describing DETAIL is in preparation.
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for setting up, running the tests, and opening a pull
 request.
 
-<!-- TODO(release): add a License section once the license file exists, and a Funding section. -->
+## License
+
+DETAIL is free software under the [GNU Affero General Public License v3.0](LICENSE)
+(AGPL-3.0-only). You may use, change and share it. If you share a changed version, or let
+others use one over a network, you must offer them its source code under the same license.
+
+Later versions of DETAIL are planned under a non-commercial license. A version already released
+keeps the license it was released under.
+
+The SAM 3 and DINOv3 model weights are not part of DETAIL. DETAIL downloads them from Hugging
+Face, where Meta publishes each under its own license, which you accept when you request access
+there. Those licenses include restrictions of their own, such as on military use.
+
+<!-- TODO(release): add a Funding section. -->
