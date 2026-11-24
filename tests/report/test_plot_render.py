@@ -1,5 +1,12 @@
 """The matplotlib renderer for ``report/plot_spec.PlotSpec``: every mark kind draws, colours come
-from the theme, and a 3-D grid is one camera over shared ranges."""
+from the theme, and a 3-D grid is one camera over shared ranges.
+
+**A screen picture is drawn for its pane** (``docs/recorded_classes.md``). At a fixed 110 dpi a
+panel was about 290 pixels wide however few there were, so a plot grouped into one panel came out
+385×232 and was stretched to fill the page. ``screen_dpi`` fits the figure to the pane with room
+to zoom, floored for a grid larger than the pane and capped in pixels; ``render_png`` takes
+``dpi`` with no default, so a caller cannot fall back to the fixed one.
+"""
 
 import numpy as np
 import pytest
@@ -262,7 +269,9 @@ def test_a_figure_reports_each_panel_and_a_render_its_write(tmp_path):
     ]
     heard.clear()
     plot_render.render_png(
-        _path_spec(2), progress=lambda s, f, d: heard.append((s, f, d))
+        _path_spec(2),
+        dpi=plot_render.SCREEN_DPI,
+        progress=lambda s, f, d: heard.append((s, f, d)),
     )
     assert heard == [("drawing", 0.0, "r0"), ("drawing", 0.5, "r1")]
 
@@ -272,8 +281,56 @@ def test_render_writes_each_format_and_png_bytes_are_a_png(tmp_path):
         _path_spec(), tmp_path / "a" / "fig", formats=("png", "pdf")
     )
     assert [p.suffix for p in paths] == [".png", ".pdf"]
-    data = plot_render.render_png(_path_spec(), theme="dark")
+    data = plot_render.render_png(
+        _path_spec(), dpi=plot_render.SCREEN_DPI, theme="dark"
+    )
     assert data[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def _png_size(data: bytes) -> tuple[int, int]:
+    """A PNG's width and height, from its header."""
+    return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+
+
+#: A maximised result page's picture pane on a 2560×1440 screen, in its pixels.
+_PANE = (2060.0, 1250.0)
+
+
+@pytest.mark.parametrize("n_panels", [1, 2, 5])
+def test_a_screen_picture_fills_its_pane_however_few_panels_it_has(n_panels):
+    """The picture is drawn at the pane's size, with room to zoom, not at one fixed resolution.
+
+    At a fixed 110 dpi a panel was about 290 pixels wide however few there were, so a plot
+    grouped into one panel came out 385×232 and was stretched to fill the pane. Fitted to the
+    pane, the picture reaches ``ZOOM_HEADROOM`` times its width or its height, whichever binds.
+    """
+    spec = _path_spec(n_panels)
+    width, height = _png_size(
+        plot_render.render_png(spec, dpi=plot_render.screen_dpi(spec, _PANE))
+    )
+    wanted = plot_render.ZOOM_HEADROOM
+    assert max(width / _PANE[0], height / _PANE[1]) == pytest.approx(wanted, abs=0.01)
+    assert width * height <= plot_render.MAX_SCREEN_PIXELS
+
+
+def test_the_fewer_panels_the_finer_they_are_drawn():
+    dpis = [plot_render.screen_dpi(_path_spec(n), _PANE) for n in (1, 4, 16)]
+    assert dpis == sorted(dpis, reverse=True)
+    assert dpis[0] > 4 * plot_render.SCREEN_DPI
+
+
+def test_a_grid_larger_than_its_pane_keeps_the_floor():
+    """84 panels are ten columns, 27 inches wide: fitted to a small pane that is under 40 dpi,
+    unreadable however far it is zoomed."""
+    spec = _path_spec(84)
+    assert plot_render.screen_dpi(spec, (800.0, 600.0)) == plot_render.SCREEN_DPI
+
+
+def test_a_huge_pane_is_held_to_the_pixel_budget():
+    spec = _path_spec(1)
+    dpi = plot_render.screen_dpi(spec, (20_000.0, 20_000.0))
+    width, height = plot_render.figure_size(spec)
+    assert width * height * dpi**2 == pytest.approx(plot_render.MAX_SCREEN_PIXELS)
 
 
 @pytest.mark.parametrize("n, cols", [(1, 1), (4, 2), (5, 3), (84, 10)])

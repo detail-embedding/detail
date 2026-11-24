@@ -19,6 +19,11 @@ produce (macOS turns Ctrl+left into a *right* button before Qt sees it, Apple QA
 capability was documented, implemented and unreachable. Fit is a button rather than only a
 gesture for the same test's other half: a view that can be moved out of frame needs a way back.
 
+**The picture is scaled to the screen's pixels.** The pane's geometry, zoom and pan are in its
+logical pixels, as every host and every click mapping reads them; the pixmap it shows is scaled
+to ``devicePixelRatioF()`` times that and tagged with the ratio, so a display scaled to 125% does
+not enlarge an already-scaled picture a second time.
+
 **Double-click is deliberately not bound.** ``clicked`` drives play/pause on three surfaces, and
 Qt delivers press and release *before* a double click — so "double-click to fit" would toggle
 playback on the way past. The Fit button is the fit.
@@ -321,12 +326,19 @@ class ImageView(QLabel):
     def _rescale(self) -> None:
         if self._pixmap is None:
             return
+        # Scaled to the screen's own pixels, not the pane's logical size: on a display scaled to
+        # 125%, a picture scaled to the pane is enlarged a second time when it is painted, and
+        # every frame and plot came out soft. The pan stays in the pane's logical pixels, where
+        # a drag measures it; ``ratio`` converts at the crop.
+        ratio = self.devicePixelRatioF()
+        window = QSize(round(self.width() * ratio), round(self.height() * ratio))
         fitted = self._pixmap.scaled(
-            self.size(),
+            window,
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
         if self._zoom == 1.0:
+            fitted.setDevicePixelRatio(ratio)
             self.setPixmap(fitted)
             return
         grown = fitted.size() * self._zoom
@@ -338,23 +350,22 @@ class ImageView(QLabel):
         # Crop the pane's worth out of the enlarged picture rather than handing the label a
         # pixmap bigger than itself — a QLabel would centre-crop it for us, which throws the pan
         # away. Clamped so a pan can never run past the edge and show empty space.
-        window = self.size()
-        max_x = max(0, (scaled.width() - window.width()) // 2)
-        max_y = max(0, (scaled.height() - window.height()) // 2)
+        max_x = int(max(0, (scaled.width() - window.width()) // 2) / ratio)
+        max_y = int(max(0, (scaled.height() - window.height()) // 2) / ratio)
         self._offset = QPoint(
             max(-max_x, min(max_x, self._offset.x())),
             max(-max_y, min(max_y, self._offset.y())),
         )
-        left = (scaled.width() - window.width()) // 2 - self._offset.x()
-        top = (scaled.height() - window.height()) // 2 - self._offset.y()
-        self.setPixmap(
-            scaled.copy(
-                max(0, left),
-                max(0, top),
-                min(window.width(), scaled.width()),
-                min(window.height(), scaled.height()),
-            )
+        left = (scaled.width() - window.width()) // 2 - round(self._offset.x() * ratio)
+        top = (scaled.height() - window.height()) // 2 - round(self._offset.y() * ratio)
+        shown = scaled.copy(
+            max(0, left),
+            max(0, top),
+            min(window.width(), scaled.width()),
+            min(window.height(), scaled.height()),
         )
+        shown.setDevicePixelRatio(ratio)
+        self.setPixmap(shown)
 
 
 class PictureWithControls(QWidget):
