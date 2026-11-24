@@ -1,10 +1,10 @@
 # User guides
 
 A step-by-step path from a new computer to analyzed behavior, for experiments with **one
-animal in each video**. You install DETAIL, set it up, then work through a full analysis in
-the DETAIL desktop app, one chapter at a time. No programming is needed. You type (or paste) a
+animal in each video**. You install Detail, set it up, then work through a full analysis in
+the Detail desktop app, one chapter at a time. No programming is needed. You type (or paste) a
 few commands during installation, and every one is given to you. After that, everything
-happens in the DETAIL window.
+happens in the Detail window.
 
 Every chapter follows one example experiment, filmed from above. The guide works the same for
 a camera beside the animal: [Side-view and isometric
@@ -12,23 +12,23 @@ recordings](single-animal/keypoints.md#side-view-and-isometric-recordings), in c
 what changes.
 
 !!! note "An NVIDIA GPU is required"
-    DETAIL finds and follows animals with AI models that need an NVIDIA graphics card (GPU)
+    Detail finds and follows animals with AI models that need an NVIDIA graphics card (GPU)
     in your computer. A computer with no NVIDIA GPU, such as any Mac and most laptops, cannot
     run them.
 
 ??? info "About GPUs"
-    A GPU (graphics processing unit) is the chip that draws your screen. The AI models DETAIL
+    A GPU (graphics processing unit) is the chip that draws your screen. The AI models Detail
     uses run thousands of times faster on a GPU than on the main processor, but only on GPUs
     made by NVIDIA, because they are built on NVIDIA's CUDA software. Intel and AMD graphics,
     and Apple's chips, cannot run them.
 
 ## The path at a glance
 
-First [install DETAIL](#choose-your-install-page), once per computer, then [configure
+First [install Detail](#choose-your-install-page), once per computer, then [configure
 it](configure.md). The chapters come after that.
 
 Each box is one chapter. Click a box to open it. The first tag says where the chapter works in
-DETAIL: the button along the top, then the page in the list on the left. A **GPU** tag means
+Detail: the button along the top, then the page in the list on the left. A **GPU** tag means
 the chapter's heavy work runs on your computer's GPU, and takes a while.
 
 <div class="guide-flow" markdown>
@@ -40,7 +40,7 @@ the chapter's heavy work runs on your computer's GPU, and takes a while.
 5. [Embedding](single-animal/embedding.md) <span class="where where-app">Experiments › Processing pipeline</span> <span class="where where-gpu">GPU</span> <span class="note">Describe what the animal looks like in each frame, for the analyses.</span>
 6. [Location export](single-animal/location-export.md) <span class="where where-app">Experiments › Analysis</span> <span class="note">Where the animal is on every frame, against your regions and points, as spreadsheets.</span>
 7. [Behavior scan](single-animal/behavior-scan.md) <span class="where where-app">Experiments › Analysis</span> <span class="note">Find a behavior you can name, from a few examples.</span>
-8. [Clustering](single-animal/clustering.md) <span class="where where-app">Experiments › Analysis</span> <span class="note">Let DETAIL group frames into behaviors you have not named yet.</span>
+8. [Clustering](single-animal/clustering.md) <span class="where where-app">Experiments › Analysis</span> <span class="note">Let Detail group frames into behaviors you have not named yet.</span>
 
 
 Chapters 1 to 5 build on each other: do them in order. Chapter 6 needs only chapters 1 to 3,
@@ -66,8 +66,8 @@ here.
 
 | To | Go to |
 |----|-------|
-| Install DETAIL, or update it | [Install on Windows](install-windows.md), [Install on Linux](install-linux.md) |
-| Launch DETAIL again later | [Windows](install-windows.md#launch-it-again-later), [Linux](install-linux.md#launch-it-again-later) |
+| Install Detail, or update it | [Install on Windows](install-windows.md), [Install on Linux](install-linux.md) |
+| Launch Detail again later | [Windows](install-windows.md#launch-it-again-later), [Linux](install-linux.md#launch-it-again-later) |
 | Get PyTorch to use the GPU | [Configure, step 1](configure.md#1-get-pytorch-to-use-the-gpu) |
 | Set up a Hugging Face token | [Configure, step 2](configure.md#2-set-up-hugging-face-access) |
 | Install SAM 3 and download the models | [Configure, steps 3 and 4](configure.md#3-install-the-sam-3-backend) |
@@ -114,12 +114,12 @@ follow only that install page. Each page ends by telling you which page to read 
     - **Linux:** open a terminal and run `lspci | grep -i nvidia`. A line that names an NVIDIA
       device means you have one.
 
-After the install page, go on to [Configure DETAIL](configure.md), then chapter 1,
+After the install page, go on to [Configure Detail](configure.md), then chapter 1,
 [Create an experiment and add recordings](single-animal/create-an-experiment.md).
 
 ## Hardware and disk space
 
-The computer you install DETAIL on needs:
+The computer you install Detail on needs:
 
 | | Minimum | Recommended |
 |---|---|---|
@@ -135,7 +135,7 @@ recordings need space of their own on top of this.
 
 | Part of the installation | Size |
 |---|---|
-| DETAIL itself | 0.3 GB |
+| Detail itself | 0.3 GB |
 | The Python environment, including PyTorch with GPU support | 7 GB |
 | SAM 3, the detection model | 3.5 GB |
 | DINOv3, the embedding model | 1.2 GB |
@@ -144,7 +144,7 @@ recordings need space of their own on top of this.
 ??? info "About these numbers"
     The sizes were measured on a Windows install. GPU memory matters most: a model that does
     not fit in it stops with an "out of memory" error, or on Windows slows to a crawl. More
-    GPU memory lets DETAIL process more video frames at once, which is faster. The settings
+    GPU memory lets Detail process more video frames at once, which is faster. The settings
     that decide how much memory a step uses, such as the **Batch size** for training a model,
     start at values that fit an 8 GB GPU. [Detect and
     track](single-animal/detect-and-track.md#batch-size-and-your-gpu) says how to raise them
@@ -159,33 +159,33 @@ recordings need space of their own on top of this.
 
 - **A computer you can install software on.** Some steps ask for an administrator password.
 - **About an hour** for installation. Most of it is waiting for downloads.
-- **Free disk space** for DETAIL, the AI models, and your videos. Plan for tens of gigabytes
+- **Free disk space** for Detail, the AI models, and your videos. Plan for tens of gigabytes
   before your videos.
-- **Your GitHub account.** DETAIL downloads from GitHub. The install page signs your computer
+- **Your GitHub account.** Detail downloads from GitHub. The install page signs your computer
   in to the account you read these guides with.
 - **A Hugging Face account.** The AI models download from Hugging Face. [Configure
-  DETAIL](configure.md) shows you how to make one.
+  Detail](configure.md) shows you how to make one.
 - **Your videos**, one animal in each. A few minutes of video is enough to follow the guide.
   Common formats such as `.mp4` and `.avi` work.
 - **Time.** The chapters with the GPU tag run for a while: from minutes for a short video to
-  hours for a large experiment. You can keep using DETAIL while they run.
+  hours for a large experiment. You can keep using Detail while they run.
 - **For a side view:** the whole animal in the picture, from the side.
   **For a view from above:** the whole floor of the arena in the picture.
 
-??? info "About this: closing DETAIL while something is running"
-    Runs carry on without DETAIL: detection, tracking, distills and the rest each run as
+??? info "About this: closing Detail while something is running"
+    Runs carry on without Detail: detection, tracking, distills and the rest each run as
     their own process, so you can close the window and open it again later to see how they
-    stand. **Video imports do not**: they run inside DETAIL, so closing it stops them, and
-    those recordings are marked **failed**. Leave DETAIL open until every import says
+    stand. **Video imports do not**: they run inside Detail, so closing it stops them, and
+    those recordings are marked **failed**. Leave Detail open until every import says
     **ready**.
 
-    If you close DETAIL while something is running, it asks first, in a window called
+    If you close Detail while something is running, it asks first, in a window called
     **Still in progress**:
 
     - **Cancel runs & quit** stops everything that is running, then closes.
     - **Leave running & quit** closes and leaves the runs going. When only imports are
       running it says **Quit anyway**, because they stop either way.
-    - **Don't quit** keeps DETAIL open.
+    - **Don't quit** keeps Detail open.
 
 ??? info "About this: what is different between the two views"
     Most of the guide is the same for both views. The demo is filmed from above; [Side-view and isometric
@@ -194,7 +194,7 @@ recordings need space of their own on top of this.
 
     - **The keypoints.** A view from above and a side view see different body points, so they
       use different skeletons (chapter 4).
-    - **Turning the animal.** Before describing each frame, DETAIL turns the animal to face one
+    - **Turning the animal.** Before describing each frame, Detail turns the animal to face one
       way: from above it turns the head to point right, from the side it flips the animal to
       face right (chapter 5).
     - **What a behavior looks like.** Rearing, for example, is the animal standing up. From the

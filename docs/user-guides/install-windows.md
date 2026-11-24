@@ -1,15 +1,15 @@
 # Install on Windows
 
-This page installs DETAIL on a Windows 10 or Windows 11 computer. DETAIL runs everything on
+This page installs Detail on a Windows 10 or Windows 11 computer. Detail runs everything on
 your computer's NVIDIA GPU.
 
 !!! note "Your computer needs an NVIDIA GPU"
     Check before you start: press ++ctrl+shift+esc++ to open Task Manager, click **More
     details** if you see it, then the **Performance** tab. One of the **GPU** entries on the
-    left must say **NVIDIA**. If none does, DETAIL cannot run on your
+    left must say **NVIDIA**. If none does, Detail cannot run on your
     computer.
 
-    Check the [hardware and disk space](index.md#hardware-and-disk-space) DETAIL needs, too.
+    Check the [hardware and disk space](index.md#hardware-and-disk-space) Detail needs, too.
     The installation needs at least 25 GB free on drive `C:`.
 
 ## The steps at a glance
@@ -23,10 +23,10 @@ Each box is one step on this page. Click a box to go to that step. The tags say 
 1. [Install Git, the GitHub CLI and uv](#3-install-git-the-github-cli-and-uv) <span class="where where-powershell">PowerShell</span>
 1. [Allow PowerShell to run scripts](#4-allow-powershell-to-run-scripts) <span class="where where-powershell">PowerShell</span>
 1. [Sign in to GitHub](#5-sign-in-to-github-from-your-computer) <span class="where where-powershell">PowerShell</span> <span class="where where-web">Browser</span>
-1. [Download DETAIL](#6-download-detail) <span class="where where-powershell">PowerShell</span>
-1. [Create the environment and install DETAIL](#7-create-the-environment-and-install-detail) <span class="where where-powershell">PowerShell, same window</span>
+1. [Download Detail](#6-download-detail) <span class="where where-powershell">PowerShell</span>
+1. [Create the environment and install Detail](#7-create-the-environment-and-install-detail) <span class="where where-powershell">PowerShell, same window</span>
 1. [Turn on Developer Mode](#8-turn-on-developer-mode) <span class="where where-settings">Windows Settings</span>
-1. [Launch DETAIL](#9-launch-detail) <span class="where where-powershell">PowerShell, same window</span> <span class="where where-detail">DETAIL window</span> <span class="note">Then go on to Configure DETAIL.</span>
+1. [Launch Detail](#9-launch-detail) <span class="where where-powershell">PowerShell, same window</span> <span class="where where-detail">Detail window</span> <span class="note">Then go on to Configure Detail.</span>
 
 </div>
 
@@ -50,7 +50,7 @@ this page.
     4. Wait for the `PS ...>` prompt to come back before running the next command.
 
     If you close PowerShell partway through, open it again the same way. Steps 7 and later
-    also need you to go back into the DETAIL folder and switch on its environment. The
+    also need you to go back into the Detail folder and switch on its environment. The
     commands for that are under [Launch it again later](#launch-it-again-later).
 
 ## 1. Update the NVIDIA driver
@@ -71,7 +71,7 @@ nvidia-smi
 A table prints with your GPU's name. Its top line includes `CUDA Version`.
 
 ??? info "About this step"
-    DETAIL's AI models use NVIDIA's CUDA software, which comes with the driver. An old driver
+    Detail's AI models use NVIDIA's CUDA software, which comes with the driver. An old driver
     supports only old versions of CUDA, and so only old versions of PyTorch, the library the
     models run on. Updating the driver first avoids a mismatch later.
 
@@ -83,7 +83,7 @@ A table prints with your GPU's name. Its top line includes `CUDA Version`.
 
 ## 2. Install Python 3.12
 
-DETAIL needs Python version **3.12** exactly. Your computer may already have Python, possibly a
+Detail needs Python version **3.12** exactly. Your computer may already have Python, possibly a
 newer version. A newer version is not enough, but you can keep it: Python 3.12 installs next
 to it without changing it.
 
@@ -117,14 +117,14 @@ py -3.12 --version
 It prints a version starting with `Python 3.12`.
 
 ??? info "About this step: why 3.12, and having several versions"
-    Python is the programming language DETAIL is written in. DETAIL is built and tested on
+    Python is the programming language Detail is written in. Detail is built and tested on
     Python 3.12. Some libraries it depends on, PyTorch and SAM 3 among them, are slow to
     support each new Python, so a newer version can fail partway through the install.
 
     Several Python versions can be installed on one computer, and each program picks the one
     it asks for. The `py` launcher that comes with Python from python.org lists them all and
     starts whichever you name: `py -3.12` runs 3.12 even when a newer one is the default.
-    DETAIL's environment (step 7) asks for 3.12 by name, so your other versions, and anything
+    Detail's environment (step 7) asks for 3.12 by name, so your other versions, and anything
     that uses them, are not affected.
 
 ??? warning "If this doesn't work"
@@ -140,7 +140,7 @@ It prints a version starting with `Python 3.12`.
 
 ## 3. Install Git, the GitHub CLI and uv
 
-These are three more free tools DETAIL needs. Install them with winget, one at a time, in **PowerShell**:
+These are three more free tools Detail needs. Install them with winget, one at a time, in **PowerShell**:
 
 ```
 winget install --id Git.Git -e
@@ -175,10 +175,10 @@ uv --version
 Each prints a version number.
 
 ??? info "About this step: what each tool is"
-    - **Git** downloads DETAIL and later fetches its updates.
+    - **Git** downloads Detail and later fetches its updates.
     - **The GitHub CLI** (`gh`) signs your computer in to your GitHub account, so Git can
-      download the DETAIL repository.
-    - **uv** installs DETAIL and the libraries it uses into a separate folder, its
+      download the Detail repository.
+    - **uv** installs Detail and the libraries it uses into a separate folder, its
       *environment*, so they cannot clash with other Python software on the computer.
 
     PowerShell only looks for new programs when it starts, which is why you reopen it.
@@ -191,7 +191,7 @@ Each prints a version number.
 
 ## 4. Allow PowerShell to run scripts
 
-Windows blocks PowerShell scripts by default, and switching on DETAIL's environment runs one.
+Windows blocks PowerShell scripts by default, and switching on Detail's environment runs one.
 In **PowerShell**, allow scripts for your own account. You do this once, and it needs no administrator:
 
 ```
@@ -220,9 +220,9 @@ gh auth login --hostname github.com --git-protocol https --web
 
 ??? info "About this step"
     This links Git on your computer to your GitHub account, so it can download the
-    DETAIL repository. You do it once per computer.
+    Detail repository. You do it once per computer.
 
-## 6. Download DETAIL
+## 6. Download Detail
 
 In **PowerShell**, go to your home folder:
 
@@ -230,7 +230,7 @@ In **PowerShell**, go to your home folder:
 cd $HOME
 ```
 
-Download DETAIL into a new folder there, named `detail`:
+Download Detail into a new folder there, named `detail`:
 
 ```
 gh repo clone detail-embedding/detail detail
@@ -245,15 +245,15 @@ cd detail
 **Check:** the prompt now ends in `\detail>`.
 
 ??? info "About this step"
-    Your home folder is `C:\Users\yourname`, so DETAIL ends up in `C:\Users\yourname\detail`.
+    Your home folder is `C:\Users\yourname`, so Detail ends up in `C:\Users\yourname\detail`.
 
 ??? warning "If this doesn't work"
     - **"Could not resolve to a Repository":** the GitHub account you signed in with
-      cannot open the DETAIL repository. Sign in again with the account that can.
-    - **"destination path 'detail' already exists":** DETAIL was downloaded before. Run
+      cannot open the Detail repository. Sign in again with the account that can.
+    - **"destination path 'detail' already exists":** Detail was downloaded before. Run
       `cd detail` and go on to step 7.
 
-## 7. Create the environment and install DETAIL
+## 7. Create the environment and install Detail
 
 In the same **PowerShell** window, still inside the `detail` folder (the prompt ends
 in `\detail>`), create the environment, using the Python 3.12 from step 2:
@@ -270,7 +270,7 @@ Switch it on:
 
 **Check:** the prompt now starts with `(detail)`.
 
-Install DETAIL and everything it needs into the environment:
+Install Detail and everything it needs into the environment:
 
 ```
 uv pip install -e ".[yolo,torch,gui,analysis,sam3]"
@@ -284,16 +284,16 @@ This downloads several gigabytes and can take ten minutes or more. Wait for the 
 detail --help
 ```
 
-A list of DETAIL commands prints.
+A list of Detail commands prints.
 
 ??? info "About this step"
-    The environment is the `.venv` folder inside `detail`. Everything DETAIL installs goes
+    The environment is the `.venv` folder inside `detail`. Everything Detail installs goes
     there and nowhere else, so removing that folder removes it all.
 
     You switch the environment on (activate it) every time you open a new PowerShell window
-    to use DETAIL. While it is on, the prompt starts with `(detail)`.
+    to use Detail. While it is on, the prompt starts with `(detail)`.
 
-    The words in brackets are optional parts of DETAIL to include: `yolo` and `sam3` for
+    The words in brackets are optional parts of Detail to include: `yolo` and `sam3` for
     detection models, `torch` for the AI libraries, `gui` for the desktop app, and `analysis`
     for clustering.
 
@@ -320,7 +320,7 @@ multi-gigabyte model file twice.
     Windows only allows those links (symlinks) in Developer Mode. Developer Mode changes nothing
     else about how Windows works for you.
 
-## 9. Launch DETAIL
+## 9. Launch Detail
 
 In the same **PowerShell** window, with the environment on (the prompt starts with
 `(detail)`):
@@ -329,18 +329,18 @@ In the same **PowerShell** window, with the environment on (the prompt starts wi
 detail-gui
 ```
 
-The DETAIL window opens on **Experiments**, which is empty for now:
+The Detail window opens on **Experiments**, which is empty for now:
 
-![The DETAIL window on first launch: the mode buttons along the top and an empty Experiments list.](../assets/user-guides/install/first-launch.png)
+![The Detail window on first launch: the mode buttons along the top and an empty Experiments list.](../assets/user-guides/install/first-launch.png)
 
-Leave it open and go on to [Configure DETAIL](configure.md).
+Leave it open and go on to [Configure Detail](configure.md).
 
 ??? info "About this step"
-    PowerShell stays busy while DETAIL is open, and closing PowerShell closes DETAIL. Use a
+    PowerShell stays busy while Detail is open, and closing PowerShell closes Detail. Use a
     second PowerShell window for any other commands.
 
     The PyTorch installed in step 7 cannot use the GPU yet, because Windows downloads get a
-    version without GPU support. The first step of [Configure DETAIL](configure.md) replaces
+    version without GPU support. The first step of [Configure Detail](configure.md) replaces
     it.
 
 ## Launch it again later
@@ -359,9 +359,9 @@ cd $HOME\detail
 detail-gui
 ```
 
-## Update DETAIL
+## Update Detail
 
-Close DETAIL first. Then, in PowerShell, go to the DETAIL folder and switch on its
+Close Detail first. Then, in PowerShell, go to the Detail folder and switch on its
 environment (the first two commands under [Launch it again later](#launch-it-again-later)).
 Download the latest version:
 
@@ -375,8 +375,8 @@ If it printed a list of changed files, reinstall so any new libraries arrive:
 uv pip install -e ".[yolo,torch,gui,analysis,sam3]"
 ```
 
-Then launch DETAIL again.
+Then launch Detail again.
 
 ## Next
 
-[Configure DETAIL](configure.md).
+[Configure Detail](configure.md).
