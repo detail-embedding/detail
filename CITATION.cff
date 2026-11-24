@@ -16,6 +16,7 @@ authors:
     family-names: Coffey
   - given-names: Sam A.
     family-names: Golden
+license: AGPL-3.0-only
 repository-code: "https://github.com/detail-embedding/detail"
 url: "https://detail-embedding.github.io/detail/"
 keywords:
