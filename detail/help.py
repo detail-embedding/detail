@@ -37,9 +37,7 @@ HELP: dict[str, HelpTopic] = {
     "roi": HelpTopic("concepts", "roi-poi"),
     "poi": HelpTopic("concepts", "roi-poi"),
     "distance-calibration": HelpTopic("concepts", "distance-calibration"),
-    "matcher": HelpTopic("concepts", "behavior-query-eval"),
-    "behavior-query-eval": HelpTopic("concepts", "behavior-query-eval"),
-    "behavior-query": HelpTopic("concepts", "behavior-query-eval"),
+    "behavior-query": HelpTopic("concepts", "query"),
     "embedding-run": HelpTopic("concepts", "embedding-run"),
     "compute-target": HelpTopic("concepts", "compute-target"),
     "model-kinds": HelpTopic("concepts", "model-variant"),
@@ -54,6 +52,7 @@ HELP: dict[str, HelpTopic] = {
     "comparison-recordings": HelpTopic("gui", "comparison-recordings"),
     "comparison-measures": HelpTopic("gui", "comparison-measures"),
     "comparison-floor": HelpTopic("gui", "comparison-floor"),
+    "comparison-locations": HelpTopic("gui", "comparison-locations"),
     "comparison-snapshot": HelpTopic("gui", "comparison-snapshot"),
     "gpu": HelpTopic("getting-started", "gpu-and-cuda"),
     "hf-token": HelpTopic("getting-started", "hugging-face-access"),
@@ -105,8 +104,6 @@ _GENERATED_PAGES = frozenset(
         "reference/manifest",
         "input-images",
         "embedding-models",
-        "querying-methods",
-        "behavior-query-eval",
     }
 )
 

@@ -34,6 +34,7 @@ from detail import docs_access
 from detail import surfaces
 from detail.api import clip_montage as _clip_montage
 from detail.api.experiment import Experiment
+from detail.api.location_plots import FORMATS as LOCATION_PLOT_FORMATS
 from detail.api import tools as api_tools
 from detail.cli_numbers import FINITE_FLOAT
 from detail.cli_numbers import finite_float_range
@@ -45,11 +46,11 @@ from detail.configs.display import ConfidenceView
 from detail.configs.embedding import EmbeddingConfig
 from detail.configs.labeling import LabelingConfig
 from detail.configs.location_export import LocationExportConfig
+from detail.configs.location_plots import LocationPlotView
 from detail.configs.temporal_clustering import TemporalClusteringConfig
 from detail.configs.temporal_codebook import TemporalCodebookConfig
 from detail.configs.query import QueryConfig
 from detail.configs.describe import describe_config
-from detail.configs.query_eval import QueryEvalConfig
 from detail.configs.quick_segment import QuickSegmentConfig
 from detail.configs.tracking import TrackingConfig
 from detail.configs.windows import WindowSpec
@@ -79,7 +80,6 @@ _DET = DetectionConfig.model_fields
 _EMB = EmbeddingConfig.model_fields
 _LAB = LabelingConfig.model_fields
 _LOC = LocationExportConfig.model_fields
-_QE = QueryEvalConfig.model_fields
 _WIN = WindowSpec.model_fields
 _QRY = QueryConfig.model_fields
 # The clip montage's defaults (§22), read from the API so `--help`, the window and a script
@@ -96,7 +96,6 @@ _MEDPC = MedpcSessionConfig.model_fields
 _BORIS = BorisSelectionConfig.model_fields
 _DET_DOC = {p["name"]: p for p in describe_config(DetectionConfig)}
 _EMB_DOC = {p["name"]: p for p in describe_config(EmbeddingConfig)}
-_QE_DOC = {p["name"]: p for p in describe_config(QueryEvalConfig)}
 _QRY_DOC = {p["name"]: p for p in describe_config(QueryConfig)}
 _QSEG_DOC = {p["name"]: p for p in describe_config(QuickSegmentConfig)}
 _VIEW_DOC = {p["name"]: p for p in describe_config(ConfidenceView)}
@@ -5101,15 +5100,6 @@ def _location_options(command):
             "--sample-fps", "sample_fps", default=None, type=FINITE_FLOAT,
             help=_LOC["sample_fps"].description,
         ),  # fmt: skip
-        click.option(
-            "--remove-thin-parts/--keep-thin-parts", "remove_thin_parts", default=None,
-            help=_LOC["remove_thin_parts"].description,
-        ),  # fmt: skip
-        click.option(
-            "--thin-part-scale", "thin_part_scale", default=None, type=FINITE_FLOAT,
-            help=_LOC["thin_part_scale"].description
-            + f" Default: {_LOC['thin_part_scale'].default}.",
-        ),  # fmt: skip
     ]
     for option in reversed(options):
         command = option(command)
@@ -5135,30 +5125,164 @@ def _given_location_options(**values) -> dict:
         "tracks/roi_relations/point_relations CSVs + locations.yaml."
     ),
 )  # fmt: skip
+@click.option(
+    "--keypoints", "keypoint_run_id", default=None, type=str,
+    help=_LOC["keypoint_run_id"].description,
+)  # fmt: skip
 @_location_options
 def locations_export(
     experiment_dir: Path,
     recording_id: str,
     tracking_run_id: str,
     out_dir: str,
+    keypoint_run_id: str | None,
     sample_fps: float | None,
-    remove_thin_parts: bool | None,
-    thin_part_scale: float | None,
 ) -> None:
     """Write per-frame, per-track spatial features (position, body shape, and position
     relative to the recording's ROIs/POIs) for a completed tracking run, keyed by t_ns.
     """
     sess = _recording(_open_experiment(experiment_dir), recording_id)
-    options = _given_location_options(
-        sample_fps=sample_fps,
-        remove_thin_parts=remove_thin_parts,
-        thin_part_scale=thin_part_scale,
-    )
+    options = _given_location_options(sample_fps=sample_fps)
+    bar = _StageProgress()
     try:
-        out = sess.export_locations(tracking_run_id, out_dir, **options)
+        out = sess.export_locations(
+            tracking_run_id,
+            out_dir,
+            keypoint_run_id=keypoint_run_id,
+            progress=bar,
+            **options,
+        )
     except ValueError as e:
         raise click.ClickException(str(e))
+    finally:
+        bar.close()
     click.echo(f"exported: {out}")
+
+
+def _view_option_type(doc: dict) -> click.ParamType | type:
+    """A view field's click type: its choices, or its bounds (an exclusive one open)."""
+    if doc["choices"]:
+        return click.Choice([str(c) for c in doc["choices"]])
+    if doc["type"] == "integer":
+        return _int_range(doc)
+    if doc["type"] == "number":
+        lo, hi = doc["minimum"], doc["maximum"]
+        return finite_float_range(
+            min=lo if lo is not None else doc["exclusive_minimum"],
+            max=hi if hi is not None else doc["exclusive_maximum"],
+            min_open=lo is None and doc["exclusive_minimum"] is not None,
+            max_open=hi is None and doc["exclusive_maximum"] is not None,
+        )
+    return str
+
+
+def _view_options(model):
+    """One ``--option`` per field of a view model (``configs/display.py``'s kind), its
+    choices, bounds, default and help read from the model (``describe_config``) —
+    enumerated, so a field added there is a flag here, with nothing written twice."""
+
+    def decorate(fn):
+        for doc in reversed(describe_config(model)):
+            flag = "--" + doc["name"].replace("_", "-")
+            if doc["type"] == "array":
+                # A list field is a repeatable flag named for one item; none given is the
+                # model's unset (``_view_values`` turns the empty tuple back into None).
+                singular = flag[:-1] if flag.endswith("s") else flag
+                fn = click.option(
+                    singular, doc["name"], multiple=True, help=doc["help"]
+                )(fn)
+                continue
+            if doc["type"] == "boolean":
+                fn = click.option(
+                    f"{flag}/--no-{flag[2:]}",
+                    doc["name"],
+                    default=bool(doc["default"]),
+                    show_default=True,
+                    help=doc["help"],
+                )(fn)
+                continue
+            fn = click.option(
+                flag,
+                doc["name"],
+                type=_view_option_type(doc),
+                default=doc["default"],
+                show_default=doc["default"] is not None,
+                help=doc["help"],
+            )(fn)
+        return fn
+
+    return decorate
+
+
+def _view_values(fields: dict) -> dict:
+    """``_view_options``' values as the model takes them: a repeatable flag given no times
+    is the field's unset, not an empty list."""
+    return {
+        name: (list(value) or None) if isinstance(value, tuple) else value
+        for name, value in fields.items()
+    }
+
+
+@locations.command("plot")
+@_EXPERIMENT_OPT
+@click.option(
+    "--run", "run_id", required=True,
+    help="Completed location-export analysis run (e.g. an_03).",
+)  # fmt: skip
+@click.option(
+    "--recording", "recording_refs", multiple=True,
+    help="Recording name (or id) to plot (repeatable). Default: every completed recording "
+    "of the run.",
+)  # fmt: skip
+@click.option(
+    "--out", "out_stem", required=True, type=UserPath(dir_okay=False),
+    help="Output path without extension; one file per --format is written beside it.",
+)  # fmt: skip
+@click.option(
+    "--format", "formats", multiple=True,
+    type=click.Choice(list(LOCATION_PLOT_FORMATS)), default=("png",), show_default=True,
+    help="png / svg / pdf picture, or html: one self-contained interactive page you can "
+    "hover, zoom and (3-D) turn (repeatable).",
+)  # fmt: skip
+@click.option(
+    "--theme", type=click.Choice(["light", "dark"]), default="light", show_default=True,
+    help="Chart surface.",
+)  # fmt: skip
+@_view_options(LocationPlotView)
+def locations_plot(
+    experiment_dir: Path,
+    run_id: str,
+    recording_refs: tuple[str, ...],
+    out_stem: str,
+    formats: tuple[str, ...],
+    theme: str,
+    **view_fields,
+) -> None:
+    """Draw a location-export run: the animal's path, where it spent its time, its speed, or
+    its body's size and shape — per recording, or by a Recording Information column with
+    --group-by."""
+    proj = _open_experiment(experiment_dir)
+    try:
+        view = LocationPlotView(**_view_values(view_fields))
+        plots = proj.location_plots(run_id)
+        recording_ids = (
+            [proj.resolve_recording(ref).id for ref in recording_refs]
+            if recording_refs
+            else None
+        )
+    except (ValueError, KeyError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    bar = _StageProgress()
+    try:
+        paths = plots.export(
+            view, out_stem, recording_ids, formats=formats, theme=theme, progress=bar
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    finally:
+        bar.close()
+    for path in paths:
+        click.echo(f"wrote: {path}")
 
 
 # --------------------------------------------------------------------------- #
@@ -5188,6 +5312,15 @@ def analysis() -> None:
     "recording's own match (alternative to --tracking). Repeat it to cover recordings "
     "tracked through different chains: each reads its run of the one named setting it has.",
 )  # fmt: skip
+@click.option(
+    "--keypoints", "keypoint_run_id", default=None, type=str,
+    help="location_export: " + _LOC["keypoint_run_id"].description,
+)  # fmt: skip
+@click.option(
+    "--keypoints-ref", "keypoints_ref", default=None, type=str,
+    help="location_export: RECORDING:kt_NN — derive the keypoint track settings from this "
+    "run and read each recording's own run with them (alternative to --keypoints).",
+)  # fmt: skip
 @_location_options
 def analysis_run(
     experiment_dir: Path,
@@ -5195,30 +5328,39 @@ def analysis_run(
     module_id: str,
     tracking_run_id: str | None,
     tracking_refs: tuple[str, ...],
+    keypoint_run_id: str | None,
+    keypoints_ref: str | None,
     sample_fps: float | None,
-    remove_thin_parts: bool | None,
-    thin_part_scale: float | None,
 ) -> None:
     """Launch an analysis run over the selected recordings; writes ``an_NN``."""
     if bool(tracking_run_id) == bool(tracking_refs):
         raise click.ClickException("pass exactly one of --tracking or --tracking-ref")
-    options = _given_location_options(
-        sample_fps=sample_fps,
-        remove_thin_parts=remove_thin_parts,
-        thin_part_scale=thin_part_scale,
-    )
-    if options and module_id != "location_export":
+    options = _given_location_options(sample_fps=sample_fps)
+    keypoint_flags = {
+        "keypoints": keypoint_run_id,
+        "keypoints-ref": keypoints_ref,
+    }
+    given_keypoints = [f"--{flag}" for flag, value in keypoint_flags.items() if value]
+    if (options or given_keypoints) and module_id != "location_export":
         # Applied or refused, never dropped: another module would ignore them in silence.
-        given = ", ".join(f"--{name.replace('_', '-')}" for name in options)
+        given = ", ".join(
+            [f"--{name.replace('_', '-')}" for name in options] + given_keypoints
+        )
         raise click.ClickException(
             f"{given} belong to the location_export module, not to {module_id}"
         )
+    if len(given_keypoints) > 1:
+        raise click.ClickException("pass at most one of --keypoints or --keypoints-ref")
     proj = _open_experiment(experiment_dir)
     config = {"source_recording_ids": list(recording_ids), **options}
     if tracking_refs:
         config.update(_spec_selection(proj, "tracking", tracking_refs))
     else:
         config["tracking_run_id"] = tracking_run_id
+    if keypoints_ref:
+        config.update(_spec_selection(proj, "keypoint_track", (keypoints_ref,)))
+    elif keypoint_run_id:
+        config["keypoint_run_id"] = keypoint_run_id
     try:
         run = proj.run_analysis(module_id, config)
     except ValueError as e:
@@ -5888,7 +6030,8 @@ def analysis_query(
 @click.option(
     "--finalize", is_flag=True, default=False,
     help="Mark the run complete — your statement that you are done calibrating. Refused, "
-    "naming the recordings, while the search has not reached every one.",
+    "naming the recordings, while the search has not reached every one, and naming the "
+    "behaviors while any has no cutoff (set them with --cutoff in the same command).",
 )  # fmt: skip
 @click.option(
     "--reopen", is_flag=True, default=False,
@@ -5968,7 +6111,9 @@ def analysis_query_calibrate(
     if finalize:
         try:
             _with_stage_progress(lambda bar: run.finalize(progress=bar))
-        except ValueError as e:  # a search that did not reach every recording
+        except ValueError as e:
+            # A search that did not reach every recording, or a behavior with no cutoff
+            # (`QueryRun.finish_blocker`, a UserInputError): either way one line, no traceback.
             raise click.ClickException(str(e))
         click.echo(f"finalized {run_id}")
 
@@ -6027,9 +6172,9 @@ def _echo_query_state(run) -> None:
 )  # fmt: skip
 @click.option(
     "--goal-width", type=FINITE_FLOAT, default=None,
-    help="Say whether each 95% confidence interval is this narrow yet (the GUI's default is "
-    "0.20, i.e. ±0.10), and roughly where another round of 25 would put it — a sample-size "
-    "goal, not a judgment of the label. Nothing is said about width without it.",
+    help="Say whether each 95% confidence interval of the earlier one-by-one audit is this "
+    "narrow (the GUI's default is 0.20, i.e. ±0.10) — a sample-size goal, not a judgment of "
+    "the label. Nothing is said about width without it.",
 )  # fmt: skip
 @click.option(
     "--own-only", is_flag=True, default=False,
@@ -6061,9 +6206,12 @@ def analysis_audit(
 
     A temporal clustering run's precision comes from its clip review (`clip_review.csv`: every
     clip of a cluster reviewed, written by `finish_review`), printed first with each cluster's
-    figure; the earlier one-by-one audit (`audit.csv`) follows under its own heading, read as it
-    always was.
+    figure; a query run's from its review of every clip its cutoff keeps, one recording at a
+    time (§20). The earlier one-by-one audit (`audit.csv`) follows under its own heading, read as
+    it always was.
     """
+    from detail.api.query import QueryRun
+
     proj = _open_experiment(experiment_dir)
     run = proj.authored_run(run_id)
     if run is None:
@@ -6071,9 +6219,17 @@ def analysis_audit(
             f"{run_id} is not an authored run (a query or clustering run), so it has no "
             "reliability audit. `detail analysis list` shows each run's module."
         )
-    if hasattr(run, "review_precision"):
+    # Chosen by the run's kind, not by which methods it has: both kinds have a
+    # `review_precision`, with different arguments and a different population.
+    reviewed_first = True
+    if isinstance(run, QueryRun):
+        _echo_query_review(run, label, cutoff, by_recording)
+        click.echo("Earlier one-by-one audit:")
+    elif hasattr(run, "review_precision"):
         _echo_clip_review(run, label)
         click.echo("Earlier one-by-one audit:")
+    else:
+        reviewed_first = False
     if run.nested_labels:
         paths = [label] if label else run.audit_labels()
         scopes = [(path, {"path": path, "own_only": own_only}) for path in paths]
@@ -6090,7 +6246,13 @@ def analysis_audit(
     for scope, address in scopes:
         estimate = run.audit_precision(cutoff=cutoff, **address)
         if estimate is None:
-            click.echo("(not audited — no reliability estimate for this run)")
+            # Under the earlier audit's heading, "no reliability estimate for this run" denied
+            # the review printed just above it.
+            click.echo(
+                "  (none)"
+                if reviewed_first
+                else "(not audited — no reliability estimate for this run)"
+            )
             return
         depth = scope.count(sep) if run.nested_labels else 0
         shown = "  " * depth + scope.rsplit(sep, 1)[-1]
@@ -6184,23 +6346,44 @@ def _echo_clip_review(run, label: str | None) -> None:
             )
 
 
-def _width_note(estimate: dict, goal: float) -> str:
-    """How wide the interval is against the goal width, and roughly where another round would
-    put it — sample-size facts, not a verdict."""
+def _echo_query_review(
+    run, label: str | None, cutoff: float | None, by_recording: bool
+) -> None:
+    """A query run's review, behavior by behavior and, with ``by_recording``, recording by
+    recording (§20), in ``storage/audit_figures``'s wording — the one AUDIT shows.
+
+    Everything is read before anything is printed, so a run whose candidates cannot be read
+    prints only the error.
+    """
     from detail.storage import audit_figures
-    from detail.storage import behavior_audit
+
+    behaviors = [b for b in run.behaviors() if label is None or label in (b.id, b.name)]
+    lines = []
+    for b in behaviors:
+        at = b.cutoff if cutoff is None else cutoff
+        if at is None:
+            lines.append(f"  {b.name}: no cutoff yet, nothing to review")
+            continue
+        rows = run.review_by_recording(b.id, cutoff=at)
+        estimate = run.review_precision(b.id, cutoff=at)
+        lines.append("  " + audit_figures.query_review_line(b.name, at, estimate, rows))
+        if by_recording:
+            lines.extend(
+                f"    {row['name']:<24} {audit_figures.query_review_cell(row)}"
+                for row in rows
+            )
+    click.echo("Review (every clip the cutoff keeps):")
+    for text in lines or ["  (no behavior matches)"]:
+        click.echo(text)
+
+
+def _width_note(estimate: dict, goal: float) -> str:
+    """How wide the interval is against the goal width — a sample-size fact, not a verdict."""
+    from detail.storage import audit_figures
 
     width = audit_figures.width(estimate)
-    if audit_figures.goal_reached(estimate, goal):
-        return f"CI width {width:.2f}, goal {goal:.2f} reached"
-    after = behavior_audit.projected_interval(estimate, behavior_audit.DEFAULT_BUDGET)
-    projection = (
-        f"; {behavior_audit.DEFAULT_BUDGET} more would give about "
-        f"{after[0]:.2f}–{after[1]:.2f}"
-        if after
-        else ""
-    )
-    return f"CI width {width:.2f}, goal {goal:.2f}{projection}"
+    reached = " reached" if audit_figures.goal_reached(estimate, goal) else ""
+    return f"CI width {width:.2f}, goal {goal:.2f}{reached}"
 
 
 @analysis.command("export-query")
@@ -6376,7 +6559,9 @@ def _interpret_options(kind: str):
                 "--finalize",
                 is_flag=True,
                 default=False,
-                help="Mark the run complete, your statement that you are done interpreting.",
+                help="Mark the run complete, your statement that you are done interpreting. "
+                "Refused while nothing is labelled (label a node with --name-node in the same "
+                "command).",
             ),
             click.option(
                 "--reopen",
@@ -6462,6 +6647,8 @@ def _interpret(
         for source, into in merge_pairs:
             click.echo(f"merged {source!r} into {into!r}")
         if finalize:
+            # Refused while nothing is labelled (`finish_blocker`, a UserInputError): one
+            # `Error:` line through the handler below, never a traceback.
             _with_stage_progress(lambda bar: run.finalize(progress=bar))
             click.echo("run finalized")
         if reopen:
@@ -7040,284 +7227,6 @@ def analysis_cluster_montage(
         raise click.ClickException(str(e))
 
 
-@analysis.command("query-eval")
-@_EXPERIMENT_OPT
-@click.option(
-    "--search", "search_recordings", multiple=True,
-    help=_QE["source_recording_ids"].description,
-)  # fmt: skip
-@click.option(
-    "--embed-run", "embed_run_id", required=True, help=_QE["embed_run_id"].description
-)
-@click.option(
-    "--behavior", "behaviors", multiple=True, required=True,
-    help=_QE["behaviors"].description,
-)  # fmt: skip
-@click.option(
-    "--stream", "stream_name", default=None,
-    help=_QE["stream_name"].description,
-)  # fmt: skip
-@click.option(
-    "--track", "track_id", type=_int_range(_QE_DOC["track_id"]),
-    default=_QE["track_id"].default, show_default=True, help=_QE["track_id"].description,
-)  # fmt: skip
-@click.option(
-    "--fusion", type=click.Choice(list(get_args(_QE["fusion"].annotation))),
-    default=_QE["fusion"].default, show_default=True, help=_QE["fusion"].description,
-)  # fmt: skip
-@click.option(
-    "--method", type=click.Choice(list(get_args(_QE["method"].annotation))),
-    default=_QE["method"].default, show_default=True, help=_QE["method"].description,
-)  # fmt: skip
-@click.option(
-    "--keyframe-select", "keyframe_select",
-    type=click.Choice(list(get_args(_QE["keyframe_select"].annotation))),
-    default=_QE["keyframe_select"].default, show_default=True,
-    help=_QE["keyframe_select"].description,
-)  # fmt: skip
-@click.option(
-    "--n-keyframes", "n_keyframes", type=_int_range(_QE_DOC["n_keyframes"]),
-    default=_QE["n_keyframes"].default, show_default=True,
-    help=_QE["n_keyframes"].description,
-)  # fmt: skip
-@click.option(
-    "--band", type=FINITE_FLOAT, default=_QE["band_s"].default, show_default=True,
-    help=_QE["band_s"].description,
-)  # fmt: skip
-@click.option(
-    "--k", "k", type=_int_range(_QE_DOC["k"]),
-    default=_QE["k"].default, show_default=True, help=_QE["k"].description,
-)  # fmt: skip
-@click.option(
-    "--tau", "tau", type=_float_range(_QE_DOC["tau"]),
-    default=_QE["tau"].default, show_default=True, help=_QE["tau"].description,
-)  # fmt: skip
-@click.option(
-    "--n-negatives", "n_negatives", type=_int_range(_QE_DOC["n_negatives"]),
-    default=_QE["n_negatives"].default, show_default=True,
-    help=_QE["n_negatives"].description,
-)  # fmt: skip
-@click.option(
-    # ``--max-gap`` is this option's original name, kept so existing sweep scripts run.
-    "--split-gap",
-    "--max-gap",
-    "trajectory_split_gap_s",
-    type=FINITE_FLOAT,
-    default=None,
-    help=_QE["trajectory_split_gap_s"].description,
-)
-@click.option(
-    "--max-results", "max_results", type=_int_range(_QE_DOC["max_results"]),
-    default=None, help=_QE["max_results"].description,
-)  # fmt: skip
-@click.option(
-    "--n-exemplars", "n_exemplars", type=_int_range(_QE_DOC["n_exemplars"]),
-    default=_QE["n_exemplars"].default, show_default=True, help=_QE["n_exemplars"].description,
-)  # fmt: skip
-@click.option(
-    "--negative-pool", "negative_pool",
-    type=click.Choice(list(get_args(_QE["negative_pool"].annotation))),
-    default=_QE["negative_pool"].default, show_default=True,
-    help=_QE["negative_pool"].description,
-)  # fmt: skip
-@click.option(
-    "--n-holdout", "n_holdout", type=_int_range(_QE_DOC["n_holdout"]),
-    default=None, help=_QE["n_holdout"].description,
-)  # fmt: skip
-@click.option(
-    "--folds", type=_int_range(_QE_DOC["folds"]), default=_QE["folds"].default,
-    show_default=True, help=_QE["folds"].description,
-)  # fmt: skip
-@click.option(
-    "--seed", type=_int_range(_QE_DOC["seed"]), default=_QE["seed"].default,
-    show_default=True, help=_QE["seed"].description,
-)  # fmt: skip
-@click.option(
-    "--iou", "iou_threshold", type=FINITE_FLOAT, default=_QE["iou_threshold"].default,
-    show_default=True, help=_QE["iou_threshold"].description,
-)  # fmt: skip
-@click.option(
-    "--point-window", "point_window_s", type=FINITE_FLOAT, default=_QE["point_window_s"].default,
-    show_default=True, help=_QE["point_window_s"].description,
-)  # fmt: skip
-@click.option(
-    "--out", "out_path", required=True, type=UserPath(dir_okay=False, path_type=Path),
-    help="Metrics CSV to append one row per behavior to (created if absent).",
-)  # fmt: skip
-@click.option(
-    "--pr-out", "pr_out_dir", default=None, type=UserPath(file_okay=False, path_type=Path),
-    help="Optional directory for per-behavior PR-curve points.",
-)  # fmt: skip
-@click.option(
-    "--predictions-out", "predictions_out", default=None,
-    type=UserPath(dir_okay=False, path_type=Path),
-    help="Optional CSV of per-clip prediction outcomes (TP/FP + matched GT). Overwritten.",
-)  # fmt: skip
-@click.option(
-    "--ground-truth-out", "ground_truth_out", default=None,
-    type=UserPath(dir_okay=False, path_type=Path),
-    help="Optional CSV of ground-truth outcomes (matched / FN / exemplar). Overwritten.",
-)  # fmt: skip
-@click.option(
-    "--folds-out", "folds_out", default=None,
-    type=UserPath(dir_okay=False, path_type=Path),
-    help="Optional CSV of per-fold metrics behind the mean±std row. Overwritten.",
-)  # fmt: skip
-@click.option(
-    "--overlap-out", "overlap_out", default=None,
-    type=UserPath(dir_okay=False, path_type=Path),
-    help="Optional CSV of recall/precision/AP at each overlap level, each beside its "
-         "null (a value that doesn't clear its null isn't real). Overwritten.",
-)  # fmt: skip
-def analysis_query_eval(
-    experiment_dir, search_recordings, embed_run_id, behaviors, stream_name, track_id,
-    fusion, method, keyframe_select, n_keyframes, band, k, tau, n_negatives, negative_pool,
-    trajectory_split_gap_s, max_results, n_exemplars, n_holdout, folds, seed,
-    iou_threshold, point_window_s, out_path, pr_out_dir, predictions_out, ground_truth_out,
-    folds_out, overlap_out,
-) -> None:  # fmt: skip
-    """Score behavior-query retrieval against ground truth (§16, scriptable).
-
-    Held-out exemplars seed the query; matches are scored against the remaining
-    ground-truth intervals. One row per --behavior is appended to --out so a shell
-    sweep over configs / embedding runs builds a comparison table."""
-    from detail.pipeline.query_eval import (
-        QueryEvalModule,
-        _overlap_rows,
-        evaluate_query,
-        null_at as query_eval_null_at,
-    )
-    from detail.storage import query_eval_csv
-
-    _open_experiment(
-        experiment_dir
-    )  # friendly error if the experiment is missing/invalid
-    if out_path.is_file():
-        # Rows are appended to --out after the whole evaluation; an unrelated CSV there
-        # would refuse them only then, so check it before spending the evaluation.
-        try:
-            query_eval_csv.read_metrics_csv(out_path)
-        except ValueError as e:
-            raise click.ClickException(
-                f"--out {out_path} is not a query-eval metrics CSV ({e}); rows are "
-                "appended to it, so name a new file or an earlier --out"
-            )
-    config = {
-        "source_recording_ids": list(search_recordings),
-        "embed_run_id": embed_run_id,
-        "behaviors": list(behaviors),
-        "stream_name": stream_name,
-        "track_id": track_id,
-        "fusion": fusion,
-        "method": method,
-        "keyframe_select": keyframe_select,
-        "n_keyframes": n_keyframes,
-        "band_s": band,
-        "k": k,
-        "tau": tau,
-        "n_negatives": n_negatives,
-        "negative_pool": negative_pool,
-        "trajectory_split_gap_s": trajectory_split_gap_s,
-        "max_results": max_results,
-        "n_exemplars": n_exemplars,
-        "n_holdout": n_holdout,
-        "folds": folds,
-        "seed": seed,
-        "iou_threshold": iou_threshold,
-        "point_window_s": point_window_s,
-    }
-    # The module's own checks, which a launched run gets and this direct call skipped: an
-    # unknown --stream, --embed-run, --track or --behavior fails naming what there is, rather
-    # than scoring nothing (`docs/cli.md`).
-    try:
-        config = QueryEvalModule().validate(experiment_dir, config)
-    except (ValueError, KeyError, FileNotFoundError) as e:
-        raise click.ClickException(str(e))
-    bar = _StageProgress()
-    try:
-        results = evaluate_query(experiment_dir, config, progress=bar)
-    except (ValueError, KeyError, FileNotFoundError) as e:
-        raise click.ClickException(str(e))
-    finally:
-        bar.close()
-
-    rows = []
-    fold_rows = []
-    for r in results:
-        if r.metrics is None:
-            click.echo(f"{r.behavior} [{r.behavior_type}]: skipped — {r.skipped}")
-            continue
-        m = r.metrics
-        spread = f" ±{m.ap_std:.3f}" if m.n_folds > 1 else ""
-        click.echo(
-            f"{r.behavior} [{r.behavior_type}]: AP={m.ap:.3f}{spread} "
-            f"P={m.precision:.3f} R={m.recall:.3f} ({m.n_folds} fold(s), "
-            f"tp={m.tp} fp={m.fp} fn={m.fn})"
-        )
-        at = query_eval_null_at(r.overlap, iou_threshold)
-        rows.append(
-            query_eval_csv.MetricRow(
-                embed_run_id=embed_run_id, behavior=r.behavior,
-                behavior_type=r.behavior_type, n_recordings=r.n_recordings, fusion=fusion,
-                method=method,
-                band_s=band, iou_threshold=iou_threshold, point_window_s=point_window_s,
-                n_exemplars=n_exemplars, n_holdout=n_holdout, seed=seed,
-                negative_pool=negative_pool,
-                trajectory_split_gap_s=trajectory_split_gap_s,
-                max_results=max_results, n_gt=m.n_gt, n_pred=m.n_pred, tp=m.tp, fp=m.fp,
-                fn=m.fn, ap=m.ap, precision=m.precision, recall=m.recall,
-                best_f1=m.best_f1, best_f1_threshold=m.best_f1_threshold,
-                n_folds=m.n_folds, ap_std=m.ap_std, precision_std=m.precision_std,
-                recall_std=m.recall_std, best_f1_std=m.best_f1_std,
-                recall_null=at.recall_null if at else 0.0,
-                recall_lift=at.recall_lift if at else 0.0,
-                ap_null=at.ap_null if at else 0.0,
-                ap_lift=at.ap_lift if at else 0.0,
-            )
-        )  # fmt: skip
-        for j, fm in enumerate(r.fold_metrics):
-            fold_rows.append(
-                query_eval_csv.FoldMetricRow(
-                    behavior=r.behavior, fold=j, n_gt=fm.n_gt, n_pred=fm.n_pred,
-                    tp=fm.tp, fp=fm.fp, fn=fm.fn, ap=fm.ap, precision=fm.precision,
-                    recall=fm.recall, best_f1=fm.best_f1,
-                    best_f1_threshold=fm.best_f1_threshold,
-                )
-            )  # fmt: skip
-            if pr_out_dir is not None:
-                Path(pr_out_dir).mkdir(parents=True, exist_ok=True)
-                query_eval_csv.write_pr_points(
-                    Path(pr_out_dir) / f"{embed_run_id}_{r.behavior}_fold_{j:02d}.csv",
-                    fm.pr_points,
-                )
-    if not rows:
-        raise click.ClickException(
-            "every behavior was skipped, so nothing was scored and --out was not written"
-        )
-    query_eval_csv.append_metrics(out_path, rows)
-    click.echo(f"metrics: {out_path}")
-    if folds_out is not None:
-        query_eval_csv.write_folds_csv(folds_out, fold_rows)
-        click.echo(f"folds: {folds_out}")
-    if overlap_out is not None:
-        query_eval_csv.write_overlap_csv(
-            overlap_out, [row for r in results for row in _overlap_rows(r)]
-        )
-        click.echo(f"overlap: {overlap_out}")
-    # Per-clip detail (the recorded run writes these into its run dir; the scriptable
-    # path emits them on request, for surface parity with the GUI explorer).
-    if predictions_out is not None:
-        query_eval_csv.write_predictions_csv(
-            predictions_out, [row for r in results for row in r.predictions]
-        )
-        click.echo(f"predictions: {predictions_out}")
-    if ground_truth_out is not None:
-        query_eval_csv.write_ground_truth_csv(
-            ground_truth_out, [row for r in results for row in r.ground_truth]
-        )
-        click.echo(f"ground truth: {ground_truth_out}")
-
-
 # --------------------------------------------------------------------------- #
 # modules (processing-module registry, §6.5)
 # --------------------------------------------------------------------------- #
@@ -7657,18 +7566,41 @@ def measures_export(
     click.echo(f"wrote {out}")
 
 
-def _refuse_unanswered_unit(experiment, group_by: list, recordings: list) -> None:
+def _refuse_unanswered_unit(
+    experiment,
+    group_by: list,
+    recordings: list,
+    *,
+    source_run_id: str,
+    source: str,
+    snapshot: str | None,
+) -> None:
     """Raise unless the cohort has no repeats — and name the column when it does.
 
     The GUI infers the same column and pre-selects it (`analysis/cohort.py`); the CLI cannot
     pre-select anything, so it names it in the refusal. Surface parity is the point: a user who
     reads "pass a column" and does not know *which* column is left where the GUI's first version
     left everyone.
+
+    The cohort is the recordings the run covers (`source_recordings`), not the experiment's:
+    over a run that covered one session per animal, counting every recording demanded an
+    answer to a question the comparison does not have. A run that cannot offer the source is
+    left to refuse itself, in its own words.
     """
     from detail.analysis import cohort
+    from detail.api.comparison import ComparisonRunError, source_recordings
 
     metadata = experiment.recording_metadata
-    ids = recordings or [r.id for r in experiment.recordings]
+    ids = recordings
+    if not ids:
+        try:
+            ids = source_recordings(
+                experiment, source_run_id, source=source, snapshot=snapshot
+            )
+        except ComparisonRunError:
+            return
+        if not ids:
+            return
     subject = cohort.infer_subject_column(metadata, ids, group_by=group_by)
     if subject is None:
         return  # nothing repeats: `[]` is the only answer, and it is the one taken
@@ -7696,6 +7628,19 @@ def _comparison_help(name: str) -> str:
     return ComparisonConfig.model_fields[name].description or ""
 
 
+def _comparison_choices(name: str) -> list[str]:
+    """The values a `comparison run` choice takes, read off the config model's ``Literal``.
+
+    Typed here by hand they were complete on the day they were typed: a source added to the
+    model would have been refused by the one surface that claims to mirror the API.
+    """
+    import typing
+
+    from detail.configs.comparison import ComparisonConfig
+
+    return list(typing.get_args(ComparisonConfig.model_fields[name].annotation))
+
+
 @main.group()
 def comparison() -> None:
     """Compare behavior between groups defined by recording metadata (§24)."""
@@ -7707,7 +7652,8 @@ def comparison() -> None:
     "--source-run",
     "source_run_id",
     required=True,
-    help="Analysis run holding the behavior output.",
+    help="Analysis run to compare over: one holding a behavior output, or, with "
+    "--source locations, a location-export run.",
 )
 @click.option(
     "--snapshot",
@@ -7732,7 +7678,7 @@ def comparison() -> None:
 )
 @click.option(
     "--source",
-    type=click.Choice(["labels", "nodes"]),
+    type=click.Choice(_comparison_choices("source")),
     default=_comparison_default("source"),
     show_default=True,
     help=_comparison_help("source"),
@@ -7801,10 +7747,45 @@ def comparison() -> None:
 )
 @click.option(
     "--statistic",
-    type=click.Choice(["moderated_t", "effect"]),
+    type=click.Choice(_comparison_choices("statistic")),
     default=_comparison_default("statistic"),
     show_default=True,
     help=_comparison_help("statistic"),
+)
+@click.option(
+    "--location-sample-fps",
+    type=FINITE_FLOAT,
+    default=_comparison_default("location_sample_fps"),
+    show_default=True,
+    help=_comparison_help("location_sample_fps")
+    + " Pass --location-every-row to read every row.",
+)
+@click.option(
+    "--location-every-row",
+    is_flag=True,
+    help="Locations source: read every row of the run instead of thinning to "
+    "--location-sample-fps.",
+)
+@click.option(
+    "--location-smooth-s",
+    type=FINITE_FLOAT,
+    default=_comparison_default("location_smooth_s"),
+    show_default=True,
+    help=_comparison_help("location_smooth_s"),
+)
+@click.option(
+    "--location-moving-threshold",
+    type=FINITE_FLOAT,
+    default=_comparison_default("location_moving_threshold"),
+    show_default=True,
+    help=_comparison_help("location_moving_threshold"),
+)
+@click.option(
+    "--location-jump-speed",
+    type=FINITE_FLOAT,
+    default=_comparison_default("location_jump_speed"),
+    show_default=True,
+    help=_comparison_help("location_jump_speed"),
 )
 def comparison_run(
     experiment_dir,
@@ -7829,6 +7810,11 @@ def comparison_run(
     candidate_floor_s,
     suppress_nesting,
     statistic,
+    location_sample_fps,
+    location_every_row,
+    location_smooth_s,
+    location_moving_threshold,
+    location_jump_speed,
 ) -> None:
     """Run a comparison and save it.
 
@@ -7842,10 +7828,19 @@ def comparison_run(
     named values — follows from what the ``--group-by`` column does within the unit, and is
     printed when the run ends (§24).
     ``--source nodes`` screens every node of a clustering run's node cache, named or not.
+    ``--source locations`` compares distance travelled, time moving, speed and body shape,
+    read from a location-export run, each measure by its own test.
     """
     proj = _open_experiment(experiment_dir)
     if not aggregate_to:
-        _refuse_unanswered_unit(proj, list(group_by or ()), list(recordings or ()))
+        _refuse_unanswered_unit(
+            proj,
+            list(group_by or ()),
+            list(recordings or ()),
+            source_run_id=source_run_id,
+            source=source,
+            snapshot=source_snapshot,
+        )
     path = [] if tuple(aggregate_to) == ("none",) else list(aggregate_to)
     if levels and len(levels) != 2:
         raise click.UsageError(
@@ -7876,6 +7871,12 @@ def comparison_run(
                 "candidate_floor_s": candidate_floor_s,
                 "suppress_nesting": suppress_nesting,
                 "statistic": statistic,
+                "location_sample_fps": (
+                    None if location_every_row else location_sample_fps
+                ),
+                "location_smooth_s": location_smooth_s,
+                "location_moving_threshold": location_moving_threshold,
+                "location_jump_speed": location_jump_speed,
             },
             progress=bar,
         )
@@ -7908,6 +7909,14 @@ def comparison_run(
             f"  every node of {record['source_run_id']} at or above "
             f"{record.get('candidate_floor_s')} s, ranked on share of time"
         )
+    if record.get("source") == "locations":
+        exported = record.get("location_export") or {}
+        # Only a comparison made before thin-part removal was taken out can say "removed".
+        thin = " (thin parts removed)" if exported.get("remove_thin_parts") else ""
+        click.echo(
+            f"  locations of {record['source_run_id']}{thin}: each measure "
+            f"tested on its own over {record.get('draws')} shuffles"
+        )
     if record.get("source_snapshot"):
         click.echo(f"  read {record['source_run_id']} @ {record['source_snapshot']}")
     _echo_screened(record)
@@ -7937,6 +7946,14 @@ _THEME_HELP = (
 )
 
 
+def _comparison_formats() -> tuple[str, ...]:
+    """The figure formats a comparison export writes unless told otherwise: the one default
+    every surface shares (`comparison_report.DEFAULT_FORMATS`), not retyped here."""
+    from detail.analysis.comparison_report import DEFAULT_FORMATS
+
+    return DEFAULT_FORMATS
+
+
 @comparison.command("export")
 @click.argument("comparison_id")
 @_EXPERIMENT_OPT
@@ -7951,7 +7968,7 @@ _THEME_HELP = (
     "--format",
     "formats",
     multiple=True,
-    default=("pdf", "svg", "png"),
+    default=_comparison_formats(),
     show_default=True,
     help="A figure format to write; repeat for several. Any format matplotlib writes "
     "(jpg, tiff, eps, …); an unknown one is refused before anything is drawn.",

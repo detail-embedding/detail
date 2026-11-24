@@ -6,19 +6,21 @@ and how far it is from each point. Every row carries its time, so the files line
 lever presses or drug infusions.
 
 It needs only the tracking from chapter 3, and the regions and points from chapter 2. It does
-not need keypoints or an embedding, so it can come as soon as tracking is done.
+not need keypoints or an embedding, so it can come as soon as tracking is done; with the
+keypoints from chapter 4 it can write them too.
 
 ## The steps at a glance
 
 Each box is one step on this page. Click a box to go to that step. The first tag says where
-the step is in DETAIL.
+the step is in Detail.
 
 <div class="guide-flow" markdown>
 
 1. [Check the regions and points](#1-check-the-regions-and-points) <span class="where where-app">a recording › Edit scene geometry</span> <span class="note">What the export measures against.</span>
 2. [Run the export](#2-run-the-export) <span class="where where-app">Experiments › Analysis › New analysis</span> <span class="note">About 2 minutes for the three demo videos, on the processor.</span>
-3. [Open the files](#3-open-the-files) <span class="where where-app">Experiments › Analysis › the run's page › Results</span> <span class="note">Spreadsheets per recording.</span>
-4. [Optional: export the body points](#4-optional-export-the-body-points) <span class="where where-app">the keypoint track run's page › Export…</span> <span class="note">Where each keypoint is, per frame.</span>
+3. [Open the files](#3-open-the-files) <span class="where where-app">Experiments › Analysis › the run's page › Files</span> <span class="note">Spreadsheets per recording.</span>
+4. [Look at the plots](#4-look-at-the-plots) <span class="where where-app">the run's page › Plots</span> <span class="note">Paths, heat maps, speed and body shape, per recording or by group.</span>
+5. [Optional: the body points](#5-optional-the-body-points) <span class="where where-app">New analysis › Keypoint track run</span> <span class="note">Where each keypoint is, per frame, and its path.</span>
 
 </div>
 
@@ -54,8 +56,8 @@ analysis run** dialog:
 2. Click **Select all**.
 3. **Tracking run:** check that the tracking from chapter 3 is ticked. With one tracking, it
    is ticked for you.
-4. Leave **Rows per second** at **every frame** and **Remove thin parts** unticked. *About
-   this step*, below, says when to change them.
+4. Leave **Rows per second** at **every frame**. *About this step*, below, says when to
+   change it.
 5. Click **Run**.
 
 ![The Launch an analysis run dialog for Location export: module Location export, all three recordings ticked, and the tracking run list with the tracking from chapter 3 ticked, highlighted. Numbered markers sit on every control.](../../assets/user-guides/single-animal/location-export/launch-location-export.png)
@@ -73,29 +75,22 @@ analysis run** dialog:
     8. **Cancel**: closes the dialog without starting anything.
     9. **?**: a short explanation of the setting beside it.
 
-The picture was taken before **Rows per second** and **Remove thin parts** were added. They
-sit under **Tracking run**, each with a **?** beside it.
+The picture was taken before **Keypoint track run** and **Rows per second** were added. They
+sit under **Tracking run**, each with a **?** beside it; leave **Keypoint track run** at
+**(none)** for now (step 5).
 
-??? info "About this step: rows per second and thin parts"
+??? info "About this step: rows per second"
     - **Rows per second.** Left at **every frame**, the export writes a row for every frame
       the animal was tracked on. Set it to a number, such as 5, and it writes about that many
       rows a second: the tracked frame nearest each tick of a clock. Nothing is filled in
       between, so a stretch where the animal was lost has no rows. A few rows a second is
       enough for distance travelled, speed and body shape, and the export finishes many times
       sooner. On a 30-minute video at 1920 x 1080, 5 rows a second took about half a minute
-      on a desktop computer, and a minute and a half with thin parts removed.
-    - **Remove thin parts.** Ticked, the body is measured without its thin parts: a tail, a
-      limb, an antenna. Tick it for rats and mice. A rat's tail moves the centre of its
-      outline and makes it read far longer than its body is: 260 mm against 180 mm, on one
-      rat seen from above. Leave it unticked for an
-      animal whose thin parts are its body, such as a fish or a snake. Only the `body_`
-      columns change; the `mask_` columns and the region and point files are still the
-      whole outline.
-    - **Thin part scale**, under **Advanced Settings**: how thick a part must be to count as
-      body. It is a share of the animal's own size in the picture, so it does not depend on
-      the distance calibration. The default, 0.12, removes a rat's tail seen from above and
-      from the side. Raise it if a tail survives; lower it if the head or the legs are
-      being cut off.
+      on a desktop computer.
+    - **The body is the whole outline.** Nothing is cut out of it, so a rat's tail counts
+      toward its length and moves its centre: 260 mm against 180 mm, on one rat seen from
+      above. Every body column is a standard measure of the outline that you can recompute
+      in any other tool.
 
 ??? warning "Check which tracking run is ticked"
     When nothing was ticked before, the list ticks the tracking that covers the most of the
@@ -107,12 +102,14 @@ processor.
 
 ## 3. Open the files
 
-When the run's **Status** says **complete**, its page has one card under **Results**.
+When the run's **Status** says **complete**, its page has two cards under **Results**:
+**Plots ›** (step 4) and **Files ›**. The pictures in this step were taken before the
+**Plots** card was added, when **Files ›** was called **Results ›**.
 
 ![The Location export run's page: an_01, location_export, complete, with the Results card, and the Open output folder, Delete analysis and Start new analysis buttons. Numbered markers sit on every control.](../../assets/user-guides/single-animal/location-export/location-export-run.png)
 
 ??? info "What everything on this screen does"
-    1. **Results ›**: the files the run wrote. Click it to list them.
+    1. **Results ›**, now **Files ›**: the files the run wrote. Click it to list them.
     2. **Open output folder**: opens the folder that holds them, to copy them or open them
        in a spreadsheet, R or Python.
     3. **Delete analysis**: deletes the run and its files, after asking.
@@ -120,7 +117,7 @@ When the run's **Status** says **complete**, its page has one card under **Resul
 
     The **Notes** button at the top of the window opens a notes box for the run.
 
-Click **Results ›** for the files it wrote: three for each recording. To go back to the run's
+Click **Files ›** for the files it wrote: three for each recording. To go back to the run's
 page, click its id, here **an_01**, in the line at the top.
 
 ![The Location export run's Results: the table of its files, tracks.csv, roi_relations.csv and point_relations.csv for each of the three recordings. Numbered markers sit on every control.](../../assets/user-guides/single-animal/location-export/location-export-files.png)
@@ -141,9 +138,9 @@ tracked animal (0 with one animal).
 | `bbox_cx`, `bbox_cy` | The centre of that box. |
 | `mask_cx`, `mask_cy` | The centre of the animal's outline, which follows the body more closely than the box. |
 | `bbox_area`, `mask_area` | The size of the box and of the outline. |
-| `body_cx`, `body_cy` | The centre of the body. The same as `mask_cx`, `mask_cy` unless **Remove thin parts** was ticked; then it is the centre without the tail. |
-| `body_area` | The size of the body. |
-| `body_length`, `body_width` | How long and how wide the body is, along and across its long axis. Their ratio says how stretched out or balled up the animal is. |
+| `body_cx`, `body_cy` | The centre of the body: the same as `mask_cx`, `mask_cy`. |
+| `body_area` | The size of the body: the same as `mask_area`. |
+| `body_length`, `body_width` | How long and how wide the outline is: the long and short axes of the ellipse with the same spread (MATLAB's `MajorAxisLength` and `MinorAxisLength`). Their ratio says how stretched out or balled up the animal is. |
 | `body_angle_deg` | Which way the long axis points in the picture, from 0 to 180 degrees: 0 is left to right, 90 is up and down. It does not say which end is the head. |
 
 **`roi_relations.csv`**: the animal and each region, one row per region per frame.
@@ -183,7 +180,7 @@ in. On the demo, box1's `tracks.csv` has 8,854 rows, one for each tracked frame.
     Each row is one frame, so a mean of a 0-or-1 column is the share of time.
 
     To line the files up with other data, join on `t_ns`: it is the same clock as every
-    other DETAIL time, counted from the start of the video. The recording's **Recording
+    other Detail time, counted from the start of the video. The recording's **Recording
     information** (chapter 1) goes alongside by its folder name.
 
 ??? warning "If this doesn't work"
@@ -194,16 +191,83 @@ in. On the demo, box1's `tracks.csv` has 8,854 rows, one for each tracked frame.
     - **Far fewer rows than frames:** the tracking lost the animal for those frames (see
       chapter 3), or **Rows per second** was set, which writes that many rows a second and
       no more.
-    - **"thin parts cannot be removed from these masks":** the outlines are too coarse for
-      the size of part you asked to remove. Raise **Thin part scale**, or untick **Remove
-      thin parts**.
 
-## 4. Optional: export the body points
+## 4. Look at the plots
 
-The location export does not include keypoints. To get where each body point is on every
-frame, export them from the keypoint track run instead: open it (**Processing pipeline** ›
-the keypoint track run), click **Export…** at the top right, and tick **Keypoints**. It
-writes one spreadsheet per recording, with a row per frame per body point. [Chapter
+On the run's page, click **Plots ›**. It draws the run's files: one panel per recording, or
+one per group of recordings. Every change to the controls on the left redraws it, and
+scrolling on the picture zooms.
+
+1. **Plot:** what to draw:
+    - **trace**: the path the animal took, light to dark as time goes on.
+    - **heatmap**: where it spent its time, darker for more.
+    - **speed**: how fast it moved, over time.
+    - **trace3d**: the path with time going up, so a place visited twice shows as two
+      layers.
+    - **body**: a measure of its body over time: its length, its width, its area, how
+      stretched out it is (**elongation**, length ÷ width), or the area of its whole
+      outline.
+    - **body_hist**: how often the body measured each value of that measure.
+2. **Position:** the point a path follows: the centre of the **body**, of the whole outline
+   (**mask**), or of its box (**bbox**). The body is the whole outline, tail and all, so
+   **body** and **mask** follow the same point.
+3. **Group by:** leave **(each recording)** for a panel per recording, or choose a column of
+   the **Recording information** (chapter 1), such as **drug**, for one panel or line per
+   value.
+4. **Body outline every (s):** on a **trace**, draws the body's outline every so many
+   seconds: an ellipse as long and as wide as the body, turned along its long axis. It
+   shows where the animal was stretched out and where it was balled up.
+
+Speed is measured the way a [comparison](../../gui.md#comparisons) between groups measures
+it: on the body's path averaged over a second, and broken where tracking was lost or the
+position jumped further than the animal could move. A jump is drawn as a break in the path, not as a line across the arena.
+
+With **Group by** set, each animal counts the same, however long it was tracked: on a heat
+map its time is shared out to 1 before the animals of a group are averaged, and a speed or
+body line is the mean across animals, with a band for the standard error. A **trace** or
+**trace3d** has no average: paths of different animals cannot be averaged into one, so a
+group's panel draws every animal's path over the others. For where a group spent its time,
+use **heatmap**. The title gives how many animals are in each group.
+
+**Export image…** saves the plot as a picture (PNG), a drawing that stays sharp at any size
+(SVG or PDF), or **Interactive HTML**: one page that opens in any web browser, with no
+internet needed. On that page you can hover over a point to read it, zoom, and turn a 3-D
+plot with the mouse; every 3-D panel turns together.
+
+??? warning "If this doesn't work"
+    - **"exported before the body was measured":** the run was made before the export
+      measured the body. Run the export again for **body** plots and outlines; the other
+      plots work on it as it is.
+    - **"N animals … location plots show one animal per recording":** the recording's
+      tracking followed more than one animal. Plots draw one animal per recording.
+    - **"mm needs a distance calibration":** a ticked recording has no calibration. Add one
+      (chapter 2, step 3) and run the export again, or set **Units** to **px**.
+
+## 5. Optional: the body points
+
+With the keypoints from chapter 4, the export can also write where each body point is. In
+step 2, set **Keypoint track run** to the keypoint tracking of the same tracking run, and run
+it. Each recording's folder then has a fourth file:
+
+**`keypoints.csv`**: one row per frame per body point, on the same frames as `tracks.csv`.
+
+| Column | What it is |
+|---|---|
+| `keypoint` | The body point, such as `nose`. |
+| `x`, `y` | Where it was, in `_norm`, `_px` and `_mm`. Blank on a frame it was not placed. |
+| `score` | How sure the keypoint model was. |
+| `visible` | 1 if the score was over the cut-off, 0 if not; a point under it keeps its place. |
+
+On **Plots**, **Position** then lists the body points: a path follows the nose, say, with a
+gap wherever the nose was hidden. **Keypoints** draws several points on one path, a colour
+each.
+
+A keypoint tracking made from another tracking run is refused when you click **Run**, naming
+the recording: its animals are not this export's.
+
+To get the body points without a location export, export them from the keypoint track run
+instead: open it (**Processing pipeline** › the keypoint track run), click **Export…** at the
+top right, and tick **Keypoints**. [Chapter
 4](keypoints.md#optional-take-the-keypoints-to-deeplabcut-sleap-or-nwb) shows the dialog.
 
 ## Next

@@ -42,10 +42,6 @@ _SEAMS = ("image_view.py", "full_frame.py")
 #: non-fix, in the `fix-the-class` sense: the sweep reached it and stopped for a stated reason.
 ALLOWED: dict[str, str] = {
     # -- thumbnails: small by design, and each opens something bigger ------------------- #
-    "clip_grid.py:_Cell.set_image": (
-        "a strip cell — a single click marks it and loads it into the player beside the row, "
-        "and a double click opens the clip in a window of its own"
-    ),
     "cluster_strip.py:_Thumb._paint": (
         "a cluster member's crop — a click plays it in place, a double click opens the whole "
         "frame in a player; the crop is for telling members apart, not for studying one"

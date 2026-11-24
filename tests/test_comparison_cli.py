@@ -512,6 +512,29 @@ def test_a_labels_comparison_prints_what_it_is_not_independent_of(
     assert "screened=climb" in listed.output
 
 
+def test_the_unit_question_counts_the_recordings_the_run_covers(tmp_path):
+    """One recording per animal in the run; the experiment holds a second recording of one
+    of them that the run never analyzed. Nothing repeats among what is compared, so there is
+    no question to ask, and asking it from the experiment's count was the bug."""
+    from detail.storage import metadata as md
+
+    one_each = {
+        f"r{a}": ({"animal": a, "drug": drug}, 3 + i)
+        for i, (a, drug) in enumerate(
+            [("A", "veh"), ("B", "fent"), ("C", "veh"), ("D", "fent")]
+        )
+    }
+    exp = _cohort(tmp_path, one_each)
+    exp.create_recording("outside")
+    md.upsert_row(exp.dir, "outside", {"animal": "A", "drug": "fent"})
+    result = _run(
+        "comparison", "run", "--experiment", str(exp.dir), "--source-run", "an_01",
+        "--group-by", "drug", "--measure", "n_instances",
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    assert "one observation is: (one per recording)" in result.output
+
+
 def test_run_says_which_recordings_were_left_out(tmp_path):
     from tests.api.test_comparison import DOSES
 
@@ -623,3 +646,87 @@ def test_a_screen_that_could_have_no_floor_is_refused_with_its_remedy(
     assert "Add a second animal that has both fent and veh." in result.output
     assert "Traceback" not in result.output
     assert exp.comparisons == []
+
+
+# --------------------------------------------------------------------------------------------- #
+# the locations source (detail#70)
+# --------------------------------------------------------------------------------------------- #
+def _locations(exp, *extra):
+    return _run(
+        "comparison", "run", "--experiment", str(exp.dir), "--source-run", "an_01",
+        "--source", "locations", "--group-by", "session", "--aggregate-to", "animal",
+        "--level", "saline", "--level", "drug", *extra,
+    )  # fmt: skip
+
+
+def test_a_locations_comparison_runs_and_says_how_it_is_judged(tmp_path):
+    from tests.api.test_comparison_locations import cohort, paired_plan
+
+    exp = cohort(tmp_path, paired_plan())
+    result = _locations(exp, "--measure", "distance", "--measure", "body_length")
+    assert result.exit_code == 0, result.output
+    assert "design: paired" in result.output
+    assert (
+        "locations of an_01: each measure tested on its own over " "10000 shuffles"
+    ) in result.output
+    assert "ordered by each measure's own test" in result.output
+    record = exp.comparisons[-1].record()
+    assert record["source"] == "locations"
+    assert record["measures"] == ["distance", "body_length"]
+
+
+def test_every_location_setting_typed_reaches_the_record(tmp_path):
+    from tests.api.test_comparison_locations import cohort, paired_plan
+
+    exp = cohort(tmp_path, paired_plan())
+    result = _locations(
+        exp, "--location-every-row", "--location-smooth-s", "2", "--location-moving-threshold",
+        "3.5", "--location-jump-speed", "12",
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    record = exp.comparisons[-1].record()
+    assert record["location_sample_fps"] is None  # every row, said and not defaulted
+    assert record["location_smooth_s"] == 2.0
+    assert record["location_moving_threshold"] == 3.5
+    assert record["location_jump_speed"] == 12.0
+
+
+def test_a_run_that_is_not_a_location_export_is_refused_in_one_line(tmp_path):
+    from tests.api.test_comparison_locations import cohort, paired_plan
+
+    exp = cohort(tmp_path, paired_plan(), module_id="query")  # a run of another module
+    result = _locations(exp)
+    assert result.exit_code != 0
+    assert "Traceback" not in result.output
+    assert (
+        "the locations source reads a location-export run, and an_01 is a query run"
+        in (result.output)
+    )
+
+
+def test_the_choices_the_cli_offers_are_the_config_models():
+    """`--source` and `--statistic` were typed by hand, and were complete on the day they were
+    typed: a source added to the model would have been refused by the surface that claims to
+    mirror the API. Read off the model, with every `--location-…` option's help and default.
+    """
+    import typing
+
+    from detail import cli
+    from detail.configs.comparison import ComparisonConfig
+
+    params = {p.name: p for p in cli.comparison_run.params}
+    for name in ("source", "statistic"):
+        offered = list(params[name].type.choices)
+        assert offered == list(
+            typing.get_args(ComparisonConfig.model_fields[name].annotation)
+        ), name
+    assert "locations" in params["source"].type.choices
+    location_fields = [
+        n for n in ComparisonConfig.model_fields if n.startswith("location_")
+    ]
+    assert location_fields, "the model has no location settings to check"
+    for name in location_fields:
+        field = ComparisonConfig.model_fields[name]
+        assert name in params, f"comparison run has no option for {name}"
+        assert params[name].default == field.default, name
+        assert params[name].help.startswith(field.description), name

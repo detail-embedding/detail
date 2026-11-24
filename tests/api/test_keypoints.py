@@ -12,6 +12,7 @@ from detail.core.skeleton import PRESETS, Skeleton
 from detail.storage import example_sets as example_store
 from detail.storage import recording as recording_store
 from tests import experiments
+from tests.skeletons import SIDE_5
 
 SK = Skeleton(names=("nose", "tail_base"), edges=(("nose", "tail_base"),))
 N_FRAMES = 5
@@ -40,9 +41,9 @@ def test_a_set_made_from_a_preset_or_library_entry_records_where_it_came_from(tm
     from detail.api import skeletons as library
 
     proj = Experiment.create("p", tmp_path)
-    from_preset = proj.create_example_set("side", "quadruped_side_5")
-    assert from_preset.skeleton == PRESETS["quadruped_side_5"][1]
-    assert from_preset.skeleton_ref == library.ref("quadruped_side_5")
+    from_preset = proj.create_example_set("side", "midline_2")
+    assert from_preset.skeleton == PRESETS["midline_2"][1]
+    assert from_preset.skeleton_ref == library.ref("midline_2")
     mine = library.create_skeleton("two", SK)
     from_library = proj.create_example_set("two", mine["id"])
     assert from_library.skeleton_ref == {
@@ -66,11 +67,8 @@ def test_resolve_skeleton_takes_a_preset_a_set_a_file_or_a_skeleton(tmp_path):
     path.write_text(yaml.dump(SK.to_dict()), encoding="utf-8")
 
     assert kp.resolve_skeleton(proj, SK) == (SK, None)
-    preset, ref = kp.resolve_skeleton(proj, "quadruped_overhead_12")
-    assert (
-        preset == PRESETS["quadruped_overhead_12"][1]
-        and ref["id"] == "quadruped_overhead_12"
-    )
+    preset, ref = kp.resolve_skeleton(proj, "midline_3")
+    assert preset == PRESETS["midline_3"][1] and ref["id"] == "midline_3"
     assert kp.resolve_skeleton(proj, made.id) == (
         SK,
         None,
@@ -132,7 +130,7 @@ def test_the_skeleton_changes_until_the_first_mark(tmp_path):
     from detail.core.examples import ExampleFrame
 
     proj = Experiment.create("p", tmp_path)
-    made = proj.create_example_set("rats", "quadruped_side_5")
+    made = proj.create_example_set("rats", "midline_2")
     changed = proj.update_example_set(made.id, skeleton="midline_3")
     assert changed.skeleton == PRESETS["midline_3"][1]
     assert changed.skeleton_ref["id"] == "midline_3", "the ref follows the new skeleton"
@@ -153,8 +151,8 @@ def test_the_skeleton_changes_until_the_first_mark(tmp_path):
     )
     example_store.write_set(proj.dir, current)
     assert (
-        proj.update_example_set(made.id, skeleton="quadruped_side_5").skeleton_ref["id"]
-        == "quadruped_side_5"
+        proj.update_example_set(made.id, skeleton="midline_2").skeleton_ref["id"]
+        == "midline_2"
     ), "a frame without marks holds no points, so it does not fix the skeleton"
 
     set_id = _marked(proj)
@@ -171,7 +169,7 @@ def test_duplicate_copies_the_skeleton_and_no_frames(tmp_path):
     copy = proj.duplicate_example_set(set_id)
     assert copy.id != set_id and copy.name == "rats copy"
     assert copy.skeleton_ref is None, "a set made from a bare Skeleton names no entry"
-    linked = proj.create_example_set("linked", "quadruped_side_5")
+    linked = proj.create_example_set("linked", "midline_2")
     assert proj.duplicate_example_set(linked.id).skeleton_ref == linked.skeleton_ref
     assert copy.skeleton == SK and copy.frames == []
     assert proj.duplicate_example_set(set_id, name="side").name == "side"
@@ -197,23 +195,21 @@ def test_export_then_import_round_trips_a_set_with_its_frames(tracked, tmp_path)
 def test_a_bare_skeleton_file_imports_as_an_empty_set(tmp_path):
     proj = Experiment.create("p", tmp_path)
     path = tmp_path / "side_view.yaml"
-    path.write_text(
-        yaml.dump(PRESETS["quadruped_side_5"][1].to_dict()), encoding="utf-8"
-    )
+    path.write_text(yaml.dump(SIDE_5.to_dict()), encoding="utf-8")
     made = proj.import_example_set(path)
     assert made.name == "side_view" and made.frames == []
-    assert made.skeleton == PRESETS["quadruped_side_5"][1]
-    assert made.skeleton.layout == PRESETS["quadruped_side_5"][1].layout
+    assert made.skeleton == SIDE_5
+    assert made.skeleton.layout == SIDE_5.layout
 
 
 # --- example sets ------------------------------------------------------------------- #
 def test_create_example_set_copies_the_named_skeleton(tmp_path):
     proj = Experiment.create("p", tmp_path)
 
-    created = proj.create_example_set("overhead", "quadruped_overhead_12")
+    created = proj.create_example_set("overhead", "midline_3")
 
     assert created.id == "ex_01"
-    assert created.skeleton == PRESETS["quadruped_overhead_12"][1]
+    assert created.skeleton == PRESETS["midline_3"][1]
     assert [s.id for s in proj.example_sets()] == ["ex_01"]
     assert proj.example_set("ex_01").name == "overhead"
     audit = proj.create_example_set("au", SK, purpose="audit")

@@ -126,12 +126,10 @@ FILE_TIER = {
     "tests/tools/test_quick_segment.py": "slow",
     "tests/test_cli.py": "slow",
     # --- heavy numeric backends: numba JIT, HDBSCAN, UMAP, sklearn on real matrices - #
-    "tests/analysis/test_extraction_scaling.py": "slow",
     "tests/analysis/test_retrieval.py": "slow",
     "tests/analysis/test_segmentation.py": "slow",
     "tests/analysis/test_tw_finch.py": "slow",
     "tests/analysis/test_finch_abd.py": "slow",
-    "tests/pipeline/test_query_eval.py": "slow",
     "tests/pipeline/test_query_module.py": "slow",
     # Three real fits — one per registered cluster method — each paying a UMAP layout it never
     # names, so the signature scan cannot see the cost. Measured at ~12 s. The merge tree's own
@@ -139,8 +137,10 @@ FILE_TIER = {
     "tests/cluster_methods/test_hierarchy.py": "slow",
     # --- matplotlib figure rendering ------------------------------------------------ #
     "tests/analysis/test_comparison_figures_shape.py": "slow",
+    "tests/analysis/test_comparison_paper_figures.py": "slow",
     "tests/report/test_comparison_figures.py": "slow",
     "tests/report/test_figures.py": "slow",
+    "tests/report/test_plot_render.py": "slow",
     "tests/report/test_behavior_figures.py": "slow",
     # --- a real backend model, fetched and run --------------------------------------- #
     "tests/models/test_trained_yolo.py": "slow",
@@ -348,7 +348,8 @@ GUARD_FILES = frozenset(
         "tests/gui/test_collapse.py",
         "tests/gui/test_window_state.py",
         "tests/gui/test_decode_priority.py",
-        "tests/gui/test_strip_reuse.py",
+        # An identity (a label, a behavior) is never told apart by hue alone.
+        "tests/gui/test_identity_marks.py",
         "tests/gui/test_audit_playback.py",
         "tests/gui/test_worker_lifetime.py",
         # A bounded wait raises naming what never happened, or its answer is used.
@@ -356,7 +357,11 @@ GUARD_FILES = frozenset(
         # No test inherits a modifier key or mouse button held by an earlier one.
         "tests/gui/test_input_state.py",
         # --- label leakage and the ground-truth boundary -------------------------- #
-        "tests/pipeline/test_label_leakage.py",
+        # CLAUDE.md, "Labels score a method; they never build one": Behavior scan's background
+        # draw reads no label, and no cluster method's signature can take one. (The permutation
+        # test these stood beside drove query eval and was retired with it.)
+        "tests/pipeline/test_query_background.py",
+        "tests/cluster_methods/test_registry.py",
         "tests/analysis/test_no_unfiltered_behavior_streams.py",
         "tests/analysis/test_behavior_stream_origin.py",
         # A screen that could have no floor is refused before measuring: the rule before
@@ -366,6 +371,7 @@ GUARD_FILES = frozenset(
         "tests/test_docs_nav.py",
         "tests/test_docs_cli_examples.py",
         "tests/test_docs_voice.py",
+        "tests/test_product_name.py",
         "tests/test_user_guide_legends.py",
         "tests/test_docs_generated_pages.py",
         "tests/test_docs_map.py",
@@ -385,8 +391,6 @@ GUARD_FILES = frozenset(
         # One tool pinned in three places, and the only full-suite gate while CI is down.
         "tests/test_pre_commit_config.py",
         "tests/test_help.py",
-        "tests/analysis/test_query_methods_docs.py",
-        "tests/analysis/test_metrics_docs.py",
         "tests/analysis/test_measures_docs.py",
         "tests/transforms/test_constructor_docs.py",
         "tests/checks/test_commands.py",

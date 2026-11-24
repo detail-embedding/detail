@@ -335,126 +335,28 @@ def default_layout(skeleton: Skeleton) -> Layout:
 # --------------------------------------------------------------------------- #
 # Presets — a starting skeleton for the labeling screen
 # --------------------------------------------------------------------------- #
-#: ``id -> (label, skeleton)``: the two quadruped skeletons the research measured (overhead and
-#: side view) and Quick pose's simpler overhead
-#: and three-point midline presets. Named for the body plan and view, not a
-#: species (renamed 2026-10-09 from ``rodent_*`` / ``elongate``, which no longer resolve).
-#: Each is ordered head to tail, the order a person
-#: clicks in, and ships a layout so the editor opens on a picture of the animal rather than
-#: a column. A preset is copied into an example set on use (§26 "Skeleton templates").
+#: ``id -> (label, skeleton)``: two midline skeletons, the simplest a person can click. Named
+#: for the body plan, not a species, with the point count in the id. Trimmed 2026-11-22 to
+#: these two from the quadruped overhead (12 and 8 points) and side (5 points) presets, whose
+#: ids no longer resolve; a set made from one keeps its copy (§26 "Skeleton templates").
+#: Each is ordered head to tail, the order a person clicks in, and ships a layout so the
+#: editor opens on a picture of the animal rather than a column. A preset is copied into an
+#: example set on use.
 PRESETS: dict[str, tuple[str, Skeleton]] = {
-    "quadruped_overhead_12": (
-        "Quadruped overhead view (12 points)",
-        Skeleton(
-            names=(
-                "nose",
-                "left_ear",
-                "right_ear",
-                "neck_base",
-                "left_shoulder",
-                "right_shoulder",
-                "mid_back",
-                "left_hip",
-                "right_hip",
-                "tail_base",
-                "tail_mid",
-                "tail_tip",
-            ),
-            edges=(
-                ("nose", "neck_base"),
-                ("left_ear", "neck_base"),
-                ("right_ear", "neck_base"),
-                ("neck_base", "left_shoulder"),
-                ("neck_base", "right_shoulder"),
-                ("neck_base", "mid_back"),
-                ("mid_back", "tail_base"),
-                ("tail_base", "left_hip"),
-                ("tail_base", "right_hip"),
-                ("tail_base", "tail_mid"),
-                ("tail_mid", "tail_tip"),
-            ),
-            pairs=(
-                ("left_ear", "right_ear"),
-                ("left_shoulder", "right_shoulder"),
-                ("left_hip", "right_hip"),
-            ),
-            layout=(
-                (0.5, 0.08),
-                (0.41, 0.17),
-                (0.59, 0.17),
-                (0.5, 0.27),
-                (0.38, 0.36),
-                (0.62, 0.36),
-                (0.5, 0.48),
-                (0.4, 0.6),
-                (0.6, 0.6),
-                (0.5, 0.68),
-                (0.5, 0.81),
-                (0.5, 0.94),
-            ),
-        ),
-    ),
-    "quadruped_side_5": (
-        "Quadruped side view (5 points)",
-        Skeleton(
-            names=("nose", "left_ear", "right_ear", "mid_back", "tail_base"),
-            edges=(
-                ("nose", "left_ear"),
-                ("nose", "right_ear"),
-                ("nose", "mid_back"),
-                ("mid_back", "tail_base"),
-            ),
-            pairs=(("left_ear", "right_ear"),),
-            layout=(
-                (0.12, 0.5),
-                (0.3, 0.3),
-                (0.36, 0.38),
-                (0.56, 0.36),
-                (0.88, 0.5),
-            ),
-        ),
-    ),
-    "quadruped_overhead_8": (
-        "Quadruped overhead view (8 points)",
-        Skeleton(
-            names=(
-                "nose",
-                "left_ear",
-                "right_ear",
-                "neck",
-                "spine_mid",
-                "tail_base",
-                "tail_mid",
-                "tail_tip",
-            ),
-            edges=(
-                ("nose", "neck"),
-                ("left_ear", "neck"),
-                ("right_ear", "neck"),
-                ("neck", "spine_mid"),
-                ("spine_mid", "tail_base"),
-                ("tail_base", "tail_mid"),
-                ("tail_mid", "tail_tip"),
-            ),
-            pairs=(("left_ear", "right_ear"),),
-            layout=(
-                (0.5, 0.08),
-                (0.41, 0.18),
-                (0.59, 0.18),
-                (0.5, 0.28),
-                (0.5, 0.47),
-                (0.5, 0.65),
-                (0.5, 0.8),
-                (0.5, 0.94),
-            ),
-        ),
-    ),
     "midline_3": (
         "Midline (3 points)",
         Skeleton(
             names=("head", "midpoint", "tail"),
             edges=(("head", "midpoint"), ("midpoint", "tail")),
             layout=((0.15, 0.5), (0.5, 0.5), (0.85, 0.5)),
+        ),
+    ),
+    "midline_2": (
+        "Midline (2 points)",
+        Skeleton(
+            names=("head", "tail"),
+            edges=(("head", "tail"),),
+            layout=((0.2, 0.5), (0.8, 0.5)),
         ),
     ),
 }

@@ -544,6 +544,24 @@ def test_audited_is_derived_from_the_audit_file_not_from_the_producer(tmp_path):
     assert bo.read_behavior_output(tmp_path).audited is True
 
 
+def test_a_review_of_every_clip_counts_as_audited(tmp_path):
+    """A run reviewed clip by clip (``clip_review.csv``, §19/§20/§22) and never audited one by
+    one is audited: reading ``audit.csv`` alone reported it as never checked."""
+    from detail.storage import clip_review
+    from detail.storage.clip_edits import ClipRef
+
+    _write(tmp_path)
+    assert bo.read_behavior_output(tmp_path).audited is False
+    clip_review.append_answers(
+        tmp_path,
+        [(ClipRef("recording_001", 0, 10, 40), True)],
+        node=None,
+        label_path="q01",
+    )
+    _write(tmp_path)
+    assert bo.read_behavior_output(tmp_path).audited is True
+
+
 # --------------------------------------------------------------------------- #
 # atomicity
 # --------------------------------------------------------------------------- #

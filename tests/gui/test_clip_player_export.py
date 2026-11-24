@@ -72,9 +72,14 @@ def test_the_export_is_not_something_an_embedder_opts_into(qapp):
     """
     embedders = _embedders()
     # Five since the hidden capabilities' GUIs (clusterers, behavior query and discovery) were
-    # removed; the floor is there to catch the sweep going blind, not to count surfaces.
+    # removed; then the query AUDIT tab's one-clip player went with the one-by-one audit (its
+    # review plays every clip in the shared montage), query eval's explorer was removed, and the
+    # behavior scan's CALIBRATE player and its own BROWSE table went (2026-11: CALIBRATE plays
+    # every clip in the montage, and BROWSE is clustering's, which builds its player through a
+    # parameter this sweep does not see). The floor is there to catch the sweep going blind, not
+    # to count surfaces.
     assert (
-        len(embedders) >= 5
+        len(embedders) >= 2
     ), f"the sweep stopped finding embedders: {sorted(embedders)}"
 
     params = set(inspect.signature(_ClipPlayer.__init__).parameters)

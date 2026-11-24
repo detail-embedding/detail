@@ -9,11 +9,9 @@ from detail.core.examples import (
     ExampleMark,
     ExampleSet,
 )
-from detail.core.skeleton import PRESETS
+from tests.skeletons import SIDE_5
 
-SKELETON = PRESETS["quadruped_side_5"][
-    1
-]  # nose, left_ear, right_ear, mid_back, tail_base
+SKELETON = SIDE_5  # nose, left_ear, right_ear, mid_back, tail_base
 IMAGE = "frames/a1f3c9.png"
 HASHES = {IMAGE: "0" * 64, "frames/9c2e71.png": "1" * 64}
 

@@ -2,8 +2,8 @@
 
 Every column comes off ``MeasureSpec``, which already carries a ``label``, a ``description``, a
 ``unit``, a ``rule`` and its ``requires`` — so there is no second source to drift from the first,
-the way ``metrics_docs`` needs one for ``EvalMetrics`` fields that have no text of their own. A
-measure registered later appears here with no edit.
+the way query eval's ``metrics_docs`` (removed with that module) needed one for ``EvalMetrics``
+fields that had no text of their own. A measure registered later appears here with no edit.
 
 The hand-written prose is ``measures-intro.md`` (before the table).
 """
@@ -12,6 +12,7 @@ from pathlib import Path
 
 import mkdocs_gen_files
 
+from detail.analysis import location_measures
 from detail.analysis.measures import CONDITIONS, MEASURES
 
 _DOCS = Path(__file__).resolve().parent.parent / "docs"
@@ -22,6 +23,7 @@ _UNITS = {
     "1/s": "per second",
     "fraction": "share of time",
     "": "count",
+    "ratio": "ratio (no unit)",
 }
 
 #: What each `rule` means for which instances a measure sees.
@@ -78,6 +80,23 @@ lines += [
     "| --- | --- |",
 ]
 lines += [f"| `{name}` | {what} |" for name, what in _RULES.items()]
+lines += [
+    "",
+    "## Movement and body shape",
+    "",
+    "A [comparison](concepts.md#comparison) over a location-export run measures these "
+    "instead, one value for each recording and animal. They are read from the run's "
+    "per-frame tables, so they need a location export that measured the body and a distance "
+    "calibration on every recording.",
+    "",
+    "| Measure | Id | Unit | What it reports |",
+    "| --- | --- | --- | --- |",
+]
+lines += [
+    f"| **{spec.label}** | `{measure_id}` | {_UNITS.get(spec.unit, spec.unit)} | "
+    f"{spec.description} |"
+    for measure_id, spec in location_measures.MEASURES.items()
+]
 
 with mkdocs_gen_files.open("measures.md", "w", encoding="utf-8") as handle:
     handle.write("\n".join(lines) + "\n")

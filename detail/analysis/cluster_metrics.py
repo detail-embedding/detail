@@ -234,10 +234,10 @@ def one_cluster_floor(truth, pred, *, noise_label: int = -1) -> dict[int, dict]:
     exists to catch. So the floor is computed as the real one-cluster prediction, noise mask
     and all.
 
-    This is the cluster-eval counterpart of the nulls ``analysis/query_eval`` has shipped since
-    it learned the same lesson (a recall no better than its null). It is a *floor*,
-    not a null: one specific uninformative answer, not an
-    average over uninformative answers.
+    This is the cluster-eval counterpart of the nulls query eval (a module since removed)
+    shipped once it had learned the same lesson (a recall no better than its null). It is a
+    *floor*, not a null: one specific uninformative answer, not an average over uninformative
+    answers.
     """
     truth = np.asarray(truth)
     pred = np.asarray(pred)

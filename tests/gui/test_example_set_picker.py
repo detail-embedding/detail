@@ -42,14 +42,12 @@ def _skeleton(qapp, picker, skeleton_id):
 
 def test_sets_are_listed_under_the_skeleton_they_were_made_from(qapp, proj):
     mine = library.create_skeleton("two", TWO)
-    side = proj.create_example_set("side rats", "quadruped_side_5")
+    side = proj.create_example_set("side rats", "midline_2")
     two = proj.create_example_set("two rats", mine["id"])
     loose = proj.create_example_set("loose", Skeleton(names=("x", "y", "z")))
     picker = _picker(qapp, proj)
 
-    assert (
-        picker.skeleton_id() == "quadruped_side_5"
-    ), "opens on the first set's skeleton"
+    assert picker.skeleton_id() == "midline_2", "opens on the first set's skeleton"
     assert picker.set_id() == side.id and "0 / 0 frames" in picker._counts.text()
     _skeleton(qapp, picker, mine["id"])
     assert picker.set_id() == two.id
@@ -64,12 +62,12 @@ def test_sets_are_listed_under_the_skeleton_they_were_made_from(qapp, proj):
 def test_a_set_made_before_the_library_matches_by_its_skeleton(qapp, proj):
     from detail.storage import example_sets as store
 
-    made = proj.create_example_set("old", "quadruped_side_5")
+    made = proj.create_example_set("old", "midline_2")
     current = store.read_set(proj.dir, made.id)
     current.skeleton_ref = None
     store.write_set(proj.dir, current)
     picker = _picker(qapp, proj)
-    assert picker.skeleton_id() == "quadruped_side_5" and picker.set_id() == made.id
+    assert picker.skeleton_id() == "midline_2" and picker.set_id() == made.id
 
 
 def test_new_names_a_set_then_opens_the_labeling_screen(qapp, proj, monkeypatch):
@@ -84,28 +82,21 @@ def test_new_names_a_set_then_opens_the_labeling_screen(qapp, proj, monkeypatch)
     def choose(dialog):
         offered.append(dialog.skeleton_id())
         dialog._name.setText("overhead rats")
-        dialog._skeleton.setCurrentIndex(
-            dialog._skeleton.findData("quadruped_overhead_12")
-        )
+        dialog._skeleton.setCurrentIndex(dialog._skeleton.findData("midline_3"))
         return mod.Dialog.DialogCode.Accepted
 
     monkeypatch.setattr(mod.NewExampleSetDialog, "exec", choose)
     picker = _picker(qapp, proj)
-    _skeleton(qapp, picker, "quadruped_side_5")
+    _skeleton(qapp, picker, "midline_2")
     changed = []
     picker.changed.connect(lambda: changed.append(picker.set_id()))
     picker._new.click()
     drain_until(qapp, lambda: not picker._reading and picker.set_id() is not None)
     made = proj.example_sets()[0]
-    assert (
-        made.name == "overhead rats"
-        and made.skeleton_ref["id"] == "quadruped_overhead_12"
-    )
-    assert offered == ["quadruped_side_5"], "the window opens on the picker's skeleton"
+    assert made.name == "overhead rats" and made.skeleton_ref["id"] == "midline_3"
+    assert offered == ["midline_2"], "the window opens on the picker's skeleton"
     assert opened == [made.id] and picker.set_id() == made.id
-    assert (
-        picker.skeleton_id() == "quadruped_overhead_12"
-    ), "the picker follows the new set"
+    assert picker.skeleton_id() == "midline_3", "the picker follows the new set"
     assert changed[-1] == made.id
 
     picker._mark.click()
@@ -113,7 +104,7 @@ def test_new_names_a_set_then_opens_the_labeling_screen(qapp, proj, monkeypatch)
 
 
 def test_delete_asks_and_a_set_a_run_lists_is_refused(qapp, proj, monkeypatch):
-    made = proj.create_example_set("side", "quadruped_side_5")
+    made = proj.create_example_set("side", "midline_2")
     picker = _picker(qapp, proj)
     from detail.storage import example_sets as store
 

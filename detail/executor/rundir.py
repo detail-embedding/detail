@@ -113,6 +113,34 @@ def read_envelope(run_dir: Path | str) -> dict:
     return json.loads(atomic.read_text(_job_path(run_dir)))
 
 
+def mask_resolution(
+    detection_dir: Path | str, part_id: str | None = None
+) -> tuple[int, int] | None:
+    """``(height, width)`` a detection run's mask RLEs were encoded at (§9), or ``None`` when
+    the run records none (no ``job.json``, or a run that wrote no masks).
+
+    ``part_id`` asks for one part's: each part's masks are encoded at the size its own frames
+    decoded at, which its ``parts[]`` entry records, while the run's ``mask_resolution`` is
+    its first part's. They agree whenever the recording's parts share a resolution, as §3
+    requires; the part's own is read first so a recording made before that was checked still
+    decodes each part at its own size.
+    """
+    try:
+        envelope = read_envelope(detection_dir)
+    except FileNotFoundError:
+        return None
+    sizes = [
+        entry.get("mask_resolution")
+        for entry in envelope.get("parts") or []
+        if part_id is not None and entry.get("id") == part_id
+    ]
+    size = next((s for s in sizes if s), None) or envelope.get("mask_resolution")
+    if not size:
+        return None
+    height, width = (int(v) for v in size)
+    return height, width
+
+
 def read_status(run_dir: Path | str) -> JobStatus:
     return JobStatus(read_envelope(run_dir)["status"])
 

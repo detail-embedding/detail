@@ -78,7 +78,7 @@ hand-listed. A hand-written `config()` is complete on the day it is written; aft
 silently uses the default for whatever was dropped, and the record it writes is well-formed.
 
 `record["params"]` is derived from the job (`runners.job_params`), carrying config fields **by name** —
-`query_eval.build_job` is the pattern. A hand-listed dict is complete until a field is added and
+`temporal_clustering.build_job` is the pattern. A hand-listed dict is complete until a field is added and
 nothing fails when it stops being: `cluster_eval`, a module since removed, dropped `stream_name`
 from every run it wrote, including runs that passed one explicitly.
 

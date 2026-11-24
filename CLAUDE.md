@@ -167,8 +167,7 @@ reporting*.
   `event → render` mapping (CLI and GUI are deliberately separate); a second one is the bug.
 - A synchronous API method that does real work takes a `progress` callback, and **every caller
   drives it**. A new long path, or a flag that makes a quick one long, ships with progress and a
-  test that it is wired. `Recording.export_locations` is an outstanding violation.
-  Guard: `tests/test_progress_callers.py`.
+  test that it is wired. Guard: `tests/test_progress_callers.py`.
 - GUI interactive loads (a preview, a frame decode, a one-shot export) run off the UI thread
   through `gui/busy.py` (`run_busy` / `run_progress`), never as a raw slow call in a widget
   `__init__` or slot. Guard: `tests/gui/test_ui_thread_blocking.py`.
@@ -183,7 +182,7 @@ CLI `--help` read the field metadata; hand-writing a range, help or default in a
 
 **A resolved default is persisted; a headline metric ships with its floor** (Tenet 9).
 - Never hand-write `record["params"]`: derive it from the job (`runners.job_params`), and build
-  the job by carrying config fields by name (`query_eval.build_job`).
+  the job by carrying config fields by name (`temporal_clustering.build_job`).
   Guard: `tests/configs/test_record_completeness.py`.
 - Resolve a defaulted input in `validate()` and write the resolved value back. Raise rather than
   guess when the choice is ambiguous. Never resolve from mutable or order-dependent state.
@@ -199,8 +198,8 @@ index, which name a cluster carries, which rows are sampled — no user can reac
 - A supervised step is fine when it is the thing being measured, never upstream of a number
   reported as unsupervised quality. A metric with documented optimism (clustering's majority-vote
   per-behavior F1) is not a leak: the test is whether a user could reproduce the number.
-- Guard: `tests/pipeline/test_label_leakage.py` permutes the labels with the user's inputs held
-  fixed; predictions must not change.
+- Guard: `tests/pipeline/test_query_background.py` (the background draw reads no behavior
+  stream); `tests/cluster_methods/test_registry.py` (no method signature can take a label).
 
 **A recording's id is the tool's, its name is the user's** (`DESIGN_PLAN.md` §3).
 `Experiment.add_recording(name)` mints `recording_NNN`; `create_recording(recording_id)` is the

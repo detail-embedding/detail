@@ -244,8 +244,10 @@ def check_categorical(
     )
 
 
-def check_ramp(ramp) -> list[str]:
-    """The failures of an ordered one-hue ramp: monotone lightness, visible steps, one hue.
+def check_ramp(ramp, *, one_hue: bool = True) -> list[str]:
+    """The failures of an ordered ramp: monotone lightness, visible steps, and (unless
+    ``one_hue`` is False, for a perceptual colormap like viridis whose hue moves by design)
+    one hue.
 
     A correct ramp fails the categorical checks by design — it spans the lightness band and its
     pale end drops below the chroma floor — so an ordered scale is checked for reading *as* a
@@ -267,7 +269,7 @@ def check_ramp(ramp) -> list[str]:
     ]
     if thin:
         failures.append(f"steps closer than ΔL {RAMP_MIN_DELTA_L}: {thin}")
-    hues = [oklch(c)[2] for c in ramp if oklch(c)[1] >= 0.03]
+    hues = [oklch(c)[2] for c in ramp if oklch(c)[1] >= 0.03] if one_hue else []
     if hues:
         spread = max(hues) - min(hues)
         spread = 360 - spread if spread > 180 else spread

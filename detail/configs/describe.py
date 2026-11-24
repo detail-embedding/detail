@@ -16,7 +16,7 @@ from detail.configs.labeling import LabelingConfig
 # dataset sources (labeling, keypoint_dataset) — and a few other configs with no module registry
 # still declare config models, but the walk below cannot find them. List them here so their
 # parameters reach the reference; a hand-written parameter table in the CLI docs is the bug this
-# avoids. (query_eval is a registered §16 AnalysisModule, so the registry walk covers it.)
+# avoids.
 #
 # The third element is **the surface that launches it**, and it is required. A module registry
 # member is reached by its own id, so §25 hiding it is enough; these have no registry, so their
@@ -155,8 +155,9 @@ def describe_config(model_cls: type[BaseModel]) -> list[dict]:
                 # A `Literal[...]`'s allowed values, or None for a field that is not a
                 # choice. Read off the schema's `enum` rather than `get_args` on the
                 # annotation, so this is the same single source as every other key here —
-                # a form calling `get_args` on a model field itself (the query-eval form's
-                # `_FUSIONS`) is the retyping this table exists to remove.
+                # a form calling `get_args` on a model field itself (as the `_FUSIONS` of
+                # query eval's form did, before that module was removed) is the retyping this
+                # table exists to remove.
                 "choices": _choices(prop),
             }
         )
@@ -468,7 +469,6 @@ def _default_str(p: dict) -> str:
 #: An id that mangles correctly needs no entry; ``location_export`` → "Location export" already.
 _DISPLAY_NAMES = {
     "query": "Behavior scan",
-    "query_eval": "Behavior-query eval",
     "temporal_clustering": "Behavior clustering",
     # The importer's own `display_name`, which is what the picker shows. Left to the
     # fallback the page would be titled "Timeseries csv" while the app says "Time-series

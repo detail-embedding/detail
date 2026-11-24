@@ -21,6 +21,8 @@ for one part could answer for another. A key that is a value (``part["stem"]``) 
 rebuild and names the part.
 """
 
+import json
+
 import cv2
 import numpy as np
 import pytest
@@ -38,12 +40,17 @@ from detail.storage.zarr_io import (
 )
 
 
-def _recording_with_detection(tmp_path, n_frames=5, write_video=None):
+def _recording_with_detection(tmp_path, n_frames=5, write_video=None, encoded=None):
     """A recording with a tiny video + a hand-written detection run (no model).
 
     ``write_video`` overrides how the video is produced (e.g. the ``write_vfr_video``
     fixture); the timestamp map is then generated from the file's real PTS rather
     than assumed constant-rate.
+
+    ``encoded`` (``(h, w)``) encodes the masks at that size instead of the footage's 48x64,
+    and writes the run's ``job.json`` saying so, as a run whose footage now decodes at another
+    size than its detection did. The first mask is the same box either way: rows and columns
+    10:20 of the footage.
     """
     proj_dir = experiment_store.create_experiment(tmp_path, "p")
     recording_store.create_recording(proj_dir, "s1")
@@ -93,11 +100,26 @@ def _recording_with_detection(tmp_path, n_frames=5, write_video=None):
     }
     from pycocotools import mask as mask_utils
 
-    mask0 = np.zeros((48, 64), np.uint8)
-    mask0[10:20, 10:20] = 1
+    mask_h, mask_w = encoded or (48, 64)
+    mask0 = np.zeros((mask_h, mask_w), np.uint8)
+    y0, y1 = 10 * mask_h // 48, 20 * mask_h // 48
+    x0, x1 = 10 * mask_w // 64, 20 * mask_w // 64
+    mask0[y0:y1, x0:x1] = 1
     rle0 = mask_utils.encode(np.asfortranarray(mask0))["counts"].decode("ascii")
     ddir = sdir / "detections" / "det_01"
     ddir.mkdir(parents=True)
+    if encoded is not None:
+        (ddir / "job.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "status": "complete",
+                    "mask_resolution": [mask_h, mask_w],
+                    "parts": [{"id": "part_001", "mask_resolution": [mask_h, mask_w]}],
+                }
+            ),
+            encoding="utf-8",
+        )
     with DetectionPartWriter(ddir / "part_001.zarr") as writer:
         # frame 0: two detections, frame 2: one, frames 1/3/4: none (no rows)
         writer.add_row(0, 0, 0, "mouse", 0.9, (0.1, 0.1, 0.2, 0.2), rle0)
@@ -135,6 +157,25 @@ def test_detection_preview_masks(tmp_path):
     assert mask is not None and mask.shape == (48, 64) and mask.dtype == bool
     assert mask[15, 15] and not mask[0, 0]  # the 10:20 box round-trips through RLE
     assert preview.frame(0, 0)[2][0].mask is None  # default: boxes only
+
+
+def test_a_mask_encoded_at_another_size_lands_where_it_was_on_the_footage(tmp_path):
+    """A run's masks decode at the size it encoded them at, then resize to the footage.
+
+    Decoded at the footage's 48x64, a 24x32 mask's runs are laid down the columns of a grid
+    twice as tall and the box comes out as stripes. Both readers are held to it: the
+    overlay on a frame and the mask trail's per-frame masks.
+    """
+    recording = _add_tracking(_recording_with_detection(tmp_path, encoded=(24, 32)))
+    preview = recording.detection_preview("det_01")
+    mask = preview.frame(0, 0, with_masks=True)[2][0].mask
+    assert mask.shape == (48, 64)
+    expected = np.zeros((48, 64), bool)
+    expected[10:20, 10:20] = True
+    np.testing.assert_array_equal(mask, expected)
+
+    trail = recording.tracking_preview("track_01").subject_masks(0, 0, [0], (48, 64))
+    np.testing.assert_array_equal(trail[0], expected)
 
 
 def test_detection_preview_unknown_run(tmp_path):

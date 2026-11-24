@@ -21,7 +21,7 @@ because you did not get to it — say what you could not collect.
 
 ### How did you run it?
 
-<!-- GUI (the DETAIL app), CLI (a detail command in a terminal), or Python script or notebook. -->
+<!-- GUI (the Detail app), CLI (a detail command in a terminal), or Python script or notebook. -->
 
 ### detail doctor output
 

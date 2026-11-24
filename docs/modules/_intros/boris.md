@@ -5,7 +5,7 @@ parameters below pick one of each; the refusal lists what the export holds. Bout
 different observations or animals are never merged onto one track.
 
 A behavior scored both as START/STOP bouts and as POINT events is refused, naming the rows of
-each kind: a behavior is one kind or the other, and evaluation scores the two differently.
+each kind: a behavior is one kind or the other.
 
 The aggregated export (one row per bout, with `Start (s)` and `Stop (s)` columns) is a
 different file and is refused, saying so: export the observation again with **Export events >

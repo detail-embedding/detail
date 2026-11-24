@@ -14,6 +14,7 @@ from detail.core.skeleton import PRESETS, Skeleton
 from detail.core.skeleton import check_against_model
 from detail.core.skeleton import flip_index
 from detail.core.skeleton import pairs_from_flip_index
+from tests.skeletons import OVERHEAD_12
 
 
 def _rat(**overrides) -> Skeleton:
@@ -132,12 +133,11 @@ def test_the_digest_is_the_structure_in_column_order():
 
 def test_the_presets_are_named_for_the_body_plan_and_view():
     """The user's naming (2026-10-09), ids and labels both: a species guess ("Fish or worm")
-    read as a joke, and two presets share a view, so the count is in the id."""
+    read as a joke, and two presets share a body plan, so the count is in the id. Trimmed to
+    the two midlines on 2026-11-22."""
     assert {pid: label for pid, (label, _sk) in PRESETS.items()} == {
-        "quadruped_overhead_12": "Quadruped overhead view (12 points)",
-        "quadruped_overhead_8": "Quadruped overhead view (8 points)",
-        "quadruped_side_5": "Quadruped side view (5 points)",
         "midline_3": "Midline (3 points)",
+        "midline_2": "Midline (2 points)",
     }
     for pid, (_label, sk) in PRESETS.items():
         assert pid.endswith(f"_{len(sk.names)}"), "the id carries the point count"
@@ -157,8 +157,8 @@ def test_every_preset_is_valid(preset_id):
         )
 
 
-def test_the_overhead_preset_is_the_research_skeleton():
-    _label, skeleton = PRESETS["quadruped_overhead_12"]
+def test_the_research_skeleton_reads_its_pairs_and_midline():
+    skeleton = OVERHEAD_12
     assert len(skeleton) == 12
     assert skeleton.pairs == (
         ("left_ear", "right_ear"),

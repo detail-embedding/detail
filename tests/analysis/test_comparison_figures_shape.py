@@ -146,9 +146,9 @@ def test_every_rendered_figure_carries_the_aggregation_path(tmp_path, aggregate_
     seen: list[list[str]] = []
     original = figlib.save_figure
 
-    def spy(fig, out_stem, formats=("pdf", "svg", "png")):
+    def spy(fig, out_stem, formats=("pdf", "svg", "png"), **kwargs):
         seen.append(_texts_on(fig))
-        return original(fig, out_stem, formats)
+        return original(fig, out_stem, formats, **kwargs)
 
     figlib.save_figure = spy
     try:
@@ -163,10 +163,10 @@ def test_every_rendered_figure_carries_the_aggregation_path(tmp_path, aggregate_
         f"{len(missing)} of {len(seen)} figures were saved without the aggregation path "
         f"on them; §24 requires it on every one"
     )
-    # And every *kind* of figure was actually drawn, or "every one" is a claim about a subset.
+    # And every *kind* of figure was actually drawn, or "every one" is a claim about a subset:
+    # the per-measurement panels, the composite of them, and the ranking.
     assert any("difference_ranking" in n for n in names), names
-    if aggregate_to:
-        assert any("paired" in n for n in names), names
+    assert "panels.png" in names, names
 
 
 def test_a_figure_saved_without_the_note_would_be_caught(tmp_path):
@@ -198,34 +198,61 @@ CROSSOVER = {
 }
 
 
+def _joins_drawn(comparison, tmp_path) -> list[list[str]]:
+    """The unit-joining lines each measurement figure drew: one list of unit labels per call
+    of the bar primitive. A join is a line labelled with its unit; an error bar's cap is not.
+    """
+    from detail.report import figures as figlib
+
+    drawn: list[list[str]] = []
+    original = figlib.bars_with_units
+
+    def spy(ax, group_labels, observations, **kwargs):
+        units = original(ax, group_labels, observations, **kwargs)
+        drawn.append(
+            [line.get_label() for line in ax.lines if line.get_label() in units]
+        )
+        return units
+
+    figlib.bars_with_units = spy
+    try:
+        _figures(comparison, tmp_path)
+    finally:
+        figlib.bars_with_units = original
+    return drawn
+
+
 def test_a_subject_in_both_groups_gets_a_line(tmp_path):
     """Two independent clouds of dots throw away the pairing that makes a crossover powerful:
-    a consistent within-animal shift can read as heavy overlap between groups."""
+    a consistent within-animal shift can read as heavy overlap between groups. The line is
+    drawn in the measurement's own figure, not in a second one beside it (detail#76)."""
     from tests.api.test_comparison import _cohort
 
     exp = _cohort(tmp_path, CROSSOVER)
     comparison = _run(exp, aggregate_to=["animal"])
 
+    joins = _joins_drawn(comparison, tmp_path)
+
+    assert joins and all(sorted(j) == ["F3", "F4"] for j in joins), joins
     names, _out = _figures(comparison, tmp_path)
+    assert not any("paired" in name for name in names), names
 
-    assert "n_instances__rearing__paired.png" in names, names
 
-
-def test_no_pairing_means_no_paired_figure(tmp_path):
+def test_no_pairing_means_no_lines(tmp_path):
     """It fires on the structure, not on a setting. With one observation per recording, each
     point belongs to exactly one group and there is nothing to join."""
     from tests.api.test_comparison import _cohort
 
     exp = _cohort(tmp_path, CROSSOVER)
-    names, _out = _figures(_run(exp, aggregate_to=[]), tmp_path)
+    joins = _joins_drawn(_run(exp, aggregate_to=[]), tmp_path)
 
-    assert not any("paired" in name for name in names), names
+    assert joins and all(j == [] for j in joins), joins
 
 
-def test_the_paired_figure_is_built_from_observations_not_summaries(tmp_path):
+def test_the_lines_are_built_from_observations_not_summaries(tmp_path):
     """`compare.summarize` buckets by group and sorts the values, dropping `Observation.key` —
     so the summaries cannot say which point is which animal, which is the whole content of a
-    paired plot. Asserted by drawing one line per animal, which only the keyed data can do.
+    pairing. Asserted by the unit each dot is drawn for, which only the keyed data can give.
     """
     from detail.report import figures as figlib
     from tests.api.test_comparison import _cohort
@@ -234,20 +261,20 @@ def test_the_paired_figure_is_built_from_observations_not_summaries(tmp_path):
     comparison = _run(exp, aggregate_to=["animal"])
 
     drawn: list[list] = []
-    original = figlib.paired_lines
+    original = figlib.bars_with_units
 
-    def spy(ax, group_labels, pairs, **kwargs):
-        drawn.append(pairs)
-        return original(ax, group_labels, pairs, **kwargs)
+    def spy(ax, group_labels, observations, **kwargs):
+        drawn.append(observations)
+        return original(ax, group_labels, observations, **kwargs)
 
-    figlib.paired_lines = spy
+    figlib.bars_with_units = spy
     try:
         _figures(comparison, tmp_path)
     finally:
-        figlib.paired_lines = original
+        figlib.bars_with_units = original
 
-    assert drawn, "no paired figure was drawn"
-    subjects = {label for pairs in drawn for label, _values in pairs}
+    assert drawn, "no bars were drawn"
+    subjects = {unit for groups in drawn for group in groups for unit, _ in group}
     assert subjects == {"F3", "F4"}, subjects
 
 
@@ -298,9 +325,9 @@ def test_a_pairing_is_not_drawn_from_one_window_labelled_as_all_of_them(tmp_path
         exp, aggregate_to=["animal"], windows={"kind": "normalized", "parts": 3}
     )
 
-    names, _out = _figures(comparison, tmp_path)
+    joins = _joins_drawn(comparison, tmp_path)
 
-    assert not any("paired" in name for name in names), names
+    assert joins == [], "a windowed measurement drew bars of one window as the whole"
 
 
 def test_one_window_still_pairs(tmp_path):
@@ -308,9 +335,9 @@ def test_one_window_still_pairs(tmp_path):
     from tests.api.test_comparison import _cohort
 
     exp = _cohort(tmp_path, CROSSOVER)
-    names, _out = _figures(_run(exp, aggregate_to=["animal"]), tmp_path)
+    joins = _joins_drawn(_run(exp, aggregate_to=["animal"]), tmp_path)
 
-    assert "n_instances__rearing__paired.png" in names, names
+    assert joins and all(sorted(j) == ["F3", "F4"] for j in joins), joins
 
 
 # --------------------------------------------------------------------------- #
