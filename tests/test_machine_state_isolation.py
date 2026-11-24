@@ -12,7 +12,7 @@ temporary video path turned up in a developer's real ``~/.cache/detail/previews/
 **And state no fixture isolated at all.** The experiments root falls back to the real
 ``~/Documents/DetailExperiments`` whenever storage.yaml names no root, which the isolated one
 never does. Tests redirected it one at a time; the tool-run case of ``test_id_reuse.py`` did
-not, and every full run since 2026-11-19 left two stub tool runs in a developer's real
+not, and every full run since 2026-11-17 left two stub tool runs in a developer's real
 ``tools/`` folder (42 by 2026-11-23), on which the app's Quick tools rail raised
 ``KeyError: 'tool_id'``. ``_isolate_machine_storage`` now moves it, per test and at the floor.
 
