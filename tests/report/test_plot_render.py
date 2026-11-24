@@ -125,13 +125,41 @@ def test_2d_position_panels_run_y_down():
     assert fig.axes[0].get_ylim() == (50.0, 0.0)
 
 
-def test_a_path_skips_the_palest_ramp_steps_and_a_heat_map_does_not():
-    path_fig = plot_render.figure(_path_spec(1))
-    coll = path_fig.axes[0].collections[0]
-    low = coll.cmap(0.0)
-    assert low[:3] == pytest.approx(
-        [c / 255 for c in chart_theme.rgb(chart_theme.LIGHT.sequential[2])], abs=0.01
-    )
+def _rgb01(hex_color: str) -> list[float]:
+    return [c / 255 for c in chart_theme.rgb(hex_color)]
+
+
+def test_dark_is_inferno_and_light_is_inferno_reversed():
+    """The theme's stops are matplotlib's own inferno, sampled at nine even points. Here, not
+    beside the theme: ``core/chart_theme.py`` is pure data and its tests import no
+    matplotlib."""
+    import matplotlib
+    from matplotlib.colors import to_hex
+
+    inferno = tuple(to_hex(matplotlib.colormaps["inferno"](i / 8)) for i in range(9))
+    assert chart_theme.DARK.colormap == inferno
+    assert chart_theme.LIGHT.colormap == inferno[::-1]
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_paths_and_heat_maps_wear_the_theme_s_colormap(theme):
+    """Inferno on the dark surface, reversed on the light: on a busy picture of paths the grey
+    ramp read as black and white. A path skips the steps a thin line would vanish into
+    against the surface (``style.line_stops``); a heat map keeps the whole ramp."""
+    from detail.core.color_checks import contrast
+    from detail.report.style import DEFAULT_STYLE, LINE_MIN_CONTRAST, line_stops
+
+    style = DEFAULT_STYLE.with_theme(theme)
+    chart = style.chart
+    stops = line_stops(chart)
+    assert ",".join(stops) in ",".join(chart.colormap)  # one unbroken run of it
+    assert all(contrast(c, chart.surface) >= LINE_MIN_CONTRAST for c in stops)
+    assert len(stops) < len(
+        chart.colormap
+    )  # each colormap has an end too near its surface
+    coll = plot_render.figure(_path_spec(1), style).axes[0].collections[0]
+    assert coll.cmap(0.0)[:3] == pytest.approx(_rgb01(stops[0]), abs=0.01)
+    assert coll.cmap(1.0)[:3] == pytest.approx(_rgb01(stops[-1]), abs=0.01)
     heat = PlotSpec(
         kind="heatmap",
         title="Occupancy",
@@ -145,12 +173,10 @@ def test_a_path_skips_the_palest_ramp_steps_and_a_heat_map_does_not():
         y=Axis("y", (0.0, 1.0)),
         color=ColorScale("share", 0.0, 0.5),
     )
-    mesh = plot_render.figure(heat).axes[0].collections[0]
-    assert mesh.cmap(0.0)[:3] == pytest.approx(
-        [c / 255 for c in chart_theme.rgb(chart_theme.LIGHT.sequential[0])], abs=0.01
-    )
-    # A cell the animal never entered is drawn as nothing: the ramp's palest step is a grey,
-    # and a frame of it read as a floor the animal had covered.
+    mesh = plot_render.figure(heat, style).axes[0].collections[0]
+    assert mesh.cmap(0.0)[:3] == pytest.approx(_rgb01(chart.colormap[0]), abs=0.01)
+    assert mesh.cmap(1.0)[:3] == pytest.approx(_rgb01(chart.colormap[-1]), abs=0.01)
+    # A cell the animal never entered is drawn as nothing, not as the colormap's low end.
     drawn = mesh.get_array()
     assert np.ravel(drawn.mask).tolist() == [False, True, True, False]
 

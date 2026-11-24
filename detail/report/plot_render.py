@@ -21,7 +21,7 @@ import matplotlib.pyplot as plt
 
 from detail.report.figures import caption, rc_settings_held, save_figure, styled
 from detail.report.plot_spec import Line, PlotSpec
-from detail.report.style import DEFAULT_STYLE, FigureStyle, sequential_cmap
+from detail.report.style import DEFAULT_STYLE, FigureStyle, plot_cmap
 
 #: Width of one panel, in inches. A grid of panels is this times its column count.
 PANEL_WIDTH_IN = 2.6
@@ -49,8 +49,7 @@ MAX_SCREEN_PIXELS = 12_000_000
 #: Steps a coloured line's colour is drawn in. A run of consecutive segments in one step is one
 #: polyline, so a time-coloured path costs a few dozen drawn paths rather than one per segment: a
 #: group panel of 25 half-hour paths was 225,000 segment paths, and drawing them was most of every
-#: redraw. Neighbouring steps of a 64-step sequential ramp are closer together than the eye tells
-#: apart.
+#: redraw. Neighbouring steps of a 64-step colormap are closer together than the eye tells apart.
 COLOUR_STEPS = 64
 
 #: ``(stage, fraction, detail)`` — the synchronous-API progress shape (CLAUDE.md).
@@ -138,7 +137,7 @@ def figure(
             fig.add_subplot(rows, cols, i + 1, projection=projection) for i in range(n)
         ]
         has_heat = any(p.heat is not None for p in spec.panels)
-        cmap = sequential_cmap(style) if has_heat else _line_cmap(style)
+        cmap = plot_cmap(style, heat=has_heat)
         for index, (ax, panel) in enumerate(zip(axes, spec.panels)):
             if progress is not None:
                 progress("drawing", index / n, panel.title or spec.title)
@@ -192,20 +191,6 @@ def _legend(fig, spec: PlotSpec, style: FigureStyle) -> None:
         fig.legend(handles=handles, loc="outside right upper", frameon=False)
 
 
-#: How many of the palest sequential steps a coloured *line* skips. The ramp's low end sits near
-#: the surface so an empty heat-map cell reads as nothing; a thin line in that colour is invisible.
-_LINE_RAMP_SKIP = 2
-
-
-def _line_cmap(style: FigureStyle):
-    from matplotlib.colors import LinearSegmentedColormap
-
-    return LinearSegmentedColormap.from_list(
-        f"detail_sequential_line_{style.theme}",
-        list(style.chart.sequential[_LINE_RAMP_SKIP:]),
-    )
-
-
 def _panel_height(spec: PlotSpec) -> float:
     if spec.three_d:
         return PANEL_WIDTH_IN * 1.15
@@ -223,9 +208,9 @@ def _draw_panel(ax, spec: PlotSpec, panel, style: FigureStyle, cmap) -> None:
     chart = style.chart
     if panel.heat is not None:
         heat = panel.heat
-        # A cell the animal never entered is drawn as nothing, not as the ramp's palest step:
-        # the chart theme's sequential ramp starts at a light grey, and a frame of it read as
-        # a floor the animal had covered.
+        # A cell the animal never entered is drawn as nothing, not as the colormap's low end:
+        # on the grey ramp that was a light-grey floor the animal seemed to have covered, and on
+        # viridis it would be dark purple everywhere the animal never went.
         grid = np.ma.masked_where(~(np.asarray(heat.grid) > 0), heat.grid)
         ax.pcolormesh(
             heat.x_edges,

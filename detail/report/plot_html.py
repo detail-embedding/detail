@@ -18,10 +18,7 @@ import numpy as np
 
 from detail.core import chart_theme
 from detail.report.plot_spec import Line, PlotSpec
-
-#: How many of the palest sequential steps a coloured path skips (``plot_render``'s rule: a thin
-#: line in the ramp's near-surface end vanishes).
-_LINE_RAMP_SKIP = 2
+from detail.report.style import plot_stops
 
 #: Pixels per panel; the page is this times its grid.
 PANEL_PX = 420
@@ -69,7 +66,8 @@ def figure(spec: PlotSpec, theme: str = "light"):
         vertical_spacing=min(0.12, 0.6 / rows) if rows > 1 else 0.1,
     )
     has_heat = any(p.heat is not None for p in spec.panels)
-    ramp = chart.sequential if has_heat else chart.sequential[_LINE_RAMP_SKIP:]
+    # The picture's own colours (``report/style.plot_stops``), so the page and the PNG agree.
+    ramp = plot_stops(chart, heat=has_heat)
     if spec.color is not None:
         fig.update_layout(
             coloraxis={
