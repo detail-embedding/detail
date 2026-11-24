@@ -178,15 +178,6 @@ def test_the_colormap_s_low_end_fades_into_the_surface(theme) -> None:
     assert contrasts[-1] == max(contrasts)
 
 
-def test_dark_is_inferno_and_light_is_inferno_reversed() -> None:
-    import matplotlib
-    from matplotlib.colors import to_hex
-
-    inferno = tuple(to_hex(matplotlib.colormaps["inferno"](i / 8)) for i in range(9))
-    assert DARK.colormap == inferno
-    assert LIGHT.colormap == inferno[::-1]
-
-
 @BOTH
 def test_zero_on_the_sequential_scale_sits_near_the_surface(theme) -> None:
     """Low magnitude reads as "nothing": the low end is the ramp stop closest to the surface."""

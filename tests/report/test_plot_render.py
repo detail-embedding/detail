@@ -129,6 +129,18 @@ def _rgb01(hex_color: str) -> list[float]:
     return [c / 255 for c in chart_theme.rgb(hex_color)]
 
 
+def test_dark_is_inferno_and_light_is_inferno_reversed():
+    """The theme's stops are matplotlib's own inferno, sampled at nine even points. Here, not
+    beside the theme: ``core/chart_theme.py`` is pure data and its tests import no
+    matplotlib."""
+    import matplotlib
+    from matplotlib.colors import to_hex
+
+    inferno = tuple(to_hex(matplotlib.colormaps["inferno"](i / 8)) for i in range(9))
+    assert chart_theme.DARK.colormap == inferno
+    assert chart_theme.LIGHT.colormap == inferno[::-1]
+
+
 @pytest.mark.parametrize("theme", ["light", "dark"])
 def test_paths_and_heat_maps_wear_the_theme_s_colormap(theme):
     """Inferno on the dark surface, reversed on the light: on a busy picture of paths the grey
