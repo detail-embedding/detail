@@ -186,6 +186,55 @@ def test_detection_runner_writes_zarr_and_payload(tmp_path):
     assert env["parts"][0]["status"] == "complete"
 
 
+def test_a_recording_whose_parts_differ_in_size_fails_detection_naming_both(tmp_path):
+    """Every door a part comes in by refuses one of another size, so this recording is one
+    made before those checks. Left to complete, its run reached every stage that reads
+    masks, which decodes and places them at the run's one size: the odd part's masks as
+    stripes, its positions in other pixels than the arena and the calibration. It fails here
+    instead, and a failed run is read by nothing downstream."""
+    from detail.core.errors import UserInputError
+
+    recording_dir, n_frames = _setup(tmp_path)
+    big = recording_dir / "video" / "part_002.mp4"
+    writer = cv2.VideoWriter(
+        str(big), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (W * 2, H * 2)
+    )
+    for i in range(n_frames):
+        writer.write(np.full((H * 2, W * 2, 3), i * 17, dtype=np.uint8))
+    writer.release()
+    recording_store.write_timestamps_csv(
+        recording_dir / "video" / "timestamps" / "generated" / "part_002.csv",
+        (np.arange(_count_frames(big), dtype=np.int64) + n_frames) * 1000,
+    )
+    data = recording_store.read_recording(recording_dir)
+    second = dict(data["video"]["files"][0])
+    second.update(
+        index=1,
+        file="video/part_002.mp4",
+        timestamps={
+            "generated": "video/timestamps/generated/part_002.csv",
+            "user": None,
+            "active": "generated",
+        },
+    )
+    data["video"]["files"].append(second)
+    recording_store.write_recording(recording_dir, data)
+    run_dir = recording_dir / "detections" / "det_01"
+    run_dir.mkdir(parents=True)
+    rundir.init_run_dir(run_dir, _job())
+
+    with (
+        _registered_model(),
+        pytest.raises(
+            UserInputError,
+            match=rf"part_001 is {W}×{H} and part_002 is {W * 2}×{H * 2}.*remove part_002",
+        ),
+    ):
+        detection.run(_job(), run_dir, progress_cb=lambda e: None, stop_event=None)
+    sizes = [p["mask_resolution"] for p in rundir.read_envelope(run_dir)["parts"]]
+    assert sizes == [[H, W], [H * 2, W * 2]]  # what each part was read at, recorded
+
+
 def test_detection_inline_emits_loading_message_and_multiple_events(tmp_path):
     recording_dir, n_frames = _setup(tmp_path)
     run_dir = recording_dir / "detections" / "det_01"

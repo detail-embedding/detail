@@ -24,6 +24,30 @@ masks every reader decoded at the run's (its first part's) size. §3 says a reco
 share one resolution, a bundle import checked it, and adding a part did not; now both ask
 ``storage/video_integrity.another_parts_shape``
 (``tests/api/test_recording.py::test_a_part_of_another_shape_is_refused_before_anything_is_written``).
+
+**Every door, and the recordings from before them.** A review of that rule found four more
+ways through, each guarded where it lives:
+
+- The rate was compared to three decimals, and a container's rate is frames over duration, so
+  two files from one variable-rate camera (29.97 and 29.99) were refused. Within 1% now
+  (``tests/storage/test_video_integrity.py::test_a_variable_rate_camera_s_next_file_is_another_part``).
+- An import checked each part as it came, after the parts before it were copied: a two-part
+  import failed gigabytes in, holding one part. Every part is checked first
+  (``tests/api/test_imports.py::test_parts_that_cannot_share_a_recording_are_refused_before_any_is_copied``).
+- Referencing a part registered its folder as a video root before the check, so a refused
+  part still left a change on the machine
+  (``tests/api/test_recording.py::test_a_refused_reference_part_registers_no_video_root``).
+- A recording made before the checks, with parts of two sizes, reached every stage that reads
+  masks, and those place masks *and positions* at the run's one size: the odd part's
+  positions are in other pixels than the arena and the calibration, so decoding its masks
+  right would not have made it right. Detection fails such a recording, naming both sizes,
+  and a failed run is read by nothing downstream
+  (``tests/pipeline/test_detection.py::test_a_recording_whose_parts_differ_in_size_fails_detection_naming_both``).
+
+And ``out=`` refuses a frame of another *shape* than the mask's: resizing turned stripes into
+a believable mask, so a rotated video read one way by detection and the other way by a player
+would have been drawn squashed, with nothing to say so
+(``test_a_mask_is_not_stretched_onto_a_frame_of_another_shape``).
 """
 
 from __future__ import annotations
@@ -73,6 +97,20 @@ def test_a_mask_decodes_at_its_own_size_then_resizes_to_out():
     shrunk = decode_mask(counts, (24, 32), out=(12, 16))
     assert shrunk.shape == (12, 16) and shrunk.dtype == bool
     np.testing.assert_array_equal(shrunk, _square(12, 16))
+
+
+def test_a_mask_is_not_stretched_onto_a_frame_of_another_shape():
+    """Resizing to ``out`` turned stripes into a believable mask, so a mask resized onto a
+    frame of another *shape* (a rotated video read one way by detection and the other way by
+    a player) was drawn squashed, somewhere the animal is not, with nothing to say so. A
+    decoder's padding (1088 rows for 1080) is a resize, not another shape."""
+    counts = _encode(_square(24, 32))
+    with pytest.raises(ValueError, match=r"32×24 frame cannot be placed on a 24×32"):
+        decode_mask(counts, (24, 32), out=(32, 24))
+    with pytest.raises(ValueError, match="another shape"):
+        decode_mask("", (24, 32), out=(32, 24))
+    padded = _encode(_square(1080, 1920))
+    assert decode_mask(padded, (1080, 1920), out=(1088, 1920)).shape == (1088, 1920)
 
 
 def test_an_empty_mask_is_empty_at_the_size_asked_for():

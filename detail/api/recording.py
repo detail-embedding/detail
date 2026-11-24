@@ -359,6 +359,27 @@ class Recording:
             raise FileNotFoundError(f"video file not found: {path}")
         reference = storage == "reference"
         rel: str | None = None
+        data = recording_store.read_recording(self.dir)
+        video = data.get("video") or {"storage": storage, "files": []}
+
+        index = len(video["files"])
+        part_name = f"part_{index + 1:03d}"
+        # Checked before a referenced file's folder is registered as a video root: a part
+        # refused here leaves nothing behind, on the machine or in the experiment.
+        probe = video_store.probe_video(src)
+        if video["files"] and video.get("resolution"):
+            # A recording written before its rate was recorded is held to its size alone.
+            first = {
+                "resolution": video["resolution"],
+                "fps": video.get("fps_container") or probe["fps"],
+            }
+            differs = video_integrity.another_parts_shape(first, probe)
+            if differs is not None:
+                raise UserInputError(
+                    f"{src.name} cannot be another part of this recording: {differs}. "
+                    "Every part of a recording has one picture size and one frame rate; "
+                    "add it as a recording of its own."
+                )
         if reference:
             if video_root is None:
                 # No location given (the GUI/CLI default): remember the video's own folder
@@ -375,25 +396,6 @@ class Recording:
             except ValueError:
                 raise ValueError(
                     f"video {src} is not under video root {video_root!r} ({root_dir})"
-                )
-        data = recording_store.read_recording(self.dir)
-        video = data.get("video") or {"storage": storage, "files": []}
-
-        index = len(video["files"])
-        part_name = f"part_{index + 1:03d}"
-        probe = video_store.probe_video(src)
-        if video["files"] and video.get("resolution"):
-            # A recording written before its rate was recorded is held to its size alone.
-            first = {
-                "resolution": video["resolution"],
-                "fps": video.get("fps_container") or probe["fps"],
-            }
-            differs = video_integrity.another_parts_shape(first, probe)
-            if differs is not None:
-                raise UserInputError(
-                    f"{src.name} cannot be another part of this recording: {differs}. "
-                    "Every part of a recording has one picture size and one frame rate; "
-                    "add it as a recording of its own."
                 )
         fps = probe["fps"]
         # Integer ns from the parts' own maps, each re-based to start at 0 — the

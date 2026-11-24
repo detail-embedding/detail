@@ -480,9 +480,30 @@ def _require_rle_size(counts: str, size: tuple[int, int]) -> None:
     covered = int(rle.rle_counts(counts).sum())
     if covered != height * width:
         raise ValueError(
-            f"a mask that covers {covered:,} pixels was decoded at {height}x{width} "
-            f"({height * width:,}): a mask decodes at the size its detection run encoded "
-            "it at (the run's mask_resolution), and is resized to a frame with out="
+            f"a mask of {covered:,} pixels cannot be read at {width}×{height} "
+            f"({height * width:,}): masks are read at the size their detection run saw the "
+            "video at (its mask_resolution, then resized with out=). If this recording's "
+            "video parts are not all one size, add the odd part as a recording of its own "
+            "and run detection again."
+        )
+
+
+#: How far a mask's aspect ratio and a frame's may differ, as a fraction, for the mask to be
+#: resized onto the frame (``decode_mask``'s ``out``). A decoder's padding (1920×1088 against
+#: 1920×1080) is 0.7%; a frame of another shape is not a resize of the mask's.
+MASK_ASPECT_TOLERANCE = 0.02
+
+
+def _require_same_shape(size: tuple[int, int], out: tuple[int, int]) -> None:
+    """Raise unless ``out`` is ``size`` scaled: a resize to another shape squashes the mask,
+    and it is drawn somewhere the animal is not, with nothing to show it is wrong."""
+    (h, w), (oh, ow) = size, out
+    if abs((w / h) / (ow / oh) - 1.0) > MASK_ASPECT_TOLERANCE:
+        raise ValueError(
+            f"a mask found on a {w}×{h} frame cannot be placed on a {ow}×{oh} one: the "
+            "picture is another shape than the one its detection run saw (a rotated video "
+            "decodes one way in one reader and another way in the next). Run detection on "
+            "the video as it is shown here."
         )
 
 
@@ -499,9 +520,12 @@ def decode_mask(
 
     Raises:
         ValueError: ``counts`` is not a mask of ``size`` (its runs cover another number of
-            pixels). Decoded anyway, it would come out as stripes.
+            pixels). Decoded anyway, it would come out as stripes. Or ``out`` is another
+            shape than ``size`` (``MASK_ASPECT_TOLERANCE``): resized, it would be squashed.
     """
     shape = tuple(int(v) for v in (out if out is not None else size))
+    if out is not None:
+        _require_same_shape(tuple(int(v) for v in size), shape)
     if not counts:
         return np.zeros(shape, dtype=bool)
     from pycocotools import mask as mask_utils

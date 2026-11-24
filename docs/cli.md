@@ -218,7 +218,7 @@ table, see the [Parameters reference](reference/parameters.md).
   the next part. Repeat to add more parts. The video is imported at its original rate
   and resolution: a stage that wants fewer frames sets `--every-n-frames` on the run, which
   needs no second copy. Every part of a recording has one picture size and one frame rate,
-  so a video that differs from the recording's first part is refused, naming both. Add `--reference` to **reference the video in place**: the file is not
+  so a video of another size, or a frame rate more than 1% away, is refused, naming both. Add `--reference` to **reference the video in place**: the file is not
   copied; the recording stores its location plus a content fingerprint so a moved or
   changed file is detected. The location (the file's folder) is remembered
   automatically; `--video-root <alias>` pins a specific registered [video

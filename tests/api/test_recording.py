@@ -2061,6 +2061,31 @@ def test_a_part_of_another_shape_is_refused_before_anything_is_written(tmp_path)
     assert len(recording.video_parts) == 2
 
 
+def test_a_refused_reference_part_registers_no_video_root(tmp_path, tmp_path_factory):
+    """Referencing a video in place registers its folder as a video root on this machine.
+    That ran before the part was checked, so a part refused for its size still left its
+    folder registered: refused, and not before anything was written.
+
+    The video sits outside ``tmp_path``, which is a registered root already: under it, the
+    registration reuses that root and changes nothing, and this passed with the bug back in.
+    """
+    from detail.core.errors import UserInputError
+    from detail.storage import video_roots
+
+    recording = _make_recording(tmp_path)
+    a = tmp_path / "a.mp4"
+    _write_video(a, n_frames=5)
+    recording.add_video_part(a)
+    big = tmp_path_factory.mktemp("elsewhere") / "big.mp4"
+    _write_video_shaped(big, 4, size=(W * 2, H * 2), fps=30.0)
+    before = video_roots.list_video_roots()
+    assert not any(big.is_relative_to(root) for root in before.values())
+
+    with pytest.raises(UserInputError, match=rf"{W * 2}×{H * 2}"):
+        recording.add_video_part(big, storage="reference")
+    assert video_roots.list_video_roots() == before
+
+
 def test_add_video_part_multipart_global_timestamps(tmp_path):
     recording = _make_recording(tmp_path)
     a, b = tmp_path / "a.mp4", tmp_path / "b.mp4"

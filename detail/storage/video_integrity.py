@@ -26,6 +26,12 @@ from detail.storage import integrity
 from detail.storage import recording as recording_store
 from detail.storage import video_roots
 
+#: How far apart, as a fraction, two parts' container frame rates may be and still be parts of
+#: one recording (``another_parts_shape``). Wide enough for one variable-rate camera's files
+#: (29.97 against 29.99 is 0.07%); far below any two standard rates (24/25 is 4%, 29.97/30
+#: is 0.1% and is let through, as the same camera's NTSC and integer labels).
+PART_FPS_TOLERANCE = 0.01
+
 
 @dataclass(frozen=True)
 class VideoIssue:
@@ -97,16 +103,20 @@ def another_parts_shape(first: dict, probe: dict) -> str | None:
 
     Every part of a recording shares one resolution and one frame rate (§3): boxes, masks and
     calibrations are in the first part's pixels, a detection run decodes every part's masks at
-    one size, and one rate is what a part's frames are counted in. The rate is compared to the
-    millisecond-frame (three decimals), so a container's rounding never refuses a part. Both
-    ``first`` and ``probe`` are ``video.probe_video`` results (``resolution`` is ``[w, h]``);
-    the one rule a bundle import and adding a part share.
+    one size, and one rate is what a part's frames are counted in. The size must match exactly;
+    the rate within ``PART_FPS_TOLERANCE``, because a container's rate is its frames over its
+    duration, and two files from one variable-rate camera (a phone, a webcam, a screen
+    recorder) read as 29.97 and 29.99. Frame times come from each part's own timestamps
+    (Tenet 8), so that difference misplaces nothing. Both ``first`` and ``probe`` are
+    ``video.probe_video`` results (``resolution`` is ``[w, h]``); the one rule a bundle import
+    and adding a part share.
     """
     if list(probe["resolution"]) != list(first["resolution"]):
         w, h = probe["resolution"]
         fw, fh = first["resolution"]
         return f"it is {w}×{h}, and the recording's video is {fw}×{fh}"
-    if round(float(probe["fps"]), 3) != round(float(first["fps"]), 3):
+    rate, first_rate = float(probe["fps"]), float(first["fps"])
+    if abs(rate - first_rate) > PART_FPS_TOLERANCE * first_rate:
         return (
             f"it runs at {float(probe['fps']):g} frames a second, and the recording's "
             f"video at {float(first['fps']):g}"
