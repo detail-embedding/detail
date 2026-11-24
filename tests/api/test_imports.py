@@ -472,3 +472,23 @@ def test_a_single_recording_import_reports_mid_run_progress_with_an_eta(
     assert mid, "no event between 0 and 1 on a single-recording import"
     assert all(e.eta_s is not None for e in mid)
     assert events[-1].fraction == 1.0 and events[-1].recordings_done == 1
+
+
+def test_parts_that_cannot_share_a_recording_are_refused_before_any_is_copied(tmp_path):
+    """``add_video_part`` checks each part as it comes, after the parts before it were
+    copied: a two-part import whose second part was another size failed gigabytes in, and
+    left a ``failed`` recording holding the first part. Every part is checked first now
+    (``imports._require_one_shape``), by the rule a bundle import uses."""
+    experiment = Experiment.create("p", tmp_path)
+    first = _video(tmp_path / "a.mp4")
+    other = _video(tmp_path / "b.mp4", w=64, h=48)
+    specs = [RecordingImportSpec(id="two", video_parts=[first, other])]
+    errors, cancelled = import_specs(experiment, specs)
+    assert cancelled is False
+    ((sid, message),) = errors
+    assert sid == "two"
+    assert "b.mp4 cannot be part 2" in str(message) and "64×48" in str(message)
+    recording = experiment.get_recording("two")
+    assert recording.import_status == "failed"
+    assert recording.video_parts == []
+    assert not list((recording.dir / "video").glob("*.mp4"))
