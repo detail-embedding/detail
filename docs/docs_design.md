@@ -342,6 +342,7 @@ and why.
 | video part | (calling it a recording) | a recording has many parts |
 | recording · run · job | (used interchangeably) | distinct concepts — keep separate |
 | product name via `site_name` (§8) | scattering the literal name in prose | provisional placeholder — a rename must be one change |
+| Detail | DETAIL (all caps) | it is a name, not an acronym; checked case-sensitively by `tests/test_product_name.py` |
 | substantial / detailed / significant | meaty | plain, precise wording |
 | built-in / native / fully supported | first-class | jargon |
 | comma, colon, parentheses, or two sentences | `—` (em dash) | reads as agent-written; restructure the sentence |

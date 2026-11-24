@@ -1,4 +1,4 @@
-# DETAIL
+# Detail
 
 A species-agnostic tool for behavioral video analysis, built on open-source
 segmentation, tracking, and image-embedding models.
@@ -10,7 +10,7 @@ segmentation, tracking, and image-embedding models.
 ## Start here
 
 - **[User guides](user-guides/index.md)**: step by step in the desktop app, from installing
-  DETAIL to analyzed behavior, with every screen explained. New here? Start with these.
+  Detail to analyzed behavior, with every screen explained. New here? Start with these.
 - **[Getting started](getting-started.md)**: the short install for someone at ease in a
   terminal: model access, then launch the GUI or CLI. Already installed?
   [Launch it again later](getting-started.md#launch-it-again-later).

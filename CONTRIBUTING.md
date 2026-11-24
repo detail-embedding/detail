@@ -1,4 +1,4 @@
-# Contributing to DETAIL
+# Contributing to Detail
 
 Thanks for helping. This page covers setting up, running the tests, and opening a pull request.
 The rules the code itself follows (schemas, storage, the hard rules) are in
@@ -6,7 +6,7 @@ The rules the code itself follows (schemas, storage, the hard rules) are in
 
 ## Set up
 
-DETAIL uses [uv](https://docs.astral.sh/uv/) and Python 3.12 or newer. Install uv, clone, and make an
+Detail uses [uv](https://docs.astral.sh/uv/) and Python 3.12 or newer. Install uv, clone, and make an
 environment as the [README](README.md) describes, then install the package with the extras the
 tests need:
 

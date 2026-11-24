@@ -272,7 +272,7 @@ Two surfaces show frames and deliberately do not play:
 
 Machine-global setup, shared across every experiment. The landing page is a **Get started** checklist (GPU / CUDA, Hugging Face access, the SAM 3 backend package, the SAM 3 weights, **See it segment a clip**, which opens [Quick segment](tools.md#quick-segment), and **Recommended: distill a fast model**), each with an **Open** button. On a machine with no NVIDIA GPU the two SAM 3 steps are marked as needing one, **Install a runnable detection model** is added after them, and **See it segment a clip** says it needs an NVIDIA GPU or an installed detection model, because Quick segment can only run SAM 3 on an NVIDIA GPU. It reads live state and marks each step ✓ when done: **See it segment a clip** once a Quick segment run has finished, and **Recommended: distill a fast model** once a distilled model is in the Model manager.
 
-**Check readiness** re-runs the checks. It probes the environment in a fresh subprocess, so if you install something in a terminal while the app is open (a CUDA PyTorch wheel, the SAM 3 backend package), clicking it picks the change up **without restarting the app**. A newly installed SAM 3 backend is then usable straight away, Quick segment included. A reinstalled PyTorch is not: the running app keeps the PyTorch it started with, so restart DETAIL to use the new build. The same checks run headless as [`detail doctor`](cli.md#doctor). SAM 3 is only marked ready when its weights *and* its backend package (`import sam3`) are both present, so a run can't pass the check and then crash mid-run.
+**Check readiness** re-runs the checks. It probes the environment in a fresh subprocess, so if you install something in a terminal while the app is open (a CUDA PyTorch wheel, the SAM 3 backend package), clicking it picks the change up **without restarting the app**. A newly installed SAM 3 backend is then usable straight away, Quick segment included. A reinstalled PyTorch is not: the running app keeps the PyTorch it started with, so restart Detail to use the new build. The same checks run headless as [`detail doctor`](cli.md#doctor). SAM 3 is only marked ready when its weights *and* its backend package (`import sam3`) are both present, so a run can't pass the check and then crash mid-run.
 
 A step still to do carries a dismissable amber banner on its own screen, naming what is missing.
 
@@ -280,9 +280,9 @@ A step still to do carries a dismissable amber banner on its own screen, naming 
 
 **Previews build in the background.** When a recording finishes importing, when you open an experiment with previews missing (a new computer, an imported archive, a cleared cache), and when a tracking run finishes while its page is open, the missing previews are queued. A bar at the right of the status bar shows the one in hand: which recording and part, whether it is the video or a tracking run's masks, how many are waiting, and the time left. It disappears when the queue is empty. One builds at a time; you can keep working. The same build is [`detail cache previews build`](cli.md#cache).
 
-**Previews are built once per video on each computer, so keep them.** Building takes a while, so a long experiment can take hours, and clip montages wait until their recordings are built. Clearing is safe, but you wait for that again. Updating DETAIL keeps the previews you have; an update that needs to rebuild them says so before it starts, with what is rebuilt and roughly how long.
+**Previews are built once per video on each computer, so keep them.** Building takes a while, so a long experiment can take hours, and clip montages wait until their recordings are built. Clearing is safe, but you wait for that again. Updating Detail keeps the previews you have; an update that needs to rebuild them says so before it starts, with what is rebuilt and roughly how long.
 
-**GPU / CUDA** shows the detected accelerator. When CUDA is broken on an NVIDIA box, the *CUDA doctor* names the gap and gives a copyable fix command plus the driver and PyTorch links. It shows how it chose the build: the newest CUDA your driver supports, and the newest PyTorch build at or below it (CUDA 13.2 gives `cu132`). Under the command it reminds you to restart DETAIL once the install finishes. On a machine without an NVIDIA GPU the panel is greyed, not hidden.
+**GPU / CUDA** shows the detected accelerator. When CUDA is broken on an NVIDIA box, the *CUDA doctor* names the gap and gives a copyable fix command plus the driver and PyTorch links. It shows how it chose the build: the newest CUDA your driver supports, and the newest PyTorch build at or below it (CUDA 13.2 gives `cu132`). Under the command it reminds you to restart Detail once the install finishes. On a machine without an NVIDIA GPU the panel is greyed, not hidden.
 
 **SAM 3 backend** gives the full copy-paste sequence to install SAM 3 into your environment, from opening a terminal to verifying: SAM 3 ships off PyPI, so it must be cloned and installed from source, and the detail package needs its `sam3` extra. Each OS gets one block, every command under a short `#` description; the block for the machine you're on uses the **real paths** the tool detects (your detail folder, your environment), the other OS's shows the relative forms and its own activation and Triton line. The block for your OS has an **Open Terminal** / **Open PowerShell** button (named for your platform's shell) next to **Copy** (it drops that terminal into your detail folder so you can paste the commands (greyed on Linux, where you open a terminal yourself). Run the sequence, then click **Check readiness** and the status flips without restarting the app. When the machine has no NVIDIA GPU, a note above the status says so) SAM 3 needs one to run, though the commands are still shown.
 
@@ -303,7 +303,7 @@ The experiment's own screen, and the first one you see when you open it. **Overv
 Edit the experiment name and description, then **Save**.
 
 - **Sections**: one row per section with a live count (recordings and how many have video, datasets and models (and how many are still being made), runs and how many are going or failed, analyses, comparisons) and an **Open →** into each.
-- **Export experiment…**: opens the [Export dialog](#export) with **Experiment bundle** ticked: the whole experiment as one archive another DETAIL can import, with boxes for source video, training datasets and gzip. Clicking **Export** takes you to the export's page, which shows a bar, the phase it is in and the time left; the export runs in the background, so you can leave that page, and it stays listed under [Active processes](#active-processes). The archive is named after the experiment.
+- **Export experiment…**: opens the [Export dialog](#export) with **Experiment bundle** ticked: the whole experiment as one archive another Detail can import, with boxes for source video, training datasets and gzip. Clicking **Export** takes you to the export's page, which shows a bar, the phase it is in and the time left; the export runs in the background, so you can leave that page, and it stays listed under [Active processes](#active-processes). The archive is named after the experiment.
 - **Delete experiment**: confirms first, then removes everything.
 
 ## Recordings
@@ -349,7 +349,7 @@ Every recording-level input lives here (run outputs are read-only). The top show
 
 - **Streams**: **Add stream** imports an aligned time-series. Choose the **data file** first and the dialog identifies it: MED-PC operant events (`.txt` + `.MPC`), your own CSV as a sensor trace (**Time-series CSV (sensor data)**) or timestamped events (**Events CSV**), or **behavior labels** from an interval CSV or a **BORIS** export. Change the importer above if the guess is wrong. A CSV must be saved as **CSV UTF-8** and comma-separated; one that is not is refused with a message saying what to change. A BORIS **aggregated** export (one row per bout, with *Start (s)* and *Stop (s)*) is identified as BORIS and refused, as in the CLI: export the observation again with **Export events > Tabular events**.
 
-    The rest of the form follows from the importer. A CSV that isn't already shaped for DETAIL (an arbitrary export with its own column names) shows the file's **actual header**: say which column is time and what it holds (a frame index, seconds, raw `t_ns`, or a **UTC timestamp**, where the first row becomes `t=0`), then tick the columns to bring in. Ticked columns become **channels of one stream**, so a pose file with four channels is one stream you align once, not four you align four times.
+    The rest of the form follows from the importer. A CSV that isn't already shaped for Detail (an arbitrary export with its own column names) shows the file's **actual header**: say which column is time and what it holds (a frame index, seconds, raw `t_ns`, or a **UTC timestamp**, where the first row becomes `t=0`), then tick the columns to bring in. Ticked columns become **channels of one stream**, so a pose file with four channels is one stream you align once, not four you align four times.
 
     A MED-PC file that holds several boxes shows a **Session** list (subject, box and start time for each), and a BORIS export that holds several observations or subjects shows **Observation** and **Subject** lists. Pick the one this recording is: Import stays greyed until you do, and they are never merged. A file holding one of each shows the row greyed with what it holds. The choice belongs to this file, so **Save as…** does not keep it.
 
@@ -714,7 +714,7 @@ outlier row is the point, a recording that took three times its neighbours is a 
 single total hides. A distill run's page has the same export, with its labeling and training as
 the rows. Frames and fps appear only for stages that count frames (detection, tracking,
 embedding and the keypoint stages); a distill or an analysis shows its wall clock alone. It is a local file (nothing is sent anywhere), and it reads the run's own activity log,
-so a run from before DETAIL kept one shows blanks rather than guesses.
+so a run from before Detail kept one shows blanks rather than guesses.
 
 Under the bar, while a run is going, is a row per **recording**: a bar each, the one in flight showing its stage and its own ETA, finished ones greyed with how long they took, failures in red with the reason, and a recording that was cancelled or stopped part-way (*cancelled*, *partial*) also in red, saying which. Past eight recordings the finished and the queued fold into counts (*7 done*, *12 queued*), so a 21-recording run is four rows rather than twenty-one, and the one that failed is not buried among them; click a count to open it. The rows stay in the order the run does them. Once the run finishes they give way to the **Results** list below, which carries each recording's produced run id and status. **Click a row to see that recording's results** underneath it: the video, the scatter, or (for a recording that did not finish) why. **Double-click** opens the recording itself. A long run scrolls inside the list, so the results underneath stay on screen.
 
@@ -1087,7 +1087,7 @@ folder it will make (`study3_temporal_clustering_an_017_export_2026-09-10_1432/`
 never collide and one is still identifiable months later on somebody else's machine.
 
 Every export writes **the data behind the artifact**, not just the artifact: clips come with a
-`clips.csv` saying which bout each file is, so a figure can be rebuilt outside DETAIL rather than
+`clips.csv` saying which bout each file is, so a figure can be rebuilt outside Detail rather than
 only watched. Each folder also gets a `params.csv` of the settings that produced the run, your
 [notes](#notes) on what you exported from as `notes.md` when it has any, and an `export.yaml`
 manifest. Each row's tooltip names the files it writes.
@@ -1148,7 +1148,7 @@ narrowed export, and `export.yaml` lists it under `whole`.
   where the recording is calibrated. A detection run exports **Masks** as COCO
   instance-segmentation JSON. Neither needs an analysis first, and each writes one file per
   recording the run covered. A keypoint run (detect or track) offers five rows: **Keypoints**
-  (DETAIL's long CSV), **Keypoints for DeepLabCut**, **Keypoints for SLEAP**, **Keypoints as
+  (Detail's long CSV), **Keypoints for DeepLabCut**, **Keypoints for SLEAP**, **Keypoints as
   NWB** and **Keypoints video** (the footage with the points drawn on). The dialog adds their
   shared knobs: **Points from** on a track run (**Tracking**, or **Detection, before
   tracking and smoothing** to see what tracking changed), the **Score threshold** (the method's default
@@ -1186,7 +1186,7 @@ The same catalogue is on the command line as `detail export`, see the
   dialog says "No video will be packed" and why when no recording has video to pack here: their
   copied video is not on this computer (put it back with **Locate video**), or their video is
   used in place, which never travels in an archive.
-- **Gzip is rarely worth ticking.** DETAIL's data files are compressed already, so it barely shrinks the bundle and makes the export much slower.
+- **Gzip is rarely worth ticking.** Detail's data files are compressed already, so it barely shrinks the bundle and makes the export much slower.
 - **Video used in place is found again.** When a recording's video was used where it was (not
   copied), the archive notes which folder it was in on the computer that exported it. Importing
   looks in that same folder, so video on a server both computers reach is found without you doing

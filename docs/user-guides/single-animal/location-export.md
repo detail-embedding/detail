@@ -12,7 +12,7 @@ keypoints from chapter 4 it can write them too.
 ## The steps at a glance
 
 Each box is one step on this page. Click a box to go to that step. The first tag says where
-the step is in DETAIL.
+the step is in Detail.
 
 <div class="guide-flow" markdown>
 
@@ -180,7 +180,7 @@ in. On the demo, box1's `tracks.csv` has 8,854 rows, one for each tracked frame.
     Each row is one frame, so a mean of a 0-or-1 column is the share of time.
 
     To line the files up with other data, join on `t_ns`: it is the same clock as every
-    other DETAIL time, counted from the start of the video. The recording's **Recording
+    other Detail time, counted from the start of the video. The recording's **Recording
     information** (chapter 1) goes alongside by its folder name.
 
 ??? warning "If this doesn't work"
