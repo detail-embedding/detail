@@ -11,5 +11,5 @@ The three authors below are covered by a separate written authors' agreement
 | GitHub username | Full name | Date (YYYY-MM-DD) | CLA version |
 |---|---|---|---|
 | mlurbur | Moses Lurbur | 2026-11-23 | 1.0 |
-| DrCoffey | [full name] | [date] | authors' agreement |
+| DrCoffey | Kevin Coffey | 2026-11-23 | 1.0 |
 | SamAGolden | [full name] | [date] | authors' agreement |
