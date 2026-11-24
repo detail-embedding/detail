@@ -84,8 +84,7 @@ warning appear, fix its cause rather than silencing it.
 Before your first pull request can be merged, read the
 [DETAIL Contributor License Agreement](CLA.md) and agree to it. You keep the copyright in what
 you write. You give the project the right to distribute your work, including under a different
-license in future versions: DETAIL's first release is AGPL-3.0, and later versions are planned
-under a non-commercial license.
+license in future versions.
 
 To agree, add a line to [`.github/cla-signatures.md`](.github/cla-signatures.md) in your first
 pull request, in a commit you make yourself: your GitHub username, full name, the date, and the
