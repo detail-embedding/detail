@@ -52,12 +52,35 @@ BODY_KINDS = ("body", "body_hist")
 #: The positions ``tracks.csv`` carries for every run; any other ``source`` names a keypoint.
 CENTROID_SOURCES = ("body", "mask", "bbox")
 
+#: Each position kind's title; ``{of}`` is the point it follows (:func:`followed`).
 _TITLES = {
-    "trace": "Path",
-    "heatmap": "Occupancy",
-    "speed": "Speed over time",
-    "trace3d": "Path over time",
+    "trace": "Path{of}",
+    "heatmap": "Occupancy{of}",
+    "speed": "Speed{of} over time",
+    "trace3d": "Path{of} over time",
 }
+#: What a title says a centroid position is; the body, the default, goes unsaid.
+_CENTROID_NAMES = {"body": "", "mask": "the mask's centre", "bbox": "the box's centre"}
+
+
+def followed(view: LocationPlotView) -> str:
+    """The point a position plot follows, as its title says it: ``" of the nose"``,
+    ``" of the tail_base and nose"`` for several on a path, or ``""`` for the body.
+
+    Every position plot was titled the same whatever it followed, so an exported path of the
+    nose read as the body's.
+    """
+    if view.points and view.kind in ("trace", "trace3d"):
+        names = [f"the {name}" for name in view.points]
+        joined = (
+            ", ".join(names[:-1]) + f" and {names[-1]}" if len(names) > 1 else names[0]
+        )
+        return f" of {joined}"
+    if view.source in _CENTROID_NAMES:
+        name = _CENTROID_NAMES[view.source]
+        return f" of {name}" if name else ""
+    return f" of the {view.source}"
+
 
 #: ``body_measure`` → (what it is called, how its unit is written from the length unit).
 _MEASURES = {
@@ -773,7 +796,8 @@ def build_plot(
     grouped = group_traces(traces, group_values or {}) if is_grouped(view) else None
     if view.kind in BODY_KINDS:
         return _body_plot(traces, view, units, grouped, notes)
-    title = _TITLES[view.kind] + (f" by {view.group_by}" if grouped else "")
+    title = _TITLES[view.kind].format(of=followed(view))
+    title += f" by {view.group_by}" if grouped else ""
     note = f"Not plotted: {'; '.join(notes)}" if notes else ""
     if view.kind == "speed":
         return _speed_plot(traces, view, units, grouped, title, note)

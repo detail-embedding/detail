@@ -814,6 +814,7 @@ them):
   the same point; a keypoint's name (on a run exported with `--keypoints`) follows that point,
   a frame it was hidden on a gap.
 - `--point <keypoint>` (repeatable): several points on one `trace` / `trace3d`, a colour each.
+  The title names the point a plot follows (*Path of the nose*); the body goes unnamed.
 - `--body-measure length|width|area|elongation|mask_area`: what a body plot shows.
 - `--group-by <column>`: one panel (or one line) per value of a Recording Information
   column, each animal counting once.

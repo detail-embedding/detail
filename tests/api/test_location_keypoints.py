@@ -246,6 +246,48 @@ def test_keypoint_plots_export_as_an_interactive_page_too(proj, tmp_path, view, 
     assert not missing
 
 
+@pytest.mark.parametrize(
+    "view, title",
+    [
+        (LocationPlotView(), "Path"),
+        (LocationPlotView(source="nose"), "Path of the nose"),
+        (LocationPlotView(kind="trace3d", source="nose"), "Path of the nose over time"),
+        (LocationPlotView(kind="speed", source="nose"), "Speed of the nose over time"),
+        (
+            LocationPlotView(kind="heatmap", source="tail_base"),
+            "Occupancy of the tail_base",
+        ),
+        (
+            LocationPlotView(points=["tail_base", "nose"]),
+            "Path of the tail_base and the nose",
+        ),
+        (LocationPlotView(source="bbox"), "Path of the box's centre"),
+        (LocationPlotView(kind="heatmap", points=["nose"]), "Occupancy"),
+    ],
+)
+def test_a_plot_s_title_names_the_point_it_follows(proj, view, title):
+    """Every position plot was titled the same whatever it followed, so an exported path of
+    the nose read as the body's. The body, the default, goes unsaid; several points name
+    themselves only on a path, the one kind that draws them."""
+    _with_points(proj)
+    assert proj.location_plots("an_01").build(view).title == title
+
+
+def test_a_grouped_title_names_the_point_then_the_group(proj):
+    walk = _walk()
+    ids = finished_run(
+        proj, {"a": {0: walk}, "b": {0: walk}}, metadata={"a": {"sex": "F"}}
+    )
+    for sid in ids.values():
+        write_keypoints(
+            proj.analysis_run_dir("an_01") / sid, walk, {"nose": (8.0, 0.0, None)}
+        )
+    spec = proj.location_plots("an_01").build(
+        LocationPlotView(kind="speed", source="nose", group_by="sex")
+    )
+    assert spec.title == "Speed of the nose over time by sex"
+
+
 def test_an_unknown_keypoint_or_a_run_without_keypoints_says_so(proj, tmp_path):
     _with_points(proj)
     with pytest.raises(
