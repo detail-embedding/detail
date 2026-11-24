@@ -19,14 +19,16 @@ trade a person makes when a behavior stops being distinguishable at thumbnail si
 rescaled from the decoded array, so growing the row costs no decoding.
 
 ``EthogramStrip`` is one row per recording, the whole timeline, every cluster drawn in its colour
-with the selected one solid and the rest dimmed. Where a behavior sits relative to the others is
+**and its pattern** (`plot_theme.label_mark`: never hue alone) with the selected one full strength
+and the rest dimmed. Where a behavior sits relative to the others is
 the thing a scatter cannot show — and a cluster that only ever happens in the first two minutes is
 a finding a person will not get from a list of thumbnails. **Clicking a band selects its cluster**,
 the same way clicking a point in the scatter does: both are pictures of the vocabulary, and a
 picture you can point at is worth more than one you can only read.
 
-Deliberately not `ClipGrid`. That widget is Query's, and its frame, its score caption and its
-selection shadow are all load-bearing there; the two surfaces want opposite things from a cell.
+Deliberately not a grid of framed, captioned cells. A cell with a frame, a score caption and a
+selection shadow is for judging one clip at a time; this strip is for comparing members against
+each other, and the two want opposite things from a cell.
 """
 
 import colorsys
@@ -48,7 +50,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from detail.core.chart_theme import LIGHT, rgb
+from detail.core.chart_theme import rgb
 from detail.gui import frame_source
 from detail.gui import decode_order
 from detail.gui import plot_theme
@@ -72,7 +74,7 @@ MAX_PLAY_FRAMES = 120
 
 
 def _pool():
-    """Qt's global thread pool — the same one `ClipGrid` decodes on."""
+    """Qt's global thread pool — the one every thumbnail decode in the app shares."""
     from PyQt6.QtCore import QThreadPool
 
     return QThreadPool.globalInstance()
@@ -191,8 +193,8 @@ class ClusterClipStrip(QWidget):
         #: Indices with a decode in flight, so a scroll does not queue them a second time.
         self._pending: set[int] = set()
         self._playing: int | None = None
-        # Unparented and shared, the way `ClipGrid`'s is: a task holds a reference, so it
-        # outlives a strip whose host closed mid-decode and can still emit safely.
+        # Unparented and shared: a task holds a reference, so it outlives a strip whose host
+        # closed mid-decode and can still emit safely.
         self._signals = _CellSignals()
         self._signals.done.connect(self._on_decoded)
         self._clip_signals = _ClipSignals()
@@ -498,15 +500,19 @@ def cluster_colors(n: int) -> list[tuple[float, float, float, float]]:
     from a circle that divides by ``n``, not ``n - 1`` — hue 0 and hue 1 are the same red, so
     closing the circle handed the first and last cluster one colour.
 
-    Canonical (light) steps: the same colour tints a cluster's thumbnails, which are video.
+    The current theme's steps, the ones `plot_theme.label_swatch` draws BROWSE's key in: a band
+    and the swatch that names it are one colour in either theme. Light steps were a holdover from
+    when these also tinted video thumbnails, and left five of a dark window's bands a step off
+    their key.
     """
     # The label colours: BROWSE's lanes are behavior labels, so they keep off the two the
     # diverging scale has for less and more (`ChartTheme.label_identity`).
-    fixed = len(LIGHT.label_identities())
+    theme = plot_theme.current()
+    fixed = len(theme.label_identities())
     out = []
     for i in range(max(n, 1)):
         if i < fixed:
-            r, g, b = rgb(LIGHT.label_identity(i))
+            r, g, b = rgb(theme.label_identity(i))
         else:
             r, g, b = colorsys.hsv_to_rgb(i / max(n, 1), 0.85, 0.95)
             r, g, b = int(r * 255), int(g * 255), int(b * 255)
@@ -559,8 +565,14 @@ class EthogramStrip(QWidget):
     are pictures of the vocabulary, and the thing a person does on seeing an interesting stretch is
     point at it — a picture that can only be read makes them find the row in a table instead.
 
-    The selected cluster is drawn solid and the rest dimmed, so the question the row answers is
-    "where does *this* one sit among the others" rather than "what colour is everything". Time the
+    The selected cluster is drawn at full strength and the rest dimmed, so the question the row
+    answers is "where does *this* one sit among the others" rather than "what colour is
+    everything".
+
+    **A band is its colour and its pattern**, both from its index (`plot_theme.paint_label_mark`),
+    so two clusters or labels never differ by hue alone. The pattern is anchored to the strip, so
+    neighbouring bands of one identity join into one texture; a band narrower than a pattern's
+    period (about 6px) cannot show one, and zooming in is what gives it the room. Time the
     subject was not observed is left blank rather than filled: a tracking gap is not a behavior,
     and at several dozen clusters a fully tiled bar reads as noise.
 
@@ -821,7 +833,8 @@ class EthogramStrip(QWidget):
                 int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
                 name,
             )
-        painter.setClipRect(QRectF(left, 0, width, self.height()))
+        visible = QRectF(left, 0, width, self.height())
+        painter.setClipRect(visible)
         painter.setPen(Qt.PenStyle.NoPen)
         for row, (_recording_id, bands) in enumerate(self._rows):
             top = self._bar_top(row)
@@ -831,11 +844,24 @@ class EthogramStrip(QWidget):
             painter.setBrush(QColor(theme.grid))
             x0, x1 = self._x(0.0, row), self._x(1.0, row)
             painter.drawRect(x0, top, x1 - x0, self.BAR_PX)
+            # Grouped by identity, so each one's pattern is stroked once along the row rather
+            # than once per bout (`plot_theme.paint_label_mark`).
+            by_identity: dict[int, list[QRectF]] = {}
             for start, end, cluster in bands:
-                painter.setBrush(self._color_for(int(cluster)))
                 x0 = self._x(start, row)
                 x1 = max(self._x(end, row), x0 + 1)
-                painter.drawRect(x0, top, x1 - x0, self.BAR_PX)
+                # Cut to what is on screen first: zoomed in, one band can be a hundred thousand
+                # pixels wide, and its pattern would be drawn across all of them.
+                band = QRectF(x0, top, x1 - x0, self.BAR_PX).intersected(visible)
+                by_identity.setdefault(int(cluster), []).append(band)
+            for cluster, rects in by_identity.items():
+                plot_theme.paint_label_mark(
+                    painter,
+                    rects,
+                    cluster,
+                    color=self._color_for(cluster),
+                    theme=theme,
+                )
             self._paint_lane(painter, row)
         self._paint_highlight(painter)
         painter.setClipping(False)

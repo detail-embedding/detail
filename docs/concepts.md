@@ -1,4 +1,4 @@
-﻿# DETAIL concepts
+﻿# Detail concepts
 
 The shared vocabulary and mental model behind the tool, referenced by the [CLI guide](cli.md) and the [GUI guide](gui.md). Read this once; the guides assume these terms.
 
@@ -191,7 +191,7 @@ on its own track method. It is seconds of CPU, so another tracking run or other 
 new run over the same detect run and the raw result is never rewritten. Detect runs made before
 this split (one row per tracked animal) are refused with a message to run keypoint detection
 again. Either run exports its points for other pose tools (DeepLabCut, SLEAP, NWB), as
-DETAIL's own long table, or as a video with the points drawn on; see
+Detail's own long table, or as a video with the points drawn on; see
 [Keypoints, for pose tools](cli.md#keypoints-for-pose-tools). An embedding run can **align** on a track run: through a **heading definition**
 (the points whose mean is the front, the points whose mean is the back) each subject image is
 turned to face one way before the model sees it, rotated for an overhead camera or mirrored
@@ -283,7 +283,7 @@ example `behavior`) and a **shape** (event, interval, or continuous). MED-PC ope
 signal stream; behavior labels are a `behavior`-role interval stream.
 
 Bring your own data as CSV: continuous sensor traces (`timeseries_csv`) or timestamped events
-(`events_csv`). A file already shaped for DETAIL needs only a time column named `seconds`,
+(`events_csv`). A file already shaped for Detail needs only a time column named `seconds`,
 `frame` or `t_ns`. For any other export, say which column is time and what it holds (a frame
 index, seconds, raw `t_ns`, or a UTC timestamp) and which columns to bring in as channels. One
 CSV makes one stream carrying those channels.
@@ -300,15 +300,14 @@ Human-scored ground truth of which behavior occurs over which frames, imported a
 --importer behavior_csv`) or in bulk (`recording import-labels`).
 
 Each behavior is a **point** (an instant) or a **state** (a duration). The annotation records the
-behaviors it **covered**, the scored vocabulary, so a recording is only judged on behaviors it
-actually scored.
+behaviors it **covered**, the scored vocabulary, so a behavior nobody scored is told apart from
+one that did not happen.
 
 A stream also records its **origin**: `ground_truth` (a person scored it) or `predicted` (a
-method produced it, re-ingested). A predicted stream is never read as ground truth. It does not
-make a recording eligible for an evaluation, and naming it for scoring is refused, because a
+method produced it, re-ingested). A predicted stream is never read as ground truth, because a
 method scored against its own output produces a good-looking number that measures nothing.
 Anything you import is ground truth unless the file says otherwise or you pass `--origin
-predicted`. Every label file DETAIL exports carries an `origin` column, so re-importing a
+predicted`. Every label file Detail exports carries an `origin` column, so re-importing a
 method's output brings it back as `predicted` on its own.
 
 A label file is one animal in one session. A BORIS export holding several observations or
@@ -373,11 +372,20 @@ millimetres (`_mm`) when the recording has a distance calibration. Run it big (`
 many recordings) or quick (`locations export`, one recording).
 
 `tracks.csv` also measures the **body**: its centre, area, length, width and the direction of
-its long axis. The body is the whole mask unless you ask for thin parts (a tail, a limb, an
-antenna) to be left out, which is recommended for rats and mice and never forced, because for
-some animals the thin part is the body. Length and width are measured along and across the
-body's long axis, found from its shape. A sampling rate writes a few rows a second instead of
-every frame.
+its long axis. The body is the whole mask, with nothing taken out, so a tail counts toward it:
+what counts as the animal is decided by the tracking that drew the mask. Each body column is a
+standard measure you can recompute from the mask in any tool: length and width are the major
+and minor axes of the ellipse with the same second moments (MATLAB `regionprops`). A sampling rate writes a few rows a second instead of
+every frame. With a keypoint track run, it also writes `keypoints.csv`: where each skeleton
+point was, on the same rows, refused when the keypoint run's poses went to another tracking run.
+
+A finished run **plots** its own files, with no re-run: the animal's path, where it spent its
+time, its speed, and its body's length, width, area or elongation over time or as a
+histogram, per recording or grouped by a Recording Information column (each animal counting
+once). Speed is measured on the same smoothed path a comparison measures, broken at the same
+gaps and tracking jumps, so the two agree. Plots show one animal per recording. The app shows
+them on the run's **Plots** view; `locations plot` writes them as PNG, SVG or PDF, or as an
+interactive HTML page to hover, zoom and turn.
 
 ### Behavior scan (query) { #query }
 
@@ -388,33 +396,9 @@ cutoff per behavior** and get instances with start and end times, not a frame-by
 
 The search is computed once and never changes; the cutoff is yours, and re-projecting at a new
 one is instant, so you can move it while watching what falls in and out. Precision is favoured
-over recall by design. Build it with `analysis query` and set cutoffs with `analysis
-query-calibrate`.
-
-### Behavior-query evaluation { #behavior-query-eval }
-
-Scores how well the query retrieves a labeled behavior against the ground-truth streams.
-Held-out example clips seed the query; the rest of the labeled instances are the answer. Its
-purpose is to compare configurations: vary the embedding run (embed model and size,
-input-image constructor, input size) or the query parameters and read the average precision
-side by side.
-**Folds** cross-validate for a seed-independent number.
-
-The scoring **method** comes in two families:
-
-- **Windowed matchers** (`dtw`, `clip_pooled_mean`/`max`, `keyframe`) return matches about the
-  example's length, scored by temporal overlap as a span-detection average precision. Overlap is
-  IoU for state behaviors and a time window for point behaviors.
-- The **per-frame classifier** `soft_knn` scores every frame into a threshold-free per-frame
-  average precision, voting over the `k` nearest labeled frames (the example frames plus
-  `n_negatives` background frames, with `tau` the temperature).
-
-Every score is reported beside its **null**, the same result with the answer destroyed, so the
-**lift** over the null is the part that is real.
-
-Run it scriptably (`analysis query-eval`, one CSV row per behavior) or as a recorded GUI run
-whose report and **Explore clips** window play the matches. Full detail:
-[Behavior-query evaluation](behavior-query-eval.md).
+over recall by design, and it is measured by reviewing every instance the cutoff keeps and
+taking out the wrong ones, which also leaves them out of the run's output. Build it with
+`analysis query` and set cutoffs with `analysis query-calibrate`.
 
 ### Behavior clustering
 
@@ -532,7 +516,7 @@ An export carries the data behind an artifact as well as the artifact: a `clips.
 bout each clip file holds, a `params.csv` of the run's settings, your notes on the run, and PNG
 plus SVG for anything with a picture. A run exports what it made: masks, tracks, embeddings,
 keypoints and analysis results. A recording exports its streams, its frame timestamps, its
-scene geometry, a clip of a frame range, and the video parts DETAIL holds a copy of; a video
+scene geometry, a clip of a frame range, and the video parts Detail holds a copy of; a video
 referenced in place is already yours, under its own folder, and is not copied back out.
 
 The experiment **bundle** is a separate format, and the only export that imports back. See
@@ -608,7 +592,7 @@ Built today, reachable from the API, GUI and CLI:
 | Processing | Detection (SAM 3, trained and imported YOLO), tracking (`anchor_tracker`, `iou_single_tracker`), keypoint detect (`dinov3_match`, a distilled or imported YOLO-pose model) and keypoint track, embedding (DINOv3) |
 | Scene geometry | Field of view, ROIs and POIs, distance calibration |
 | Streams | MED-PC operant events, CSV sensor traces and events, behavior labels |
-| Analysis | Location export, behavior scan (query), behavior-query evaluation, behavior clustering, measures, comparisons |
+| Analysis | Location export, behavior scan (query), behavior clustering, measures, comparisons |
 | Detection and keypoint models | Processing runs, datasets, trained models, the unified **distill** run (a detector, or a keypoint student), promotion to the machine-global catalog |
 | Getting data out | The `export` backbone and an **Export** button on every result screen; experiment bundles that import back |
 | Tools | One-off, experiment-free runs, starting with **Quick segment**. Runs live in a machine-global `tools/` folder (see the [Tools guide](tools.md)) |
@@ -618,5 +602,5 @@ classifier** over embeddings. Behavior clustering is built; a supervised classif
 
 ## Next
 
-- Driving DETAIL from the terminal or a script: [CLI guide](cli.md)
+- Driving Detail from the terminal or a script: [CLI guide](cli.md)
 - Driving it from the desktop app: [GUI guide](gui.md)

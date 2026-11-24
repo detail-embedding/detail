@@ -667,8 +667,7 @@ def test_a_locations_comparison_runs_and_says_how_it_is_judged(tmp_path):
     assert result.exit_code == 0, result.output
     assert "design: paired" in result.output
     assert (
-        "locations of an_01 (thin parts removed): each measure tested on its own over "
-        "10000 shuffles"
+        "locations of an_01: each measure tested on its own over " "10000 shuffles"
     ) in result.output
     assert "ordered by each measure's own test" in result.output
     record = exp.comparisons[-1].record()

@@ -1836,7 +1836,7 @@ def _render_location_export(demo_dir: Path) -> None:
     shot = window.grab()
     _number_screen(shot, window, page, f"{out}/location-export-run.png")
 
-    page._show_view("Results")
+    page._show_view("Files")
     _settle()
     page = _page(window)
     shot = window.grab()

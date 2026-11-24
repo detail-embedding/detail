@@ -605,54 +605,6 @@ def clip_csv_rows() -> list[dict]:
     ]
 
 
-def a_query_eval_record() -> dict:
-    """A scored eval run's record, as the explore dialog reads it."""
-    return {
-        "id": "qe_01",
-        "embed_run_id": "emb_01",
-        "track_id": 0,
-        "module_id": "query_eval",
-        "status": "complete",
-    }
-
-
-def a_query_eval_metrics() -> dict:
-    """behavior -> the eval's own `MetricRow`, not a dict shaped like one.
-
-    A plain dict passed here builds the dialog and then raises the moment it selects a behavior,
-    because the widget reads `.n_folds` off the value. The real dataclass costs one import and
-    makes the fixture wrong in the ways the code actually checks.
-    """
-    from detail.storage.query_eval_csv import MetricRow
-
-    return {
-        "rearing": MetricRow(
-            embed_run_id="emb_01",
-            behavior="rearing",
-            behavior_type="state",
-            n_recordings=1,
-            fusion="min",
-            band_s=0.0,
-            iou_threshold=0.5,
-            point_window_s=0.0,
-            n_exemplars=1,
-            seed=0,
-            trajectory_split_gap_s=None,
-            max_results=None,
-            n_gt=1,
-            n_pred=1,
-            tp=1,
-            fp=0,
-            fn=0,
-            ap=1.0,
-            precision=1.0,
-            recall=1.0,
-            best_f1=1.0,
-            best_f1_threshold=0.5,
-        )
-    }
-
-
 def _a_clip(recording):
     """One short clip of ``recording``'s first track, in the shape the players take.
 
@@ -740,7 +692,7 @@ def _providers(experiment, recording) -> dict:
         "model_id": lambda: next(iter(MODELS)),
         "prompt_text": lambda: "mouse",
         "compute": lambda: ComputeTarget("cpu", None, None, None),
-        # The last seven. Every name below is unique to one dialog — checked, because this table
+        # The rest. Every name below is unique to one dialog — checked, because this table
         # is keyed globally and a name two dialogs share would hand one of them the other's
         # object. That is the failure `ComparisonExportDialog` sat in for months.
         "comparison": lambda: a_saved_comparison(experiment),
@@ -749,9 +701,6 @@ def _providers(experiment, recording) -> dict:
         "results": clip_csv_rows,
         "query": lambda: {"name": "rearing", "fusion": "min", "band_ns": 0},
         "queries": lambda: [{"name": "rearing", "examples": [], "matches": []}],
-        "record": a_query_eval_record,
-        "by_behavior": a_query_eval_metrics,
-        "behavior": lambda: "rearing",
         # The keypoint labeling screen (§26) opens on an example set; one is made in the
         # fixture experiment the first time a dialog asks.
         "set_id": lambda: an_example_set(experiment),
@@ -1090,14 +1039,24 @@ def an_experiment_with_completed_runs(tmp_path):
     # the not-found path. Which state a page is walked in matters: the empty and populated
     # screens are different screens, and the rules about how a table cues a clickable row have
     # nothing to run over when the table has no rows.
+    # Its tables are real, so its Plots view draws a plot rather than an error.
+    from tests.location_fixtures import track, write_run
+
+    run_dir = analysis_runs_store.analysis_dir(proj.dir, "an_01")
+    write_run(
+        run_dir,
+        {"recording_001": {0: track(10.0 + np.arange(50) * 4.0, np.full(50, 60.0))}},
+    )
     analysis_runs_store.write_analysis_yaml(
-        analysis_runs_store.analysis_dir(proj.dir, "an_01"),
+        run_dir,
         {
             "id": "an_01",
             "module_id": "location_export",
             "recording_ids": ["recording_001"],
             "tracking_run_id": "track_01",
             "status": "complete",
+            "per_recording": {"recording_001": {"status": "complete"}},
+            "params": {"source_recording_ids": ["recording_001"]},
             "artifacts": [
                 {"path": "recording_001/tracks.csv", "kind": "tracks", "label": "x"}
             ],

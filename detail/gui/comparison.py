@@ -124,9 +124,10 @@ def _stages() -> tuple[str, ...]:
 #: vs last third" the same operation as "drug A vs B" rather than a separate feature (§24).
 #:
 #: `subject` is deliberately **not** offered as an aggregation path. It is a per-recording *track
-#: index* (`core/utils.check_track_is_unambiguous`), `0` in every experiment that exists, so
-#: "average within subject" reads as "average within animal" and means "average within track
-#: slot". It stays available to compare across, where `describe_columns` shows it is constant.
+#: index* (assigned in order of first appearance within one tracking run, §13), `0` in every
+#: experiment that exists, so "average within subject" reads as "average within animal" and
+#: means "average within track slot". It stays available to compare across, where
+#: `describe_columns` shows it is constant.
 _ROW_KEYS = compare.ROW_KEYS
 
 #: What each row key is, since `metadata.csv` cannot say — they are produced by the measure pass.
@@ -1940,10 +1941,11 @@ class ComparisonDetailPage(QWidget):
             )
         if record.get("source") == "locations":
             exported = record.get("location_export") or {}
-            thin = "removed" if exported.get("remove_thin_parts") else "kept"
+            # Only a comparison made before thin-part removal was taken out says "removed".
+            thin = " (thin parts removed)" if exported.get("remove_thin_parts") else ""
             lines.append(
                 f"movement and body shape from location export "
-                f"{record.get('source_run_id', '')} (thin parts {thin}); each measure "
+                f"{record.get('source_run_id', '')}{thin}; each measure "
                 "tested on its own"
             )
         # A label this comparison scores that a screen over the same column chose (§24): the

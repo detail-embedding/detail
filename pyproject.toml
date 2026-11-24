@@ -1,11 +1,13 @@
 [build-system]
-requires = ["setuptools>=61", "wheel"]
+requires = ["setuptools>=77", "wheel"]  # 77: `license` as an SPDX expression (PEP 639)
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "detail"
 version = "0.1.0"
 description = "Segmentation, tracking, and embedding pipeline for behavioral video."
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"  # zarr>=3.2 requires 3.12; uv resolves the full range
 dependencies = [
     "numpy>=2",      # vlen-str columns use numpy StringDType (numpy 2.0+)
@@ -19,6 +21,8 @@ dependencies = [
     "click",         # CLI + confirm_fn default (DESIGN_PLAN §15)
     "pydantic>=2",   # typed config models — single source for param metadata + validation
     "matplotlib",    # publication figures for the report/ + comparison export capability (§18)
+    "plotly>=5.24",  # interactive HTML of a report/plot_spec.PlotSpec (§16 location plots);
+                     # pure Python, imported lazily inside the HTML renderer
     "pillow",        # GIF export (§22 enlarged panes, api/animation.py); matplotlib needs it too
     "scipy",         # keypoint track's pose-to-subject match (linear_sum_assignment, §26);
                       # imported lazily inside the functions that use it
@@ -109,7 +113,6 @@ docs = [
     "mkdocstrings[python]",
     "mkdocs-click",
     "mkdocs-gen-files",
-    "matplotlib",  # scripts/gen_docs_querying_methods.py renders the figure at build time
     "mike",
 ]
 

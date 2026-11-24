@@ -36,6 +36,7 @@ from detail.core.dataclasses import (
     DetectionJob,
     DetectionProgressEvent,
 )
+from detail.core.errors import UserInputError
 from detail.core.progress import PROGRESS_INTERVAL_S, remaining_seconds
 from detail.core.protocols import ModelNotReadyError
 from detail.core.utils import check_cuda_indices, resolve_device, utc_timestamp
@@ -153,6 +154,7 @@ def run(job: DetectionJob, run_dir, progress_cb, stop_event) -> None:
     mask_resolution = _first_mask_resolution(parts_status)
     rundir.update_payload(run_dir, mask_resolution=mask_resolution, parts=parts_status)
     _raise_if_any_failed(parts_status)
+    _raise_if_parts_differ_in_size(parts_status, Path(recording_dir).name)
 
 
 # --------------------------------------------------------------------------- #
@@ -481,6 +483,34 @@ def _first_mask_resolution(parts_status: list[dict]) -> list[int] | None:
         if mr is not None:
             return list(mr)
     return None
+
+
+def _raise_if_parts_differ_in_size(parts_status: list[dict], recording: str) -> None:
+    """Fail the run of a recording whose parts were read at more than one size.
+
+    A recording's parts share one size (§3), and every door a part comes in by refuses one
+    that does not (adding a part, an import, a bundle, relinking). One made before those
+    checks would otherwise reach every stage that reads masks, which decodes and places them
+    at the run's one size: the odd part's masks as stripes, and its positions in other pixels
+    than the arena and the calibration. A failed run is read by nothing downstream.
+
+    Raises:
+        UserInputError: Two parts' frames decoded at different sizes.
+    """
+    sizes = {
+        r["id"]: tuple(r["mask_resolution"])
+        for r in parts_status
+        if r.get("mask_resolution")
+    }
+    if len(set(sizes.values())) < 2:
+        return
+    (first_id, (fh, fw)), *rest = sizes.items()
+    odd_id, (oh, ow) = next((pid, hw) for pid, hw in rest if hw != (fh, fw))
+    raise UserInputError(
+        f"recording {recording!r} has video parts of more than one size: {first_id} is "
+        f"{fw}×{fh} and {odd_id} is {ow}×{oh}. Every part of a recording shares one "
+        f"picture size; remove {odd_id} and add it as a recording of its own."
+    )
 
 
 def _raise_if_any_failed(parts_status: list[dict]) -> None:

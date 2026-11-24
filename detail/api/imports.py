@@ -25,11 +25,13 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from detail.api import recording as recording_api
+from detail.core.errors import UserInputError
 from detail.core.progress import ThrottledProgress, remaining_seconds
 from detail.core.utils import transcode_parallelism
 from detail.storage import manifest as manifest_store
 from detail.storage import recording as recording_store
 from detail.storage import video as video_store
+from detail.storage import video_integrity
 
 #: The share of a *copied* part's import spent reading its timestamps; the copy is the rest.
 #: Measured on a local disk over parts of different sizes. The low end, because a bar that
@@ -221,6 +223,7 @@ def import_data(
     report = _RecordingProgress(progress_cb)
     recording_store.set_import_status(recording.dir, "importing")
     try:
+        _require_one_shape(spec.video_parts)
         for i, video in enumerate(spec.video_parts):
             part_start, part_end = part_spans[i]
             where = f" (part {i + 1} of {n})" if n > 1 else ""
@@ -272,6 +275,34 @@ def import_data(
     # `recording.yaml` is precisely the contended file, the one the GUI thread reads while the
     # import worker rewrites it.
     recording_store.set_import_status(recording.dir, "ready")
+
+
+def _require_one_shape(video_parts) -> None:
+    """Refuse a recording's parts that cannot share one recording, before any is copied.
+
+    ``add_video_part`` checks each part as it comes, which is after the parts before it were
+    copied: a two-part import whose second part was another size failed gigabytes in, left
+    ``failed`` with one part. A bundle import checks in ``validate_manifest``; this is the
+    same rule (``video_integrity.another_parts_shape``) for every other import.
+
+    Raises:
+        UserInputError: A part's size, or its frame rate beyond the tolerance, differs from
+            the first part's.
+    """
+    if len(video_parts) < 2:
+        return
+    paths = [Path(p) for p in video_parts]
+    first = video_store.probe_video(paths[0])
+    for number, path in enumerate(paths[1:], start=2):
+        differs = video_integrity.another_parts_shape(
+            first, video_store.probe_video(path)
+        )
+        if differs is not None:
+            raise UserInputError(
+                f"{path.name} cannot be part {number} of a recording that starts with "
+                f"{paths[0].name}: {differs}. Every part of a recording has one picture "
+                "size and one frame rate; import it as a recording of its own."
+            )
 
 
 def _import_one(

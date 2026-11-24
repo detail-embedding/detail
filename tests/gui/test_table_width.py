@@ -12,8 +12,8 @@ tables — and its only guard was hard-coded to those two, so the twenty-four ra
 `QTableWidget` constructions that bypass the helpers were never looked at.
 
 Every table therefore does one of three things, and this scan makes a new one say which:
-stretch its last column (`tables.fill_width`, or `list_table(stretch=True)`), hand one column
-the slack (`tables.give_slack_to`), cap itself to its content (`fit_table_height` / `fit_table_width`),
+stretch its last column (`tables.fill_width`), hand one column the slack
+(`tables.give_slack_to`), cap itself to its content (`fit_table_height` / `fit_table_width`),
 or come from `pages._table`, which already stretches.
 """
 
@@ -28,7 +28,6 @@ _GUI = pathlib.Path(__file__).resolve().parents[2] / "detail" / "gui"
 #: column has no leftover to spread, and one whose columns the user drags is theirs to size.
 EXEMPT = {
     "gui/pages.py:_table": "the helper itself — it stretches its last data column",
-    "gui/tables.py:list_table": "the helper itself — `stretch=` is its caller's choice",
     # `requirements.py`'s counterexamples are widgets built to be *wrong* — each one is the
     # proof that a structural requirement can fail. A scan for non-conforming tables finding
     # them is the scan working; they are never shown to anyone.

@@ -204,9 +204,8 @@ not exactly these, so a new or renamed section is defined here before it ships.
 | Getting started | the shortest install and first launch, for someone at ease in a terminal | could a developer be running from this page alone, in minutes? | an explanation of every step (that is the install user guide) |
 | User guides | every task a user does in the app, as a titled step in a chapter; the chapters run in order from install to results | is it something a user *does*? then it is a step here, and only here | CLI commands; standalone task pages; the deep *why* |
 | Manual | what each screen and each command group is and does, laid out the way the tool is; all CLI usage | is it organised by screen or by command, not by goal? would a reader search it rather than read it through? | a step-by-step path to a goal |
-| Concepts | why it works this way: the pipeline, the vocabulary, the methods; with the generated catalogs (Input images, Embedding models, Querying methods, Measures) and the Glossary | is it readable away from the tool, with no steps? | steps and button names |
+| Concepts | why it works this way: the pipeline, the vocabulary, the methods; with the generated catalogs (Input images, Embedding models, Measures) and the Glossary | is it readable away from the tool, with no steps? | steps and button names |
 | Modules | one generated page per module: its settings | is it generated from a config model? | hand-written prose beyond the intro file |
-| Evaluation | one generated page per eval module: how a result is scored | is it generated from the module's metrics? | another module's metrics |
 | Reference | the Python API, the CLI commands, the parameters, the manifest, the GUI requirements: generated and complete | is it generated, austere and complete? | narrative |
 | Known issues | current limitations, each with its workaround | is it a limitation a user can hit today? | a fixed issue |
 
@@ -241,7 +240,7 @@ Contributing already exists, as `CONTRIBUTING.md` at the repo root; it is not in
 A planned destination is added the moment its trigger fires — never as an empty placeholder.
 
 **Diátaxis mapping.** User guides = tutorial; Manual = reference a person wrote, organised by
-surface; Concepts = explanation; Modules, Evaluation and Reference = generated reference.
+surface; Concepts = explanation; Modules and Reference = generated reference.
 Getting started is a short tutorial for one reader. A section holds one kind of page: the
 earlier "Guides" section blended a walkthrough with task lookup, and that blend is what let the
 same task be written in three places. The **Glossary** is reference-type but sits under
@@ -261,14 +260,6 @@ definition), distinct from the internal writer word-list (§5).
   `storage/manifest.py` and the `STREAM_IMPORTERS` registry (`scripts/gen_docs_manifest.py`).
 - **GUI requirements** — `reference/gui-requirements.md`, generated from the predicates in
   `detail/gui/requirements.py` (`scripts/gen_docs_requirements.py`).
-
-**Evaluation structure.** One **Evaluation** section, **one page per eval module** (the
-behavior-query eval today). Each page is generated from that module's metrics single-source (§7):
-its `EvalMetrics`-style dataclass and a `describe_*()` feed the metric table, the config defaults
-feed the matching rule, and the figure renders from a committed fixture through the real matcher and
-scoring. A new eval module adds a sibling page here, generated the same way — never a rewrite of an
-existing one. Keep each page scoped to its module (name it for the module, e.g. "Behavior query"),
-so the section grows by addition.
 
 **Per-type page templates ("anatomy of a page").** Every page declares its type and follows that
 type's skeleton:
@@ -351,6 +342,7 @@ and why.
 | video part | (calling it a recording) | a recording has many parts |
 | recording · run · job | (used interchangeably) | distinct concepts — keep separate |
 | product name via `site_name` (§8) | scattering the literal name in prose | provisional placeholder — a rename must be one change |
+| Detail | DETAIL (all caps) | it is a name, not an acronym; checked case-sensitively by `tests/test_product_name.py` |
 | substantial / detailed / significant | meaty | plain, precise wording |
 | built-in / native / fully supported | first-class | jargon |
 | comma, colon, parentheses, or two sentences | `—` (em dash) | reads as agent-written; restructure the sentence |
@@ -490,7 +482,7 @@ read it, or the field metadata it reads:
 
 **Registered catalogs generate their own page.** The same single-source discipline applies to any
 registry of options a user picks from, not only per-parameter docs. When a page lists registered
-things (input-image constructors, embedding models, querying methods, transforms, eval metrics),
+things (input-image constructors, embedding models, transforms, measures),
 generate it from the code: a `describe_*()` in the package returns each entry's metadata, and a
 `mkdocs-gen-files` script renders the page. What keeps it from drifting:
 
@@ -501,18 +493,14 @@ generate it from the code: a `describe_*()` in the package returns each entry's 
   shown next to an option is read from the field metadata (above), so changing the config changes
   the page.
 - **Example images and figures render at build from a committed fixture through the real code
-  path** (the real renderer, the real matcher), so they move with the code. A few honest
+  path** (the real renderer), so they move with the code. A few honest
   imperfections in real output are fine, and preferred over a hand-idealized picture.
 - **A drift test pins the page's entry set to the implementation** (e.g. the config `Literal` == the
   implemented registry == the described set), and `describe_*()` raises on an entry it cannot
   describe, so a new option cannot ship undocumented.
 
 Live templates: `detail/transforms/constructor_docs.py` + `scripts/gen_docs_input_images.py`
-(Input images), `detail/analysis/query_methods_docs.py` + `scripts/gen_docs_querying_methods.py`
-(Querying methods, including a build-time figure and config-sourced defaults),
-`detail/analysis/metrics_docs.py` + `scripts/gen_docs_behavior_query_eval.py` (the Behavior-query
-evaluation page: metrics, matching defaults and a figure from the real matcher),
-`scripts/gen_docs_embedding_models.py` (Embedding models, from `api.models`),
+(Input images), `scripts/gen_docs_embedding_models.py` (Embedding models, from `api.models`),
 `scripts/gen_docs_measures.py` (Measures, from `MeasureSpec`), and `scripts/gen_docs_modules.py`
 (one page per module). `tests/test_docs_generated_pages.py` fails a `*_docs.py` module that no
 generator renders.
@@ -631,8 +619,9 @@ or planned:
 - **Voice check** *(live)* — `tests/test_docs_voice.py`. The §5 word-list's banned column is
   parsed out of the table itself and grepped in the user-facing docs (the nav, plus the
   `*-intro.md` files whose prose is inlined into generated pages); a banned term fails. Five
-  rows are not enforced and say why in `_NOT_ENFORCED`: `eval`, which is the module's own
-  name on every surface; the literal product name, which waits on the rename the row asks for;
+  rows are not enforced and say why in `_NOT_ENFORCED`: `eval`, which as a bare scan also
+  matches "evaluate", "evaluation" and "retrieval"; the literal product name, which waits on
+  the rename the row asks for;
   the two parenthetical glosses ("calling it a recording", "used interchangeably"), which no scan
   can match; and the em dash, which has a ratchet instead. **Em dashes only decrease**: `_EM_DASH_CEILING`
   is the whole inventory, a page absent from it is checked at zero, and an entry left above the

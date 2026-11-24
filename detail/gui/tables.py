@@ -267,7 +267,7 @@ def refill_table_widget(table, fill) -> None:
     writing it. With live sorting, the first ``setItem`` in a row can trigger a resort
     that moves row ``r`` elsewhere before the rest of that row's cells are written,
     scrambling which cells land in which row. Not needed for a ``QTableView`` over a
-    ``QStandardItemModel`` (``pages._table`` / ``tables.list_table``): that model only
+    ``QStandardItemModel`` (``pages._table``): that model only
     resorts on an explicit ``sort()`` call (wired to the header by
     :func:`enable_sorting`), never as a side effect of ``setItem``.
     """
@@ -465,40 +465,6 @@ def nav_cell() -> QStandardItem:
     cell = QStandardItem(NAV_GLYPH)
     cell.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
     return cell
-
-
-def list_table(*, stretch: bool = False, sortable: bool = True) -> QTableView:
-    """A read-only list table: row selection, no editing, no row numbers, columns to content.
-
-    The shape every list in this package uses. Call :func:`fit_table_height` after filling it
-    unless it is a page's primary content.
-
-    ``stretch=True`` widens the last data column to fill the view instead of leaving dead
-    grid to its right — right for a list that *is* its pane's content. Its opposite is
-    :func:`fit_table_width`, for a summary that should hug what it holds.
-
-    ``sortable=False`` opts *only* out of :func:`enable_sorting` — a bounded top-N panel
-    where reordering would defeat the point, or a table whose row order is a registry's
-    declared position. It never opts a table out of :func:`make_columns_resizable`, which
-    every table gets unconditionally: `docs/gui_design.md` says "never opt out of
-    resizing", and there is no reason column-dragging should depend on whether the rows
-    happen to be sortable. A row-position-dependent click handler must read identity via
-    :func:`row_id`, never ``index.row()``, once sorting is on.
-    """
-    view = QTableView()
-    view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-    view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-    view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-    view.verticalHeader().setVisible(False)
-    # Off, like `pages._table`: Qt defaults it on, no caller in this package has ever wanted it,
-    # and a wrapped cell makes `fit_table_height` short by the rows it grew.
-    view.setWordWrap(False)
-    make_columns_resizable(view)
-    if sortable:
-        enable_sorting(view)
-    if stretch:
-        view.horizontalHeader().setStretchLastSection(True)
-    return view
 
 
 def fill_width(table) -> None:

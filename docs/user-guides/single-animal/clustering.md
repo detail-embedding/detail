@@ -1,19 +1,19 @@
 # 8. Clustering
 
 A **behavior scan** (chapter 7) finds behaviors you can already name. **Clustering** finds the
-ones you have not named yet. DETAIL cuts every recording into short **bouts**, stretches where
+ones you have not named yet. Detail cuts every recording into short **bouts**, stretches where
 the animal's posture changes in one way, and groups bouts that look alike, from the embedding
 (chapter 5). It builds the groups into a **tree**: the whole run at the top, splitting into
 smaller and smaller groups, each a candidate behavior.
 
 You then look through the tree, watch each group's clips, and **label** the groups that are a
-behavior you recognise. The labels are what the rest of DETAIL counts: how often, for how
+behavior you recognise. The labels are what the rest of Detail counts: how often, for how
 long, in which recordings.
 
 ## The steps at a glance
 
 Each box is one step on this page. Click a box to go to that step. The first tag says where
-the step is in DETAIL.
+the step is in Detail.
 
 <div class="guide-flow" markdown>
 
@@ -149,7 +149,8 @@ first. Hover over a clip to pause the others; double-click it to open it at full
         ++ctrl+z++.
     14. **Open in window**: opens the chosen cluster in a window of its own (step 4).
     15. **Scrollbar**: scrolls the clips.
-    16. **Finish**: says you are done labelling. It can be reopened.
+    16. **Finish**: says you are done labelling. Greyed out, with the reason beside it,
+        until a behavior is labelled. It can be reopened.
     17. **Reopen**: opens a finished run again, to change its labels. Greyed out while the
         run is open.
 
@@ -316,7 +317,8 @@ tab.
        has, and whether it has been reviewed and how many clips were taken out. Click a
        cluster to review it. Right-click one to open it on the Interpret view.
     2. **✓ Finish review**: says you have looked at every clip of the cluster. Greyed out
-       until the last clip has been on screen.
+       until the last clip has been on screen, and while any clip shows *no preview*: a clip
+       you could not see cannot be counted, so build the previews first.
     3. **Undo (⌘Z)**: puts back the last clip you took out (++ctrl+z++).
     4. **Show ▾**: what the clips show.
     5. **Export ▾**: saves the clips.
@@ -352,12 +354,12 @@ or look at the cluster's two halves, when the review found the cluster is two be
 **Browse** lists every labelled bout, by recording and time, with an ethogram of each
 recording: where in the video each label falls.
 
-![The Browse view: 47 labelled bouts; on the left the labels with their bouts and time, the recordings and a metadata filter; on the right the ethogram of box1, box2 and box3 in the labels' colours, the list of bouts with behavior, recording, start, duration and audit, and the player playing the first one. Numbered markers sit on every control.](../../assets/user-guides/single-animal/clustering/browse.png)
+![The Browse view: 47 labelled bouts; on the left the labels with their bouts and time, the recordings and a metadata filter; on the right the ethogram of box1, box2 and box3 in the labels' colours and patterns, the list of bouts with behavior, recording, start, duration and audit, and the player playing the first one. Numbered markers sit on every control.](../../assets/user-guides/single-animal/clustering/browse.png)
 
 ??? info "What everything on this screen does"
     1. **Clear filters**: ticks every label and recording again.
     2. **Ethogram**: folds the ethogram away or opens it. Each row is a recording, coloured
-       by label along the video. Click a bout to play it. Scroll over it to zoom.
+       and patterned by label along the video; the swatch beside each label is the key. Click a bout to play it. Scroll over it to zoom.
     3. **Labels**: each label with its bouts and time. Untick a label to leave it out.
     4. **Search recordings**: shows only recordings whose name contains what you type.
     5. **Recordings**: untick a recording to leave it out.
@@ -405,7 +407,7 @@ When every behavior you want is labelled and audited, go back to **Interpret** a
 
 ## What next
 
-You have been through the whole of DETAIL on one experiment. From here:
+You have been through the whole of Detail on one experiment. From here:
 
 - **Compare groups**: the **Comparisons** section of an experiment compares the measures of
   a scan or a clustering between groups of recordings, such as drug on against drug off.

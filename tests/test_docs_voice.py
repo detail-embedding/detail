@@ -54,13 +54,18 @@ _EM_DASH_CEILING: dict[str, int] = {}
 #: before a sweep, which is exactly what an unexplained skip would hide.
 _NOT_ENFORCED = {
     "eval": (
-        "the module is *named* 'Behavior-query eval' on every surface, so the 12 hits are "
-        "mostly a UI string rather than prose. Enforcing the row means renaming the module "
-        "or exempting its name, which is a decision, not a sweep."
+        "the module that was *named* 'Behavior-query eval' on every surface is removed, so "
+        "its UI string no longer accounts for the hits. What is left is that a scan for the "
+        "bare term also matches 'evaluate', 'evaluation' and 'retrieval', which the user pages "
+        "still use. Enforcing the row needs a rule for those, which is a decision, not a sweep."
     ),
     "scattering the literal name in prose": (
         "23 literals. The row calls the product name provisional and asks that a rename be "
         "one change; doing that needs the rename to be real first."
+    ),
+    "DETAIL (all caps)": (
+        "only the capitals are wrong, and this scan ignores case, so it would match every "
+        "'detail'. tests/test_product_name.py checks it case-sensitively instead."
     ),
     "(calling it a recording)": "a parenthetical gloss, not a term a scan can match.",
     "(used interchangeably)": "a parenthetical gloss, not a term a scan can match.",

@@ -34,6 +34,8 @@ from detail.storage import behavior_audit
 from detail.storage import clip_review as review_store
 from detail.storage import temporal_runs
 
+from tests.audit_seed import draw, judge
+
 
 def _labelled(experiment, run_id):
     run = experiment.temporal_clustering_run(run_id)
@@ -301,8 +303,8 @@ def test_a_finalized_run_refuses_to_finish(fitted_codebook):
 def test_the_old_audit_is_left_alone_and_still_read(fitted_codebook):
     experiment, run_id = fitted_codebook
     run, climb, _rear = _labelled(experiment, run_id)
-    for row in run.audit_sample(path="climb", budget=3):
-        run.label_audit(row.instance_id, True)
+    for row in draw(run, path="climb", budget=3):
+        judge(run, row.instance_id, True)
     audit_bytes = (run._run_dir() / "audit.csv").read_bytes()
     run.finish_review(climb)
     assert (run._run_dir() / "audit.csv").read_bytes() == audit_bytes
@@ -313,8 +315,8 @@ def test_the_old_audit_is_left_alone_and_still_read(fitted_codebook):
 def test_the_cli_prints_each_cluster_then_the_earlier_audit(fitted_codebook):
     experiment, run_id = fitted_codebook
     run, climb, rear = _labelled(experiment, run_id)
-    for row in run.audit_sample(path="climb", budget=3):
-        run.label_audit(row.instance_id, True)
+    for row in draw(run, path="climb", budget=3):
+        judge(run, row.instance_id, True)
     clips = run.node_view().clips(climb).rows()
     run.finish_review(climb)
 

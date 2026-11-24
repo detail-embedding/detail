@@ -1506,6 +1506,124 @@ def the_package_uses_no_icon_sets(package) -> None:
     )
 
 
+#: The one module that draws an identity's swatch: its colour and its pattern together.
+_SWATCH_MODULE = "plot_theme.py"
+#: The call that draws one (`plot_theme.label_swatch`).
+_SWATCH_CALL = "label_swatch"
+
+#: Item decorations that are still a colour and nothing else, keyed ``file:Class.method`` like
+#: :data:`_TEXT_CELLS_FROM_STR`, with why each is not patterned yet. A key that matches no site
+#: fails (``tests/gui/test_requirements.py``), so an entry leaves with the site it excuses — and
+#: an entry is a reader who cannot tell two of these apart, not a style preference.
+_COLOUR_ONLY_SWATCHES: dict[str, str] = {
+    "__main__.py:configure_application": (
+        "the application's Dock/taskbar icon — a picture of the app, not an identity's swatch"
+    ),
+    "arena.py:SceneGeometryDialog._swatch": (
+        "not yet: an arena region's colour in the region list, keying the scene it is drawn "
+        "on. The scene's regions would need the same pattern, so the two move together"
+    ),
+    "arena.py:SceneGeometryDialog._rebuild_list": (
+        "not yet: places the region swatch `SceneGeometryDialog._swatch` draws (same reason)"
+    ),
+    "label_panel.py:_swatch": (
+        "not yet: INTERPRET's Labels menu, keying the cluster tree's label fills, which "
+        "`node_workspace.py` draws in colour alone — the key and the tree move together"
+    ),
+    "label_panel.py:QuickLabels._rebuild": (
+        "not yet: INTERPRET's quick-label menu, the same key as `_swatch` (same reason)"
+    ),
+    "behavior_query.py:ClipExampleDialog._refresh_behaviors": (
+        "not yet: the example dialog's behavior list, coloured by `_behavior_color` (the "
+        "categorical palette by position, not the label identities), keying the timeline's "
+        "example marks, which are colour alone too"
+    ),
+    "behavior_query.py:ClipExampleDialog._refresh_clips": (
+        "not yet: the same behavior colour beside each example clip (same reason)"
+    ),
+}
+
+
+def _decorations_without_a_pattern(package) -> tuple[list[str], set[str]]:
+    """Every item decoration placed by a function that never draws a patterned swatch, and the
+    exemptions that matched.
+
+    A **decoration** is ``setData(…, DecorationRole …)``, ``setIcon(…)`` or a ``QIcon(…)``: in a
+    package with no icon sets, each is a swatch. It passes when the function placing it calls
+    ``label_swatch`` — a proxy for "the value came from there", which a function placing a
+    patterned swatch beside a bare colour would slip past. Pure over a directory, so the rule's
+    tests can hand it a one-line package.
+    """
+    import ast
+
+    offenders: list[str] = []
+    excused: set[str] = set()
+    for source in sorted(package.rglob("*.py")):
+        if source.name in _SCAN_EXEMPT or source.name == _SWATCH_MODULE:
+            continue
+        rel = source.relative_to(package).as_posix()
+        tree = ast.parse(source.read_text(encoding="utf-8-sig"))
+        owner = _owners(tree)
+        patterned: set[str] = set()
+        sites: list[tuple[str, int]] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = (
+                func.attr
+                if isinstance(func, ast.Attribute)
+                else getattr(func, "id", "")
+            )
+            where = owner.get(node, "<module>")
+            if name == _SWATCH_CALL:
+                patterned.add(where)
+            decoration_role = name == "setData" and any(
+                isinstance(arg, ast.Attribute) and arg.attr == "DecorationRole"
+                for arg in node.args
+            )
+            if decoration_role or name in ("setIcon", "QIcon"):
+                sites.append((where, node.lineno))
+        for where, lineno in sites:
+            if where in patterned:
+                continue
+            key = f"{rel}:{where}"
+            if key in _COLOUR_ONLY_SWATCHES:
+                excused.add(key)
+            else:
+                offenders.append(f"{key} (line {lineno})")
+    return offenders, excused
+
+
+@requirement(
+    kinds=("package",),
+    counterexample=lambda: _a_package_that(
+        "item.setData(QColor(0, 158, 115), Qt.ItemDataRole.DecorationRole)"
+    ),
+)
+def an_identity_swatch_is_never_colour_alone(package) -> None:
+    """An identity's swatch carries its pattern as well as its colour (`plot_theme.label_swatch`).
+
+    A ``QColor`` in ``DecorationRole`` draws a square of hue and nothing else, and on BROWSE that
+    square was the only key to an ethogram whose bands differed by hue alone. To the user who
+    asked for this (colour-blind, 2026-11-23) "groom" and "hi" were two greys of one lightness.
+    Every label slot is now a colour **and** a pattern (``plot_theme.label_mark``), drawn the same
+    way in the band and in its key, so the key can be read without the hue.
+
+    The bands themselves are not a source pattern — a ``QPainter`` fill looks like any other —
+    so ``tests/gui/test_identity_marks.py`` renders them, takes the hue away and measures them in
+    greyscale. This rule holds the half a scan can: the swatch that keys them. What is still
+    colour alone is listed, with why, in :data:`_COLOUR_ONLY_SWATCHES`.
+    """
+    offenders, _excused = _decorations_without_a_pattern(package)
+    assert not offenders, (
+        "these place a swatch that is a colour and nothing else, so a colour-blind reader "
+        "cannot tell two of them apart — use `plot_theme.label_swatch(slot)`, which draws the "
+        "slot's pattern over its colour (or, if this is not an identity's swatch, declare it in "
+        "`_COLOUR_ONLY_SWATCHES` with the reason):\n  " + "\n  ".join(offenders)
+    )
+
+
 @requirement(
     kinds=("package",),
     counterexample=lambda: _a_package_that('QPropertyAnimation(widget, b"geometry")'),
@@ -1597,10 +1715,6 @@ _CONFIRMATIONS: dict[str, str] = {
 #: Dialogs deliberately opened non-modally, and why. A run config is modal so the window it
 #: launches from cannot be touched mid-launch; a *report* is not a launch.
 _NON_MODAL_DIALOGS: dict[str, str] = {
-    "modules/analysis_query_eval.py": (
-        "the clips explorer is a report, not a config — non-modal and resizable so it stays "
-        "reachable while the run page behind it is read"
-    ),
     "clip_pane_window.py": (
         "the enlarged Masks / Keypoints pane (`open_pane_window`) is a companion view of the "
         "clip window, not a config: it follows that window's ticks live, so the clip window has "
@@ -2290,10 +2404,11 @@ def _picture_drawn_bottom(picture, parent) -> int:
     from PyQt6.QtCore import QPoint
 
     pixmap = picture.pixmap()
+    # In the label's own pixels: the pixmap is scaled to the screen's (`ImageView._rescale`).
     local_y = (
         picture.height()
         if pixmap is None or pixmap.isNull()
-        else ((picture.height() + pixmap.height()) // 2)
+        else int((picture.height() + pixmap.deviceIndependentSize().height()) // 2)
     )
     return picture.mapTo(parent, QPoint(0, local_y)).y()
 
@@ -2493,10 +2608,6 @@ _TEXT_CELLS_FROM_STR: dict[str, str] = {
         "the non-number branch of the shared builder: a number goes to `SortCell` on the next "
         "line, so whatever reaches `str()` here is already text"
     ),
-    "audit_tab.py:AuditTab._fill": (
-        "AUDIT's summary tables do not sort (no `enable_sorting`), and their cells are "
-        "sentences such as `0.82  (0.71–0.90, n=40)` or `not audited`, not numbers"
-    ),
 }
 
 
@@ -2509,9 +2620,9 @@ def _numeric_text_cells(package) -> tuple[list[str], set[str]]:
     - an f-string with a numeric format spec (``f"{x:.3f}"``);
     - ``str()`` around a counting call (``str(len(rows))``);
     - ``str()`` around a bare name or attribute (``str(m.n_folds)``, and ``str(x)`` inside a
-      comprehension over numbers — the query-eval fold table);
+      comprehension over numbers — the fold table of query eval, a module since removed);
     - a conditional expression with ``str()`` in a branch (``"" if rank is None else
-      str(rank)``, the query-eval Rank column).
+      str(rank)``, that module's Rank column).
 
     The last two cannot tell a number from an id held in a variable, so a ``str(<name>)`` cell
     that really is text is declared in :data:`_TEXT_CELLS_FROM_STR` with its reason.
@@ -2605,9 +2716,10 @@ def a_numeric_cell_sorts_on_its_value(package) -> None:
 
     **And the scan had its own gap** (#35): it read only an f-string with a numeric spec and
     `str()` around a counting call, so `str(m.n_folds)`, `str(x)` in a comprehension and
-    `"" if rank is None else str(rank)` all passed it, and the query-eval Rank, Folds and
-    per-fold count columns sorted 1, 10, 11, 2. Those spellings are read now; a `str(<name>)`
-    cell that is really text is declared in :data:`_TEXT_CELLS_FROM_STR`.
+    `"" if rank is None else str(rank)` all passed it, and the Rank, Folds and per-fold count
+    columns of query eval (a module since removed) sorted 1, 10, 11, 2. Those spellings are
+    read now; a `str(<name>)` cell that is really text is declared in
+    :data:`_TEXT_CELLS_FROM_STR`.
     """
     offenders, _excused = _numeric_text_cells(package)
     assert not offenders, (
@@ -2905,8 +3017,9 @@ def a_split_puts_panes_side_by_side(splitter) -> None:
 
     The rule `tests/gui/test_workspace_parity.py` wrote down — "vertical sections are
     `CollapsibleBand` + drag handle; horizontal panes are `QSplitter`" — was swept over two
-    workspaces, and the query-eval explorer kept a vertical `QSplitter` (timeline over the panes)
-    that neither of them could see. Swept here over every page and dialog the corpus builds.
+    workspaces, and the explorer of query eval (a module since removed) kept a vertical
+    `QSplitter` (timeline over the panes) that neither of them could see. Swept here over every
+    page and dialog the corpus builds.
     """
     from PyQt6.QtCore import Qt
 

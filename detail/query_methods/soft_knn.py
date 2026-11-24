@@ -3,10 +3,11 @@
 It pools every exemplar frame into one labelled index, so five clips cost about what
 one does, where a per-exemplar matcher pays one pass per clip.
 
-**The scoring is a port; the segmentation is not.** `pipeline/query_eval.py` scores frames and
-folds them into a per-frame Average Precision, which needs no spans at all — its `_bool_runs`
-exists to make figures readable and says so. §20 needs instances, so how a per-frame score
-becomes one had to be decided, and it was decided by comparing the alternatives:
+**The scoring is a port; the segmentation is not.** Query eval (a module since removed), which
+the scoring came from, scored frames and folded them into a per-frame Average Precision, which
+needs no spans at all — its `_bool_runs` existed only to make figures readable. §20 needs
+instances, so how a per-frame score becomes one had to be decided, and it was decided by
+comparing the alternatives:
 
 - **The raw score flickers.** A run above any cutoff lasts a frame or two, so
   thresholding the raw score is not a viable way to form anything.

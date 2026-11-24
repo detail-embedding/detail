@@ -1,12 +1,12 @@
 """Ground-truth behavior labels as a per-frame integer sequence (shared primitive).
 
-This is the scoring-neutral half of what ``pipeline/query_eval.py`` does inline: read a recording's
-``behavior``-role stream and turn its labeled intervals into a per-frame label array. It is lifted
-here — rather than reused from query_eval — so the clustering eval and a future auto-namer share one
-interval→frame reader without importing query_eval's fold-splitting, IoU/point scoring, or
-``iou_threshold``/``point_window_s`` semantics, which are specific to per-clip retrieval AP.
+This is the scoring-neutral half of what query eval, a module since removed, did inline: read a
+recording's ``behavior``-role stream and turn its labeled intervals into a per-frame label array.
+It was lifted here — rather than reused from query eval — so the clustering eval and a future
+auto-namer share one interval→frame reader without query eval's fold-splitting, IoU/point scoring,
+or ``iou_threshold``/``point_window_s`` semantics, which were specific to per-clip retrieval AP.
 
-The one generalization over query_eval's ``_interval_mask``: that returns a boolean mask for *one*
+The one generalization over query eval's ``_interval_mask``: that returned a boolean mask for *one*
 behavior; ``frames_to_labels`` returns a *multi-class* integer label per frame (behavior id, or
 ``unlabeled`` for a frame in no interval), which is what a clustering metric scores against.
 
@@ -124,8 +124,8 @@ def recording_behavior_intervals(
     ``stream_name`` picks the ``behavior``-role stream (video-aligned ``t_ns``); omitted, it is
     resolved by ``resolve_behavior_stream``, which raises rather than guess when the recording
     carries more than one. ``behaviors`` optionally restricts to a subset. Empty if the
-    recording carries no such stream. Scoring-neutral — the generalization of query_eval's
-    per-behavior ``_behavior_intervals`` to all behaviors.
+    recording carries no such stream. Scoring-neutral — the generalization, to all behaviors,
+    of the per-behavior ``_behavior_intervals`` that query eval (since removed) read.
 
     Predicted streams are excluded unless ``allow_predicted`` (§19) — see
     ``resolve_behavior_stream``.
@@ -155,8 +155,8 @@ def frames_to_labels(
     """Per-frame integer behavior label for frame times ``t_ns`` (multi-class).
 
     A ``state`` behavior labels a frame whose time lies in ``[start, end]``; a ``point`` behavior
-    labels a frame within ``±point_window_ns`` of the interval start (mirroring query_eval's point
-    mode). Frames in no interval get ``unlabeled``. ``behavior_types`` maps a label to
+    labels a frame within ``±point_window_ns`` of the interval start (the point mode query eval,
+    since removed, used). Frames in no interval get ``unlabeled``. ``behavior_types`` maps a label to
     ``"state"``/``"point"`` (default: all ``state``). Pass ``label_to_id`` to fix the behavior→id
     map across recordings; otherwise ids are assigned to the sorted labels present.
 

@@ -10,8 +10,8 @@ sits *below* what a degenerate fit really scores, because
 its unassigned frames raise precision. A floor the degenerate answer beats certifies the thing
 it exists to catch. So the floor matches the real prediction's coverage.
 
-This is the cluster-eval counterpart of the nulls ``analysis/query_eval`` has shipped since it
-learned the same lesson.
+This is the cluster-eval counterpart of the nulls ``analysis/query_eval`` (a module since
+removed) shipped once it had learned the same lesson.
 """
 
 import numpy as np

@@ -18,7 +18,7 @@ Steps 2–4 are also a checklist in the app: install the `gui` extra, launch
 `detail-gui`, and work through **Configuration**, which reads the live state of
 this machine, writes the install commands with your own paths filled in, and
 re-checks without a restart ([GUI guide](gui.md#configuration)). Reinstalling
-PyTorch is the exception: restart DETAIL afterwards, because a running app keeps
+PyTorch is the exception: restart Detail afterwards, because a running app keeps
 the PyTorch it started with. `detail doctor` is the same checks headless.
 
 ## Install
@@ -122,7 +122,7 @@ with your tag:
 uv pip install --reinstall-package torch --reinstall-package torchvision torch torchvision --index-url https://download.pytorch.org/whl/cu126
 ```
 
-If DETAIL is open, restart it afterwards. A running app keeps the PyTorch it
+If Detail is open, restart it afterwards. A running app keeps the PyTorch it
 started with.
 
 ## SAM3 backend
@@ -243,7 +243,7 @@ checks are available from Python via `Experiment.check_model_access(<id>)`.
     is set, `set HF_HUB_DISABLE_SYMLINKS_WARNING=1`.
 
 !!! note "Disk space for video previews"
-    Each computer keeps small copies of your videos for clip montages to play from, in `~/.cache/detail/previews/`: tens of megabytes per hour of video, and roughly twice that on Windows and Linux, where the bundled video library cannot write H.264. They are built in the background after an import, are never part of an experiment, and can be cleared any time from Configuration or with `detail cache clear --previews`. Building them takes a while, once per computer, so clear them only when you need the space. Updating DETAIL keeps them; an update that needs to rebuild them says so first.
+    Each computer keeps small copies of your videos for clip montages to play from, in `~/.cache/detail/previews/`: tens of megabytes per hour of video, and roughly twice that on Windows and Linux, where the bundled video library cannot write H.264. They are built in the background after an import, are never part of an experiment, and can be cleared any time from Configuration or with `detail cache clear --previews`. Building them takes a while, once per computer, so clear them only when you need the space. Updating Detail keeps them; an update that needs to rebuild them says so first.
     To keep them elsewhere, set `DETAIL_PREVIEW_DIR` or add `preview_cache:` under
     `storage: default:` in `~/.config/detail/storage.yaml`.
 
@@ -310,7 +310,7 @@ python -c "import torch; print(torch.__version__, torch.version.cuda)"
 If torch's `+cuXXX` build is newer than the `CUDA Version` in `nvidia-smi`'s
 header, update the [NVIDIA driver](https://www.nvidia.com/download/index.aspx).
 If you can't, reinstall torch for your driver's CUDA as in
-[GPU and CUDA](#gpu-and-cuda), then restart DETAIL.
+[GPU and CUDA](#gpu-and-cuda), then restart Detail.
 
 ## Next
 

@@ -6,10 +6,11 @@ behind everything to their left — on a large behavior, seconds before the visi
 filled and more churn behind it, which also starves the player's own decode because they share
 the global pool.
 
-**Two strips, one rule.** `ConfidenceStrip` (query) grew this ordering while somebody was looking
-at that page; `ClusterClipStrip` (clustering) never got it and fires every clip at once. That is
-the recorded class *two surfaces answering the same question with two mechanisms* — so the
-ordering lives here, as a function of geometry, and both strips ask it.
+**One rule, written for two strips.** The query CALIBRATE's confidence strip grew this ordering
+while somebody was looking at that page, and `ClusterClipStrip` (clustering) never got it and fired
+every clip at once — the recorded class *two surfaces answering the same question with two
+mechanisms* — so the ordering moved here, as a function of geometry. The confidence strip is gone
+(CALIBRATE plays the shared montage, 2026-11); the cluster strip still asks.
 
 Kept Qt-light on purpose: it reads `x()` / `width()` off whatever it is handed, so it is testable
 against plain stand-ins and the strips stay responsible for their own layout and caching.

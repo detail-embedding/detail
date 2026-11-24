@@ -116,10 +116,6 @@ CSV_ALLOWED: dict[str, tuple[int, str]] = {
     "storage/append_log.py": (2, f"an append-only log, {_RECORD}"),
     "storage/behavior_output.py": (3, f"run tables, {_RECORD}"),
     "storage/location_export.py": (1, f"a location export, {_RECORD}"),
-    "storage/query_eval_csv.py": (
-        2,
-        f"query-eval tables, {_RECORD}; `query-eval --out` is checked up front in cli.py",
-    ),
     "storage/recording.py": (1, f"a timestamps CSV, {_RECORD}"),
     "storage/spatial.py": (1, f"keyframes.csv, {_RECORD}"),
     "storage/streams.py": (1, f"a canonical stream table, {_RECORD}"),

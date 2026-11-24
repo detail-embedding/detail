@@ -37,7 +37,6 @@ from detail.gui.modules import registry
 from detail.gui.start_from import (
     StartFromRow,
     analysis_runs_for,
-    behavior_names,
     processing_runs_for,
     unrestored_settings,
 )
@@ -295,13 +294,10 @@ def _eligible(recording, upstream: str) -> bool:
     """Whether a recording satisfies a module's ``requires`` entry.
 
     Most entries are **run kinds** (``detection`` / ``tracking`` / ``embedding``) —
-    satisfied by a complete ``{kind}_runs`` record. Two are not runs: ``video`` (has a
-    video part) and ``behavior`` (carries a behavior-role ground-truth stream, §3 — what
-    the query eval scores against), so they resolve against recording state directly."""
+    satisfied by a complete ``{kind}_runs`` record. One is not a run: ``video`` (has a
+    video part), so it resolves against recording state directly."""
     if upstream == "video":
         return bool(recording.video_parts)
-    if upstream == "behavior":
-        return recording.is_annotated
     runs = getattr(recording, f"{upstream}_runs", [])
     return any(r.get("status") == "complete" for r in runs)
 
@@ -447,12 +443,7 @@ def seed_config(seed: dict) -> dict:
     """
     params = seed.get("params") or {}
     promoted = {k: v for k, v in seed.items() if k not in _RECORD_KEYS}
-    flat = {**promoted, **params}
-    # A query-eval record lists what it scored as one dict per behavior; the form takes names.
-    names = behavior_names(flat.get("behaviors"))
-    if names is not None:
-        flat["behaviors"] = names
-    return flat
+    return {**promoted, **params}
 
 
 class LaunchRunDialog(Dialog):
