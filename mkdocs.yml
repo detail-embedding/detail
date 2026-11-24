@@ -1,4 +1,4 @@
-site_name: DETAIL
+site_name: Detail
 site_description: A species-agnostic tool for behavioral video analysis.
 # The published site (docs/docs_design.md §8). The local offline build still links
 # page-to-page relatively; this only fills the sitemap and each page's canonical link.
@@ -105,7 +105,7 @@ nav:
       - Overview: user-guides/index.md
       - Install on Windows: user-guides/install-windows.md
       - Install on Linux: user-guides/install-linux.md
-      - Configure DETAIL: user-guides/configure.md
+      - Configure Detail: user-guides/configure.md
       - 1. Create an experiment: user-guides/single-animal/create-an-experiment.md
       - 2. Set up each recording: user-guides/single-animal/set-up-recordings.md
       - 3. Detect and track: user-guides/single-animal/detect-and-track.md

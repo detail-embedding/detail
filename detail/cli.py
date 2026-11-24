@@ -34,6 +34,7 @@ from detail import docs_access
 from detail import surfaces
 from detail.api import clip_montage as _clip_montage
 from detail.api.experiment import Experiment
+from detail.api.location_plots import FORMATS as LOCATION_PLOT_FORMATS
 from detail.api import tools as api_tools
 from detail.cli_numbers import FINITE_FLOAT
 from detail.cli_numbers import finite_float_range
@@ -45,6 +46,7 @@ from detail.configs.display import ConfidenceView
 from detail.configs.embedding import EmbeddingConfig
 from detail.configs.labeling import LabelingConfig
 from detail.configs.location_export import LocationExportConfig
+from detail.configs.location_plots import LocationPlotView
 from detail.configs.temporal_clustering import TemporalClusteringConfig
 from detail.configs.temporal_codebook import TemporalCodebookConfig
 from detail.configs.query import QueryConfig
@@ -5123,12 +5125,17 @@ def _given_location_options(**values) -> dict:
         "tracks/roi_relations/point_relations CSVs + locations.yaml."
     ),
 )  # fmt: skip
+@click.option(
+    "--keypoints", "keypoint_run_id", default=None, type=str,
+    help=_LOC["keypoint_run_id"].description,
+)  # fmt: skip
 @_location_options
 def locations_export(
     experiment_dir: Path,
     recording_id: str,
     tracking_run_id: str,
     out_dir: str,
+    keypoint_run_id: str | None,
     sample_fps: float | None,
 ) -> None:
     """Write per-frame, per-track spatial features (position, body shape, and position
@@ -5136,11 +5143,146 @@ def locations_export(
     """
     sess = _recording(_open_experiment(experiment_dir), recording_id)
     options = _given_location_options(sample_fps=sample_fps)
+    bar = _StageProgress()
     try:
-        out = sess.export_locations(tracking_run_id, out_dir, **options)
+        out = sess.export_locations(
+            tracking_run_id,
+            out_dir,
+            keypoint_run_id=keypoint_run_id,
+            progress=bar,
+            **options,
+        )
     except ValueError as e:
         raise click.ClickException(str(e))
+    finally:
+        bar.close()
     click.echo(f"exported: {out}")
+
+
+def _view_option_type(doc: dict) -> click.ParamType | type:
+    """A view field's click type: its choices, or its bounds (an exclusive one open)."""
+    if doc["choices"]:
+        return click.Choice([str(c) for c in doc["choices"]])
+    if doc["type"] == "integer":
+        return _int_range(doc)
+    if doc["type"] == "number":
+        lo, hi = doc["minimum"], doc["maximum"]
+        return finite_float_range(
+            min=lo if lo is not None else doc["exclusive_minimum"],
+            max=hi if hi is not None else doc["exclusive_maximum"],
+            min_open=lo is None and doc["exclusive_minimum"] is not None,
+            max_open=hi is None and doc["exclusive_maximum"] is not None,
+        )
+    return str
+
+
+def _view_options(model):
+    """One ``--option`` per field of a view model (``configs/display.py``'s kind), its
+    choices, bounds, default and help read from the model (``describe_config``) —
+    enumerated, so a field added there is a flag here, with nothing written twice."""
+
+    def decorate(fn):
+        for doc in reversed(describe_config(model)):
+            flag = "--" + doc["name"].replace("_", "-")
+            if doc["type"] == "array":
+                # A list field is a repeatable flag named for one item; none given is the
+                # model's unset (``_view_values`` turns the empty tuple back into None).
+                singular = flag[:-1] if flag.endswith("s") else flag
+                fn = click.option(
+                    singular, doc["name"], multiple=True, help=doc["help"]
+                )(fn)
+                continue
+            if doc["type"] == "boolean":
+                fn = click.option(
+                    f"{flag}/--no-{flag[2:]}",
+                    doc["name"],
+                    default=bool(doc["default"]),
+                    show_default=True,
+                    help=doc["help"],
+                )(fn)
+                continue
+            fn = click.option(
+                flag,
+                doc["name"],
+                type=_view_option_type(doc),
+                default=doc["default"],
+                show_default=doc["default"] is not None,
+                help=doc["help"],
+            )(fn)
+        return fn
+
+    return decorate
+
+
+def _view_values(fields: dict) -> dict:
+    """``_view_options``' values as the model takes them: a repeatable flag given no times
+    is the field's unset, not an empty list."""
+    return {
+        name: (list(value) or None) if isinstance(value, tuple) else value
+        for name, value in fields.items()
+    }
+
+
+@locations.command("plot")
+@_EXPERIMENT_OPT
+@click.option(
+    "--run", "run_id", required=True,
+    help="Completed location-export analysis run (e.g. an_03).",
+)  # fmt: skip
+@click.option(
+    "--recording", "recording_refs", multiple=True,
+    help="Recording name (or id) to plot (repeatable). Default: every completed recording "
+    "of the run.",
+)  # fmt: skip
+@click.option(
+    "--out", "out_stem", required=True, type=UserPath(dir_okay=False),
+    help="Output path without extension; one file per --format is written beside it.",
+)  # fmt: skip
+@click.option(
+    "--format", "formats", multiple=True,
+    type=click.Choice(list(LOCATION_PLOT_FORMATS)), default=("png",), show_default=True,
+    help="png / svg / pdf picture, or html: one self-contained interactive page you can "
+    "hover, zoom and (3-D) turn (repeatable).",
+)  # fmt: skip
+@click.option(
+    "--theme", type=click.Choice(["light", "dark"]), default="light", show_default=True,
+    help="Chart surface.",
+)  # fmt: skip
+@_view_options(LocationPlotView)
+def locations_plot(
+    experiment_dir: Path,
+    run_id: str,
+    recording_refs: tuple[str, ...],
+    out_stem: str,
+    formats: tuple[str, ...],
+    theme: str,
+    **view_fields,
+) -> None:
+    """Draw a location-export run: the animal's path, where it spent its time, its speed, or
+    its body's size and shape — per recording, or by a Recording Information column with
+    --group-by."""
+    proj = _open_experiment(experiment_dir)
+    try:
+        view = LocationPlotView(**_view_values(view_fields))
+        plots = proj.location_plots(run_id)
+        recording_ids = (
+            [proj.resolve_recording(ref).id for ref in recording_refs]
+            if recording_refs
+            else None
+        )
+    except (ValueError, KeyError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    bar = _StageProgress()
+    try:
+        paths = plots.export(
+            view, out_stem, recording_ids, formats=formats, theme=theme, progress=bar
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    finally:
+        bar.close()
+    for path in paths:
+        click.echo(f"wrote: {path}")
 
 
 # --------------------------------------------------------------------------- #
@@ -5170,6 +5312,15 @@ def analysis() -> None:
     "recording's own match (alternative to --tracking). Repeat it to cover recordings "
     "tracked through different chains: each reads its run of the one named setting it has.",
 )  # fmt: skip
+@click.option(
+    "--keypoints", "keypoint_run_id", default=None, type=str,
+    help="location_export: " + _LOC["keypoint_run_id"].description,
+)  # fmt: skip
+@click.option(
+    "--keypoints-ref", "keypoints_ref", default=None, type=str,
+    help="location_export: RECORDING:kt_NN — derive the keypoint track settings from this "
+    "run and read each recording's own run with them (alternative to --keypoints).",
+)  # fmt: skip
 @_location_options
 def analysis_run(
     experiment_dir: Path,
@@ -5177,24 +5328,39 @@ def analysis_run(
     module_id: str,
     tracking_run_id: str | None,
     tracking_refs: tuple[str, ...],
+    keypoint_run_id: str | None,
+    keypoints_ref: str | None,
     sample_fps: float | None,
 ) -> None:
     """Launch an analysis run over the selected recordings; writes ``an_NN``."""
     if bool(tracking_run_id) == bool(tracking_refs):
         raise click.ClickException("pass exactly one of --tracking or --tracking-ref")
     options = _given_location_options(sample_fps=sample_fps)
-    if options and module_id != "location_export":
+    keypoint_flags = {
+        "keypoints": keypoint_run_id,
+        "keypoints-ref": keypoints_ref,
+    }
+    given_keypoints = [f"--{flag}" for flag, value in keypoint_flags.items() if value]
+    if (options or given_keypoints) and module_id != "location_export":
         # Applied or refused, never dropped: another module would ignore them in silence.
-        given = ", ".join(f"--{name.replace('_', '-')}" for name in options)
+        given = ", ".join(
+            [f"--{name.replace('_', '-')}" for name in options] + given_keypoints
+        )
         raise click.ClickException(
             f"{given} belong to the location_export module, not to {module_id}"
         )
+    if len(given_keypoints) > 1:
+        raise click.ClickException("pass at most one of --keypoints or --keypoints-ref")
     proj = _open_experiment(experiment_dir)
     config = {"source_recording_ids": list(recording_ids), **options}
     if tracking_refs:
         config.update(_spec_selection(proj, "tracking", tracking_refs))
     else:
         config["tracking_run_id"] = tracking_run_id
+    if keypoints_ref:
+        config.update(_spec_selection(proj, "keypoint_track", (keypoints_ref,)))
+    elif keypoint_run_id:
+        config["keypoint_run_id"] = keypoint_run_id
     try:
         run = proj.run_analysis(module_id, config)
     except ValueError as e:

@@ -21,6 +21,14 @@ class LocationExportConfig(BaseModel):
         "recording (e.g. track_01).",
         json_schema_extra={"scope": "selection", "label": "Tracking run"},
     )
+    keypoint_run_id: str | None = Field(
+        None,
+        description="A completed keypoint track run to export beside the tracks "
+        "(keypoints.csv: where each skeleton point was, on the rows tracks.csv has), common to every selected "
+        "recording (e.g. kt_01). Its poses must have been assigned to the tracking run this "
+        "export reads. Unset: no keypoints.",
+        json_schema_extra={"scope": "selection", "label": "Keypoint track run"},
+    )
     sample_fps: float | None = Field(
         None,
         gt=0.0,

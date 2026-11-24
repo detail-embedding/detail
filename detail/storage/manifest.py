@@ -37,6 +37,7 @@ from detail.core.registries import STREAM_IMPORTERS
 from detail.importers import import_stream_importers
 from detail.storage import metadata as metadata_store
 from detail.storage import video as video_store
+from detail.storage import video_integrity
 from detail.storage.user_yaml import read_user_yaml
 
 MANIFEST_NAMES = ("manifest.yaml", "manifest.yml")
@@ -96,7 +97,7 @@ class RecordingSpec(BaseModel):
     )
     video: list[str] = Field(
         default_factory=list,
-        description="Ordered video parts, relative paths; multiple parts must share fps + resolution.",
+        description="Ordered video parts, relative paths; multiple parts must share a resolution, and a frame rate within 1%.",
     )
     streams: list[StreamSpec] = Field(
         default_factory=list, description="Aligned time-series streams."
@@ -309,12 +310,19 @@ def _validate_video(bundle, recording, where, sources, errors, warnings) -> None
             probes.append(video_store.probe_video(full))
         except Exception as exc:  # noqa: BLE001 — report, don't crash validation
             errors.append(f"{where}: cannot open video {part}: {exc}")
-    if len(probes) > 1:  # parts of one recording must share fps + resolution
-        res0, fps0 = probes[0]["resolution"], round(probes[0]["fps"], 3)
-        if any(
-            pr["resolution"] != res0 or round(pr["fps"], 3) != fps0 for pr in probes[1:]
-        ):
-            errors.append(f"{where}: video parts must share fps + resolution")
+    differs = next(
+        (
+            reason
+            for pr in probes[1:]
+            if (reason := video_integrity.another_parts_shape(probes[0], pr))
+        ),
+        None,
+    )
+    if differs is not None:
+        errors.append(
+            f"{where}: video parts must share fps + resolution (a frame rate within 1%): "
+            f"a later part {differs.removeprefix('it ')}"
+        )
 
 
 def _validate_stream_config(importer_cls, stream, where, errors) -> None:

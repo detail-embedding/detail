@@ -9,7 +9,7 @@ lightweight scripting substrate; this is the recorded, batch, progress-bearing r
 """
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from detail.configs.location_export import LocationExportConfig
@@ -28,6 +28,8 @@ from detail.storage import recording as recording_store
 from detail.storage import spatial as spatial_store
 
 _CSV_KINDS = ("tracks", "roi_relations", "point_relations")
+#: Written for a recording whose export read a keypoint track run.
+_KEYPOINT_KIND = "keypoints"
 
 
 @dataclass
@@ -45,12 +47,16 @@ class LocationAnalysisJob:
     tracking_run_ids: dict[str, str]
     created_at: str
     sample_fps: float | None
+    #: Each recording's own keypoint track run (§16 *Keypoints in the export*), resolved at
+    #: launch; empty when the export reads no keypoints.
+    keypoint_run_ids: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
             "job_id": self.job_id,
             "source_recording_ids": list(self.source_recording_ids),
             "tracking_run_ids": dict(self.tracking_run_ids),
+            "keypoint_run_ids": dict(self.keypoint_run_ids),
             "created_at": self.created_at,
             **{name: getattr(self, name) for name in option_names()},
         }
@@ -71,6 +77,8 @@ class LocationAnalysisJob:
             source_recording_ids=recordings,
             tracking_run_ids=dict(run_ids),
             created_at=d["created_at"],
+            # Compat: a job written before keypoints read none.
+            keypoint_run_ids=dict(d.get("keypoint_run_ids") or {}),
             **{name: getattr(options, name) for name in option_names()},
         )
 
@@ -137,11 +145,70 @@ class LocationExportModule(AnalysisModule):
                 if refusal is not None:
                     raise ValueError(f"recording {sid!r}: {refusal}")
         config.update(selection)
+        config["keypoint_run_ids"] = self._resolve_keypoints(
+            experiment_dir, recording_ids, config, selection["tracking_run_ids"]
+        )
         # The options this model owns outright, resolved and written back (Tenet 9): the
         # record then says "every frame" where the user left it unset.
         # Only these fields: the model does not cover the selection keys beside them.
         config.update({name: getattr(model, name) for name in option_names()})
         return config
+
+    @staticmethod
+    def _resolve_keypoints(
+        experiment_dir, recording_ids: list[str], config: dict, tracking: dict
+    ) -> dict[str, str]:
+        """``{recording_id: kt_NN}``: each recording's own keypoint track run, from a
+        ``keypoint_track_spec`` (the launch form's picker) or a literal ``keypoint_run_id``;
+        empty when neither is given.
+
+        Raises:
+            ValueError: A recording has no matching run, its run is not complete, or the run
+                assigned its poses to another tracking run than the one this export reads
+                there: its ``object_id`` would be another run's, and its points would land on
+                the wrong animal.
+        """
+        from detail.api import run_spec
+        from detail.storage.keypoint_runs import KeypointTrackRun
+
+        spec = config.get("keypoint_track_spec")
+        literal = config.get("keypoint_run_id")
+        if spec is None and not literal:
+            return {}
+        resolved = {}
+        for sid in recording_ids:
+            recording_dir = experiment_store.recording_path(experiment_dir, sid)
+            data = recording_store.read_recording(recording_dir)
+            run_id = (
+                run_spec.resolve_spec_in_recording(
+                    data, "keypoint_track", spec, recording_dir
+                )
+                if spec is not None
+                else literal
+            )
+            entry = {r.get("id"): r for r in data.get("keypoint_track_runs", [])}.get(
+                run_id
+            )
+            if entry is None:
+                which = "with those settings" if spec is not None else repr(literal)
+                raise ValueError(f"recording {sid!r} has no keypoint track run {which}")
+            if entry.get("status") != "complete":
+                raise ValueError(
+                    f"recording {sid!r}: keypoint track run {run_id!r} is "
+                    f"{entry.get('status')!r}, not complete"
+                )
+            tracked = str(
+                KeypointTrackRun(recording_dir, run_id).meta["tracking_run_id"]
+            )
+            if tracked != str(tracking.get(sid)):
+                raise ValueError(
+                    f"recording {sid!r}: keypoint track run {run_id!r} assigned its poses "
+                    f"to tracking run {tracked!r}, not the {tracking.get(sid)!r} this "
+                    "export reads; its animals are another run's, so its points would land "
+                    "on the wrong animal"
+                )
+            resolved[sid] = run_id
+        return resolved
 
     def build_job(self, run_id: str, config: dict) -> LocationAnalysisJob:
         recording_ids = list(config["source_recording_ids"])
@@ -152,10 +219,14 @@ class LocationExportModule(AnalysisModule):
             run_id_single = config.get("tracking_run_id")
             mapping = {sid: run_id_single for sid in recording_ids}
         options = options_from(config)
+        keypoints = config.get("keypoint_run_ids")
+        if keypoints is None and config.get("keypoint_run_id"):
+            keypoints = {sid: config["keypoint_run_id"] for sid in recording_ids}
         return LocationAnalysisJob(
             job_id=run_id,
             source_recording_ids=recording_ids,
             tracking_run_ids=dict(mapping),
+            keypoint_run_ids=dict(keypoints or {}),
             created_at=utc_timestamp(),
             **{name: getattr(options, name) for name in option_names()},
         )
@@ -165,10 +236,11 @@ class LocationExportModule(AnalysisModule):
 
     def output_manifest(self, run_id: str, config: dict) -> list[dict]:
         """Relative per-recording CSV paths (no absolute paths in experiment files)."""
+        keypoints = config.get("keypoint_run_ids") or {}
         return [
             {"path": f"{sid}/{kind}.csv", "kind": kind, "label": f"{sid} · {kind}"}
             for sid in config.get("source_recording_ids", [])
-            for kind in _CSV_KINDS
+            for kind in _CSV_KINDS + ((_KEYPOINT_KIND,) if sid in keypoints else ())
         ]
 
     def runner(self, job, run_dir, progress_cb, stop_event) -> None:
@@ -214,6 +286,7 @@ class LocationExportModule(AnalysisModule):
                     job.tracking_run_ids[sid],
                     on_progress=on_rows,
                     options=options,
+                    keypoint_run_id=job.keypoint_run_ids.get(sid),
                 )
                 write_location_tables(run_dir / sid, tables)
             except Exception as exc:  # noqa: BLE001 — per-recording isolation boundary
@@ -254,7 +327,11 @@ class LocationExportModule(AnalysisModule):
         record["tracking_run_ids"] = dict(job.tracking_run_ids)
         record["per_recording"] = per_recording
         record["artifacts"] = self.output_manifest(
-            job.job_id, {"source_recording_ids": succeeded}
+            job.job_id,
+            {
+                "source_recording_ids": succeeded,
+                "keypoint_run_ids": job.keypoint_run_ids,
+            },
         )
         record["status"] = status
         # Every number this run was launched with, derived from the job rather than

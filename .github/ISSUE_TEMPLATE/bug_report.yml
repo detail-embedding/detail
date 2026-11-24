@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: >-
-        Some of what we need disappears when you close windows. If you started DETAIL from a
+        Some of what we need disappears when you close windows. If you started Detail from a
         terminal, save that window's whole scrollback to a file before you do anything else.
   - type: textarea
     id: what-happened
@@ -34,7 +34,7 @@ body:
     attributes:
       label: How did you run it?
       options:
-        - GUI (the DETAIL app)
+        - GUI (the Detail app)
         - CLI (a detail command in a terminal)
         - Python script or notebook
     validations:
@@ -45,7 +45,7 @@ body:
       label: detail doctor output
       description: >-
         In a terminal, run `detail doctor` and paste everything it prints. Don't shorten it.
-        It gives your DETAIL version, operating system, Python, GPU, CUDA and package versions.
+        It gives your Detail version, operating system, Python, GPU, CUDA and package versions.
       render: text
     validations:
       required: true
@@ -61,7 +61,7 @@ body:
     attributes:
       label: Terminal output
       description: >-
-        If you started DETAIL from a terminal, save that window's whole scrollback to a file
+        If you started Detail from a terminal, save that window's whole scrollback to a file
         first, then attach it here.
   - type: textarea
     id: ruled-out

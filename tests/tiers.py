@@ -140,6 +140,7 @@ FILE_TIER = {
     "tests/analysis/test_comparison_paper_figures.py": "slow",
     "tests/report/test_comparison_figures.py": "slow",
     "tests/report/test_figures.py": "slow",
+    "tests/report/test_plot_render.py": "slow",
     "tests/report/test_behavior_figures.py": "slow",
     # --- a real backend model, fetched and run --------------------------------------- #
     "tests/models/test_trained_yolo.py": "slow",
@@ -370,6 +371,7 @@ GUARD_FILES = frozenset(
         "tests/test_docs_nav.py",
         "tests/test_docs_cli_examples.py",
         "tests/test_docs_voice.py",
+        "tests/test_product_name.py",
         "tests/test_user_guide_legends.py",
         "tests/test_docs_generated_pages.py",
         "tests/test_docs_map.py",

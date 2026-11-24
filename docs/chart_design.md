@@ -39,6 +39,7 @@ exported ethogram. In a dark window every plot was a lit panel with grey tick la
 | `handle` | a control drawn on a plot — the cutoff you drag | one colour on every plot that carries one |
 | `text` / `text_secondary` / `text_muted` | titles / ticks and legends / annotations | text never wears a series colour |
 | `sequential` | magnitude | no hue, lightness alone; the low end sits near the surface so zero reads as nothing |
+| `colormap` | the location plots: a path coloured by time or speed, an occupancy heat map | inferno on dark, inferno reversed on light: hue and lightness both move, lightness monotonically, and the low end fades into the surface in both, so a barely visited cell reads as almost nothing and a hotspot stands out. A grey ramp on a busy picture read as black and white; viridis on light put its darkest purple on the least-visited cells. An empty cell is masked; a thin line drops the end steps under 2:1 against the surface (`report/style.line_stops`). Not for the cluster tree's shares: those stay `sequential` |
 | `diverging` | signed difference | blue ↔ grey ↔ yellow, centred on zero; the poles differ in lightness too, and no behavior label takes a colour near either (`ChartTheme.label_identity`) |
 
 Status (ready / warning / error) is not a chart colour and stays in `gui/status_color.py`.
