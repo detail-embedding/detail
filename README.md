@@ -77,9 +77,24 @@ resource. The app also opens a copy that matches your install, offline: the Docs
 
 ## Citing DETAIL
 
-A paper describing DETAIL is in preparation.
+If you use DETAIL in your research, please cite our preprint (bioRxiv link coming soon):
 
-<!-- TODO(release): replace the line above with the preprint link and its BibTeX entry. -->
+> Lurbur M, Iyer V, Just R, Coffey KR, Golden SA. Introducing Detail: species-agnostic,
+> generalizable animal behavior analysis using foundation model embedding spaces. *bioRxiv*
+> (2026).
+
+```bibtex
+@article{lurbur2026detail,
+  title   = {Introducing Detail: species-agnostic, generalizable animal behavior analysis using foundation model embedding spaces},
+  author  = {Lurbur, Moses and Iyer, Vikram and Just, Ren{\'e} and Coffey, Kevin R. and Golden, Sam A.},
+  journal = {bioRxiv},
+  year    = {2026}
+}
+```
+
+The **Cite this repository** button on GitHub gives the same citation in APA and BibTeX.
+
+<!-- TODO(release): add the preprint link and DOI above, and `doi:`/`url:` in CITATION.cff. -->
 
 ## Contributing
 
