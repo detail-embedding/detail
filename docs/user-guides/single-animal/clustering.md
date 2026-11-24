@@ -1,19 +1,19 @@
 # 8. Clustering
 
 A **behavior scan** (chapter 7) finds behaviors you can already name. **Clustering** finds the
-ones you have not named yet. DETAIL cuts every recording into short **bouts**, stretches where
+ones you have not named yet. Detail cuts every recording into short **bouts**, stretches where
 the animal's posture changes in one way, and groups bouts that look alike, from the embedding
 (chapter 5). It builds the groups into a **tree**: the whole run at the top, splitting into
 smaller and smaller groups, each a candidate behavior.
 
 You then look through the tree, watch each group's clips, and **label** the groups that are a
-behavior you recognise. The labels are what the rest of DETAIL counts: how often, for how
+behavior you recognise. The labels are what the rest of Detail counts: how often, for how
 long, in which recordings.
 
 ## The steps at a glance
 
 Each box is one step on this page. Click a box to go to that step. The first tag says where
-the step is in DETAIL.
+the step is in Detail.
 
 <div class="guide-flow" markdown>
 
@@ -407,7 +407,7 @@ When every behavior you want is labelled and audited, go back to **Interpret** a
 
 ## What next
 
-You have been through the whole of DETAIL on one experiment. From here:
+You have been through the whole of Detail on one experiment. From here:
 
 - **Compare groups**: the **Comparisons** section of an experiment compares the measures of
   a scan or a clustering between groups of recordings, such as drug on against drug off.

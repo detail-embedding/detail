@@ -816,7 +816,7 @@ Plots show one animal per recording; a recording whose tracking followed several
 the title, not plotted.
 
 ### `export`
-Get data out of DETAIL in open formats. `export list` shows what a subject can produce;
+Get data out of Detail in open formats. `export list` shows what a subject can produce;
 `export run` writes it. See [Getting your data out](#getting-your-data-out).
 
 ```bash
@@ -1431,9 +1431,9 @@ Check this machine's setup: PyTorch / CUDA, the SAM 3 backend package, Hugging F
 and model weights.
 
 It starts with a **System** section, which is what a bug report needs: your build of
-DETAIL and its commit, the operating system, the Python version and what kind of
+Detail and its commit, the operating system, the Python version and what kind of
 environment it runs in, CPU, RAM, GPU, the NVIDIA driver and the newest CUDA it supports,
-which CUDA your PyTorch was built for, and the version of every package DETAIL uses. No line
+which CUDA your PyTorch was built for, and the version of every package Detail uses. No line
 in it names a folder or your user name, so you can paste the whole section into an issue.
 
 It runs the checks in a fresh subprocess, so it reflects the
@@ -1530,7 +1530,7 @@ coordinates and frame ranges needed to rebuild a figure somewhere else. Each exp
 gets a `params.csv` (the settings that produced the run), the subject's
 [notes](#notes) as `notes.md` when it has any, and an `export.yaml` manifest.
 
-Only what DETAIL made is exportable. Your video and your streams came from you and you still
+Only what Detail made is exportable. Your video and your streams came from you and you still
 have them; tracks, masks, embeddings and analysis results did not exist before we computed them.
 
 ```bash
@@ -1553,7 +1553,7 @@ somebody else's machine.
 | `--recording <id>` | `geometry` | field of view, distance calibration, every ROI and POI (the **scene geometry**) |
 | | `streams` | one CSV per stream: its own time `t_ns` with video time `video_t_ns` beside it (`video_end_t_ns` too for intervals; a behavior stream also carries `origin`), plus `streams.csv` naming each stream's clock and stored alignment offset |
 | | `timestamps` | `frame_idx,t_ns` for every frame of every video part |
-| | `video` | the video parts DETAIL imported a copy of |
+| | `video` | the video parts Detail imported a copy of |
 | | `clip` | one mp4 of the frame range `--frames START:END` names, plus `clip.csv` (see [Clips, in three flavours](#clips-in-three-flavours)) |
 | `--run <run_NNN>`, a detection run | `masks` | one COCO instance-segmentation JSON per recording |
 | `--run <run_NNN>`, a tracking run | `tracks` | one CSV per recording: a row per frame per track |
@@ -1573,13 +1573,13 @@ somebody else's machine.
 
 `export list` shows **every** target the subject can have, and says why one cannot run,
 "this recording has no streams imported yet" is something you can act on, where a missing row
-would leave you unable to tell that from "DETAIL cannot export streams".
+would leave you unable to tell that from "Detail cannot export streams".
 
 ### Video that was referenced in place
 
-`video` exports the parts DETAIL holds a copy of. A part added with **reference in place** is
+`video` exports the parts Detail holds a copy of. A part added with **reference in place** is
 skipped and the reason says so: that file is already yours, under the video root it was
-registered from, and copying it back out would export nothing DETAIL made. A recording whose
+registered from, and copying it back out would export nothing Detail made. A recording whose
 parts are all referenced reports `video` as unavailable rather than writing a short export.
 
 Each exported video keeps its part's own number, the same number the `timestamps` target uses.
@@ -1606,7 +1606,7 @@ frame_idx,t_ns,observed,rearing,c02
 
 - `frame_idx` counts every frame of the recording from 0, across all its video parts.
 - `t_ns` is that frame's time in nanoseconds from the start of the first part, the same
-  clock as every other DETAIL table, so the file lines up with your other data without a lookup.
+  clock as every other Detail table, so the file lines up with your other data without a lookup.
 - `observed` is `1` when the frame was analyzed and `0` when it was not, typically because the
   tracker lost the animal there. **An unobserved frame is kept as a row, with `0` in every
   behavior column.** Read those zeros as "not looked at", not "not doing it": filter on
@@ -1652,7 +1652,7 @@ do not: they export **unassigned**, with an empty `track_id` and each pose numbe
 frame (`instance`), which DeepLabCut and SLEAP read as untracked individuals. `--source detect`
 on a track run exports them the same way.
 
-- `keypoints` is DETAIL's own long table, one CSV per recording: a row per frame per track per
+- `keypoints` is Detail's own long table, one CSV per recording: a row per frame per track per
   keypoint with `x_px, y_px, x_norm, y_norm, score, visible, changed`. Its `frame_idx` restarts
   at 0 in each video part, the one named in `part_id`; `t_ns` is counted from the start of the
   recording. `changed` is `0` as
@@ -1736,7 +1736,7 @@ Writes `performance.md`, meant to be pasted: three hours of detection is fast or
 the box, and that comparison is only useful across machines. It holds:
 
 - **the machine the run ran on**: GPU, driver, CPU, RAM, OS, versions. That is the computer that
-  did the work, not the one exporting. A run from before DETAIL recorded it shows this computer and
+  did the work, not the one exporting. A run from before Detail recorded it shows this computer and
   says so.
 - **per recording**: wall clock, frames, fps, and the **peak RAM** and **peak GPU memory** the
   work used. RAM counts the worker and every process it started. GPU memory is blank when it was
@@ -1750,9 +1750,9 @@ distill the units are its stages. Frames and fps are shown only for a stage that
 (detection, tracking, embedding, keypoint detection and keypoint tracking); for a distill and
 for an analysis they are blank, and the wall clock is the number to compare.
 
-The timings come from the run's own `activity.csv`, so a run that finished before DETAIL kept one
+The timings come from the run's own `activity.csv`, so a run that finished before Detail kept one
 reports blanks rather than guesses. A recording's wall clock runs from its first logged moment to
-its last, and the run's ends when the run did. A run made before DETAIL logged those last moments
+its last, and the run's ends when the run did. A run made before Detail logged those last moments
 shows each recording a few seconds short, so a short recording's fps there reads too high. **Nothing is sent anywhere**: it is a file, and sharing it is
 your decision.
 
@@ -1781,7 +1781,7 @@ vocabulary's path is just its label. `coverage.csv` gives `observed_ns` per
 `(recording_id, subject)`, which is the denominator for any rate you compute: video duration is
 not recording duration is not tracked time.
 
-The two position columns are **absent** on a run made before DETAIL recorded per-frame geometry.
+The two position columns are **absent** on a run made before Detail recorded per-frame geometry.
 `detail recording backfill-kinematics --experiment <dir> --recording <id> --embedding <emb_NN>`
 fills it in and the next export has them. Present but **blank** is a different answer: that bout
 had no frame we could place.
@@ -1820,7 +1820,7 @@ frame that has detections, carrying `t_ns` as well as the COCO fields), `annotat
 `segmentation` as run-length encoding, `bbox`, `area`, `score`, and `categories` from the class
 names you prompted with. Coordinates are in the **mask resolution**, which `info` records
 alongside the video's, masks were rasterized there, so a box scaled to anything else would not
-sit on one. The mask data is the encoding DETAIL stored rather than a re-encoding of it.
+sit on one. The mask data is the encoding Detail stored rather than a re-encoding of it.
 
 `embeddings_index.csv`, `row`, `recording_id`, `track_id`, `part`, `frame_idx`, `t_ns`, one row
 per row of `embeddings.npy`. The matrix alone cannot be joined to anything, which is why the
@@ -2042,7 +2042,7 @@ detail experiment import study.segproj.tar
 #   imported: /Users/you/Documents/DetailExperiments/study
 ```
 
-Include the heavy bits when you need them: `--include-video`, `--include-datasets`, `--gzip`. `--gzip` rarely pays: DETAIL's data files are compressed already, so it barely shrinks the archive and makes the export much slower. An earlier archive saved inside the experiment folder is never packed into a later one. A folder that is a symlink is not followed, and the export names each one it left out:
+Include the heavy bits when you need them: `--include-video`, `--include-datasets`, `--gzip`. `--gzip` rarely pays: Detail's data files are compressed already, so it barely shrinks the archive and makes the export much slower. An earlier archive saved inside the experiment folder is never packed into a later one. A folder that is a symlink is not followed, and the export names each one it left out:
 
 ```
 exported: study.segproj.tar
@@ -2080,7 +2080,7 @@ goes `reading` → `extracting` → `verifying` → `placing`. A slim export rea
 file twice (once for the checksum, once to pack it), so a large experiment takes
 minutes even without its video. If a file changes between those two reads (a run
 still writing to the experiment), the export stops and names the file; let the
-run finish and export again. Before packing, the export also checks that no DETAIL
+run finish and export again. Before packing, the export also checks that no Detail
 file holds an absolute path (a home folder such as `/home/…` or `/Users/…`, or a
 drive such as `D:\`), since that path would not exist on the other machine; if one
 does, it stops and names the file, the line and the path. Text you wrote is not

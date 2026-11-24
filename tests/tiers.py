@@ -371,6 +371,7 @@ GUARD_FILES = frozenset(
         "tests/test_docs_nav.py",
         "tests/test_docs_cli_examples.py",
         "tests/test_docs_voice.py",
+        "tests/test_product_name.py",
         "tests/test_user_guide_legends.py",
         "tests/test_docs_generated_pages.py",
         "tests/test_docs_map.py",

@@ -1,4 +1,4 @@
-﻿# DETAIL concepts
+﻿# Detail concepts
 
 The shared vocabulary and mental model behind the tool, referenced by the [CLI guide](cli.md) and the [GUI guide](gui.md). Read this once; the guides assume these terms.
 
@@ -191,7 +191,7 @@ on its own track method. It is seconds of CPU, so another tracking run or other 
 new run over the same detect run and the raw result is never rewritten. Detect runs made before
 this split (one row per tracked animal) are refused with a message to run keypoint detection
 again. Either run exports its points for other pose tools (DeepLabCut, SLEAP, NWB), as
-DETAIL's own long table, or as a video with the points drawn on; see
+Detail's own long table, or as a video with the points drawn on; see
 [Keypoints, for pose tools](cli.md#keypoints-for-pose-tools). An embedding run can **align** on a track run: through a **heading definition**
 (the points whose mean is the front, the points whose mean is the back) each subject image is
 turned to face one way before the model sees it, rotated for an overhead camera or mirrored
@@ -284,7 +284,7 @@ example `behavior`) and a **shape** (event, interval, or continuous). MED-PC ope
 signal stream; behavior labels are a `behavior`-role interval stream.
 
 Bring your own data as CSV: continuous sensor traces (`timeseries_csv`) or timestamped events
-(`events_csv`). A file already shaped for DETAIL needs only a time column named `seconds`,
+(`events_csv`). A file already shaped for Detail needs only a time column named `seconds`,
 `frame` or `t_ns`. For any other export, say which column is time and what it holds (a frame
 index, seconds, raw `t_ns`, or a UTC timestamp) and which columns to bring in as channels. One
 CSV makes one stream carrying those channels.
@@ -308,7 +308,7 @@ A stream also records its **origin**: `ground_truth` (a person scored it) or `pr
 method produced it, re-ingested). A predicted stream is never read as ground truth, because a
 method scored against its own output produces a good-looking number that measures nothing.
 Anything you import is ground truth unless the file says otherwise or you pass `--origin
-predicted`. Every label file DETAIL exports carries an `origin` column, so re-importing a
+predicted`. Every label file Detail exports carries an `origin` column, so re-importing a
 method's output brings it back as `predicted` on its own.
 
 A label file is one animal in one session. A BORIS export holding several observations or
@@ -516,7 +516,7 @@ An export carries the data behind an artifact as well as the artifact: a `clips.
 bout each clip file holds, a `params.csv` of the run's settings, your notes on the run, and PNG
 plus SVG for anything with a picture. A run exports what it made: masks, tracks, embeddings,
 keypoints and analysis results. A recording exports its streams, its frame timestamps, its
-scene geometry, a clip of a frame range, and the video parts DETAIL holds a copy of; a video
+scene geometry, a clip of a frame range, and the video parts Detail holds a copy of; a video
 referenced in place is already yours, under its own folder, and is not copied back out.
 
 The experiment **bundle** is a separate format, and the only export that imports back. See
@@ -602,5 +602,5 @@ classifier** over embeddings. Behavior clustering is built; a supervised classif
 
 ## Next
 
-- Driving DETAIL from the terminal or a script: [CLI guide](cli.md)
+- Driving Detail from the terminal or a script: [CLI guide](cli.md)
 - Driving it from the desktop app: [GUI guide](gui.md)

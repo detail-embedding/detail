@@ -4,7 +4,7 @@ A **behavior scan** finds a behavior you can already name, such as rearing or gr
 every video. You show it a few **example clips** of each behavior. It then looks through
 every frame of every recording for stretches whose embedding (chapter 5) is like your
 examples, and gives each a **confidence** from 0 to 1. You choose a **cut-off**: matches
-above it count as the behavior. DETAIL then counts bouts, time spent and so on, per
+above it count as the behavior. Detail then counts bouts, time spent and so on, per
 recording.
 
 No model is trained. A scan takes seconds, and changing the cut-off afterwards costs
@@ -13,7 +13,7 @@ nothing: the scan is not run again.
 ## The steps at a glance
 
 Each box is one step on this page. Click a box to go to that step. The first tag says where
-the step is in DETAIL.
+the step is in Detail.
 
 <div class="guide-flow" markdown>
 
@@ -219,7 +219,7 @@ The scan does not decide what is the behavior. It gives every stretch of every v
 The **cut-off** is where you draw the line: matches above it count as the behavior, and
 everything the later steps report, bouts, time and rate, is counted from them.
 
-There is no right cut-off that DETAIL could choose for you. A confidence says how alike two
+There is no right cut-off that Detail could choose for you. A confidence says how alike two
 stretches look, not whether the animal is rearing, and how alike is alike enough depends on
 the behavior, the camera and your examples. Too low a cut-off counts things that are not the
 behavior; too high, and real bouts are missed. Only you can tell which, by watching the clips
