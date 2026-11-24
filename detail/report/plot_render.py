@@ -19,7 +19,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from detail.report.figures import caption, save_figure, styled
+from detail.report.figures import caption, rc_settings_held, save_figure, styled
 from detail.report.plot_spec import Line, PlotSpec
 from detail.report.style import DEFAULT_STYLE, FigureStyle, sequential_cmap
 
@@ -29,9 +29,22 @@ PANEL_WIDTH_IN = 2.6
 #: The most panels a row holds; past this a grid grows downward.
 MAX_COLUMNS = 10
 
-#: The GUI's picture resolution — enough to read at the result page's size, small enough to
-#: redraw while a camera slider moves.
+#: The least resolution the GUI's picture is drawn at. A figure is ``PANEL_WIDTH_IN`` per column
+#: whatever the pane, so at one fixed resolution a panel was about 290 pixels wide however few
+#: there were: a plot grouped into one panel came out 385×232 and was stretched four times over
+#: to fill the pane. :func:`screen_dpi` draws the picture at the pane's size instead; this floor
+#: is what a grid of many panels, already larger than the pane, keeps.
 SCREEN_DPI = 110
+
+#: How far the GUI's picture can be zoomed in before it is enlarged past the pixels it was drawn
+#: with. Measured on a 50-recording export at a 2060×1250 pane: drawing twice the pane's pixels
+#: costs a grouped path plot 0.3–0.45 s over drawing the pane's own, and the other kinds 0.1 s.
+ZOOM_HEADROOM = 2.0
+
+#: The most pixels the GUI's picture is drawn with, so a large pane on a dense screen cannot ask
+#: for a picture that takes seconds to encode and tens of megabytes to hold. Twice a maximised
+#: 2560×1440 pane's pixels in a 16:9 figure is about 7 MP.
+MAX_SCREEN_PIXELS = 12_000_000
 
 #: Steps a coloured line's colour is drawn in. A run of consecutive segments in one step is one
 #: polyline, so a time-coloured path costs a few dozen drawn paths rather than one per segment: a
@@ -47,6 +60,28 @@ Progress = Callable[[str, float, str], None] | None
 def columns_for(n: int) -> int:
     """Panels per row for ``n`` panels: about square, never more than ``MAX_COLUMNS``."""
     return max(1, min(MAX_COLUMNS, math.ceil(math.sqrt(n))))
+
+
+def figure_size(spec: PlotSpec) -> tuple[float, float]:
+    """``spec``'s figure as ``(width, height)`` in inches: ``PANEL_WIDTH_IN`` per column and a
+    panel's height per row, with room for the title and the colour bar."""
+    n = len(spec.panels)
+    cols = columns_for(n)
+    rows = -(-n // cols)
+    return PANEL_WIDTH_IN * cols + 0.9, _panel_height(spec) * rows + 0.5
+
+
+def screen_dpi(spec: PlotSpec, pane: tuple[float, float]) -> float:
+    """The resolution to draw ``spec`` at for a pane of ``pane`` (width, height) screen pixels.
+
+    The figure fitted to the pane, times ``ZOOM_HEADROOM``, so the fewer panels a plot has the
+    finer they are drawn; never above ``MAX_SCREEN_PIXELS`` in all, and never below
+    ``SCREEN_DPI``, which a grid larger than the pane keeps.
+    """
+    width, height = figure_size(spec)
+    fit = min(pane[0] / width, pane[1] / height)
+    most = math.sqrt(MAX_SCREEN_PIXELS / (width * height))
+    return max(SCREEN_DPI, min(fit * ZOOM_HEADROOM, most))
 
 
 def colour_steps(
@@ -96,9 +131,8 @@ def figure(
     n = len(spec.panels)
     cols = columns_for(n)
     rows = -(-n // cols)
-    panel_h = _panel_height(spec)
     with styled(style):
-        fig = plt.figure(figsize=(PANEL_WIDTH_IN * cols + 0.9, panel_h * rows + 0.5))
+        fig = plt.figure(figsize=figure_size(spec))
         projection = "3d" if spec.three_d else None
         axes = [
             fig.add_subplot(rows, cols, i + 1, projection=projection) for i in range(n)
@@ -325,15 +359,22 @@ def render(
 def render_png(
     spec: PlotSpec,
     *,
+    dpi: float,
     theme: str = "light",
-    dpi: int = SCREEN_DPI,
     progress: Progress = None,
 ) -> bytes:
-    """``spec`` as PNG bytes at screen resolution — the GUI's picture. ``progress`` hears
-    ``drawing`` per panel (:func:`figure`)."""
+    """``spec`` as PNG bytes at ``dpi`` — the GUI's picture. ``progress`` hears ``drawing`` per
+    panel (:func:`figure`).
+
+    ``dpi`` has no default: a picture drawn for a pane takes :func:`screen_dpi` of that pane,
+    and a fixed one is what drew a one-panel plot at 385×232 and stretched it to fill the page.
+    """
     style = DEFAULT_STYLE.with_theme(theme)
-    fig = figure(spec, style, progress)
-    buffer = io.BytesIO()
-    fig.savefig(buffer, format="png", dpi=dpi, facecolor=fig.get_facecolor())
-    plt.close(fig)
+    # Held from the first panel to the save: saved under another thread's house style
+    # (``savefig.bbox: tight``), the picture is cropped to another size than ``dpi`` drew.
+    with rc_settings_held():
+        fig = figure(spec, style, progress)
+        buffer = io.BytesIO()
+        fig.savefig(buffer, format="png", dpi=dpi, facecolor=fig.get_facecolor())
+        plt.close(fig)
     return buffer.getvalue()
