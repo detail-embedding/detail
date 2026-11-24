@@ -782,6 +782,13 @@ One option chooses how often a row is written. `analysis run` takes it too:
 length and width are the major and minor axes of the ellipse with the same second moments,
 as MATLAB's `regionprops` defines them. A bar shows the rows measured, then the write.
 
+`--keypoints kt_NN` also writes `keypoints.csv`: where each skeleton point was, on the rows
+`tracks.csv` has, with its score and whether it was over the cut-off (`visible`). The keypoint
+track run must have assigned its poses to `--tracking`'s run; one of another tracking run is
+refused, because its animals are not this export's. `analysis run` takes `--keypoints kt_NN` (the
+id in every recording) or `--keypoints-ref RECORDING:kt_NN` (those settings, each recording's
+own run), for the location export only.
+
 ### `locations plot`
 `--experiment`, `--run an_NN` (a finished location-export run), `--out <path>` (no extension):
 draws the run from its own CSVs and writes `<path>.png`, or one file per `--format png|svg|pdf|html`
@@ -802,8 +809,12 @@ them):
 - `--kind trace|heatmap|speed|trace3d|body|body_hist`: the path, where the animal spent its
   time, speed over time, the path against time in 3-D, a body measure over time, or a
   histogram of it.
-- `--source body|mask|bbox`: the position a path follows: the body's centre, the mask's or
-  the box's. The body is the whole mask, so `body` and `mask` follow the same point.
+- `--source body|mask|bbox|<keypoint>`: the position a path follows: the body's centre, the
+  mask's, the box's, or a keypoint's. The body is the whole mask, so `body` and `mask` follow
+  the same point; a keypoint's name (on a run exported with `--keypoints`) follows that point,
+  a frame it was hidden on a gap.
+- `--point <keypoint>` (repeatable): several points on one `trace` / `trace3d`, a colour each.
+  The title names the point a plot follows (*Path of the nose*); the body goes unnamed.
 - `--body-measure length|width|area|elongation|mask_area`: what a body plot shows.
 - `--group-by <column>`: one panel (or one line) per value of a Recording Information
   column, each animal counting once.

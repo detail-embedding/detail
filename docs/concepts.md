@@ -377,7 +377,8 @@ its long axis. The body is the whole mask, with nothing taken out, so a tail cou
 what counts as the animal is decided by the tracking that drew the mask. Each body column is a
 standard measure you can recompute from the mask in any tool: length and width are the major
 and minor axes of the ellipse with the same second moments (MATLAB `regionprops`). A sampling rate writes a few rows a second instead of
-every frame.
+every frame. With a keypoint track run, it also writes `keypoints.csv`: where each skeleton
+point was, on the same rows, refused when the keypoint run's poses went to another tracking run.
 
 A finished run **plots** its own files, with no re-run: the animal's path, where it spent its
 time, its speed, and its body's length, width, area or elongation over time or as a

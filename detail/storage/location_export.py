@@ -1,7 +1,8 @@
 """Location-export CSV + manifest writer/reader (analysis layer).
 
 Three tidy CSVs (``tracks`` / ``roi_relations`` / ``point_relations``) keyed by
-``t_ns`` so they join with the streams CSV (§3), plus a ``locations.yaml`` manifest
+``t_ns`` so they join with the streams CSV (§3) — and ``keypoints`` when the export read a
+keypoint track run — plus a ``locations.yaml`` manifest
 (``schema_version`` first — Tenet 7; full lineage so the export reproduces from
 itself). Mirrors the canonical-stream CSV idiom in ``storage/streams.py``.
 
@@ -22,6 +23,8 @@ TRACKS_FILE = "tracks.csv"
 ROI_FILE = "roi_relations.csv"
 POINT_FILE = "point_relations.csv"
 MANIFEST_FILE = "locations.yaml"
+#: Written only by an export that read a keypoint track run.
+KEYPOINTS_FILE = "keypoints.csv"
 
 
 def _write_csv(path: Path, columns: list[str], rows: list[tuple]) -> None:
@@ -41,6 +44,9 @@ def write_location_tables(out_dir: Path | str, tables) -> Path:
     _write_csv(out_dir / TRACKS_FILE, *tables.tracks)
     _write_csv(out_dir / ROI_FILE, *tables.roi_relations)
     _write_csv(out_dir / POINT_FILE, *tables.point_relations)
+    keypoints = tables.keypoints
+    if keypoints is not None:
+        _write_csv(out_dir / KEYPOINTS_FILE, *keypoints)
 
     manifest = {"schema_version": tables.source.get("schema_version", 1)}
     manifest.update({k: v for k, v in tables.source.items() if k != "schema_version"})
@@ -54,6 +60,9 @@ def write_location_tables(out_dir: Path | str, tables) -> Path:
         "roi_relations": tables.roi_relations[0],
         "point_relations": tables.point_relations[0],
     }
+    if keypoints is not None:
+        manifest["files"]["keypoints"] = KEYPOINTS_FILE
+        manifest["columns"]["keypoints"] = keypoints[0]
     with open(out_dir / MANIFEST_FILE, "w", encoding="utf-8") as f:
         yaml.dump(manifest, f, sort_keys=False)
     return out_dir

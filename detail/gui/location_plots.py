@@ -27,6 +27,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from detail.analysis.location_plots import CENTROID_SOURCES
 from detail.configs.location_plots import LocationPlotView
 from detail.gui._pydantic_form import (
     any_field_value,
@@ -50,6 +51,7 @@ _BODY = ("body", "body_hist")
 #: Which plot kinds each field means something for; a field not listed applies to every kind.
 _APPLIES_TO = {
     "source": _POSITIONS,
+    "points": _PATHS,
     "body_measure": _BODY,
     "color_by": _PATHS,
     "posture_every_s": ("trace",),
@@ -65,6 +67,10 @@ _APPLIES_TO = {
 }
 #: Rows that need the body, which an export made before it was measured does not have.
 _NEEDS_BODY = ("body_measure", "posture_every_s")
+#: Rows that need keypoints, which an export without a keypoint track run does not have.
+_NEEDS_KEYPOINTS = ("points",)
+#: The keypoint checklist's height: a few rows, scrolled for a long skeleton.
+_POINT_LIST_PX = 110
 #: The group-by combo's "no grouping" entry.
 EACH_RECORDING = "(each recording)"
 #: What the body-outline box reads when it is left unset.
@@ -103,6 +109,18 @@ class LocationPlotsPanel(QWidget):
             elif name == "posture_every_s":
                 widget = optional_spin(LocationPlotView, name, NO_OUTLINE_TEXT)
                 _connect(widget, self._schedule)
+            elif name == "source":
+                # The centres every run has; the run's keypoints are added once it is read.
+                widget = QComboBox()
+                for centre in CENTROID_SOURCES:
+                    widget.addItem(centre, centre)
+                widget.setToolTip(meta["help"])
+                widget.currentIndexChanged.connect(self._schedule)
+            elif name == "points":
+                widget = QListWidget()
+                widget.setToolTip(meta["help"])
+                widget.setMaximumHeight(_POINT_LIST_PX)
+                widget.itemChanged.connect(self._schedule)
             elif name in _SLIDERS:
                 widget = field_slider(LocationPlotView, name)
                 widget.set_value(LocationPlotView.model_fields[name].default)
@@ -120,6 +138,8 @@ class LocationPlotsPanel(QWidget):
         column.addWidget(form_host)
         # Whether the export measured the body; until the run is read, assume it did.
         self._has_body = True
+        # Whether it read a keypoint track run; until the run is read, assume not.
+        self._has_keypoints = False
 
         column.addWidget(QLabel("Recordings:"))
         self._recordings = QListWidget()
@@ -167,7 +187,7 @@ class LocationPlotsPanel(QWidget):
 
             def open_run(_emit):
                 plots = experiment.location_plots(run_id)
-                return plots, plots.body_measured()
+                return plots, plots.body_measured(), plots.keypoint_names
 
             run_progress(
                 self,
@@ -178,9 +198,22 @@ class LocationPlotsPanel(QWidget):
             )
 
     def _on_opened(self, opened) -> None:
-        plots, has_body = opened
+        plots, has_body, keypoint_names = opened
         self._plots = plots
         self._has_body = has_body
+        self._has_keypoints = bool(keypoint_names)
+        source = self._widgets["source"]
+        points = self._widgets["points"]
+        source.blockSignals(True)
+        points.blockSignals(True)
+        for point in keypoint_names:
+            source.addItem(point, point)
+            item = QListWidgetItem(point)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Unchecked)
+            points.addItem(item)
+        source.blockSignals(False)
+        points.blockSignals(False)
         self._sync_rows()
         names = plots.names()
         self._recordings.blockSignals(True)
@@ -204,8 +237,10 @@ class LocationPlotsPanel(QWidget):
         """The controls as a ``LocationPlotView`` — every field, read from its widget."""
         values = {}
         for name, widget in self._widgets.items():
-            if name == "group_by":
+            if name in ("group_by", "source"):
                 values[name] = widget.currentData()
+            elif name == "points":
+                values[name] = _ticked(widget) or None
             elif name == "posture_every_s":
                 values[name] = optional_value(widget)
             elif name in _SLIDERS:
@@ -227,8 +262,10 @@ class LocationPlotsPanel(QWidget):
         main = self._form.main
         for name in set(_APPLIES_TO) | set(_NEEDS_BODY):
             widget = self._widgets[name]
-            shown = kind in _APPLIES_TO.get(name, (kind,)) and (
-                self._has_body or name not in _NEEDS_BODY
+            shown = (
+                kind in _APPLIES_TO.get(name, (kind,))
+                and (self._has_body or name not in _NEEDS_BODY)
+                and (self._has_keypoints or name not in _NEEDS_KEYPOINTS)
             )
             if main.indexOf(widget) >= 0:
                 main.setRowVisible(widget, shown)
@@ -315,6 +352,14 @@ class LocationPlotsPanel(QWidget):
             label="Exporting…",
             on_error=self._failed,
         )
+
+
+def _ticked(listing: QListWidget) -> list[str]:
+    return [
+        listing.item(i).text()
+        for i in range(listing.count())
+        if listing.item(i).checkState() == Qt.CheckState.Checked
+    ]
 
 
 def _connect(widget: QWidget, slot) -> None:

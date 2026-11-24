@@ -31,12 +31,19 @@ class LocationPlotView(BaseModel):
         "body's shape or size over time. body_hist: how often the body measured each value.",
         json_schema_extra={"label": "Plot"},
     )
-    source: Literal["body", "mask", "bbox"] = Field(
+    source: str = Field(
         "body",
         description="The animal's position: 'body' (the centre of its body, which the "
         "export measures as the whole mask, so the same point as 'mask'), 'mask' (the "
-        "centre of the whole mask) or 'bbox' (the bounding box's centre).",
+        "centre of the whole mask), 'bbox' (the bounding box's centre), or a keypoint's "
+        "name (e.g. 'nose') when the export read a keypoint track run.",
         json_schema_extra={"label": "Position"},
+    )
+    points: list[str] | None = Field(
+        None,
+        description="Several keypoints to draw on a path plot, each in its own colour. "
+        "Unset: the one Position.",
+        json_schema_extra={"label": "Keypoints"},
     )
     body_measure: BodyMeasure = Field(
         "length",

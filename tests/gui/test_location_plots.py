@@ -242,6 +242,45 @@ def test_export_writes_the_current_plot(qapp, page, tmp_path):
     assert drain_until(qapp, lambda: panel._status.text().startswith("Wrote "))
 
 
+def test_keypoint_rows_appear_only_when_the_run_has_keypoints(qapp, page, tmp_path):
+    from PyQt6.QtCore import Qt
+
+    from detail.gui.pages import AnalysisRunDetailPage
+    from tests.location_fixtures import write_keypoints
+
+    _open(page)
+    bare = _panel(page)
+    assert _drawn(qapp, bare)
+    assert not _row_shown(bare, "points")  # this run read no keypoints
+
+    proj = Experiment.create("k", tmp_path / "k")
+    walk = _walk()
+    ids = finished_run(proj, {"a": {0: walk}})
+    write_keypoints(
+        proj.analysis_run_dir("an_01") / ids["a"],
+        walk,
+        {"nose": (5.0, 0.0, None), "tail_base": (-5.0, 0.0, None)},
+    )
+    other = AnalysisRunDetailPage(proj, "an_01")
+    try:
+        _open(other)
+        panel = _panel(other)
+        assert _drawn(qapp, panel)
+        source = panel._widgets["source"]
+        assert [source.itemText(i) for i in range(source.count())] == [
+            "body", "mask", "bbox", "nose", "tail_base",
+        ]  # fmt: skip
+        assert _row_shown(panel, "points")
+        panel._widgets["points"].item(1).setCheckState(Qt.CheckState.Checked)
+        assert panel.view().points == ["tail_base"]
+        set_any_field_value(LocationPlotView, "kind", panel._widgets["kind"], "heatmap")
+        panel._sync_rows()
+        assert not _row_shown(panel, "points")  # several points belong on a path
+    finally:
+        other.close()
+        drain_busy_calls(qapp)
+
+
 def test_export_writes_an_interactive_page(qapp, page, tmp_path):
     from detail.gui.location_plots import EXPORT_FILTERS
 
