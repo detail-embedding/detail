@@ -14,6 +14,10 @@ figure came back, which is what this file used to be:
   illegible for the light slots and repeats what the mark beside it already says; a size computed
   as ``base_fontsize - 3`` landed at 6pt. Every primitive is asked, in both themes, for ink-only
   text and the print floor (``core/chart_theme.PRINT_TYPE``).
+- **Two threads styling at once leave the style on.** matplotlib's settings are one process-wide
+  dict, and ``rc_context`` restores it whole, so a thread leaving last put back the style the
+  other had set. ``styled`` and ``save_figure`` hold one lock
+  (``test_two_threads_styling_at_once_leave_matplotlib_as_they_found_it``).
 - **Category labels run together.** Group names are as long as users make them; the fixture here
   is proved colliding before the save-time turn is asked to clear it, by the geometry of rotated
   text rather than by overlapping boxes, which rotated text always has.
@@ -100,6 +104,51 @@ def test_styled_context_applies_font_size():
         # `base_fontsize` is the axis-label size; ticks and legend scale with it.
         assert plt.rcParams["axes.labelsize"] == 13.0
         assert plt.rcParams["xtick.labelsize"] == 7.0 * 13.0 / 8.0
+
+
+def test_two_threads_styling_at_once_leave_matplotlib_as_they_found_it():
+    """matplotlib's settings are one process-wide dict, and ``rc_context`` saves and restores it
+    whole. A second thread entering while the first is inside saved the first's style as
+    "before" and, leaving last, put it back for good: the location Plots view overlaps a draw
+    with the one replacing it, and ``savefig.bbox`` stayed ``"tight"`` for the session, so every
+    later screen picture was cropped to another size than it was drawn at.
+
+    The second thread is let try while the first holds the style. Without the hold it gets in
+    straight away, and this fails on the setting left behind.
+    """
+    import threading
+
+    import matplotlib.pyplot as plt
+
+    before = plt.rcParams["savefig.bbox"]
+    assert before != "tight", "the style's own value: the check could not see a leak"
+    first_in, first_out, second_tried, second_in = (threading.Event() for _ in range(4))
+    release = threading.Event()
+
+    def first():
+        with figures.styled():
+            first_in.set()
+            release.wait(10)
+        first_out.set()
+
+    def second():
+        first_in.wait(10)
+        second_tried.set()
+        with figures.styled():
+            second_in.set()
+            first_out.wait(10)  # leaving last is what put the style back for good
+
+    threads = [threading.Thread(target=first), threading.Thread(target=second)]
+    for thread in threads:
+        thread.start()
+    assert second_tried.wait(10)
+    # Unheld, the second is inside by now; held, it waits for the first.
+    entered_early = second_in.wait(0.5)
+    release.set()
+    for thread in threads:
+        thread.join(10)
+    assert not entered_early, "a second thread styled while the first held the style"
+    assert plt.rcParams["savefig.bbox"] == before
 
 
 def test_grid_multiples_returns_exactly_n_axes_and_hides_the_rest():

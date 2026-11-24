@@ -5,7 +5,8 @@ choices, bounds, default and help match the CLI — and the recording checklist;
 right in a zoomable ``ImageView``. The picture is the same matplotlib render an export writes
 (``report/plot_render.render_png``), drawn off the UI thread through ``run_progress``: reading
 the run's CSVs is the slow part, and ``LocationPlots`` keeps what it read, so changing a control
-after the first draw only re-draws.
+after the first draw only re-draws. It is drawn at the pane's size in screen pixels, with room
+to zoom (``plot_render.screen_dpi``), so a plot of one or two panels is as sharp as a grid.
 
 The run is opened on first show, never in ``__init__``, so a page that builds the result widget
 and is never shown reads nothing.
@@ -288,12 +289,14 @@ class LocationPlotsPanel(QWidget):
 
         view, plots = self.view(), self._plots
         theme = plot_theme.current().name
+        pane = self.pane_pixels()
 
         def work(emit):
             # Every report is also where a newer draw stops this one (`busy.run_progress`):
             # a run of quick changes costs the last draw, not one per change.
             spec = plots.build(view, chosen, progress=emit)
-            return plot_render.render_png(spec, theme=theme, progress=emit)
+            dpi = plot_render.screen_dpi(spec, pane)
+            return plot_render.render_png(spec, dpi=dpi, theme=theme, progress=emit)
 
         self._status.setText("")
         run_progress(
@@ -304,6 +307,13 @@ class LocationPlotsPanel(QWidget):
             on_error=self._failed,
             supersedes="location-plot",
         )
+
+    def pane_pixels(self) -> tuple[float, float]:
+        """The picture pane's size in the screen's own pixels: on a display scaled to 125%, a
+        pane 1000 wide is 1250 of them, and a picture drawn for 1000 is enlarged to fill it.
+        """
+        ratio = self._picture.devicePixelRatioF()
+        return self._picture.width() * ratio, self._picture.height() * ratio
 
     def _show(self, png: bytes) -> None:
         pixmap = QPixmap()

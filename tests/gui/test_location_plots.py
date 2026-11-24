@@ -189,6 +189,37 @@ def test_a_newer_draw_stops_the_one_it_replaces(qapp, page, monkeypatch):
     )
 
 
+@pytest.mark.parametrize("ratio", [1.0, 1.25])
+def test_a_grouped_plot_is_drawn_at_the_size_its_pane_shows_it(
+    qapp, page, monkeypatch, ratio
+):
+    """A plot grouped into one panel was drawn at a fixed 110 dpi, 385×232, and stretched to
+    fill the pane. It is now drawn at the pane's size in the screen's own pixels (``ratio`` is a
+    display scaled to 125%), with ``ZOOM_HEADROOM`` to zoom into."""
+    from detail.report import plot_render
+
+    panel = _panel(page)
+    monkeypatch.setattr(panel._picture, "devicePixelRatioF", lambda: ratio)
+    _open(page)
+    assert _drawn(qapp, panel)
+    first = panel._picture.pixmap_size()
+    set_any_field_value(LocationPlotView, "kind", panel._widgets["kind"], "speed")
+    panel._widgets["group_by"].setCurrentIndex(1)
+    panel._draw()
+    assert drain_until(qapp, lambda: panel._picture.pixmap_size() != first)
+    drain_until(qapp, lambda: not panel._timer.isActive())
+    drain_busy_calls(qapp)
+    drawn = panel._picture.pixmap_size()
+    pane_w, pane_h = panel.pane_pixels()
+    assert (pane_w, pane_h) == (
+        panel._picture.width() * ratio,
+        panel._picture.height() * ratio,
+    )
+    assert max(drawn.width() / pane_w, drawn.height() / pane_h) == pytest.approx(
+        plot_render.ZOOM_HEADROOM, abs=0.02
+    )
+
+
 def test_unticking_every_recording_says_what_to_do(qapp, page):
     from PyQt6.QtCore import Qt
 

@@ -12,6 +12,7 @@ came to be one grey here and another in the GUI. The rules the forms follow — 
 allowed, why a summary is ink, where the legend goes — are ``docs/chart_design.md``.
 """
 
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -53,10 +54,28 @@ SCATTER_DENSITY_ABOVE = 5000
 _GOLDEN = 0.6180339887498949
 
 
+#: matplotlib's rc settings are one process-wide dict, and ``rc_context`` saves it on the way in
+#: and puts that back on the way out. Two threads inside one at once restore each other's: the
+#: second saves the first's style as "before" and, leaving last, puts it back for good. The
+#: location Plots view overlaps a draw with the one replacing it, and after a quick run of control
+#: changes the house style (``savefig.bbox: tight`` among it) stayed on for the session. So
+#: whatever changes those settings, or saves a figure under them, holds this.
+_RC_SETTINGS = threading.RLock()
+
+
+@contextmanager
+def rc_settings_held():
+    """Hold matplotlib's process-wide settings for this thread for the block: no other thread
+    changes them, or saves a figure under its own, until it ends."""
+    with _RC_SETTINGS:
+        yield
+
+
 @contextmanager
 def styled(style: FigureStyle = DEFAULT_STYLE):
-    """Apply the design language's rcParams for the duration of the block."""
-    with plt.rc_context(rc_params(style)):
+    """Apply the design language's rcParams for the duration of the block; another thread's
+    figure waits for it (``rc_settings_held``)."""
+    with _RC_SETTINGS, plt.rc_context(rc_params(style)):
         yield
 
 
@@ -107,7 +126,7 @@ def save_figure(
     """
     stem = Path(out_stem)
     written: list[Path] = []
-    with plt.rc_context(save_params()):
+    with _RC_SETTINGS, plt.rc_context(save_params()):
         _turn_colliding_tick_labels(fig)
         for fmt in formats:
             path = stem.with_suffix(f".{fmt}")
