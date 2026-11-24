@@ -3,9 +3,10 @@
 ``segment_recording``, ``pool_recordings``, ``bout_medoid_distance``, ``detector_params`` and
 ``detector_params_rows`` used to be defined across three pipeline modules that were hidden from a
 default build (``cluster_fit``, ``cluster_apply``, ``syllable_discovery``), and ``LazyTrajectories``
-in a fourth (``pipeline/clip_query``). Temporal clustering and query eval, which are visible,
-imported them from there — lazily, so an import-only test stayed green while the visible feature
-depended on hidden code at run time. All four modules have since been removed
+in a fourth (``pipeline/clip_query``). Temporal clustering and query eval (itself since
+removed), which were visible, imported them from there — lazily, so an import-only test stayed
+green while the visible feature depended on hidden code at run time. All four modules have
+since been removed
 (``docs/removed_capabilities.md``); the import scan below keeps the visible callers off their
 names, so a restored copy cannot become a dependency again by accident.
 
@@ -30,7 +31,6 @@ _HIDDEN_HOMES = (
 _VISIBLE_CALLERS = (
     "analysis/bout_segmentation.py",
     "cluster_methods/dtw_finch.py",
-    "pipeline/query_eval.py",
 )
 
 

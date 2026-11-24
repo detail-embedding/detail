@@ -24,8 +24,6 @@ dist/
 site/
 
 # mkdocs-gen-files build artifacts (generated at build time)
-docs/querying-methods.md
-docs/behavior-query-eval.md
 docs/assets/*/generated/
 
 

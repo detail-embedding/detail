@@ -8,7 +8,7 @@ the figures consume them unchanged. Nothing is re-measured from masks: the per-f
 are the run's, and a comparison stays seconds.
 
 **Locomotion** is measured on the path of the *body* centre (``body_cx_mm`` / ``body_cy_mm``,
-which leaves the tail out when the run removed thin parts). Three rules, each from a failure on
+the mask's centre). Three rules, each from a failure on
 real recordings (detail#70):
 
 - **A raw centre path over-counts.** Frame-to-frame jitter adds distance for an animal standing
@@ -22,7 +22,9 @@ real recordings (detail#70):
   step belongs to the window its time is in, so distance over adjacent windows sums to the
   distance over their union.
 
-**Body shape** is the median over the window of the run's per-frame length, width and area.
+**Body shape** is the median over the window of the run's per-frame length, width and area,
+all standard measures of the whole mask. A run exported with thin parts removed (an option the
+export no longer has) measured something no other tool can reproduce, and is refused by name.
 
 Everything in millimetres depends on the recording's distance calibration, so a recording
 exported without one is refused rather than measured in pixels beside recordings measured in
@@ -292,7 +294,8 @@ def read_manifest(recording_dir: Path) -> dict:
 
 
 def require_body(manifest: Mapping, recording_id: str, run_id: str) -> None:
-    """Refuse a recording the run measured no body for, or measured without a calibration.
+    """Refuse a recording the run measured no body for, measured with its thin parts removed,
+    or measured without a calibration.
 
     Raises:
         LocationSourceError: Naming the recording and what to do about it.
@@ -304,6 +307,12 @@ def require_body(manifest: Mapping, recording_id: str, run_id: str) -> None:
             f"location-export run {run_id} was made before the export measured the body "
             f"({recording_id} has no {missing[0]} column). Run the location export again "
             "and compare the new run."
+        )
+    if manifest.get("remove_thin_parts"):
+        raise LocationSourceError(
+            f"location-export run {run_id} measured {recording_id}'s body with its thin "
+            "parts removed, which the export no longer does. Run the location export again "
+            "and compare the new run, which measures the whole mask."
         )
     if not manifest.get("pixels_per_mm"):
         raise LocationSourceError(

@@ -26,9 +26,7 @@ exclude_docs: |
   behavior_clustering_ideas.md
   input-images-intro.md
   embedding-models-intro.md
-  querying-methods-intro.md
   measures-intro.md
-  behavior-query-eval-intro.md
   modules/_intros/*
 
 # Broken links/anchors fail the build (docs/docs_design.md §9, Tenet 6).
@@ -69,8 +67,6 @@ plugins:
         - scripts/gen_docs_parameters.py
         - scripts/gen_docs_input_images.py
         - scripts/gen_docs_embedding_models.py
-        - scripts/gen_docs_querying_methods.py
-        - scripts/gen_docs_behavior_query_eval.py
         - scripts/gen_docs_measures.py
         - scripts/gen_docs_manifest.py
         - scripts/gen_docs_requirements.py
@@ -126,7 +122,6 @@ nav:
       - Overview: concepts.md
       - Input images: input-images.md
       - Embedding models: embedding-models.md
-      - Querying methods: querying-methods.md
       - Measures: measures.md
       - Glossary: glossary.md
   - Modules:  # generated per config model by scripts/gen_docs_modules.py
@@ -139,7 +134,6 @@ nav:
       - Keypoint track, despike and smooth: modules/despike_smooth.md
       - Keypoint dataset: modules/keypoint_dataset.md
       - Behavior scan: modules/query.md
-      - Behavior-query eval: modules/query_eval.md
       - Location export: modules/location_export.md
       - Comparison: modules/comparison.md
       - Behavior clustering: modules/temporal_clustering.md
@@ -152,8 +146,6 @@ nav:
       - Stream importer - CSV: modules/timeseries_csv.md
       - Stream importer - MED-PC: modules/medpc.md
       - Stream importer - BORIS: modules/boris.md
-  - Evaluation:
-      - Behavior query: behavior-query-eval.md
   - Reference:
       - Python API: reference/api.md
       - CLI commands: reference/cli.md

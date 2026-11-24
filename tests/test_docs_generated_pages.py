@@ -1,21 +1,24 @@
 """Prose written for the docs is prose a reader can reach.
 
 The class: **a single-source description module with no generator behind it.** A
-``detail/analysis/*_docs.py`` module exists to be *the* place a method describes itself, and the
+``*_docs.py`` module under ``detail/`` exists to be *the* place a method describes itself, and the
 value only lands when a ``scripts/gen_docs_*.py`` script renders it into a page and the page is in
 the nav. Miss the last step and the module still imports, its own anti-drift tests still pass, and
 the text is unreachable from the app, the site and the CLI alike.
 
 How it hid: ``analysis/cluster_methods_docs.py`` had a full description of every clustering rule,
 a test pinning it against the config Literals, and a docstring saying "the same shape as
-``analysis/query_methods_docs.py``" — and no generator. Its answer to "what is the cluster
-hierarchy derived from" had been written for months and had never been on a screen. Nothing failed,
-because nothing about an unread function is broken; the reviewer asking the question in a design
-meeting was the only signal, and the answer to give them was already in the repo.
+``analysis/query_methods_docs.py``" (a module since removed) — and no generator. Its answer to
+"what is the cluster hierarchy derived from" had been written for months and had never been on a
+screen. Nothing failed, because nothing about an unread function is broken; the reviewer asking the
+question in a design meeting was the only signal, and the answer to give them was already in the
+repo.
 
-The rule: a ``*_docs.py`` module under ``detail/analysis/`` is imported by a generator script, and
+The rule: a ``*_docs.py`` module anywhere under ``detail/`` is imported by a generator script, and
 that script writes a page the nav carries. The scan is over the modules that exist, so a new one is
-covered the day it is added rather than the day somebody remembers this file.
+covered the day it is added rather than the day somebody remembers this file. It walks the whole
+package rather than ``detail/analysis/``, where these modules first lived: the two there went with
+the pages they fed, and the one left (``transforms/constructor_docs.py``) sat outside the scan.
 
 Sibling of ``tests/test_docs_nav.py``, which covers the pages that *are* on disk; generated pages
 are invisible to that scan by construction, which is exactly why they need this one.
@@ -28,7 +31,7 @@ import pytest
 import yaml
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
-ANALYSIS = REPO / "detail" / "analysis"
+PACKAGE = REPO / "detail"
 SCRIPTS = REPO / "scripts"
 MKDOCS_YML = REPO / "mkdocs.yml"
 
@@ -71,8 +74,8 @@ def _generator_scripts() -> list[pathlib.Path]:
     raise AssertionError("mkdocs.yml has no gen-files plugin")
 
 
-def _docs_modules(package: pathlib.Path = ANALYSIS) -> list[pathlib.Path]:
-    return sorted(package.glob("*_docs.py"))
+def _docs_modules(package: pathlib.Path = PACKAGE) -> list[pathlib.Path]:
+    return sorted(package.rglob("*_docs.py"))
 
 
 def _generators_of(
@@ -94,7 +97,7 @@ def test_at_least_one_docs_module_exists():
     """Guard the guard: an empty glob would make every parametrised case below vacuous."""
     assert (
         _docs_modules()
-    ), "no detail/analysis/*_docs.py modules — this scan proves nothing"
+    ), "no *_docs.py modules under detail/ — this scan proves nothing"
 
 
 @pytest.mark.parametrize("module", _docs_modules(), ids=lambda p: p.stem)
@@ -102,8 +105,9 @@ def test_every_docs_module_is_rendered_by_a_generator(module):
     """The module's text reaches a page, and the page reaches the nav."""
     users = _generators_of(module, _generator_scripts())
     assert users, (
-        f"detail/analysis/{module.name} describes something for the docs and no generator in "
-        "mkdocs.yml's gen-files list imports it, so nothing it says is reachable by a user. "
+        f"{module.relative_to(REPO).as_posix()} describes something for the docs and no "
+        "generator in mkdocs.yml's gen-files list imports it, so nothing it says is reachable by "
+        "a user. "
         "Add a scripts/gen_docs_*.py that renders it, and put the page in the nav."
     )
 
@@ -120,7 +124,7 @@ def test_the_scan_would_catch_an_unrendered_module(tmp_path):
     """The negative case. A scan that matches everything today passes vacuously forever.
 
     The orphan is planted in a copy of the package's shape under ``tmp_path``, never in
-    ``detail/analysis/``: a file created and deleted in the source tree mid-run is seen coming and
+    ``detail/``: a file created and deleted in the source tree mid-run is seen coming and
     going by every other test that walks ``detail/`` in parallel (``tests/source_tree.py``).
     """
     orphan = tmp_path / "zz_orphan_docs.py"

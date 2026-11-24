@@ -162,7 +162,7 @@ class ProcessingModule(ABC):
         data-dependent value it derives locally (embedding's shared canvas, sized to
         *this* recording's largest mask) comes out different per recording — and the
         resulting runs are then not comparable, which blocks every cross-recording
-        consumer (query, query-eval, clustering). Resolving here and
+        consumer (query, clustering). Resolving here and
         enriching ``config`` makes the per-recording resolution deterministic.
 
         An override that reads each recording calls ``on_recording(recording_id)`` before

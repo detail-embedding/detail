@@ -76,7 +76,6 @@ EXERCISED: dict[str, dict] = {
 NOT_YET_BY_SETTINGS: dict[str, str] = {
     "query": "#547 PR2 — its embedding run also names the exemplar recordings, so its "
     "resolution covers search and exemplar recordings alike",
-    "query_eval": "#547 PR2 — migrates with query, whose runs it evaluates",
 }
 
 #: Prefix of the upstream's run ids, for building the cohort.
@@ -489,7 +488,6 @@ _INTERSECTS_IDS = re.compile(r"(?<!def )\bcommon_complete_run_(?:ids|items)\s*\(
 ALLOWED_ID_PICKERS: dict[str, str] = {
     "detail/gui/modules/_common.py": "the helpers' own definitions",
     "detail/gui/modules/analysis_query.py": "#547 PR2",
-    "detail/gui/modules/analysis_query_eval.py": "#547 PR2",
 }
 
 

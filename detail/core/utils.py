@@ -347,43 +347,6 @@ def resolve_track_id(track_id: int | str, subject_labels: dict | None) -> int:
     return matches[0]
 
 
-def check_track_is_unambiguous(
-    track_id: int, recording_id: str, available: list[int], *, run_id: str
-) -> None:
-    """Reject a bare integer track id in a recording that offers more than one track.
-
-    Track ids are assigned **in order of first appearance within one tracking run** (§13), so an
-    integer names a position, not an animal. With a single track that position is unambiguous —
-    there is one subject and the int finds it, which is every recording in this project today.
-    With several, ``track_id=0`` is "whichever the tracker happened to number first", and that
-    can be a different animal in each recording. Pooling subjects across recordings by that
-    integer then mixes them, silently and plausibly: every recording contributes bouts, the
-    counts look right, and the vocabulary is fitted across two animals.
-
-    So this raises at the point the ambiguity first exists rather than letting the run proceed.
-    ``subject_labels`` on the tracking run and ``resolve_track_id`` above are the designed way
-    out (§13), and are not built — deliberately, since nothing needs them yet. This is what will
-    tell someone they do.
-
-    Cross-recording animal *identity* is a separate thing and already solved: it is a
-    recording-level fact carried by the §11 grouping variables (``metadata.csv``'s animal id
-    column), which is the right level when one recording holds one animal.
-
-    Raises:
-        ValueError: If ``available`` holds more than one track.
-    """
-    if len(available) <= 1:
-        return
-    raise ValueError(
-        f"recording {recording_id!r} has {len(available)} tracks ({sorted(available)}) in run "
-        f"{run_id!r}, so track_id={track_id} is ambiguous: track ids are assigned in order of "
-        "first appearance within each recording, so the same integer is not the same animal "
-        "across recordings, and pooling them would mix subjects. Run this on one subject at a "
-        "time, or assign subject_labels to the tracking run so a track can be named "
-        "(DESIGN_PLAN §13 — not built yet)."
-    )
-
-
 def t_ns_to_seconds(t_ns: int) -> float:
     """Convert int64 nanoseconds (Tenet 8) to float seconds."""
     return t_ns / NS_PER_SECOND

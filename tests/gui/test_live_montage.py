@@ -222,7 +222,14 @@ def test_a_failing_source_marks_the_tile_and_the_rest_still_draw(montage, qapp):
 
     montage.set_source(Broken())
     montage.set_clips(_clips(3))
-    assert _drain(qapp, lambda: montage._failed == {1} and len(montage._images) == 2)
+    assert _drain(
+        qapp, lambda: montage.unpictured() == (0, 1) and len(montage._images) == 2
+    )
+    changes = []
+    montage.pictures_changed.connect(lambda: changes.append(True))
+    montage.set_source(FakeSource())
+    assert changes, "resetting the pictures said nothing"
+    assert _drain(qapp, lambda: montage.unpictured() == (0, 0))
 
 
 def test_tile_size_and_order_controls_emit(montage, qapp):
@@ -885,6 +892,116 @@ def test_a_drag_previews_the_run_and_marks_it_once_on_letting_go(montage, qapp):
     assert runs == [([1, 2, 4, 5], False)] and clicked == [], "one run, no click"
     assert montage.preview() is None and not montage.is_dragging()
     assert montage.last_clicked() == 5, "a Shift-click after it runs from its end"
+
+
+def test_a_click_only_grid_draws_no_run_and_marks_none(montage, qapp):
+    """``set_click_hint(..., runs=False)``: a click chooses one tile and nothing else.
+
+    CALIBRATE's grid moves its cutoff to a clicked clip. With runs on, a drag across it drew
+    AUDIT's removal preview over clips nothing was going to remove, and a Shift-click marked a
+    run nobody listens for. The negative half is the test above: the same drag with runs on
+    previews and marks.
+    """
+    runs, clicked = _marking(montage)
+    montage.set_click_hint(lambda i: "Click: show the cutoff here", runs=False)
+    _drag(montage, qapp, 1, 5, release=False)
+    assert montage.preview() is None and not montage.is_dragging()
+    _mouse(
+        montage, qapp, "release", montage.tile_rect(5).center(), Qt.MouseButton.NoButton
+    )
+    assert runs == [], "a drag marked a run on a click-only grid"
+    # A press that moved is still the press it began as: one click on the tile it started on.
+    assert clicked == [1]
+    _mouse(
+        montage, qapp, "press", montage.tile_rect(7).center(), Qt.MouseButton.LeftButton
+    )
+    _mouse(
+        montage,
+        qapp,
+        "release",
+        montage.tile_rect(7).center(),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.ShiftModifier,
+    )
+    assert runs == [] and clicked == [1, 7], "a Shift-click is a plain click here"
+
+
+def test_a_rule_heading_is_a_dashed_line_in_a_wider_gap(montage, qapp):
+    """``set_rule_headings(True)``: a titled section's heading becomes a dashed line across the
+    grid in the theme's handle colour, with the title on it, in a band about three lines tall —
+    more room between the two sections than a heading's one line. CALIBRATE's cutoff, which a
+    stepped line through the gaps made too easy to miss."""
+    from PyQt6.QtGui import QColor, QFontMetrics
+
+    from detail.gui import plot_theme
+    from detail.gui.sizing import emphasis_font
+
+    montage.resize(900, 500)
+    montage.set_clips(
+        _clips(12), sections=[("", 5), ("▲ 5 kept · cutoff 0.5 · 7 dropped ▼", 7)]
+    )
+    qapp.processEvents()
+    ((title, plain),) = montage.heading_rects()
+
+    montage.set_rule_headings(True)
+    qapp.processEvents()
+    ((title, ruled),) = montage.heading_rects()
+    line = QFontMetrics(emphasis_font(montage.canvas, steps=0)).height()
+    assert (
+        ruled.height() >= 2 * line + plain.height() - 8
+    ), "no more room than a heading"
+    assert (
+        montage.tile_rect(5).top() > ruled.bottom()
+    ), "the dropped run does not start after it"
+
+    image = montage.canvas.grab().toImage()
+    y = montage.rule_rect(ruled).center().y()
+    handle = QColor(plot_theme.current().handle)
+    hits = sum(
+        1
+        for x in range(
+            montage.rule_rect(ruled).left(), montage.rule_rect(ruled).right()
+        )
+        if image.pixelColor(x, y).red() == handle.red()
+        and image.pixelColor(x, y).green() == handle.green()
+    )
+    assert hits > montage.rule_rect(ruled).width() // 4, "the rule is not drawn"
+    dashed = [
+        image.pixelColor(x, y)
+        == image.pixelColor(montage.rule_rect(ruled).left() + 1, y)
+        for x in range(
+            montage.rule_rect(ruled).left(), montage.rule_rect(ruled).left() + 60
+        )
+    ]
+    assert not all(dashed), "the rule is solid: it is told from an edge by colour alone"
+
+
+def test_a_click_only_grid_offers_no_removal_cue(montage, qapp, monkeypatch):
+    """The hovered tile's faint ✕ says "a click removes this". On a click-only grid a click
+    chooses a clip (CALIBRATE's cutoff), so the ✕ was a promise the click did not keep.
+    """
+    cues = []
+    real = lm.LiveMontage._paint_cross
+    monkeypatch.setattr(
+        lm.LiveMontage,
+        "_paint_cross",
+        lambda self, painter, index, *, cue: (
+            cues.append(cue),
+            real(self, painter, index, cue=cue),
+        )[1],
+    )
+    montage.clip_clicked.connect(lambda i, s: None)
+    montage.set_clips(_clips(4))
+    montage.set_click_hint(lambda i: "Click: remove")
+    montage._set_hovered(1)
+    montage.grab()
+    assert True in cues, "the marking grid lost its cue — this proves nothing below"
+
+    cues.clear()
+    montage.set_click_hint(lambda i: "Click: choose", runs=False)
+    montage._set_hovered(2)
+    montage.grab()
+    assert True not in cues, "a click-only grid drew the removal cue"
 
 
 def test_a_drag_back_through_the_grid_runs_in_reading_order(montage, qapp):

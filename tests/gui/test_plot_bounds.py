@@ -261,19 +261,6 @@ def test_a_declared_unbounded_axis_is_left_alone(qapp):
     assert x_high - x_low > 5.0, "an undeclared domain must not be clamped"
 
 
-def test_the_audit_curve_cannot_be_scrolled_off_the_confidence_axis(qapp, tmp_path):
-    from tests.gui.test_audit_tab import _tab
-
-    _exp, _run, tab = _tab(qapp, tmp_path)
-    tab.resize(1200, 800)
-    tab.show()
-    QApplication.processEvents()
-    (x_low, x_high), (y_low, y_high) = _wrench(tab._plot)
-    tab.hide()
-    assert -0.021 <= x_low and x_high <= 1.021
-    assert -0.021 <= y_low and y_high <= 1.021
-
-
 def test_the_calibration_cutoff_cannot_be_dragged_out_of_range(qapp):
     import pyqtgraph as pg
 

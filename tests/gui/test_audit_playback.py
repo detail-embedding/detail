@@ -131,16 +131,3 @@ def test_a_clip_that_cannot_be_decoded_does_not_stay_armed(qapp):
 
 
 # --- and it plays once ---------------------------------------------------------------- #
-
-
-def test_the_audit_player_does_not_loop(qapp, tmp_path):
-    """A clip that restarts on its own keeps pulling the eye back while you are deciding, and
-    the decision is a single yes/no about what you just watched.
-
-    Through the tab that builds it, not by constructing a player: the looping was a keyword at
-    one call site, so the call site is the thing to check.
-    """
-    from tests.gui.test_audit_tab import _tab
-
-    _exp, _run, tab = _tab(qapp, tmp_path)
-    assert tab._player._loop is False, "audit clips loop under the decision being made"
