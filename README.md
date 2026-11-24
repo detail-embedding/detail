@@ -92,9 +92,6 @@ DETAIL is free software under the [GNU Affero General Public License v3.0](LICEN
 (AGPL-3.0-only). You may use, change and share it. If you share a changed version, or let
 others use one over a network, you must offer them its source code under the same license.
 
-Later versions of DETAIL are planned under a non-commercial license. A version already released
-keeps the license it was released under.
-
 The SAM 3 and DINOv3 model weights are not part of DETAIL. DETAIL downloads them from Hugging
 Face, where Meta publishes each under its own license, which you accept when you request access
 there. Those licenses include restrictions of their own, such as on military use.
