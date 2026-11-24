@@ -379,6 +379,13 @@ standard measure you can recompute from the mask in any tool: length and width a
 and minor axes of the ellipse with the same second moments (MATLAB `regionprops`). A sampling rate writes a few rows a second instead of
 every frame.
 
+A finished run **plots** its own files, with no re-run: the animal's path, where it spent its
+time, its speed, and its body's length, width, area or elongation over time or as a
+histogram, per recording or grouped by a Recording Information column (each animal counting
+once). Speed is measured on the same smoothed path a comparison measures, broken at the same
+gaps and tracking jumps, so the two agree. Plots show one animal per recording. The app shows
+them on the run's **Plots** view; `locations plot` writes them as PNG, SVG or PDF.
+
 ### Behavior scan (query) { #query }
 
 **Behavior scan** is the app's name for the `query` module, which is the name `analysis query`

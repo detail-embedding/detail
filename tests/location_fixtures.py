@@ -35,14 +35,99 @@ def track(x, y=None, *, hz=5.0, t0=0.0, t=None, length=180.0, width=75.0) -> lm.
     )
 
 
+def finished_run(
+    experiment,
+    plan: dict,
+    *,
+    run_id: str = "an_01",
+    metadata: dict | None = None,
+    failed: tuple[str, ...] = (),
+    **write_options,
+) -> dict[str, str]:
+    """A finished location-export run of ``experiment`` over ``{recording name: {object_id:
+    Track}}``: the recordings made by name, their files written by :func:`write_run`, and the
+    run's record as the runner leaves it. ``metadata`` is ``{name: {column: value}}``;
+    ``failed`` names recordings the run recorded as failed, with no files. Returns ``{name:
+    recording_id}``.
+    """
+    from detail.storage import analysis_runs
+    from detail.storage import metadata as md
+
+    ids = {name: experiment.add_recording(name).id for name in plan}
+    for name, values in (metadata or {}).items():
+        md.upsert_row(experiment.dir, ids[name], values)
+    run_dir = analysis_runs.analysis_dir(experiment.dir, run_id)
+    write_run(
+        run_dir,
+        {ids[name]: tracks for name, tracks in plan.items() if name not in failed},
+        **write_options,
+    )
+    per_recording = {
+        ids[name]: {"status": "failed" if name in failed else "complete"}
+        for name in plan
+    }
+    analysis_runs.write_analysis_yaml(
+        run_dir,
+        {
+            "id": run_id,
+            "module_id": "location_export",
+            "status": "partial" if failed else "complete",
+            "per_recording": per_recording,
+            "artifacts": [
+                {"path": f"{sid}/tracks.csv", "kind": "tracks", "label": sid}
+                for name, sid in ids.items()
+                if name not in failed
+            ],
+            "params": {
+                "source_recording_ids": list(ids.values()),
+                "sample_fps": 5.0,
+                **(
+                    {"remove_thin_parts": True, "thin_part_scale": 0.12}
+                    if write_options.get("thin_parts_removed")
+                    else {}
+                ),
+            },
+        },
+    )
+    return ids
+
+
+#: The frame a hand-built run's recordings were filmed at, ``(width, height)`` in pixels.
+FRAME = (640, 480)
+#: How much larger the whole mask is than the body in a hand-built run made while the export
+#: could remove thin parts: the tail. In a run made since, the body is the mask.
+MASK_OVER_BODY = 1.25
+
+
 def write_run(
-    run_dir, recordings: dict, *, pixels_per_mm=2.0, body=True, thin_parts_removed=False
+    run_dir,
+    recordings: dict,
+    *,
+    pixels_per_mm=2.0,
+    body=True,
+    frame=FRAME,
+    thin_parts_removed=False,
 ) -> None:
     """A location-export run's files for ``{recording_id: {object_id: Track}}``, through the
     export's own writer. ``body=False`` is a run from before the body was measured;
-    ``thin_parts_removed`` one made while the export could still remove thin parts."""
+    ``thin_parts_removed`` one made while the export could still remove thin parts.
+
+    A track's positions and sizes are in millimetres; every other column is filled from them
+    as the export fills it — pixels at ``pixels_per_mm``, normalized by ``frame`` — with the
+    mask's and the box's centres at the body's, the long axis along x, and the whole mask's
+    area the body's (``MASK_OVER_BODY`` times it when ``thin_parts_removed``).
+    ``pixels_per_mm=None`` is an uncalibrated run: its millimetre columns are blank, and the
+    track's numbers are read as pixels.
+    """
     columns = TRACKS_COLUMNS if body else TRACKS_COLUMNS[: -len(BODY_COLUMNS)]
     at = {name: i for i, name in enumerate(columns)}
+    scale = pixels_per_mm or 1.0
+    width, height = frame
+    mask_over_body = MASK_OVER_BODY if thin_parts_removed else 1.0
+
+    def mm(value: float) -> str | float:
+        return round(value, 3) if pixels_per_mm else ""
+
     for recording_id, tracks in recordings.items():
         rows = []
         for object_id, tr in tracks.items():
@@ -50,14 +135,35 @@ def write_run(
                 row = [""] * len(columns)
                 row[at["frame_idx"]], row[at["t_ns"]] = k, int(tr.t_ns[k])
                 row[at["object_id"]] = object_id
+                x_px, y_px = float(tr.x_mm[k]) * scale, float(tr.y_mm[k]) * scale
+                area_px = float(tr.area_mm2[k]) * scale * scale
+                centres = {"x_norm": x_px / width, "y_norm": y_px / height}
+                for src in ("mask", "bbox") + (("body",) if body else ()):
+                    row[at[f"{src}_cx_norm"]] = round(centres["x_norm"], 6)
+                    row[at[f"{src}_cy_norm"]] = round(centres["y_norm"], 6)
+                    row[at[f"{src}_cx_px"]] = round(x_px, 2)
+                    row[at[f"{src}_cy_px"]] = round(y_px, 2)
+                    row[at[f"{src}_cx_mm"]] = mm(float(tr.x_mm[k]))
+                    row[at[f"{src}_cy_mm"]] = mm(float(tr.y_mm[k]))
+                row[at["mask_area_px"]] = round(area_px * mask_over_body, 2)
+                row[at["mask_area_norm"]] = round(
+                    area_px * mask_over_body / (width * height), 8
+                )
                 if body:
+                    for name, value in (
+                        ("body_length_px", float(tr.length_mm[k]) * scale),
+                        ("body_width_px", float(tr.width_mm[k]) * scale),
+                        ("body_area_px", area_px),
+                        ("body_area_norm", area_px / (width * height)),
+                        ("body_angle_deg", 0.0),
+                    ):
+                        row[at[name]] = "" if np.isnan(value) else round(value, 8)
                     for name, values in (
-                        ("body_cx_mm", tr.x_mm), ("body_cy_mm", tr.y_mm),
                         ("body_length_mm", tr.length_mm), ("body_width_mm", tr.width_mm),
                         ("body_area_mm2", tr.area_mm2),
                     ):  # fmt: skip
                         value = float(values[k])
-                        row[at[name]] = "" if np.isnan(value) else round(value, 3)
+                        row[at[name]] = "" if np.isnan(value) else mm(value)
                 rows.append(tuple(row))
         write_location_tables(
             run_dir / recording_id,
@@ -67,6 +173,7 @@ def write_run(
                 point_relations=(POINT_COLUMNS, []),
                 source={
                     "schema_version": 1,
+                    "video_resolution": [width, height],
                     "pixels_per_mm": pixels_per_mm,
                     "sample_fps": 5.0,
                     **(

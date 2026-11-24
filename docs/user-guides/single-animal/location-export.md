@@ -17,8 +17,9 @@ the step is in DETAIL.
 
 1. [Check the regions and points](#1-check-the-regions-and-points) <span class="where where-app">a recording › Edit scene geometry</span> <span class="note">What the export measures against.</span>
 2. [Run the export](#2-run-the-export) <span class="where where-app">Experiments › Analysis › New analysis</span> <span class="note">About 2 minutes for the three demo videos, on the processor.</span>
-3. [Open the files](#3-open-the-files) <span class="where where-app">Experiments › Analysis › the run's page › Results</span> <span class="note">Spreadsheets per recording.</span>
-4. [Optional: export the body points](#4-optional-export-the-body-points) <span class="where where-app">the keypoint track run's page › Export…</span> <span class="note">Where each keypoint is, per frame.</span>
+3. [Open the files](#3-open-the-files) <span class="where where-app">Experiments › Analysis › the run's page › Files</span> <span class="note">Spreadsheets per recording.</span>
+4. [Look at the plots](#4-look-at-the-plots) <span class="where where-app">the run's page › Plots</span> <span class="note">Paths, heat maps, speed and body shape, per recording or by group.</span>
+5. [Optional: export the body points](#5-optional-export-the-body-points) <span class="where where-app">the keypoint track run's page › Export…</span> <span class="note">Where each keypoint is, per frame.</span>
 
 </div>
 
@@ -99,12 +100,14 @@ processor.
 
 ## 3. Open the files
 
-When the run's **Status** says **complete**, its page has one card under **Results**.
+When the run's **Status** says **complete**, its page has two cards under **Results**:
+**Plots ›** (step 4) and **Files ›**. The pictures in this step were taken before the
+**Plots** card was added, when **Files ›** was called **Results ›**.
 
 ![The Location export run's page: an_01, location_export, complete, with the Results card, and the Open output folder, Delete analysis and Start new analysis buttons. Numbered markers sit on every control.](../../assets/user-guides/single-animal/location-export/location-export-run.png)
 
 ??? info "What everything on this screen does"
-    1. **Results ›**: the files the run wrote. Click it to list them.
+    1. **Results ›**, now **Files ›**: the files the run wrote. Click it to list them.
     2. **Open output folder**: opens the folder that holds them, to copy them or open them
        in a spreadsheet, R or Python.
     3. **Delete analysis**: deletes the run and its files, after asking.
@@ -112,7 +115,7 @@ When the run's **Status** says **complete**, its page has one card under **Resul
 
     The **Notes** button at the top of the window opens a notes box for the run.
 
-Click **Results ›** for the files it wrote: three for each recording. To go back to the run's
+Click **Files ›** for the files it wrote: three for each recording. To go back to the run's
 page, click its id, here **an_01**, in the line at the top.
 
 ![The Location export run's Results: the table of its files, tracks.csv, roi_relations.csv and point_relations.csv for each of the three recordings. Numbered markers sit on every control.](../../assets/user-guides/single-animal/location-export/location-export-files.png)
@@ -187,7 +190,56 @@ in. On the demo, box1's `tracks.csv` has 8,854 rows, one for each tracked frame.
       chapter 3), or **Rows per second** was set, which writes that many rows a second and
       no more.
 
-## 4. Optional: export the body points
+## 4. Look at the plots
+
+On the run's page, click **Plots ›**. It draws the run's files: one panel per recording, or
+one per group of recordings. Every change to the controls on the left redraws it, and
+scrolling on the picture zooms.
+
+1. **Plot:** what to draw:
+    - **trace**: the path the animal took, light to dark as time goes on.
+    - **heatmap**: where it spent its time, darker for more.
+    - **speed**: how fast it moved, over time.
+    - **trace3d**: the path with time going up, so a place visited twice shows as two
+      layers.
+    - **body**: a measure of its body over time: its length, its width, its area, how
+      stretched out it is (**elongation**, length ÷ width), or the area of its whole
+      outline.
+    - **body_hist**: how often the body measured each value of that measure.
+2. **Position:** the point a path follows: the centre of the **body**, of the whole outline
+   (**mask**), or of its box (**bbox**). The body is the whole outline, tail and all, so
+   **body** and **mask** follow the same point.
+3. **Group by:** leave **(each recording)** for a panel per recording, or choose a column of
+   the **Recording information** (chapter 1), such as **drug**, for one panel or line per
+   value.
+4. **Body outline every (s):** on a **trace**, draws the body's outline every so many
+   seconds: an ellipse as long and as wide as the body, turned along its long axis. It
+   shows where the animal was stretched out and where it was balled up.
+
+Speed is measured the way a [comparison](../../gui.md#comparisons) between groups measures
+it: on the body's path averaged over a second, and broken where tracking was lost or the
+position jumped further than the animal could move. A jump is drawn as a break in the path, not as a line across the arena.
+
+With **Group by** set, each animal counts the same, however long it was tracked: on a heat
+map its time is shared out to 1 before the animals of a group are averaged, and a speed or
+body line is the mean across animals, with a band for the standard error. A **trace** or
+**trace3d** has no average: paths of different animals cannot be averaged into one, so a
+group's panel draws every animal's path over the others. For where a group spent its time,
+use **heatmap**. The title gives how many animals are in each group.
+
+**Export image…** saves the plot as a picture (PNG) or a drawing that stays sharp at any size
+(SVG or PDF).
+
+??? warning "If this doesn't work"
+    - **"exported before the body was measured":** the run was made before the export
+      measured the body. Run the export again for **body** plots and outlines; the other
+      plots work on it as it is.
+    - **"N animals … location plots show one animal per recording":** the recording's
+      tracking followed more than one animal. Plots draw one animal per recording.
+    - **"mm needs a distance calibration":** a ticked recording has no calibration. Add one
+      (chapter 2, step 3) and run the export again, or set **Units** to **px**.
+
+## 5. Optional: export the body points
 
 The location export does not include keypoints. To get where each body point is on every
 frame, export them from the keypoint track run instead: open it (**Processing pipeline** ›

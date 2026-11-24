@@ -92,6 +92,7 @@ here.
 | Work with a side-view recording | [Chapter 4](single-animal/keypoints.md#side-view-and-isometric-recordings) |
 | Run an embedding | [Chapter 5](single-animal/embedding.md) |
 | Export where the animal is, as spreadsheets | [Chapter 6](single-animal/location-export.md) |
+| Plot an animal's path, speed or body shape | [Chapter 6](single-animal/location-export.md#4-look-at-the-plots) |
 | Find a behavior from a few examples | [Chapter 7](single-animal/behavior-scan.md) |
 | Group behavior into clusters and label them | [Chapter 8](single-animal/clustering.md) |
 | Save a cluster's clips | [Chapter 8, step 4](single-animal/clustering.md#save-the-clips) |

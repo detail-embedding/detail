@@ -1,6 +1,6 @@
 """The shared image view: zoom that a user can reach, and undo.
 
-**The classes this guards**, all three already recorded in `CLAUDE.md`:
+**The classes this guards**, recorded in `CLAUDE.md` and `docs/recorded_classes.md`:
 
 - *"A binding is only real on the platform it can be produced on."* The 3-D scatter shipped pan
   bound to middle-drag and Ctrl+left-drag; a MacBook has no middle button, and macOS turns
@@ -14,6 +14,9 @@
   wheel to the page unless a widget claims `OWNS_WHEEL`. A zoom-on-wheel view is exactly such a
   claim — and a view that is *not* zoomable must not make it, or it becomes a hole the page
   cannot be scrolled through.
+- *"A picture scaled in a unit other than the pixels it is shown in."* The pane scaled each
+  picture to its logical size, and a display scaled to 125% enlarged it again when painting, so
+  every frame and plot here was soft. It scales to ``devicePixelRatioF()`` and tags the pixmap.
 """
 
 import pytest
@@ -258,6 +261,67 @@ def test_a_click_maps_through_zoom_and_pan(qapp):
     # a point half the pane right of centre is a quarter of the *zoomed* picture away
     right = view.image_position(QPointF(300, 150))
     assert right[0] == pytest.approx(0.5 + 100 / (400 * view.zoom), abs=0.01)
+
+
+def test_the_picture_is_drawn_at_the_screen_s_pixels_and_maps_clicks_as_before(
+    qapp, monkeypatch
+):
+    """On a display scaled to 125%, a picture scaled to the pane's logical size was enlarged a
+    second time when painted, so every frame and plot shown here was soft. A 400×300 pane is
+    500×375 of the screen's pixels: the pixmap shown is those, tagged with the ratio. Zoomed and
+    panned, the crop drawn and the frame position a click maps to still agree.
+
+    What the pane hands the label is read, not ``label.pixmap()``: a ``QLabel`` gives back its
+    picture re-scaled to the screen it is on, and this test's offscreen screen is 100%.
+    """
+    from PyQt6.QtCore import QEvent, QSize
+    from PyQt6.QtGui import QMouseEvent
+
+    view = ImageView(zoomable=True)
+    monkeypatch.setattr(view, "devicePixelRatioF", lambda: 1.25)
+    handed = []
+    real_set = view.setPixmap
+
+    def set_pixmap(pixmap):
+        handed.append(pixmap)
+        real_set(pixmap)
+
+    monkeypatch.setattr(view, "setPixmap", set_pixmap)
+    _shown(view, qapp)
+    frame = _patterned(1600, 1200)
+    view.set_frame(frame)
+    shown = handed[-1]
+    assert (shown.width(), shown.height(), shown.devicePixelRatio()) == (500, 375, 1.25)
+
+    view._set_zoom(2.0, about=None)
+
+    def mouse(kind, x):
+        return QMouseEvent(
+            kind,
+            QPointF(x, 150),
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+
+    view.mousePressEvent(mouse(QEvent.Type.MouseButtonPress, 200))
+    view.mouseMoveEvent(mouse(QEvent.Type.MouseMove, 240))
+    view.mouseReleaseEvent(mouse(QEvent.Type.MouseButtonRelease, 240))
+    qapp.processEvents()
+
+    # Twice the 500×375 fit is 1000×750; centred, then dragged 40 pane pixels (50 of the
+    # screen's) right, the crop starts at x = 250 - 50.
+    grown = frame.scaled(
+        QSize(1000, 750),
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    shown = handed[-1]
+    assert (shown.width(), shown.height(), shown.devicePixelRatio()) == (500, 375, 1.25)
+    assert shown.toImage() == grown.copy(200, 187, 500, 375).toImage()
+    assert view.image_position(QPointF(200, 150)) == pytest.approx(
+        ((200 + 250) / 1000, (187 + 187.5) / 750), abs=0.005
+    )
 
 
 def test_no_frame_no_position(qapp):

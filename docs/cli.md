@@ -780,7 +780,39 @@ One option chooses how often a row is written. `analysis run` takes it too:
 
 `locations.yaml` records it. The `body_` columns measure the whole mask, tail and all: its
 length and width are the major and minor axes of the ellipse with the same second moments,
-as MATLAB's `regionprops` defines them.
+as MATLAB's `regionprops` defines them. A bar shows the rows measured, then the write.
+
+### `locations plot`
+`--experiment`, `--run an_NN` (a finished location-export run), `--out <path>` (no extension):
+draws the run from its own CSVs and writes `<path>.png`, or one file per `--format png|svg|pdf`
+(repeatable). `--recording <name>` (repeatable) plots only those recordings; `--theme dark`
+draws on a dark surface. No run record; the run is only read.
+
+```bash
+detail locations plot --experiment ./study --run an_03 --out figs/paths
+detail locations plot --experiment ./study --run an_03 --out figs/heat --kind heatmap --group-by genotype --format png --format pdf
+detail locations plot --experiment ./study --run an_03 --out figs/length --kind body --body-measure length --group-by genotype
+```
+
+Every other flag is one of the plot's settings, with its choices, bounds, default and help read
+from the same model the app's **Plots** view is built from (`detail locations plot --help` lists
+them):
+
+- `--kind trace|heatmap|speed|trace3d|body|body_hist`: the path, where the animal spent its
+  time, speed over time, the path against time in 3-D, a body measure over time, or a
+  histogram of it.
+- `--source body|mask|bbox`: the position a path follows: the body's centre, the mask's or
+  the box's. The body is the whole mask, so `body` and `mask` follow the same point.
+- `--body-measure length|width|area|elongation|mask_area`: what a body plot shows.
+- `--group-by <column>`: one panel (or one line) per value of a Recording Information
+  column, each animal counting once.
+- `--posture-every-s <s>`: on a `trace`, the body's outline every that many seconds.
+- `--units mm|px|norm`: by default mm when every plotted recording is calibrated, otherwise px.
+- `--smooth-s`, `--jump-speed`: the path's smoothing and the jump that breaks it, read from a
+  comparison's own defaults so a speed plot and a comparison measure one path.
+
+Plots show one animal per recording; a recording whose tracking followed several is named under
+the title, not plotted.
 
 ### `export`
 Get data out of DETAIL in open formats. `export list` shows what a subject can produce;

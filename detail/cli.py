@@ -34,6 +34,7 @@ from detail import docs_access
 from detail import surfaces
 from detail.api import clip_montage as _clip_montage
 from detail.api.experiment import Experiment
+from detail.api.location_plots import FORMATS as LOCATION_PLOT_FORMATS
 from detail.api import tools as api_tools
 from detail.cli_numbers import FINITE_FLOAT
 from detail.cli_numbers import finite_float_range
@@ -45,6 +46,7 @@ from detail.configs.display import ConfidenceView
 from detail.configs.embedding import EmbeddingConfig
 from detail.configs.labeling import LabelingConfig
 from detail.configs.location_export import LocationExportConfig
+from detail.configs.location_plots import LocationPlotView
 from detail.configs.temporal_clustering import TemporalClusteringConfig
 from detail.configs.temporal_codebook import TemporalCodebookConfig
 from detail.configs.query import QueryConfig
@@ -5136,11 +5138,122 @@ def locations_export(
     """
     sess = _recording(_open_experiment(experiment_dir), recording_id)
     options = _given_location_options(sample_fps=sample_fps)
+    bar = _StageProgress()
     try:
-        out = sess.export_locations(tracking_run_id, out_dir, **options)
+        out = sess.export_locations(tracking_run_id, out_dir, progress=bar, **options)
     except ValueError as e:
         raise click.ClickException(str(e))
+    finally:
+        bar.close()
     click.echo(f"exported: {out}")
+
+
+def _view_option_type(doc: dict) -> click.ParamType | type:
+    """A view field's click type: its choices, or its bounds (an exclusive one open)."""
+    if doc["choices"]:
+        return click.Choice([str(c) for c in doc["choices"]])
+    if doc["type"] == "integer":
+        return _int_range(doc)
+    if doc["type"] == "number":
+        lo, hi = doc["minimum"], doc["maximum"]
+        return finite_float_range(
+            min=lo if lo is not None else doc["exclusive_minimum"],
+            max=hi if hi is not None else doc["exclusive_maximum"],
+            min_open=lo is None and doc["exclusive_minimum"] is not None,
+            max_open=hi is None and doc["exclusive_maximum"] is not None,
+        )
+    return str
+
+
+def _view_options(model):
+    """One ``--option`` per field of a view model (``configs/display.py``'s kind), its
+    choices, bounds, default and help read from the model (``describe_config``) —
+    enumerated, so a field added there is a flag here, with nothing written twice."""
+
+    def decorate(fn):
+        for doc in reversed(describe_config(model)):
+            flag = "--" + doc["name"].replace("_", "-")
+            if doc["type"] == "boolean":
+                fn = click.option(
+                    f"{flag}/--no-{flag[2:]}",
+                    doc["name"],
+                    default=bool(doc["default"]),
+                    show_default=True,
+                    help=doc["help"],
+                )(fn)
+                continue
+            fn = click.option(
+                flag,
+                doc["name"],
+                type=_view_option_type(doc),
+                default=doc["default"],
+                show_default=doc["default"] is not None,
+                help=doc["help"],
+            )(fn)
+        return fn
+
+    return decorate
+
+
+@locations.command("plot")
+@_EXPERIMENT_OPT
+@click.option(
+    "--run", "run_id", required=True,
+    help="Completed location-export analysis run (e.g. an_03).",
+)  # fmt: skip
+@click.option(
+    "--recording", "recording_refs", multiple=True,
+    help="Recording name (or id) to plot (repeatable). Default: every completed recording "
+    "of the run.",
+)  # fmt: skip
+@click.option(
+    "--out", "out_stem", required=True, type=UserPath(dir_okay=False),
+    help="Output path without extension; one file per --format is written beside it.",
+)  # fmt: skip
+@click.option(
+    "--format", "formats", multiple=True,
+    type=click.Choice(list(LOCATION_PLOT_FORMATS)), default=("png",), show_default=True,
+    help="Picture format (repeatable).",
+)  # fmt: skip
+@click.option(
+    "--theme", type=click.Choice(["light", "dark"]), default="light", show_default=True,
+    help="Chart surface.",
+)  # fmt: skip
+@_view_options(LocationPlotView)
+def locations_plot(
+    experiment_dir: Path,
+    run_id: str,
+    recording_refs: tuple[str, ...],
+    out_stem: str,
+    formats: tuple[str, ...],
+    theme: str,
+    **view_fields,
+) -> None:
+    """Draw a location-export run: the animal's path, where it spent its time, its speed, or
+    its body's size and shape — per recording, or by a Recording Information column with
+    --group-by."""
+    proj = _open_experiment(experiment_dir)
+    try:
+        view = LocationPlotView(**view_fields)
+        plots = proj.location_plots(run_id)
+        recording_ids = (
+            [proj.resolve_recording(ref).id for ref in recording_refs]
+            if recording_refs
+            else None
+        )
+    except (ValueError, KeyError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    bar = _StageProgress()
+    try:
+        paths = plots.export(
+            view, out_stem, recording_ids, formats=formats, theme=theme, progress=bar
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    finally:
+        bar.close()
+    for path in paths:
+        click.echo(f"wrote: {path}")
 
 
 # --------------------------------------------------------------------------- #
