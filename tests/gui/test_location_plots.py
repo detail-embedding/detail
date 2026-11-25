@@ -242,6 +242,34 @@ def test_export_writes_the_current_plot(qapp, page, tmp_path):
     assert drain_until(qapp, lambda: panel._status.text().startswith("Wrote "))
 
 
+def test_a_redraw_keeps_the_export_message(qapp, page, tmp_path):
+    """Changing a setting and exporting at once must leave "Wrote …" on screen.
+
+    A setting change redraws after a short debounce, and the redraw used to start by clearing
+    the status line. When the export finished first, its "Wrote …" flashed and vanished: seen
+    on CI, where the debounce outlasted a quick export. A redraw now clears only an error a
+    redraw put there.
+    """
+    panel = _panel(page)
+    _open(page)
+    assert _drawn(qapp, panel)
+    panel.export_to(str(tmp_path / "path.svg"))
+    assert drain_until(qapp, lambda: panel._status.text().startswith("Wrote "))
+    panel._draw()
+    drain_busy_calls(qapp)
+    assert panel._status.text().startswith("Wrote ")
+
+
+def test_a_redraw_clears_its_own_earlier_error(qapp, page):
+    panel = _panel(page)
+    _open(page)
+    assert _drawn(qapp, panel)
+    panel._draw_failed(RuntimeError("could not draw"))
+    assert panel._status.text() == "could not draw"
+    panel._draw()
+    assert panel._status.text() == ""
+
+
 def test_keypoint_rows_appear_only_when_the_run_has_keypoints(qapp, page, tmp_path):
     from PyQt6.QtCore import Qt
 
