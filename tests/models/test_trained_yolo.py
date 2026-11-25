@@ -48,13 +48,13 @@ def test_closed_set_attrs():
 
 def test_init_stores_weights_and_classes(tmp_path):
     weights = tmp_path / "best.pt"
-    model = TrainedYOLO(weights, ["mouse", "pellet"])
+    model = TrainedYOLO(weights, ["mouse", "pellet"], negative_class_ids=())
     assert model._weights_path == weights
     assert model._classes == ["mouse", "pellet"]
 
 
 def test_predict_before_load_raises(tmp_path):
-    model = TrainedYOLO(tmp_path / "best.pt", ["mouse"])
+    model = TrainedYOLO(tmp_path / "best.pt", ["mouse"], negative_class_ids=())
     with pytest.raises(RuntimeError, match="load.. must be called"):
         model.predict(np.zeros((8, 8, 3), np.uint8), Prompt(targets=[]))
 
@@ -64,14 +64,16 @@ def test_readiness_missing_dependency(tmp_path, monkeypatch):
     weights.write_bytes(b"w")
     # None in sys.modules makes ``import ultralytics`` raise ImportError
     monkeypatch.setitem(sys.modules, "ultralytics", None)
-    status = TrainedYOLO(weights, ["mouse"]).readiness()
+    status = TrainedYOLO(weights, ["mouse"], negative_class_ids=()).readiness()
     assert not status.ready
     assert status.reason == "missing_dependency"
 
 
 def test_readiness_missing_weights(tmp_path):
     pytest.importorskip("ultralytics")
-    status = TrainedYOLO(tmp_path / "absent.pt", ["mouse"]).readiness()
+    status = TrainedYOLO(
+        tmp_path / "absent.pt", ["mouse"], negative_class_ids=()
+    ).readiness()
     assert not status.ready
     assert status.reason == "missing_weights"
     assert "absent.pt" in status.message
@@ -81,7 +83,7 @@ def test_readiness_ready_when_weights_present(tmp_path):
     pytest.importorskip("ultralytics")
     weights = tmp_path / "best.pt"
     weights.write_bytes(b"w")
-    assert TrainedYOLO(weights, ["mouse"]).readiness().ready
+    assert TrainedYOLO(weights, ["mouse"], negative_class_ids=()).readiness().ready
 
 
 def _build_seg_weights(path):
@@ -107,7 +109,9 @@ def test_load_and_predict_ignores_prompt(tmp_path):
     pytest.importorskip("ultralytics")
     weights = _build_seg_weights(tmp_path / "stand_in-seg.pt")
 
-    model = TrainedYOLO(weights, classes=["person"])  # closed-set class list
+    model = TrainedYOLO(
+        weights, classes=["person"], negative_class_ids=()
+    )  # closed-set class list
     model.load("cpu")
     model.set_conf_threshold(0.05)
     frame = np.zeros((64, 64, 3), np.uint8)
@@ -151,7 +155,7 @@ def test_predict_batch_is_ultralytics_predict_split_at_its_own_stages(tmp_path):
 
     weights = _detecting_seg_weights(tmp_path / "detecting-seg.pt")
     classes = ["mouse"]
-    model = TrainedYOLO(weights, classes)
+    model = TrainedYOLO(weights, classes, negative_class_ids=())
     model.load("cpu")
     model.set_conf_threshold(0.05)
     reference = YOLO(str(weights))
@@ -178,7 +182,11 @@ def test_predict_batch_is_ultralytics_predict_split_at_its_own_stages(tmp_path):
                 0,
                 0,
                 trained_yolo._detections(
-                    trained_yolo._host_arrays(ultra), classes, w, h
+                    trained_yolo._host_arrays(ultra),
+                    classes,
+                    w,
+                    h,
+                    negative_class_ids=(),
                 ),
             ).detections()
             detections = result.detections()
@@ -238,7 +246,7 @@ def test_the_stand_in_weights_are_built_without_touching_the_network(
     assert weights.is_file()
     assert weights.stat().st_size > 0
 
-    model = TrainedYOLO(weights, classes=["person"])
+    model = TrainedYOLO(weights, classes=["person"], negative_class_ids=())
     model.load("cpu")
     result = model.predict(np.zeros((64, 64, 3), np.uint8), Prompt(targets=[]))
     assert isinstance(result, FrameResult)

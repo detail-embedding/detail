@@ -32,7 +32,7 @@ class _StubTrainedLoader(DetectionModel):
     supported_cue_types = []
     supported_backends = ["cpu"]
 
-    def __init__(self, weights_path, classes):
+    def __init__(self, weights_path, classes, *, negative_class_ids=()):
         super().__init__(None)
         self.weights_path = weights_path
         self.classes = classes

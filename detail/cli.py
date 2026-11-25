@@ -3999,6 +3999,14 @@ def dataset_create(
     type=finite_float_range(0.0, 0.5),
     help=_LAB["background_share"].description,
 )
+@click.option(
+    "--negative-prompt",
+    "negative_prompt",
+    default=_LAB["negative_prompt"].default,
+    type=str,
+    metavar="TEXT",
+    help=_LAB["negative_prompt"].description,
+)
 @_BACKEND_OPT
 @_DEVICE_OPT
 def dataset_label(
@@ -4014,6 +4022,7 @@ def dataset_label(
     min_contour_area: int,
     val_split: float,
     background_share: float,
+    negative_prompt: str | None,
     backend: str,
     devices: tuple[int, ...],
 ) -> None:
@@ -4040,6 +4049,7 @@ def dataset_label(
             min_contour_area=min_contour_area,
             val_split=val_split,
             background_share=background_share,
+            negative_prompt=negative_prompt,
             compute=_compute_target(backend, devices),
             sampling=sampling,
             model_id=model_id,
@@ -4084,6 +4094,10 @@ def dataset_status(dataset_id: str, experiment_dir: Path) -> None:
     classes = record.get("classes")
     if classes:
         click.echo(f"  classes: {', '.join(c['name'] for c in classes)}")
+    negatives = record.get("negative_classes")
+    if negatives:
+        names = ", ".join(c["name"] for c in negatives)
+        click.echo(f"  negative prompt: {names} (learned apart, never reported)")
 
 
 @dataset.command("attach")
@@ -4351,6 +4365,9 @@ def train_status(model_id: str, experiment_dir: Path) -> None:
         click.echo(f"  trained with: {trained_with}")
     if record.get("classes"):
         click.echo(f"  classes: {record['classes']}")
+    if record.get("negative_classes"):
+        names = ", ".join(c["name"] for c in record["negative_classes"])
+        click.echo(f"  negative prompt: {names} (learned apart, never reported)")
     if record.get("metrics"):
         click.echo(f"  metrics: {record['metrics']}")
     # The line `train stop` is decided from. Without it the CLI can stop a training and gives
@@ -4497,6 +4514,14 @@ def distill() -> None:
     help=_LAB["background_share"].description,
 )
 @click.option(
+    "--negative-prompt",
+    "negative_prompt",
+    default=_LAB["negative_prompt"].default,
+    type=str,
+    metavar="TEXT",
+    help=_LAB["negative_prompt"].description,
+)
+@click.option(
     "--label-model",
     "label_model_id",
     default="sam3",
@@ -4576,6 +4601,7 @@ def distill_run(
     min_contour_area: int,
     val_split: float,
     background_share: float,
+    negative_prompt: str | None,
     label_model_id: str,
     label_model_variant: str | None,
     base_model: str,
@@ -4622,6 +4648,7 @@ def distill_run(
             min_contour_area=min_contour_area,
             val_split=val_split,
             background_share=background_share,
+            negative_prompt=negative_prompt,
             label_model_id=label_model_id,
             label_model_variant=label_model_variant,
             label_compute=(
@@ -4938,6 +4965,9 @@ def model_show(model_id: str) -> None:
     click.echo(f"description: {ref.description or '—'}")
     click.echo(f"notes:       {ref.notes or '—'}")
     click.echo(f"classes:     {', '.join(ref.classes) or '—'}")
+    if ref.negative_classes:
+        names = ", ".join(ref.negative_classes)
+        click.echo(f"negative:    {names} (learned apart, never reported)")
     click.echo(f"preview:     {ref.preview_path or '—'}")
     if ref.source_experiments:
         projects = ", ".join(

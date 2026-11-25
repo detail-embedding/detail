@@ -6,12 +6,20 @@ prompt. ``supported_cue_types = []`` marks it closed-set, so detection takes an
 empty prompt and ``predict`` ignores the prompt entirely. The class names come
 from the recorded dataset classes (``model.yaml``), not from the run config.
 
+**A negative class is never output** (§12 *Negative prompt*). A student distilled with a
+negative prompt was trained on one more class than ``model.yaml``'s ``classes`` lists — the
+thing that is not the subject, labelled so it learns it apart — and every prediction drops
+that class's rows. Ultralytics' NMS is per class (no ``agnostic_nms``), so dropping the rows
+after it leaves the other classes' rows exactly as they were. ``negative_class_ids`` is a
+required keyword: a construction site that forgot it would output the negative class.
+
 Unlike the registry-keyed pretrained models, this is constructed by the resolver
 (``models/resolve.py``) with an explicit local weights path + class list, and is
 registered under its ``model_family`` (``"yolo"``) via ``register_trained_loader``.
 ``from ultralytics import YOLO`` stays inside ``load`` (Tenet 13).
 """
 
+from collections.abc import Iterable
 from pathlib import Path
 
 import numpy as np
@@ -40,10 +48,17 @@ class TrainedYOLO(DetectionModel):
     supported_backends = ["cpu", "mps", "cuda"]
     supports_batching = True  # Ultralytics runs a list of frames in one forward pass
 
-    def __init__(self, weights_path: Path | str, classes: list[str]) -> None:
+    def __init__(
+        self,
+        weights_path: Path | str,
+        classes: list[str],
+        *,
+        negative_class_ids: Iterable[int],
+    ) -> None:
         super().__init__(None)  # no size variants
         self._weights_path = Path(weights_path)
         self._classes = list(classes)
+        self._negative_class_ids = frozenset(int(i) for i in negative_class_ids)
         self._model = None
         self._device = "cpu"
         self._conf = 0.5
@@ -131,11 +146,7 @@ class TrainedYOLO(DetectionModel):
             retina_masks=True,  # full-resolution masks (matching the frame)
             verbose=False,
         )
-        return FrameResult.from_detections(
-            frame_idx=0,
-            t_ns=0,
-            detections=_detections(_host_arrays(results[0]), self._classes, w, h),
-        )
+        return self._frame_result(_host_arrays(results[0]), w, h)
 
     def predict_batch(
         self, frames: list[np.ndarray], prompts: list[Prompt]
@@ -160,14 +171,22 @@ class TrainedYOLO(DetectionModel):
         ]
 
     def finish_batch(self, raw: object) -> list[FrameResult]:
-        return [
-            FrameResult.from_detections(
-                frame_idx=0,
-                t_ns=0,
-                detections=_detections(arrays, self._classes, w, h),
-            )
-            for arrays, w, h in raw
-        ]
+        return [self._frame_result(arrays, w, h) for arrays, w, h in raw]
+
+    def _frame_result(self, arrays, w: int, h: int) -> FrameResult:
+        """One frame's host arrays as a ``FrameResult``, without the negative classes: the
+        one conversion both predict paths share."""
+        return FrameResult.from_detections(
+            frame_idx=0,
+            t_ns=0,
+            detections=_detections(
+                arrays,
+                self._classes,
+                w,
+                h,
+                negative_class_ids=self._negative_class_ids,
+            ),
+        )
 
     def _split_predict(self):
         if self._model is None:
@@ -198,15 +217,26 @@ def _host_arrays(result) -> tuple | None:
     return xyxy, conf, cls, masks
 
 
-def _detections(arrays, class_names: list[str], w: int, h: int) -> list[Detection]:
-    """``_host_arrays``' output as normalized ``Detection``s."""
+def _detections(
+    arrays,
+    class_names: list[str],
+    w: int,
+    h: int,
+    *,
+    negative_class_ids: Iterable[int],
+) -> list[Detection]:
+    """``_host_arrays``' output as normalized ``Detection``s, leaving out every row of a
+    negative class (§12 *Negative prompt*)."""
     if arrays is None:
         return []
+    negative = frozenset(negative_class_ids)
     xyxy, conf, cls, masks = arrays
     detections = []
     for i in range(len(xyxy)):
-        x1, y1, x2, y2 = (float(v) for v in xyxy[i])
         class_index = int(cls[i])
+        if class_index in negative:
+            continue
+        x1, y1, x2, y2 = (float(v) for v in xyxy[i])
         name = (
             class_names[class_index]
             if class_index < len(class_names)

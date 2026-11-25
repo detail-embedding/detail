@@ -2,7 +2,8 @@
 
 A long GPU job: resolve the trainer (TRAINERS registry) + dataset, call
 ``trainer.train`` (which writes weights into ``models/<id>/run/``), then record
-the trained-weight paths (relative — Tenet 6), the dataset's classes, the
+the trained-weight paths (relative — Tenet 6), the dataset's classes (and its negative
+prompt's classes, which the model never outputs — §12 *Negative prompt*), the
 trainer's metrics, and what it trained with (``hyperparams`` + the backend's resolved
 ``trained_with``) into ``model.yaml``. The trainer backend (e.g. Ultralytics) is
 lazy-imported inside its own class (Tenet 13); this module imports none.
@@ -16,6 +17,7 @@ from detail.core.registries import TRAINERS
 from detail.core.utils import resolve_device
 from detail.executor import rundir
 from detail.executor.runners import register_runner
+from detail.models import resolve
 from detail.models.trained_yolo import TrainedYOLO
 from detail.storage import datasets as datasets_store
 from detail.storage import models as models_store
@@ -100,6 +102,8 @@ def _train(job: TrainingJob, run_dir: Path, progress_cb, stop_event) -> dict:
     record = models_store.read_model_yaml(run_dir)
     record["model_family"] = trainer.model_family  # resolves the trained-apply loader
     record["classes"] = dataset.get("classes", [])
+    # Trained on, never output: the loader drops them (§12 *Negative prompt*).
+    record["negative_classes"] = list(dataset.get("negative_classes") or [])
     if dataset.get("task"):
         # A pose dataset (§12 *Distill keypoints*): the student carries the task and the
         # skeleton copy it was trained on, which is what the keypoint resolver reads back.
@@ -128,6 +132,7 @@ def _train(job: TrainingJob, run_dir: Path, progress_cb, stop_event) -> dict:
             device,
             progress_cb,
             int(job.hyperparams.get("epochs") or 0),
+            negative_class_ids=resolve.negative_class_ids(record),
         )
         if best is not None and not interrupted
         else None
@@ -153,6 +158,8 @@ def _capture_preview(
     device: str,
     progress_cb,
     total_epochs: int = 0,
+    *,
+    negative_class_ids: list[int],
 ) -> str | None:
     """Render one overlay frame of the model's own prediction as its preview thumbnail
     (§12) — a "what this model does" shot for the catalog. Best-effort at an isolation
@@ -199,7 +206,11 @@ def _capture_preview(
                     message="writing preview",
                 )
             )
-        model = TrainedYOLO(best, [c["name"] for c in classes])
+        model = TrainedYOLO(
+            best,
+            [c["name"] for c in classes],
+            negative_class_ids=negative_class_ids,
+        )
         model.load(device)
         result = model.predict(
             frame_bgr, Prompt(targets=[])

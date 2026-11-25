@@ -583,3 +583,83 @@ def test_distill_with_no_recordings_named_samples_those_with_video(
     )
     rec = distill_store.read_run(proj.dir, "distill_001")
     assert rec["config"]["source_recording_ids"] == ["recording_001"]
+
+
+# --- §12 *Negative prompt* -------------------------------------------------- #
+def test_a_distill_records_its_negative_prompt_and_labels_with_it(
+    tmp_path, monkeypatch
+):
+    """The prompt is recorded on the run and reaches the label stage, which adds the class."""
+    proj = Experiment.create("p", tmp_path)
+    _pass_validation(proj, monkeypatch)
+    monkeypatch.setattr(
+        "detail.api.experiment.spawn_coordinator", lambda *_a, **_k: 4321
+    )
+    proj.distill(
+        "m",
+        classes=[LabelingClass(0, "mouse", "a mouse")],
+        n_frames=2,
+        source_recording_ids=["recording_001"],
+        trainer_id="faketrainer",
+        negative_prompt=" cable ",
+    )
+    record = distill_store.read_run(proj.dir, "distill_001")
+    assert record["config"]["labeling"]["negative_prompt"] == "cable"
+    # The user's classes stay as typed: the label stage adds the negative one.
+    assert [c["name"] for c in record["config"]["classes"]] == ["mouse"]
+
+    labelled = {}
+    monkeypatch.setattr(
+        proj,
+        "label_dataset",
+        lambda **kw: labelled.update(kw) or _FakeRun("dataset_001", [], "failed"),
+    )
+    DistillOrchestrator(proj, "distill_001", record, lambda _p: None).run()
+    assert labelled["negative_prompt"] == "cable"
+
+
+def test_a_distill_recorded_before_the_field_labels_without_one(tmp_path, monkeypatch):
+    proj = Experiment.create("p", tmp_path)
+    record = _reserve(proj)  # its labeling block has no "negative_prompt"
+    assert "negative_prompt" not in record["config"]["labeling"]
+    labelled = {}
+    monkeypatch.setattr(
+        proj,
+        "label_dataset",
+        lambda **kw: labelled.update(kw) or _FakeRun("dataset_001", [], "failed"),
+    )
+    DistillOrchestrator(proj, "distill_001", record, lambda _p: None).run()
+    assert labelled["negative_prompt"] is None
+
+
+def test_a_negative_prompt_that_is_a_class_is_refused_before_the_run_exists(
+    tmp_path,
+):
+    proj = Experiment.create("p", tmp_path)
+    classes = [LabelingClass(0, "mouse", "a mouse"), LabelingClass(1, "cable", "wire")]
+    with pytest.raises(ValueError, match="negative prompt 'cable' is also class"):
+        proj.distill("m", classes=classes, n_frames=4, negative_prompt="cable")
+    assert not distill_store.list_runs(proj.dir)
+
+
+def test_label_dataset_adds_the_negative_class_to_the_job(tmp_path, monkeypatch):
+    proj = Experiment.create("p", tmp_path)
+    _pass_validation(proj, monkeypatch)
+    submitted = []
+    monkeypatch.setattr(
+        "detail.api.experiment.LocalExecutor.submit",
+        lambda self, job: submitted.append(job),
+    )
+    proj.label_dataset(
+        "d",
+        [LabelingClass(0, "mouse", "a mouse")],
+        n_frames=2,
+        source_recording_ids=["recording_001"],
+        negative_prompt="cable",
+    )
+    (job,) = submitted
+    assert [(c.class_id, c.name, c.prompt) for c in job.classes] == [
+        (0, "mouse", "a mouse"),
+        (1, "cable", "cable"),
+    ]
+    assert job.negative_classes == ["cable"]

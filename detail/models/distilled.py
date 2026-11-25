@@ -98,6 +98,9 @@ def register_distilled_model(
             "model_family": record.get("model_family", "yolo"),
             "task": record.get("task", "segment"),
             "classes": record.get("classes", []),
+            # The weights still know them; without this the catalog copy would output them
+            # (§12 *Negative prompt*).
+            "negative_classes": list(record.get("negative_classes") or []),
             "weights": {"best": imported_store.WEIGHTS_RELPATH},
             "status": "complete",
             "created_at": utc_timestamp(),

@@ -3407,6 +3407,7 @@ class GlobalModelDetailPage(QWidget):
         form.addRow("Notes", _wrap_label(ref.notes or "—"))
         form.addRow("Created", QLabel(_short_dt(ref.created_at) or "—"))
         form.addRow("Classes", QLabel(", ".join(ref.classes) or "—"))
+        _add_negative_prompt_row(form, ref.negative_classes, "Negative prompt")
         form_widget = QWidget()
         form_widget.setLayout(form)
         top.addWidget(form_widget, 1)
@@ -3527,6 +3528,18 @@ def _wrap_label(text: str) -> QLabel:
     label = QLabel(text)
     label.setWordWrap(True)
     return label
+
+
+def _add_negative_prompt_row(
+    form: QFormLayout, names: list[str], label: str = "Negative prompt:"
+) -> None:
+    """A dataset's or detector's *Negative prompt* row (§12), only when it has one: the
+    thing labelled so the detector learns it apart from its classes, and never reports.
+    """
+    if names:
+        form.addRow(
+            label, _wrap_label(f"{', '.join(names)} (learned apart, never reported)")
+        )
 
 
 class ExperimentRecordingsPage(QWidget):
@@ -6928,6 +6941,9 @@ class DatasetDetailPage(_FitDetailPage):
         )
         classes = [c.get("name") for c in record.get("classes", [])]
         form.addRow("Classes:", QLabel(", ".join(classes) if classes else "—"))
+        _add_negative_prompt_row(
+            form, [c.get("name") for c in record.get("negative_classes") or []]
+        )
         self._add(holder)
         self._add_notes("dataset", self._dataset_id)
         if record.get("status") in ACTIVE_STATUSES:
@@ -7147,6 +7163,9 @@ class ModelDetailPage(_FitDetailPage):
         trained_with.setWordWrap(True)
         form.addRow("Trained with:", trained_with)
         form.addRow("Classes:", QLabel(", ".join(classes) if classes else "—"))
+        _add_negative_prompt_row(
+            form, [c.get("name") for c in record.get("negative_classes") or []]
+        )
         form.addRow("Weights:", QLabel(str(weights.get("best", "—"))))
         form.addRow(
             "Metrics:",

@@ -6,7 +6,9 @@ nested inputs (``classes``, ``source_recording_ids``, ``compute``, ``name``) sta
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from detail.core.dataclasses import LabelingClass
 
 
 class LabelingConfig(BaseModel):
@@ -71,3 +73,51 @@ class LabelingConfig(BaseModel):
         "label so the trained detector learns what nothing there looks like. 0 keeps none.",
         json_schema_extra={"advanced": True, "label": "Background share"},
     )
+    negative_prompt: str | None = Field(
+        None,
+        description="Something in the video that touches the animal but is not it, such as a "
+        "tether, cable or patch cord. The teacher labels it as a class of its own, so the "
+        "trained detector learns to tell it apart from your classes and never reports it. "
+        "Leave empty for none. For a tethered animal, `cable` works with SAM 3 where "
+        "`tether` finds nothing. Check it with Test prompts: it must not take part of the "
+        "animal, such as a tail.",
+        json_schema_extra={"advanced": True, "label": "Negative prompt"},
+    )
+
+    @field_validator("negative_prompt", mode="before")
+    @classmethod
+    def _blank_is_none(cls, value: object) -> object:
+        """An empty or whitespace-only prompt is no negative prompt; any other is trimmed."""
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
+
+
+def with_negative_prompt(
+    classes: list[LabelingClass], negative_prompt: str | None
+) -> tuple[list[LabelingClass], list[str]]:
+    """``classes`` plus the negative prompt's class, and the negative class names (§12
+    *Negative prompt*).
+
+    The negative class is named after its prompt and takes the next class id after the
+    user's, so the user's classes keep their ids and a trained model's output classes stay
+    the first ones. Returns the user's classes unchanged and ``[]`` when there is no
+    negative prompt.
+
+    Raises:
+        ValueError: a class is already named or prompted like the negative prompt, so the
+            same thing would be labelled both as a class and as not one.
+    """
+    prompt = (negative_prompt or "").strip()
+    if not prompt:
+        return list(classes), []
+    for c in classes:
+        if prompt.lower() in (c.name.strip().lower(), c.prompt.strip().lower()):
+            raise ValueError(
+                f"the negative prompt {prompt!r} is also class {c.name!r}; a class is "
+                "labelled as what you want detected, and the negative prompt as what you "
+                "do not, so change one of them"
+            )
+    next_id = max((c.class_id for c in classes), default=-1) + 1
+    negative = LabelingClass(class_id=next_id, name=prompt, prompt=prompt)
+    return [*classes, negative], [prompt]

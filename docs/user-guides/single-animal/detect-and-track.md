@@ -65,8 +65,8 @@ The **Distill new model** dialog opens. Fill in the top part:
        whether the dialog is ready to start.
     8. **Student**: the fast model that learns from the labels. `yolo11s-seg.pt` is a small
        one that outlines as well as boxes.
-    9. **Advanced Settings**: opens 13 more settings, shown in step 2. Their values work as
-       they are, except **Batch size** (see step 2).
+    9. **Advanced Settings**: opens the rest of the settings, shown in step 2. Their values
+       work as they are, except **Batch size** (see step 2).
     10. **Class name**: the label stored on each animal found, such as `mouse`.
     11. **Text prompt**: the words SAM 3 searches for. Often the same as the class name.
     12. **−**: removes this class.
@@ -105,13 +105,23 @@ the prompt on six frames of the first recording and shows what it found.
       **Detection confidence threshold** (5) until only the animal is left. Use that value as the distill's
       **Confidence threshold** under **Advanced Settings**.
 
+??? tip "If your animal wears a tether, cable or patch cord"
+    A detector can learn the cable as a faint piece of the animal, and tracking then adds it
+    to the animal's outline. To prevent that, type `cable` in **Negative prompt** under
+    **Advanced Settings**. SAM 3 then labels the cable as something else, the detector
+    learns it apart from the animal, and it never reports it.
+
+    Click **Test prompts** again: a second column shows what `cable` finds. **Check:** it
+    outlines the cable and no part of the animal, such as its tail. With SAM 3, `cable`
+    finds a tether where `tether` finds nothing.
+
 ## 2. Distill a fast detector
 
 Click **▶ Advanced Settings** to see the rest of the settings. Set **Batch size** for your
 GPU (see [Batch size and your GPU](#batch-size-and-your-gpu) below), and leave the others as
 they are.
 
-![The Distill dialog scrolled to Advanced Settings: frame sampling, confidence threshold, validation split, background share and minimum contour area; where the labelling and training run; and the training parameters epochs, batch size 8, image size and patience, with Batch size highlighted. Numbered markers sit on every setting.](../../assets/user-guides/single-animal/detect/distill-advanced.png)
+![The Distill dialog scrolled to Advanced Settings: frame sampling, confidence threshold, validation split, background share, minimum contour area and negative prompt; where the labelling and training run; and the training parameters epochs, batch size 8, image size and patience, with Batch size highlighted. Numbered markers sit on every setting.](../../assets/user-guides/single-animal/detect/distill-advanced.png)
 
 ??? info "What everything on this screen does"
     1. **Frame sampling**: how the frames to label are picked. **stratified** spreads them
@@ -122,16 +132,18 @@ they are.
     4. **Background share**: the largest share of frames where SAM 3 found nothing that are
        kept, so the model learns what an empty frame looks like.
     5. **Min contour area**: outlines smaller than this many pixels are dropped as noise.
-    6. **Label backend**: where SAM 3 labels the frames: **cuda** is your computer's GPU.
-    7. **Label CUDA device**: which GPU, on a computer with more than one. 0 is the first.
-    8. **Train backend**: where the fast model trains.
-    9. **Train CUDA device**: which GPU trains it.
-    10. **Epochs**: how many times the training goes through all the labelled frames, at
+    6. **Negative prompt**: something touching the animal that is not the animal, such as a
+       tether's cable. Empty for none. See the tip in step 1.
+    7. **Label backend**: where SAM 3 labels the frames: **cuda** is your computer's GPU.
+    8. **Label CUDA device**: which GPU, on a computer with more than one. 0 is the first.
+    9. **Train backend**: where the fast model trains.
+    10. **Train CUDA device**: which GPU trains it.
+    11. **Epochs**: how many times the training goes through all the labelled frames, at
         most.
-    11. **Batch size**: how many frames it trains on at once. See below.
-    12. **Image size**: the size, in pixels, frames are shrunk to for training.
-    13. **Patience**: stop early if the model has not improved for this many epochs.
-    14. **?**: a short explanation of the setting beside it.
+    12. **Batch size**: how many frames it trains on at once. See below.
+    13. **Image size**: the size, in pixels, frames are shrunk to for training.
+    14. **Patience**: stop early if the model has not improved for this many epochs.
+    15. **?**: a short explanation of the setting beside it.
 
 ### Batch size and your GPU
 

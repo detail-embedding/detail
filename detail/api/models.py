@@ -59,6 +59,9 @@ class ImportedModelRef:
     task: str | None = None
     skeleton: Skeleton | None = None
     skeleton_ref: dict | None = None
+    # A distilled detector's negative prompt classes (§12 *Negative prompt*): trained on,
+    # never output, so not among ``classes``.
+    negative_classes: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -383,6 +386,7 @@ def _imported_ref(rec: dict) -> ImportedModelRef:
         name=rec.get("name", ""),
         model_family=rec.get("model_family", ""),
         classes=[c["name"] for c in rec.get("classes", [])],
+        negative_classes=[c["name"] for c in rec.get("negative_classes") or []],
         source=rec.get("source", "imported"),
         provenance=rec.get("provenance"),
         created_at=rec.get("created_at"),

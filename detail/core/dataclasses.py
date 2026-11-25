@@ -472,6 +472,10 @@ class LabelingJob:
     # passes LabelingConfig's resolved value; 0.0 is what a job recorded before the field
     # existed did.
     background_share: float = 0.0
+    # Names, among `classes`, of the negative prompt's class (§12 *Negative prompt*): labelled
+    # so the student learns it apart, kept out of the dataset's and the model's `classes`. A
+    # job recorded before the field existed had none.
+    negative_classes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -490,6 +494,7 @@ class LabelingJob:
             "model_id": self.model_id,
             "model_variant": self.model_variant,
             "background_share": self.background_share,
+            "negative_classes": list(self.negative_classes),
         }
 
     @classmethod
@@ -510,6 +515,7 @@ class LabelingJob:
             model_id=d.get("model_id", "sam3"),
             model_variant=d.get("model_variant"),
             background_share=d.get("background_share", 0.0),
+            negative_classes=list(d.get("negative_classes") or []),
         )
 
 
