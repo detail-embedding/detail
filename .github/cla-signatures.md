@@ -12,4 +12,4 @@ The three authors below are covered by a separate written authors' agreement
 |---|---|---|---|
 | mlurbur | Moses Lurbur | 2026-11-23 | 1.0 |
 | DrCoffey | Kevin Coffey | 2026-11-23 | 1.0 |
-| SamAGolden | [full name] | [date] | authors' agreement |
+| SamAGolden | Sam Golden | 2026-11-24 | 1.0 |
