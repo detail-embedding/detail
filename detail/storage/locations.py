@@ -45,11 +45,16 @@ def experiments_root() -> Path:
     (configuring a custom root via storage.yaml / Preferences comes later). The
     directory is created if missing.
     """
-    data = read_storage()
-    configured = data.get("storage", {}).get("default", {}).get("root")
-    root = Path(configured).expanduser() if configured else DEFAULT_ROOT
+    root = _experiments_root_path()
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+def _experiments_root_path() -> Path:
+    """Where :func:`experiments_root` resolves, without creating it."""
+    data = read_storage()
+    configured = data.get("storage", {}).get("default", {}).get("root")
+    return Path(configured).expanduser() if configured else DEFAULT_ROOT
 
 
 def configured_model_cache() -> Path | None:

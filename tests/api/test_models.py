@@ -457,11 +457,11 @@ def test_import_takes_a_skeleton_file_preset_or_library_id(tmp_path, pose_pt):
     assert [e["id"] for e in skeletons.skeletons() if not e["builtin"]] == [
         ref.skeleton_ref["id"]
     ]
-    # a preset that does not fit (5 points) is refused on its count
+    # a preset that does not fit (2 points) is refused on its count
     with pytest.raises(
-        ValueError, match="model places 4 points but the skeleton has 5"
+        ValueError, match="model places 4 points but the skeleton has 2"
     ):
-        api_models.import_model(pose_pt, skeleton="quadruped_side_5", name="c")
+        api_models.import_model(pose_pt, skeleton="midline_2", name="c")
 
 
 def test_pose_models_are_keypoint_rows_and_kept_out_of_detection(

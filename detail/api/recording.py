@@ -350,12 +350,36 @@ class Recording:
         Raises:
             FileNotFoundError: If ``path`` is not a file.
             ValueError: If a reference import is missing/mismatched against its video root.
+            UserInputError: If the video's resolution or frame rate is not the recording's.
+                Every part of a recording shares both (§3): boxes, masks and calibrations are
+                in its pixels, and a detection run decodes every part's masks at one size.
         """
         src = Path(path)
         if not src.is_file():
             raise FileNotFoundError(f"video file not found: {path}")
         reference = storage == "reference"
         rel: str | None = None
+        data = recording_store.read_recording(self.dir)
+        video = data.get("video") or {"storage": storage, "files": []}
+
+        index = len(video["files"])
+        part_name = f"part_{index + 1:03d}"
+        # Checked before a referenced file's folder is registered as a video root: a part
+        # refused here leaves nothing behind, on the machine or in the experiment.
+        probe = video_store.probe_video(src)
+        if video["files"] and video.get("resolution"):
+            # A recording written before its rate was recorded is held to its size alone.
+            first = {
+                "resolution": video["resolution"],
+                "fps": video.get("fps_container") or probe["fps"],
+            }
+            differs = video_integrity.another_parts_shape(first, probe)
+            if differs is not None:
+                raise UserInputError(
+                    f"{src.name} cannot be another part of this recording: {differs}. "
+                    "Every part of a recording has one picture size and one frame rate; "
+                    "add it as a recording of its own."
+                )
         if reference:
             if video_root is None:
                 # No location given (the GUI/CLI default): remember the video's own folder
@@ -373,12 +397,6 @@ class Recording:
                 raise ValueError(
                     f"video {src} is not under video root {video_root!r} ({root_dir})"
                 )
-        data = recording_store.read_recording(self.dir)
-        video = data.get("video") or {"storage": storage, "files": []}
-
-        index = len(video["files"])
-        part_name = f"part_{index + 1:03d}"
-        probe = video_store.probe_video(src)
         fps = probe["fps"]
         # Integer ns from the parts' own maps, each re-based to start at 0 — the
         # offset is the only thing that places this part in the recording (Tenet 8).
@@ -1341,7 +1359,14 @@ class Recording:
             )
         return rec
 
-    def location_tables(self, tracking_run_id: str, **options: float | bool | None):
+    def location_tables(
+        self,
+        tracking_run_id: str,
+        *,
+        keypoint_run_id: str | None = None,
+        progress: Callable[[str, float, str], None] | None = None,
+        **options: float | bool | None,
+    ):
         """Per-frame, per-track spatial features for a completed tracking run —
         bbox/centroids/areas, the body's centre, area, length and width, and position
         relative to this recording's ROIs/POIs.
@@ -1352,16 +1377,22 @@ class Recording:
 
         Args:
             tracking_run_id: A complete tracking run of this recording.
+            keypoint_run_id: A complete keypoint track run whose poses went to that tracking
+                run, read into a fourth table (``keypoints``); ``None`` reads no keypoints.
+            progress: ``(stage, fraction, detail)``, called as the tracked rows are
+                measured: a recording's export takes minutes, and without it looks hung.
             **options: The measurement options of ``configs.location_export``:
                 ``sample_fps`` (rows per second per subject; unset is every tracked
                 frame).
 
         Raises:
             ValueError: If the tracking run is missing or not complete, an option is not
-                one this export has, or one is outside its bounds.
+                one this export has, or one is outside its bounds; or the keypoint track run
+                is not complete or assigned its poses to another tracking run.
         """
         from detail.analysis import locations as _locations
         from detail.configs import location_export as _config
+        from detail.core.progress import ThrottledProgress
 
         self._require_complete_tracking(tracking_run_id)
         unknown = sorted(set(options) - set(_config.option_names()))
@@ -1370,33 +1401,75 @@ class Recording:
                 f"location export has no option {', '.join(unknown)}; it has "
                 f"{', '.join(_config.option_names())}"
             )
+        resolved = _config.options_from(options)
+        on_rows = None
+        if progress is not None:
+            # The compute reports per tracked row, hundreds of thousands of them, so the
+            # throttle keeps the callback off its loop.
+            emit = ThrottledProgress(lambda event: progress(*event))
+
+            def on_rows(done: int, total: int) -> None:
+                fraction = done / total if total else 1.0
+                emit(
+                    ("measuring", fraction, f"{done:,} of {total:,} rows"),
+                    force=done >= total,
+                )
+
+            on_rows(0, 1)  # the bar moves before the first part is read
+        if keypoint_run_id is not None:
+            entry = {r.get("id"): r for r in self.keypoint_track_runs}.get(
+                keypoint_run_id
+            )
+            if entry is None or entry.get("status") != "complete":
+                state = "missing" if entry is None else repr(entry.get("status"))
+                raise UserInputError(
+                    f"keypoint track run {keypoint_run_id!r} is {state}, not complete"
+                )
         return _locations.compute_location_tables(
-            self, tracking_run_id, options=_config.options_from(options)
+            self,
+            tracking_run_id,
+            on_progress=on_rows,
+            options=resolved,
+            keypoint_run_id=keypoint_run_id,
         )
 
     def export_locations(
         self,
         tracking_run_id: str,
         out_dir: Path | str,
+        *,
+        keypoint_run_id: str | None = None,
+        progress: Callable[[str, float, str], None] | None = None,
         **options: float | bool | None,
     ) -> Path:
         """Compute + write the three location CSVs (``tracks`` / ``roi_relations`` /
-        ``point_relations``) + a ``locations.yaml`` manifest into a new folder under
-        ``out_dir``; returns that folder. Tables keyed by ``t_ns`` (joins with streams).
-        ``options`` are :meth:`location_tables`'s.
+        ``point_relations``, and ``keypoints`` with a ``keypoint_run_id``) + a
+        ``locations.yaml`` manifest into a new folder under ``out_dir``; returns that folder. Tables keyed by ``t_ns`` (joins with streams).
+        ``progress`` and ``options`` are :meth:`location_tables`'s; ``progress`` also hears
+        the write.
 
         The names are fixed, so each export gets its own folder: writing them straight into
         ``out_dir`` replaced one recording's files with the next one's (#29)."""
         from detail.api import exporters
         from detail.storage import location_export
 
-        tables = self.location_tables(tracking_run_id, **options)
+        tables = self.location_tables(
+            tracking_run_id,
+            keypoint_run_id=keypoint_run_id,
+            progress=progress,
+            **options,
+        )
         dest = exporters.new_export_folder(
             exporters.ExportSubject("recording", self._experiment_dir, self.id),
             out_dir,
             what=f"{tracking_run_id}_locations",
         )
-        return location_export.write_location_tables(dest, tables)
+        if progress is not None:
+            progress("writing", 0.0, dest.name)
+        written = location_export.write_location_tables(dest, tables)
+        if progress is not None:
+            progress("writing", 1.0, dest.name)
+        return written
 
     def backfill_kinematics(
         self, embed_run_id: str, *, progress=None, overwrite: bool = False

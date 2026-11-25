@@ -438,7 +438,7 @@ def an_example_set(experiment) -> str:
     existing = experiment.example_sets()
     if existing:
         return existing[0].id
-    return experiment.create_example_set("examples", "quadruped_side_5").id
+    return experiment.create_example_set("examples", "midline_2").id
 
 
 def an_imported_stream(recording) -> str:
@@ -718,7 +718,7 @@ def _providers(experiment, recording) -> dict:
         "recording_names": lambda: {recording.id: recording.name},
         # The New example set window (§26): the library, the picker's skeleton, a name.
         "skeleton_entries": lambda: _skeleton_entries(),
-        "chosen_skeleton_id": lambda: "quadruped_side_5",
+        "chosen_skeleton_id": lambda: "midline_2",
         "default_set_name": lambda: "example set 1",
         # A cluster's pop-out window (`cluster_window.ClusterWindow`) is opened by INTERPRET and
         # reads its labels and write queue. A page with no run loaded: the window opens on its
@@ -787,7 +787,7 @@ def _skeleton_entries() -> list[dict]:
 def _a_skeleton_entry() -> dict:
     from detail.api import skeletons
 
-    return skeletons.skeleton("quadruped_side_5")
+    return skeletons.skeleton("midline_2")
 
 
 #: Dialogs :func:`build_dialog` cannot construct, and what each is missing. An entry is a
@@ -1039,14 +1039,24 @@ def an_experiment_with_completed_runs(tmp_path):
     # the not-found path. Which state a page is walked in matters: the empty and populated
     # screens are different screens, and the rules about how a table cues a clickable row have
     # nothing to run over when the table has no rows.
+    # Its tables are real, so its Plots view draws a plot rather than an error.
+    from tests.location_fixtures import track, write_run
+
+    run_dir = analysis_runs_store.analysis_dir(proj.dir, "an_01")
+    write_run(
+        run_dir,
+        {"recording_001": {0: track(10.0 + np.arange(50) * 4.0, np.full(50, 60.0))}},
+    )
     analysis_runs_store.write_analysis_yaml(
-        analysis_runs_store.analysis_dir(proj.dir, "an_01"),
+        run_dir,
         {
             "id": "an_01",
             "module_id": "location_export",
             "recording_ids": ["recording_001"],
             "tracking_run_id": "track_01",
             "status": "complete",
+            "per_recording": {"recording_001": {"status": "complete"}},
+            "params": {"source_recording_ids": ["recording_001"]},
             "artifacts": [
                 {"path": "recording_001/tracks.csv", "kind": "tracks", "label": "x"}
             ],

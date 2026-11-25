@@ -91,10 +91,10 @@ def test_a_click_adds_the_frame_places_the_point_and_saves(qapp, proj):
 def test_the_skeleton_can_change_until_the_first_mark(qapp, proj):
     from detail.core.skeleton import PRESETS
 
-    created = proj.create_example_set("rats", "quadruped_side_5")
+    created = proj.create_example_set("rats", "midline_2")
     dialog = _open(qapp, proj, created.id)
     combo = dialog._skeleton
-    assert combo.currentData() == "quadruped_side_5" and combo.isEnabled()
+    assert combo.currentData() == "midline_2" and combo.isEnabled()
     combo.setCurrentIndex(combo.findData("midline_3"))
     combo.activated.emit(combo.currentIndex())
     qapp.processEvents()

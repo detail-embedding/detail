@@ -12,6 +12,7 @@ def test_round_trips():
     d = {
         "source_recording_ids": ["s1", "s2"],
         "tracking_run_id": "track_01",
+        "keypoint_run_id": "kt_01",
         "sample_fps": 5.0,
     }
     assert LocationExportConfig.model_validate(d).model_dump() == d
@@ -26,6 +27,7 @@ def test_defaults_are_empty_and_none():
     assert cfg.model_dump() == {
         "source_recording_ids": [],
         "tracking_run_id": None,
+        "keypoint_run_id": None,
         "sample_fps": None,
     }
 
@@ -51,7 +53,7 @@ def test_the_options_are_the_fields_that_are_not_the_selection():
         for name, field in LocationExportConfig.model_fields.items()
         if (field.json_schema_extra or {}).get("scope") == "selection"
     }
-    assert selection == {"source_recording_ids", "tracking_run_id"}
+    assert selection == {"source_recording_ids", "tracking_run_id", "keypoint_run_id"}
     assert set(option_names()) | selection == set(LocationExportConfig.model_fields)
 
 

@@ -280,6 +280,8 @@ def render_part(
     # first frame that is actually written and reused for the rest of the pass.
     out_size = (size, size)
     sample: tuple[np.ndarray, np.ndarray] | None = None
+    # The size the part's masks were encoded at; the footage can decode at another (§9).
+    encoded = part.get("mask_hw")
     try:
         pending, active, frame_idx = list(ordered), [], 0
         while frame_idx <= last:
@@ -318,7 +320,16 @@ def render_part(
                     drawing = (rows[box_frame][0], row[1] if row is not None else "")
                     payloads = drawn[key] = {
                         render: np.ascontiguousarray(
-                            _payload(render, bgr, drawing, size, out_size, sample, crop)
+                            _payload(
+                                render,
+                                bgr,
+                                drawing,
+                                size,
+                                out_size,
+                                sample,
+                                crop,
+                                encoded,
+                            )
                         )
                         for render in wanted
                     }
@@ -351,13 +362,15 @@ def _payload(
     out_size: tuple[int, int],
     sample: tuple[np.ndarray, np.ndarray] | None,
     crop: bool,
+    encoded: tuple[int, int] | None = None,
 ) -> np.ndarray:
-    """One decoded frame, drawn and framed for one flavour."""
+    """One decoded frame, drawn and framed for one flavour. ``encoded`` is the size the
+    part's masks were encoded at (``None``: the frame's own)."""
     import cv2
 
     box, mask_rle = row
     if render == MASK:
-        binary = _mask_image(bgr.shape[:2], mask_rle)
+        binary = _mask_image(bgr.shape[:2], mask_rle, encoded)
         # `_square_crop` is channel-agnostic, so the mask crops with the same call the frame
         # does — and cropping *before* the resize keeps the mask's own edges rather than
         # inventing intermediate greys.
@@ -371,13 +384,15 @@ def _payload(
         cropped = _square_crop(bgr, box, size)
         if render == RAW:
             return cropped
-        return _blend_cropped(cropped, mask_rle, bgr.shape[:2], box, size)
+        return _blend_cropped(cropped, mask_rle, bgr.shape[:2], box, size, encoded)
     if render == RAW:
         return cv2.resize(bgr, out_size, interpolation=cv2.INTER_AREA)
-    return _overlay(bgr, mask_rle, out_size, sample)
+    return _overlay(bgr, mask_rle, out_size, sample, encoded)
 
 
-def _mask_image(src: tuple[int, int], mask_rle: str) -> np.ndarray:
+def _mask_image(
+    src: tuple[int, int], mask_rle: str, encoded: tuple[int, int] | None = None
+) -> np.ndarray:
     """The subject's mask as a black-and-white BGR frame at the source resolution.
 
     Three channels because the mp4 writers take them; the values stay strictly 0 or 255, which
@@ -388,7 +403,7 @@ def _mask_image(src: tuple[int, int], mask_rle: str) -> np.ndarray:
 
     if not mask_rle:
         return np.zeros((*src, 3), np.uint8)
-    mask = decode_mask(mask_rle, src)
+    mask = decode_mask(mask_rle, encoded or src, out=src)
     return np.repeat((mask.astype(np.uint8) * 255)[:, :, None], 3, axis=2)
 
 
@@ -398,6 +413,7 @@ def _blend_cropped(
     src: tuple[int, int],
     box: np.ndarray,
     size: int,
+    encoded: tuple[int, int] | None = None,
 ) -> np.ndarray:
     """A cropped frame with the subject's mask blended on, in the crop's own frame.
 
@@ -412,7 +428,7 @@ def _blend_cropped(
 
     if not mask_rle:
         return cropped
-    ones = decode_mask(mask_rle, src).view(np.uint8)
+    ones = decode_mask(mask_rle, encoded or src, out=src).view(np.uint8)
     window = _square_crop(np.broadcast_to(ones[:, :, None], (*src, 3)), box, size)
     return rgb_to_bgr(draw_mask(bgr_to_rgb(cropped), window[:, :, 0] > 0, MASK_TINT))
 
@@ -437,6 +453,7 @@ def _overlay(
     mask_rle: str,
     out_size: tuple[int, int],
     sample: tuple[np.ndarray, np.ndarray],
+    encoded: tuple[int, int] | None = None,
 ) -> np.ndarray:
     """The frame at ``out_size`` with the subject's mask blended on (BGR in, BGR out).
 
@@ -456,7 +473,8 @@ def _overlay(
     out = cv2.resize(bgr, out_size, interpolation=cv2.INTER_AREA)
     if not mask_rle:
         return out
-    mask = decode_mask(mask_rle, bgr.shape[:2])[sample[0]][:, sample[1]]
+    src = bgr.shape[:2]
+    mask = decode_mask(mask_rle, encoded or src, out=src)[sample[0]][:, sample[1]]
     return rgb_to_bgr(draw_mask(bgr_to_rgb(out), mask, MASK_TINT))
 
 

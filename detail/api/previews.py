@@ -707,6 +707,10 @@ class PreviewClip:
         #: normalized ``(n, 2, 2)`` (front, back), NaN where the frame has none; ``None`` draws
         #: every frame as recorded.
         self._axes: np.ndarray | None = None
+        #: A side-view run's **Aligned** orientation (:meth:`set_pose`): its embedding's flip per
+        #: tile frame (``ClipPoints.flips``), the tile drawn as recorded and mirrored where
+        #: flagged; ``None`` on any other run.
+        self._flips: np.ndarray | None = None
         #: Keypoints drawn on the tile (:meth:`set_pose`): ``(points (n, K, 2), scores (n, K),
         #: skeleton)``, or ``None``.
         self._points: tuple | None = None
@@ -758,28 +762,39 @@ class PreviewClip:
         *,
         axes: np.ndarray | None = None,
         points: tuple | None = None,
+        flips: np.ndarray | None = None,
     ) -> None:
         """Turn the tiles so the body points up (``axes``: ``(n, 2, 2)`` normalized front and
         back per tile frame, NaN where there is none) and/or draw the keypoints on them
         (``points``: ``(points (n, K, 2), scores (n, K), skeleton)``), one row per tile frame.
+        A side-view run is Aligned by ``flips`` instead (``(n,)``, ``ClipPoints.flips``): each
+        tile drawn as recorded and mirrored where its embedding mirrored the frame, never
+        turned, so it needs no axes (``clip_views.mirror_as_embedded``).
 
         Raises:
-            ValueError: a row count that is not the clip's.
+            ValueError: a row count that is not the clip's, or both ``axes`` and ``flips``.
         """
+        if axes is not None and flips is not None:
+            raise ValueError(
+                "axes turn an overhead run's tiles and flips mirror a side view's: pass one"
+            )
         for name, rows in (
             ("axes", axes),
             ("points", None if points is None else points[0]),
+            ("flips", flips),
         ):
             if rows is not None and len(rows) != len(self):
                 raise ValueError(
                     f"{name}: {len(rows)} rows for a clip of {len(self)} frames"
                 )
         self._axes = None if axes is None else np.asarray(axes, dtype=np.float64)
+        self._flips = None if flips is None else np.asarray(flips, dtype=np.float64)
         self._points = points
 
     def _matrix(self, offset: int) -> np.ndarray | None:
         """The turn for tile ``offset`` (``clip_views.turn_matrix``), or ``None``: as recorded,
-        whether by choice or because the frame gives no axis."""
+        whether by choice, because the frame gives no axis, or because a side view is never
+        turned."""
         if self._axes is None:
             return None
         ends = self._axes[offset]
@@ -801,8 +816,9 @@ class PreviewClip:
 
         With footage, the proxy frame with the animal outlined and its trail as fading
         outlines; without, its filled mask and trail on white. A frame past the proxy's
-        end (a short file) is a grey tile. Turned so the body points up, and the keypoints
-        drawn, when :meth:`set_pose` asked; a frame with no axis is drawn as recorded and
+        end (a short file) is a grey tile. Turned so the body points up (a side view: mirrored
+        where its embedding mirrored the frame), and the keypoints drawn, when :meth:`set_pose`
+        asked; a frame with no axis (a side view: no embedded row) is drawn as recorded and
         marked "no axis"."""
         offset = min(max(int(offset), 0), len(self) - 1)
         proxy_frame = int(self.proxy_frames[offset])
@@ -842,9 +858,12 @@ class PreviewClip:
             tile = _draw_masks(tile, history, now, ring, self.tint)
         if self._points is not None:
             tile = self._draw_points(tile, offset, matrix)
-        if self._axes is not None and matrix is None:
-            from detail.api.clip_views import mark_no_axis
+        from detail.api.clip_views import mark_no_axis, mirror_as_embedded
 
+        if self._flips is not None:
+            mirrored = mirror_as_embedded(tile, float(self._flips[offset]))
+            return mark_no_axis(tile) if mirrored is None else mirrored
+        if self._axes is not None and matrix is None:
             tile = mark_no_axis(tile)
         return tile
 

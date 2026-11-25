@@ -122,7 +122,7 @@ def test_the_page_is_a_table_of_presets_then_the_library(qapp, root):
     ), "no canvas on the page"
     for button in (page._edit_button, page._export, page._delete):
         assert not button.isEnabled() and "Select a skeleton" in button.toolTip()
-    _choose(qapp, page, "quadruped_side_5")
+    _choose(qapp, page, "midline_2")
     assert page._edit_button.isEnabled() and page._export.isEnabled()
     assert not page._delete.isEnabled() and "preset" in page._delete.toolTip()
     _choose(qapp, page, made["id"])
@@ -195,7 +195,7 @@ def test_export_replaces_the_file_the_save_dialog_confirmed(
     qapp, root, tmp_path, monkeypatch
 ):
     page = _page(qapp)
-    _choose(qapp, page, "quadruped_side_5")
+    _choose(qapp, page, "midline_2")
     out = tmp_path / "out.yaml"
     out.write_text("old", encoding="utf-8")
     monkeypatch.setattr(

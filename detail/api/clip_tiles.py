@@ -108,7 +108,9 @@ class TileLook:
     ``footage``: the proxy's picture (off: on white). ``masks``: the subject's mask, outlined on
     footage and filled on white; ``mask_trail``: its last half second, fading. ``keypoints``: the
     keypoint run the embedding read, drawn over the rest. ``aligned``: each frame turned so the
-    body points up (``clip_views.turn_matrix``).
+    body points up (``clip_views.turn_matrix``); on a side-view (``mirror``) run, drawn as
+    recorded and mirrored where its embedding mirrored the frame
+    (``clip_views.mirror_as_embedded``), never turned.
 
     Raises:
         ValueError: a tile that would draw nothing (none of footage, masks, keypoints).
@@ -419,14 +421,19 @@ class ClipTiles:
         source = tile.source_frames()
         stem = self._catalog.part_stem(clip.recording_id, part)
         xy, scores = points.rows_at(clip.subject, stem, source)
-        axes = None
+        axes = flips = None
         if look.aligned:
             axis = points.axis(clip.subject)
             if axis is not None:
-                axes = tile_axes(xy, scores, axis)
+                # A side view is mirrored by its embedding's flags and never turned, so it
+                # needs no axes; any other run is turned by them.
+                flips = points.flips(clip.subject, stem, source)
+                if flips is None:
+                    axes = tile_axes(xy, scores, axis)
         tile.set_pose(
             axes=axes,
             points=(xy, scores, points.skeleton) if look.keypoints else None,
+            flips=flips,
         )
 
     def close(self) -> None:

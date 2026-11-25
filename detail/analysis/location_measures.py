@@ -188,45 +188,131 @@ def _running_mean(values: np.ndarray, n: int) -> np.ndarray:
     return np.convolve(values, np.ones(n) / n, mode="valid")
 
 
+#: Consecutive samples further apart than this many median sample intervals straddle a gap in
+#: tracking: the path breaks there.
+GAP_INTERVALS = 1.5
+
+
+def _typical_length(body_length: np.ndarray) -> float:
+    finite = np.asarray(body_length, dtype=np.float64)
+    finite = finite[np.isfinite(finite)]
+    return float(np.median(finite)) if len(finite) else np.nan
+
+
+def _broken_steps(
+    t_s: np.ndarray, x: np.ndarray, y: np.ndarray, body: float, jump_speed: float
+) -> np.ndarray:
+    """``broken[i]`` for the step from sample ``i`` to ``i + 1``: a gap or a jump."""
+    elapsed = np.diff(t_s)
+    broken = elapsed > GAP_INTERVALS * float(np.median(elapsed))
+    if np.isfinite(body) and body > 0:
+        raw = np.hypot(np.diff(x), np.diff(y))
+        with np.errstate(invalid="ignore", divide="ignore"):
+            broken |= raw / elapsed > jump_speed * body
+    return broken
+
+
+def path_breaks(
+    t_s: np.ndarray,
+    x: np.ndarray,
+    y: np.ndarray,
+    body_length: np.ndarray,
+    jump_speed: float,
+) -> np.ndarray:
+    """``breaks[i]``: samples ``i - 1`` and ``i`` straddle a gap or a jump, so a drawn path
+    does not join them. The rule :func:`smoothed_segments` breaks a path by, per sample.
+
+    ``x``, ``y`` and ``body_length`` share one unit, any unit the same in both directions:
+    the rule compares a speed with body lengths per second, which no such unit changes.
+    """
+    out = np.zeros(len(t_s), dtype=bool)
+    if len(t_s) < 2 or not float(np.median(np.diff(t_s))) > 0:
+        return out
+    out[1:] = _broken_steps(t_s, x, y, _typical_length(body_length), jump_speed)
+    return out
+
+
+@dataclass(frozen=True)
+class Stretch:
+    """One unbroken stretch of a path: the samples it is made of (``rows``, a slice of the
+    track) and their running means."""
+
+    rows: slice
+    t_s: np.ndarray
+    x: np.ndarray
+    y: np.ndarray
+
+
+def smoothed_segments(
+    t_s: np.ndarray,
+    x: np.ndarray,
+    y: np.ndarray,
+    body_length: np.ndarray,
+    smooth_s: float,
+    jump_speed: float,
+) -> list[Stretch] | None:
+    """A path's unbroken stretches, each as running means over ``smooth_s``.
+
+    The path breaks at a gap in tracking and at a raw step faster than ``jump_speed`` median
+    body lengths a second; nothing is joined across a break, and a stretch too short to
+    smooth is dropped. ``None`` for a track with too few samples to have a path at all.
+
+    ``x``, ``y`` and ``body_length`` share one unit that is the same in both directions (mm or
+    px). A running mean is linear, so a caller may scale each axis of the stretches afterwards
+    (to the frame's fractions, say) and get the same stretches as if it had smoothed those.
+    """
+    t_s = np.asarray(t_s, dtype=np.float64)
+    if len(t_s) < 3:
+        return None
+    dt = float(np.median(np.diff(t_s)))
+    if not dt > 0:
+        return None
+    n = max(1, int(round(smooth_s / dt)))
+    broken = _broken_steps(t_s, x, y, _typical_length(body_length), jump_speed)
+    edges = np.flatnonzero(broken) + 1
+    stretches = []
+    for lo, hi in zip(np.r_[0, edges], np.r_[edges, len(t_s)]):
+        if hi - lo < n + 1:
+            continue
+        stretches.append(
+            Stretch(
+                rows=slice(int(lo), int(hi)),
+                t_s=_running_mean(t_s[lo:hi], n),
+                x=_running_mean(x[lo:hi], n),
+                y=_running_mean(y[lo:hi], n),
+            )
+        )
+    return stretches
+
+
 def smoothed_path(track: Track, settings: Settings) -> SmoothedPath | None:
     """The track's path as steps between smoothed positions, broken at gaps and jumps.
 
     ``None`` for a track with too few samples to have a path at all.
     """
     t = track.t_ns.astype(np.float64) / NS_PER_S
-    if len(t) < 3:
+    stretches = smoothed_segments(
+        t,
+        track.x_mm,
+        track.y_mm,
+        track.length_mm,
+        settings.smooth_s,
+        settings.jump_speed,
+    )
+    if not stretches:
         return None
-    dt = float(np.median(np.diff(t)))
-    if not dt > 0:
-        return None
-    n = max(1, int(round(settings.smooth_s / dt)))
-    x, y = track.x_mm, track.y_mm
-    raw = np.hypot(np.diff(x), np.diff(y))
-    elapsed = np.diff(t)
-    broken = elapsed > 1.5 * dt
-    body = float(np.nanmedian(track.length_mm)) if len(track.length_mm) else np.nan
-    if np.isfinite(body) and body > 0:
-        with np.errstate(invalid="ignore", divide="ignore"):
-            broken |= raw / elapsed > settings.jump_speed * body
-    edges = np.flatnonzero(broken) + 1
     times, steps, speeds = [], [], []
-    for lo, hi in zip(np.r_[0, edges], np.r_[edges, len(t)]):
-        if hi - lo < n + 1:
-            continue
-        sx = _running_mean(x[lo:hi], n)
-        sy = _running_mean(y[lo:hi], n)
-        st = _running_mean(t[lo:hi], n)
-        step = np.hypot(np.diff(sx), np.diff(sy))
+    for stretch in stretches:
+        st = stretch.t_s
+        step = np.hypot(np.diff(stretch.x), np.diff(stretch.y))
         times.append((st[:-1] + st[1:]) / 2.0)
         steps.append(step)
         speeds.append(step / np.diff(st) / 10.0)
-    if not steps:
-        return None
     return SmoothedPath(
         t_ns=np.concatenate(times) * NS_PER_S,
         step_mm=np.concatenate(steps),
         speed_cm_s=np.concatenate(speeds),
-        dt_ns=dt * NS_PER_S,
+        dt_ns=float(np.median(np.diff(t))) * NS_PER_S,
     )
 
 

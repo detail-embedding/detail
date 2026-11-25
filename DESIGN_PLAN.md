@@ -651,7 +651,7 @@ recordings:
     metadata: {animal_id: M002}
 ```
 
-**Validation is upfront + exhaustive** (Tenet 10 — `storage/manifest.py::validate_manifest`): structure + `schema_version`; each id path-safe, unique-in-file, not colliding with an existing recording; each video path resolves under the bundle, opens (probe), and all of a recording's parts share fps + resolution; each stream's importer is registered, name path-safe + unique-in-recording, `raw` + every required `aux` key present with the right extension; `config` valid against that importer's `config_model` (and absent for an importer that declares none); `offset_ns` an int. All problems are reported together; on any error, **nothing is imported**. Warnings (a reused source path) don't block. The CLI (`detail recording import --bundle <dir> [--dry-run]`) and the GUI ("Import bundle…") share `load_manifest` + `validate_manifest` + `api.imports.build_specs`; deep parse/decode failures surface per recording at import time (that recording goes `failed`, the batch continues).
+**Validation is upfront + exhaustive** (Tenet 10 — `storage/manifest.py::validate_manifest`): structure + `schema_version`; each id path-safe, unique-in-file, not colliding with an existing recording; each video path resolves under the bundle, opens (probe), and all of a recording's parts share a resolution and, within 1% (`video_integrity.PART_FPS_TOLERANCE`), a frame rate — the rule adding a part and every other import share (`video_integrity.another_parts_shape`), checked for every part before the first is copied; each stream's importer is registered, name path-safe + unique-in-recording, `raw` + every required `aux` key present with the right extension; `config` valid against that importer's `config_model` (and absent for an importer that declares none); `offset_ns` an int. All problems are reported together; on any error, **nothing is imported**. Warnings (a reused source path) don't block. The CLI (`detail recording import --bundle <dir> [--dry-run]`) and the GUI ("Import bundle…") share `load_manifest` + `validate_manifest` + `api.imports.build_specs`; deep parse/decode failures surface per recording at import time (that recording goes `failed`, the batch continues).
 
 Using integer nanoseconds rather than float seconds avoids floating point drift at high sample rates (e.g., 30kHz neural signals over a 1-hour recording). Integer comparison is exact; any two samples with the same `t_ns` value are provably simultaneous.
 
@@ -5169,8 +5169,9 @@ with it (§24).
 - **Length and width are the second-moment ellipse axes**: four standard deviations of the
   mask's area along and across its principal axis, each cell adding its own `side² / 12`
   (`body_axis: shape` in the manifest), which is MATLAB `regionprops`'s `MajorAxisLength` /
-  `MinorAxisLength`. A head-to-tail axis from a keypoint track is planned and not built; it
-  needs a second upstream selection per recording.
+  `MinorAxisLength`. A head-to-tail axis from a keypoint track is planned and not built; the
+  second upstream selection per recording it needs now exists (*Keypoints in the export*,
+  below).
 - **`body_*` equals `mask_*`** in the columns they share, to the last digit: both come from
   one function.
 
@@ -5196,7 +5197,164 @@ GUI Analysis tab) is the surface that adds progress, batch, history, and
 navigate-away safety. Feature details (the column schemas, the OR-merge, the
 normalized/pixel/mm units — the `_mm` columns come from the recording's distance
 calibration, blank when uncalibrated — the part-frame-offset lift) live with the compute
-in `analysis/locations.py`.
+in `analysis/locations.py`. `Recording.export_locations` / `location_tables` take a
+`progress` callback (`measuring` per tracked row, then `writing`), which `locations export`
+drives with a bar.
+
+#### Keypoints in the export
+
+An export may also read a **keypoint track run** (§26) and write a fourth table,
+`keypoints.csv`: one row per `(frame_idx, object_id)` row of `tracks.csv` per skeleton point,
+keyed and timed as `tracks.csv` is (`frame_idx`, `t_ns`, `object_id`, `keypoint`), with
+`x_norm`/`y_norm`, `_px` and `_mm` (blank uncalibrated), the point's `score` and `visible`. A
+point the run did not place has blank coordinates; one under the detect method's display
+cut-off keeps its coordinates and has `visible` 0 (§26 *Visibility is a view*). It is read
+through `api.keypoint_export.PointSource`, so it agrees with every keypoint export, and with
+`sample_fps` it holds only the rows `tracks.csv` kept. `locations.yaml` records
+`keypoint_run_id`, `keypoint_cutoff` and `keypoint_names`, and lists the file under `files`
+and `columns`; an export without keypoints writes no file.
+
+**The selection.** `keypoint_run_id` (a selection field of `LocationExportConfig`, the id in
+every recording) or `keypoint_track_spec` (settings, resolved in each recording by
+`run_spec.resolve_spec_in_recording`; the launch form's picker and `analysis run
+--keypoints-ref` emit it). `validate` resolves either to a `keypoint_run_ids` map the job
+carries (`job_params` writes it to the record), and **refuses** a recording whose run is
+missing, not complete, or **assigned its poses to another tracking run** than the one the
+export reads there: `object_id` is a position within one tracking run, so its points would land
+on another run's animals. The compute (`analysis/locations.keypoint_table`) refuses the same for
+a direct caller (`Recording.export_locations(..., keypoint_run_id=)`).
+
+**In the plots.** `source` takes a keypoint's name as well as `body` / `mask` / `bbox`: the
+point's positions, a sample it was not placed on or under the cut-off a gap (dropped before the
+path rule, so it neither bridges a break nor poisons the smoothing). `points` (several names)
+draws each point's path on a `trace` / `trace3d` plot, one line per point in its categorical
+colour (identity in the order asked), with a legend; the body outline is drawn once per animal,
+in ink. A keypoint path shares the track's clock and its body, read on the frames the point
+has. A point the run did not export, or any point on a run without keypoints, raises naming
+what there is; a body plot reads the body whatever the position. `LocationPlots.keypoint_names`
+lists the run's points (from the manifests).
+
+#### Location plots (viewing a location export)
+
+A completed location-export run is **drawn on demand from its own CSVs**: nothing image-shaped
+is written by the run, and a run made before plots existed gets them with no re-run. The plots
+read `tracks.csv` (through `storage/location_export.read_location_csv`, by column name) and
+`locations.yaml` (`video_resolution`, `pixels_per_mm`): a position is read once, as the
+normalized centre, and converted — `px = norm × width|height`, `mm = px / pixels_per_mm`, the
+conversion the export writes into the `_px` / `_mm` columns.
+
+**One animal per recording.** Every tracker this tool has follows one animal, so a recording's
+path is its one `object_id`. A `tracks.csv` with several (an imported multi-animal tracking) is
+not guessed at: the recording is named in the plot's note (`box 3: 2 animals (tracks 0, 3);
+location plots show one animal per recording`) and the rest are drawn.
+
+**A run exported with thin parts removed is drawn as it was measured.** The export no longer
+removes thin parts (*The body*, above), and a comparison refuses a run that did; a plot is a
+picture of the run, which is never invalidated, so it draws one, and `LocationPlots.build` puts
+`THIN_PARTS_NOTE` first in the note of every kind: its body columns, and the body length the
+path rule breaks a jump by, are not the whole mask's that `source` and `body_measure` describe.
+
+**View parameters, not run config.** `configs/location_plots.LocationPlotView` (pydantic, the
+`configs/display.py` kind — absent from the run record and from the parameter reference) is the
+one source for each knob's choices, bounds, default and help. The GUI's controls are built from
+it and the CLI's `locations plot` flags are enumerated from it (`cli._view_options`), so a
+field added here reaches both.
+
+| field | type / default | meaning |
+|---|---|---|
+| `kind` | `trace` \| `heatmap` \| `speed` \| `trace3d` \| `body` \| `body_hist`, `trace` | 2-D path; occupancy heat map; speed over time; path against time in 3-D; a body measure over time; its histogram |
+| `source` | str, `body` | `body`, `mask`, `bbox` or a keypoint name (*Keypoints in the export*) — the position. `body` is the mask's centre to the last digit (§16 *The body*: the body is the whole mask), and on an export made before the body was measured it reads the mask's centre |
+| `points` | list[str] \| None, None | several keypoints drawn on a path plot, one colour each |
+| `body_measure` | `length` \| `width` \| `area` \| `elongation` \| `mask_area`, `length` | what a body plot shows; `elongation` is length ÷ width, `mask_area` the whole mask's area (`area` too, since the body is the whole mask) |
+| `units` | `mm` \| `px` \| `norm` \| None, None | None = `mm` when every plotted recording is calibrated, else `px`; `mm` with an uncalibrated recording raises naming it; a body measure in `norm` raises |
+| `color_by` | `time` \| `speed`, `time` | what colours a path (`trace`, `trace3d`) |
+| `group_by` | str \| None, None | a Recording Information (`metadata.csv`) column |
+| `posture_every_s` | float > 0 \| None, None | on a `trace`, the body's outline every this many seconds |
+| `bins` | int 40, 5–200 | heat-map cells along the frame's longer side (square cells) |
+| `hist_bins` | int 40, 5–200 | body-histogram bins, from the smallest value plotted to the largest |
+| `time_bin_s` | float 1.0, 0.04–600 | bin width of a speed or body plot over time |
+| `smooth_s`, `jump_speed` | float, a comparison's `location_smooth_s` / `location_jump_speed` defaults | the path rule below, read from `configs/comparison.py` rather than written again |
+| `speed_clip_pct` | float 95, 50–100 | top of a speed colour scale, as a percentile of every plotted speed |
+| `elev`, `azim` | float 22 (−90–90), −60 (−180–180) | the one camera every 3-D panel shares |
+| `max_points` | int 20000, 500–1,000,000 | drawn samples per path, evenly subsampled; speeds and histograms use every sample |
+
+**One path rule** (`analysis/location_measures.smoothed_segments` / `path_breaks`, §24 *The
+locations source*). A path breaks at a gap in tracking (consecutive samples more than 1.5
+median sample intervals apart) and at a raw step faster than `jump_speed` of the animal's median
+body lengths a second. A break is drawn as a break (NaN), so neither a dropout nor a tracking
+jump is drawn as a line across the arena. Speed is measured on each unbroken stretch's running
+mean over `smooth_s`: a speed plot's steps are, step for step, the steps a comparison measures
+distance and speed on. The rule runs in pixels, where a body length means one thing in both
+directions; a running mean is linear, so the stretches are scaled per axis to the plot's units
+after. An export made before the body was measured has no body length, so its path breaks at
+gaps only. `t_s` runs from the animal's first tracked sample. y runs **down** on every 2-D and
+3-D plot, so a plot reads the same way up as the video.
+
+**The body.** `body` plots the run's per-frame `body_*` columns as measured: the mean per
+`time_bin_s` bin over time (a bin with no sample is a gap), or, for `body_hist`, the share of
+the animal's samples in each bin (each animal's bars sum to 1), drawn as a step line. Length and
+width are in `px` or `mm`, areas in their squares. `posture_every_s` draws, on a `trace`, the
+body's outline at the samples a clock at `1 / posture_every_s` keeps by the export's own
+sampling rule (`analysis/locations.sampled_indices`): an ellipse with the body's length and
+width along `body_angle_deg`, at the body's centre, computed in pixels and converted point by
+point, so it keeps the body's shape whatever the plot's units, and coloured as the path is at
+that moment. `body_angle_deg` is an axis (0–180°) with no head or tail, so an outline has no
+arrow. A recording exported before the body was measured is named in the note (`exported
+before the body was measured; export it again`), on body plots and outlines alike.
+
+**Per recording.** Without `group_by`, one panel per recording, sharing axis ranges and one
+colour scale.
+
+**By group.** Each animal counts once:
+
+- `trace` / `trace3d` — one panel per group, every animal overlaid, in `norm` units (the only
+  frame shared across videos).
+- `heatmap` — one panel per group: **each animal's occupancy is normalized to sum to 1, then
+  the group's grids are averaged**, so an animal tracked longer does not outweigh its
+  group-mates. Cells are square when every recording in the plot shares one aspect ratio.
+- `speed`, `body`, `body_hist` — one axes, one line per group: the mean across animals per bin
+  with a ± SEM band where the group has ≥ 2. A scalar, so `units` follows the auto rule.
+
+A panel title's `n` counts animals. A recording with no value in the `group_by` column is its
+own group, `(no value)` — never dropped. An unknown column raises, naming the columns there are.
+
+**What is left out is said.** A recording with no tracked rows, several animals, or (on a body
+plot) no body is named in the spec's `note`, drawn under the title. With nothing left to plot,
+`build` raises with the same list.
+
+A heat-map cell holds the **fraction of the animal's samples** that fell in it. Colour is the
+theme's one-hue sequential ramp, low end near the surface so an empty cell reads as nothing; a
+path's time or speed colour is the same ramp less its two palest steps (a thin line in them
+vanishes). Group lines take categorical identities in group order.
+
+**A figure is data.** `analysis/location_plots.build_plot` returns a `report/plot_spec.PlotSpec`
+— numpy arrays, labels and colour *roles*, no plotting library — and
+`report/plot_render.py` draws it with matplotlib through the house style (`report/figures.py`,
+`report/style.py`): files for an export (PNG, SVG, PDF) and PNG bytes for the GUI, so the
+picture on screen is the one an export writes. `report/plot_html.py` is its twin for **one
+self-contained interactive page** (`html`): plotly, imported inside the renderer only, with
+plotly.js embedded so the page opens offline (about 5 MB). It resolves the same colour roles
+against `core/chart_theme.py`; a 2-D path coloured by time or speed carries its colour on
+markers over a hairline (a plotly 2-D line has one colour), a 3-D path colours its line; a
+heat-map cell with no time is left empty, as the picture leaves it; and since plotly links
+axes but not cameras, a 3-D page carries one small script that copies a turned scene's camera
+to every other, so the panels turn together as the picture's grid shares one camera.
+
+A coloured path is drawn as one polyline per run of consecutive segments in one of `COLOUR_STEPS` (64) colour steps, in the path's order
+(`plot_render.colour_steps`): every segment the per-segment rule drew, what came later on top,
+at a few dozen drawn paths per time-coloured path rather than one per segment. Progress is
+`reading` per recording, `measuring` (the spec), `drawing` per panel and, for files, `writing`;
+the GUI's draw is a `run_progress` call with `supersedes`, so a control changed mid-draw stops
+that draw at its next panel (`gui/busy.py`).
+
+**Surfaces.** API: `Experiment.location_plots(run_id)` → `LocationPlots` (`build(view,
+recording_ids, progress)`, `export(view, stem, recording_ids, formats=, theme=, progress=)`,
+`body_measured()`; `formats` png, svg, pdf and html); it keeps what it read, so a second plot
+re-reads nothing. CLI: `detail
+locations plot`. GUI: the run's page has two views, **Plots** (`gui/location_plots.
+LocationPlotsPanel`: the controls, the recording checklist, **Export image…**, the picture in a
+zoomable `ImageView`, the run read on first show behind a progress bar) and **Files** (the CSVs
+the run wrote).
 
 ### The analysis run page
 
@@ -8330,7 +8488,8 @@ after which every clip starts together again. The clock is the footage's rate up
   `DEFAULT_LAYERS` — masks on white, no footage.
 - **Aligned** (`MontageLayers.aligned`, `--aligned`): a tile frame turned by `clip_views.turn_matrix`
   about the axis's middle, the crop's side kept, the outline placed by the same turn
-  (`_outline_turned`); a frame with no axis is `_as_recorded` and marked. **Context**
+  (`_outline_turned`); a frame with no axis is `_as_recorded` and marked. A `mirror` run's tile is
+  the `_as_recorded` one, mirrored where the embedding mirrored the frame (below). **Context**
   (`with_context`, `cluster_montage(context_s=)`, `--context`): each clip widened either side;
   labels and the clip list name the clip itself.
 
@@ -8395,10 +8554,30 @@ every frame on the bar, context included, with the window's `ClipViewSettings`) 
 PNG…* (`write_clip_frame`, off the UI thread through `run_busy`). The plain player's own **Export
 video…** is hidden in this window.
 
-**Aligned** (`ClipViewSettings.aligned`, `TileLook.aligned`, `MontageLayers.aligned`) is **one turn**,
-`clip_views.turn_matrix(front, back, side, out_wh)`: rotate about the body axis's middle so back→front
-points **up** (Align pose's direction), put the middle at the output's centre, scale `side` to the
-output's height. The axis ends are the frame's keypoints of the run the embedding read, averaged over
+**Aligned** (`ClipViewSettings.aligned`, `TileLook.aligned`, `MontageLayers.aligned`) follows how
+the clip's embedding aligned. Overhead or unaligned: **one turn**,
+`clip_views.turn_matrix(front, back, side, out_wh)`: rotate about the body axis's middle so
+back→front points **up** (Align pose's direction), put the middle at the output's centre, scale
+`side` to the output's height. **A side view (`align: mirror`) is never turned**: each surface draws
+the frame as it draws it as recorded and reverses its columns where the embedding mirrored that
+frame (`clip_views.mirror_as_embedded`), so the animal faces right as the model saw it. Exact (no
+resampling), and whatever was drawn on the picture goes with it. **It reads only the flag, never
+the keypoints**: placing a side view on each frame's body-axis middle moved the picture with every
+jitter of the points, and a frame whose nose was lost would be drawn unflipped although the
+embedding carried its heading across the gap and flipped it. **The flag is the one the embedding
+stored**, `align_mirrored` on each embedded row (§14), read by `ClipPoints.flips` (two small columns
+per part, once per subject; `ClipFrame.flip`, `PreviewClip.set_pose(flips=)`). It is never
+recomputed: `mirror_flags` holds a side over the frames the run *sampled*, so recomputing at another
+frame step, frame size or heading definition gives other flags, and needs that definition to still
+fit. A run that embedded every `n`-th frame embedded nothing between, so a frame holds the flag of
+the embedded frame it follows (`f - f % n`, the frames `track_frames_at_cadence` selects); a frame
+with no embedded row (NaN: the subject absent, or no heading) is drawn as recorded and marked *no
+axis*. The flag is read only when something drawn needs it (Aligned, or Align pose), so a clip
+played as recorded reads nothing. **Align pose** on a side view is likewise never turned: the pose,
+scaled and centred on the body's middle, is mirrored where the embedding mirrored the frame
+(`body_axis.side_view_points`, its trail by `ClipPoints.flip_window`). Turning a side view upright,
+as every surface once did, showed the clusters a posture the embedding never saw
+(`tests/api/test_clip_align.py`). The axis ends are the frame's keypoints of the run the embedding read, averaged over
 the heading definition's front and back sets at the run's cutoff (`axis_ends`, `body_axis.
 row_axis_ends`), in the target picture's own pixels, so the angle is right at any size. Used by the
 clip window (`turn_views`: footage, masks pane and pose pane — unless Align pose already aligned it —
@@ -10075,9 +10254,13 @@ order; which *image* side that falls on is learned from the clicks, per pair (*P
 two existing, different points and no point is in two pairs; an edge names existing points and is
 not a self-loop; no duplicate edge in either direction.
 
-**Presets.** Four built-in skeletons (`quadruped_overhead_12` 12 points, `quadruped_side_5` 5,
-`quadruped_overhead_8` 8, `midline_3` 3 — the two research skeletons and Quick pose's two, roles removed),
-each with a layout, shown as **read-only rows** of the skeleton library (below). **Renamed
+**Presets.** Two built-in skeletons (`midline_3`: head, midpoint, tail; `midline_2`: head, tail),
+each with a layout, shown as **read-only rows** of the skeleton library (below). **Trimmed
+2026-11-22** (the user's choice) from four: `quadruped_overhead_12`, `quadruped_side_5` and
+`quadruped_overhead_8` were removed and `midline_2` added. As with the rename below, the removed ids
+no longer resolve; a set, run or model made from one holds its own copy and keeps working, and
+shows in the example-set picker under *(no library skeleton)* until its skeleton is added to the
+library. Before the trim: **Renamed
 2026-10-09** (the user's review: named for the body plan and view, not a species) from
 `rodent_overhead` / `rodent_side` / `rodent_simple` / `elongate`; labelled *Quadruped overhead
 view (12 points)*, *Quadruped overhead view (8 points)*, *Quadruped side view (5 points)*, *Midline

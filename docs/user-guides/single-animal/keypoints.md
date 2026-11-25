@@ -5,7 +5,7 @@ on. Tracking (chapter 3) says where the animal is; keypoints say how it is posed
 faces, and what its head and tail are doing. The embedding (chapter 5) uses them to turn
 every animal the same way before comparing postures.
 
-DETAIL makes a keypoint model the same way it made the fast detector in chapter 3: by
+Detail makes a keypoint model the same way it made the fast detector in chapter 3: by
 distilling. You mark the points by hand on about ten frames, an **example set**. A slow,
 careful **teacher** uses those to place the points on a few hundred more frames. A small fast
 **student** model then trains on the teacher's frames, and the student places keypoints on
@@ -19,7 +19,7 @@ isometric recordings](#side-view-and-isometric-recordings) at the end of the cha
 In SLEAP or DeepLabCut, you mark the points by hand on hundreds of frames, and a network
 trains on your marks. A new camera or setup usually needs more frames marked.
 
-In DETAIL, from top-down or side-view recordings, you mark about ten (although more examples
+In Detail, from top-down or side-view recordings, you mark about ten (although more examples
 do generally improve outcomes slightly). Isometric recordings, or recordings with many
 occlusions, may need upwards of 50 examples. The teacher, **dinov3_match**, a large image
 model that has already learned what images look like, needs no training: on a new frame it
@@ -28,25 +28,25 @@ hundred frames, and the student trains on those, so the hundreds of frames are m
 you. If all you want is the nose, back and tail base from top-down recordings without
 occlusions, 5 frames is typically enough.
 
-| | SLEAP or DeepLabCut | DETAIL |
+| | SLEAP or DeepLabCut | Detail |
 |---|---|---|
 | Frames you mark | Hundreds | About ten; 5 for nose, back and tail base from above; 50 or more for isometric or heavily occluded views |
 | What trains on them | A network, on your marks | Nothing: the teacher matches them, and the student trains on the teacher's frames |
 | Your time | Hours of marking | About 20 minutes |
 | Points | As precise as your marking and training | Close, not exact |
 
-DETAIL uses keypoints mainly to find which way the animal faces, for its egocentric
+Detail uses keypoints mainly to find which way the animal faces, for its egocentric
 alignment (chapter 5), where close is enough. If you need exact positions, for joint angles
 say, check them against frames you marked yourself, as step 3 does. True pose estimation will
 generally give more accurate keypoints, so choose your approach based on what your experiment
-needs. DETAIL's points can be taken into SLEAP, DeepLabCut and the tools that read their
+needs. Detail's points can be taken into SLEAP, DeepLabCut and the tools that read their
 files: see [Take the keypoints to DeepLabCut, SLEAP or
 NWB](#optional-take-the-keypoints-to-deeplabcut-sleap-or-nwb), at the end of step 5.
 
 ## The steps at a glance
 
 Each box is one step on this page. Click a box to go to that step. The first tag says where
-the step is in DETAIL. A **GPU** tag means the step's work runs on your computer's GPU.
+the step is in Detail. A **GPU** tag means the step's work runs on your computer's GPU.
 
 <div class="guide-flow" markdown>
 
@@ -90,7 +90,7 @@ In the **Distill new model** dialog:
    and labels three times faster.
 6. **Examples:** the example set, which you make next (step 2).
 
-![The Distill new model dialog for keypoints: model type Keypoints, the name mouse keypoints, the teacher Patch method + example set with dinov3_match at vit_large, the skeleton Quadruped overhead view, the example set mouse overhead with 11 of 11 frames, the tracking from chapter 3, 300 frames to label, the score cut-off still to set, the student yolo11s-pose.pt, and Distill greyed out with its reason at the bottom. Numbered markers sit on every control.](../../assets/user-guides/single-animal/keypoints/distill-keypoints.png)
+![The Distill new model dialog for keypoints: model type Keypoints, the name mouse keypoints, the teacher Patch method + example set with dinov3_match at vit_large, the skeleton mouse overhead, the example set mouse overhead with 11 of 11 frames, the tracking from chapter 3, 300 frames to label, the score cut-off still to set, the student yolo11s-pose.pt, and Distill greyed out with its reason at the bottom. Numbered markers sit on every control.](../../assets/user-guides/single-animal/keypoints/distill-keypoints.png)
 
 ??? info "What everything on this screen does"
     1. **Model type**: **Keypoints** makes a keypoint model.
@@ -101,10 +101,11 @@ In the **Distill new model** dialog:
        have instead.
     5. **Method**: the patch method. **dinov3_match** is the one to use.
     6. **Size**: the method's size. **vit_large** is the most accurate, and the one
-       downloaded in Configure DETAIL.
-    7. **Skeleton**: the points to mark and the lines joining them. **Quadruped overhead view
-       (12 points)** is made for a four-legged animal seen from above. Your own skeletons are
-       listed too ([Make your own skeleton](#make-your-own-skeleton)).
+       downloaded in Configure Detail.
+    7. **Skeleton**: the points to mark and the lines joining them. The demo uses
+       **mouse overhead**, 12 points made for a four-legged animal seen from above. Your own
+       skeletons are listed here ([Make your own skeleton](#make-your-own-skeleton)), after
+       the two presets, **Midline (3 points)** and **Midline (2 points)**.
     8. **Example set**: which example set the teacher learns from. The count beside it says
        how many of its frames are fully marked.
     9. **New example set…**: makes an empty example set and opens it for marking (step 2).
@@ -132,14 +133,18 @@ Leave the dialog open: steps 2 and 3 work from it.
 ### Make your own skeleton
 
 A **skeleton** is the list of points to mark, the lines joining them, and which points are a
-left/right pair. The demo uses the preset **Quadruped overhead view (12 points)**. If you
-want fewer points, or different ones, make a skeleton before you make the example set. This
-example makes a 6-point skeleton: nose, left ear, right ear, neck, back and tail base.
+left/right pair. Detail comes with two presets: **Midline (3 points)** (head, midpoint and
+tail) and **Midline (2 points)** (head and tail). For anything more, such as ears or a tail
+tip, make a skeleton before you make the example set. The demo's skeleton, **mouse
+overhead**, has 12 points: the nose, both ears, the base of the neck, both shoulders, the
+middle of the back, both hips, and the base, middle and tip of the tail. This example makes
+a smaller one the same way, with 6 points: nose, left ear, right ear, neck, back and tail
+base.
 
 Click **Keypoints manager** in the bar along the top of the window, then **+ New
 skeleton**.
 
-![The Keypoints manager: the + New skeleton button highlighted, and the table of skeletons with the four presets. Numbered markers sit on every control.](../../assets/user-guides/single-animal/keypoints/keypoints-manager.png)
+![The Keypoints manager: the + New skeleton button highlighted, and the table of skeletons with the two presets. Numbered markers sit on every control.](../../assets/user-guides/single-animal/keypoints/keypoints-manager.png)
 
 ??? info "What everything on this screen does"
     Skeletons are shared by every experiment on your computer. An example set, a keypoint
@@ -150,7 +155,7 @@ skeleton**.
     2. **Import…**: adds a skeleton from a `.yaml` file, for example one a colleague
        exported.
     3. **The skeletons**: every skeleton, with how many points it has and what uses it.
-       **preset** ones come with DETAIL and cannot be changed; editing one saves a copy.
+       **preset** ones come with Detail and cannot be changed; editing one saves a copy.
        Double-click a row to open it.
     4. **Edit…**: opens the chosen skeleton. A skeleton something uses keeps its points:
        an edit is saved as a new skeleton.
@@ -191,7 +196,7 @@ In the **New skeleton** window:
     7. **Cancel**: closes the window. With unsaved changes, it asks first.
 
 ??? info "About this step: which points to choose"
-    - **Pairs matter.** Marking the ears as a pair is how DETAIL keeps the left ear and
+    - **Pairs matter.** Marking the ears as a pair is how Detail keeps the left ear and
       the right ear apart, rather than letting them swap.
     - **Choose points you can see.** A point hidden on most frames, such as a paw from
       above, gives the teacher little to match. For the nose, back and tail base from above,
@@ -201,12 +206,12 @@ In the **New skeleton** window:
       `tail_base` as the back.
 
 Your skeleton is now in the **Skeleton** list of the Distill dialog and of **New example
-set…**. Choose it there instead of the preset.
+set…**. Choose it there.
 
 ### Make the example set
 
 In the **Distill new model** dialog, click **New example set…**. Give the set a name, such
-as `mouse overhead`, leave the **Skeleton** as it is (or choose your own), and click
+as `mouse overhead`, choose your skeleton in **Skeleton**, and click
 **Create and mark frames**.
 
 ![The New example set dialog: the name mouse overhead and the skeleton. Numbered markers sit on every control.](../../assets/user-guides/single-animal/keypoints/new-example-set.png)
@@ -231,7 +236,7 @@ The marking window opens on the first recording. To fill the set:
 5. When all 12 are done, press ++d++ to go to the next example frame, and do the same.
 
 Every click saves by itself, in the background. Closing the window while clicks are still
-being saved loses nothing: they finish behind it. Quitting DETAIL first asks you to wait for
+being saved loses nothing: they finish behind it. Quitting Detail first asks you to wait for
 them. Points are coloured by side: blue for left, orange for right,
 green for the middle of the body. **Left and right are the animal's own**, not the
 picture's: from above, with the nose pointing up the screen, the animal's left ear is on the
@@ -502,10 +507,10 @@ moves, and the nose stays at the front.
 
 ### Optional: take the keypoints to DeepLabCut, SLEAP or NWB
 
-DETAIL can write its keypoints in the formats other pose tools read. Open the keypoint track
+Detail can write its keypoints in the formats other pose tools read. Open the keypoint track
 run's page and click **Export…**, at the top right.
 
-1. **Save to:** click **Choose** and pick a folder. DETAIL makes a new folder inside it for
+1. **Save to:** click **Choose** and pick a folder. Detail makes a new folder inside it for
    this export, named under **Creates**.
 2. Tick the format you want.
 3. **Recordings:** the recording selected on the run's page is ticked. Click **All** for
@@ -519,7 +524,7 @@ run's page and click **Export…**, at the top right.
     2. **Choose**: picks that folder.
     3. **The greyed-out rows**: what other kinds of run write, such as tracks. Each says
        which run it comes from.
-    4. **Keypoints**: DETAIL's own table, one spreadsheet per recording: a row per frame per
+    4. **Keypoints**: Detail's own table, one spreadsheet per recording: a row per frame per
        point, with its position, its score, and whether it is visible.
     5. **Keypoints for DeepLabCut**: DeepLabCut's table, one spreadsheet per video. It is
        also what keypoint-MoSeq, VAME, B-SOiD, SimBA and movement read.
@@ -555,8 +560,8 @@ it is done.
 ??? warning "If this doesn't work"
     **Keypoints for SLEAP** or **Keypoints as NWB** is greyed out, and says *needs h5py* or
     *needs pynwb*: the install pages leave out the libraries those two formats need. Close
-    DETAIL. In the terminal you installed DETAIL from (**PowerShell** on Windows,
-    **Terminal** on Linux), go to the DETAIL folder and switch on its environment, the first
+    Detail. In the terminal you installed Detail from (**PowerShell** on Windows,
+    **Terminal** on Linux), go to the Detail folder and switch on its environment, the first
     two commands under *Launch it again later* on your install page
     ([Windows](../install-windows.md#launch-it-again-later),
     [Linux](../install-linux.md#launch-it-again-later)). Then run:
@@ -565,7 +570,7 @@ it is done.
     uv pip install -e ".[keypoints_export]"
     ```
 
-    Launch DETAIL again. The same libraries also make **Keypoints for DeepLabCut** write
+    Launch Detail again. The same libraries also make **Keypoints for DeepLabCut** write
     each table as an `.h5` file beside the spreadsheet, as DeepLabCut does itself.
 
 ## Side-view and isometric recordings
@@ -575,25 +580,26 @@ in this chapter are the same, with three differences. The same goes for an **iso
 recording, filmed from above at an angle. There the differences matter even more: from an
 angle the animal is seen in many more orientations, so the example set has to cover them all.
 
-**1. Choose the skeleton.** In **New example set…**, choose **Quadruped side view (5
-points)**: nose, left ear, right ear, middle of the back and tail base, with the ears as a
-left/right pair. Or [make your own](#make-your-own-skeleton): an isometric view often sees
-more of the body than a side view, such as the paws.
+**1. Choose the skeleton.** [Make one](#make-your-own-skeleton) for the view. From the side,
+5 points is a good start: nose, left ear, right ear, middle of the back and tail base, with
+the ears as a left/right pair. An isometric view often sees more of the body than a side
+view, such as the paws. If only the body's line matters, the preset **Midline (3 points)**
+needs no skeleton of your own.
 
-![The skeleton editor showing the Quadruped side view (5 points) preset: the nose at the left, joined to the left ear, the right ear and the middle of the back, which is joined to the tail base. Numbered markers sit on every control.](../../assets/user-guides/single-animal/keypoints/side-skeleton.png)
+![The skeleton editor showing a 5-point side-view skeleton, mouse side: the nose at the left, joined to the left ear, the right ear and the middle of the back, which is joined to the tail base. Numbered markers sit on every control.](../../assets/user-guides/single-animal/keypoints/side-skeleton.png)
 
 ??? info "What everything on this screen does"
-    The editor opens this way from the **Keypoints manager**: choose the preset and click
-    **Edit…**. A preset cannot be changed, so an edit saves a copy.
+    The **New skeleton** window from [Make your own skeleton](#make-your-own-skeleton),
+    with the five points drawn from the side: the nose at the left, the tail base at the
+    right.
 
-    1. **Name**: the skeleton's name.
+    1. **Name**: the skeleton's name, here `mouse side`.
     2. **Point**: the chosen point's name.
     3. **Pair with**: the chosen point's partner on the other side of the body.
        **(none)** for the nose, which is on the middle of the body.
     4. **Side**: the side of the body, for a paired point. Greyed out for the nose.
-    5. **Remove point**: removes the chosen point, in the copy.
-    6. **Save as new**: saves your changes as a new skeleton, leaving the preset as it is.
-       Greyed out until something has changed.
+    5. **Remove point**: removes the chosen point.
+    6. **Save**: saves the skeleton.
     7. **Cancel**: closes the window.
 
     From the side, one ear is usually hidden behind the head. Mark it **Not visible** (++n++)

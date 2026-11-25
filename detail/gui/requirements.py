@@ -2404,10 +2404,11 @@ def _picture_drawn_bottom(picture, parent) -> int:
     from PyQt6.QtCore import QPoint
 
     pixmap = picture.pixmap()
+    # In the label's own pixels: the pixmap is scaled to the screen's (`ImageView._rescale`).
     local_y = (
         picture.height()
         if pixmap is None or pixmap.isNull()
-        else ((picture.height() + pixmap.height()) // 2)
+        else int((picture.height() + pixmap.deviceIndependentSize().height()) // 2)
     )
     return picture.mapTo(parent, QPoint(0, local_y)).y()
 

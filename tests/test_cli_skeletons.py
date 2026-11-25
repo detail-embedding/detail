@@ -57,11 +57,9 @@ def test_list_create_show_edit_and_delete(root, tmp_path):
     out = _ok("list")
     for preset_id, (label, sk) in PRESETS.items():
         assert f"{preset_id}  {label}  {len(sk)} points" in out
-    assert "created skeleton: sk_01" in _ok(
-        "create", "rats", "--from", "quadruped_side_5"
-    )
+    assert "created skeleton: sk_01" in _ok("create", "rats", "--from", "midline_2")
     shown = _ok("show", "sk_01")
-    assert "rats  5 points" in shown and "used by: nothing" in shown
+    assert "rats  2 points" in shown and "used by: nothing" in shown
     edited = tmp_path / "edited.yaml"
     edited.write_text(
         yaml.dump(Skeleton(names=("a", "b"), edges=(("a", "b"),)).to_dict()),
@@ -71,13 +69,13 @@ def test_list_create_show_edit_and_delete(root, tmp_path):
         "edit", "sk_01", "--name", "two", "--skeleton", str(edited)
     )
     assert "nothing to change" in _fails("edit", "sk_01")
-    assert "built-in preset" in _fails("edit", "quadruped_side_5", "--name", "x")
+    assert "built-in preset" in _fails("edit", "midline_2", "--name", "x")
     assert "deleted skeleton: sk_01" in _ok("delete", "sk_01")
     assert "no skeleton 'sk_01'" in _fails("show", "sk_01")
 
 
 def test_a_used_skeleton_refuses_edit_and_delete_and_says_what_uses_it(root, tmp_path):
-    _ok("create", "rats", "--from", "quadruped_side_5")
+    _ok("create", "rats", "--from", "midline_2")
     exp = Experiment.create("lab", root)
     exp.create_example_set("overhead", "sk_01")
     assert "used by: example set examples/ex_01/examples.yaml (lab)" in _ok(

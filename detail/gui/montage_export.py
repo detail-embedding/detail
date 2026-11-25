@@ -559,6 +559,8 @@ class MontageExport(QObject):
 
     def export(self, kind: str) -> None:
         """Ask where, then write ``kind`` (:data:`KINDS`) of the current job."""
+        from detail.api.animation import GIF
+        from detail.api.animation import MP4
         from detail.gui import animation_export as ax
 
         job = self.job()
@@ -569,9 +571,7 @@ class MontageExport(QObject):
         shown = describe(self._montage.look(), job.context_s, picking=job.picks)
         shown = shown.split(": ", 1)[1]
         if kind == "video":
-            path = ax.ask_save_path(
-                owner, "Export video", self._file(what, ax.MP4), ax.MP4
-            )
+            path = ax.ask_save_path(owner, "Export video", self._file(what, MP4), MP4)
             if path is not None:
                 self.write_montage(job, path)
         elif kind == "gif":
@@ -582,9 +582,7 @@ class MontageExport(QObject):
             )
             if answer is None:
                 return
-            path = ax.ask_save_path(
-                owner, "Export GIF", self._file(what, ax.GIF), ax.GIF
-            )
+            path = ax.ask_save_path(owner, "Export GIF", self._file(what, GIF), GIF)
             if path is not None:
                 self.write_montage(job, path, max_width=answer[0], fps=answer[1])
         elif kind == "files":

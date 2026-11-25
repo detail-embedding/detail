@@ -1,8 +1,8 @@
 # 1. Create an experiment and add recordings
 
-An **experiment** holds your recordings and every result DETAIL makes from them. In this
-chapter you create one, bring your videos into it, and tell DETAIL a little about each
-recording. Everything here happens in the DETAIL window.
+An **experiment** holds your recordings and every result Detail makes from them. In this
+chapter you create one, bring your videos into it, and tell Detail a little about each
+recording. Everything here happens in the Detail window.
 
 The example is the top-down experiment: three 5-minute videos of one mouse each, filmed from
 above in three operant boxes.
@@ -10,7 +10,7 @@ above in three operant boxes.
 ## The steps at a glance
 
 Each box is one step on this page. Click a box to go to that step. The tag says where the
-step is in DETAIL: the button along the top, then the page in the list on the left, then
+step is in Detail: the button along the top, then the page in the list on the left, then
 the dialog that opens.
 
 <div class="guide-flow" markdown>
@@ -34,12 +34,12 @@ Click **Experiments** in the row of buttons along the top, then **New experiment
 
     1. **Experiments**: this screen. Every experiment shows as a card. Double-click a card to open it.
     2. **Active processes**: everything running now in any experiment, such as a detection run or a video import, and anything that failed.
-    3. **Configuration**: the setup checklist from [Configure DETAIL](../configure.md).
+    3. **Configuration**: the setup checklist from [Configure Detail](../configure.md).
     4. **Model manager**: every model on your computer: the downloaded ones, such as SAM 3 and DINOv3, and the ones you train.
     5. **Keypoints manager**: the skeletons, the sets of body points chapter 4 places on the animal.
     6. **Quick tools**: tools that need no experiment, such as trying SAM 3 on one video.
-    7. **Docs**: **Open full docs ↗** opens DETAIL's documentation, these guides included, in your browser. It works without the internet.
-    8. **Version History**: which version of DETAIL you are running, what changed, and **Check for updates**.
+    7. **Docs**: **Open full docs ↗** opens Detail's documentation, these guides included, in your browser. It works without the internet.
+    8. **Version History**: which version of Detail you are running, what changed, and **Check for updates**.
     9. **Info**: a short explanation of the screen you are on.
     10. **New experiment**: makes a new experiment. This step.
     11. **Import experiment**: opens an experiment someone exported to a file (a `.tar` archive), for example to move it from another computer. A bar shows how far it has got, and **Cancel** stops it with nothing placed. Video kept outside the experiment is looked for where the other computer had it; any recording whose video is still not found is named at the end.
@@ -52,7 +52,7 @@ Fill in the dialog:
 ![The New experiment dialog filled in: name Top-down demo, a description, and the Create button highlighted.](../../assets/user-guides/single-animal/create/new-experiment.png)
 
 ??? info "What everything on this screen does"
-    1. **Name**: what the experiment is called everywhere in DETAIL. Required. You can change it later on the Overview.
+    1. **Name**: what the experiment is called everywhere in Detail. Required. You can change it later on the Overview.
     2. **Description**: a sentence about the study. Optional.
     3. **Create**: makes the experiment and opens it.
     4. **Cancel**: closes the dialog without making anything.
@@ -70,7 +70,7 @@ side.
     1. **Overview**: this page.
     2. **Recording information**: one row per recording, with what differs between them. Step 3.
     3. **Recordings**: add recordings and open each one's page. Step 2.
-    4. **Datasets**: frames with labels that DETAIL makes when it trains a model (chapter 3).
+    4. **Datasets**: frames with labels that Detail makes when it trains a model (chapter 3).
     5. **Models**: the models trained for this experiment, such as a fast detector (chapter 3) and a keypoint model (chapter 4).
     6. **Processing pipeline**: start and follow detection, tracking and embedding runs (chapters 3 to 5).
     7. **Analysis**: behavior scan, clustering and the other analyses (chapters 6 to 8).
@@ -85,7 +85,7 @@ side.
     16. **Delete experiment**: deletes the experiment and everything in its folder, after asking. It cannot be undone. Videos you referenced in place stay where they are.
 
 ??? info "About this step"
-    DETAIL keeps each experiment in its own folder, inside a folder named
+    Detail keeps each experiment in its own folder, inside a folder named
     `DetailExperiments` in your Documents folder. The **Folder** line on the Overview shows
     where.
 
@@ -128,7 +128,7 @@ In the **Add recordings** dialog:
 Click **Create**. The dialog closes and the videos import in the background. A bar at the
 bottom of the window shows which video is importing and how long is left.
 
-**Check:** when the import is done, each recording's **Status** says **ready**. Leave DETAIL
+**Check:** when the import is done, each recording's **Status** says **ready**. Leave Detail
 open until then: closing it stops the imports.
 
 ![The Recordings page with box1, box2 and box3, each ready.](../../assets/user-guides/single-animal/create/recordings-added.png)
@@ -136,12 +136,12 @@ open until then: closing it stops the imports.
 ??? info "What everything on this screen does"
     1. **The recordings table**: one row per recording. **Status** says whether its video has finished importing (**ready**). **Source** is where the video came from. **Parts** is how many video files the recording has. **Streams** counts other data lined up with the video, such as operant-box events. **Field of view** and **Detections** fill in as you work through the next chapters. Double-click a row to open that recording's page.
 
-After the import, DETAIL also makes small copies of each video in the background, for the
+After the import, Detail also makes small copies of each video in the background, for the
 clip previews in chapters 7 and 8. A second bar at the bottom of the window, **Previews**,
 shows how far it has got. You can carry on while it works.
 
 ??? info "About this step: copying or referencing the video"
-    By default DETAIL **copies** each video into the experiment folder. The experiment then
+    By default Detail **copies** each video into the experiment folder. The experiment then
     has everything it needs, and you can move or delete the original. It needs as much free
     space as the videos take.
 
@@ -151,7 +151,7 @@ shows how far it has got. You can carry on while it works.
     video** on the recording's page points it at the new place.
 
 ??? info "About this step: names and ids"
-    A recording's **name** is yours to choose and change. DETAIL also gives each recording an
+    A recording's **name** is yours to choose and change. Detail also gives each recording an
     **id**, such as `recording_000`, which never changes. You can rename a recording later on
     its own page.
 
@@ -163,7 +163,7 @@ shows how far it has got. You can carry on while it works.
     - **A recording's status stays on importing:** the import is still going. The bar at the
       bottom of the window shows its progress. Large videos, and videos on a network drive,
       take longer.
-    - **A recording's status says failed:** DETAIL was closed, or the computer shut down,
+    - **A recording's status says failed:** Detail was closed, or the computer shut down,
       while it imported. An import cannot carry on where it stopped: double-click the
       recording to open its page, click **Delete recording** at the bottom, then add the
       video again with **Add recordings**.
@@ -199,7 +199,7 @@ you are not sure you will need it.
 ![The Recording information table while editing: the three recordings with columns box (1 to 3), drug (on, off, on), animal (17, 18, 19), date and session, with the Add column and Save buttons highlighted.](../../assets/user-guides/single-animal/create/recording-information.png)
 
 ??? info "What everything on this screen does"
-    1. **The table**: double-click a cell to change it. You can copy and paste cells, including from a spreadsheet. **recording_id** and **file** are filled in by DETAIL. Your columns follow. The tick-box columns after them fill in by themselves as you work on each recording.
+    1. **The table**: double-click a cell to change it. You can copy and paste cells, including from a spreadsheet. **recording_id** and **file** are filled in by Detail. Your columns follow. The tick-box columns after them fill in by themselves as you work on each recording.
     2. **Save**: saves every change you made since **Edit**.
     3. **Cancel**: throws away every change you made since **Edit**.
     4. **Add column**: adds a column. It asks for the name.
@@ -235,7 +235,7 @@ A column added there appears on every recording, empty on the others until you f
 ## 4. Optional: a recording in several files
 
 Some cameras save one session as several video files, one after another. Keep them as **one
-recording with several parts**, not as separate recordings: DETAIL then plays and analyzes
+recording with several parts**, not as separate recordings: Detail then plays and analyzes
 them as one video, on one clock. Skip this step if each session is one file.
 
 1. Add the session's **first** file as a recording ([step 2](#2-add-the-recordings)) and wait
@@ -252,7 +252,9 @@ were filmed, and the heading counts them, such as **Video parts (2)**. If two ar
 
 ??? info "About this step"
     Every part of a recording must have the same picture size and the same frame rate, which
-    is the case for files one camera saved in one session. DETAIL refuses a part that differs.
+    is the case for files one camera saved in one session. Detail refuses a part that differs,
+    before it copies anything. A frame rate within 1% counts as the same: a phone or webcam
+    saves each file at a slightly different average rate.
 
     Set the order before you go on. Once the recording has a run, such as a detection run in
     chapter 3, the order is fixed, because the run's results are tied to it.
@@ -287,9 +289,9 @@ is enough for you.
           dose: 0
     ```
 
-3. In DETAIL, click **Recordings** in the list on the left, then **Import bundle**, and choose
+3. In Detail, click **Recordings** in the list on the left, then **Import bundle**, and choose
    the bundle folder.
-4. DETAIL checks the whole manifest, then asks **Import 2 recording(s) from this bundle?**
+4. Detail checks the whole manifest, then asks **Import 2 recording(s) from this bundle?**
    Click **Yes**. The videos import in the background, as in step 2.
 
 ![The Recordings page with the Import bundle button highlighted.](../../assets/user-guides/single-animal/create/import-bundle.png)
@@ -308,7 +310,7 @@ its import is done. Each `metadata` entry is a column on **Recording information
     recordings](../../cli.md#bulk-importing-recordings) in the manual.
 
 ??? warning "If this doesn't work"
-    DETAIL checks the whole manifest before it creates anything. If it finds a problem it
+    Detail checks the whole manifest before it creates anything. If it finds a problem it
     lists every one in a window titled **Import bundle** and imports nothing, so you can fix
     the file and try again. The usual problems:
 

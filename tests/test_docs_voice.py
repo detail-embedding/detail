@@ -63,6 +63,10 @@ _NOT_ENFORCED = {
         "23 literals. The row calls the product name provisional and asks that a rename be "
         "one change; doing that needs the rename to be real first."
     ),
+    "DETAIL (all caps)": (
+        "only the capitals are wrong, and this scan ignores case, so it would match every "
+        "'detail'. tests/test_product_name.py checks it case-sensitively instead."
+    ),
     "(calling it a recording)": "a parenthetical gloss, not a term a scan can match.",
     "(used interchangeably)": "a parenthetical gloss, not a term a scan can match.",
     EM_DASH: "has its own ratchet above, which counts rather than forbids.",

@@ -502,6 +502,48 @@ def test_overlay_draws_the_mask_on_the_frame(tmp_path):
     assert _channel_shift(tinted, plain, 0, 8) < 5  # a corner outside it
 
 
+@pytest.mark.parametrize("crop", [False, True])
+@pytest.mark.parametrize("render", [clip_render.MASK, clip_render.OVERLAY])
+def test_a_mask_encoded_at_another_size_is_drawn_where_it_was(tmp_path, render, crop):
+    """The part's masks decode at ``part["mask_hw"]``, the size its detection run encoded them
+    at, whatever size the footage decodes at (§9).
+
+    Here the footage is 64x64 and the masks were encoded at 32x32. Decoded at the footage's
+    size, the 32x32 grid's runs are laid down the columns of a 64x64 one and the subject comes
+    out as stripes across most of the frame. All three of the module's mask readers are
+    exercised (the mask flavour, the overlay on the whole frame and the overlay on a crop), and
+    each is held to the whole drawn region, not a patch: stripes cover the square's patch too.
+    """
+    from detail.api.run_preview import _square_crop
+
+    video = tmp_path / "grey.mp4"
+    _write_sized_video(video, 12, width=64, height=64, value=128)
+    small = np.zeros((32, 32), dtype=bool)
+    small[12:20, 12:20] = True  # the footage's 24:40 square, inside the 16:48 box
+    part = {**make_part(video, range(12), mask=small), "mask_hw": (32, 32)}
+    box = (0.25, 0.25, 0.75, 0.75)
+    plain_part = {**part, "reader": _Reader(list(range(12)), [box] * 12)}
+    drawn, plain = tmp_path / "drawn.mp4", tmp_path / "plain.mp4"
+    for p, out in ((part, drawn), (plain_part, plain)):
+        clip_render.render_part(
+            p, [job(2, 6, out)], 0, 64, renders=(render,), crop=crop
+        )
+
+    expected = np.zeros((64, 64), np.uint8)
+    expected[24:40, 24:40] = 255
+    if crop:
+        framed = _square_crop(np.repeat(expected[:, :, None], 3, axis=2), box, 64)
+        expected = framed[:, :, 0]
+    expected = expected > 127
+    frame = _first_frame(drawn).astype(np.int16)
+    if render == clip_render.MASK:
+        on = frame.mean(axis=2) > 127
+    else:
+        on = np.abs(frame - _first_frame(plain).astype(np.int16)).max(axis=2) > 20
+    overlap = (on & expected).sum() / (on | expected).sum()
+    assert overlap > 0.7, f"drawn region overlaps the mask by {overlap:.2f}"
+
+
 def test_overlay_still_writes_a_frame_when_the_mask_is_missing(tmp_path):
     """Detection rows with no mask (a bbox-only model) must not silently drop the frame."""
     video = tmp_path / "grey.mp4"
