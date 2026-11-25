@@ -86,7 +86,7 @@ here.
 | Train a fast detector | [Chapter 3, step 2](single-animal/detect-and-track.md#2-distill-a-fast-detector) |
 | Detect and track the animal | [Chapter 3, steps 3 and 4](single-animal/detect-and-track.md#3-detect-every-frame) |
 | Save the tracks as files | [Chapter 3, step 4](single-animal/detect-and-track.md#optional-save-the-tracks) |
-| Make your own skeleton | [Chapter 4, step 2](single-animal/keypoints.md#make-your-own-skeleton) |
+| Make your own skeleton | [Chapter 4](single-animal/keypoints.md#optional-make-your-own-skeleton) |
 | Place and track keypoints | [Chapter 4, steps 4 and 5](single-animal/keypoints.md#4-place-keypoints-on-every-frame) |
 | Take keypoints to DeepLabCut, SLEAP or NWB | [Chapter 4, step 5](single-animal/keypoints.md#optional-take-the-keypoints-to-deeplabcut-sleap-or-nwb) |
 | Work with a side-view recording | [Chapter 4](single-animal/keypoints.md#side-view-and-isometric-recordings) |
@@ -192,8 +192,8 @@ recordings need space of their own on top of this.
     recordings](single-animal/keypoints.md#side-view-and-isometric-recordings), in chapter 4, says what changes for a
     camera beside the animal:
 
-    - **The keypoints.** A view from above and a side view see different body points, so they
-      use different skeletons (chapter 4).
+    - **The keypoints.** Both use the same three points, head, midpoint and tail, but from
+      the side the example set has to show the animal facing more ways (chapter 4).
     - **Turning the animal.** Before describing each frame, Detail turns the animal to face one
       way: from above it turns the head to point right, from the side it flips the animal to
       face right (chapter 5).

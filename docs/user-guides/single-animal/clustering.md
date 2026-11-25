@@ -17,7 +17,7 @@ the step is in Detail.
 
 <div class="guide-flow" markdown>
 
-1. [Run a behavior clustering](#1-run-a-behavior-clustering) <span class="where where-app">Experiments › Analysis › New analysis</span> <span class="note">About 2 minutes for the demo, on the processor.</span>
+1. [Run a behavior clustering](#1-run-a-behavior-clustering) <span class="where where-app">Experiments › Analysis › New analysis</span> <span class="note">Under a minute for the demo, on the processor.</span>
 2. [Look through the tree](#2-look-through-the-tree) <span class="where where-app">the run › Interpret</span> <span class="note">The groups, and every clip of the one you choose, playing.</span>
 3. [Narrow with filters](#3-narrow-with-filters) <span class="where where-app">the run › Interpret › Filters</span> <span class="note">Which groups come from one drug, one box, one part of the arena.</span>
 4. [Watch a cluster's clips](#4-watch-a-clusters-clips) <span class="where where-app">the run › Interpret › Open in window</span> <span class="note">A cluster in its own window; one clip at full size.</span>
@@ -90,7 +90,7 @@ analysis run** dialog:
         that grows with the square of their number, so a run on many long recordings can set
         this to bound it. The run then says what it left out.
 
-The run's page opens. On the demo, the clustering took about 2 minutes, on the processor.
+The run's page opens. On the demo, the clustering took under a minute, on the processor.
 When its **Status** says **open**, it is ready to label.
 
 ![The behavior clustering's page: an_03, with the four cards Interpret, Audit, Browse and Measures under Results, then Open output folder, Delete analysis and Start new analysis. Numbered markers sit on every control.](../../assets/user-guides/single-animal/clustering/clustering-run.png)
@@ -116,43 +116,46 @@ the filters on the left (step 3).
 
 **The tree** reads from the top down. The top block, **all**, is every bout. Each block below
 splits its parent into two or more clusters, each marked with its number and its share of the
-run's time, such as **#20 31.6%**. A wide block is a common behavior; a narrow one a rare one.
+run's time, such as **#20 27.0%**. A wide block is a common behavior; a narrow one a rare one.
 Click a block to choose it.
 
 **The montage** under it plays every clip of the chosen cluster at once, the most typical
 first. Hover over a clip to pause the others; double-click it to open it at full size
 (step 4).
 
-![The Interpret view with cluster #20 chosen: the filters on the left, the tree at the top with #20 outlined, and under it the cluster's label bar, saying Behavior #20, not labelled, 37 clips, 3.9 min, 31.6% of the run, and its clips playing in a grid. Numbered markers sit on every control.](../../assets/user-guides/single-animal/clustering/interpret.png)
+![The Interpret view with cluster #20 chosen: the filters on the left, the tree at the top with #20 outlined, and under it the cluster's label bar, saying Behavior #20, not labelled, 38 clips, 2.2 min, 27.0% of the run, and its clips playing in a grid. Numbered markers sit on every control.](../../assets/user-guides/single-animal/clustering/interpret.png)
 
 ??? info "What everything on this screen does"
-    1. **−**: zooms the tree out.
-    2. **+**: zooms the tree in, to tell small clusters apart. Scrolling over the tree does
+    1. **Find behaviors**: type a cluster's number, such as `20`, or a label, to go to it in
+       the tree.
+    2. **Find**: goes to it. ++enter++ does the same.
+    3. **−**: zooms the tree out.
+    4. **+**: zooms the tree in, to tell small clusters apart. Scrolling over the tree does
        the same.
-    3. **Whole tree**: shows the whole tree again.
-    4. **The tree**: every cluster, as a block under its parent. Click a block to choose it;
+    5. **Whole tree**: shows the whole tree again.
+    6. **The tree**: every cluster, as a block under its parent. Click a block to choose it;
        right-click it for **Label…**, **Remove label**, **Open in window** and **Zoom to
        this**. Drag the dotted handle under the tree to give it more or less height.
-    5. **Most typical ▾**: the order of the clips: **Most typical** first, **Least typical**
+    7. **Most typical ▾**: the order of the clips: **Most typical** first, **Least typical**
        first, or **Random**. The least typical ones show where a cluster's edges are.
-    6. **Show ▾**: what the clips show: the video, the animal's outline, a trail of where the
+    8. **Show ▾**: what the clips show: the video, the animal's outline, a trail of where the
        outline has been, the keypoints, **As recorded** or **Aligned** (head up from
        above; from the side, flipped to face right as the embedding saw them), and how much
        footage either side.
-    7. **Export ▾**: saves the clips (see *Save the clips*, below).
-    8. **Size**: how big the clips are.
-    9. **Label this behavior**: type a label for the chosen cluster (step 5).
-    10. **Label**: puts the label typed beside it on the cluster. ++enter++ does the same.
-    11. **Remove**: takes the chosen cluster's label off.
-    12. **Labels ▾**: the labels you have used, to put one on with a click, and to rename or
+    9. **Export ▾**: saves the clips (see *Save the clips*, below).
+    10. **Size**: how big the clips are.
+    11. **Label this behavior**: type a label for the chosen cluster (step 5).
+    12. **Label**: puts the label typed beside it on the cluster. ++enter++ does the same.
+    13. **Remove**: takes the chosen cluster's label off.
+    14. **Labels ▾**: the labels you have used, to put one on with a click, and to rename or
         merge labels.
-    13. **Undo (⌘Z)**: undoes the last label change. On Windows and Linux the key is
+    15. **Undo (⌘Z)**: undoes the last label change. On Windows and Linux the key is
         ++ctrl+z++.
-    14. **Open in window**: opens the chosen cluster in a window of its own (step 4).
-    15. **Scrollbar**: scrolls the clips.
-    16. **Finish**: says you are done labelling. Greyed out, with the reason beside it,
+    16. **Open in window**: opens the chosen cluster in a window of its own (step 4).
+    17. **Scrollbar**: scrolls the clips.
+    18. **Finish**: says you are done labelling. Greyed out, with the reason beside it,
         until a behavior is labelled. It can be reopened.
-    17. **Reopen**: opens a finished run again, to change its labels. Greyed out while the
+    19. **Reopen**: opens a finished run again, to change its labels. Greyed out while the
         run is open.
 
     The line under the cluster's name gives its clips, its total time, and its share of
@@ -167,13 +170,13 @@ How to read the tree:
    only divides one behavior in two.
 
 On the demo, **#20** is mice moving across the floor with the body stretched out and the
-tail trailing: walking. **#1** is mice staying in one spot for a long time, the body
+tail trailing: walking. **#3** is mice staying in one spot for a long time, the body
 bunched up.
 
 ??? info "About this step: clips and bouts"
     Each clip is one bout: a stretch of video where the animal's posture changed in one
     way, from a fraction of a second to a minute. The cluster's **time** is the sum of its
-    bouts. A cluster can hold few clips but much time, when its bouts are long, as **#1**
+    bouts. A cluster can hold few clips but much time, when its bouts are long, as **#3**
     does on the demo.
 
 ## 3. Narrow with filters
@@ -185,7 +188,7 @@ not match in grey.
 
 For example, to see which clusters come from drug-on recordings: under **drug**, tick **on**.
 
-![The Interpret view with the drug filter set to on: the filters on the left highlighted, saying 81 of 109 clips match, with the drug section open and on ticked; the tree's blocks shaded by how many of their clips match; and the montage with the clips from drug-off recordings drawn in grey.](../../assets/user-guides/single-animal/clustering/filters.png)
+![The Interpret view with the drug filter set to on: the filters on the left highlighted, saying 92 of 122 clips match, with the drug section open and on ticked; the tree's blocks shaded by how many of their clips match; and the montage with the clips from drug-off recordings drawn in grey.](../../assets/user-guides/single-animal/clustering/filters.png)
 
 What the filters are:
 
@@ -229,7 +232,7 @@ Double-click a clip, in the window or on the Interpret view, to open it at full 
 **clip window**. It plays the clip from the original video, and **◀ previous** and **next ▶**
 step through the cluster's clips in the montage's order.
 
-![The clip window: clip 1 of 37 of cluster #20, a mouse in box3 with its outline drawn, with the advanced view showing the outline and keypoints on their own beside it and the speed, area, length, bend and turning traces under the video. Numbered markers sit on every control.](../../assets/user-guides/single-animal/clustering/clip-window.png)
+![The clip window: clip 1 of 38 of cluster #20, a mouse in box2 with its outline drawn, with the advanced view showing the outline and keypoints on their own beside it and the speed, area, length, bend and turning traces under the video. Numbered markers sit on every control.](../../assets/user-guides/single-animal/clustering/clip-window.png)
 
 ??? info "What everything on this screen does"
     The line at the top says which clip this is: its recording, its length, where it
@@ -285,7 +288,7 @@ When a cluster is one behavior you recognise, give it a label:
 The label goes on at once; there is no Save button. The block in the tree takes the label's
 colour, and the key above the tree lists every label with its total time.
 
-![The Interpret view after labelling: cluster #20 labelled walking, in orange, and cluster #1 staying in place, in blue; the key above the tree lists walking 3m51s and staying in place 3m17s; the label bar for #20 is highlighted.](../../assets/user-guides/single-animal/clustering/labelled.png)
+![The Interpret view after labelling: cluster #20 labelled walking, in pink, and cluster #3 staying in place, in green; the key above the tree lists walking 2m12s and staying in place 1m28s; the label bar for #20 is highlighted.](../../assets/user-guides/single-animal/clustering/labelled.png)
 
 Other ways to label:
 
@@ -356,7 +359,7 @@ or look at the cluster's two halves, when the review found the cluster is two be
 **Browse** lists every labelled bout, by recording and time, with an ethogram of each
 recording: where in the video each label falls.
 
-![The Browse view: 47 labelled bouts; on the left the labels with their bouts and time, the recordings and a metadata filter; on the right the ethogram of box1, box2 and box3 in the labels' colours and patterns, the list of bouts with behavior, recording, start, duration and audit, and the player playing the first one. Numbered markers sit on every control.](../../assets/user-guides/single-animal/clustering/browse.png)
+![The Browse view: 53 labelled bouts; on the left the labels with their bouts and time, the recordings and a metadata filter; on the right the ethogram of box1, box2 and box3 in the labels' colours and patterns, the list of bouts with behavior, recording, start, duration and audit, and the player playing a walking bout. Numbered markers sit on every control.](../../assets/user-guides/single-animal/clustering/browse.png)
 
 ??? info "What everything on this screen does"
     1. **Clear filters**: ticks every label and recording again.

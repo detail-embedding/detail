@@ -1,9 +1,10 @@
 # 4. Keypoints
 
-**Keypoints** are named points on the body: the nose, the ears, the base of the tail and so
-on. Tracking (chapter 3) says where the animal is; keypoints say how it is posed, which way it
-faces, and what its head and tail are doing. The embedding (chapter 5) uses them to turn
-every animal the same way before comparing postures.
+**Keypoints** are named points on the body. This guide uses three, down the middle of the
+animal: the **head**, the **midpoint** of the back, and the base of the **tail**. Tracking
+(chapter 3) says where the animal is; keypoints say which way it faces and how its body
+bends. The embedding (chapter 5) uses them to turn every animal the same way before
+comparing postures.
 
 Detail makes a keypoint model the same way it made the fast detector in chapter 3: by
 distilling. You mark the points by hand on about ten frames, an **example set**. A slow,
@@ -25,12 +26,12 @@ occlusions, may need upwards of 50 examples. The teacher, **dinov3_match**, a la
 model that has already learned what images look like, needs no training: on a new frame it
 puts each point where the picture looks most like the spot you marked. It does that on a few
 hundred frames, and the student trains on those, so the hundreds of frames are marked for
-you. If all you want is the nose, back and tail base from top-down recordings without
-occlusions, 5 frames is typically enough.
+you. For the three points of this guide from top-down recordings without occlusions,
+5 frames is typically enough.
 
 | | SLEAP or DeepLabCut | Detail |
 |---|---|---|
-| Frames you mark | Hundreds | About ten; 5 for nose, back and tail base from above; 50 or more for isometric or heavily occluded views |
+| Frames you mark | Hundreds | About ten; 5 for the head, midpoint and tail from above; 50 or more for isometric or heavily occluded views |
 | What trains on them | A network, on your marks | Nothing: the teacher matches them, and the student trains on the teacher's frames |
 | Your time | Hours of marking | About 20 minutes |
 | Points | As precise as your marking and training | Close, not exact |
@@ -51,7 +52,7 @@ the step is in Detail. A **GPU** tag means the step's work runs on your computer
 <div class="guide-flow" markdown>
 
 1. [Start a keypoint distill](#1-start-a-keypoint-distill) <span class="where where-app">Experiments › Models › Distill new model › Keypoints</span> <span class="note">The teacher, and which tracking to read.</span>
-2. [Mark an example set](#2-mark-an-example-set) <span class="where where-app">Distill new model › New example set</span> <span class="note">About 20 minutes of clicking. To use your own points, first [make a skeleton](#make-your-own-skeleton) in the Keypoints manager.</span>
+2. [Mark an example set](#2-mark-an-example-set) <span class="where where-app">Distill new model › New example set</span> <span class="note">About 10 minutes of clicking. To mark more points than three, first [make a skeleton](#optional-make-your-own-skeleton) in the Keypoints manager.</span>
 3. [Check the cut-off and distill](#3-check-the-cut-off-and-distill) <span class="where where-app">Distill new model › Test cut-off</span> <span class="where where-gpu">GPU</span> <span class="note">About 10 minutes on an 8 GB GPU.</span>
 4. [Place keypoints on every frame](#4-place-keypoints-on-every-frame) <span class="where where-app">Experiments › Processing pipeline › New run</span> <span class="where where-gpu">GPU</span> <span class="note">About a minute per 5-minute video.</span>
 5. [Track the keypoints](#5-track-the-keypoints) <span class="where where-app">Experiments › Processing pipeline › New run</span> <span class="note">Seconds. Runs on the processor, not the GPU.</span>
@@ -90,7 +91,7 @@ In the **Distill new model** dialog:
    and labels three times faster.
 6. **Examples:** the example set, which you make next (step 2).
 
-![The Distill new model dialog for keypoints: model type Keypoints, the name mouse keypoints, the teacher Patch method + example set with dinov3_match at vit_large, the skeleton mouse overhead, the example set mouse overhead with 11 of 11 frames, the tracking from chapter 3, 300 frames to label, the score cut-off still to set, the student yolo11s-pose.pt, and Distill greyed out with its reason at the bottom. Numbered markers sit on every control.](../../assets/user-guides/single-animal/keypoints/distill-keypoints.png)
+![The Distill new model dialog for keypoints: model type Keypoints, the name mouse keypoints, the teacher Patch method + example set with dinov3_match at vit_large, the skeleton Midline (3 points), the example set mouse overhead with 11 of 11 frames, the tracking from chapter 3, 300 frames to label, the score cut-off still to set, the student yolo11s-pose.pt, and Distill greyed out with its reason at the bottom. Numbered markers sit on every control.](../../assets/user-guides/single-animal/keypoints/distill-keypoints.png)
 
 ??? info "What everything on this screen does"
     1. **Model type**: **Keypoints** makes a keypoint model.
@@ -102,10 +103,10 @@ In the **Distill new model** dialog:
     5. **Method**: the patch method. **dinov3_match** is the one to use.
     6. **Size**: the method's size. **vit_large** is the most accurate, and the one
        downloaded in Configure Detail.
-    7. **Skeleton**: the points to mark and the lines joining them. The demo uses
-       **mouse overhead**, 12 points made for a four-legged animal seen from above. Your own
-       skeletons are listed here ([Make your own skeleton](#make-your-own-skeleton)), after
-       the two presets, **Midline (3 points)** and **Midline (2 points)**.
+    7. **Skeleton**: the points to mark and the lines joining them. The demo uses the preset
+       **Midline (3 points)**: `head`, `midpoint` and `tail`, joined in a line. The other
+       preset, **Midline (2 points)**, is the head and tail alone. Your own skeletons are
+       listed after them ([Make your own skeleton](#optional-make-your-own-skeleton)).
     8. **Example set**: which example set the teacher learns from. The count beside it says
        how many of its frames are fully marked.
     9. **New example set…**: makes an empty example set and opens it for marking (step 2).
@@ -130,91 +131,12 @@ Leave the dialog open: steps 2 and 3 work from it.
 
 ## 2. Mark an example set
 
-### Make your own skeleton
-
-A **skeleton** is the list of points to mark, the lines joining them, and which points are a
-left/right pair. Detail comes with two presets: **Midline (3 points)** (head, midpoint and
-tail) and **Midline (2 points)** (head and tail). For anything more, such as ears or a tail
-tip, make a skeleton before you make the example set. The demo's skeleton, **mouse
-overhead**, has 12 points: the nose, both ears, the base of the neck, both shoulders, the
-middle of the back, both hips, and the base, middle and tip of the tail. This example makes
-a smaller one the same way, with 6 points: nose, left ear, right ear, neck, back and tail
-base.
-
-Click **Keypoints manager** in the bar along the top of the window, then **+ New
-skeleton**.
-
-![The Keypoints manager: the + New skeleton button highlighted, and the table of skeletons with the two presets. Numbered markers sit on every control.](../../assets/user-guides/single-animal/keypoints/keypoints-manager.png)
-
-??? info "What everything on this screen does"
-    Skeletons are shared by every experiment on your computer. An example set, a keypoint
-    run or a model that uses one keeps its own copy, so changing a skeleton later never
-    changes work already done.
-
-    1. **+ New skeleton**: opens an empty skeleton to draw.
-    2. **Import…**: adds a skeleton from a `.yaml` file, for example one a colleague
-       exported.
-    3. **The skeletons**: every skeleton, with how many points it has and what uses it.
-       **preset** ones come with Detail and cannot be changed; editing one saves a copy.
-       Double-click a row to open it.
-    4. **Edit…**: opens the chosen skeleton. A skeleton something uses keeps its points:
-       an edit is saved as a new skeleton.
-    5. **Export…**: saves the chosen skeleton to a file, to share it.
-    6. **Delete**: deletes the chosen skeleton, after asking. Greyed out for a preset or a
-       skeleton something uses.
-
-In the **New skeleton** window:
-
-1. **Name:** `mouse 6-point`.
-2. Click the canvas six times, once for each point, in roughly where it sits on an animal
-   seen from above: the nose at the top, the ears either side behind it, then the neck, the
-   back and the tail base down the middle.
-3. After each click the new point is chosen. Type its name in **Point**, and press
-   ++enter++: `nose`, `left_ear`, `right_ear`, `neck`, `back`, `tail_base`.
-4. Join the points with lines: click a point, then hold ++shift++ and click the next. Join
-   each ear to the nose, then nose to neck, neck to back, and back to tail base.
-5. Click `left_ear`, set **Pair with** to `right_ear`, and **Side** to `left`.
-6. Click **Save**.
-
-![The New skeleton window: the name mouse 6-point and the six points drawn on the canvas, the nose at the top joined to both ears and to the neck, then the back and the tail base below; left_ear is chosen, paired with right_ear on the left side. Numbered markers sit on every control.](../../assets/user-guides/single-animal/keypoints/new-skeleton.png)
-
-??? info "What everything on this screen does"
-    The canvas shows the skeleton as you draw it. Click to add a point, drag one to move
-    it, right-click one to remove it, and ++shift++-click a second point to join or unjoin
-    the two. Scroll to zoom. Points are coloured by side: blue for left, orange for right,
-    green for the middle of the body.
-
-    1. **Name**: the skeleton's name, as the **Skeleton** lists show it.
-    2. **Point**: the chosen point's name. Each name is used once. Lowercase with `_`
-       instead of spaces, such as `tail_base`, keeps names easy to read in other screens.
-    3. **Pair with**: the point's partner on the other side of the body, such as the other
-       ear. **(none)** for a point on the middle of the body.
-    4. **Side**: which side of the body the point is on, for a paired point.
-    5. **Remove point**: removes the chosen point.
-    6. **Save**: saves the skeleton. Greyed out until it is valid, for example while two
-       points share a name; the line above says what is wrong.
-    7. **Cancel**: closes the window. With unsaved changes, it asks first.
-
-??? info "About this step: which points to choose"
-    - **Pairs matter.** Marking the ears as a pair is how Detail keeps the left ear and
-      the right ear apart, rather than letting them swap.
-    - **Choose points you can see.** A point hidden on most frames, such as a paw from
-      above, gives the teacher little to match. For the nose, back and tail base from above,
-      5 example frames is typically enough (see the top of this chapter).
-    - **Plan for the heading.** Chapter 5 turns every animal by a heading made from front
-      and back points. With this skeleton, use `nose` and `neck` as the front and
-      `tail_base` as the back.
-
-Your skeleton is now in the **Skeleton** list of the Distill dialog and of **New example
-set…**. Choose it there.
-
-### Make the example set
-
 In the **Distill new model** dialog, click **New example set…**. Give the set a name, such
-as `mouse overhead`, choose your skeleton in **Skeleton**, and click
-**Create and mark frames**.
+as `mouse overhead`, leave **Skeleton** at **Midline (3 points)**, and click **Create and
+mark frames**. To mark other points, such as the ears, [make your own
+skeleton](#optional-make-your-own-skeleton) first and choose it here instead.
 
-![The New example set dialog: the name mouse overhead and the skeleton. Numbered markers sit on every control.](../../assets/user-guides/single-animal/keypoints/new-example-set.png)
+![The New example set dialog: the name mouse overhead and the skeleton Midline (3 points). Numbered markers sit on every control.](../../assets/user-guides/single-animal/keypoints/new-example-set.png)
 
 ??? info "What everything on this screen does"
     1. **Name**: the example set's name.
@@ -229,20 +151,19 @@ The marking window opens on the first recording. To fill the set:
    It picks twelve frames, across all the recordings, where the animal is posed
    differently, and lists them under **Example frames**.
 2. Click the first frame in **Example frames**. The video goes to it.
-3. **Click the animal's nose.** The point is placed, and the next point in **Keypoints** is
-   highlighted.
-4. Click each point in turn, down the list. When a point cannot be seen on this frame, such
-   as an ear hidden by the head, press ++n++ (**Not visible**) instead.
-5. When all 12 are done, press ++d++ to go to the next example frame, and do the same.
+3. **Click the tip of the animal's nose** for `head`. The point is placed, and the next
+   point in **Keypoints** is highlighted.
+4. Click the middle of the back for `midpoint`, then the base of the tail, where it leaves
+   the body, for `tail`. When a point cannot be seen on this frame, such as the head tucked
+   under the body, press ++n++ (**Not visible**) instead.
+5. When all 3 are done, press ++d++ to go to the next example frame, and do the same.
 
-Every click saves by itself, in the background. Closing the window while clicks are still
-being saved loses nothing: they finish behind it. Quitting Detail first asks you to wait for
-them. Points are coloured by side: blue for left, orange for right,
-green for the middle of the body. **Left and right are the animal's own**, not the
-picture's: from above, with the nose pointing up the screen, the animal's left ear is on the
-left of the picture.
+Put each point on the same spot of the body on every frame: the teacher matches what the
+picture looks like there. Every click saves by itself, in the background. Closing the window
+while clicks are still being saved loses nothing: they finish behind it. Quitting Detail
+first asks you to wait for them.
 
-![The marking window: the video of box1 at frame 2559 with the mouse's points placed and joined by the skeleton's lines, the keypoints list with every point placed or not visible, the controls to add frames, and the list of 11 example frames, each all marked. Numbered markers sit on every control.](../../assets/user-guides/single-animal/keypoints/labeling.png)
+![The marking window: the video of box3 at frame 2358 with the mouse's head, midpoint and tail placed and joined by the skeleton's lines, the keypoints list with every point placed or not visible, the controls to add frames, and the list of 11 example frames, each all marked. Numbered markers sit on every control.](../../assets/user-guides/single-animal/keypoints/labeling.png)
 
 ??? info "What everything on this screen does"
     1. **Video**: which recording to show.
@@ -272,7 +193,7 @@ left of the picture.
     22. **Close**: closes the window. The marks are already saved.
 
 **Check:** every frame in **Example frames** says **all marked**, and the line under the
-video says **12 of 12 keypoints marked**.
+video says **3 of 3 keypoints marked**.
 
 ??? info "About this step: what makes a good example set"
     - **Ten to fifteen frames** is enough. More frames of the same pose add little; frames
@@ -298,7 +219,7 @@ Click **Test cut-off…**, beside **Score cut-off**. The **Test cut-off** window
 teacher places points on 12 frames. That can take a few minutes, most of it loading the
 teacher. Move the slider to **0.75**, as for the demo.
 
-![The Test cut-off window: 12 frames with the teacher's points drawn, filled where they are taught and hollow where they are under the cut-off; the score cut-off slider at 0.75, with 128 of 144 points taught; and the check against your example clicks: a median of 38.8 pixels, 21.6% of body size, at or above the cut-off. Numbered markers sit on every control.](../../assets/user-guides/single-animal/keypoints/test-cutoff.png)
+![The Test cut-off window: 12 frames with the teacher's points drawn, filled where they are taught and hollow where they are under the cut-off; the score cut-off slider at 0.75, with 34 of 36 points taught; and the check against your example clicks: a median of 20.7 pixels, 11.3% of body size, at or above the cut-off. Numbered markers sit on every control.](../../assets/user-guides/single-animal/keypoints/test-cutoff.png)
 
 ??? info "What everything on this screen does"
     The teacher places points on 12 frames, the way the distill will. A filled point is
@@ -306,29 +227,29 @@ teacher. Move the slider to **0.75**, as for the demo.
     the teacher against your own marks: each example frame is placed from the others, and
     the distance to your click is measured, for all the points and for each one.
 
-    1. **Scrollbar**: scrolls the frames up and down.
-    2. **The slider**: moves the cut-off. The frames update as you slide.
-    3. **Score cut-off**: the cut-off, to type in. Beside it, how many points are taught.
-    4. **Use this cut-off**: closes the window and puts this cut-off in the Distill dialog.
-    5. **Another sample**: draws 12 other frames.
-    6. **Close**: closes the window without changing the cut-off.
+    1. **The slider**: moves the cut-off. The frames update as you slide.
+    2. **Score cut-off**: the cut-off, to type in. Beside it, how many points are taught.
+    3. **Use this cut-off**: closes the window and puts this cut-off in the Distill dialog.
+    4. **Another sample**: draws 12 other frames.
+    5. **Close**: closes the window without changing the cut-off.
 
 **Check:** on most frames, most points are filled and sit on the right part of the body.
-Hollow points should be mostly the hard ones: the tail tip, or an ear turned away.
+Hollow points should be mostly the hard ones: a head tucked under the body while the
+animal grooms, or a tail base hidden as it rears.
 
 ??? info "About this step: reading the numbers"
-    **Median 38.8 px (21.6% of body size)** says how far, typically, the teacher's point
-    was from the click you made. On the demo it is large because the example marks were
-    quick ones (see the note at the top of the chapter). The student only needs the
-    teacher to be close, often: it learns from 300 frames, and the errors average out.
+    **Median 20.7 px (11.3% of body size)** says how far, typically, the teacher's point
+    was from the click you made. Careful example marks bring it down (see the note at the
+    top of the chapter). The student only needs the teacher to be close, often: it learns
+    from 300 frames, and the errors average out.
 
     If the points at or above the cut-off are much closer than those below it, the cut-off
     is doing its job: raising it keeps fewer, better points.
 
 ??? warning "If this doesn't work"
-    - **Left and right are swapped on many frames:** check the example set. A swap in your
-      marks teaches the teacher a swap. Open it with **Mark frames…**, and look for frames
-      where the blue points are on the animal's right.
+    - **The head and tail are swapped on many frames:** check the example set. A swap in
+      your marks teaches the teacher a swap. Open it with **Mark frames…**, and look for
+      frames where `head` sits on the tail.
     - **Points are far off on one box only:** add two or three frames from that box to the
       example set.
 
@@ -360,7 +281,7 @@ an 8 GB GPU.
 
 Click **Distill**. The dialog closes and the distill's page opens. The teacher labels 300
 frames, the student trains, and the student is registered as a keypoint method. On the demo,
-labelling took about a minute and training 9.
+labelling took about half a minute and training 9.
 
 ![The finished keypoint distill's page: name mouse keypoints, status complete, its label, train and register stages, and the training curve, with the best epoch marked. Numbered markers sit on every control.](../../assets/user-guides/single-animal/keypoints/distill-run.png)
 
@@ -419,7 +340,7 @@ processing run** dialog:
     15. **Cancel**: closes the dialog without starting anything.
     16. **?**: a short explanation of the setting beside it.
 
-On the demo, the three 5-minute videos took about 3 and a half minutes on an 8 GB GPU.
+On the demo, the three 5-minute videos took about 3 minutes on an 8 GB GPU.
 
 ## 5. Track the keypoints
 
@@ -478,11 +399,11 @@ Click **New run** again. In the dialog:
 Tracking keypoints takes seconds, on the processor rather than the GPU. When the run's page
 says **complete**, click **›** on a recording to see its keypoints on the video.
 
-![A recording's keypoint track result: the video of box1 with the mouse's tracked outline and its points joined by the skeleton's lines, a frame scrubber, the strips of frames with no animal and with no keypoints, and the coverage of each point. Numbered markers sit on every control.](../../assets/user-guides/single-animal/keypoints/keypoint-result.png)
+![A recording's keypoint track result: the video of box3 with the mouse's tracked outline and its head, midpoint and tail joined by the skeleton's lines, a frame scrubber, the strips of frames with no animal and with no keypoints, and the coverage of each point. Numbered markers sit on every control.](../../assets/user-guides/single-animal/keypoints/keypoint-result.png)
 
 ??? info "What everything on this screen does"
     The lines above the video say how many of the tracked frames were given a pose: here
-    8,851 of 8,854. The strips under the controls mark the frames with no animal and the
+    8,801 of 8,841. The strips under the controls mark the frames with no animal and the
     frames with an animal but no keypoints; the last line gives each point's coverage.
 
     1. **The slider**: moves through the video.
@@ -494,7 +415,7 @@ says **complete**, click **›** on a recording to see its keypoints on the vide
     7. **Frame number**: the frame shown. Type a number and press ++enter++ to go there.
 
 **Check:** play a few seconds of each recording. The points stay on the body as the animal
-moves, and the nose stays at the front.
+moves, and the head stays at the front.
 
 ??? warning "If this doesn't work"
     - **Points flicker between two places:** raise **Smooth window (s)** a little under
@@ -573,48 +494,90 @@ it is done.
     Launch Detail again. The same libraries also make **Keypoints for DeepLabCut** write
     each table as an `.h5` file beside the spreadsheet, as DeepLabCut does itself.
 
+## Optional: make your own skeleton
+
+**Midline (3 points)** is all the later chapters need: the head and tail give the heading the
+embedding turns each animal by. Make your own skeleton when you want other points as well,
+such as the ears or the paws, and make it before the example set.
+
+Click **Keypoints manager** in the bar along the top of the window, then **+ New
+skeleton**.
+
+![The Keypoints manager: the + New skeleton button highlighted, and the table of skeletons with the two presets. Numbered markers sit on every control.](../../assets/user-guides/single-animal/keypoints/keypoints-manager.png)
+
+??? info "What everything on this screen does"
+    Skeletons are shared by every experiment on your computer. An example set, a keypoint
+    run or a model that uses one keeps its own copy, so changing a skeleton later never
+    changes work already done.
+
+    1. **+ New skeleton**: opens an empty skeleton to draw.
+    2. **Import…**: adds a skeleton from a `.yaml` file, for example one a colleague
+       exported.
+    3. **The skeletons**: every skeleton, with how many points it has and what uses it.
+       **preset** ones come with Detail and cannot be changed; editing one saves a copy.
+       Double-click a row to open it.
+    4. **Edit…**: opens the chosen skeleton. A skeleton something uses keeps its points:
+       an edit is saved as a new skeleton.
+    5. **Export…**: saves the chosen skeleton to a file, to share it.
+    6. **Delete**: deletes the chosen skeleton, after asking. Greyed out for a preset or a
+       skeleton something uses.
+
+In the **New skeleton** window, this example adds the ears to the midline:
+
+1. **Name:** `mouse 5-point`.
+2. Click the canvas once for each point, where it sits on an animal seen from above, and
+   type its name in **Point** after each click: `nose` at the top, `left_ear` and
+   `right_ear` either side behind it, then `back` and `tail_base` down the middle.
+3. Join the points: click one, then hold ++shift++ and click the next. Join each ear to the
+   nose, then nose to back, and back to tail base.
+4. Click `left_ear`, set **Pair with** to `right_ear`, and **Side** to `left`. A pair is how
+   Detail keeps the left and right ear apart rather than letting them swap. Left and right
+   are the animal's own: from above, with the nose up the screen, its left ear is on the left.
+5. Click **Save**.
+
+![The New skeleton window: the name mouse 5-point and the five points drawn on the canvas, the nose at the top joined to both ears and to the back, then the tail base below; left_ear is chosen, paired with right_ear on the left side. Numbered markers sit on every control.](../../assets/user-guides/single-animal/keypoints/new-skeleton.png)
+
+??? info "What everything on this screen does"
+    The canvas shows the skeleton as you draw it. Click to add a point, drag one to move
+    it, right-click one to remove it, and ++shift++-click a second point to join or unjoin
+    the two. Scroll to zoom. Points are coloured by side: blue for left, orange for right,
+    green for the middle of the body.
+
+    1. **Name**: the skeleton's name, as the **Skeleton** lists show it.
+    2. **Point**: the chosen point's name. Each name is used once. Lowercase with `_`
+       instead of spaces, such as `tail_base`, keeps names easy to read in other screens.
+    3. **Pair with**: the point's partner on the other side of the body, such as the other
+       ear. **(none)** for a point on the middle of the body.
+    4. **Side**: which side of the body the point is on, for a paired point.
+    5. **Remove point**: removes the chosen point.
+    6. **Save**: saves the skeleton. Greyed out until it is valid, for example while two
+       points share a name; the line above says what is wrong.
+    7. **Cancel**: closes the window. With unsaved changes, it asks first.
+
+Your skeleton is now in the **Skeleton** list of the Distill dialog and of **New example
+set…**: choose it there, and mark its points in the order **Keypoints** lists them. Choose
+points you can see; a paw hidden on most frames from above gives the teacher little to
+match. In chapter 5, use `nose` as the front of the heading and `tail_base` as the back.
+
 ## Side-view and isometric recordings
 
 The demo is filmed from above. If your camera looks at the animal from the side, the steps
-in this chapter are the same, with three differences. The same goes for an **isometric**
+in this chapter are the same, with two differences. The same goes for an **isometric**
 recording, filmed from above at an angle. There the differences matter even more: from an
 angle the animal is seen in many more orientations, so the example set has to cover them all.
+Keep **Midline (3 points)**: the head, midpoint and tail can be seen from any side.
 
-**1. Choose the skeleton.** [Make one](#make-your-own-skeleton) for the view. From the side,
-5 points is a good start: nose, left ear, right ear, middle of the back and tail base, with
-the ears as a left/right pair. An isometric view often sees more of the body than a side
-view, such as the paws. If only the body's line matters, the preset **Midline (3 points)**
-needs no skeleton of your own.
-
-![The skeleton editor showing a 5-point side-view skeleton, mouse side: the nose at the left, joined to the left ear, the right ear and the middle of the back, which is joined to the tail base. Numbered markers sit on every control.](../../assets/user-guides/single-animal/keypoints/side-skeleton.png)
-
-??? info "What everything on this screen does"
-    The **New skeleton** window from [Make your own skeleton](#make-your-own-skeleton),
-    with the five points drawn from the side: the nose at the left, the tail base at the
-    right.
-
-    1. **Name**: the skeleton's name, here `mouse side`.
-    2. **Point**: the chosen point's name.
-    3. **Pair with**: the chosen point's partner on the other side of the body.
-       **(none)** for the nose, which is on the middle of the body.
-    4. **Side**: the side of the body, for a paired point. Greyed out for the nose.
-    5. **Remove point**: removes the chosen point.
-    6. **Save**: saves the skeleton.
-    7. **Cancel**: closes the window.
-
-    From the side, one ear is usually hidden behind the head. Mark it **Not visible** (++n++)
-    on those frames: the teacher learns which ear is in view from that.
-
-**2. Cover every direction in the example set.** From the side or at an angle, the animal
+**1. Cover every direction in the example set.** From the side or at an angle, the animal
 looks very different facing the camera, facing away and side on, so the example set needs
 each. Add more frames than from above, about 30, or 50 for an isometric view, with **Varied
 frames**. Then look down **Example frames**: if the animal faces the same way in most of
 them, add frames from moments it faces the other ways, by going to them on the slider and
-marking them there. A frame you mark is added to the set.
+marking them there. A frame you mark is added to the set. When the animal faces the camera,
+the midpoint and tail are hidden behind it: mark them **Not visible** (++n++).
 
-**3. In the later chapters.** In chapter 5, set **Egocentric alignment** to **Side camera:
-flip so the animal faces right**, and define the heading with `nose` as the front and
-`tail_base` as the back.
+**2. In the later chapters.** In chapter 5, set **Egocentric alignment** to **Side camera:
+flip so the animal faces right**, and define the heading with `head` as the front and
+`tail` as the back, as from above.
 
 ## Next
 
