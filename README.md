@@ -79,13 +79,13 @@ resource. The app also opens a copy that matches your install, offline: the Docs
 
 If you use Detail in your research, please cite our preprint (bioRxiv link coming soon):
 
-> Lurbur M, Iyer V, Just R, Coffey KR, Golden SA. Introducing Detail: species-agnostic,
-> generalizable animal behavior analysis using foundation model embedding spaces. *bioRxiv*
+> Lurbur M, Iyer V, Just R, Coffey KR, Golden SA. Detail: species-agnostic,
+> generalizable animal behavior analysis using foundation model embeddings. *bioRxiv*
 > (2026).
 
 ```bibtex
 @article{lurbur2026detail,
-  title   = {Introducing Detail: species-agnostic, generalizable animal behavior analysis using foundation model embedding spaces},
+  title   = {Detail: species-agnostic, generalizable animal behavior analysis using foundation model embeddings},
   author  = {Lurbur, Moses and Iyer, Vikram and Just, Ren{\'e} and Coffey, Kevin R. and Golden, Sam A.},
   journal = {bioRxiv},
   year    = {2026}

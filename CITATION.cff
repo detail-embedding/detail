@@ -27,8 +27,8 @@ keywords:
 preferred-citation:
   type: article
   title: >-
-    Introducing Detail: species-agnostic, generalizable animal behavior analysis using
-    foundation model embedding spaces
+    Detail: species-agnostic, generalizable animal behavior analysis using foundation
+    model embeddings
   authors:
     - given-names: Moses
       family-names: Lurbur
