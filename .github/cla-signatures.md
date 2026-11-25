@@ -6,7 +6,7 @@ keep the username exactly as GitHub shows it. Add only your own line, and leave 
 they are: the check refuses anything else (`scripts/check_cla.py`).
 
 The three authors below are covered by a separate written authors' agreement
-([date to be filled in once signed]).
+(signed 2026-11-24).
 
 | GitHub username | Full name | Date (YYYY-MM-DD) | CLA version |
 |---|---|---|---|
