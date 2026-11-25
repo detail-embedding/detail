@@ -1,0 +1,5 @@
+# Every file is owned by the maintainers team (mlurbur, DrCoffey, SamAGolden).
+# The "main: maintainer approval (non-maintainers)" rule set requires a code owner's
+# approval on a pull request from anyone outside that team; without this file that
+# requirement had nothing to point at, and any approval counted.
+* @detail-embedding/maintainers
