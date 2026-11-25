@@ -7,7 +7,7 @@ is handed and never complains. Handed the size of the frame a mask is about to b
 the recording's ``video.resolution``, it lays another grid's runs down this one's columns and
 the animal comes out as stripes across the frame. Nothing raised, so it was found by eye, on a
 recording whose file decoded larger than its detection had, in the clip window, the cluster
-montage and every clip export (detail-embedding/detail-dev#970).
+montage and every clip export.
 
 **How it hid.** Every fixture wrote its masks at the size of its own footage, so the size a
 reader passed and the size the mask had were always the same number, by two routes.
