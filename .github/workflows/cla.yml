@@ -1,0 +1,69 @@
+name: CLA
+
+# Fails a pull request whose author has not agreed to the DETAIL Contributor License Agreement
+# (CLA.md): agreement is a row with the author's GitHub username in .github/cla-signatures.md,
+# added in a commit the author made (CONTRIBUTING.md, "Sign the contributor license agreement").
+# scripts/check_cla.py holds the rules: an author outside the organization may add only their
+# own row, may not change existing rows, and must make the commit that adds it themselves.
+#
+# Runs on `pull_request`, not `pull_request_target`: it needs no secrets and only reads, so it
+# runs safely on forks with a read-only token. A pull request runs its own copy of this file and
+# of the script, so a change to either is read in review like any other change to .github/.
+#
+# To make it block merges, add "check" (this workflow's job) to main's required status checks
+# (a repository setting the maintainers change, not this file).
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: cla-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          sparse-checkout: |
+            .github/cla-signatures.md
+            scripts/check_cla.py
+          sparse-checkout-cone-mode: false
+      - name: Read the signature file on the base branch
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          if git cat-file -e "$BASE_SHA:.github/cla-signatures.md" 2>/dev/null; then
+            git show "$BASE_SHA:.github/cla-signatures.md" > "$RUNNER_TEMP/base.md"
+          fi
+      - name: List who made the commits that touch the signature file
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          gh api --paginate "repos/$REPO/pulls/$NUMBER/commits" --jq '.[].sha' | sort > "$RUNNER_TEMP/pr_shas"
+          # "-" stands for a commit whose email is linked to no GitHub account.
+          gh api --paginate "repos/$REPO/commits?sha=$HEAD_SHA&path=.github/cla-signatures.md&per_page=100" --jq '.[] | "\(.sha) \(.author.login // "-")"' | sort > "$RUNNER_TEMP/touching"
+          join "$RUNNER_TEMP/pr_shas" "$RUNNER_TEMP/touching" | cut -d' ' -f2 > "$RUNNER_TEMP/commit_authors"
+      - name: Check the author's signature
+        env:
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          ASSOCIATION: ${{ github.event.pull_request.author_association }}
+        run: >-
+          python3 -I scripts/check_cla.py
+          --head .github/cla-signatures.md
+          --base "$RUNNER_TEMP/base.md"
+          --author "$AUTHOR"
+          --association "$ASSOCIATION"
+          --commit-authors "$RUNNER_TEMP/commit_authors"
