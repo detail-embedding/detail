@@ -304,6 +304,28 @@ def aligned_points(
     return (turned * float(scale) + np.array([w / 2.0, h / 2.0])) / np.array([w, h])
 
 
+def side_view_points(
+    points: np.ndarray,
+    front_xy: np.ndarray,
+    back_xy: np.ndarray,
+    frame_wh: tuple[int, int],
+    scale: float,
+    flipped: bool,
+) -> np.ndarray:
+    """One row's ``(K, 2)`` normalized points as a side-view (``align: mirror``) embedding saw
+    them: never turned, mirrored left to right where it flipped the frame (``flipped``), with
+    the body axis's middle at the frame's centre and ``scale`` pixels drawn per pixel measured.
+    :func:`aligned_points` is the overhead case, which turns the body up; a side view turned
+    up would show a walking animal as rearing. Returns normalized points in the same frame.
+    """
+    w, h = (float(frame_wh[0]), float(frame_wh[1]))
+    px = np.asarray(points, dtype=np.float64) * np.array([w, h])
+    rel = px - (np.asarray(front_xy) + np.asarray(back_xy)) / 2.0
+    if flipped:
+        rel[:, 0] = -rel[:, 0]
+    return (rel * float(scale) + np.array([w / 2.0, h / 2.0])) / np.array([w, h])
+
+
 def heading_series(
     t_ns: np.ndarray,
     points: np.ndarray,

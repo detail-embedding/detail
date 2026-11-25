@@ -65,13 +65,6 @@ ALLOWED = {
     ): "A private drawing step, not a door: a tile draws the subject's keypoints the one way the "
     "montage shows them (scores dim, the edge colour picked by footage or white); the keypoints' "
     "look is the drawer's own, chosen once in ``visualize``.",
-    (
-        "PreviewClip",
-        "_matrix",
-        "recorded",
-    ): "A private placement step, not a door: ``recorded`` is the tile's own as-recorded "
-    "placement, the clip's fixed crop (``_crop_matrix``), which a side view keeps; a caller has "
-    "no other placement to give it.",
 }
 
 

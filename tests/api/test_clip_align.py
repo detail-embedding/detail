@@ -8,18 +8,32 @@ picture's centre; the footage, the masks and the keypoints turn together; a fram
 is drawn as recorded and marked, never blank; a run with no keypoints or no heading definition
 says why, in the clip window's words.
 
-**A side view is never turned upright.** The class this guards: a surface that aligns a clip by
-the body axis alone, ignoring how its embedding aligned. A ``mirror`` (side-view) embedding flips
-the animal to face right and never turns it, yet every surface here once turned it nose-up,
-because the one turn read the axis and not the run. Each surface now takes the run's own flip
-(``ClipPoints.flips``, from ``pipeline.embedding.headings_for_run``) through
-:func:`clip_views.aligned_matrix`; the side-view tests below fail on any surface that turns one.
+**A side view is shown as its embedding drew it.** The class this guards: a surface that aligns a
+clip by the body axis, ignoring how its embedding aligned. A ``mirror`` (side-view) embedding
+mirrors the animal to face right and never turns it, yet every surface here once turned it
+nose-up, because the one turn read the axis and not the run. It hid three more ways, each pinned
+below:
 
-**A side view holds still.** The first fix placed a side view as a turn places a frame, centred
-on that frame's body-axis middle, so every jitter of the keypoints moved the picture: the live
-tiles bobbed up and down while the export, which flips the clip's fixed crop, stayed still. A
-side view now keeps the surface's own as-recorded placement, mirrored where flagged; the
-side-view tests fail if the keypoints move it.
+- **Recomputing the flag instead of reading it.** The first fix re-derived each frame's flip from
+  the keypoints (``pipeline.embedding.headings_for_run``) at a step of one frame, at the video's
+  size and by the heading definition as it reads today. The embedding flipped at its own
+  ``every_n_frames`` (the mirror hold runs over the frames it sampled, so another step gives
+  other flags), at the masks' size, by the definition it was given, and it stored the answer:
+  ``align_mirrored`` on every embedded row (§14). The recomputation could disagree with the
+  embedding, raised on every frame once the definition no longer fit the skeleton, and ran over
+  the whole recording on the first frame of any clip, Aligned or not. ``ClipPoints.flips`` reads
+  the stored column, held between embedded frames at the run's step.
+- **Asking the keypoints first.** A frame the embedding carried a heading across (its nose lost
+  for a moment) was flipped by the run, but each surface checked for this frame's body axis
+  before it looked at the flip, and drew it unflipped and marked *no axis*. A side view now reads
+  only its flip (:func:`clip_views.mirror_as_embedded`).
+- **Align pose.** The clip window's pose pane, scaled and centred, still turned a side view
+  nose-up beside mirrored footage. It is now mirrored where the run mirrored it, never turned
+  (``body_axis.side_view_points``).
+
+A side view is also drawn as the surface draws it as recorded, its columns reversed where
+flipped: never resampled, and never placed on each frame's body-axis middle, which made the live
+tiles bob with every jitter of the keypoints while the exports held still.
 """
 
 from __future__ import annotations
@@ -30,6 +44,7 @@ import pytest
 from detail.api import clip_views
 from detail.api.clip_views import ClipViewSettings
 from detail.api.run_preview import ClipQueryPreview
+from detail.analysis.body_axis import BodyAxis
 from detail.core.visualize import MASK_TINT
 from tests.clip_fixtures import H
 from tests.clip_fixtures import W
@@ -72,41 +87,37 @@ def test_the_turn_puts_the_front_straight_above_the_back_at_the_centre(front, ba
     assert by - fy == pytest.approx(length), "a side of the output's height: no scaling"
 
 
-@pytest.mark.parametrize("flipped", [False, True])
-def test_a_side_view_keeps_its_recorded_placement_mirrored_where_flipped(flipped):
-    out = (48, 48)
-    recorded = clip_views.crop_matrix((10, 5, 40, 35), 48)
-    front, back = np.array([30.0, 20.0]), np.array([20.0, 25.0])
-
-    def aligned(front, back):
-        return clip_views.aligned_matrix(
-            front, back, 30, out, float(flipped), recorded=recorded
-        )
-
-    matrix = aligned(front, back)
-    assert np.array_equal(
-        aligned(front + [0.0, 4.0], back - [0.0, 3.0]), matrix
-    ), "the keypoints never move a side view: a jitter in them would move the picture"
-    points = np.array([[12.0, 7.0], [33.0, 30.0]])
-    as_recorded = points @ recorded[:, :2].T + recorded[:, 2]
-    placed = points @ matrix[:, :2].T + matrix[:, 2]
-    assert placed[:, 1] == pytest.approx(as_recorded[:, 1]), "not turned, not moved"
-    expected = 47 - as_recorded[:, 0] if flipped else as_recorded[:, 0]
-    assert placed[:, 0] == pytest.approx(expected), "mirrored only where flipped"
+@pytest.mark.parametrize("flip", [0.0, 1.0, float("nan")])
+def test_a_side_view_picture_is_the_recorded_one_reversed_where_flipped(flip):
+    picture = np.arange(4 * 6 * 3, dtype=np.uint8).reshape(4, 6, 3)
+    shown = clip_views.mirror_as_embedded(picture, flip)
+    if np.isnan(flip):
+        assert (
+            shown is None
+        ), "no embedded row: the caller draws it as recorded and marks it"
+    else:
+        expected = picture[:, ::-1] if flip else picture
+        assert np.array_equal(shown, expected), "exact: no resampling, never turned"
 
 
-def test_an_overhead_run_turns_and_a_side_view_without_a_heading_is_not_placed():
-    front, back = np.array([10.0, 10.0]), np.array([20.0, 20.0])
-    recorded = np.eye(2, 3)
-    assert np.array_equal(
-        clip_views.aligned_matrix(front, back, 48, (64, 48), None, recorded=recorded),
-        clip_views.turn_matrix(front, back, 48, (64, 48)),
+def test_align_pose_places_a_side_view_unturned_and_mirrored_where_flipped():
+    axis = BodyAxis((0,), (1,), (), (W, H), None, 10.0)
+    # Nose up-left of its tail, as if rearing while facing left.
+    xy = np.array([[[20 / W, 10 / H], [26 / W, 18 / H]]] * 3)
+    scores = np.full((3, 2), 0.9)
+    placed = clip_views.aligned_window(
+        xy, scores, axis, (W, H), flips=np.array([1.0, 0.0, np.nan])
     )
-    nan = float("nan")
+    nose, tail = placed[0] * [W, H]
     assert (
-        clip_views.aligned_matrix(front, back, 48, (64, 48), nan, recorded=recorded)
-        is None
-    )
+        nose[0] > tail[0] and nose[1] < tail[1]
+    ), "mirrored: rearing, now facing right"
+    assert (nose + tail) / 2 == pytest.approx([W / 2, H / 2]), "centred on the body"
+    nose, tail = placed[1] * [W, H]
+    assert nose[0] < tail[0] and nose[1] < tail[1], "unflipped: as it stood, not turned"
+    assert np.isnan(placed[2]).all(), "no embedded row: not placed"
+    nose, tail = clip_views.aligned_window(xy, scores, axis, (W, H))[0] * [W, H]
+    assert nose[0] == pytest.approx(tail[0]), "an overhead run is turned up"
 
 
 def test_a_frame_with_no_axis_is_marked_not_blanked():
@@ -158,20 +169,19 @@ def test_a_frame_without_the_subjects_axis_plays_as_recorded_and_says_so(tmp_pat
     assert np.array_equal(turned.masks, plain.masks)
 
 
-def _extent(picture) -> tuple[float, float, int, int]:
-    """``(centre row, centre col, height, width)`` of the tinted animal."""
-    rows, cols = np.nonzero(_tinted(picture))
-    return rows.mean(), cols.mean(), int(np.ptp(rows)), int(np.ptp(cols))
+def _side_frame(recording, frame, **kwargs):
+    preview = ClipQueryPreview(recording.dir.parent.parent)
+    return preview.clip_frame(
+        recording.id, "emb_01", 0, frame, ClipViewSettings(**kwargs)
+    )
 
 
 def test_a_side_view_clip_is_flipped_as_its_embedding_flipped_it_not_turned_up(
     tmp_path,
 ):
     recording = with_side_heading(with_keypoints(two_animals(tmp_path)))
-    preview = ClipQueryPreview(recording.dir.parent.parent)
-    frame = preview.clip_frame(recording.id, "emb_01", 0, 0, ClipViewSettings())
-    # Nose (12, 12) over tail (18, 18): facing up-left, so the embedding flipped it.
-    assert frame.flip == 1.0, "the run's own flip, read from its headings"
+    # Nose (12, 12) over tail (18, 18): facing up-left, so the embedding mirrored it.
+    assert _side_frame(recording, 0, aligned=True).flip == 1.0
     plain, aligned = _views(recording), _views(recording, aligned=True)
     # The picture as recorded, mirrored: not turned, and not moved onto the body's middle
     # (which would move it with every jitter of the keypoints).
@@ -179,23 +189,122 @@ def test_a_side_view_clip_is_flipped_as_its_embedding_flipped_it_not_turned_up(
     assert np.array_equal(aligned.frame, plain.frame[:, ::-1])
 
 
-def test_a_side_view_frame_its_embedding_has_no_heading_for_plays_as_recorded(tmp_path):
+def test_the_flip_shown_is_the_one_the_embedding_stored_not_one_recomputed(tmp_path):
+    # Frame 0 faces left, so a flip recomputed from its keypoints would mirror it; the run
+    # stored that it did not (another step, frame size or definition can make it so).
+    recording = with_side_heading(
+        with_keypoints(two_animals(tmp_path)), {0: False, 2: True}
+    )
+    assert _side_frame(recording, 0, aligned=True).flip == 0.0
+    assert np.array_equal(
+        _views(recording, aligned=True).masks, _views(recording).masks
+    ), "drawn as the embedding drew it: unflipped"
+
+
+def test_a_side_view_frame_with_no_keypoints_is_flipped_by_its_stored_flag(tmp_path):
+    # Frame 2 has no keypoints, but the run carried a heading across it and mirrored it.
     recording = with_side_heading(with_keypoints(two_animals(tmp_path)))
-    preview = ClipQueryPreview(recording.dir.parent.parent)
-    frame = preview.clip_frame(recording.id, "emb_01", 0, 2, ClipViewSettings())
+    plain = _views(recording, frame=2)
+    aligned = _views(recording, frame=2, aligned=True)
+    # Mirrored, not marked: a side view never asks the keypoints.
+    assert np.array_equal(aligned.frame, plain.frame[:, ::-1])
+    assert np.array_equal(aligned.masks, plain.masks[:, ::-1])
+
+
+def test_a_side_view_frame_its_embedding_has_no_row_for_plays_as_recorded(tmp_path):
+    recording = with_side_heading(with_keypoints(two_animals(tmp_path)), {0: True})
+    frame = _side_frame(recording, 2, aligned=True)
     assert frame.flip is not None and np.isnan(frame.flip)
+    plain = _views(recording, frame=2)
     aligned = _views(recording, frame=2, aligned=True)
     assert (aligned.frame[2, 2] == 40).all(), "marked"
-    assert np.array_equal(aligned.masks, _views(recording, frame=2).masks)
+    assert np.array_equal(aligned.frame[20:], plain.frame[20:]), "and drawn as recorded"
+    assert np.array_equal(aligned.masks, plain.masks)
+
+
+@pytest.mark.parametrize("every_n_frames", [1, 2])
+def test_between_embedded_frames_a_frame_holds_the_flag_of_the_one_it_follows(
+    tmp_path, every_n_frames
+):
+    recording = with_side_heading(
+        with_keypoints(two_animals(tmp_path)),
+        {0: True, 2: False},
+        every_n_frames=every_n_frames,
+    )
+    points = ClipQueryPreview(recording.dir.parent.parent).clip_points(
+        recording.id, "emb_01"
+    )
+    nan = np.nan
+    if every_n_frames == 1:
+        expected = [
+            1.0,
+            nan,
+            0.0,
+            nan,
+            nan,
+        ]  # every frame was sampled; 1 and 3 have no row
+    else:
+        expected = [1.0, 1.0, 0.0, 0.0, nan]  # 1 and 3 were never sampled; 4 has no row
+    np.testing.assert_array_equal(points.flips(0, "part_001", range(5)), expected)
+    np.testing.assert_array_equal(points.flip_window(0, [5], 1, 3), expected[1:4])
+
+
+def test_a_side_view_whose_definition_no_longer_fits_plays_as_recorded(tmp_path):
+    import yaml
+
+    recording = with_side_heading(with_keypoints(two_animals(tmp_path)))
+    meta_path = recording.dir / "embeddings" / "emb_01" / "embedding.yaml"
+    meta = yaml.safe_load(meta_path.read_text(encoding="utf-8-sig"))
+    meta["heading_definition"] = {"front": ["snout"], "back": ["tail"]}
+    meta_path.write_text(yaml.dump(meta, sort_keys=False), encoding="utf-8")
+    plain, aligned = _views(recording), _views(recording, aligned=True)
+    assert "does not fit" in aligned.align_note
+    assert np.array_equal(aligned.masks, plain.masks), "greyed, so as recorded"
+
+
+def test_a_side_view_reads_its_flips_only_for_what_draws_one(tmp_path, monkeypatch):
+    recording = with_side_heading(with_keypoints(two_animals(tmp_path)))
+    asked = []
+    read = clip_views.ClipPoints.flips
+
+    def flips(self, *args):
+        asked.append(args)
+        return read(self, *args)
+
+    monkeypatch.setattr(clip_views.ClipPoints, "flips", flips)
+    assert _side_frame(recording, 0).flip is None
+    assert _side_frame(recording, 0, trail=True).flip is None
+    assert not asked, "as recorded, nothing reads a side view's flips"
+    assert _side_frame(recording, 0, aligned=True).flip == 1.0
+    assert _side_frame(recording, 0, pose_aligned=True).flip == 1.0
+    assert len(asked) == 2
+
+
+def test_align_pose_on_a_side_view_faces_the_way_the_embedding_drew_it(tmp_path):
+    def pose(name, flips):
+        recording = with_side_heading(
+            with_keypoints(two_animals(tmp_path / name)), flips
+        )
+        settings = ClipViewSettings(
+            masks_on_frame=False, points_on_frame=False, pose_aligned=True
+        )
+        preview = ClipQueryPreview(recording.dir.parent.parent)
+        return preview.clip_views(recording.id, "emb_01", 0, 0, settings).pose
+
+    def lean(picture):
+        """Mean column of the ink above the middle row less that below it: > 0 when the
+        nose (above) is right of the tail."""
+        rows, cols = np.nonzero((picture < 250).any(axis=2))
+        return cols[rows < H // 2].mean() - cols[rows > H // 2].mean()
+
+    # Nose (12, 12) up-left of tail (18, 18): turned up, it would not lean at all.
+    assert lean(pose("mirrored", {0: True})) > 6, "mirrored: up and to the right"
+    assert lean(pose("as_drawn", {0: False})) < -6, "as the run drew it: up and left"
 
 
 def test_an_overhead_run_has_no_flip(tmp_path):
     recording = with_heading(with_keypoints(two_animals(tmp_path)))
-    preview = ClipQueryPreview(recording.dir.parent.parent)
-    assert (
-        preview.clip_frame(recording.id, "emb_01", 0, 0, ClipViewSettings()).flip
-        is None
-    )
+    assert _side_frame(recording, 0, aligned=True).flip is None
 
 
 def test_without_a_heading_definition_aligned_changes_nothing_and_says_why(tmp_path):
@@ -322,7 +431,7 @@ def test_an_aligned_tile_turns_the_animal_up_about_its_middle(
         assert np.array_equal(marked[40:], as_recorded[40:]), "and drawn as recorded"
 
 
-def test_a_side_view_tile_is_flipped_never_turned_and_marked_without_a_heading(
+def test_a_side_view_tile_is_the_recorded_tile_mirrored_and_marked_without_a_row(
     processed_recording, write_vfr_video
 ):
     from detail.api import previews
@@ -333,32 +442,18 @@ def test_a_side_view_tile_is_flipped_never_turned_and_marked_without_a_heading(
     t = _timestamps(recording)
     reader = previews.PreviewReader.open(recording, 0, "track_01")
     with reader.clip(0, int(t[10]), int(t[40]), 64, footage=False, trail=1) as clip:
-        row, col, tall, wide = _tile_shape(clip.frame_at(0))
-        ends = _ends_facing_right(clip)
-        # The same frames with the keypoints jittering up and down, as a pose estimate does.
-        jittered = (
-            ends
-            + np.array([0.0, 0.06])
-            * np.where(np.arange(len(ends)) % 2, 1.0, -1.0)[:, None, None]
-        )
-        for flip in (0.0, 1.0):
-            clip.set_pose(axes=ends, flips=np.full(len(ends), flip))
-            steady = clip.frame_at(0)
-            clip.set_pose(axes=jittered, flips=np.full(len(ends), flip))
-            assert np.array_equal(
-                clip.frame_at(0), steady
-            ), "the keypoints never move a side view"
-            row_now, col_now, tall_now, wide_now = _tile_shape(steady)
-            assert tall_now == pytest.approx(tall, abs=1), "not turned"
-            assert wide_now == pytest.approx(wide, abs=1)
-            # Within resampling: the as-recorded tile is resized, the aligned one warped,
-            # and the two count pixels half a pixel apart (about a pixel at this scale).
-            assert row_now == pytest.approx(row, abs=1.5), "where it was recorded"
-            assert col_now == pytest.approx(
-                63 - col if flip else col, abs=1.5
-            ), "mirrored about the tile's middle where flipped"
-        clip.set_pose(axes=ends, flips=np.full(len(ends), np.nan))
-        assert (clip.frame_at(0)[1, 1] == 40).all(), "no heading: marked"
+        as_recorded = clip.frame_at(0)
+        n = len(clip)
+        clip.set_pose(flips=np.ones(n))
+        assert np.array_equal(clip.frame_at(0), as_recorded[:, ::-1]), "exact, unturned"
+        clip.set_pose(flips=np.zeros(n))
+        assert np.array_equal(clip.frame_at(0), as_recorded), "unflipped: as recorded"
+        clip.set_pose(flips=np.full(n, np.nan))
+        marked = clip.frame_at(0)
+        assert (marked[1, 1] == 40).all(), "no embedded row: marked"
+        assert np.array_equal(marked[40:], as_recorded[40:]), "and drawn as recorded"
+        with pytest.raises(ValueError, match="pass one"):
+            clip.set_pose(axes=_ends_facing_right(clip), flips=np.ones(n))
 
 
 def test_the_tile_source_hands_a_side_view_tile_its_runs_flips(
@@ -366,7 +461,6 @@ def test_the_tile_source_hands_a_side_view_tile_its_runs_flips(
 ):
     from types import SimpleNamespace
 
-    from detail.analysis.body_axis import BodyAxis
     from detail.api.clip_tiles import TileLook
     from tests.api.test_clip_tiles import _tiles
     from tests.api.test_previews import _timestamps, _tracked_recording
@@ -388,7 +482,7 @@ def test_the_tile_source_hands_a_side_view_tile_its_runs_flips(
 
     def flips(track_id, stem, frames):
         asked.append((track_id, stem))
-        return np.zeros(len(frames))
+        return np.ones(len(frames))
 
     points = SimpleNamespace(
         run=object(),
@@ -402,11 +496,7 @@ def test_the_tile_source_hands_a_side_view_tile_its_runs_flips(
     plain = tiles.frame(0, 0, 64, True, look=TileLook(footage=False))
     aligned = tiles.frame(0, 0, 64, True, look=TileLook(footage=False, aligned=True))
     assert asked == [(0, "part_001")], "the side-view flips are asked for once per clip"
-    _r, _c, tall, wide = _tile_shape(plain)
-    _r, _c, tall_now, wide_now = _tile_shape(aligned)
-    assert tall_now == pytest.approx(tall, abs=1) and wide_now == pytest.approx(
-        wide, abs=1
-    )
+    assert np.array_equal(aligned, plain[:, ::-1]), "the recorded tile, mirrored"
     tiles.close()
 
 
@@ -500,24 +590,33 @@ def test_an_aligned_export_tile_is_turned_and_a_frame_without_an_axis_is_marked(
         montage.close()
 
 
-def test_a_side_view_export_tile_is_not_turned(tmp_path):
+def test_a_side_view_export_tile_is_the_recorded_tile_mirrored(tmp_path):
     from detail.api.clip_montage import MontageLayers
 
     recording = with_side_heading(with_keypoints(two_animals(tmp_path)))
     montage = _montage(recording)
     try:
-        plain = montage.tile(0, 0, MontageLayers(mask=True), 48)
-        aligned = montage.tile(0, 0, MontageLayers(mask=True, aligned=True), 48)
-        row, col, tall, wide = _tile_shape(aligned)
-        plain_row, plain_col, plain_tall, plain_wide = _tile_shape(plain)
-        assert tall == pytest.approx(plain_tall, abs=1), "a square, not a diamond"
-        assert wide == pytest.approx(plain_wide, abs=1)
-        # Frame 0 faces left, so its embedding flipped it: the as-recorded tile, mirrored
-        # (within resampling: resized as recorded, warped aligned).
-        assert row == pytest.approx(plain_row, abs=1.5)
-        assert col == pytest.approx(47 - plain_col, abs=1.5)
+        for frame in (0, 2):  # frame 2 has no keypoints; its stored flag still flips it
+            for raw in (False, True):
+                plain = montage.tile(0, frame, MontageLayers(raw=raw, mask=True), 48)
+                aligned = montage.tile(
+                    0, frame, MontageLayers(raw=raw, mask=True, aligned=True), 48
+                )
+                assert np.array_equal(aligned, plain[:, ::-1]), (frame, raw)
+    finally:
+        montage.close()
+
+
+def test_a_side_view_export_tile_with_no_embedded_row_is_marked(tmp_path):
+    from detail.api.clip_montage import MontageLayers
+
+    recording = with_side_heading(with_keypoints(two_animals(tmp_path)), {0: True})
+    montage = _montage(recording)
+    try:
+        plain = montage.tile(0, 2, MontageLayers(mask=True), 48)
         marked = montage.tile(0, 2, MontageLayers(mask=True, aligned=True), 48)
-        assert (marked[1, 1] == 40).all(), "no heading or axis: marked"
+        assert (marked[1, 1] == 40).all()
+        assert np.array_equal(marked[24:], plain[24:]), "and drawn as recorded"
     finally:
         montage.close()
 

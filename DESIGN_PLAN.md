@@ -8246,9 +8246,10 @@ after which every clip starts together again. The clock is the footage's rate up
   shows** (`show_menu.layers_of` of **Show ▾**'s look, the orientation included, and its context),
   and **Export ▾** says so; Export… entries had once said "from the source video" while writing
   `DEFAULT_LAYERS` — masks on white, no footage.
-- **Aligned** (`MontageLayers.aligned`, `--aligned`): a tile frame placed by `clip_views.aligned_matrix`
-  (turned, or flipped for a `mirror` run: below) about the axis's middle, the crop's side kept, the outline placed by the same turn
-  (`_outline_turned`); a frame with no axis is `_as_recorded` and marked. **Context**
+- **Aligned** (`MontageLayers.aligned`, `--aligned`): a tile frame turned by `clip_views.turn_matrix`
+  about the axis's middle, the crop's side kept, the outline placed by the same turn
+  (`_outline_turned`); a frame with no axis is `_as_recorded` and marked. A `mirror` run's tile is
+  the `_as_recorded` one, mirrored where the embedding mirrored the frame (below). **Context**
   (`with_context`, `cluster_montage(context_s=)`, `--context`): each clip widened either side;
   labels and the clip list name the clip itself.
 
@@ -8313,22 +8314,30 @@ every frame on the bar, context included, with the window's `ClipViewSettings`) 
 PNG…* (`write_clip_frame`, off the UI thread through `run_busy`). The plain player's own **Export
 video…** is hidden in this window.
 
-**Aligned** (`ClipViewSettings.aligned`, `TileLook.aligned`, `MontageLayers.aligned`) is **one matrix**,
-`clip_views.aligned_matrix(front, back, side, out_wh, flip, recorded=)`, which follows how the clip's embedding
-aligned. Overhead or unaligned (`flip` `None`): `turn_matrix`, rotate about the body axis's middle so
+**Aligned** (`ClipViewSettings.aligned`, `TileLook.aligned`, `MontageLayers.aligned`) follows how
+the clip's embedding aligned. Overhead or unaligned: **one turn**,
+`clip_views.turn_matrix(front, back, side, out_wh)`: rotate about the body axis's middle so
 back→front points **up** (Align pose's direction), put the middle at the output's centre, scale
-`side` to the output's height. **A side view (`align: mirror`) is never turned upright**:
-`mirror_matrix` keeps the surface's own as-recorded placement (`recorded`: the clip's fixed crop as
-an affine, `clip_views.crop_matrix`, for a tile; the identity for the clip window), flipped
-left-right about the picture's middle where the embedding flipped that frame, so the animal faces
-right as the model saw it. **It never reads the keypoints**: placing a side view on each frame's
-body-axis middle, as a turn must, moved the picture with every jitter of the points, and the live
-tiles bobbed up and down while the export, which flips the fixed crop, held still. The flag is
-`ClipPoints.flips` → `pipeline.embedding.headings_for_run` at every frame with the run's own
-settings (`ClipFrame.flip`, `PreviewClip.set_pose(flips=)`), the one computation the embedding
-flips by; a frame it gives no heading (NaN) is drawn as recorded and marked *no axis*. Turning a
-side view upright, as every surface once did, showed the clusters a posture the embedding never
-saw (`tests/api/test_clip_align.py`). The axis ends are the frame's keypoints of the run the embedding read, averaged over
+`side` to the output's height. **A side view (`align: mirror`) is never turned**: each surface draws
+the frame as it draws it as recorded and reverses its columns where the embedding mirrored that
+frame (`clip_views.mirror_as_embedded`), so the animal faces right as the model saw it. Exact (no
+resampling), and whatever was drawn on the picture goes with it. **It reads only the flag, never
+the keypoints**: placing a side view on each frame's body-axis middle moved the picture with every
+jitter of the points, and a frame whose nose was lost would be drawn unflipped although the
+embedding carried its heading across the gap and flipped it. **The flag is the one the embedding
+stored**, `align_mirrored` on each embedded row (§14), read by `ClipPoints.flips` (two small columns
+per part, once per subject; `ClipFrame.flip`, `PreviewClip.set_pose(flips=)`). It is never
+recomputed: `mirror_flags` holds a side over the frames the run *sampled*, so recomputing at another
+frame step, frame size or heading definition gives other flags, and needs that definition to still
+fit. A run that embedded every `n`-th frame embedded nothing between, so a frame holds the flag of
+the embedded frame it follows (`f - f % n`, the frames `track_frames_at_cadence` selects); a frame
+with no embedded row (NaN: the subject absent, or no heading) is drawn as recorded and marked *no
+axis*. The flag is read only when something drawn needs it (Aligned, or Align pose), so a clip
+played as recorded reads nothing. **Align pose** on a side view is likewise never turned: the pose,
+scaled and centred on the body's middle, is mirrored where the embedding mirrored the frame
+(`body_axis.side_view_points`, its trail by `ClipPoints.flip_window`). Turning a side view upright,
+as every surface once did, showed the clusters a posture the embedding never saw
+(`tests/api/test_clip_align.py`). The axis ends are the frame's keypoints of the run the embedding read, averaged over
 the heading definition's front and back sets at the run's cutoff (`axis_ends`, `body_axis.
 row_axis_ends`), in the target picture's own pixels, so the angle is right at any size. Used by the
 clip window (`turn_views`: footage, masks pane and pose pane — unless Align pose already aligned it —

@@ -6857,8 +6857,9 @@ def analysis_export_temporal_clustering(
     default=_MONTAGE_DEFAULTS.aligned,
     show_default=True,
     help="Turn each clip so the animal's body points up, frame by frame, from the keypoint "
-    "run the embedding read and its heading definition. A frame with no body axis is drawn "
-    "as recorded and marked.",
+    "run the embedding read and its heading definition; a side-view embedding (aligned by "
+    "mirror) is flipped where it flipped instead, never turned. A frame with no body axis "
+    "is drawn as recorded and marked.",
 )
 @click.option(
     "--context",

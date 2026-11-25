@@ -707,7 +707,9 @@ class PreviewClip:
         #: normalized ``(n, 2, 2)`` (front, back), NaN where the frame has none; ``None`` draws
         #: every frame as recorded.
         self._axes: np.ndarray | None = None
-        #: A side-view run's flip per tile frame (``ClipPoints.flips``), or ``None``: turned.
+        #: A side-view run's **Aligned** orientation (:meth:`set_pose`): its embedding's flip per
+        #: tile frame (``ClipPoints.flips``), the tile drawn as recorded and mirrored where
+        #: flagged; ``None`` on any other run.
         self._flips: np.ndarray | None = None
         #: Keypoints drawn on the tile (:meth:`set_pose`): ``(points (n, K, 2), scores (n, K),
         #: skeleton)``, or ``None``.
@@ -765,12 +767,17 @@ class PreviewClip:
         """Turn the tiles so the body points up (``axes``: ``(n, 2, 2)`` normalized front and
         back per tile frame, NaN where there is none) and/or draw the keypoints on them
         (``points``: ``(points (n, K, 2), scores (n, K), skeleton)``), one row per tile frame.
-        A side-view run's ``flips`` (``(n,)``, ``ClipPoints.flips``) flip the tiles where its
-        embedding flipped them instead of turning them (``clip_views.aligned_matrix``).
+        A side-view run is Aligned by ``flips`` instead (``(n,)``, ``ClipPoints.flips``): each
+        tile drawn as recorded and mirrored where its embedding mirrored the frame, never
+        turned, so it needs no axes (``clip_views.mirror_as_embedded``).
 
         Raises:
-            ValueError: a row count that is not the clip's.
+            ValueError: a row count that is not the clip's, or both ``axes`` and ``flips``.
         """
+        if axes is not None and flips is not None:
+            raise ValueError(
+                "axes turn an overhead run's tiles and flips mirror a side view's: pass one"
+            )
         for name, rows in (
             ("axes", axes),
             ("points", None if points is None else points[0]),
@@ -785,27 +792,23 @@ class PreviewClip:
         self._points = points
 
     def _matrix(self, offset: int) -> np.ndarray | None:
-        """The turn for tile ``offset`` (``clip_views.aligned_matrix``), or ``None``: as
-        recorded, whether by choice or because the frame gives no axis."""
+        """The turn for tile ``offset`` (``clip_views.turn_matrix``), or ``None``: as recorded,
+        whether by choice, because the frame gives no axis, or because a side view is never
+        turned."""
         if self._axes is None:
             return None
         ends = self._axes[offset]
         if not np.isfinite(ends).all():
             return None
-        from detail.api.clip_views import aligned_matrix
+        from detail.api.clip_views import turn_matrix
 
         wh = np.array(self._reader.size, dtype=np.float64)
         front, back = ends[0] * wh, ends[1] * wh
         if np.allclose(front, back):
             return None
         x0, y0, x1, y1 = self.crop
-        return aligned_matrix(
-            front,
-            back,
-            max(x1 - x0, y1 - y0, 1),
-            (self.tile_px, self.tile_px),
-            None if self._flips is None else float(self._flips[offset]),
-            recorded=self._crop_matrix(),
+        return turn_matrix(
+            front, back, max(x1 - x0, y1 - y0, 1), (self.tile_px, self.tile_px)
         )
 
     def frame_at(self, offset: int) -> np.ndarray:
@@ -813,8 +816,9 @@ class PreviewClip:
 
         With footage, the proxy frame with the animal outlined and its trail as fading
         outlines; without, its filled mask and trail on white. A frame past the proxy's
-        end (a short file) is a grey tile. Turned so the body points up, and the keypoints
-        drawn, when :meth:`set_pose` asked; a frame with no axis is drawn as recorded and
+        end (a short file) is a grey tile. Turned so the body points up (a side view: mirrored
+        where its embedding mirrored the frame), and the keypoints drawn, when :meth:`set_pose`
+        asked; a frame with no axis (a side view: no embedded row) is drawn as recorded and
         marked "no axis"."""
         offset = min(max(int(offset), 0), len(self) - 1)
         proxy_frame = int(self.proxy_frames[offset])
@@ -854,17 +858,22 @@ class PreviewClip:
             tile = _draw_masks(tile, history, now, ring, self.tint)
         if self._points is not None:
             tile = self._draw_points(tile, offset, matrix)
-        if self._axes is not None and matrix is None:
-            from detail.api.clip_views import mark_no_axis
+        from detail.api.clip_views import mark_no_axis, mirror_as_embedded
 
+        if self._flips is not None:
+            mirrored = mirror_as_embedded(tile, float(self._flips[offset]))
+            return mark_no_axis(tile) if mirrored is None else mirrored
+        if self._axes is not None and matrix is None:
             tile = mark_no_axis(tile)
         return tile
 
     def _crop_matrix(self) -> np.ndarray:
         """``_to_tile``'s crop, square and scale as an affine: proxy pixels to tile pixels."""
-        from detail.api.clip_views import crop_matrix
-
-        return crop_matrix(self.crop, self.tile_px)
+        x0, y0, x1, y1 = self.crop
+        side = max(x1 - x0, y1 - y0, 1)
+        top, left = (side - (y1 - y0)) // 2, (side - (x1 - x0)) // 2
+        k = self.tile_px / side
+        return np.array([[k, 0.0, k * (left - x0)], [0.0, k, k * (top - y0)]])
 
     def _draw_points(self, tile: np.ndarray, offset: int, matrix) -> np.ndarray:
         """The subject's keypoints on ``tile``, placed the way its picture was."""

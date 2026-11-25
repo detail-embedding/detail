@@ -85,11 +85,11 @@ class ClipViewSettings:
     pose_aligned: bool = False
     #: **Aligned** orientation: every picture — the footage with what is drawn on it, the masks
     #: pane, the pose pane — turned about the animal's middle so its body points up, frame by
-    #: frame (:func:`turn_matrix`); a side-view (``mirror``) run's pictures are flipped where
-    #: its embedding flipped them instead (:func:`aligned_matrix`). A frame with no body axis
-    #: is drawn as recorded and marked
-    #: (:func:`mark_no_axis`). ``pose_aligned`` is the pose pane's own, older alignment (scaled
-    #: and centred too); with it on, the pose pane is not turned a second time.
+    #: frame (:func:`turn_matrix`); a side-view (``mirror``) run's pictures are instead drawn
+    #: as recorded and mirrored where its embedding mirrored them (:func:`mirror_as_embedded`).
+    #: A frame with no body axis (on a side view, no embedded row) is drawn as recorded and
+    #: marked (:func:`mark_no_axis`). ``pose_aligned`` is the pose pane's own, older alignment
+    #: (scaled and centred too); with it on, the pose pane is not turned a second time.
     aligned: bool = False
 
     @property
@@ -102,12 +102,14 @@ class ClipViewSettings:
 class PointTrail:
     """Where the subject's keypoints have just been: ``xy`` ``(n, K, 2)`` normalized, oldest
     first, ``scores`` ``(n, K)``, a colour per point by its role, and which points were asked
-    for (``kept``, ``(K,)`` bool)."""
+    for (``kept``, ``(K,)`` bool). ``flips`` is a side-view run's flip on each of those frames
+    (``ClipPoints.flip_window``), read only for Align pose; ``None`` otherwise."""
 
     xy: np.ndarray
     scores: np.ndarray
     colours: tuple[tuple[int, int, int], ...]
     kept: np.ndarray
+    flips: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -139,9 +141,10 @@ class ClipFrame:
     point_trail: PointTrail | None = None
     centre_trail: np.ndarray | None = None
     mask_history: list | None = None
-    #: How a **side-view** embedding (``align: mirror``) drew this frame: ``1.0`` flipped,
-    #: ``0.0`` not, NaN where it has no heading here; ``None`` for any other run, whose
-    #: Aligned picture is turned (:func:`aligned_matrix`).
+    #: How a **side-view** embedding (``align: mirror``) drew this frame, as it stored it
+    #: (``ClipPoints.flips``): ``1.0`` mirrored, ``0.0`` not, NaN where it embedded no row here.
+    #: ``None`` for any other run, whose Aligned picture is turned (:func:`turn_matrix`), and
+    #: whenever neither Aligned nor Align pose is asked for, since nothing then reads it.
     flip: float | None = None
 
     def subject(self, track_id: int) -> Detection | None:
@@ -232,7 +235,9 @@ def draw_pose_pane(
 ) -> np.ndarray | None:
     """Every subject's keypoints alone on white, the clip's animal in its role colours and the
     others greyed; body-aligned (the animal alone, axis up, its middle at the centre) when
-    ``settings.pose_aligned`` and the frame has an axis. ``None`` when the run has no
+    ``settings.pose_aligned`` and the frame has an axis. On a side-view run (``frame.flip`` set)
+    the aligned pose is never turned: centred and scaled the same, mirrored where the embedding
+    mirrored the frame (:func:`body_axis.side_view_points`). ``None`` when the run has no
     keypoints. Returns a new picture."""
     if frame.skeleton is None:
         return None
@@ -242,7 +247,13 @@ def draw_pose_pane(
         trail = frame.point_trail
         if aligned:
             trail = PointTrail(
-                aligned_window(trail.xy, trail.scores, frame.axis, _wh(frame)),
+                aligned_window(
+                    trail.xy,
+                    trail.scores,
+                    frame.axis,
+                    _wh(frame),
+                    flips=trail.flips if frame.flip is not None else None,
+                ),
                 trail.scores,
                 trail.colours,
                 trail.kept,
@@ -251,7 +262,11 @@ def draw_pose_pane(
     placed = dict(frame.placed)
     if aligned:
         pose = draw_aligned_pose(
-            pose, frame.axis, placed.get(int(track_id)), frame.skeleton
+            pose,
+            frame.axis,
+            placed.get(int(track_id)),
+            frame.skeleton,
+            flip=frame.flip,
         )
         placed = {}
     for subject_id in sorted(placed, key=lambda t: t == int(track_id)):
@@ -301,10 +316,17 @@ def _wh(frame: ClipFrame) -> tuple[int, int]:
 
 
 def aligned_window(
-    xy: np.ndarray, scores: np.ndarray, axis: BodyAxis, canvas_wh: tuple[int, int]
+    xy: np.ndarray,
+    scores: np.ndarray,
+    axis: BodyAxis,
+    canvas_wh: tuple[int, int],
+    *,
+    flips: np.ndarray | None = None,
 ) -> np.ndarray:
-    """``xy`` (``(n, K, 2)`` normalized) with each frame turned by **its own** body axis, the
-    way :func:`draw_aligned_pose` turns the frame shown — NaN where a frame has no axis.
+    """``xy`` (``(n, K, 2)`` normalized) with each frame placed by **its own** body axis, the
+    way :func:`draw_aligned_pose` places the frame shown — NaN where a frame has no axis.
+    ``flips`` (``(n,)``) is a side-view run's flip on each frame: each is then mirrored, not
+    turned, and NaN where the embedding has no row.
 
     So a trail on the body-aligned pose is the path each point took *relative to the body*:
     a paw stepping, a head turning, not the animal crossing the arena (which the footage's
@@ -319,8 +341,35 @@ def aligned_window(
     scale = ALIGNED_LENGTH * wh[1] / axis.typical_length_px
     for i in range(len(xy)):
         if np.isfinite(front_xy[i]).all() and np.isfinite(back_xy[i]).all():
-            out[i] = body_axis.aligned_points(xy[i], front_xy[i], back_xy[i], wh, scale)
+            placed = _pose_placed(
+                xy[i],
+                front_xy[i],
+                back_xy[i],
+                wh,
+                scale,
+                None if flips is None else float(flips[i]),
+            )
+            if placed is not None:
+                out[i] = placed
     return out
+
+
+def _pose_placed(
+    xy: np.ndarray,
+    front_xy: np.ndarray,
+    back_xy: np.ndarray,
+    wh: tuple[int, int],
+    scale: float,
+    flip: float | None,
+) -> np.ndarray | None:
+    """Align pose's placement of one row: turned up (``flip`` ``None``, an overhead run), or a
+    side view's, mirrored where flipped; ``None`` where a side view has no embedded row.
+    """
+    if flip is None:
+        return body_axis.aligned_points(xy, front_xy, back_xy, wh, scale)
+    if not np.isfinite(flip):
+        return None
+    return body_axis.side_view_points(xy, front_xy, back_xy, wh, scale, bool(flip))
 
 
 def draw_aligned_pose(
@@ -328,9 +377,14 @@ def draw_aligned_pose(
     axis: BodyAxis,
     subject: tuple[np.ndarray, np.ndarray] | None,
     skeleton: Skeleton,
+    *,
+    flip: float | None = None,
 ) -> np.ndarray:
     """The clip's animal on ``canvas``, its body axis up; a line of text instead when this
     frame gives no axis. ``subject`` is its ``(points, scores)`` on the frame, or ``None``.
+    ``flip`` is a side-view run's flip on this frame (``ClipFrame.flip``): the animal is then
+    mirrored where flagged and never turned, and a frame with no embedded row (NaN) gets the
+    line.
     """
     h, w = canvas.shape[:2]
     # Measured in the recording's pixels, as the typical length was; drawn normalized.
@@ -340,16 +394,19 @@ def draw_aligned_pose(
         front_xy, back_xy = body_axis.row_axis_ends(
             xy[None], scores[None], list(axis.front), list(axis.back), wh, axis.cutoff
         )
+        placed = None
         if np.isfinite(front_xy).all() and np.isfinite(back_xy).all():
-            turned = body_axis.aligned_points(
+            placed = _pose_placed(
                 xy,
                 front_xy[0],
                 back_xy[0],
                 wh,
                 ALIGNED_LENGTH * wh[1] / axis.typical_length_px,
+                flip,
             )
+        if placed is not None:
             return draw_keypoints(
-                canvas, turned, skeleton, scores=scores, edge_color=POSE_EDGE
+                canvas, placed, skeleton, scores=scores, edge_color=POSE_EDGE
             )
     out = canvas.copy()
     cv2.putText(
@@ -365,7 +422,7 @@ def draw_aligned_pose(
     return out
 
 
-# --- the aligned orientation: one turn, every picture --------------------------------------- #
+# --- the aligned orientation: one turn (a side view: one mirror), every picture ------------- #
 #: The pose pane's line on a frame with no axis.
 NO_AXIS_LINE = "no body axis on this frame"
 #: The mark on a picture drawn as recorded because its frame gives no body axis.
@@ -422,62 +479,20 @@ def turn_matrix(
     return np.hstack([linear, shift[:, None]])
 
 
-def crop_matrix(crop: tuple[int, int, int, int], size: int) -> np.ndarray:
-    """A clip's as-recorded tile placement as a ``2 × 3`` affine, frame pixels to tile pixels:
-    the fixed ``crop`` ``(x0, y0, x1, y1)``, centred in a square, scaled to ``size`` — what
-    ``previews._to_tile`` and the montage's as-recorded tile cut."""
-    x0, y0, x1, y1 = crop
-    side = max(x1 - x0, y1 - y0, 1)
-    top, left = (side - (y1 - y0)) // 2, (side - (x1 - x0)) // 2
-    k = size / side
-    return np.array([[k, 0.0, k * (left - x0)], [0.0, k, k * (top - y0)]])
+def mirror_as_embedded(picture: np.ndarray, flip: float) -> np.ndarray | None:
+    """A **side-view** (``align: mirror``) run's Aligned picture: ``picture`` as the surface
+    draws it as recorded, mirrored left to right where the embedding mirrored this frame
+    (``flip`` ``1.0``), unchanged where it did not (``0.0``), and ``None`` where the embedding
+    has no row here (NaN): the caller draws that frame as recorded and marks it, never guessed.
 
-
-def mirror_matrix(
-    recorded: np.ndarray, out_wh: tuple[int, int], flipped: bool
-) -> np.ndarray:
-    """The ``2 × 3`` affine of a **side-view** run's Aligned picture: the surface's own
-    as-recorded placement ``recorded`` (frame pixels to ``out_wh`` pixels), mirrored left to
-    right about the picture's middle where ``flipped`` (the embedding's own flip, §14
-    ``mirror``).
-
-    It never reads the keypoints. A turn has to centre each frame on its body axis, so the
-    picture moves with every jitter of the points; a side view needs no turn, so it keeps the
-    clip's fixed crop and stays still, as a montage export of it does."""
-    recorded = np.asarray(recorded, dtype=np.float64)
-    if not flipped:
-        return recorded.copy()
-    mirror = np.array([[-1.0, 0.0], [0.0, 1.0]])
-    shift = np.array([float(out_wh[0]) - 1.0, 0.0])
-    return np.hstack(
-        [mirror @ recorded[:, :2], (mirror @ recorded[:, 2] + shift)[:, None]]
-    )
-
-
-def aligned_matrix(
-    front: np.ndarray,
-    back: np.ndarray,
-    side: float,
-    out_wh: tuple[int, int],
-    flip: float | None,
-    *,
-    recorded: np.ndarray,
-) -> np.ndarray | None:
-    """The **Aligned** picture's affine for one frame, the way the clip's embedding aligned:
-    :func:`turn_matrix` (body up) for an overhead or unaligned run (``flip`` ``None``), and
-    :func:`mirror_matrix` for a side-view one (``flip`` the embedding's flag): the surface's
-    as-recorded placement ``recorded``, mirrored where flagged, so a side view stays a side
-    view, as the embedding saw it, and holds still. ``None`` where a side-view run has no
-    heading on this frame (``flip`` NaN): the frame is drawn as recorded and marked, never
-    guessed.
-
-    Every surface that draws a clip Aligned (the clip window, the live tiles, the exports)
-    takes its matrix from here, so none of them turns a side view upright."""
-    if flip is None:
-        return turn_matrix(front, back, side, out_wh)
+    A side view is never turned. Turning it upright showed the clusters a posture the
+    embedding never saw, and placing it on each frame's body-axis middle moved the picture
+    with every jitter of the keypoints. Reversing the columns of the as-recorded picture is
+    exact: no resampling, and whatever is drawn on it (outlines, keypoints, trails) goes with
+    it."""
     if not np.isfinite(flip):
         return None
-    return mirror_matrix(recorded, out_wh, bool(flip))
+    return np.ascontiguousarray(picture[:, ::-1]) if flip else picture
 
 
 def turn_picture(
@@ -568,7 +583,7 @@ def frame_turn(
 
 
 def turn_views(
-    frame: "ClipFrame",
+    frame: ClipFrame,
     settings: ClipViewSettings,
     track_id: int,
     footage: np.ndarray | None,
@@ -576,34 +591,47 @@ def turn_views(
     pose: np.ndarray | None,
 ) -> tuple[np.ndarray | None, np.ndarray, np.ndarray | None, bool]:
     """The three pictures in the **Aligned** orientation (``settings.aligned``): each turned
-    by the one :func:`aligned_matrix` of this frame's axis, at the frame's own size. Returns
-    ``(footage, masks, pose, turned)``; ``turned`` is False on a frame with no axis, whose
-    pictures come back as recorded with the footage (or, without it, the masks pane) marked.
+    by the one :func:`turn_matrix` of this frame's axis, at the frame's own size, or on a
+    side-view run mirrored where its embedding mirrored the frame (:func:`mirror_as_embedded`,
+    which reads only ``frame.flip``, never the keypoints). Returns ``(footage, masks, pose,
+    turned)``; ``turned`` is False on a frame with no axis (on a side view, no embedded row),
+    whose pictures come back as recorded with the footage (or, without it, the masks pane)
+    marked.
 
     A run with no axis at all (``frame.axis`` None: no keypoints or no heading definition)
     comes back untouched and unmarked — the switch that asks for this is greyed with the reason
     there, and marking every frame would only repeat it."""
     if not settings.aligned or frame.axis is None:
         return footage, masks, pose, False
+    if frame.flip is not None:
+        if not np.isfinite(frame.flip):
+            return _marked(footage, masks, pose)
+        if footage is not None:
+            footage = mirror_as_embedded(footage, frame.flip)
+        masks = mirror_as_embedded(masks, frame.flip)
+        if pose is not None and not settings.pose_aligned:
+            pose = mirror_as_embedded(pose, frame.flip)
+        return footage, masks, pose, True
     ends = frame_turn(frame, track_id)
     if ends is None:
-        if footage is not None:
-            return mark_no_axis(footage), masks, pose, False
-        return footage, mark_no_axis(masks), pose, False
+        return _marked(footage, masks, pose)
     wh = _wh(frame)
-    matrix = aligned_matrix(
-        ends[0], ends[1], wh[1], wh, frame.flip, recorded=np.eye(2, 3)
-    )
-    if matrix is None:
-        if footage is not None:
-            return mark_no_axis(footage), masks, pose, False
-        return footage, mark_no_axis(masks), pose, False
+    matrix = turn_matrix(ends[0], ends[1], wh[1], wh)
     if footage is not None:
         footage = turn_picture(footage, matrix, wh, (0, 0, 0))
     masks = turn_picture(masks, matrix, wh, (255, 255, 255))
     if pose is not None and not settings.pose_aligned:
         pose = turn_picture(pose, matrix, wh, (255, 255, 255))
     return footage, masks, pose, True
+
+
+def _marked(
+    footage: np.ndarray | None, masks: np.ndarray, pose: np.ndarray | None
+) -> tuple[np.ndarray | None, np.ndarray, np.ndarray | None, bool]:
+    """:func:`turn_views`' frame drawn as recorded and marked: the footage, else the masks."""
+    if footage is not None:
+        return mark_no_axis(footage), masks, pose, False
+    return footage, mark_no_axis(masks), pose, False
 
 
 def pose_notes(
@@ -655,10 +683,10 @@ class ClipPoints:
     experiment's one saved definition that fits this skeleton. Several that fit is a choice
     this window does not make for you, so it uses none and ``axis_note`` says why.
 
-    A **side-view** embedding (``align: mirror``) also hands over ``mirror``: ``(recording_dir,
-    tracking_run_id, alignment settings)``, from which :meth:`flips` reads the flip the
-    embedding made on each frame, so the Aligned picture flips where it flipped rather than
-    turning the animal upright.
+    A **side-view** embedding (``align: mirror``) also hands over ``mirror``: ``(the embedding
+    run's directory, its every_n_frames)``, from which :meth:`flips` reads the flip the
+    embedding stored on each frame it embedded, so the Aligned picture flips where it flipped
+    rather than turning the animal upright.
     """
 
     def __init__(
@@ -671,7 +699,7 @@ class ClipPoints:
         definition: dict | None = None,
         axis_note: str | None = None,
         cutoff: float | None = None,
-        mirror: tuple[Path, str, dict] | None = None,
+        mirror: tuple[Path, int] | None = None,
     ) -> None:
         self.run = run
         self.note = note
@@ -752,13 +780,10 @@ class ClipPoints:
         if cutoff is None:
             cutoff = meta.get("pose_min_score")
         mirror = None
-        if meta.get("align") == "mirror" and meta.get("tracking_run_id"):
-            from detail.pipeline.embedding import _alignment_settings
-
+        if meta.get("align") == "mirror":
             mirror = (
-                Path(recording_dir),
-                str(meta["tracking_run_id"]),
-                _alignment_settings(meta),
+                Path(recording_dir) / "embeddings" / embed_run_id,
+                max(int(meta.get("every_n_frames") or 1), 1),
             )
         return cls(
             run,
@@ -771,14 +796,19 @@ class ClipPoints:
             mirror=mirror,
         )
 
-    def flips(self, track_id: int, part_stem: str, frames) -> np.ndarray | None:
+    def flips(
+        self, track_id: int, part_stem: str, frames: Sequence[int] | np.ndarray
+    ) -> np.ndarray | None:
         """``(n,)`` float, how a **side-view** embedding drew one subject on part-local
-        ``frames`` of one part: ``1.0`` flipped, ``0.0`` not, NaN where it has no heading
-        (a gap longer than its *Max gap*, before the first or after the last heading). ``None``
-        for any other run: its Aligned picture is turned, not flipped (:func:`aligned_matrix`).
+        ``frames`` of one part: ``1.0`` mirrored, ``0.0`` not, NaN where it embedded no row.
+        ``None`` for any other run: its Aligned picture is turned, not mirrored.
 
-        The flags are `pipeline.embedding.headings_for_run`'s at every frame with the run's own
-        settings, the one computation the embedding flips by, read whole once per subject.
+        The flag is the one the embedding stored (the ``align_mirrored`` column of its part,
+        §14), never recomputed: recomputing from the keypoints at another frame step, frame
+        size or heading definition gives other flags, and needs all three to still be there.
+        A run that embedded every ``n``-th frame embedded nothing between, so a frame holds
+        the flag of the embedded frame it follows (``f - f % n``, the frames the embedding
+        selects); NaN where that frame has no row (the subject absent, or no heading).
         """
         if self._mirror is None:
             return None
@@ -787,51 +817,48 @@ class ClipPoints:
         known = self._flip_series(int(track_id)).get(part_stem)
         if known is None or not len(known[0]) or not len(frames):
             return out
-        at = np.clip(np.searchsorted(known[0], frames), 0, len(known[0]) - 1)
-        hit = known[0][at] == frames
+        every = self._mirror[1]
+        sampled = frames - frames % every
+        at = np.clip(np.searchsorted(known[0], sampled), 0, len(known[0]) - 1)
+        hit = known[0][at] == sampled
         out[hit] = known[1][at[hit]]
         return out
 
+    def flip_window(
+        self, track_id: int, part_frame_counts: list[int], first: int, last: int
+    ) -> np.ndarray | None:
+        """:meth:`flips` over the inclusive global frames ``[first, last]`` — a trail's frames,
+        as :meth:`window` reads their points. ``None`` for any run but a side view."""
+        if self._mirror is None:
+            return None
+        out = np.full(int(last) - int(first) + 1, np.nan, dtype=np.float64)
+        start = 0
+        for stem, count in zip(self.part_stems, part_frame_counts):
+            lo, hi = max(int(first), start), min(int(last), start + int(count) - 1)
+            if lo <= hi:
+                out[lo - int(first) : hi - int(first) + 1] = self.flips(
+                    track_id, stem, np.arange(lo - start, hi - start + 1)
+                )
+            start += int(count)
+        return out
+
     def _flip_series(self, track_id: int) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+        """``{part stem: (frame_idx, align_mirrored as float)}`` of one subject's embedded
+        rows, read once: two small columns, never the embedding itself."""
         with self._lock:
             found = self._flips.get(track_id)
         if found is not None:
             return found
-        from detail.analysis.body_axis import SOURCE_NONE
-        from detail.executor import rundir
-        from detail.pipeline.embedding import headings_for_run
-        from detail.storage.user_yaml import read_user_yaml
+        from detail.storage.zarr_io import PartZarrReader
 
-        recording_dir, tracking_run_id, settings = self._mirror
-        # A heading's angle is the same at any scale of the frame, so the recording's own
-        # size serves; the masks' size is read only when the recording records none.
-        mask_w, mask_h = self.frame_wh
-        if min(self.frame_wh) <= 0:
-            track_meta = read_user_yaml(
-                recording_dir / "tracking" / tracking_run_id / "track.yaml"
-            )
-            detection_dir = (
-                recording_dir / "detections" / track_meta["detection_run_id"]
-            )
-            mask_h, mask_w = rundir.read_envelope(detection_dir)["mask_resolution"]
-        per_part = headings_for_run(
-            recording_dir,
-            tracking_run_id,
-            [track_id],
-            1,
-            settings,
-            (int(mask_h), int(mask_w)),
-        )
+        run_dir, _every = self._mirror
         series = {}
-        for (_track, part_id), headings in per_part.items():
-            frames = np.asarray(headings["frame_idx"], dtype=np.int64)
-            flag = np.where(
-                np.asarray(headings["source"]) == SOURCE_NONE,
-                np.nan,
-                np.asarray(headings["mirrored"], dtype=np.float64),
-            )
+        for part in sorted((run_dir / f"track_{track_id}").glob("part_*.zarr")):
+            reader = PartZarrReader(part)
+            frames = np.asarray(reader.column("frame_idx")[:], dtype=np.int64)
+            flag = np.asarray(reader.column("align_mirrored")[:], dtype=np.float64)
             order = np.argsort(frames, kind="stable")
-            series[part_id] = (frames[order], flag[order])
+            series[part.stem] = (frames[order], flag[order])
         with self._lock:
             self._flips[track_id] = series
         return series

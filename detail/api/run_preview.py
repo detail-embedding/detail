@@ -1920,6 +1920,9 @@ class ClipQueryPreview:
         placed = (
             points.at(points.part_stems[part_index], int(actual)) if has_points else {}
         )
+        axis = points.axis(int(track_id)) if has_points else None
+        # A side view's flip is read only for what draws one: Aligned, or Align pose.
+        wants_flip = axis is not None and (settings.aligned or settings.pose_aligned)
         point_trail = None
         centre_trail = None
         if settings.trail and span:
@@ -1937,7 +1940,14 @@ class ClipQueryPreview:
                 colours = tuple(
                     KEYPOINT_COLORS[role] for role in keypoint_roles(points.skeleton)
                 )
-                point_trail = views_api.PointTrail(xy, scores, colours, kept)
+                flips = (
+                    points.flip_window(
+                        int(track_id), counts, max(shown - span, 0), shown
+                    )
+                    if wants_flip and settings.pose_aligned
+                    else None
+                )
+                point_trail = views_api.PointTrail(xy, scores, colours, kept, flips)
             else:
                 centre_trail = self._centre_trail(
                     recording_id,
@@ -1965,20 +1975,22 @@ class ClipQueryPreview:
             placed=placed,
             skeleton=points.skeleton if has_points else None,
             pose_note=points.note,
-            axis=points.axis(int(track_id)) if has_points else None,
+            axis=axis,
             align_note=points.axis_note,
             point_trail=point_trail,
             centre_trail=centre_trail,
             mask_history=mask_history,
-            flip=self._flip(points, int(track_id), part_index, int(actual)),
+            flip=(
+                self._flip(points, int(track_id), part_index, int(actual))
+                if wants_flip
+                else None
+            ),
         )
 
     @staticmethod
     def _flip(points, track_id: int, part_index: int, actual: int) -> float | None:
-        """A side-view embedding's flip on this frame (``ClipFrame.flip``), read only when
-        it is drawn Aligned would need it: ``None`` for any other run."""
-        if points.run is None:
-            return None
+        """A side-view embedding's stored flip on this frame (``ClipFrame.flip``), ``None``
+        for any other run."""
         found = points.flips(track_id, points.part_stems[part_index], [actual])
         return None if found is None else float(found[0])
 

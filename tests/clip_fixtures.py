@@ -26,6 +26,7 @@ from detail.storage import keypoint_runs
 from detail.storage import recording as recording_store
 from detail.storage.keypoint_zarr import KeypointTrackPartWriter
 from detail.storage.zarr_io import AssignmentPartWriter, DetectionPartWriter
+from detail.storage.zarr_io import EmbeddingPartWriter
 
 from tests.api.test_run_preview import (
     _INPUT_SPEC,
@@ -154,10 +155,37 @@ def with_heading(recording):
     return recording
 
 
-def with_side_heading(recording):
+def with_side_heading(recording, flips=None, *, every_n_frames=1):
     """The embedding was aligned by nose (front) and tail (back) as a **side view**
-    (``align: mirror``): flipped to face right, never turned."""
+    (``align: mirror``): never turned, mirrored where its part says so.
+
+    ``flips`` is what the run stored, ``{frame: align_mirrored}``, one embedded row per frame
+    (§14): by default frame 0, whose nose is left of its tail, and frame 2, which has no
+    keypoints and was embedded with the heading carried across the gap, both mirrored. A frame
+    left out has no embedded row, as a frame with no heading has none. ``every_n_frames`` is
+    the run's frame step."""
+    flips = {0: True, 2: True} if flips is None else flips
     _name_keypoint_run(recording, heading=True, align="mirror")
+    edir = recording.dir / "embeddings" / "emb_01"
+    meta = yaml.safe_load((edir / "embedding.yaml").read_text(encoding="utf-8-sig"))
+    meta["every_n_frames"] = int(every_n_frames)
+    (edir / "embedding.yaml").write_text(
+        yaml.dump(meta, sort_keys=False), encoding="utf-8"
+    )
+    part = edir / "track_0" / "part_001.zarr"
+    shutil.rmtree(part)
+    det_rows = {0: 0, 2: 2}  # two_animals' detection rows of track 0
+    with EmbeddingPartWriter(part, output_dim=4, aligned=True) as writer:
+        for frame, mirrored in sorted(flips.items()):
+            writer.add_row(
+                int(frame),
+                int(frame * 1e9 / 30),
+                det_rows.get(int(frame), 0),
+                np.eye(4, dtype=np.float32)[int(frame) % 4],
+                heading_deg=180.0 if mirrored else 0.0,
+                heading_source=0 if frame == 0 else 1,
+                align_mirrored=bool(mirrored),
+            )
     return recording
 
 

@@ -224,8 +224,9 @@ PICK_PAD = 3
 ALIGN_CHECKING = "Checking whether this run's keypoints can align its clips…"
 ALIGN_TIP = (
     "Turn every clip so the animal's body points up, frame by frame, from the keypoint run the "
-    "embedding read: postures compare across clips whichever way the animal faced. A frame "
-    'with no body axis plays as recorded, marked "no axis".'
+    "embedding read: postures compare across clips whichever way the animal faced. A "
+    "side-view embedding is flipped where it flipped instead, never turned. A frame with no "
+    'body axis plays as recorded, marked "no axis".'
 )
 #: The order switch's choices: ``(key, label)``. The page sorts; this widget only asks.
 ORDERS = (
