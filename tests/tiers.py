@@ -367,6 +367,8 @@ GUARD_FILES = frozenset(
         # A screen that could have no floor is refused before measuring: the rule before
         # and the ranking after must agree on every shape the rule claims to know.
         "tests/analysis/test_no_floor_before_measuring.py",
+        # A test that fakes the clock fakes it for one module, never for the watchdog.
+        "tests/test_module_clock.py",
         # --- documentation / help anti-drift -------------------------------------- #
         "tests/test_docs_nav.py",
         "tests/test_docs_cli_examples.py",

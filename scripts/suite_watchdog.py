@@ -48,6 +48,13 @@ _ACTIVE = "DETAIL_SUITE_WATCHDOG_PID"
 _TICK_S = 1.0
 #: Exit status for a run ended by the watchdog — pytest's INTERNAL_ERROR.
 _EXIT_STATUS = 3
+#: The clock and the sleep the watchdog uses, taken when this plugin loads, before any test runs.
+#: A test that patches ``time.monotonic`` or ``time.sleep`` (even through another module's
+#: ``time`` attribute) patches them for the whole process, and the serial CI job runs tests in
+#: the process this thread lives in: a fake clock set ahead read as 714 s with no progress and
+#: ended a run 8 minutes old; a no-op sleep turns this loop into a busy one.
+_monotonic = time.monotonic
+_sleep = time.sleep
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -63,7 +70,7 @@ class _Watchdog:
     def __init__(self, config: pytest.Config, timeout_s: float) -> None:
         self._config = config
         self._timeout_s = timeout_s
-        self._last = time.monotonic()
+        self._last = _monotonic()
         self._deadline_s = timeout_s
         self._phase = "starting"
         self._running: dict[str, str] = {}
@@ -75,7 +82,7 @@ class _Watchdog:
 
     def _progress(self, phase: str | None = None) -> None:
         with self._lock:
-            self._last = time.monotonic()
+            self._last = _monotonic()
             if phase is not None:
                 self._phase = phase
 
@@ -109,16 +116,16 @@ class _Watchdog:
     @pytest.hookimpl(trylast=True)
     def pytest_sessionfinish(self, session: pytest.Session) -> None:
         with self._lock:
-            self._last = time.monotonic()
+            self._last = _monotonic()
             self._deadline_s = min(_EXIT_GRACE_S, self._timeout_s)
             self._phase = "exiting after the session finished"
             self._running.clear()
 
     def _watch(self) -> None:
         while True:
-            time.sleep(_TICK_S)
+            _sleep(_TICK_S)
             with self._lock:
-                idle = time.monotonic() - self._last
+                idle = _monotonic() - self._last
                 deadline = self._deadline_s
             if idle >= deadline:
                 self._fire(idle)

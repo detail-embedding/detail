@@ -34,6 +34,7 @@ import pytest
 
 from detail.core import progress as core_progress
 from detail.storage import activity
+from tests.module_clock import patch_module_time
 
 
 def _row(**kw):
@@ -61,7 +62,7 @@ def test_the_log_is_cheaper_than_the_bar(tmp_path, monkeypatch):
     # Simulated time, because a tight loop takes milliseconds and *any* interval collapses it to
     # one row — which is how the first version of this test looked right and proved nothing.
     clock = {"t": 0.0}
-    monkeypatch.setattr(core_progress.time, "monotonic", lambda: clock["t"])
+    patch_module_time(monkeypatch, core_progress, monotonic=lambda: clock["t"])
 
     log = activity.ActivityLog(tmp_path, interval_s=activity.ACTIVITY_INTERVAL_S)
     ticks = int(600 / core_progress.PROGRESS_INTERVAL_S)  # ten minutes of bar frames
@@ -304,7 +305,7 @@ def _scripted(monkeypatch):
 
     base = dt.datetime(2026, 10, 20, 9, 0, tzinfo=dt.timezone.utc)
     clock = {"t": 0.0}
-    monkeypatch.setattr(core_progress.time, "monotonic", lambda: clock["t"])
+    patch_module_time(monkeypatch, core_progress, monotonic=lambda: clock["t"])
     monkeypatch.setattr(
         activity,
         "_now_iso",

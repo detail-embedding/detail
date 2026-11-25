@@ -23,6 +23,7 @@ import yaml
 
 from detail.core import atomic
 from detail.storage import experiment, recording
+from tests.module_clock import patch_module_time
 
 
 def test_part_stem_prefers_id_then_falls_back_to_file():
@@ -182,7 +183,7 @@ def test_read_recording_retries_transient_lock(recording_dir, monkeypatch):
     """The GUI thread reading recording.yaml rides out the PermissionError the import
     QThread's os.replace provokes on Windows, instead of crashing the app."""
     real_text = (recording_dir / "recording.yaml").read_text(encoding="utf-8-sig")
-    monkeypatch.setattr(atomic.time, "sleep", lambda _s: None)
+    patch_module_time(monkeypatch, atomic, sleep=lambda _s: None)
     calls = {"n": 0}
 
     def flaky_read(self, *args, **kwargs):
@@ -200,7 +201,7 @@ def test_write_recording_retries_replace_on_lock(recording_dir, monkeypatch):
     """The import worker's os.replace rides out the reverse race — a GUI reader
     holding the destination open when the worker swaps the temp file in."""
     real_replace = atomic.os.replace
-    monkeypatch.setattr(atomic.time, "sleep", lambda _s: None)
+    patch_module_time(monkeypatch, atomic, sleep=lambda _s: None)
     calls = {"n": 0}
 
     def flaky_replace(src, dst):
